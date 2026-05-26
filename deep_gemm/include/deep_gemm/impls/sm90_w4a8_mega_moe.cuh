@@ -426,7 +426,7 @@ sm90_w4a8_mega_moe_impl(void* y,
         L1_SHAPE_N, L1_SHAPE_K,
         L2_SHAPE_N, L2_SHAPE_K,
         kNumExpertsPerRank, kNumExpertsPerWave,
-        kNumSMs, kNumRanks, kClusterSize, kL2NMajorScheduleRequested, kL1NMajorScheduleRequested>(workspace);
+        kNumSMs, kNumRanks, kClusterSize>(workspace);
 
     // Pipeline state shared by TMA loaders and math warpgroups
     uint32_t stage_idx = 0, phase = 0;
