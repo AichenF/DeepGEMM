@@ -86,7 +86,7 @@ template <
     uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks
 >
 CUTLASS_GLOBAL __launch_bounds__(kNumThreads, 1) void
-sm90_fp8_mega_moe_impl(void* y,
+sm90_w4a8_mega_moe_impl(void* y,
                        int* cumulative_local_expert_recv_stats,
                        const uint32_t num_tokens,
                        const __grid_constant__ layout::SymBuffer<kNumRanks> sym_buffer,
@@ -1373,34 +1373,12 @@ sm90_fp8_mega_moe_impl(void* y,
                             }
                         }
 
-                        const float weight_r0 = [&]() {
-                            if constexpr (kNumMaxTokensPerRank <= 1024) {
-                                float weight = 0.0f;
-                                if (col_idx == 0)
-                                    weight = valid_r0 ? *l1_topk_weights_buffer
-                                        .get_data_buffer(m_idx + row_offset_r0)
-                                        .get_base_ptr<float>() : 0.0f;
-                                return __shfl_sync(0xffffffff, weight, static_cast<int>(lane_idx - col_idx));
-                            } else {
-                                return valid_r0 ? *l1_topk_weights_buffer
-                                    .get_data_buffer(m_idx + row_offset_r0)
-                                    .get_base_ptr<float>() : 0.0f;
-                            }
-                        }();
-                        const float weight_r1 = [&]() {
-                            if constexpr (kNumMaxTokensPerRank <= 1024) {
-                                float weight = 0.0f;
-                                if (col_idx == 0)
-                                    weight = valid_r1 ? *l1_topk_weights_buffer
-                                        .get_data_buffer(m_idx + row_offset_r1)
-                                        .get_base_ptr<float>() : 0.0f;
-                                return __shfl_sync(0xffffffff, weight, static_cast<int>(lane_idx - col_idx));
-                            } else {
-                                return valid_r1 ? *l1_topk_weights_buffer
-                                    .get_data_buffer(m_idx + row_offset_r1)
-                                    .get_base_ptr<float>() : 0.0f;
-                            }
-                        }();
+                        float weight_r0 = valid_r0 ? *l1_topk_weights_buffer
+                            .get_data_buffer(m_idx + row_offset_r0)
+                            .get_base_ptr<float>() : 0.0f;
+                        float weight_r1 = valid_r1 ? *l1_topk_weights_buffer
+                            .get_data_buffer(m_idx + row_offset_r1)
+                            .get_base_ptr<float>() : 0.0f;
                         #pragma unroll
                         for (uint32_t p = 0; p < kNumPairs; ++ p) {
                             swiglu_r0[p][0] *= weight_r0;
@@ -1665,35 +1643,17 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
                         arrive_empty_barrier(stage_idx);
 
-                        if constexpr (WG_BLOCK_N == 128) {
-                            const float scale_0_lo = scale_a_0_lo * l2_sf_lo;
-                            const float scale_1_lo = scale_a_1_lo * l2_sf_lo;
-                            const float scale_0_hi = scale_a_0_hi * l2_sf_lo;
-                            const float scale_1_hi = scale_a_1_hi * l2_sf_lo;
-                            #pragma unroll
-                            for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
-                                final_accum[i*4+0] += scale_0_lo * accum[i*4+0];
-                                final_accum[i*4+1] += scale_0_lo * accum[i*4+1];
-                                final_accum[i*4+2] += scale_1_lo * accum[i*4+2];
-                                final_accum[i*4+3] += scale_1_lo * accum[i*4+3];
-                                final_accum[i*4+0] += scale_0_hi * accum_hi[i*4+0];
-                                final_accum[i*4+1] += scale_0_hi * accum_hi[i*4+1];
-                                final_accum[i*4+2] += scale_1_hi * accum_hi[i*4+2];
-                                final_accum[i*4+3] += scale_1_hi * accum_hi[i*4+3];
-                            }
-                        } else {
-                            #pragma unroll
-                            for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
-                                const float l2_sf = (i < 16u) ? l2_sf_lo : l2_sf_hi;
-                                final_accum[i*4+0] += scale_a_0_lo * l2_sf * accum[i*4+0];
-                                final_accum[i*4+1] += scale_a_0_lo * l2_sf * accum[i*4+1];
-                                final_accum[i*4+2] += scale_a_1_lo * l2_sf * accum[i*4+2];
-                                final_accum[i*4+3] += scale_a_1_lo * l2_sf * accum[i*4+3];
-                                final_accum[i*4+0] += scale_a_0_hi * l2_sf * accum_hi[i*4+0];
-                                final_accum[i*4+1] += scale_a_0_hi * l2_sf * accum_hi[i*4+1];
-                                final_accum[i*4+2] += scale_a_1_hi * l2_sf * accum_hi[i*4+2];
-                                final_accum[i*4+3] += scale_a_1_hi * l2_sf * accum_hi[i*4+3];
-                            }
+                        #pragma unroll
+                        for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
+                            const float l2_sf = (i < 16u) ? l2_sf_lo : l2_sf_hi;
+                            final_accum[i*4+0] += scale_a_0_lo * l2_sf * accum[i*4+0];
+                            final_accum[i*4+1] += scale_a_0_lo * l2_sf * accum[i*4+1];
+                            final_accum[i*4+2] += scale_a_1_lo * l2_sf * accum[i*4+2];
+                            final_accum[i*4+3] += scale_a_1_lo * l2_sf * accum[i*4+3];
+                            final_accum[i*4+0] += scale_a_0_hi * l2_sf * accum_hi[i*4+0];
+                            final_accum[i*4+1] += scale_a_0_hi * l2_sf * accum_hi[i*4+1];
+                            final_accum[i*4+2] += scale_a_1_hi * l2_sf * accum_hi[i*4+2];
+                            final_accum[i*4+3] += scale_a_1_hi * l2_sf * accum_hi[i*4+3];
                         }
                     } else {
                     // L2: split BLOCK_K=128 into two halves (per-64 SFA), each 2 WGMMAs.
@@ -1942,27 +1902,12 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 }
 
 
-                float weight_r0 = 0.0f, weight_r1 = 0.0f;
-                if constexpr (kNumMaxTokensPerRank <= 1024) {
-                    const int topk_weight_src_lane = static_cast<int>(lane_idx - col_idx);
-                    if (col_idx == 0) {
-                        weight_r0 = valid_r0 ? *l1_topk_weights_buffer
-                            .get_data_buffer(m_idx + row_offset_r0)
-                            .get_base_ptr<float>() : 0.0f;
-                        weight_r1 = valid_r1 ? *l1_topk_weights_buffer
-                            .get_data_buffer(m_idx + row_offset_r1)
-                            .get_base_ptr<float>() : 0.0f;
-                    }
-                    weight_r0 = __shfl_sync(0xffffffff, weight_r0, topk_weight_src_lane);
-                    weight_r1 = __shfl_sync(0xffffffff, weight_r1, topk_weight_src_lane);
-                } else {
-                    weight_r0 = valid_r0 ? *l1_topk_weights_buffer
-                        .get_data_buffer(m_idx + row_offset_r0)
-                        .get_base_ptr<float>() : 0.0f;
-                    weight_r1 = valid_r1 ? *l1_topk_weights_buffer
-                        .get_data_buffer(m_idx + row_offset_r1)
-                        .get_base_ptr<float>() : 0.0f;
-                }
+                const float weight_r0 = valid_r0 ? *l1_topk_weights_buffer
+                    .get_data_buffer(m_idx + row_offset_r0)
+                    .get_base_ptr<float>() : 0.0f;
+                const float weight_r1 = valid_r1 ? *l1_topk_weights_buffer
+                    .get_data_buffer(m_idx + row_offset_r1)
+                    .get_base_ptr<float>() : 0.0f;
                 #pragma unroll
                 for (uint32_t p = 0; p < kNumPairs; ++ p) {
                     swiglu_r0[p][0] *= weight_r0;
@@ -2098,17 +2043,10 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
                     auto scatter_direct_row = [&](const uint32_t& row_offset, const bool& valid_row, const uint32_t& row_accum_offset) {
                         if (valid_row) {
-                            uint32_t dst_rank_idx = 0, dst_token_idx = 0, dst_topk_idx = 0;
-                            if (col_idx == 0) {
-                                const auto src_metadata = *workspace.get_token_src_metadata_ptr(m_idx + row_offset);
-                                dst_rank_idx = src_metadata.rank_idx;
-                                dst_token_idx = src_metadata.token_idx;
-                                dst_topk_idx = src_metadata.topk_idx;
-                            }
-                            const int src_lane = static_cast<int>(lane_idx - col_idx);
-                            dst_rank_idx = __shfl_sync(0xffffffff, dst_rank_idx, src_lane);
-                            dst_token_idx = __shfl_sync(0xffffffff, dst_token_idx, src_lane);
-                            dst_topk_idx = __shfl_sync(0xffffffff, dst_topk_idx, src_lane);
+                            const auto src_metadata = *workspace.get_token_src_metadata_ptr(m_idx + row_offset);
+                            const uint32_t dst_rank_idx = src_metadata.rank_idx;
+                            const uint32_t dst_token_idx = src_metadata.token_idx;
+                            const uint32_t dst_topk_idx = src_metadata.topk_idx;
                             const auto dst_token = combine_token_buffer.get_rank_buffer(dst_topk_idx)
                                                    .get_data_buffer(dst_token_idx);
                             auto dst_base = math::advance_ptr<uint8_t>(

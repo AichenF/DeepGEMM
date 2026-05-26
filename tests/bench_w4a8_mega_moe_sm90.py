@@ -88,7 +88,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         buffer.topk_idx[:num_tokens].copy_(topk_idx)
         buffer.topk_weights[:num_tokens].copy_(topk_w)
         y = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
-        deep_gemm.fp8_mega_moe(
+        deep_gemm.w4a8_mega_moe(
             y, transformed_l1, transformed_l2, buffer,
             cumulative_local_expert_recv_stats=cum_stats,
             recipe=(128, 128, 128),
@@ -128,7 +128,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
             run_fused()
         torch.cuda.synchronize()
         dist.barrier()
-    t_fused = bench_kineto(run_fused, 'sm90_fp8_mega_moe',
+    t_fused = bench_kineto(run_fused, 'sm90_w4a8_mega_moe',
                            barrier=lambda: dist.barrier(),
                            num_tests=args.num_tests,
                            suppress_kineto_output=True)

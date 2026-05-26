@@ -23,6 +23,8 @@ template <uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t BLOCK_K,
           uint32_t kNumExpertsPerWave,
           uint32_t kNumSMs, uint32_t kNumRanks,
           uint32_t kClusterSize = 2,
+          bool kL2NMajorSchedule = false,
+          bool kL1NMajorSchedule = false,
           uint32_t kNumExpertsPerLane = math::constexpr_ceil_div(kNumExpertsPerRank, 32u),
           uint32_t kNumL1BlockNs = L1_SHAPE_N / BLOCK_N,
           uint32_t kNumL2BlockNs = L2_SHAPE_N / BLOCK_N,
@@ -62,7 +64,7 @@ struct MegaMoEScheduler {
     uint32_t stored_num_tokens_per_expert[kNumExpertsPerLane] = {};
 
     CUTLASS_DEVICE explicit MegaMoEScheduler(const layout::Workspace& workspace): workspace(workspace) {
-        block_idx = blockIdx.x;
+        block_idx = blockIdx.x / kClusterSize;
     }
 
     CUTLASS_DEVICE uint32_t get_wave_expert_end_idx() const {
@@ -112,7 +114,10 @@ struct MegaMoEScheduler {
 
     template <bool kDoUMMAAligned = false>
     CUTLASS_DEVICE uint32_t get_valid_m() const {
-        const auto m = cute::min(current_num_tokens - m_block_idx * BLOCK_M, BLOCK_M);
+        const auto m_start = m_block_idx * BLOCK_M;
+        if (m_start >= current_num_tokens)
+            return 0;
+        const auto m = cute::min(current_num_tokens - m_start, BLOCK_M);
         return kDoUMMAAligned ? math::align(m, 16u) : m;
     }
 
@@ -120,12 +125,22 @@ struct MegaMoEScheduler {
         const auto wave_end_expert_idx = get_wave_expert_end_idx();
         while (current_local_expert_idx < wave_end_expert_idx) {
             const auto num_m_blocks = get_current_num_m_blocks();
-            m_block_idx = block_idx / kNumL1BlockNs;
-            if (m_block_idx < num_m_blocks)
+            const auto num_m_units = math::ceil_div(num_m_blocks, kClusterSize);
+            if (block_idx < num_m_units * kNumL1BlockNs) {
+                if constexpr (kL1NMajorSchedule) {
+                    n_block_idx = block_idx / num_m_units;
+                    const auto m_unit_idx = block_idx - n_block_idx * num_m_units;
+                    m_block_idx = m_unit_idx * kClusterSize + cute::block_rank_in_cluster();
+                } else {
+                    const auto m_unit_idx = block_idx / kNumL1BlockNs;
+                    m_block_idx = m_unit_idx * kClusterSize + cute::block_rank_in_cluster();
+                    n_block_idx = block_idx % kNumL1BlockNs;
+                }
                 return true;
+            }
 
             // Current expert is fully assigned, move to the next
-            block_idx -= num_m_blocks * kNumL1BlockNs;
+            block_idx -= num_m_units * kNumL1BlockNs;
             advance_expert_idx();
         }
         return false;
@@ -135,17 +150,27 @@ struct MegaMoEScheduler {
         const auto wave_end_expert_idx = get_wave_expert_end_idx();
         while (current_local_expert_idx < wave_end_expert_idx) {
             const auto num_m_blocks = get_current_num_m_blocks();
-            if (block_idx < num_m_blocks * kNumL2BlockNs) {
-                m_block_idx = block_idx / kNumL2BlockNs;
+            const auto num_m_units = math::ceil_div(num_m_blocks, kClusterSize);
+            if (block_idx < num_m_units * kNumL2BlockNs) {
+                if constexpr (kL2NMajorSchedule) {
+                    n_block_idx = block_idx / num_m_units;
+                    const auto m_unit_idx = block_idx - n_block_idx * num_m_units;
+                    m_block_idx = m_unit_idx * kClusterSize + cute::block_rank_in_cluster();
+                } else {
+                    const auto m_unit_idx = block_idx / kNumL2BlockNs;
+                    m_block_idx = m_unit_idx * kClusterSize + cute::block_rank_in_cluster();
+                    n_block_idx = block_idx % kNumL2BlockNs;
+                }
                 return true;
             }
 
             // Current expert is fully assigned, move to the next
-            block_idx -= num_m_blocks * kNumL2BlockNs;
+            block_idx -= num_m_units * kNumL2BlockNs;
             advance_expert_idx();
         }
         return false;
     }
+
 
     // Core state machine: assigns the next block
     CUTLASS_DEVICE cute::tuple<BlockPhase, uint32_t, uint32_t, uint32_t> get_next_block() {
@@ -156,9 +181,8 @@ struct MegaMoEScheduler {
             if (next_phase == BlockPhase::Linear1) {
                 if (fetch_next_l1_block()) {
                     // Found a new L1 block
-                    n_block_idx = block_idx - m_block_idx * kNumL1BlockNs;
-                    // Jump to next block
-                    block_idx += kNumSMs;
+                    // Jump to next cluster-scheduled work unit
+                    block_idx += kNumSMs / kClusterSize;
                     return {BlockPhase::Linear1, current_local_expert_idx, m_block_idx, n_block_idx};
                 } else {
                     // L1 for the current wave is complete, transition to L2
@@ -168,9 +192,8 @@ struct MegaMoEScheduler {
             } else {
                 if (fetch_next_l2_block()) {
                     // Found a new L2 block
-                    n_block_idx = block_idx - m_block_idx * kNumL2BlockNs;
-                    // Jump to next block
-                    block_idx += kNumSMs;
+                    // Jump to next cluster-scheduled work unit
+                    block_idx += kNumSMs / kClusterSize;
                     return {BlockPhase::Linear2, current_local_expert_idx, m_block_idx, n_block_idx};
                 } else {
                     // Move to L1 of the next wave

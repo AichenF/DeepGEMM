@@ -400,18 +400,526 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     )
 
     # 路由：scores → topk_idx (M, K) + topk_weights (M, K)
-    scores = torch.randn((num_tokens, num_experts), dtype=torch.float, device="cuda")
-    topk_weights, topk_idx = torch.topk(
-        scores, num_topk, dim=-1, largest=True, sorted=False
-    )
+    eplb_replica_for = {}
+    eplb_replica_slots: list[int] = []
+    if args.num_redundant_experts > 0:
+        assert args.num_redundant_experts % num_ranks == 0, "num_redundant_experts must divide num_ranks"
+        num_replicas_per_rank = args.num_redundant_experts // num_ranks
+        assert 0 < num_replicas_per_rank < num_experts_per_rank, "invalid redundant expert count"
+        for r in range(num_ranks):
+            base = r * num_experts_per_rank
+            eplb_replica_slots += list(range(base + num_experts_per_rank - num_replicas_per_rank,
+                                             base + num_experts_per_rank))
+        logical_mask = torch.ones(num_experts, dtype=torch.bool, device="cuda")
+        logical_mask[torch.tensor(eplb_replica_slots, dtype=torch.long, device="cuda")] = False
+        if args.score_powerlaw_alpha > 0:
+            expert_rank = torch.arange(1, num_experts + 1, dtype=torch.float, device="cuda")
+            bias_for_hot = torch.pow(expert_rank, -args.score_powerlaw_alpha)
+            bias_for_hot = (bias_for_hot - bias_for_hot.mean()) / (bias_for_hot.std() + 1e-6)
+            hot_order = torch.argsort(bias_for_hot.masked_fill(~logical_mask, -float("inf")), descending=True).cpu().tolist()
+        else:
+            hot_order = torch.arange(num_experts, device="cuda")[logical_mask].cpu().tolist()
+        hot_experts = hot_order[:args.num_redundant_experts]
+        eplb_replica_for = {int(h): int(s) for h, s in zip(hot_experts, eplb_replica_slots)}
+        if rank_idx == 0:
+            print(
+                f" > eplb_sim redundant={args.num_redundant_experts} "
+                f"replicas_per_rank={num_replicas_per_rank} "
+                f"dispatch={args.replica_dispatch}",
+                flush=True,
+            )
+
+    def make_scores():
+        scores = torch.randn((num_tokens, num_experts), dtype=torch.float, device="cuda")
+        if args.score_powerlaw_alpha > 0:
+            expert_rank = torch.arange(1, num_experts + 1, dtype=torch.float, device="cuda")
+            bias = torch.pow(expert_rank, -args.score_powerlaw_alpha)
+            bias = (bias - bias.mean()) / (bias.std() + 1e-6)
+            scores = scores + args.score_powerlaw_scale * bias[None, :]
+        if eplb_replica_slots:
+            scores[:, torch.tensor(eplb_replica_slots, dtype=torch.long, device="cuda")] = -float("inf")
+        return scores
+
+    def apply_eplb_replicas(idx: torch.Tensor) -> torch.Tensor:
+        if not eplb_replica_for:
+            return idx
+        mapped = idx.clone()
+        if args.replica_dispatch == "hash":
+            token_ids = torch.arange(num_tokens, device="cuda")[:, None]
+            slot_ids = torch.arange(num_topk, device="cuda")[None, :]
+            choose_replica = ((token_ids * num_topk + slot_ids + rank_idx) & 1).bool()
+            for logical_expert, replica_slot in eplb_replica_for.items():
+                mapped = torch.where((idx == logical_expert) & choose_replica,
+                                     torch.full_like(mapped, replica_slot), mapped)
+        elif args.replica_dispatch == "static":
+            for logical_expert, replica_slot in eplb_replica_for.items():
+                logical_rank = logical_expert // num_experts_per_rank
+                replica_rank = replica_slot // num_experts_per_rank
+                if rank_idx == logical_rank:
+                    chosen = logical_expert
+                elif rank_idx == replica_rank:
+                    chosen = replica_slot
+                else:
+                    chosen = replica_slot if ((rank_idx + logical_expert) & 1) else logical_expert
+                if chosen != logical_expert:
+                    mapped = torch.where(idx == logical_expert,
+                                         torch.full_like(mapped, chosen), mapped)
+        else:
+            raise ValueError(f"unknown replica_dispatch={args.replica_dispatch}")
+        return mapped
+
+    if args.routing_mode == "balanced":
+        assert args.masked_ratio == 0.0, "balanced routing does not support masked_ratio"
+        assert (num_tokens * num_topk) % num_experts == 0, "balanced routing requires M*topk divisible by num_experts"
+        token_ids = torch.arange(num_tokens, device="cuda", dtype=torch.long)[:, None]
+        topk_offsets = torch.arange(num_topk, device="cuda", dtype=torch.long)[None, :]
+        topk_idx = (token_ids * num_topk + topk_offsets) % num_experts
+        topk_weights = torch.ones((num_tokens, num_topk), dtype=torch.float, device="cuda")
+    elif args.routing_mode in ("balanced-shuffled", "balanced-shuffled-score"):
+        assert args.masked_ratio == 0.0, f"{args.routing_mode} routing does not support masked_ratio"
+        assert num_tokens % num_experts == 0, f"{args.routing_mode} requires M divisible by num_experts"
+        assert num_experts % num_topk == 0, f"{args.routing_mode} requires experts divisible by topk"
+        token_perm = torch.randperm(num_tokens, device="cuda")
+        expert_perm = torch.randperm(num_experts, device="cuda")
+        positions = torch.arange(num_tokens, device="cuda", dtype=torch.long)
+        slot_stride = num_experts // num_topk
+        topk_idx = torch.empty((num_tokens, num_topk), dtype=torch.long, device="cuda")
+        for slot in range(num_topk):
+            expert_ids = expert_perm[(positions + slot * slot_stride) % num_experts]
+            topk_idx[token_perm, slot] = expert_ids
+        if args.routing_mode == "balanced-shuffled-score":
+            scores = make_scores()
+            topk_weights = torch.gather(scores, 1, topk_idx)
+        else:
+            topk_weights = torch.ones((num_tokens, num_topk), dtype=torch.float, device="cuda")
+    elif args.routing_mode == "topk-repair-budget-softmax":
+        assert args.masked_ratio == 0.0, f"{args.routing_mode} routing does not support masked_ratio"
+        assert (num_tokens * num_topk) % num_experts == 0, f"{args.routing_mode} requires exact local expert capacity"
+        scores = make_scores()
+        topk_weights, topk_idx = torch.topk(scores, num_topk, dim=-1, largest=True, sorted=False)
+        expert_capacity = (num_tokens * num_topk) // num_experts
+        scores_cpu = scores.cpu()
+        probs_cpu = torch.softmax(scores_cpu, dim=1)
+        selected = topk_idx.cpu().tolist()
+        original_selected = [row[:] for row in selected]
+        selected_sets = [set(row) for row in selected]
+        counts = [0] * num_experts
+        for row in selected:
+            for expert in row:
+                counts[expert] += 1
+
+        selected_mass = 0.0
+        for token, row in enumerate(selected):
+            selected_mass += sum(float(probs_cpu[token, expert].item()) for expert in row)
+        original_mass = selected_mass
+        changed_slots = 0
+        touched_tokens = set()
+        budget = args.repair_mass_drop_budget
+
+        while True:
+            overflow = {e for e, c in enumerate(counts) if c > expert_capacity}
+            underfull = [e for e, c in enumerate(counts) if c < expert_capacity]
+            if not overflow or not underfull:
+                break
+            candidates = []
+            for token, row in enumerate(selected):
+                token_set = selected_sets[token]
+                for slot, old_expert in enumerate(row):
+                    if old_expert not in overflow:
+                        continue
+                    old_score = float(scores_cpu[token, old_expert].item())
+                    old_mass = float(probs_cpu[token, old_expert].item())
+                    for new_expert in underfull:
+                        if new_expert in token_set:
+                            continue
+                        new_mass = float(probs_cpu[token, new_expert].item())
+                        loss = old_score - float(scores_cpu[token, new_expert].item())
+                        mass_loss = old_mass - new_mass
+                        candidates.append((loss, mass_loss, token, slot, old_expert, new_expert))
+            if not candidates:
+                break
+            candidates.sort(key=lambda x: x[0])
+            changed = False
+            for _, mass_loss, token, slot, old_expert, new_expert in candidates:
+                if counts[old_expert] <= expert_capacity or counts[new_expert] >= expert_capacity:
+                    continue
+                if selected[token][slot] != old_expert or new_expert in selected_sets[token]:
+                    continue
+                next_mass = selected_mass - mass_loss
+                next_drop = (original_mass - next_mass) / max(original_mass, 1e-12)
+                if next_drop > budget:
+                    continue
+                selected[token][slot] = new_expert
+                selected_sets[token].remove(old_expert)
+                selected_sets[token].add(new_expert)
+                counts[old_expert] -= 1
+                counts[new_expert] += 1
+                selected_mass = next_mass
+                changed_slots += 1
+                touched_tokens.add(token)
+                changed = True
+            if not changed:
+                break
+
+        topk_idx = torch.tensor(selected, dtype=torch.long, device="cuda")
+        topk_weights = torch.softmax(torch.gather(scores, 1, topk_idx), dim=-1)
+        mass_drop = (original_mass - selected_mass) / max(original_mass, 1e-12)
+        over_slots = sum(max(0, c - expert_capacity) for c in counts)
+        max_count = max(counts)
+        dist_print(
+            f" > bounded_repair rank={rank_idx}: budget={budget:.3f} "
+            f"changed={changed_slots / max(num_tokens * num_topk, 1) * 100:.1f}% "
+            f"touched={len(touched_tokens) / max(num_tokens, 1) * 100:.1f}% "
+            f"mass_drop={mass_drop * 100:.1f}% over_slots={over_slots} max_count={max_count}",
+            once_in_node=False,
+        )
+    elif args.routing_mode == "global-repair-budget-softmax":
+        assert args.masked_ratio == 0.0, f"{args.routing_mode} routing does not support masked_ratio"
+        scores = make_scores()
+        all_scores = uneven_all_gather(scores, group=group)
+        local_num_tokens = torch.tensor([num_tokens], dtype=torch.long, device="cuda")
+        all_num_tokens_t = [torch.zeros_like(local_num_tokens) for _ in range(num_ranks)]
+        dist.all_gather(all_num_tokens_t, local_num_tokens, group=group)
+        all_num_tokens = [int(x.item()) for x in all_num_tokens_t]
+        local_offset = sum(all_num_tokens[:rank_idx])
+        total_num_tokens = sum(all_num_tokens)
+        assert (total_num_tokens * num_topk) % num_experts == 0, f"{args.routing_mode} requires exact global expert capacity"
+
+        all_topk_weights, all_topk_idx = torch.topk(all_scores, num_topk, dim=-1, largest=True, sorted=False)
+        expert_capacity = (total_num_tokens * num_topk) // num_experts
+        scores_cpu = all_scores.cpu()
+        probs_cpu = torch.softmax(scores_cpu, dim=1)
+        score_order = torch.argsort(all_scores, dim=1, descending=True).cpu().tolist()
+        selected = all_topk_idx.cpu().tolist()
+        selected_sets = [set(row) for row in selected]
+        counts = [0] * num_experts
+        for row in selected:
+            for expert in row:
+                counts[expert] += 1
+
+        selected_mass = 0.0
+        for token, row in enumerate(selected):
+            selected_mass += sum(float(probs_cpu[token, expert].item()) for expert in row)
+        original_mass = selected_mass
+        changed_slots = 0
+        touched_tokens = set()
+        budget = args.repair_mass_drop_budget
+        max_rounds = max(1, args.repair_max_rounds)
+
+        for _round in range(max_rounds):
+            overflow = {e for e, c in enumerate(counts) if c > expert_capacity}
+            if not overflow:
+                break
+            underfull = {e for e, c in enumerate(counts) if c < expert_capacity}
+            if not underfull:
+                break
+            candidates = []
+            for token, row in enumerate(selected):
+                token_set = selected_sets[token]
+                for slot, old_expert in enumerate(row):
+                    if old_expert not in overflow:
+                        continue
+                    new_expert = -1
+                    for cand in score_order[token]:
+                        if cand in underfull and cand not in token_set:
+                            new_expert = cand
+                            break
+                    if new_expert < 0:
+                        continue
+                    old_score = float(scores_cpu[token, old_expert].item())
+                    old_mass = float(probs_cpu[token, old_expert].item())
+                    new_mass = float(probs_cpu[token, new_expert].item())
+                    loss = old_score - float(scores_cpu[token, new_expert].item())
+                    mass_loss = old_mass - new_mass
+                    candidates.append((loss, mass_loss, token, slot, old_expert, new_expert))
+            if not candidates:
+                break
+            candidates.sort(key=lambda x: x[0])
+            changed = False
+            for _, mass_loss, token, slot, old_expert, new_expert in candidates:
+                if counts[old_expert] <= expert_capacity or counts[new_expert] >= expert_capacity:
+                    continue
+                if selected[token][slot] != old_expert or new_expert in selected_sets[token]:
+                    continue
+                next_mass = selected_mass - mass_loss
+                next_drop = (original_mass - next_mass) / max(original_mass, 1e-12)
+                if next_drop > budget:
+                    continue
+                selected[token][slot] = new_expert
+                selected_sets[token].remove(old_expert)
+                selected_sets[token].add(new_expert)
+                counts[old_expert] -= 1
+                counts[new_expert] += 1
+                selected_mass = next_mass
+                changed_slots += 1
+                touched_tokens.add(token)
+                changed = True
+            if not changed:
+                break
+
+        all_topk_idx = torch.tensor(selected, dtype=torch.long, device="cuda")
+        topk_idx = all_topk_idx[local_offset:local_offset + num_tokens].contiguous()
+        topk_weights = torch.softmax(torch.gather(scores, 1, topk_idx), dim=-1)
+        mass_drop = (original_mass - selected_mass) / max(original_mass, 1e-12)
+        over_slots = sum(max(0, c - expert_capacity) for c in counts)
+        max_count = max(counts)
+        if rank_idx == 0:
+            dist_print(
+                f" > global_bounded_repair: budget={budget:.3f} "
+                f"changed={changed_slots / max(total_num_tokens * num_topk, 1) * 100:.1f}% "
+                f"touched={len(touched_tokens) / max(total_num_tokens, 1) * 100:.1f}% "
+                f"mass_drop={mass_drop * 100:.1f}% over_slots={over_slots} max_count={max_count}",
+                once_in_node=False,
+            )
+    elif args.routing_mode in ("topk-repair", "topk-repair-one", "topk-repair-softmax"):
+        assert args.masked_ratio == 0.0, f"{args.routing_mode} routing does not support masked_ratio"
+        assert (num_tokens * num_topk) % num_experts == 0, f"{args.routing_mode} requires exact local expert capacity"
+        scores = make_scores()
+        topk_weights, topk_idx = torch.topk(scores, num_topk, dim=-1, largest=True, sorted=False)
+        expert_capacity = (num_tokens * num_topk) // num_experts
+        scores_cpu = scores.cpu()
+        selected = topk_idx.cpu().tolist()
+        selected_sets = [set(row) for row in selected]
+        counts = [0] * num_experts
+        for row in selected:
+            for expert in row:
+                counts[expert] += 1
+
+        while True:
+            overflow = {e for e, c in enumerate(counts) if c > expert_capacity}
+            underfull = [e for e, c in enumerate(counts) if c < expert_capacity]
+            if not overflow:
+                break
+            candidates = []
+            underfull_set = set(underfull)
+            for token, row in enumerate(selected):
+                token_set = selected_sets[token]
+                for slot, old_expert in enumerate(row):
+                    if old_expert not in overflow:
+                        continue
+                    old_score = float(scores_cpu[token, old_expert].item())
+                    for new_expert in underfull:
+                        if new_expert in token_set:
+                            continue
+                        loss = old_score - float(scores_cpu[token, new_expert].item())
+                        candidates.append((loss, token, slot, old_expert, new_expert))
+            assert candidates, "topk-repair could not find a repair candidate"
+            candidates.sort(key=lambda x: x[0])
+            changed = False
+            for _, token, slot, old_expert, new_expert in candidates:
+                if counts[old_expert] <= expert_capacity or counts[new_expert] >= expert_capacity:
+                    continue
+                if selected[token][slot] != old_expert or new_expert in selected_sets[token]:
+                    continue
+                selected[token][slot] = new_expert
+                selected_sets[token].remove(old_expert)
+                selected_sets[token].add(new_expert)
+                counts[old_expert] -= 1
+                counts[new_expert] += 1
+                changed = True
+            assert changed, "topk-repair made no progress"
+        assert all(c == expert_capacity for c in counts), "topk-repair failed to reach exact capacity"
+        topk_idx = torch.tensor(selected, dtype=torch.long, device="cuda")
+        if args.routing_mode == "topk-repair-one":
+            topk_weights = torch.ones((num_tokens, num_topk), dtype=torch.float, device="cuda")
+        elif args.routing_mode == "topk-repair-softmax":
+            topk_weights = torch.softmax(torch.gather(scores, 1, topk_idx), dim=-1)
+        else:
+            topk_weights = torch.gather(scores, 1, topk_idx)
+    elif args.routing_mode in ("local-exact-score", "local-exact-score-one"):
+        assert args.masked_ratio == 0.0, f"{args.routing_mode} routing does not support masked_ratio"
+        assert (num_tokens * num_topk) % num_experts == 0, f"{args.routing_mode} requires exact local expert capacity"
+        scores = make_scores()
+        expert_capacity = (num_tokens * num_topk) // num_experts
+        assert expert_capacity % num_topk == 0, f"{args.routing_mode} requires per-slot expert capacity"
+        per_slot_capacity = expert_capacity // num_topk
+        score_order = torch.argsort(scores, dim=1, descending=True).cpu().tolist()
+        selected = [[-1] * num_topk for _ in range(num_tokens)]
+        selected_sets = [set() for _ in range(num_tokens)]
+
+        import sys
+        sys.setrecursionlimit(max(10000, num_tokens * 4))
+        for slot in range(num_topk):
+            assignment = [-1] * num_tokens
+            matched_tokens = [[] for _ in range(num_experts)]
+            token_order = sorted(
+                range(num_tokens),
+                key=lambda t: scores[t, score_order[t][0]].item(),
+                reverse=True,
+            )
+
+            def try_assign(token: int, seen_experts: set[int]) -> bool:
+                for expert in score_order[token]:
+                    if expert in selected_sets[token] or expert in seen_experts:
+                        continue
+                    seen_experts.add(expert)
+                    if len(matched_tokens[expert]) < per_slot_capacity:
+                        matched_tokens[expert].append(token)
+                        assignment[token] = expert
+                        return True
+                    for idx, other_token in enumerate(list(matched_tokens[expert])):
+                        if try_assign(other_token, seen_experts):
+                            matched_tokens[expert][idx] = token
+                            assignment[token] = expert
+                            return True
+                return False
+
+            for token in token_order:
+                assert try_assign(token, set()), "local-exact-score matching failed"
+            assert all(expert >= 0 for expert in assignment), "local-exact-score left unassigned tokens"
+            assert all(len(tokens) == per_slot_capacity for tokens in matched_tokens), "local-exact-score left capacity imbalance"
+            for token, expert in enumerate(assignment):
+                selected[token][slot] = expert
+                selected_sets[token].add(expert)
+
+        topk_idx = torch.tensor(selected, dtype=torch.long, device="cuda")
+        if args.routing_mode == "local-exact-score-one":
+            topk_weights = torch.ones((num_tokens, num_topk), dtype=torch.float, device="cuda")
+        else:
+            topk_weights = torch.gather(scores, 1, topk_idx)
+    elif args.routing_mode == "local-capacity":
+        assert args.masked_ratio == 0.0, "local-capacity routing does not support masked_ratio"
+        scores = make_scores()
+        expert_capacity = math.ceil(num_tokens * num_topk / num_experts)
+        candidate_k = num_experts
+        cand_vals, cand_idx = torch.topk(scores, candidate_k, dim=-1, largest=True, sorted=True)
+        order = torch.argsort(cand_vals[:, 0], descending=True).cpu().tolist()
+        cand_idx_cpu = cand_idx.cpu().tolist()
+        remaining = [expert_capacity] * num_experts
+        selected = [[-1] * num_topk for _ in range(num_tokens)]
+        pending: list[tuple[int, int]] = []
+        for token in order:
+            used = 0
+            for expert in cand_idx_cpu[token]:
+                if remaining[expert] > 0:
+                    selected[token][used] = expert
+                    remaining[expert] -= 1
+                    used += 1
+                    if used == num_topk:
+                        break
+            if used < num_topk:
+                pending.append((token, used))
+        fallback_cursor = 0
+        for token, used in pending:
+            already = set(selected[token][:used])
+            while used < num_topk:
+                found = False
+                for _ in range(num_experts):
+                    expert = fallback_cursor % num_experts
+                    fallback_cursor += 1
+                    if remaining[expert] > 0 and expert not in already:
+                        selected[token][used] = expert
+                        remaining[expert] -= 1
+                        already.add(expert)
+                        used += 1
+                        found = True
+                        break
+                if not found:
+                    for expert in cand_idx_cpu[token]:
+                        if expert not in already:
+                            selected[token][used] = expert
+                            already.add(expert)
+                            used += 1
+                            found = True
+                            break
+                assert found, "local-capacity routing could not fill all topk slots"
+        topk_idx = torch.tensor(selected, dtype=torch.long, device="cuda")
+        topk_weights = torch.gather(scores, 1, topk_idx)
+    elif args.routing_mode == "capacity":
+        assert args.masked_ratio == 0.0, "capacity routing does not support masked_ratio"
+        scores = make_scores()
+        all_scores = uneven_all_gather(scores, group=group)
+        local_num_tokens = torch.tensor([num_tokens], dtype=torch.long, device="cuda")
+        all_num_tokens_t = [torch.zeros_like(local_num_tokens) for _ in range(num_ranks)]
+        dist.all_gather(all_num_tokens_t, local_num_tokens, group=group)
+        all_num_tokens = [int(x.item()) for x in all_num_tokens_t]
+        local_offset = sum(all_num_tokens[:rank_idx])
+        total_num_tokens = sum(all_num_tokens)
+        expert_capacity = math.ceil(total_num_tokens * num_topk / num_experts)
+        candidate_k = num_experts
+        cand_vals, cand_idx = torch.topk(all_scores, candidate_k, dim=-1, largest=True, sorted=True)
+        order = torch.argsort(cand_vals[:, 0], descending=True).cpu().tolist()
+        cand_idx_cpu = cand_idx.cpu().tolist()
+        remaining = [expert_capacity] * num_experts
+        selected = [[-1] * num_topk for _ in range(total_num_tokens)]
+        pending: list[tuple[int, int]] = []
+        for token in order:
+            used = 0
+            for expert in cand_idx_cpu[token]:
+                if remaining[expert] > 0:
+                    selected[token][used] = expert
+                    remaining[expert] -= 1
+                    used += 1
+                    if used == num_topk:
+                        break
+            if used < num_topk:
+                pending.append((token, used))
+        fallback_cursor = 0
+        for token, used in pending:
+            already = set(selected[token][:used])
+            while used < num_topk:
+                found = False
+                for _ in range(num_experts):
+                    expert = fallback_cursor % num_experts
+                    fallback_cursor += 1
+                    if remaining[expert] > 0 and expert not in already:
+                        selected[token][used] = expert
+                        remaining[expert] -= 1
+                        already.add(expert)
+                        used += 1
+                        found = True
+                        break
+                if not found:
+                    for expert in cand_idx_cpu[token]:
+                        if expert not in already:
+                            selected[token][used] = expert
+                            already.add(expert)
+                            used += 1
+                            found = True
+                            break
+                assert found, "capacity routing could not fill all topk slots"
+        if rank_idx == 0:
+            probs_cpu = torch.softmax(all_scores.cpu(), dim=1)
+            natural_mass = 0.0
+            selected_mass = 0.0
+            changed_slots = 0
+            touched_tokens = 0
+            for token, row in enumerate(selected):
+                natural = cand_idx_cpu[token][:num_topk]
+                natural_set = set(natural)
+                row_set = set(row)
+                overlap = len(natural_set & row_set)
+                changed_slots += num_topk - overlap
+                touched_tokens += overlap != num_topk
+                natural_mass += sum(float(probs_cpu[token, expert].item()) for expert in natural)
+                selected_mass += sum(float(probs_cpu[token, expert].item()) for expert in row)
+            mass_drop = (natural_mass - selected_mass) / max(natural_mass, 1e-12)
+            used_counts = [expert_capacity - r for r in remaining]
+            dist_print(
+                f" > capacity_quality: changed={changed_slots / max(total_num_tokens * num_topk, 1) * 100:.1f}% "
+                f"touched={touched_tokens / max(total_num_tokens, 1) * 100:.1f}% "
+                f"mass_drop={mass_drop * 100:.1f}% max_count={max(used_counts)}",
+                once_in_node=False,
+            )
+        all_topk_idx = torch.tensor(selected, dtype=torch.long, device="cuda")
+        topk_idx = all_topk_idx[local_offset:local_offset + num_tokens].contiguous()
+        topk_weights = torch.gather(scores, 1, topk_idx)
+    else:
+        scores = make_scores()
+        topk_weights, topk_idx = torch.topk(
+            scores, num_topk, dim=-1, largest=True, sorted=False
+        )
+    topk_idx = apply_eplb_replicas(topk_idx)
     if args.masked_ratio > 0:
         rand_mask = torch.rand_like(topk_idx, dtype=torch.float)
         topk_idx.masked_fill_(rand_mask < args.masked_ratio, -1)
         topk_weights.masked_fill_(topk_idx < 0, 0)
 
     # 累计接收统计：fused 与 baseline 各持一份避免相互覆盖
+    phase_profile_enabled = os.environ.get("DG_SM90_MOE_PHASE_PROFILE", "0") not in ("", "0")
+    phase_profile_extra = 64 if phase_profile_enabled else 0
     cum_stats_fused = torch.zeros(
-        (num_experts_per_rank,), dtype=torch.int, device="cuda"
+        (num_experts_per_rank + phase_profile_extra,), dtype=torch.int, device="cuda"
     )
     cum_stats_baseline = cum_stats_fused.clone()
 
@@ -610,6 +1118,20 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     # 把所有 rank 的 topk_idx 收齐，再把不落在本 rank 持有 expert 范围内的条目
     # 标成 -1；剩下的非 -1 条目数即"被路由进本 rank 的 (token, slot) 总数"。
     gathered_topk_idx = uneven_all_gather(topk_idx, group=group)
+    all_routed_topk_idx = gathered_topk_idx
+    local_num_tokens_t = torch.tensor([num_tokens], dtype=torch.long, device="cuda")
+    all_num_tokens_t = [torch.zeros_like(local_num_tokens_t) for _ in range(num_ranks)]
+    dist.all_gather(all_num_tokens_t, local_num_tokens_t, group=group)
+    all_num_tokens = [int(x.item()) for x in all_num_tokens_t]
+    peer_recv_counts = []
+    row_start = 0
+    for src_tokens in all_num_tokens:
+        src_topk = all_routed_topk_idx[row_start:row_start + src_tokens]
+        peer_recv_counts.append(int(((src_topk >= rank_idx * num_experts_per_rank) &
+                                     (src_topk < (rank_idx + 1) * num_experts_per_rank)).sum().item()))
+        row_start += src_tokens
+    max_peer_recv = max(peer_recv_counts) if peer_recv_counts else 0
+    gathered_topk_idx = all_routed_topk_idx.clone()
     gathered_topk_idx[
         (gathered_topk_idx < rank_idx * num_experts_per_rank)
         | (gathered_topk_idx >= (rank_idx + 1) * num_experts_per_rank)
@@ -617,9 +1139,45 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     local_expert_ids = gathered_topk_idx[gathered_topk_idx != -1]
     num_recv_tokens = int(local_expert_ids.numel())
     num_touched_experts = int(torch.unique(local_expert_ids).numel())
+    if num_recv_tokens > 0:
+        local_counts = torch.bincount(
+            local_expert_ids - rank_idx * num_experts_per_rank,
+            minlength=num_experts_per_rank,
+        )
+        num_m_tiles = int(((local_counts + 63) // 64).sum().item())
+        max_expert_tokens = int(local_counts.max().item())
+    else:
+        num_m_tiles = 0
+        max_expert_tokens = 0
+
+    # ---- NSYS external profiler multi-iter ----
+    # Under DG_USE_NVIDIA_TOOLS=1, bench_kineto returns a sentinel and does not
+    # run its internal torch.profiler loop.  Keep this explicit loop so nsys
+    # captures multiple steady-state mega_moe kernels, matching decode_t256/t512.
+    _nsys_iters = int(os.environ.get("NSYS_ITERS", "0"))
+    if _nsys_iters > 0:
+        for _it in range(_nsys_iters):
+            torch.cuda.synchronize()
+            if ep_buffer is not None:
+                ep_buffer.barrier(use_comm_stream=False)
+            else:
+                dist.barrier()
+            torch.cuda._sleep(int(2e7))  # ~10ms gap between iters
+            if ep_buffer is not None:
+                ep_buffer.barrier(use_comm_stream=False)
+            else:
+                dist.barrier()
+            run_fused()
+        torch.cuda.synchronize()
+        if ep_buffer is not None:
+            ep_buffer.barrier(use_comm_stream=False)
+        else:
+            dist.barrier()
 
     # ---- benchmark ----
     # fused：bench_kineto 抓 sm90_fp8_mega_moe_impl 的 GPU 段（不含 host overhead）
+    if phase_profile_enabled:
+        cum_stats_fused.zero_()
     t_fused = bench_kineto(
         run_fused,
         SM90_KERNEL_NAME,
@@ -633,6 +1191,35 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
             else None
         ),
     )
+    if phase_profile_enabled:
+        cum_stats_fused.zero_()
+        torch.cuda.synchronize()
+        if ep_buffer is not None:
+            ep_buffer.barrier(use_comm_stream=False)
+        else:
+            dist.barrier()
+        phase_start = torch.cuda.Event(enable_timing=True)
+        phase_end = torch.cuda.Event(enable_timing=True)
+        phase_start.record()
+        run_fused()
+        phase_end.record()
+        torch.cuda.synchronize()
+        phase_event_us = phase_start.elapsed_time(phase_end) * 1000.0
+        raw_i32 = cum_stats_fused[num_experts_per_rank:num_experts_per_rank + 64].detach().cpu().tolist()
+        def _u64(slot: int) -> int:
+            lo = raw_i32[slot * 2] & 0xffffffff
+            hi = raw_i32[slot * 2 + 1] & 0xffffffff
+            return lo | (hi << 32)
+        names = ("dispatch_total", "dispatch_pull", "math_loop", "combine_barrier", "combine_reduce", "gemm_core", "l1_epilogue", "l2_epilogue")
+        pieces = []
+        for idx, name in enumerate(names):
+            total = _u64(idx)
+            max_cycles = _u64(8 + idx)
+            count = _u64(16 + idx)
+            avg_us = (total / count / 1000.0) if count else 0.0
+            max_us = max_cycles / 1000.0
+            pieces.append(f"{name}:avg={avg_us:.1f}us,max={max_us:.1f}us,n={count},ns={total}/{max_cycles}")
+        dist_print(f" > phase_profile rank={rank_idx}: event={phase_event_us:.1f}us; " + "; ".join(pieces))
     # baseline：cuda events 中位数（tilelang.do_bench 在 H200 不一定有，统一用 events）
     t_baseline = (
         _bench_cuda_events(
@@ -722,7 +1309,7 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
         return (
             f" > {name:<10} {rank_idx:2d}/{num_ranks:<2d} "
             f"{num_recv_tokens:12d} "
-            f"{num_touched_experts:14d} | "
+            f"{num_touched_experts:14d} {num_m_tiles:7d} {max_expert_tokens:8d} {max_peer_recv:8d} | "
             f"{compute_tflops:15.0f} "
             f"{hbm_gbs_:9.0f} "
             f"{nvlink_gbs_:9.0f} "
@@ -733,7 +1320,7 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
 
     dist_print("Performance:", once_in_node=True)
     dist_print(
-        " > kind       EP    recv_tokens active_experts | "
+        " > kind       EP    recv_tokens active_experts m_tiles max_exp max_peer | "
         "compute(TFLOPS) HBM(GB/s) NVL(GB/s)  time(us) reduction(us) speedup",
         once_in_node=True,
     )
@@ -831,10 +1418,53 @@ if __name__ == "__main__":
     parser.add_argument("--num-experts", type=int, default=384)
     parser.add_argument("--num-topk", type=int, default=6)
     parser.add_argument(
+        "--routing-mode",
+        type=str,
+        default="random",
+        choices=("random", "balanced", "balanced-shuffled", "balanced-shuffled-score", "topk-repair", "topk-repair-one", "topk-repair-softmax", "topk-repair-budget-softmax", "global-repair-budget-softmax", "local-exact-score", "local-exact-score-one", "local-capacity", "capacity"),
+        help="routing 构造方式；balanced/balanced-shuffled/topk-repair/local-exact-score/local-capacity/capacity 控制每 expert assignment 数",
+    )
+    parser.add_argument(
         "--masked-ratio",
         type=float,
         default=0.0,
         help="随机 mask 掉部分 topk expert selection，用于验证稀疏路由边界",
+    )
+    parser.add_argument(
+        "--score-powerlaw-alpha",
+        type=float,
+        default=0.0,
+        help="给 routing score 加 Zipf/power-law expert bias；0 表示关闭",
+    )
+    parser.add_argument(
+        "--score-powerlaw-scale",
+        type=float,
+        default=1.0,
+        help="power-law bias 的标准差尺度",
+    )
+    parser.add_argument(
+        "--repair-mass-drop-budget",
+        type=float,
+        default=0.0,
+        help="topk-repair-budget-softmax 的 aggregate selected softmax-mass drop 上限，例如 0.10",
+    )
+    parser.add_argument(
+        "--repair-max-rounds",
+        type=int,
+        default=4,
+        help="global-repair-budget-softmax 的 greedy repair 最大轮数，避免诊断代码超时",
+    )
+    parser.add_argument(
+        "--num-redundant-experts",
+        type=int,
+        default=0,
+        help="benchmark-only EPLB simulation: reserve physical expert slots as hot-expert replicas",
+    )
+    parser.add_argument(
+        "--replica-dispatch",
+        choices=("hash", "static"),
+        default="hash",
+        help="replica remap model: token-level hash or SGLang static source-rank approximation",
     )
     parser.add_argument(
         "--fast-math",
