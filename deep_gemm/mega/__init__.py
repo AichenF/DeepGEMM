@@ -193,26 +193,8 @@ def w4a8_mega_moe(y: torch.Tensor,
                   activation: str = 'swiglu',
                   activation_clamp: Optional[float] = None,
                   fast_math: bool = True):
-    """SM90 (Hopper) W4A8 MegaMoE entry — Phase 0 scaffold."""
+    """SM90 (Hopper) W4A8 MegaMoE entry."""
     _C.w4a8_mega_moe(
-        y,
-        l1_weights, l2_weights,
-        cumulative_local_expert_recv_stats,
-        sym_buffer.buffer,
-        sym_buffer.handle.buffer_ptrs, sym_buffer.group.rank(),
-        sym_buffer.num_max_tokens_per_rank,
-        sym_buffer.num_experts, sym_buffer.num_topk,
-        recipe,
-        activation, activation_clamp,
-        fast_math
-    )
-
-def w4a8_mega_moe_split(y, l1_weights, l2_weights, sym_buffer,
-                       cumulative_local_expert_recv_stats=None,
-                       recipe=(128,128,128), activation="swiglu",
-                       activation_clamp=None, fast_math=True):
-    """SM90 W4A8 MegaMoE split-2 entry."""
-    _C.w4a8_mega_moe_split(
         y, l1_weights, l2_weights,
         cumulative_local_expert_recv_stats,
         sym_buffer.buffer,

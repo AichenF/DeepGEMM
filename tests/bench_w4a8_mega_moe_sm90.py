@@ -98,7 +98,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
 
     # Stage inputs once; bench-loop re-copies them each call (bench helper expects
     # an idempotent ``fn``).
-    def run_fused():
+    def run():
         buffer.x[:num_tokens].copy_(x_fp8)
         buffer.x_sf[:num_tokens].copy_(x_sf)
         buffer.topk_idx[:num_tokens].copy_(topk_idx)
@@ -117,14 +117,14 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     if args.ncu_profile_only:
         dist_print(f'[NCU] tokens={num_tokens} hidden={hidden} ih={intermediate_hidden}',
                    once_in_node=True)
-        run_fused()
+        run()
         torch.cuda.synchronize()
         dist.barrier()
         buffer.destroy()
         return
 
     # Warm up + benchmark
-    run_fused()
+    run()
     dist.barrier()
     if phase_profile_enabled:
         cum_stats.zero_()
@@ -141,10 +141,10 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
             dist.barrier()
             torch.cuda._sleep(int(2e7))  # 10ms gap between iters
             dist.barrier()
-            run_fused()
+            run()
         torch.cuda.synchronize()
         dist.barrier()
-    t_fused = bench_kineto(run_fused, 'sm90_w4a8_mega_moe',
+    t_w4a8 = bench_kineto(run, 'sm90_w4a8_mega_moe',
                            barrier=lambda: dist.barrier(),
                            num_tests=args.num_tests,
                            suppress_kineto_output=True)
@@ -156,7 +156,8 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     num_recv_tokens = (gathered_topk_idx != -1).sum().item()
 
     safe_div = lambda a, b: float('nan') if b == 0 else a / b
-    tflops = safe_div(2 * num_recv_tokens * (hidden * intermediate_hidden * 3) / 1e12, t_fused)
+    tflops_w4a8 = safe_div(2 * num_recv_tokens * (hidden * intermediate_hidden * 3) / 1e12, t_w4a8)
+    tflops = tflops_w4a8  # legacy alias for the rest of the print logic
     num_touched_experts = max(0, torch.unique(gathered_topk_idx.flatten()).numel() - 1)
     # FP8 weights = 1 byte, FP8 acts = 1 byte, BF16 output = 2 bytes
     num_hbm_bytes = (
@@ -167,12 +168,12 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         num_recv_tokens * intermediate_hidden +                     # L2 acts read
         num_recv_tokens * hidden * 2                                # L2 out write
     )
-    hbm_gbs = safe_div(num_hbm_bytes / 1e9, t_fused)
+    hbm_gbs = safe_div(num_hbm_bytes / 1e9, t_w4a8)
 
     if print_perf:
         dist_print(
             f' tokens={num_tokens:4d}  recv={num_recv_tokens:5d}  experts={num_touched_experts:4d}  '
-            f'{t_fused * 1e6:7.1f} us  {tflops:6.1f} TFLOPS  {hbm_gbs:6.0f} GB/s  (rank{rank_idx})',
+            f'w4a8={t_w4a8 * 1e6:7.1f}us({tflops_w4a8:5.1f}TF, {hbm_gbs:4.0f}GB/s)  (rank{rank_idx})',
             once_in_node=True,
         )
         if phase_profile_enabled:

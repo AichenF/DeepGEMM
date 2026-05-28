@@ -31,7 +31,7 @@ namespace deep_gemm {
 //   * Cluster size is at most 2 (TMA multicast on A); no 2-CTA UMMA.
 // ============================================================================
 
-class SM90W4A8MegaMoERuntime final : public LaunchRuntime<SM90W4A8MegaMoERuntime> {
+class SM90W4A8MegaMoESplitRuntime final : public LaunchRuntime<SM90W4A8MegaMoESplitRuntime> {
 public:
     struct Args {
         // Templated arguments
@@ -49,6 +49,8 @@ public:
         bool l1_dual_k_accum;
         bool l2_nmajor_schedule;
         bool l1_nmajor_schedule;
+        bool run_l1_phase;
+        bool run_l2_phase;
         MegaMoESM90Config config;
 
         // Runtime arguments
@@ -92,19 +94,15 @@ static void __instantiate_kernel() {{
         {},
         {},
         {},
-        {},
         {}, {}, {},
         {},
         {}, {},
         {},
         {},
-        {},
-        {},
-        {},
-        {},
-        {},
-        {},
-        {}
+        {}, {}, {}, {}, {}, {}, {}, {},
+        {}, {}, {}, {},
+        {}, {}, {}, {}, {}, {}, {},
+        {}, {}
     >);
 }};
 )",
@@ -121,14 +119,10 @@ static void __instantiate_kernel() {{
     args.launch_args.grid_dim.first, args.num_ranks,
     to_string(args.activation_clamp),
     args.fast_math ? "true" : "false",
-    args.async_l1_tma_store ? "true" : "false",
-    args.split_sfa_tma ? "true" : "false",
-    args.direct_l2_scatter ? "true" : "false",
-    args.l2_dual_accum ? "true" : "false",
-    args.phase_profile ? "true" : "false",
-    args.l1_dual_k_accum ? "true" : "false",
-    args.l2_nmajor_schedule ? "true" : "false",
-    args.l1_nmajor_schedule ? "true" : "false");
+    args.async_l1_tma_store ? "true" : "false", args.split_sfa_tma ? "true" : "false", args.direct_l2_scatter ? "true" : "false", args.l2_dual_accum ? "true" : "false", args.phase_profile ? "true" : "false", args.l1_dual_k_accum ? "true" : "false", args.l2_nmajor_schedule ? "true" : "false", args.l1_nmajor_schedule ? "true" : "false",
+    args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
+    args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks,
+    args.run_l1_phase ? "true" : "false", args.run_l2_phase ? "true" : "false");
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -244,7 +238,7 @@ static void sm90_w4a8_mega_moe(
 
     // Launch
     const auto num_sms = device_runtime->get_num_sms();
-    const SM90W4A8MegaMoERuntime::Args args = {
+    const SM90W4A8MegaMoESplitRuntime::Args args = {
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
         .hidden = hidden, .intermediate_hidden = intermediate_hidden,
         .num_experts = num_experts, .num_topk = num_topk,
@@ -259,6 +253,8 @@ static void sm90_w4a8_mega_moe(
         .l1_dual_k_accum = get_env<int>("DG_SM90_MOE_L1_DUAL_K", 0) != 0,
         .l2_nmajor_schedule = get_env<int>("DG_SM90_MOE_L2_NMAJOR", 0) != 0,
         .l1_nmajor_schedule = get_env<int>("DG_SM90_MOE_L1_NMAJOR", 0) != 0,
+        .run_l1_phase = true,
+        .run_l2_phase = false,
         .config = config,
         .y = y.data_ptr(),
         .cumulative_local_expert_recv_stats = cumulative_local_expert_recv_stats_ptr,
@@ -278,9 +274,9 @@ static void sm90_w4a8_mega_moe(
         .launch_args = LaunchArgs(num_sms, config.num_dispatch_threads + config.num_non_epilogue_threads + config.num_epilogue_threads,
                                   config.smem_size, config.cluster_size)
     };
-    const auto code = SM90W4A8MegaMoERuntime::generate(args);
+    const auto code = SM90W4A8MegaMoESplitRuntime::generate(args);
     const auto runtime = compiler->build("sm90_w4a8_mega_moe", code);
-    SM90W4A8MegaMoERuntime::launch(runtime, args);
+    SM90W4A8MegaMoESplitRuntime::launch(runtime, args);
 }
 
 } // namespace deep_gemm

@@ -89,7 +89,6 @@ from .mega import (
     fp8_fp4_mega_moe,
     fp8_mega_moe,
     w4a8_mega_moe,
-    w4a8_mega_moe_split,
 )
 
 # Some utils

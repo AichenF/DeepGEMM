@@ -56,45 +56,18 @@ __device__ inline void dequant_smem_b_inplace(uint8_t* smem_b, uint32_t tid_in_w
     #pragma unroll
     for (int i = 0; i < 16; ++i) {
         __nv_fp8x4_e4m3 fp8_pair[2];
-        deep_gemm::w4a8::dequant_mxfp4_to_fp8(static_cast<int>(fp4_regs[i]), fp8_pair);
-        // Apply E8M0 scale via integer add on FP8 exponent bits.
-        // FP8 exp shift: each group's 32 K = 4 dwords (i/4 = group index).
-        // Scale exp = (e8m0 - 120) → 7-bit field added to FP8 exp(bits 6..3 of byte).
-        // We do it per-byte: add (delta_exp << 3) to each FP8 byte, clamping.
-        uint32_t e8m0 = static_cast<uint32_t>(e8m0_regs[i / 4]);
-        // E8M0 scale via FP multiply (correctness ✓ — bit-identical to MXFP4 ref).
-        if (e8m0 != 0) {
-            float scale = deep_gemm::w4a8::e8m0_to_float(static_cast<uint8_t>(e8m0)) * 64.0f;
-            // 64.0 compensates Marlin FP4→FP8 shift (FP8 byte = FP4 / 64).
-            __nv_fp8x4_e4m3 scaled[2];
-            #pragma unroll
-            for (int p = 0; p < 2; ++p) {
-                uint8_t bytes[4]; uint8_t out_bytes[4];
-                *reinterpret_cast<uint32_t*>(bytes) = *reinterpret_cast<uint32_t*>(&fp8_pair[p]);
-                #pragma unroll
-                for (int b = 0; b < 4; ++b) {
-                    __nv_fp8_e4m3 fp8_val; fp8_val.__x = bytes[b];
-                    float fv = static_cast<float>(fp8_val) * scale;
-                    __nv_fp8_e4m3 out_val(fv);
-                    out_bytes[b] = out_val.__x;
-                }
-                scaled[p] = *reinterpret_cast<__nv_fp8x4_e4m3*>(out_bytes);
-            }
-            uint32_t logical = i * 8;
-            uint32_t physical = logical ^ ((tid_in_wg & 7) << 4);
-            uint32_t* swz_dst = reinterpret_cast<uint32_t*>(
-                reinterpret_cast<uint8_t*>(fp8_dst) + physical);
-            swz_dst[0] = *reinterpret_cast<uint32_t*>(&scaled[1]);
-            swz_dst[1] = *reinterpret_cast<uint32_t*>(&scaled[0]);
-        } else {
-            // Same swap for unscaled path
-            uint32_t logical = i * 8;
-            uint32_t physical = logical ^ ((tid_in_wg & 7) << 4);
-            uint32_t* swz_dst = reinterpret_cast<uint32_t*>(
-                reinterpret_cast<uint8_t*>(fp8_dst) + physical);
-            swz_dst[0] = *reinterpret_cast<uint32_t*>(&fp8_pair[1]);
-            swz_dst[1] = *reinterpret_cast<uint32_t*>(&fp8_pair[0]);
-        }
+        // FAST PATH: integer exp add with subnormal/overflow handling.
+        // 10-20x faster than per-byte FP multiply.
+        deep_gemm::w4a8::dequant_mxfp4_to_fp8_with_int_scale(
+            static_cast<int>(fp4_regs[i]),
+            e8m0_regs[i / 4],
+            fp8_pair);
+        uint32_t logical = i * 8;
+        uint32_t physical = logical ^ ((tid_in_wg & 7) << 4);
+        uint32_t* swz_dst = reinterpret_cast<uint32_t*>(
+            reinterpret_cast<uint8_t*>(fp8_dst) + physical);
+        swz_dst[0] = *reinterpret_cast<uint32_t*>(&fp8_pair[1]);
+        swz_dst[1] = *reinterpret_cast<uint32_t*>(&fp8_pair[0]);
     }
     asm volatile("bar.sync %0, %1;" : : "r"(bar_idx), "r"(num_math_threads));
 }
@@ -157,7 +130,9 @@ template <
     uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4,
     uint32_t kNumThreads = kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads,
     uint32_t kNumTokensPerWarp = 32 / kNumTopk,
-    uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks
+    uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks,
+    bool kRunL1Phase = true,
+    bool kRunL2Phase = true
 >
 CUTLASS_GLOBAL __launch_bounds__(kNumThreads, 1) void
 sm90_w4a8_mega_moe_impl(void* y,
@@ -500,6 +475,7 @@ sm90_w4a8_mega_moe_impl(void* y,
     //       per-block linear mapping (no 4×32 transpose).
     // =====================================================================
     if (warp_idx < kNumDispatchWarps) {
+        if constexpr (!kRunL1Phase) { /* kernel B skips ROLE 1 dispatch */ } else {
         cutlass::arch::warpgroup_reg_dealloc<kNumDispatchRegisters>();
         const unsigned long long dispatch_total_start = phase_profile_clock();
 
@@ -770,6 +746,7 @@ sm90_w4a8_mega_moe_impl(void* y,
     //   Warps inside `kNumNonEpilogueThreads` (= 4 warps): warp 0 loads
     //   A + SFA, warp 1 loads B + SFB, warps 2..3 idle.
     // =====================================================================
+        } /* end if constexpr kRunL1Phase */
     } else if (warp_idx == kNumDispatchWarps) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
@@ -777,6 +754,8 @@ sm90_w4a8_mega_moe_impl(void* y,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
+            if constexpr (!kRunL1Phase) { if (block_phase == sched::BlockPhase::Linear1) return; }
+            if constexpr (!kRunL2Phase) { if (block_phase == sched::BlockPhase::Linear2) return; }
             const auto tensor_map_a_ptr = block_phase == sched::BlockPhase::Linear2
                 ? &tensor_map_l2_acts : &tensor_map_l1_acts;
             const auto tensor_map_sfa_ptr = block_phase == sched::BlockPhase::Linear2
@@ -856,6 +835,8 @@ sm90_w4a8_mega_moe_impl(void* y,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
+            if constexpr (!kRunL1Phase) { if (block_phase == sched::BlockPhase::Linear1) return; }
+            if constexpr (!kRunL2Phase) { if (block_phase == sched::BlockPhase::Linear2) return; }
             const auto tensor_map_b_ptr =
                 block_phase == sched::BlockPhase::Linear2 ? &tensor_map_l2_weights : &tensor_map_l1_weights;
 
@@ -888,6 +869,8 @@ sm90_w4a8_mega_moe_impl(void* y,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
+            if constexpr (!kRunL1Phase) { if (block_phase == sched::BlockPhase::Linear1) return; }
+            if constexpr (!kRunL2Phase) { if (block_phase == sched::BlockPhase::Linear2) return; }
             (void)local_expert_idx;
             (void)n_block_idx;
             const auto tensor_map_sfa_ptr = block_phase == sched::BlockPhase::Linear2
@@ -1042,6 +1025,8 @@ sm90_w4a8_mega_moe_impl(void* y,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
+            if constexpr (!kRunL1Phase) { if (block_phase == sched::BlockPhase::Linear1) return; }
+            if constexpr (!kRunL2Phase) { if (block_phase == sched::BlockPhase::Linear2) return; }
             const uint32_t valid_m = scheduler.template get_valid_m<false>();
             const uint32_t pool_block_idx = scheduler.get_current_pool_block_offset() + m_block_idx;
             const uint32_t m_idx = pool_block_idx * BLOCK_M;
