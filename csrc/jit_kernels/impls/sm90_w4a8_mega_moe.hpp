@@ -184,6 +184,30 @@ static void sm90_w4a8_mega_moe(
         config.block_m, config.block_n, config.block_k,
         config.num_dispatch_threads / 32, config.num_epilogue_threads / 32);
 
+    const bool direct_l2_scatter = config.block_n == 128;
+    if (direct_l2_scatter) {
+        auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
+        constexpr int kSmemAlignment = 1024;
+        const int num_dispatch_warps = config.num_dispatch_threads / 32;
+        const int num_epilogue_warps = config.num_epilogue_threads / 32;
+        const int num_epilogue_warpgroups = num_epilogue_warps / 4;
+        const int smem_expert_count_size = align(num_experts * static_cast<int>(sizeof(uint32_t)), kSmemAlignment);
+        const int smem_send_buffers_size = align(
+            static_cast<int>(layout::Buffer(layout::Data(hidden), num_dispatch_warps, 1).get_num_bytes()),
+            kSmemAlignment);
+        const int smem_dispatch_size = smem_expert_count_size + smem_send_buffers_size;
+        const int smem_cd_l1 = num_epilogue_warpgroups * config.block_m * (config.block_n / 2);
+        const int smem_cd = align(smem_cd_l1, kSmemAlignment);
+        const int smem_sfa_per_stage = align(2 * config.block_m * static_cast<int>(sizeof(float)), 128);
+        const int smem_per_stage = config.block_m * config.block_k + config.block_n * config.block_k + smem_sfa_per_stage;
+        const int smem_barriers_fixed = (num_dispatch_warps + 2 * num_epilogue_warps) * 8;
+        const int smem_barriers_per_stage = 2 * 8;
+        const int smem_fixed = smem_dispatch_size + smem_cd + smem_barriers_fixed;
+        config.num_stages = (SM90ArchSpec::smem_capacity - smem_fixed) / (smem_per_stage + smem_barriers_per_stage);
+        DG_HOST_ASSERT(config.num_stages >= 2);
+        config.smem_size = smem_fixed + config.num_stages * (smem_per_stage + smem_barriers_per_stage);
+    }
+
     // Tensormap construction
     // Acts/weights: standard 2D TMA descriptors (FP8 K-major).
     // Activation SF: per-128 channel float for L1, per-64 for L2 (MN-major, no swizzle).
@@ -260,7 +284,7 @@ static void sm90_w4a8_mega_moe(
         .fast_math = fast_math,
         .async_l1_tma_store = get_env<int>("DG_SM90_MOE_ASYNC_L1_STORE", 0) != 0,
         .split_sfa_tma = get_env<int>("DG_SM90_MOE_SPLIT_SFA_TMA", 0) != 0,
-        .direct_l2_scatter = get_env<int>("DG_SM90_MOE_DIRECT_L2_SCATTER", 0) != 0,
+        .direct_l2_scatter = direct_l2_scatter,
         .l2_dual_accum = get_env<int>("DG_SM90_MOE_L2_DUAL_ACCUM", 0) != 0,
         .phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0,
         .l1_dual_k_accum = get_env<int>("DG_SM90_MOE_L1_DUAL_K", 0) != 0,
