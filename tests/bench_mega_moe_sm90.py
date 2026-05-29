@@ -24,6 +24,7 @@ if REPO_ROOT not in sys.path:
 
 import deep_gemm
 from deep_gemm.utils import per_token_cast_to_fp8
+from deep_gemm.quantization_mxfp4 import quantize_to_mxfp4_w4a8, dequantize_mxfp4_to_fp32
 from deep_gemm.utils.dist import dist_print, init_dist, uneven_all_gather
 from deep_gemm.testing import bench_kineto, calc_diff, get_arch_major
 
@@ -70,8 +71,19 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
 
     x_fp8, x_sf = per_token_cast_to_fp8(x_bf, use_ue8m0=False, gran_k=128,
                                         use_packed_ue8m0=False)
-    l1_w_fp8, l1_w_sf = _quantize_grouped_fp8_block_128_128(l1_bf)
-    l2_w_fp8, l2_w_sf = _quantize_grouped_fp8_block_128_128(l2_bf)
+    if args.w4_shadow_fp8:
+        # Latency-oriented upper bound: keep W4A8 as the storage format, but
+        # materialize an FP8 shadow cache before running the existing W8 fused
+        # kernel. The W4 scale is baked into the FP8 values, so block SF is 1.
+        l1_packed, l1_e8m0 = quantize_to_mxfp4_w4a8(l1_bf, group_size=32)
+        l2_packed, l2_e8m0 = quantize_to_mxfp4_w4a8(l2_bf, group_size=32)
+        l1_w_fp8 = dequantize_mxfp4_to_fp32(l1_packed, l1_e8m0, group_size=32).to(torch.float8_e4m3fn).contiguous()
+        l2_w_fp8 = dequantize_mxfp4_to_fp32(l2_packed, l2_e8m0, group_size=32).to(torch.float8_e4m3fn).contiguous()
+        l1_w_sf = torch.ones((num_experts_per_rank, (intermediate_hidden * 2) // 128, hidden // 128), dtype=torch.float, device='cuda')
+        l2_w_sf = torch.ones((num_experts_per_rank, hidden // 128, intermediate_hidden // 128), dtype=torch.float, device='cuda')
+    else:
+        l1_w_fp8, l1_w_sf = _quantize_grouped_fp8_block_128_128(l1_bf)
+        l2_w_fp8, l2_w_sf = _quantize_grouped_fp8_block_128_128(l2_bf)
     transformed_l1, transformed_l2 = deep_gemm.transform_weights_for_mega_moe_sm90(
         (l1_w_fp8, l1_w_sf), (l2_w_fp8, l2_w_sf),
     )
@@ -95,6 +107,36 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
             fast_math=fast_math,
         )
         return y
+
+    if args.check_w4_shadow:
+        assert args.w4_shadow_fp8, '--check-w4-shadow requires --w4-shadow-fp8'
+
+        def _interleave_l1_n(t, gran=8):
+            g, n, *rest = t.shape
+            half = n // 2
+            gate = t[:, :half].reshape(g, half // gran, gran, *rest)
+            up = t[:, half:].reshape(g, half // gran, gran, *rest)
+            return torch.empty_like(t).copy_(torch.stack([gate, up], dim=2).reshape(g, n, *rest))
+
+        transformed_w4_l1 = (_interleave_l1_n(l1_packed).contiguous(), _interleave_l1_n(l1_e8m0).contiguous())
+        transformed_w4_l2 = (l2_packed.contiguous(), l2_e8m0.contiguous())
+        y_shadow = run_fused()
+        buffer.x[:num_tokens].copy_(x_fp8)
+        buffer.x_sf[:num_tokens].copy_(x_sf)
+        buffer.topk_idx[:num_tokens].copy_(topk_idx)
+        buffer.topk_weights[:num_tokens].copy_(topk_w)
+        y_w4 = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
+        deep_gemm.w4a8_mega_moe(
+            y_w4, transformed_w4_l1, transformed_w4_l2, buffer,
+            cumulative_local_expert_recv_stats=cum_stats,
+            recipe=(128, 128, 128),
+            activation='swiglu',
+            activation_clamp=activation_clamp,
+            fast_math=fast_math,
+        )
+        torch.cuda.synchronize()
+        dist.barrier()
+        dist_print(f' shadow_vs_w4_diff={calc_diff(y_shadow, y_w4):.6f}', once_in_node=True)
 
     if args.ncu_profile_only:
         dist_print(f'[NCU] tokens={num_tokens} hidden={hidden} ih={intermediate_hidden}',
@@ -203,6 +245,10 @@ if __name__ == '__main__':
     parser.add_argument('--masked-ratio', type=float, default=0.0)
     parser.add_argument('--fast-math', type=int, default=1)
     parser.add_argument('--num-tests', type=int, default=20)
+    parser.add_argument('--w4-shadow-fp8', action='store_true',
+                        help='Materialize W4A8 weights into an FP8 shadow cache and run the W8 fused kernel')
+    parser.add_argument('--check-w4-shadow', action='store_true',
+                        help='Compare the FP8 shadow path against the W4A8 fused kernel once before benchmarking')
 
     args = parser.parse_args()
 
