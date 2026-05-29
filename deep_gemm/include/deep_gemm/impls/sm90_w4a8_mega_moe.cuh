@@ -93,7 +93,9 @@ __device__ inline void dequant_smem_b_inplace(uint8_t* smem_b, uint32_t tid_in_w
             }
         }
     }
-    asm volatile("bar.sync %0, %1;" : : "r"(bar_idx), "r"(num_math_threads));
+    // Do not add a post-dequant named barrier here: callers enter a
+    // warpgroup-synchronous WGMMA fence before consuming smem_b. The earlier
+    // barrier is the one needed to protect packed reads before overwrite.
 }
 }  // namespace w4a8
 }  // namespace deep_gemm
