@@ -1867,38 +1867,39 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
             const auto run_l1_dual_k_gemm_loop = [&]() {
                 DG_STATIC_ASSERT((kHidden / BLOCK_K) % 2 == 0, "L1 dual-K expects an even number of K blocks");
-                constexpr uint32_t kL1SFKBlocks   = kHidden / 128;
-                constexpr uint32_t kL1SFGateBlks  = kIntermediateHidden / 128;
-                constexpr uint32_t kL1SFPerExpert = (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
-                const uint32_t gate_n = (n_block_idx * BLOCK_N + wg_n_idx) / 256u;
-                const uint32_t up_n   = kL1SFGateBlks + gate_n;
-                const float* expert_sf_base = l1_weights_sf + local_expert_idx * kL1SFPerExpert;
-                const float* gate_sf_base = expert_sf_base + gate_n * kL1SFKBlocks;
-                const float* up_sf_base = expert_sf_base + up_n * kL1SFKBlocks;
                 float accum_b[kAccumPerThread];
+                const auto dequant_l1_b_stage = [&](const uint32_t b_stage_idx, const uint32_t k_for_dequant) {
+                    const uint32_t tid_in_wg = epilogue_thread_idx;
+                    constexpr uint32_t kKOver32L1 = kHidden / 32;
+                    constexpr uint32_t kL1NTotal = 2 * kIntermediateHidden;
+                    const uint32_t row_global = n_block_idx * BLOCK_N + tid_in_wg;
+                    const uint8_t* e8m0_ptr = reinterpret_cast<const uint8_t*>(l1_weights_sf) +
+                        local_expert_idx * kL1NTotal * kKOver32L1 +
+                        row_global * kKOver32L1 +
+                        k_for_dequant * 4u;
+                    deep_gemm::w4a8::dequant_smem_b_inplace(
+                        reinterpret_cast<uint8_t*>(smem_b[b_stage_idx]), tid_in_wg,
+                        kNumEpilogueThreads, 8u, e8m0_ptr);
+                };
 
                 for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks;) {
                     const uint32_t stage0 = stage_idx;
                     const uint32_t phase0 = phase;
                     const uint32_t k0 = k_block_idx;
                     full_barriers[stage0]->wait(phase0);
+                    dequant_l1_b_stage(stage0, k0);
 
                     const float scale_a0_r0 = ptx::ld_shared(smem_sfa[stage0] + row_offset_r0);
                     const float scale_a0_r1 = ptx::ld_shared(smem_sfa[stage0] + row_offset_r1);
-                    const float2 gate_sf_pair = __ldg(reinterpret_cast<const float2*>(gate_sf_base + k0));
-                    const float2 up_sf_pair = __ldg(reinterpret_cast<const float2*>(up_sf_base + k0));
-                    const float gate_sf0 = gate_sf_pair.x;
-                    const float up_sf0   = up_sf_pair.x;
 
                     advance_pipeline(k_block_idx);
                     const uint32_t stage1 = stage_idx;
                     const uint32_t phase1 = phase;
                     full_barriers[stage1]->wait(phase1);
+                    dequant_l1_b_stage(stage1, k_block_idx);
 
                     const float scale_a1_r0 = ptx::ld_shared(smem_sfa[stage1] + row_offset_r0);
                     const float scale_a1_r1 = ptx::ld_shared(smem_sfa[stage1] + row_offset_r1);
-                    const float gate_sf1 = gate_sf_pair.y;
-                    const float up_sf1   = up_sf_pair.y;
 
                     #pragma unroll
                     for (uint32_t i = 0; i < kAccumPerThread; ++ i) {
@@ -1935,16 +1936,14 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
                     #pragma unroll
                     for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
-                        const float sb0 = (i & 1u) ? up_sf0 : gate_sf0;
-                        const float sb1 = (i & 1u) ? up_sf1 : gate_sf1;
-                        final_accum[i*4+0] += scale_a0_r0 * sb0 * accum[i*4+0];
-                        final_accum[i*4+1] += scale_a0_r0 * sb0 * accum[i*4+1];
-                        final_accum[i*4+2] += scale_a0_r1 * sb0 * accum[i*4+2];
-                        final_accum[i*4+3] += scale_a0_r1 * sb0 * accum[i*4+3];
-                        final_accum[i*4+0] += scale_a1_r0 * sb1 * accum_b[i*4+0];
-                        final_accum[i*4+1] += scale_a1_r0 * sb1 * accum_b[i*4+1];
-                        final_accum[i*4+2] += scale_a1_r1 * sb1 * accum_b[i*4+2];
-                        final_accum[i*4+3] += scale_a1_r1 * sb1 * accum_b[i*4+3];
+                        final_accum[i*4+0] += scale_a0_r0 * accum[i*4+0];
+                        final_accum[i*4+1] += scale_a0_r0 * accum[i*4+1];
+                        final_accum[i*4+2] += scale_a0_r1 * accum[i*4+2];
+                        final_accum[i*4+3] += scale_a0_r1 * accum[i*4+3];
+                        final_accum[i*4+0] += scale_a1_r0 * accum_b[i*4+0];
+                        final_accum[i*4+1] += scale_a1_r0 * accum_b[i*4+1];
+                        final_accum[i*4+2] += scale_a1_r1 * accum_b[i*4+2];
+                        final_accum[i*4+3] += scale_a1_r1 * accum_b[i*4+3];
                     }
 
                     advance_pipeline(k_block_idx);
