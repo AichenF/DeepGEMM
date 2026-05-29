@@ -323,7 +323,7 @@ static int get_num_experts_per_wave_for_mega_moe_sm90(
     // keep enough work resident without fragmenting expert scheduling.
     const float expected_tokens_per_expert =
         static_cast<float>(num_tokens) * num_topk / num_experts_per_rank;
-    if (block_m == 64 and (expected_tokens_per_expert < 1.0f or expected_tokens_per_expert > 4.0f)) {
+    if (block_m == 64 and (expected_tokens_per_expert < 1.0f or expected_tokens_per_expert >= 4.0f)) {
         return num_experts_per_rank;
     }
     return get_num_experts_per_wave_for_mega_moe(
