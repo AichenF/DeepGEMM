@@ -23,9 +23,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 import deep_gemm
-import sys as _sys
-_sys.path.insert(0, '/root/fac/megamoe/DeepGEMM/deep_gemm')
-from quantization_mxfp4 import quantize_to_mxfp4_w4a8
+from deep_gemm.quantization_mxfp4 import quantize_to_mxfp4_w4a8
 from deep_gemm.utils import per_token_cast_to_fp8
 from deep_gemm.utils.dist import dist_print, init_dist, uneven_all_gather
 from deep_gemm.testing import bench_kineto, calc_diff, get_arch_major

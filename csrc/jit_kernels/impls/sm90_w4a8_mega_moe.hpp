@@ -254,7 +254,7 @@ static void sm90_w4a8_mega_moe(
         .l2_nmajor_schedule = get_env<int>("DG_SM90_MOE_L2_NMAJOR", 0) != 0,
         .l1_nmajor_schedule = get_env<int>("DG_SM90_MOE_L1_NMAJOR", 0) != 0,
         .run_l1_phase = true,
-        .run_l2_phase = false,
+        .run_l2_phase = true,
         .config = config,
         .y = y.data_ptr(),
         .cumulative_local_expert_recv_stats = cumulative_local_expert_recv_stats_ptr,

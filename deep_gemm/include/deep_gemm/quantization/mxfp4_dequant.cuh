@@ -24,44 +24,56 @@ namespace w4a8 {
 //               underflow to subnormal range (result_exp == 0) are zeroed to
 //               match FP-multiply FP8 round-to-zero behavior.
 // e8m0 == 0 → zero output.
+DG_W4A8_INLINE std::uint32_t apply_e8m0_shift_to_fp8_mag(std::uint32_t mag,
+                                                                std::uint8_t e8m0) {
+    if (e8m0 >= 121u) {
+        const std::uint32_t off = (static_cast<std::uint32_t>(e8m0) - 121u) << 3;
+        const std::uint32_t off_packed = off | (off << 8) | (off << 16) | (off << 24);
+        mag = __vaddus4(mag, off_packed);
+        mag = __vminu4(mag, 0x7e7e7e7e);
+    } else {
+        const std::uint32_t absdelta = 121u - static_cast<std::uint32_t>(e8m0);
+        const std::uint32_t off = (absdelta >= 16u) ? 0x78u : (absdelta << 3);
+        const std::uint32_t off_packed = off | (off << 8) | (off << 16) | (off << 24);
+        mag = __vsubus4(mag, off_packed);
+    }
+    return mag & 0x7f7f7f7f;
+}
+
+DG_W4A8_INLINE std::uint32_t correct_e2m1_base_and_apply_scale(std::uint32_t out,
+                                                               std::uint32_t mag,
+                                                               std::uint8_t e8m0) {
+    const std::uint32_t sign = out & 0x80808080;
+    std::uint32_t val = out & 0x7f7f7f7f;
+
+    // The fast bit-shift path gives mag * 0.75 for mag=1 and turns mag=0
+    // into a non-zero value after exponent add. Correct those two E2M1 cases
+    // while keeping the vectorized byte path for mag>=2.
+    const std::uint32_t zero_mask = __vcmpeq4(mag, 0x00000000);
+    const std::uint32_t one_mask = __vcmpeq4(mag, 0x01010101);
+    val = __vsubus4(val, one_mask & 0x04040404);
+    val = apply_e8m0_shift_to_fp8_mag(val, e8m0);
+    val &= ~zero_mask;
+    return sign | val;
+}
+
 DG_W4A8_INLINE void dequant_mxfp4_to_fp8_with_int_scale(int q, std::uint8_t e8m0,
                                                         __nv_fp8x4_e4m3* frag_b) {
-    constexpr int MASK = 0x70707070;
-    int q_hi = q;
-    int q_lo = q << 4;
-    int Out1 = (q_hi & 0x80808080) | ((q_hi & MASK) >> 2);
-    int Out2 = (q_lo & 0x80808080) | ((q_lo & MASK) >> 2);
+    constexpr std::uint32_t MASK = 0x70707070;
+    const std::uint32_t uq = static_cast<std::uint32_t>(q);
+    const std::uint32_t q_hi = uq;
+    const std::uint32_t q_lo = uq << 4;
 
-    if (e8m0 == 0u) {
-        Out1 = Out1 & 0x80808080;
-        Out2 = Out2 & 0x80808080;
-    } else if (e8m0 >= 121u && e8m0 <= 133u) {
-        std::uint32_t delta = static_cast<std::uint32_t>(e8m0) - 121u;
-        std::uint32_t off = delta << 3;
-        std::uint32_t off_packed = off | (off << 8) | (off << 16) | (off << 24);
-        Out1 = (Out1 & 0x80808080) |
-               (((Out1 & 0x7F7F7F7F) + off_packed) & 0x7F7F7F7F);
-        Out2 = (Out2 & 0x80808080) |
-               (((Out2 & 0x7F7F7F7F) + off_packed) & 0x7F7F7F7F);
-    } else if (e8m0 < 121u) {
-        // delta < 0: per-byte unsigned saturating subtract via __vsubus4.
-        // Underflow yields exp=0 (subnormal); minor precision loss accepted.
-        std::uint32_t absdelta = 121u - static_cast<std::uint32_t>(e8m0);
-        std::uint32_t off = (absdelta >= 16u) ? 0x78u : (absdelta << 3);
-        std::uint32_t off_packed = off | (off << 8) | (off << 16) | (off << 24);
-        std::uint32_t mag1 = static_cast<std::uint32_t>(Out1) & 0x7F7F7F7F;
-        std::uint32_t mag2 = static_cast<std::uint32_t>(Out2) & 0x7F7F7F7F;
-        std::uint32_t sub1 = __vsubus4(mag1, off_packed);
-        std::uint32_t sub2 = __vsubus4(mag2, off_packed);
-        Out1 = (Out1 & 0x80808080) | static_cast<int>(sub1);
-        Out2 = (Out2 & 0x80808080) | static_cast<int>(sub2);
-    } else {
-        Out1 = (Out1 & 0x80808080) | 0x7E7E7E7E;
-        Out2 = (Out2 & 0x80808080) | 0x7E7E7E7E;
-    }
+    std::uint32_t out_hi = (q_hi & 0x80808080) | ((q_hi & MASK) >> 2);
+    std::uint32_t out_lo = (q_lo & 0x80808080) | ((q_lo & MASK) >> 2);
+    const std::uint32_t mag_hi = (uq >> 4) & 0x07070707;
+    const std::uint32_t mag_lo = uq & 0x07070707;
 
-    frag_b[1] = *reinterpret_cast<const __nv_fp8x4_e4m3*>(&Out1);
-    frag_b[0] = *reinterpret_cast<const __nv_fp8x4_e4m3*>(&Out2);
+    out_hi = correct_e2m1_base_and_apply_scale(out_hi, mag_hi, e8m0);
+    out_lo = correct_e2m1_base_and_apply_scale(out_lo, mag_lo, e8m0);
+
+    frag_b[1] = *reinterpret_cast<const __nv_fp8x4_e4m3*>(&out_hi);
+    frag_b[0] = *reinterpret_cast<const __nv_fp8x4_e4m3*>(&out_lo);
 }
 
 #undef DG_W4A8_INLINE
