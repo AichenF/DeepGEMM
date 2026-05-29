@@ -318,6 +318,48 @@ static void sm90_w4a8_mega_moe(
         auto phase_args = args;
         phase_args.run_l1_phase = run_l1_phase;
         phase_args.run_l2_phase = run_l2_phase;
+        if (!run_l1_phase && run_l2_phase &&
+            get_env<int>("DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE", 0) != 0) {
+            phase_args.config.num_dispatch_threads = 0;
+            phase_args.config.num_non_epilogue_threads = 128;
+            std::tie(phase_args.config.num_stages, phase_args.config.smem_size) =
+                get_pipeline_config_for_mega_moe_sm90(
+                    SM90ArchSpec::smem_capacity,
+                    num_experts, hidden,
+                    phase_args.config.block_m, phase_args.config.block_n, phase_args.config.block_k,
+                    phase_args.config.num_dispatch_threads / 32,
+                    phase_args.config.num_epilogue_threads / 32);
+            if (phase_args.direct_l2_scatter) {
+                auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
+                constexpr int kSmemAlignment = 1024;
+                const int num_dispatch_warps = phase_args.config.num_dispatch_threads / 32;
+                const int num_epilogue_warps = phase_args.config.num_epilogue_threads / 32;
+                const int num_epilogue_warpgroups = num_epilogue_warps / 4;
+                const int smem_expert_count_size = align(num_experts * static_cast<int>(sizeof(uint32_t)), kSmemAlignment);
+                const int smem_send_buffers_size = align(
+                    static_cast<int>(layout::Buffer(layout::Data(hidden), num_dispatch_warps, 1).get_num_bytes()),
+                    kSmemAlignment);
+                const int smem_dispatch_size = smem_expert_count_size + smem_send_buffers_size;
+                const int smem_cd_l1 = num_epilogue_warpgroups * phase_args.config.block_m * (phase_args.config.block_n / 2);
+                const int smem_cd = align(smem_cd_l1, kSmemAlignment);
+                const int smem_sfa_per_stage = align(2 * phase_args.config.block_m * static_cast<int>(sizeof(float)), 128);
+                const int smem_per_stage = phase_args.config.block_m * phase_args.config.block_k +
+                                           phase_args.config.block_n * phase_args.config.block_k + smem_sfa_per_stage;
+                const int smem_barriers_fixed = (num_dispatch_warps + 2 * num_epilogue_warps) * 8;
+                const int smem_barriers_per_stage = 2 * 8;
+                const int smem_fixed = smem_dispatch_size + smem_cd + smem_barriers_fixed;
+                phase_args.config.num_stages = (SM90ArchSpec::smem_capacity - smem_fixed) /
+                    (smem_per_stage + smem_barriers_per_stage);
+                DG_HOST_ASSERT(phase_args.config.num_stages >= 2);
+                phase_args.config.smem_size = smem_fixed + phase_args.config.num_stages *
+                    (smem_per_stage + smem_barriers_per_stage);
+            }
+            phase_args.launch_args = LaunchArgs(
+                num_sms,
+                phase_args.config.num_dispatch_threads + phase_args.config.num_non_epilogue_threads +
+                    phase_args.config.num_epilogue_threads,
+                phase_args.config.smem_size, phase_args.config.cluster_size);
+        }
         const auto code = SM90W4A8MegaMoESplitRuntime::generate(phase_args);
         const auto runtime = compiler->build(kernel_name, code);
         SM90W4A8MegaMoESplitRuntime::launch(runtime, phase_args);
@@ -325,7 +367,10 @@ static void sm90_w4a8_mega_moe(
 
     if (get_env<int>("DG_SM90_MOE_SPLIT_L1_L2", 0) != 0) {
         launch_with_phases(true, false, "sm90_w4a8_mega_moe_l1");
-        launch_with_phases(false, true, "sm90_w4a8_mega_moe_l2");
+        launch_with_phases(
+            false, true,
+            get_env<int>("DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE", 0) != 0 ?
+                "sm90_w4a8_mega_moe_l2_nodisp" : "sm90_w4a8_mega_moe_l2");
         return;
     }
 

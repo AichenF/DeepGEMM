@@ -495,7 +495,32 @@ sm90_w4a8_mega_moe_impl(void* y,
         }
     };
 
+    const auto for_each_selected_block = [&](auto&& func) {
+        if constexpr (kRunL1Phase && !kRunL2Phase) {
+            scheduler.for_each_linear1_block(
+                [&](const uint32_t& local_expert_idx,
+                    const uint32_t& num_k_blocks,
+                    const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
+                    func(sched::BlockPhase::Linear1, local_expert_idx,
+                         num_k_blocks, m_block_idx, n_block_idx);
+                });
+        } else if constexpr (!kRunL1Phase && kRunL2Phase) {
+            scheduler.for_each_linear2_block(
+                [&](const uint32_t& local_expert_idx,
+                    const uint32_t& num_k_blocks,
+                    const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
+                    func(sched::BlockPhase::Linear2, local_expert_idx,
+                         num_k_blocks, m_block_idx, n_block_idx);
+                });
+        } else {
+            scheduler.for_each_block(func);
+        }
+    };
+
     const auto cleanup_workspace = [&]() {
+        if constexpr (kNumDispatchWarps == 0) {
+            return;
+        } else {
         DG_STATIC_ASSERT(kNumSMs > 1, "Invalid SM count");
         if (sm_idx == 0) {
             #pragma unroll
@@ -530,6 +555,7 @@ sm90_w4a8_mega_moe_impl(void* y,
                 __syncwarp();
             }
         }
+        }
     };
 
     // =====================================================================
@@ -542,6 +568,9 @@ sm90_w4a8_mega_moe_impl(void* y,
     //       per-block linear mapping (no 4×32 transpose).
     // =====================================================================
     if (warp_idx < kNumDispatchWarps) {
+        if constexpr (kNumDispatchWarps == 0) {
+            return;
+        } else {
         cutlass::arch::warpgroup_reg_dealloc<kNumDispatchRegisters>();
         if constexpr (!kRunL1Phase) {
             scheduler.fetch_expert_recv_count();
@@ -791,10 +820,11 @@ sm90_w4a8_mega_moe_impl(void* y,
     //   A + SFA, warp 1 loads B + SFB, warps 2..3 idle.
     // =====================================================================
         } /* end if constexpr kRunL1Phase */
+        }
     } else if (warp_idx == kNumDispatchWarps) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
-        scheduler.for_each_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const sched::BlockPhase& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
@@ -875,7 +905,7 @@ sm90_w4a8_mega_moe_impl(void* y,
     } else if (warp_idx == kNumDispatchWarps + 1) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
-        scheduler.for_each_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const sched::BlockPhase& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
@@ -908,7 +938,7 @@ sm90_w4a8_mega_moe_impl(void* y,
     } else if (kSplitSFATMA && warp_idx == kNumDispatchWarps + 2) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
-        scheduler.for_each_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const sched::BlockPhase& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
@@ -1040,6 +1070,50 @@ sm90_w4a8_mega_moe_impl(void* y,
             }
         };
 
+        const auto cleanup_workspace_from_epilogue = [&]() {
+            DG_STATIC_ASSERT(kNumSMs > 1, "Invalid SM count");
+            if (sm_idx == 0) {
+                #pragma unroll
+                for (uint32_t i = epilogue_thread_idx; i < kNumExperts; i += kNumEpilogueThreads)
+                    *workspace.get_expert_send_count_ptr(i) = 0;
+            } else {
+                for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
+                    const auto num_recv_tokens = static_cast<uint32_t>(
+                        *workspace.get_expert_recv_count_sum_ptr(i));
+                    const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
+                    const auto cleanup_pool_block_offset = scheduler.get_pool_block_offset(i);
+
+                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                    if (epilogue_thread_idx == 0) {
+                        *workspace.get_expert_recv_count_sum_ptr(i) = 0;
+                        if (cumulative_local_expert_recv_stats != nullptr)
+                            ptx::red_add(cumulative_local_expert_recv_stats + i, static_cast<int>(num_recv_tokens));
+                    }
+
+                    for (uint32_t j = epilogue_thread_idx; j < kNumRanks; j += kNumEpilogueThreads)
+                        *workspace.get_expert_recv_count_ptr(j, i) = 0;
+
+                    for (uint32_t j = epilogue_thread_idx; j < num_recv_m_blocks; j += kNumEpilogueThreads) {
+                        *workspace.get_l1_arrival_count_ptr(cleanup_pool_block_offset + j) = 0;
+                        *workspace.get_l2_arrival_mask_ptr(cleanup_pool_block_offset + j) = 0;
+                    }
+                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                }
+            }
+        };
+
+        const auto finish_no_dispatch_k2_cleanup = [&]() {
+            if constexpr (!kRunL1Phase && kRunL2Phase && kNumDispatchWarps == 0) {
+                ptx::sync_unaligned(kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
+                cleanup_workspace_from_epilogue();
+                comm::nvlink_barrier<kNumRanks, kNumSMs, kNumEpilogueThreads,
+                                     kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
+                    workspace, sym_buffer, sm_idx, epilogue_thread_idx,
+                    [&]() { ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx); },
+                    true, false);
+            }
+        };
+
         // WGMMA-output register layout helpers
         const uint32_t row_idx = lane_idx / 4;
         const uint32_t col_idx = lane_idx % 4;
@@ -1081,7 +1155,7 @@ sm90_w4a8_mega_moe_impl(void* y,
 
         const unsigned long long math_loop_start = phase_profile_clock();
 
-        scheduler.for_each_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const sched::BlockPhase& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
@@ -2372,6 +2446,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
             const unsigned long long combine_reduce_end = phase_profile_clock();
             if (epilogue_warp_idx == 0 and lane_idx == 0)
                 phase_profile_record(kProfileCombineReduce, combine_reduce_end - combine_reduce_start);
+            finish_no_dispatch_k2_cleanup();
             return;
         } else {
 
@@ -2485,6 +2560,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
         const unsigned long long combine_reduce_end = phase_profile_clock();
         if (epilogue_warp_idx == 0 and lane_idx == 0)
             phase_profile_record(kProfileCombineReduce, combine_reduce_end - combine_reduce_start);
+        finish_no_dispatch_k2_cleanup();
         }
         }
     }
