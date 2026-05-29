@@ -44,11 +44,8 @@ __device__ inline void dequant_smem_b_inplace(uint8_t* smem_b, uint32_t tid_in_w
     #pragma unroll
     for (int i = 0; i < 16; ++i) fp4_regs[i] = fp4_src[i];
 
-    // 4 E8M0 bytes for this row's current K block (each covers 32 K = 4 dwords)
-    uint8_t e8m0_regs[4];
-    #pragma unroll
-    for (int g = 0; g < 4; ++g)
-        e8m0_regs[g] = e8m0_row_base[g];
+    // 4 E8M0 bytes for this row's current K block (each covers 32 K = 4 dwords).
+    const uint32_t e8m0_pack = *reinterpret_cast<const uint32_t*>(e8m0_row_base);
 
     asm volatile("bar.sync %0, %1;" : : "r"(bar_idx), "r"(num_math_threads));
 
@@ -64,7 +61,7 @@ __device__ inline void dequant_smem_b_inplace(uint8_t* smem_b, uint32_t tid_in_w
 
     #pragma unroll
     for (int g = 0; g < 4; ++g) {
-        const std::uint8_t e8m0 = e8m0_regs[g];
+        const std::uint8_t e8m0 = static_cast<std::uint8_t>(e8m0_pack >> (g * 8));
         if (e8m0 >= 121u) {
             const std::uint32_t off = (static_cast<std::uint32_t>(e8m0) - 121u) << 3;
             const std::uint32_t off_packed = off | (off << 8) | (off << 16) | (off << 24);
