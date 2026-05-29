@@ -24,7 +24,7 @@ if REPO_ROOT not in sys.path:
 
 import deep_gemm
 from deep_gemm.utils import per_token_cast_to_fp8
-from deep_gemm.quantization_mxfp4 import quantize_to_mxfp4_w4a8, dequantize_mxfp4_to_fp32
+from deep_gemm.quantization_mxfp4 import quantize_to_mxfp4_w4a8
 from deep_gemm.utils.dist import dist_print, init_dist, uneven_all_gather
 from deep_gemm.testing import bench_kineto, calc_diff, get_arch_major
 
@@ -77,16 +77,15 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         # kernel. The W4 scale is baked into the FP8 values, so block SF is 1.
         l1_packed, l1_e8m0 = quantize_to_mxfp4_w4a8(l1_bf, group_size=32)
         l2_packed, l2_e8m0 = quantize_to_mxfp4_w4a8(l2_bf, group_size=32)
-        l1_w_fp8 = dequantize_mxfp4_to_fp32(l1_packed, l1_e8m0, group_size=32).to(torch.float8_e4m3fn).contiguous()
-        l2_w_fp8 = dequantize_mxfp4_to_fp32(l2_packed, l2_e8m0, group_size=32).to(torch.float8_e4m3fn).contiguous()
-        l1_w_sf = torch.ones((num_experts_per_rank, (intermediate_hidden * 2) // 128, hidden // 128), dtype=torch.float, device='cuda')
-        l2_w_sf = torch.ones((num_experts_per_rank, hidden // 128, intermediate_hidden // 128), dtype=torch.float, device='cuda')
+        transformed_l1, transformed_l2 = deep_gemm.materialize_w4a8_fp8_shadow_for_mega_moe_sm90(
+            (l1_packed, l1_e8m0), (l2_packed, l2_e8m0),
+        )
     else:
         l1_w_fp8, l1_w_sf = _quantize_grouped_fp8_block_128_128(l1_bf)
         l2_w_fp8, l2_w_sf = _quantize_grouped_fp8_block_128_128(l2_bf)
-    transformed_l1, transformed_l2 = deep_gemm.transform_weights_for_mega_moe_sm90(
-        (l1_w_fp8, l1_w_sf), (l2_w_fp8, l2_w_sf),
-    )
+        transformed_l1, transformed_l2 = deep_gemm.transform_weights_for_mega_moe_sm90(
+            (l1_w_fp8, l1_w_sf), (l2_w_fp8, l2_w_sf),
+        )
 
     cum_stats = torch.zeros(num_experts_per_rank, dtype=torch.int, device='cuda')
 

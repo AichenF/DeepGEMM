@@ -131,6 +131,51 @@ def transform_weights_for_mega_moe_sm90(
     return (_interleave_one(l1_fp8), l1_sf), l2_weights
 
 
+
+def materialize_w4a8_fp8_shadow_for_mega_moe_sm90(
+    l1_weights: Tuple[torch.Tensor, torch.Tensor],
+    l2_weights: Tuple[torch.Tensor, torch.Tensor],
+    group_size: int = 32,
+) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]:
+    """Materialize a latency-oriented FP8 shadow cache from W4A8 MXFP4 weights.
+
+    The W4A8 fused SM90 kernel keeps weights compact, but its hot path must
+    unpack MXFP4 values and apply E8M0 scales before WGMMA can consume them.
+    This helper moves that conversion outside the hot path: it bakes the W4A8
+    scale into FP8 e4m3 values and returns weights already transformed for
+    ``fp8_mega_moe``. The returned block scale tensors are all ones because the
+    scale has already been applied during shadow materialization.
+    """
+    from ..quantization_mxfp4 import dequantize_mxfp4_to_fp32
+
+    l1_packed, l1_e8m0 = l1_weights
+    l2_packed, l2_e8m0 = l2_weights
+    assert group_size == 32, 'SM90 W4A8 MegaMoE currently expects MXFP4 group_size=32'
+    assert l1_packed.dim() == 3 and l2_packed.dim() == 3
+    assert l1_e8m0.dim() == 3 and l2_e8m0.dim() == 3
+
+    l1_fp8 = (
+        dequantize_mxfp4_to_fp32(l1_packed, l1_e8m0, group_size=group_size)
+        .to(torch.float8_e4m3fn)
+        .contiguous()
+    )
+    l2_fp8 = (
+        dequantize_mxfp4_to_fp32(l2_packed, l2_e8m0, group_size=group_size)
+        .to(torch.float8_e4m3fn)
+        .contiguous()
+    )
+
+    def _unit_sf_for_fp8_weight(w: torch.Tensor) -> torch.Tensor:
+        num_experts, n, k = w.shape
+        assert n % 128 == 0 and k % 128 == 0
+        return torch.ones((num_experts, n // 128, k // 128), dtype=torch.float, device=w.device)
+
+    return transform_weights_for_mega_moe_sm90(
+        (l1_fp8, _unit_sf_for_fp8_weight(l1_fp8)),
+        (l2_fp8, _unit_sf_for_fp8_weight(l2_fp8)),
+    )
+
+
 def fp8_fp4_mega_moe(y: torch.Tensor,
                      l1_weights: Tuple[torch.Tensor, torch.Tensor],
                      l2_weights: Tuple[torch.Tensor, torch.Tensor],
