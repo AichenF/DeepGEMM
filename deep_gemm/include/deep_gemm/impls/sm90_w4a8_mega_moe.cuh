@@ -183,8 +183,8 @@ sm90_w4a8_mega_moe_impl(void* y,
     // =====================================================================
     // Template checks
     // =====================================================================
-    DG_STATIC_ASSERT(kNumDispatchThreads % 128 == 0, "Invalid number of dispatch threads");
-    DG_STATIC_ASSERT(kNumNonEpilogueThreads == 128, "Invalid number of GEMM TMA warps (4 warps expected)");
+    DG_STATIC_ASSERT(kNumDispatchThreads == 64 or kNumDispatchThreads % 128 == 0, "Invalid number of dispatch threads");
+    DG_STATIC_ASSERT(kNumNonEpilogueThreads == 64 or kNumNonEpilogueThreads == 128, "Invalid number of GEMM TMA warps (2 or 4 warps expected)");
     DG_STATIC_ASSERT(kNumEpilogueThreads % 128 == 0, "Invalid number of math/epilogue threads");
     DG_STATIC_ASSERT(kNumExperts % kNumRanks == 0, "Invalid number of experts or ranks");
     DG_STATIC_ASSERT(kClusterSize == 1 or kClusterSize == 2, "Invalid cluster size");

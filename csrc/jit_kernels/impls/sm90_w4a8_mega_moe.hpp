@@ -168,10 +168,21 @@ static void sm90_w4a8_mega_moe(
     const auto num_padded_sf_pool_tokens = static_cast<int>(l1_acts_sf.size(0));
 
     // Heuristics
-    const auto config = get_mega_moe_config_sm90(
+    auto config = get_mega_moe_config_sm90(
         num_ranks, num_experts, num_experts_per_rank,
         num_max_tokens_per_rank, num_tokens, num_topk,
         hidden, intermediate_hidden, num_padded_sf_pool_tokens);
+
+    // W4A8 dequant runs in the math warpgroup; the two extra non-epilogue
+    // warps used by the FP8 path do not help the W4 critical path. Keep the
+    // math warpgroup aligned by using 2 dispatch + 2 TMA + 4 math warps.
+    config.num_dispatch_threads = 64;
+    config.num_non_epilogue_threads = 64;
+    std::tie(config.num_stages, config.smem_size) = get_pipeline_config_for_mega_moe_sm90(
+        SM90ArchSpec::smem_capacity,
+        num_experts, hidden,
+        config.block_m, config.block_n, config.block_k,
+        config.num_dispatch_threads / 32, config.num_epilogue_threads / 32);
 
     // Tensormap construction
     // Acts/weights: standard 2D TMA descriptors (FP8 K-major).
