@@ -49,6 +49,7 @@ public:
         bool l1_dual_k_accum;
         bool l2_nmajor_schedule;
         bool l1_nmajor_schedule;
+        bool k2_direct_accum;
         bool run_l1_phase;
         bool run_l2_phase;
         MegaMoESM90Config config;
@@ -102,7 +103,7 @@ static void __instantiate_kernel() {{
         {}, {}, {}, {}, {}, {}, {}, {},
         {}, {}, {}, {},
         {}, {}, {}, {}, {}, {}, {},
-        {}, {}
+        {}, {}, {}
     >);
 }};
 )",
@@ -120,6 +121,7 @@ static void __instantiate_kernel() {{
     to_string(args.activation_clamp),
     args.fast_math ? "true" : "false",
     args.async_l1_tma_store ? "true" : "false", args.split_sfa_tma ? "true" : "false", args.direct_l2_scatter ? "true" : "false", args.l2_dual_accum ? "true" : "false", args.phase_profile ? "true" : "false", args.l1_dual_k_accum ? "true" : "false", args.l2_nmajor_schedule ? "true" : "false", args.l1_nmajor_schedule ? "true" : "false",
+    args.k2_direct_accum ? "true" : "false",
     args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
     args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks,
     args.run_l1_phase ? "true" : "false", args.run_l2_phase ? "true" : "false");
@@ -253,6 +255,7 @@ static void sm90_w4a8_mega_moe(
         .l1_dual_k_accum = get_env<int>("DG_SM90_MOE_L1_DUAL_K", 0) != 0,
         .l2_nmajor_schedule = get_env<int>("DG_SM90_MOE_L2_NMAJOR", 0) != 0,
         .l1_nmajor_schedule = get_env<int>("DG_SM90_MOE_L1_NMAJOR", 0) != 0,
+        .k2_direct_accum = get_env<int>("DG_SM90_MOE_K2_DIRECT_ACCUM", 0) != 0,
         .run_l1_phase = true,
         .run_l2_phase = true,
         .config = config,
@@ -274,9 +277,24 @@ static void sm90_w4a8_mega_moe(
         .launch_args = LaunchArgs(num_sms, config.num_dispatch_threads + config.num_non_epilogue_threads + config.num_epilogue_threads,
                                   config.smem_size, config.cluster_size)
     };
-    const auto code = SM90W4A8MegaMoESplitRuntime::generate(args);
-    const auto runtime = compiler->build("sm90_w4a8_mega_moe", code);
-    SM90W4A8MegaMoESplitRuntime::launch(runtime, args);
+    const auto launch_with_phases = [&](const bool run_l1_phase,
+                                        const bool run_l2_phase,
+                                        const std::string& kernel_name) {
+        auto phase_args = args;
+        phase_args.run_l1_phase = run_l1_phase;
+        phase_args.run_l2_phase = run_l2_phase;
+        const auto code = SM90W4A8MegaMoESplitRuntime::generate(phase_args);
+        const auto runtime = compiler->build(kernel_name, code);
+        SM90W4A8MegaMoESplitRuntime::launch(runtime, phase_args);
+    };
+
+    if (get_env<int>("DG_SM90_MOE_SPLIT_L1_L2", 0) != 0) {
+        launch_with_phases(true, false, "sm90_w4a8_mega_moe_l1");
+        launch_with_phases(false, true, "sm90_w4a8_mega_moe_l2");
+        return;
+    }
+
+    launch_with_phases(true, true, "sm90_w4a8_mega_moe");
 }
 
 } // namespace deep_gemm

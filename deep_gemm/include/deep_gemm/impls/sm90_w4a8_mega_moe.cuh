@@ -53,21 +53,48 @@ __device__ inline void dequant_smem_b_inplace(uint8_t* smem_b, uint32_t tid_in_w
     asm volatile("bar.sync %0, %1;" : : "r"(bar_idx), "r"(num_math_threads));
 
     uint32_t* fp8_dst = reinterpret_cast<uint32_t*>(smem_b + tid_in_wg * 128);
-    #pragma unroll
-    for (int i = 0; i < 16; ++i) {
-        __nv_fp8x4_e4m3 fp8_pair[2];
-        // FAST PATH: integer exp add with subnormal/overflow handling.
-        // 10-20x faster than per-byte FP multiply.
-        deep_gemm::w4a8::dequant_mxfp4_to_fp8_with_int_scale(
-            static_cast<int>(fp4_regs[i]),
-            e8m0_regs[i / 4],
-            fp8_pair);
-        uint32_t logical = i * 8;
-        uint32_t physical = logical ^ ((tid_in_wg & 7) << 4);
+    const auto store_pair = [&](const int i, __nv_fp8x4_e4m3* fp8_pair) {
+        const uint32_t logical = i * 8;
+        const uint32_t physical = logical ^ ((tid_in_wg & 7) << 4);
         uint32_t* swz_dst = reinterpret_cast<uint32_t*>(
             reinterpret_cast<uint8_t*>(fp8_dst) + physical);
         swz_dst[0] = *reinterpret_cast<uint32_t*>(&fp8_pair[1]);
         swz_dst[1] = *reinterpret_cast<uint32_t*>(&fp8_pair[0]);
+    };
+
+    #pragma unroll
+    for (int g = 0; g < 4; ++g) {
+        const std::uint8_t e8m0 = e8m0_regs[g];
+        if (e8m0 >= 121u) {
+            const std::uint32_t off = (static_cast<std::uint32_t>(e8m0) - 121u) << 3;
+            const std::uint32_t off_packed = off | (off << 8) | (off << 16) | (off << 24);
+            std::uint32_t lookup_lo, lookup_hi;
+            deep_gemm::w4a8::make_scaled_e2m1_lookup_tables<true>(
+                off_packed, lookup_lo, lookup_hi);
+            #pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const int i = g * 4 + j;
+                __nv_fp8x4_e4m3 fp8_pair[2];
+                deep_gemm::w4a8::dequant_mxfp4_to_fp8_with_scaled_lookup(
+                    static_cast<int>(fp4_regs[i]), lookup_lo, lookup_hi, fp8_pair);
+                store_pair(i, fp8_pair);
+            }
+        } else {
+            const std::uint32_t absdelta = 121u - static_cast<std::uint32_t>(e8m0);
+            const std::uint32_t off = (absdelta >= 16u) ? 0x78u : (absdelta << 3);
+            const std::uint32_t off_packed = off | (off << 8) | (off << 16) | (off << 24);
+            std::uint32_t lookup_lo, lookup_hi;
+            deep_gemm::w4a8::make_scaled_e2m1_lookup_tables<false>(
+                off_packed, lookup_lo, lookup_hi);
+            #pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const int i = g * 4 + j;
+                __nv_fp8x4_e4m3 fp8_pair[2];
+                deep_gemm::w4a8::dequant_mxfp4_to_fp8_with_scaled_lookup(
+                    static_cast<int>(fp4_regs[i]), lookup_lo, lookup_hi, fp8_pair);
+                store_pair(i, fp8_pair);
+            }
+        }
     }
     asm volatile("bar.sync %0, %1;" : : "r"(bar_idx), "r"(num_math_threads));
 }
@@ -120,6 +147,7 @@ template <
     bool kL1DualKAccumRequested = false,
     bool kL2NMajorScheduleRequested = false,
     bool kL1NMajorScheduleRequested = false,
+    bool kK2DirectAccumRequested = false,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
     uint32_t L2_SHAPE_N = kHidden,
@@ -252,6 +280,8 @@ sm90_w4a8_mega_moe_impl(void* y,
         (!kSplitNWarpgroups) && (!kSerialNWarpgroups);
     constexpr bool kL2DualAccum = kL2DualAccumRequested && (!kUseMMASync) &&
         (!kSplitNWarpgroups) && (!kSerialNWarpgroups) && WG_BLOCK_N == 128;
+    constexpr bool kK2DirectAccum = kK2DirectAccumRequested && (!kRunL1Phase) && kRunL2Phase &&
+        (!kUseMMASync) && (!kDirectL2Scatter);
     constexpr bool kL1DualKAccum = kL1DualKAccumRequested && (!kUseMMASync) &&
         (!kSplitNWarpgroups) && (!kSerialNWarpgroups) && WG_BLOCK_N == 128 &&
         (kHidden / BLOCK_K) % 2 == 0;
@@ -421,6 +451,7 @@ sm90_w4a8_mega_moe_impl(void* y,
     constexpr uint32_t kBeforeDispatchPullBarrierTag    = 1;
     constexpr uint32_t kBeforeCombineReduceBarrierTag   = 2;
     constexpr uint32_t kAfterWorkspaceCleanBarrierTag   = 3;
+    constexpr uint32_t kBeforeDirectAccumZeroBarrierTag = 4;
 
     // Register reconfiguration counts (chosen to fit in 64512 reg budget).
     // For the 256-epilogue-thread case (block_m=128, 2 math WGs):
@@ -465,6 +496,43 @@ sm90_w4a8_mega_moe_impl(void* y,
         }
     };
 
+    const auto cleanup_workspace = [&]() {
+        DG_STATIC_ASSERT(kNumSMs > 1, "Invalid SM count");
+        if (sm_idx == 0) {
+            #pragma unroll
+            for (uint32_t i = thread_idx; i < kNumExperts; i += kNumDispatchThreads)
+                *workspace.get_expert_send_count_ptr(i) = 0;
+        } else {
+            for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
+                const auto num_recv_tokens = static_cast<uint32_t>(
+                    *workspace.get_expert_recv_count_sum_ptr(i));
+                const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
+                const auto cleanup_pool_block_offset = scheduler.get_pool_block_offset(i);
+
+                ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
+
+                DG_STATIC_ASSERT(kNumDispatchWarps >= 2, "Not enough dispatch warps");
+                if (warp_idx == 0) {
+                    *workspace.get_expert_recv_count_sum_ptr(i) = 0;
+                } else if (warp_idx == 1) {
+                    if (cute::elect_one_sync() and cumulative_local_expert_recv_stats != nullptr)
+                        ptx::red_add(cumulative_local_expert_recv_stats + i, static_cast<int>(num_recv_tokens));
+                    __syncwarp();
+                }
+
+                for (uint32_t j = thread_idx; j < kNumRanks; j += kNumDispatchThreads)
+                    *workspace.get_expert_recv_count_ptr(j, i) = 0;
+                __syncwarp();
+
+                for (uint32_t j = thread_idx; j < num_recv_m_blocks; j += kNumDispatchThreads) {
+                    *workspace.get_l1_arrival_count_ptr(cleanup_pool_block_offset + j) = 0;
+                    *workspace.get_l2_arrival_mask_ptr(cleanup_pool_block_offset + j) = 0;
+                }
+                __syncwarp();
+            }
+        }
+    };
+
     // =====================================================================
     // ROLE 1: DISPATCH WARPS
     //   Mirrors SM100 dispatch with two changes:
@@ -475,8 +543,19 @@ sm90_w4a8_mega_moe_impl(void* y,
     //       per-block linear mapping (no 4×32 transpose).
     // =====================================================================
     if (warp_idx < kNumDispatchWarps) {
-        if constexpr (!kRunL1Phase) { /* kernel B skips ROLE 1 dispatch */ } else {
         cutlass::arch::warpgroup_reg_dealloc<kNumDispatchRegisters>();
+        if constexpr (!kRunL1Phase) {
+            scheduler.fetch_expert_recv_count();
+            ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
+            ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
+            cleanup_workspace();
+            comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
+                                 kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
+                workspace, sym_buffer, sm_idx, thread_idx,
+                [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
+                true, false);
+            return;
+        } else {
         const unsigned long long dispatch_total_start = phase_profile_clock();
 
         DG_STATIC_ASSERT(kNumTopk <= 32, "Invalid number of topk");
@@ -698,48 +777,14 @@ sm90_w4a8_mega_moe_impl(void* y,
             phase_profile_record(kProfileDispatchTotal, dispatch_pull_end - dispatch_total_start);
         }
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
-
-        DG_STATIC_ASSERT(kNumSMs > 1, "Invalid SM count");
-        if (sm_idx == 0) {
-            #pragma unroll
-            for (uint32_t i = thread_idx; i < kNumExperts; i += kNumDispatchThreads)
-                *workspace.get_expert_send_count_ptr(i) = 0;
-        } else {
-            for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
-                const auto num_recv_tokens = static_cast<uint32_t>(
-                    *workspace.get_expert_recv_count_sum_ptr(i));
-                const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
-
-                expert_pool_block_offset = scheduler.get_pool_block_offset(i);
-
-                ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
-
-                DG_STATIC_ASSERT(kNumDispatchWarps >= 2, "Not enough dispatch warps");
-                if (warp_idx == 0) {
-                    *workspace.get_expert_recv_count_sum_ptr(i) = 0;
-                } else if (warp_idx == 1) {
-                    if (cute::elect_one_sync() and cumulative_local_expert_recv_stats != nullptr)
-                        ptx::red_add(cumulative_local_expert_recv_stats + i, static_cast<int>(num_recv_tokens));
-                    __syncwarp();
-                }
-
-                for (uint32_t j = thread_idx; j < kNumRanks; j += kNumDispatchThreads)
-                    *workspace.get_expert_recv_count_ptr(j, i) = 0;
-                __syncwarp();
-
-                for (uint32_t j = thread_idx; j < num_recv_m_blocks; j += kNumDispatchThreads) {
-                    *workspace.get_l1_arrival_count_ptr(expert_pool_block_offset + j) = 0;
-                    *workspace.get_l2_arrival_mask_ptr(expert_pool_block_offset + j) = 0;
-                }
-                __syncwarp();
-            }
+        if constexpr (kRunL2Phase) {
+            cleanup_workspace();
+            comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
+                                 kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
+                workspace, sym_buffer, sm_idx, thread_idx,
+                [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
+                true, false);
         }
-
-        comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
-                             kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
-            workspace, sym_buffer, sm_idx, thread_idx,
-            [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
-            true, false);
 
     // =====================================================================
     // ROLE 2: GEMM TMA LOAD warps (load A+SFA, B+SFB)
@@ -851,7 +896,6 @@ sm90_w4a8_mega_moe_impl(void* y,
                     // BLOCK_K/2 bytes per row (= BLOCK_K nibbles). No swizzle
                     // since dequant restages into smem with explicit layout.
                     const uint32_t k_idx = k_block_idx * (BLOCK_K / 2);
-
                     tma::copy<BLOCK_K / 2, LOAD_BLOCK_N, 0, b_dtype_t>(
                         tensor_map_b_ptr, full_barriers[stage_idx], smem_b[stage_idx],
                         k_idx, n_idx, kClusterSize);
@@ -1019,6 +1063,23 @@ sm90_w4a8_mega_moe_impl(void* y,
 
         // Sync with dispatch
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
+
+        if constexpr (kK2DirectAccum) {
+            auto* accum_pairs = reinterpret_cast<uint32_t*>(
+                combine_token_buffer.get_rank_buffer(0).get_base_ptr());
+            const uint64_t num_accum_pairs = static_cast<uint64_t>(num_tokens) * kHidden / 2u;
+            for (uint64_t i = static_cast<uint64_t>(sm_idx) * kNumEpilogueThreads + epilogue_thread_idx;
+                 i < num_accum_pairs;
+                 i += static_cast<uint64_t>(kNumSMs) * kNumEpilogueThreads) {
+                accum_pairs[i] = 0u;
+            }
+            comm::nvlink_barrier<kNumRanks, kNumSMs, kNumEpilogueThreads,
+                                 kEpilogueGridSyncIndex, kBeforeDirectAccumZeroBarrierTag>(
+                workspace, sym_buffer, sm_idx, epilogue_thread_idx,
+                [&]() { ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx); }
+            );
+        }
+
         const unsigned long long math_loop_start = phase_profile_clock();
 
         scheduler.for_each_block([&](const sched::BlockPhase& block_phase,
@@ -2226,30 +2287,43 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             + epilogue_wg_idx * WG_BLOCK_M * WG_BLOCK_N
                             + row_in_wg * WG_BLOCK_N
                             + lane_in_row * cols_per_lane;
-                        const auto dst_token = combine_token_buffer.get_rank_buffer(dst_topk_idx)
-                                               .get_data_buffer(dst_token_idx);
 
-                        if constexpr (WG_BLOCK_N == 256) {
-                            const auto packed0 = *reinterpret_cast<uint4*>(smem_ptr);
-                            const auto packed1 = *(reinterpret_cast<uint4*>(smem_ptr) + 1);
-                            auto dst_ptr = math::advance_ptr<uint4>(
-                                dst_token.get_base_ptr(),
-                                n_idx * sizeof(nv_bfloat16) + lane_in_row * 2u * sizeof(uint4));
-                            auto mapped_dst_ptr = sym_buffer.map(dst_ptr, dst_rank_idx);
-                            mapped_dst_ptr[0] = packed0;
-                            mapped_dst_ptr[1] = packed1;
-                        } else if constexpr (WG_BLOCK_N == 128) {
-                            const auto packed = *reinterpret_cast<uint4*>(smem_ptr);
-                            auto dst_ptr = math::advance_ptr<uint4>(
-                                dst_token.get_base_ptr(),
-                                n_idx * sizeof(nv_bfloat16) + lane_in_row * sizeof(uint4));
-                            *sym_buffer.map(dst_ptr, dst_rank_idx) = packed;
+                        if constexpr (kK2DirectAccum) {
+                            auto* accum_ptr = combine_token_buffer.get_rank_buffer(0)
+                                .get_data_buffer(dst_token_idx).get_base_ptr<nv_bfloat16>()
+                                + n_idx + lane_in_row * cols_per_lane;
+                            auto* mapped_accum_ptr = sym_buffer.map(accum_ptr, dst_rank_idx);
+                            #pragma unroll
+                            for (uint32_t p = 0; p < cols_per_lane / 2; ++p) {
+                                const auto packed = *reinterpret_cast<nv_bfloat162*>(smem_ptr + p * 2);
+                                atomicAdd(reinterpret_cast<nv_bfloat162*>(mapped_accum_ptr + p * 2), packed);
+                            }
                         } else {
-                            const auto packed = *reinterpret_cast<uint2*>(smem_ptr);
-                            auto dst_ptr = math::advance_ptr<uint2>(
-                                dst_token.get_base_ptr(),
-                                n_idx * sizeof(nv_bfloat16) + lane_in_row * sizeof(uint2));
-                            *sym_buffer.map(dst_ptr, dst_rank_idx) = packed;
+                            const auto dst_token = combine_token_buffer.get_rank_buffer(dst_topk_idx)
+                                                   .get_data_buffer(dst_token_idx);
+
+                            if constexpr (WG_BLOCK_N == 256) {
+                                const auto packed0 = *reinterpret_cast<uint4*>(smem_ptr);
+                                const auto packed1 = *(reinterpret_cast<uint4*>(smem_ptr) + 1);
+                                auto dst_ptr = math::advance_ptr<uint4>(
+                                    dst_token.get_base_ptr(),
+                                    n_idx * sizeof(nv_bfloat16) + lane_in_row * 2u * sizeof(uint4));
+                                auto mapped_dst_ptr = sym_buffer.map(dst_ptr, dst_rank_idx);
+                                mapped_dst_ptr[0] = packed0;
+                                mapped_dst_ptr[1] = packed1;
+                            } else if constexpr (WG_BLOCK_N == 128) {
+                                const auto packed = *reinterpret_cast<uint4*>(smem_ptr);
+                                auto dst_ptr = math::advance_ptr<uint4>(
+                                    dst_token.get_base_ptr(),
+                                    n_idx * sizeof(nv_bfloat16) + lane_in_row * sizeof(uint4));
+                                *sym_buffer.map(dst_ptr, dst_rank_idx) = packed;
+                            } else {
+                                const auto packed = *reinterpret_cast<uint2*>(smem_ptr);
+                                auto dst_ptr = math::advance_ptr<uint2>(
+                                    dst_token.get_base_ptr(),
+                                    n_idx * sizeof(nv_bfloat16) + lane_in_row * sizeof(uint2));
+                                *sym_buffer.map(dst_ptr, dst_rank_idx) = packed;
+                            }
                         }
                     }
 
@@ -2263,6 +2337,11 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
         const unsigned long long math_loop_end = phase_profile_clock();
         if (epilogue_warp_idx == 0 and lane_idx == 0)
             phase_profile_record(kProfileMathLoop, math_loop_end - math_loop_start);
+
+        if constexpr (!kRunL2Phase) {
+            ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
+            return;
+        } else {
 
         // ---------------- COMBINE ----------------
         // NVLink barrier first: signals remote ranks that this rank's GEMM
@@ -2281,6 +2360,22 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
         // dispatch may now safely clean workspace state.
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
         const unsigned long long combine_reduce_start = phase_profile_clock();
+
+        if constexpr (kK2DirectAccum) {
+            const auto* accum_pairs = reinterpret_cast<const uint32_t*>(
+                combine_token_buffer.get_rank_buffer(0).get_base_ptr());
+            auto* y_pairs = reinterpret_cast<uint32_t*>(y);
+            const uint64_t num_pairs = static_cast<uint64_t>(num_tokens) * kHidden / 2u;
+            for (uint64_t pair_idx = static_cast<uint64_t>(sm_idx) * kNumEpilogueThreads + epilogue_thread_idx;
+                 pair_idx < num_pairs;
+                 pair_idx += static_cast<uint64_t>(kNumSMs) * kNumEpilogueThreads) {
+                y_pairs[pair_idx] = accum_pairs[pair_idx];
+            }
+            const unsigned long long combine_reduce_end = phase_profile_clock();
+            if (epilogue_warp_idx == 0 and lane_idx == 0)
+                phase_profile_record(kProfileCombineReduce, combine_reduce_end - combine_reduce_start);
+            return;
+        } else {
 
         constexpr uint32_t kNumHiddenBytes = kHidden * sizeof(nv_bfloat16);
         constexpr uint32_t kNumElemsPerUint4 = sizeof(uint4) / sizeof(nv_bfloat162);
@@ -2392,6 +2487,8 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
         const unsigned long long combine_reduce_end = phase_profile_clock();
         if (epilogue_warp_idx == 0 and lane_idx == 0)
             phase_profile_record(kProfileCombineReduce, combine_reduce_end - combine_reduce_start);
+        }
+        }
     }
 #else
     if (blockIdx.x == 0 and threadIdx.x == 0)
