@@ -71,9 +71,10 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
 
     x_fp8, x_sf = per_token_cast_to_fp8(x_bf, use_ue8m0=False, gran_k=128,
                                         use_packed_ue8m0=False)
-    l1_w_fp8, l1_w_sf = _quantize_grouped_fp8_block_128_128(l1_bf)
-    l2_w_fp8, l2_w_sf = _quantize_grouped_fp8_block_128_128(l2_bf)
-    # W4A8: quantize FP8 weights to packed MXFP4 + per-32 E8M0 SF.
+    # W4A8: quantize real BF16 weights directly to packed MXFP4 + per-32 E8M0 SF.
+    # Do not route through block-FP8 weight quantization here; that produces
+    # byte-domain FP8 values and requires a separate block SF that this kernel
+    # ABI does not consume.
     # ALSO apply the gate/up gran-8 N-interleave for L1, matching
     # transform_weights_for_mega_moe_sm90 — kernel epilogue assumes this layout.
     def _interleave_l1_n(t, gran=8):
@@ -83,8 +84,8 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         up = t[:, half:].reshape(g, half // gran, gran, *rest)
         return torch.empty_like(t).copy_(torch.stack([gate, up], dim=2).reshape(g, n, *rest))
 
-    l1_packed, l1_e8m0 = quantize_to_mxfp4_w4a8(l1_w_fp8, group_size=32)
-    l2_packed, l2_e8m0 = quantize_to_mxfp4_w4a8(l2_w_fp8, group_size=32)
+    l1_packed, l1_e8m0 = quantize_to_mxfp4_w4a8(l1_bf, group_size=32)
+    l2_packed, l2_e8m0 = quantize_to_mxfp4_w4a8(l2_bf, group_size=32)
     l1_packed = _interleave_l1_n(l1_packed)
     l1_e8m0 = _interleave_l1_n(l1_e8m0)
     transformed_l1 = (l1_packed.cuda().contiguous(), l1_e8m0.cuda().contiguous())

@@ -1,4 +1,4 @@
-"""Offline MXFP4 quantization for W4A8 fused MegaMoE (v2)."""
+"""Offline MXFP4 quantization for W4A8 fused MegaMoE."""
 import torch
 
 
@@ -18,12 +18,17 @@ def fp32_to_fp4_nibble(x: torch.Tensor) -> torch.Tensor:
     return sign | nibble_idx
 
 
-def quantize_to_mxfp4_w4a8(weight_fp8: torch.Tensor, group_size: int = 32):
-    assert weight_fp8.dtype == torch.float8_e4m3fn
-    *outer_shape, K = weight_fp8.shape
+def quantize_to_mxfp4_w4a8(weight: torch.Tensor, group_size: int = 32):
+    """Quantize real-valued weights to packed MXFP4 plus per-32 E8M0 scale.
+
+    ``weight`` may be BF16/FP32 or FP8. Passing BF16/FP32 is the normal W4A8
+    path; passing FP8 preserves the previous byte-domain helper behavior.
+    """
+    assert weight.is_floating_point() or weight.dtype == torch.float8_e4m3fn
+    *outer_shape, K = weight.shape
     assert K % group_size == 0
     G = K // group_size
-    w = weight_fp8.to(torch.float32).view(*outer_shape, G, group_size)
+    w = weight.to(torch.float32).view(*outer_shape, G, group_size)
     max_abs = w.abs().amax(dim=-1, keepdim=True).clamp(min=1e-30)
     desired_scale = max_abs / FP4_MAX
     e_unbiased = torch.ceil(torch.log2(desired_scale)).clamp(-127, 127)
