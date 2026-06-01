@@ -149,10 +149,17 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     # Warm up + benchmark
     run_fused()
     dist.barrier()
+    split_l1_l2 = os.environ.get('DG_SM90_MOE_SPLIT_L1_L2', '1') != '0'
     t_fused = bench_kineto(run_fused, 'sm90_fp8_mega_moe',
                            barrier=lambda: dist.barrier(),
                            num_tests=args.num_tests,
-                           suppress_kineto_output=True)
+                           suppress_kineto_output=True,
+                           with_multiple_kernels=split_l1_l2)
+    if split_l1_l2:
+        # K1 and K2 share the same CUDA symbol with different template phase
+        # flags. Kineto matches both rows, so convert per-kernel average back
+        # to per-call latency.
+        t_fused *= 2
 
     # Count tokens that landed on this rank for stats
     gathered_topk_idx = uneven_all_gather(topk_idx, group=group)

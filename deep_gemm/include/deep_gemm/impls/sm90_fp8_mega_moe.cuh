@@ -61,6 +61,8 @@ template <
     uint32_t kNumSMs, uint32_t kNumRanks,
     float kActivationClamp,
     bool kFastMath,
+    bool kRunL1Phase = true,
+    bool kRunL2Phase = true,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
     uint32_t L2_SHAPE_N = kHidden,
@@ -316,6 +318,69 @@ sm90_fp8_mega_moe_impl(void* y,
     constexpr uint32_t kDispatchGridSyncIndex = 0;
     constexpr uint32_t kEpilogueGridSyncIndex = 1;
 
+    const auto for_each_selected_block = [&](auto&& func) {
+        if constexpr (kRunL1Phase && !kRunL2Phase) {
+            scheduler.for_each_linear1_block(
+                [&](const uint32_t& local_expert_idx,
+                    const uint32_t& num_k_blocks,
+                    const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
+                    func(sched::BlockPhase::Linear1, local_expert_idx,
+                         num_k_blocks, m_block_idx, n_block_idx);
+                });
+        } else if constexpr (!kRunL1Phase && kRunL2Phase) {
+            scheduler.for_each_linear2_block(
+                [&](const uint32_t& local_expert_idx,
+                    const uint32_t& num_k_blocks,
+                    const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
+                    func(sched::BlockPhase::Linear2, local_expert_idx,
+                         num_k_blocks, m_block_idx, n_block_idx);
+                });
+        } else {
+            scheduler.for_each_block(func);
+        }
+    };
+
+    const auto cleanup_workspace = [&]() {
+        if constexpr (kNumDispatchWarps == 0) {
+            return;
+        } else {
+        DG_STATIC_ASSERT(kNumSMs > 1, "Invalid SM count");
+        if (sm_idx == 0) {
+            #pragma unroll
+            for (uint32_t i = thread_idx; i < kNumExperts; i += kNumDispatchThreads)
+                *workspace.get_expert_send_count_ptr(i) = 0;
+        } else {
+            for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
+                const auto num_recv_tokens = static_cast<uint32_t>(
+                    *workspace.get_expert_recv_count_sum_ptr(i));
+                const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
+                const auto cleanup_pool_block_offset = scheduler.get_pool_block_offset(i);
+
+                ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
+
+                DG_STATIC_ASSERT(kNumDispatchWarps >= 2, "Not enough dispatch warps");
+                if (warp_idx == 0) {
+                    *workspace.get_expert_recv_count_sum_ptr(i) = 0;
+                } else if (warp_idx == 1) {
+                    if (cute::elect_one_sync() and cumulative_local_expert_recv_stats != nullptr)
+                        ptx::red_add(cumulative_local_expert_recv_stats + i, static_cast<int>(num_recv_tokens));
+                    __syncwarp();
+                }
+
+                for (uint32_t j = thread_idx; j < kNumRanks; j += kNumDispatchThreads)
+                    *workspace.get_expert_recv_count_ptr(j, i) = 0;
+                __syncwarp();
+
+                for (uint32_t j = thread_idx; j < num_recv_m_blocks; j += kNumDispatchThreads) {
+                    *workspace.get_l1_arrival_count_ptr(cleanup_pool_block_offset + j) = 0;
+                    *workspace.get_l2_arrival_mask_ptr(cleanup_pool_block_offset + j) = 0;
+                }
+                __syncwarp();
+            }
+        }
+        }
+    };
+
     // =====================================================================
     // ROLE 1: DISPATCH WARPS
     //   Mirrors SM100 dispatch with two changes:
@@ -326,7 +391,22 @@ sm90_fp8_mega_moe_impl(void* y,
     //       per-block linear mapping (no 4×32 transpose).
     // =====================================================================
     if (warp_idx < kNumDispatchWarps) {
+        if constexpr (kNumDispatchWarps == 0) {
+            return;
+        } else {
         cutlass::arch::warpgroup_reg_dealloc<kNumDispatchRegisters>();
+        if constexpr (!kRunL1Phase) {
+            scheduler.fetch_expert_recv_count();
+            ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
+            ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
+            cleanup_workspace();
+            comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
+                                 kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
+                workspace, sym_buffer, sm_idx, thread_idx,
+                [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
+                true, false);
+            return;
+        }
 
         DG_STATIC_ASSERT(kNumTopk <= 32, "Invalid number of topk");
         constexpr uint32_t kNumActivateLanes = kNumTokensPerWarp * kNumTopk;
@@ -537,50 +617,18 @@ sm90_fp8_mega_moe_impl(void* y,
             __syncwarp();
         }
 
-        // Cleanup workspace, overlapping with combine
+        // Cleanup workspace, overlapping with combine. Split K1 keeps the
+        // workspace live for the following K2 launch.
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
-
-        DG_STATIC_ASSERT(kNumSMs > 1, "Invalid SM count");
-        if (sm_idx == 0) {
-            #pragma unroll
-            for (uint32_t i = thread_idx; i < kNumExperts; i += kNumDispatchThreads)
-                *workspace.get_expert_send_count_ptr(i) = 0;
-        } else {
-            for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
-                const auto num_recv_tokens = static_cast<uint32_t>(
-                    *workspace.get_expert_recv_count_sum_ptr(i));
-                const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
-
-                expert_pool_block_offset = scheduler.get_pool_block_offset(i);
-
-                ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
-
-                DG_STATIC_ASSERT(kNumDispatchWarps >= 2, "Not enough dispatch warps");
-                if (warp_idx == 0) {
-                    *workspace.get_expert_recv_count_sum_ptr(i) = 0;
-                } else if (warp_idx == 1) {
-                    if (cute::elect_one_sync() and cumulative_local_expert_recv_stats != nullptr)
-                        ptx::red_add(cumulative_local_expert_recv_stats + i, static_cast<int>(num_recv_tokens));
-                    __syncwarp();
-                }
-
-                for (uint32_t j = thread_idx; j < kNumRanks; j += kNumDispatchThreads)
-                    *workspace.get_expert_recv_count_ptr(j, i) = 0;
-                __syncwarp();
-
-                for (uint32_t j = thread_idx; j < num_recv_m_blocks; j += kNumDispatchThreads) {
-                    *workspace.get_l1_arrival_count_ptr(expert_pool_block_offset + j) = 0;
-                    *workspace.get_l2_arrival_mask_ptr(expert_pool_block_offset + j) = 0;
-                }
-                __syncwarp();
-            }
+        if constexpr (kRunL2Phase) {
+            cleanup_workspace();
+            comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
+                                 kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
+                workspace, sym_buffer, sm_idx, thread_idx,
+                [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
+                true, false);
         }
-
-        comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
-                             kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
-            workspace, sym_buffer, sm_idx, thread_idx,
-            [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
-            true, false);
+        }
 
     // =====================================================================
     // ROLE 2: GEMM TMA LOAD warps (load A+SFA, B+SFB)
@@ -590,7 +638,7 @@ sm90_fp8_mega_moe_impl(void* y,
     } else if (warp_idx == kNumDispatchWarps) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
-        scheduler.for_each_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const sched::BlockPhase& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
@@ -656,7 +704,7 @@ sm90_fp8_mega_moe_impl(void* y,
     } else if (warp_idx == kNumDispatchWarps + 1) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
-        scheduler.for_each_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const sched::BlockPhase& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
@@ -700,6 +748,49 @@ sm90_fp8_mega_moe_impl(void* y,
         const uint32_t epilogue_thread_idx = epilogue_warp_idx * 32 + lane_idx;
         const uint32_t warp_idx_in_wg     = epilogue_warp_idx % 4;
 
+        const auto cleanup_workspace_from_epilogue = [&]() {
+            DG_STATIC_ASSERT(kNumSMs > 1, "Invalid SM count");
+            if (sm_idx == 0) {
+                #pragma unroll
+                for (uint32_t i = epilogue_thread_idx; i < kNumExperts; i += kNumEpilogueThreads)
+                    *workspace.get_expert_send_count_ptr(i) = 0;
+            } else {
+                for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
+                    const auto num_recv_tokens = static_cast<uint32_t>(
+                        *workspace.get_expert_recv_count_sum_ptr(i));
+                    const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
+                    const auto cleanup_pool_block_offset = scheduler.get_pool_block_offset(i);
+
+                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                    if (epilogue_thread_idx == 0) {
+                        *workspace.get_expert_recv_count_sum_ptr(i) = 0;
+                        if (cumulative_local_expert_recv_stats != nullptr)
+                            ptx::red_add(cumulative_local_expert_recv_stats + i, static_cast<int>(num_recv_tokens));
+                    }
+
+                    for (uint32_t j = epilogue_thread_idx; j < kNumRanks; j += kNumEpilogueThreads)
+                        *workspace.get_expert_recv_count_ptr(j, i) = 0;
+
+                    for (uint32_t j = epilogue_thread_idx; j < num_recv_m_blocks; j += kNumEpilogueThreads) {
+                        *workspace.get_l1_arrival_count_ptr(cleanup_pool_block_offset + j) = 0;
+                        *workspace.get_l2_arrival_mask_ptr(cleanup_pool_block_offset + j) = 0;
+                    }
+                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                }
+            }
+        };
+
+        const auto finish_no_dispatch_k2_cleanup = [&]() {
+            if constexpr (!kRunL1Phase && kRunL2Phase && kNumDispatchWarps == 0) {
+                cleanup_workspace_from_epilogue();
+                comm::nvlink_barrier<kNumRanks, kNumSMs, kNumEpilogueThreads,
+                                     kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
+                    workspace, sym_buffer, sm_idx, epilogue_thread_idx,
+                    [&]() { ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx); },
+                    true, false);
+            }
+        };
+
         // WGMMA-output register layout helpers
         const uint32_t row_idx = lane_idx / 4;
         const uint32_t col_idx = lane_idx % 4;
@@ -713,7 +804,7 @@ sm90_fp8_mega_moe_impl(void* y,
         // Sync with dispatch
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
 
-        scheduler.for_each_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const sched::BlockPhase& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
@@ -1153,6 +1244,11 @@ sm90_fp8_mega_moe_impl(void* y,
             }
         });
 
+        if constexpr (!kRunL2Phase) {
+            ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
+            return;
+        }
+
         // ---------------- COMBINE ----------------
         // NVLink barrier first: signals remote ranks that this rank's GEMM
         // outputs (NVLink scatter targets) are fully written.
@@ -1273,6 +1369,7 @@ sm90_fp8_mega_moe_impl(void* y,
                 __syncwarp();
             }
         }
+        finish_no_dispatch_k2_cleanup();
     }
 #else
     if (blockIdx.x == 0 and threadIdx.x == 0)

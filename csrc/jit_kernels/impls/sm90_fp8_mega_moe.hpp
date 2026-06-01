@@ -41,6 +41,8 @@ public:
         int num_ranks;
         float activation_clamp;
         bool fast_math;
+        bool run_l1_phase;
+        bool run_l2_phase;
         MegaMoESM90Config config;
 
         // Runtime arguments
@@ -85,7 +87,7 @@ static void __instantiate_kernel() {{
         {}, {}, {},
         {}, {},
         {},
-        {}
+        {}, {}, {}
     >);
 }};
 )",
@@ -100,7 +102,8 @@ static void __instantiate_kernel() {{
     args.config.num_dispatch_threads, args.config.num_non_epilogue_threads, args.config.num_epilogue_threads,
     args.launch_args.grid_dim.first, args.num_ranks,
     to_string(args.activation_clamp),
-    args.fast_math ? "true" : "false");
+    args.fast_math ? "true" : "false",
+    args.run_l1_phase ? "true" : "false", args.run_l2_phase ? "true" : "false");
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -210,6 +213,8 @@ static void sm90_fp8_mega_moe(
         .num_ranks = num_ranks,
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
+        .run_l1_phase = true,
+        .run_l2_phase = true,
         .config = config,
         .y = y.data_ptr(),
         .cumulative_local_expert_recv_stats = cumulative_local_expert_recv_stats_ptr,
@@ -227,9 +232,44 @@ static void sm90_fp8_mega_moe(
         .launch_args = LaunchArgs(num_sms, config.num_dispatch_threads + config.num_non_epilogue_threads + config.num_epilogue_threads,
                                   config.smem_size, config.cluster_size)
     };
-    const auto code = SM90FP8MegaMoERuntime::generate(args);
-    const auto runtime = compiler->build("sm90_fp8_mega_moe", code);
-    SM90FP8MegaMoERuntime::launch(runtime, args);
+    const auto launch_with_phases = [&](const bool run_l1_phase,
+                                        const bool run_l2_phase,
+                                        const std::string& kernel_name) {
+        auto phase_args = args;
+        phase_args.run_l1_phase = run_l1_phase;
+        phase_args.run_l2_phase = run_l2_phase;
+        if (!run_l1_phase && run_l2_phase &&
+            get_env<int>("DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE", 0) != 0) {
+            phase_args.config.num_dispatch_threads = 0;
+            phase_args.config.num_non_epilogue_threads = 128;
+            std::tie(phase_args.config.num_stages, phase_args.config.smem_size) =
+                get_pipeline_config_for_mega_moe_sm90(
+                    SM90ArchSpec::smem_capacity,
+                    num_experts, hidden,
+                    phase_args.config.block_m, phase_args.config.block_n, phase_args.config.block_k,
+                    phase_args.config.num_dispatch_threads / 32,
+                    phase_args.config.num_epilogue_threads / 32);
+            phase_args.launch_args = LaunchArgs(
+                num_sms,
+                phase_args.config.num_dispatch_threads + phase_args.config.num_non_epilogue_threads +
+                    phase_args.config.num_epilogue_threads,
+                phase_args.config.smem_size, phase_args.config.cluster_size);
+        }
+        const auto code = SM90FP8MegaMoERuntime::generate(phase_args);
+        const auto runtime = compiler->build(kernel_name, code);
+        SM90FP8MegaMoERuntime::launch(runtime, phase_args);
+    };
+
+    if (get_env<int>("DG_SM90_MOE_SPLIT_L1_L2", 1) != 0) {
+        launch_with_phases(true, false, "sm90_fp8_mega_moe_l1");
+        launch_with_phases(
+            false, true,
+            get_env<int>("DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE", 0) != 0 ?
+                "sm90_fp8_mega_moe_l2_nodisp" : "sm90_fp8_mega_moe_l2");
+        return;
+    }
+
+    launch_with_phases(true, true, "sm90_fp8_mega_moe");
 }
 
 } // namespace deep_gemm
