@@ -85,7 +85,12 @@ from .mega import (
     SymmBuffer,
     get_symm_buffer_for_mega_moe,
     transform_weights_for_mega_moe,
+    transform_weights_for_mega_moe_sm90,
+    transform_nvfp4_weights_for_mega_moe_sm90,
+    materialize_nvfp4_fp8_shadow_for_mega_moe_sm90,
     fp8_fp4_mega_moe,
+    fp8_mega_moe,
+    nvfp4_mega_moe,
 )
 
 # Some utils

@@ -1,0 +1,69 @@
+# SM90 MegaMoE NVFP4 Notes
+
+This branch adds a true packed NVFP4 runtime-dequant path for the SM90 MegaMoE kernel. Run validation and benchmarks inside the `mega_moe_box` container, not directly on the host.
+
+Before running GPU tests, check that no other compute process is active:
+
+```bash
+nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits
+```
+
+## Correctness
+
+Use this test for the main NVFP4 correctness gate:
+
+```bash
+docker exec -e TORCH_CUDA_ARCH_LIST=9.0a mega_moe_box bash -lc \
+  "cd /root/fac/megamoe/DeepGEMM_megamoe_nvfp4 && \
+   python3 tests/test_nvfp4_mega_moe_sm90_correctness.py"
+```
+
+`tests/test_nvfp4_mega_moe_sm90_correctness.py` covers:
+
+- Python NVFP4 dequant and layout-transform checks.
+- CUDA byte-level LUT/dequant checks for `128 x 16` UE4M3 scale-code / E2M1 nibble combinations.
+- End-to-end SM90 NVFP4 MegaMoE correctness for default `M=32` and `M=256` cases.
+- Finite-output, cosine similarity, norm-ratio, max-abs-diff, and mean-abs-diff reporting.
+
+For a broader guarded run, use:
+
+```bash
+docker exec mega_moe_box bash -lc \
+  "cd /root/fac/megamoe/DeepGEMM_megamoe_nvfp4 && \
+   scripts/run_nvfp4_gates_when_idle.sh"
+```
+
+That script performs GPU-idle preflight, a small correctness sweep over several weight scales, default correctness, NVFP4 benchmark, W8A8 benchmark, and latency-ratio parsing.
+
+## Benchmarks
+
+NVFP4 true packed runtime-dequant benchmark:
+
+```bash
+docker exec mega_moe_box bash -lc \
+  "cd /root/fac/megamoe/DeepGEMM_megamoe_nvfp4 && \
+   python3 tests/bench_nvfp4_mega_moe_sm90.py --num-processes 8 --batches 32 --num-tests 5"
+```
+
+W8A8 / FP8 baseline benchmark:
+
+```bash
+docker exec mega_moe_box bash -lc \
+  "cd /root/fac/megamoe/DeepGEMM_megamoe_nvfp4 && \
+   python3 tests/bench_mega_moe_sm90.py --num-processes 8 --batches 32 --num-tests 5"
+```
+
+## Latest Result
+
+Latest container correctness gate on `mega_moe_box` passed with:
+
+- `NVFP4 dequant unit test: PASS`
+- `NVFP4 CUDA dequant LUT unit test: PASS`
+- `M=32`: `cosine_min=0.9996`, `cosine_mean=0.9997`, `norm_ratio=0.9997`, `max_abs_diff=1.0846e+01`, `mean_abs_diff=1.1152e+00`
+- `M=256`: `cosine_min=0.9996`, `cosine_mean=0.9996`, `norm_ratio=0.9996`, `max_abs_diff=1.1957e+01`, `mean_abs_diff=1.0920e+00`
+
+Latest measured performance for the current best true packed NVFP4 path was about `1239.3 us` versus W8A8 `983.4 us` at `tokens=32`, `hidden=7168`, `intermediate_hidden=2048`, `num_experts=256`, `topk=8`, `num_processes=8`, so NVFP4 is currently about `1.26x` slower than W8A8 on that decode benchmark.
+
+## Removed AKO Logs
+
+`HINTS.md` and `ITERATIONS.md` were AKO working files: `HINTS.md` stored optimization constraints, and `ITERATIONS.md` stored detailed per-iteration experiment logs. They are useful during kernel search, but they are not required for the final branch review, so this branch keeps the shorter summary above instead.
