@@ -325,7 +325,9 @@ static void sm90_nvfp4_mega_moe(
 
     // Launch
     const auto num_sms = device_runtime->get_num_sms();
-    const bool l1_dual_k_default = (hidden / config.block_k) % 2 == 0;
+    // Small-M defaults avoid measured fixed overheads that do not pay back at low occupancy.
+    const bool l1_dual_k_default = (hidden / config.block_k) % 2 == 0 && num_tokens != 32;
+    const int l2_dual_accum_default = num_tokens == 64 ? 0 : 1;
     const SM90NVFP4MegaMoESplitRuntime::Args args = {
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
         .hidden = hidden, .intermediate_hidden = intermediate_hidden,
@@ -336,10 +338,10 @@ static void sm90_nvfp4_mega_moe(
         .async_l1_tma_store = get_env<int>("DG_SM90_MOE_ASYNC_L1_STORE", 0) != 0,
         .split_sfa_tma = split_sfa_tma,
         .direct_l2_scatter = direct_l2_scatter,
-        .l2_dual_accum = get_env<int>("DG_SM90_MOE_L2_DUAL_ACCUM", 1) != 0,
+        .l2_dual_accum = get_env<int>("DG_SM90_MOE_L2_DUAL_ACCUM", l2_dual_accum_default) != 0,
         .phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0,
         .l1_dual_k_accum = get_env<int>("DG_SM90_MOE_L1_DUAL_K", l1_dual_k_default ? 1 : 0) != 0,
-        .l2_nmajor_schedule = get_env<int>("DG_SM90_MOE_L2_NMAJOR", 1) != 0,
+        .l2_nmajor_schedule = get_env<int>("DG_SM90_MOE_L2_NMAJOR", num_tokens == 128 ? 0 : 1) != 0,
         .l1_nmajor_schedule = get_env<int>("DG_SM90_MOE_L1_NMAJOR", 0) != 0,
         .k2_direct_accum = get_env<int>("DG_SM90_MOE_K2_DIRECT_ACCUM", 0) != 0,
         .loader_dequant = nvfp4_loader_dequant,
@@ -430,10 +432,10 @@ static void sm90_nvfp4_mega_moe(
         SM90NVFP4MegaMoESplitRuntime::launch(runtime, phase_args);
     };
 
-    // Fused single-kernel mode is a small win for BM64 M=128 and BM64 M=4096.
+    // Fused single-kernel mode is a small win for BM64 M=64/M=128 and BM64 M=4096.
     // The BM128 path is faster with split L1/L2, including M=4096. Keep the env
     // as an override, but use the measured per-token default below.
-    const bool fused_default = num_tokens == 128 || (num_tokens == 4096 && config.block_m == 64);
+    const bool fused_default = num_tokens == 64 || num_tokens == 128 || (num_tokens == 4096 && config.block_m == 64);
     const int split_l1_l2_default = fused_default ? 0 : 1;
     const bool split_l1_l2 = get_env<int>("DG_SM90_MOE_SPLIT_L1_L2", split_l1_l2_default) != 0;
     if (split_l1_l2) {

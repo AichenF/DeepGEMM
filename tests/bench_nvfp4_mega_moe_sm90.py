@@ -146,7 +146,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
             and not shape_override
             and num_tokens in (256, 512, 1024, 2048, 4096, 8192)
         )
-        fused_default = num_tokens == 128 or (num_tokens == 4096 and not bm128_default)
+        fused_default = num_tokens in (64, 128) or (num_tokens == 4096 and not bm128_default)
         split_l1_l2 = not fused_default
     else:
         split_l1_l2 = split_env != "0"
