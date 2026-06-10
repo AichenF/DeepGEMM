@@ -22,7 +22,7 @@ docker exec -e TORCH_CUDA_ARCH_LIST=9.0a mega_moe_box bash -lc \
 
 - Python NVFP4 dequant and layout-transform checks.
 - CUDA byte-level LUT/dequant checks for `128 x 16` UE4M3 scale-code / E2M1 nibble combinations.
-- End-to-end SM90 NVFP4 MegaMoE correctness for default `M=32`, `M=256`, `M=2048`, and `M=4096` cases.
+- End-to-end SM90 NVFP4 MegaMoE correctness for default `M=32`, `M=128`, `M=256`, `M=2048`, and `M=4096` cases.
 - Finite-output, cosine similarity, norm-ratio, max-abs-diff, and mean-abs-diff reporting.
 
 For a broader guarded run, use:
@@ -60,27 +60,28 @@ Latest container correctness gates on `mega_moe_box` passed with:
 - `NVFP4 dequant unit test: PASS`
 - `NVFP4 CUDA dequant LUT unit test: PASS`
 - Default path, `M=32`: `cosine_min=0.9996`, `cosine_mean=0.9997`, `norm_ratio=0.9997`, `max_abs_diff=1.0846e+01`, `mean_abs_diff=1.1152e+00`
+- Default path, `M=128`: `cosine_min=0.9996`, `cosine_mean=0.9996`, `norm_ratio=0.9997`, `max_abs_diff=1.2675e+01`, `mean_abs_diff=1.1399e+00`
 - Default path, `M=256`: `cosine_min=0.9996`, `cosine_mean=0.9996`, `norm_ratio=0.9996`, `max_abs_diff=1.1957e+01`, `mean_abs_diff=1.0920e+00`
 - Default path, `M=2048`: `cosine_min=0.9995`, `cosine_mean=0.9996`, `norm_ratio=0.9995`, `max_abs_diff=1.6218e+01`, `mean_abs_diff=1.1196e+00`
 - Default path, `M=4096`: `cosine_min=0.9995`, `cosine_mean=0.9996`, `norm_ratio=0.9995`, `max_abs_diff=1.6195e+01`, `mean_abs_diff=1.1162e+00`
 
-Current default NVFP4 uses the BM64 path for all token counts. The BM128/2-epilogue-WG path remains available only as an explicit experiment through `DG_SM90_NVFP4_BM128_HEURISTIC=1` or direct shape overrides, because it reproduced non-finite outputs in large correctness tests.
+Current default NVFP4 uses the BM64 shape for all token counts. It uses fused single-kernel execution for `M=128` and `M=4096`, and split L1/L2 execution elsewhere. The BM128/2-epilogue-WG shape remains available only as an explicit experiment through `DG_SM90_NVFP4_BM128_HEURISTIC=1` or direct shape overrides, because it reproduced non-finite outputs in large correctness tests.
 
 Latest same-container benchmark, `hidden=7168`, `intermediate_hidden=2048`, `num_experts=256`, `topk=8`, `num_processes=8`, `num_tests=20`:
 
 | tokens | NVFP4 us | W8A8 us | NVFP4/W8A8 |
 |---:|---:|---:|---:|
-| 32 | 1278.8 | 900.9 | 1.42x |
-| 64 | 1415.8 | 946.9 | 1.50x |
-| 128 | 1316.4 | 930.2 | 1.42x |
-| 256 | 1831.7 | 1299.5 | 1.41x |
-| 512 | 3268.0 | 2412.6 | 1.35x |
-| 1024 | 5589.0 | 3833.0 | 1.46x |
-| 2048 | 10289.0 | 7077.0 | 1.45x |
-| 4096 | 19647.0 | 13568.0 | 1.45x |
-| 8192 | 38187.0 | 26611.0 | 1.44x |
+| 32 | 1360.4 | 900.9 | 1.51x |
+| 64 | 1304.7 | 946.9 | 1.38x |
+| 128 | 1263.0 | 930.2 | 1.36x |
+| 256 | 1846.4 | 1299.5 | 1.42x |
+| 512 | 3339.0 | 2412.6 | 1.38x |
+| 1024 | 5526.0 | 3833.0 | 1.44x |
+| 2048 | 10224.0 | 7077.0 | 1.44x |
+| 4096 | 19440.0 | 13568.0 | 1.43x |
+| 8192 | 38227.0 | 26611.0 | 1.44x |
 
-Current default NVFP4 is correctness-safe but not yet close to W8A8; the remaining gap is roughly `1.35x-1.50x` in this same-container sweep.
+Current default NVFP4 is correctness-safe but not yet close to W8A8; the remaining gap is roughly `1.36x-1.51x` in this same-container sweep.
 
 ## Removed AKO Logs
 

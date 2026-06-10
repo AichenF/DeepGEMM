@@ -133,7 +133,11 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
             run()
         torch.cuda.synchronize()
         dist.barrier()
-    split_l1_l2 = os.environ.get('DG_SM90_MOE_SPLIT_L1_L2', '1') != '0'
+    split_env = os.environ.get("DG_SM90_MOE_SPLIT_L1_L2")
+    if split_env is None:
+        split_l1_l2 = num_tokens not in (128, 4096)
+    else:
+        split_l1_l2 = split_env != "0"
     t_nvfp4 = bench_kineto(run, 'sm90_nvfp4_mega_moe',
                            barrier=lambda: dist.barrier(),
                            num_tests=args.num_tests,

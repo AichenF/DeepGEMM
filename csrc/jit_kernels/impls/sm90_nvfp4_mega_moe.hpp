@@ -422,7 +422,12 @@ static void sm90_nvfp4_mega_moe(
         SM90NVFP4MegaMoESplitRuntime::launch(runtime, phase_args);
     };
 
-    if (get_env<int>("DG_SM90_MOE_SPLIT_L1_L2", 1) != 0) {
+    // Fused single-kernel mode is a small win for a couple of BM64 NVFP4
+    // points, while split L1/L2 remains better elsewhere. Keep the env as an
+    // override, but use the measured per-token default below.
+    const int split_l1_l2_default = (num_tokens == 128 || num_tokens == 4096) ? 0 : 1;
+    const bool split_l1_l2 = get_env<int>("DG_SM90_MOE_SPLIT_L1_L2", split_l1_l2_default) != 0;
+    if (split_l1_l2) {
         launch_with_phases(true, false, "sm90_nvfp4_mega_moe_l1");
         launch_with_phases(
             false, true,
