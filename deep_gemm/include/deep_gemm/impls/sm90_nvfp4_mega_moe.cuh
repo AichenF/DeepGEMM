@@ -331,8 +331,8 @@ sm90_nvfp4_mega_moe_impl(void* y,
     DG_STATIC_ASSERT(BLOCK_N == 128,
                      "NVFP4 smem dequant currently requires the BN128 UE4M3 scale tile layout");
     DG_STATIC_ASSERT(BLOCK_K == 128, "BLOCK_K is fixed to 128 (per-128 SF)");
-    DG_STATIC_ASSERT(kNumEpilogueThreads == 128,
-                     "NVFP4 smem dequant currently maps one math WG thread to one BLOCK_N=128 B row");
+    DG_STATIC_ASSERT(kNumNonEpilogueThreads == 128,
+                     "NVFP4 loader dequant expects four non-epilogue warps");
 
     // =====================================================================
     // Thread / warp identification
@@ -420,7 +420,7 @@ sm90_nvfp4_mega_moe_impl(void* y,
         (!kSplitNWarpgroups) && (!kSerialNWarpgroups) && WG_BLOCK_N == 128 &&
         (kHidden / BLOCK_K) % 2 == 0;
     constexpr bool kLoaderDequant = kLoaderDequantRequested && (!kSplitSFATMA) &&
-        kNumMMANonEpilogueWarps == 4 && kNumEpilogueThreads == 128;
+        kNumMMANonEpilogueWarps == 4;
     constexpr bool kDirectScaleGmem = kDirectScaleGmemRequested && (!kLoaderDequant);
     constexpr bool kPackedBScratch = kPackedBScratchRequested && (!kLoaderDequant);
     constexpr bool kSplitDequantBarrier = kSplitDequantBarrierRequested && (!kLoaderDequant) && (!kPackedBScratch);
@@ -614,7 +614,7 @@ sm90_nvfp4_mega_moe_impl(void* y,
     const auto dequant_loaded_b_stage = [&](const uint32_t& s, const uint32_t& p,
                                             const uint32_t& non_epilogue_thread_idx) {
         if constexpr (kLoaderDequant) {
-            if constexpr (kNumMMANonEpilogueWarps == 4 && kNumEpilogueThreads == 128) {
+            if constexpr (kNumMMANonEpilogueWarps == 4) {
                 if (non_epilogue_thread_idx >= 64u) {
                     full_barriers[s]->wait(p);
                     const uint32_t dequant_tid = non_epilogue_thread_idx - 64u;
@@ -2712,9 +2712,10 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
         constexpr uint32_t kNumChunkSlots = 3;
         constexpr uint32_t kNumMaxRegistersForBuffer = 128;
-        constexpr uint32_t kNumChunks =
+        constexpr uint32_t kNumDefaultChunks =
             (kNumChunkSlots * kNumEpilogueWarps * kNumHiddenBytes <= SMEM_BEFORE_BARRIER_SIZE
              and kHidden <= 32 * kNumMaxRegistersForBuffer) ? 1 : 2;
+        constexpr uint32_t kNumChunks = (kHidden == 7168) ? 7 : kNumDefaultChunks;
         constexpr uint32_t kNumChunkBytes = kNumHiddenBytes / kNumChunks;
         constexpr uint32_t kNumChunkUint4 = kNumChunkBytes / sizeof(uint4);
         constexpr uint32_t kNumUint4PerLane = kNumChunkUint4 / 32;

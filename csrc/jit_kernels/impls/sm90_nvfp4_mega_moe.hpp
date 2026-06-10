@@ -187,7 +187,19 @@ static void sm90_nvfp4_mega_moe(
     // Keep the NVFP4 bridge on the default BN128 layout until a BN256 scale
     // tile format is added.
     DG_HOST_ASSERT(config.block_n == 128);
-    DG_HOST_ASSERT(config.num_epilogue_threads == 128);
+    DG_HOST_ASSERT(config.num_epilogue_threads == 128 || config.num_epilogue_threads == 256);
+    const bool nvfp4_user_shape_override =
+        get_env<int>("DG_SM90_MOE_BLOCK_M", 0) > 0 ||
+        get_env<int>("DG_SM90_MOE_EPILOGUE_WG", 0) > 0 ||
+        get_env<int>("DG_SM90_MOE_BLOCK_N", 128) != 128;
+    if (!nvfp4_user_shape_override && num_tokens >= 2048) {
+        config.block_m = 128;
+        config.num_epilogue_threads = 256;
+        const int num_sms_for_config = device_runtime->get_num_sms();
+        config.num_experts_per_wave = get_num_experts_per_wave_for_mega_moe_sm90(
+            num_experts_per_rank, num_tokens, num_topk,
+            intermediate_hidden, config.block_m, config.block_n, num_sms_for_config);
+    }
     const int nvfp4_dispatch_threads = get_env<int>("DG_SM90_NVFP4_DISPATCH_THREADS", 128);
     const int nvfp4_non_epilogue_threads = get_env<int>("DG_SM90_NVFP4_NON_EPILOGUE_THREADS", 128);
     DG_HOST_ASSERT(nvfp4_dispatch_threads == 64 || nvfp4_dispatch_threads == 128);
@@ -319,7 +331,7 @@ static void sm90_nvfp4_mega_moe(
         .l2_dual_accum = get_env<int>("DG_SM90_MOE_L2_DUAL_ACCUM", 1) != 0,
         .phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0,
         .l1_dual_k_accum = get_env<int>("DG_SM90_MOE_L1_DUAL_K", l1_dual_k_default ? 1 : 0) != 0,
-        .l2_nmajor_schedule = get_env<int>("DG_SM90_MOE_L2_NMAJOR", 0) != 0,
+        .l2_nmajor_schedule = get_env<int>("DG_SM90_MOE_L2_NMAJOR", 1) != 0,
         .l1_nmajor_schedule = get_env<int>("DG_SM90_MOE_L1_NMAJOR", 0) != 0,
         .k2_direct_accum = get_env<int>("DG_SM90_MOE_K2_DIRECT_ACCUM", 0) != 0,
         .loader_dequant = nvfp4_loader_dequant,

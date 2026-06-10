@@ -55,14 +55,31 @@ docker exec mega_moe_box bash -lc \
 
 ## Latest Result
 
-Latest container correctness gate on `mega_moe_box` passed with:
+Latest container correctness gates on `mega_moe_box` passed with:
 
 - `NVFP4 dequant unit test: PASS`
 - `NVFP4 CUDA dequant LUT unit test: PASS`
-- `M=32`: `cosine_min=0.9996`, `cosine_mean=0.9997`, `norm_ratio=0.9997`, `max_abs_diff=1.0846e+01`, `mean_abs_diff=1.1152e+00`
-- `M=256`: `cosine_min=0.9996`, `cosine_mean=0.9996`, `norm_ratio=0.9996`, `max_abs_diff=1.1957e+01`, `mean_abs_diff=1.0920e+00`
+- Default path, `M=32`: `cosine_min=0.9996`, `cosine_mean=0.9997`, `norm_ratio=0.9997`, `max_abs_diff=1.0846e+01`, `mean_abs_diff=1.1152e+00`
+- Default path, `M=256`: `cosine_min=0.9996`, `cosine_mean=0.9996`, `norm_ratio=0.9996`, `max_abs_diff=1.1957e+01`, `mean_abs_diff=1.0920e+00`
+- Large-M heuristic path, `M=2048`: `cosine_min=0.9995`, `cosine_mean=0.9996`, `norm_ratio=0.9995`, `max_abs_diff=1.6218e+01`, `mean_abs_diff=1.1196e+00`
 
-Latest measured performance for the current best true packed NVFP4 path was about `1239.3 us` versus W8A8 `983.4 us` at `tokens=32`, `hidden=7168`, `intermediate_hidden=2048`, `num_experts=256`, `topk=8`, `num_processes=8`, so NVFP4 is currently about `1.26x` slower than W8A8 on that decode benchmark.
+Current default NVFP4 uses the BM64 path for `num_tokens < 2048` and a BM128/2-epilogue-WG path for `num_tokens >= 2048`. The BM128 path keeps true packed NVFP4 runtime dequant, but amortizes each B-tile dequant over a larger M tile.
+
+Latest same-container benchmark, `hidden=7168`, `intermediate_hidden=2048`, `num_experts=256`, `topk=8`, `num_processes=8`, `num_tests=20`:
+
+| tokens | NVFP4 us | W8A8 us | NVFP4/W8A8 |
+|---:|---:|---:|---:|
+| 32 | 1407.0 | 869.5 | 1.62x |
+| 64 | 1261.9 | 1023.4 | 1.23x |
+| 128 | 1272.7 | 918.1 | 1.39x |
+| 256 | 1831.9 | 1308.5 | 1.40x |
+| 512 | 3365.0 | 2458.4 | 1.37x |
+| 1024 | 5475.0 | 3792.0 | 1.44x |
+| 2048 | 10028.0 | 7154.0 | 1.40x |
+| 4096 | 18281.0 | 13552.0 | 1.35x |
+| 8192 | 35155.0 | 26660.0 | 1.32x |
+
+Compared with the prior NVFP4 BM64 baseline in this branch, the large-M heuristic improves the main large batches approximately from `10205 -> 10028 us` at M=2048, `19459 -> 18281 us` at M=4096, and `38335 -> 35155 us` at M=8192 in the latest same-run comparison.
 
 ## Removed AKO Logs
 
