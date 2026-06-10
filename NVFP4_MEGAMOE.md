@@ -22,7 +22,7 @@ docker exec -e TORCH_CUDA_ARCH_LIST=9.0a mega_moe_box bash -lc \
 
 - Python NVFP4 dequant and layout-transform checks.
 - CUDA byte-level LUT/dequant checks for `128 x 16` UE4M3 scale-code / E2M1 nibble combinations.
-- End-to-end SM90 NVFP4 MegaMoE correctness for default `M=32` and `M=256` cases.
+- End-to-end SM90 NVFP4 MegaMoE correctness for default `M=32`, `M=256`, `M=2048`, and `M=4096` cases.
 - Finite-output, cosine similarity, norm-ratio, max-abs-diff, and mean-abs-diff reporting.
 
 For a broader guarded run, use:
@@ -61,25 +61,26 @@ Latest container correctness gates on `mega_moe_box` passed with:
 - `NVFP4 CUDA dequant LUT unit test: PASS`
 - Default path, `M=32`: `cosine_min=0.9996`, `cosine_mean=0.9997`, `norm_ratio=0.9997`, `max_abs_diff=1.0846e+01`, `mean_abs_diff=1.1152e+00`
 - Default path, `M=256`: `cosine_min=0.9996`, `cosine_mean=0.9996`, `norm_ratio=0.9996`, `max_abs_diff=1.1957e+01`, `mean_abs_diff=1.0920e+00`
-- Large-M heuristic path, `M=2048`: `cosine_min=0.9995`, `cosine_mean=0.9996`, `norm_ratio=0.9995`, `max_abs_diff=1.6218e+01`, `mean_abs_diff=1.1196e+00`
+- Default path, `M=2048`: `cosine_min=0.9995`, `cosine_mean=0.9996`, `norm_ratio=0.9995`, `max_abs_diff=1.6218e+01`, `mean_abs_diff=1.1196e+00`
+- Default path, `M=4096`: `cosine_min=0.9995`, `cosine_mean=0.9996`, `norm_ratio=0.9995`, `max_abs_diff=1.6195e+01`, `mean_abs_diff=1.1162e+00`
 
-Current default NVFP4 uses the BM64 path for `num_tokens < 2048` and a BM128/2-epilogue-WG path for `num_tokens >= 2048`. The BM128 path keeps true packed NVFP4 runtime dequant, but amortizes each B-tile dequant over a larger M tile.
+Current default NVFP4 uses the BM64 path for all token counts. The BM128/2-epilogue-WG path remains available only as an explicit experiment through `DG_SM90_NVFP4_BM128_HEURISTIC=1` or direct shape overrides, because it reproduced non-finite outputs in large correctness tests.
 
 Latest same-container benchmark, `hidden=7168`, `intermediate_hidden=2048`, `num_experts=256`, `topk=8`, `num_processes=8`, `num_tests=20`:
 
 | tokens | NVFP4 us | W8A8 us | NVFP4/W8A8 |
 |---:|---:|---:|---:|
-| 32 | 1407.0 | 869.5 | 1.62x |
-| 64 | 1261.9 | 1023.4 | 1.23x |
-| 128 | 1272.7 | 918.1 | 1.39x |
-| 256 | 1831.9 | 1308.5 | 1.40x |
-| 512 | 3365.0 | 2458.4 | 1.37x |
-| 1024 | 5475.0 | 3792.0 | 1.44x |
-| 2048 | 10028.0 | 7154.0 | 1.40x |
-| 4096 | 18281.0 | 13552.0 | 1.35x |
-| 8192 | 35155.0 | 26660.0 | 1.32x |
+| 32 | 1278.8 | 900.9 | 1.42x |
+| 64 | 1415.8 | 946.9 | 1.50x |
+| 128 | 1316.4 | 930.2 | 1.42x |
+| 256 | 1831.7 | 1299.5 | 1.41x |
+| 512 | 3268.0 | 2412.6 | 1.35x |
+| 1024 | 5589.0 | 3833.0 | 1.46x |
+| 2048 | 10289.0 | 7077.0 | 1.45x |
+| 4096 | 19647.0 | 13568.0 | 1.45x |
+| 8192 | 38187.0 | 26611.0 | 1.44x |
 
-Compared with the prior NVFP4 BM64 baseline in this branch, the large-M heuristic improves the main large batches approximately from `10205 -> 10028 us` at M=2048, `19459 -> 18281 us` at M=4096, and `38335 -> 35155 us` at M=8192 in the latest same-run comparison.
+Current default NVFP4 is correctness-safe but not yet close to W8A8; the remaining gap is roughly `1.35x-1.50x` in this same-container sweep.
 
 ## Removed AKO Logs
 

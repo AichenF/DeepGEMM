@@ -192,7 +192,10 @@ static void sm90_nvfp4_mega_moe(
         get_env<int>("DG_SM90_MOE_BLOCK_M", 0) > 0 ||
         get_env<int>("DG_SM90_MOE_EPILOGUE_WG", 0) > 0 ||
         get_env<int>("DG_SM90_MOE_BLOCK_N", 128) != 128;
-    if (!nvfp4_user_shape_override && num_tokens >= 2048) {
+    // BM128/2-WG is still experimental for NVFP4: it has reproduced non-finite
+    // output in large correctness tests, so keep the default path on BM64.
+    const bool nvfp4_bm128_experimental = get_env<int>("DG_SM90_NVFP4_BM128_HEURISTIC", 0) != 0;
+    if (!nvfp4_user_shape_override && nvfp4_bm128_experimental && num_tokens == 2048) {
         config.block_m = 128;
         config.num_epilogue_threads = 256;
         const int num_sms_for_config = device_runtime->get_num_sms();
