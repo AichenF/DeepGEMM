@@ -67,25 +67,25 @@ Latest container correctness gates on `mega_moe_box` passed with:
 - Default path, `M=2048`: `cosine_min=0.9995`, `cosine_mean=0.9996`, `norm_ratio=0.9995`, `max_abs_diff=1.6218e+01`, `mean_abs_diff=1.1196e+00`
 - Default path, `M=4096`: `cosine_min=0.9995`, `cosine_mean=0.9996`, `norm_ratio=0.9995`, `max_abs_diff=1.6195e+01`, `mean_abs_diff=1.1162e+00`
 
-Current default NVFP4 uses BM64 for most token counts, fused single-kernel execution for `M=128` and `M=4096`, and the BM128/2-epilogue-WG shape only at `M=2048`. The BM128 path uses a wider loader-dequant non-epilogue register budget (`64` regs) with a reduced epilogue budget (`192` regs), which fixed the previous non-finite output at `M=2048`. Set `DG_SM90_NVFP4_BM128_HEURISTIC=0` to force the BM64 fallback.
+Current default NVFP4 uses BM64 for small token counts, fused single-kernel execution for `M=128` and `M=4096`, and the BM128/2-epilogue-WG shape for `M=256`, `M=512`, `M=1024`, and `M=2048`. The BM128 path uses a wider loader-dequant non-epilogue register budget (`64` regs) with a reduced epilogue budget (`192` regs), which fixed the previous non-finite output. Set `DG_SM90_NVFP4_BM128_HEURISTIC=0` to force the BM64 fallback.
 
-Additional `M=2048` default-shape coverage passed for `weight_scale=1.0`, `0.05`, and `0.001`; the lowest observed cosine was `0.9985` at `weight_scale=1.0`, with finite output and norm ratio `0.9991`.
+Additional BM128 coverage passed for `M=256/512/1024/2048` with `weight_scale=1.0`, `0.05`, and `0.001`; the lowest observed cosine was `0.9985` at `M=2048`, `weight_scale=1.0`, with finite output and norm ratio `0.9991`.
 
 Latest same-container benchmark, `hidden=7168`, `intermediate_hidden=2048`, `num_experts=256`, `topk=8`, `num_processes=8`, `num_tests=20`:
 
 | tokens | NVFP4 us | W8A8 us | NVFP4/W8A8 |
 |---:|---:|---:|---:|
-| 32 | 1274.7 | 900.9 | 1.41x |
-| 64 | 1284.1 | 946.9 | 1.36x |
-| 128 | 1302.0 | 930.2 | 1.40x |
-| 256 | 1902.9 | 1299.5 | 1.46x |
-| 512 | 3208.0 | 2412.6 | 1.33x |
-| 1024 | 5529.0 | 3833.0 | 1.44x |
-| 2048 | 6861.0 | 7077.0 | 0.97x |
-| 4096 | 19319.0 | 13568.0 | 1.42x |
-| 8192 | 38222.0 | 26611.0 | 1.44x |
+| 32 | 1323.1 | 900.9 | 1.47x |
+| 64 | 1287.3 | 946.9 | 1.36x |
+| 128 | 1383.0 | 930.2 | 1.49x |
+| 256 | 1624.1 | 1299.5 | 1.25x |
+| 512 | 2550.0 | 2412.6 | 1.06x |
+| 1024 | 4160.0 | 3833.0 | 1.09x |
+| 2048 | 6832.0 | 7077.0 | 0.97x |
+| 4096 | 19426.0 | 13568.0 | 1.43x |
+| 8192 | 38239.0 | 26611.0 | 1.44x |
 
-Current default NVFP4 now has one stable same-container win at `M=2048` (`6861.0us` vs W8A8 `7077.0us`). Other token counts are still not close to W8A8; the remaining gap outside `M=2048` is roughly `1.33x-1.46x` in this sweep.
+Current default NVFP4 is now close to W8A8 for `M=512/1024` and slightly faster at `M=2048`. `M=256` improved but is still `1.25x` slower; small `M<=128` and large `M>=4096` remain the main gaps.
 
 ## Removed AKO Logs
 

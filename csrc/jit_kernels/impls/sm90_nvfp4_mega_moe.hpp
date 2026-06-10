@@ -192,11 +192,14 @@ static void sm90_nvfp4_mega_moe(
         get_env<int>("DG_SM90_MOE_BLOCK_M", 0) > 0 ||
         get_env<int>("DG_SM90_MOE_EPILOGUE_WG", 0) > 0 ||
         get_env<int>("DG_SM90_MOE_BLOCK_N", 128) != 128;
-    // BM128/2-WG is enabled only for M=2048, where the loader-dequant register
-    // budget has correctness coverage and a stable speedup. Set
+    // BM128/2-WG is enabled for medium M where the wider loader-dequant
+    // register budget has correctness coverage and a stable speedup. Keep small
+    // M on BM64/fused paths, where BM128 adds fixed overhead. Set
     // DG_SM90_NVFP4_BM128_HEURISTIC=0 to force the BM64 fallback.
     const bool nvfp4_bm128_heuristic = get_env<int>("DG_SM90_NVFP4_BM128_HEURISTIC", 1) != 0;
-    if (!nvfp4_user_shape_override && nvfp4_bm128_heuristic && num_tokens == 2048) {
+    const bool nvfp4_bm128_medium_m =
+        num_tokens == 256 || num_tokens == 512 || num_tokens == 1024 || num_tokens == 2048;
+    if (!nvfp4_user_shape_override && nvfp4_bm128_heuristic && nvfp4_bm128_medium_m) {
         config.block_m = 128;
         config.num_epilogue_threads = 256;
         const int num_sms_for_config = device_runtime->get_num_sms();
