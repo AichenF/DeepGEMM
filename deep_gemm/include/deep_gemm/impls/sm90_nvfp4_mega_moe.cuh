@@ -655,12 +655,17 @@ sm90_nvfp4_mega_moe_impl(void* y,
     constexpr uint32_t kBeforeDirectAccumZeroBarrierTag = 4;
 
     // Register reconfiguration counts (chosen to fit in 64512 reg budget).
-    // For the 256-epilogue-thread case (block_m=128, 2 math WGs):
-    //   128*48 + 128*40 + 256*208 = 64512 exactly.
+    // For the 256-epilogue-thread loader-dequant case (block_m=128, 2 math WGs),
+    // give non-epilogue warps more room for two-row NVFP4 dequant while staying
+    // inside the 64K register file: 128*48 + 128*64 + 256*192 = 63488.
     constexpr uint32_t kNumDispatchRegisters    = 48;
     constexpr uint32_t kNumNonEpilogueRegisters =
-        (kLoaderDequant && kNumEpilogueThreads == 128) ? 80 : 40;
-    constexpr uint32_t kNumEpilogueRegisters    = (kSerialNWarpgroups or kWideNWarpgroups) ? 256 : ((kUseMMASync and BLOCK_M == 32) ? 240 : 208);
+        (kLoaderDequant && kNumEpilogueThreads == 128) ? 80 :
+        (kLoaderDequant && kNumEpilogueThreads == 256) ? 64 : 40;
+    constexpr uint32_t kNumEpilogueRegisters    =
+        (kLoaderDequant && kNumEpilogueThreads == 256) ? 192 :
+        (kSerialNWarpgroups or kWideNWarpgroups) ? 256 :
+        ((kUseMMASync and BLOCK_M == 32) ? 240 : 208);
     DG_STATIC_ASSERT(kNumDispatchRegisters * kNumDispatchThreads +
                      kNumNonEpilogueRegisters * kNumNonEpilogueThreads +
                      kNumEpilogueRegisters * kNumEpilogueThreads <= 64512,
