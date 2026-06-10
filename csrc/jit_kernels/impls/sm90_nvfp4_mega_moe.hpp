@@ -363,14 +363,16 @@ static void sm90_nvfp4_mega_moe(
         .launch_args = LaunchArgs(num_sms, config.num_dispatch_threads + config.num_non_epilogue_threads + config.num_epilogue_threads,
                                   config.smem_size, config.cluster_size)
     };
+    const int l2_no_dispatch_pipeline_default = (num_tokens == 2048) ? 1 : 0;
+    const bool l2_no_dispatch_pipeline =
+        get_env<int>("DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE", l2_no_dispatch_pipeline_default) != 0;
     const auto launch_with_phases = [&](const bool run_l1_phase,
                                         const bool run_l2_phase,
                                         const std::string& kernel_name) {
         auto phase_args = args;
         phase_args.run_l1_phase = run_l1_phase;
         phase_args.run_l2_phase = run_l2_phase;
-        if (!run_l1_phase && run_l2_phase &&
-            get_env<int>("DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE", 0) != 0) {
+        if (!run_l1_phase && run_l2_phase && l2_no_dispatch_pipeline) {
             phase_args.config.num_dispatch_threads = 0;
             phase_args.config.num_non_epilogue_threads = 128;
             std::tie(phase_args.config.num_stages, phase_args.config.smem_size) =
@@ -431,8 +433,7 @@ static void sm90_nvfp4_mega_moe(
         launch_with_phases(true, false, "sm90_nvfp4_mega_moe_l1");
         launch_with_phases(
             false, true,
-            get_env<int>("DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE", 0) != 0 ?
-                "sm90_nvfp4_mega_moe_l2_nodisp" : "sm90_nvfp4_mega_moe_l2");
+            l2_no_dispatch_pipeline ? "sm90_nvfp4_mega_moe_l2_nodisp" : "sm90_nvfp4_mega_moe_l2");
         return;
     }
 

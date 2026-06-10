@@ -336,7 +336,7 @@ def _worker(local_rank: int, num_local_ranks: int, args: argparse.Namespace) -> 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="SM90 NVFP4 MegaMoE correctness gate")
-    parser.add_argument("--batches", nargs="+", type=int, default=[32, 128, 256, 2048, 4096])
+    parser.add_argument("--batches", nargs="+", type=int, default=[32, 128, 256, 512, 1024, 2048, 4096])
     parser.add_argument("--hidden", type=int, default=7168)
     parser.add_argument("--intermediate-hidden", type=int, default=2048)
     parser.add_argument("--num-experts", type=int, default=8)
