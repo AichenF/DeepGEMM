@@ -192,14 +192,15 @@ static void sm90_nvfp4_mega_moe(
         get_env<int>("DG_SM90_MOE_BLOCK_M", 0) > 0 ||
         get_env<int>("DG_SM90_MOE_EPILOGUE_WG", 0) > 0 ||
         get_env<int>("DG_SM90_MOE_BLOCK_N", 128) != 128;
-    // BM128/2-WG is enabled for medium M where the wider loader-dequant
+    // BM128/2-WG is enabled for medium/large M where the wider loader-dequant
     // register budget has correctness coverage and a stable speedup. Keep small
     // M on BM64/fused paths, where BM128 adds fixed overhead. Set
     // DG_SM90_NVFP4_BM128_HEURISTIC=0 to force the BM64 fallback.
     const bool nvfp4_bm128_heuristic = get_env<int>("DG_SM90_NVFP4_BM128_HEURISTIC", 1) != 0;
-    const bool nvfp4_bm128_medium_m =
-        num_tokens == 256 || num_tokens == 512 || num_tokens == 1024 || num_tokens == 2048;
-    if (!nvfp4_user_shape_override && nvfp4_bm128_heuristic && nvfp4_bm128_medium_m) {
+    const bool nvfp4_bm128_main_m =
+        num_tokens == 256 || num_tokens == 512 || num_tokens == 1024 || num_tokens == 2048 ||
+        num_tokens == 4096 || num_tokens == 8192;
+    if (!nvfp4_user_shape_override && nvfp4_bm128_heuristic && nvfp4_bm128_main_m) {
         config.block_m = 128;
         config.num_epilogue_threads = 256;
         const int num_sms_for_config = device_runtime->get_num_sms();
@@ -428,10 +429,11 @@ static void sm90_nvfp4_mega_moe(
         SM90NVFP4MegaMoESplitRuntime::launch(runtime, phase_args);
     };
 
-    // Fused single-kernel mode is a small win for a couple of BM64 NVFP4
-    // points, while split L1/L2 remains better elsewhere. Keep the env as an
-    // override, but use the measured per-token default below.
-    const int split_l1_l2_default = (num_tokens == 128 || num_tokens == 4096) ? 0 : 1;
+    // Fused single-kernel mode is a small win for BM64 M=128 and BM64 M=4096.
+    // The BM128 path is faster with split L1/L2, including M=4096. Keep the env
+    // as an override, but use the measured per-token default below.
+    const bool fused_default = num_tokens == 128 || (num_tokens == 4096 && config.block_m == 64);
+    const int split_l1_l2_default = fused_default ? 0 : 1;
     const bool split_l1_l2 = get_env<int>("DG_SM90_MOE_SPLIT_L1_L2", split_l1_l2_default) != 0;
     if (split_l1_l2) {
         launch_with_phases(true, false, "sm90_nvfp4_mega_moe_l1");

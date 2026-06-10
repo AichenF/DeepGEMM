@@ -135,7 +135,19 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         dist.barrier()
     split_env = os.environ.get("DG_SM90_MOE_SPLIT_L1_L2")
     if split_env is None:
-        split_l1_l2 = num_tokens not in (128, 4096)
+        shape_override = (
+            int(os.environ.get("DG_SM90_MOE_BLOCK_M", "0")) > 0
+            or int(os.environ.get("DG_SM90_MOE_EPILOGUE_WG", "0")) > 0
+            or int(os.environ.get("DG_SM90_MOE_BLOCK_N", "128")) != 128
+        )
+        bm128_enabled = os.environ.get("DG_SM90_NVFP4_BM128_HEURISTIC", "1") != "0"
+        bm128_default = (
+            bm128_enabled
+            and not shape_override
+            and num_tokens in (256, 512, 1024, 2048, 4096, 8192)
+        )
+        fused_default = num_tokens == 128 or (num_tokens == 4096 and not bm128_default)
+        split_l1_l2 = not fused_default
     else:
         split_l1_l2 = split_env != "0"
     t_nvfp4 = bench_kineto(run, 'sm90_nvfp4_mega_moe',
