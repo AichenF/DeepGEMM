@@ -368,7 +368,8 @@ static void sm90_nvfp4_mega_moe(
         .launch_args = LaunchArgs(num_sms, config.num_dispatch_threads + config.num_non_epilogue_threads + config.num_epilogue_threads,
                                   config.smem_size, config.cluster_size)
     };
-    const int l2_no_dispatch_pipeline_default = (num_tokens == 2048) ? 1 : 0;
+    const int l2_no_dispatch_pipeline_default =
+        (num_tokens == 256 || num_tokens == 512 || num_tokens == 1024 || num_tokens == 2048) ? 1 : 0;
     const bool l2_no_dispatch_pipeline =
         get_env<int>("DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE", l2_no_dispatch_pipeline_default) != 0;
     const auto launch_with_phases = [&](const bool run_l1_phase,
