@@ -10,6 +10,7 @@
 
 #include "../jit/device_runtime.hpp"
 #include "../jit_kernels/impls/sm90_fp8_mega_moe.hpp"
+#include "../jit_kernels/impls/sm90_nvfp4_mega_moe.hpp"
 #include "../utils/layout.hpp"
 
 namespace deep_gemm::mega {
@@ -208,11 +209,109 @@ static void fp8_mega_moe(
         sym_buffer.zero_();
 }
 
+// SM90 (Hopper) NVFP4 MegaMoE entry. Accepts packed E2M1 FP4 weights + UE4M3 SF.
+static void nvfp4_mega_moe(
+    const torch::Tensor& y,
+    const std::tuple<torch::Tensor, torch::Tensor>& l1_weights_tuple,
+    const std::tuple<torch::Tensor, torch::Tensor>& l2_weights_tuple,
+    const std::optional<torch::Tensor>& cumulative_local_expert_recv_stats,
+    const torch::Tensor& sym_buffer,
+    const std::vector<int64_t>& sym_buffer_ptrs, const int& rank_idx,
+    const int& num_max_tokens_per_rank,
+    const int& num_experts, const int& num_topk,
+    const std::tuple<int, int, int>& recipe,
+    const std::string& activation,
+    const std::optional<float>& activation_clamp_opt,
+    const bool& fast_math
+) {
+    const auto [l1_weights, l1_weights_sf] = l1_weights_tuple;
+    const auto [l2_weights, l2_weights_sf] = l2_weights_tuple;
+    const auto arch_major = device_runtime->get_arch_major();
+    DG_HOST_ASSERT(arch_major == 9);
+    const auto num_tokens = static_cast<int>(y.size(0));
+    const auto [rm, rn, rk] = recipe;
+    DG_HOST_ASSERT(rm == 128 and rn == 128 and rk == 128);
+    DG_HOST_ASSERT(activation == "swiglu");
+    const auto activation_clamp = activation_clamp_opt.value_or(std::numeric_limits<float>::infinity());
+    DG_HOST_ASSERT(activation_clamp >= 0);
+    DG_HOST_ASSERT(get_major_type_ab(l1_weights) == cute::UMMA::Major::K);
+    DG_HOST_ASSERT(get_major_type_ab(l2_weights) == cute::UMMA::Major::K);
+    // NVFP4: weights are uint8 packed E2M1 FP4 (K dimension halved).
+    // L1 weight: (E, 2*IH, H/2). L2 weight: (E, H, IH/2). K dim is always last.
+    DG_HOST_ASSERT(l1_weights.scalar_type() == torch::kUInt8);
+    DG_HOST_ASSERT(l2_weights.scalar_type() == torch::kUInt8);
+    DG_HOST_ASSERT(l1_weights_sf.scalar_type() == torch::kUInt8);
+    DG_HOST_ASSERT(l2_weights_sf.scalar_type() == torch::kUInt8);
+    const auto [num_experts_per_rank, intermediate_hidden_2, hidden_packed] = get_shape<3>(l1_weights);
+    const auto [num_experts_per_rank_, hidden_, intermediate_hidden_packed] = get_shape<3>(l2_weights);
+    const int hidden = hidden_packed * 2;
+    const int intermediate_hidden = intermediate_hidden_packed * 2;
+    DG_HOST_ASSERT(num_tokens <= num_max_tokens_per_rank);
+    DG_HOST_ASSERT(num_experts_per_rank == num_experts_per_rank_);
+    DG_HOST_ASSERT(hidden == hidden_);
+    DG_HOST_ASSERT(intermediate_hidden_2 == 2 * intermediate_hidden);
+    DG_HOST_ASSERT(l1_weights.is_contiguous() and l2_weights.is_contiguous());
+    DG_HOST_ASSERT(hidden % 128 == 0 and intermediate_hidden % 128 == 0);
+    DG_HOST_ASSERT(intermediate_hidden / 64 <= 64);
+    // NVFP4 UE4M3 SF: tile-major shape
+    //   (E, N/block_n, K/128, block_n, 8)
+    // where block_n is 128 by default and 256 for the opt-in split-N experiment.
+    DG_HOST_ASSERT(l1_weights_sf.dim() == 5);
+    DG_HOST_ASSERT(l2_weights_sf.dim() == 5);
+    const int nvfp4_block_n = static_cast<int>(l1_weights_sf.size(3));
+    DG_HOST_ASSERT(nvfp4_block_n == 128 or nvfp4_block_n == 256);
+    DG_HOST_ASSERT(l2_weights_sf.size(3) == nvfp4_block_n);
+    DG_HOST_ASSERT(l1_weights_sf.size(0) == num_experts_per_rank);
+    DG_HOST_ASSERT(l1_weights_sf.size(1) == intermediate_hidden * 2 / nvfp4_block_n);
+    DG_HOST_ASSERT(l1_weights_sf.size(2) == hidden / 128);
+    DG_HOST_ASSERT(l1_weights_sf.size(4) == 8);
+    DG_HOST_ASSERT(l1_weights_sf.is_contiguous());
+    DG_HOST_ASSERT(l2_weights_sf.size(0) == num_experts_per_rank);
+    DG_HOST_ASSERT(l2_weights_sf.size(1) == hidden / nvfp4_block_n);
+    DG_HOST_ASSERT(l2_weights_sf.size(2) == intermediate_hidden / 128);
+    DG_HOST_ASSERT(l2_weights_sf.size(4) == 8);
+    DG_HOST_ASSERT(l2_weights_sf.is_contiguous());
+    if (cumulative_local_expert_recv_stats.has_value()) {
+        DG_HOST_ASSERT(cumulative_local_expert_recv_stats->scalar_type() == torch::kInt);
+        const auto stats_numel = cumulative_local_expert_recv_stats->numel();
+        const bool phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0;
+        DG_HOST_ASSERT(stats_numel == num_experts_per_rank or
+                       (phase_profile and stats_numel >= num_experts_per_rank + 64));
+        DG_HOST_ASSERT(cumulative_local_expert_recv_stats->is_contiguous());
+    }
+    const auto num_ranks = static_cast<int>(sym_buffer_ptrs.size());
+    const auto num_experts_ = num_experts_per_rank * num_ranks;
+    const auto [num_required_bytes, slice] = get_symm_buffer_size_for_sm90_mega_moe(
+        num_ranks, num_experts,
+        num_max_tokens_per_rank, num_topk,
+        hidden, intermediate_hidden,
+        true, activation);
+    DG_HOST_ASSERT(sym_buffer.nbytes() >= static_cast<size_t>(num_required_bytes));
+    DG_HOST_ASSERT(num_experts == num_experts_);
+    const auto [x, x_sf, topk_idx, topk_weights, l1_acts, l1_acts_sf, l2_acts, l2_acts_sf] = slice(sym_buffer);
+    sm90_nvfp4_mega_moe(y,
+                      l1_acts, l1_acts_sf,
+                      l2_acts, l2_acts_sf,
+                      l1_weights, l2_weights,
+                      l1_weights_sf, l2_weights_sf,
+                      cumulative_local_expert_recv_stats,
+                      sym_buffer_ptrs,
+                      rank_idx, num_max_tokens_per_rank,
+                      num_experts_per_rank,
+                      num_tokens, num_topk,
+                      hidden, intermediate_hidden,
+                      activation_clamp, fast_math);
+    if (get_env<int>("DG_COMM_KERNEL_DEBUG"))
+        sym_buffer.zero_();
+}
+
+
 static void register_sm90_apis(pybind11::module_& m) {
 #if DG_TENSORMAP_COMPATIBLE
     m.def("get_token_alignment_for_sm90_mega_moe", &get_token_alignment_for_sm90_mega_moe);
     m.def("get_symm_buffer_size_for_sm90_mega_moe", &get_symm_buffer_size_for_sm90_mega_moe);
     m.def("fp8_mega_moe", &fp8_mega_moe);
+    m.def("nvfp4_mega_moe", &nvfp4_mega_moe);
 #endif
 }
 

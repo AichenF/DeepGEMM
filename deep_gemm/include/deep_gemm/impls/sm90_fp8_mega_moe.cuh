@@ -142,6 +142,7 @@ template <
     bool kL2ArrivalCounter,
     bool kL2EpilogueRequiresFullSync,
     bool kSplitPhaseHotPath,
+    bool kUnitWeightScale = false,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
     uint32_t L2_SHAPE_N = kHidden,
@@ -1064,16 +1065,18 @@ sm90_fp8_mega_moe_impl(void* y,
                         constexpr uint32_t kL1SFGateBlks  = kIntermediateHidden / 128;
                         constexpr uint32_t kL1SFPerExpert = (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
                         constexpr uint32_t kL2SFPerExpert = (kHidden / 128) * kL2SFKBlocks;
-                        float gate_sf = 0.0f, up_sf = 0.0f, l2_sf = 0.0f;
-                        if (block_phase == sched::BlockPhase::Linear1) {
-                            const uint32_t gate_n = sf_n_block_idx / 2u;
-                            const uint32_t up_n   = kL1SFGateBlks + gate_n;
-                            const float* base = l1_weights_sf + local_expert_idx * kL1SFPerExpert + k_block_idx;
-                            gate_sf = __ldg(base + gate_n * kL1SFKBlocks);
-                            up_sf   = __ldg(base + up_n   * kL1SFKBlocks);
-                        } else {
-                            l2_sf = __ldg(l2_weights_sf + local_expert_idx * kL2SFPerExpert
-                                                        + sf_n_block_idx * kL2SFKBlocks + k_block_idx);
+                        float gate_sf = 1.0f, up_sf = 1.0f, l2_sf = 1.0f;
+                        if constexpr (!kUnitWeightScale) {
+                            if (block_phase == sched::BlockPhase::Linear1) {
+                                const uint32_t gate_n = sf_n_block_idx / 2u;
+                                const uint32_t up_n   = kL1SFGateBlks + gate_n;
+                                const float* base = l1_weights_sf + local_expert_idx * kL1SFPerExpert + k_block_idx;
+                                gate_sf = __ldg(base + gate_n * kL1SFKBlocks);
+                                up_sf   = __ldg(base + up_n   * kL1SFKBlocks);
+                            } else {
+                                l2_sf = __ldg(l2_weights_sf + local_expert_idx * kL2SFPerExpert
+                                                            + sf_n_block_idx * kL2SFKBlocks + k_block_idx);
+                            }
                         }
 
                         if (block_phase == sched::BlockPhase::Linear1) {
@@ -1185,16 +1188,18 @@ sm90_fp8_mega_moe_impl(void* y,
                         constexpr uint32_t kL1SFGateBlks  = kIntermediateHidden / 128;
                         constexpr uint32_t kL1SFPerExpert = (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
                         constexpr uint32_t kL2SFPerExpert = (kHidden / 128) * kL2SFKBlocks;
-                        float gate_sf = 0.0f, up_sf = 0.0f, l2_sf = 0.0f;
-                        if (block_phase == sched::BlockPhase::Linear1) {
-                            const uint32_t gate_n = sf_n_block_idx / 2u;
-                            const uint32_t up_n   = kL1SFGateBlks + gate_n;
-                            const float* base = l1_weights_sf + local_expert_idx * kL1SFPerExpert + k_block_idx;
-                            gate_sf = __ldg(base + gate_n * kL1SFKBlocks);
-                            up_sf   = __ldg(base + up_n   * kL1SFKBlocks);
-                        } else {
-                            l2_sf = __ldg(l2_weights_sf + local_expert_idx * kL2SFPerExpert
-                                                        + sf_n_block_idx * kL2SFKBlocks + k_block_idx);
+                        float gate_sf = 1.0f, up_sf = 1.0f, l2_sf = 1.0f;
+                        if constexpr (!kUnitWeightScale) {
+                            if (block_phase == sched::BlockPhase::Linear1) {
+                                const uint32_t gate_n = sf_n_block_idx / 2u;
+                                const uint32_t up_n   = kL1SFGateBlks + gate_n;
+                                const float* base = l1_weights_sf + local_expert_idx * kL1SFPerExpert + k_block_idx;
+                                gate_sf = __ldg(base + gate_n * kL1SFKBlocks);
+                                up_sf   = __ldg(base + up_n   * kL1SFKBlocks);
+                            } else {
+                                l2_sf = __ldg(l2_weights_sf + local_expert_idx * kL2SFPerExpert
+                                                            + sf_n_block_idx * kL2SFKBlocks + k_block_idx);
+                            }
                         }
 
                         if (block_phase == sched::BlockPhase::Linear1) {
@@ -1308,16 +1313,18 @@ sm90_fp8_mega_moe_impl(void* y,
                     constexpr uint32_t kL1SFGateBlks  = kIntermediateHidden / 128;
                     constexpr uint32_t kL1SFPerExpert = (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
                     constexpr uint32_t kL2SFPerExpert = (kHidden / 128) * kL2SFKBlocks;
-                    float gate_sf = 0.0f, up_sf = 0.0f, l2_sf = 0.0f;
-                    if (block_phase == sched::BlockPhase::Linear1) {
-                        const uint32_t gate_n = sf_n_block_idx / 2u;
-                        const uint32_t up_n   = kL1SFGateBlks + gate_n;
-                        const float* base = l1_weights_sf + local_expert_idx * kL1SFPerExpert + k_block_idx;
-                        gate_sf = __ldg(base + gate_n * kL1SFKBlocks);
-                        up_sf   = __ldg(base + up_n   * kL1SFKBlocks);
-                    } else {
-                        l2_sf = __ldg(l2_weights_sf + local_expert_idx * kL2SFPerExpert
-                                                    + sf_n_block_idx * kL2SFKBlocks + k_block_idx);
+                    float gate_sf = 1.0f, up_sf = 1.0f, l2_sf = 1.0f;
+                    if constexpr (!kUnitWeightScale) {
+                        if (block_phase == sched::BlockPhase::Linear1) {
+                            const uint32_t gate_n = sf_n_block_idx / 2u;
+                            const uint32_t up_n   = kL1SFGateBlks + gate_n;
+                            const float* base = l1_weights_sf + local_expert_idx * kL1SFPerExpert + k_block_idx;
+                            gate_sf = __ldg(base + gate_n * kL1SFKBlocks);
+                            up_sf   = __ldg(base + up_n   * kL1SFKBlocks);
+                        } else {
+                            l2_sf = __ldg(l2_weights_sf + local_expert_idx * kL2SFPerExpert
+                                                        + sf_n_block_idx * kL2SFKBlocks + k_block_idx);
+                        }
                     }
 
                     if (block_phase == sched::BlockPhase::Linear1) {
