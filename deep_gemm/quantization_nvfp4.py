@@ -108,17 +108,70 @@ def nvfp4_scale_to_tile_major(
     )
 
 
+def nvfp4_fuse_packed_with_scale_tile_major(
+    packed: torch.Tensor,
+    scale_tile_major: torch.Tensor,
+    block_k: int = 128,
+) -> torch.Tensor:
+    """Pack each BK128 NVFP4 row as ``64B FP4 + 8B UE4M3 scale + 8B padding``.
+
+    The SM90 fused-layout experiment keeps true compact NVFP4 input but lets the
+    B TMA load bring packed FP4 and its row-local scale bytes together. The
+    returned tensor keeps the public 3D weight shape ``(E, N, K/128*80)`` so it
+    can still use the normal K-major TMA descriptor path.
+    """
+    assert packed.dtype == torch.uint8
+    assert scale_tile_major.dtype == torch.uint8
+    assert packed.dim() == 3
+    assert scale_tile_major.dim() == 5
+    E, N, K_half = packed.shape
+    E_s, n_blocks, k_blocks, block_n, groups_per_k_block = scale_tile_major.shape
+    fused_row_bytes = block_k // 2 + 16
+    scale_offset = block_k // 2
+    assert E == E_s
+    assert N == n_blocks * block_n
+    assert K_half == k_blocks * (block_k // 2)
+    assert groups_per_k_block == block_k // 16
+    packed_tile = (
+        packed.view(E, n_blocks, block_n, k_blocks, block_k // 2)
+        .permute(0, 1, 3, 2, 4)
+        .contiguous()
+    )
+    fused = torch.empty(
+        (E, n_blocks, k_blocks, block_n, fused_row_bytes),
+        dtype=torch.uint8,
+        device=packed.device,
+    )
+    fused[..., :scale_offset] = packed_tile
+    fused[..., scale_offset : scale_offset + groups_per_k_block] = scale_tile_major
+    return (
+        fused.permute(0, 1, 3, 2, 4)
+        .reshape(E, N, k_blocks * fused_row_bytes)
+        .contiguous()
+    )
+
+
 def dequantize_nvfp4_to_fp32(packed: torch.Tensor, scale_ue4m3: torch.Tensor, group_size: int = 16) -> torch.Tensor:
-    *outer_shape, K_half = packed.shape
-    K = K_half * 2
-    G = K // group_size
     if scale_ue4m3.dim() == 5:
         E, n_blocks, k_blocks, block_n, groups_per_k_block = scale_ue4m3.shape
+        fused_row_bytes = 80
+        fused_k = k_blocks * fused_row_bytes
+        if packed.dim() == 3 and packed.shape == (E, n_blocks * block_n, fused_k):
+            packed = (
+                packed.view(E, n_blocks, block_n, k_blocks, fused_row_bytes)
+                .permute(0, 1, 3, 2, 4)[..., :64]
+                .permute(0, 1, 3, 2, 4)
+                .reshape(E, n_blocks * block_n, k_blocks * 64)
+                .contiguous()
+            )
         scale_ue4m3 = (
             scale_ue4m3.permute(0, 1, 3, 2, 4)
             .contiguous()
             .view(E, n_blocks * block_n, k_blocks * groups_per_k_block)
         )
+    *outer_shape, K_half = packed.shape
+    K = K_half * 2
+    G = K // group_size
     # Inverse Marlin permutation: each 4-byte chunk represents 8 K elements;
     # low nibbles -> K[4..7], high nibbles -> K[0..3].
     pck = packed.view(*outer_shape, K // 8, 4)

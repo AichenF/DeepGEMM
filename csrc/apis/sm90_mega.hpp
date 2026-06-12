@@ -242,10 +242,18 @@ static void nvfp4_mega_moe(
     DG_HOST_ASSERT(l2_weights.scalar_type() == torch::kUInt8);
     DG_HOST_ASSERT(l1_weights_sf.scalar_type() == torch::kUInt8);
     DG_HOST_ASSERT(l2_weights_sf.scalar_type() == torch::kUInt8);
-    const auto [num_experts_per_rank, intermediate_hidden_2, hidden_packed] = get_shape<3>(l1_weights);
-    const auto [num_experts_per_rank_, hidden_, intermediate_hidden_packed] = get_shape<3>(l2_weights);
-    const int hidden = hidden_packed * 2;
-    const int intermediate_hidden = intermediate_hidden_packed * 2;
+    DG_HOST_ASSERT(l1_weights_sf.dim() == 5);
+    DG_HOST_ASSERT(l2_weights_sf.dim() == 5);
+    const bool nvfp4_fused_b_scale_layout = get_env<int>("DG_SM90_NVFP4_FUSED_B_SCALE", 1) != 0;
+    const auto [num_experts_per_rank, intermediate_hidden_2, hidden_storage] = get_shape<3>(l1_weights);
+    const auto [num_experts_per_rank_, hidden_, intermediate_hidden_storage] = get_shape<3>(l2_weights);
+    const int hidden = nvfp4_fused_b_scale_layout ? static_cast<int>(l1_weights_sf.size(2)) * 128 : hidden_storage * 2;
+    const int intermediate_hidden = nvfp4_fused_b_scale_layout ?
+        static_cast<int>(l2_weights_sf.size(2)) * 128 : intermediate_hidden_storage * 2;
+    if (nvfp4_fused_b_scale_layout) {
+        DG_HOST_ASSERT(hidden_storage == (hidden / 128) * 80);
+        DG_HOST_ASSERT(intermediate_hidden_storage == (intermediate_hidden / 128) * 80);
+    }
     DG_HOST_ASSERT(num_tokens <= num_max_tokens_per_rank);
     DG_HOST_ASSERT(num_experts_per_rank == num_experts_per_rank_);
     DG_HOST_ASSERT(hidden == hidden_);
@@ -256,8 +264,6 @@ static void nvfp4_mega_moe(
     // NVFP4 UE4M3 SF: tile-major shape
     //   (E, N/block_n, K/128, block_n, 8)
     // where block_n is 128 by default and 256 for the opt-in split-N experiment.
-    DG_HOST_ASSERT(l1_weights_sf.dim() == 5);
-    DG_HOST_ASSERT(l2_weights_sf.dim() == 5);
     const int nvfp4_block_n = static_cast<int>(l1_weights_sf.size(3));
     DG_HOST_ASSERT(nvfp4_block_n == 128 or nvfp4_block_n == 256);
     DG_HOST_ASSERT(l2_weights_sf.size(3) == nvfp4_block_n);
@@ -276,7 +282,7 @@ static void nvfp4_mega_moe(
         const auto stats_numel = cumulative_local_expert_recv_stats->numel();
         const bool phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0;
         DG_HOST_ASSERT(stats_numel == num_experts_per_rank or
-                       (phase_profile and stats_numel >= num_experts_per_rank + 64));
+                       (phase_profile and stats_numel >= num_experts_per_rank + 96));
         DG_HOST_ASSERT(cumulative_local_expert_recv_stats->is_contiguous());
     }
     const auto num_ranks = static_cast<int>(sym_buffer_ptrs.size());

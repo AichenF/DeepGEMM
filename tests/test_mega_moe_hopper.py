@@ -1044,6 +1044,14 @@ def _run_fused_only_config(
         suppress_kineto_output=True,
     )
 
+    t_rank = torch.tensor([t_fused], dtype=torch.float64, device="cuda")
+    t_rank_max = t_rank.clone()
+    t_rank_sum = t_rank.clone()
+    dist.all_reduce(t_rank_max, op=dist.ReduceOp.MAX)
+    dist.all_reduce(t_rank_sum, op=dist.ReduceOp.SUM)
+    t_fused_rank_max = float(t_rank_max.item())
+    t_fused_rank_mean = float(t_rank_sum.item()) / num_ranks
+
     gathered_topk_idx = uneven_all_gather(topk_idx, group=group)
     gathered_topk_idx[
         (gathered_topk_idx < rank_idx * num_experts_per_rank)
@@ -1073,6 +1081,7 @@ def _run_fused_only_config(
     dist_print(
         f" tokens={num_tokens:4d}  recv={num_recv_tokens:5d}  "
         f"experts={num_touched_experts:4d}  {t_fused * 1e6:7.1f} us  "
+        f"mean_rank={t_fused_rank_mean * 1e6:7.1f} us max_rank={t_fused_rank_max * 1e6:7.1f} us  "
         f"{tflops:6.1f} TFLOPS  {hbm_gbs:6.0f} GB/s  (rank{rank_idx})",
         once_in_node=True,
     )

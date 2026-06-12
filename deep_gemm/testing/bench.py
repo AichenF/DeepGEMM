@@ -116,7 +116,10 @@ def bench_kineto(fn, kernel_names, num_tests: int = 30,
                 profiler.step()
 
     # Parse the profiling table
-    prof_lines = profiler.key_averages().table(sort_by='cuda_time_total', max_name_column_width=100).split('\n')
+    prof_table = profiler.key_averages().table(sort_by="cuda_time_total", max_name_column_width=100)
+    if int(os.environ.get("DG_SHOW_KINETO_TABLE", 0)):
+        print(prof_table)
+    prof_lines = prof_table.split("\n")
     kernel_names = (kernel_names, ) if isinstance(kernel_names, str) else kernel_names
     if not with_multiple_kernels:
         for name in kernel_names:

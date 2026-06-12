@@ -91,7 +91,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         kernel_name = 'sm90_nvfp4_mega_moe'
 
     phase_profile_enabled = os.environ.get('DG_SM90_MOE_PHASE_PROFILE', '0') != '0'
-    phase_profile_ints = 64 if phase_profile_enabled else 0
+    phase_profile_ints = 96 if phase_profile_enabled else 0
     cum_stats = torch.zeros(num_experts_per_rank + phase_profile_ints, dtype=torch.int, device='cuda')
 
     # Stage inputs once; bench-loop re-copies them each call (bench helper expects
@@ -142,11 +142,12 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
             run()
         torch.cuda.synchronize()
         dist.barrier()
+    show_kineto = os.environ.get('DG_SHOW_KINETO', '0') != '0'
     if args.weight_mode == 'fp8-shadow':
         t_nvfp4 = bench_kineto(run, kernel_name,
                                barrier=lambda: dist.barrier(),
                                num_tests=args.num_tests,
-                               suppress_kineto_output=True)
+                               suppress_kineto_output=not show_kineto)
     else:
         split_env = os.environ.get('DG_SM90_MOE_SPLIT_L1_L2')
         if split_env is None:
@@ -163,16 +164,34 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
                 and num_tokens in (256, 512, 1024, 2048, 4096, 8192)
             )
             fused_default = num_tokens == 4096 and not bm128_default
-            split_l1_l2 = not fused_default
+            true_fused_small_m_default = num_tokens in (64, 128)
+            split_l1_l2 = not (fused_default or true_fused_small_m_default)
         else:
             split_l1_l2 = split_env != '0'
+        # The profiler table exposes the generated CUDA function name, not the
+        # JIT build name, so split L1/L2 launches cannot be matched separately
+        # by "_l1" / "_l2" suffix. With one substring and
+        # with_multiple_kernels=True, bench_kineto returns the per-kernel
+        # average across both split launches; multiply by two to estimate one
+        # end-to-end MoE call.
         t_nvfp4 = bench_kineto(run, kernel_name,
                                barrier=lambda: dist.barrier(),
                                num_tests=args.num_tests,
-                               suppress_kineto_output=True,
+                               suppress_kineto_output=not show_kineto,
                                with_multiple_kernels=split_l1_l2)
         if split_l1_l2:
             t_nvfp4 *= 2
+
+    t_rank = torch.tensor([t_nvfp4], dtype=torch.float64, device="cuda")
+    t_rank_max = t_rank.clone()
+    t_rank_min = t_rank.clone()
+    t_rank_sum = t_rank.clone()
+    dist.all_reduce(t_rank_max, op=dist.ReduceOp.MAX)
+    dist.all_reduce(t_rank_min, op=dist.ReduceOp.MIN)
+    dist.all_reduce(t_rank_sum, op=dist.ReduceOp.SUM)
+    t_nvfp4_rank_max = float(t_rank_max.item())
+    t_nvfp4_rank_min = float(t_rank_min.item())
+    t_nvfp4_rank_mean = float(t_rank_sum.item()) / num_ranks
 
     # Count tokens that landed on this rank for stats
     gathered_topk_idx = uneven_all_gather(topk_idx, group=group)
@@ -198,7 +217,9 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     if print_perf:
         dist_print(
             f' tokens={num_tokens:4d}  recv={num_recv_tokens:5d}  experts={num_touched_experts:4d}  '
-            f'{args.weight_mode}={t_nvfp4 * 1e6:7.1f}us({tflops_nvfp4:5.1f}TF, {hbm_gbs:4.0f}GB/s)  (rank{rank_idx})',
+            f'{args.weight_mode}={t_nvfp4 * 1e6:7.1f}us '
+            f'mean_rank={t_nvfp4_rank_mean * 1e6:7.1f}us max_rank={t_nvfp4_rank_max * 1e6:7.1f}us '
+            f'({tflops_nvfp4:5.1f}TF, {hbm_gbs:4.0f}GB/s)  (rank{rank_idx})',
             once_in_node=True,
         )
         if phase_profile_enabled:
@@ -206,7 +227,8 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
             names = [
                 'dispatch_total', 'dispatch_pull', 'math_loop', 'combine_barrier',
                 'combine_reduce', 'gemm_core', 'l1_epilogue', 'l2_epilogue',
-                'loader_dequant', 'math_dequant_wait',
+                'loader_dequant', 'math_dequant_wait', 'l1_tma_wait',
+                'l1_ready_notify', 'l2_ready_wait', 'l2_scatter',
             ]
             num_phase_metrics = len(names)
             profile = cum_stats[

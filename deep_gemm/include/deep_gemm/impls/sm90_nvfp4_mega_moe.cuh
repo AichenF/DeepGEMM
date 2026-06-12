@@ -228,6 +228,60 @@ __device__ __forceinline__ void dequant_smem_b_inplace_two_rows(
     }
 }
 
+template <uint32_t kNumDequantThreads, uint32_t kBarIdx, uint32_t kFusedRowBytes = 80>
+__device__ __forceinline__ void dequant_smem_b_inplace_two_rows_fused_scale(
+        uint8_t* __restrict__ smem_b, uint32_t tid,
+        const uint2* __restrict__ lut_smem) {
+    const uint32_t row0 = tid;
+    const uint32_t row1 = tid + kNumDequantThreads;
+
+    const uint8_t* __restrict__ row_ptr0 = smem_b + row0 * kFusedRowBytes;
+    const uint8_t* __restrict__ row_ptr1 = smem_b + row1 * kFusedRowBytes;
+    const uint32_t* __restrict__ fp4_src0 = reinterpret_cast<const uint32_t*>(row_ptr0);
+    const uint32_t* __restrict__ fp4_src1 = reinterpret_cast<const uint32_t*>(row_ptr1);
+    uint32_t fp4_regs0[16];
+    uint32_t fp4_regs1[16];
+    #pragma unroll
+    for (int i = 0; i < 16; ++i) {
+        fp4_regs0[i] = fp4_src0[i];
+        fp4_regs1[i] = fp4_src1[i];
+    }
+
+    const uint2 scale_words0 = *reinterpret_cast<const uint2*>(row_ptr0 + 64);
+    const uint2 scale_words1 = *reinterpret_cast<const uint2*>(row_ptr1 + 64);
+    const uint32_t scale_word0_lo = scale_words0.x;
+    const uint32_t scale_word0_hi = scale_words0.y;
+    const uint32_t scale_word1_lo = scale_words1.x;
+    const uint32_t scale_word1_hi = scale_words1.y;
+
+    asm volatile("bar.sync %0, %1;" : : "n"(kBarIdx), "n"(kNumDequantThreads));
+
+    uint8_t* __restrict__ fp8_dst_base0 = smem_b + row0 * 128;
+    uint8_t* __restrict__ fp8_dst_base1 = smem_b + row1 * 128;
+    const uint32_t row_swizzle = (tid & 7u) << 4;
+    #pragma unroll
+    for (int scale_i = 0; scale_i < 8; ++scale_i) {
+        const uint32_t scale_word0 = scale_i < 4 ? scale_word0_lo : scale_word0_hi;
+        const uint32_t scale_word1 = scale_i < 4 ? scale_word1_lo : scale_word1_hi;
+        const uint32_t scale_ue4m3_0 = (scale_word0 >> ((scale_i & 3) * 8)) & 0xffu;
+        const uint32_t scale_ue4m3_1 = (scale_word1 >> ((scale_i & 3) * 8)) & 0xffu;
+        const int i0 = scale_i * 2;
+        const int i1 = i0 + 1;
+        const uint2 lut0 = lut_smem[scale_ue4m3_0 & 0x7fu];
+        const uint2 lut1 = lut_smem[scale_ue4m3_1 & 0x7fu];
+        const uint2 r0_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs0[i0], lut0);
+        const uint2 r0_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs0[i1], lut0);
+        const uint2 r1_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs1[i0], lut1);
+        const uint2 r1_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs1[i1], lut1);
+        const uint32_t logical = i0 * 8;
+        const uint32_t physical = logical ^ row_swizzle;
+        *reinterpret_cast<uint4*>(fp8_dst_base0 + physical) =
+            make_uint4(r0_s0.x, r0_s0.y, r0_s1.x, r0_s1.y);
+        *reinterpret_cast<uint4*>(fp8_dst_base1 + physical) =
+            make_uint4(r1_s0.x, r1_s0.y, r1_s1.x, r1_s1.y);
+    }
+}
+
 }  // namespace nvfp4
 }  // namespace deep_gemm
 
@@ -274,6 +328,8 @@ template <
     bool kDirectL2ScatterRequested = false,
     bool kL2DualAccumRequested = false,
     bool kPhaseProfileRequested = false,
+    bool kL2ArrivalCounterRequested = false,
+    bool kDirectScatterMetadataBroadcastRequested = false,
     bool kL1DualKAccumRequested = false,
     bool kL2NMajorScheduleRequested = false,
     bool kL1NMajorScheduleRequested = false,
@@ -283,6 +339,8 @@ template <
     bool kPackedBScratchRequested = false,
     bool kSplitDequantBarrierRequested = false,
     bool kStridedBGmemLoadRequested = false,
+    bool kFusedBScaleLayoutRequested = false,
+    bool kCombine7ChunkRequested = false,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
     uint32_t L2_SHAPE_N = kHidden,
@@ -417,6 +475,10 @@ sm90_nvfp4_mega_moe_impl(void* y,
         (!kSplitNWarpgroups) && (!kSerialNWarpgroups);
     constexpr bool kL2DualAccum = kL2DualAccumRequested && (!kUseMMASync) &&
         (!kSplitNWarpgroups) && (!kSerialNWarpgroups) && WG_BLOCK_N == 128;
+    constexpr bool kL2ArrivalCounter = kL2ArrivalCounterRequested && (!kUseMMASync) &&
+        (!kSplitNWarpgroups) && BLOCK_N == 128;
+    constexpr bool kDirectScatterMetadataBroadcast =
+        kDirectScatterMetadataBroadcastRequested && kDirectL2Scatter;
     constexpr bool kK2DirectAccum = kK2DirectAccumRequested && (!kRunL1Phase) && kRunL2Phase &&
         (!kUseMMASync) && (!kDirectL2Scatter);
     constexpr bool kL1DualKAccum = kL1DualKAccumRequested && (!kUseMMASync) &&
@@ -428,6 +490,9 @@ sm90_nvfp4_mega_moe_impl(void* y,
     constexpr bool kPackedBScratch = kPackedBScratchRequested && (!kLoaderDequant);
     constexpr bool kSplitDequantBarrier = kSplitDequantBarrierRequested && (!kLoaderDequant) && (!kPackedBScratch);
     constexpr bool kStridedBGmemLoad = kStridedBGmemLoadRequested && (!kLoaderDequant) && (!kPackedBScratch);
+    constexpr bool kFusedBScaleLayout = kFusedBScaleLayoutRequested && kLoaderDequant;
+    DG_STATIC_ASSERT((!kFusedBScaleLayoutRequested) or kLoaderDequant,
+                     "Fused NVFP4 B+scale layout requires loader dequant");
     using L1WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     using L2WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     static_assert(L1WGMMA::M == 64 and L1WGMMA::N == WG_BLOCK_N and L1WGMMA::K == 32,
@@ -459,6 +524,8 @@ sm90_nvfp4_mega_moe_impl(void* y,
         math::constexpr_align<uint32_t>(128u * sizeof(uint2), kSharedMemoryAlignment);
     constexpr uint32_t SMEM_A_SIZE_PER_STAGE = LOAD_BLOCK_M * BLOCK_K * sizeof(a_dtype_t);
     constexpr uint32_t SMEM_B_SIZE_PER_STAGE = LOAD_BLOCK_N * BLOCK_K * sizeof(b_dtype_t);
+    constexpr uint32_t B_LOAD_BYTES_PER_ROW = kFusedBScaleLayout ? 80u : (BLOCK_K / 2u);
+    constexpr uint32_t SMEM_B_LOAD_SIZE_PER_STAGE = LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW;
     constexpr uint32_t SMEM_PACKED_B_SIZE_PER_STAGE = kPackedBScratch ?
         LOAD_BLOCK_N * (BLOCK_K / 2u) * sizeof(b_dtype_t) : 0u;
     // SFA per-stage must be sized for the larger of L1 (BLOCK_M floats) and L2
@@ -469,7 +536,7 @@ sm90_nvfp4_mega_moe_impl(void* y,
     constexpr uint32_t SMEM_SFA_SIZE_PER_STAGE = 2 * kL2SFAHalfStride * sizeof(float);
     // NVFP4 UE4M3 weight SF: one byte per 16 K values, staged by the B loader
     // warp so the math warpgroup dequant hot path reads scales from shared memory.
-    constexpr uint32_t SMEM_SFB_SIZE_PER_STAGE = kDirectScaleGmem ? 0u :
+    constexpr uint32_t SMEM_SFB_SIZE_PER_STAGE = (kDirectScaleGmem || kFusedBScaleLayout) ? 0u :
         math::constexpr_align<uint32_t>(LOAD_BLOCK_N * (BLOCK_K / 16u) * sizeof(uint8_t), 128u);
 
     // CD output: max of L1 FP8 (BLOCK_M * (BLOCK_N/2) * 1 byte * num_wg) and
@@ -621,12 +688,17 @@ sm90_nvfp4_mega_moe_impl(void* y,
                 if (non_epilogue_thread_idx >= 64u) {
                     full_barriers[s]->wait(p);
                     const uint32_t dequant_tid = non_epilogue_thread_idx - 64u;
-                    const uint8_t* ue4m3_base = smem_sfb[s];
-                    deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows<64u, 8u>(
-                        reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid,
-                        ue4m3_base + dequant_tid * (BLOCK_K / 16u),
-                        ue4m3_base + (dequant_tid + 64u) * (BLOCK_K / 16u),
-                        smem_nvfp4_lut);
+                    if constexpr (kFusedBScaleLayout) {
+                        deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_fused_scale<64u, 8u>(
+                            reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
+                    } else {
+                        const uint8_t* ue4m3_base = smem_sfb[s];
+                        deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows<64u, 8u>(
+                            reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid,
+                            ue4m3_base + dequant_tid * (BLOCK_K / 16u),
+                            ue4m3_base + (dequant_tid + 64u) * (BLOCK_K / 16u),
+                            smem_nvfp4_lut);
+                    }
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
                 }
@@ -687,7 +759,11 @@ sm90_nvfp4_mega_moe_impl(void* y,
     constexpr uint32_t kProfileL2Epilogue = 7;
     constexpr uint32_t kProfileLoaderDequant = 8;
     constexpr uint32_t kProfileMathDequantWait = 9;
-    constexpr uint32_t kNumPhaseProfileMetrics = 10;
+    constexpr uint32_t kProfileL1TMAWait = 10;
+    constexpr uint32_t kProfileL1ReadyNotify = 11;
+    constexpr uint32_t kProfileL2ReadyWait = 12;
+    constexpr uint32_t kProfileL2Scatter = 13;
+    constexpr uint32_t kNumPhaseProfileMetrics = 14;
     const auto phase_profile_clock = [&]() -> unsigned long long {
         if constexpr (kPhaseProfileRequested) {
             unsigned long long t;
@@ -713,24 +789,73 @@ sm90_nvfp4_mega_moe_impl(void* y,
         scheduler.fetch_expert_recv_count();
         scheduler.set_expert_idx(0);
 
-        while (true) {
-            CUTE_TIE_DECL(scheduler.get_next_block(), block_phase,
-                          current_local_expert_idx, m_block_idx, n_block_idx);
-            if (block_phase == sched::BlockPhase::None)
-                break;
+        constexpr uint32_t kNumL1BlockNs = L1_SHAPE_N / BLOCK_N;
+        constexpr uint32_t kNumL2BlockNs = L2_SHAPE_N / BLOCK_N;
+        constexpr uint32_t kNumL1BlockKs = L1_SHAPE_K / BLOCK_K;
+        constexpr uint32_t kNumL2BlockKs = L2_SHAPE_K / BLOCK_K;
 
-            if constexpr (kRunL1Phase && !kRunL2Phase) {
-                if (block_phase != sched::BlockPhase::Linear1)
-                    continue;
-            } else if constexpr (!kRunL1Phase && kRunL2Phase) {
-                if (block_phase != sched::BlockPhase::Linear2)
-                    continue;
+        const auto for_each_generic_block = [&]() {
+            while (true) {
+                CUTE_TIE_DECL(scheduler.get_next_block(), block_phase,
+                              current_local_expert_idx, m_block_idx, n_block_idx);
+                if (block_phase == sched::BlockPhase::None)
+                    break;
+
+                if constexpr (kRunL1Phase && !kRunL2Phase) {
+                    if (block_phase != sched::BlockPhase::Linear1)
+                        continue;
+                } else if constexpr (!kRunL1Phase && kRunL2Phase) {
+                    if (block_phase != sched::BlockPhase::Linear2)
+                        continue;
+                }
+
+                func(block_phase, current_local_expert_idx,
+                     block_phase == sched::BlockPhase::Linear2 ? kNumL2BlockKs : kNumL1BlockKs,
+                     m_block_idx, n_block_idx);
             }
+        };
 
-            func(block_phase, current_local_expert_idx,
-                 block_phase == sched::BlockPhase::Linear2 ?
-                    (L2_SHAPE_K / BLOCK_K) : (L1_SHAPE_K / BLOCK_K),
-                 m_block_idx, n_block_idx);
+        if constexpr (kRunL1Phase && !kRunL2Phase) {
+            if (num_tokens < 128) {
+                for_each_generic_block();
+            } else {
+                while (scheduler.current_local_expert_idx < kNumExpertsPerRank) {
+                    if (!scheduler.fetch_next_l1_block())
+                        continue;
+                    const uint32_t n_block_idx = scheduler.block_idx - scheduler.m_block_idx * kNumL1BlockNs;
+                    scheduler.block_idx += kNumSMs;
+                    func(sched::BlockPhase::Linear1, scheduler.current_local_expert_idx,
+                         kNumL1BlockKs, scheduler.m_block_idx, n_block_idx);
+                }
+            }
+        } else if constexpr (!kRunL1Phase && kRunL2Phase) {
+            if (num_tokens < 128) {
+                for_each_generic_block();
+            } else {
+                while (scheduler.current_local_expert_idx < kNumExpertsPerRank) {
+                    if (!scheduler.fetch_next_l2_block())
+                        continue;
+                    const uint32_t n_block_idx = scheduler.block_idx - scheduler.m_block_idx * kNumL2BlockNs;
+                    scheduler.block_idx += kNumSMs;
+                    func(sched::BlockPhase::Linear2, scheduler.current_local_expert_idx,
+                         kNumL2BlockKs, scheduler.m_block_idx, n_block_idx);
+                }
+            }
+        } else {
+            while (true) {
+                CUTE_TIE_DECL(scheduler.get_next_block(), block_phase,
+                              current_local_expert_idx, m_block_idx, n_block_idx);
+                if (block_phase == sched::BlockPhase::None)
+                    break;
+
+                if (block_phase == sched::BlockPhase::Linear1) {
+                    func(std::integral_constant<sched::BlockPhase, sched::BlockPhase::Linear1>{},
+                         current_local_expert_idx, kNumL1BlockKs, m_block_idx, n_block_idx);
+                } else {
+                    func(std::integral_constant<sched::BlockPhase, sched::BlockPhase::Linear2>{},
+                         current_local_expert_idx, kNumL2BlockKs, m_block_idx, n_block_idx);
+                }
+            }
         }
     };
 
@@ -1041,7 +1166,7 @@ sm90_nvfp4_mega_moe_impl(void* y,
     } else if (warp_idx == kNumDispatchWarps) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
-        for_each_selected_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const auto& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
@@ -1058,20 +1183,32 @@ sm90_nvfp4_mega_moe_impl(void* y,
 
             // Wait for the pool to be ready. Cluster peers can be dummy CTAs for
             // the tail M unit when an expert has an odd number of M blocks.
+            const unsigned long long ready_wait_start = phase_profile_clock();
             if (has_valid_m) {
                 if (block_phase == sched::BlockPhase::Linear1) {
                     const auto ptr = workspace.get_l1_arrival_count_ptr(pool_block_idx);
                     const auto expected = valid_m;
                     while (ptx::ld_acq(ptr) != expected);
                 } else {
-                    const auto ptr = workspace.get_l2_arrival_mask_ptr(pool_block_idx);
-                    // Each L1 N block sets one bit; total bits = L1_SHAPE_N / BLOCK_N.
+                    // Each L1 N block publishes one ready event per active M warpgroup.
                     constexpr uint32_t kNumL1BlockNs = L1_SHAPE_N / BLOCK_N;
-                    const uint64_t expected = (kNumL1BlockNs >= 64)
-                        ? ~0ull : ((1ull << kNumL1BlockNs) - 1ull);
-                    while (ptx::ld_acq_gpu(ptr) != expected);
+                    if constexpr (kL2ArrivalCounter) {
+                        const auto ptr = reinterpret_cast<const uint32_t*>(
+                            workspace.get_l2_arrival_mask_ptr(pool_block_idx));
+                        const uint32_t active_m_wgs = math::ceil_div(valid_m, WG_BLOCK_M);
+                        const uint32_t expected = kNumL1BlockNs * active_m_wgs;
+                        while (ptx::ld_acq(ptr) != expected);
+                    } else {
+                        const auto ptr = workspace.get_l2_arrival_mask_ptr(pool_block_idx);
+                        const uint64_t expected = (kNumL1BlockNs >= 64)
+                            ? ~0ull : ((1ull << kNumL1BlockNs) - 1ull);
+                        while (ptx::ld_acq_gpu(ptr) != expected);
+                    }
                 }
             }
+            const unsigned long long ready_wait_end = phase_profile_clock();
+            if (has_valid_m and block_phase == sched::BlockPhase::Linear2 and lane_idx == 0)
+                phase_profile_record(kProfileL2ReadyWait, ready_wait_end - ready_wait_start);
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 empty_barriers[stage_idx]->wait(phase ^ 1);
 
@@ -1123,7 +1260,7 @@ sm90_nvfp4_mega_moe_impl(void* y,
     } else if (warp_idx == kNumDispatchWarps + 1) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
-        for_each_selected_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const auto& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
@@ -1146,7 +1283,7 @@ sm90_nvfp4_mega_moe_impl(void* y,
                 // NVFP4: packed FP4, K halved in storage bytes. TMA loads
                 // BLOCK_K/2 bytes per row (= BLOCK_K nibbles). No swizzle
                 // since dequant restages into smem with explicit layout.
-                const uint32_t k_idx = k_block_idx * (BLOCK_K / 2);
+                const uint32_t k_idx = k_block_idx * B_LOAD_BYTES_PER_ROW;
                 const uint8_t* scale_tile = weights_sf_ptr +
                     (((local_expert_idx * scale_n_blocks + n_block_idx) *
                       scale_k_blocks + k_block_idx) * BLOCK_N) * (BLOCK_K / 16u);
@@ -1176,17 +1313,17 @@ sm90_nvfp4_mega_moe_impl(void* y,
                         }
                     }
                 } else if (cute::elect_one_sync()) {
-                    tma::copy<BLOCK_K / 2, LOAD_BLOCK_N, 0, b_dtype_t>(
+                    tma::copy<B_LOAD_BYTES_PER_ROW, LOAD_BLOCK_N, 0, b_dtype_t>(
                         tensor_map_b_ptr, full_barriers[stage_idx],
                         kPackedBScratch ? smem_packed_b[stage_idx] : smem_b[stage_idx],
                         k_idx, n_idx, kClusterSize);
-                    if constexpr (kDirectScaleGmem) {
-                        full_barriers[stage_idx]->arrive_and_expect_tx(SMEM_B_SIZE_PER_STAGE / 2);
+                    if constexpr (kDirectScaleGmem || kFusedBScaleLayout) {
+                        full_barriers[stage_idx]->arrive_and_expect_tx(SMEM_B_LOAD_SIZE_PER_STAGE);
                     } else {
                         ptx::tma_load_1d(smem_sfb[stage_idx], scale_tile,
                                          full_barriers[stage_idx], SMEM_SFB_SIZE_PER_STAGE);
                         full_barriers[stage_idx]->arrive_and_expect_tx(
-                            SMEM_B_SIZE_PER_STAGE / 2 + SMEM_SFB_SIZE_PER_STAGE);
+                            SMEM_B_LOAD_SIZE_PER_STAGE + SMEM_SFB_SIZE_PER_STAGE);
                     }
                 }
                 __syncwarp();
@@ -1197,7 +1334,7 @@ sm90_nvfp4_mega_moe_impl(void* y,
     } else if (kSplitSFATMA && warp_idx == kNumDispatchWarps + 2) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
-        for_each_selected_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const auto& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
@@ -1212,19 +1349,32 @@ sm90_nvfp4_mega_moe_impl(void* y,
             const uint32_t valid_m = scheduler.template get_valid_m<false>();
             const bool has_valid_m = valid_m > 0;
 
+            const unsigned long long ready_wait_start = phase_profile_clock();
             if (has_valid_m) {
                 if (block_phase == sched::BlockPhase::Linear1) {
                     const auto ptr = workspace.get_l1_arrival_count_ptr(pool_block_idx);
                     const auto expected = valid_m;
                     while (ptx::ld_acq(ptr) != expected);
                 } else {
-                    const auto ptr = workspace.get_l2_arrival_mask_ptr(pool_block_idx);
+                    // Each L1 N block publishes one ready event per active M warpgroup.
                     constexpr uint32_t kNumL1BlockNs = L1_SHAPE_N / BLOCK_N;
-                    const uint64_t expected = (kNumL1BlockNs >= 64)
-                        ? ~0ull : ((1ull << kNumL1BlockNs) - 1ull);
-                    while (ptx::ld_acq_gpu(ptr) != expected);
+                    if constexpr (kL2ArrivalCounter) {
+                        const auto ptr = reinterpret_cast<const uint32_t*>(
+                            workspace.get_l2_arrival_mask_ptr(pool_block_idx));
+                        const uint32_t active_m_wgs = math::ceil_div(valid_m, WG_BLOCK_M);
+                        const uint32_t expected = kNumL1BlockNs * active_m_wgs;
+                        while (ptx::ld_acq(ptr) != expected);
+                    } else {
+                        const auto ptr = workspace.get_l2_arrival_mask_ptr(pool_block_idx);
+                        const uint64_t expected = (kNumL1BlockNs >= 64)
+                            ? ~0ull : ((1ull << kNumL1BlockNs) - 1ull);
+                        while (ptx::ld_acq_gpu(ptr) != expected);
+                    }
                 }
             }
+            const unsigned long long ready_wait_end = phase_profile_clock();
+            if (has_valid_m and block_phase == sched::BlockPhase::Linear2 and lane_idx == 0)
+                phase_profile_record(kProfileL2ReadyWait, ready_wait_end - ready_wait_start);
 
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 empty_barriers[stage_idx]->wait(phase ^ 1);
@@ -1265,7 +1415,7 @@ sm90_nvfp4_mega_moe_impl(void* y,
         if constexpr (kLoaderDequant) {
             const uint32_t non_epilogue_warp_idx = warp_idx - kNumDispatchWarps;
             const uint32_t non_epilogue_thread_idx = non_epilogue_warp_idx * 32 + lane_idx;
-            for_each_selected_block([&](const sched::BlockPhase& block_phase,
+            for_each_selected_block([&](const auto& block_phase,
                                          const uint32_t&, const uint32_t& num_k_blocks,
                                          const uint32_t&, const uint32_t&) {
                 if constexpr (!kRunL1Phase) { if (block_phase == sched::BlockPhase::Linear1) return; }
@@ -1308,12 +1458,24 @@ sm90_nvfp4_mega_moe_impl(void* y,
 
         const auto notify_l1_ready = [&](const uint32_t& ready_pool_block_idx,
                                          const uint32_t& ready_n_block_idx) {
-            if (epilogue_warp_idx == 0 and cute::elect_one_sync()) {
-                ptx::red_or_rel_gpu(
-                    workspace.get_l2_arrival_mask_ptr(ready_pool_block_idx),
-                    1ull << ready_n_block_idx);
+            const unsigned long long notify_start = phase_profile_clock();
+            if constexpr (kL2ArrivalCounter) {
+                if (warp_idx_in_wg == 0 and cute::elect_one_sync()) {
+                    ptx::red_add_rel(
+                        reinterpret_cast<uint32_t*>(workspace.get_l2_arrival_mask_ptr(ready_pool_block_idx)),
+                        1u);
+                }
+            } else {
+                if (epilogue_warp_idx == 0 and cute::elect_one_sync()) {
+                    ptx::red_or_rel_gpu(
+                        workspace.get_l2_arrival_mask_ptr(ready_pool_block_idx),
+                        1ull << ready_n_block_idx);
+                }
             }
             __syncwarp();
+            const unsigned long long notify_end = phase_profile_clock();
+            if (epilogue_warp_idx == 0 and lane_idx == 0)
+                phase_profile_record(kProfileL1ReadyNotify, notify_end - notify_start);
         };
 
         const auto drain_async_l1_store_stage = [&](const uint32_t& store_stage) {
@@ -1432,7 +1594,7 @@ sm90_nvfp4_mega_moe_impl(void* y,
 
         const unsigned long long math_loop_start = phase_profile_clock();
 
-        for_each_selected_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const auto& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
@@ -1449,7 +1611,6 @@ sm90_nvfp4_mega_moe_impl(void* y,
             const uint32_t row_offset_r1 = row_block_offset + r_1;
             const bool valid_r0 = row_offset_r0 < valid_m;
             const bool valid_r1 = row_offset_r1 < valid_m;
-
 
             if constexpr (kAsyncL1TMAStore) {
                 if (block_phase != sched::BlockPhase::Linear1)
@@ -1912,7 +2073,11 @@ sm90_nvfp4_mega_moe_impl(void* y,
                         cute::tma_store_arrive();
                     }
                     __syncwarp();
+                    const unsigned long long l1_tma_wait_start = phase_profile_clock();
                     ptx::tma_store_wait<0>();
+                    const unsigned long long l1_tma_wait_end = phase_profile_clock();
+                    if (epilogue_warp_idx == 0 and lane_idx == 0)
+                        phase_profile_record(kProfileL1TMAWait, l1_tma_wait_end - l1_tma_wait_start);
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                     notify_l1_ready(pool_block_idx, n_block_idx);
                 } else {
@@ -2323,7 +2488,8 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     if (block_phase == sched::BlockPhase::Linear1)
                         drain_all_async_l1_stores();
                 }
-                ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                if (!(kL2ArrivalCounter && block_phase == sched::BlockPhase::Linear1))
+                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 return;
             }
 
@@ -2502,7 +2668,11 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         cute::tma_store_arrive();
                     }
                     __syncwarp();
+                    const unsigned long long l1_tma_wait_start = phase_profile_clock();
                     ptx::tma_store_wait<0>();
+                    const unsigned long long l1_tma_wait_end = phase_profile_clock();
+                    if (epilogue_warp_idx == 0 and lane_idx == 0)
+                        phase_profile_record(kProfileL1TMAWait, l1_tma_wait_end - l1_tma_wait_start);
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                     notify_l1_ready(pool_block_idx, n_block_idx);
                 } else {
@@ -2525,8 +2695,13 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         async_l1_store_n[l1_store_stage] = n_block_idx;
                         async_l1_store_stage ^= 1u;
                     } else {
+                        const unsigned long long l1_tma_wait_start = phase_profile_clock();
                         ptx::tma_store_wait<0>();
-                        ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                        const unsigned long long l1_tma_wait_end = phase_profile_clock();
+                        if (epilogue_warp_idx == 0 and lane_idx == 0)
+                            phase_profile_record(kProfileL1TMAWait, l1_tma_wait_end - l1_tma_wait_start);
+                        if constexpr (!kL2ArrivalCounter)
+                            ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                         notify_l1_ready(pool_block_idx, n_block_idx);
                     }
                 }
@@ -2539,39 +2714,87 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
                 if constexpr (kDirectL2Scatter) {
                     DG_STATIC_ASSERT(WG_BLOCK_N == 128, "Direct L2 scatter prototype only supports N128");
+                    const unsigned long long l2_scatter_start = phase_profile_clock();
 
-                    auto scatter_direct_row = [&](const uint32_t& row_offset, const bool& valid_row, const uint32_t& row_accum_offset) {
-                        if (valid_row) {
-                            const auto src_metadata = *workspace.get_token_src_metadata_ptr(m_idx + row_offset);
-                            const uint32_t dst_rank_idx = src_metadata.rank_idx;
-                            const uint32_t dst_token_idx = src_metadata.token_idx;
-                            const uint32_t dst_topk_idx = src_metadata.topk_idx;
-                            const auto dst_token = combine_token_buffer.get_rank_buffer(dst_topk_idx)
-                                                   .get_data_buffer(dst_token_idx);
-                            auto dst_base = math::advance_ptr<uint8_t>(
-                                dst_token.get_base_ptr(), n_idx * sizeof(nv_bfloat16));
-                            auto mapped_dst_base = sym_buffer.map(dst_base, dst_rank_idx);
+                    if constexpr (kDirectScatterMetadataBroadcast) {
+                        auto scatter_direct_row = [&](const uint32_t& row_offset, const bool& valid_row, const uint32_t& row_accum_offset) {
+                            if (valid_row) {
+                                uint32_t dst_rank_idx = 0;
+                                uint32_t dst_token_idx = 0;
+                                uint32_t dst_topk_idx = 0;
+                                if (col_idx == 0) {
+                                    const auto src_metadata = *workspace.get_token_src_metadata_ptr(m_idx + row_offset);
+                                    dst_rank_idx = src_metadata.rank_idx;
+                                    dst_token_idx = src_metadata.token_idx;
+                                    dst_topk_idx = src_metadata.topk_idx;
+                                }
+                                const uint32_t row_group_leader = lane_idx & ~3u;
+                                const uint32_t row_group_mask = 0xfu << row_group_leader;
+                                dst_rank_idx = __shfl_sync(row_group_mask, dst_rank_idx, row_group_leader);
+                                dst_token_idx = __shfl_sync(row_group_mask, dst_token_idx, row_group_leader);
+                                dst_topk_idx = __shfl_sync(row_group_mask, dst_topk_idx, row_group_leader);
+                                const auto dst_token = combine_token_buffer.get_rank_buffer(dst_topk_idx)
+                                                       .get_data_buffer(dst_token_idx);
+                                auto dst_base = math::advance_ptr<uint8_t>(
+                                    dst_token.get_base_ptr(), n_idx * sizeof(nv_bfloat16));
+                                auto mapped_dst_base = sym_buffer.map(dst_base, dst_rank_idx);
 
-                            #pragma unroll
-                            for (uint32_t i = 0; i < kAccumPerThread / 8; ++ i) {
-                                const uint32_t chunk_lo = 2 * i, chunk_hi = 2 * i + 1;
-                                const uint32_t col_lo = chunk_lo * 8 + col_idx * 2;
-                                const uint32_t col_hi = chunk_hi * 8 + col_idx * 2;
-                                const uint32_t packed_lo = math::cast_into_bf16_and_pack(
-                                    final_accum[chunk_lo * 4 + row_accum_offset + 0],
-                                    final_accum[chunk_lo * 4 + row_accum_offset + 1]);
-                                const uint32_t packed_hi = math::cast_into_bf16_and_pack(
-                                    final_accum[chunk_hi * 4 + row_accum_offset + 0],
-                                    final_accum[chunk_hi * 4 + row_accum_offset + 1]);
-                                *reinterpret_cast<uint32_t*>(mapped_dst_base + col_lo * sizeof(nv_bfloat16)) = packed_lo;
-                                *reinterpret_cast<uint32_t*>(mapped_dst_base + col_hi * sizeof(nv_bfloat16)) = packed_hi;
+                                #pragma unroll
+                                for (uint32_t i = 0; i < kAccumPerThread / 8; ++ i) {
+                                    const uint32_t chunk_lo = 2 * i, chunk_hi = 2 * i + 1;
+                                    const uint32_t col_lo = chunk_lo * 8 + col_idx * 2;
+                                    const uint32_t col_hi = chunk_hi * 8 + col_idx * 2;
+                                    const uint32_t packed_lo = math::cast_into_bf16_and_pack(
+                                        final_accum[chunk_lo * 4 + row_accum_offset + 0],
+                                        final_accum[chunk_lo * 4 + row_accum_offset + 1]);
+                                    const uint32_t packed_hi = math::cast_into_bf16_and_pack(
+                                        final_accum[chunk_hi * 4 + row_accum_offset + 0],
+                                        final_accum[chunk_hi * 4 + row_accum_offset + 1]);
+                                    *reinterpret_cast<uint32_t*>(mapped_dst_base + col_lo * sizeof(nv_bfloat16)) = packed_lo;
+                                    *reinterpret_cast<uint32_t*>(mapped_dst_base + col_hi * sizeof(nv_bfloat16)) = packed_hi;
+                                }
                             }
-                        }
-                    };
+                        };
 
-                    scatter_direct_row(row_offset_r0, valid_r0, 0);
-                    scatter_direct_row(row_offset_r1, valid_r1, 2);
+                        scatter_direct_row(row_offset_r0, valid_r0, 0);
+                        scatter_direct_row(row_offset_r1, valid_r1, 2);
+                    } else {
+                        auto scatter_direct_row = [&](const uint32_t& row_offset, const bool& valid_row, const uint32_t& row_accum_offset) {
+                            if (valid_row) {
+                                const auto src_metadata = *workspace.get_token_src_metadata_ptr(m_idx + row_offset);
+                                const uint32_t dst_rank_idx = src_metadata.rank_idx;
+                                const uint32_t dst_token_idx = src_metadata.token_idx;
+                                const uint32_t dst_topk_idx = src_metadata.topk_idx;
+                                const auto dst_token = combine_token_buffer.get_rank_buffer(dst_topk_idx)
+                                                       .get_data_buffer(dst_token_idx);
+                                auto dst_base = math::advance_ptr<uint8_t>(
+                                    dst_token.get_base_ptr(), n_idx * sizeof(nv_bfloat16));
+                                auto mapped_dst_base = sym_buffer.map(dst_base, dst_rank_idx);
+
+                                #pragma unroll
+                                for (uint32_t i = 0; i < kAccumPerThread / 8; ++ i) {
+                                    const uint32_t chunk_lo = 2 * i, chunk_hi = 2 * i + 1;
+                                    const uint32_t col_lo = chunk_lo * 8 + col_idx * 2;
+                                    const uint32_t col_hi = chunk_hi * 8 + col_idx * 2;
+                                    const uint32_t packed_lo = math::cast_into_bf16_and_pack(
+                                        final_accum[chunk_lo * 4 + row_accum_offset + 0],
+                                        final_accum[chunk_lo * 4 + row_accum_offset + 1]);
+                                    const uint32_t packed_hi = math::cast_into_bf16_and_pack(
+                                        final_accum[chunk_hi * 4 + row_accum_offset + 0],
+                                        final_accum[chunk_hi * 4 + row_accum_offset + 1]);
+                                    *reinterpret_cast<uint32_t*>(mapped_dst_base + col_lo * sizeof(nv_bfloat16)) = packed_lo;
+                                    *reinterpret_cast<uint32_t*>(mapped_dst_base + col_hi * sizeof(nv_bfloat16)) = packed_hi;
+                                }
+                            }
+                        };
+
+                        scatter_direct_row(row_offset_r0, valid_r0, 0);
+                        scatter_direct_row(row_offset_r1, valid_r1, 2);
+                    }
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                    const unsigned long long l2_scatter_end = phase_profile_clock();
+                    if (epilogue_warp_idx == 0 and lane_idx == 0)
+                        phase_profile_record(kProfileL2Scatter, l2_scatter_end - l2_scatter_start);
                 } else {
                     // STSM into smem_cd_l2 (BF16). Reuse SM100 column-swizzle layout.
                     #pragma unroll
@@ -2614,6 +2837,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     }
 
                     ptx::sync_aligned(128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
+                    const unsigned long long l2_scatter_start = phase_profile_clock();
 
                     // Scatter to remote ranks via NVLink (one row per warp-pair)
                     // Each warpgroup-warp covers 8 unique rows × 2 (r_0 + r_1 doubled by warps)
@@ -2680,6 +2904,9 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     }
 
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                    const unsigned long long l2_scatter_end = phase_profile_clock();
+                    if (epilogue_warp_idx == 0 and lane_idx == 0)
+                        phase_profile_record(kProfileL2Scatter, l2_scatter_end - l2_scatter_start);
                 }
                 const unsigned long long block_epilogue_end = phase_profile_clock();
                 if (epilogue_warp_idx == 0 and lane_idx == 0)
@@ -2738,7 +2965,8 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
         constexpr uint32_t kNumDefaultChunks =
             (kNumChunkSlots * kNumEpilogueWarps * kNumHiddenBytes <= SMEM_BEFORE_BARRIER_SIZE
              and kHidden <= 32 * kNumMaxRegistersForBuffer) ? 1 : 2;
-        constexpr uint32_t kNumChunks = kNumDefaultChunks;
+        constexpr bool kUseCombine7Chunks = kCombine7ChunkRequested && (kHidden % 7 == 0);
+        constexpr uint32_t kNumChunks = kUseCombine7Chunks ? 7 : kNumDefaultChunks;
         constexpr uint32_t kNumChunkBytes = kNumHiddenBytes / kNumChunks;
         constexpr uint32_t kNumChunkUint4 = kNumChunkBytes / sizeof(uint4);
         constexpr uint32_t kNumUint4PerLane = kNumChunkUint4 / 32;

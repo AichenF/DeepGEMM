@@ -44,6 +44,8 @@ public:
         bool direct_l2_scatter;
         bool l2_dual_accum;
         bool phase_profile;
+        bool l2_arrival_counter;
+        bool direct_scatter_metadata_broadcast;
         bool l1_dual_k_accum;
         bool l2_nmajor_schedule;
         bool l1_nmajor_schedule;
@@ -53,6 +55,8 @@ public:
         bool packed_b_scratch;
         bool split_dequant_barrier;
         bool strided_b_gmem_load;
+        bool fused_b_scale_layout;
+        bool combine_7chunk;
         bool run_l1_phase;
         bool run_l2_phase;
         MegaMoESM90Config config;
@@ -104,10 +108,10 @@ static void __instantiate_kernel() {{
         {}, {},
         {},
         {},
-        {}, {}, {}, {}, {}, {}, {}, {},
+        {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+        {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
         {}, {}, {}, {}, {}, {}, {}, {}, {},
-        {}, {}, {}, {}, {}, {}, {},
-        {}, {}, {}, {}
+        {}, {}, {}
     >);
 }};
 )",
@@ -124,8 +128,8 @@ static void __instantiate_kernel() {{
     args.launch_args.grid_dim.first, args.num_ranks,
     to_string(args.activation_clamp),
     args.fast_math ? "true" : "false",
-    args.async_l1_tma_store ? "true" : "false", args.split_sfa_tma ? "true" : "false", args.direct_l2_scatter ? "true" : "false", args.l2_dual_accum ? "true" : "false", args.phase_profile ? "true" : "false", args.l1_dual_k_accum ? "true" : "false", args.l2_nmajor_schedule ? "true" : "false", args.l1_nmajor_schedule ? "true" : "false",
-    args.k2_direct_accum ? "true" : "false", args.loader_dequant ? "true" : "false", args.direct_scale_gmem ? "true" : "false", args.packed_b_scratch ? "true" : "false", args.split_dequant_barrier ? "true" : "false", args.strided_b_gmem_load ? "true" : "false",
+    args.async_l1_tma_store ? "true" : "false", args.split_sfa_tma ? "true" : "false", args.direct_l2_scatter ? "true" : "false", args.l2_dual_accum ? "true" : "false", args.phase_profile ? "true" : "false", args.l2_arrival_counter ? "true" : "false", args.direct_scatter_metadata_broadcast ? "true" : "false", args.l1_dual_k_accum ? "true" : "false", args.l2_nmajor_schedule ? "true" : "false", args.l1_nmajor_schedule ? "true" : "false",
+    args.k2_direct_accum ? "true" : "false", args.loader_dequant ? "true" : "false", args.direct_scale_gmem ? "true" : "false", args.packed_b_scratch ? "true" : "false", args.split_dequant_barrier ? "true" : "false", args.strided_b_gmem_load ? "true" : "false", args.fused_b_scale_layout ? "true" : "false", args.combine_7chunk ? "true" : "false",
     args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
     args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks,
     args.run_l1_phase ? "true" : "false", args.run_l2_phase ? "true" : "false",
@@ -236,6 +240,9 @@ static void sm90_nvfp4_mega_moe(
         !nvfp4_loader_dequant && !nvfp4_packed_b_scratch;
     const bool nvfp4_strided_b_gmem_load = get_env<int>("DG_SM90_NVFP4_STRIDED_B_GMEM_LOAD", 0) != 0 &&
         !nvfp4_loader_dequant && !nvfp4_packed_b_scratch;
+    const bool nvfp4_fused_b_scale_layout = get_env<int>("DG_SM90_NVFP4_FUSED_B_SCALE", 1) != 0;
+    DG_HOST_ASSERT(!nvfp4_fused_b_scale_layout || nvfp4_loader_dequant);
+    const int nvfp4_b_storage_per_k_block = nvfp4_fused_b_scale_layout ? 80 : config.block_k / 2;
     config.num_dispatch_threads = nvfp4_dispatch_threads;
     config.num_non_epilogue_threads = nvfp4_non_epilogue_threads;
     DG_HOST_ASSERT((config.num_dispatch_threads + config.num_non_epilogue_threads) % 128 == 0);
@@ -266,7 +273,7 @@ static void sm90_nvfp4_mega_moe(
             num_epilogue_warpgroups * wg_block_m * wg_block_n * static_cast<int>(sizeof(nv_bfloat16));
         const int smem_cd = align(std::max(smem_cd_l1, smem_cd_l2), kSmemAlignment);
         const int smem_sfa_per_stage = align(2 * config.block_m * static_cast<int>(sizeof(float)), 128);
-        const int smem_sfb_per_stage = nvfp4_direct_scale_gmem ? 0 :
+        const int smem_sfb_per_stage = (nvfp4_direct_scale_gmem || nvfp4_fused_b_scale_layout) ? 0 :
             align(config.block_n * (config.block_k / 16), 128);
         const int smem_packed_b_per_stage = nvfp4_packed_b_scratch ?
             config.block_n * (config.block_k / 2) : 0;
@@ -301,12 +308,13 @@ static void sm90_nvfp4_mega_moe(
                                                         config.num_padded_sf_pool_tokens, hidden,
                                                         config.block_m, kGranK,
                                                         1, 0);
-    // NVFP4: packed FP4 weight, K halved in storage bytes. No swizzle
-    // (Phase 3 dequant restages into the existing FP8 smem buffer which keeps
-    // its 128B swizzle for WGMMA).
+    // NVFP4: packed FP4 weight, optionally fused with row-local UE4M3 scale
+    // bytes as 80B per BK128 row. No swizzle since dequant restages into the
+    // existing FP8 smem buffer which keeps its 128B swizzle for WGMMA.
     const auto tensor_map_l1_weights = make_tma_2d_desc(l1_weights,
-                                                        hidden / 2, num_experts_per_rank * intermediate_hidden * 2,
-                                                        config.block_k / 2, config.block_n,
+                                                        static_cast<int>(l1_weights.size(2)),
+                                                        num_experts_per_rank * intermediate_hidden * 2,
+                                                        nvfp4_b_storage_per_k_block, config.block_n,
                                                         static_cast<int>(l1_weights.stride(-2)),
                                                         0);
     // UE4M3 SF: accessed via raw uint8 pointer rather than TMA, since the
@@ -345,10 +353,12 @@ static void sm90_nvfp4_mega_moe(
                                                         config.num_padded_sf_pool_tokens, intermediate_hidden,
                                                         config.block_m, kL2ActsSFGranK,
                                                         1, 0);
-    // NVFP4: packed FP4 weight, K halved in storage bytes. No swizzle (see L1).
+    // NVFP4: packed FP4 weight, optionally fused with row-local UE4M3 scale
+    // bytes as 80B per BK128 row. No swizzle (see L1).
     const auto tensor_map_l2_weights = make_tma_2d_desc(l2_weights,
-                                                        intermediate_hidden / 2, num_experts_per_rank * hidden,
-                                                        config.block_k / 2, config.block_n,
+                                                        static_cast<int>(l2_weights.size(2)),
+                                                        num_experts_per_rank * hidden,
+                                                        nvfp4_b_storage_per_k_block, config.block_n,
                                                         static_cast<int>(l2_weights.stride(-2)),
                                                         0);
 
@@ -359,8 +369,24 @@ static void sm90_nvfp4_mega_moe(
 
     // Launch
     const auto num_sms = device_runtime->get_num_sms();
-    const bool l1_dual_k_default = (hidden / config.block_k) % 2 == 0 && num_tokens != 32;
-    const int l2_dual_accum_default = num_tokens == 64 ? 0 : 1;
+    const bool fused_default = (num_tokens == 4096 && config.block_m == 64);
+    const bool true_fused_small_m_default = (num_tokens == 64 || num_tokens == 128);
+    const int split_l1_l2_default = (fused_default || true_fused_small_m_default) ? 0 : 1;
+    const bool split_l1_l2 = get_env<int>("DG_SM90_MOE_SPLIT_L1_L2", split_l1_l2_default) != 0;
+    const bool true_fused_l1_l2 = !split_l1_l2;
+
+    const bool l1_dual_k_default =
+        (hidden / config.block_k) % 2 == 0 && num_tokens != 32 && num_tokens < 512 &&
+        !(true_fused_l1_l2 && num_tokens == 256);
+    const int l2_dual_accum_default = true_fused_l1_l2 ? 0 :
+        ((num_tokens == 64 || num_tokens == 512 || num_tokens == 4096 || num_tokens == 8192) ? 0 : 1);
+    const bool l2_arrival_counter_default = config.block_n == 128 &&
+        (num_tokens == 32 || num_tokens == 128 || num_tokens == 512 || num_tokens == 1024 ||
+         num_tokens == 2048 || num_tokens == 4096 || num_tokens == 8192) &&
+        !(true_fused_l1_l2 && (num_tokens == 512 || num_tokens == 2048));
+
+    const bool direct_scatter_metadata_broadcast_default =
+        direct_l2_scatter && num_tokens >= 512;
     const bool async_l1_tma_store_requested = get_env<int>("DG_SM90_MOE_ASYNC_L1_STORE", 0) != 0;
     DG_HOST_ASSERT(!async_l1_tma_store_requested && "DG_SM90_MOE_ASYNC_L1_STORE is not supported for NVFP4 yet");
     const SM90NVFP4MegaMoESplitRuntime::Args args = {
@@ -375,8 +401,13 @@ static void sm90_nvfp4_mega_moe(
         .direct_l2_scatter = direct_l2_scatter,
         .l2_dual_accum = get_env<int>("DG_SM90_MOE_L2_DUAL_ACCUM", l2_dual_accum_default) != 0,
         .phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0,
+        .l2_arrival_counter = get_env<int>(
+            "DG_SM90_NVFP4_L2_ARRIVAL_COUNTER", l2_arrival_counter_default ? 1 : 0) != 0,
+        .direct_scatter_metadata_broadcast = get_env<int>(
+            "DG_SM90_NVFP4_DIRECT_SCATTER_METADATA_BCAST",
+            direct_scatter_metadata_broadcast_default ? 1 : 0) != 0,
         .l1_dual_k_accum = get_env<int>("DG_SM90_MOE_L1_DUAL_K", l1_dual_k_default ? 1 : 0) != 0,
-        .l2_nmajor_schedule = get_env<int>("DG_SM90_MOE_L2_NMAJOR", num_tokens == 128 ? 0 : 1) != 0,
+        .l2_nmajor_schedule = get_env<int>("DG_SM90_MOE_L2_NMAJOR", 1) != 0,
         .l1_nmajor_schedule = get_env<int>("DG_SM90_MOE_L1_NMAJOR", 0) != 0,
         .k2_direct_accum = get_env<int>("DG_SM90_MOE_K2_DIRECT_ACCUM", 0) != 0,
         .loader_dequant = nvfp4_loader_dequant,
@@ -384,6 +415,8 @@ static void sm90_nvfp4_mega_moe(
         .packed_b_scratch = nvfp4_packed_b_scratch,
         .split_dequant_barrier = nvfp4_split_dequant_barrier,
         .strided_b_gmem_load = nvfp4_strided_b_gmem_load,
+        .fused_b_scale_layout = nvfp4_fused_b_scale_layout,
+        .combine_7chunk = get_env<int>("DG_SM90_NVFP4_COMBINE_7CHUNK", 0) != 0,
         .run_l1_phase = true,
         .run_l2_phase = true,
         .config = config,
@@ -406,7 +439,7 @@ static void sm90_nvfp4_mega_moe(
                                   config.smem_size, config.cluster_size)
     };
     const int l2_no_dispatch_pipeline_default =
-        (num_tokens == 256 || num_tokens == 512 || num_tokens == 1024 || num_tokens == 2048 || num_tokens == 4096 || num_tokens == 8192) ? 1 : 0;
+        (num_tokens == 128 || num_tokens == 256 || num_tokens == 512 || num_tokens == 1024 || num_tokens == 2048 || num_tokens == 4096 || num_tokens == 8192) ? 1 : 0;
     const bool l2_no_dispatch_pipeline =
         get_env<int>("DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE", l2_no_dispatch_pipeline_default) != 0;
 
@@ -416,6 +449,8 @@ static void sm90_nvfp4_mega_moe(
         auto phase_args = args;
         phase_args.run_l1_phase = run_l1_phase;
         phase_args.run_l2_phase = run_l2_phase;
+        if (!run_l1_phase)
+            phase_args.async_l1_tma_store = false;
         if (!run_l1_phase && run_l2_phase && l2_no_dispatch_pipeline) {
             phase_args.config.num_dispatch_threads = 0;
             phase_args.config.num_non_epilogue_threads = 128;
@@ -441,7 +476,7 @@ static void sm90_nvfp4_mega_moe(
                 const int smem_cd_l1 = num_epilogue_warpgroups * phase_args.config.block_m * (phase_args.config.block_n / 2);
                 const int smem_cd = align(smem_cd_l1, kSmemAlignment);
                 const int smem_sfa_per_stage = align(2 * phase_args.config.block_m * static_cast<int>(sizeof(float)), 128);
-                const int smem_sfb_per_stage = phase_args.direct_scale_gmem ? 0 :
+                const int smem_sfb_per_stage = (phase_args.direct_scale_gmem || phase_args.fused_b_scale_layout) ? 0 :
                     align(phase_args.config.block_n * (phase_args.config.block_k / 16), 128);
                 const int smem_packed_b_per_stage = phase_args.packed_b_scratch ?
                     phase_args.config.block_n * (phase_args.config.block_k / 2) : 0;
@@ -468,9 +503,6 @@ static void sm90_nvfp4_mega_moe(
         SM90NVFP4MegaMoESplitRuntime::launch(runtime, phase_args);
     };
 
-    const bool fused_default = (num_tokens == 4096 && config.block_m == 64);
-    const int split_l1_l2_default = fused_default ? 0 : 1;
-    const bool split_l1_l2 = get_env<int>("DG_SM90_MOE_SPLIT_L1_L2", split_l1_l2_default) != 0;
     if (split_l1_l2) {
         launch_with_phases(true, false, "sm90_nvfp4_mega_moe_l1");
         launch_with_phases(

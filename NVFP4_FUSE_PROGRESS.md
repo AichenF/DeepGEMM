@@ -2573,3 +2573,2305 @@ Result:
 
 Decision:
 - Reverted. This direction would need a more careful pipeline/barrier redesign before it can be tested safely.
+
+
+## 2026-06-11: Reference NVFP4 repo comparison and split-timing correction
+
+Reference repo checked:
+- /root/fac/megamoe/DeepGEMM_megamoe_nvfp4 at 2d087b2 [nvfp4] Tune small-M heuristics with local uncommitted NVFP4 changes.
+- Reusable deltas found: M4096 disables L1 dual-K and L2 dual-accum by default; L2 no-dispatch for M4096; combine chunking uses the default chunk heuristic.
+- The fuse repo already had L2 no-dispatch through M8192 and default combine chunking. The only kernel default copied in this iteration was the M4096 dual-off policy.
+
+Measurement correction:
+- bench_kineto cannot distinguish sm90_nvfp4_mega_moe_l1 and sm90_nvfp4_mega_moe_l2 or l2_nodisp by JIT build suffix because the profiler table exposes the generated CUDA function name.
+- An attempted explicit tuple match returned 0.0 us for all sizes and was reverted.
+- The retained benchmark code now keeps substring matching with with_multiple_kernels=True and documents that the returned per-kernel average is multiplied by two to estimate one split L1+L2 MoE call.
+- This means older M512+ compact numbers around 2.4/3.8/6.7/12.2/23.7 ms were half-time records, not end-to-end split latency.
+
+M4096 dual-off A/B:
+- M4096-only, same input shape, 30-run: default 24423 us; DG_SM90_MOE_L1_DUAL_K=0 DG_SM90_MOE_L2_DUAL_ACCUM=0 24287 us.
+- M8192 20-run: default 50350 us; dual-off 50256 us.
+- Decision: keep only the M4096 default change from the reference repo. The gain is small, about 0.6%, but consistent and shape-specific.
+
+Correctness after the change:
+- Command: tests/test_nvfp4_mega_moe_sm90_correctness.py --batches 32 256 4096 --weight-scales 0.001 0.05 1.0 --reference-mode fp8-bridge --weight-mode compact --cosine-mean-threshold 0.99 --cosine-min-threshold 0.99 --norm-ratio-min 0.99 --norm-ratio-max 1.01
+- Result: PASS. Worst observed cosine_min=0.9987, finite=True for all cases.
+
+Latest compact 30-run benchmark with split L1+L2 total timing:
+
+| tokens | compact NVFP4 | W8A8 PR323 | compact/W8A8 |
+|---:|---:|---:|---:|
+| 32 | 1191.2 us | 923.9 us | 1.289x |
+| 64 | 1179.1 us | 869.9 us | 1.355x |
+| 128 | 1183.2 us | 837.1 us | 1.414x |
+| 256 | 1504.0 us | 1460.0 us | 1.030x |
+| 512 | 4727.0 us | 2320.0 us | 2.037x |
+| 1024 | 5950.0 us | 3518.0 us | 1.691x |
+| 2048 | 13772.0 us | 6274.0 us | 2.195x |
+| 4096 | 24330.0 us | 11402.0 us | 2.134x |
+| 8192 | 50534.0 us | 21904.0 us | 2.307x |
+
+Interpretation:
+- M32-M128 are still fixed-overhead dominated and 29-41% slower than PR323 W8A8.
+- M256 remains the only near-parity compact case in the current true split timing, about 3% slower.
+- M512+ are not close to W8A8 once split L1+L2 is summed; earlier near-parity records were undercounted by roughly a factor of two.
+- Next useful work should focus on avoiding two full split launches or making the compact NVFP4 L2 phase reuse a materialized representation more like the FP8-shadow upper bound.
+
+
+## 2026-06-11: Rank-aware benchmark and rejected mid/large knobs
+
+Why this was needed:
+- The compact benchmark historically printed only rank0 latency.
+- Kineto table checks showed split NVFP4 has two real sm90_nvfp4_mega_moe_impl launches per MoE call; M256 rank0 was about 972 us + 526 us = 1498 us, matching the benchmark output.
+- The same table showed severe rank skew. Example M512: rank0 was about 3.28 ms + 1.30 ms, while other ranks were around 3.5 ms + 3.2 ms.
+- W8A8 has similar rank tail in a one-iteration table check, so comparisons must keep rank0 vs max_rank conventions separate.
+
+Benchmark script change:
+- tests/bench_nvfp4_mega_moe_sm90.py now all-reduces per-rank measured latency and prints mean_rank and max_rank alongside the existing rank0 field.
+- deep_gemm/testing/bench.py has an opt-in DG_SHOW_KINETO_TABLE=1 profiler-table print for future timing audits.
+
+Latest compact 30-run full sweep:
+
+| tokens | rank0 | mean_rank | max_rank |
+|---:|---:|---:|---:|
+| 32 | 1190.8 us | 3151.6 us | 3441.9 us |
+| 64 | 1179.0 us | 3143.4 us | 3432.2 us |
+| 128 | 1182.6 us | 3137.1 us | 3435.2 us |
+| 256 | 1504.3 us | 3465.1 us | 3760.4 us |
+| 512 | 4734.0 us | 6695.8 us | 6990.0 us |
+| 1024 | 5956.0 us | 7919.9 us | 8216.0 us |
+| 2048 | 13787.0 us | 15751.3 us | 16049.0 us |
+| 4096 | 24356.0 us | 26316.1 us | 26612.0 us |
+| 8192 | 50588.0 us | 52540.6 us | 52848.0 us |
+
+Rejected knobs under rank-aware output:
+- BM64 fallback (DG_SM90_MOE_BLOCK_M=64): M512 rank0/max 5271/7510 us, M1024 10088/12337 us, M2048 19433/21687 us. Worse than BM128 default.
+- DG_SM90_MOE_L2_NMAJOR=0: M512 similar but M1024 worse; no default change.
+- DG_SM90_MOE_L1_NMAJOR=1: no win; M512 worse and large sizes tied/slower.
+- DG_SM90_MOE_K2_DIRECT_ACCUM=1: no meaningful win across M256-M4096.
+- DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE=0: consistently worse; keep no-dispatch default for M256+.
+- DG_SM90_NVFP4_NUM_STAGES=5: similar/no win for M512/M1024. DG_SM90_NVFP4_NUM_STAGES=7 is invalid for this shape and trips host max-stage assert.
+
+Interpretation:
+- The current compact NVFP4 kernel is close to the current in-repo W8A8 rank0 timing for M512/M1024, but the historical PR323 W8A8 table in README is not directly comparable without revalidating its branch and rank convention.
+- The largest remaining engineering target is rank-tail and the two heavy split launches, not raw FP4 dequant instruction latency.
+
+
+## 2026-06-11: W8A8 baseline revalidation notes
+
+Baseline ambiguity found:
+- Current fuse repo W8A8 via tests/test_mega_moe_hopper.py gives M256=1398 us, M512=4566 us, M1024=5833 us on rank0 for a 30-run sweep.
+- The existing README table lists PR323 W8A8 M512=2320 us and M1024=3518 us, which does not match the current in-repo W8A8 path.
+- /root/fac/megamoe/DeepGEMM on branch megamoe_sm90 uses a different split benchmark script and also has rank-tail / prefix-sum timing ambiguity.
+
+PR323 worktree attempt:
+- Created /root/fac/megamoe/deepgemm_805_w8a8 at commit 805f7e8 Restore SM90 block64 default heuristic.
+- Build failed before benchmark because third-party CUTLASS in that worktree lacks cute/arch/mma_sm100_desc.hpp.
+- Also tried /root/fac/megamoe/deepgemm_pr323_w8a8 from upstream/pr-323, but that remote was 23f46aa rather than 805f7e8 and hit the same missing CUTLASS header.
+
+Decision:
+- Do not use the historical 2320/3518/21904 us W8A8 numbers as the only comparison until the exact PR323 build environment is restored.
+- For current-code comparisons, compact NVFP4 rank0 is close to current in-repo W8A8 at M512/M1024, but max-rank latency remains high for both.
+
+
+## 2026-06-11: Current W8A8 rank-aware comparison and M2048 follow-up
+
+W8A8 same-repo rank-aware benchmark:
+
+| tokens | W8A8 rank0 | W8A8 mean | W8A8 max |
+|---:|---:|---:|---:|
+| 32 | 787.5 us | 2762.4 us | 3052.0 us |
+| 64 | 805.2 us | 2786.9 us | 3074.0 us |
+| 128 | 814.1 us | 2768.1 us | 3087.0 us |
+| 256 | 1399.0 us | 3381.2 us | 3671.0 us |
+| 512 | 4565.0 us | 6528.0 us | 6815.0 us |
+| 1024 | 5666.0 us | 7645.9 us | 7941.0 us |
+| 2048 | 10850.0 us | 12835.0 us | 13125.0 us |
+| 4096 | 23474.0 us | 25450.6 us | 25743.0 us |
+| 8192 | 46233.0 us | 48227.6 us | 48532.0 us |
+
+NVFP4 / current W8A8 ratio:
+
+| tokens | rank0 ratio | max-rank ratio |
+|---:|---:|---:|
+| 32 | 1.512x | 1.128x |
+| 64 | 1.464x | 1.116x |
+| 128 | 1.453x | 1.113x |
+| 256 | 1.075x | 1.024x |
+| 512 | 1.037x | 1.026x |
+| 1024 | 1.051x | 1.035x |
+| 2048 | 1.271x | 1.223x |
+| 4096 | 1.038x | 1.034x |
+| 8192 | 1.094x | 1.089x |
+
+M2048 follow-up:
+- fp8-shadow upper bound: rank0=10831 us, max_rank=13090 us, essentially matching W8A8. The M2048 gap is therefore compact online dequant/materialization overhead, not general EP rank tail.
+- L1 dual-K off: rank0/max 13729/15981 us, no meaningful improvement.
+- L2 dual-accum off: rank0/max 13772/16027 us, no improvement.
+- Both off: rank0/max 13910/16156 us, worse.
+- NUM_STAGES=4: rank0/max 14315/16571 us, worse.
+- LOADER_DEQUANT=0: invalid for this M2048 path, triggered CUDA illegal memory access; no default change.
+- After that invalid env run, default compact quick correctness was rerun for M32 and M2048 at weight_scale=0.05. Result: PASS, worst cosine_min=0.9995, finite=True.
+- Kineto table for M2048 compact split shows two heavy kernels: rank0 about 7.27 ms + 6.49 ms; slower ranks about 9.7 ms + 6.2 ms. Both phases contribute to the gap.
+- SPLIT_L1_L2=0 fused single-launch M2048 is much worse: rank0=32041 us, max_rank=34285 us. Simple launch fusion is not the fix.
+
+Decision:
+- Keep current defaults. The next M2048-specific optimization must reduce online compact dequant/materialization cost rather than retune scheduling flags.
+
+
+## 2026-06-11: Reference split NVFP4 comparison - fused small-M default
+
+Reference repo checked: /root/fac/megamoe/DeepGEMM_megamoe_nvfp4.
+
+Relevant difference:
+- Reference split NVFP4 defaults to fused single-kernel mode for M64/M128 and BM64 M4096.
+- Current fuse repo only defaults fused for M4096 with BM64; M32/M64/M128 remain split L1/L2.
+
+Validation before benchmarking:
+- Forced DG_SM90_MOE_SPLIT_L1_L2=0 for M32/M64/M128.
+- Correctness PASS for weight_scale 0.001, 0.05, 1.0 with fp8-bridge compact reference.
+- Worst cosine_min was 0.9992 and all norm ratios stayed inside 0.99..1.01.
+
+30-run benchmark with DG_SM90_MOE_SPLIT_L1_L2=0:
+
+| tokens | rank0 | mean-rank | max-rank |
+|---:|---:|---:|---:|
+| 32 | 1235.0 us | 3184.5 us | 3484.0 us |
+| 64 | 1223.0 us | 3174.6 us | 3473.0 us |
+| 128 | 1220.0 us | 3186.3 us | 3475.0 us |
+
+Comparison against current split default from the latest full 30-run:
+- M32 split default was rank0/max 1190.8/3441.9 us, so fused is slower.
+- M64 split default was rank0/max 1179.0/3432.2 us, so fused is slower.
+- M128 split default was rank0/max 1182.6/3435.2 us, so fused is slower.
+
+Decision:
+- Do not copy the reference repo M64/M128 fused default into this fuse repo.
+- The true compact path is already doing in-kernel tile dequant, not whole-layer host-side dequant; the next useful reference direction is lower-level dequant/materialization or per-size pipeline changes, not single-launch fusion.
+
+
+## 2026-06-11: Reference split NVFP4 comparison - split scheduler helpers
+
+Reference repo checked: /root/fac/megamoe/DeepGEMM_megamoe_nvfp4.
+
+Attempt:
+- Ported scheduler.for_each_linear1_block and scheduler.for_each_linear2_block from the reference split NVFP4 repo.
+- Switched sm90_nvfp4_mega_moe.cuh split-only launches to use the phase-specific helpers instead of the generic get_next_block loop with phase filtering.
+- Rationale: reduce split L1/L2 scheduler overhead, especially for small M fixed-cost dominated cases.
+
+Validation:
+- Rebuild PASS.
+- Correctness PASS for M32, M128, M256, M2048, M4096 and weight_scale 0.001, 0.05, 1.0.
+- Worst observed cosine_min was 0.9985; finite=True and norm ratios stayed within 0.99..1.01.
+
+30-run benchmark after the change:
+
+| tokens | rank0 | mean-rank | max-rank |
+|---:|---:|---:|---:|
+| 32 | 1212.3 us | 3171.4 us | 3458.0 us |
+| 64 | 1226.0 us | 3168.4 us | 3473.1 us |
+| 128 | 1225.4 us | 3180.4 us | 3473.1 us |
+| 256 | 1521.4 us | 3481.4 us | 3769.8 us |
+| 512 | 4746.0 us | 6684.5 us | 6992.0 us |
+| 1024 | 5992.0 us | 7957.0 us | 8250.0 us |
+| 2048 | 13665.0 us | 15748.9 us | 16084.0 us |
+| 4096 | 24227.0 us | 26158.4 us | 26463.0 us |
+| 8192 | 50789.0 us | 52750.2 us | 53058.0 us |
+
+Outcome:
+- M2048/M4096 rank0 improved slightly, but M32/M64/M128/M256 regressed and max-rank did not improve reliably.
+- Because default path must not regress small M, the code change was reverted.
+- This suggests the generic scheduler loop is not the dominant small-M cost in the fuse repo; the gap is still more likely in online compact dequant/materialization plus split-phase fixed overhead.
+
+
+## 2026-06-11: Phase profile refresh and async L1 store gate attempt
+
+Phase profile refresh, default compact path, DG_SM90_MOE_PHASE_PROFILE=1, 10 runs:
+
+| tokens | profiled rank0 | mean-rank | max-rank | key observations |
+|---:|---:|---:|---:|---|
+| 32 | 1427.4 us | 3343.8 us | 3665.1 us | math_loop avg 661653 cycles, loader_dequant avg 1044 cycles, math_dequant_wait avg 464 cycles |
+| 2048 | 14631.0 us | 16594.6 us | 16882.0 us | math_loop avg 7211679 cycles, loader_dequant avg 2600 cycles, dispatch_pull avg 404059 cycles |
+
+Interpretation:
+- Small M remains fixed-overhead dominated; raw loader-dequant and dequant wait are not individually large.
+- M2048 pays the compact materialization cost many times; fp8-shadow matching W8A8 at M2048 still indicates the gap is true compact online dequant/materialization rather than generic EP tail.
+
+Reference split NVFP4 comparison also showed host support for DG_SM90_MOE_ASYNC_L1_STORE was not hard-disabled there, while this fuse repo disables it.
+
+Attempt:
+- Temporarily enabled async L1 store as an opt-in env path in the NVFP4 host launcher.
+- Added host smem accounting for the double-buffered async L1 output area so the kernel shared-memory layout matched the async branch.
+
+Result:
+- Build PASS.
+- Correctness with DG_SM90_MOE_ASYNC_L1_STORE=1 hung on the first M32 case before producing kernel output.
+- The exact residual bash/python PIDs from this test were killed; no broad python kill was used.
+
+Decision:
+- Reverted the async L1 store host changes.
+- Do not use async L1 store for NVFP4 until the L1 ready-mask / TMA store drain lifecycle is debugged inside the kernel.
+
+
+## 2026-06-11: Direct benchmark of reference split NVFP4 repo
+
+Reference repo measured read-only:
+- /root/fac/megamoe/DeepGEMM_megamoe_nvfp4
+- Branch HEAD: 2d087b2 [nvfp4] Tune small-M heuristics, with local uncommitted NVFP4 changes present.
+- Its benchmark script is older and does not support --weight-mode or rank-aware mean/max output, so this is rank0-only.
+
+Command shape:
+- python3 -u tests/bench_nvfp4_mega_moe_sm90.py --num-processes 8 --batches 32 64 128 2048 --num-tests 30
+
+Results:
+
+| tokens | reference rank0 |
+|---:|---:|
+| 32 | 1227.5 us |
+| 64 | 1212.0 us |
+| 128 | 1219.0 us |
+| 2048 | 20857.0 us |
+
+Comparison:
+- Current fuse repo latest retained full run was M32=1190.8 us, M64=1179.0 us, M128=1182.6 us, M2048=13787.0 us on rank0.
+- Therefore the reference split NVFP4 repo is not a faster compact implementation for these measured cases.
+- Directly copying the remaining reference implementation details is unlikely to close the compact/W8A8 gap.
+
+
+## 2026-06-11: Correct W8A8 comparison after vector-load dequant probe
+
+Correction:
+- The earlier W8A8 rank-aware table with M8192=46233 us is not a trustworthy PR323 W8A8 baseline for performance comparison.
+- Stable PR323 W8A8 M8192 measurements in this log are around 21904 us, with nearby reruns around 21887-21935 us.
+- Therefore comparisons against 46233 us are invalid and overly optimistic for NVFP4.
+
+Vector-load dequant probe:
+- Temporarily changed the default loader-dequant two-row helper to read packed FP4 rows as eight uint4 loads instead of 32 scalar uint32 loads.
+- Correctness PASSed for M32 and M2048 at weight_scale=0.05.
+- Full 30-run result was:
+
+| tokens | vector-load NVFP4 |
+|---:|---:|
+| 32 | 1258.3 us |
+| 64 | 1341.9 us |
+| 128 | 1281.1 us |
+| 256 | 1650.0 us |
+| 512 | 2560.3 us |
+| 1024 | 3877.0 us |
+| 2048 | 6873.0 us |
+| 4096 | 12517.0 us |
+| 8192 | 24306.0 us |
+
+Correct comparison against PR323 W8A8:
+
+| tokens | PR323 W8A8 | vector-load NVFP4 | ratio |
+|---:|---:|---:|---:|
+| 32 | 923.9 us | 1258.3 us | 1.362x |
+| 64 | 869.9 us | 1341.9 us | 1.543x |
+| 128 | 837.1 us | 1281.1 us | 1.530x |
+| 256 | 1460.0 us | 1650.0 us | 1.130x |
+| 512 | 2320.0 us | 2560.3 us | 1.104x |
+| 1024 | 3518.0 us | 3877.0 us | 1.102x |
+| 2048 | 6274.0 us | 6873.0 us | 1.095x |
+| 4096 | 11402.0 us | 12517.0 us | 1.098x |
+| 8192 | 21904.0 us | 24306.0 us | 1.110x |
+
+Comparison against retained compact default after L2 no-dispatch extension:
+- Retained M8192 was 23657 us, so vector-load dequant regressed M8192 by about 2.7%.
+- Retained M512/M1024/M2048 were 2401/3803/6719 us, so vector-load also regressed those cases slightly.
+- Small M regressed more severely, especially M64.
+
+Decision:
+- Rejected and reverted vector-load dequant.
+- Keep the scalar two-row loader-dequant helper.
+- Use the PR323 W8A8 table around M8192=21904 us for gap reporting unless a fresh same-window W8A8 rerun replaces it.
+
+
+## 2026-06-12: Block-level pipeline follow-up - async L1 store and wave size probe
+
+Context:
+- The latest phase analysis supports the hypothesis that FC1/FC2 dequant is already overlapped with MMA: `math_dequant_wait` is small relative to the total math loop.
+- The missing piece is not another simple dequant/MMA overlap knob, but a stable way to overlap L1 epilogue/TMA-store or L2 scatter with later tile load/dequant at block/wave granularity.
+
+### Async L1 TMA store lifecycle fix, opt-in only
+
+Change:
+- Re-enabled `DG_SM90_MOE_ASYNC_L1_STORE=1` as an opt-in NVFP4 path only for the safe small-M shape `BM64/BN128/128 epilogue threads`.
+- Added host shared-memory accounting for the double-buffered async L1 output area.
+- Fixed the previous hang by draining all pending async L1 TMA stores before the split L1-only kernel returns, so L2 phase can observe the published arrival mask.
+- L2-only phase explicitly disables the async L1 template flag.
+
+Validation:
+- Rebuild PASS.
+- Correctness PASS with `DG_SM90_MOE_ASYNC_L1_STORE=1`, batches 32/64/128, weight scales 0.001/0.05/1.0, fp8-bridge compact reference, cosine/norm thresholds 0.99.
+- JIT cache inspection confirmed L1 kernels instantiated with async=true and L2 kernels with async=false.
+
+Same-window 30-run A/B, small M:
+
+| tokens | default off | async L1 opt-in | delta |
+|---:|---:|---:|---:|
+| 32 | 1222.3 us | 1203.5 us | +1.5% |
+| 64 | 1203.7 us | 1202.9 us | ~flat |
+| 128 | 1211.1 us | 1242.4 us | -2.6% |
+
+Decision:
+- Do not enable as default. It is not a stable broad win and M128 regresses.
+- Keep only as an opt-in/debug path for now. A possible future M32-only default would need 50-run confirmation because the win is small and small-M tails are noisy.
+
+### Phase profile refresh
+
+Default compact path with `DG_SM90_MOE_PHASE_PROFILE=1`, 5 runs:
+
+| tokens | profiled rank0 | dispatch_total avg cycles | math_loop avg cycles | l1_epi avg | l2_epi avg | loader_dequant avg | math_dequant_wait avg |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 32 | 1458.7 us | 61151 | 675714 | 2188 | 526 | 1046 | 464 |
+| 256 | 1684.4 us | 93673 | 782822 | 4384 | 1207 | 1275 | 169 |
+| 1024 | 4188.0 us | 244973 | 1966729 | 4008 | 1651 | 1265 | 174 |
+| 8192 | 26240.0 us | 1726469 | 12767500 | 4039 | 1817 | 1258 | 175 |
+
+Interpretation:
+- Loader-side dequant is visible but `math_dequant_wait` is low, so the math warpgroup is usually not blocked waiting for dequant.
+- The remaining compact gap is mostly total block lifecycle/resource pressure: online FP4 unpack + FP8 materialization + barriers + L1/L2 staging, not an isolated dequant-wait stall.
+
+### Smaller experts-per-wave probe, reverted
+
+Hypothesis:
+- Reducing `num_experts_per_wave` might make fused/split scheduling switch from L1 to L2 earlier, approximating a finer-grained block-level pipeline.
+
+Temporary change:
+- Added `DG_SM90_NVFP4_EXPERTS_PER_WAVE` host override for screening, then reverted after measurement.
+
+Validation:
+- `DG_SM90_NVFP4_EXPERTS_PER_WAVE=4` correctness PASS for M32/M256 and weight scales 0.001/0.05/1.0.
+
+30-run benchmark with EPW=4:
+
+| tokens | EPW=4 compact |
+|---:|---:|
+| 32 | 1476.3 us |
+| 64 | 1325.0 us |
+| 128 | 1354.5 us |
+| 256 | 1702.8 us |
+| 512 | 2671.0 us |
+| 1024 | 3963.0 us |
+| 2048 | 6779.0 us |
+| 4096 | 12233.0 us |
+| 8192 | 23719.0 us |
+
+Decision:
+- Reverted. Smaller wave size starts L2 earlier but increases waiting/scheduling overhead and strongly regresses small M. It is not the right block-level pipeline mechanism.
+
+Current conclusion:
+- The true compact NVFP4 path remains slower than PR323 W8A8. Correct PR323 comparison still uses W8A8 M8192 around 21904 us, not the invalid 46233 us table.
+- A high-benefit block-level pipeline likely needs a real wavefront scheduler (for example L1 chunk N, then L2 of the previous ready chunk while issuing L1 for the next chunk) rather than simply shrinking expert waves or async-draining L1 stores.
+
+
+### Async L1 store 50-run follow-up
+
+Because small-M results have visible tail/noise, the apparent 30-run M32 win was rechecked with 50-run A/B:
+
+| tokens | default off 50-run | async L1 opt-in 50-run | result |
+|---:|---:|---:|---|
+| 32 | 1211.6 us | 1219.0 us | async slower |
+
+Final decision for this attempt:
+- Reverted the async L1 store host/kernel changes.
+- Do not keep even as an opt-in performance path in this branch; it is correctness-fixable but not a stable latency win.
+- The result reinforces that simple async-drain of L1 stores is not sufficient; the needed optimization is a real wavefront/block-level scheduler, not just delaying `tma_store_wait`.
+
+
+### Final default validation for this round
+
+After reverting the async and EPW experiments, rebuilt the extension and reran default compact correctness:
+- PASS for M32/M256, weight scales 0.001/0.05/1.0.
+- Dequant unit test PASS and CUDA dequant LUT unit test PASS.
+- Worst observed cosine_min was 0.9991; norm ratios stayed within 0.99..1.01.
+
+Latest default compact 30-run benchmark:
+
+| tokens | NVFP4 compact | mean-rank | max-rank | PR323 W8A8 | ratio vs W8A8 |
+|---:|---:|---:|---:|---:|---:|
+| 32 | 1226.7 us | 1237.6 us | 1266.6 us | 923.9 us | 1.328x |
+| 64 | 1205.3 us | 1207.8 us | 1214.7 us | 869.9 us | 1.386x |
+| 128 | 1209.0 us | 1203.5 us | 1210.3 us | 837.1 us | 1.444x |
+| 256 | 1530.6 us | 1540.3 us | 1552.2 us | 1460.0 us | 1.048x |
+| 512 | 2417.0 us | 2436.3 us | 2446.0 us | 2320.0 us | 1.042x |
+| 1024 | 3965.0 us | 3952.7 us | 4003.0 us | 3518.0 us | 1.127x |
+| 2048 | 6672.0 us | 6665.1 us | 6672.0 us | 6274.0 us | 1.063x |
+| 4096 | 12170.0 us | 12162.9 us | 12197.0 us | 11402.0 us | 1.067x |
+| 8192 | 23692.0 us | 23689.9 us | 23715.0 us | 21904.0 us | 1.082x |
+
+Round outcome:
+- No new performance code change retained from this round.
+- The only retained source difference remains the earlier M4096 default policy (`L1_DUAL_K=0`, `L2_DUAL_ACCUM=0`) plus benchmark/log/test harness changes already present before this round.
+- The next meaningful implementation direction is a real wavefront scheduler or a lower-cost compact dequant/materialization redesign; simple async store drain, smaller expert waves, stage retuning, no-dispatch small-M, packed scratch, and vector-load dequant have all failed to produce a robust win.
+
+
+## 2026-06-12: Wavefront fused scheduler prototype, rejected
+
+Hypothesis:
+- Current scheduler processes a wave as all L1 blocks followed by all L2 blocks. A fused single-kernel wavefront order might overlap L1 epilogue/staging of later pool blocks with L2 load/dequant of earlier ready pool blocks.
+
+Prototype:
+- Added a temporary `get_next_block_wavefront()` scheduler path.
+- The order used a small L1 lag/prologue, then issued L1 for the current pool block and L2 for an older pool block within the same fused kernel.
+- Temporarily mapped `DG_SM90_MOE_WAVEFRONT_SCHEDULE=1` onto the otherwise unused `l1_nmajor_schedule` template bit for screening.
+- Tested with `DG_SM90_MOE_SPLIT_L1_L2=0 DG_SM90_MOE_WAVEFRONT_SCHEDULE=1`.
+
+Correctness:
+- PASS for M32/M256 and weight scales 0.001/0.05/1.0 against fp8-bridge compact reference.
+- Worst observed cosine_min was 0.9991 and norm ratios stayed within 0.99..1.01.
+
+30-run benchmark:
+
+| tokens | wavefront fused compact | latest split default | result |
+|---:|---:|---:|---|
+| 32 | 1377.0 us | 1226.7 us | slower |
+| 64 | 1398.0 us | 1205.3 us | slower |
+| 128 | 1383.0 us | 1209.0 us | slower |
+| 256 | 3572.0 us | 1530.6 us | much slower |
+| 512 | 5676.0 us | 2417.0 us | much slower |
+| 1024 | 9180.0 us | 3965.0 us | much slower |
+| 2048 | 16753.0 us | 6672.0 us | much slower |
+| 4096 | 20200.0 us | 12170.0 us | slower |
+| 8192 | 71738.0 us | 23692.0 us | much slower |
+
+Decision:
+- Reverted the prototype.
+- The result suggests naive deterministic wavefront ordering makes many CTAs enter L2 too early and wait on arrival masks, while also reintroducing fused-kernel resource pressure. It does not create the stable high-benefit block-level pipeline we need.
+- A future wavefront design would need an explicit ready-aware work queue or a more balanced producer/consumer partition, not just reordered static block indices.
+
+
+## 2026-06-12: Fused producer/consumer SM partition prototype, rejected
+
+Hypothesis:
+- Instead of statically reordering individual blocks, split SMs inside the fused kernel into L1 producers and L2 consumers. L1 SMs keep producing L1 output tiles while L2 SMs consume ready arrival masks, providing explicit block-level phase overlap.
+
+Prototype:
+- Added a temporary scheduler `block_stride` so different SM partitions could cover disjoint L1 and L2 block ranges without dropping blocks.
+- In fused mode, `DG_SM90_MOE_PC_PIPELINE=1` used about half the SMs for Linear1 and half for Linear2.
+- Tested with `DG_SM90_MOE_SPLIT_L1_L2=0 DG_SM90_MOE_PC_PIPELINE=1`.
+
+Correctness:
+- PASS for M32/M256 and weight scales 0.001/0.05/1.0 against fp8-bridge compact reference.
+- Worst observed cosine_min was 0.9991 and norm ratios stayed within 0.99..1.01.
+
+30-run benchmark:
+
+| tokens | PC fused compact | latest split default | result |
+|---:|---:|---:|---|
+| 32 | 1660.0 us | 1226.7 us | slower |
+| 64 | 1710.0 us | 1205.3 us | slower |
+| 128 | 1721.0 us | 1209.0 us | slower |
+| 256 | 3689.0 us | 1530.6 us | much slower |
+| 512 | 5770.0 us | 2417.0 us | much slower |
+| 1024 | 9097.0 us | 3965.0 us | much slower |
+| 2048 | 16096.0 us | 6672.0 us | much slower |
+| 4096 | 21432.0 us | 12170.0 us | slower |
+| 8192 | 57184.0 us | 23692.0 us | much slower |
+
+Decision:
+- Reverted the prototype.
+- Correctness proves the producer/consumer partition is semantically possible, but performance is worse than split L1/L2. Halving the active SMs per layer plus fused-kernel resource pressure costs more than the overlap can recover.
+- This also explains why the current split-L1/L2 default remains best: giving each phase the full GPU is still faster than coarse concurrent partitioning.
+
+
+## 2026-06-12: Literature reassessment after block-level pipeline failures
+
+Checked current W4A8 references after repeated no-win iterations:
+- LiquidGEMM / LiquidQuant reports that high-performance W4A8 needs two things together: a dequant-friendly quantization method with very low arithmetic cost, and an implicit fine-grained pipeline that overlaps weight loading, dequantization, and MMA without extra software synchronization or redundant memory traffic. Paper: https://arxiv.org/abs/2509.01229
+- QServe/QoQ similarly frames W4A8 performance around minimizing CUDA-core dequant overhead and using weight reordering/register-level parallelism. Paper: https://arxiv.org/abs/2405.04532
+
+Relevance to this NVFP4 bridge:
+- The current true compact NVFP4 path must decode E2M1 nibbles with UE4M3 per-16 scales, materialize FP8 B into shared memory, then feed Hopper WGMMA. That creates extra shared writes, barriers, and later WGMMA shared reads.
+- Profile evidence already shows `math_dequant_wait` is small, so scheduling overlap alone is not enough. The cost is the whole bridge/materialization lifecycle.
+- Static wavefront and producer/consumer fused scheduling both made correctness pass but performance worse, confirming that simply adding overlap without reducing materialization cost does not beat split L1/L2.
+
+Implication:
+- To beat PR323 W8A8 with true NVFP4 on SM90, the next real implementation would need a new compact compute path, such as a fully correct small-M mma.sync/register-fed design or a different dequant-friendly weight representation prepared at load time. More env/shape tuning is unlikely to close the gap.
+
+
+## 2026-06-12: mma.sync path reassessment
+
+Purpose:
+- After block-level pipeline attempts failed, reassess the remaining small-M path: a dedicated mma.sync/register-style kernel that avoids WGMMA's M64 padding and may reduce small-M fixed overhead.
+
+Findings from current code and CUTLASS reference:
+- Current dormant NVFP4 mma.sync branch uses `SM89_16x8x32_F32E4M3E4M3F32_TN` and writes FP32 accumulators through `smem_accum_f32` before running the MegaMoE epilogue.
+- Earlier attempts already fixed host smem accounting and dequant wait enough to avoid illegal memory access, but results were either NaN or numerically exploded.
+- CUTLASS's own cooperative GEMM unit test for the same atom uses:
+  - `TiledMMA<MMA_Atom<SM89_16x8x32_F32E4M3E4M3F32_TN>, Layout<Shape<_2,_2,_1>>>`
+  - logical B layout as `(N, K)` with the helper's col-major/cooperative-copy path
+  - C fragment stored via `thr_mma.partition_C(...)`, not by assuming a simple row-major full `BLOCK_M x BLOCK_N` tile is covered by a manually chosen atom count.
+- The current MegaMoE branch instead builds row-major `sA`, row-major `sB`, and a row-major `sC` over `BLOCK_M x 128`, then tries to hand-map `tCrFinal` into `smem_accum_f32`. This likely mismatches the atom's A/B/C layout semantics.
+
+Implication:
+- Re-opening `DG_SM90_NVFP4_MMA_SYNC=1` inside MegaMoE is still not the right next edit.
+- The next real mma.sync attempt should first create a standalone M32/N128/K128 FP8 GEMM/dequant unit test using the CUTLASS cooperative_gemm pattern, validate C fragment coordinates and B layout, then port only that verified layout back into MegaMoE.
+- Until that standalone test exists, direct MegaMoE mma.sync edits are likely to repeat the previous NaN/exploding-output failure.
+
+
+## 2026-06-12: Direct L2 scatter sync-skip probe, rejected
+
+Hypothesis:
+- In the direct L2 scatter path (`BN128`), the per-block `ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx)` after register-to-NVLink scatter might serialize scatter tail work before the next block can enter load/dequant/MMA.
+- If direct scatter does not reuse `smem_cd_l2`, skipping that barrier could expose more block-level overlap between L2 epilogue/scatter and the next block's pipeline.
+
+Temporary change:
+- Added opt-in `DG_SM90_NVFP4_SKIP_L2_SCATTER_SYNC=1` using an extra bit in `kInstantiationTag`.
+- In `kDirectL2Scatter`, skipped the post-scatter epilogue full barrier when the opt-in bit was set.
+
+Validation result:
+- Rebuild PASS.
+- Correctness with the opt-in passed the first M32 / weight_scale=0.001 case.
+- The same run then hung at M256 before producing the case output. This indicates the post-scatter sync is still part of the required warpgroup/block lifecycle, even though direct scatter does not reuse the L2 SMEM output buffer.
+- The exact residual correctness PIDs were inspected and only those PIDs were killed; no broad `pkill python` was used.
+
+Decision:
+- Reverted the code change completely; no `.cuh` diff remains from this probe.
+- Do not skip the direct L2 scatter sync. A safe block-level pipeline needs a different synchronization design, not just removing this barrier.
+
+
+## 2026-06-12: Standalone SM89 mma.sync layout probe and MegaMoE retry
+
+Purpose:
+- Revisit the BM32 `mma.sync` path with a standalone unit probe before touching MegaMoE, because earlier direct MegaMoE attempts produced NaN/exploding output.
+
+Standalone probe:
+- Created `/tmp/sm89_mma_probe.cu` outside the repo.
+- Shape: M32/N128/K128, `SM89_16x8x32_F32E4M3E4M3F32_TN`, one 128-thread CTA.
+- Used CUTLASS/CUTE `cooperative_gemm`, `thr_mma.partition_C`, and CPU reference using the same FP8-rounded inputs.
+
+Results:
+- `TiledMMA<MMA_Atom<SM89_16x8x32_F32E4M3E4M3F32_TN>, Layout<Shape<_2,_2,_1>>>`: PASS, `bad=0`, `max_abs=0`, `max_rel=0`.
+- Same tiled layout with row-major A and row-major C mailbox, matching MegaMoE's intended SMEM layout: PASS, `bad=0`, `max_abs=0`, `max_rel=0`.
+- Current MegaMoE-style tiled layout `Layout<Shape<_2,_4,_1>>`: FAIL, 2034 bad elements, many columns zero from n=16 onward, `max_abs=0.429688`, `max_rel=1`.
+
+Useful finding:
+- The previous dormant MegaMoE mma.sync layout was definitely wrong for M32/N128/K128. The validated tiled layout is `_2,_2,_1`, not `_2,_4,_1`.
+
+MegaMoE retry:
+- Temporarily added opt-in `DG_SM90_NVFP4_MMA_SYNC=1` to select BM32/BN128/128-epi-thread shape.
+- Fixed host shared-memory accounting to include the BM32 FP32 accumulator mailbox and to disable direct L2 scatter for `kUseMMASync`, matching the kernel's compile-time gate.
+- Switched the MegaMoE mma.sync branch to the validated `_2,_2,_1` tiled layout.
+- First retry hung at M32 before output. Then added a missing `dequant_barriers[stage_idx]->wait(phase)` in the loader-dequant case.
+- Second retry no longer hung but failed correctness with non-finite output (`Kernel: abs_max=nan`, cosine/norm `nan`).
+
+Decision:
+- Reverted all MegaMoE source changes from this retry; no `.cuh` diff remains.
+- Keep the standalone probe result as guidance: `_2,_2,_1` is required, but the full MegaMoE mma.sync port still needs additional lifecycle/numeric debugging before it can become a performance candidate.
+- Do not enable `DG_SM90_NVFP4_MMA_SYNC` in default or opt-in code until M32 correctness passes.
+
+Final validation after reverting failed probes:
+- Rebuilt the extension after reverting the direct-scatter sync-skip and MegaMoE mma.sync source changes.
+- Default compact correctness smoke PASS for M32/M256, weight_scale=0.05, fp8-bridge reference.
+- Dequant unit test PASS and CUDA LUT dequant unit test PASS.
+- No new performance code was retained from this round, so the latest valid benchmark remains the previous default 30-run table.
+
+
+## 2026-06-12: no-swizzle BM32 mma.sync probe, correctness pass but performance rejected
+
+Hypothesis:
+- The earlier MegaMoE mma.sync retry failed because the WGMMA path dequantizes B into an XOR-swizzled FP8 shared-memory layout, while the SM89_16x8x32 mma.sync branch reads B as a plain row-major tensor.
+- If the opt-in BM32 mma.sync path dequantizes B into a no-swizzle FP8 SMEM layout and also uses an unswizzled activation TMA descriptor, the path should become numerically correct.
+
+Temporary change:
+- Added dequant_smem_b_inplace_two_rows_no_swizzle and used it only when kUseMMASync.
+- Kept default WGMMA compact NVFP4 path unchanged.
+- Added opt-in DG_SM90_NVFP4_MMA_SYNC=1 to select BM32/BN128/128 epilogue threads, disable direct L2 scatter, reserve FP32 accumulator mailbox SMEM, and set config.swizzle_acts_mode=0 for activation TMA.
+- Switched the mma.sync tiled layout to the standalone-validated Layout<Shape<_2,_2,_1>> and waited on dequant_barriers before consuming loader-dequantized B.
+
+Correctness:
+- Initial run without host activation swizzle gating failed with cosine_mean=0.1652 because the kernel read A as unswizzled while TMA still produced a 128B-swizzled SMEM tile.
+- After setting config.swizzle_acts_mode=0 for the opt-in path, M32 weight_scale=0.05 PASS: cosine_min=0.9996, cosine_mean=0.9997, norm_ratio=0.9998.
+- Extended correctness PASS for M32/M64/M128 and weight_scale 0.001/0.05/1.0; worst observed cosine_min=0.9992, norm ratios stayed within 0.99..1.01.
+
+Benchmark, 8 ranks, 50 tests, compact mode, DG_SM90_NVFP4_MMA_SYNC=1:
+
+| tokens | opt-in BM32 mma.sync | latest default compact NVFP4 | PR323 W8A8 | conclusion |
+| ---: | ---: | ---: | ---: | --- |
+| 32 | 2780.2 us | 1226.7 us | 923.9 us | 2.27x slower than default |
+| 64 | 2816.2 us | 1205.3 us | 869.9 us | 2.34x slower than default |
+| 128 | 4509.0 us | 1209.0 us | 837.1 us | 3.73x slower than default |
+
+Decision:
+- Correctness is now fixed for the opt-in BM32 mma.sync path, but performance is far below both default compact NVFP4 and PR323 W8A8.
+- Do not use this path as default and do not continue optimizing it before there is a separate explanation for the massive fixed overhead.
+- Return to the default WGMMA compact NVFP4 path and focus on block-level scheduling: epilogue/scatter overlap with the next tile load/dequant.
+
+## 2026-06-12: block-level pipeline follow-up, retained gated defaults
+
+Goal:
+- Continue optimizing the true compact NVFP4 MegaMoE kernel based on the analysis that dequant/MMA overlap already exists in FC1/FC2, while epilogue/scatter and next-tile load/dequant need better block-level scheduling.
+- Target: close the gap to PR323 W8A8, preferably beat it for at least one meaningful M range.
+
+Implemented and retained:
+- Ported the FP8-style L2 arrival-counter idea into NVFP4 as a template flag.
+  - L1 epilogue can publish one ready event per active M warpgroup with red_add_rel on the L2 arrival word.
+  - L2 A/SFA loaders can wait on an expected counter instead of the old bitmask.
+  - This removes the CTA-wide L1 epilogue full sync on gated sizes.
+- Added host default gating for DG_SM90_NVFP4_L2_ARRIVAL_COUNTER:
+  - default ON for M=32,512,2048,8192
+  - default OFF for M=64,128,256,1024,4096 after measurements showed regressions or instability there.
+- Changed L1 dual-K default:
+  - keep ON for M=64,128,256
+  - turn OFF for M>=512
+  - reason: dual-K was negative for M512/M1024/M2048 but still useful or neutral for smaller sizes.
+- Changed L2 N-major default to ON for M128 as well.
+
+Correctness:
+- Rebuilt successfully.
+- Final default correctness PASS for M=128,512,1024,2048,4096,8192, weight_scale=0.05, fp8-bridge reference.
+- Earlier in the same round, default correctness also PASS for M=32,64,128,256,512,1024,2048,4096,8192.
+- Dequant unit test PASS and CUDA LUT dequant unit test PASS in all correctness runs.
+
+Final benchmark notes:
+- 50-run benchmarks still show sweep-to-sweep long-tail effects, especially when many sizes are run in one process.
+- The most reliable final numbers below are from single-size or small grouped 50-run measurements after final code cleanup.
+
+| tokens | final NVFP4 | previous NVFP4 default | PR323 W8A8 | vs prev NVFP4 | vs W8A8 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 | 1194.4 us | 1226.7 us | 923.9 us | +2.7% | 1.293x slower |
+| 64 | 1199.7 us | 1205.3 us | 869.9 us | +0.5% | 1.379x slower |
+| 128 | 1208.2 us | 1209.0 us | 837.1 us | +0.1% | 1.443x slower |
+| 256 | 1510.1 us | 1530.6 us | 1460.0 us | +1.4% | 1.034x slower |
+| 512 | 2273.4 us | 2417.0 us | 2320.0 us | +6.3% | 0.980x, faster than W8A8 |
+| 1024 | 3778.0 us | 3965.0 us | 3518.0 us | +5.0% | 1.074x slower |
+| 2048 | 6608.0 us | 6672.0 us | 6274.0 us | +1.0% | 1.053x slower |
+| 4096 | 12257.0 us | 12170.0 us | 11402.0 us | -0.7% in latest run | 1.075x slower |
+| 8192 | 23295.0 us | 23692.0 us | 21904.0 us | +1.7% | 1.064x slower |
+
+Useful attempts:
+- L2 arrival counter: useful for M32/M512/M2048/M8192; not stable or negative for M64/M128/M256/M1024/M4096, so it is gated.
+- L1 dual-K OFF: useful for M512/M1024/M2048 and retained by default for M>=512.
+- M128 L2 N-major ON: single-size 50-run improved to 1204.7-1208.2 us and is now default.
+
+Rejected attempts:
+- BM32 mma.sync/no-swizzle: correctness was fixed, but performance was far worse than WGMMA default (M32 2780us, M64 2816us, M128 4509us), so all source changes from that retry were removed from the retained code.
+- Fused L1/L2 single kernel: correctness passed but was slower at both small and large M. M32/64/128 were 1280/1243/1306us; M256/512/1024 were 3477/5731/8947us.
+- EPI256 for BN128: JIT static assert, because the current WGMMA path requires one M64 tile per warpgroup and BN128+2WG would make WG_BLOCK_M=32.
+- L2_NO_DISPATCH_PIPELINE=0: correctness passed but was slower (M1024 4231us, M2048 7324us), so the existing no-dispatch L2 pipeline remains default for 256+.
+- L2_NMAJOR=0 for M32/M64: M64 regressed; not retained.
+
+Conclusion:
+- This round produced a real structural improvement in the 512-2048 region, with M512 now slightly faster than the PR323 W8A8 baseline in the retained default path.
+- Small M remains far behind W8A8 because fixed dispatch/combine/scheduler cost dominates and W4/NVFP4 dequant cannot compensate at M32/64/128.
+- Remaining gap for M1024+ is now mostly outside the dequant wait itself; further work should focus on reducing L2 scatter/combine fixed cost and improving scheduling stability rather than rewriting dequant again.
+
+## 2026-06-12: PR323 combine chunking and direct-scatter metadata probes
+
+Purpose:
+- Continue the block-level pipeline work after confirming dequant/MMA overlap already exists in FC1/FC2.
+- Test whether PR323-style combine chunking or lower direct-scatter metadata overhead can reduce the remaining L2 epilogue/scatter/combine fixed cost.
+
+Attempt 1: configurable combine chunk count, rejected as default:
+- Added a temporary compile-time DG_SM90_NVFP4_COMBINE_CHUNKS override to test the PR323 idea of splitting hidden=7168 combine into more chunks.
+- Correctness PASS for chunks=7 and chunks=4 on M512/M1024/M2048, weight_scale=0.05.
+- Correctness PASS for chunks=7, chunks=4, and chunks=14 on M4096/M8192, weight_scale=0.05.
+
+30-run signal benchmark:
+
+| chunks | M512 | M1024 | M2048 | M4096 | result |
+|---:|---:|---:|---:|---:|---|
+| 7 | 2314.2 us | 3786.0 us | 6475.0 us | 12358.0 us | M2048 looked better, others neutral/slower |
+| 4 | 2352.1 us | 3804.0 us | 6547.0 us | 12225.0 us | M4096 looked slightly better, M512/M1024 slower |
+
+50-run follow-up:
+
+| chunks | M2048 | M4096 | M8192 | result |
+|---:|---:|---:|---:|---|
+| 7 | 6633.0 us | 12325.0 us | 23341.0 us | no stable win versus retained default |
+| 4 | 6613.0 us | 12202.0 us | 23266.0 us | tiny M4096/M8192 signal, not enough for default |
+| 14 | - | 12246.0 us | 23606.0 us | worse |
+
+Same-code A/B check after a narrow default gate was briefly tried:
+
+| setting | M4096 | M8192 | note |
+|---|---:|---:|---|
+| default gate to chunks=4 | 12116.0 us | 23358.0 us | same recv distribution as chunks=0 run |
+| explicit chunks=0 | 12110.0 us | 23392.0 us | M4096 was slightly faster with chunks=0 |
+
+Decision:
+- Removed the combine chunk override from the retained source.
+- More chunks reduce per-lane reduce registers but add more TMA load/store chunks. On this kernel the tradeoff is noisy and not a stable default win.
+- Do not default-enable PR323-style 7-way combine chunking for the current true compact NVFP4 path.
+
+Attempt 2: direct L2 scatter metadata broadcast, rejected:
+- Hypothesis: in the direct L2 scatter path, every 4 lanes for the same output row redundantly load the same TokenSrcMetadata; only col_idx==0 could load and then shuffle rank/token/topk to the row group.
+- Implemented the broadcast temporarily in scatter_direct_row.
+- Rebuild PASS.
+- Correctness hung at M32 before producing case output.
+- Only the residual PIDs from this correctness command were killed: bash PID 2075080 and python PID 2075104. No broad pkill python was used.
+- Reverted the metadata broadcast source change.
+
+Final state after reverting rejected probes:
+- Rebuild PASS.
+- Default correctness smoke PASS for M32/M512/M4096, weight_scale=0.05, fp8-bridge compact reference.
+- Dequant unit test PASS and CUDA LUT dequant unit test PASS.
+- A later 8-rank benchmark after the revert was not used as a performance conclusion because GPU0 had an unrelated external /usr/bin/python3 process at 100% utilization and about 9.6 GB memory. That run produced doubled latencies and is considered contaminated.
+- Latest valid retained benchmark remains the previous single-size/small-group 50-run table:
+  - M32 1194.4 us
+  - M64 1199.7 us
+  - M128 1208.2 us
+  - M256 1510.1 us
+  - M512 2273.4 us
+  - M1024 3778.0 us
+  - M2048 6608.0 us
+  - M4096 12257.0 us
+  - M8192 23295.0 us
+
+Conclusion:
+- This continuation did not find a new stable default improvement beyond the retained L2 arrival-counter and heuristic changes.
+- PR323 combine chunking is not directly transferable as a default for NVFP4.
+- Direct-scatter metadata broadcast is unsafe in the current warp/lane lifecycle and was reverted.
+- Further benchmark work should wait until GPU0 is free, or use an isolated 8-GPU window, because one busy rank is enough to invalidate max-rank MegaMoE timings.
+
+
+## 2026-06-12: Row-mask direct-scatter metadata broadcast retained; pipeline probes
+
+Purpose:
+- Continue from the analysis that FC1/FC2 dequant/MMA overlap is already present.
+- Focus on the remaining fixed overhead around L1 epilogue ready notification and L2 direct scatter.
+- Keep true compact NVFP4 input path; do not use FP8 shadow weights.
+
+Important correction to the previous metadata-broadcast attempt:
+- The earlier direct-scatter metadata broadcast hung because it used a full-warp `__shfl_sync(0xffffffff)` while partial rows can skip the shuffle, so not all lanes in the mask participated.
+- Reimplemented it with a 4-lane row-group mask: leader is `lane_idx & ~3u`, mask is `0xfu << leader`.
+- Added a compile-time and host env gate `DG_SM90_NVFP4_DIRECT_SCATTER_METADATA_BCAST`.
+- Default gate: ON only when direct L2 scatter is active and `num_tokens >= 512`.
+- M256 and below keep the old per-lane metadata path by default.
+
+Retained source changes in this continuation:
+- `kDirectScatterMetadataBroadcast`: one lane per row-group loads `TokenSrcMetadata`, then broadcasts rank/token/topk to the 4 lanes that write that row.
+- `kL2ArrivalCounter`: kept from the previous retained state. L1 publishes ready events with a counter on selected sizes, avoiding an epilogue-wide sync in the gated path.
+- Host defaults currently retained:
+  - `DG_SM90_NVFP4_L2_ARRIVAL_COUNTER`: default ON for M32/M512/M2048/M8192.
+  - `DG_SM90_NVFP4_DIRECT_SCATTER_METADATA_BCAST`: default ON for M>=512 when direct L2 scatter is active.
+  - `DG_SM90_MOE_L1_DUAL_K`: default OFF for M>=512.
+  - `DG_SM90_MOE_L2_NMAJOR`: default ON.
+
+Correctness:
+- Rebuild PASS after final retained source.
+- Final correctness command used independent JIT cache, no global cache deletion:
+  - `DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_metadata_only_final_correct_0612`
+  - `tests/test_nvfp4_mega_moe_sm90_correctness.py --batches 32 512 1024 2048 4096 --weight-scales 0.05 --reference-mode fp8-bridge --weight-mode compact --cosine-mean-threshold 0.99 --cosine-min-threshold 0.99 --norm-ratio-min 0.99 --norm-ratio-max 1.01`
+- PASS for M32/M512/M1024/M2048/M4096.
+- Dequant unit test PASS and CUDA LUT dequant unit test PASS.
+- Earlier wide correctness in the same continuation also PASS for M32/M64/M128/M256/M512/M1024/M2048/M4096.
+
+Final current-source 50-run benchmark:
+- Command shape: `python3 tests/bench_nvfp4_mega_moe_sm90.py --num-processes 8 --batches <M> --num-tests 50 --weight-mode compact`.
+- Main final sweep log: `/tmp/nvfp4_metadata_only_final_m*_50_0612.log`.
+- Rerun logs for noisy M32/M64/M1024: `/tmp/nvfp4_metadata_only_final_rerun_m*_50_0612.log`.
+- Small-M numbers remain noisy; M64 recovered on rerun, M32 did not.
+
+| tokens | final/latest NVFP4 | PR323 W8A8 | NVFP4/W8A8 | note |
+| ---: | ---: | ---: | ---: | --- |
+| 32 | 1282.7 us | 923.9 us | 1.388x slower | latest rerun; small-M long tail still severe |
+| 64 | 1191.5 us | 869.9 us | 1.370x slower | rerun recovered from 1459.3us long tail |
+| 128 | 1205.9 us | 837.1 us | 1.441x slower | final sweep |
+| 256 | 1524.4 us | 1460.0 us | 1.044x slower | final sweep |
+| 512 | 2257.8 us | 2320.0 us | 0.973x, 2.7% faster | retained path beats W8A8 here |
+| 1024 | 3751.0 us | 3518.0 us | 1.066x slower | rerun |
+| 2048 | 6597.0 us | 6274.0 us | 1.051x slower | final sweep |
+| 4096 | 12073.0 us | 11402.0 us | 1.059x slower | final sweep |
+| 8192 | 23143.0 us | 21904.0 us | 1.057x slower | final sweep |
+
+Best current-source 50-run signals observed in this continuation:
+- M512: 2246.1-2257.8 us depending on run, consistently faster than PR323 W8A8 2320.0 us.
+- M1024: best observed 3720.0 us, latest retained after reverting pointer-broadcast 3751.0 us.
+- M2048/M4096/M8192 still land about 5-6% slower than W8A8 in latest retained runs.
+
+Pipeline and scatter probes tried:
+
+1. Async L1 TMA store opt-in, rejected and reverted:
+- Temporarily allowed `DG_SM90_MOE_ASYNC_L1_STORE=1` through the host launcher.
+- Correctness PASS for M512/M1024.
+- 50-run benchmark with async ON:
+  - M512 2250.5 us, M1024 3737.0 us, M2048 6631.0 us, M4096 12021.0 us, M8192 23220.0 us.
+- Not a stable win: M1024 was only marginally better; M2048/M8192 regressed.
+- Reverted host opt-in; final source keeps the original host assert and default false.
+
+2. Fully fused L1+L2 single kernel, rejected:
+- Tested `DG_SM90_MOE_SPLIT_L1_L2=0` on true compact NVFP4.
+- Correctness PASS for M512/M1024.
+- 50-run benchmark was much slower:
+  - M32 1259.0 us, M64 1274.0 us, M128 1267.0 us, M256 3589.0 us, M512 3160.0 us, M1024 5348.0 us, M2048 9543.0 us, M4096 18057.0 us, M8192 34196.0 us.
+- Conclusion: saving the split launch is not enough; fused path increases resource/scheduling pressure too much.
+
+3. Direct-scatter pointer broadcast, rejected and reverted:
+- Hypothesis: after metadata broadcast, only `col_idx==0` should compute `sym_buffer.map()` and broadcast the mapped pointer to the row group.
+- Correctness PASS for M512/M1024.
+- 50-run benchmark:
+  - M512 2246.1 us, M1024 3720.0 us, M2048 6608.0 us, M4096 12036.0 us, M8192 23154.0 us.
+- M512/M1024 had tiny signal, but M2048+ was neutral or worse and the extra template branch was not worth retaining.
+- Reverted pointer-broadcast gate and code; final source keeps metadata-only broadcast.
+
+4. Phase profile comparison:
+- Default phase profile M512/M1024 showed `math_dequant_wait` average around 130-138 cycles, while `math_loop` max was much longer.
+- Async L1 store did not materially change phase timings; it mostly moved or exposed waiting rather than reducing end-to-end latency.
+- This supports the earlier conclusion: dequant/MMA overlap is not the main remaining bottleneck.
+
+Current conclusion:
+- The only new retained improvement in this continuation is safe row-mask metadata broadcast for direct L2 scatter, plus the already retained L2 arrival-counter heuristic.
+- M512 is now consistently the one size where true compact NVFP4 beats PR323 W8A8.
+- M1024-8192 remain roughly 5-6% slower than W8A8; small M is still dominated by fixed dispatch/combine/scheduler overhead and is far behind W8A8.
+- Next credible direction is not more dequant tuning. It should be a real scheduling/layout change that reduces L2 scatter/combine and max-rank tail, or a new pipeline that lets L2 consume L1 output at finer granularity without the current fused-kernel resource penalty.
+
+
+Addendum: direct-scatter final sync skip probe, rejected and reverted:
+- Tried an opt-in `DG_SM90_NVFP4_SKIP_DIRECT_SCATTER_SYNC=1` gate to skip the epilogue-wide barrier after direct L2 scatter.
+- Motivation: this was the most direct test of overlapping L2 scatter with the next block load/dequant lifecycle.
+- Rebuild PASS, dequant unit test PASS, CUDA LUT unit test PASS.
+- Correctness hung at M512 before producing the case result and timed out after 20 minutes.
+- Cleaned only the residual processes from this exact command: container bash PID 2284721, container python PID 2284836, and the mapped host GPU PID 362462. No broad pkill was used.
+- Reverted the skip-sync template/env/code completely.
+- Rebuilt the reverted source and ran M512 correctness smoke PASS with `DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_after_skip_revert_correct_0612`.
+- Conclusion: the direct-scatter epilogue-wide barrier is required for the current warpgroup/block lifecycle. A real overlap design must replace it with a correct per-warpgroup or per-buffer handoff, not simply remove it.
+
+
+Addendum: direct-scatter per-warpgroup sync probe, rejected and reverted:
+- Tried replacing the direct-scatter epilogue-wide barrier with a per-warpgroup barrier under an opt-in `DG_SM90_NVFP4_DIRECT_SCATTER_WG_SYNC=1` gate.
+- Motivation: preserve intra-WG lifecycle safety while allowing different epilogue WGs to overlap scatter with later block work.
+- Rebuild PASS, dequant unit test PASS, CUDA LUT unit test PASS.
+- Correctness hung at M512 before producing the case result and timed out after 15 minutes.
+- Cleaned only the residual processes from this exact command: container bash PID 2285731, container python PID 2285846, and the mapped host GPU PID 376218. No broad pkill was used.
+- Reverted the per-WG sync template/env/code completely.
+- Rebuilt the reverted source and ran M512 correctness smoke PASS with `DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_after_wg_sync_revert_correct_0612`.
+- Conclusion: both removing the direct-scatter full barrier and weakening it to per-WG sync are unsafe in the current implementation. The next viable design needs an explicit producer/consumer handoff for the relevant shared scheduler or pipeline state rather than weakening this barrier in place.
+
+
+## 2026-06-12: Retune retained config gates after metadata broadcast
+
+Purpose:
+- Recheck existing retained knobs after row-mask metadata broadcast changed the L2 direct-scatter shape.
+- No new kernel algorithm was added in this step; only default heuristics were retuned using existing env gates.
+
+50-run A/B results:
+
+| tokens | setting | time | decision |
+| ---: | --- | ---: | --- |
+| 1024 | default before retune | 3748.0 us | baseline |
+| 1024 | L2 arrival counter ON | 3708.0 us | useful |
+| 1024 | L2 dual accum OFF | 3727.0 us | less useful than arrival ON |
+| 1024 | metadata broadcast OFF | 3762.0 us | worse |
+| 2048 | default | 6560.0 us | keep existing arrival ON, dual ON |
+| 2048 | L2 arrival counter OFF | 6600.0 us | worse |
+| 2048 | L2 dual accum OFF | 6572.0 us | slightly worse |
+| 2048 | metadata broadcast OFF | 6581.0 us | worse |
+| 4096 | default before retune | 12081.0 us | baseline |
+| 4096 | L2 arrival counter ON | 11989.0 us | useful |
+| 4096 | L2 dual accum ON | 12044.0 us | better than old default but not as good as arrival ON with dual OFF |
+| 4096 | metadata broadcast OFF | 12122.0 us | worse |
+| 8192 | default before retune | 23224.0 us | baseline |
+| 8192 | L2 arrival counter OFF | 23312.0 us | worse |
+| 8192 | L2 dual accum OFF | 23122.0 us | useful |
+| 8192 | metadata broadcast OFF | 23244.0 us | worse |
+
+Combo checks:
+- M1024 arrival ON + L2 dual OFF: 3722.0 us, worse than arrival ON alone.
+- M4096 arrival ON + L2 dual ON: 11998.0 us, about the same as arrival ON with dual OFF, but not better.
+- M8192 L2 dual OFF + metadata OFF: 23237.0 us, worse than keeping metadata broadcast ON.
+
+Retained default heuristic changes:
+- `DG_SM90_NVFP4_L2_ARRIVAL_COUNTER` default now includes M1024 and M4096.
+- `DG_SM90_MOE_L2_DUAL_ACCUM` default is now OFF for M8192 as well as M64/M4096.
+
+Correctness after heuristic change:
+- Rebuild PASS.
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_config_defaults_correct_0612`
+- PASS for M1024/M4096/M8192 with fp8-bridge compact reference and strict cosine/norm thresholds.
+- Dequant unit test PASS and CUDA LUT dequant unit test PASS.
+
+Updated-default 50-run benchmark:
+
+| tokens | updated default NVFP4 | PR323 W8A8 | NVFP4/W8A8 |
+| ---: | ---: | ---: | ---: |
+| 512 | 2271.2 us | 2320.0 us | 0.979x, 2.1% faster |
+| 1024 | 3691.0 us | 3518.0 us | 1.049x slower |
+| 2048 | 6618.0 us | 6274.0 us | 1.055x slower |
+| 4096 | 11995.0 us | 11402.0 us | 1.052x slower |
+| 8192 | 23126.0 us | 21904.0 us | 1.056x slower |
+
+Conclusion:
+- Retuning existing gates gives a small but real improvement for M1024 and M4096, and a small M8192 improvement.
+- It still does not close the remaining W8A8 gap except at M512.
+- Metadata broadcast remains useful for M1024+ and should stay default ON for direct-scatter sizes.
+
+
+Addendum: BM64 and loader-dequant-off probes, rejected:
+- Tested whether PR323 W8A8 block64 default heuristic transfers to compact NVFP4 by disabling `DG_SM90_NVFP4_BM128_HEURISTIC` and forcing split L1/L2.
+- 50-run results were much worse:
+  - M1024 5256.0 us
+  - M2048 9799.0 us
+  - M4096 18708.0 us
+  - M8192 36650.0 us
+- Decision: keep BM128 heuristic for M>=256. PR323 block64 is not transferable to this NVFP4 bridge.
+
+- Tested `DG_SM90_NVFP4_LOADER_DEQUANT=0` on M1024/M4096 to revalidate that loader-side dequant remains required.
+- M1024 failed with CUDA illegal memory access during benchmark warmup.
+- No residual GPU process remained after the failure.
+- Decision: do not use math-side fallback dequant for this path; keep loader dequant default ON.
+
+
+## 2026-06-12: Block-level pipeline follow-up and M512 dual-accum retune
+
+Purpose:
+- Follow up on the analysis that FC1/FC2 dequant-MMA overlap is already present, while the remaining gap may come from epilogue/scatter and next-tile load/dequant handoff.
+- Focus on true compact NVFP4, not fp8-shadow.
+
+Phase profile evidence:
+- Re-ran phase profiling for M512/M1024/M2048/M4096/M8192 with current defaults.
+- `math_dequant_wait` stayed very low, around 114-138 cycles average.
+- `l1_epilogue` and `l2_epilogue` were also small per block, around 2.7-3.0K cycles and 1.3-1.7K cycles average respectively.
+- `math_loop` and dispatch pull dominate cumulative time. This indicates the current loader warps already overlap next-tile load/dequant with math epilogue reasonably well; simply weakening epilogue barriers is not safe or sufficient.
+
+Rejected experiments:
+
+1. BM128 with `DG_SM90_NVFP4_EPILOGUE_THREADS=128`:
+- Temporarily allowed the env override to stay inside the BM128 heuristic.
+- JIT failed at M512 with static assertion: `Each warpgroup must run exactly one WGMMA per K-block`.
+- Reason: 1 epilogue WG does not match the current BM128 WGMMA tiling.
+- Reverted the host heuristic change; BM128 remains fixed at 256 epilogue threads.
+
+2. Direct-scatter K2 direct accumulate:
+- Prototype allowed `DG_SM90_MOE_K2_DIRECT_ACCUM=1` with direct L2 scatter.
+- L2 epilogue atomically accumulated BF16 pairs into symmetric combine slot0, then skipped topk combine reduce and only copied slot0 to `y`.
+- Correctness PASS for M512/M1024, weight_scale=0.05, strict cosine/norm thresholds.
+- 30-run benchmark with opt-in was much slower:
+  - M512 3047.0 us
+  - M1024 5222.0 us
+  - M2048 9181.0 us
+  - M4096 14323.0 us
+  - M8192 27631.0 us
+- Decision: rejected and reverted. BF16 atomic overhead is much larger than the saved combine-reduce work.
+
+3. Four-warp loader dequant:
+- Prototype changed loader dequant from 2 idle non-epilogue warps doing two rows each to all 4 non-epilogue warps doing one row each.
+- Correctness PASS for M512/M1024, weight_scale=0.05.
+- 30-run benchmark was slower than current default:
+  - M512 2445.4 us
+  - M1024 3940.0 us
+  - M2048 6831.0 us
+  - M4096 12638.0 us
+  - M8192 24100.0 us
+- Decision: rejected and reverted. The extra dequant parallelism delays the TMA loader warps from issuing the next stage, so the block-level pipeline gets worse despite lower per-row work.
+
+4. M256 metadata/arrival gates:
+- `DG_SM90_NVFP4_DIRECT_SCATTER_METADATA_BCAST=1` at M256: 1517.6 us vs 1511.1 us with it OFF.
+- `DG_SM90_NVFP4_L2_ARRIVAL_COUNTER=1` at M256: 1571.4 us vs 1531.6 us with it OFF.
+- Decision: keep both defaults OFF for M256.
+
+Retained change:
+- Disable `DG_SM90_MOE_L2_DUAL_ACCUM` by default for M512.
+- Previous default kept L2 dual accum ON for M512; same-input 50-run A/B showed OFF is faster:
+  - M512 baseline with L1 dual-K OFF, L2 dual-accum ON: 2285.2 us
+  - M512 L1 dual-K ON, L2 dual-accum ON: 2269.3 us
+  - M512 L1 dual-K OFF, L2 dual-accum OFF: 2236.5 us
+  - M512 L1 dual-K ON, L2 dual-accum OFF: 2262.7 us
+- Retained default: L1 dual-K OFF, L2 dual-accum OFF for M512.
+
+Correctness after retained change:
+- Rebuild PASS.
+- M512 correctness PASS with weight_scale 0.001/0.05/1.0, fp8-bridge compact reference, cosine/norm thresholds 0.99/0.99/0.99-1.01.
+- Final smoke correctness PASS for M512/M1024/M2048/M4096/M8192 at weight_scale=0.05.
+- Dequant unit test PASS and CUDA LUT dequant unit test PASS.
+
+Final 50-run benchmark, same `512 1024 2048 4096 8192` sweep shape:
+
+| tokens | compact NVFP4 | PR323 W8A8 reference | NVFP4/W8A8 |
+|---:|---:|---:|---:|
+| 512 | 2223.2 us | 2320.0 us | 0.958x, 4.2% faster |
+| 1024 | 3780.0 us | 3518.0 us | 1.074x slower |
+| 2048 | 6482.0 us | 6274.0 us | 1.033x slower |
+| 4096 | 12080.0 us | 11402.0 us | 1.059x slower |
+| 8192 | 23123.0 us | 21904.0 us | 1.056x slower |
+
+Single-M M512 confirmation:
+- M512-only 50-run after default change: 2231.7 us, confirming the M512 improvement on the same input distribution.
+
+All-size 50-run note:
+- Running `32 64 128 256 512 1024 2048 4096 8192` in one command changes the generated random routing/recv distribution for later sizes.
+- That sweep produced M512=2392.3 us with recv=4087, while the comparable `512..8192` sweep produced M512=2223.2 us with recv=4063.
+- Use same batch-list/input distribution when doing A/B comparisons.
+
+Conclusion:
+- This round retained one small default improvement: M512 L2 dual-accum OFF.
+- M512 now beats the PR323 W8A8 reference by about 4% in the comparable 512..8192 sweep.
+- M1024-8192 remain slower than PR323 W8A8 by about 3-7%.
+- The rejected experiments reinforce that the current pipeline already depends on keeping TMA loader warps ahead; using those warps for more dequant or adding BF16 atomics hurts.
+
+M1024 single-M confirmation after the retained M512 gate:
+- M1024-only 50-run: 3730.0 us (recv=8015). This sits between the prior retained 3691.0 us and the same-shape sweep 3780.0 us, so the observed M1024 movement is treated as input/tail variance rather than a regression from the M512 default change.
+
+
+Addendum: L2 direct-scatter metadata prefetch, rejected and reverted:
+- Prototype added an opt-in `DG_SM90_NVFP4_DIRECT_SCATTER_METADATA_PREFETCH=1` gate.
+- Design: preload/broadcast `TokenSrcMetadata` for the two rows during the final L2 WGMMA batch, between `warpgroup_commit_batch()` and `warpgroup_wait<0>()`, so the epilogue direct scatter could avoid metadata global loads on the scatter path.
+- Covered both L2 dual-accum and L2 non-dual paths. The first insertion accidentally touched L1; that was fixed before measurement.
+- Correctness PASS for M512/M1024, weight_scale=0.05, fp8-bridge compact reference.
+- 50-run benchmark with opt-in:
+  - M512-only: 2250.3 us vs default 2231.7 us, slower.
+  - M1024-only: 5061.0 us vs default 3730.0 us, much slower.
+- Decision: rejected and fully reverted. The added live metadata registers and instructions near WGMMA wait hurt scheduling/register pressure more than the epilogue metadata load saved.
+- Rebuilt after revert and M512 correctness smoke PASSed with `DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_after_metaprefetch_revert_correct_0612`.
+
+## 2026-06-12 Iteration - Packed direct-scatter metadata experiment (reverted)
+
+Hypothesis: pack TokenSrcMetadata from three uint32_t fields into one uint32_t to reduce direct L2 scatter metadata load and row-group shuffle overhead.
+
+Change tested:
+- Temporarily changed layout::TokenSrcMetadata to a packed 32-bit representation.
+- Updated SM90 NVFP4, SM90 FP8, and SM100 FP8/FP4 metadata writes/reads accordingly.
+
+Validation:
+- Rebuild PASS.
+- NVFP4 strict correctness PASS for M512/M1024, weight_scale=0.05, compact weights, FP8-bridge reference, cosine/norm thresholds 0.99.
+
+Benchmark signal, 50-run compact mode:
+- M512 single-size: 2251.3 us vs retained same-shape baseline 2231.7 us, -0.9% regression.
+- M1024 single-size: 3713.0 us vs retained same-shape baseline 3730.0 us, +0.5% improvement.
+- M512..8192 list: 2223.4 / 3734.0 / 6474.0 / 12127.0 / 23108.0 us. Compared with retained same-list baseline 2223.2 / 3780.0 / 6482.0 / 12080.0 / 23123.0 us, only M1024 improved materially and M4096 regressed slightly.
+
+Decision: reverted. The signal is too small and mixed, and the change touches shared MegaMoE metadata layout beyond the true NVFP4 kernel. Not suitable as a retained default optimization.
+
+## 2026-06-12 Iteration - L2 N-major scheduler experiment (reverted)
+
+Hypothesis: make the existing DG_SM90_MOE_L2_NMAJOR knob functional for NVFP4 by scheduling L2 blocks in N-major order within each expert. The goal was to improve B/scale locality and make next-tile load/dequant more stable while the previous tile epilogue/scatter runs.
+
+Change tested:
+- Added opt-in L1/L2 N-major scheduling parameters to MegaMoEScheduler.
+- Wired SM90 NVFP4 to pass kL1NMajorScheduleRequested/kL2NMajorScheduleRequested.
+- Kept the opt-in default off during measurement to avoid changing default behavior before A/B validation.
+
+Validation:
+- Rebuild PASS.
+- NVFP4 strict correctness PASS for M512/M1024 with DG_SM90_MOE_L2_NMAJOR=1, compact weights, FP8-bridge reference, cosine/norm thresholds 0.99.
+
+Benchmark signal, 50-run compact mode with DG_SM90_MOE_L2_NMAJOR=1:
+- M512-only: 2242.7 us vs retained same-shape baseline 2231.7 us, -0.5% regression.
+- M1024-only: 3727.0 us vs retained same-shape baseline 3730.0 us, roughly flat.
+- M512..8192 list: 2327.8 / 3719.0 / 6657.0 / 12156.0 / 23185.0 us. Compared with retained same-list baseline 2223.2 / 3780.0 / 6482.0 / 12080.0 / 23123.0 us, M1024 improved but M512, M2048, M4096, and M8192 regressed.
+
+Decision: reverted. N-major scheduling is not a reliable large-M win for this kernel; it likely hurts L1-output/L2-activation locality or CTA load balance more than it improves B reuse.
+
+## 2026-06-12 Iteration - Fused L1/L2 pipeline check (rejected)
+
+Hypothesis: disabling split L1/L2 launches with DG_SM90_MOE_SPLIT_L1_L2=0 might expose cross-phase overlap between L1 epilogue/store and L2 load/dequant, reducing fixed pipeline cost.
+
+Validation:
+- NVFP4 strict correctness PASS for M512/M1024/M2048, weight_scale=0.05, compact weights, FP8-bridge reference, cosine/norm thresholds 0.99.
+
+Benchmark signal, 50-run compact mode with DG_SM90_MOE_SPLIT_L1_L2=0:
+- M512..8192 list: 3201.0 / 5367.0 / 9434.0 / 18073.0 / 34998.0 us.
+- This is far slower than retained split default 2223.2 / 3780.0 / 6482.0 / 12080.0 / 23123.0 us.
+
+Decision: rejected. For the current BM128 NVFP4 shape, split L1/L2 remains required; fused mode loses too much occupancy/resource balance to pay for any cross-phase overlap.
+
+## 2026-06-12 Iteration - Stage and L2 dual-accum sweeps (not retained)
+
+Stage sweep:
+- M512 correctness PASS for DG_SM90_NVFP4_NUM_STAGES=2/3/4/5. Stage 6 exceeds max_num_stages.
+- 30-run M512/M1024 signal:
+  - stages=2: 2562.1 / 4228.0 us, clearly worse.
+  - stages=3: 2240.1 / 3793.0 us.
+  - stages=4: 2241.1 / 3716.0 us, best M1024 signal but M512 not better.
+  - stages=5: 2260.5 / 3751.0 us.
+- stages=4 smoke correctness PASS for M512/M1024/M2048/M4096/M8192.
+- stages=4 final 50-run M512..8192: 2241.8 / 3744.0 / 6482.0 / 12090.0 / 23138.0 us vs retained 2223.2 / 3780.0 / 6482.0 / 12080.0 / 23123.0 us.
+- stages=4 M1024-only 50-run: 3724.0 us vs retained M1024-only 3730.0 us.
+Decision: not retained. The M1024 gain is small and M512/large-M do not improve.
+
+L2 dual-accum OFF sweep:
+- Correctness PASS for M1024/M2048 with DG_SM90_MOE_L2_DUAL_ACCUM=0.
+- 50-run M512..8192 with OFF: 2254.7 / 3781.0 / 6458.0 / 12075.0 / 23164.0 us. Only M2048 showed a small signal.
+- M2048-only default vs OFF: 6572.0 vs 6560.0 us, about 0.2% improvement.
+Decision: not retained for M1024/M2048; improvement is too small/noisy. Keep existing default gates.
+
+## 2026-06-12 Final default check after reverted pipeline probes
+
+Default correctness smoke:
+- Rebuild after reverted packed-metadata changes PASSed.
+- Default M512/M1024 correctness PASS with weight_scale=0.05, compact weights, FP8-bridge reference, cosine/norm thresholds 0.99.
+
+Default 50-run benchmark, compact mode, batches 512 1024 2048 4096 8192:
+
+| tokens | latest default NVFP4 | PR323 W8A8 reference | NVFP4/W8A8 |
+|---:|---:|---:|---:|
+| 512 | 2256.7 us | 2320.0 us | 0.973x, 2.7% faster |
+| 1024 | 3816.0 us | 3518.0 us | 1.085x slower |
+| 2048 | 6426.0 us | 6274.0 us | 1.024x slower |
+| 4096 | 12117.0 us | 11402.0 us | 1.063x slower |
+| 8192 | 23140.0 us | 21904.0 us | 1.056x slower |
+
+Interpretation:
+- The current retained code still beats PR323 W8A8 at M512 in this run.
+- M1024+ remain slower than W8A8; the largest remaining gap in this run is M1024.
+- The latest failed probes were fully reverted; retained code path is unchanged except for the already documented defaults from earlier retained iterations.
+
+
+## 2026-06-12 Iteration - Direct L2 scatter store-width probes (reverted)
+
+Context:
+- Follow-up to the block-level pipeline analysis: FC1/FC2 loader dequant already overlaps with MMA, and current loader warps can also start loading/dequanting later tiles once math releases the stage empty barriers before epilogue.
+- A remaining plausible fixed cost was L2 direct scatter, where the default metadata-broadcast path still issues many per-lane 32-bit stores from each 4-lane row group.
+
+Phase profile refresh, current default, 5-run compact mode:
+
+| tokens | compact | dispatch_total avg cycles | dispatch_pull avg | math_loop avg | combine_barrier avg | combine_reduce avg | gemm_core avg | l1_epi avg | l2_epi avg | loader_dequant avg | math_dequant_wait avg |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 2498.0 us | 323637 | 105311 | 1206851 | 134850 | 13154 | 38795 | 2694 | 1366 | 1206 | 125 |
+| 1024 | 4068.0 us | 255793 | 206134 | 1981364 | 26574 | 27936 | 39102 | 2794 | 1493 | 1209 | 133 |
+| 2048 | 7080.0 us | 783234 | 405423 | 3602164 | 53012 | 60532 | 38962 | 2891 | 1599 | 1209 | 129 |
+| 4096 | 13178.0 us | 895526 | 799750 | 6389484 | 177091 | 125732 | 38545 | 2937 | 1661 | 1210 | 115 |
+
+Interpretation:
+- `math_dequant_wait` is still tiny compared with `math_loop`, confirming dequant/MMA overlap is not the immediate limiter.
+- `l2_epilogue` is small per block, but it is the only part of L2 scatter directly under this kernel's control without changing global scheduling.
+- `dispatch_pull` and combine synchronization are significant fixed/cross-rank costs, but they are mostly shared with W8A8 and not specific to NVFP4 dequant.
+
+Experiment 1: 4-lane row-group vector store
+- Change: in the direct-scatter metadata-broadcast branch, each 4-lane row group shuffled BF16 pairs to `col_idx==0`, then the leader issued 16-byte `uint4` stores. This also reduced `sym_buffer.map()` to leader lanes.
+- Correctness: PASS for M512/M1024/M2048, compact weights, `weight_scale=0.05`, FP8-bridge reference, strict cosine/norm thresholds.
+- 50-run benchmark:
+  - M512 5692.0 us
+  - M1024 9754.0 us
+  - M2048 17312.0 us
+  - M4096 32580.0 us
+  - M8192 63026.0 us
+- Decision: reverted. Store instruction count dropped, but scatter parallelism collapsed; the row-group shuffles and leader-only writes made performance much worse.
+
+Experiment 2: 2-lane pair `uint2` store
+- Change: a more conservative variant where lanes 0/1 and 2/3 of each row group produced 8-byte `uint2` stores, preserving half the store-lane parallelism.
+- Correctness: PASS for M512/M1024, compact weights, `weight_scale=0.05`, FP8-bridge reference, strict cosine/norm thresholds.
+- 30-run benchmark:
+  - M512 3774.0 us
+  - M1024 6415.0 us
+  - M2048 11469.0 us
+  - M4096 21179.0 us
+  - M8192 41018.0 us
+- Decision: reverted. Even halving the number of active store lanes was too costly.
+
+Conclusion:
+- The default direct L2 scatter should keep the current scalar per-lane stores. It is lane-parallelism limited rather than store-instruction-count limited.
+- The remaining NVFP4 vs PR323 W8A8 gap is unlikely to close through L2 scatter store-width tuning.
+- A credible next direction must either reduce online FP4->FP8 materialization cost without reducing loader overlap, or change the global scheduling/dispatch/combine lifecycle. Simple scatter vectorization is now ruled out.
+
+
+## 2026-06-12 Iteration - Async L1 TMA store for BM128 two-WG path (reverted)
+
+Hypothesis:
+- The existing async L1 TMA store code path only instantiated when `kNumEpilogueWarpgroups == 1`, so the main BM128/BN128/256-thread path for M512+ could not use it.
+- Allowing async L1 store for the two-WG BM128 path might explicitly overlap L1 epilogue/TMA-store with the next tile's load/dequant, matching the block-level pipeline direction.
+
+Temporary change:
+- Removed the one-epilogue-WG restriction from `kAsyncL1TMAStore`.
+- Re-enabled `DG_SM90_MOE_ASYNC_L1_STORE=1` in the NVFP4 host launcher as an opt-in path.
+- Added host shared-memory accounting for the double-buffered async L1 output area.
+- Forced the L2-only no-dispatch phase to instantiate with async L1 store disabled.
+- Rebuilt `deep_gemm._C` before testing.
+
+Validation result:
+- Timeout-guarded correctness command:
+  `timeout 240s env DG_SM90_MOE_ASYNC_L1_STORE=1 ... --batches 512 1024 ...`
+- The command reached the first M512 case header, then timed out at 240s before producing kernel output.
+- `ps` after timeout showed no residual `test_nvfp4_mega_moe_sm90_correctness.py` process.
+
+Decision:
+- Reverted the async 2WG host/kernel changes and rebuilt `deep_gemm._C` after revert.
+- Default M512 strict correctness after revert PASSed (`cosine_min=0.9996`, `norm_ratio=0.9995`).
+- Conclusion: the current async L1 store lifecycle is not safe for BM128/two-WG. The existing async branch cannot simply be generalized; it needs a redesigned per-WG drain/arrival protocol before it can be a viable block-level pipeline mechanism.
+
+
+## 2026-06-12 Iteration - L2 no-dispatch cleanup on loader warp (reverted)
+
+Hypothesis:
+- In the retained split path, the L2 no-dispatch kernel has no dispatch warps.
+- Workspace cleanup is currently performed by epilogue threads after combine reduce through `finish_no_dispatch_k2_cleanup()`.
+- The non-epilogue loader/dequant warps are idle after all L2 tiles are loaded/dequantized. Moving workspace cleanup to the A-loader warp could overlap cleanup with epilogue combine and reduce fixed tail cost.
+
+Temporary change:
+- Added a compile-time `kNoDispatchCleanupOnLoader` path for `!kRunL1Phase && kRunL2Phase && kNumDispatchWarps == 0`.
+- After the A-loader warp completed `for_each_selected_block`, it cleaned expert send/recv counts and L1/L2 arrival state using 32 lanes, then ran the after-clean NVLink barrier.
+- The epilogue no-dispatch cleanup path was skipped under that condition.
+
+Validation result:
+- Timeout-guarded correctness command with pipefail:
+  `timeout 240s env DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_loadercleanup_correct_0612 ... --batches 512 1024 ...`
+- The command reached the first M512 case header, then timed out at 240s before kernel output.
+- `ps` after timeout showed no residual correctness process.
+
+Decision:
+- Reverted the loader-cleanup overlap code.
+- Default M512 strict correctness after revert PASSed (`cosine_min=0.9996`, `norm_ratio=0.9995`).
+- Conclusion: cleanup cannot be moved ahead of epilogue combine with the current NVLink barrier/grid-sync lifecycle. The after-clean barrier likely conflicts with the concurrent combine barrier or rank progress ordering. This direction needs a more explicit multi-phase protocol, not a simple warp handoff.
+
+
+## 2026-06-12 Retained NVFP4 benchmark refresh and W8A8 rerun blocker
+
+Purpose:
+- After reverting several failed pipeline/scatter experiments, refresh the retained true compact NVFP4 benchmark in the current source tree.
+- Try to rerun the PR323/805 W8A8 baseline in the same window before choosing the next tuning target.
+
+Current retained NVFP4, 50-run compact mode:
+
+| tokens | recv | NVFP4 compact |
+|---:|---:|---:|
+| 512 | 4063 | 2232.7 us |
+| 1024 | 8268 | 3743.0 us |
+| 2048 | 16504 | 6474.0 us |
+| 4096 | 32619 | 12039.0 us |
+| 8192 | 65159 | 23146.0 us |
+
+Comparison against the retained PR323 W8A8 reference table:
+
+| tokens | NVFP4 refresh | PR323 W8A8 reference | NVFP4/W8A8 |
+|---:|---:|---:|---:|
+| 512 | 2232.7 us | 2320.0 us | 0.962x, 3.8% faster |
+| 1024 | 3743.0 us | 3518.0 us | 1.064x slower |
+| 2048 | 6474.0 us | 6274.0 us | 1.032x slower |
+| 4096 | 12039.0 us | 11402.0 us | 1.056x slower |
+| 8192 | 23146.0 us | 21904.0 us | 1.057x slower |
+
+W8A8 same-window rerun attempt:
+- `/root/fac/megamoe/deepgemm_pr323_w8a8` could not import `deep_gemm._C`.
+- Building it failed with missing `cute/arch/mma_sm100_desc.hpp`.
+- `/root/fac/megamoe/deepgemm_805_w8a8` is at `805f7e8 Restore SM90 block64 default heuristic`, but it also lacked `deep_gemm._C` and failed to build with the same missing CUTLASS header.
+- Therefore no fresh same-window W8A8 number was produced in this pass; keep using the prior verified PR323 W8A8 reference table unless a buildable W8A8 checkout is restored.
+
+Implication:
+- Current true compact NVFP4 now clearly beats W8A8 at M512, but still trails at M1024/M2048/M4096/M8192.
+- The largest refreshed relative gap is M1024, followed by M4096/M8192. Any next retained optimization should be size-gated and validated against these refreshed numbers.
+
+
+## 2026-06-12 Feasibility note - fused packed-B plus scale layout
+
+Motivation:
+- The current true compact NVFP4 path TMA-loads packed B (64 bytes per row for BK128) and separately TMA-loads UE4M3 scales (8 bytes per row) into `smem_sfb`.
+- Loader-dequant then reads both and materializes FP8 B in shared memory for WGMMA.
+- `math_dequant_wait` is already low, but the path still pays an extra SFB shared-memory allocation, a separate scale TMA, and an extra barrier transaction per stage.
+
+Candidate structural layout:
+- At weight-load transform time, store each BK128 row as `64B packed FP4 + 8B UE4M3 scale`, i.e. 72 bytes per row.
+- TMA-load one fused B tile of `BN * 72` bytes into the existing `smem_b` staging area.
+- Loader-dequant reads packed FP4 from `row * 72 + 0` and scale from `row * 72 + 64`, then writes the normal FP8 output to `row * 128` after all rows have first loaded their FP4/scale registers.
+- This preserves true compact NVFP4 input semantics; it does not use the FP8 shadow path.
+
+Expected upside:
+- Removes the separate SFB TMA load and `smem_sfb` stage allocation for the loader-dequant path.
+- Keeps scale bytes co-located with packed FP4 rows, which may reduce barrier bookkeeping and improve locality.
+- Does not reduce store-lane parallelism in direct L2 scatter and does not weaken existing epilogue barriers.
+
+Required code changes:
+- Python transform: add a fused layout helper in `deep_gemm/mega/__init__.py` or `deep_gemm/quantization_nvfp4.py` that packs `(E, N, K/2)` and tile-major scales into a 3D `(E, N, K/128 * 72)` tensor.
+- API/host checks: `csrc/apis/sm90_mega.hpp` must derive logical K from `storage_k / 72 * 128` when the fused layout is enabled, while still using `l*_weights_sf` for block_n/layout validation or replacing that validation with a fused-layout marker.
+- Host launcher: `csrc/jit_kernels/impls/sm90_nvfp4_mega_moe.hpp` must build B tensor maps with `BLOCK_K_STORAGE=72` instead of `BLOCK_K/2=64`, and shared-memory byte accounting must drop `SMEM_SFB_SIZE_PER_STAGE` for this path.
+- Kernel: `sm90_nvfp4_mega_moe.cuh` needs a template/runtime flag so loader-dequant uses row stride 72 and scale offset 64. The TMA transaction byte count must be `BN * 72`, not `SMEM_B_SIZE_PER_STAGE / 2`.
+- Tests: correctness must cover dequant-level row stride, then M512/M1024 strict E2E correctness, then 50-run benchmark.
+
+Risks:
+- TMA box width 72 must be accepted by the existing descriptor helper and hardware constraints.
+- In-place dequant is only safe if every dequant thread loads both packed FP4 and scale into registers before any thread writes FP8 to `row * 128`; the current two-row helper already has this barrier shape, but a new stride-aware helper is required.
+- This is an ABI/layout change, so it should be opt-in until correctness and benchmark prove it.
+
+Decision for this pass:
+- Not implemented as a quick patch because it touches Python transform, C++ API shape inference, host tensor maps, kernel dequant, and tests.
+- This remains the most concrete untried structural direction for reducing online FP4->FP8 materialization overhead without reverting to FP8 shadow weights.
+
+
+## 2026-06-12 Iteration - Fused packed-B plus scale default (retained)
+
+Context:
+- The phase profile before this iteration showed FC1/FC2 dequant/MMA overlap was already effective: `math_dequant_wait` was tiny compared with `math_loop`.
+- The remaining NVFP4-specific fixed cost was the B-side staging path: packed B TMA plus a separate SFB 1D TMA and per-stage SFB shared-memory allocation.
+
+Retained change:
+- Added a fused NVFP4 B layout where each BK128 row is stored as `64B packed FP4 + 8B UE4M3 scale + 8B padding`.
+- The physical weight tensor remains compact NVFP4 input, shaped as `(E, N, K/128*80)`; it is not an FP8 shadow cache.
+- B TMA now loads one 80B row tile into the normal `smem_b` staging area. Loader-dequant reads packed FP4 and scale from the same row, then writes the usual FP8 WGMMA-ready row layout into `smem_b`.
+- The separate SFB TMA and per-stage `smem_sfb` allocation are removed for the default fused layout.
+- `DG_SM90_NVFP4_FUSED_B_SCALE=0` remains an opt-out fallback to the previous separate packed-B + SFB layout.
+
+Validation:
+- 72B row layout was attempted first and failed at tensor-map creation with `CUDA_ERROR_INVALID_VALUE`; TMA requires a legal inner tile width, so this was changed to 80B rows.
+- 80B fused layout unit check PASS: fused tensor dequant is bit-exact with the original packed+tile-major-scale reference.
+- Default strict correctness PASS after making fused layout default:
+  - M512/M1024, weight_scale=0.05, cosine_min=0.9996, norm_ratio around 0.9994-0.9995.
+- Broad correctness PASS:
+  - dequant unit test PASS.
+  - CUDA LUT dequant unit test PASS.
+  - M32/M256/M512 with weight_scale=0.001/0.05/1.0 PASS.
+  - Worst observed cosine_min=0.9990; norm_ratio range stayed within [0.9992, 1.0059].
+
+Phase-profile signal, fused80 default, 5-run compact mode:
+
+| tokens | compact | math_loop avg cycles | loader_dequant avg | math_dequant_wait avg |
+|---:|---:|---:|---:|---:|
+| 512 | 2328.8 us | 1054117 | 1096 | 67 |
+| 1024 | 3887.0 us | 1860576 | 1099 | 63 |
+| 2048 | 6625.0 us | 3215234 | 1101 | 60 |
+| 4096 | 12199.0 us | 5894984 | 1096 | 55 |
+
+This improves the prior retained profile where `loader_dequant` was about 1206 cycles and `math_dequant_wait` about 115-133 cycles.
+
+Final default 50-run benchmark, compact true-NVFP4 input:
+
+| tokens | previous retained NVFP4 | final default NVFP4 | delta vs retained | PR323 W8A8 ref | final NVFP4/W8A8 |
+|---:|---:|---:|---:|---:|---:|
+| 512 | 2232.7 us | 2214.1 us | 0.8% faster | 2320.0 us | 0.954x, 4.6% faster |
+| 1024 | 3743.0 us | 3658.0 us | 2.3% faster | 3518.0 us | 1.040x slower |
+| 2048 | 6474.0 us | 6329.0 us | 2.2% faster | 6274.0 us | 1.009x slower |
+| 4096 | 12039.0 us | 11906.0 us | 1.1% faster | 11402.0 us | 1.044x slower |
+| 8192 | 23146.0 us | 22805.0 us | 1.5% faster | 21904.0 us | 1.041x slower |
+
+Best single fused80 run observed before the final full-sweep rerun:
+- M512/M1024/M2048/M4096/M8192 = 2200.7 / 3651.0 / 6315.0 / 11885.0 / 22777.0 us.
+- This run showed the same directional gain but final reporting keeps the later full-sweep default run above.
+
+Tried and rejected in this pass:
+- Loader global-scale dequant (`DG_SM90_NVFP4_LOADER_SCALE_GMEM=1` prototype): removed. Recomputing scale pointers in idle dequant warps failed correctness (`cosine_min=0.8609`); a shared-pointer handoff variant produced NaNs. This path was fully removed before final validation.
+- M4096 `L2_DUAL_ACCUM=1` default: 30/targeted 50-run had a positive signal, but the full final sweep regressed M4096 to 12040 us, so the default was reverted.
+- `DG_SM90_NVFP4_DIRECT_SCATTER_METADATA_BCAST=0`: improved rank0 M1024 in one sweep but worsened mean/max or larger sizes; not retained.
+- `DG_SM90_MOE_L2_NMAJOR=0`: no stable win in 50-run recheck; not retained.
+- `DG_SM90_MOE_L1_DUAL_K=1`: clear regression for M1024+; not retained.
+
+Decision:
+- Keep fused packed-B+scale 80B row layout as the default true compact NVFP4 path.
+- The target of beating W8A8 is achieved at M512 and nearly reached at M2048, but M1024/M4096/M8192 still trail PR323 W8A8 by about 4%.
+- The next structural direction should not be more dequant/MMA overlap; the fused layout already reduced that cost. Remaining gap is likely in global scheduling / dispatch-combine lifecycle / WGMMA issue efficiency rather than SFB staging alone.
+
+
+## 2026-06-12 Follow-up - Async L1 store rejected, 20-run sweep with M64/M128/M256
+
+Context:
+- The next structural hypothesis was to overlap L1 epilogue/TMA store with following-tile load/dequant for the BM128/two-epilogue-WG path.
+- A naive extension of `DG_SM90_MOE_ASYNC_L1_STORE` to two epilogue warpgroups, including a `tma_store_wait<0>` reuse guard, did not pass validation.
+
+Rejected attempt:
+- `DG_SM90_MOE_ASYNC_L1_STORE=1` with M512/M1024 strict correctness timed out after the dequant unit tests and before completing M512 E2E correctness.
+- This opt-in path was reverted/disabled for NVFP4: host now asserts if `DG_SM90_MOE_ASYNC_L1_STORE` is requested, and the kernel-side async condition is back to the original single-epilogue-WG shape.
+- No benchmark result from the async attempt is retained.
+
+Post-revert validation:
+- Rebuild PASS: `touch csrc/python_api.cpp && python setup.py build_ext --inplace -j 16`.
+- Strict compact correctness PASS after async disable:
+  - M512/M1024, weight_scale=0.05, fp8-bridge reference, compact weight mode.
+  - M512 cosine_min=0.9996, norm_ratio=0.9995.
+  - M1024 cosine_min=0.9996, norm_ratio=0.9994.
+
+Post-revert 20-run benchmark with small sizes included:
+
+Command:
+```bash
+MASTER_ADDR=127.0.0.1 MASTER_PORT=29663 \
+DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_post_async_revert_bench20_0612 \
+python3 -u tests/bench_nvfp4_mega_moe_sm90.py \
+  --num-processes 8 \
+  --batches 64 128 256 512 1024 2048 4096 8192 \
+  --num-tests 20 \
+  --weight-mode compact \
+  2>&1 | tee /tmp/nvfp4_post_async_revert_bench20.log
+```
+
+| tokens | recv | compact NVFP4 20-run | mean_rank | max_rank | PR323 W8A8 ref | compact/W8A8 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 64 | 517 | 1167.1 us | 1152.5 us | 1167.1 us | 869.9 us | 1.342x, 34.2% slower |
+| 128 | 1013 | 1340.3 us | 1307.1 us | 1340.3 us | 837.1 us | 1.601x, 60.1% slower |
+| 256 | 1990 | 1492.7 us | 1501.8 us | 1509.6 us | 1460.0 us | 1.022x, 2.2% slower |
+| 512 | 4131 | 2340.2 us | 2337.6 us | 2345.7 us | 2320.0 us | 1.009x, 0.9% slower |
+| 1024 | 8052 | 3657.0 us | 3697.9 us | 3714.0 us | 3518.0 us | 1.040x, 4.0% slower |
+| 2048 | 16403 | 6428.0 us | 6432.1 us | 6450.0 us | 6274.0 us | 1.025x, 2.5% slower |
+| 4096 | 32681 | 11920.0 us | 11907.3 us | 11922.0 us | 11402.0 us | 1.045x, 4.5% slower |
+| 8192 | 65556 | 22722.0 us | 22738.4 us | 22762.0 us | 21904.0 us | 1.037x, 3.7% slower |
+
+Interpretation:
+- The 20-run sweep with M64/M128/M256 shows the fixed-overhead regime clearly: M64/M128 remain far behind W8A8, while M256 and above are close but still mostly slower in this run.
+- This 20-run M512 did not reproduce the earlier retained 50-run best of 2214.1 us; keep the 50-run table as the best verified retained result and this table as the latest current-code 20-run including small sizes.
+- The async L1 store direction is not retained. A correct version would need a redesigned per-WG/per-stage store completion protocol rather than a simple CTA-global TMA wait change.
+
+
+## 2026-06-12 Iteration - Enable L2 no-dispatch + arrival counter for M128 (retained)
+
+Context:
+- The post-async-revert 20-run sweep added M64/M128/M256 and showed M128 was still in a fixed-overhead regime: 1340.3 us versus the PR323 W8A8 reference of 837.1 us.
+- Phase profile for M64/M128 showed `math_dequant_wait` was not the primary bottleneck. The heavier fixed costs were dispatch/combine lifecycle and a math loop floor that barely changed from M64 to M128.
+
+Env sweep:
+- `DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE=1` on M64/M128:
+  - M64: 1222.4 us, worse than the default 1127-1167 us range.
+  - M128: 1136.7 us, a strong improvement over the post-revert default 1340.3 us.
+- `DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE=1 DG_SM90_NVFP4_L2_ARRIVAL_COUNTER=1`:
+  - M64: 1275.1 us, worse.
+  - M128: 1132.8 us, slightly better than no-dispatch alone.
+- Adding `DG_SM90_NVFP4_DIRECT_SCATTER_METADATA_BCAST=1` produced lower rank0 M128 (1102.4 us) but worse mean/max ranks (mean 1161.1 us, max 1173.1 us), so it was not retained.
+
+Retained change:
+- Added `num_tokens == 128` to the default L2 no-dispatch pipeline set.
+- Added `num_tokens == 128` to the default L2 arrival-counter set.
+- M64 is intentionally not included because both no-dispatch variants regressed it.
+
+Correctness:
+- Strict M64/M128/M256 correctness PASS after changing the default gate:
+  - dequant unit test PASS.
+  - CUDA LUT dequant unit test PASS.
+  - M64/M128/M256, weight_scale=0.05, cosine_min=0.9996.
+- Broad M128 correctness PASS:
+  - weight_scale=0.001: cosine_min=0.9996, norm_ratio=0.9994.
+  - weight_scale=0.05: cosine_min=0.9996, norm_ratio=0.9997.
+  - weight_scale=1.0: cosine_min=0.9993, norm_ratio=0.9979.
+
+Default 20-run benchmark after retaining the M128 gate:
+
+| tokens | recv | compact NVFP4 20-run | mean_rank | max_rank | PR323 W8A8 ref | compact/W8A8 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 64 | 517 | 1127.3 us | 1136.7 us | 1149.0 us | 869.9 us | 1.296x, 29.6% slower |
+| 128 | 1013 | 1121.3 us | 1116.4 us | 1123.0 us | 837.1 us | 1.340x, 34.0% slower |
+| 256 | 1990 | 1511.8 us | 1506.3 us | 1513.2 us | 1460.0 us | 1.035x, 3.5% slower |
+| 512 | 4131 | 2355.5 us | 2347.1 us | 2358.5 us | 2320.0 us | 1.015x, 1.5% slower |
+| 1024 | 8052 | 3673.0 us | 3664.8 us | 3673.0 us | 3518.0 us | 1.044x, 4.4% slower |
+| 2048 | 16403 | 6390.0 us | 6385.4 us | 6395.0 us | 6274.0 us | 1.019x, 1.9% slower |
+| 4096 | 32681 | 11928.0 us | 11938.0 us | 11964.0 us | 11402.0 us | 1.046x, 4.6% slower |
+| 8192 | 65556 | 22705.0 us | 22700.1 us | 22709.0 us | 21904.0 us | 1.037x, 3.7% slower |
+
+Effect versus post-async-revert 20-run:
+- M128 improved from 1340.3 us to 1121.3 us, about 16.3% faster.
+- M64 improved from 1167.1 us to 1127.3 us in this run, but the retained code does not deliberately change M64; treat this as run-to-run variation unless reproduced.
+- M256/M512 changed within about 1-2%, so the new default is scoped enough to keep larger sizes stable.
+
+Decision:
+- Keep the M128 L2 no-dispatch + arrival counter default.
+- This is a real small-M win, but it does not close the W8A8 gap: M64/M128 are still about 30-34% slower than PR323 W8A8, and M256+ remain close but mostly behind in the 20-run sweep.
+
+
+## 2026-06-12 Profile Analysis - Tile-to-tile overlap status
+
+Current status:
+- FC1/FC2 B-side NVFP4 dequant is already overlapped with WGMMA well enough that it is no longer the main exposed stall.
+- The current default path still does not have a stable explicit block-level pipeline that overlaps L1 epilogue/TMA store or L2 scatter with the next tile's load/dequant.
+
+Evidence from existing phase profile (`/tmp/nvfp4_post_async_revert_phase_profile.log`):
+
+| tokens | compact | math_loop avg | gemm_core avg | loader_dequant avg | math_dequant_wait avg | l1_epilogue avg | l2_epilogue avg | combine_barrier avg |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 64 | 1408.1 us | 563464 | 29154 | 877 | 279 | 2355 | 727 | 11679 |
+| 128 | 1299.2 us | 567079 | 29299 | 883 | 282 | 2335 | 809 | 10685 |
+| 256 | 1668.8 us | 752896 | 38656 | 1222 | 73 | 3769 | 1151 | 14653 |
+| 512 | 2359.2 us | 1049623 | 35787 | 1095 | 68 | 2633 | 1578 | 209454 |
+| 1024 | 3776.0 us | 1718859 | 35995 | 1102 | 64 | 2772 | 1728 | 290576 |
+
+Interpretation:
+- `math_dequant_wait` is tiny for M256+ (64-73 cycles average) compared with `gemm_core` (~36k cycles) and `math_loop` (0.75M-1.72M cycles). This means loader-dequant is mostly hidden behind WGMMA/math work.
+- M64/M128 still show only ~280 cycles `math_dequant_wait`, which is also small relative to the ~563k cycle math loop floor. Their gap to W8A8 is not primarily dequant wait.
+- M512/M1024 show large `combine_barrier` averages (209k/291k cycles). This points to phase/wave synchronization and combine lifecycle as a larger exposed fixed cost than dequant.
+- L1/L2 epilogue averages are small per event, but they are serialized at the block boundary; the current profile does not expose a direct overlap percentage between epilogue/scatter and the next tile load/dequant.
+
+Code-path evidence:
+- `DG_SM90_MOE_ASYNC_L1_STORE` is currently disabled for NVFP4 by host assertion after the two-epilogue-WG experiment timed out.
+- In the non-async L1 epilogue path, the kernel issues TMA store, then executes `ptx::tma_store_wait<0>()`, and only then calls `notify_l1_ready(...)`.
+- The default split L1/L2 path launches L1 and L2 as separate kernels, so L2 does not overlap with L1 at the kernel/phase level.
+- Therefore, any store/load overlap today is incidental hardware overlap across independent CTAs/waves, not a deliberate per-block tile pipeline.
+
+Recent attempt:
+- Extending async L1 TMA store to two epilogue warpgroups was tested with a `tma_store_wait<0>` reuse guard, but M512/M1024 correctness timed out before completing E2E validation.
+- That path was reverted/disabled. It should not be counted as a working overlap pipeline.
+
+Conclusion:
+- Tile-level dequant/MMA overlap: good enough; not the active bottleneck.
+- Epilogue/scatter versus next tile load/dequant overlap: not solved. The implementation still waits at the L1 store boundary and uses split L1/L2 phase boundaries, so the remaining optimization should target a correct async store/readiness protocol or a different scheduler shape that can overlap L1 output publication and L2 consumption without deadlock.
+
+Next instrumentation gap:
+- Existing phase profile is useful but insufficient to quantify overlap directly. A better profile needs separate markers for:
+  - L1 epilogue compute before TMA store issue.
+  - L1 TMA store issue-to-wait lifetime.
+  - L1 ready notification latency.
+  - L2 wait-for-ready time.
+  - First TMA load/dequant of the next L2 tile after readiness.
+- This would make the actual missed overlap visible instead of inferring it from barriers and code structure.
+
+
+## 2026-06-12 Instrumentation - Direct tile-overlap phase metrics
+
+Change:
+- Added opt-in phase-profile-only metrics to expose the missing tile-overlap pieces more directly:
+  - `l1_tma_wait`: time spent waiting for L1 TMA store completion before publishing L1 output readiness.
+  - `l1_ready_notify`: time spent publishing L1-ready state to the L2 arrival mask/counter.
+  - `l2_ready_wait`: time spent waiting for L1 output readiness before L2 starts loading/processing a tile.
+  - `l2_scatter`: L2 direct or SMEM-mediated scatter section inside the L2 epilogue.
+- Increased the benchmark phase-profile scratch allocation from 64 to 96 `int32` slots and updated the C++ API shape check accordingly.
+
+Files touched for instrumentation:
+- `deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe.cuh`
+- `tests/bench_nvfp4_mega_moe_sm90.py`
+- `csrc/apis/sm90_mega.hpp`
+
+Validation status:
+- `python setup.py build_ext --inplace -j 16` PASS after the instrumentation patch.
+- Runtime correctness/profile collection is pending because another 8-rank benchmark is currently occupying the GPUs in `/root/fac/megamoe/DeepGEMM_megamoe_nvfp4`:
+  - `DG_SM90_NVFP4_DISPATCH_THREADS=64 python3 tests/bench_nvfp4_mega_moe_sm90.py --num-processes 8 --batches 4096 --num-tests 30`
+  - Log `/tmp/nvfp4_fused_dispatch64_M4096.log` has not progressed past the banner.
+- This external process was not killed, per the no-pkill/no-interference rule.
+
+Next validation command once GPUs are free:
+```bash
+MASTER_ADDR=127.0.0.1 MASTER_PORT=29701 \
+DG_SM90_MOE_PHASE_PROFILE=1 \
+DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_overlap_profile_0612 \
+python3 -u tests/bench_nvfp4_mega_moe_sm90.py \
+  --num-processes 8 \
+  --batches 64 128 256 512 1024 2048 \
+  --num-tests 5 \
+  --weight-mode compact \
+  2>&1 | tee /tmp/nvfp4_overlap_phase_profile.log
+```
+
+Expected use of new metrics:
+- If `l1_tma_wait` is large while `l2_ready_wait` is also large, L2 is directly exposed to L1 store publication latency.
+- If `l1_tma_wait` is large but `l2_ready_wait` is small, the scheduler/waves are hiding L1 publication latency well enough.
+- If `l2_scatter` is large and `combine_barrier` remains large, the bottleneck is likely L2 scatter/combine lifecycle rather than L1 store readiness.
+
+
+## 2026-06-12 Profile Results - Direct tile-overlap metrics
+
+Command:
+```bash
+MASTER_ADDR=127.0.0.1 MASTER_PORT=29701 \
+DG_SM90_MOE_PHASE_PROFILE=1 \
+DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_overlap_profile_0612 \
+python3 -u tests/bench_nvfp4_mega_moe_sm90.py \
+  --num-processes 8 \
+  --batches 64 128 256 512 1024 2048 \
+  --num-tests 5 \
+  --weight-mode compact \
+  2>&1 | tee /tmp/nvfp4_overlap_phase_profile.log
+```
+
+Results with the new overlap metrics:
+
+| tokens | compact | math_loop | combine_barrier | loader_dequant | math_dequant_wait | l1_tma_wait | l1_ready_notify | l2_ready_wait | l2_scatter |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 64 | 1271.5 us | 564334 | 9561 | 882 | 276 | 72 | 438 | 235 | 743 |
+| 128 | 1258.3 us | 568509 | 9386 | 902 | 308 | 74 | 421 | 233 | 829 |
+| 256 | 1679.8 us | 752570 | 10043 | 1222 | 74 | 70 | 525 | 255 | 1203 |
+| 512 | 3152.0 us | 1264692 | 211946 | 1098 | 65 | 72 | 513 | 233 | 1610 |
+| 1024 | 3905.0 us | 1749112 | 299594 | 1101 | 63 | 72 | 510 | 252 | 1699 |
+| 2048 | 6726.0 us | 3162050 | 253524 | 1101 | 59 | 73 | 548 | 236 | 1802 |
+
+Interpretation:
+- `l1_tma_wait` is only about 70-74 cycles across all profiled sizes. The synchronous `tma_store_wait<0>` after L1 output TMA store is not a large exposed stall.
+- `l2_ready_wait` is only about 233-255 cycles. L2 is not spending significant time waiting for L1 output readiness.
+- `l1_ready_notify` is about 420-550 cycles, larger than the store wait but still small compared with math loop and combine waits.
+- `l2_scatter` accounts for most of `l2_epilogue`, but is still only about 0.7-1.8k cycles per event. It is worth optimizing locally, but not enough by itself to explain the W8A8 gap.
+- `math_dequant_wait` remains small, confirming again that B-side NVFP4 dequant/MMA overlap is not the active bottleneck.
+- M512/M1024/M2048 still show much larger exposed fixed costs in `combine_barrier` and `dispatch_pull/dispatch_total` than in L1 store readiness or L2 ready wait.
+
+Conclusion:
+- The previous hypothesis that the missing gain mainly comes from L1 epilogue/TMA store not overlapping next-tile load/dequant is not supported by the new metrics.
+- Async L1 TMA store is unlikely to be the next high-value direction: it previously timed out, and the measured synchronous wait is only ~70 cycles.
+- The next structural focus should shift toward L2 scatter/combine lifecycle and scheduler/wave behavior, especially the large `combine_barrier` and `dispatch_pull` costs at M512+.
+
+
+## 2026-06-12 Experiment - Reduce SM count for combine/tail (rejected)
+
+Hypothesis:
+- The new overlap profile showed `combine_barrier` and `dispatch_pull/dispatch_total` are much larger exposed costs than L1 TMA wait or L2 ready wait.
+- Try reducing participating SMs to see whether less wave/tail pressure lowers global barrier latency.
+
+Command shape:
+```bash
+python3 -u tests/bench_nvfp4_mega_moe_sm90.py \
+  --num-processes 8 \
+  --batches 512 1024 2048 \
+  --num-tests 20 \
+  --weight-mode compact
+```
+
+Results:
+
+| config | M512 | M1024 | M2048 |
+|---|---:|---:|---:|
+| default SM count | 2242.5 us | 3671.0 us | 6308.0 us |
+| `DG_SM90_MOE_SET_NUM_SMS=72` | 2354.9 us | 3894.0 us | 6791.0 us |
+| `DG_SM90_MOE_SET_NUM_SMS=64` | 2748.5 us | 4355.0 us | 7576.0 us |
+
+Decision:
+- Rejected. Reducing SM count consistently regresses M512/M1024/M2048.
+- The barrier/tail issue is not solved by simply reducing the number of participating SMs; full SM count remains the best default.
+
+
+## 2026-06-12 Validation - Post-instrumentation correctness and default benchmark
+
+Correctness command:
+```bash
+MASTER_ADDR=127.0.0.1 MASTER_PORT=29705 \
+DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_post_instrument_correct_0612 \
+python3 -u tests/test_nvfp4_mega_moe_sm90_correctness.py \
+  --batches 128 512 \
+  --weight-scales 0.05 \
+  --reference-mode fp8-bridge \
+  --weight-mode compact \
+  --cosine-mean-threshold 0.99 \
+  --cosine-min-threshold 0.99 \
+  --norm-ratio-min 0.99 \
+  --norm-ratio-max 1.01
+```
+
+Result:
+- dequant unit test PASS.
+- CUDA LUT dequant unit test PASS.
+- M128 PASS: cosine_min=0.9996, norm_ratio=0.9997.
+- M512 PASS: cosine_min=0.9996, norm_ratio=0.9995.
+
+Default non-profile 20-run benchmark after adding profile-only instrumentation:
+
+| tokens | compact NVFP4 | mean_rank | max_rank | PR323 W8A8 ref | compact/W8A8 |
+|---:|---:|---:|---:|---:|---:|
+| 64 | 1142.5 us | 1130.7 us | 1142.5 us | 869.9 us | 1.313x, 31.3% slower |
+| 128 | 1239.2 us | 1221.4 us | 1241.8 us | 837.1 us | 1.480x, 48.0% slower |
+| 256 | 1527.7 us | 1539.6 us | 1556.9 us | 1460.0 us | 1.046x, 4.6% slower |
+| 512 | 2340.4 us | 2328.0 us | 2342.9 us | 2320.0 us | 1.009x, 0.9% slower |
+| 1024 | 3671.0 us | 3660.9 us | 3673.0 us | 3518.0 us | 1.043x, 4.3% slower |
+| 2048 | 6562.0 us | 6532.2 us | 6562.0 us | 6274.0 us | 1.046x, 4.6% slower |
+| 4096 | 11878.0 us | 11929.8 us | 11956.0 us | 11402.0 us | 1.042x, 4.2% slower |
+| 8192 | 22718.0 us | 22712.0 us | 22726.0 us | 21904.0 us | 1.037x, 3.7% slower |
+
+Interpretation:
+- Profile-only instrumentation does not affect the default non-profile path in an obvious way; results stay in the existing run-to-run band.
+- M128 remains improved versus the old pre-gate 1340.3 us result, though this run did not reproduce the best 1121.3 us M128 result.
+- M512 remains near parity with W8A8; M1024/M4096/M8192 remain about 3.7-4.3% slower in this run.
+
+
+
+## 2026-06-12 Profile - Full-size tile overlap check
+
+Purpose:
+- Re-check whether the true compact NVFP4 path is losing time because L1 epilogue/scatter is not overlapped with the next tile's load/dequant.
+- Extend the earlier phase profile from M64-M2048 to M4096/M8192.
+
+Command:
+```bash
+MASTER_ADDR=127.0.0.1 MASTER_PORT=29731 \
+DG_SM90_MOE_PHASE_PROFILE=1 \
+DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_overlap_profile_full_0612 \
+python3 -u tests/bench_nvfp4_mega_moe_sm90.py \
+  --num-processes 8 \
+  --batches 256 512 1024 2048 4096 8192 \
+  --num-tests 3 \
+  --weight-mode compact \
+  2>&1 | tee /tmp/nvfp4_overlap_phase_profile_full_0612.log
+```
+
+Results:
+
+| tokens | compact | math_loop avg cyc | dispatch_pull avg cyc | combine_barrier avg cyc | combine_reduce avg cyc | math_dequant_wait avg cyc | l1_tma_wait avg cyc | l2_ready_wait avg cyc | l2_scatter avg cyc |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 1664.0 us | 756342 | 54016 | 25282 | 4787 | 74 | 70 | 256 | 1175 |
+| 512 | 2461.0 us | 1055416 | 102918 | 393528 | 12579 | 64 | 72 | 232 | 1579 |
+| 1024 | 3813.0 us | 2161959 | 203394 | 112328 | 27466 | 62 | 71 | 253 | 1700 |
+| 2048 | 6638.0 us | 3240604 | 401488 | 106723 | 60480 | 59 | 72 | 236 | 1776 |
+| 4096 | 12411.0 us | 5974021 | 810892 | 255649 | 126696 | 54 | 73 | 227 | 1996 |
+| 8192 | 23697.0 us | 11425480 | 1614828 | 455804 | 259861 | 53 | 73 | 225 | 2039 |
+
+Interpretation:
+- Tile-to-tile overlap is not the dominant exposed loss in the current profile.
+- `math_dequant_wait` is only 53-74 cycles at M256-M8192, so B-side NVFP4 dequant is being hidden well by the math loop.
+- `l1_tma_wait` stays around 70-73 cycles for all sizes; synchronous L1 output store completion is not a meaningful wall-time limiter.
+- `l2_ready_wait` stays around 225-256 cycles; L2 is not materially blocked waiting for L1 publication.
+- `l2_scatter` grows only from about 1.2k to 2.0k cycles per event; worth local cleanup but too small to explain the 3-5% W8A8 gap by itself.
+- The exposed large terms are `dispatch_pull`, `combine_barrier`, `combine_reduce` at large M, and the `math_loop` floor. M512 is especially noisy: this run shows a large `combine_barrier` spike.
+
+Decision:
+- Do not spend more effort on async L1 TMA store as the primary direction; measured wait is tiny and previous 2-WG async attempts timed out.
+- Next structural directions should target global dispatch/combine lifecycle, chunking/reduction behavior, or per-size kernel/config specialization rather than tile load/dequant versus epilogue overlap.
+
+
+## 2026-06-12 Experiment - Force hidden=7168 combine reduce to 7 chunks (rejected)
+
+Hypothesis:
+- FP8/PR323 uses a split-MN-specific combine chunking path where hidden=7168 can be split into 7 chunks.
+- NVFP4 default combine currently uses `kNumDefaultChunks` only, which is 2 chunks for hidden=7168.
+- Forcing 7 chunks reduces each lane's BF16 reduce accumulator from about 56 `float2` values to 16 `float2` values, but increases chunk-loop and TMA load/store count.
+
+Patch tested:
+- Temporarily changed NVFP4 combine `kNumChunks` from `kNumDefaultChunks` to 7 when `kHidden % 7 == 0`.
+- Rebuilt successfully.
+
+Correctness:
+```bash
+MASTER_ADDR=127.0.0.1 MASTER_PORT=29732 \
+DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_combine7_correct_0612 \
+python3 -u tests/test_nvfp4_mega_moe_sm90_correctness.py \
+  --batches 256 512 2048 \
+  --weight-scales 0.05 \
+  --reference-mode fp8-bridge \
+  --weight-mode compact \
+  --cosine-mean-threshold 0.99 \
+  --cosine-min-threshold 0.99 \
+  --norm-ratio-min 0.99 \
+  --norm-ratio-max 1.01
+```
+- PASS.
+- M256 cosine_min=0.9996 norm_ratio=0.9996.
+- M512 cosine_min=0.9996 norm_ratio=0.9995.
+- M2048 cosine_min=0.9995 norm_ratio=0.9995.
+
+20-run benchmark:
+
+| tokens | combine7 compact | previous retained compact | delta |
+|---:|---:|---:|---:|
+| 64 | 1410.8 us | 1142.5 us | 23.5% slower |
+| 128 | 1166.9 us | 1239.2 us | 5.8% faster |
+| 256 | 1538.8 us | 1527.7 us | 0.7% slower |
+| 512 | 2381.7 us | 2340.4 us | 1.8% slower |
+| 1024 | 3708.0 us | 3671.0 us | 1.0% slower |
+| 2048 | 6429.0 us | 6562.0 us | 2.0% faster |
+| 4096 | 11936.0 us | 11878.0 us | 0.5% slower |
+| 8192 | 22774.0 us | 22718.0 us | 0.2% slower |
+
+Phase profile comparison:
+- `combine_reduce` did not improve; it got worse.
+- M64 `combine_reduce`: about 1.8k cycles retained path -> 3.7k cycles combine7.
+- M128 `combine_reduce`: about 3.6k cycles retained path -> 7.4k cycles combine7.
+- M512 `combine_reduce`: about 13k cycles retained path -> 18k cycles combine7.
+- M2048 `combine_reduce`: about 60k cycles retained path -> 81k cycles combine7.
+
+Decision:
+- Rejected and reverted.
+- The 20-run M128/M2048 improvement is not supported by phase-profile causality; it is likely run-to-run noise or interaction with unrelated barrier timing.
+- Keep `kNumChunks = kNumDefaultChunks` for NVFP4 default.
+- Do not add per-M combine7 gating unless a future longer run proves stable end-to-end benefit and a profile shows the source of the win.
+
+
+## 2026-06-12 Sweep - Existing per-M knobs after overlap profile
+
+Purpose:
+- The overlap profile showed tile-to-tile ready waits are tiny and the visible costs are dispatch/combine/math-loop.
+- Sweep existing runtime knobs before adding new code, to see whether any per-M default should be changed.
+
+Baseline used for comparison:
+- PR323 W8A8 refs: M512 2320 us, M1024 3518 us, M2048 6274 us, M4096 11402 us, M8192 21904 us.
+- Retained NVFP4 default remains split L1/L2 + compact fused B+scale + BM128 for M256+.
+
+20-run sweep results:
+
+| config | M512 | M1024 | M2048 | M4096 | M8192 | decision |
+|---|---:|---:|---:|---:|---:|---|
+| default | 2192.2 | 3774.0 | 6333.0 | 11927.0 | 22787.0 | baseline sweep |
+| `DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE=0` | 2411.0 | 4022.0 | 7088.0 | 13155.0 | 24660.0 | reject, all slower |
+| `DG_SM90_NVFP4_DIRECT_SCATTER_METADATA_BCAST=0` | 2218.7 | 3789.0 | 6316.0 | 11932.0 | 22885.0 | reject, only tiny M2048 signal |
+| `DG_SM90_NVFP4_L2_ARRIVAL_COUNTER=0` | 2275.9 | 3654.0 | 6344.0 | 12045.0 | 22988.0 | reject; M1024 signal not stable |
+| `DG_SM90_MOE_L2_DUAL_ACCUM=1` | 2216.7 | 4114.0 | 6294.0 | 11981.0 | 22870.0 | reject, M1024 bad |
+| `DG_SM90_MOE_L2_DUAL_ACCUM=0` | 2212.4 | 3626.0 | 6373.0 | 11895.0 | 22773.0 | reject after M1024 30-run |
+| `DG_SM90_MOE_L2_NMAJOR=0` | 2386.4 | 3894.0 | 6348.0 | 11882.0 | 22784.0 | reject, broad regression |
+| `DG_SM90_NVFP4_BM128_HEURISTIC=0` | 2742.0 | 4771.0 | 8796.0 | 18143.0 | 33175.0 | reject, BM128 is required |
+| `DG_SM90_NVFP4_NUM_STAGES=2` | 2584.2 | 4158.0 | 7082.0 | 13274.0 | 25550.0 | reject, 3-stage required |
+| `DG_SM90_MOE_SPLIT_L1_L2=0` | 3318.0 | 5275.0 | 9268.0 | 18028.0 | 34616.0 | reject, split L1/L2 required |
+| `DG_SM90_MOE_L1_NMAJOR=1` | 2241.3 | 3683.0 | 6313.0 | 11860.0 | 22779.0 | reject for default; tiny/noisy M2048-M4096 signal |
+
+30-run stability checks:
+
+| config | M1024 | M2048 | M4096 | decision |
+|---|---:|---:|---:|---|
+| default | 3633.0 | 6463.0 | 11770.0 | retained default |
+| `DG_SM90_MOE_L2_DUAL_ACCUM=0` | 3737.0 | - | - | M1024 signal reversed, reject |
+| `DG_SM90_NVFP4_DIRECT_SCATTER_METADATA_BCAST=0` | - | 6469.0 | - | no M2048 gain, reject |
+| `DG_SM90_MOE_L1_NMAJOR=1` | - | 6444.0 | - | only ~0.3% faster than same-run default; below noise, reject for default |
+
+Invalid config:
+- `DG_SM90_NVFP4_DISPATCH_THREADS=64` alone hits host assert because dispatch + non-epilogue threads must be a multiple of 128. It was not pursued because reducing non-epilogue threads would disable the retained loader-dequant path.
+
+Current best retained/default observations versus PR323 W8A8:
+
+| tokens | best retained NVFP4 | PR323 W8A8 | gap |
+|---:|---:|---:|---:|
+| 64 | 1142.5 us | 869.9 us | 31.3% slower |
+| 128 | 1239.2 us | 837.1 us | 48.0% slower |
+| 256 | 1527.7 us | 1460.0 us | 4.6% slower |
+| 512 | 2192.2 us | 2320.0 us | 5.5% faster |
+| 1024 | 3633.0 us | 3518.0 us | 3.3% slower |
+| 2048 | 6333.0 us | 6274.0 us | 0.9% slower, but 30-run same-code sample was 6463 us |
+| 4096 | 11770.0 us | 11402.0 us | 3.2% slower |
+| 8192 | 22718.0 us | 21904.0 us | 3.7% slower |
+
+Decision:
+- No existing runtime knob is stable enough to change the default.
+- The strongest retained result is still M512, where NVFP4 is already faster than W8A8.
+- M2048 is close but noisy; the knob sweeps did not find a reliable per-M default improvement.
+- Next useful step is W8A8-vs-NVFP4 phase-profile comparison, not more blind knob sweeping.
+
+
+## 2026-06-12 Rebaseline - Same-script current FP8 shadow/W8A8 comparison
+
+Reason:
+- Earlier tables used the PR323 retained W8A8 reference numbers.
+- To avoid comparing against a stale/noisy external reference, run the same benchmark script in the same repo/container with `--weight-mode fp8-shadow`.
+- This path materializes NVFP4 weights through the FP8 shadow bridge and calls `deep_gemm.fp8_mega_moe`, so it is the closest same-script W8A8/fp8-kernel latency reference available in this repo.
+
+Commands:
+```bash
+python3 -u tests/bench_nvfp4_mega_moe_sm90.py \
+  --num-processes 8 \
+  --batches 64 128 256 \
+  --num-tests 20 \
+  --weight-mode fp8-shadow
+
+python3 -u tests/bench_nvfp4_mega_moe_sm90.py \
+  --num-processes 8 \
+  --batches 512 1024 2048 4096 8192 \
+  --num-tests 20 \
+  --weight-mode fp8-shadow
+```
+
+Current FP8 shadow results:
+
+| tokens | fp8-shadow/W8A8 current |
+|---:|---:|
+| 64 | 823.3 us |
+| 128 | 811.8 us |
+| 256 | 1435.0 us |
+| 512 | 2126.0 us |
+| 1024 | 3539.0 us |
+| 2048 | 6019.0 us |
+| 4096 | 11468.0 us |
+| 8192 | 21825.0 us |
+
+Same-script comparison using retained NVFP4 observations from the matching/default logs:
+
+| tokens | retained NVFP4 | current fp8-shadow/W8A8 | gap |
+|---:|---:|---:|---:|
+| 64 | 1142.5 us | 823.3 us | 38.8% slower |
+| 128 | 1239.2 us | 811.8 us | 52.6% slower |
+| 256 | 1527.7 us | 1435.0 us | 6.5% slower |
+| 512 | 2192.2 us | 2126.0 us | 3.1% slower |
+| 1024 | 3774.0 us | 3539.0 us | 6.6% slower |
+| 2048 | 6333.0 us | 6019.0 us | 5.2% slower |
+| 4096 | 11927.0 us | 11468.0 us | 4.0% slower |
+| 8192 | 22787.0 us | 21825.0 us | 4.4% slower |
+
+Interpretation:
+- Against the older PR323 reference, NVFP4 looked faster at M512 and close at M2048.
+- Against the same-script current FP8 shadow reference, retained NVFP4 is still slower at every measured size.
+- The remaining target is therefore stricter than the old PR323 table suggested: large-M NVFP4 needs another ~3-6% and small-M needs a different structural path.
+- FP8 shadow does not have the NVFP4 phase-profile instrumentation, so this is a timing baseline, not a phase-level breakdown.
+
+
+## 2026-06-12 True fused NVFP4 - Compile-time phase dispatch
+
+Context:
+- User clarified that the real target should be the true fused NVFP4 kernel, while retaining the current split L1/L2 two-kernel path.
+- Before this step, `DG_SM90_MOE_SPLIT_L1_L2=0` true fused path was correct but much slower than the split path.
+
+Change tested:
+- In the fused path (`kRunL1Phase && kRunL2Phase`), dispatch scheduler blocks to the role lambdas with compile-time phase constants:
+  - `std::integral_constant<sched::BlockPhase, Linear1>` for L1 blocks.
+  - `std::integral_constant<sched::BlockPhase, Linear2>` for L2 blocks.
+- Goal: allow compiler folding of L1/L2 branches inside fused loader/math/epilogue code.
+- The split L1/L2 path remains retained and is still available as the two-kernel fallback/default path.
+
+Correctness command:
+```bash
+DG_SM90_MOE_SPLIT_L1_L2=0 \
+DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_true_fused_ctphase_correct_0612 \
+python3 -u tests/test_nvfp4_mega_moe_sm90_correctness.py \
+  --batches 128 512 2048 \
+  --weight-scales 0.05 \
+  --reference-mode fp8-bridge \
+  --weight-mode compact \
+  --cosine-mean-threshold 0.99 \
+  --cosine-min-threshold 0.99 \
+  --norm-ratio-min 0.99 \
+  --norm-ratio-max 1.01
+```
+
+Correctness result:
+- PASS.
+- M128 cosine_min=0.9996 norm_ratio=0.9997.
+- M512 cosine_min=0.9996 norm_ratio=0.9995.
+- M2048 cosine_min=0.9995 norm_ratio=0.9995.
+
+Current true fused 20-run benchmark after compile-time phase dispatch:
+
+| tokens | true fused current | previous true fused | true fused improvement |
+|---:|---:|---:|---:|
+| 64 | 1128.0 us | - | - |
+| 128 | 1330.0 us | - | - |
+| 256 | 1837.0 us | - | - |
+| 512 | 2665.0 us | 3318.0 us | 19.7% faster |
+| 1024 | 4297.0 us | 5275.0 us | 18.5% faster |
+| 2048 | 7507.0 us | 9268.0 us | 19.0% faster |
+| 4096 | 13629.0 us | 18028.0 us | 24.4% faster |
+| 8192 | 26167.0 us | 34616.0 us | 24.4% faster |
+
+Comparison against current retained split L1/L2 two-kernel path:
+
+| tokens | true fused current | split two-kernel current | true fused vs split |
+|---:|---:|---:|---:|
+| 64 | 1128.0 us | 1170.9 us | 3.7% faster |
+| 128 | 1330.0 us | 1217.6 us | 9.2% slower |
+| 256 | 1837.0 us | 1502.3 us | 22.3% slower |
+| 512 | 2665.0 us | 2319.3 us | 14.9% slower |
+| 1024 | 4297.0 us | 3675.0 us | 16.9% slower |
+| 2048 | 7507.0 us | 6504.0 us | 15.4% slower |
+| 4096 | 13629.0 us | 11841.0 us | 15.1% slower |
+| 8192 | 26167.0 us | 22712.0 us | 15.2% slower |
+
+Interpretation:
+- Compile-time phase dispatch is a real true-fused-path improvement; it removes roughly one-fifth of large-M true fused runtime.
+- It is still not competitive with the split two-kernel path for M128+.
+- The true fused path is now only better at M64 in this 20-run sample, likely because it avoids the second launch while M is too small for split-phase work to dominate.
+- For M512+, the remaining fused gap is still about 15%, so the real fused path needs another structural improvement before it can replace split L1/L2.
+
+## 2026-06-12 Iteration: true fused auto phase propagation
+
+Change:
+- Kept split L1/L2 path intact.
+- In sm90_nvfp4_mega_moe.cuh, changed the five for_each_selected_block lambda phase parameters from const sched::BlockPhase& to const auto& so the true fused scheduler compile-time Linear1/Linear2 phase can propagate into loader/math lambdas.
+
+Correctness:
+- Command: DG_SM90_MOE_SPLIT_L1_L2=0 DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_true_fused_autophase_correct_0612 python3 -u tests/test_nvfp4_mega_moe_sm90_correctness.py --batches 128 512 2048 --weight-scales 0.05 --reference-mode fp8-bridge --weight-mode compact --cosine-mean-threshold 0.99 --cosine-min-threshold 0.99 --norm-ratio-min 0.99 --norm-ratio-max 1.01
+- Result: PASS. Dequant unit PASS, CUDA LUT dequant unit PASS. M128 cosine_min=0.9996 norm_ratio=0.9997; M512 cosine_min=0.9996 norm_ratio=0.9995; M2048 cosine_min=0.9995 norm_ratio=0.9995.
+
+Benchmark, true fused compact NVFP4, 8 ranks, 20 runs:
+
+| M | time us |
+|---:|---:|
+| 64 | 1112.0 |
+| 128 | 1134.0 |
+| 256 | 1799.0 |
+| 512 | 2613.0 |
+| 1024 | 4127.0 |
+| 2048 | 7499.0 |
+| 4096 | 13609.0 |
+| 8192 | 26174.0 |
+
+Delta vs previous true fused default run: previous was 1440, 1260, 1898, 2625, 4292, 7446, 13659, 26170 us for M64..8192.
+- M64: 22.8% faster.
+- M128: 10.0% faster.
+- M256: 5.2% faster.
+- M512/M4096/M8192: roughly flat.
+- M1024: 3.8% faster.
+- M2048: 0.7% slower.
+
+Resource check:
+- BM64 true fused variants: REG=168 STACK=24.
+- BM128 true fused variants: REG=128 STACK=216 or 248, still not reduced versus prior, so there are still runtime phase branches/local states in the hot path.
+
+Conclusion:
+- Effective for small M, keep for now.
+- Not enough to close the W8A8 gap. Next target is converting the remaining hot math block_phase branches to compile-time phase traits where the caller passes a compile-time phase.
+
+## 2026-06-12 Iteration: retained true fused defaults after knob sweep
+
+Retained changes:
+- Kept the previous true fused auto phase propagation: for_each_selected_block lambda phase parameters use const auto& so compile-time Linear1/Linear2 phase can reach the hot lambdas.
+- Added a host heuristic for true fused M256 only: default L1 dual-K is disabled when DG_SM90_MOE_SPLIT_L1_L2=0 and num_tokens=256. Split L1/L2 path is unchanged.
+
+Correctness:
+- Command: DG_SM90_MOE_SPLIT_L1_L2=0 DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_true_fused_retained_correct_0612 python3 -u tests/test_nvfp4_mega_moe_sm90_correctness.py --batches 128 256 512 2048 --weight-scales 0.05 --reference-mode fp8-bridge --weight-mode compact --cosine-mean-threshold 0.99 --cosine-min-threshold 0.99 --norm-ratio-min 0.99 --norm-ratio-max 1.01
+- Result: PASS. Dequant unit PASS, CUDA LUT dequant unit PASS. M128 cosine_min=0.9996 norm_ratio=0.9997; M256 cosine_min=0.9996 norm_ratio=0.9996; M512 cosine_min=0.9996 norm_ratio=0.9995; M2048 cosine_min=0.9995 norm_ratio=0.9995.
+
+Latest benchmark, true fused compact NVFP4, 8 ranks, 20 runs:
+
+| M | NVFP4 true fused us | W8A8/fp8-shadow ref us | NVFP4 / W8A8 | gap |
+|---:|---:|---:|---:|---:|
+| 64 | 1114.0 | 823.3 | 1.353x | 35.3% slower |
+| 128 | 1162.0 | 811.8 | 1.432x | 43.1% slower |
+| 256 | 1676.0 | 1435.0 | 1.168x | 16.8% slower |
+| 512 | 2670.0 | 2126.0 | 1.256x | 25.6% slower |
+| 1024 | 4171.0 | 3539.0 | 1.179x | 17.9% slower |
+| 2048 | 7384.0 | 6019.0 | 1.227x | 22.7% slower |
+| 4096 | 13646.0 | 11468.0 | 1.190x | 19.0% slower |
+| 8192 | 26284.0 | 21825.0 | 1.204x | 20.4% slower |
+
+Delta vs previous true fused default before this iteration: previous was 1440, 1260, 1898, 2625, 4292, 7446, 13659, 26170 us for M64..8192.
+- M64: 22.6% faster.
+- M128: 7.8% faster.
+- M256: 11.7% faster.
+- M512: 1.7% slower.
+- M1024: 2.8% faster.
+- M2048: 0.8% faster.
+- M4096: flat.
+- M8192: flat/slightly slower.
+
+Resource check after retained changes:
+- BM64 true fused variants: REG=168 STACK=24.
+- BM128 true fused variants: REG=128 STACK=208/216. The M256 L1-dual-off variant is the 208B stack case; other BM128 variants still carry 216B stack.
+
+Effective attempts:
+- Auto phase propagation into loader/math lambdas: effective for small M, especially M64/M128/M256.
+- True fused M256 default L1_DUAL_K=0: effective. M256 improved from 1799 us to about 1676-1684 us in 20-run measurements.
+
+Ineffective or reverted attempts:
+- L1_DUAL_K=0 globally: rejected. Helped M256, but slowed M64/M128/M512/M1024.
+- BM64 for M256+ by disabling BM128 heuristic: rejected. M256 was 1734 us and M512/M1024 regressed.
+- L2_DUAL_ACCUM=1 in true fused: rejected. M512+ regressed to very large runtimes around 10 ms to 107 ms.
+- L2_ARRIVAL_COUNTER=0 globally: rejected. It was acceptable for some mid sizes but worse for M4096/M8192; current per-M default is better.
+- DIRECT_SCATTER_METADATA_BCAST=0: rejected after rerun. Initial M512/M1024 looked promising, but same-shape rerun showed default was better.
+- L2_NMAJOR=0: rejected after rerun. M2048-only rerun showed default 7388 us versus 7418 us with L2_NMAJOR=0.
+- if constexpr phase branch rewrite in math/epilogue: reverted. It preserved correctness but regressed M64/M128 badly to 1881/2123 us, despite tiny gains at M2048+.
+
+Current conclusion:
+- The retained true fused path is better than the start of this iteration at small M, but still does not reach the W8A8 target.
+- The remaining true fused gap is mainly BM128 hot-path overhead: gemm_core, loader_dequant, and epilogue remain higher than the split path/W8A8 reference. Resource usage still shows BM128 stack around 208-216B, so L1/L2 state separation is incomplete.
+- Recommended next structural direction: avoid a monolithic lambda carrying both L1 and L2 local states. A safer version of the reverted if constexpr attempt would explicitly split run_l1_block and run_l2_block helper functions/lambdas rather than trying to rewrite branch predicates in-place.
+
+## 2026-06-12 Sanity: retained split L1/L2 path
+
+Purpose:
+- The user asked to keep the existing two-kernel split L1/L2 path while returning to true fused work. After auto phase propagation and the true-fused-only M256 heuristic, reran split path correctness and benchmark to make sure the fallback/current best-overall path is still valid.
+
+Correctness, default split path:
+- Command: DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_split_retained_correct_0612 python3 -u tests/test_nvfp4_mega_moe_sm90_correctness.py --batches 128 256 512 2048 --weight-scales 0.05 --reference-mode fp8-bridge --weight-mode compact --cosine-mean-threshold 0.99 --cosine-min-threshold 0.99 --norm-ratio-min 0.99 --norm-ratio-max 1.01
+- Result: PASS. Dequant unit PASS, CUDA LUT dequant unit PASS. M128/M256/M512/M2048 all cosine_min around 0.9995-0.9996 and norm_ratio around 0.9995-0.9997.
+
+Benchmark, default split path, compact NVFP4, 8 ranks, 20 runs:
+
+| M | NVFP4 split us | W8A8/fp8-shadow ref us | NVFP4 / W8A8 | gap |
+|---:|---:|---:|---:|---:|
+| 64 | 1362.2 | 823.3 | 1.655x | 65.5% slower |
+| 128 | 1287.9 | 811.8 | 1.586x | 58.6% slower |
+| 256 | 1512.3 | 1435.0 | 1.054x | 5.4% slower |
+| 512 | 2336.1 | 2126.0 | 1.099x | 9.9% slower |
+| 1024 | 3637.0 | 3539.0 | 1.028x | 2.8% slower |
+| 2048 | 6383.0 | 6019.0 | 1.060x | 6.0% slower |
+| 4096 | 11831.0 | 11468.0 | 1.032x | 3.2% slower |
+| 8192 | 22620.0 | 21825.0 | 1.036x | 3.6% slower |
+
+Interpretation:
+- Current best overall path is mixed: true fused is better for M64/M128, split is better for M256 and larger.
+- Split path is now close to the W8A8/fp8-shadow reference for M256+ but not faster. True fused still needs structural work before it can replace split for larger M.
+
+## 2026-06-12 Reverted attempt: mixed default split/fused by M
+
+Attempt:
+- Changed host default so M64/M128 would use true fused while M256+ kept split, with DG_SM90_MOE_SPLIT_L1_L2 still available as override.
+
+Validation:
+- Default mixed correctness PASS for M64/M128/M256/M512/M2048.
+
+Benchmark, default mixed path, 8 ranks, 20 runs:
+
+| M | time us |
+|---:|---:|
+| 64 | 2210.0 |
+| 128 | 2314.0 |
+| 256 | 1521.0 |
+| 512 | 2314.5 |
+| 1024 | 3602.0 |
+| 2048 | 6443.0 |
+| 4096 | 11804.0 |
+| 8192 | 22584.0 |
+
+Result:
+- Reverted. M64/M128 became roughly 2x slower than explicit true fused, likely because the Python benchmark/wrapper still organizes default execution around the split multi-kernel path. Host-only default switching is therefore unsafe without changing the upper-level launch/timing path consistently.
+- After revert, default split_l1_l2_default is restored. Explicit DG_SM90_MOE_SPLIT_L1_L2=0 remains the way to benchmark true fused.
+
+## 2026-06-12 Reverted attempt: opt-in async L1 TMA store for NVFP4
+
+Motivation:
+- This targets the block-level pipeline hypothesis: overlap L1 epilogue/TMA store and L2 readiness notification with later load/dequant work instead of waiting inside the L1 epilogue.
+- Existing kernel code already has kAsyncL1TMAStore and double-buffered smem_cd_l1 support, but the NVFP4 host launcher asserted DG_SM90_MOE_ASYNC_L1_STORE unsupported.
+
+Attempt:
+- Temporarily removed the host assert and passed DG_SM90_MOE_ASYNC_L1_STORE into args.async_l1_tma_store as an opt-in only. Default stayed false.
+
+Validation result:
+- Failed correctness before benchmark. Command used DG_SM90_MOE_SPLIT_L1_L2=0 DG_SM90_MOE_ASYNC_L1_STORE=1 with compact true fused M64/M128.
+- M64 hit CUDA illegal memory access.
+- DG_PRINT_CONFIGS showed the tested single-rank shape selecting block_m=64, block_n=128, stages=7, dispatch=64, non_epi=64, epilogue=256. That shape does not satisfy the intended single-epilogue-WG async condition and is not a safe async-L1 test configuration.
+- Explicitly setting DG_SM90_NVFP4_DISPATCH_THREADS=128, DG_SM90_NVFP4_NON_EPILOGUE_THREADS=128, and DG_SM90_NVFP4_EPILOGUE_THREADS=128 still printed 64/64/256 in this correctness path and still illegal-accessed.
+
+Result:
+- Reverted. The host assert and args.async_l1_tma_store=false are restored.
+- Do not retry this as a host-only opt-in. A real async L1 pipeline needs launcher/config cleanup first so the kernel is instantiated with a supported one-epilogue-WG shape, plus a correctness gate before benchmarking.
+
+## 2026-06-12 Retained: coordinated mixed default and benchmark timing fix
+
+Motivation:
+- The previous host-only mixed default attempt appeared to regress M64/M128 to about 2x, but investigation showed the benchmark script still inferred split_l1_l2=True and multiplied the timing by two.
+- This was a measurement-path bug, not necessarily a kernel regression.
+
+Change:
+- Host launcher default now selects true fused for M64/M128 and split L1/L2 for M256+ unless DG_SM90_MOE_SPLIT_L1_L2 explicitly overrides it.
+- tests/bench_nvfp4_mega_moe_sm90.py now uses the same default split/fused inference, so M64/M128 true fused timings are not doubled.
+- Split path remains available and remains default for M256+.
+
+Correctness:
+- Command: DG_JIT_CACHE_DIR=/tmp/dg_jit_nvfp4_mixed_default_correct2_0612 python3 -u tests/test_nvfp4_mega_moe_sm90_correctness.py --batches 64 128 256 512 2048 --weight-scales 0.05 --reference-mode fp8-bridge --weight-mode compact --cosine-mean-threshold 0.99 --cosine-min-threshold 0.99 --norm-ratio-min 0.99 --norm-ratio-max 1.01
+- Result: PASS. Dequant unit PASS, CUDA LUT dequant unit PASS. M64/M128/M256/M512/M2048 all cosine_min around 0.9995-0.9996, norm_ratio around 0.9995-0.9998.
+
+Benchmark, corrected mixed default, compact NVFP4, 8 ranks, 20 runs:
+
+| M | NVFP4 mixed default us | W8A8/fp8-shadow ref us | NVFP4 / W8A8 | gap |
+|---:|---:|---:|---:|---:|
+| 64 | 1130.0 | 823.3 | 1.373x | 37.3% slower |
+| 128 | 1200.0 | 811.8 | 1.478x | 47.8% slower |
+| 256 | 1477.2 | 1435.0 | 1.029x | 2.9% slower |
+| 512 | 2367.5 | 2126.0 | 1.114x | 11.4% slower |
+| 1024 | 3724.0 | 3539.0 | 1.052x | 5.2% slower |
+| 2048 | 6457.0 | 6019.0 | 1.073x | 7.3% slower |
+| 4096 | 11835.0 | 11468.0 | 1.032x | 3.2% slower |
+| 8192 | 22631.0 | 21825.0 | 1.037x | 3.7% slower |
+
+Result:
+- Keep. This does not make NVFP4 faster than W8A8, but it makes the default path use the current best measured mode per size: true fused for M64/M128, split for M256+.
+- Remaining target gap is now smallest at M256, about 2.9%, but M64/M128 and M512/M2048 are still materially slower than W8A8.
+
+## 2026-06-12 Split-path M256/M512/M1024 W8A8 comparison and knob sweep
+
+Reason:
+- Corrected mixed default made M256 close to W8A8. Because benchmark variance depends strongly on the sampled recv distribution, reran compact and fp8-shadow on the same batch list before claiming speedup/regression.
+
+30-run same-list comparison, batches 256/512/1024:
+
+| M | recv | NVFP4 compact us | W8A8/fp8-shadow us | NVFP4 / W8A8 | result |
+|---:|---:|---:|---:|---:|---|
+| 256 | 1964 | 1489.3 | 1486.0 | 1.002x | tie, 0.2% slower |
+| 512 | 4063 | 2372.0 | 2465.0 | 0.962x | 3.8% faster |
+| 1024 | 8207 | 3666.0 | 3551.0 | 1.032x | 3.2% slower |
+
+M1024 focused sweep, 20-run, recv=8015:
+
+| Config | M1024 compact us | Notes |
+|---|---:|---|
+| default | 3612.0 | best compact in this sweep |
+| DG_SM90_NVFP4_L2_ARRIVAL_COUNTER=0 | 3678.0 | worse |
+| DG_SM90_NVFP4_DIRECT_SCATTER_METADATA_BCAST=0 | 3844.0 | worse |
+| DG_SM90_MOE_L2_NMAJOR=0 | 3673.0 | worse |
+| fp8-shadow same recv | 3480.0 | W8A8 still 3.8% faster than compact default |
+
+Earlier 20-run M256/M512/M1024 split knob sweep, recv=1964/4063/8207:
+- DG_SM90_MOE_L1_DUAL_K=0: 1548.2, 2436.0, 3596.0 us. Not retained; M256/M512 worse, M1024 tiny/noisy improvement only.
+- DG_SM90_MOE_L2_DUAL_ACCUM=0: 1685.2, 2376.0, 3808.0 us. M512 looked better, but M512 default already uses L2_DUAL_ACCUM=0; no default change needed.
+- DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE=0: 1619.9, 2521.0, 3882.0 us. Worse.
+
+Conclusion:
+- Current NVFP4 mixed default can beat W8A8 at M512 on the same 30-run batch list.
+- M256 is essentially tied.
+- M1024 remains about 3-4% slower; tested existing split-path knobs did not close it.
+
+## 2026-06-12 M1024 pipeline/profile and combine chunking attempts
+
+M1024 split-path config/resource:
+- Actual JIT split kernels are L1 and L2_nodisp.
+- L1: block_m=128, block_n=128, stages=5, dispatch=128, non_epi=128, epi=256, REG=128, STACK=0.
+- L2_nodisp: block_m=128, block_n=128, stages=6, dispatch=0, non_epi=128, epi=256, REG=168, STACK=32.
+
+M1024 phase profile, split compact, recv=8015:
+- dispatch_total avg=315395 cycles
+- dispatch_pull avg=199822 cycles
+- math_loop avg=1696314 cycles
+- combine_barrier avg=305690 cycles
+- combine_reduce avg=27964 cycles
+- gemm_core avg=35675 cycles/block
+- l1_epilogue avg=2920 cycles/block
+- l2_epilogue avg=1871 cycles/block
+- loader_dequant avg=1074 cycles/block
+- math_dequant_wait avg=57 cycles/block
+- l2_scatter avg=1775 cycles/block
+
+Interpretation:
+- Dequant/MMA overlap is already working: math_dequant_wait is tiny.
+- M1024 residual gap is mostly fixed overhead plus L2 scatter/combine/dispatch, not dequant wait.
+
+M1024 stages sweep, 20-run, recv=8015:
+- default: 3612.0 us
+- DG_SM90_NVFP4_NUM_STAGES=4: 3647.0 us, worse
+- DG_SM90_NVFP4_NUM_STAGES=5: 3637.0 us, worse/noisy
+- DG_SM90_NVFP4_NUM_STAGES=6: invalid, requested_num_stages exceeds max_num_stages
+Result: no stages default change.
+
+Attempt: port FP8-style hidden=7168 combine 7-chunking into NVFP4 combine.
+- Correctness PASS for M256/M512/M1024.
+- 30-run compact, recv=1964/4063/8207:
+  - M256: 1512.5 us, worse than retained 1489.3 us
+  - M512: 2554.0 us, worse than retained 2372.0 us
+  - M1024: 3632.0 us, better than retained 3666.0 us but still slower than W8A8 3551.0 us
+- Result: reverted. 7 chunks are not a safe default; they help M1024 slightly but regress M256/M512 materially.
+
+Conclusion:
+- Existing FP8 combine chunking is not directly portable as a global NVFP4 default.
+- A future M1024-only chunk policy could be explored, but the observed gain is under 1% and does not close the W8A8 gap.
+
+## 2026-06-12 Reverted attempt: M1024 experts-per-wave override
+
+Attempt:
+- Added temporary host env DG_SM90_NVFP4_EXPERTS_PER_WAVE to override config.num_experts_per_wave for NVFP4 experiments.
+- Goal was to see whether M1024 fixed overhead/tail behavior improves by changing wave granularity.
+
+M1024 compact, 20-run, recv=8015:
+- default: 3612.0 us
+- experts_per_wave=8: 3643.0 us
+- experts_per_wave=16: 3680.0 us
+- experts_per_wave=32: 3653.0 us
+
+Result:
+- Reverted. Default heuristic was best; no need to keep an unused env knob.
+
+## 2026-06-12 - BN256 revert and true-fused mid-M probe
+
+- Reverted the temporary `DG_SM90_NVFP4_BLOCK_N=256` host assert relaxation after BN256 correctness failed with illegal memory access. Verified code is back to BN128-only for compact NVFP4 bridge.
+- Rebuilt successfully after the revert.
+- Correctness PASS after revert for compact mixed default: M=64/128/256/512/1024/2048, weight_scale=0.05, fp8-bridge reference, cosine_min >= 0.9995, norm_ratio within [0.9994, 0.9998].
+- Correctness PASS for forced true-fused (`DG_SM90_MOE_SPLIT_L1_L2=0`) on M=256/512/1024/2048.
+- 20-run benchmark, same generated token lists:
+
+| M | compact default | compact true-fused | fp8-shadow/W8A8 | default gap vs W8A8 | true-fused gap vs W8A8 |
+|---:|---:|---:|---:|---:|---:|
+| 256 | 1517.8 us | 1654.0 us | 1432.0 us | +5.99% | +15.50% |
+| 512 | 2434.0 us | 2963.0 us | 2315.0 us | +5.14% | +27.99% |
+| 1024 | 3631.0 us | 4188.0 us | 3547.0 us | +2.37% | +18.07% |
+| 2048 | 6355.0 us | 7299.0 us | 6180.0 us | +2.83% | +18.11% |
+
+Conclusion: forcing true-fused for mid/large M is not retained. It saves a launch but loses far more from resource pressure and weaker split-phase specialization. Continue optimizing split compact path toward W8A8.
+
+## 2026-06-12 - Hybrid follow-up: small-M and scatter overlap probes
+
+Context:
+- Continue with hybrid policy: M64/M128 true-fused, M256+ split L1/L2.
+- Current machine state showed strong long-tail/load effects. M512 compact and fp8-shadow both moved to ~4.57 ms in one run, so those absolute numbers should not be compared against earlier ~2.3 ms runs. Relative same-run comparisons remain useful.
+
+Correctness / safety:
+- Restored the failed BN256 probe to BN128-only earlier.
+- Tried skipping the full epilogue barrier at the end of direct L2 scatter when `kL2ArrivalCounter` is enabled, aiming to allow scatter vs next tile load/dequant overlap. Correctness hung at M512 after passing M64/M128/M256. Killed only the exact hung test PIDs, then reverted the change. Not retained.
+- Rebuilt after reverting the failed sync experiment. Default correctness PASS for M64/M128/M256/M512.
+
+Small-M probes:
+
+| Attempt | Correctness | Result |
+|---|---|---|
+| `DG_SM90_NVFP4_DISPATCH_THREADS=64` | host assert | invalid because dispatch+non-epilogue threads not 128-aligned |
+| `DG_SM90_NVFP4_DISPATCH_THREADS=64 DG_SM90_NVFP4_NON_EPILOGUE_THREADS=64 DG_SM90_NVFP4_FUSED_B_SCALE=0` | PASS M64/M128, illegal address M256 | M64/M128 slower: 1417/1416 us vs default 1110/1130 us, not retained |
+| `DG_SM90_NVFP4_DIRECT_SCATTER_METADATA_BCAST=1` | PASS M64/M128 | M64 1114 us, M128 1114 us; M128 small gain but max_rank nearly unchanged, not retained |
+| `DG_SM90_NVFP4_L2_ARRIVAL_COUNTER=1` | PASS M64 | M64 1109 us vs default 1110 us, noise-level, not retained |
+| counter+broadcast | PASS M64/M128 | M64 1117 us, M128 1116 us, worse, not retained |
+| `DG_SM90_MOE_L1_DUAL_K=0` | PASS M64/M128 | first run improved to 1102/1111 us, but same-state forced-on run was 1111/1114 us and new default rerun was 1113/1119 us; too unstable, reverted default |
+
+Same-run small-M W8A8/fp8-shadow reference before the load shift:
+- M64: 775.7 us
+- M128: 784.8 us
+
+Conclusion:
+- No small-M knob from this round is strong enough to keep by default.
+- The direct L2 scatter barrier is necessary for current NVFP4 implementation; removing it deadlocks/hangs at M512.
+- Continue with current hybrid defaults and focus on M1024+ split-path combine/scatter or a properly gated structural change.
+
+## 2026-06-12 - Commit handoff state
+
+Current retained default:
+- Hybrid policy remains the best runnable default observed so far:
+  - M64/M128: true-fused single kernel
+  - M256+: split L1/L2 kernels
+- No unstable small-M knobs are enabled by default.
+- BN256 compact NVFP4 bridge remains gated off; verified default shape is BN128.
+
+Latest validation before commit:
+- Rebuild PASS after reverting failed small-M/default experiments.
+- Default correctness PASS for M64/M128/M256/M512 after the failed scatter-sync experiment was reverted.
+- Added opt-in `DG_SM90_NVFP4_COMBINE_7CHUNK=1` for future M1024-only combine exploration; default is OFF.
+- Opt-in 7chunk correctness PASS for M256/M512/M1024 with fp8-bridge reference, weight_scale=0.05, cosine_min >= 0.9996, norm_ratio around 0.9994-0.9996.
+- 7chunk is not enabled as default because earlier global 7chunk benchmarking regressed M256/M512 even though it slightly helped M1024.
+
+Best reliable benchmark references retained in this log:
+- Same-list 30-run: M256 compact 1489.3 us vs W8A8 1486.0 us; M512 compact 2372.0 us vs W8A8 2465.0 us; M1024 compact 3666.0 us vs W8A8 3551.0 us.
+- Same-list 20-run later: M256 compact 1517.8 us vs W8A8 1432.0 us; M512 compact 2434.0 us vs W8A8 2315.0 us; M1024 compact 3631.0 us vs W8A8 3547.0 us; M2048 compact 6355.0 us vs W8A8 6180.0 us.
+- The later M512 ~4.57 ms runs affected both compact and fp8-shadow and are treated as machine/load or benchmark-tail artifacts, not code regression evidence.
