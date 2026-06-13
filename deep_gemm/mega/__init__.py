@@ -144,7 +144,14 @@ def transform_nvfp4_weights_for_mega_moe_sm90(
     tensors are tile-major ``(E, N/128, K/128, 128, 8)`` and should be cached at
     weight-load time rather than rebuilt per forward pass.
     """
-    from ..quantization_nvfp4 import nvfp4_scale_to_tile_major
+    from ..quantization_nvfp4 import (
+        nvfp4_fuse_packed_with_scale_tile_major,
+        nvfp4_scale_to_tile_major,
+    )
+    import os
+
+    block_n = int(os.environ.get('DG_SM90_NVFP4_BLOCK_N', block_n))
+    fused_b_scale = os.environ.get('DG_SM90_NVFP4_FUSED_B_SCALE', '1') != '0'
 
     l1_packed, l1_scale = l1_weights
     l2_packed, l2_scale = l2_weights
@@ -154,12 +161,22 @@ def transform_nvfp4_weights_for_mega_moe_sm90(
     assert l1_scale.dim() == 3 and l2_scale.dim() == 3
 
     l1_packed_il, l1_scale_il = _interleave_l1_weights((l1_packed, l1_scale))
+    l1_scale_tm = nvfp4_scale_to_tile_major(l1_scale_il, block_n=block_n, block_k=block_k, group_size=group_size)
+    l2_scale_tm = nvfp4_scale_to_tile_major(l2_scale, block_n=block_n, block_k=block_k, group_size=group_size)
+    if fused_b_scale:
+        l1_packed_out = nvfp4_fuse_packed_with_scale_tile_major(
+            l1_packed_il.contiguous(), l1_scale_tm, block_k=block_k)
+        l2_packed_out = nvfp4_fuse_packed_with_scale_tile_major(
+            l2_packed.contiguous(), l2_scale_tm, block_k=block_k)
+    else:
+        l1_packed_out = l1_packed_il.contiguous()
+        l2_packed_out = l2_packed.contiguous()
     return (
-        l1_packed_il.contiguous(),
-        nvfp4_scale_to_tile_major(l1_scale_il, block_n=block_n, block_k=block_k, group_size=group_size),
+        l1_packed_out,
+        l1_scale_tm,
     ), (
-        l2_packed.contiguous(),
-        nvfp4_scale_to_tile_major(l2_scale, block_n=block_n, block_k=block_k, group_size=group_size),
+        l2_packed_out,
+        l2_scale_tm,
     )
 
 

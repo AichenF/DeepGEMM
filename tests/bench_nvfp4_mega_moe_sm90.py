@@ -82,7 +82,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     )
 
     phase_profile_enabled = os.environ.get('DG_SM90_MOE_PHASE_PROFILE', '0') != '0'
-    phase_profile_ints = 64 if phase_profile_enabled else 0
+    phase_profile_ints = 96 if phase_profile_enabled else 0
     cum_stats = torch.zeros(num_experts_per_rank + phase_profile_ints, dtype=torch.int, device='cuda')
 
     # Stage inputs once; bench-loop re-copies them each call (bench helper expects
@@ -133,30 +133,11 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
             run()
         torch.cuda.synchronize()
         dist.barrier()
-    split_env = os.environ.get("DG_SM90_MOE_SPLIT_L1_L2")
-    if split_env is None:
-        shape_override = (
-            int(os.environ.get("DG_SM90_MOE_BLOCK_M", "0")) > 0
-            or int(os.environ.get("DG_SM90_MOE_EPILOGUE_WG", "0")) > 0
-            or int(os.environ.get("DG_SM90_MOE_BLOCK_N", "128")) != 128
-        )
-        bm128_enabled = os.environ.get("DG_SM90_NVFP4_BM128_HEURISTIC", "1") != "0"
-        bm128_default = (
-            bm128_enabled
-            and not shape_override
-            and num_tokens in (256, 512, 1024, 2048, 4096, 8192)
-        )
-        fused_default = num_tokens in (64, 128) or (num_tokens == 4096 and not bm128_default)
-        split_l1_l2 = not fused_default
-    else:
-        split_l1_l2 = split_env != "0"
-    t_nvfp4 = bench_kineto(run, 'sm90_nvfp4_mega_moe',
-                           barrier=lambda: dist.barrier(),
-                           num_tests=args.num_tests,
-                           suppress_kineto_output=True,
-                           with_multiple_kernels=split_l1_l2)
-    if split_l1_l2:
-        t_nvfp4 *= 2
+    t_l1, t_l2 = bench_kineto(run, ('sm90_nvfp4_mega_moe_l1_impl', 'sm90_nvfp4_mega_moe_l2_impl'),
+                              barrier=lambda: dist.barrier(),
+                              num_tests=args.num_tests,
+                              suppress_kineto_output=True)
+    t_nvfp4 = t_l1 + t_l2
 
     # Count tokens that landed on this rank for stats
     gathered_topk_idx = uneven_all_gather(topk_idx, group=group)
@@ -182,18 +163,26 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     if print_perf:
         dist_print(
             f' tokens={num_tokens:4d}  recv={num_recv_tokens:5d}  experts={num_touched_experts:4d}  '
-            f'nvfp4={t_nvfp4 * 1e6:7.1f}us({tflops_nvfp4:5.1f}TF, {hbm_gbs:4.0f}GB/s)  (rank{rank_idx})',
+            f'nvfp4={t_nvfp4 * 1e6:7.1f}us(l1={t_l1 * 1e6:6.1f},l2={t_l2 * 1e6:6.1f})'
+            f'({tflops_nvfp4:5.1f}TF, {hbm_gbs:4.0f}GB/s)  (rank{rank_idx})',
             once_in_node=True,
         )
         if phase_profile_enabled:
             torch.cuda.synchronize()
-            profile = cum_stats[num_experts_per_rank:num_experts_per_rank + 48].view(torch.int64).cpu().tolist()
             names = [
                 'dispatch_total', 'dispatch_pull', 'math_loop', 'combine_barrier',
                 'combine_reduce', 'gemm_core', 'l1_epilogue', 'l2_epilogue',
+                'loader_dequant', 'math_dequant_wait', 'l1_tma_wait',
+                'l1_ready_notify', 'l2_ready_wait', 'l2_scatter',
             ]
+            num_phase_metrics = len(names)
+            profile = cum_stats[
+                num_experts_per_rank:num_experts_per_rank + 3 * num_phase_metrics * 2
+            ].view(torch.int64).cpu().tolist()
             for i, name in enumerate(names):
-                total, max_v, count = profile[i], profile[8 + i], profile[16 + i]
+                total = profile[i]
+                max_v = profile[num_phase_metrics + i]
+                count = profile[2 * num_phase_metrics + i]
                 avg = float(total) / count if count else 0.0
                 dist_print(
                     f'   phase {name:16s} avg={avg:10.0f} max={max_v:10d} count={count}',

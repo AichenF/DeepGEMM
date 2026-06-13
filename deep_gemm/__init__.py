@@ -108,6 +108,10 @@ except Exception as e:
 def _find_cuda_home() -> str:
     # TODO: reuse PyTorch API later
     # For some PyTorch versions, the original `_find_cuda_home` will initialize CUDA, which is incompatible with process forks
+    # Prefer newer CUDA for better codegen (NVCC >= 12.9 enables sm_90a family target on H20/H100)
+    for pref in ["/usr/local/cuda-13.0", "/usr/local/cuda-12.9"]:
+        if os.path.exists(pref + "/bin/nvcc"):
+            return pref
     cuda_home = os.environ.get('CUDA_HOME') or os.environ.get('CUDA_PATH')
     if cuda_home is None:
         # noinspection PyBroadException
