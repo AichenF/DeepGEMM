@@ -35,7 +35,7 @@
 // scale storage, then overwrites the row with FP8 values for WGMMA.
 namespace deep_gemm {
 namespace nvfp4 {
-template <uint32_t kNumMathThreads, uint32_t kBarIdx, bool kLutFree = false>
+template <uint32_t kNumMathThreads, uint32_t kBarIdx>
 __device__ __forceinline__ void dequant_smem_b_inplace(uint8_t* __restrict__ smem_b, uint32_t tid_in_wg,
                                                        const uint8_t* __restrict__ scale_row_base,
                                                        const uint2* __restrict__ lut_smem) {
@@ -58,15 +58,9 @@ __device__ __forceinline__ void dequant_smem_b_inplace(uint8_t* __restrict__ sme
         const uint32_t scale_ue4m3 = (scale_word >> ((scale_i & 3) * 8)) & 0xffu;
         const int i0 = scale_i * 2;
         const int i1 = i0 + 1;
-        uint2 s0, s1;
-        if constexpr (kLutFree) {
-            s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs[i0], scale_ue4m3);
-            s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs[i1], scale_ue4m3);
-        } else {
-            const uint2 lut = lut_smem[scale_ue4m3 & 0x7fu];
-            s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i0], lut);
-            s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i1], lut);
-        }
+        const uint2 lut = lut_smem[scale_ue4m3 & 0x7fu];
+        const uint2 s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i0], lut);
+        const uint2 s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i1], lut);
         const uint32_t logical = i0 * 8;
         const uint32_t physical = logical ^ row_swizzle;
         *reinterpret_cast<uint4*>(fp8_dst_base + physical) =
@@ -74,7 +68,7 @@ __device__ __forceinline__ void dequant_smem_b_inplace(uint8_t* __restrict__ sme
     }
 }
 
-template <uint32_t kNumMathThreads, bool kLutFree = false>
+template <uint32_t kNumMathThreads>
 __device__ __forceinline__ void dequant_smem_b_from_packed(uint8_t* __restrict__ smem_b,
                                                            const uint8_t* __restrict__ packed_b,
                                                            uint32_t tid_in_wg,
@@ -98,15 +92,9 @@ __device__ __forceinline__ void dequant_smem_b_from_packed(uint8_t* __restrict__
         const uint32_t scale_ue4m3 = (scale_word >> ((scale_i & 3) * 8)) & 0xffu;
         const int i0 = scale_i * 2;
         const int i1 = i0 + 1;
-        uint2 s0, s1;
-        if constexpr (kLutFree) {
-            s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs[i0], scale_ue4m3);
-            s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs[i1], scale_ue4m3);
-        } else {
-            const uint2 lut = lut_smem[scale_ue4m3 & 0x7fu];
-            s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i0], lut);
-            s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i1], lut);
-        }
+        const uint2 lut = lut_smem[scale_ue4m3 & 0x7fu];
+        const uint2 s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i0], lut);
+        const uint2 s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i1], lut);
         const uint32_t logical = i0 * 8;
         const uint32_t physical = logical ^ row_swizzle;
         *reinterpret_cast<uint4*>(fp8_dst_base + physical) =
@@ -115,7 +103,7 @@ __device__ __forceinline__ void dequant_smem_b_from_packed(uint8_t* __restrict__
 }
 
 
-template <uint32_t kNumMathThreads, bool kLutFree = false>
+template <uint32_t kNumMathThreads>
 __device__ __forceinline__ void dequant_smem_b_inplace_split_barrier(
         uint8_t* __restrict__ smem_b, uint32_t tid_in_wg,
         const uint8_t* __restrict__ scale_row_base,
@@ -143,15 +131,9 @@ __device__ __forceinline__ void dequant_smem_b_inplace_split_barrier(
         const uint32_t scale_ue4m3 = (scale_word >> ((scale_i & 3) * 8)) & 0xffu;
         const int i0 = scale_i * 2;
         const int i1 = i0 + 1;
-        uint2 s0, s1;
-        if constexpr (kLutFree) {
-            s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs[i0], scale_ue4m3);
-            s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs[i1], scale_ue4m3);
-        } else {
-            const uint2 lut = lut_smem[scale_ue4m3 & 0x7fu];
-            s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i0], lut);
-            s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i1], lut);
-        }
+        const uint2 lut = lut_smem[scale_ue4m3 & 0x7fu];
+        const uint2 s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i0], lut);
+        const uint2 s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i1], lut);
         const uint32_t logical = i0 * 8;
         const uint32_t physical = logical ^ row_swizzle;
         *reinterpret_cast<uint4*>(fp8_dst_base + physical) =
@@ -159,7 +141,7 @@ __device__ __forceinline__ void dequant_smem_b_inplace_split_barrier(
     }
 }
 
-template <uint32_t kNumMathThreads, bool kLutFree = false>
+template <uint32_t kNumMathThreads>
 __device__ __forceinline__ void dequant_smem_b_inplace_row_strided(uint8_t* __restrict__ smem_b,
                                                                    uint32_t tid_in_wg,
                                                                    const uint8_t* __restrict__ scale_row_base,
@@ -182,15 +164,9 @@ __device__ __forceinline__ void dequant_smem_b_inplace_row_strided(uint8_t* __re
         const uint32_t scale_ue4m3 = (scale_word >> ((scale_i & 3) * 8)) & 0xffu;
         const int i0 = scale_i * 2;
         const int i1 = i0 + 1;
-        uint2 s0, s1;
-        if constexpr (kLutFree) {
-            s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs[i0], scale_ue4m3);
-            s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs[i1], scale_ue4m3);
-        } else {
-            const uint2 lut = lut_smem[scale_ue4m3 & 0x7fu];
-            s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i0], lut);
-            s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i1], lut);
-        }
+        const uint2 lut = lut_smem[scale_ue4m3 & 0x7fu];
+        const uint2 s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i0], lut);
+        const uint2 s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i1], lut);
         const uint32_t logical = i0 * 8;
         const uint32_t physical = logical ^ row_swizzle;
         *reinterpret_cast<uint4*>(fp8_dst_base + physical) =
@@ -198,7 +174,7 @@ __device__ __forceinline__ void dequant_smem_b_inplace_row_strided(uint8_t* __re
     }
 }
 
-template <uint32_t kNumDequantThreads, uint32_t kBarIdx, bool kLutFree = false>
+template <uint32_t kNumDequantThreads, uint32_t kBarIdx>
 __device__ __forceinline__ void dequant_smem_b_inplace_two_rows(
         uint8_t* __restrict__ smem_b, uint32_t tid,
         const uint8_t* __restrict__ scale_row_base0,
@@ -237,20 +213,12 @@ __device__ __forceinline__ void dequant_smem_b_inplace_two_rows(
         const uint32_t scale_ue4m3_1 = (scale_word1 >> ((scale_i & 3) * 8)) & 0xffu;
         const int i0 = scale_i * 2;
         const int i1 = i0 + 1;
-        uint2 r0_s0, r0_s1, r1_s0, r1_s1;
-        if constexpr (kLutFree) {
-            r0_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs0[i0], scale_ue4m3_0);
-            r0_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs0[i1], scale_ue4m3_0);
-            r1_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs1[i0], scale_ue4m3_1);
-            r1_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs1[i1], scale_ue4m3_1);
-        } else {
-            const uint2 lut0 = lut_smem[scale_ue4m3_0 & 0x7fu];
-            const uint2 lut1 = lut_smem[scale_ue4m3_1 & 0x7fu];
-            r0_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs0[i0], lut0);
-            r0_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs0[i1], lut0);
-            r1_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs1[i0], lut1);
-            r1_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs1[i1], lut1);
-        }
+        const uint2 lut0 = lut_smem[scale_ue4m3_0 & 0x7fu];
+        const uint2 lut1 = lut_smem[scale_ue4m3_1 & 0x7fu];
+        const uint2 r0_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs0[i0], lut0);
+        const uint2 r0_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs0[i1], lut0);
+        const uint2 r1_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs1[i0], lut1);
+        const uint2 r1_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs1[i1], lut1);
         const uint32_t logical = i0 * 8;
         const uint32_t physical = logical ^ row_swizzle;
         *reinterpret_cast<uint4*>(fp8_dst_base0 + physical) =
@@ -260,8 +228,7 @@ __device__ __forceinline__ void dequant_smem_b_inplace_two_rows(
     }
 }
 
-
-template <uint32_t kNumDequantThreads, uint32_t kBarIdx, uint32_t kFusedRowBytes = 80, bool kLutFree = false>
+template <uint32_t kNumDequantThreads, uint32_t kBarIdx, uint32_t kFusedRowBytes = 80>
 __device__ __forceinline__ void dequant_smem_b_inplace_two_rows_fused_scale(
         uint8_t* __restrict__ smem_b, uint32_t tid,
         const uint2* __restrict__ lut_smem) {
@@ -300,20 +267,12 @@ __device__ __forceinline__ void dequant_smem_b_inplace_two_rows_fused_scale(
         const uint32_t scale_ue4m3_1 = (scale_word1 >> ((scale_i & 3) * 8)) & 0xffu;
         const int i0 = scale_i * 2;
         const int i1 = i0 + 1;
-        uint2 r0_s0, r0_s1, r1_s0, r1_s1;
-        if constexpr (kLutFree) {
-            r0_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs0[i0], scale_ue4m3_0);
-            r0_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs0[i1], scale_ue4m3_0);
-            r1_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs1[i0], scale_ue4m3_1);
-            r1_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_lut_free(fp4_regs1[i1], scale_ue4m3_1);
-        } else {
-            const uint2 lut0 = lut_smem[scale_ue4m3_0 & 0x7fu];
-            const uint2 lut1 = lut_smem[scale_ue4m3_1 & 0x7fu];
-            r0_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs0[i0], lut0);
-            r0_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs0[i1], lut0);
-            r1_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs1[i0], lut1);
-            r1_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs1[i1], lut1);
-        }
+        const uint2 lut0 = lut_smem[scale_ue4m3_0 & 0x7fu];
+        const uint2 lut1 = lut_smem[scale_ue4m3_1 & 0x7fu];
+        const uint2 r0_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs0[i0], lut0);
+        const uint2 r0_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs0[i1], lut0);
+        const uint2 r1_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs1[i0], lut1);
+        const uint2 r1_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs1[i1], lut1);
         const uint32_t logical = i0 * 8;
         const uint32_t physical = logical ^ row_swizzle;
         *reinterpret_cast<uint4*>(fp8_dst_base0 + physical) =
@@ -322,9 +281,6 @@ __device__ __forceinline__ void dequant_smem_b_inplace_two_rows_fused_scale(
             make_uint4(r1_s0.x, r1_s0.y, r1_s1.x, r1_s1.y);
     }
 }
-
-
-
 
 }  // namespace nvfp4
 }  // namespace deep_gemm
@@ -352,47 +308,7 @@ namespace deep_gemm {
 //     reduction in BF16) — ported verbatim from the SM100 kernel.
 // ============================================================================
 
-enum class MegaMoENVFP4PhaseKind {
-    Linear1,
-    Linear2
-};
-
-template <MegaMoENVFP4PhaseKind kKind>
-struct MegaMoENVFP4PhasePolicy {
-    static constexpr bool is_linear1_only = kKind == MegaMoENVFP4PhaseKind::Linear1;
-    static constexpr bool is_linear2_only = kKind == MegaMoENVFP4PhaseKind::Linear2;
-    static constexpr bool runs_linear1 = is_linear1_only;
-    static constexpr bool runs_linear2 = is_linear2_only;
-    static constexpr bool needs_dispatch_pull = runs_linear1;
-    static constexpr bool needs_combine = runs_linear2;
-
-    template <typename Scheduler, typename Func>
-    CUTLASS_DEVICE static void for_each_selected_block(Scheduler& scheduler, Func&& func) {
-        if constexpr (is_linear1_only) {
-            scheduler.for_each_linear1_block(
-                [&](const uint32_t& local_expert_idx,
-                    const uint32_t& num_k_blocks,
-                    const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
-                    func(sched::BlockPhase::Linear1, local_expert_idx,
-                         num_k_blocks, m_block_idx, n_block_idx);
-                });
-        } else {
-            scheduler.for_each_linear2_block(
-                [&](const uint32_t& local_expert_idx,
-                    const uint32_t& num_k_blocks,
-                    const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
-                    func(sched::BlockPhase::Linear2, local_expert_idx,
-                         num_k_blocks, m_block_idx, n_block_idx);
-                });
-        }
-    }
-};
-
-using MegaMoENVFP4Linear1Phase = MegaMoENVFP4PhasePolicy<MegaMoENVFP4PhaseKind::Linear1>;
-using MegaMoENVFP4Linear2Phase = MegaMoENVFP4PhasePolicy<MegaMoENVFP4PhaseKind::Linear2>;
-
 template <
-    typename MegaMoEPhase,
     uint32_t kNumMaxTokensPerRank,
     uint32_t kHidden, uint32_t kIntermediateHidden,
     uint32_t kNumExperts, uint32_t kNumTopk,
@@ -419,12 +335,12 @@ template <
     bool kL1NMajorScheduleRequested = false,
     bool kK2DirectAccumRequested = false,
     bool kLoaderDequantRequested = false,
-    bool kLutFreeRequested = false,
     bool kDirectScaleGmemRequested = false,
     bool kPackedBScratchRequested = false,
     bool kSplitDequantBarrierRequested = false,
     bool kStridedBGmemLoadRequested = false,
     bool kFusedBScaleLayoutRequested = false,
+    bool kCombine7ChunkRequested = false,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
     uint32_t L2_SHAPE_N = kHidden,
@@ -435,22 +351,25 @@ template <
     uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4,
     uint32_t kNumThreads = kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads,
     uint32_t kNumTokensPerWarp = 32 / kNumTopk,
-    uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks
+    uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks,
+    bool kRunL1Phase = true,
+    bool kRunL2Phase = true,
+    uint32_t kInstantiationTag = 0
 >
-CUTLASS_DEVICE void
-sm90_nvfp4_mega_moe_core(void* y,
+CUTLASS_GLOBAL __launch_bounds__(kNumThreads, 1) void
+sm90_nvfp4_mega_moe_impl(void* y,
                        int* cumulative_local_expert_recv_stats,
                        const uint32_t num_tokens,
-                       const layout::SymBuffer<kNumRanks>& sym_buffer,
-                       const cute::TmaDescriptor& tensor_map_l1_acts,
-                       const cute::TmaDescriptor& tensor_map_l1_acts_sf,
-                       const cute::TmaDescriptor& tensor_map_l1_weights,
+                       const __grid_constant__ layout::SymBuffer<kNumRanks> sym_buffer,
+                       const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts,
+                       const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts_sf,
+                       const __grid_constant__ cute::TmaDescriptor tensor_map_l1_weights,
                        const uint8_t* __restrict__ l1_weights_gmem,
                        const uint8_t* __restrict__ l1_weights_sf,
-                       const cute::TmaDescriptor& tensor_map_l1_output,
-                       const cute::TmaDescriptor& tensor_map_l2_acts,
-                       const cute::TmaDescriptor& tensor_map_l2_acts_sf,
-                       const cute::TmaDescriptor& tensor_map_l2_weights,
+                       const __grid_constant__ cute::TmaDescriptor tensor_map_l1_output,
+                       const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts,
+                       const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts_sf,
+                       const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weights,
                        const uint8_t* __restrict__ l2_weights_gmem,
                        const uint8_t* __restrict__ l2_weights_sf) {
 #if (defined(__CUDA_ARCH__) and (__CUDA_ARCH__ >= 900) and (__CUDA_ARCH__ < 1000)) or defined(__CLION_IDE__)
@@ -460,19 +379,20 @@ sm90_nvfp4_mega_moe_core(void* y,
     // Template checks
     // =====================================================================
     DG_STATIC_ASSERT(kNumDispatchThreads == 64 or kNumDispatchThreads % 128 == 0, "Invalid number of dispatch threads");
-    DG_STATIC_ASSERT(kNumNonEpilogueThreads == 64 or kNumNonEpilogueThreads == 128,
-                     "Invalid number of GEMM TMA/dequant warps (2 or 4 warps expected)");
+    DG_STATIC_ASSERT(kNumNonEpilogueThreads == 64 or kNumNonEpilogueThreads == 128, "Invalid number of GEMM TMA warps (2 or 4 warps expected)");
     DG_STATIC_ASSERT(kNumEpilogueThreads % 128 == 0, "Invalid number of math/epilogue threads");
+    DG_STATIC_ASSERT((kNumDispatchThreads + kNumNonEpilogueThreads) % 128 == 0,
+                     "Epilogue warpgroups must start at a warpgroup-aligned thread offset");
     DG_STATIC_ASSERT(kNumExperts % kNumRanks == 0, "Invalid number of experts or ranks");
     DG_STATIC_ASSERT(kClusterSize == 1 or kClusterSize == 2, "Invalid cluster size");
     DG_STATIC_ASSERT(kNumSMs % kClusterSize == 0, "SM count must be divisible by cluster size");
     DG_STATIC_ASSERT(BLOCK_M == 16 or BLOCK_M == 32 or BLOCK_M % 64 == 0,
                      "BLOCK_M must be 16/32 for mma.sync decode or a multiple of WGMMA::M (64)");
     DG_STATIC_ASSERT(BLOCK_N == 64 or BLOCK_N == 128 or BLOCK_N == 256, "BLOCK_N must be 64/128/256 for this SM90 path");
-    DG_STATIC_ASSERT(BLOCK_N == 128,
-                     "NVFP4 smem dequant currently requires the BN128 UE4M3 scale tile layout");
+    DG_STATIC_ASSERT(BLOCK_N == 128 or BLOCK_N == 256,
+                     "NVFP4 smem dequant supports BN128 and opt-in BN256 scale tile layouts");
     DG_STATIC_ASSERT(BLOCK_K == 128, "BLOCK_K is fixed to 128 (per-128 SF)");
-    DG_STATIC_ASSERT(kNumNonEpilogueThreads == 128,
+    DG_STATIC_ASSERT((!kLoaderDequantRequested) or kNumNonEpilogueThreads == 128,
                      "NVFP4 loader dequant expects four non-epilogue warps");
 
     // =====================================================================
@@ -483,20 +403,17 @@ sm90_nvfp4_mega_moe_core(void* y,
     const uint32_t warp_idx   = cutlass::canonical_warp_idx_sync();
     const uint32_t lane_idx   = ptx::get_lane_idx();
 
-    // Prefetch only the descriptors used by this split phase. NVFP4 UE4M3
-    // weight scales are raw pointers, so there are no weight-SF descriptors.
+    // Prefetch TMA descriptors at the very beginning. NVFP4 UE4M3 scales
+    // are raw pointers, so the placeholder scale descriptors are intentionally
+    // not prefetched.
     if (warp_idx == 0 and cute::elect_one_sync()) {
-        if constexpr (MegaMoEPhase::runs_linear1) {
-            cute::prefetch_tma_descriptor(&tensor_map_l1_acts);
-            cute::prefetch_tma_descriptor(&tensor_map_l1_acts_sf);
-            cute::prefetch_tma_descriptor(&tensor_map_l1_weights);
-            cute::prefetch_tma_descriptor(&tensor_map_l1_output);
-        }
-        if constexpr (MegaMoEPhase::runs_linear2) {
-            cute::prefetch_tma_descriptor(&tensor_map_l2_acts);
-            cute::prefetch_tma_descriptor(&tensor_map_l2_acts_sf);
-            cute::prefetch_tma_descriptor(&tensor_map_l2_weights);
-        }
+        cute::prefetch_tma_descriptor(&tensor_map_l1_acts);
+        cute::prefetch_tma_descriptor(&tensor_map_l1_acts_sf);
+        cute::prefetch_tma_descriptor(&tensor_map_l1_weights);
+        cute::prefetch_tma_descriptor(&tensor_map_l1_output);
+        cute::prefetch_tma_descriptor(&tensor_map_l2_acts);
+        cute::prefetch_tma_descriptor(&tensor_map_l2_acts_sf);
+        cute::prefetch_tma_descriptor(&tensor_map_l2_weights);
     }
 
     // =====================================================================
@@ -542,7 +459,7 @@ sm90_nvfp4_mega_moe_core(void* y,
     using b_dtype_t = cutlass::float_e4m3_t;
     constexpr bool kUseMMASync = (BLOCK_M == 16 or BLOCK_M == 32);
     constexpr bool kSplitNWarpgroups =
-        (!kUseMMASync) && BLOCK_N == 256 && kNumEpilogueWarpgroups == 2;
+        (!kUseMMASync) && BLOCK_M == 64 && BLOCK_N == 256 && kNumEpilogueWarpgroups == 2;
     constexpr bool kSerialNWarpgroups = false;
     constexpr bool kWideNWarpgroups =
         (!kUseMMASync) && BLOCK_N == 256 && kNumEpilogueWarpgroups == 1;
@@ -551,20 +468,20 @@ sm90_nvfp4_mega_moe_core(void* y,
     constexpr uint32_t L1_OUT_BLOCK_N = BLOCK_N / 2;       // post-SwiGLU tile N
     constexpr uint32_t WG_L1_OUT_BLOCK_N = WG_BLOCK_N / 2; // post-SwiGLU per-WG N
     constexpr bool kAsyncL1TMAStore =
-        kAsyncL1TMAStoreRequested && MegaMoEPhase::runs_linear1 && (!kUseMMASync) &&
-        (!kSplitNWarpgroups) && kNumEpilogueWarpgroups <= 2;
+        kAsyncL1TMAStoreRequested && (!kUseMMASync) && (!kSplitNWarpgroups) &&
+        kNumEpilogueWarpgroups == 1;
     constexpr bool kSplitSFATMA = kSplitSFATMARequested && (!kUseMMASync);
-    constexpr bool kDirectL2Scatter = kDirectL2ScatterRequested && MegaMoEPhase::runs_linear2 &&
-        (!kUseMMASync) && (!kSplitNWarpgroups) && (!kSerialNWarpgroups);
-    constexpr bool kL2DualAccum = kL2DualAccumRequested && MegaMoEPhase::runs_linear2 && (!kUseMMASync) &&
+    constexpr bool kDirectL2Scatter = kDirectL2ScatterRequested && (!kUseMMASync) &&
+        (!kSplitNWarpgroups) && (!kSerialNWarpgroups);
+    constexpr bool kL2DualAccum = kL2DualAccumRequested && (!kUseMMASync) &&
         (!kSplitNWarpgroups) && (!kSerialNWarpgroups) && WG_BLOCK_N == 128;
     constexpr bool kL2ArrivalCounter = kL2ArrivalCounterRequested && (!kUseMMASync) &&
         (!kSplitNWarpgroups) && BLOCK_N == 128;
     constexpr bool kDirectScatterMetadataBroadcast =
         kDirectScatterMetadataBroadcastRequested && kDirectL2Scatter;
-    constexpr bool kK2DirectAccum = kK2DirectAccumRequested && MegaMoEPhase::is_linear2_only &&
+    constexpr bool kK2DirectAccum = kK2DirectAccumRequested && (!kRunL1Phase) && kRunL2Phase &&
         (!kUseMMASync) && (!kDirectL2Scatter);
-    constexpr bool kL1DualKAccum = kL1DualKAccumRequested && MegaMoEPhase::runs_linear1 && (!kUseMMASync) &&
+    constexpr bool kL1DualKAccum = kL1DualKAccumRequested && (!kUseMMASync) &&
         (!kSplitNWarpgroups) && (!kSerialNWarpgroups) && WG_BLOCK_N == 128 &&
         (kHidden / BLOCK_K) % 2 == 0;
     constexpr bool kLoaderDequant = kLoaderDequantRequested && (!kSplitSFATMA) &&
@@ -580,8 +497,8 @@ sm90_nvfp4_mega_moe_core(void* y,
     using L2WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     static_assert(L1WGMMA::M == 64 and L1WGMMA::N == WG_BLOCK_N and L1WGMMA::K == 32,
                   "Unexpected WGMMA shape");
-    DG_STATIC_ASSERT((!kSplitNWarpgroups) or (BLOCK_M == 64 and WG_BLOCK_N == 128),
-                     "Split-N path expects two M64N128 WGMMA consumers");
+    DG_STATIC_ASSERT((!kSplitNWarpgroups) or (BLOCK_M == 64 and (WG_BLOCK_N == 64 or WG_BLOCK_N == 128)),
+                     "Split-N path expects M64N64 or M64N128 WGMMA consumers");
 
     // A is always CTA-local.  When kClusterSize=2 the scheduler pairs adjacent
     // M blocks with identical expert/N/K coordinates so the B TMA can multicast.
@@ -599,10 +516,10 @@ sm90_nvfp4_mega_moe_core(void* y,
     constexpr uint32_t kSharedMemoryAlignment = 1024;
     extern __shared__ __align__(kSharedMemoryAlignment) uint8_t smem_buffer[];
 
-    constexpr uint32_t SMEM_EXPERT_COUNT_SIZE = MegaMoEPhase::needs_dispatch_pull ?
-        math::constexpr_align<uint32_t>(kNumExperts * sizeof(uint32_t), kSharedMemoryAlignment) : 0u;
-    constexpr uint32_t SMEM_SEND_BUFFER_SIZE = MegaMoEPhase::needs_dispatch_pull ?
-        math::constexpr_align(fp8_token_layout.get_num_bytes() * kNumDispatchWarps, kSharedMemoryAlignment) : 0u;
+    constexpr uint32_t SMEM_EXPERT_COUNT_SIZE =
+        math::constexpr_align<uint32_t>(kNumExperts * sizeof(uint32_t), kSharedMemoryAlignment);
+    constexpr uint32_t SMEM_SEND_BUFFER_SIZE =
+        math::constexpr_align(fp8_token_layout.get_num_bytes() * kNumDispatchWarps, kSharedMemoryAlignment);
     constexpr uint32_t SMEM_NVFP4_LUT_SIZE =
         math::constexpr_align<uint32_t>(128u * sizeof(uint2), kSharedMemoryAlignment);
     constexpr uint32_t SMEM_A_SIZE_PER_STAGE = LOAD_BLOCK_M * BLOCK_K * sizeof(a_dtype_t);
@@ -627,9 +544,9 @@ sm90_nvfp4_mega_moe_core(void* y,
     constexpr uint32_t SMEM_CD_ACCUM_SIZE = kUseMMASync
         ? math::constexpr_align<uint32_t>(BLOCK_M * BLOCK_N * sizeof(float), kSharedMemoryAlignment)
         : 0u;
-    constexpr uint32_t SMEM_CD_L1_SIZE = MegaMoEPhase::runs_linear1 ?
-        kNumEpilogueWarpgroups * WG_BLOCK_M * WG_L1_OUT_BLOCK_N * sizeof(cutlass::float_e4m3_t) : 0u;
-    constexpr uint32_t SMEM_CD_L2_SIZE = (!MegaMoEPhase::runs_linear2 || kDirectL2Scatter) ? 0u :
+    constexpr uint32_t SMEM_CD_L1_SIZE =
+        kNumEpilogueWarpgroups * WG_BLOCK_M * WG_L1_OUT_BLOCK_N * sizeof(cutlass::float_e4m3_t);
+    constexpr uint32_t SMEM_CD_L2_SIZE = kDirectL2Scatter ? 0u :
         kNumEpilogueWarpgroups * WG_BLOCK_M * WG_BLOCK_N * sizeof(nv_bfloat16);
     constexpr uint32_t SMEM_CD_L1_ASYNC_SIZE = kAsyncL1TMAStore ?
         2 * kNumEpilogueWarpgroups * WG_BLOCK_M * L1_OUT_BLOCK_N * sizeof(cutlass::float_e4m3_t) : 0u;
@@ -684,7 +601,6 @@ sm90_nvfp4_mega_moe_core(void* y,
         return sf_start_ptr + kNumStages * SMEM_SFA_SIZE_PER_STAGE + i * SMEM_SFB_SIZE_PER_STAGE;
     });
     constexpr uint32_t kNumDequantBarriers = (kLoaderDequant || kSplitDequantBarrier) ? kNumStages : 0u;
-    constexpr uint32_t kNumCombineBarriers = MegaMoEPhase::needs_combine ? kNumEpilogueWarps * 2u : 0u;
 
     // Barriers live after SF.
     auto barrier_start_ptr = reinterpret_cast<Barrier*>(
@@ -699,27 +615,21 @@ sm90_nvfp4_mega_moe_core(void* y,
     // Initialization
     // =====================================================================
     if (thread_idx < 64) {
-        if constexpr (!kLutFreeRequested) {
-            reinterpret_cast<uint4*>(smem_nvfp4_lut)[thread_idx] =
-                reinterpret_cast<const uint4*>(deep_gemm::nvfp4::kE2M1AndUe4m3ToFp8Lut)[thread_idx];
-        }
+        reinterpret_cast<uint4*>(smem_nvfp4_lut)[thread_idx] =
+            reinterpret_cast<const uint4*>(deep_gemm::nvfp4::kE2M1AndUe4m3ToFp8Lut)[thread_idx];
     }
 
     if (warp_idx == 0) {
-        if constexpr (MegaMoEPhase::needs_dispatch_pull) {
-            // Clean expert-count shared memory used by the L1 dispatch path.
-            #pragma unroll
-            for (uint32_t i = lane_idx; i < kNumExperts; i += 32)
-                ptx::st_shared(smem_expert_count + i, 0u);
-        }
+        // Clean expert-count shared memory
+        #pragma unroll
+        for (uint32_t i = lane_idx; i < kNumExperts; i += 32)
+            ptx::st_shared(smem_expert_count + i, 0u);
     } else if (warp_idx == 1) {
-        if constexpr (MegaMoEPhase::needs_dispatch_pull) {
-            // Init dispatch m-barriers.
-            #pragma unroll
-            for (uint32_t i = lane_idx; i < kNumDispatchWarps; i += 32)
-                dispatch_barriers[i]->init(1);
-            cutlass::arch::fence_barrier_init();
-        }
+        // Init dispatch m-barriers
+        #pragma unroll
+        for (uint32_t i = lane_idx; i < kNumDispatchWarps; i += 32)
+            dispatch_barriers[i]->init(1);
+        cutlass::arch::fence_barrier_init();
     } else if (warp_idx == 2) {
         // Init GEMM full/empty barriers and combine barriers
         if (cute::elect_one_sync()) {
@@ -742,11 +652,9 @@ sm90_nvfp4_mega_moe_core(void* y,
                 #pragma unroll
                 for (uint32_t i = 0; i < kNumStages; ++ i) dequant_barriers[i]->init(kNumEpilogueThreads);
             }
-            if constexpr (MegaMoEPhase::needs_combine) {
-                #pragma unroll
-                for (uint32_t i = 0; i < kNumCombineBarriers; ++ i)
-                    combine_barriers[i]->init(1);
-            }
+            #pragma unroll
+            for (uint32_t i = 0; i < kNumEpilogueWarps * 2; ++ i)
+                combine_barriers[i]->init(1);
         }
         cutlass::arch::fence_barrier_init();
     }
@@ -765,6 +673,81 @@ sm90_nvfp4_mega_moe_core(void* y,
         L2_SHAPE_N, L2_SHAPE_K,
         kNumExpertsPerRank, kNumExpertsPerWave,
         kNumSMs, kNumRanks, kClusterSize>(workspace);
+
+    // Pipeline state shared by TMA loaders and math warpgroups
+    uint32_t stage_idx = 0, phase = 0;
+    auto advance_pipeline = [&](uint32_t& k_block_idx) {
+        ++ k_block_idx;
+        stage_idx = stage_idx == kNumStages - 1 ? 0 : stage_idx + 1;
+        phase ^= stage_idx == 0;
+    };
+    const auto dequant_loaded_b_stage = [&](const uint32_t& s, const uint32_t& p,
+                                            const uint32_t& non_epilogue_thread_idx) {
+        if constexpr (kLoaderDequant) {
+            if constexpr (kNumMMANonEpilogueWarps == 4) {
+                if (non_epilogue_thread_idx >= 64u) {
+                    full_barriers[s]->wait(p);
+                    const uint32_t dequant_tid = non_epilogue_thread_idx - 64u;
+                    if constexpr (kFusedBScaleLayout) {
+                        deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_fused_scale<64u, 8u>(
+                            reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
+                    } else {
+                        const uint8_t* ue4m3_base = smem_sfb[s];
+                        deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows<64u, 8u>(
+                            reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid,
+                            ue4m3_base + dequant_tid * (BLOCK_K / 16u),
+                            ue4m3_base + (dequant_tid + 64u) * (BLOCK_K / 16u),
+                            smem_nvfp4_lut);
+                    }
+                    if (dequant_tid == 0)
+                        dequant_barriers[s]->arrive();
+                }
+            } else {
+                full_barriers[s]->wait(p);
+                const uint8_t* ue4m3_ptr = smem_sfb[s] + non_epilogue_thread_idx * (BLOCK_K / 16u);
+                deep_gemm::nvfp4::dequant_smem_b_inplace<kNumEpilogueThreads, 8u>(
+                    reinterpret_cast<uint8_t*>(smem_b[s]), non_epilogue_thread_idx,
+                    ue4m3_ptr, smem_nvfp4_lut);
+                asm volatile("bar.sync %0, %1;" : : "n"(8), "n"(kNumEpilogueThreads));
+                if (non_epilogue_thread_idx == 0)
+                    dequant_barriers[s]->arrive();
+            }
+        } else {
+            (void)s; (void)p; (void)non_epilogue_thread_idx;
+        }
+    };
+
+    // Intra-SM barrier indices (mirroring SM100)
+    constexpr uint32_t kDispatchBarrierIdx              = 0;
+    constexpr uint32_t kDispatchWithEpilogueBarrierIdx  = 1;
+    constexpr uint32_t kEpilogueFullBarrierIdx          = 2;
+    constexpr uint32_t kEpilogueWGBarrierStartIdx       = 3;
+
+    // Cross-rank NVLink barrier tags
+    constexpr uint32_t kBeforeDispatchPullBarrierTag    = 1;
+    constexpr uint32_t kBeforeCombineReduceBarrierTag   = 2;
+    constexpr uint32_t kAfterWorkspaceCleanBarrierTag   = 3;
+    constexpr uint32_t kBeforeDirectAccumZeroBarrierTag = 4;
+
+    // Register reconfiguration counts (chosen to fit in 64512 reg budget).
+    // For the 256-epilogue-thread loader-dequant case (block_m=128, 2 math WGs),
+    // give non-epilogue warps more room for two-row NVFP4 dequant while staying
+    // inside the 64K register file: 128*48 + 128*64 + 256*192 = 63488.
+    constexpr uint32_t kNumDispatchRegisters    = 48;
+    constexpr uint32_t kNumNonEpilogueRegisters =
+        (kLoaderDequant && kNumEpilogueThreads == 128) ? 80 :
+        (kLoaderDequant && kNumEpilogueThreads == 256) ? 64 : 40;
+    constexpr uint32_t kNumEpilogueRegisters    =
+        (kLoaderDequant && kNumEpilogueThreads == 256) ? 192 :
+        (kSerialNWarpgroups or kWideNWarpgroups) ? 256 :
+        ((kUseMMASync and BLOCK_M == 32) ? 240 : 208);
+    DG_STATIC_ASSERT(kNumDispatchRegisters * kNumDispatchThreads +
+                     kNumNonEpilogueRegisters * kNumNonEpilogueThreads +
+                     kNumEpilogueRegisters * kNumEpilogueThreads <= 64512,
+                     "Too many registers");
+
+    constexpr uint32_t kDispatchGridSyncIndex = 0;
+    constexpr uint32_t kEpilogueGridSyncIndex = 1;
 
     constexpr uint32_t kProfileDispatchTotal = 0;
     constexpr uint32_t kProfileDispatchPull = 1;
@@ -802,90 +785,78 @@ sm90_nvfp4_mega_moe_core(void* y,
         }
     };
 
-    // Pipeline state shared by TMA loaders and math warpgroups
-    uint32_t stage_idx = 0, phase = 0;
-    auto advance_pipeline = [&](uint32_t& k_block_idx) {
-        ++ k_block_idx;
-        stage_idx = stage_idx == kNumStages - 1 ? 0 : stage_idx + 1;
-        phase ^= stage_idx == 0;
-    };
-    const auto dequant_loaded_b_stage = [&](const uint32_t& s, const uint32_t& p,
-                                            const uint32_t& non_epilogue_thread_idx) {
-        if constexpr (kLoaderDequant) {
-            if constexpr (kNumMMANonEpilogueWarps == 4) {
-                if (non_epilogue_thread_idx >= 64u) {
-                    const unsigned long long loader_dequant_start = phase_profile_clock();
-                    full_barriers[s]->wait(p);
-                    const uint32_t dequant_tid = non_epilogue_thread_idx - 64u;
-                    if constexpr (kFusedBScaleLayout) {
-                        deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_fused_scale<64u, 8u, 80u, kLutFreeRequested>(
-                            reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
-                    } else {
-                        const uint8_t* ue4m3_base = smem_sfb[s];
-                        deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows<64u, 8u, kLutFreeRequested>(
-                            reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid,
-                            ue4m3_base + dequant_tid * (BLOCK_K / 16u),
-                            ue4m3_base + (dequant_tid + 64u) * (BLOCK_K / 16u),
-                            smem_nvfp4_lut);
-                    }
-                    const unsigned long long loader_dequant_end = phase_profile_clock();
-                    if (dequant_tid == 0) {
-                        phase_profile_record(kProfileLoaderDequant, loader_dequant_end - loader_dequant_start);
-                        dequant_barriers[s]->arrive();
-                    }
+    const auto for_each_selected_block = [&](auto&& func) {
+        scheduler.fetch_expert_recv_count();
+        scheduler.set_expert_idx(0);
+
+        constexpr uint32_t kNumL1BlockNs = L1_SHAPE_N / BLOCK_N;
+        constexpr uint32_t kNumL2BlockNs = L2_SHAPE_N / BLOCK_N;
+        constexpr uint32_t kNumL1BlockKs = L1_SHAPE_K / BLOCK_K;
+        constexpr uint32_t kNumL2BlockKs = L2_SHAPE_K / BLOCK_K;
+
+        const auto for_each_generic_block = [&]() {
+            while (true) {
+                CUTE_TIE_DECL(scheduler.get_next_block(), block_phase,
+                              current_local_expert_idx, m_block_idx, n_block_idx);
+                if (block_phase == sched::BlockPhase::None)
+                    break;
+
+                if constexpr (kRunL1Phase && !kRunL2Phase) {
+                    if (block_phase != sched::BlockPhase::Linear1)
+                        continue;
+                } else if constexpr (!kRunL1Phase && kRunL2Phase) {
+                    if (block_phase != sched::BlockPhase::Linear2)
+                        continue;
                 }
+
+                func(block_phase, current_local_expert_idx,
+                     block_phase == sched::BlockPhase::Linear2 ? kNumL2BlockKs : kNumL1BlockKs,
+                     m_block_idx, n_block_idx);
+            }
+        };
+
+        if constexpr (kRunL1Phase && !kRunL2Phase) {
+            if (num_tokens < 128) {
+                for_each_generic_block();
             } else {
-                const unsigned long long loader_dequant_start = phase_profile_clock();
-                full_barriers[s]->wait(p);
-                const uint8_t* ue4m3_ptr = smem_sfb[s] + non_epilogue_thread_idx * (BLOCK_K / 16u);
-                deep_gemm::nvfp4::dequant_smem_b_inplace<kNumEpilogueThreads, 8u>(
-                    reinterpret_cast<uint8_t*>(smem_b[s]), non_epilogue_thread_idx,
-                    ue4m3_ptr, smem_nvfp4_lut);
-                asm volatile("bar.sync %0, %1;" : : "n"(8), "n"(kNumEpilogueThreads));
-                const unsigned long long loader_dequant_end = phase_profile_clock();
-                if (non_epilogue_thread_idx == 0) {
-                    phase_profile_record(kProfileLoaderDequant, loader_dequant_end - loader_dequant_start);
-                    dequant_barriers[s]->arrive();
+                while (scheduler.current_local_expert_idx < kNumExpertsPerRank) {
+                    if (!scheduler.fetch_next_l1_block())
+                        continue;
+                    const uint32_t n_block_idx = scheduler.block_idx - scheduler.m_block_idx * kNumL1BlockNs;
+                    scheduler.block_idx += kNumSMs;
+                    func(sched::BlockPhase::Linear1, scheduler.current_local_expert_idx,
+                         kNumL1BlockKs, scheduler.m_block_idx, n_block_idx);
+                }
+            }
+        } else if constexpr (!kRunL1Phase && kRunL2Phase) {
+            if (num_tokens < 128) {
+                for_each_generic_block();
+            } else {
+                while (scheduler.current_local_expert_idx < kNumExpertsPerRank) {
+                    if (!scheduler.fetch_next_l2_block())
+                        continue;
+                    const uint32_t n_block_idx = scheduler.block_idx - scheduler.m_block_idx * kNumL2BlockNs;
+                    scheduler.block_idx += kNumSMs;
+                    func(sched::BlockPhase::Linear2, scheduler.current_local_expert_idx,
+                         kNumL2BlockKs, scheduler.m_block_idx, n_block_idx);
                 }
             }
         } else {
-            (void)s; (void)p; (void)non_epilogue_thread_idx;
+            while (true) {
+                CUTE_TIE_DECL(scheduler.get_next_block(), block_phase,
+                              current_local_expert_idx, m_block_idx, n_block_idx);
+                if (block_phase == sched::BlockPhase::None)
+                    break;
+
+                if (block_phase == sched::BlockPhase::Linear1) {
+                    func(std::integral_constant<sched::BlockPhase, sched::BlockPhase::Linear1>{},
+                         current_local_expert_idx, kNumL1BlockKs, m_block_idx, n_block_idx);
+                } else {
+                    func(std::integral_constant<sched::BlockPhase, sched::BlockPhase::Linear2>{},
+                         current_local_expert_idx, kNumL2BlockKs, m_block_idx, n_block_idx);
+                }
+            }
         }
-    };
-
-    // Intra-SM barrier indices (mirroring SM100)
-    constexpr uint32_t kDispatchBarrierIdx              = 0;
-    constexpr uint32_t kDispatchWithEpilogueBarrierIdx  = 1;
-    constexpr uint32_t kEpilogueFullBarrierIdx          = 2;
-    constexpr uint32_t kEpilogueWGBarrierStartIdx       = 3;
-
-    // Cross-rank NVLink barrier tags
-    constexpr uint32_t kBeforeDispatchPullBarrierTag    = 1;
-    constexpr uint32_t kBeforeCombineReduceBarrierTag   = 2;
-    constexpr uint32_t kAfterWorkspaceCleanBarrierTag   = 3;
-    constexpr uint32_t kBeforeDirectAccumZeroBarrierTag = 4;
-
-    // Register reconfiguration counts (chosen to fit in 64512 reg budget).
-    // For the 256-epilogue-thread loader-dequant case (block_m=128, 2 math WGs),
-    // give non-epilogue warps more room for two-row NVFP4 dequant while staying
-    // inside the 64K register file: 128*48 + 128*64 + 256*192 = 63488.
-    constexpr uint32_t kNumDispatchRegisters    = 48;
-    constexpr uint32_t kNumNonEpilogueRegisters =
-        (kLoaderDequant && kNumEpilogueThreads == 128) ? 80 :        (kLoaderDequant && kNumEpilogueThreads == 256) ? 64 : 40;
-    constexpr uint32_t kNumEpilogueRegisters    =
-        (kLoaderDequant && kNumEpilogueThreads == 256) ? 192 :
-        (kSerialNWarpgroups or kWideNWarpgroups) ? 256 :
-        ((kUseMMASync and BLOCK_M == 32) ? 240 : 208);
-    DG_STATIC_ASSERT(kNumDispatchRegisters * kNumDispatchThreads +
-                     kNumNonEpilogueRegisters * kNumNonEpilogueThreads +
-                     kNumEpilogueRegisters * kNumEpilogueThreads <= 64512,
-                     "Too many registers");
-
-    constexpr uint32_t kDispatchGridSyncIndex = 0;
-    constexpr uint32_t kEpilogueGridSyncIndex = 1;
-
-    const auto for_each_selected_block = [&](auto&& func) {
-        MegaMoEPhase::for_each_selected_block(scheduler, func);
     };
 
     const auto cleanup_workspace = [&]() {
@@ -943,7 +914,7 @@ sm90_nvfp4_mega_moe_core(void* y,
             return;
         } else {
         cutlass::arch::warpgroup_reg_dealloc<kNumDispatchRegisters>();
-        if constexpr (!MegaMoEPhase::runs_linear1) {
+        if constexpr (!kRunL1Phase) {
             scheduler.fetch_expert_recv_count();
             ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
             ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
@@ -1176,7 +1147,7 @@ sm90_nvfp4_mega_moe_core(void* y,
             phase_profile_record(kProfileDispatchTotal, dispatch_pull_end - dispatch_total_start);
         }
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
-        if constexpr (MegaMoEPhase::runs_linear2) {
+        if constexpr (kRunL2Phase) {
             cleanup_workspace();
             comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
                                  kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
@@ -1190,18 +1161,20 @@ sm90_nvfp4_mega_moe_core(void* y,
     //   Warps inside `kNumNonEpilogueThreads` (= 4 warps): warp 0 loads
     //   A + SFA, warp 1 loads B + SFB, warps 2..3 idle.
     // =====================================================================
-        } /* end if constexpr MegaMoEPhase::runs_linear1 */
+        } /* end if constexpr kRunL1Phase */
         }
     } else if (warp_idx == kNumDispatchWarps) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
-        for_each_selected_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const auto& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
-            const auto tensor_map_a_ptr = MegaMoEPhase::runs_linear2
+            if constexpr (!kRunL1Phase) { if (block_phase == sched::BlockPhase::Linear1) return; }
+            if constexpr (!kRunL2Phase) { if (block_phase == sched::BlockPhase::Linear2) return; }
+            const auto tensor_map_a_ptr = block_phase == sched::BlockPhase::Linear2
                 ? &tensor_map_l2_acts : &tensor_map_l1_acts;
-            const auto tensor_map_sfa_ptr = MegaMoEPhase::runs_linear2
+            const auto tensor_map_sfa_ptr = block_phase == sched::BlockPhase::Linear2
                 ? &tensor_map_l2_acts_sf : &tensor_map_l1_acts_sf;
 
             const uint32_t pool_block_idx = scheduler.get_current_pool_block_offset() + m_block_idx;
@@ -1212,11 +1185,12 @@ sm90_nvfp4_mega_moe_core(void* y,
             // the tail M unit when an expert has an odd number of M blocks.
             const unsigned long long ready_wait_start = phase_profile_clock();
             if (has_valid_m) {
-                if constexpr (MegaMoEPhase::runs_linear1) {
+                if (block_phase == sched::BlockPhase::Linear1) {
                     const auto ptr = workspace.get_l1_arrival_count_ptr(pool_block_idx);
                     const auto expected = valid_m;
                     while (ptx::ld_acq(ptr) != expected);
                 } else {
+                    // Each L1 N block publishes one ready event per active M warpgroup.
                     constexpr uint32_t kNumL1BlockNs = L1_SHAPE_N / BLOCK_N;
                     if constexpr (kL2ArrivalCounter) {
                         const auto ptr = reinterpret_cast<const uint32_t*>(
@@ -1233,7 +1207,7 @@ sm90_nvfp4_mega_moe_core(void* y,
                 }
             }
             const unsigned long long ready_wait_end = phase_profile_clock();
-            if (has_valid_m and MegaMoEPhase::runs_linear2 and lane_idx == 0)
+            if (has_valid_m and block_phase == sched::BlockPhase::Linear2 and lane_idx == 0)
                 phase_profile_record(kProfileL2ReadyWait, ready_wait_end - ready_wait_start);
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 empty_barriers[stage_idx]->wait(phase ^ 1);
@@ -1252,7 +1226,7 @@ sm90_nvfp4_mega_moe_core(void* y,
                         full_barriers[stage_idx]->arrive_and_expect_tx(SMEM_A_SIZE_PER_STAGE);
                     } else {
                         // TMA load SFA
-                        if constexpr (MegaMoEPhase::runs_linear1) {
+                        if (block_phase == sched::BlockPhase::Linear1) {
                             // L1 SFA per-128: load (BLOCK_M, 1) at K=k_block_idx
                             tma::copy<BLOCK_M, 1, 0, float>(
                                 tensor_map_sfa_ptr, full_barriers[stage_idx], smem_sfa[stage_idx],
@@ -1286,28 +1260,36 @@ sm90_nvfp4_mega_moe_core(void* y,
     } else if (warp_idx == kNumDispatchWarps + 1) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
-        for_each_selected_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const auto& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
+            if constexpr (!kRunL1Phase) { if (block_phase == sched::BlockPhase::Linear1) return; }
+            if constexpr (!kRunL2Phase) { if (block_phase == sched::BlockPhase::Linear2) return; }
             const auto tensor_map_b_ptr =
-                MegaMoEPhase::runs_linear2 ? &tensor_map_l2_weights : &tensor_map_l1_weights;
+                block_phase == sched::BlockPhase::Linear2 ? &tensor_map_l2_weights : &tensor_map_l1_weights;
             const uint8_t* weights_sf_ptr =
-                MegaMoEPhase::runs_linear2 ? l2_weights_sf : l1_weights_sf;
+                block_phase == sched::BlockPhase::Linear2 ? l2_weights_sf : l1_weights_sf;
 
-            const uint32_t shape_n = MegaMoEPhase::runs_linear2 ? L2_SHAPE_N : L1_SHAPE_N;
-            const uint32_t shape_k = MegaMoEPhase::runs_linear2 ? L2_SHAPE_K : L1_SHAPE_K;
+            const uint32_t shape_n = block_phase == sched::BlockPhase::Linear2 ? L2_SHAPE_N : L1_SHAPE_N;
+            const uint32_t shape_k = block_phase == sched::BlockPhase::Linear2 ? L2_SHAPE_K : L1_SHAPE_K;
+            const uint32_t scale_n_blocks = shape_n / BLOCK_N;
+            const uint32_t scale_k_blocks = shape_k / BLOCK_K;
 
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 empty_barriers[stage_idx]->wait(phase ^ 1);
 
                 const uint32_t n_idx = local_expert_idx * shape_n + n_block_idx * BLOCK_N;
-                // NVFP4: packed FP4, optionally fused with its row-local scale.
-                // Dequant restages into smem with explicit FP8 layout for WGMMA.
+                // NVFP4: packed FP4, K halved in storage bytes. TMA loads
+                // BLOCK_K/2 bytes per row (= BLOCK_K nibbles). No swizzle
+                // since dequant restages into smem with explicit layout.
                 const uint32_t k_idx = k_block_idx * B_LOAD_BYTES_PER_ROW;
+                const uint8_t* scale_tile = weights_sf_ptr +
+                    (((local_expert_idx * scale_n_blocks + n_block_idx) *
+                      scale_k_blocks + k_block_idx) * BLOCK_N) * (BLOCK_K / 16u);
                 if constexpr (kStridedBGmemLoad) {
                     const uint8_t* weights_gmem_ptr =
-                        MegaMoEPhase::runs_linear2 ? l2_weights_gmem : l1_weights_gmem;
+                        block_phase == sched::BlockPhase::Linear2 ? l2_weights_gmem : l1_weights_gmem;
                     const uint32_t packed_shape_k = shape_k / 2;
                     #pragma unroll
                     for (uint32_t row_base = 0; row_base < LOAD_BLOCK_N; row_base += 8) {
@@ -1322,14 +1304,9 @@ sm90_nvfp4_mega_moe_core(void* y,
                     }
                     __syncwarp();
                     if (cute::elect_one_sync()) {
-                        if constexpr (kDirectScaleGmem || kFusedBScaleLayout) {
+                        if constexpr (kDirectScaleGmem) {
                             full_barriers[stage_idx]->arrive();
                         } else {
-                            constexpr uint32_t scale_n_blocks = (MegaMoEPhase::runs_linear2 ? L2_SHAPE_N : L1_SHAPE_N) / BLOCK_N;
-                            constexpr uint32_t scale_k_blocks = (MegaMoEPhase::runs_linear2 ? L2_SHAPE_K : L1_SHAPE_K) / BLOCK_K;
-                            const uint8_t* scale_tile = weights_sf_ptr +
-                                (((local_expert_idx * scale_n_blocks + n_block_idx) *
-                                  scale_k_blocks + k_block_idx) * BLOCK_N) * (BLOCK_K / 16u);
                             ptx::tma_load_1d(smem_sfb[stage_idx], scale_tile,
                                              full_barriers[stage_idx], SMEM_SFB_SIZE_PER_STAGE);
                             full_barriers[stage_idx]->arrive_and_expect_tx(SMEM_SFB_SIZE_PER_STAGE);
@@ -1343,11 +1320,6 @@ sm90_nvfp4_mega_moe_core(void* y,
                     if constexpr (kDirectScaleGmem || kFusedBScaleLayout) {
                         full_barriers[stage_idx]->arrive_and_expect_tx(SMEM_B_LOAD_SIZE_PER_STAGE);
                     } else {
-                        constexpr uint32_t scale_n_blocks = (MegaMoEPhase::runs_linear2 ? L2_SHAPE_N : L1_SHAPE_N) / BLOCK_N;
-                        constexpr uint32_t scale_k_blocks = (MegaMoEPhase::runs_linear2 ? L2_SHAPE_K : L1_SHAPE_K) / BLOCK_K;
-                        const uint8_t* scale_tile = weights_sf_ptr +
-                            (((local_expert_idx * scale_n_blocks + n_block_idx) *
-                              scale_k_blocks + k_block_idx) * BLOCK_N) * (BLOCK_K / 16u);
                         ptx::tma_load_1d(smem_sfb[stage_idx], scale_tile,
                                          full_barriers[stage_idx], SMEM_SFB_SIZE_PER_STAGE);
                         full_barriers[stage_idx]->arrive_and_expect_tx(
@@ -1362,13 +1334,15 @@ sm90_nvfp4_mega_moe_core(void* y,
     } else if (kSplitSFATMA && warp_idx == kNumDispatchWarps + 2) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
-        for_each_selected_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const auto& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
+            if constexpr (!kRunL1Phase) { if (block_phase == sched::BlockPhase::Linear1) return; }
+            if constexpr (!kRunL2Phase) { if (block_phase == sched::BlockPhase::Linear2) return; }
             (void)local_expert_idx;
             (void)n_block_idx;
-            const auto tensor_map_sfa_ptr = MegaMoEPhase::runs_linear2
+            const auto tensor_map_sfa_ptr = block_phase == sched::BlockPhase::Linear2
                 ? &tensor_map_l2_acts_sf : &tensor_map_l1_acts_sf;
 
             const uint32_t pool_block_idx = scheduler.get_current_pool_block_offset() + m_block_idx;
@@ -1377,11 +1351,12 @@ sm90_nvfp4_mega_moe_core(void* y,
 
             const unsigned long long ready_wait_start = phase_profile_clock();
             if (has_valid_m) {
-                if constexpr (MegaMoEPhase::runs_linear1) {
+                if (block_phase == sched::BlockPhase::Linear1) {
                     const auto ptr = workspace.get_l1_arrival_count_ptr(pool_block_idx);
                     const auto expected = valid_m;
                     while (ptx::ld_acq(ptr) != expected);
                 } else {
+                    // Each L1 N block publishes one ready event per active M warpgroup.
                     constexpr uint32_t kNumL1BlockNs = L1_SHAPE_N / BLOCK_N;
                     if constexpr (kL2ArrivalCounter) {
                         const auto ptr = reinterpret_cast<const uint32_t*>(
@@ -1398,7 +1373,7 @@ sm90_nvfp4_mega_moe_core(void* y,
                 }
             }
             const unsigned long long ready_wait_end = phase_profile_clock();
-            if (has_valid_m and MegaMoEPhase::runs_linear2 and lane_idx == 0)
+            if (has_valid_m and block_phase == sched::BlockPhase::Linear2 and lane_idx == 0)
                 phase_profile_record(kProfileL2ReadyWait, ready_wait_end - ready_wait_start);
 
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
@@ -1408,7 +1383,7 @@ sm90_nvfp4_mega_moe_core(void* y,
                     if (has_valid_m) {
                     const uint32_t m_idx = pool_block_idx * BLOCK_M;
 
-                    if constexpr (MegaMoEPhase::runs_linear1) {
+                    if (block_phase == sched::BlockPhase::Linear1) {
                         tma::copy<BLOCK_M, 1, 0, float>(
                             tensor_map_sfa_ptr, full_barriers[stage_idx], smem_sfa[stage_idx],
                             m_idx, k_block_idx, 1);
@@ -1440,11 +1415,17 @@ sm90_nvfp4_mega_moe_core(void* y,
         if constexpr (kLoaderDequant) {
             const uint32_t non_epilogue_warp_idx = warp_idx - kNumDispatchWarps;
             const uint32_t non_epilogue_thread_idx = non_epilogue_warp_idx * 32 + lane_idx;
-            for_each_selected_block([&](const sched::BlockPhase& block_phase,
+            for_each_selected_block([&](const auto& block_phase,
                                          const uint32_t&, const uint32_t& num_k_blocks,
                                          const uint32_t&, const uint32_t&) {
-                        for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
+                if constexpr (!kRunL1Phase) { if (block_phase == sched::BlockPhase::Linear1) return; }
+                if constexpr (!kRunL2Phase) { if (block_phase == sched::BlockPhase::Linear2) return; }
+                for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
+                    const unsigned long long loader_dequant_start = phase_profile_clock();
                     dequant_loaded_b_stage(stage_idx, phase, non_epilogue_thread_idx);
+                    const unsigned long long loader_dequant_end = phase_profile_clock();
+                    if (non_epilogue_thread_idx == 64u)
+                        phase_profile_record(kProfileLoaderDequant, loader_dequant_end - loader_dequant_start);
                     __syncwarp();
                 }
             });
@@ -1561,7 +1542,7 @@ sm90_nvfp4_mega_moe_core(void* y,
         };
 
         const auto finish_no_dispatch_k2_cleanup = [&]() {
-            if constexpr (MegaMoEPhase::is_linear2_only && kNumDispatchWarps == 0) {
+            if constexpr (!kRunL1Phase && kRunL2Phase && kNumDispatchWarps == 0) {
                 ptx::sync_unaligned(kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
                 cleanup_workspace_from_epilogue();
                 comm::nvlink_barrier<kNumRanks, kNumSMs, kNumEpilogueThreads,
@@ -1613,10 +1594,12 @@ sm90_nvfp4_mega_moe_core(void* y,
 
         const unsigned long long math_loop_start = phase_profile_clock();
 
-        for_each_selected_block([&](const sched::BlockPhase& block_phase,
+        for_each_selected_block([&](const auto& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
+            if constexpr (!kRunL1Phase) { if (block_phase == sched::BlockPhase::Linear1) return; }
+            if constexpr (!kRunL2Phase) { if (block_phase == sched::BlockPhase::Linear2) return; }
             const uint32_t valid_m = scheduler.template get_valid_m<false>();
             const uint32_t pool_block_idx = scheduler.get_current_pool_block_offset() + m_block_idx;
             const uint32_t m_idx = pool_block_idx * BLOCK_M;
@@ -1629,17 +1612,9 @@ sm90_nvfp4_mega_moe_core(void* y,
             const bool valid_r0 = row_offset_r0 < valid_m;
             const bool valid_r1 = row_offset_r1 < valid_m;
 
-
             if constexpr (kAsyncL1TMAStore) {
-                if constexpr (MegaMoEPhase::runs_linear1) {
-                    // Keep async L1 stores on full M tiles. Tail tiles fall back
-                    // to the synchronous path so inactive epilogue warpgroups do
-                    // not have to participate in async-store drain barriers.
-                    if (valid_m < BLOCK_M)
-                        drain_all_async_l1_stores();
-                } else {
+                if (block_phase != sched::BlockPhase::Linear1)
                     drain_all_async_l1_stores();
-                }
             }
 
             if constexpr (kUseMMASync) {
@@ -1680,7 +1655,7 @@ sm90_nvfp4_mega_moe_core(void* y,
                     constexpr uint32_t kL1SFPerExpert = (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
                     constexpr uint32_t kL2SFPerExpert = (kHidden / 128) * kL2SFKBlocks;
 
-                    if constexpr (MegaMoEPhase::runs_linear1) {
+                    if (block_phase == sched::BlockPhase::Linear1) {
                         const float gate_sf = 1.0f;
                         const float up_sf = 1.0f;
 
@@ -1741,7 +1716,7 @@ sm90_nvfp4_mega_moe_core(void* y,
                 constexpr uint32_t kMMASyncRowsPerPass = kNumEpilogueThreads / 8;
                 DG_STATIC_ASSERT(kMMASyncRowsPerPass == 16, "mma.sync epilogue maps 8 lanes per row");
 
-                if constexpr (MegaMoEPhase::runs_linear1) {
+                if (block_phase == sched::BlockPhase::Linear1) {
                     #pragma unroll
                     for (uint32_t row_base = 0; row_base < BLOCK_M; row_base += kMMASyncRowsPerPass) {
                         const uint32_t row = row_base + epilogue_thread_idx / 8;
@@ -1866,7 +1841,7 @@ sm90_nvfp4_mega_moe_core(void* y,
 
                     float scale_a_0_lo, scale_a_1_lo;
                     float scale_a_0_hi, scale_a_1_hi;
-                    if constexpr (MegaMoEPhase::runs_linear1) {
+                    if (block_phase == sched::BlockPhase::Linear1) {
                         scale_a_0_lo = ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r0);
                         scale_a_1_lo = ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r1);
                     } else {
@@ -1886,7 +1861,7 @@ sm90_nvfp4_mega_moe_core(void* y,
                     for (uint32_t serial_n_idx = 0; serial_n_idx < kNumSerialN; ++serial_n_idx) {
                         const uint32_t serial_wg_n_idx = serial_n_idx * WG_BLOCK_N;
                         float gate_sf = 0.0f, up_sf = 0.0f, l2_sf = 0.0f;
-                        if constexpr (MegaMoEPhase::runs_linear1) {
+                        if (block_phase == sched::BlockPhase::Linear1) {
                             gate_sf = 1.0f;
                             up_sf = 1.0f;
 
@@ -1977,7 +1952,7 @@ sm90_nvfp4_mega_moe_core(void* y,
                     return;
                 }
 
-                if constexpr (MegaMoEPhase::runs_linear1) {
+                if (block_phase == sched::BlockPhase::Linear1) {
                 constexpr uint32_t kNumPairs = kAccumPerThread / 8;
                     #pragma unroll
                     for (uint32_t serial_n_idx = 0; serial_n_idx < kNumSerialN; ++serial_n_idx) {
@@ -2098,7 +2073,11 @@ sm90_nvfp4_mega_moe_core(void* y,
                         cute::tma_store_arrive();
                     }
                     __syncwarp();
+                    const unsigned long long l1_tma_wait_start = phase_profile_clock();
                     ptx::tma_store_wait<0>();
+                    const unsigned long long l1_tma_wait_end = phase_profile_clock();
+                    if (epilogue_warp_idx == 0 and lane_idx == 0)
+                        phase_profile_record(kProfileL1TMAWait, l1_tma_wait_end - l1_tma_wait_start);
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                     notify_l1_ready(pool_block_idx, n_block_idx);
                 } else {
@@ -2174,7 +2153,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     const unsigned long long dequant_wait_start = phase_profile_clock();
                     dequant_barriers[stage_idx]->wait(phase);
                     const unsigned long long dequant_wait_end = phase_profile_clock();
-                    if (epilogue_warp_idx == 0 and lane_idx == 0)
+                    if (epilogue_warp_idx == 0 && lane_idx == 0)
                         phase_profile_record(kProfileMathDequantWait, dequant_wait_end - dequant_wait_start);
                 } else {
                     full_barriers[stage_idx]->wait(phase);
@@ -2185,11 +2164,11 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         const uint32_t _tid_in_wg = epilogue_thread_idx;
                         const uint8_t* _ue4m3_ptr = nullptr;
                         if constexpr (kDirectScaleGmem) {
-                            const uint32_t shape_n = MegaMoEPhase::runs_linear2 ? L2_SHAPE_N : L1_SHAPE_N;
-                            const uint32_t shape_k = MegaMoEPhase::runs_linear2 ? L2_SHAPE_K : L1_SHAPE_K;
+                            const uint32_t shape_n = block_phase == sched::BlockPhase::Linear2 ? L2_SHAPE_N : L1_SHAPE_N;
+                            const uint32_t shape_k = block_phase == sched::BlockPhase::Linear2 ? L2_SHAPE_K : L1_SHAPE_K;
                             const uint32_t scale_n_blocks = shape_n / BLOCK_N;
                             const uint32_t scale_k_blocks = shape_k / BLOCK_K;
-                            const uint8_t* weights_sf_ptr = MegaMoEPhase::runs_linear2 ? l2_weights_sf : l1_weights_sf;
+                            const uint8_t* weights_sf_ptr = block_phase == sched::BlockPhase::Linear2 ? l2_weights_sf : l1_weights_sf;
                             const uint8_t* scale_tile = weights_sf_ptr +
                                 (((local_expert_idx * scale_n_blocks + n_block_idx) *
                                   scale_k_blocks + k_block_idx) * BLOCK_N) * (BLOCK_K / 16u);
@@ -2221,7 +2200,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 // Read SF (must precede warpgroup_arrive)
                 float scale_a_0_lo, scale_a_1_lo;
                 float scale_a_0_hi, scale_a_1_hi;  // Only used in L2 (per-64 K)
-                if constexpr (MegaMoEPhase::runs_linear1) {
+                if (block_phase == sched::BlockPhase::Linear1) {
                     scale_a_0_lo = ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r0);
                     scale_a_1_lo = ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r1);
                 } else {
@@ -2235,7 +2214,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 // NVFP4 UE4M3 weight scales are applied during FP4 -> FP8 smem
                 // expansion, so the WGMMA accumulator only needs activation SF.
 
-                if constexpr (MegaMoEPhase::runs_linear1) {
+                if (block_phase == sched::BlockPhase::Linear1) {
                     // Single per-128 K-block WGMMA group
                     #pragma unroll
                     for (uint32_t i = 0; i < kAccumPerThread; ++ i) ptx::warpgroup_fence_operand(accum[i]);
@@ -2489,7 +2468,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
             };
 
             if constexpr (kL1DualKAccum) {
-                if constexpr (MegaMoEPhase::runs_linear1)
+                if (block_phase == sched::BlockPhase::Linear1)
                     run_l1_dual_k_gemm_loop();
                 else
                     run_default_gemm_loop();
@@ -2505,13 +2484,17 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
             // A dummy cluster peer may still carry an async L1 store from the
             // previous valid block, so drain it before leaving the L1 wave.
             if (row_block_offset >= valid_m) {
-                if (!(kL2ArrivalCounter && MegaMoEPhase::runs_linear1))
+                if constexpr (kAsyncL1TMAStore) {
+                    if (block_phase == sched::BlockPhase::Linear1)
+                        drain_all_async_l1_stores();
+                }
+                if (!(kL2ArrivalCounter && block_phase == sched::BlockPhase::Linear1))
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 return;
             }
 
             const unsigned long long block_epilogue_start = phase_profile_clock();
-            if constexpr (MegaMoEPhase::runs_linear1) {
+            if (block_phase == sched::BlockPhase::Linear1) {
                 // ---------------- L1 EPILOGUE: SwiGLU + FP8 quantize + TMA store ----------------
                 // Layout in `final_accum`:
                 //   16 chunks of 8 N-cols, each chunk = 4 floats per thread = (r0c0, r0c1, r1c0, r1c1).
@@ -2607,6 +2590,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     amax_r1[g] = math::warp_reduce<4, false>(amax_r1[g], math::ReduceMax<float>());
                 }
 
+
                 float sf_r0[kNumSFGroups], sf_inv_r0[kNumSFGroups];
                 float sf_r1[kNumSFGroups], sf_inv_r1[kNumSFGroups];
                 #pragma unroll
@@ -2619,8 +2603,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 }
 
                 // Quantize and write to smem_cd_l1 (row-major, no swizzle).
-                const bool use_async_l1_store = kAsyncL1TMAStore && valid_m == BLOCK_M;
-                const uint32_t l1_store_stage = use_async_l1_store ? async_l1_store_stage : 0u;
+                const uint32_t l1_store_stage = kAsyncL1TMAStore ? async_l1_store_stage : 0u;
                 if constexpr (kAsyncL1TMAStore)
                     drain_async_l1_store_stage(l1_store_stage);
                 auto* smem_cd_l1_wg = smem_cd_l1
@@ -2685,7 +2668,11 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         cute::tma_store_arrive();
                     }
                     __syncwarp();
+                    const unsigned long long l1_tma_wait_start = phase_profile_clock();
                     ptx::tma_store_wait<0>();
+                    const unsigned long long l1_tma_wait_end = phase_profile_clock();
+                    if (epilogue_warp_idx == 0 and lane_idx == 0)
+                        phase_profile_record(kProfileL1TMAWait, l1_tma_wait_end - l1_tma_wait_start);
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                     notify_l1_ready(pool_block_idx, n_block_idx);
                 } else {
@@ -2702,22 +2689,11 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     }
                     __syncwarp();
                     if constexpr (kAsyncL1TMAStore) {
-                        if (use_async_l1_store) {
-                            ptx::sync_aligned(128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
-                            async_l1_store_pending[l1_store_stage] = true;
-                            async_l1_store_pool[l1_store_stage] = pool_block_idx;
-                            async_l1_store_n[l1_store_stage] = n_block_idx;
-                            async_l1_store_stage ^= 1u;
-                        } else {
-                            const unsigned long long l1_tma_wait_start = phase_profile_clock();
-                            ptx::tma_store_wait<0>();
-                            const unsigned long long l1_tma_wait_end = phase_profile_clock();
-                            if (epilogue_warp_idx == 0 and lane_idx == 0)
-                                phase_profile_record(kProfileL1TMAWait, l1_tma_wait_end - l1_tma_wait_start);
-                            if constexpr (!kL2ArrivalCounter)
-                                ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-                            notify_l1_ready(pool_block_idx, n_block_idx);
-                        }
+                        ptx::sync_aligned(128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
+                        async_l1_store_pending[l1_store_stage] = true;
+                        async_l1_store_pool[l1_store_stage] = pool_block_idx;
+                        async_l1_store_n[l1_store_stage] = n_block_idx;
+                        async_l1_store_stage ^= 1u;
                     } else {
                         const unsigned long long l1_tma_wait_start = phase_profile_clock();
                         ptx::tma_store_wait<0>();
@@ -2736,9 +2712,9 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 // ---------------- L2 EPILOGUE: BF16 cast + NVLink scatter ----------------
                 constexpr uint32_t kNumRowsPerWarp = WG_BLOCK_M / 8;
 
-                const unsigned long long l2_scatter_start = phase_profile_clock();
                 if constexpr (kDirectL2Scatter) {
                     DG_STATIC_ASSERT(WG_BLOCK_N == 128, "Direct L2 scatter prototype only supports N128");
+                    const unsigned long long l2_scatter_start = phase_profile_clock();
 
                     if constexpr (kDirectScatterMetadataBroadcast) {
                         auto scatter_direct_row = [&](const uint32_t& row_offset, const bool& valid_row, const uint32_t& row_accum_offset) {
@@ -2861,6 +2837,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     }
 
                     ptx::sync_aligned(128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
+                    const unsigned long long l2_scatter_start = phase_profile_clock();
 
                     // Scatter to remote ranks via NVLink (one row per warp-pair)
                     // Each warpgroup-warp covers 8 unique rows × 2 (r_0 + r_1 doubled by warps)
@@ -2940,9 +2917,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
         if (epilogue_warp_idx == 0 and lane_idx == 0)
             phase_profile_record(kProfileMathLoop, math_loop_end - math_loop_start);
 
-        if constexpr (!MegaMoEPhase::runs_linear2) {
-            if constexpr (kAsyncL1TMAStore)
-                drain_all_async_l1_stores();
+        if constexpr (!kRunL2Phase) {
             ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
             return;
         } else {
@@ -2990,7 +2965,8 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
         constexpr uint32_t kNumDefaultChunks =
             (kNumChunkSlots * kNumEpilogueWarps * kNumHiddenBytes <= SMEM_BEFORE_BARRIER_SIZE
              and kHidden <= 32 * kNumMaxRegistersForBuffer) ? 1 : 2;
-        constexpr uint32_t kNumChunks = kNumDefaultChunks;
+        constexpr bool kUseCombine7Chunks = kCombine7ChunkRequested && (kHidden % 7 == 0);
+        constexpr uint32_t kNumChunks = kUseCombine7Chunks ? 7 : kNumDefaultChunks;
         constexpr uint32_t kNumChunkBytes = kNumHiddenBytes / kNumChunks;
         constexpr uint32_t kNumChunkUint4 = kNumChunkBytes / sizeof(uint4);
         constexpr uint32_t kNumUint4PerLane = kNumChunkUint4 / 32;
@@ -3101,195 +3077,6 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
     if (blockIdx.x == 0 and threadIdx.x == 0)
         DG_DEVICE_ASSERT(false and "This kernel only supports sm_90");
 #endif
-}
-
-
-template <
-    uint32_t kNumMaxTokensPerRank,
-    uint32_t kHidden, uint32_t kIntermediateHidden,
-    uint32_t kNumExperts, uint32_t kNumTopk,
-    uint32_t kNumExpertsPerWave,
-    uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t BLOCK_K,
-    uint32_t kNumMaxPoolTokens,
-    uint32_t kNumPaddedSFPoolTokens,
-    uint32_t kNumStages,
-    uint32_t kNumDispatchThreads, uint32_t kNumNonEpilogueThreads,
-    uint32_t kNumEpilogueThreads,
-    uint32_t kClusterSize,
-    uint32_t kNumSMs, uint32_t kNumRanks,
-    float kActivationClamp,
-    bool kFastMath,
-    bool kAsyncL1TMAStoreRequested = true,
-    bool kSplitSFATMARequested = false,
-    bool kDirectL2ScatterRequested = false,
-    bool kL2DualAccumRequested = false,
-    bool kPhaseProfileRequested = false,
-    bool kL2ArrivalCounterRequested = false,
-    bool kDirectScatterMetadataBroadcastRequested = false,
-    bool kL1DualKAccumRequested = false,
-    bool kL2NMajorScheduleRequested = false,
-    bool kL1NMajorScheduleRequested = false,
-    bool kK2DirectAccumRequested = false,
-    bool kLoaderDequantRequested = false,
-    bool kLutFreeRequested = false,
-    bool kDirectScaleGmemRequested = false,
-    bool kPackedBScratchRequested = false,
-    bool kSplitDequantBarrierRequested = false,
-    bool kStridedBGmemLoadRequested = false,
-    bool kFusedBScaleLayoutRequested = false,
-    uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
-    uint32_t L1_SHAPE_K = kHidden,
-    uint32_t L2_SHAPE_N = kHidden,
-    uint32_t L2_SHAPE_K = kIntermediateHidden,
-    uint32_t kNumDispatchWarps = kNumDispatchThreads / 32,
-    uint32_t kNumMMANonEpilogueWarps = kNumNonEpilogueThreads / 32,
-    uint32_t kNumEpilogueWarps = kNumEpilogueThreads / 32,
-    uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4,
-    uint32_t kNumThreads = kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads,
-    uint32_t kNumTokensPerWarp = 32 / kNumTopk,
-    uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks
->
-CUTLASS_GLOBAL __launch_bounds__(kNumThreads, 1) void
-sm90_nvfp4_mega_moe_l1_impl(int* cumulative_local_expert_recv_stats,
-                            const uint32_t num_tokens,
-                            const __grid_constant__ layout::SymBuffer<kNumRanks> sym_buffer,
-                            const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts,
-                            const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts_sf,
-                            const __grid_constant__ cute::TmaDescriptor tensor_map_l1_weights,
-                            const uint8_t* __restrict__ l1_weights_gmem,
-                            const uint8_t* __restrict__ l1_weights_sf,
-                            const __grid_constant__ cute::TmaDescriptor tensor_map_l1_output) {
-    sm90_nvfp4_mega_moe_core<
-        MegaMoENVFP4Linear1Phase,
-        kNumMaxTokensPerRank, kHidden, kIntermediateHidden,
-        kNumExperts, kNumTopk, kNumExpertsPerWave,
-        BLOCK_M, BLOCK_N, BLOCK_K,
-        kNumMaxPoolTokens, kNumPaddedSFPoolTokens, kNumStages,
-        kNumDispatchThreads, kNumNonEpilogueThreads, kNumEpilogueThreads,
-        kClusterSize, kNumSMs, kNumRanks,
-        kActivationClamp, kFastMath,
-        kAsyncL1TMAStoreRequested, kSplitSFATMARequested,
-        kDirectL2ScatterRequested, kL2DualAccumRequested,
-        kPhaseProfileRequested, kL2ArrivalCounterRequested, kDirectScatterMetadataBroadcastRequested,
-        kL1DualKAccumRequested,
-        kL2NMajorScheduleRequested, kL1NMajorScheduleRequested,
-        kK2DirectAccumRequested, kLoaderDequantRequested, kLutFreeRequested,
-        kDirectScaleGmemRequested, kPackedBScratchRequested,
-        kSplitDequantBarrierRequested, kStridedBGmemLoadRequested,
-        kFusedBScaleLayoutRequested,
-        L1_SHAPE_N, L1_SHAPE_K, L2_SHAPE_N, L2_SHAPE_K,
-        kNumDispatchWarps, kNumMMANonEpilogueWarps,
-        kNumEpilogueWarps, kNumEpilogueWarpgroups,
-        kNumThreads, kNumTokensPerWarp, kNumExpertsPerRank>(
-            nullptr,
-            cumulative_local_expert_recv_stats,
-            num_tokens,
-            sym_buffer,
-            tensor_map_l1_acts,
-            tensor_map_l1_acts_sf,
-            tensor_map_l1_weights,
-            l1_weights_gmem,
-            l1_weights_sf,
-            tensor_map_l1_output,
-            tensor_map_l1_acts,
-            tensor_map_l1_acts_sf,
-            tensor_map_l1_weights,
-            nullptr,
-            nullptr);
-}
-
-template <
-    uint32_t kNumMaxTokensPerRank,
-    uint32_t kHidden, uint32_t kIntermediateHidden,
-    uint32_t kNumExperts, uint32_t kNumTopk,
-    uint32_t kNumExpertsPerWave,
-    uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t BLOCK_K,
-    uint32_t kNumMaxPoolTokens,
-    uint32_t kNumPaddedSFPoolTokens,
-    uint32_t kNumStages,
-    uint32_t kNumDispatchThreads, uint32_t kNumNonEpilogueThreads,
-    uint32_t kNumEpilogueThreads,
-    uint32_t kClusterSize,
-    uint32_t kNumSMs, uint32_t kNumRanks,
-    float kActivationClamp,
-    bool kFastMath,
-    bool kAsyncL1TMAStoreRequested = false,
-    bool kSplitSFATMARequested = false,
-    bool kDirectL2ScatterRequested = false,
-    bool kL2DualAccumRequested = false,
-    bool kPhaseProfileRequested = false,
-    bool kL2ArrivalCounterRequested = false,
-    bool kDirectScatterMetadataBroadcastRequested = false,
-    bool kL1DualKAccumRequested = false,
-    bool kL2NMajorScheduleRequested = false,
-    bool kL1NMajorScheduleRequested = false,
-    bool kK2DirectAccumRequested = false,
-    bool kLoaderDequantRequested = false,
-    bool kLutFreeRequested = false,
-    bool kDirectScaleGmemRequested = false,
-    bool kPackedBScratchRequested = false,
-    bool kSplitDequantBarrierRequested = false,
-    bool kStridedBGmemLoadRequested = false,
-    bool kFusedBScaleLayoutRequested = false,
-    uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
-    uint32_t L1_SHAPE_K = kHidden,
-    uint32_t L2_SHAPE_N = kHidden,
-    uint32_t L2_SHAPE_K = kIntermediateHidden,
-    uint32_t kNumDispatchWarps = kNumDispatchThreads / 32,
-    uint32_t kNumMMANonEpilogueWarps = kNumNonEpilogueThreads / 32,
-    uint32_t kNumEpilogueWarps = kNumEpilogueThreads / 32,
-    uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4,
-    uint32_t kNumThreads = kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads,
-    uint32_t kNumTokensPerWarp = 32 / kNumTopk,
-    uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks
->
-CUTLASS_GLOBAL __launch_bounds__(kNumThreads, 1) void
-sm90_nvfp4_mega_moe_l2_impl(void* y,
-                            int* cumulative_local_expert_recv_stats,
-                            const uint32_t num_tokens,
-                            const __grid_constant__ layout::SymBuffer<kNumRanks> sym_buffer,
-                            const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts,
-                            const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts_sf,
-                            const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weights,
-                            const uint8_t* __restrict__ l2_weights_gmem,
-                            const uint8_t* __restrict__ l2_weights_sf) {
-    sm90_nvfp4_mega_moe_core<
-        MegaMoENVFP4Linear2Phase,
-        kNumMaxTokensPerRank, kHidden, kIntermediateHidden,
-        kNumExperts, kNumTopk, kNumExpertsPerWave,
-        BLOCK_M, BLOCK_N, BLOCK_K,
-        kNumMaxPoolTokens, kNumPaddedSFPoolTokens, kNumStages,
-        kNumDispatchThreads, kNumNonEpilogueThreads, kNumEpilogueThreads,
-        kClusterSize, kNumSMs, kNumRanks,
-        kActivationClamp, kFastMath,
-        kAsyncL1TMAStoreRequested, kSplitSFATMARequested,
-        kDirectL2ScatterRequested, kL2DualAccumRequested,
-        kPhaseProfileRequested, kL2ArrivalCounterRequested, kDirectScatterMetadataBroadcastRequested,
-        kL1DualKAccumRequested,
-        kL2NMajorScheduleRequested, kL1NMajorScheduleRequested,
-        kK2DirectAccumRequested, kLoaderDequantRequested, kLutFreeRequested,
-        kDirectScaleGmemRequested, kPackedBScratchRequested,
-        kSplitDequantBarrierRequested, kStridedBGmemLoadRequested,
-        kFusedBScaleLayoutRequested,
-        L1_SHAPE_N, L1_SHAPE_K, L2_SHAPE_N, L2_SHAPE_K,
-        kNumDispatchWarps, kNumMMANonEpilogueWarps,
-        kNumEpilogueWarps, kNumEpilogueWarpgroups,
-        kNumThreads, kNumTokensPerWarp, kNumExpertsPerRank>(
-            y,
-            cumulative_local_expert_recv_stats,
-            num_tokens,
-            sym_buffer,
-            tensor_map_l2_acts,
-            tensor_map_l2_acts_sf,
-            tensor_map_l2_weights,
-            nullptr,
-            nullptr,
-            tensor_map_l2_acts,
-            tensor_map_l2_acts,
-            tensor_map_l2_acts_sf,
-            tensor_map_l2_weights,
-            l2_weights_gmem,
-            l2_weights_sf);
 }
 
 } // namespace deep_gemm

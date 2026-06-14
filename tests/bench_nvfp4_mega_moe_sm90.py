@@ -80,6 +80,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
         (l1_packed, l1_scale), (l2_packed, l2_scale),
     )
+    kernel_name = 'sm90_nvfp4_mega_moe'
 
     phase_profile_enabled = os.environ.get('DG_SM90_MOE_PHASE_PROFILE', '0') != '0'
     phase_profile_ints = 96 if phase_profile_enabled else 0
@@ -133,11 +134,50 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
             run()
         torch.cuda.synchronize()
         dist.barrier()
-    t_l1, t_l2 = bench_kineto(run, ('sm90_nvfp4_mega_moe_l1_impl', 'sm90_nvfp4_mega_moe_l2_impl'),
-                              barrier=lambda: dist.barrier(),
-                              num_tests=args.num_tests,
-                              suppress_kineto_output=True)
-    t_nvfp4 = t_l1 + t_l2
+    show_kineto = os.environ.get('DG_SHOW_KINETO', '0') != '0'
+    split_env = os.environ.get('DG_SM90_MOE_SPLIT_L1_L2')
+    if split_env is None:
+        shape_override = (
+            int(os.environ.get('DG_SM90_MOE_BLOCK_M', '0')) > 0
+            or int(os.environ.get('DG_SM90_MOE_EPILOGUE_WG', '0')) > 0
+            or int(os.environ.get('DG_SM90_MOE_BLOCK_N', '128')) != 128
+            or int(os.environ.get('DG_SM90_NVFP4_EPILOGUE_THREADS', '0')) > 0
+        )
+        bm128_enabled = os.environ.get('DG_SM90_NVFP4_BM128_HEURISTIC', '1') != '0'
+        bm128_default = (
+            bm128_enabled
+            and not shape_override
+            and num_tokens in (256, 512, 1024, 2048, 4096, 8192)
+        )
+        fused_default = num_tokens == 4096 and not bm128_default
+        true_fused_small_m_default = num_tokens in (32, 64, 128)
+        split_l1_l2 = not (fused_default or true_fused_small_m_default)
+    else:
+        split_l1_l2 = split_env != '0'
+    # The profiler table exposes the generated CUDA function name, not the
+    # JIT build name, so split L1/L2 launches cannot be matched separately
+    # by "_l1" / "_l2" suffix. With one substring and
+    # with_multiple_kernels=True, bench_kineto returns the per-kernel
+    # average across both split launches; multiply by two to estimate one
+    # end-to-end MoE call.
+    t_nvfp4 = bench_kineto(run, kernel_name,
+                           barrier=lambda: dist.barrier(),
+                           num_tests=args.num_tests,
+                           suppress_kineto_output=not show_kineto,
+                           with_multiple_kernels=split_l1_l2)
+    if split_l1_l2:
+        t_nvfp4 *= 2
+
+    t_rank = torch.tensor([t_nvfp4], dtype=torch.float64, device="cuda")
+    t_rank_max = t_rank.clone()
+    t_rank_min = t_rank.clone()
+    t_rank_sum = t_rank.clone()
+    dist.all_reduce(t_rank_max, op=dist.ReduceOp.MAX)
+    dist.all_reduce(t_rank_min, op=dist.ReduceOp.MIN)
+    dist.all_reduce(t_rank_sum, op=dist.ReduceOp.SUM)
+    t_nvfp4_rank_max = float(t_rank_max.item())
+    t_nvfp4_rank_min = float(t_rank_min.item())
+    t_nvfp4_rank_mean = float(t_rank_sum.item()) / num_ranks
 
     # Count tokens that landed on this rank for stats
     gathered_topk_idx = uneven_all_gather(topk_idx, group=group)
@@ -163,7 +203,8 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     if print_perf:
         dist_print(
             f' tokens={num_tokens:4d}  recv={num_recv_tokens:5d}  experts={num_touched_experts:4d}  '
-            f'nvfp4={t_nvfp4 * 1e6:7.1f}us(l1={t_l1 * 1e6:6.1f},l2={t_l2 * 1e6:6.1f})'
+            f'nvfp4={t_nvfp4 * 1e6:7.1f}us '
+            f'mean_rank={t_nvfp4_rank_mean * 1e6:7.1f}us max_rank={t_nvfp4_rank_max * 1e6:7.1f}us '
             f'({tflops_nvfp4:5.1f}TF, {hbm_gbs:4.0f}GB/s)  (rank{rank_idx})',
             once_in_node=True,
         )
@@ -255,7 +296,6 @@ if __name__ == '__main__':
     parser.add_argument('--masked-ratio', type=float, default=0.0)
     parser.add_argument('--fast-math', type=int, default=1)
     parser.add_argument('--num-tests', type=int, default=20)
-
     args = parser.parse_args()
 
     if args.local_rank_idx is not None:
