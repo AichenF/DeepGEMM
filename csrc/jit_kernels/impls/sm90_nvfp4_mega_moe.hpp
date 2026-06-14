@@ -57,6 +57,7 @@ public:
         bool strided_b_gmem_load;
         bool fused_b_scale_layout;
         bool combine_7chunk;
+        bool skip_direct_scatter_sync;
         bool run_l1_phase;
         bool run_l2_phase;
         MegaMoESM90Config config;
@@ -111,7 +112,7 @@ static void __instantiate_kernel() {{
         {}, {}, {}, {}, {}, {}, {}, {}, {},
         {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
         {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-        {}, {}, {}
+        {}, {}, {}, {}
     >);
 }};
 )",
@@ -129,7 +130,7 @@ static void __instantiate_kernel() {{
     to_string(args.activation_clamp),
     args.fast_math ? "true" : "false",
     args.async_l1_tma_store ? "true" : "false", args.split_sfa_tma ? "true" : "false", args.direct_l2_scatter ? "true" : "false", args.l2_dual_accum ? "true" : "false", args.phase_profile ? "true" : "false", args.l2_arrival_counter ? "true" : "false", args.direct_scatter_metadata_broadcast ? "true" : "false", args.l1_dual_k_accum ? "true" : "false", args.l2_nmajor_schedule ? "true" : "false", args.l1_nmajor_schedule ? "true" : "false",
-    args.k2_direct_accum ? "true" : "false", args.loader_dequant ? "true" : "false", args.direct_scale_gmem ? "true" : "false", args.packed_b_scratch ? "true" : "false", args.split_dequant_barrier ? "true" : "false", args.strided_b_gmem_load ? "true" : "false", args.fused_b_scale_layout ? "true" : "false", args.combine_7chunk ? "true" : "false",
+    args.k2_direct_accum ? "true" : "false", args.loader_dequant ? "true" : "false", args.direct_scale_gmem ? "true" : "false", args.packed_b_scratch ? "true" : "false", args.split_dequant_barrier ? "true" : "false", args.strided_b_gmem_load ? "true" : "false", args.fused_b_scale_layout ? "true" : "false", args.combine_7chunk ? "true" : "false", args.skip_direct_scatter_sync ? "true" : "false",
     args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
     args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks,
     args.run_l1_phase ? "true" : "false", args.run_l2_phase ? "true" : "false",
@@ -439,6 +440,9 @@ static void sm90_nvfp4_mega_moe(
         .strided_b_gmem_load = nvfp4_strided_b_gmem_load,
         .fused_b_scale_layout = nvfp4_fused_b_scale_layout,
         .combine_7chunk = get_env<int>("DG_SM90_NVFP4_COMBINE_7CHUNK", 0) != 0,
+        .skip_direct_scatter_sync = get_env<int>(
+            "DG_SM90_NVFP4_SKIP_DIRECT_SCATTER_SYNC",
+            (true_fused_l1_l2 && config.block_n == 256 && num_tokens == 128) ? 1 : 0) != 0,
         .run_l1_phase = true,
         .run_l2_phase = true,
         .config = config,
