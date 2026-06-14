@@ -425,8 +425,9 @@ sm90_nvfp4_mega_moe_impl(void* y,
     DG_STATIC_ASSERT(BLOCK_N == 128 or BLOCK_N == 256,
                      "NVFP4 smem dequant supports BN128 and opt-in BN256 scale tile layouts");
     DG_STATIC_ASSERT(BLOCK_K == 128, "BLOCK_K is fixed to 128 (per-128 SF)");
-    DG_STATIC_ASSERT((!kLoaderDequantRequested) or kNumNonEpilogueThreads == 128,
-                     "NVFP4 loader dequant expects four non-epilogue warps");
+    DG_STATIC_ASSERT((!kLoaderDequantRequested) or kNumNonEpilogueThreads == 128 or
+                     (kNumNonEpilogueThreads == 64 and kPackedBScratchRequested and BLOCK_N == 256),
+                     "NVFP4 loader dequant expects four non-epilogue warps or the BN256 packed-scratch path");
 
     // =====================================================================
     // Thread / warp identification
@@ -717,7 +718,26 @@ sm90_nvfp4_mega_moe_impl(void* y,
     const auto dequant_loaded_b_stage = [&](const uint32_t& s, const uint32_t& p,
                                             const uint32_t& non_epilogue_thread_idx) {
         if constexpr (kLoaderDequant) {
-            if constexpr (kNumMMANonEpilogueWarps == 4) {
+            if constexpr (kNumMMANonEpilogueWarps == 2 && kPackedBScratch && LOAD_BLOCK_N == 256) {
+                full_barriers[s]->wait(p);
+                #pragma unroll
+                for (uint32_t row = non_epilogue_thread_idx; row < LOAD_BLOCK_N; row += 64u) {
+                    if constexpr (kFusedBScaleLayout) {
+                        deep_gemm::nvfp4::dequant_smem_b_from_packed_fused_scale(
+                            reinterpret_cast<uint8_t*>(smem_b[s]),
+                            reinterpret_cast<const uint8_t*>(smem_packed_b[s]),
+                            row, smem_nvfp4_lut);
+                    } else {
+                        const uint8_t* ue4m3_ptr = smem_sfb[s] + row * (BLOCK_K / 16u);
+                        deep_gemm::nvfp4::dequant_smem_b_from_packed<kNumEpilogueThreads>(
+                            reinterpret_cast<uint8_t*>(smem_b[s]),
+                            reinterpret_cast<const uint8_t*>(smem_packed_b[s]),
+                            row, ue4m3_ptr, smem_nvfp4_lut);
+                    }
+                }
+                if (non_epilogue_thread_idx == 0)
+                    dequant_barriers[s]->arrive();
+            } else if constexpr (kNumMMANonEpilogueWarps == 4) {
                 if constexpr (kFusedBScaleLayout && LOAD_BLOCK_N == 256) {
                     full_barriers[s]->wait(p);
                     const uint32_t dequant_tid = non_epilogue_thread_idx;

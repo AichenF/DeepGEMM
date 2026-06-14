@@ -236,14 +236,22 @@ static void sm90_nvfp4_mega_moe(
     DG_HOST_ASSERT(nvfp4_dispatch_threads == 64 || nvfp4_dispatch_threads == 128);
     DG_HOST_ASSERT(nvfp4_non_epilogue_threads == 64 || nvfp4_non_epilogue_threads == 128);
     const bool split_sfa_tma = get_env<int>("DG_SM90_MOE_SPLIT_SFA_TMA", 0) != 0;
-    const int nvfp4_loader_dequant_default = config.block_n == 256 ? 0 : 1;
-    const bool nvfp4_loader_dequant = get_env<int>("DG_SM90_NVFP4_LOADER_DEQUANT", nvfp4_loader_dequant_default) != 0 &&
-        nvfp4_non_epilogue_threads == 128 && !split_sfa_tma;
+    const int nvfp4_loader_dequant_default = config.block_n == 256 ?
+        (num_tokens == 128 ? 1 : 0) :
+        1;
+    const bool nvfp4_loader_dequant_requested =
+        get_env<int>("DG_SM90_NVFP4_LOADER_DEQUANT", nvfp4_loader_dequant_default) != 0 && !split_sfa_tma;
+    const int nvfp4_packed_b_scratch_default = config.block_n == 256 ? 1 : 0;
+    const bool nvfp4_packed_b_scratch_requested =
+        get_env<int>("DG_SM90_NVFP4_PACKED_B_SCRATCH", nvfp4_packed_b_scratch_default) != 0;
+    const bool nvfp4_bn256_packed_loader_dequant =
+        config.block_n == 256 && nvfp4_non_epilogue_threads == 64 && nvfp4_packed_b_scratch_requested;
+    const bool nvfp4_loader_dequant = nvfp4_loader_dequant_requested &&
+        (nvfp4_non_epilogue_threads == 128 || nvfp4_bn256_packed_loader_dequant);
     const bool nvfp4_direct_scale_gmem = get_env<int>("DG_SM90_NVFP4_DIRECT_SCALE_GMEM", 0) != 0 &&
         !nvfp4_loader_dequant;
-    const int nvfp4_packed_b_scratch_default = config.block_n == 256 ? 1 : 0;
-    const bool nvfp4_packed_b_scratch = get_env<int>("DG_SM90_NVFP4_PACKED_B_SCRATCH", nvfp4_packed_b_scratch_default) != 0 &&
-        !nvfp4_loader_dequant;
+    const bool nvfp4_packed_b_scratch = nvfp4_packed_b_scratch_requested &&
+        (!nvfp4_loader_dequant || nvfp4_bn256_packed_loader_dequant);
     const bool nvfp4_split_dequant_barrier = get_env<int>("DG_SM90_NVFP4_SPLIT_DEQUANT_BARRIER", 0) != 0 &&
         !nvfp4_loader_dequant && !nvfp4_packed_b_scratch;
     const bool nvfp4_strided_b_gmem_load = get_env<int>("DG_SM90_NVFP4_STRIDED_B_GMEM_LOAD", 0) != 0 &&
