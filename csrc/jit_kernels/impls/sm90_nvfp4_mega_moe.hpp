@@ -263,7 +263,11 @@ static void sm90_nvfp4_mega_moe(
     config.num_non_epilogue_threads = nvfp4_non_epilogue_threads;
     DG_HOST_ASSERT((config.num_dispatch_threads + config.num_non_epilogue_threads) % 128 == 0);
     DG_HOST_ASSERT(!(config.block_n == 256 && nvfp4_packed_b_scratch && num_tokens > 128));
-    const bool direct_l2_scatter = config.block_n == 128;
+    const int direct_l2_scatter_default =
+        (config.block_n == 128 || (config.block_n == 256 && num_tokens <= 128)) ? 1 : 0;
+    const bool direct_l2_scatter = get_env<int>("DG_SM90_NVFP4_DIRECT_L2_SCATTER", direct_l2_scatter_default) != 0;
+    DG_HOST_ASSERT(!direct_l2_scatter || config.block_n == 128 ||
+                   (config.block_n == 256 && config.block_m == 64 && config.num_epilogue_threads == 256));
     {
         auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
         constexpr int kSmemAlignment = 1024;

@@ -504,7 +504,7 @@ sm90_nvfp4_mega_moe_impl(void* y,
         kNumEpilogueWarpgroups == 1;
     constexpr bool kSplitSFATMA = kSplitSFATMARequested && (!kUseMMASync);
     constexpr bool kDirectL2Scatter = kDirectL2ScatterRequested && (!kUseMMASync) &&
-        (!kSplitNWarpgroups) && (!kSerialNWarpgroups);
+        (!kSerialNWarpgroups) && WG_BLOCK_N == 128;
     constexpr bool kL2DualAccum = kL2DualAccumRequested && (!kUseMMASync) &&
         (!kSplitNWarpgroups) && (!kSerialNWarpgroups) && WG_BLOCK_N == 128;
     constexpr bool kL2ArrivalCounter = kL2ArrivalCounterRequested && (!kUseMMASync) &&
