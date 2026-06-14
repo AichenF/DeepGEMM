@@ -1679,6 +1679,23 @@ sm90_nvfp4_mega_moe_impl(void* y,
                     drain_all_async_l1_stores();
             }
 
+            if constexpr (kLoaderDequant && (!kUseMMASync) && (!kSplitNWarpgroups)) {
+                if (row_block_offset >= valid_m) {
+                    for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
+                        dequant_barriers[stage_idx]->wait(phase);
+                        arrive_empty_barrier(stage_idx);
+                        __syncwarp();
+                    }
+                    if constexpr (kAsyncL1TMAStore) {
+                        if (block_phase == sched::BlockPhase::Linear1)
+                            drain_all_async_l1_stores();
+                    }
+                    if (!(kL2ArrivalCounter && block_phase == sched::BlockPhase::Linear1))
+                        ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                    return;
+                }
+            }
+
             if constexpr (kUseMMASync) {
                 using MMASyncTiled = cute::TiledMMA<
                     cute::MMA_Atom<cute::SM89_16x8x32_F32E4M3E4M3F32_TN>,
