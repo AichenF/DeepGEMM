@@ -77,8 +77,14 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     # ABI does not consume.
     l1_packed, l1_scale = quantize_to_nvfp4(l1_bf, group_size=16)
     l2_packed, l2_scale = quantize_to_nvfp4(l2_bf, group_size=16)
+    # M32/M64/M128 are dominated by per-block fixed cost. The BN256
+    # packed-scratch layout halves the N-block count and uses math-side NVFP4
+    # dequant; M256+ keeps the higher-throughput BN128 split path.
+    nvfp4_block_n = 256 if num_tokens <= 128 else 128
+    nvfp4_fused_b_scale = True if num_tokens <= 64 else None
     transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
         (l1_packed, l1_scale), (l2_packed, l2_scale),
+        block_n=nvfp4_block_n, fused_b_scale=nvfp4_fused_b_scale,
     )
     kernel_name = 'sm90_nvfp4_mega_moe'
 

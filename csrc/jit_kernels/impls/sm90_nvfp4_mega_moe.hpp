@@ -108,9 +108,9 @@ static void __instantiate_kernel() {{
         {}, {},
         {},
         {},
-        {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-        {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
         {}, {}, {}, {}, {}, {}, {}, {}, {},
+        {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+        {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
         {}, {}, {}
     >);
 }};
@@ -182,18 +182,20 @@ static void sm90_nvfp4_mega_moe(
         num_max_tokens_per_rank, num_tokens, num_topk,
         hidden, intermediate_hidden, num_padded_sf_pool_tokens);
 
-    // PR323's generic SM90 heuristic can select shapes the NVFP4 bridge does
-    // not support yet. BN256 looked fast in latency-only probes but failed
-    // correctness, so keep the compact NVFP4 bridge restricted to verified BN128.
+    // BN128 remains the default layout. BN256 is opt-in for the verified
+    // small-M packed-scratch path, where it halves the N-block count.
     const int nvfp4_block_n_from_layout = static_cast<int>(l1_weights_sf.size(3));
-    DG_HOST_ASSERT(nvfp4_block_n_from_layout == 128);
+    DG_HOST_ASSERT(nvfp4_block_n_from_layout == 128 || nvfp4_block_n_from_layout == 256);
     const int nvfp4_block_n = get_env<int>("DG_SM90_NVFP4_BLOCK_N", nvfp4_block_n_from_layout);
-    DG_HOST_ASSERT(nvfp4_block_n == 128);
+    DG_HOST_ASSERT(nvfp4_block_n == 128 || nvfp4_block_n == 256);
     DG_HOST_ASSERT(nvfp4_block_n == nvfp4_block_n_from_layout);
     config.block_m = 64;
     config.block_n = nvfp4_block_n;
     config.block_k = 128;
     config.cluster_size = 1;
+    const int nvfp4_env_block_m = get_env<int>("DG_SM90_MOE_BLOCK_M", 0);
+    if (nvfp4_env_block_m > 0)
+        config.block_m = nvfp4_env_block_m;
     config.num_epilogue_threads = get_env<int>(
         "DG_SM90_NVFP4_EPILOGUE_THREADS", config.block_n == 256 ? 256 : 128);
     DG_HOST_ASSERT((config.block_n == 128 and (config.num_epilogue_threads == 128 or config.num_epilogue_threads == 256)) or
@@ -223,29 +225,44 @@ static void sm90_nvfp4_mega_moe(
     // DG_SM90_NVFP4_LOADER_DEQUANT=0 to use the math-side fallback.
     // The BLOCK_M=16/32 mma.sync branch is not fully wired for NVFP4.
     DG_HOST_ASSERT(config.block_m >= 64);
+    DG_HOST_ASSERT(config.block_m == 64 or config.block_m == 128);
     // UE4M3 scale tensors are prepacked as (E, N/block_n, K/128, block_n, 8).
     DG_HOST_ASSERT(config.block_n == 128 or config.block_n == 256);
-    const int nvfp4_dispatch_threads = get_env<int>("DG_SM90_NVFP4_DISPATCH_THREADS", 128);
-    const int nvfp4_non_epilogue_threads = get_env<int>("DG_SM90_NVFP4_NON_EPILOGUE_THREADS", 128);
+    const int nvfp4_dispatch_threads_default = config.block_n == 256 ? 64 : 128;
+    const int nvfp4_non_epilogue_threads_default = config.block_n == 256 ? 64 : 128;
+    const int nvfp4_dispatch_threads = get_env<int>("DG_SM90_NVFP4_DISPATCH_THREADS", nvfp4_dispatch_threads_default);
+    const int nvfp4_non_epilogue_threads = get_env<int>("DG_SM90_NVFP4_NON_EPILOGUE_THREADS", nvfp4_non_epilogue_threads_default);
     DG_HOST_ASSERT(nvfp4_dispatch_threads == 64 || nvfp4_dispatch_threads == 128);
     DG_HOST_ASSERT(nvfp4_non_epilogue_threads == 64 || nvfp4_non_epilogue_threads == 128);
     const bool split_sfa_tma = get_env<int>("DG_SM90_MOE_SPLIT_SFA_TMA", 0) != 0;
-    const bool nvfp4_loader_dequant = get_env<int>("DG_SM90_NVFP4_LOADER_DEQUANT", 1) != 0 &&
+    const int nvfp4_loader_dequant_default = config.block_n == 256 ? 0 : 1;
+    const bool nvfp4_loader_dequant = get_env<int>("DG_SM90_NVFP4_LOADER_DEQUANT", nvfp4_loader_dequant_default) != 0 &&
         nvfp4_non_epilogue_threads == 128 && !split_sfa_tma;
     const bool nvfp4_direct_scale_gmem = get_env<int>("DG_SM90_NVFP4_DIRECT_SCALE_GMEM", 0) != 0 &&
         !nvfp4_loader_dequant;
-    const bool nvfp4_packed_b_scratch = get_env<int>("DG_SM90_NVFP4_PACKED_B_SCRATCH", 0) != 0 &&
+    const int nvfp4_packed_b_scratch_default = config.block_n == 256 ? 1 : 0;
+    const bool nvfp4_packed_b_scratch = get_env<int>("DG_SM90_NVFP4_PACKED_B_SCRATCH", nvfp4_packed_b_scratch_default) != 0 &&
         !nvfp4_loader_dequant;
     const bool nvfp4_split_dequant_barrier = get_env<int>("DG_SM90_NVFP4_SPLIT_DEQUANT_BARRIER", 0) != 0 &&
         !nvfp4_loader_dequant && !nvfp4_packed_b_scratch;
     const bool nvfp4_strided_b_gmem_load = get_env<int>("DG_SM90_NVFP4_STRIDED_B_GMEM_LOAD", 0) != 0 &&
         !nvfp4_loader_dequant && !nvfp4_packed_b_scratch;
-    const bool nvfp4_fused_b_scale_layout = get_env<int>("DG_SM90_NVFP4_FUSED_B_SCALE", 1) != 0;
-    DG_HOST_ASSERT(!nvfp4_fused_b_scale_layout || nvfp4_loader_dequant);
+    const int weight_storage_k = static_cast<int>(l1_weights.size(2));
+    const int weight_k_blocks = static_cast<int>(l1_weights_sf.size(2));
+    const bool layout_fused_b_scale = weight_storage_k == weight_k_blocks * 80;
+    const bool layout_plain_b_scale = weight_storage_k == weight_k_blocks * (config.block_k / 2);
+    DG_HOST_ASSERT(layout_fused_b_scale || layout_plain_b_scale);
+    const auto fused_b_scale_env = get_env<std::string>("DG_SM90_NVFP4_FUSED_B_SCALE", "");
+    const bool nvfp4_fused_b_scale_layout = fused_b_scale_env.empty() ?
+        layout_fused_b_scale : (get_env<int>("DG_SM90_NVFP4_FUSED_B_SCALE", 0) != 0);
+    DG_HOST_ASSERT(nvfp4_fused_b_scale_layout == layout_fused_b_scale);
+    DG_HOST_ASSERT(config.block_n == 128 || nvfp4_fused_b_scale_layout || !nvfp4_loader_dequant);
+    DG_HOST_ASSERT(!nvfp4_fused_b_scale_layout || nvfp4_loader_dequant || nvfp4_packed_b_scratch);
     const int nvfp4_b_storage_per_k_block = nvfp4_fused_b_scale_layout ? 80 : config.block_k / 2;
     config.num_dispatch_threads = nvfp4_dispatch_threads;
     config.num_non_epilogue_threads = nvfp4_non_epilogue_threads;
     DG_HOST_ASSERT((config.num_dispatch_threads + config.num_non_epilogue_threads) % 128 == 0);
+    DG_HOST_ASSERT(!(config.block_n == 256 && nvfp4_packed_b_scratch && num_tokens > 128));
     const bool direct_l2_scatter = config.block_n == 128;
     {
         auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
@@ -276,7 +293,7 @@ static void sm90_nvfp4_mega_moe(
         const int smem_sfb_per_stage = (nvfp4_direct_scale_gmem || nvfp4_fused_b_scale_layout) ? 0 :
             align(config.block_n * (config.block_k / 16), 128);
         const int smem_packed_b_per_stage = nvfp4_packed_b_scratch ?
-            config.block_n * (config.block_k / 2) : 0;
+            config.block_n * nvfp4_b_storage_per_k_block : 0;
         const int smem_per_stage = config.block_m * config.block_k + config.block_n * config.block_k +
                                    smem_packed_b_per_stage + smem_sfa_per_stage + smem_sfb_per_stage;
         const int smem_barriers_fixed = (num_dispatch_warps + 2 * num_epilogue_warps) * 8;
@@ -339,9 +356,10 @@ static void sm90_nvfp4_mega_moe(
     const int wg_block_m = config.block_m / wg_split_m_h;
     const int wg_block_n = config.block_n / wg_split_n_h;
     const int wg_l1_out_block_n = wg_block_n / 2;
+    const int l1_output_store_block_n = split_n_warpgroups_h ? config.block_n / 2 : wg_l1_out_block_n;
     const auto tensor_map_l1_output = make_tma_2d_desc(l2_acts,
                                                        intermediate_hidden, config.num_max_pool_tokens,
-                                                       wg_l1_out_block_n, wg_block_m,
+                                                       l1_output_store_block_n, wg_block_m,
                                                        static_cast<int>(l2_acts.stride(-2)),
                                                        0);
     const auto tensor_map_l2_acts = make_tma_2d_desc(l2_acts,
@@ -374,6 +392,7 @@ static void sm90_nvfp4_mega_moe(
     const int split_l1_l2_default = (fused_default || true_fused_small_m_default) ? 0 : 1;
     const bool split_l1_l2 = get_env<int>("DG_SM90_MOE_SPLIT_L1_L2", split_l1_l2_default) != 0;
     const bool true_fused_l1_l2 = !split_l1_l2;
+    DG_HOST_ASSERT(!(config.block_n == 256 && nvfp4_packed_b_scratch && split_l1_l2));
     const bool l1_dual_k_default =
         (hidden / config.block_k) % 2 == 0 && num_tokens != 32 && num_tokens < 512 &&
         !true_fused_l1_l2;
@@ -478,7 +497,7 @@ static void sm90_nvfp4_mega_moe(
                 const int smem_sfb_per_stage = (phase_args.direct_scale_gmem || phase_args.fused_b_scale_layout) ? 0 :
                     align(phase_args.config.block_n * (phase_args.config.block_k / 16), 128);
                 const int smem_packed_b_per_stage = phase_args.packed_b_scratch ?
-                    phase_args.config.block_n * (phase_args.config.block_k / 2) : 0;
+                    phase_args.config.block_n * (phase_args.fused_b_scale_layout ? 80 : phase_args.config.block_k / 2) : 0;
                 const int smem_per_stage = phase_args.config.block_m * phase_args.config.block_k +
                                            phase_args.config.block_n * phase_args.config.block_k +
                                            smem_packed_b_per_stage + smem_sfa_per_stage + smem_sfb_per_stage;

@@ -137,12 +137,13 @@ def transform_nvfp4_weights_for_mega_moe_sm90(
     block_n: int = 128,
     block_k: int = 128,
     group_size: int = 16,
+    fused_b_scale: Optional[bool] = None,
 ) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]:
     """Prepack NVFP4 weights for the SM90 fused MegaMoE kernel.
 
     Input scale tensors are row-major ``(E, N, K/16)`` UE4M3. Returned scale
-    tensors are tile-major ``(E, N/128, K/128, 128, 8)`` and should be cached at
-    weight-load time rather than rebuilt per forward pass.
+    tensors are tile-major ``(E, N/block_n, K/128, block_n, 8)`` and should be
+    cached at weight-load time rather than rebuilt per forward pass.
     """
     from ..quantization_nvfp4 import (
         nvfp4_fuse_packed_with_scale_tile_major,
@@ -151,7 +152,9 @@ def transform_nvfp4_weights_for_mega_moe_sm90(
     import os
 
     block_n = int(os.environ.get('DG_SM90_NVFP4_BLOCK_N', block_n))
-    fused_b_scale = os.environ.get('DG_SM90_NVFP4_FUSED_B_SCALE', '1') != '0'
+    if fused_b_scale is None:
+        fused_b_scale_env = os.environ.get('DG_SM90_NVFP4_FUSED_B_SCALE')
+        fused_b_scale = (block_n == 128) if fused_b_scale_env is None else fused_b_scale_env != '0'
 
     l1_packed, l1_scale = l1_weights
     l2_packed, l2_scale = l2_weights
@@ -223,6 +226,7 @@ def materialize_nvfp4_fp8_shadow_for_mega_moe_sm90(
         (l1_fp8, _unit_sf_for_fp8_weight(l1_fp8)),
         (l2_fp8, _unit_sf_for_fp8_weight(l2_fp8)),
     )
+
 
 
 def fp8_fp4_mega_moe(y: torch.Tensor,

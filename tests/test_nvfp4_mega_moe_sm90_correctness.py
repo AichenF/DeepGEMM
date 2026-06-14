@@ -149,7 +149,25 @@ def _run_dequant_unit_test() -> None:
         rtol=0,
         atol=0,
     )
+
+    transformed_l1_bn256, transformed_l2_bn256 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
+        (l1_packed, l1_scale), (l2_packed, l2_scale), block_n=256,
+    )
+    torch.testing.assert_close(
+        dequantize_nvfp4_to_fp32(transformed_l1_bn256[0], transformed_l1_bn256[1], group_size=16),
+        _interleave_l1_n(dequantize_nvfp4_to_fp32(l1_packed, l1_scale, group_size=16)),
+        rtol=0,
+        atol=0,
+    )
+    torch.testing.assert_close(
+        dequantize_nvfp4_to_fp32(transformed_l2_bn256[0], transformed_l2_bn256[1], group_size=16),
+        dequantize_nvfp4_to_fp32(l2_packed, l2_scale, group_size=16),
+        rtol=0,
+        atol=0,
+    )
     print('NVFP4 dequant unit test: PASS', flush=True)
+
+
 
 
 def _silu(x: torch.Tensor) -> torch.Tensor:
@@ -216,8 +234,11 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
         l1_dequant = l1_dequant.to(torch.float8_e4m3fn).float()
         l2_dequant = l2_dequant.to(torch.float8_e4m3fn).float()
 
+    nvfp4_block_n = 256 if m_tokens <= 128 else 128
+    nvfp4_fused_b_scale = True if m_tokens <= 64 else None
     transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
         (l1_packed, l1_scale), (l2_packed, l2_scale),
+        block_n=nvfp4_block_n, fused_b_scale=nvfp4_fused_b_scale,
     )
 
     cumulative_stats = torch.zeros(num_local_experts, dtype=torch.int, device="cuda")

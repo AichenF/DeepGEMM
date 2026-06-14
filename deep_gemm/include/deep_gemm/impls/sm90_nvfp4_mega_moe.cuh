@@ -9,6 +9,7 @@
 
 #include <cute/arch/cluster_sm90.hpp>
 #include <deep_gemm/quantization/nvfp4_dequant.cuh>
+
 #include <cute/arch/copy_sm90_tma.hpp>
 #include <cute/arch/mma_sm89.hpp>
 #include <cute/atom/mma_atom.hpp>
@@ -102,6 +103,37 @@ __device__ __forceinline__ void dequant_smem_b_from_packed(uint8_t* __restrict__
     }
 }
 
+__device__ __forceinline__ void dequant_smem_b_from_packed_fused_scale(uint8_t* __restrict__ smem_b,
+                                                                      const uint8_t* __restrict__ packed_b,
+                                                                      uint32_t tid_in_wg,
+                                                                      const uint2* __restrict__ lut_smem) {
+    const uint8_t* __restrict__ row_ptr = packed_b + tid_in_wg * 80;
+    const uint32_t* __restrict__ fp4_src = reinterpret_cast<const uint32_t*>(row_ptr);
+    uint32_t fp4_regs[16];
+    #pragma unroll
+    for (int i = 0; i < 16; ++i) fp4_regs[i] = fp4_src[i];
+
+    const uint2 scale_words = *reinterpret_cast<const uint2*>(row_ptr + 64);
+    const uint32_t scale_word_lo = scale_words.x;
+    const uint32_t scale_word_hi = scale_words.y;
+
+    uint8_t* __restrict__ fp8_dst_base = smem_b + tid_in_wg * 128;
+    const uint32_t row_swizzle = (tid_in_wg & 7u) << 4;
+    #pragma unroll
+    for (int scale_i = 0; scale_i < 8; ++scale_i) {
+        const uint32_t scale_word = scale_i < 4 ? scale_word_lo : scale_word_hi;
+        const uint32_t scale_ue4m3 = (scale_word >> ((scale_i & 3) * 8)) & 0xffu;
+        const int i0 = scale_i * 2;
+        const int i1 = i0 + 1;
+        const uint2 lut = lut_smem[scale_ue4m3 & 0x7fu];
+        const uint2 s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i0], lut);
+        const uint2 s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i1], lut);
+        const uint32_t logical = i0 * 8;
+        const uint32_t physical = logical ^ row_swizzle;
+        *reinterpret_cast<uint4*>(fp8_dst_base + physical) =
+            make_uint4(s0.x, s0.y, s1.x, s1.y);
+    }
+}
 
 template <uint32_t kNumMathThreads>
 __device__ __forceinline__ void dequant_smem_b_inplace_split_barrier(
@@ -490,9 +522,9 @@ sm90_nvfp4_mega_moe_impl(void* y,
     constexpr bool kPackedBScratch = kPackedBScratchRequested && (!kLoaderDequant);
     constexpr bool kSplitDequantBarrier = kSplitDequantBarrierRequested && (!kLoaderDequant) && (!kPackedBScratch);
     constexpr bool kStridedBGmemLoad = kStridedBGmemLoadRequested && (!kLoaderDequant) && (!kPackedBScratch);
-    constexpr bool kFusedBScaleLayout = kFusedBScaleLayoutRequested && kLoaderDequant;
-    DG_STATIC_ASSERT((!kFusedBScaleLayoutRequested) or kLoaderDequant,
-                     "Fused NVFP4 B+scale layout requires loader dequant");
+    constexpr bool kFusedBScaleLayout = kFusedBScaleLayoutRequested && (kLoaderDequant || kPackedBScratch);
+    DG_STATIC_ASSERT((!kFusedBScaleLayoutRequested) or kLoaderDequant || kPackedBScratch,
+                     "Fused NVFP4 B+scale layout requires loader dequant or packed scratch");
     using L1WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     using L2WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     static_assert(L1WGMMA::M == 64 and L1WGMMA::N == WG_BLOCK_N and L1WGMMA::K == 32,
@@ -527,7 +559,7 @@ sm90_nvfp4_mega_moe_impl(void* y,
     constexpr uint32_t B_LOAD_BYTES_PER_ROW = kFusedBScaleLayout ? 80u : (BLOCK_K / 2u);
     constexpr uint32_t SMEM_B_LOAD_SIZE_PER_STAGE = LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW;
     constexpr uint32_t SMEM_PACKED_B_SIZE_PER_STAGE = kPackedBScratch ?
-        LOAD_BLOCK_N * (BLOCK_K / 2u) * sizeof(b_dtype_t) : 0u;
+        LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW * sizeof(b_dtype_t) : 0u;
     // SFA per-stage must be sized for the larger of L1 (BLOCK_M floats) and L2
     // (two per-64-K halves). Each TMA destination must be 128B aligned, so
     // the second L2 half cannot start immediately after 16 floats in M16 decode.
@@ -685,7 +717,14 @@ sm90_nvfp4_mega_moe_impl(void* y,
                                             const uint32_t& non_epilogue_thread_idx) {
         if constexpr (kLoaderDequant) {
             if constexpr (kNumMMANonEpilogueWarps == 4) {
-                if (non_epilogue_thread_idx >= 64u) {
+                if constexpr (kFusedBScaleLayout && LOAD_BLOCK_N == 256) {
+                    full_barriers[s]->wait(p);
+                    const uint32_t dequant_tid = non_epilogue_thread_idx;
+                    deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_fused_scale<128u, 8u>(
+                        reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
+                    if (dequant_tid == 0)
+                        dequant_barriers[s]->arrive();
+                } else if (non_epilogue_thread_idx >= 64u) {
                     full_barriers[s]->wait(p);
                     const uint32_t dequant_tid = non_epilogue_thread_idx - 64u;
                     if constexpr (kFusedBScaleLayout) {
@@ -736,8 +775,10 @@ sm90_nvfp4_mega_moe_impl(void* y,
     constexpr uint32_t kNumDispatchRegisters    = 48;
     constexpr uint32_t kNumNonEpilogueRegisters =
         (kLoaderDequant && kNumEpilogueThreads == 128) ? 80 :
+        (kLoaderDequant && kNumEpilogueThreads == 256 && LOAD_BLOCK_N == 256) ? 80 :
         (kLoaderDequant && kNumEpilogueThreads == 256) ? 64 : 40;
     constexpr uint32_t kNumEpilogueRegisters    =
+        (kLoaderDequant && kNumEpilogueThreads == 256 && LOAD_BLOCK_N == 256) ? 184 :
         (kLoaderDequant && kNumEpilogueThreads == 256) ? 192 :
         (kSerialNWarpgroups or kWideNWarpgroups) ? 256 :
         ((kUseMMASync and BLOCK_M == 32) ? 240 : 208);
@@ -2177,10 +2218,17 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             _ue4m3_ptr = smem_sfb[stage_idx] + _tid_in_wg * (BLOCK_K / 16u);
                         }
                         if constexpr (kPackedBScratch) {
-                            deep_gemm::nvfp4::dequant_smem_b_from_packed<kNumEpilogueThreads>(
-                                reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
-                                reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
-                                _tid_in_wg, _ue4m3_ptr, smem_nvfp4_lut);
+                            if constexpr (kFusedBScaleLayout) {
+                                deep_gemm::nvfp4::dequant_smem_b_from_packed_fused_scale(
+                                    reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
+                                    reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
+                                    _tid_in_wg, smem_nvfp4_lut);
+                            } else {
+                                deep_gemm::nvfp4::dequant_smem_b_from_packed<kNumEpilogueThreads>(
+                                    reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
+                                    reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
+                                    _tid_in_wg, _ue4m3_ptr, smem_nvfp4_lut);
+                            }
                         } else if constexpr (kStridedBGmemLoad) {
                             deep_gemm::nvfp4::dequant_smem_b_inplace_row_strided<kNumEpilogueThreads>(
                                 reinterpret_cast<uint8_t*>(smem_b[stage_idx]), _tid_in_wg,
@@ -2374,10 +2422,17 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         ue4m3_ptr = smem_sfb[b_stage_idx] + tid_in_wg * (BLOCK_K / 16u);
                     }
                     if constexpr (kPackedBScratch) {
-                        deep_gemm::nvfp4::dequant_smem_b_from_packed<kNumEpilogueThreads>(
-                            reinterpret_cast<uint8_t*>(smem_b[b_stage_idx]),
-                            reinterpret_cast<const uint8_t*>(smem_packed_b[b_stage_idx]),
-                            tid_in_wg, ue4m3_ptr, smem_nvfp4_lut);
+                        if constexpr (kFusedBScaleLayout) {
+                            deep_gemm::nvfp4::dequant_smem_b_from_packed_fused_scale(
+                                reinterpret_cast<uint8_t*>(smem_b[b_stage_idx]),
+                                reinterpret_cast<const uint8_t*>(smem_packed_b[b_stage_idx]),
+                                tid_in_wg, smem_nvfp4_lut);
+                        } else {
+                            deep_gemm::nvfp4::dequant_smem_b_from_packed<kNumEpilogueThreads>(
+                                reinterpret_cast<uint8_t*>(smem_b[b_stage_idx]),
+                                reinterpret_cast<const uint8_t*>(smem_packed_b[b_stage_idx]),
+                                tid_in_wg, ue4m3_ptr, smem_nvfp4_lut);
+                        }
                     } else if constexpr (kStridedBGmemLoad) {
                         deep_gemm::nvfp4::dequant_smem_b_inplace_row_strided<kNumEpilogueThreads>(
                             reinterpret_cast<uint8_t*>(smem_b[b_stage_idx]), tid_in_wg,
