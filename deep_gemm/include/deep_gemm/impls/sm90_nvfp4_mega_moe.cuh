@@ -437,17 +437,21 @@ sm90_nvfp4_mega_moe_impl(void* y,
     const uint32_t warp_idx   = cutlass::canonical_warp_idx_sync();
     const uint32_t lane_idx   = ptx::get_lane_idx();
 
-    // Prefetch TMA descriptors at the very beginning. NVFP4 UE4M3 scales
-    // are raw pointers, so the placeholder scale descriptors are intentionally
-    // not prefetched.
+    // Prefetch only descriptors used by this split phase. NVFP4 UE4M3 scales
+    // are raw pointers, so placeholder scale descriptors are intentionally not
+    // prefetched.
     if (warp_idx == 0 and cute::elect_one_sync()) {
-        cute::prefetch_tma_descriptor(&tensor_map_l1_acts);
-        cute::prefetch_tma_descriptor(&tensor_map_l1_acts_sf);
-        cute::prefetch_tma_descriptor(&tensor_map_l1_weights);
-        cute::prefetch_tma_descriptor(&tensor_map_l1_output);
-        cute::prefetch_tma_descriptor(&tensor_map_l2_acts);
-        cute::prefetch_tma_descriptor(&tensor_map_l2_acts_sf);
-        cute::prefetch_tma_descriptor(&tensor_map_l2_weights);
+        if constexpr (kRunL1Phase) {
+            cute::prefetch_tma_descriptor(&tensor_map_l1_acts);
+            cute::prefetch_tma_descriptor(&tensor_map_l1_acts_sf);
+            cute::prefetch_tma_descriptor(&tensor_map_l1_weights);
+            cute::prefetch_tma_descriptor(&tensor_map_l1_output);
+        }
+        if constexpr (kRunL2Phase) {
+            cute::prefetch_tma_descriptor(&tensor_map_l2_acts);
+            cute::prefetch_tma_descriptor(&tensor_map_l2_acts_sf);
+            cute::prefetch_tma_descriptor(&tensor_map_l2_weights);
+        }
     }
 
     // =====================================================================
@@ -886,8 +890,9 @@ sm90_nvfp4_mega_moe_impl(void* y,
                         continue;
                     const uint32_t n_block_idx = scheduler.block_idx - scheduler.m_block_idx * kNumL1BlockNs;
                     scheduler.block_idx += kNumSMs;
-                    func(sched::BlockPhase::Linear1, scheduler.current_local_expert_idx,
-                         kNumL1BlockKs, scheduler.m_block_idx, n_block_idx);
+                    func(std::integral_constant<sched::BlockPhase, sched::BlockPhase::Linear1>{},
+                         scheduler.current_local_expert_idx, kNumL1BlockKs,
+                         scheduler.m_block_idx, n_block_idx);
                 }
             }
         } else if constexpr (!kRunL1Phase && kRunL2Phase) {
@@ -899,8 +904,9 @@ sm90_nvfp4_mega_moe_impl(void* y,
                         continue;
                     const uint32_t n_block_idx = scheduler.block_idx - scheduler.m_block_idx * kNumL2BlockNs;
                     scheduler.block_idx += kNumSMs;
-                    func(sched::BlockPhase::Linear2, scheduler.current_local_expert_idx,
-                         kNumL2BlockKs, scheduler.m_block_idx, n_block_idx);
+                    func(std::integral_constant<sched::BlockPhase, sched::BlockPhase::Linear2>{},
+                         scheduler.current_local_expert_idx, kNumL2BlockKs,
+                         scheduler.m_block_idx, n_block_idx);
                 }
             }
         } else {
