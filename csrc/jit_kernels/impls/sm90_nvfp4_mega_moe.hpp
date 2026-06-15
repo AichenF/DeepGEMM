@@ -488,6 +488,23 @@ static void sm90_nvfp4_mega_moe(
         phase_args.run_l2_phase = run_l2_phase;
         if (!run_l1_phase)
             phase_args.async_l1_tma_store = false;
+        if (run_l1_phase && !run_l2_phase && phase_args.config.block_n == 128 &&
+            phase_args.config.num_dispatch_threads == 128) {
+            auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
+            constexpr int kSmemAlignment = 1024;
+            const int full_send_buffers_size = align(
+                static_cast<int>(layout::Buffer(layout::Data(hidden), 4, 1).get_num_bytes()),
+                kSmemAlignment);
+            const int active_send_buffers_size = align(
+                static_cast<int>(layout::Buffer(layout::Data(hidden), 2, 1).get_num_bytes()),
+                kSmemAlignment);
+            phase_args.config.smem_size -= full_send_buffers_size - active_send_buffers_size;
+            phase_args.launch_args = LaunchArgs(
+                num_sms,
+                phase_args.config.num_dispatch_threads + phase_args.config.num_non_epilogue_threads +
+                    phase_args.config.num_epilogue_threads,
+                phase_args.config.smem_size, phase_args.config.cluster_size);
+        }
         if (!run_l1_phase && run_l2_phase && l2_no_dispatch_pipeline) {
             phase_args.config.num_dispatch_threads = 0;
             phase_args.config.num_non_epilogue_threads = 128;
