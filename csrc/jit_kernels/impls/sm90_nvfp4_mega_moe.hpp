@@ -527,7 +527,8 @@ static void sm90_nvfp4_mega_moe(
                     kSmemAlignment);
                 const int smem_dispatch_size = smem_expert_count_size + smem_send_buffers_size;
                 const int smem_nvfp4_lut = align(128 * 8, kSmemAlignment);
-                const int smem_cd_l1 = num_epilogue_warpgroups * phase_args.config.block_m * (phase_args.config.block_n / 2);
+                const int smem_cd_l1 = run_l1_phase ?
+                    num_epilogue_warpgroups * phase_args.config.block_m * (phase_args.config.block_n / 2) : 0;
                 const int smem_cd = align(smem_cd_l1, kSmemAlignment);
                 const int smem_sfa_per_stage = align(2 * phase_args.config.block_m * static_cast<int>(sizeof(float)), 128);
                 const int smem_sfb_per_stage = (phase_args.direct_scale_gmem || phase_args.fused_b_scale_layout) ? 0 :

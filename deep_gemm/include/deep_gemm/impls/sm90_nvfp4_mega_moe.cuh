@@ -590,11 +590,11 @@ sm90_nvfp4_mega_moe_impl(void* y,
     constexpr uint32_t SMEM_CD_ACCUM_SIZE = kUseMMASync
         ? math::constexpr_align<uint32_t>(BLOCK_M * BLOCK_N * sizeof(float), kSharedMemoryAlignment)
         : 0u;
-    constexpr uint32_t SMEM_CD_L1_SIZE =
-        kNumEpilogueWarpgroups * WG_BLOCK_M * WG_L1_OUT_BLOCK_N * sizeof(cutlass::float_e4m3_t);
+    constexpr uint32_t SMEM_CD_L1_SIZE = kRunL1Phase ?
+        kNumEpilogueWarpgroups * WG_BLOCK_M * WG_L1_OUT_BLOCK_N * sizeof(cutlass::float_e4m3_t) : 0u;
     constexpr uint32_t SMEM_CD_L2_SIZE = kDirectL2Scatter ? 0u :
         kNumEpilogueWarpgroups * WG_BLOCK_M * WG_BLOCK_N * sizeof(nv_bfloat16);
-    constexpr uint32_t SMEM_CD_L1_ASYNC_SIZE = kAsyncL1TMAStore ?
+    constexpr uint32_t SMEM_CD_L1_ASYNC_SIZE = (kRunL1Phase && kAsyncL1TMAStore) ?
         2 * kNumEpilogueWarpgroups * WG_BLOCK_M * L1_OUT_BLOCK_N * sizeof(cutlass::float_e4m3_t) : 0u;
     constexpr uint32_t SMEM_CD_OUTPUT_BASE_SIZE =
         SMEM_CD_L1_SIZE > SMEM_CD_L2_SIZE ? SMEM_CD_L1_SIZE : SMEM_CD_L2_SIZE;
