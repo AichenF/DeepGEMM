@@ -2890,8 +2890,14 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         scatter_direct_row(row_offset_r0, valid_r0, 0);
                         scatter_direct_row(row_offset_r1, valid_r1, 2);
                     }
-                    if constexpr (!kSkipDirectScatterSyncRequested)
+                    if constexpr (kSkipDirectScatterSyncRequested) {
+                        if constexpr (BLOCK_N == 128) {
+                            if (valid_m < BLOCK_M)
+                                ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                        }
+                    } else {
                         ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                    }
                     const unsigned long long l2_scatter_end = phase_profile_clock();
                     if (epilogue_warp_idx == 0 and lane_idx == 0)
                         phase_profile_record(kProfileL2Scatter, l2_scatter_end - l2_scatter_start);
