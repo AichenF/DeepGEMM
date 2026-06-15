@@ -209,7 +209,8 @@ static void sm90_nvfp4_mega_moe(
         get_env<int>("DG_SM90_NVFP4_EPILOGUE_THREADS", 0) > 0;
     const bool nvfp4_bm128_heuristic = get_env<int>("DG_SM90_NVFP4_BM128_HEURISTIC", 1) != 0;
     const bool nvfp4_bm128_main_m =
-        num_tokens == 256 || num_tokens == 512 || num_tokens == 1024 || num_tokens == 2048 ||
+        num_tokens == 256 || num_tokens == 260 || num_tokens == 512 || num_tokens == 819 ||
+        num_tokens == 1024 || num_tokens == 2048 || num_tokens == 3072 ||
         num_tokens == 4096 || num_tokens == 8192;
     if (!nvfp4_user_shape_override && nvfp4_bm128_heuristic && nvfp4_bm128_main_m && config.block_n == 128) {
         config.block_m = 128;
@@ -220,7 +221,7 @@ static void sm90_nvfp4_mega_moe(
         num_experts_per_rank, num_tokens, num_topk,
         intermediate_hidden, config.block_m, config.block_n,
         device_runtime->get_num_sms());
-    if (num_tokens == 256 && config.block_m == 128 && config.block_n == 128)
+    if ((num_tokens == 256 || num_tokens == 260) && config.block_m == 128 && config.block_n == 128)
         config.num_experts_per_wave = num_experts_per_rank;
     if (num_tokens == 512 && config.block_m == 128 && config.block_n == 128 && num_experts_per_rank % 16 == 0)
         config.num_experts_per_wave = 16;
@@ -405,7 +406,7 @@ static void sm90_nvfp4_mega_moe(
     // Launch
     const auto num_sms = device_runtime->get_num_sms();
     const bool fused_default = (num_tokens == 4096 && config.block_m == 64);
-    const bool true_fused_small_m_default = (num_tokens == 32 || num_tokens == 64 || num_tokens == 128);
+    const bool true_fused_small_m_default = (num_tokens == 8 || num_tokens == 16 || num_tokens == 32 || num_tokens == 64 || num_tokens == 128);
     const int split_l1_l2_default = (fused_default || true_fused_small_m_default) ? 0 : 1;
     const bool split_l1_l2 = get_env<int>("DG_SM90_MOE_SPLIT_L1_L2", split_l1_l2_default) != 0;
     const bool true_fused_l1_l2 = !split_l1_l2;

@@ -153,10 +153,10 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         bm128_default = (
             bm128_enabled
             and not shape_override
-            and num_tokens in (256, 512, 1024, 2048, 4096, 8192)
+            and num_tokens in (256, 260, 512, 819, 1024, 2048, 3072, 4096, 8192)
         )
         fused_default = num_tokens == 4096 and not bm128_default
-        true_fused_small_m_default = num_tokens in (32, 64, 128)
+        true_fused_small_m_default = num_tokens in (8, 16, 32, 64, 128)
         split_l1_l2 = not (fused_default or true_fused_small_m_default)
     else:
         split_l1_l2 = split_env != '0'
