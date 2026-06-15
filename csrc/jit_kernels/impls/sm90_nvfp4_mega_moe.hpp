@@ -220,6 +220,8 @@ static void sm90_nvfp4_mega_moe(
         num_experts_per_rank, num_tokens, num_topk,
         intermediate_hidden, config.block_m, config.block_n,
         device_runtime->get_num_sms());
+    if (num_tokens == 256 && config.block_m == 128 && config.block_n == 128)
+        config.num_experts_per_wave = num_experts_per_rank;
 
     // NVFP4 dequant defaults to the idle-warps loader path for the supported
     // SM90 bridge shape (4 dispatch + 4 non-epilogue + 4 math warps). Set
