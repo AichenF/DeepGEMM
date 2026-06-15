@@ -418,6 +418,8 @@ static void sm90_nvfp4_mega_moe(
 
     const bool direct_scatter_metadata_broadcast_default =
         direct_l2_scatter && num_tokens >= 256;
+    const int combine_7chunk_default =
+        (num_tokens == 512 || num_tokens == 1024) ? 1 : 0;
     const bool async_l1_tma_store_requested = get_env<int>("DG_SM90_MOE_ASYNC_L1_STORE", 0) != 0;
     DG_HOST_ASSERT(!async_l1_tma_store_requested && "DG_SM90_MOE_ASYNC_L1_STORE is not supported for NVFP4 yet");
     const SM90NVFP4MegaMoESplitRuntime::Args args = {
@@ -447,7 +449,7 @@ static void sm90_nvfp4_mega_moe(
         .split_dequant_barrier = nvfp4_split_dequant_barrier,
         .strided_b_gmem_load = nvfp4_strided_b_gmem_load,
         .fused_b_scale_layout = nvfp4_fused_b_scale_layout,
-        .combine_7chunk = get_env<int>("DG_SM90_NVFP4_COMBINE_7CHUNK", 0) != 0,
+        .combine_7chunk = get_env<int>("DG_SM90_NVFP4_COMBINE_7CHUNK", combine_7chunk_default) != 0,
         .skip_direct_scatter_sync = get_env<int>(
             "DG_SM90_NVFP4_SKIP_DIRECT_SCATTER_SYNC",
             (true_fused_l1_l2 && config.block_n == 256 && num_tokens == 128) ? 1 : 0) != 0,
