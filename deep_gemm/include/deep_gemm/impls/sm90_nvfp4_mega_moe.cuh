@@ -522,6 +522,14 @@ sm90_nvfp4_mega_moe_impl(void* y,
     constexpr bool kL1DualKAccum = kL1DualKAccumRequested && (!kUseMMASync) &&
         (!kSplitNWarpgroups) && (!kSerialNWarpgroups) && WG_BLOCK_N == 128 &&
         (kHidden / BLOCK_K) % 2 == 0;
+    // Keep the 4-warp dispatch allocation for warpgroup/register alignment,
+    // but only use two warps for BN128 split L1 dispatch. W8A8's BN256 path
+    // uses two dispatch warps; the extra NVFP4 dispatch warps mostly add fixed
+    // small/mid-M overhead while loader-dequant still needs its aligned 4-warp
+    // non-epilogue group.
+    constexpr uint32_t kNumActiveDispatchWarps =
+        (kRunL1Phase && !kRunL2Phase && BLOCK_N == 128 && kNumDispatchWarps == 4) ? 2 : kNumDispatchWarps;
+    constexpr uint32_t kNumActiveDispatchThreads = kNumActiveDispatchWarps * 32;
     constexpr bool kLoaderDequant = kLoaderDequantRequested && (!kSplitSFATMA) &&
         kNumMMANonEpilogueWarps == 4;
     constexpr bool kDirectScaleGmem = kDirectScaleGmemRequested && (!kLoaderDequant);
@@ -999,18 +1007,20 @@ sm90_nvfp4_mega_moe_impl(void* y,
         DG_STATIC_ASSERT(kNumTopk <= 32, "Invalid number of topk");
         constexpr uint32_t kNumActivateLanes = kNumTokensPerWarp * kNumTopk;
         const auto read_topk_idx = [&](const auto& process) {
-            #pragma unroll
-            for (uint32_t i = (sm_idx * kNumDispatchWarps + warp_idx) * kNumTokensPerWarp;
-                 i < num_tokens;
-                 i += kNumSMs * kNumDispatchWarps * kNumTokensPerWarp) {
-                int expert_idx = -1;
-                if (i + (lane_idx / kNumTopk) < num_tokens and lane_idx < kNumActivateLanes) {
-                    expert_idx = static_cast<int>(
-                        __ldg(input_topk_idx_buffer.get_base_ptr<int64_t>() + i * kNumTopk + lane_idx));
-                    if (expert_idx >= 0)
-                        process(i * kNumTopk + lane_idx, expert_idx);
+            if (warp_idx < kNumActiveDispatchWarps) {
+                #pragma unroll
+                for (uint32_t i = (sm_idx * kNumActiveDispatchWarps + warp_idx) * kNumTokensPerWarp;
+                     i < num_tokens;
+                     i += kNumSMs * kNumActiveDispatchWarps * kNumTokensPerWarp) {
+                    int expert_idx = -1;
+                    if (i + (lane_idx / kNumTopk) < num_tokens and lane_idx < kNumActivateLanes) {
+                        expert_idx = static_cast<int>(
+                            __ldg(input_topk_idx_buffer.get_base_ptr<int64_t>() + i * kNumTopk + lane_idx));
+                        if (expert_idx >= 0)
+                            process(i * kNumTopk + lane_idx, expert_idx);
+                    }
+                    __syncwarp();
                 }
-                __syncwarp();
             }
         };
 
@@ -1043,9 +1053,9 @@ sm90_nvfp4_mega_moe_impl(void* y,
             [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); }
         );
 
-        if (sm_idx == 0) {
+        if (sm_idx == 0 and thread_idx < kNumActiveDispatchThreads) {
             #pragma unroll
-            for (uint32_t i = thread_idx; i < kNumExperts; i += kNumDispatchThreads) {
+            for (uint32_t i = thread_idx; i < kNumExperts; i += kNumActiveDispatchThreads) {
                 const auto dst_rank_idx = i / kNumExpertsPerRank;
                 const auto dst_local_expert_idx = i % kNumExpertsPerRank;
                 const auto expert_status = *workspace.get_expert_send_count_ptr(i);
@@ -1070,149 +1080,151 @@ sm90_nvfp4_mega_moe_impl(void* y,
         const unsigned long long dispatch_pull_start = phase_profile_clock();
 
         // Token / SF pull loop
-        uint32_t pull_mbarrier_phase = 0;
-        const auto pull_buffer = smem_send_buffers.get_rank_buffer(warp_idx).get_data_buffer(0);
-        const auto pull_mbarrier = dispatch_barriers[warp_idx];
+        if (warp_idx < kNumActiveDispatchWarps) {
+            uint32_t pull_mbarrier_phase = 0;
+            const auto pull_buffer = smem_send_buffers.get_rank_buffer(warp_idx).get_data_buffer(0);
+            const auto pull_mbarrier = dispatch_barriers[warp_idx];
 
-        scheduler.fetch_expert_recv_count();
+            scheduler.fetch_expert_recv_count();
 
-        constexpr uint32_t kNumRanksPerLane = math::constexpr_ceil_div(kNumRanks, 32u);
-        int      current_expert_idx = -1;
-        uint32_t stored_rank_count[kNumRanksPerLane] = {};
-        uint32_t expert_start_idx = 0, expert_end_idx = 0;
-        uint32_t expert_pool_block_offset = 0;
+            constexpr uint32_t kNumRanksPerLane = math::constexpr_ceil_div(kNumRanks, 32u);
+            int      current_expert_idx = -1;
+            uint32_t stored_rank_count[kNumRanksPerLane] = {};
+            uint32_t expert_start_idx = 0, expert_end_idx = 0;
+            uint32_t expert_pool_block_offset = 0;
 
-        constexpr uint32_t kNumGlobalWarps = kNumSMs * kNumDispatchWarps;
-        for (uint32_t token_idx = sm_idx * kNumDispatchWarps + warp_idx; ; token_idx += kNumGlobalWarps) {
-            int old_expert_idx = current_expert_idx;
-            while (token_idx >= expert_end_idx) {
-                if (++ current_expert_idx >= kNumExpertsPerRank)
+            constexpr uint32_t kNumGlobalWarps = kNumSMs * kNumActiveDispatchWarps;
+            for (uint32_t token_idx = sm_idx * kNumActiveDispatchWarps + warp_idx; ; token_idx += kNumGlobalWarps) {
+                int old_expert_idx = current_expert_idx;
+                while (token_idx >= expert_end_idx) {
+                    if (++ current_expert_idx >= kNumExpertsPerRank)
+                        break;
+                    expert_pool_block_offset += math::ceil_div(expert_end_idx - expert_start_idx, BLOCK_M);
+                    expert_start_idx = expert_end_idx;
+                    expert_end_idx += scheduler.get_num_tokens(current_expert_idx);
+                }
+                if (current_expert_idx >= kNumExpertsPerRank)
                     break;
-                expert_pool_block_offset += math::ceil_div(expert_end_idx - expert_start_idx, BLOCK_M);
-                expert_start_idx = expert_end_idx;
-                expert_end_idx += scheduler.get_num_tokens(current_expert_idx);
-            }
-            if (current_expert_idx >= kNumExpertsPerRank)
-                break;
 
-            if (old_expert_idx != current_expert_idx) {
-                old_expert_idx = current_expert_idx;
-                #pragma unroll
-                for (uint32_t i = 0; i < kNumRanksPerLane; ++ i) {
-                    const uint32_t j = i * 32 + lane_idx;
-                    stored_rank_count[i] = j < kNumRanks ?
-                        static_cast<uint32_t>(*workspace.get_expert_recv_count_ptr(j, current_expert_idx)) : 0;
-                }
-            }
-
-            // Round-robin rank selection (identical to SM100)
-            uint32_t current_rank_in_expert_idx;
-            uint32_t remaining[kNumRanksPerLane];
-            #pragma unroll
-            for (uint32_t i = 0; i < kNumRanksPerLane; ++ i)
-                remaining[i] = stored_rank_count[i];
-            uint32_t offset = 0;
-            uint32_t token_idx_in_expert = token_idx - expert_start_idx;
-            uint32_t slot_idx = token_idx_in_expert;
-            uint32_t token_idx_in_rank;
-            while (true) {
-                uint32_t num_actives_in_lane = 0;
-                uint32_t min_in_lane = 0xffffffff;
-                #pragma unroll
-                for (uint32_t i = 0; i < kNumRanksPerLane; ++ i) {
-                    num_actives_in_lane += remaining[i] > 0;
-                    if (remaining[i] > 0)
-                        min_in_lane = cute::min(min_in_lane, remaining[i]);
-                }
-                const uint32_t num_active_ranks = __reduce_add_sync(0xffffffff, num_actives_in_lane);
-                const uint32_t length = __reduce_min_sync(0xffffffff, min_in_lane);
-
-                const uint32_t num_round_tokens = length * num_active_ranks;
-                if (slot_idx < num_round_tokens) {
-                    const uint32_t slot_idx_in_round = slot_idx % num_active_ranks;
-                    uint32_t num_seen_ranks = 0;
-                    current_rank_in_expert_idx = 0;
+                if (old_expert_idx != current_expert_idx) {
+                    old_expert_idx = current_expert_idx;
                     #pragma unroll
                     for (uint32_t i = 0; i < kNumRanksPerLane; ++ i) {
-                        const uint32_t mask = __ballot_sync(0xffffffff, remaining[i] > 0);
-                        const uint32_t num_active_lanes = __popc(mask);
-                        if (slot_idx_in_round >= num_seen_ranks and slot_idx_in_round < num_seen_ranks + num_active_lanes)
-                            current_rank_in_expert_idx = i * 32 + __fns(mask, 0, slot_idx_in_round - num_seen_ranks + 1);
-                        num_seen_ranks += num_active_lanes;
+                        const uint32_t j = i * 32 + lane_idx;
+                        stored_rank_count[i] = j < kNumRanks ?
+                            static_cast<uint32_t>(*workspace.get_expert_recv_count_ptr(j, current_expert_idx)) : 0;
                     }
-                    token_idx_in_rank = offset + (slot_idx / num_active_ranks);
-                    break;
                 }
-                slot_idx -= num_round_tokens;
-                offset += length;
+
+                // Round-robin rank selection (identical to SM100)
+                uint32_t current_rank_in_expert_idx;
+                uint32_t remaining[kNumRanksPerLane];
                 #pragma unroll
                 for (uint32_t i = 0; i < kNumRanksPerLane; ++ i)
-                    remaining[i] -= cute::min(remaining[i], length);
-            }
+                    remaining[i] = stored_rank_count[i];
+                uint32_t offset = 0;
+                uint32_t token_idx_in_expert = token_idx - expert_start_idx;
+                uint32_t slot_idx = token_idx_in_expert;
+                uint32_t token_idx_in_rank;
+                while (true) {
+                    uint32_t num_actives_in_lane = 0;
+                    uint32_t min_in_lane = 0xffffffff;
+                    #pragma unroll
+                    for (uint32_t i = 0; i < kNumRanksPerLane; ++ i) {
+                        num_actives_in_lane += remaining[i] > 0;
+                        if (remaining[i] > 0)
+                            min_in_lane = cute::min(min_in_lane, remaining[i]);
+                    }
+                    const uint32_t num_active_ranks = __reduce_add_sync(0xffffffff, num_actives_in_lane);
+                    const uint32_t length = __reduce_min_sync(0xffffffff, min_in_lane);
 
-            const uint32_t src_token_topk_idx = *workspace.get_src_token_topk_idx_ptr(
-                current_expert_idx, current_rank_in_expert_idx, token_idx_in_rank);
-            const uint32_t src_token_idx = src_token_topk_idx / kNumTopk;
-            const uint32_t src_topk_idx  = src_token_topk_idx % kNumTopk;
+                    const uint32_t num_round_tokens = length * num_active_ranks;
+                    if (slot_idx < num_round_tokens) {
+                        const uint32_t slot_idx_in_round = slot_idx % num_active_ranks;
+                        uint32_t num_seen_ranks = 0;
+                        current_rank_in_expert_idx = 0;
+                        #pragma unroll
+                        for (uint32_t i = 0; i < kNumRanksPerLane; ++ i) {
+                            const uint32_t mask = __ballot_sync(0xffffffff, remaining[i] > 0);
+                            const uint32_t num_active_lanes = __popc(mask);
+                            if (slot_idx_in_round >= num_seen_ranks and slot_idx_in_round < num_seen_ranks + num_active_lanes)
+                                current_rank_in_expert_idx = i * 32 + __fns(mask, 0, slot_idx_in_round - num_seen_ranks + 1);
+                            num_seen_ranks += num_active_lanes;
+                        }
+                        token_idx_in_rank = offset + (slot_idx / num_active_ranks);
+                        break;
+                    }
+                    slot_idx -= num_round_tokens;
+                    offset += length;
+                    #pragma unroll
+                    for (uint32_t i = 0; i < kNumRanksPerLane; ++ i)
+                        remaining[i] -= cute::min(remaining[i], length);
+                }
 
-            // TMA pull token data into SMEM
-            if (cute::elect_one_sync()) {
-                ptx::tma_load_1d(
-                    pull_buffer.get_base_ptr(),
-                    sym_buffer.map(input_token_buffer.get_data_buffer(src_token_idx).get_base_ptr(),
-                                   current_rank_in_expert_idx),
-                    pull_mbarrier, kHidden);
-            }
-            __syncwarp();
+                const uint32_t src_token_topk_idx = *workspace.get_src_token_topk_idx_ptr(
+                    current_expert_idx, current_rank_in_expert_idx, token_idx_in_rank);
+                const uint32_t src_token_idx = src_token_topk_idx / kNumTopk;
+                const uint32_t src_topk_idx  = src_token_topk_idx % kNumTopk;
 
-            // Copy SF: per-128 K floats, written linearly (no UTCCP transpose).
-            constexpr uint32_t kNumSFFloats = kHidden / 128;
-            DG_STATIC_ASSERT(kNumSFFloats > 0 and kHidden % 128 == 0, "Invalid SF");
-            const auto remote_sf_ptr = sym_buffer.map(
-                input_sf_buffer.get_data_buffer(src_token_idx).get_base_ptr<float>(),
-                current_rank_in_expert_idx);
-            const auto local_sf_ptr  = l1_sf_buffer.get_base_ptr<float>();
-            const uint32_t sf_pool_token_idx = expert_pool_block_offset * BLOCK_M + token_idx_in_expert;
-            #pragma unroll
-            for (uint32_t i = 0; i < math::constexpr_ceil_div(kNumSFFloats, 32u); ++ i) {
-                const uint32_t j = i * 32 + lane_idx;
-                if (j < kNumSFFloats)
-                    local_sf_ptr[j * kNumPaddedSFPoolTokens + sf_pool_token_idx] = remote_sf_ptr[j];
-            }
-            __syncwarp();
+                // TMA pull token data into SMEM
+                if (cute::elect_one_sync()) {
+                    ptx::tma_load_1d(
+                        pull_buffer.get_base_ptr(),
+                        sym_buffer.map(input_token_buffer.get_data_buffer(src_token_idx).get_base_ptr(),
+                                       current_rank_in_expert_idx),
+                        pull_mbarrier, kHidden);
+                }
+                __syncwarp();
 
-            const uint32_t pool_token_idx = expert_pool_block_offset * BLOCK_M + token_idx_in_expert;
-            if (cute::elect_one_sync()) {
-                const auto weight = *sym_buffer.map(
-                    input_topk_weights_buffer.get_base_ptr<float>() + src_token_topk_idx,
+                // Copy SF: per-128 K floats, written linearly (no UTCCP transpose).
+                constexpr uint32_t kNumSFFloats = kHidden / 128;
+                DG_STATIC_ASSERT(kNumSFFloats > 0 and kHidden % 128 == 0, "Invalid SF");
+                const auto remote_sf_ptr = sym_buffer.map(
+                    input_sf_buffer.get_data_buffer(src_token_idx).get_base_ptr<float>(),
                     current_rank_in_expert_idx);
-                *l1_topk_weights_buffer.get_data_buffer(pool_token_idx).get_base_ptr<float>() = weight;
+                const auto local_sf_ptr  = l1_sf_buffer.get_base_ptr<float>();
+                const uint32_t sf_pool_token_idx = expert_pool_block_offset * BLOCK_M + token_idx_in_expert;
+                #pragma unroll
+                for (uint32_t i = 0; i < math::constexpr_ceil_div(kNumSFFloats, 32u); ++ i) {
+                    const uint32_t j = i * 32 + lane_idx;
+                    if (j < kNumSFFloats)
+                        local_sf_ptr[j * kNumPaddedSFPoolTokens + sf_pool_token_idx] = remote_sf_ptr[j];
+                }
+                __syncwarp();
 
-                ptx::mbarrier_arrive_and_set_tx(pull_mbarrier, kHidden);
-                ptx::mbarrier_wait_and_flip_phase(pull_mbarrier, pull_mbarrier_phase);
+                const uint32_t pool_token_idx = expert_pool_block_offset * BLOCK_M + token_idx_in_expert;
+                if (cute::elect_one_sync()) {
+                    const auto weight = *sym_buffer.map(
+                        input_topk_weights_buffer.get_base_ptr<float>() + src_token_topk_idx,
+                        current_rank_in_expert_idx);
+                    *l1_topk_weights_buffer.get_data_buffer(pool_token_idx).get_base_ptr<float>() = weight;
 
-                ptx::tma_store_1d(
-                    l1_token_buffer.get_data_buffer(pool_token_idx).get_base_ptr(),
-                    pull_buffer.get_base_ptr(), pull_buffer.get_num_bytes());
+                    ptx::mbarrier_arrive_and_set_tx(pull_mbarrier, kHidden);
+                    ptx::mbarrier_wait_and_flip_phase(pull_mbarrier, pull_mbarrier_phase);
 
-                *workspace.get_token_src_metadata_ptr(pool_token_idx) =
-                    {current_rank_in_expert_idx, src_token_idx, src_topk_idx};
+                    ptx::tma_store_1d(
+                        l1_token_buffer.get_data_buffer(pool_token_idx).get_base_ptr(),
+                        pull_buffer.get_base_ptr(), pull_buffer.get_num_bytes());
 
-                cute::tma_store_arrive();
-                ptx::tma_store_wait<0>();
-                ptx::red_add_rel(
-                    workspace.get_l1_arrival_count_ptr(expert_pool_block_offset + token_idx_in_expert / BLOCK_M), 1);
+                    *workspace.get_token_src_metadata_ptr(pool_token_idx) =
+                        {current_rank_in_expert_idx, src_token_idx, src_topk_idx};
+
+                    cute::tma_store_arrive();
+                    ptx::tma_store_wait<0>();
+                    ptx::red_add_rel(
+                        workspace.get_l1_arrival_count_ptr(expert_pool_block_offset + token_idx_in_expert / BLOCK_M), 1);
+                }
+                __syncwarp();
             }
-            __syncwarp();
-        }
 
 
 
-        // Cleanup workspace, overlapping with combine
-        const unsigned long long dispatch_pull_end = phase_profile_clock();
-        if (lane_idx == 0) {
-            phase_profile_record(kProfileDispatchPull, dispatch_pull_end - dispatch_pull_start);
-            phase_profile_record(kProfileDispatchTotal, dispatch_pull_end - dispatch_total_start);
+            // Cleanup workspace, overlapping with combine
+            const unsigned long long dispatch_pull_end = phase_profile_clock();
+            if (lane_idx == 0) {
+                phase_profile_record(kProfileDispatchPull, dispatch_pull_end - dispatch_pull_start);
+                phase_profile_record(kProfileDispatchTotal, dispatch_pull_end - dispatch_total_start);
+            }
         }
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
         if constexpr (kRunL2Phase) {
