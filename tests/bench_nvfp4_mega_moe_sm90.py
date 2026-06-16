@@ -81,7 +81,8 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     # also benefit from the BN256 fused single-kernel path, which cuts N tiles
     # and direct-scatters L2 output. Larger M keeps the BN128 split path.
     nvfp4_use_bn256 = num_tokens <= 128 or num_tokens in (256, 260, 512, 819, 1024)
-    nvfp4_block_n = 256 if nvfp4_use_bn256 else 128
+    nvfp4_default_block_n = 256 if nvfp4_use_bn256 else 128
+    nvfp4_block_n = int(os.environ.get("DG_SM90_NVFP4_BLOCK_N", nvfp4_default_block_n))
     nvfp4_fused_b_scale = True if nvfp4_use_bn256 else None
     transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
         (l1_packed, l1_scale), (l2_packed, l2_scale),
@@ -149,6 +150,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
             or int(os.environ.get('DG_SM90_MOE_EPILOGUE_WG', '0')) > 0
             or int(os.environ.get('DG_SM90_MOE_BLOCK_N', '128')) != 128
             or int(os.environ.get('DG_SM90_NVFP4_EPILOGUE_THREADS', '0')) > 0
+            or nvfp4_block_n != nvfp4_default_block_n
         )
         bm128_enabled = os.environ.get('DG_SM90_NVFP4_BM128_HEURISTIC', '1') != '0'
         bm128_default = (
@@ -158,7 +160,11 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         )
         fused_default = num_tokens == 4096 and not bm128_default
         true_fused_small_m_default = num_tokens in (8, 16, 32, 64, 128)
-        fused_mid_m_default = num_tokens in (256, 260, 512, 819, 1024) and not shape_override
+        fused_mid_m_default = (
+            num_tokens in (256, 260, 512, 819, 1024)
+            and nvfp4_block_n == 256
+            and not shape_override
+        )
         split_l1_l2 = not (fused_default or true_fused_small_m_default or fused_mid_m_default)
     else:
         split_l1_l2 = split_env != '0'
