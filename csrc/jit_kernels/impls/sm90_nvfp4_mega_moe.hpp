@@ -435,7 +435,8 @@ static void sm90_nvfp4_mega_moe(
         !(true_fused_l1_l2 && (num_tokens == 512 || num_tokens == 2048));
 
     const bool direct_scatter_metadata_broadcast_default =
-        direct_l2_scatter && num_tokens >= 256;
+        direct_l2_scatter &&
+        (num_tokens >= 256 || num_tokens == 8 || num_tokens == 32 || num_tokens == 64);
     const int combine_7chunk_default = 0;
     const bool async_l1_tma_store_requested = get_env<int>("DG_SM90_MOE_ASYNC_L1_STORE", 0) != 0;
     DG_HOST_ASSERT(!async_l1_tma_store_requested && "DG_SM90_MOE_ASYNC_L1_STORE is not supported for NVFP4 yet");
