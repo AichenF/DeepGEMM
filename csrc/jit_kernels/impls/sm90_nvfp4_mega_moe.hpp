@@ -428,8 +428,9 @@ static void sm90_nvfp4_mega_moe(
     const bool true_fused_l1_l2 = !split_l1_l2;
     DG_HOST_ASSERT(!(config.block_n == 256 && nvfp4_packed_b_scratch && split_l1_l2));
     const bool l1_dual_k_default =
-        (hidden / config.block_k) % 2 == 0 && num_tokens != 32 && num_tokens < 512 &&
-        !true_fused_l1_l2;
+        (hidden / config.block_k) % 2 == 0 && num_tokens != 32 &&
+        ((num_tokens < 512 && !true_fused_l1_l2) ||
+         (num_tokens == 512 && true_fused_l1_l2));
     const int l2_dual_accum_default = true_fused_l1_l2 ? 0 :
         ((num_tokens == 256 || num_tokens == 4096 || num_tokens == 8192) ? 1 : 0);
     const bool l2_arrival_counter_default = config.block_n == 128 &&
