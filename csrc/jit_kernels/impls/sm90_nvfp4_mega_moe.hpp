@@ -436,6 +436,7 @@ static void sm90_nvfp4_mega_moe(
 
     const bool direct_scatter_metadata_broadcast_default =
         direct_l2_scatter &&
+        num_tokens != 8192 &&
         (num_tokens >= 256 || num_tokens == 8 || num_tokens == 32 || num_tokens == 64);
     const int combine_7chunk_default = 0;
     const bool async_l1_tma_store_requested = get_env<int>("DG_SM90_MOE_ASYNC_L1_STORE", 0) != 0;
