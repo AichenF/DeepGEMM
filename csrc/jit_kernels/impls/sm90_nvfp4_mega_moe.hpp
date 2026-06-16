@@ -434,7 +434,7 @@ static void sm90_nvfp4_mega_moe(
         ((num_tokens == 256 || num_tokens == 4096 || num_tokens == 8192) ? 1 : 0);
     const bool l2_arrival_counter_default = config.block_n == 128 &&
         (num_tokens == 32 || num_tokens == 128 || num_tokens == 512 || num_tokens == 1024 ||
-         num_tokens == 2048 || num_tokens == 4096 || num_tokens == 8192) &&
+         num_tokens == 2048 || num_tokens == 3072 || num_tokens == 4096 || num_tokens == 8192) &&
         !(true_fused_l1_l2 && (num_tokens == 512 || num_tokens == 2048));
 
     const bool direct_scatter_metadata_broadcast_default =
