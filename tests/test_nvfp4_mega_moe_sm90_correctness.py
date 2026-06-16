@@ -234,7 +234,7 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
         l1_dequant = l1_dequant.to(torch.float8_e4m3fn).float()
         l2_dequant = l2_dequant.to(torch.float8_e4m3fn).float()
 
-    nvfp4_use_bn256 = m_tokens <= 128 or m_tokens in (256, 260, 512, 819)
+    nvfp4_use_bn256 = m_tokens <= 128 or m_tokens in (256, 260, 512, 819, 1024)
     nvfp4_block_n = 256 if nvfp4_use_bn256 else 128
     nvfp4_fused_b_scale = True if nvfp4_use_bn256 else None
     transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
