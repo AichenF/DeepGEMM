@@ -108,10 +108,10 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_fused_scale(uint8_t* 
                                                                       uint32_t tid_in_wg,
                                                                       const uint2* __restrict__ lut_smem) {
     const uint8_t* __restrict__ row_ptr = packed_b + tid_in_wg * 80;
-    const uint32_t* __restrict__ fp4_src = reinterpret_cast<const uint32_t*>(row_ptr);
-    uint32_t fp4_regs[16];
+    const uint2* __restrict__ fp4_src = reinterpret_cast<const uint2*>(row_ptr);
+    uint2 fp4_pairs[8];
     #pragma unroll
-    for (int i = 0; i < 16; ++i) fp4_regs[i] = fp4_src[i];
+    for (int i = 0; i < 8; ++i) fp4_pairs[i] = fp4_src[i];
 
     const uint2 scale_words = *reinterpret_cast<const uint2*>(row_ptr + 64);
     const uint32_t scale_word_lo = scale_words.x;
@@ -123,12 +123,11 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_fused_scale(uint8_t* 
     for (int scale_i = 0; scale_i < 8; ++scale_i) {
         const uint32_t scale_word = scale_i < 4 ? scale_word_lo : scale_word_hi;
         const uint32_t scale_ue4m3 = (scale_word >> ((scale_i & 3) * 8)) & 0xffu;
-        const int i0 = scale_i * 2;
-        const int i1 = i0 + 1;
         const uint2 lut = lut_smem[scale_ue4m3 & 0x7fu];
-        const uint2 s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i0], lut);
-        const uint2 s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs[i1], lut);
-        const uint32_t logical = i0 * 8;
+        const uint2 fp4_pair = fp4_pairs[scale_i];
+        const uint2 s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_pair.x, lut);
+        const uint2 s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_pair.y, lut);
+        const uint32_t logical = scale_i * 16;
         const uint32_t physical = logical ^ row_swizzle;
         *reinterpret_cast<uint4*>(fp8_dst_base + physical) =
             make_uint4(s0.x, s0.y, s1.x, s1.y);
