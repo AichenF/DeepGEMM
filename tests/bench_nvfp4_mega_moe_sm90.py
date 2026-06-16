@@ -77,11 +77,12 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     # ABI does not consume.
     l1_packed, l1_scale = quantize_to_nvfp4(l1_bf, group_size=16)
     l2_packed, l2_scale = quantize_to_nvfp4(l2_bf, group_size=16)
-    # M32/M64/M128 are dominated by per-block fixed cost. The BN256
-    # packed-scratch layout halves the N-block count and uses math-side NVFP4
-    # dequant; M256+ keeps the higher-throughput BN128 split path.
-    nvfp4_block_n = 256 if num_tokens <= 128 else 128
-    nvfp4_fused_b_scale = True if num_tokens <= 128 else None
+    # M32/M64/M128 are dominated by per-block fixed cost. M256/M260/M512/M819
+    # also benefit from the BN256 fused single-kernel path, which cuts N tiles
+    # and direct-scatters L2 output. Larger M keeps the BN128 split path.
+    nvfp4_use_bn256 = num_tokens <= 128 or num_tokens in (256, 260, 512, 819)
+    nvfp4_block_n = 256 if nvfp4_use_bn256 else 128
+    nvfp4_fused_b_scale = True if nvfp4_use_bn256 else None
     transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
         (l1_packed, l1_scale), (l2_packed, l2_scale),
         block_n=nvfp4_block_n, fused_b_scale=nvfp4_fused_b_scale,
@@ -153,11 +154,12 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         bm128_default = (
             bm128_enabled
             and not shape_override
-            and num_tokens in (256, 260, 512, 819, 1024, 2048, 3072, 4096, 8192)
+            and num_tokens in (1024, 2048, 3072, 4096, 8192)
         )
         fused_default = num_tokens == 4096 and not bm128_default
         true_fused_small_m_default = num_tokens in (8, 16, 32, 64, 128)
-        split_l1_l2 = not (fused_default or true_fused_small_m_default)
+        fused_mid_m_default = num_tokens in (256, 260, 512, 819) and not shape_override
+        split_l1_l2 = not (fused_default or true_fused_small_m_default or fused_mid_m_default)
     else:
         split_l1_l2 = split_env != '0'
     # The profiler table exposes the generated CUDA function name, not the

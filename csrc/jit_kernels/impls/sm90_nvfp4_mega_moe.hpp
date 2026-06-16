@@ -246,7 +246,8 @@ static void sm90_nvfp4_mega_moe(
     DG_HOST_ASSERT(nvfp4_non_epilogue_threads == 64 || nvfp4_non_epilogue_threads == 128);
     const bool split_sfa_tma = get_env<int>("DG_SM90_MOE_SPLIT_SFA_TMA", 0) != 0;
     const int nvfp4_loader_dequant_default = config.block_n == 256 ?
-        (num_tokens == 128 ? 1 : 0) :
+        ((num_tokens == 128 || num_tokens == 256 || num_tokens == 260 ||
+          num_tokens == 512 || num_tokens == 819) ? 1 : 0) :
         1;
     const bool nvfp4_loader_dequant_requested =
         get_env<int>("DG_SM90_NVFP4_LOADER_DEQUANT", nvfp4_loader_dequant_default) != 0 && !split_sfa_tma;
@@ -280,9 +281,14 @@ static void sm90_nvfp4_mega_moe(
     config.num_dispatch_threads = nvfp4_dispatch_threads;
     config.num_non_epilogue_threads = nvfp4_non_epilogue_threads;
     DG_HOST_ASSERT((config.num_dispatch_threads + config.num_non_epilogue_threads) % 128 == 0);
-    DG_HOST_ASSERT(!(config.block_n == 256 && nvfp4_packed_b_scratch && num_tokens > 128));
+    DG_HOST_ASSERT(!(config.block_n == 256 && nvfp4_packed_b_scratch &&
+                     num_tokens > 128 && num_tokens != 256 && num_tokens != 260 &&
+                     num_tokens != 512 && num_tokens != 819));
     const int direct_l2_scatter_default =
-        (config.block_n == 128 || (config.block_n == 256 && num_tokens <= 128)) ? 1 : 0;
+        (config.block_n == 128 ||
+         (config.block_n == 256 &&
+          (num_tokens <= 128 || num_tokens == 256 || num_tokens == 260 ||
+           num_tokens == 512 || num_tokens == 819))) ? 1 : 0;
     const bool direct_l2_scatter = get_env<int>("DG_SM90_NVFP4_DIRECT_L2_SCATTER", direct_l2_scatter_default) != 0;
     DG_HOST_ASSERT(!direct_l2_scatter || config.block_n == 128 ||
                    (config.block_n == 256 && config.block_m == 64 && config.num_epilogue_threads == 256));
@@ -411,7 +417,10 @@ static void sm90_nvfp4_mega_moe(
     const auto num_sms = device_runtime->get_num_sms();
     const bool fused_default = (num_tokens == 4096 && config.block_m == 64);
     const bool true_fused_small_m_default = (num_tokens == 8 || num_tokens == 16 || num_tokens == 32 || num_tokens == 64 || num_tokens == 128);
-    const int split_l1_l2_default = (fused_default || true_fused_small_m_default) ? 0 : 1;
+    const bool fused_mid_m_default = ((num_tokens == 256 || num_tokens == 260 ||
+                                       num_tokens == 512 || num_tokens == 819) &&
+                                      config.block_n == 256 && nvfp4_packed_b_scratch);
+    const int split_l1_l2_default = (fused_default || true_fused_small_m_default || fused_mid_m_default) ? 0 : 1;
     const bool split_l1_l2 = get_env<int>("DG_SM90_MOE_SPLIT_L1_L2", split_l1_l2_default) != 0;
     const bool true_fused_l1_l2 = !split_l1_l2;
     DG_HOST_ASSERT(!(config.block_n == 256 && nvfp4_packed_b_scratch && split_l1_l2));
@@ -460,7 +469,8 @@ static void sm90_nvfp4_mega_moe(
         .combine_7chunk = get_env<int>("DG_SM90_NVFP4_COMBINE_7CHUNK", combine_7chunk_default) != 0,
         .skip_direct_scatter_sync = get_env<int>(
             "DG_SM90_NVFP4_SKIP_DIRECT_SCATTER_SYNC",
-            ((true_fused_l1_l2 && config.block_n == 256 && num_tokens < 128) ||
+            ((true_fused_l1_l2 && config.block_n == 256 &&
+              (num_tokens < 128 || num_tokens == 512 || num_tokens == 819)) ||
              (!true_fused_l1_l2 && config.block_n == 128 && num_tokens >= 512)) ? 1 : 0) != 0,
         .run_l1_phase = true,
         .run_l2_phase = true,
