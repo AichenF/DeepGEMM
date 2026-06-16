@@ -475,7 +475,8 @@ static void sm90_nvfp4_mega_moe(
         .skip_direct_scatter_sync = get_env<int>(
             "DG_SM90_NVFP4_SKIP_DIRECT_SCATTER_SYNC",
             ((true_fused_l1_l2 && config.block_n == 256 &&
-              (num_tokens <= 128 || num_tokens == 256 || num_tokens == 512 || num_tokens == 819 || num_tokens == 1024)) ||
+              (num_tokens <= 128 || num_tokens == 256 || num_tokens == 260 ||
+               num_tokens == 512 || num_tokens == 819 || num_tokens == 1024)) ||
              (!true_fused_l1_l2 && config.block_n == 128 && num_tokens >= 512)) ? 1 : 0) != 0,
         .run_l1_phase = true,
         .run_l2_phase = true,
