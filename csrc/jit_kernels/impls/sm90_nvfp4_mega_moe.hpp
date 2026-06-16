@@ -495,7 +495,7 @@ static void sm90_nvfp4_mega_moe(
                                   config.smem_size, config.cluster_size)
     };
     const int l2_no_dispatch_pipeline_default =
-        (num_tokens == 128 || num_tokens == 256 || num_tokens == 512 || num_tokens == 1024 || num_tokens == 2048 || num_tokens == 4096 || num_tokens == 8192) ? 1 : 0;
+        (num_tokens == 128 || num_tokens == 256 || num_tokens == 512 || num_tokens == 1024 || num_tokens == 2048 || num_tokens == 3072 || num_tokens == 4096 || num_tokens == 8192) ? 1 : 0;
     const bool l2_no_dispatch_pipeline =
         get_env<int>("DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE", l2_no_dispatch_pipeline_default) != 0;
 
