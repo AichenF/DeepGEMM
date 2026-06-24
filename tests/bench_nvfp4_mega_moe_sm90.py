@@ -29,6 +29,10 @@ from deep_gemm.utils.dist import dist_print, init_dist, uneven_all_gather
 from deep_gemm.testing import bench_kineto, calc_diff, get_arch_major
 
 
+def _nvfp4_bn256_fused_m(num_tokens: int) -> bool:
+    return num_tokens <= int(os.environ.get("DG_SM90_NVFP4_BN256_FUSED_MAX_M", "1280"))
+
+
 def _quantize_grouped_fp8_block_128_128(w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     g, n, k = w.shape
     assert n % 128 == 0 and k % 128 == 0
@@ -77,10 +81,9 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     # ABI does not consume.
     l1_packed, l1_scale = quantize_to_nvfp4(l1_bf, group_size=16)
     l2_packed, l2_scale = quantize_to_nvfp4(l2_bf, group_size=16)
-    # M32/M64/M128 are dominated by per-block fixed cost. M256/M260/M512/M819
-    # also benefit from the BN256 fused single-kernel path, which cuts N tiles
-    # and direct-scatters L2 output. Larger M keeps the BN128 split path.
-    nvfp4_use_bn256 = num_tokens <= 128 or num_tokens in (256, 260, 512, 819, 1024)
+    # The SM90 NVFP4 wrapper uses the BN256 fused path for the compact bucket up
+    # to the configurable small/mid-M cutoff; larger M keeps the BN128 split path.
+    nvfp4_use_bn256 = _nvfp4_bn256_fused_m(num_tokens)
     nvfp4_default_block_n = 256 if nvfp4_use_bn256 else 128
     nvfp4_block_n = int(os.environ.get("DG_SM90_NVFP4_BLOCK_N", nvfp4_default_block_n))
     nvfp4_fused_b_scale = True if nvfp4_use_bn256 else None
@@ -145,27 +148,8 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     show_kineto = os.environ.get('DG_SHOW_KINETO', '0') != '0'
     split_env = os.environ.get('DG_SM90_MOE_SPLIT_L1_L2')
     if split_env is None:
-        shape_override = (
-            int(os.environ.get('DG_SM90_MOE_BLOCK_M', '0')) > 0
-            or int(os.environ.get('DG_SM90_MOE_EPILOGUE_WG', '0')) > 0
-            or int(os.environ.get('DG_SM90_MOE_BLOCK_N', '128')) != 128
-            or int(os.environ.get('DG_SM90_NVFP4_EPILOGUE_THREADS', '0')) > 0
-            or nvfp4_block_n != nvfp4_default_block_n
-        )
-        bm128_enabled = os.environ.get('DG_SM90_NVFP4_BM128_HEURISTIC', '1') != '0'
-        bm128_default = (
-            bm128_enabled
-            and not shape_override
-            and num_tokens in (1024, 2048, 3072, 4096, 8192)
-        )
-        fused_default = num_tokens == 4096 and not bm128_default
-        true_fused_small_m_default = num_tokens in (8, 16, 32, 64, 128)
-        fused_mid_m_default = (
-            num_tokens in (256, 260, 512, 819, 1024)
-            and nvfp4_block_n == 256
-            and not shape_override
-        )
-        split_l1_l2 = not (fused_default or true_fused_small_m_default or fused_mid_m_default)
+        fused_bn256_default = nvfp4_block_n == 256 and _nvfp4_bn256_fused_m(num_tokens)
+        split_l1_l2 = not fused_bn256_default
     else:
         split_l1_l2 = split_env != '0'
     # The profiler table exposes the generated CUDA function name, not the

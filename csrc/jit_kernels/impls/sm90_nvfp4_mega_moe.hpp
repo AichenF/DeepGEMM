@@ -183,8 +183,16 @@ static void sm90_nvfp4_mega_moe(
         num_max_tokens_per_rank, num_tokens, num_topk,
         hidden, intermediate_hidden, num_padded_sf_pool_tokens);
 
-    // BN128 remains the default layout. BN256 is opt-in for the verified
-    // small-M packed-scratch path, where it halves the N-block count.
+    const auto ceil_div = [](int x, int y) { return (x + y - 1) / y; };
+    const int nvfp4_bn256_fused_max_m = get_env<int>("DG_SM90_NVFP4_BN256_FUSED_MAX_M", 1280);
+    const auto nvfp4_bn256_fused_m = [=](int m) { return m <= nvfp4_bn256_fused_max_m; };
+    const auto nvfp4_bn128_bm128_m = [](int m) { return m >= 256; };
+    const auto nvfp4_bn256_loader_dequant_m = [=](int m) { return m >= 128 && m <= nvfp4_bn256_fused_max_m; };
+    const auto nvfp4_l2_nodisp_m = [](int m) { return m >= 512; };
+
+    // BN128 remains the default large-M layout. BN256 is used for the compact
+    // fused path up to the configurable small/mid-M cutoff, where it halves the
+    // N-block count.
     const int nvfp4_block_n_from_layout = static_cast<int>(l1_weights_sf.size(3));
     DG_HOST_ASSERT(nvfp4_block_n_from_layout == 128 || nvfp4_block_n_from_layout == 256);
     const int nvfp4_block_n = get_env<int>("DG_SM90_NVFP4_BLOCK_N", nvfp4_block_n_from_layout);
@@ -208,10 +216,7 @@ static void sm90_nvfp4_mega_moe(
         get_env<int>("DG_SM90_MOE_BLOCK_N", 128) != 128 ||
         get_env<int>("DG_SM90_NVFP4_EPILOGUE_THREADS", 0) > 0;
     const bool nvfp4_bm128_heuristic = get_env<int>("DG_SM90_NVFP4_BM128_HEURISTIC", 1) != 0;
-    const bool nvfp4_bm128_main_m =
-        num_tokens == 256 || num_tokens == 260 || num_tokens == 512 || num_tokens == 819 ||
-        num_tokens == 1024 || num_tokens == 2048 || num_tokens == 3072 ||
-        num_tokens == 4096 || num_tokens == 8192;
+    const bool nvfp4_bm128_main_m = nvfp4_bn128_bm128_m(num_tokens);
     if (!nvfp4_user_shape_override && nvfp4_bm128_heuristic && nvfp4_bm128_main_m && config.block_n == 128) {
         config.block_m = 128;
         config.num_epilogue_threads = 256;
@@ -249,9 +254,7 @@ static void sm90_nvfp4_mega_moe(
     DG_HOST_ASSERT(nvfp4_non_epilogue_threads == 64 || nvfp4_non_epilogue_threads == 128);
     const bool split_sfa_tma = get_env<int>("DG_SM90_MOE_SPLIT_SFA_TMA", 0) != 0;
     const int nvfp4_loader_dequant_default = config.block_n == 256 ?
-        ((num_tokens == 128 || num_tokens == 256 || num_tokens == 260 ||
-          num_tokens == 512 || num_tokens == 819 || num_tokens == 1024) ? 1 : 0) :
-        1;
+        (nvfp4_bn256_loader_dequant_m(num_tokens) ? 1 : 0) : 1;
     const bool nvfp4_loader_dequant_requested =
         get_env<int>("DG_SM90_NVFP4_LOADER_DEQUANT", nvfp4_loader_dequant_default) != 0 && !split_sfa_tma;
     const int nvfp4_packed_b_scratch_default = config.block_n == 256 ? 1 : 0;
@@ -285,13 +288,11 @@ static void sm90_nvfp4_mega_moe(
     config.num_non_epilogue_threads = nvfp4_non_epilogue_threads;
     DG_HOST_ASSERT((config.num_dispatch_threads + config.num_non_epilogue_threads) % 128 == 0);
     DG_HOST_ASSERT(!(config.block_n == 256 && nvfp4_packed_b_scratch &&
-                     num_tokens > 128 && num_tokens != 256 && num_tokens != 260 &&
-                     num_tokens != 512 && num_tokens != 819 && num_tokens != 1024));
+                     !nvfp4_bn256_fused_m(num_tokens)));
     const int direct_l2_scatter_default =
         (config.block_n == 128 ||
-         (config.block_n == 256 &&
-          (num_tokens <= 128 || num_tokens == 256 || num_tokens == 260 ||
-           num_tokens == 512 || num_tokens == 819 || num_tokens == 1024))) ? 1 : 0;
+         (config.block_n == 256 && nvfp4_bn256_fused_m(num_tokens) &&
+          config.block_m == 64 && config.num_epilogue_threads == 256)) ? 1 : 0;
     const bool direct_l2_scatter = get_env<int>("DG_SM90_NVFP4_DIRECT_L2_SCATTER", direct_l2_scatter_default) != 0;
     DG_HOST_ASSERT(!direct_l2_scatter || config.block_n == 128 ||
                    (config.block_n == 256 && config.block_m == 64 && config.num_epilogue_threads == 256));
@@ -418,31 +419,26 @@ static void sm90_nvfp4_mega_moe(
 
     // Launch
     const auto num_sms = device_runtime->get_num_sms();
-    const bool fused_default = (num_tokens == 4096 && config.block_m == 64);
-    const bool true_fused_small_m_default = (num_tokens == 8 || num_tokens == 16 || num_tokens == 32 || num_tokens == 64 || num_tokens == 128);
-    const bool fused_mid_m_default = ((num_tokens == 256 || num_tokens == 260 ||
-                                       num_tokens == 512 || num_tokens == 819 || num_tokens == 1024) &&
-                                      config.block_n == 256 && nvfp4_packed_b_scratch);
-    const int split_l1_l2_default = (fused_default || true_fused_small_m_default || fused_mid_m_default) ? 0 : 1;
+    const bool fused_bn256_default =
+        config.block_n == 256 && nvfp4_packed_b_scratch && nvfp4_bn256_fused_m(num_tokens);
+    const int split_l1_l2_default = fused_bn256_default ? 0 : 1;
     const bool split_l1_l2 = get_env<int>("DG_SM90_MOE_SPLIT_L1_L2", split_l1_l2_default) != 0;
     const bool true_fused_l1_l2 = !split_l1_l2;
     DG_HOST_ASSERT(!(config.block_n == 256 && nvfp4_packed_b_scratch && split_l1_l2));
+    const int m_tiles = ceil_div(num_tokens, config.block_m);
     const bool l1_dual_k_default =
         (hidden / config.block_k) % 2 == 0 && num_tokens != 32 &&
         ((num_tokens < 512 && !true_fused_l1_l2) ||
-         ((num_tokens == 512 || num_tokens == 819) && true_fused_l1_l2));
+         (true_fused_l1_l2 && config.block_n == 256 && m_tiles >= 8 && m_tiles < 16));
     const int l2_dual_accum_default = true_fused_l1_l2 ? 0 :
-        ((num_tokens == 256 || num_tokens == 4096 || num_tokens == 8192) ? 1 : 0);
+        ((config.block_n == 128 && (num_tokens <= 256 || num_tokens >= 4096)) ? 1 : 0);
     const bool l2_arrival_counter_default = config.block_n == 128 &&
-        (num_tokens == 32 || num_tokens == 128 || num_tokens == 512 || num_tokens == 1024 ||
-         num_tokens == 2048 || num_tokens == 3072 || num_tokens == 4096 || num_tokens == 8192) &&
-        !(true_fused_l1_l2 && (num_tokens == 512 || num_tokens == 2048));
+        (num_tokens <= 128 || num_tokens >= 512);
 
     const bool direct_scatter_metadata_broadcast_default =
         direct_l2_scatter &&
-        num_tokens != 8192 &&
-        (num_tokens >= 256 || num_tokens == 8 || num_tokens == 32 ||
-         num_tokens == 64 || num_tokens == 128);
+        num_tokens < 8192 &&
+        (num_tokens >= 256 || num_tokens <= 128);
     const int combine_7chunk_default = 0;
     const bool async_l1_tma_store_requested = get_env<int>("DG_SM90_MOE_ASYNC_L1_STORE", 0) != 0;
     DG_HOST_ASSERT(!async_l1_tma_store_requested && "DG_SM90_MOE_ASYNC_L1_STORE is not supported for NVFP4 yet");
@@ -476,9 +472,7 @@ static void sm90_nvfp4_mega_moe(
         .combine_7chunk = get_env<int>("DG_SM90_NVFP4_COMBINE_7CHUNK", combine_7chunk_default) != 0,
         .skip_direct_scatter_sync = get_env<int>(
             "DG_SM90_NVFP4_SKIP_DIRECT_SCATTER_SYNC",
-            ((true_fused_l1_l2 && config.block_n == 256 &&
-              (num_tokens <= 128 || num_tokens == 256 || num_tokens == 260 ||
-               num_tokens == 512 || num_tokens == 819 || num_tokens == 1024)) ||
+            ((true_fused_l1_l2 && config.block_n == 256 && nvfp4_bn256_fused_m(num_tokens)) ||
              (!true_fused_l1_l2 && config.block_n == 128 && num_tokens >= 512)) ? 1 : 0) != 0,
         .run_l1_phase = true,
         .run_l2_phase = true,
@@ -502,7 +496,7 @@ static void sm90_nvfp4_mega_moe(
                                   config.smem_size, config.cluster_size)
     };
     const int l2_no_dispatch_pipeline_default =
-        (num_tokens == 128 || num_tokens == 256 || num_tokens == 512 || num_tokens == 1024 || num_tokens == 2048 || num_tokens == 3072 || num_tokens == 4096 || num_tokens == 8192) ? 1 : 0;
+        (!true_fused_l1_l2 && config.block_n == 128 && nvfp4_l2_nodisp_m(num_tokens)) ? 1 : 0;
     const bool l2_no_dispatch_pipeline =
         get_env<int>("DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE", l2_no_dispatch_pipeline_default) != 0;
 
