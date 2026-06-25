@@ -85,7 +85,6 @@ Pipeline-overlap follow-up on 2026-06-11:
 - L1 shared-memory sizing was corrected for the default non-async BM128 path. The previous host-side estimate reserved the async-sized CD buffer even when async store was disabled; the default path now reserves only the actual L1 output tile buffer, leaving more space for the load/dequant pipeline.
 - L2 direct-scatter full epilogue sync was tested as a removal candidate but was reverted. Removing it made M256 hang even with L1 async disabled, so the sync is still required to keep the math warpgroups and CTA pipeline state aligned.
 - L2 no-dispatch is now also the default for M64. A same-window M64 check improved from `1284.3us` to `1272.7us`, and the final full sweep improved M64 from the previous `1359.0us` table row to `1283.3us`.
-- Async L1 store remains env-gated with `DG_SM90_MOE_ASYNC_L1_STORE=1`, not default. Same-code runs showed no stable default win: it helped some isolated rows but regressed M256/M512/M4096/M8192 in the first full sweep.
 
 Default-path validation after this follow-up:
 
@@ -126,11 +125,10 @@ Targeted validation for the small-M heuristics:
 | M64 NVFP4 fused + `DG_SM90_MOE_L2_DUAL_ACCUM=0` repeat | 1261.0 us |
 | M64 NVFP4 same-run old default repeat | 1281.5 us |
 | M128 NVFP4 default | 1251.0 us |
-| M128 NVFP4 with `DG_SM90_MOE_L2_NMAJOR=1` | 1298.0 us |
 | M32 W8A8 | 863.6 us |
 | M64 W8A8 | 1019.9 us |
 
-The heuristics now change M32, M64, M128, and M4096: M32 disables L1 dual-K accumulation by default; M64 uses fused L1/L2 execution with L2 dual accumulation disabled by default; M128 disables the L2 N-major schedule by default; and M4096 disables L1 dual-K plus L2 dual-accum by default. Later M32 `DG_SM90_MOE_L1_NMAJOR=1` and `DG_SM90_MOE_L2_NMAJOR=0` experiments were not kept: both had positive short-run signals but lost longer repeats (`L1_NMAJOR=1`: `1278.0 us` vs forced off `1266.8 us`; `L2_NMAJOR=0`: `1293.9 us` vs forced on `1273.5 us`). Current default NVFP4 is now closest at M4096 but still behind the latest W8A8 baseline. The remaining clear gaps are M32, M64, M128, M256, and M4096; M32, M128, and M4096 improved modestly but are still behind W8A8.
+The heuristics now change M32, M64, M128, and M4096: M32 disables L1 dual-K accumulation by default; M64 uses fused L1/L2 execution with L2 dual accumulation disabled by default; and M4096 disables L1 dual-K plus L2 dual-accum by default. The earlier N-major schedule experiment knobs were later removed because the CUDA kernel never consumed those template parameters. Current default NVFP4 is now closest at M4096 but still behind the latest W8A8 baseline. The remaining clear gaps are M32, M64, M128, M256, and M4096; M32, M128, and M4096 improved modestly but are still behind W8A8.
 
 ## Removed AKO Logs
 
@@ -184,13 +182,9 @@ large M where MMA dominates.
 
 ### Env / code knobs probed this iter
 
-1. **DG_SM90_MOE_L1_NMAJOR=1 at M=4096/8192** — only previously tested at M=32 (regression there).
-   Correctness PASS (cosine_min=0.9995). Bench: M=4096=11799, M=8192=22848. Negligible gain (0.15%/0.21%). NOT kept.
+1. **N-major schedule experiments at M=4096/8192** — correctness passed, but measured changes were within noise and were not kept. The corresponding env knobs were later removed because the CUDA kernel did not consume them.
 
-2. **DG_SM90_MOE_L2_NMAJOR=0 at M=4096/8192** — analogous to M=128 heuristic.
-   Bench: M=4096=11831, M=8192=22824. Within noise. NOT kept.
-
-3. **DG_SM90_NVFP4_BM128_HEURISTIC=0 (force BM64/7-stage)** — tested for TMA-hiding hypothesis.
+2. **DG_SM90_NVFP4_BM128_HEURISTIC=0 (force BM64/7-stage)** — tested for TMA-hiding hypothesis.
    Bench: M=4096=17329 (+47%), M=8192=34170 (+49%). Catastrophic regression. BM128 is correct for large M.
 
 4. **NVCC 13.0 via DG_JIT_NVCC_COMPILER=/usr/local/cuda-13.0/bin/nvcc** — KEPT.
@@ -254,7 +248,7 @@ than config knobs.
    M=2048 +3.5%, M=4096 +0.7% WORSE. REVERTED.
 2. DG_SM90_MOE_L2_DUAL_ACCUM=1 — M=2048 +13.3%, M=4096 +3.0% WORSE.
 3. DG_SM90_MOE_L1_DUAL_K=1 — M=2048 +2.0%, M=4096 +1.7% WORSE.
-4. DG_SM90_MOE_ASYNC_L1_STORE=1 — M=4096 +2.2% WORSE. Code: "BM128/2WG not stable".
+4. Async L1 TMA store prototype — M=4096 +2.2% WORSE. Code: "BM128/2WG not stable".
 5. DG_SM90_NVFP4_DIRECT_SCATTER_METADATA_BCAST=0 — M=4096 +8.3% WORSE.
 6. DG_SM90_NVFP4_L2_ARRIVAL_COUNTER=0 — M=4096 +1.8% WORSE.
 7. BLOCK_N=256+BLOCK_M=128 — process crash on direct_l2_scatter=False path.

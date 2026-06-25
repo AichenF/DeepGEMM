@@ -390,25 +390,15 @@ static MegaMoESM90Config get_mega_moe_config_sm90(
     auto [block_m, num_epilogue_threads_default] = get_block_config_for_mega_moe_sm90(
         num_ranks, num_experts, num_max_tokens_per_rank, num_topk, num_tokens);
     int num_epilogue_threads = num_epilogue_threads_default;
-    // Env overrides:
-    //   DG_SM90_MOE_BLOCK_N=256 → wider tile for better TFLOPS (requires 2 epilogue WGs).
-    //   DG_SM90_MOE_BLOCK_M=N  → override block_m (must be in candidate set).
-    //   DG_SM90_MOE_EPILOGUE_WG=N → set num_epilogue_warpgroups.
-    int block_n = get_env<int>("DG_SM90_MOE_BLOCK_N", 128);
-    if (block_n != 128 && block_n != 256) block_n = 128;
+    int block_n = 128;
+    // Env override for experimental block-M sweeps. NVFP4 block-N and epilogue
+    // threads are selected by the NVFP4 wrapper from the packed weight layout.
     if (get_env<int>("DG_SM90_MOE_BLOCK_M", 0) > 0) {
         const int env_bm = get_env<int>("DG_SM90_MOE_BLOCK_M", 64);
         if (std::any_of(layout::kCandidateBlockM, layout::kCandidateBlockM + layout::kNumCandidateBlockMs,
                         [=](const auto& c){ return c == env_bm; })) {
             block_m = env_bm;
         }
-    }
-    if (get_env<int>("DG_SM90_MOE_EPILOGUE_WG", 0) > 0) {
-        const int wg = get_env<int>("DG_SM90_MOE_EPILOGUE_WG", 1);
-        if (wg == 1 || wg == 2) num_epilogue_threads = wg * 128;
-    } else if (block_n == 256) {
-        // BN256 requires 2 warpgroups for split-N path
-        num_epilogue_threads = 256;
     }
     const int block_k = 128;
     // NOTES: cluster_size=1 for SM90 in this initial implementation. Cluster=2

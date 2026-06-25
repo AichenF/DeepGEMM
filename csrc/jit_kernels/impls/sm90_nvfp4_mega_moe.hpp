@@ -39,7 +39,6 @@ public:
         int num_ranks;
         float activation_clamp;
         bool fast_math;
-        bool async_l1_tma_store;
         bool split_sfa_tma;
         bool direct_l2_scatter;
         bool l2_dual_accum;
@@ -47,8 +46,6 @@ public:
         bool l2_arrival_counter;
         bool direct_scatter_metadata_broadcast;
         bool l1_dual_k_accum;
-        bool l2_nmajor_schedule;
-        bool l1_nmajor_schedule;
         bool k2_direct_accum;
         bool loader_dequant;
         bool direct_scale_gmem;
@@ -109,8 +106,8 @@ static void __instantiate_kernel() {{
         {}, {},
         {},
         {},
+        {}, {}, {}, {}, {}, {}, {},
         {}, {}, {}, {}, {}, {}, {}, {}, {},
-        {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
         {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
         {}, {}, {}, {}
     >);
@@ -129,7 +126,7 @@ static void __instantiate_kernel() {{
     args.launch_args.grid_dim.first, args.num_ranks,
     to_string(args.activation_clamp),
     args.fast_math ? "true" : "false",
-    args.async_l1_tma_store ? "true" : "false", args.split_sfa_tma ? "true" : "false", args.direct_l2_scatter ? "true" : "false", args.l2_dual_accum ? "true" : "false", args.phase_profile ? "true" : "false", args.l2_arrival_counter ? "true" : "false", args.direct_scatter_metadata_broadcast ? "true" : "false", args.l1_dual_k_accum ? "true" : "false", args.l2_nmajor_schedule ? "true" : "false", args.l1_nmajor_schedule ? "true" : "false",
+    args.split_sfa_tma ? "true" : "false", args.direct_l2_scatter ? "true" : "false", args.l2_dual_accum ? "true" : "false", args.phase_profile ? "true" : "false", args.l2_arrival_counter ? "true" : "false", args.direct_scatter_metadata_broadcast ? "true" : "false", args.l1_dual_k_accum ? "true" : "false",
     args.k2_direct_accum ? "true" : "false", args.loader_dequant ? "true" : "false", args.direct_scale_gmem ? "true" : "false", args.packed_b_scratch ? "true" : "false", args.split_dequant_barrier ? "true" : "false", args.strided_b_gmem_load ? "true" : "false", args.fused_b_scale_layout ? "true" : "false", args.combine_7chunk ? "true" : "false", args.skip_direct_scatter_sync ? "true" : "false",
     args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
     args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks,
@@ -212,8 +209,6 @@ static void sm90_nvfp4_mega_moe(
 
     const bool nvfp4_user_shape_override =
         get_env<int>("DG_SM90_MOE_BLOCK_M", 0) > 0 ||
-        get_env<int>("DG_SM90_MOE_EPILOGUE_WG", 0) > 0 ||
-        get_env<int>("DG_SM90_MOE_BLOCK_N", 128) != 128 ||
         get_env<int>("DG_SM90_NVFP4_EPILOGUE_THREADS", 0) > 0;
     const bool nvfp4_bm128_heuristic = get_env<int>("DG_SM90_NVFP4_BM128_HEURISTIC", 1) != 0;
     const bool nvfp4_bm128_main_m = nvfp4_bn128_bm128_m(num_tokens);
@@ -440,8 +435,6 @@ static void sm90_nvfp4_mega_moe(
         num_tokens < 8192 &&
         (num_tokens >= 256 || num_tokens <= 128);
     const int combine_7chunk_default = 0;
-    const bool async_l1_tma_store_requested = get_env<int>("DG_SM90_MOE_ASYNC_L1_STORE", 0) != 0;
-    DG_HOST_ASSERT(!async_l1_tma_store_requested && "DG_SM90_MOE_ASYNC_L1_STORE is not supported for NVFP4 yet");
     const SM90NVFP4MegaMoESplitRuntime::Args args = {
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
         .hidden = hidden, .intermediate_hidden = intermediate_hidden,
@@ -449,7 +442,6 @@ static void sm90_nvfp4_mega_moe(
         .num_ranks = num_ranks,
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
-        .async_l1_tma_store = false,
         .split_sfa_tma = split_sfa_tma,
         .direct_l2_scatter = direct_l2_scatter,
         .l2_dual_accum = get_env<int>("DG_SM90_MOE_L2_DUAL_ACCUM", l2_dual_accum_default) != 0,
@@ -460,8 +452,6 @@ static void sm90_nvfp4_mega_moe(
             "DG_SM90_NVFP4_DIRECT_SCATTER_METADATA_BCAST",
             direct_scatter_metadata_broadcast_default ? 1 : 0) != 0,
         .l1_dual_k_accum = get_env<int>("DG_SM90_MOE_L1_DUAL_K", l1_dual_k_default ? 1 : 0) != 0,
-        .l2_nmajor_schedule = get_env<int>("DG_SM90_MOE_L2_NMAJOR", 1) != 0,
-        .l1_nmajor_schedule = get_env<int>("DG_SM90_MOE_L1_NMAJOR", 0) != 0,
         .k2_direct_accum = get_env<int>("DG_SM90_MOE_K2_DIRECT_ACCUM", 0) != 0,
         .loader_dequant = nvfp4_loader_dequant,
         .direct_scale_gmem = nvfp4_direct_scale_gmem,
@@ -506,8 +496,6 @@ static void sm90_nvfp4_mega_moe(
         auto phase_args = args;
         phase_args.run_l1_phase = run_l1_phase;
         phase_args.run_l2_phase = run_l2_phase;
-        if (!run_l1_phase)
-            phase_args.async_l1_tma_store = false;
         if (run_l1_phase && !run_l2_phase && phase_args.config.block_n == 128 &&
             phase_args.config.num_dispatch_threads == 128) {
             auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };

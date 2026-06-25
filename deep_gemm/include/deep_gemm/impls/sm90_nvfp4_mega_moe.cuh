@@ -354,7 +354,6 @@ template <
     uint32_t kNumSMs, uint32_t kNumRanks,
     float kActivationClamp,
     bool kFastMath,
-    bool kAsyncL1TMAStoreRequested = true,
     bool kSplitSFATMARequested = false,
     bool kDirectL2ScatterRequested = false,
     bool kL2DualAccumRequested = false,
@@ -362,8 +361,6 @@ template <
     bool kL2ArrivalCounterRequested = false,
     bool kDirectScatterMetadataBroadcastRequested = false,
     bool kL1DualKAccumRequested = false,
-    bool kL2NMajorScheduleRequested = false,
-    bool kL1NMajorScheduleRequested = false,
     bool kK2DirectAccumRequested = false,
     bool kLoaderDequantRequested = false,
     bool kDirectScaleGmemRequested = false,
@@ -504,9 +501,7 @@ sm90_nvfp4_mega_moe_impl(void* y,
     constexpr uint32_t WG_BLOCK_N = (kSplitNWarpgroups || kSerialNWarpgroups) ? BLOCK_N / 2 : BLOCK_N;
     constexpr uint32_t L1_OUT_BLOCK_N = BLOCK_N / 2;       // post-SwiGLU tile N
     constexpr uint32_t WG_L1_OUT_BLOCK_N = WG_BLOCK_N / 2; // post-SwiGLU per-WG N
-    constexpr bool kAsyncL1TMAStore =
-        kAsyncL1TMAStoreRequested && (!kUseMMASync) && (!kSplitNWarpgroups) &&
-        kNumEpilogueWarpgroups == 1;
+    constexpr bool kAsyncL1TMAStore = false;
     constexpr bool kSplitSFATMA = kSplitSFATMARequested && (!kUseMMASync);
     constexpr bool kDirectL2Scatter = kDirectL2ScatterRequested && (!kUseMMASync) &&
         (!kSerialNWarpgroups) && WG_BLOCK_N == 128;
