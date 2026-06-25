@@ -128,7 +128,7 @@ def transform_nvfp4_weights_for_mega_moe_sm90(
     block_n = int(os.environ.get('DG_SM90_NVFP4_BLOCK_N', block_n))
     if fused_b_scale is None:
         fused_b_scale_env = os.environ.get('DG_SM90_NVFP4_FUSED_B_SCALE')
-        fused_b_scale = (block_n == 128) if fused_b_scale_env is None else fused_b_scale_env != '0'
+        fused_b_scale = True if fused_b_scale_env is None else fused_b_scale_env != '0'
 
     l1_packed, l1_scale = l1_weights
     l2_packed, l2_scale = l2_weights

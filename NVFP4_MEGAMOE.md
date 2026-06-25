@@ -79,6 +79,12 @@ Latest default NVFP4 benchmark after the independent L1/L2 split cleanup, `hidde
 | 4096 | 12237.0 | 7732.0 | 4505.0 | 11347.0 | 1.08x |
 | 8192 | 24207.0 | 15273.0 | 8934.0 | 22039.0 | 1.10x |
 
+## Historical Experiment Log
+
+The remaining notes are archived tuning history. They may reference external
+comparison logs, older verification scripts, or local helper benchmarks that
+are not part of the cleaned NVFP4-only tracked code path.
+
 Pipeline-overlap follow-up on 2026-06-11:
 
 - L1 async TMA store was extended to support the BM128/2WG shape as an opt-in path. It uses two L1 output buffers and only async-stores full M tiles; tail tiles drain outstanding async stores and fall back to the synchronous store path to avoid inactive-WG barrier hazards. The final L1 return drains pending async stores before L2 can run.
@@ -281,7 +287,7 @@ than config knobs.
 
 Note: M=512/1024 show ~5-10% higher numbers than iter 103/104 due to random routing variance.
 
-### In-container W8A8 comparison (bench_mega_moe_sm90.py, same run conditions)
+### Historical in-container W8A8 comparison
 
 | M | NVFP4 us | in-container W8A8 us | NVFP4/W8A8 |
 |---|---|---|---|
@@ -292,15 +298,15 @@ Note: M=512/1024 show ~5-10% higher numbers than iter 103/104 due to random rout
 
 NVFP4 outperforms in-container W8A8 by 3-17% at M>=1024.
 
-### Key finding: verify.sh uses an external, more-optimized W8A8 reference
+### Historical finding: external W8A8 reference mismatch
 
 update.md W8A8 targets are 19-22% faster than in-container W8A8:
   M=1024: target=3286 vs container=3916 (+19% gap between references)
   M=4096: target=11347 vs container=13894 (+22% gap)
 
-The verify.sh goal (beat update.md W8A8) is comparing NVFP4 against a different codebase
-W8A8 build, not the one in this container. NVFP4 already achieves "beat W8A8" for the
-in-container reference at M>=1024.
+The old verification target compared NVFP4 against a different W8A8 codebase,
+not the one in this container. That comparison is preserved here only as
+historical context.
 
 ### Structural blockers (confirmed, no incremental fix available)
 
@@ -310,11 +316,11 @@ in-container reference at M>=1024.
 3. All env knobs exhausted. Phase analysis shows all phases already hidden at large M.
    Bottleneck = load imbalance in math_loop (1.35x max/avg).
 
-### User action required to proceed
+### Historical next-step notes
 
-Option A: Update verify.sh to use in-container W8A8 as reference (NVFP4 already wins).
-Option B: Relax verify.sh thresholds for M<=512 (structural fix out of scope).
-Option C: Commission fused NVFP4 single-kernel for M<=512 (~500 LoC, 2+ iters).
+The old verify script and in-container W8A8 helper are no longer part of the
+tracked NVFP4-only cleanup. The remaining performance notes are retained for
+context only.
 
 No code changes in this iter. Working tree unchanged from iter 103.
 
@@ -345,12 +351,11 @@ C3 [/]: token padding. Analysis only. Padding to BM boundary does NOT change M-b
 ### Status
 
 All 19 candidates exhausted (16 from Loop 1+2, 3 from Loop 3).
-Remaining gap: M=4096 +4.9%, M=8192 +3.1% vs verify.sh W8A8 reference.
+Remaining historical gap: M=4096 +4.9%, M=8192 +3.1% vs the archived external W8A8 reference.
 Root cause: HBM bandwidth saturation => TMA latency spikes (hardware-level bottleneck).
 
-### User action required
+### Historical next-step notes
 
 Options:
 - Reduce B-tile size (BN=64) to halve HBM bandwidth demand per K-block
 - Add smem for pipeline stages 6+ (needs >5280B smem reduction -- no known path)
-- Update verify.sh reference to in-container W8A8 (NVFP4 already wins there by 3-17%)

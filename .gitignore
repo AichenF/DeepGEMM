@@ -22,3 +22,9 @@ stubs/
 
 # Symlinks to compiled extensions
 deep_gemm/*.so
+
+# Local cleanup/review artifacts that should not be re-tracked
+/tests/bench_mega_moe_sm90.py
+/HINTS.md
+*.orig
+/deep_gemm/include/fmt
