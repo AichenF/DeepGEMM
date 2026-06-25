@@ -522,10 +522,9 @@ sm90_nvfp4_mega_moe_impl(void* y,
         (!kSplitNWarpgroups) && (!kSerialNWarpgroups) && WG_BLOCK_N == 128 &&
         (kHidden / BLOCK_K) % 2 == 0;
     // Keep the 4-warp dispatch allocation for warpgroup/register alignment,
-    // but only use two warps for BN128 split L1 dispatch. W8A8's BN256 path
-    // uses two dispatch warps; the extra NVFP4 dispatch warps mostly add fixed
-    // small/mid-M overhead while loader-dequant still needs its aligned 4-warp
-    // non-epilogue group.
+    // but only use two warps for BN128 split L1 dispatch. The extra NVFP4
+    // dispatch warps mostly add fixed small/mid-M overhead while loader-dequant
+    // still needs its aligned 4-warp non-epilogue group.
     constexpr uint32_t kNumActiveDispatchWarps =
         (kRunL1Phase && !kRunL2Phase && BLOCK_N == 128 && kNumDispatchWarps == 4) ? 2 : kNumDispatchWarps;
     constexpr uint32_t kNumActiveDispatchThreads = kNumActiveDispatchWarps * 32;

@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# SM90 (Hopper) variant of run_ncu_mega_moe.sh
-# Drives `tests/bench_mega_moe_sm90.py` with NCU, profiling the
-# `sm90_fp8_mega_moe_impl` kernel for a single batch size.
+# SM90 (Hopper) NVFP4 MegaMoE NCU harness.
+# Drives `tests/bench_nvfp4_mega_moe_sm90.py`, profiling the
+# `sm90_nvfp4_mega_moe_impl` kernel for a single batch size.
 
 set -e
 
@@ -51,14 +51,14 @@ mkdir -p "$output_dir"
 export DG_JIT_WITH_LINEINFO=1
 
 echo "Warm up JIT cache"
-python tests/bench_mega_moe_sm90.py --ncu-profile-only "${python_args[@]}"
+python tests/bench_nvfp4_mega_moe_sm90.py --ncu-profile-only "${python_args[@]}"
 
 sleep 2
 
 ncu_args=(
     --config-file off
     --force-overwrite
-    --kernel-name sm90_fp8_mega_moe_impl
+    --kernel-name sm90_nvfp4_mega_moe_impl
     --import-source yes
     --replay-mode application
     --section SpeedOfLight
@@ -77,8 +77,8 @@ ncu_args=(
 echo "Run Job"
 
 for ((i = 0; i < num_processes; ++i)); do
-    ncu ${ncu_args[@]} -o "${output_dir%/}/mega-moe-sm90.$i" \
-        python tests/bench_mega_moe_sm90.py \
+    ncu ${ncu_args[@]} -o "${output_dir%/}/mega-moe-sm90-nvfp4.$i" \
+        python tests/bench_nvfp4_mega_moe_sm90.py \
             --local-rank-idx=$i \
             --ncu-profile-only \
             "${python_args[@]}" &

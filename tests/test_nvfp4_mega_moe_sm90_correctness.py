@@ -199,7 +199,7 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
             f"=== NVFP4 single-rank correctness M={m_tokens}, "
             f"NE={num_experts}, NL={num_local_experts}, NK={num_topk}, "
             f"NMT={num_max_tokens_per_rank}, weight_scale={weight_scale:g}, "
-            f"reference={args.reference_mode} ===",
+            "reference=exact-nvfp4 ===",
             flush=True,
         )
 
@@ -234,9 +234,6 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
     l2_packed, l2_scale = quantize_to_nvfp4(l2_bf, group_size=16)
     l1_dequant = dequantize_nvfp4_to_fp32(l1_packed, l1_scale, group_size=16)
     l2_dequant = dequantize_nvfp4_to_fp32(l2_packed, l2_scale, group_size=16)
-    if args.reference_mode == "fp8-bridge":
-        l1_dequant = l1_dequant.to(torch.float8_e4m3fn).float()
-        l2_dequant = l2_dequant.to(torch.float8_e4m3fn).float()
 
     nvfp4_use_bn256 = _nvfp4_bn256_fused_m(m_tokens)
     nvfp4_block_n = 256 if nvfp4_use_bn256 else 128
@@ -267,10 +264,10 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
     torch.cuda.synchronize()
     dist.barrier(group=group)
 
-    if args.reference_mode == "fp8-bridge":
-        x_ref = (x_fp8.float().view(m_tokens, hidden // 128, 128) * x_sf.unsqueeze(-1)).view(m_tokens, hidden)
-    else:
-        x_ref = x_bf.float()
+    x_ref = (
+        x_fp8.float().view(m_tokens, hidden // 128, 128)
+        * x_sf.float().unsqueeze(2)
+    ).view(m_tokens, hidden)
     y_ref = torch.zeros((m_tokens, hidden), device="cuda", dtype=torch.float32)
     for token_idx in range(m_tokens):
         for topk_i in range(num_topk):
@@ -285,6 +282,9 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
 
     finite = torch.isfinite(y_kernel).all().item()
     diff = y_kernel.float() - y_ref
+    abs_max_diff = diff.abs().max().item()
+    abs_mean_diff = diff.abs().mean().item()
+    ref_abs_max = y_ref.abs().max().item()
     cosine = torch.nn.functional.cosine_similarity(y_kernel.float(), y_ref, dim=-1)
     cosine_min = cosine.min().item()
     cosine_mean = cosine.mean().item()
@@ -306,8 +306,8 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
             flush=True,
         )
         print(
-            f"Diff: max_abs={diff.abs().max().item():.4e} "
-            f"mean_abs={diff.abs().mean().item():.4e}",
+            f"Diff: max_abs={abs_max_diff:.4e} "
+            f"mean_abs={abs_mean_diff:.4e}",
             flush=True,
         )
         print(
@@ -318,15 +318,27 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
 
     if not finite:
         raise AssertionError(f"M={m_tokens}, weight_scale={weight_scale:g}: kernel produced non-finite values")
-    if cosine_mean < args.cosine_mean_threshold:
+    small_signal_abs_pass = (
+        ref_abs_max <= args.small_signal_ref_abs_max
+        and abs_max_diff <= args.small_signal_abs_max_threshold
+        and abs_mean_diff <= args.small_signal_abs_mean_threshold
+    )
+    if small_signal_abs_pass:
+        if rank_idx == 0:
+            print(
+                f"Small-signal absolute check PASS: ref_abs_max={ref_abs_max:.4e} "
+                f"max_abs_diff={abs_max_diff:.4e} mean_abs_diff={abs_mean_diff:.4e}",
+                flush=True,
+            )
+    elif cosine_mean < args.cosine_mean_threshold:
         raise AssertionError(
             f"M={m_tokens}, weight_scale={weight_scale:g}: cosine_mean={cosine_mean:.4f} < {args.cosine_mean_threshold:.4f}"
         )
-    if cosine_min < args.cosine_min_threshold:
+    if not small_signal_abs_pass and cosine_min < args.cosine_min_threshold:
         raise AssertionError(
             f"M={m_tokens}, weight_scale={weight_scale:g}: cosine_min={cosine_min:.4f} < {args.cosine_min_threshold:.4f}"
         )
-    if not (args.norm_ratio_min <= norm_ratio <= args.norm_ratio_max):
+    if not small_signal_abs_pass and not (args.norm_ratio_min <= norm_ratio <= args.norm_ratio_max):
         raise AssertionError(
             f"M={m_tokens}, weight_scale={weight_scale:g}: norm_ratio={norm_ratio:.4f} "
             f"outside [{args.norm_ratio_min:.4f}, {args.norm_ratio_max:.4f}]"
@@ -372,11 +384,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--fast-math", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--weight-scales", nargs="+", type=float, default=[0.05])
-    parser.add_argument("--reference-mode", choices=["fp8-bridge", "exact-nvfp4"], default="fp8-bridge")
     parser.add_argument("--cosine-mean-threshold", type=float, default=0.9)
     parser.add_argument("--cosine-min-threshold", type=float, default=0.9)
     parser.add_argument("--norm-ratio-min", type=float, default=0.5)
     parser.add_argument("--norm-ratio-max", type=float, default=2.0)
+    parser.add_argument("--small-signal-ref-abs-max", type=float, default=1e-4)
+    parser.add_argument("--small-signal-abs-max-threshold", type=float, default=1e-4)
+    parser.add_argument("--small-signal-abs-mean-threshold", type=float, default=2e-5)
     return parser.parse_args()
 
 

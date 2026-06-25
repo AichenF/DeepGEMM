@@ -243,11 +243,10 @@ static MegaMoEConfig get_mega_moe_config(
 // ----------------------------------------------------------------------------
 // SM90 differs from SM100 in:
 //   - No tensor memory (TMEM): WGMMA accumulators live in registers.
-//   - No FP4: weights are FP8 e4m3, scales are per-128 channel float.
+//   - Activation scales are per-128 float, not packed UE8M0 int.
 //   - No 2-CTA cluster MMA: TMA multicast cluster=2 may still be used.
-//   - SF for activations is float (not UE8M0 int) and per-128 (not per-32).
-// The kernel is in `deep_gemm/impls/sm90_fp8_mega_moe.cuh` and is currently
-// a skeleton; this config is what the host runtime reads.
+// NVFP4 MegaMoE uses this host-side schedule config and supplies its own
+// packed-weight layout in `deep_gemm/impls/sm90_nvfp4_mega_moe.cuh`.
 // ============================================================================
 
 struct MegaMoESM90Config {

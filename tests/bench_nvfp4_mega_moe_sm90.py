@@ -1,8 +1,6 @@
-"""SM90 (Hopper) MegaMoE benchmark / NCU-profile harness.
+"""SM90 (Hopper) NVFP4 MegaMoE benchmark / NCU-profile harness.
 
-Mirrors ``tests/test_mega_moe.py``'s ``--ncu-profile-only`` /
-``--local-rank-idx`` interface so the same ``scripts/run_ncu_mega_moe.sh``
-pattern can drive it for SM90.
+This harness drives the packed NVFP4 MegaMoE path only.
 
 In normal (non-NCU) mode it sweeps a list of ``num_tokens`` values (default:
 1, 2, 4, 8, 16, 32) and reports per-call kernel time via the same
@@ -16,7 +14,6 @@ import random
 import sys
 import torch
 import torch.distributed as dist
-from typing import Tuple
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
@@ -26,21 +23,11 @@ import deep_gemm
 from deep_gemm.quantization_nvfp4 import quantize_to_nvfp4
 from deep_gemm.utils import per_token_cast_to_fp8
 from deep_gemm.utils.dist import dist_print, init_dist, uneven_all_gather
-from deep_gemm.testing import bench_kineto, calc_diff, get_arch_major
+from deep_gemm.testing import bench_kineto, get_arch_major
 
 
 def _nvfp4_bn256_fused_m(num_tokens: int) -> bool:
     return num_tokens <= int(os.environ.get("DG_SM90_NVFP4_BN256_FUSED_MAX_M", "1280"))
-
-
-def _quantize_grouped_fp8_block_128_128(w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    g, n, k = w.shape
-    assert n % 128 == 0 and k % 128 == 0
-    w_view = w.view(g, n // 128, 128, k // 128, 128).float()
-    amax = w_view.abs().amax(dim=(-1, -3)).clamp(1e-4)
-    sf = amax / 448.0
-    w_fp8 = (w_view / sf.unsqueeze(-1).unsqueeze(-3)).to(torch.float8_e4m3fn)
-    return w_fp8.view(g, n, k).contiguous(), sf.contiguous()
 
 
 def _run_one_config(args, num_tokens, num_max_tokens_per_rank,

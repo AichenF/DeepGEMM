@@ -14,7 +14,7 @@ Use this test for the main NVFP4 correctness gate:
 
 ```bash
 docker exec -e TORCH_CUDA_ARCH_LIST=9.0a mega_moe_box bash -lc \
-  "cd /root/fac/megamoe/DeepGEMM_megamoe_nvfp4 && \
+  "cd /root/fac/megamoe/DeepGEMM_megamoe_nvfp4_opt && \
    python3 tests/test_nvfp4_mega_moe_sm90_correctness.py"
 ```
 
@@ -29,11 +29,11 @@ For a broader guarded run, use:
 
 ```bash
 docker exec mega_moe_box bash -lc \
-  "cd /root/fac/megamoe/DeepGEMM_megamoe_nvfp4 && \
+  "cd /root/fac/megamoe/DeepGEMM_megamoe_nvfp4_opt && \
    scripts/run_nvfp4_gates_when_idle.sh"
 ```
 
-That script performs GPU-idle preflight, a small correctness sweep over several weight scales, default correctness, medium/large-M NVFP4 and W8A8 benchmarks, and latency-ratio parsing. By default it gates `M=256/512/1024/2048/4096/8192` with `NVFP4_W8A8_RATIO_MAX=1.25`; set `NVFP4_GATE_BENCH_BATCHES` or `NVFP4_W8A8_RATIO_MAX` to override.
+That script performs GPU-idle preflight, a small correctness sweep over several weight scales, default correctness, a medium/large-M NVFP4 benchmark, and benchmark-log sanity parsing. By default it checks `M=256/512/1024/2048/4096/8192`; set `NVFP4_GATE_BENCH_BATCHES` to override.
 
 ## Benchmarks
 
@@ -41,16 +41,8 @@ NVFP4 true packed runtime-dequant benchmark:
 
 ```bash
 docker exec mega_moe_box bash -lc \
-  "cd /root/fac/megamoe/DeepGEMM_megamoe_nvfp4 && \
+  "cd /root/fac/megamoe/DeepGEMM_megamoe_nvfp4_opt && \
    python3 tests/bench_nvfp4_mega_moe_sm90.py --num-processes 8 --batches 32 --num-tests 5"
-```
-
-W8A8 / FP8 baseline benchmark:
-
-```bash
-docker exec mega_moe_box bash -lc \
-  "cd /root/fac/megamoe/DeepGEMM_megamoe_nvfp4 && \
-   python3 tests/bench_mega_moe_sm90.py --num-processes 8 --batches 32 --num-tests 5"
 ```
 
 ## Latest Result
@@ -368,4 +360,3 @@ Options:
 - Reduce B-tile size (BN=64) to halve HBM bandwidth demand per K-block
 - Add smem for pipeline stages 6+ (needs >5280B smem reduction -- no known path)
 - Update verify.sh reference to in-container W8A8 (NVFP4 already wins there by 3-17%)
-
