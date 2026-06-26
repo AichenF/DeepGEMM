@@ -505,7 +505,8 @@
 
                 for (uint32_t j = thread_idx; j < num_recv_m_blocks; j += kNumDispatchThreads) {
                     *workspace.get_l1_arrival_count_ptr(cleanup_pool_block_offset + j) = 0;
-                    *workspace.get_l2_arrival_mask_ptr(cleanup_pool_block_offset + j) = 0;
+                    if constexpr (!kSkipL1ReadyNotify && !kSkipL2ReadyMask)
+                        *workspace.get_l2_arrival_mask_ptr(cleanup_pool_block_offset + j) = 0;
                 }
                 __syncwarp();
             }
@@ -1050,7 +1051,8 @@
 
                     for (uint32_t j = epilogue_thread_idx; j < num_recv_m_blocks; j += kNumEpilogueThreads) {
                         *workspace.get_l1_arrival_count_ptr(cleanup_pool_block_offset + j) = 0;
-                        *workspace.get_l2_arrival_mask_ptr(cleanup_pool_block_offset + j) = 0;
+                        if constexpr (!kSkipL1ReadyNotify && !kSkipL2ReadyMask)
+                            *workspace.get_l2_arrival_mask_ptr(cleanup_pool_block_offset + j) = 0;
                     }
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 }

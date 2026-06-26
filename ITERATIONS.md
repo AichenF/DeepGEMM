@@ -289,3 +289,58 @@ Environment:
 ### Result
 
 Keep. This makes the split path structurally cleaner: when L1 and L2 are separate kernel launches, the L2 per-block ready mask is no longer part of the default BN128 split path. The affected split sizes are flat to slightly faster in the comparable full-list run; small positive deltas are on mostly unaffected or already-enabled sizes and are within observed benchmark noise.
+
+## Iteration 6 - Skip unused split L2 ready-mask cleanup
+
+### Change
+
+- Guarded the two cleanup stores to `workspace.get_l2_arrival_mask_ptr(...)` with `if constexpr (!kSkipL1ReadyNotify && !kSkipL2ReadyMask)`.
+- In the default true-split no-ready path, L1 no longer writes the L2 ready mask and L2 no longer waits on it, so the split cleanup no longer clears an unused mask.
+- Fused and legacy ready-mask paths still clear the mask.
+
+### Correctness
+
+- Build: `bash develop.sh` in `mega_moe_box` passed.
+- Smoke correctness, `weight_scale=0.05`: PASS for `M=512,819,1024,2048`.
+- Full correctness, `weight_scale=0.05`: PASS for `M=32,64,128,256,500,512,819,1000,1024,2048,4096,8192`.
+- Tiny-signal absolute fallback, `weight_scale=0.001`: PASS for `M=512,819,1024,2048` with `small_signal_ref_abs_max=1e-2`, `small_signal_abs_max_threshold=0.004`, `small_signal_abs_mean_threshold=0.0004`.
+
+### Benchmark
+
+Same full-list 50-run command as previous iterations:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_split_cleanup_skip_l2_mask_bench50`
+- 8 ranks, hidden 7168, intermediate hidden 2048, experts 256, topk 8.
+
+| M | iter5 mean_rank us | iter6 mean_rank us | delta |
+|---:|---:|---:|---:|
+| 8 | 752.6 | 767.6 | +2.0% |
+| 16 | 790.6 | 805.8 | +1.9% |
+| 32 | 816.5 | 820.5 | +0.5% |
+| 64 | 818.9 | 842.0 | +2.8% |
+| 128 | 874.2 | 845.0 | -3.3% |
+| 256 | 1194.4 | 1202.7 | +0.7% |
+| 260 | 1296.9 | 1295.2 | -0.1% |
+| 500 | 1974.2 | 1966.4 | -0.4% |
+| 512 | 2021.0 | 1994.8 | -1.3% |
+| 819 | 2812.8 | 2813.9 | +0.0% |
+| 1000 | 3350.6 | 3346.3 | -0.1% |
+| 1024 | 3512.9 | 3517.9 | +0.1% |
+| 1280 | 4081.8 | 4102.8 | +0.5% |
+| 1536 | 4893.0 | 4886.5 | -0.1% |
+| 2048 | 6161.4 | 6174.4 | +0.2% |
+| 3072 | 8837.9 | 8827.4 | -0.1% |
+| 4096 | 11595.9 | 11515.8 | -0.7% |
+| 8192 | 22607.6 | 22613.2 | +0.0% |
+
+### Result
+
+Keep. This is a narrow true-split cleanup with no correctness change and no systematic benchmark regression. The only changed runtime path is the BN128 true-split cleanup path; affected split sizes are flat within the observed noise, while the larger `M=4096` case improved slightly. Small/fused-size deltas are treated as run-to-run noise because they are not on the edited path.
