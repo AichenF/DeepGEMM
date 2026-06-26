@@ -474,7 +474,7 @@ static void sm90_nvfp4_mega_moe(
     const bool l2_no_dispatch_pipeline =
         get_env<int>("DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE", l2_no_dispatch_pipeline_default) != 0;
     const bool true_split_no_l2_ready_mask =
-        (!true_fused_l1_l2 && config.block_n == 128 && (num_tokens == 512 || num_tokens == 819));
+        (!true_fused_l1_l2 && config.block_n == 128);
 
     const auto launch_with_phase = [&](const int split_phase_mode,
                                         const std::string& kernel_name) {

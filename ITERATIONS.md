@@ -226,3 +226,66 @@ Environment:
 ### Result
 
 This is a useful launch-selection win: `M=512` improves by about 8% in the full-list run. Other sizes are unchanged by construction except benchmark noise; the only visible positive deltas are small/noisy and not tied to a path change. Keep `M=1024` split for now due the known E2E precision-risk history.
+
+## Iteration 5 - Enable true-split no-ready-mask for all BN128 split sizes
+
+### Change
+
+- Updated the wrapper policy so every BN128 split L1/L2 launch uses the existing `kTrueSplitNoL2ReadyMask` template variant.
+- In split L1 this makes the L2-ready notification a no-op; in split L2 this skips the per-block L2-ready-mask wait.
+- Fused mode is unchanged. BN256 fused sizes such as `M=512` are unchanged by construction.
+
+### Profiling Notes
+
+- A direct 8-rank NCU application-replay run on `M=512` triggered NVLink barrier timeouts, so multi-rank NCU remains unsuitable for communication timing.
+- Single-rank/e32 NCU reports were collected only for kernel-internal resource comparison:
+  - `M512` fused: `/tmp/ncu_d13dc79_m512_single_e32/mega-moe-sm90-nvfp4.0.ncu-rep`
+  - `M1024` split: `/tmp/ncu_d13dc79_m1024_single_e32/mega-moe-sm90-nvfp4.0.ncu-rep`
+- Key internal signal: `M1024` split L1 still has high barrier stalls, so removing the now-unnecessary split L1/L2 ready-mask path is a reasonable true-split cleanup.
+
+### Correctness
+
+- Build: `bash develop.sh` in `mega_moe_box` passed.
+- Smoke correctness, `weight_scale=0.05`: PASS for `M=512,819,1024,2048`.
+- Full correctness, `weight_scale=0.05`: PASS for `M=32,64,128,256,500,512,819,1000,1024,2048,4096,8192`.
+- Tiny-signal absolute fallback, `weight_scale=0.001`: PASS for `M=512,819,1024,2048` with `small_signal_ref_abs_max=1e-2`, `small_signal_abs_max_threshold=0.004`, `small_signal_abs_mean_threshold=0.0004`.
+
+### Benchmark
+
+Same full-list 50-run command as previous iterations:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_true_split_all_noready_full_bench`
+- 8 ranks, hidden 7168, intermediate hidden 2048, experts 256, topk 8.
+
+| M | iter4 mean_rank us | iter5 mean_rank us | delta |
+|---:|---:|---:|---:|
+| 8 | 759.7 | 752.6 | -0.9% |
+| 16 | 794.9 | 790.6 | -0.5% |
+| 32 | 824.7 | 816.5 | -1.0% |
+| 64 | 833.1 | 818.9 | -1.7% |
+| 128 | 867.4 | 874.2 | +0.8% |
+| 256 | 1195.0 | 1194.4 | -0.1% |
+| 260 | 1289.2 | 1296.9 | +0.6% |
+| 500 | 1955.0 | 1974.2 | +1.0% |
+| 512 | 1996.0 | 2021.0 | +1.3% |
+| 819 | 2800.5 | 2812.8 | +0.4% |
+| 1000 | 3358.8 | 3350.6 | -0.2% |
+| 1024 | 3522.9 | 3512.9 | -0.3% |
+| 1280 | 4106.9 | 4081.8 | -0.6% |
+| 1536 | 4921.9 | 4893.0 | -0.6% |
+| 2048 | 6216.2 | 6161.4 | -0.9% |
+| 3072 | 8868.1 | 8837.9 | -0.3% |
+| 4096 | 11607.5 | 11595.9 | -0.1% |
+| 8192 | 22697.2 | 22607.6 | -0.4% |
+
+### Result
+
+Keep. This makes the split path structurally cleaner: when L1 and L2 are separate kernel launches, the L2 per-block ready mask is no longer part of the default BN128 split path. The affected split sizes are flat to slightly faster in the comparable full-list run; small positive deltas are on mostly unaffected or already-enabled sizes and are within observed benchmark noise.
