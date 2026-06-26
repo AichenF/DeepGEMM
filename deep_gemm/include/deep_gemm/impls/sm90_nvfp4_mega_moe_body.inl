@@ -457,18 +457,21 @@
                      local_expert_idx, num_k_blocks, m_block_idx, n_block_idx);
             });
         } else {
-            scheduler.for_each_block([&](const sched::BlockPhase& block_phase,
-                                         const uint32_t& local_expert_idx,
-                                         const uint32_t& num_k_blocks,
-                                         const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
+            scheduler.fetch_expert_recv_count();
+            scheduler.set_expert_idx(0);
+            while (true) {
+                CUTE_TIE_DECL(scheduler.get_next_block(),
+                              block_phase, local_expert_idx, m_block_idx, n_block_idx);
+                if (block_phase == sched::BlockPhase::None)
+                    break;
                 if (block_phase == sched::BlockPhase::Linear1) {
                     func(std::integral_constant<sched::BlockPhase, sched::BlockPhase::Linear1>{},
-                         local_expert_idx, num_k_blocks, m_block_idx, n_block_idx);
+                         local_expert_idx, L1_SHAPE_K / BLOCK_K, m_block_idx, n_block_idx);
                 } else {
                     func(std::integral_constant<sched::BlockPhase, sched::BlockPhase::Linear2>{},
-                         local_expert_idx, num_k_blocks, m_block_idx, n_block_idx);
+                         local_expert_idx, L2_SHAPE_K / BLOCK_K, m_block_idx, n_block_idx);
                 }
-            });
+            }
         }
     };
 

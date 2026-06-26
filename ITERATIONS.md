@@ -861,3 +861,92 @@ python tests/bench_nvfp4_mega_moe_sm90.py --batches 260 512 1024 8192 --num-test
 ### Result
 
 Reject and revert. Correctness passed, but the same-condition targeted comparison showed stable regressions on `M=260` and `M=512` without a compensating gain. The kernel source was restored to Iteration 12 (`947e362`) before committing this log entry.
+
+## Iteration 14 - Use PR323-style fused block iterator
+
+### Change
+
+- Refactored only the fused `for_each_selected_block` path to use the explicit PR323-style scheduler loop:
+  - call `fetch_expert_recv_count()`,
+  - reset `set_expert_idx(0)`,
+  - repeatedly call `get_next_block()`,
+  - dispatch `Linear1` and `Linear2` with compile-time phase tags and fixed K-block counts.
+- Split L1 and split L2 paths are unchanged.
+- Did not change math, dequant, epilogue, wrapper launch selection, or any new optimization heuristic.
+
+### Correctness
+
+- Build: `./develop.sh` passed.
+- Smoke correctness, `weight_scale=0.05`: PASS for `M=512,819,1024,2048`.
+- Full correctness, `weight_scale=0.05`: PASS for `M=32,64,128,256,500,512,819,1000,1024,2048,4096,8192`.
+- Tiny-signal absolute fallback, `weight_scale=0.001`: PASS for `M=512,819,1024,2048` with `small_signal_ref_abs_max=1e-2`, `small_signal_abs_max_threshold=0.004`, `small_signal_abs_mean_threshold=0.0004`.
+
+### Benchmark
+
+Full-list 50-run command:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_iter14_pr323_iter_bench50`
+- 8 ranks, hidden 7168, intermediate hidden 2048, experts 256, topk 8.
+
+| M | iter12 mean_rank us | iter14 mean_rank us | delta |
+|---:|---:|---:|---:|
+| 8 | 752.9 | 744.8 | -1.1% |
+| 16 | 797.2 | 798.6 | +0.2% |
+| 32 | 885.7 | 830.3 | -6.3% |
+| 64 | 817.9 | 819.3 | +0.2% |
+| 128 | 838.6 | 858.9 | +2.4% |
+| 256 | 1200.4 | 1204.3 | +0.3% |
+| 260 | 1288.1 | 1312.8 | +1.9% |
+| 500 | 1962.2 | 1967.9 | +0.3% |
+| 512 | 1991.5 | 1994.6 | +0.2% |
+| 819 | 2809.9 | 2815.4 | +0.2% |
+| 1000 | 3355.2 | 3337.5 | -0.5% |
+| 1024 | 3511.1 | 3500.4 | -0.3% |
+| 1280 | 4079.0 | 4078.1 | -0.0% |
+| 1536 | 4874.4 | 4880.9 | +0.1% |
+| 2048 | 6179.0 | 6167.9 | -0.2% |
+| 3072 | 8819.5 | 8834.6 | +0.2% |
+| 4096 | 11524.6 | 11546.5 | +0.2% |
+| 8192 | 22606.6 | 22643.1 | +0.2% |
+
+Targeted same-condition probes with `8192` included to keep NMT comparable:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py --batches 32 128 260 512 8192 --num-tests 50
+```
+
+| probe | M | iter12 `947e362` mean_rank us | iter14 mean_rank us | delta |
+|---|---:|---:|---:|---:|
+| target1 | 32 | 801.5 | 805.5 | +0.5% |
+| target1 | 128 | 816.4 | 828.9 | +1.5% |
+| target1 | 260 | 1343.9 | 1380.1 | +2.7% |
+| target1 | 512 | 2033.6 | 2027.7 | -0.3% |
+| target1 | 8192 | 22614.9 | 22624.6 | +0.0% |
+| target2 | 32 | 801.5 | 808.8 | +0.9% |
+| target2 | 128 | 816.4 | 824.1 | +0.9% |
+| target2 | 260 | 1343.9 | 1339.1 | -0.4% |
+| target2 | 512 | 2033.6 | 2051.4 | +0.9% |
+| target2 | 8192 | 22614.9 | 22626.4 | +0.1% |
+
+Focused 100-run M128 check:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py --batches 128 8192 --num-tests 100
+```
+
+| M | iter12 `947e362` mean_rank us | iter14 mean_rank us | delta |
+|---:|---:|---:|---:|
+| 128 | 824.4 | 810.8 | -1.6% |
+| 8192 | 22695.0 | 22725.6 | +0.1% |
+
+### Result
+
+Keep. The full-list run showed possible slow points at `M=128` and `M=260`, but same-condition probes did not reproduce a stable regression: `M=260` flipped from slower to slightly faster on the second current rerun, and the focused 100-run `M=128` check was faster than Iteration 12. The change is therefore accepted as a low-risk refactor toward a true fused/split structure, not as a claimed new performance optimization.
