@@ -788,10 +788,20 @@
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
-            const auto tensor_map_a_ptr = block_phase == sched::BlockPhase::Linear2
-                ? &tensor_map_l2_acts : &tensor_map_l1_acts;
-            const auto tensor_map_sfa_ptr = block_phase == sched::BlockPhase::Linear2
-                ? &tensor_map_l2_acts_sf : &tensor_map_l1_acts_sf;
+            using BlockPhaseTag = std::remove_cv_t<std::remove_reference_t<decltype(block_phase)>>;
+            constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
+            const auto tensor_map_a_ptr = [&]() {
+                if constexpr (kBlockIsL2)
+                    return &tensor_map_l2_acts;
+                else
+                    return &tensor_map_l1_acts;
+            }();
+            const auto tensor_map_sfa_ptr = [&]() {
+                if constexpr (kBlockIsL2)
+                    return &tensor_map_l2_acts_sf;
+                else
+                    return &tensor_map_l1_acts_sf;
+            }();
 
             const uint32_t pool_block_idx = scheduler.get_current_pool_block_offset() + m_block_idx;
             const uint32_t valid_m = scheduler.template get_valid_m<false>();
@@ -801,7 +811,7 @@
             // the tail M unit when an expert has an odd number of M blocks.
             const unsigned long long ready_wait_start = phase_profile_clock();
             if (has_valid_m) {
-                if (block_phase == sched::BlockPhase::Linear1) {
+                if constexpr (!kBlockIsL2) {
                     const auto ptr = workspace.get_l1_arrival_count_ptr(pool_block_idx);
                     const auto expected = valid_m;
                     while (ptx::ld_acq(ptr) != expected);
@@ -823,8 +833,10 @@
                 }
             }
             const unsigned long long ready_wait_end = phase_profile_clock();
-            if (has_valid_m and block_phase == sched::BlockPhase::Linear2 and lane_idx == 0)
-                phase_profile_record(kProfileL2ReadyWait, ready_wait_end - ready_wait_start);
+            if constexpr (kBlockIsL2) {
+                if (has_valid_m and lane_idx == 0)
+                    phase_profile_record(kProfileL2ReadyWait, ready_wait_end - ready_wait_start);
+            }
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 empty_barriers[stage_idx]->wait(phase ^ 1);
 
@@ -839,7 +851,7 @@
                         k_idx, m_idx, 1);
 
                     // TMA load SFA
-                    if (block_phase == sched::BlockPhase::Linear1) {
+                    if constexpr (!kBlockIsL2) {
                         // L1 SFA per-128: load (BLOCK_M, 1) at K=k_block_idx
                         tma::copy<BLOCK_M, 1, 0, float>(
                             tensor_map_sfa_ptr, full_barriers[stage_idx], smem_sfa[stage_idx],
@@ -876,13 +888,23 @@
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
-            const auto tensor_map_b_ptr =
-                block_phase == sched::BlockPhase::Linear2 ? &tensor_map_l2_weights : &tensor_map_l1_weights;
-            const uint8_t* weights_sf_ptr =
-                block_phase == sched::BlockPhase::Linear2 ? l2_weights_sf : l1_weights_sf;
+            using BlockPhaseTag = std::remove_cv_t<std::remove_reference_t<decltype(block_phase)>>;
+            constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
+            const auto tensor_map_b_ptr = [&]() {
+                if constexpr (kBlockIsL2)
+                    return &tensor_map_l2_weights;
+                else
+                    return &tensor_map_l1_weights;
+            }();
+            const uint8_t* weights_sf_ptr = [&]() -> const uint8_t* {
+                if constexpr (kBlockIsL2)
+                    return l2_weights_sf;
+                else
+                    return l1_weights_sf;
+            }();
 
-            const uint32_t shape_n = block_phase == sched::BlockPhase::Linear2 ? L2_SHAPE_N : L1_SHAPE_N;
-            const uint32_t shape_k = block_phase == sched::BlockPhase::Linear2 ? L2_SHAPE_K : L1_SHAPE_K;
+            constexpr uint32_t shape_n = kBlockIsL2 ? L2_SHAPE_N : L1_SHAPE_N;
+            constexpr uint32_t shape_k = kBlockIsL2 ? L2_SHAPE_K : L1_SHAPE_K;
             const uint32_t scale_n_blocks = shape_n / BLOCK_N;
             const uint32_t scale_k_blocks = shape_k / BLOCK_K;
 

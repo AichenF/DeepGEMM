@@ -467,3 +467,103 @@ Notes:
 ### Result
 
 Keep. This makes the shared body rely on the explicit selected-phase iterator instead of repeating phase guards inside every callback. Correctness is unchanged, and the full-list plus targeted small-M reruns show no systematic performance regression.
+
+## Iteration 9 - Use compile-time phase tags in loader paths
+
+### Profiling Input
+
+After iteration 8, current-head single-rank/e32 NCU was collected to refresh the internal bottleneck picture:
+
+```bash
+NCU_LAUNCH_COUNT=1 \
+bash scripts/run_ncu_mega_moe_sm90.sh \
+  --num-processes 1 --output /tmp/ncu_02e7f9a_m512_single_e32 \
+  --batches 512 --num-experts 32 --num-tests 1
+
+NCU_LAUNCH_COUNT=2 \
+bash scripts/run_ncu_mega_moe_sm90.sh \
+  --num-processes 1 --output /tmp/ncu_02e7f9a_m1024_single_e32 \
+  --batches 1024 --num-experts 32 --num-tests 1
+```
+
+Reports:
+
+- `/tmp/ncu_02e7f9a_m512_single_e32/mega-moe-sm90-nvfp4.0.ncu-rep`
+- `/tmp/ncu_02e7f9a_m1024_single_e32/mega-moe-sm90-nvfp4.0.ncu-rep`
+
+Key metrics:
+
+| case | kernel | duration ms | SM % | DRAM % | L1TEX % | regs | smem KB | barrier stall | eligible warps | inst |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| M512/e32 | fused | 1.884 | 83.5 | 16.3 | 42.9 | 168 | 210.648 | 2.716 | 0.532 | 476.665M |
+| M1024/e32 | split L1 | 2.103 | 87.5 | 9.7 | 34.0 | 128 | 193.816 | 7.092 | 0.397 | 373.395M |
+| M1024/e32 | split L2 | 1.145 | 80.1 | 9.6 | 36.4 | 168 | 205.072 | 2.974 | 0.460 | 234.677M |
+
+This matches the previous profile: split L1 is still barrier/pipeline limited, while M512 fused is already high-SM-throughput. The next low-risk PR323-style refactor should therefore be structural phase specialization rather than another ready-mask cleanup.
+
+### Change
+
+- Added `<type_traits>` for phase-tag type inspection.
+- In the A/SFA loader and B/SFB loader callbacks, replaced runtime `block_phase == Linear2 ? ... : ...` descriptor/scale selection with `std::integral_constant`-based `if constexpr` selection.
+- Converted the A/SFA ready wait and SFA TMA load branch to use the same compile-time phase tag.
+- Did not touch math, epilogue, dequant arithmetic, scheduler policy, wrapper heuristics, or launch selection.
+
+### Correctness
+
+- Build: `bash develop.sh` in `mega_moe_box` passed.
+- Smoke correctness, `weight_scale=0.05`: PASS for `M=512,819,1024,2048`.
+- Full correctness, `weight_scale=0.05`: PASS for `M=32,64,128,256,500,512,819,1000,1024,2048,4096,8192`.
+- Tiny-signal absolute fallback, `weight_scale=0.001`: PASS for `M=512,819,1024,2048` with `small_signal_ref_abs_max=1e-2`, `small_signal_abs_max_threshold=0.004`, `small_signal_abs_mean_threshold=0.0004`.
+
+### Benchmark
+
+Full-list 50-run command:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_loader_phase_tag_bench50`
+- 8 ranks, hidden 7168, intermediate hidden 2048, experts 256, topk 8.
+
+Full-list result:
+
+| M | mean_rank us |
+|---:|---:|
+| 8 | 802.6 |
+| 16 | 797.4 |
+| 32 | 836.3 |
+| 64 | 823.0 |
+| 128 | 881.3 |
+| 256 | 1199.4 |
+| 260 | 1304.1 |
+| 500 | 2002.4 |
+| 512 | 1989.0 |
+| 819 | 2804.1 |
+| 1000 | 3332.6 |
+| 1024 | 3506.9 |
+| 1280 | 4122.0 |
+| 1536 | 4867.2 |
+| 2048 | 6163.5 |
+| 3072 | 8830.4 |
+| 4096 | 11527.1 |
+| 8192 | 22595.6 |
+
+Targeted reruns with `8192` included to keep `num_max_tokens_per_rank=8192`:
+
+| M | rerun mean_rank us |
+|---:|---:|
+| 8 | 759.6 |
+| 32 | 811.9 |
+| 128 | 848.8 |
+| 500 | 1844.6 |
+| 1280 | 4075.2 |
+| 8192 | 22648.2 |
+
+### Result
+
+Keep. The full-list run had several noisy high points, but NMT=8192 targeted reruns did not reproduce a stable regression. This moves the loader side closer to PR323-style phase-specialized processing while leaving the math/epilogue hot path unchanged.
