@@ -476,19 +476,33 @@ static void sm90_nvfp4_mega_moe(
     const bool true_split_no_l2_ready_mask =
         (!true_fused_l1_l2 && config.block_n == 128);
 
-    const auto launch_with_phase = [&](const int split_phase_mode,
-                                        const std::string& kernel_name) {
-        DG_HOST_ASSERT(split_phase_mode >= SM90NVFP4MegaMoESplitRuntime::kFusedPhaseMode &&
-                       split_phase_mode <= SM90NVFP4MegaMoESplitRuntime::kSplitL2PhaseMode);
-        const bool run_l1_phase = split_phase_mode != SM90NVFP4MegaMoESplitRuntime::kSplitL2PhaseMode;
-        const bool run_l2_phase = split_phase_mode != SM90NVFP4MegaMoESplitRuntime::kSplitL1PhaseMode;
+    const auto refresh_launch_args = [&](SM90NVFP4MegaMoESplitRuntime::Args& phase_args) {
+        phase_args.launch_args = LaunchArgs(
+            num_sms,
+            phase_args.config.num_dispatch_threads + phase_args.config.num_non_epilogue_threads +
+                phase_args.config.num_epilogue_threads,
+            phase_args.config.smem_size, phase_args.config.cluster_size);
+    };
+
+    const auto build_and_launch = [&](const SM90NVFP4MegaMoESplitRuntime::Args& phase_args,
+                                      const std::string& kernel_name) {
+        const auto code = SM90NVFP4MegaMoESplitRuntime::generate(phase_args);
+        const auto runtime = compiler->build(kernel_name, code);
+        SM90NVFP4MegaMoESplitRuntime::launch(runtime, phase_args);
+    };
+
+    const auto launch_fused = [&]() {
         auto phase_args = args;
-        phase_args.split_phase_mode = split_phase_mode;
-        phase_args.true_split_no_l2_ready_mask =
-            true_split_no_l2_ready_mask &&
-            ((run_l1_phase && !run_l2_phase) || (!run_l1_phase && run_l2_phase));
-        if (run_l1_phase && !run_l2_phase && phase_args.config.block_n == 128 &&
-            phase_args.config.num_dispatch_threads == 128) {
+        phase_args.split_phase_mode = SM90NVFP4MegaMoESplitRuntime::kFusedPhaseMode;
+        phase_args.true_split_no_l2_ready_mask = false;
+        build_and_launch(phase_args, "sm90_nvfp4_mega_moe");
+    };
+
+    const auto launch_split_l1 = [&]() {
+        auto phase_args = args;
+        phase_args.split_phase_mode = SM90NVFP4MegaMoESplitRuntime::kSplitL1PhaseMode;
+        phase_args.true_split_no_l2_ready_mask = true_split_no_l2_ready_mask;
+        if (phase_args.config.block_n == 128 && phase_args.config.num_dispatch_threads == 128) {
             auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
             constexpr int kSmemAlignment = 1024;
             const int full_send_buffers_size = align(
@@ -498,13 +512,17 @@ static void sm90_nvfp4_mega_moe(
                 static_cast<int>(layout::Buffer(layout::Data(hidden), 2, 1).get_num_bytes()),
                 kSmemAlignment);
             phase_args.config.smem_size -= full_send_buffers_size - active_send_buffers_size;
-            phase_args.launch_args = LaunchArgs(
-                num_sms,
-                phase_args.config.num_dispatch_threads + phase_args.config.num_non_epilogue_threads +
-                    phase_args.config.num_epilogue_threads,
-                phase_args.config.smem_size, phase_args.config.cluster_size);
+            refresh_launch_args(phase_args);
         }
-        if (!run_l1_phase && run_l2_phase && l2_no_dispatch_pipeline) {
+        build_and_launch(phase_args, true_split_no_l2_ready_mask ?
+            "sm90_nvfp4_mega_moe_true_split_l1" : "sm90_nvfp4_mega_moe_l1");
+    };
+
+    const auto launch_split_l2 = [&]() {
+        auto phase_args = args;
+        phase_args.split_phase_mode = SM90NVFP4MegaMoESplitRuntime::kSplitL2PhaseMode;
+        phase_args.true_split_no_l2_ready_mask = true_split_no_l2_ready_mask;
+        if (l2_no_dispatch_pipeline) {
             phase_args.config.num_dispatch_threads = 0;
             phase_args.config.num_non_epilogue_threads = 128;
             std::tie(phase_args.config.num_stages, phase_args.config.smem_size) =
@@ -519,16 +537,13 @@ static void sm90_nvfp4_mega_moe(
                 constexpr int kSmemAlignment = 1024;
                 const int num_dispatch_warps = phase_args.config.num_dispatch_threads / 32;
                 const int num_epilogue_warps = phase_args.config.num_epilogue_threads / 32;
-                const int num_epilogue_warpgroups = num_epilogue_warps / 4;
                 const int smem_expert_count_size = align(num_experts * static_cast<int>(sizeof(uint32_t)), kSmemAlignment);
                 const int smem_send_buffers_size = align(
                     static_cast<int>(layout::Buffer(layout::Data(hidden), num_dispatch_warps, 1).get_num_bytes()),
                     kSmemAlignment);
                 const int smem_dispatch_size = smem_expert_count_size + smem_send_buffers_size;
                 const int smem_nvfp4_lut = align(128 * 8, kSmemAlignment);
-                const int smem_cd_l1 = run_l1_phase ?
-                    num_epilogue_warpgroups * phase_args.config.block_m * (phase_args.config.block_n / 2) : 0;
-                const int smem_cd = align(smem_cd_l1, kSmemAlignment);
+                const int smem_cd = 0;
                 const int smem_sfa_per_stage = align(2 * phase_args.config.block_m * static_cast<int>(sizeof(float)), 128);
                 const int smem_sfb_per_stage = phase_args.fused_b_scale_layout ? 0 :
                     align(phase_args.config.block_n * (phase_args.config.block_k / 16), 128);
@@ -546,32 +561,21 @@ static void sm90_nvfp4_mega_moe(
                 phase_args.config.smem_size = smem_fixed + phase_args.config.num_stages *
                     (smem_per_stage + smem_barriers_per_stage);
             }
-            phase_args.launch_args = LaunchArgs(
-                num_sms,
-                phase_args.config.num_dispatch_threads + phase_args.config.num_non_epilogue_threads +
-                    phase_args.config.num_epilogue_threads,
-                phase_args.config.smem_size, phase_args.config.cluster_size);
+            refresh_launch_args(phase_args);
         }
-        const auto code = SM90NVFP4MegaMoESplitRuntime::generate(phase_args);
-        const auto runtime = compiler->build(kernel_name, code);
-        SM90NVFP4MegaMoESplitRuntime::launch(runtime, phase_args);
+        build_and_launch(phase_args, true_split_no_l2_ready_mask ?
+            (l2_no_dispatch_pipeline ?
+                "sm90_nvfp4_mega_moe_true_split_l2_nodisp" : "sm90_nvfp4_mega_moe_true_split_l2") :
+            (l2_no_dispatch_pipeline ? "sm90_nvfp4_mega_moe_l2_nodisp" : "sm90_nvfp4_mega_moe_l2"));
     };
 
     if (split_l1_l2) {
-        launch_with_phase(
-            SM90NVFP4MegaMoESplitRuntime::kSplitL1PhaseMode,
-            true_split_no_l2_ready_mask ?
-                "sm90_nvfp4_mega_moe_true_split_l1" : "sm90_nvfp4_mega_moe_l1");
-        launch_with_phase(
-            SM90NVFP4MegaMoESplitRuntime::kSplitL2PhaseMode,
-            true_split_no_l2_ready_mask ?
-                (l2_no_dispatch_pipeline ?
-                    "sm90_nvfp4_mega_moe_true_split_l2_nodisp" : "sm90_nvfp4_mega_moe_true_split_l2") :
-                (l2_no_dispatch_pipeline ? "sm90_nvfp4_mega_moe_l2_nodisp" : "sm90_nvfp4_mega_moe_l2"));
+        launch_split_l1();
+        launch_split_l2();
         return;
     }
 
-    launch_with_phase(SM90NVFP4MegaMoESplitRuntime::kFusedPhaseMode, "sm90_nvfp4_mega_moe");
+    launch_fused();
 }
 
 } // namespace deep_gemm

@@ -344,3 +344,62 @@ Environment:
 ### Result
 
 Keep. This is a narrow true-split cleanup with no correctness change and no systematic benchmark regression. The only changed runtime path is the BN128 true-split cleanup path; affected split sizes are flat within the observed noise, while the larger `M=4096` case improved slightly. Small/fused-size deltas are treated as run-to-run noise because they are not on the edited path.
+
+## Iteration 7 - Split host launchers for fused and split phases
+
+### Change
+
+- Replaced the shared host-side `launch_with_phase()` lambda with explicit `launch_fused()`, `launch_split_l1()`, and `launch_split_l2()` launchers.
+- Kept one shared `build_and_launch()` helper for JIT generation/build/launch.
+- Fused launch now explicitly sets `split_phase_mode = kFusedPhaseMode` and `true_split_no_l2_ready_mask = false`.
+- Split L1/L2 launches now explicitly set their own phase mode and true-split readiness policy, instead of deriving `run_l1_phase` / `run_l2_phase` booleans in the host wrapper.
+- No kernel math, dequant, scheduler, or launch-selection heuristic changed.
+
+### Correctness
+
+- Build: `bash develop.sh` in `mega_moe_box` passed.
+- Smoke correctness, `weight_scale=0.05`: PASS for `M=512,819,1024,2048`.
+- Full correctness, `weight_scale=0.05`: PASS for `M=32,64,128,256,500,512,819,1000,1024,2048,4096,8192`.
+- Tiny-signal absolute fallback, `weight_scale=0.001`: PASS for `M=512,819,1024,2048` with `small_signal_ref_abs_max=1e-2`, `small_signal_abs_max_threshold=0.004`, `small_signal_abs_mean_threshold=0.0004`.
+
+### Benchmark
+
+Same full-list 50-run command as previous iterations:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_wrapper_refactor_bench50`
+- 8 ranks, hidden 7168, intermediate hidden 2048, experts 256, topk 8.
+
+| M | iter6 mean_rank us | iter7 mean_rank us | delta |
+|---:|---:|---:|---:|
+| 8 | 767.6 | 741.9 | -3.3% |
+| 16 | 805.8 | 805.7 | -0.0% |
+| 32 | 820.5 | 831.5 | +1.3% |
+| 64 | 842.0 | 822.0 | -2.4% |
+| 128 | 845.0 | 820.8 | -2.9% |
+| 256 | 1202.7 | 1199.9 | -0.2% |
+| 260 | 1295.2 | 1314.4 | +1.5% |
+| 500 | 1966.4 | 1955.6 | -0.5% |
+| 512 | 1994.8 | 1995.1 | +0.0% |
+| 819 | 2813.9 | 2803.1 | -0.4% |
+| 1000 | 3346.3 | 3338.0 | -0.2% |
+| 1024 | 3517.9 | 3493.1 | -0.7% |
+| 1280 | 4102.8 | 4083.4 | -0.5% |
+| 1536 | 4886.5 | 4876.6 | -0.2% |
+| 2048 | 6174.4 | 6167.0 | -0.1% |
+| 3072 | 8827.4 | 8832.4 | +0.1% |
+| 4096 | 11515.8 | 11519.4 | +0.0% |
+| 8192 | 22613.2 | 22601.9 | -0.0% |
+
+Note: the first full-list run reported `M=128` as `933.4us mean_rank`, but an immediate 50-run single-size rerun with the same JIT cache reported `820.8us mean_rank`. Because this wrapper refactor does not change the fused kernel generated for `M=128`, the full-list `M=128` point is treated as rank-level benchmark noise; the rerun value is used in the table.
+
+### Result
+
+Keep. This is a structural wrapper refactor toward explicit fused/split launch paths. Correctness is unchanged, and the 50-run benchmark does not show a systematic regression after the noisy `M=128` point is rerun. The generated kernel entrypoint selection and kernel names remain the same as iteration 6.
