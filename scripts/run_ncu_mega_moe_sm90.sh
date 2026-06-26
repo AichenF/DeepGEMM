@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # SM90 (Hopper) NVFP4 MegaMoE NCU harness.
-# Drives `tests/bench_nvfp4_mega_moe_sm90.py`, profiling the
-# `sm90_nvfp4_mega_moe_impl` kernel for a single batch size.
+# Drives `tests/bench_nvfp4_mega_moe_sm90.py`, profiling the generated
+# `sm90_nvfp4_mega_moe_*_impl` kernel symbol(s) for a single batch size.
 
 set -e
 
@@ -49,6 +49,8 @@ echo "Output Dir: $output_dir"
 mkdir -p "$output_dir"
 
 export DG_JIT_WITH_LINEINFO=1
+kernel_name="${NCU_KERNEL_NAME:-regex:.*sm90_nvfp4_mega_moe_.*_impl.*}"
+launch_count="${NCU_LAUNCH_COUNT:-1}"
 
 echo "Warm up JIT cache"
 python tests/bench_nvfp4_mega_moe_sm90.py --ncu-profile-only "${python_args[@]}"
@@ -58,7 +60,8 @@ sleep 2
 ncu_args=(
     --config-file off
     --force-overwrite
-    --kernel-name sm90_nvfp4_mega_moe_impl
+    --target-processes all
+    --kernel-name "$kernel_name"
     --import-source yes
     --replay-mode application
     --section SpeedOfLight
@@ -68,13 +71,15 @@ ncu_args=(
     --section MemoryWorkloadAnalysis
     --section InstructionStats
     --launch-skip 0
-    --launch-count 1
+    --launch-count "$launch_count"
     --clock-control none
     --kill yes
     --app-replay-buffer memory
 )
 
 echo "Run Job"
+echo "NCU Kernel Name: $kernel_name"
+echo "NCU Launch Count: $launch_count"
 
 for ((i = 0; i < num_processes; ++i)); do
     ncu ${ncu_args[@]} -o "${output_dir%/}/mega-moe-sm90-nvfp4.$i" \
