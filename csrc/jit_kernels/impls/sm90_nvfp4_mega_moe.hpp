@@ -31,6 +31,10 @@ namespace deep_gemm {
 
 class SM90NVFP4MegaMoESplitRuntime final : public LaunchRuntime<SM90NVFP4MegaMoESplitRuntime> {
 public:
+    static constexpr int kFusedPhaseMode = 0;
+    static constexpr int kSplitL1PhaseMode = 1;
+    static constexpr int kSplitL2PhaseMode = 2;
+
     struct Args {
         // Templated arguments
         int num_max_tokens_per_rank;
@@ -49,8 +53,7 @@ public:
         bool packed_b_scratch;
         bool fused_b_scale_layout;
         bool skip_direct_scatter_sync;
-        bool run_l1_phase;
-        bool run_l2_phase;
+        int split_phase_mode;
         bool true_split_no_l2_ready_mask;
         MegaMoESM90Config config;
 
@@ -79,9 +82,10 @@ public:
     };
 
     static std::string generate_impl(const Args& args) {
-        const int split_phase_mode = args.run_l1_phase ? (args.run_l2_phase ? 0 : 1) : 2;
-        const char* kernel_symbol = split_phase_mode == 0 ? "sm90_nvfp4_mega_moe_fused_impl" :
-            (split_phase_mode == 1 ? "sm90_nvfp4_mega_moe_split_l1_impl" : "sm90_nvfp4_mega_moe_split_l2_impl");
+        DG_HOST_ASSERT(args.split_phase_mode >= kFusedPhaseMode && args.split_phase_mode <= kSplitL2PhaseMode);
+        const char* kernel_symbol = args.split_phase_mode == kFusedPhaseMode ? "sm90_nvfp4_mega_moe_fused_impl" :
+            (args.split_phase_mode == kSplitL1PhaseMode ?
+                "sm90_nvfp4_mega_moe_split_l1_impl" : "sm90_nvfp4_mega_moe_split_l2_impl");
         return fmt::format(R"(
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe.cuh>
 
@@ -129,7 +133,7 @@ static void __instantiate_kernel() {{
     args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
     args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks,
     args.true_split_no_l2_ready_mask ? "true" : "false",
-    split_phase_mode |
+    args.split_phase_mode |
         (args.true_split_no_l2_ready_mask ? 4 : 0));
     }
 
@@ -447,8 +451,7 @@ static void sm90_nvfp4_mega_moe(
             "DG_SM90_NVFP4_SKIP_DIRECT_SCATTER_SYNC",
             ((true_fused_l1_l2 && config.block_n == 256 && nvfp4_bn256_fused_m(num_tokens)) ||
              (!true_fused_l1_l2 && config.block_n == 128 && num_tokens >= 512)) ? 1 : 0) != 0,
-        .run_l1_phase = true,
-        .run_l2_phase = true,
+        .split_phase_mode = SM90NVFP4MegaMoESplitRuntime::kFusedPhaseMode,
         .true_split_no_l2_ready_mask = false,
         .config = config,
         .y = y.data_ptr(),
@@ -474,12 +477,14 @@ static void sm90_nvfp4_mega_moe(
     const bool true_split_no_l2_ready_mask =
         (!true_fused_l1_l2 && config.block_n == 128 && (num_tokens == 512 || num_tokens == 819));
 
-    const auto launch_with_phases = [&](const bool run_l1_phase,
-                                        const bool run_l2_phase,
+    const auto launch_with_phase = [&](const int split_phase_mode,
                                         const std::string& kernel_name) {
+        DG_HOST_ASSERT(split_phase_mode >= SM90NVFP4MegaMoESplitRuntime::kFusedPhaseMode &&
+                       split_phase_mode <= SM90NVFP4MegaMoESplitRuntime::kSplitL2PhaseMode);
+        const bool run_l1_phase = split_phase_mode != SM90NVFP4MegaMoESplitRuntime::kSplitL2PhaseMode;
+        const bool run_l2_phase = split_phase_mode != SM90NVFP4MegaMoESplitRuntime::kSplitL1PhaseMode;
         auto phase_args = args;
-        phase_args.run_l1_phase = run_l1_phase;
-        phase_args.run_l2_phase = run_l2_phase;
+        phase_args.split_phase_mode = split_phase_mode;
         phase_args.true_split_no_l2_ready_mask =
             true_split_no_l2_ready_mask &&
             ((run_l1_phase && !run_l2_phase) || (!run_l1_phase && run_l2_phase));
@@ -554,12 +559,12 @@ static void sm90_nvfp4_mega_moe(
     };
 
     if (split_l1_l2) {
-        launch_with_phases(
-            true, false,
+        launch_with_phase(
+            SM90NVFP4MegaMoESplitRuntime::kSplitL1PhaseMode,
             true_split_no_l2_ready_mask ?
                 "sm90_nvfp4_mega_moe_true_split_l1" : "sm90_nvfp4_mega_moe_l1");
-        launch_with_phases(
-            false, true,
+        launch_with_phase(
+            SM90NVFP4MegaMoESplitRuntime::kSplitL2PhaseMode,
             true_split_no_l2_ready_mask ?
                 (l2_no_dispatch_pipeline ?
                     "sm90_nvfp4_mega_moe_true_split_l2_nodisp" : "sm90_nvfp4_mega_moe_true_split_l2") :
@@ -567,7 +572,7 @@ static void sm90_nvfp4_mega_moe(
         return;
     }
 
-    launch_with_phases(true, true, "sm90_nvfp4_mega_moe");
+    launch_with_phase(SM90NVFP4MegaMoESplitRuntime::kFusedPhaseMode, "sm90_nvfp4_mega_moe");
 }
 
 } // namespace deep_gemm
