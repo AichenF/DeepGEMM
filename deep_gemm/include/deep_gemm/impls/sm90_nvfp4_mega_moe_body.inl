@@ -2004,7 +2004,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
             }
 
             const unsigned long long block_epilogue_start = phase_profile_clock();
-            if (block_phase == sched::BlockPhase::Linear1) {
+            if constexpr (!kBlockIsL2) {
                 // ---------------- L1 EPILOGUE: SwiGLU + FP8 quantize + TMA store ----------------
                 // Layout in `final_accum`:
                 //   16 chunks of 8 N-cols, each chunk = 4 floats per thread = (r0c0, r0c1, r1c0, r1c1).

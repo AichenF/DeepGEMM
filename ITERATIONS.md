@@ -639,3 +639,87 @@ Targeted probes:
 ### Result
 
 Keep. This is a narrow structural refactor toward compile-time phase-specialized true split/fuse code, but it deliberately avoids the main math/epilogue body. Full correctness and tiny-signal fallback pass. The 50-run benchmark is flat overall; the apparent M64 full-list regression is not reproduced against a same-condition clean `d552298` baseline, where current is faster.
+
+## Iteration 11 - Specialize the main epilogue phase branch
+
+### Change
+
+- Converted the main math callback epilogue selector from:
+
+```cpp
+if (block_phase == sched::BlockPhase::Linear1) { ... } else { ... }
+```
+
+to:
+
+```cpp
+if constexpr (!kBlockIsL2) { ... } else { ... }
+```
+
+- This is intentionally a one-line structural refactor:
+  - L1 epilogue implementation is unchanged,
+  - L2 epilogue implementation is unchanged,
+  - GEMM loop selection is unchanged,
+  - dequant arithmetic, scheduler policy, wrapper heuristics, and launch selection are unchanged.
+
+This moves the split L1/L2 instantiations closer to true phase-specific kernels at the source level, while keeping fused behavior the same generic selected-block loop.
+
+### Correctness
+
+- Build: `./develop.sh` in `mega_moe_box` passed after restoring the current worktree from the Iteration 10 probe.
+- Smoke correctness, `weight_scale=0.05`: PASS for `M=512,819,1024,2048`.
+- Full correctness, `weight_scale=0.05`: PASS for `M=32,64,128,256,500,512,819,1000,1024,2048,4096,8192`.
+- Tiny-signal absolute fallback, `weight_scale=0.001`: PASS for `M=512,819,1024,2048` with `small_signal_ref_abs_max=1e-2`, `small_signal_abs_max_threshold=0.004`, `small_signal_abs_mean_threshold=0.0004`.
+
+### Benchmark
+
+Full-list 50-run command:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_iter11_epilogue_constexpr_bench50`
+- 8 ranks, hidden 7168, intermediate hidden 2048, experts 256, topk 8.
+
+| M | iter10 mean_rank us | iter11 mean_rank us | delta |
+|---:|---:|---:|---:|
+| 8 | 769.0 | 750.3 | -2.4% |
+| 16 | 803.8 | 813.1 | +1.2% |
+| 32 | 819.6 | 889.9 | +8.6% |
+| 64 | 851.4 | 832.1 | -2.3% |
+| 128 | 866.2 | 891.3 | +2.9% |
+| 256 | 1187.0 | 1217.6 | +2.6% |
+| 260 | 1286.1 | 1310.2 | +1.9% |
+| 500 | 1972.4 | 1969.5 | -0.1% |
+| 512 | 1996.0 | 1999.7 | +0.2% |
+| 819 | 2818.2 | 2819.8 | +0.1% |
+| 1000 | 3360.2 | 3357.0 | -0.1% |
+| 1024 | 3516.2 | 3513.5 | -0.1% |
+| 1280 | 4088.0 | 4097.5 | +0.2% |
+| 1536 | 4858.1 | 4874.0 | +0.3% |
+| 2048 | 6160.4 | 6167.6 | +0.1% |
+| 3072 | 8829.4 | 8809.8 | -0.2% |
+| 4096 | 11536.9 | 11517.8 | -0.2% |
+| 8192 | 22616.4 | 22602.6 | -0.1% |
+
+Targeted probe with `8192` included to keep NMT comparable:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py --batches 32 128 256 8192 --num-tests 50
+```
+
+| M | iter11 current mean_rank us | iter10 `f8686fd` mean_rank us | delta |
+|---:|---:|---:|---:|
+| 32 | 809.6 | 813.2 | -0.4% |
+| 128 | 813.4 | 825.9 | -1.5% |
+| 256 | 1307.0 | 1301.8 | +0.4% |
+| 8192 | 22666.8 | 22581.4 | +0.4% |
+
+### Result
+
+Keep. The full-list small-M points `M=32` and `M=128` were noisy, but the same-condition targeted run against the Iteration 10 commit shows no regression. The large-M sweep is flat, with all deltas within benchmark noise. This is a useful true-split refactor because split L1/L2 epilogue code is now selected at compile time instead of relying on a runtime-looking phase branch.
