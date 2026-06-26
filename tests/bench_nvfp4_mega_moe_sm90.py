@@ -27,7 +27,7 @@ from deep_gemm.testing import bench_kineto, get_arch_major
 
 
 def _nvfp4_bn256_fused_m(num_tokens: int) -> bool:
-    return num_tokens <= int(os.environ.get("DG_SM90_NVFP4_BN256_FUSED_MAX_M", "1280"))
+    return num_tokens <= int(os.environ.get("DG_SM90_NVFP4_BN256_FUSED_MAX_M", "511"))
 
 
 def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
@@ -73,7 +73,8 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     nvfp4_use_bn256 = _nvfp4_bn256_fused_m(num_tokens)
     nvfp4_default_block_n = 256 if nvfp4_use_bn256 else 128
     nvfp4_block_n = int(os.environ.get("DG_SM90_NVFP4_BLOCK_N", nvfp4_default_block_n))
-    nvfp4_fused_b_scale = True if nvfp4_use_bn256 else None
+    nvfp4_fused_b_scale_env = os.environ.get("DG_SM90_NVFP4_FUSED_B_SCALE")
+    nvfp4_fused_b_scale = None if nvfp4_fused_b_scale_env is not None else (True if nvfp4_use_bn256 else None)
     transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
         (l1_packed, l1_scale), (l2_packed, l2_scale),
         block_n=nvfp4_block_n, fused_b_scale=nvfp4_fused_b_scale,

@@ -39,21 +39,15 @@ public:
         int num_ranks;
         float activation_clamp;
         bool fast_math;
-        bool split_sfa_tma;
         bool direct_l2_scatter;
         bool l2_dual_accum;
         bool phase_profile;
         bool l2_arrival_counter;
         bool direct_scatter_metadata_broadcast;
         bool l1_dual_k_accum;
-        bool k2_direct_accum;
         bool loader_dequant;
-        bool direct_scale_gmem;
         bool packed_b_scratch;
-        bool split_dequant_barrier;
-        bool strided_b_gmem_load;
         bool fused_b_scale_layout;
-        bool combine_7chunk;
         bool skip_direct_scatter_sync;
         bool run_l1_phase;
         bool run_l2_phase;
@@ -72,13 +66,11 @@ public:
         CUtensorMap tensor_map_l1_acts;
         CUtensorMap tensor_map_l1_acts_sf;
         CUtensorMap tensor_map_l1_weights;
-        const uint8_t* l1_weights_gmem;
         const uint8_t* l1_weights_sf;
         CUtensorMap tensor_map_l1_output;
         CUtensorMap tensor_map_l2_acts;
         CUtensorMap tensor_map_l2_acts_sf;
         CUtensorMap tensor_map_l2_weights;
-        const uint8_t* l2_weights_gmem;
         const uint8_t* l2_weights_sf;
 
         // Launch configs
@@ -106,8 +98,8 @@ static void __instantiate_kernel() {{
         {}, {},
         {},
         {},
-        {}, {}, {}, {}, {}, {}, {},
-        {}, {}, {}, {}, {}, {}, {}, {}, {},
+        {}, {}, {}, {}, {}, {},
+        {}, {}, {}, {},
         {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
         {}, {}, {}, {}
     >);
@@ -126,8 +118,8 @@ static void __instantiate_kernel() {{
     args.launch_args.grid_dim.first, args.num_ranks,
     to_string(args.activation_clamp),
     args.fast_math ? "true" : "false",
-    args.split_sfa_tma ? "true" : "false", args.direct_l2_scatter ? "true" : "false", args.l2_dual_accum ? "true" : "false", args.phase_profile ? "true" : "false", args.l2_arrival_counter ? "true" : "false", args.direct_scatter_metadata_broadcast ? "true" : "false", args.l1_dual_k_accum ? "true" : "false",
-    args.k2_direct_accum ? "true" : "false", args.loader_dequant ? "true" : "false", args.direct_scale_gmem ? "true" : "false", args.packed_b_scratch ? "true" : "false", args.split_dequant_barrier ? "true" : "false", args.strided_b_gmem_load ? "true" : "false", args.fused_b_scale_layout ? "true" : "false", args.combine_7chunk ? "true" : "false", args.skip_direct_scatter_sync ? "true" : "false",
+    args.direct_l2_scatter ? "true" : "false", args.l2_dual_accum ? "true" : "false", args.phase_profile ? "true" : "false", args.l2_arrival_counter ? "true" : "false", args.direct_scatter_metadata_broadcast ? "true" : "false", args.l1_dual_k_accum ? "true" : "false",
+    args.loader_dequant ? "true" : "false", args.packed_b_scratch ? "true" : "false", args.fused_b_scale_layout ? "true" : "false", args.skip_direct_scatter_sync ? "true" : "false",
     args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
     args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks,
     args.run_l1_phase ? "true" : "false", args.run_l2_phase ? "true" : "false",
@@ -143,13 +135,11 @@ static void __instantiate_kernel() {{
             args.tensor_map_l1_acts,
             args.tensor_map_l1_acts_sf,
             args.tensor_map_l1_weights,
-            args.l1_weights_gmem,
             args.l1_weights_sf,
             args.tensor_map_l1_output,
             args.tensor_map_l2_acts,
             args.tensor_map_l2_acts_sf,
             args.tensor_map_l2_weights,
-            args.l2_weights_gmem,
             args.l2_weights_sf
         ));
     }
@@ -181,7 +171,7 @@ static void sm90_nvfp4_mega_moe(
         hidden, intermediate_hidden, num_padded_sf_pool_tokens);
 
     const auto ceil_div = [](int x, int y) { return (x + y - 1) / y; };
-    const int nvfp4_bn256_fused_max_m = get_env<int>("DG_SM90_NVFP4_BN256_FUSED_MAX_M", 1280);
+    const int nvfp4_bn256_fused_max_m = get_env<int>("DG_SM90_NVFP4_BN256_FUSED_MAX_M", 511);
     const auto nvfp4_bn256_fused_m = [=](int m) { return m <= nvfp4_bn256_fused_max_m; };
     const auto nvfp4_bn128_bm128_m = [](int m) { return m >= 256; };
     const auto nvfp4_bn256_loader_dequant_m = [=](int m) { return m >= 128 && m <= nvfp4_bn256_fused_max_m; };
@@ -247,11 +237,10 @@ static void sm90_nvfp4_mega_moe(
     const int nvfp4_non_epilogue_threads = get_env<int>("DG_SM90_NVFP4_NON_EPILOGUE_THREADS", nvfp4_non_epilogue_threads_default);
     DG_HOST_ASSERT(nvfp4_dispatch_threads == 64 || nvfp4_dispatch_threads == 128);
     DG_HOST_ASSERT(nvfp4_non_epilogue_threads == 64 || nvfp4_non_epilogue_threads == 128);
-    const bool split_sfa_tma = get_env<int>("DG_SM90_MOE_SPLIT_SFA_TMA", 0) != 0;
     const int nvfp4_loader_dequant_default = config.block_n == 256 ?
         (nvfp4_bn256_loader_dequant_m(num_tokens) ? 1 : 0) : 1;
     const bool nvfp4_loader_dequant_requested =
-        get_env<int>("DG_SM90_NVFP4_LOADER_DEQUANT", nvfp4_loader_dequant_default) != 0 && !split_sfa_tma;
+        get_env<int>("DG_SM90_NVFP4_LOADER_DEQUANT", nvfp4_loader_dequant_default) != 0;
     const int nvfp4_packed_b_scratch_default = config.block_n == 256 ? 1 : 0;
     const bool nvfp4_packed_b_scratch_requested =
         get_env<int>("DG_SM90_NVFP4_PACKED_B_SCRATCH", nvfp4_packed_b_scratch_default) != 0;
@@ -259,14 +248,8 @@ static void sm90_nvfp4_mega_moe(
         config.block_n == 256 && nvfp4_non_epilogue_threads == 64 && nvfp4_packed_b_scratch_requested;
     const bool nvfp4_loader_dequant = nvfp4_loader_dequant_requested &&
         (nvfp4_non_epilogue_threads == 128 || nvfp4_bn256_packed_loader_dequant);
-    const bool nvfp4_direct_scale_gmem = get_env<int>("DG_SM90_NVFP4_DIRECT_SCALE_GMEM", 0) != 0 &&
-        !nvfp4_loader_dequant;
     const bool nvfp4_packed_b_scratch = nvfp4_packed_b_scratch_requested &&
         (!nvfp4_loader_dequant || nvfp4_bn256_packed_loader_dequant);
-    const bool nvfp4_split_dequant_barrier = get_env<int>("DG_SM90_NVFP4_SPLIT_DEQUANT_BARRIER", 0) != 0 &&
-        !nvfp4_loader_dequant && !nvfp4_packed_b_scratch;
-    const bool nvfp4_strided_b_gmem_load = get_env<int>("DG_SM90_NVFP4_STRIDED_B_GMEM_LOAD", 0) != 0 &&
-        !nvfp4_loader_dequant && !nvfp4_packed_b_scratch;
     const int weight_storage_k = static_cast<int>(l1_weights.size(2));
     const int weight_k_blocks = static_cast<int>(l1_weights_sf.size(2));
     const bool layout_fused_b_scale = weight_storage_k == weight_k_blocks * 80;
@@ -317,14 +300,14 @@ static void sm90_nvfp4_mega_moe(
             num_epilogue_warpgroups * wg_block_m * wg_block_n * static_cast<int>(sizeof(nv_bfloat16));
         const int smem_cd = align(std::max(smem_cd_l1, smem_cd_l2), kSmemAlignment);
         const int smem_sfa_per_stage = align(2 * config.block_m * static_cast<int>(sizeof(float)), 128);
-        const int smem_sfb_per_stage = (nvfp4_direct_scale_gmem || nvfp4_fused_b_scale_layout) ? 0 :
+        const int smem_sfb_per_stage = nvfp4_fused_b_scale_layout ? 0 :
             align(config.block_n * (config.block_k / 16), 128);
         const int smem_packed_b_per_stage = nvfp4_packed_b_scratch ?
             config.block_n * nvfp4_b_storage_per_k_block : 0;
         const int smem_per_stage = config.block_m * config.block_k + config.block_n * config.block_k +
                                    smem_packed_b_per_stage + smem_sfa_per_stage + smem_sfb_per_stage;
         const int smem_barriers_fixed = (num_dispatch_warps + 2 * num_epilogue_warps) * 8;
-        const int smem_barriers_per_stage = ((nvfp4_loader_dequant || nvfp4_split_dequant_barrier) ? 3 : 2) * 8;
+        const int smem_barriers_per_stage = (nvfp4_loader_dequant ? 3 : 2) * 8;
         const int smem_fixed = smem_dispatch_size + smem_nvfp4_lut + smem_cd + smem_barriers_fixed;
         const int max_num_stages = (SM90ArchSpec::smem_capacity - smem_fixed) /
                                    (smem_per_stage + smem_barriers_per_stage);
@@ -426,7 +409,7 @@ static void sm90_nvfp4_mega_moe(
         ((num_tokens < 512 && !true_fused_l1_l2) ||
          (true_fused_l1_l2 && config.block_n == 256 && m_tiles >= 8 && m_tiles < 16));
     const int l2_dual_accum_default = true_fused_l1_l2 ? 0 :
-        ((config.block_n == 128 && (num_tokens <= 256 || num_tokens >= 4096)) ? 1 : 0);
+        ((config.block_n == 128 && (num_tokens <= 256 || num_tokens >= 512)) ? 1 : 0);
     const bool l2_arrival_counter_default = config.block_n == 128 &&
         (num_tokens <= 128 || num_tokens >= 512);
 
@@ -434,7 +417,6 @@ static void sm90_nvfp4_mega_moe(
         direct_l2_scatter &&
         num_tokens < 8192 &&
         (num_tokens >= 256 || num_tokens <= 128);
-    const int combine_7chunk_default = 0;
     const SM90NVFP4MegaMoESplitRuntime::Args args = {
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
         .hidden = hidden, .intermediate_hidden = intermediate_hidden,
@@ -442,7 +424,6 @@ static void sm90_nvfp4_mega_moe(
         .num_ranks = num_ranks,
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
-        .split_sfa_tma = split_sfa_tma,
         .direct_l2_scatter = direct_l2_scatter,
         .l2_dual_accum = get_env<int>("DG_SM90_MOE_L2_DUAL_ACCUM", l2_dual_accum_default) != 0,
         .phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0,
@@ -452,14 +433,9 @@ static void sm90_nvfp4_mega_moe(
             "DG_SM90_NVFP4_DIRECT_SCATTER_METADATA_BCAST",
             direct_scatter_metadata_broadcast_default ? 1 : 0) != 0,
         .l1_dual_k_accum = get_env<int>("DG_SM90_MOE_L1_DUAL_K", l1_dual_k_default ? 1 : 0) != 0,
-        .k2_direct_accum = get_env<int>("DG_SM90_MOE_K2_DIRECT_ACCUM", 0) != 0,
         .loader_dequant = nvfp4_loader_dequant,
-        .direct_scale_gmem = nvfp4_direct_scale_gmem,
         .packed_b_scratch = nvfp4_packed_b_scratch,
-        .split_dequant_barrier = nvfp4_split_dequant_barrier,
-        .strided_b_gmem_load = nvfp4_strided_b_gmem_load,
         .fused_b_scale_layout = nvfp4_fused_b_scale_layout,
-        .combine_7chunk = get_env<int>("DG_SM90_NVFP4_COMBINE_7CHUNK", combine_7chunk_default) != 0,
         .skip_direct_scatter_sync = get_env<int>(
             "DG_SM90_NVFP4_SKIP_DIRECT_SCATTER_SYNC",
             ((true_fused_l1_l2 && config.block_n == 256 && nvfp4_bn256_fused_m(num_tokens)) ||
@@ -474,13 +450,11 @@ static void sm90_nvfp4_mega_moe(
         .tensor_map_l1_acts = tensor_map_l1_acts,
         .tensor_map_l1_acts_sf = tensor_map_l1_acts_sf,
         .tensor_map_l1_weights = tensor_map_l1_weights,
-        .l1_weights_gmem = l1_weights.data_ptr<uint8_t>(),
         .l1_weights_sf = l1_weights_sf.data_ptr<uint8_t>(),
         .tensor_map_l1_output = tensor_map_l1_output,
         .tensor_map_l2_acts = tensor_map_l2_acts,
         .tensor_map_l2_acts_sf = tensor_map_l2_acts_sf,
         .tensor_map_l2_weights = tensor_map_l2_weights,
-        .l2_weights_gmem = l2_weights.data_ptr<uint8_t>(),
         .l2_weights_sf = l2_weights_sf.data_ptr<uint8_t>(),
         .launch_args = LaunchArgs(num_sms, config.num_dispatch_threads + config.num_non_epilogue_threads + config.num_epilogue_threads,
                                   config.smem_size, config.cluster_size)
@@ -539,7 +513,7 @@ static void sm90_nvfp4_mega_moe(
                     num_epilogue_warpgroups * phase_args.config.block_m * (phase_args.config.block_n / 2) : 0;
                 const int smem_cd = align(smem_cd_l1, kSmemAlignment);
                 const int smem_sfa_per_stage = align(2 * phase_args.config.block_m * static_cast<int>(sizeof(float)), 128);
-                const int smem_sfb_per_stage = (phase_args.direct_scale_gmem || phase_args.fused_b_scale_layout) ? 0 :
+                const int smem_sfb_per_stage = phase_args.fused_b_scale_layout ? 0 :
                     align(phase_args.config.block_n * (phase_args.config.block_k / 16), 128);
                 const int smem_packed_b_per_stage = phase_args.packed_b_scratch ?
                     phase_args.config.block_n * (phase_args.fused_b_scale_layout ? 80 : phase_args.config.block_k / 2) : 0;
@@ -547,7 +521,7 @@ static void sm90_nvfp4_mega_moe(
                                            phase_args.config.block_n * phase_args.config.block_k +
                                            smem_packed_b_per_stage + smem_sfa_per_stage + smem_sfb_per_stage;
                 const int smem_barriers_fixed = (num_dispatch_warps + 2 * num_epilogue_warps) * 8;
-                const int smem_barriers_per_stage = ((phase_args.loader_dequant || phase_args.split_dequant_barrier) ? 3 : 2) * 8;
+                const int smem_barriers_per_stage = (phase_args.loader_dequant ? 3 : 2) * 8;
                 const int smem_fixed = smem_dispatch_size + smem_nvfp4_lut + smem_cd + smem_barriers_fixed;
                 phase_args.config.num_stages = (SM90ArchSpec::smem_capacity - smem_fixed) /
                     (smem_per_stage + smem_barriers_per_stage);
