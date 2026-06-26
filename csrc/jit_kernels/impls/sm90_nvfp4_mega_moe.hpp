@@ -80,13 +80,15 @@ public:
 
     static std::string generate_impl(const Args& args) {
         const int split_phase_mode = args.run_l1_phase ? (args.run_l2_phase ? 0 : 1) : 2;
+        const char* kernel_symbol = split_phase_mode == 0 ? "sm90_nvfp4_mega_moe_fused_impl" :
+            (split_phase_mode == 1 ? "sm90_nvfp4_mega_moe_split_l1_impl" : "sm90_nvfp4_mega_moe_split_l2_impl");
         return fmt::format(R"(
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe.cuh>
 
 using namespace deep_gemm;
 
 static void __instantiate_kernel() {{
-    auto ptr = reinterpret_cast<void*>(&sm90_nvfp4_mega_moe_impl<
+    auto ptr = reinterpret_cast<void*>(&{}<
         {},
         {}, {},
         {}, {},
@@ -102,11 +104,13 @@ static void __instantiate_kernel() {{
         {},
         {}, {}, {}, {}, {}, {},
         {}, {}, {}, {},
-        {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-        {}, {}, {}, {}
+        {}, {}, {}, {},
+        {}, {}, {}, {}, {}, {}, {},
+        {}, {}
     >);
 }};
 )",
+    kernel_symbol,
     args.num_max_tokens_per_rank,
     args.hidden, args.intermediate_hidden,
     args.num_experts, args.num_topk,
@@ -124,7 +128,6 @@ static void __instantiate_kernel() {{
     args.loader_dequant ? "true" : "false", args.packed_b_scratch ? "true" : "false", args.fused_b_scale_layout ? "true" : "false", args.skip_direct_scatter_sync ? "true" : "false",
     args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
     args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks,
-    split_phase_mode,
     args.true_split_no_l2_ready_mask ? "true" : "false",
     split_phase_mode |
         (args.true_split_no_l2_ready_mask ? 4 : 0));
