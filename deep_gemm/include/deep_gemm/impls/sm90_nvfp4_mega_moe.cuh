@@ -401,7 +401,7 @@ sm90_nvfp4_mega_moe_fused_impl(void* y,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts_sf,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weights,
                        const uint8_t* __restrict__ l2_weights_sf) {
-    constexpr uint32_t kSplitPhaseMode = 0;
+    constexpr uint32_t kPhaseMode = 0;
     constexpr bool kTrueSplitNoL2ReadyMask = false;
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_body.inl>
 }
@@ -446,20 +446,20 @@ template <
     bool kTrueSplitNoL2ReadyMask = false
 >
 CUTLASS_GLOBAL __launch_bounds__(kNumThreads, 1) void
-sm90_nvfp4_mega_moe_split_l1_impl(void* y,
-                       int* cumulative_local_expert_recv_stats,
+sm90_nvfp4_mega_moe_split_l1_impl(int* cumulative_local_expert_recv_stats,
                        const uint32_t num_tokens,
                        const __grid_constant__ layout::SymBuffer<kNumRanks> sym_buffer,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts_sf,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l1_weights,
                        const uint8_t* __restrict__ l1_weights_sf,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l1_output,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts_sf,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weights,
-                       const uint8_t* __restrict__ l2_weights_sf) {
-    constexpr uint32_t kSplitPhaseMode = 1;
+                       const __grid_constant__ cute::TmaDescriptor tensor_map_l1_output) {
+    void* y = nullptr;
+    const auto& tensor_map_l2_acts = tensor_map_l1_acts;
+    const auto& tensor_map_l2_acts_sf = tensor_map_l1_acts_sf;
+    const auto& tensor_map_l2_weights = tensor_map_l1_weights;
+    const uint8_t* l2_weights_sf = l1_weights_sf;
+    constexpr uint32_t kPhaseMode = 1;
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_body.inl>
 }
 
@@ -507,16 +507,16 @@ sm90_nvfp4_mega_moe_split_l2_impl(void* y,
                        int* cumulative_local_expert_recv_stats,
                        const uint32_t num_tokens,
                        const __grid_constant__ layout::SymBuffer<kNumRanks> sym_buffer,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts_sf,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l1_weights,
-                       const uint8_t* __restrict__ l1_weights_sf,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l1_output,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts_sf,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weights,
                        const uint8_t* __restrict__ l2_weights_sf) {
-    constexpr uint32_t kSplitPhaseMode = 2;
+    const auto& tensor_map_l1_acts = tensor_map_l2_acts;
+    const auto& tensor_map_l1_acts_sf = tensor_map_l2_acts_sf;
+    const auto& tensor_map_l1_weights = tensor_map_l2_weights;
+    const uint8_t* l1_weights_sf = l2_weights_sf;
+    const auto& tensor_map_l1_output = tensor_map_l2_acts;
+    constexpr uint32_t kPhaseMode = 2;
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_body.inl>
 }
 

@@ -950,3 +950,89 @@ python tests/bench_nvfp4_mega_moe_sm90.py --batches 128 8192 --num-tests 100
 ### Result
 
 Keep. The full-list run showed possible slow points at `M=128` and `M=260`, but same-condition probes did not reproduce a stable regression: `M=260` flipped from slower to slightly faster on the second current rerun, and the focused 100-run `M=128` check was faster than Iteration 12. The change is therefore accepted as a low-risk refactor toward a true fused/split structure, not as a claimed new performance optimization.
+
+## Milestone Candidate - Narrow true-split kernel launch arguments
+
+### Change
+
+- Narrowed the split L1 and split L2 CUDA entrypoint signatures so split launches no longer pass the full fused argument list.
+- Split L1 now receives only L1 descriptors, L1 weight scale pointer, L1 output descriptor, symm buffer, token count, and cumulative stats. Inactive L2 names are local aliases used only to keep the shared compile-time body syntactically valid.
+- Split L2 now receives only y, L2 descriptors, L2 weight scale pointer, symm buffer, token count, and cumulative stats. Inactive L1 names are local aliases used only for discarded compile-time branches.
+- Fused kernel signature and fused launch arguments are unchanged.
+- No math, scheduler, dequant, epilogue, or size-selection heuristic was changed.
+- Per user direction, this is logged as a milestone candidate only; no per-iteration commit/push is made.
+
+### Correctness
+
+- Build: `./develop.sh` in `mega_moe_box` passed.
+- Smoke correctness, `weight_scale=0.05`: PASS for `M=512,819,1024,2048`.
+- Full correctness, `weight_scale=0.05`: PASS for `M=32,64,128,256,500,512,819,1000,1024,2048,4096,8192`.
+- Tiny-signal absolute fallback, `weight_scale=0.001`: PASS for `M=512,819,1024,2048` with `small_signal_ref_abs_max=0.01`, `small_signal_abs_max_threshold=0.004`, `small_signal_abs_mean_threshold=0.0004`.
+
+### Benchmark Sanity
+
+Command:
+
+```bash
+python3 tests/bench_nvfp4_mega_moe_sm90.py --batches 32 512 819 1024 8192 --num-tests 30
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_narrow_split_args_bench30`
+- 8 ranks, hidden 7168, intermediate hidden 2048, experts 256, topk 8.
+
+| M | mean_rank us | max_rank us |
+|---:|---:|---:|
+| 32 | 828.6 | 835.7 |
+| 512 | 1936.6 | 1945.0 |
+| 819 | 2780.9 | 2786.0 |
+| 1024 | 3491.4 | 3503.0 |
+| 8192 | 22604.1 | 22622.0 |
+
+### Full 50-run Benchmark Gate
+
+Command:
+
+```bash
+python3 tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_narrow_split_args_bench50`
+
+| M | iter14 mean_rank us | narrow-args mean_rank us | delta |
+|---:|---:|---:|---:|
+| 8 | 744.8 | 757.5 | +1.7% |
+| 16 | 798.6 | 806.5 | +1.0% |
+| 32 | 830.3 | 843.0 | +1.5% |
+| 64 | 819.3 | 812.7 | -0.8% |
+| 128 | 858.9 | 854.9 | -0.5% |
+| 256 | 1204.3 | 1193.2 | -0.9% |
+| 260 | 1312.8 | 1298.6 | -1.1% |
+| 500 | 1967.9 | 1962.9 | -0.3% |
+| 512 | 1994.6 | 1992.2 | -0.1% |
+| 819 | 2815.4 | 2826.3 | +0.4% |
+| 1000 | 3337.5 | 3337.8 | +0.0% |
+| 1024 | 3500.4 | 3498.9 | -0.0% |
+| 1280 | 4078.1 | 4081.9 | +0.1% |
+| 1536 | 4880.9 | 4873.5 | -0.2% |
+| 2048 | 6167.9 | 6167.0 | -0.0% |
+| 3072 | 8834.6 | 8820.6 | -0.2% |
+| 4096 | 11546.5 | 11531.2 | -0.1% |
+| 8192 | 22643.1 | 22607.9 | -0.2% |
+
+### Result
+
+Keep as a milestone candidate. The change makes the true split entrypoints cleaner without changing the compute body or default routing. The full 50-run sweep shows no material regression on the split sizes affected by the launch ABI reduction; the only >1% positive deltas are on small fused sizes whose kernel signature and launch arguments are unchanged, so they are treated as run-to-run noise rather than a refactor regression. Do not push until this is folded into a milestone commit and the user asks for push.
+
+### E2E Coverage Audit
+
+- DeepGEMM exports `nvfp4_mega_moe` from `csrc/apis/mega.hpp`.
+- Current SGLang at `/root/fac/sglang` does not call `nvfp4_mega_moe`; `git grep nvfp4_mega_moe -- python/sglang` is empty, and cross-ref searches over local/remotes also found no `nvfp4_mega_moe` or `transform_nvfp4_weights_for_mega_moe_sm90` integration.
+- Current SGLang MegaMoE config maps SM90 to `fp8_mega_moe` and SM100 FP4 to `fp8_fp4_mega_moe` in `python/sglang/srt/layers/moe/mega_moe.py`.
+- Therefore the full correctness gate above is a kernel-level NVFP4 gate. Historical GSM8K / SGLang e2e runs in the current SGLang tree would not prove this SM90 NVFP4 kernel unless a separate SGLang integration route calls `deep_gemm.nvfp4_mega_moe`.
+- Kernel-level boundary correctness also passed for the historically suspicious effective-token sizes and neighbors: `M=1024,1025,1200,2047,2048`, `weight_scale=0.05`, with `cosine_min=0.9986-0.9987` and finite outputs.

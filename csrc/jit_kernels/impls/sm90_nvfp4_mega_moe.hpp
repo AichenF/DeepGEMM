@@ -29,7 +29,7 @@ namespace deep_gemm {
 //   * Cluster size is at most 2 (TMA multicast on A); no 2-CTA UMMA.
 // ============================================================================
 
-class SM90NVFP4MegaMoESplitRuntime final : public LaunchRuntime<SM90NVFP4MegaMoESplitRuntime> {
+class SM90NVFP4MegaMoERuntime final : public LaunchRuntime<SM90NVFP4MegaMoERuntime> {
 public:
     static constexpr int kFusedPhaseMode = 0;
     static constexpr int kSplitL1PhaseMode = 1;
@@ -53,7 +53,7 @@ public:
         bool packed_b_scratch;
         bool fused_b_scale_layout;
         bool skip_direct_scatter_sync;
-        int split_phase_mode;
+        int phase_mode;
         bool true_split_no_l2_ready_mask;
         MegaMoESM90Config config;
 
@@ -82,11 +82,11 @@ public:
     };
 
     static std::string generate_impl(const Args& args) {
-        DG_HOST_ASSERT(args.split_phase_mode >= kFusedPhaseMode && args.split_phase_mode <= kSplitL2PhaseMode);
-        const char* kernel_symbol = args.split_phase_mode == kFusedPhaseMode ? "sm90_nvfp4_mega_moe_fused_impl" :
-            (args.split_phase_mode == kSplitL1PhaseMode ?
+        DG_HOST_ASSERT(args.phase_mode >= kFusedPhaseMode && args.phase_mode <= kSplitL2PhaseMode);
+        const char* kernel_symbol = args.phase_mode == kFusedPhaseMode ? "sm90_nvfp4_mega_moe_fused_impl" :
+            (args.phase_mode == kSplitL1PhaseMode ?
                 "sm90_nvfp4_mega_moe_split_l1_impl" : "sm90_nvfp4_mega_moe_split_l2_impl");
-        const std::string split_template_args = args.split_phase_mode == kFusedPhaseMode ? "" :
+        const std::string phase_template_args = args.phase_mode == kFusedPhaseMode ? "" :
             fmt::format(",\n        {}", args.true_split_no_l2_ready_mask ? "true" : "false");
         return fmt::format(R"(
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe.cuh>
@@ -133,20 +133,47 @@ static void __instantiate_kernel() {{
     args.loader_dequant ? "true" : "false", args.packed_b_scratch ? "true" : "false", args.fused_b_scale_layout ? "true" : "false", args.skip_direct_scatter_sync ? "true" : "false",
     args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
     args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks,
-    split_template_args);
+    phase_template_args);
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+        if (args.phase_mode == kFusedPhaseMode) {
+            DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
+                args.y,
+                args.cumulative_local_expert_recv_stats,
+                args.num_tokens,
+                args.sym_buffer_ptrs,
+                args.tensor_map_l1_acts,
+                args.tensor_map_l1_acts_sf,
+                args.tensor_map_l1_weights,
+                args.l1_weights_sf,
+                args.tensor_map_l1_output,
+                args.tensor_map_l2_acts,
+                args.tensor_map_l2_acts_sf,
+                args.tensor_map_l2_weights,
+                args.l2_weights_sf
+            ));
+            return;
+        }
+        if (args.phase_mode == kSplitL1PhaseMode) {
+            DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
+                args.cumulative_local_expert_recv_stats,
+                args.num_tokens,
+                args.sym_buffer_ptrs,
+                args.tensor_map_l1_acts,
+                args.tensor_map_l1_acts_sf,
+                args.tensor_map_l1_weights,
+                args.l1_weights_sf,
+                args.tensor_map_l1_output
+            ));
+            return;
+        }
+        DG_HOST_ASSERT(args.phase_mode == kSplitL2PhaseMode);
         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
             args.y,
             args.cumulative_local_expert_recv_stats,
             args.num_tokens,
             args.sym_buffer_ptrs,
-            args.tensor_map_l1_acts,
-            args.tensor_map_l1_acts_sf,
-            args.tensor_map_l1_weights,
-            args.l1_weights_sf,
-            args.tensor_map_l1_output,
             args.tensor_map_l2_acts,
             args.tensor_map_l2_acts_sf,
             args.tensor_map_l2_weights,
@@ -427,7 +454,7 @@ static void sm90_nvfp4_mega_moe(
         direct_l2_scatter &&
         num_tokens < 8192 &&
         (num_tokens >= 256 || num_tokens <= 128);
-    const SM90NVFP4MegaMoESplitRuntime::Args args = {
+    const SM90NVFP4MegaMoERuntime::Args args = {
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
         .hidden = hidden, .intermediate_hidden = intermediate_hidden,
         .num_experts = num_experts, .num_topk = num_topk,
@@ -450,7 +477,7 @@ static void sm90_nvfp4_mega_moe(
             "DG_SM90_NVFP4_SKIP_DIRECT_SCATTER_SYNC",
             ((true_fused_l1_l2 && config.block_n == 256 && nvfp4_bn256_fused_m(num_tokens)) ||
              (!true_fused_l1_l2 && config.block_n == 128 && num_tokens >= 512)) ? 1 : 0) != 0,
-        .split_phase_mode = SM90NVFP4MegaMoESplitRuntime::kFusedPhaseMode,
+        .phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode,
         .true_split_no_l2_ready_mask = false,
         .config = config,
         .y = y.data_ptr(),
@@ -476,7 +503,7 @@ static void sm90_nvfp4_mega_moe(
     const bool true_split_no_l2_ready_mask =
         (!true_fused_l1_l2 && config.block_n == 128);
 
-    const auto refresh_launch_args = [&](SM90NVFP4MegaMoESplitRuntime::Args& phase_args) {
+    const auto refresh_launch_args = [&](SM90NVFP4MegaMoERuntime::Args& phase_args) {
         phase_args.launch_args = LaunchArgs(
             num_sms,
             phase_args.config.num_dispatch_threads + phase_args.config.num_non_epilogue_threads +
@@ -484,23 +511,23 @@ static void sm90_nvfp4_mega_moe(
             phase_args.config.smem_size, phase_args.config.cluster_size);
     };
 
-    const auto build_and_launch = [&](const SM90NVFP4MegaMoESplitRuntime::Args& phase_args,
+    const auto build_and_launch = [&](const SM90NVFP4MegaMoERuntime::Args& phase_args,
                                       const std::string& kernel_name) {
-        const auto code = SM90NVFP4MegaMoESplitRuntime::generate(phase_args);
+        const auto code = SM90NVFP4MegaMoERuntime::generate(phase_args);
         const auto runtime = compiler->build(kernel_name, code);
-        SM90NVFP4MegaMoESplitRuntime::launch(runtime, phase_args);
+        SM90NVFP4MegaMoERuntime::launch(runtime, phase_args);
     };
 
     const auto launch_fused = [&]() {
         auto phase_args = args;
-        phase_args.split_phase_mode = SM90NVFP4MegaMoESplitRuntime::kFusedPhaseMode;
+        phase_args.phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode;
         phase_args.true_split_no_l2_ready_mask = false;
         build_and_launch(phase_args, "sm90_nvfp4_mega_moe");
     };
 
     const auto launch_split_l1 = [&]() {
         auto phase_args = args;
-        phase_args.split_phase_mode = SM90NVFP4MegaMoESplitRuntime::kSplitL1PhaseMode;
+        phase_args.phase_mode = SM90NVFP4MegaMoERuntime::kSplitL1PhaseMode;
         phase_args.true_split_no_l2_ready_mask = true_split_no_l2_ready_mask;
         if (phase_args.config.block_n == 128 && phase_args.config.num_dispatch_threads == 128) {
             auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
@@ -520,7 +547,7 @@ static void sm90_nvfp4_mega_moe(
 
     const auto launch_split_l2 = [&]() {
         auto phase_args = args;
-        phase_args.split_phase_mode = SM90NVFP4MegaMoESplitRuntime::kSplitL2PhaseMode;
+        phase_args.phase_mode = SM90NVFP4MegaMoERuntime::kSplitL2PhaseMode;
         phase_args.true_split_no_l2_ready_mask = true_split_no_l2_ready_mask;
         if (l2_no_dispatch_pipeline) {
             phase_args.config.num_dispatch_threads = 0;

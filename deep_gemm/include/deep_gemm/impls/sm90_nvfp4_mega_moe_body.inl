@@ -12,7 +12,7 @@
     DG_STATIC_ASSERT(kNumExperts % kNumRanks == 0, "Invalid number of experts or ranks");
     DG_STATIC_ASSERT(kClusterSize == 1 or kClusterSize == 2, "Invalid cluster size");
     DG_STATIC_ASSERT(kNumSMs % kClusterSize == 0, "SM count must be divisible by cluster size");
-    DG_STATIC_ASSERT(kSplitPhaseMode <= 2, "Invalid split phase mode");
+    DG_STATIC_ASSERT(kPhaseMode <= 2, "Invalid phase mode");
     DG_STATIC_ASSERT(BLOCK_M == 16 or BLOCK_M == 32 or BLOCK_M % 64 == 0,
                      "BLOCK_M must be 16/32 for mma.sync decode or a multiple of WGMMA::M (64)");
     DG_STATIC_ASSERT(BLOCK_N == 64 or BLOCK_N == 128 or BLOCK_N == 256, "BLOCK_N must be 64/128/256 for this SM90 path");
@@ -26,8 +26,8 @@
     // =====================================================================
     // Thread / warp identification
     // =====================================================================
-    constexpr bool kRunL1Phase = kSplitPhaseMode != 2;
-    constexpr bool kRunL2Phase = kSplitPhaseMode != 1;
+    constexpr bool kRunL1Phase = kPhaseMode != 2;
+    constexpr bool kRunL2Phase = kPhaseMode != 1;
     const uint32_t sm_idx     = blockIdx.x;
     const uint32_t thread_idx = threadIdx.x;
     const uint32_t warp_idx   = cutlass::canonical_warp_idx_sync();
