@@ -387,6 +387,7 @@ template <
     uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks,
     bool kRunL1Phase = true,
     bool kRunL2Phase = true,
+    bool kTrueSplitNoL2ReadyMask = false,
     uint32_t kInstantiationTag = 0
 >
 CUTLASS_GLOBAL __launch_bounds__(kNumThreads, 1) void
@@ -510,6 +511,8 @@ sm90_nvfp4_mega_moe_impl(void* y,
         (!kSplitNWarpgroups) && (!kSerialNWarpgroups) && WG_BLOCK_N == 128;
     constexpr bool kL2ArrivalCounter = kL2ArrivalCounterRequested && (!kUseMMASync) &&
         (!kSplitNWarpgroups) && BLOCK_N == 128;
+    constexpr bool kSkipL2ReadyMask = kTrueSplitNoL2ReadyMask && (!kRunL1Phase) && kRunL2Phase;
+    constexpr bool kSkipL1ReadyNotify = kTrueSplitNoL2ReadyMask && kRunL1Phase && (!kRunL2Phase);
     constexpr bool kDirectScatterMetadataBroadcast =
         kDirectScatterMetadataBroadcastRequested && kDirectL2Scatter;
     constexpr bool kL1DualKAccum = kL1DualKAccumRequested && (!kUseMMASync) &&
@@ -1206,7 +1209,7 @@ sm90_nvfp4_mega_moe_impl(void* y,
                     const auto ptr = workspace.get_l1_arrival_count_ptr(pool_block_idx);
                     const auto expected = valid_m;
                     while (ptx::ld_acq(ptr) != expected);
-                } else {
+                } else if constexpr (!kSkipL2ReadyMask) {
                     // Each L1 N block publishes one ready event per active M warpgroup.
                     constexpr uint32_t kNumL1BlockNs = L1_SHAPE_N / BLOCK_N;
                     if constexpr (kL2ArrivalCounter) {
@@ -1372,7 +1375,10 @@ sm90_nvfp4_mega_moe_impl(void* y,
         const auto notify_l1_ready = [&](const uint32_t& ready_pool_block_idx,
                                          const uint32_t& ready_n_block_idx) {
             const unsigned long long notify_start = phase_profile_clock();
-            if constexpr (kL2ArrivalCounter) {
+            if constexpr (kSkipL1ReadyNotify) {
+                (void)ready_pool_block_idx;
+                (void)ready_n_block_idx;
+            } else if constexpr (kL2ArrivalCounter) {
                 if (warp_idx_in_wg == 0 and cute::elect_one_sync()) {
                     ptx::red_add_rel(
                         reinterpret_cast<uint32_t*>(workspace.get_l2_arrival_mask_ptr(ready_pool_block_idx)),

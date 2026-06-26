@@ -51,6 +51,7 @@ public:
         bool skip_direct_scatter_sync;
         bool run_l1_phase;
         bool run_l2_phase;
+        bool true_split_no_l2_ready_mask;
         MegaMoESM90Config config;
 
         // Runtime arguments
@@ -101,7 +102,7 @@ static void __instantiate_kernel() {{
         {}, {}, {}, {}, {}, {},
         {}, {}, {}, {},
         {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-        {}, {}, {}, {}
+        {}, {}, {}, {}, {}
     >);
 }};
 )",
@@ -123,7 +124,9 @@ static void __instantiate_kernel() {{
     args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
     args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks,
     args.run_l1_phase ? "true" : "false", args.run_l2_phase ? "true" : "false",
-    (args.run_l1_phase ? 1 : 0) | (args.run_l2_phase ? 2 : 0));
+    args.true_split_no_l2_ready_mask ? "true" : "false",
+    (args.run_l1_phase ? 1 : 0) | (args.run_l2_phase ? 2 : 0) |
+        (args.true_split_no_l2_ready_mask ? 4 : 0));
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -442,6 +445,7 @@ static void sm90_nvfp4_mega_moe(
              (!true_fused_l1_l2 && config.block_n == 128 && num_tokens >= 512)) ? 1 : 0) != 0,
         .run_l1_phase = true,
         .run_l2_phase = true,
+        .true_split_no_l2_ready_mask = false,
         .config = config,
         .y = y.data_ptr(),
         .cumulative_local_expert_recv_stats = cumulative_local_expert_recv_stats_ptr,
@@ -463,6 +467,8 @@ static void sm90_nvfp4_mega_moe(
         (!true_fused_l1_l2 && config.block_n == 128 && nvfp4_l2_nodisp_m(num_tokens)) ? 1 : 0;
     const bool l2_no_dispatch_pipeline =
         get_env<int>("DG_SM90_MOE_L2_NO_DISPATCH_PIPELINE", l2_no_dispatch_pipeline_default) != 0;
+    const bool true_split_no_l2_ready_mask =
+        (!true_fused_l1_l2 && config.block_n == 128 && (num_tokens == 512 || num_tokens == 819));
 
     const auto launch_with_phases = [&](const bool run_l1_phase,
                                         const bool run_l2_phase,
@@ -470,6 +476,9 @@ static void sm90_nvfp4_mega_moe(
         auto phase_args = args;
         phase_args.run_l1_phase = run_l1_phase;
         phase_args.run_l2_phase = run_l2_phase;
+        phase_args.true_split_no_l2_ready_mask =
+            true_split_no_l2_ready_mask &&
+            ((run_l1_phase && !run_l2_phase) || (!run_l1_phase && run_l2_phase));
         if (run_l1_phase && !run_l2_phase && phase_args.config.block_n == 128 &&
             phase_args.config.num_dispatch_threads == 128) {
             auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
@@ -541,10 +550,16 @@ static void sm90_nvfp4_mega_moe(
     };
 
     if (split_l1_l2) {
-        launch_with_phases(true, false, "sm90_nvfp4_mega_moe_l1");
+        launch_with_phases(
+            true, false,
+            true_split_no_l2_ready_mask ?
+                "sm90_nvfp4_mega_moe_true_split_l1" : "sm90_nvfp4_mega_moe_l1");
         launch_with_phases(
             false, true,
-            l2_no_dispatch_pipeline ? "sm90_nvfp4_mega_moe_l2_nodisp" : "sm90_nvfp4_mega_moe_l2");
+            true_split_no_l2_ready_mask ?
+                (l2_no_dispatch_pipeline ?
+                    "sm90_nvfp4_mega_moe_true_split_l2_nodisp" : "sm90_nvfp4_mega_moe_true_split_l2") :
+                (l2_no_dispatch_pipeline ? "sm90_nvfp4_mega_moe_l2_nodisp" : "sm90_nvfp4_mega_moe_l2"));
         return;
     }
 
