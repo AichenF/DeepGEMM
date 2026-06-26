@@ -788,8 +788,6 @@
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
-            if constexpr (!kRunL1Phase) { if (block_phase == sched::BlockPhase::Linear1) return; }
-            if constexpr (!kRunL2Phase) { if (block_phase == sched::BlockPhase::Linear2) return; }
             const auto tensor_map_a_ptr = block_phase == sched::BlockPhase::Linear2
                 ? &tensor_map_l2_acts : &tensor_map_l1_acts;
             const auto tensor_map_sfa_ptr = block_phase == sched::BlockPhase::Linear2
@@ -878,8 +876,6 @@
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
-            if constexpr (!kRunL1Phase) { if (block_phase == sched::BlockPhase::Linear1) return; }
-            if constexpr (!kRunL2Phase) { if (block_phase == sched::BlockPhase::Linear2) return; }
             const auto tensor_map_b_ptr =
                 block_phase == sched::BlockPhase::Linear2 ? &tensor_map_l2_weights : &tensor_map_l1_weights;
             const uint8_t* weights_sf_ptr =
@@ -932,8 +928,6 @@
             for_each_selected_block([&](const auto& block_phase,
                                          const uint32_t&, const uint32_t& num_k_blocks,
                                          const uint32_t&, const uint32_t&) {
-                if constexpr (!kRunL1Phase) { if (block_phase == sched::BlockPhase::Linear1) return; }
-                if constexpr (!kRunL2Phase) { if (block_phase == sched::BlockPhase::Linear2) return; }
                 for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                     const unsigned long long loader_dequant_start = phase_profile_clock();
                     dequant_loaded_b_stage(stage_idx, phase, non_epilogue_thread_idx);
@@ -1100,8 +1094,6 @@
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
-            if constexpr (!kRunL1Phase) { if (block_phase == sched::BlockPhase::Linear1) return; }
-            if constexpr (!kRunL2Phase) { if (block_phase == sched::BlockPhase::Linear2) return; }
             const uint32_t valid_m = scheduler.template get_valid_m<false>();
             const uint32_t pool_block_idx = scheduler.get_current_pool_block_offset() + m_block_idx;
             const uint32_t m_idx = pool_block_idx * BLOCK_M;

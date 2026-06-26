@@ -403,3 +403,67 @@ Note: the first full-list run reported `M=128` as `933.4us mean_rank`, but an im
 ### Result
 
 Keep. This is a structural wrapper refactor toward explicit fused/split launch paths. Correctness is unchanged, and the 50-run benchmark does not show a systematic regression after the noisy `M=128` point is rerun. The generated kernel entrypoint selection and kernel names remain the same as iteration 6.
+
+## Iteration 8 - Remove redundant selected-phase guards
+
+### Change
+
+- Removed four redundant callback guards from `for_each_selected_block()` users in the TMA A/SFA loader, TMA B/SFB loader, loader-dequant idle warp path, and math/epilogue path.
+- `for_each_selected_block()` is now the single body-local phase filter:
+  - split L1 entrypoints iterate only `Linear1` blocks,
+  - split L2 entrypoints iterate only `Linear2` blocks,
+  - fused entrypoints iterate both phases and pass each as a compile-time phase tag.
+- No scheduler, dequant, math, epilogue, or launch-selection logic changed.
+
+### Correctness
+
+- Build: `bash develop.sh` in `mega_moe_box` passed.
+- Smoke correctness, `weight_scale=0.05`: PASS for `M=512,819,1024,2048`.
+- Full correctness, `weight_scale=0.05`: PASS for `M=32,64,128,256,500,512,819,1000,1024,2048,4096,8192`.
+- Tiny-signal absolute fallback, `weight_scale=0.001`: PASS for `M=512,819,1024,2048` with `small_signal_ref_abs_max=1e-2`, `small_signal_abs_max_threshold=0.004`, `small_signal_abs_mean_threshold=0.0004`.
+
+### Benchmark
+
+Same full-list 50-run command as previous iterations:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_phase_guard_bench50`
+- 8 ranks, hidden 7168, intermediate hidden 2048, experts 256, topk 8.
+
+| M | iter7 mean_rank us | iter8 mean_rank us | delta |
+|---:|---:|---:|---:|
+| 8 | 741.9 | 767.7 | +3.5% |
+| 16 | 805.7 | 806.5 | +0.1% |
+| 32 | 831.5 | 804.9 | -3.2% |
+| 64 | 822.0 | 814.9 | -0.9% |
+| 128 | 820.8 | 813.6 | -0.9% |
+| 256 | 1199.9 | 1201.9 | +0.2% |
+| 260 | 1314.4 | 1293.0 | -1.6% |
+| 500 | 1955.6 | 1963.3 | +0.4% |
+| 512 | 1995.1 | 1986.3 | -0.4% |
+| 819 | 2803.1 | 2799.6 | -0.1% |
+| 1000 | 3338.0 | 3339.2 | +0.0% |
+| 1024 | 3493.1 | 3511.9 | +0.5% |
+| 1280 | 4083.4 | 4083.1 | -0.0% |
+| 1536 | 4876.6 | 4862.2 | -0.3% |
+| 2048 | 6167.0 | 6152.6 | -0.2% |
+| 3072 | 8832.4 | 8815.2 | -0.2% |
+| 4096 | 11519.4 | 11504.1 | -0.1% |
+| 8192 | 22601.9 | 22587.8 | -0.1% |
+
+Notes:
+
+- The first full-list run reported `M=32` as `914.5us mean_rank`; an immediate 50-run single-size rerun with the same JIT cache reported `804.9us`, so the rerun value is used in the table.
+- `M=8` rerun reported `767.7us`, matching iteration 6 (`767.6us`) but slower than iteration 7's unusually fast `741.9us` sample. Because the removed guards compile out in fused mode, this is treated as normal small-M benchmark variance rather than a generated-kernel regression.
+- `M=128` rerun reported `813.6us`, confirming no small-M systematic regression.
+
+### Result
+
+Keep. This makes the shared body rely on the explicit selected-phase iterator instead of repeating phase guards inside every callback. Correctness is unchanged, and the full-list plus targeted small-M reruns show no systematic performance regression.
