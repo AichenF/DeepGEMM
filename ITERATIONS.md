@@ -795,3 +795,69 @@ python tests/bench_nvfp4_mega_moe_sm90.py --batches 8 16 32 64 128 8192 --num-te
 ### Result
 
 Keep. The same-condition small-M targeted probe shows no stable regression, and the full-list run is flat-to-slightly faster across most sizes. This completes compile-time phase specialization for the active mma.sync small-M path without changing its math.
+
+## Iteration 13 - Rejected default WGMMA SF-load phase specialization
+
+### Change Tried
+
+- Tried converting the default WGMMA loop activation-SF load selector from a runtime-looking phase branch to:
+
+```cpp
+if constexpr (!kBlockIsL2) { ... } else { ... }
+```
+
+- Scope was intentionally narrow:
+  - only the L1/L2 activation-SF load branch inside `run_default_gemm_loop`,
+  - no WGMMA instruction sequence changes,
+  - no epilogue changes,
+  - no scheduler, wrapper, or launch-selection changes.
+
+### Correctness
+
+- Build: `./develop.sh` passed.
+- Smoke correctness, `weight_scale=0.05`: PASS for `M=512,819,1024,2048`.
+- Full correctness, `weight_scale=0.05`: PASS for `M=32,64,128,256,500,512,819,1000,1024,2048,4096,8192`.
+- Tiny-signal absolute fallback, `weight_scale=0.001`: PASS for `M=512,819,1024,2048`.
+
+### Benchmark
+
+Full-list 50-run command:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_iter13_wgmma_sf_bench50`
+
+Full-list result:
+
+| M | iter12 mean_rank us | iter13 tried mean_rank us | delta |
+|---:|---:|---:|---:|
+| 260 | 1288.1 | 1312.8 | +1.9% |
+| 512 | 1991.5 | 2013.6 | +1.1% |
+| 1024 | 3511.1 | 3522.2 | +0.3% |
+| 1280 | 4079.0 | 4098.1 | +0.5% |
+| 2048 | 6179.0 | 6174.4 | -0.1% |
+| 4096 | 11524.6 | 11540.4 | +0.1% |
+| 8192 | 22606.6 | 22606.1 | -0.0% |
+
+Targeted probe with `8192` included:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py --batches 260 512 1024 8192 --num-tests 50
+```
+
+| M | iter13 tried mean_rank us | iter12 `947e362` mean_rank us | delta |
+|---:|---:|---:|---:|
+| 260 | 1283.2 | 1266.7 | +1.3% |
+| 512 | 2054.0 | 2025.7 | +1.4% |
+| 1024 | 3559.1 | 3566.2 | -0.2% |
+| 8192 | 22723.8 | 22663.9 | +0.3% |
+
+### Result
+
+Reject and revert. Correctness passed, but the same-condition targeted comparison showed stable regressions on `M=260` and `M=512` without a compensating gain. The kernel source was restored to Iteration 12 (`947e362`) before committing this log entry.
