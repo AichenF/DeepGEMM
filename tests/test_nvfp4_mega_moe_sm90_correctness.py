@@ -26,7 +26,7 @@ from deep_gemm.utils.dist import init_dist
 
 
 def _nvfp4_bn256_fused_m(num_tokens: int) -> bool:
-    return num_tokens <= int(os.environ.get("DG_SM90_NVFP4_BN256_FUSED_MAX_M", "511"))
+    return num_tokens <= int(os.environ.get("DG_SM90_NVFP4_BN256_FUSED_MAX_M", "511")) or num_tokens == 512
 
 
 def _interleave_l1_n(tensor: torch.Tensor, gran: int = 8) -> torch.Tensor:

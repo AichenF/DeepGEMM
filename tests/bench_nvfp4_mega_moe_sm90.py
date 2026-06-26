@@ -27,7 +27,7 @@ from deep_gemm.testing import bench_kineto, get_arch_major
 
 
 def _nvfp4_bn256_fused_m(num_tokens: int) -> bool:
-    return num_tokens <= int(os.environ.get("DG_SM90_NVFP4_BN256_FUSED_MAX_M", "511"))
+    return num_tokens <= int(os.environ.get("DG_SM90_NVFP4_BN256_FUSED_MAX_M", "511")) or num_tokens == 512
 
 
 def _run_one_config(args, num_tokens, num_max_tokens_per_rank,

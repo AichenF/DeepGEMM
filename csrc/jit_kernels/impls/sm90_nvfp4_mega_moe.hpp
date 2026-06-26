@@ -176,9 +176,9 @@ static void sm90_nvfp4_mega_moe(
 
     const auto ceil_div = [](int x, int y) { return (x + y - 1) / y; };
     const int nvfp4_bn256_fused_max_m = get_env<int>("DG_SM90_NVFP4_BN256_FUSED_MAX_M", 511);
-    const auto nvfp4_bn256_fused_m = [=](int m) { return m <= nvfp4_bn256_fused_max_m; };
+    const auto nvfp4_bn256_fused_m = [=](int m) { return m <= nvfp4_bn256_fused_max_m || m == 512; };
     const auto nvfp4_bn128_bm128_m = [](int m) { return m >= 256; };
-    const auto nvfp4_bn256_loader_dequant_m = [=](int m) { return m >= 128 && m <= nvfp4_bn256_fused_max_m; };
+    const auto nvfp4_bn256_loader_dequant_m = [=](int m) { return m >= 128 && nvfp4_bn256_fused_m(m); };
     const auto nvfp4_l2_nodisp_m = [](int m) { return m >= 512; };
 
     // BN128 remains the default large-M layout. BN256 is used for the compact

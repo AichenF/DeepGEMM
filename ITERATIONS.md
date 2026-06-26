@@ -171,3 +171,58 @@ Environment:
 ### Result
 
 This is a parity structural change. It makes split/fused mode selection explicit and removes the invalid two-bool mode space, but it does not create a standalone L1/L2 implementation body yet. The benchmark is within normal run-to-run noise and does not show a systematic regression. Continue with real L1/L2 body separation or PR323-style fused specialization only behind the same correctness and no-regression gates.
+
+## Iteration 4 - Route M512 to the fused BN256 path
+
+### Change
+
+- Updated the BN256 fused selector so `M=512` uses the existing fused BN256 layout/path.
+- Kept `M=1024` on the split path because earlier E2E validation identified effective-token size 1024 as a precision-risk size.
+- Synced the benchmark and correctness helpers so their transformed weight layout matches the wrapper selector.
+
+### Correctness
+
+- Build: `bash develop.sh` in `mega_moe_box` passed.
+- Smoke correctness, `weight_scale=0.05`: PASS for `M=500,512,819,1024`.
+- Full correctness, `weight_scale=0.05`: PASS for `M=32,64,128,256,500,512,819,1000,1024,2048,4096,8192`.
+- Tiny-signal absolute fallback, `weight_scale=0.001`: PASS for `M=512,819,1024` with `small_signal_ref_abs_max=1e-2`, `small_signal_abs_max_threshold=1e-2`, `small_signal_abs_mean_threshold=1e-3`.
+
+### Benchmark
+
+Same full-list 50-run command as previous iterations:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_m512_fused_iter4_full_bench`
+- 8 ranks, hidden 7168, intermediate hidden 2048, experts 256, topk 8.
+
+| M | iter3 mean_rank us | iter4 mean_rank us | delta |
+|---:|---:|---:|---:|
+| 8 | 757.5 | 759.7 | +0.3% |
+| 16 | 791.9 | 794.9 | +0.4% |
+| 32 | 820.6 | 824.7 | +0.5% |
+| 64 | 800.9 | 833.1 | +4.0% |
+| 128 | 868.0 | 867.4 | -0.1% |
+| 256 | 1184.8 | 1195.0 | +0.9% |
+| 260 | 1301.6 | 1289.2 | -1.0% |
+| 500 | 1960.9 | 1955.0 | -0.3% |
+| 512 | 2169.7 | 1996.0 | -8.0% |
+| 819 | 2818.7 | 2800.5 | -0.6% |
+| 1000 | 3360.8 | 3358.8 | -0.1% |
+| 1024 | 3536.7 | 3522.9 | -0.4% |
+| 1280 | 4113.2 | 4106.9 | -0.2% |
+| 1536 | 4880.9 | 4921.9 | +0.8% |
+| 2048 | 6191.1 | 6216.2 | +0.4% |
+| 3072 | 8899.5 | 8868.1 | -0.4% |
+| 4096 | 11607.8 | 11607.5 | -0.0% |
+| 8192 | 22712.8 | 22697.2 | -0.1% |
+
+### Result
+
+This is a useful launch-selection win: `M=512` improves by about 8% in the full-list run. Other sizes are unchanged by construction except benchmark noise; the only visible positive deltas are small/noisy and not tied to a path change. Keep `M=1024` split for now due the known E2E precision-risk history.
