@@ -384,9 +384,7 @@ template <
     uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4,
     uint32_t kNumThreads = kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads,
     uint32_t kNumTokensPerWarp = 32 / kNumTopk,
-    uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks,
-    bool kTrueSplitNoL2ReadyMask = false,
-    uint32_t kInstantiationTag = 0
+    uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks
 >
 CUTLASS_GLOBAL __launch_bounds__(kNumThreads, 1) void
 sm90_nvfp4_mega_moe_fused_impl(void* y,
@@ -403,6 +401,7 @@ sm90_nvfp4_mega_moe_fused_impl(void* y,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weights,
                        const uint8_t* __restrict__ l2_weights_sf) {
     constexpr uint32_t kSplitPhaseMode = 0;
+    constexpr bool kTrueSplitNoL2ReadyMask = false;
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_body.inl>
 }
 
@@ -443,8 +442,7 @@ template <
     uint32_t kNumThreads = kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads,
     uint32_t kNumTokensPerWarp = 32 / kNumTopk,
     uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks,
-    bool kTrueSplitNoL2ReadyMask = false,
-    uint32_t kInstantiationTag = 0
+    bool kTrueSplitNoL2ReadyMask = false
 >
 CUTLASS_GLOBAL __launch_bounds__(kNumThreads, 1) void
 sm90_nvfp4_mega_moe_split_l1_impl(void* y,
@@ -501,8 +499,7 @@ template <
     uint32_t kNumThreads = kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads,
     uint32_t kNumTokensPerWarp = 32 / kNumTopk,
     uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks,
-    bool kTrueSplitNoL2ReadyMask = false,
-    uint32_t kInstantiationTag = 0
+    bool kTrueSplitNoL2ReadyMask = false
 >
 CUTLASS_GLOBAL __launch_bounds__(kNumThreads, 1) void
 sm90_nvfp4_mega_moe_split_l2_impl(void* y,

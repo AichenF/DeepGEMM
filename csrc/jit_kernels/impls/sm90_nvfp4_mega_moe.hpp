@@ -86,6 +86,8 @@ public:
         const char* kernel_symbol = args.split_phase_mode == kFusedPhaseMode ? "sm90_nvfp4_mega_moe_fused_impl" :
             (args.split_phase_mode == kSplitL1PhaseMode ?
                 "sm90_nvfp4_mega_moe_split_l1_impl" : "sm90_nvfp4_mega_moe_split_l2_impl");
+        const std::string split_template_args = args.split_phase_mode == kFusedPhaseMode ? "" :
+            fmt::format(",\n        {}", args.true_split_no_l2_ready_mask ? "true" : "false");
         return fmt::format(R"(
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe.cuh>
 
@@ -109,8 +111,7 @@ static void __instantiate_kernel() {{
         {}, {}, {}, {}, {}, {},
         {}, {}, {}, {},
         {}, {}, {}, {},
-        {}, {}, {}, {}, {}, {}, {},
-        {}, {}
+        {}, {}, {}, {}, {}, {}, {}{}
     >);
 }};
 )",
@@ -132,9 +133,7 @@ static void __instantiate_kernel() {{
     args.loader_dequant ? "true" : "false", args.packed_b_scratch ? "true" : "false", args.fused_b_scale_layout ? "true" : "false", args.skip_direct_scatter_sync ? "true" : "false",
     args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
     args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks,
-    args.true_split_no_l2_ready_mask ? "true" : "false",
-    args.split_phase_mode |
-        (args.true_split_no_l2_ready_mask ? 4 : 0));
+    split_template_args);
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
