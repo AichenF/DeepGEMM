@@ -567,3 +567,75 @@ Targeted reruns with `8192` included to keep `num_max_tokens_per_rank=8192`:
 ### Result
 
 Keep. The full-list run had several noisy high points, but NMT=8192 targeted reruns did not reproduce a stable regression. This moves the loader side closer to PR323-style phase-specialized processing while leaving the math/epilogue hot path unchanged.
+
+## Iteration 10 - Specialize math-side sync phase checks
+
+### Change
+
+- In the math/epilogue selected-block callback, added a compile-time phase tag:
+  - `BlockPhaseTag`
+  - `kBlockIsL2`
+- Converted only the sync/empty-tile phase checks to `if constexpr`:
+  - async L1 TMA-store drain before L2 blocks,
+  - async L1 TMA-store drain on invalid-M L1 blocks,
+  - epilogue barrier sync skip for `kL2ArrivalCounter && L1`.
+- Did not change the main WGMMA math loop, L1 epilogue, L2 epilogue, dequant arithmetic, scheduler policy, wrapper heuristics, or launch selection.
+
+An intermediate variant also changed the `kL1DualKAccum` loop selection to compile-time phase selection. That touches the hot GEMM-loop selection path and was removed before the final version after targeted M256 probes did not show a clean improvement. The committed version keeps this branch in its previous runtime form.
+
+### Correctness
+
+- Build: `./develop.sh` in `mega_moe_box` passed after restoring the current worktree from the baseline probe.
+- Smoke correctness, `weight_scale=0.05`: PASS for `M=512,819,1024,2048`.
+- Full correctness, `weight_scale=0.05`: PASS for `M=32,64,128,256,500,512,819,1000,1024,2048,4096,8192`.
+- Tiny-signal absolute fallback, `weight_scale=0.001`: PASS for `M=512,819,1024,2048` with `small_signal_ref_abs_max=1e-2`, `small_signal_abs_max_threshold=0.004`, `small_signal_abs_mean_threshold=0.0004`.
+
+### Benchmark
+
+Full-list 50-run command:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_iter10_sync_only_bench50`
+- 8 ranks, hidden 7168, intermediate hidden 2048, experts 256, topk 8.
+
+| M | iter9 mean_rank us | iter10 mean_rank us | delta |
+|---:|---:|---:|---:|
+| 8 | 802.6 | 769.0 | -4.2% |
+| 16 | 797.4 | 803.8 | +0.8% |
+| 32 | 836.3 | 819.6 | -2.0% |
+| 64 | 823.0 | 851.4 | +3.5% |
+| 128 | 881.3 | 866.2 | -1.7% |
+| 256 | 1199.4 | 1187.0 | -1.0% |
+| 260 | 1304.1 | 1286.1 | -1.4% |
+| 500 | 2002.4 | 1972.4 | -1.5% |
+| 512 | 1989.0 | 1996.0 | +0.4% |
+| 819 | 2804.1 | 2818.2 | +0.5% |
+| 1000 | 3332.6 | 3360.2 | +0.8% |
+| 1024 | 3506.9 | 3516.2 | +0.3% |
+| 1280 | 4122.0 | 4088.0 | -0.8% |
+| 1536 | 4867.2 | 4858.1 | -0.2% |
+| 2048 | 6163.5 | 6160.4 | -0.1% |
+| 3072 | 8830.4 | 8829.4 | -0.0% |
+| 4096 | 11527.1 | 11536.9 | +0.1% |
+| 8192 | 22595.6 | 22616.4 | +0.1% |
+
+Targeted probes:
+
+| probe | M | current mean_rank us | clean d552298 mean_rank us | note |
+|---|---:|---:|---:|---|
+| `M=256,1024,8192` | 256 | 1292.6 | 1295.6 | no current regression under same recv/NMT |
+| `M=256,1024,8192` | 1024 | 3494.1 | 3442.1 | +1.5%, within the same noise band as full-list deltas |
+| `M=256,1024,8192` | 8192 | 22608.6 | 22650.4 | no current regression |
+| `M=64,8192` | 64 | 853.8 | 869.1 | full-list M64 was noisy; same-condition baseline is slower |
+| `M=64,8192` | 8192 | 22609.2 | 22601.4 | effectively equal |
+
+### Result
+
+Keep. This is a narrow structural refactor toward compile-time phase-specialized true split/fuse code, but it deliberately avoids the main math/epilogue body. Full correctness and tiny-signal fallback pass. The 50-run benchmark is flat overall; the apparent M64 full-list regression is not reproduced against a same-condition clean `d552298` baseline, where current is faster.

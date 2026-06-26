@@ -1127,9 +1127,11 @@
             const uint32_t row_offset_r1 = row_block_offset + r_1;
             const bool valid_r0 = row_offset_r0 < valid_m;
             const bool valid_r1 = row_offset_r1 < valid_m;
+            using BlockPhaseTag = std::remove_cv_t<std::remove_reference_t<decltype(block_phase)>>;
+            constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
 
             if constexpr (kAsyncL1TMAStore) {
-                if (block_phase != sched::BlockPhase::Linear1)
+                if constexpr (kBlockIsL2)
                     drain_all_async_l1_stores();
             }
 
@@ -1141,10 +1143,10 @@
                         __syncwarp();
                     }
                     if constexpr (kAsyncL1TMAStore) {
-                        if (block_phase == sched::BlockPhase::Linear1)
+                        if constexpr (!kBlockIsL2)
                             drain_all_async_l1_stores();
                     }
-                    if (!(kL2ArrivalCounter && block_phase == sched::BlockPhase::Linear1))
+                    if constexpr (!kL2ArrivalCounter || kBlockIsL2)
                         ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                     return;
                 }
@@ -1993,10 +1995,10 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
             // previous valid block, so drain it before leaving the L1 wave.
             if (row_block_offset >= valid_m) {
                 if constexpr (kAsyncL1TMAStore) {
-                    if (block_phase == sched::BlockPhase::Linear1)
+                    if constexpr (!kBlockIsL2)
                         drain_all_async_l1_stores();
                 }
-                if (!(kL2ArrivalCounter && block_phase == sched::BlockPhase::Linear1))
+                if constexpr (!kL2ArrivalCounter || kBlockIsL2)
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 return;
             }
