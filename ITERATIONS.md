@@ -114,3 +114,60 @@ Environment:
 ### Result
 
 The structural no-ready-mask path is correctness-safe on the smoke set and improves the two enabled sizes in the full-list run, while leaving other sizes on the legacy ready-mask path. The remaining tiny positive deltas occur on sizes where the new template flag is not enabled, so they are treated as benchmark noise / iter1 baseline noise rather than a direct no-ready-mask regression. Before finalizing, run full correctness and consider repeated benchmark samples for the marginal sizes.
+
+## Iteration 3 - First-class split phase mode
+
+### Change
+
+- Replaced the two template booleans `kRunL1Phase` / `kRunL2Phase` with a single `kSplitPhaseMode` template parameter:
+  - `0`: fused L1+L2
+  - `1`: split L1 only
+  - `2`: split L2 only
+- The kernel body still derives local constexpr `kRunL1Phase` and `kRunL2Phase`, so this is a structural cleanup toward true split rather than a math/dataflow change.
+- Kept the iteration-2 gated no-ready-mask behavior unchanged.
+
+### Correctness
+
+- Build: `bash develop.sh` in `mega_moe_box` passed.
+- Smoke correctness, `weight_scale=0.05`: PASS for `M=128,512,819,1024`.
+- Full correctness, `weight_scale=0.05`: PASS for `M=32,64,128,256,500,512,819,1000,1024,2048,4096,8192`.
+
+### Benchmark
+
+Same full-list 50-run command as iterations 1 and 2:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_split_phase_mode_iter3_full_bench`
+- 8 ranks, hidden 7168, intermediate hidden 2048, experts 256, topk 8.
+
+| M | iter2 mean_rank us | iter3 mean_rank us | delta |
+|---:|---:|---:|---:|
+| 8 | 777.0 | 757.5 | -2.5% |
+| 16 | 795.8 | 791.9 | -0.5% |
+| 32 | 845.0 | 820.6 | -2.9% |
+| 64 | 825.4 | 800.9 | -3.0% |
+| 128 | 850.7 | 868.0 | +2.0% |
+| 256 | 1189.4 | 1184.8 | -0.4% |
+| 260 | 1288.0 | 1301.6 | +1.1% |
+| 500 | 1953.3 | 1960.9 | +0.4% |
+| 512 | 2161.7 | 2169.7 | +0.4% |
+| 819 | 2802.8 | 2818.7 | +0.6% |
+| 1000 | 3368.8 | 3360.8 | -0.2% |
+| 1024 | 3517.9 | 3536.7 | +0.5% |
+| 1280 | 4115.9 | 4113.2 | -0.1% |
+| 1536 | 4904.7 | 4880.9 | -0.5% |
+| 2048 | 6199.7 | 6191.1 | -0.1% |
+| 3072 | 8891.7 | 8899.5 | +0.1% |
+| 4096 | 11609.4 | 11607.8 | -0.0% |
+| 8192 | 22721.4 | 22712.8 | -0.0% |
+
+### Result
+
+This is a parity structural change. It makes split/fused mode selection explicit and removes the invalid two-bool mode space, but it does not create a standalone L1/L2 implementation body yet. The benchmark is within normal run-to-run noise and does not show a systematic regression. Continue with real L1/L2 body separation or PR323-style fused specialization only behind the same correctness and no-regression gates.

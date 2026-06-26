@@ -79,6 +79,7 @@ public:
     };
 
     static std::string generate_impl(const Args& args) {
+        const int split_phase_mode = args.run_l1_phase ? (args.run_l2_phase ? 0 : 1) : 2;
         return fmt::format(R"(
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe.cuh>
 
@@ -102,7 +103,7 @@ static void __instantiate_kernel() {{
         {}, {}, {}, {}, {}, {},
         {}, {}, {}, {},
         {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-        {}, {}, {}, {}, {}
+        {}, {}, {}, {}
     >);
 }};
 )",
@@ -123,9 +124,9 @@ static void __instantiate_kernel() {{
     args.loader_dequant ? "true" : "false", args.packed_b_scratch ? "true" : "false", args.fused_b_scale_layout ? "true" : "false", args.skip_direct_scatter_sync ? "true" : "false",
     args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
     args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks,
-    args.run_l1_phase ? "true" : "false", args.run_l2_phase ? "true" : "false",
+    split_phase_mode,
     args.true_split_no_l2_ready_mask ? "true" : "false",
-    (args.run_l1_phase ? 1 : 0) | (args.run_l2_phase ? 2 : 0) |
+    split_phase_mode |
         (args.true_split_no_l2_ready_mask ? 4 : 0));
     }
 
