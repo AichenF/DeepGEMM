@@ -1190,7 +1190,7 @@
                     constexpr uint32_t kL1SFPerExpert = (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
                     constexpr uint32_t kL2SFPerExpert = (kHidden / 128) * kL2SFKBlocks;
 
-                    if (block_phase == sched::BlockPhase::Linear1) {
+                    if constexpr (!kBlockIsL2) {
                         const float gate_sf = 1.0f;
                         const float up_sf = 1.0f;
 
@@ -1251,7 +1251,7 @@
                 constexpr uint32_t kMMASyncRowsPerPass = kNumEpilogueThreads / 8;
                 DG_STATIC_ASSERT(kMMASyncRowsPerPass == 16, "mma.sync epilogue maps 8 lanes per row");
 
-                if (block_phase == sched::BlockPhase::Linear1) {
+                if constexpr (!kBlockIsL2) {
                     #pragma unroll
                     for (uint32_t row_base = 0; row_base < BLOCK_M; row_base += kMMASyncRowsPerPass) {
                         const uint32_t row = row_base + epilogue_thread_idx / 8;

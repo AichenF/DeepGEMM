@@ -723,3 +723,75 @@ python tests/bench_nvfp4_mega_moe_sm90.py --batches 32 128 256 8192 --num-tests 
 ### Result
 
 Keep. The full-list small-M points `M=32` and `M=128` were noisy, but the same-condition targeted run against the Iteration 10 commit shows no regression. The large-M sweep is flat, with all deltas within benchmark noise. This is a useful true-split refactor because split L1/L2 epilogue code is now selected at compile time instead of relying on a runtime-looking phase branch.
+
+## Iteration 12 - Specialize mma.sync phase branches
+
+### Change
+
+- Converted the two remaining active `kUseMMASync` L1/L2 selectors to compile-time phase selection:
+  - the mma.sync per-K block L1-vs-L2 compute branch,
+  - the mma.sync L1-vs-L2 epilogue branch.
+- This only affects the `BLOCK_M == 16 or BLOCK_M == 32` small-M path.
+- Did not change default WGMMA code, dequant arithmetic, scheduler policy, wrapper heuristics, or launch selection.
+
+### Correctness
+
+- Build: `./develop.sh` in `mega_moe_box` passed after restoring the current worktree from the Iteration 11 probe.
+- Smoke correctness, `weight_scale=0.05`: PASS for `M=512,819,1024,2048`.
+- Full correctness, `weight_scale=0.05`: PASS for `M=32,64,128,256,500,512,819,1000,1024,2048,4096,8192`.
+- Tiny-signal absolute fallback, `weight_scale=0.001`: PASS for `M=512,819,1024,2048` with `small_signal_ref_abs_max=1e-2`, `small_signal_abs_max_threshold=0.004`, `small_signal_abs_mean_threshold=0.0004`.
+
+### Benchmark
+
+Full-list 50-run command:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_iter12_mmasync_phase_bench50`
+- 8 ranks, hidden 7168, intermediate hidden 2048, experts 256, topk 8.
+
+| M | iter11 mean_rank us | iter12 mean_rank us | delta |
+|---:|---:|---:|---:|
+| 8 | 750.3 | 752.9 | +0.3% |
+| 16 | 813.1 | 797.2 | -2.0% |
+| 32 | 889.9 | 885.7 | -0.5% |
+| 64 | 832.1 | 817.9 | -1.7% |
+| 128 | 891.3 | 838.6 | -5.9% |
+| 256 | 1217.6 | 1200.4 | -1.4% |
+| 260 | 1310.2 | 1288.1 | -1.7% |
+| 500 | 1969.5 | 1962.2 | -0.4% |
+| 512 | 1999.7 | 1991.5 | -0.4% |
+| 819 | 2819.8 | 2809.9 | -0.4% |
+| 1000 | 3357.0 | 3355.2 | -0.1% |
+| 1024 | 3513.5 | 3511.1 | -0.1% |
+| 1280 | 4097.5 | 4079.0 | -0.5% |
+| 1536 | 4874.0 | 4874.4 | +0.0% |
+| 2048 | 6167.6 | 6179.0 | +0.2% |
+| 3072 | 8809.8 | 8819.5 | +0.1% |
+| 4096 | 11517.8 | 11524.6 | +0.1% |
+| 8192 | 22602.6 | 22606.6 | +0.0% |
+
+Targeted small-M probe with `8192` included to keep NMT comparable:
+
+```bash
+python tests/bench_nvfp4_mega_moe_sm90.py --batches 8 16 32 64 128 8192 --num-tests 50
+```
+
+| M | iter12 current mean_rank us | iter11 `7756bfe` mean_rank us | delta |
+|---:|---:|---:|---:|
+| 8 | 750.6 | 758.0 | -1.0% |
+| 16 | 796.8 | 800.8 | -0.5% |
+| 32 | 823.5 | 841.6 | -2.1% |
+| 64 | 845.7 | 835.6 | +1.2% |
+| 128 | 835.2 | 835.9 | -0.1% |
+| 8192 | 22641.9 | 22618.8 | +0.1% |
+
+### Result
+
+Keep. The same-condition small-M targeted probe shows no stable regression, and the full-list run is flat-to-slightly faster across most sizes. This completes compile-time phase specialization for the active mma.sync small-M path without changing its math.
