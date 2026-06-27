@@ -401,9 +401,8 @@ sm90_nvfp4_mega_moe_fused_impl(void* y,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts_sf,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weights,
                        const uint8_t* __restrict__ l2_weights_sf) {
-    constexpr uint32_t kPhaseMode = 0;
     constexpr bool kTrueSplitNoL2ReadyMask = false;
-#include <deep_gemm/impls/sm90_nvfp4_mega_moe_body.inl>
+#include <deep_gemm/impls/sm90_nvfp4_mega_moe_fused_body.inl>
 }
 
 
@@ -454,13 +453,7 @@ sm90_nvfp4_mega_moe_split_l1_impl(int* cumulative_local_expert_recv_stats,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l1_weights,
                        const uint8_t* __restrict__ l1_weights_sf,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l1_output) {
-    void* y = nullptr;
-    const auto& tensor_map_l2_acts = tensor_map_l1_acts;
-    const auto& tensor_map_l2_acts_sf = tensor_map_l1_acts_sf;
-    const auto& tensor_map_l2_weights = tensor_map_l1_weights;
-    const uint8_t* l2_weights_sf = l1_weights_sf;
-    constexpr uint32_t kPhaseMode = 1;
-#include <deep_gemm/impls/sm90_nvfp4_mega_moe_body.inl>
+#include <deep_gemm/impls/sm90_nvfp4_mega_moe_split_l1_body.inl>
 }
 
 
@@ -511,13 +504,7 @@ sm90_nvfp4_mega_moe_split_l2_impl(void* y,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts_sf,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weights,
                        const uint8_t* __restrict__ l2_weights_sf) {
-    const auto& tensor_map_l1_acts = tensor_map_l2_acts;
-    const auto& tensor_map_l1_acts_sf = tensor_map_l2_acts_sf;
-    const auto& tensor_map_l1_weights = tensor_map_l2_weights;
-    const uint8_t* l1_weights_sf = l2_weights_sf;
-    const auto& tensor_map_l1_output = tensor_map_l2_acts;
-    constexpr uint32_t kPhaseMode = 2;
-#include <deep_gemm/impls/sm90_nvfp4_mega_moe_body.inl>
+#include <deep_gemm/impls/sm90_nvfp4_mega_moe_split_l2_body.inl>
 }
 
 

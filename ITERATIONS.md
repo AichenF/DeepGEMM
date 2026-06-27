@@ -1036,3 +1036,156 @@ Keep as a milestone candidate. The change makes the true split entrypoints clean
 - Current SGLang MegaMoE config maps SM90 to `fp8_mega_moe` and SM100 FP4 to `fp8_fp4_mega_moe` in `python/sglang/srt/layers/moe/mega_moe.py`.
 - Therefore the full correctness gate above is a kernel-level NVFP4 gate. Historical GSM8K / SGLang e2e runs in the current SGLang tree would not prove this SM90 NVFP4 kernel unless a separate SGLang integration route calls `deep_gemm.nvfp4_mega_moe`.
 - Kernel-level boundary correctness also passed for the historically suspicious effective-token sizes and neighbors: `M=1024,1025,1200,2047,2048`, `weight_scale=0.05`, with `cosine_min=0.9986-0.9987` and finite outputs.
+
+## Milestone Candidate - Independent fused and split kernel bodies
+
+### Change
+
+- Replaced the shared `sm90_nvfp4_mega_moe_body.inl` include with three independent kernel bodies:
+  - `sm90_nvfp4_mega_moe_fused_body.inl`
+  - `sm90_nvfp4_mega_moe_split_l1_body.inl`
+  - `sm90_nvfp4_mega_moe_split_l2_body.inl`
+- Removed the old tracked shared body file.
+- Removed `kPhaseMode`, `kRunL1Phase`, and `kRunL2Phase` from the compiled SM90 NVFP4 MegaMoE implementation.
+- Split L1 no longer carries L2 descriptor/weight aliases in its entrypoint; split L2 no longer carries L1 descriptor/output aliases in its entrypoint.
+- This is a pure source-structure refactor. No size routing, math, dequant, dispatch algorithm, combine algorithm, or optimization heuristic was intentionally changed.
+
+### Correctness
+
+- Build: `./develop.sh` in `mega_moe_box` passed after deleting the shared body.
+- Smoke correctness with a fresh JIT cache: PASS for `M=32,512,819,1024`, `weight_scale=0.05`.
+- Full correctness, `weight_scale=0.05`: PASS for `M=32,64,128,256,500,512,819,1000,1024,1280,1536,2047,2048,3072,4096,8192`.
+- Tiny-signal absolute fallback, `weight_scale=0.001`: PASS for the same M list with `small_signal_ref_abs_max=0.01`, `small_signal_abs_max_threshold=0.004`, `small_signal_abs_mean_threshold=0.0004`.
+
+### Full 50-run Benchmark Gate
+
+Command:
+
+```bash
+python3 tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+Environment:
+
+- `DG_JIT_CACHE_DIR=/tmp/dg_jit_three_body_bench50`
+- 8 ranks, hidden 7168, intermediate hidden 2048, experts 256, topk 8.
+
+| M | narrow-args mean_rank us | three-body mean_rank us | delta |
+|---:|---:|---:|---:|
+| 8 | 757.5 | 745.6 | -1.6% |
+| 16 | 806.5 | 827.2 | +2.6% |
+| 32 | 843.0 | 822.2 | -2.5% |
+| 64 | 812.7 | 861.6 | +6.0% |
+| 128 | 854.9 | 838.1 | -2.0% |
+| 256 | 1193.2 | 1187.8 | -0.5% |
+| 260 | 1298.6 | 1318.0 | +1.5% |
+| 500 | 1962.9 | 1998.6 | +1.8% |
+| 512 | 1992.2 | 2009.7 | +0.9% |
+| 819 | 2826.3 | 2827.5 | +0.0% |
+| 1000 | 3337.8 | 3362.9 | +0.8% |
+| 1024 | 3498.9 | 3517.4 | +0.5% |
+| 1280 | 4081.9 | 4092.0 | +0.2% |
+| 1536 | 4873.5 | 4881.9 | +0.2% |
+| 2048 | 6167.0 | 6151.5 | -0.3% |
+| 3072 | 8820.6 | 8841.0 | +0.2% |
+| 4096 | 11531.2 | 11528.0 | -0.0% |
+| 8192 | 22607.9 | 22599.4 | -0.0% |
+
+### Targeted Recheck
+
+The full-list run showed small-M/routing noise at `M=16`, `M=64`, `M=260`, and `M=500`. A same-cache targeted 50-run recheck removed those apparent regressions:
+
+```bash
+python3 tests/bench_nvfp4_mega_moe_sm90.py --batches 16 64 260 500 --num-tests 50
+```
+
+| M | narrow-args mean_rank us | targeted three-body mean_rank us | delta |
+|---:|---:|---:|---:|
+| 16 | 806.5 | 790.8 | -1.9% |
+| 64 | 812.7 | 799.7 | -1.6% |
+| 260 | 1298.6 | 1284.1 | -1.1% |
+| 500 | 1962.9 | 1918.7 | -2.3% |
+
+### Result
+
+Keep as the true three-body refactor milestone. The source now has independent fused, split-L1, and split-L2 bodies rather than one phase-mode body. Correctness passes across the full kernel-level M sweep, and targeted 50-run checks show no reproduced performance regression on the noisy full-list points. Do not push until the user asks for push.
+
+### Completion Audit Cleanup
+
+The completion audit found that the first three-body split still carried dead cross-phase ready-mask paths:
+
+- split-L1 still had L2 ready-mask publish/cleanup code.
+- split-L2 still had L1-ready wait/notify dead code.
+
+Those paths were removed from the split bodies. Static grep now has no hits for:
+
+- split-L1: `BlockPhase::Linear2`, `tensor_map_l2`, `l2_weights`, `get_l2_arrival_mask`
+- split-L2: `BlockPhase::Linear1`, `tensor_map_l1`, `l1_weights`, `tensor_map_l1_output`, `notify_l1_ready`, `get_l2_arrival_mask`
+- all bodies/entrypoints: `kPhaseMode`, `kRunL1Phase`, `kRunL2Phase`, `sm90_nvfp4_mega_moe_body.inl`
+
+The remaining `get_l1_arrival_count_ptr` in split-L2 is workspace cleanup for the next call, not an L1 compute branch or L1 descriptor/output path.
+
+Rebuild passed:
+
+```bash
+./develop.sh
+```
+
+Full correctness passed:
+
+```bash
+DG_JIT_CACHE_DIR=/tmp/dg_jit_three_body_clean_full_correct \
+python3 tests/test_nvfp4_mega_moe_sm90_correctness.py \
+  --batches 32 64 128 256 500 512 819 1000 1024 1280 1536 2047 2048 3072 4096 8192 \
+  --weight-scales 0.05 0.001 \
+  --small-signal-ref-abs-max 0.01 \
+  --small-signal-abs-max-threshold 0.004 \
+  --small-signal-abs-mean-threshold 0.0004
+```
+
+Final full-list 50-run benchmark:
+
+```bash
+DG_JIT_CACHE_DIR=/tmp/dg_jit_three_body_clean_bench50 \
+python3 tests/bench_nvfp4_mega_moe_sm90.py \
+  --batches 8 16 32 64 128 256 260 500 512 819 1000 1024 1280 1536 2048 3072 4096 8192 \
+  --num-tests 50
+```
+
+| M | narrow-args mean_rank us | clean three-body mean_rank us | delta |
+|---:|---:|---:|---:|
+| 8 | 757.5 | 749.8 | -1.0% |
+| 16 | 806.5 | 797.3 | -1.1% |
+| 32 | 843.0 | 861.8 | +2.2% |
+| 64 | 812.7 | 817.4 | +0.6% |
+| 128 | 854.9 | 824.8 | -3.5% |
+| 256 | 1193.2 | 1194.5 | +0.1% |
+| 260 | 1298.6 | 1294.4 | -0.3% |
+| 500 | 1962.9 | 1954.4 | -0.4% |
+| 512 | 1992.2 | 2026.1 | +1.7% |
+| 819 | 2826.3 | 2818.2 | -0.3% |
+| 1000 | 3337.8 | 3359.0 | +0.6% |
+| 1024 | 3498.9 | 3535.2 | +1.0% |
+| 1280 | 4081.9 | 4088.5 | +0.2% |
+| 1536 | 4873.5 | 4883.9 | +0.2% |
+| 2048 | 6167.0 | 6166.0 | -0.0% |
+| 3072 | 8820.6 | 8828.4 | +0.1% |
+| 4096 | 11531.2 | 11534.4 | +0.0% |
+| 8192 | 22607.9 | 22628.4 | +0.1% |
+
+Full-list points over 1% were rechecked with the same JIT cache:
+
+```bash
+DG_JIT_CACHE_DIR=/tmp/dg_jit_three_body_clean_bench50 \
+python3 tests/bench_nvfp4_mega_moe_sm90.py --batches 32 512 1024 --num-tests 50
+```
+
+| M | narrow-args mean_rank us | targeted clean three-body mean_rank us | delta |
+|---:|---:|---:|---:|
+| 32 | 843.0 | 821.0 | -2.6% |
+| 512 | 1992.2 | 1932.4 | -3.0% |
+| 1024 | 3498.9 | 3503.3 | +0.1% |
+
+Result: keep. The stricter split-body cleanup still passes full correctness and does not reproduce a performance regression in targeted 50-run checks.
