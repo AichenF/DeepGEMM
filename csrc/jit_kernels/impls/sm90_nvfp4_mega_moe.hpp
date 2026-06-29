@@ -52,7 +52,6 @@ public:
         bool loader_dequant;
         bool packed_b_scratch;
         bool fused_b_scale_layout;
-        bool skip_direct_scatter_sync;
         int phase_mode;
         bool true_split_no_l2_ready_mask;
         MegaMoESM90Config config;
@@ -76,6 +75,8 @@ public:
         CUtensorMap tensor_map_l2_acts_sf;
         CUtensorMap tensor_map_l2_weights;
         const uint8_t* l2_weights_sf;
+        const float* l1_global_scales;
+        const float* l2_global_scales;
 
         // Launch configs
         LaunchArgs launch_args;
@@ -109,7 +110,7 @@ static void __instantiate_kernel() {{
         {},
         {},
         {}, {}, {}, {}, {}, {},
-        {}, {}, {}, {},
+        {}, {}, {},
         {}, {}, {}, {},
         {}, {}, {}, {}, {}, {}, {}{}
     >);
@@ -130,7 +131,7 @@ static void __instantiate_kernel() {{
     to_string(args.activation_clamp),
     args.fast_math ? "true" : "false",
     args.direct_l2_scatter ? "true" : "false", args.l2_dual_accum ? "true" : "false", args.phase_profile ? "true" : "false", args.l2_arrival_counter ? "true" : "false", args.direct_scatter_metadata_broadcast ? "true" : "false", args.l1_dual_k_accum ? "true" : "false",
-    args.loader_dequant ? "true" : "false", args.packed_b_scratch ? "true" : "false", args.fused_b_scale_layout ? "true" : "false", args.skip_direct_scatter_sync ? "true" : "false",
+    args.loader_dequant ? "true" : "false", args.packed_b_scratch ? "true" : "false", args.fused_b_scale_layout ? "true" : "false",
     args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
     args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks,
     phase_template_args);
@@ -151,7 +152,9 @@ static void __instantiate_kernel() {{
                 args.tensor_map_l2_acts,
                 args.tensor_map_l2_acts_sf,
                 args.tensor_map_l2_weights,
-                args.l2_weights_sf
+                args.l2_weights_sf,
+                args.l1_global_scales,
+                args.l2_global_scales
             ));
             return;
         }
@@ -164,7 +167,9 @@ static void __instantiate_kernel() {{
                 args.tensor_map_l1_acts_sf,
                 args.tensor_map_l1_weights,
                 args.l1_weights_sf,
-                args.tensor_map_l1_output
+                args.tensor_map_l1_output,
+                args.l1_global_scales,
+                args.l2_global_scales
             ));
             return;
         }
@@ -177,7 +182,8 @@ static void __instantiate_kernel() {{
             args.tensor_map_l2_acts,
             args.tensor_map_l2_acts_sf,
             args.tensor_map_l2_weights,
-            args.l2_weights_sf
+            args.l2_weights_sf,
+            args.l2_global_scales
         ));
     }
 };
@@ -189,6 +195,8 @@ static void sm90_nvfp4_mega_moe(
     const torch::Tensor& l1_weights, const torch::Tensor& l2_weights,
     const torch::Tensor& l1_weights_sf, const torch::Tensor& l2_weights_sf,
     const std::optional<torch::Tensor> cumulative_local_expert_recv_stats,
+    const std::optional<torch::Tensor> l1_global_scales,
+    const std::optional<torch::Tensor> l2_global_scales,
     const std::vector<int64_t>& sym_buffer_ptrs,
     const int& rank_idx, const int& num_max_tokens_per_rank,
     const int& num_experts_per_rank,
@@ -431,6 +439,8 @@ static void sm90_nvfp4_mega_moe(
     int* cumulative_local_expert_recv_stats_ptr = nullptr;
     if (cumulative_local_expert_recv_stats.has_value())
         cumulative_local_expert_recv_stats_ptr = cumulative_local_expert_recv_stats->data_ptr<int>();
+    const float* l1_global_scales_ptr = l1_global_scales.has_value() ? l1_global_scales->data_ptr<float>() : nullptr;
+    const float* l2_global_scales_ptr = l2_global_scales.has_value() ? l2_global_scales->data_ptr<float>() : nullptr;
 
     // Launch
     const auto num_sms = device_runtime->get_num_sms();
@@ -473,10 +483,6 @@ static void sm90_nvfp4_mega_moe(
         .loader_dequant = nvfp4_loader_dequant,
         .packed_b_scratch = nvfp4_packed_b_scratch,
         .fused_b_scale_layout = nvfp4_fused_b_scale_layout,
-        .skip_direct_scatter_sync = get_env<int>(
-            "DG_SM90_NVFP4_SKIP_DIRECT_SCATTER_SYNC",
-            ((true_fused_l1_l2 && config.block_n == 256 && nvfp4_bn256_fused_m(num_tokens)) ||
-             (!true_fused_l1_l2 && config.block_n == 128 && num_tokens >= 512)) ? 1 : 0) != 0,
         .phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode,
         .true_split_no_l2_ready_mask = false,
         .config = config,
@@ -493,6 +499,8 @@ static void sm90_nvfp4_mega_moe(
         .tensor_map_l2_acts_sf = tensor_map_l2_acts_sf,
         .tensor_map_l2_weights = tensor_map_l2_weights,
         .l2_weights_sf = l2_weights_sf.data_ptr<uint8_t>(),
+        .l1_global_scales = l1_global_scales_ptr,
+        .l2_global_scales = l2_global_scales_ptr,
         .launch_args = LaunchArgs(num_sms, config.num_dispatch_threads + config.num_non_epilogue_threads + config.num_epilogue_threads,
                                   config.smem_size, config.cluster_size)
     };

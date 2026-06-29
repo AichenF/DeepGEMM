@@ -1576,6 +1576,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
             }
 
             const unsigned long long block_epilogue_start = phase_profile_clock();
+            const float l1_global_scale = l1_global_scales == nullptr ? 1.0f : __ldg(l1_global_scales + local_expert_idx);
             
                 // ---------------- L1 EPILOGUE: SwiGLU + FP8 quantize + TMA store ----------------
                 // Layout in `final_accum`:
@@ -1610,14 +1611,14 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         if constexpr (kActivationClamp != cute::numeric_limits<float>::infinity())
                             x = cute::min(cute::max(x, -kActivationClamp), kActivationClamp);
                     };
-                    float g_r0_c0 = final_accum[gate*4 + 0]; clamp_gate(g_r0_c0);
-                    float g_r0_c1 = final_accum[gate*4 + 1]; clamp_gate(g_r0_c1);
-                    float g_r1_c0 = final_accum[gate*4 + 2]; clamp_gate(g_r1_c0);
-                    float g_r1_c1 = final_accum[gate*4 + 3]; clamp_gate(g_r1_c1);
-                    float u_r0_c0 = final_accum[up*4   + 0]; clamp_up(u_r0_c0);
-                    float u_r0_c1 = final_accum[up*4   + 1]; clamp_up(u_r0_c1);
-                    float u_r1_c0 = final_accum[up*4   + 2]; clamp_up(u_r1_c0);
-                    float u_r1_c1 = final_accum[up*4   + 3]; clamp_up(u_r1_c1);
+                    float g_r0_c0 = final_accum[gate*4 + 0] * l1_global_scale; clamp_gate(g_r0_c0);
+                    float g_r0_c1 = final_accum[gate*4 + 1] * l1_global_scale; clamp_gate(g_r0_c1);
+                    float g_r1_c0 = final_accum[gate*4 + 2] * l1_global_scale; clamp_gate(g_r1_c0);
+                    float g_r1_c1 = final_accum[gate*4 + 3] * l1_global_scale; clamp_gate(g_r1_c1);
+                    float u_r0_c0 = final_accum[up*4   + 0] * l1_global_scale; clamp_up(u_r0_c0);
+                    float u_r0_c1 = final_accum[up*4   + 1] * l1_global_scale; clamp_up(u_r0_c1);
+                    float u_r1_c0 = final_accum[up*4   + 2] * l1_global_scale; clamp_up(u_r1_c0);
+                    float u_r1_c1 = final_accum[up*4   + 3] * l1_global_scale; clamp_up(u_r1_c1);
 
                     auto silu = [](float x) -> float {
                         const float e = kFastMath ? __expf(-x) : expf(-x);

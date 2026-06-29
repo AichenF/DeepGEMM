@@ -253,6 +253,8 @@ static void nvfp4_mega_moe(
     const std::tuple<torch::Tensor, torch::Tensor>& l1_weights_tuple,
     const std::tuple<torch::Tensor, torch::Tensor>& l2_weights_tuple,
     const std::optional<torch::Tensor>& cumulative_local_expert_recv_stats,
+    const std::optional<torch::Tensor>& l1_global_scales,
+    const std::optional<torch::Tensor>& l2_global_scales,
     const torch::Tensor& sym_buffer,
     const std::vector<int64_t>& sym_buffer_ptrs, const int& rank_idx,
     const int& num_max_tokens_per_rank,
@@ -331,6 +333,18 @@ static void nvfp4_mega_moe(
                        (phase_profile and stats_numel >= num_experts_per_rank + 64));
         DG_HOST_ASSERT(cumulative_local_expert_recv_stats->is_contiguous());
     }
+    if (l1_global_scales.has_value()) {
+        DG_HOST_ASSERT(l1_global_scales->scalar_type() == torch::kFloat32);
+        DG_HOST_ASSERT(l1_global_scales->numel() == num_experts_per_rank);
+        DG_HOST_ASSERT(l1_global_scales->is_contiguous());
+        DG_HOST_ASSERT(l1_global_scales->device() == y.device());
+    }
+    if (l2_global_scales.has_value()) {
+        DG_HOST_ASSERT(l2_global_scales->scalar_type() == torch::kFloat32);
+        DG_HOST_ASSERT(l2_global_scales->numel() == num_experts_per_rank);
+        DG_HOST_ASSERT(l2_global_scales->is_contiguous());
+        DG_HOST_ASSERT(l2_global_scales->device() == y.device());
+    }
     const auto num_ranks = static_cast<int>(sym_buffer_ptrs.size());
     const auto num_experts_ = num_experts_per_rank * num_ranks;
     const auto [num_required_bytes, slice] = get_symm_buffer_size_for_mega_moe(
@@ -347,6 +361,8 @@ static void nvfp4_mega_moe(
                       l1_weights, l2_weights,
                       l1_weights_sf, l2_weights_sf,
                       cumulative_local_expert_recv_stats,
+                      l1_global_scales,
+                      l2_global_scales,
                       sym_buffer_ptrs,
                       rank_idx, num_max_tokens_per_rank,
                       num_experts_per_rank,

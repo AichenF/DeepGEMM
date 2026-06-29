@@ -1086,6 +1086,12 @@
             const bool valid_r1 = row_offset_r1 < valid_m;
             using BlockPhaseTag = std::remove_cv_t<std::remove_reference_t<decltype(block_phase)>>;
             constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
+            const float l2_global_scale = l2_global_scales == nullptr ? 1.0f : __ldg(l2_global_scales + local_expert_idx);
+            const auto cast_l2_scaled_bf16_pair = [&](float x, float y) -> uint32_t {
+                x *= l2_global_scale;
+                y *= l2_global_scale;
+                return math::cast_into_bf16_and_pack(x, y);
+            };
 
             if constexpr (kAsyncL1TMAStore) {
                 if constexpr (kBlockIsL2)
@@ -1305,10 +1311,10 @@
                                 float f5 = smem_accum_f32[row * BLOCK_N + col + 5];
                                 float f6 = smem_accum_f32[row * BLOCK_N + col + 6];
                                 float f7 = smem_accum_f32[row * BLOCK_N + col + 7];
-                                packed.x = math::cast_into_bf16_and_pack(f0, f1);
-                                packed.y = math::cast_into_bf16_and_pack(f2, f3);
-                                packed.z = math::cast_into_bf16_and_pack(f4, f5);
-                                packed.w = math::cast_into_bf16_and_pack(f6, f7);
+                                packed.x = cast_l2_scaled_bf16_pair(f0, f1);
+                                packed.y = cast_l2_scaled_bf16_pair(f2, f3);
+                                packed.z = cast_l2_scaled_bf16_pair(f4, f5);
+                                packed.w = cast_l2_scaled_bf16_pair(f6, f7);
                                 auto dst_ptr = math::advance_ptr<uint4>(
                                     dst_token.get_base_ptr(),
                                     n_idx * sizeof(nv_bfloat16) + col * sizeof(nv_bfloat16));
@@ -1445,6 +1451,7 @@
                 }
 
                 if (block_phase == sched::BlockPhase::Linear1) {
+                    const float l1_global_scale = l1_global_scales == nullptr ? 1.0f : __ldg(l1_global_scales + local_expert_idx);
                 constexpr uint32_t kNumPairs = kAccumPerThread / 8;
                     #pragma unroll
                     for (uint32_t serial_n_idx = 0; serial_n_idx < kNumSerialN; ++serial_n_idx) {
@@ -1464,14 +1471,14 @@
                                 if constexpr (kActivationClamp != cute::numeric_limits<float>::infinity())
                                     x = cute::min(cute::max(x, -kActivationClamp), kActivationClamp);
                             };
-                            float g_r0_c0 = final_accum[serial_n_idx][gate*4 + 0]; clamp_gate(g_r0_c0);
-                            float g_r0_c1 = final_accum[serial_n_idx][gate*4 + 1]; clamp_gate(g_r0_c1);
-                            float g_r1_c0 = final_accum[serial_n_idx][gate*4 + 2]; clamp_gate(g_r1_c0);
-                            float g_r1_c1 = final_accum[serial_n_idx][gate*4 + 3]; clamp_gate(g_r1_c1);
-                            float u_r0_c0 = final_accum[serial_n_idx][up*4   + 0]; clamp_up(u_r0_c0);
-                            float u_r0_c1 = final_accum[serial_n_idx][up*4   + 1]; clamp_up(u_r0_c1);
-                            float u_r1_c0 = final_accum[serial_n_idx][up*4   + 2]; clamp_up(u_r1_c0);
-                            float u_r1_c1 = final_accum[serial_n_idx][up*4   + 3]; clamp_up(u_r1_c1);
+                            float g_r0_c0 = final_accum[serial_n_idx][gate*4 + 0] * l1_global_scale; clamp_gate(g_r0_c0);
+                            float g_r0_c1 = final_accum[serial_n_idx][gate*4 + 1] * l1_global_scale; clamp_gate(g_r0_c1);
+                            float g_r1_c0 = final_accum[serial_n_idx][gate*4 + 2] * l1_global_scale; clamp_gate(g_r1_c0);
+                            float g_r1_c1 = final_accum[serial_n_idx][gate*4 + 3] * l1_global_scale; clamp_gate(g_r1_c1);
+                            float u_r0_c0 = final_accum[serial_n_idx][up*4   + 0] * l1_global_scale; clamp_up(u_r0_c0);
+                            float u_r0_c1 = final_accum[serial_n_idx][up*4   + 1] * l1_global_scale; clamp_up(u_r0_c1);
+                            float u_r1_c0 = final_accum[serial_n_idx][up*4   + 2] * l1_global_scale; clamp_up(u_r1_c0);
+                            float u_r1_c1 = final_accum[serial_n_idx][up*4   + 3] * l1_global_scale; clamp_up(u_r1_c1);
                             auto silu = [](float x) -> float {
                                 const float e = kFastMath ? __expf(-x) : expf(-x);
                                 const float sig = kFastMath ? math::fast_rcp(1.0f + e) : 1.0f / (1.0f + e);
@@ -1586,17 +1593,17 @@
                                 *reinterpret_cast<uint32_t*>(smem_ptr) = packed;
                             };
                             if (valid_r0) {
-                                const uint32_t r0_lo = math::cast_into_bf16_and_pack(
+                                const uint32_t r0_lo = cast_l2_scaled_bf16_pair(
                                     final_accum[serial_n_idx][chunk_lo*4 + 0], final_accum[serial_n_idx][chunk_lo*4 + 1]);
-                                const uint32_t r0_hi = math::cast_into_bf16_and_pack(
+                                const uint32_t r0_hi = cast_l2_scaled_bf16_pair(
                                     final_accum[serial_n_idx][chunk_hi*4 + 0], final_accum[serial_n_idx][chunk_hi*4 + 1]);
                                 write_pair(r_0, chunk_lo * 8 + col_idx * 2, r0_lo);
                                 write_pair(r_0, chunk_hi * 8 + col_idx * 2, r0_hi);
                             }
                             if (valid_r1) {
-                                const uint32_t r1_lo = math::cast_into_bf16_and_pack(
+                                const uint32_t r1_lo = cast_l2_scaled_bf16_pair(
                                     final_accum[serial_n_idx][chunk_lo*4 + 2], final_accum[serial_n_idx][chunk_lo*4 + 3]);
-                                const uint32_t r1_hi = math::cast_into_bf16_and_pack(
+                                const uint32_t r1_hi = cast_l2_scaled_bf16_pair(
                                     final_accum[serial_n_idx][chunk_hi*4 + 2], final_accum[serial_n_idx][chunk_hi*4 + 3]);
                                 write_pair(r_1, chunk_lo * 8 + col_idx * 2, r1_lo);
                                 write_pair(r_1, chunk_hi * 8 + col_idx * 2, r1_hi);
@@ -1962,6 +1969,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
             const unsigned long long block_epilogue_start = phase_profile_clock();
             if constexpr (!kBlockIsL2) {
+                const float l1_global_scale = l1_global_scales == nullptr ? 1.0f : __ldg(l1_global_scales + local_expert_idx);
                 // ---------------- L1 EPILOGUE: SwiGLU + FP8 quantize + TMA store ----------------
                 // Layout in `final_accum`:
                 //   16 chunks of 8 N-cols, each chunk = 4 floats per thread = (r0c0, r0c1, r1c0, r1c1).
@@ -1995,14 +2003,14 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         if constexpr (kActivationClamp != cute::numeric_limits<float>::infinity())
                             x = cute::min(cute::max(x, -kActivationClamp), kActivationClamp);
                     };
-                    float g_r0_c0 = final_accum[gate*4 + 0]; clamp_gate(g_r0_c0);
-                    float g_r0_c1 = final_accum[gate*4 + 1]; clamp_gate(g_r0_c1);
-                    float g_r1_c0 = final_accum[gate*4 + 2]; clamp_gate(g_r1_c0);
-                    float g_r1_c1 = final_accum[gate*4 + 3]; clamp_gate(g_r1_c1);
-                    float u_r0_c0 = final_accum[up*4   + 0]; clamp_up(u_r0_c0);
-                    float u_r0_c1 = final_accum[up*4   + 1]; clamp_up(u_r0_c1);
-                    float u_r1_c0 = final_accum[up*4   + 2]; clamp_up(u_r1_c0);
-                    float u_r1_c1 = final_accum[up*4   + 3]; clamp_up(u_r1_c1);
+                    float g_r0_c0 = final_accum[gate*4 + 0] * l1_global_scale; clamp_gate(g_r0_c0);
+                    float g_r0_c1 = final_accum[gate*4 + 1] * l1_global_scale; clamp_gate(g_r0_c1);
+                    float g_r1_c0 = final_accum[gate*4 + 2] * l1_global_scale; clamp_gate(g_r1_c0);
+                    float g_r1_c1 = final_accum[gate*4 + 3] * l1_global_scale; clamp_gate(g_r1_c1);
+                    float u_r0_c0 = final_accum[up*4   + 0] * l1_global_scale; clamp_up(u_r0_c0);
+                    float u_r0_c1 = final_accum[up*4   + 1] * l1_global_scale; clamp_up(u_r0_c1);
+                    float u_r1_c0 = final_accum[up*4   + 2] * l1_global_scale; clamp_up(u_r1_c0);
+                    float u_r1_c1 = final_accum[up*4   + 3] * l1_global_scale; clamp_up(u_r1_c1);
 
                     auto silu = [](float x) -> float {
                         const float e = kFastMath ? __expf(-x) : expf(-x);
@@ -2211,10 +2219,10 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                                     const uint32_t chunk_lo = 2 * i, chunk_hi = 2 * i + 1;
                                     const uint32_t col_lo = chunk_lo * 8 + col_idx * 2;
                                     const uint32_t col_hi = chunk_hi * 8 + col_idx * 2;
-                                    const uint32_t packed_lo = math::cast_into_bf16_and_pack(
+                                    const uint32_t packed_lo = cast_l2_scaled_bf16_pair(
                                         final_accum[chunk_lo * 4 + row_accum_offset + 0],
                                         final_accum[chunk_lo * 4 + row_accum_offset + 1]);
-                                    const uint32_t packed_hi = math::cast_into_bf16_and_pack(
+                                    const uint32_t packed_hi = cast_l2_scaled_bf16_pair(
                                         final_accum[chunk_hi * 4 + row_accum_offset + 0],
                                         final_accum[chunk_hi * 4 + row_accum_offset + 1]);
                                     *reinterpret_cast<uint32_t*>(mapped_dst_base + col_lo * sizeof(nv_bfloat16)) = packed_lo;
@@ -2243,10 +2251,10 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                                     const uint32_t chunk_lo = 2 * i, chunk_hi = 2 * i + 1;
                                     const uint32_t col_lo = chunk_lo * 8 + col_idx * 2;
                                     const uint32_t col_hi = chunk_hi * 8 + col_idx * 2;
-                                    const uint32_t packed_lo = math::cast_into_bf16_and_pack(
+                                    const uint32_t packed_lo = cast_l2_scaled_bf16_pair(
                                         final_accum[chunk_lo * 4 + row_accum_offset + 0],
                                         final_accum[chunk_lo * 4 + row_accum_offset + 1]);
-                                    const uint32_t packed_hi = math::cast_into_bf16_and_pack(
+                                    const uint32_t packed_hi = cast_l2_scaled_bf16_pair(
                                         final_accum[chunk_hi * 4 + row_accum_offset + 0],
                                         final_accum[chunk_hi * 4 + row_accum_offset + 1]);
                                     *reinterpret_cast<uint32_t*>(mapped_dst_base + col_lo * sizeof(nv_bfloat16)) = packed_lo;
@@ -2258,14 +2266,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         scatter_direct_row(row_offset_r0, valid_r0, 0);
                         scatter_direct_row(row_offset_r1, valid_r1, 2);
                     }
-                    if constexpr (kSkipDirectScatterSyncRequested) {
-                        if constexpr (BLOCK_N == 128) {
-                            if (valid_m < BLOCK_M)
-                                ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-                        }
-                    } else {
-                        ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-                    }
+                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                     const unsigned long long l2_scatter_end = phase_profile_clock();
                     if (epilogue_warp_idx == 0 and lane_idx == 0)
                         phase_profile_record(kProfileL2Scatter, l2_scatter_end - l2_scatter_start);
@@ -2293,17 +2294,17 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             *reinterpret_cast<uint32_t*>(smem_ptr) = packed;
                         };
                         if (valid_r0) {
-                            const uint32_t r0_lo = math::cast_into_bf16_and_pack(
+                            const uint32_t r0_lo = cast_l2_scaled_bf16_pair(
                                 final_accum[chunk_lo*4 + 0], final_accum[chunk_lo*4 + 1]);
-                            const uint32_t r0_hi = math::cast_into_bf16_and_pack(
+                            const uint32_t r0_hi = cast_l2_scaled_bf16_pair(
                                 final_accum[chunk_hi*4 + 0], final_accum[chunk_hi*4 + 1]);
                             write_pair(r_0, chunk_lo * 8 + col_idx * 2, r0_lo);
                             write_pair(r_0, chunk_hi * 8 + col_idx * 2, r0_hi);
                         }
                         if (valid_r1) {
-                            const uint32_t r1_lo = math::cast_into_bf16_and_pack(
+                            const uint32_t r1_lo = cast_l2_scaled_bf16_pair(
                                 final_accum[chunk_lo*4 + 2], final_accum[chunk_lo*4 + 3]);
-                            const uint32_t r1_hi = math::cast_into_bf16_and_pack(
+                            const uint32_t r1_hi = cast_l2_scaled_bf16_pair(
                                 final_accum[chunk_hi*4 + 2], final_accum[chunk_hi*4 + 3]);
                             write_pair(r_1, chunk_lo * 8 + col_idx * 2, r1_lo);
                             write_pair(r_1, chunk_hi * 8 + col_idx * 2, r1_hi);
