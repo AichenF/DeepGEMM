@@ -26,8 +26,12 @@ from deep_gemm.utils.dist import dist_print, init_dist, uneven_all_gather
 from deep_gemm.testing import bench_kineto, get_arch_major
 
 
-def _nvfp4_bn256_fused_m(num_tokens: int) -> bool:
-    return num_tokens <= int(os.environ.get("DG_SM90_NVFP4_BN256_FUSED_MAX_M", "511")) or num_tokens == 512
+def _expected_tokens_per_local_expert(num_tokens: int, num_topk: int, num_experts_per_rank: int) -> float:
+    return num_tokens * num_topk / num_experts_per_rank
+
+
+def _nvfp4_bn256_fused_shape(num_tokens: int, num_topk: int, num_experts_per_rank: int) -> bool:
+    return _expected_tokens_per_local_expert(num_tokens, num_topk, num_experts_per_rank) <= 128.0
 
 
 def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
@@ -68,16 +72,15 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     # ABI does not consume.
     l1_packed, l1_scale = quantize_to_nvfp4(l1_bf, group_size=16)
     l2_packed, l2_scale = quantize_to_nvfp4(l2_bf, group_size=16)
-    # The SM90 NVFP4 wrapper uses the BN256 fused path for the compact bucket up
-    # to the configurable small/mid-M cutoff; larger M keeps the BN128 split path.
-    nvfp4_use_bn256 = _nvfp4_bn256_fused_m(num_tokens)
+    # The SM90 NVFP4 wrapper uses the BN256 fused path while expected tokens per
+    # local expert are low enough to keep the fused phase efficient; larger
+    # shapes keep the BN128 split path.
+    nvfp4_use_bn256 = _nvfp4_bn256_fused_shape(num_tokens, num_topk, num_experts_per_rank)
     nvfp4_default_block_n = 256 if nvfp4_use_bn256 else 128
-    nvfp4_block_n = int(os.environ.get("DG_SM90_NVFP4_BLOCK_N", nvfp4_default_block_n))
-    nvfp4_fused_b_scale_env = os.environ.get("DG_SM90_NVFP4_FUSED_B_SCALE")
-    nvfp4_fused_b_scale = None if nvfp4_fused_b_scale_env is not None else (True if nvfp4_use_bn256 else None)
+    nvfp4_block_n = args.nvfp4_block_n or nvfp4_default_block_n
     transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
         (l1_packed, l1_scale), (l2_packed, l2_scale),
-        block_n=nvfp4_block_n, fused_b_scale=nvfp4_fused_b_scale,
+        block_n=nvfp4_block_n,
     )
     kernel_name = 'sm90_nvfp4_mega_moe'
 
@@ -134,12 +137,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         torch.cuda.synchronize()
         dist.barrier()
     show_kineto = os.environ.get('DG_SHOW_KINETO', '0') != '0'
-    split_env = os.environ.get('DG_SM90_MOE_SPLIT_L1_L2')
-    if split_env is None:
-        fused_bn256_default = nvfp4_block_n == 256 and _nvfp4_bn256_fused_m(num_tokens)
-        split_l1_l2 = not fused_bn256_default
-    else:
-        split_l1_l2 = split_env != '0'
+    split_l1_l2 = nvfp4_block_n == 128
     # The profiler table exposes the generated CUDA function name, not the
     # JIT build name, so split L1/L2 launches cannot be matched separately
     # by "_l1" / "_l2" suffix. With one substring and
@@ -282,6 +280,8 @@ if __name__ == '__main__':
     parser.add_argument('--masked-ratio', type=float, default=0.0)
     parser.add_argument('--fast-math', type=int, default=1)
     parser.add_argument('--num-tests', type=int, default=20)
+    parser.add_argument('--nvfp4-block-n', type=int, choices=(128, 256), default=None,
+                        help='Override NVFP4 prepacked weight layout: 256=fused, 128=split')
     args = parser.parse_args()
 
     if args.local_rank_idx is not None:

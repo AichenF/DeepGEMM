@@ -288,10 +288,7 @@ struct MegaMoESM90Config {
     }
 };
 
-static std::tuple<int, int> get_block_config_for_mega_moe_sm90(
-    const int& num_ranks, const int& num_experts,
-    const int& num_max_tokens_per_rank, const int& num_topk,
-    const int& num_tokens) {
+static std::tuple<int, int> get_block_config_for_mega_moe_sm90() {
     // Pick block_m and number of math (epilogue) warpgroups. WGMMA::M = 64 is
     // the hard floor on Hopper, so each warpgroup needs at least 64 rows;
     // i.e. (block_m / num_epilogue_warpgroups) >= 64.
@@ -387,19 +384,8 @@ static MegaMoESM90Config get_mega_moe_config_sm90(
     const int& num_max_tokens_per_rank, const int& num_tokens, const int& num_topk,
     const int& hidden, const int& intermediate_hidden,
     const int& num_padded_sf_pool_tokens) {
-    auto [block_m, num_epilogue_threads_default] = get_block_config_for_mega_moe_sm90(
-        num_ranks, num_experts, num_max_tokens_per_rank, num_topk, num_tokens);
-    int num_epilogue_threads = num_epilogue_threads_default;
-    int block_n = 128;
-    // Env override for experimental block-M sweeps. NVFP4 block-N and epilogue
-    // threads are selected by the NVFP4 wrapper from the packed weight layout.
-    if (get_env<int>("DG_SM90_MOE_BLOCK_M", 0) > 0) {
-        const int env_bm = get_env<int>("DG_SM90_MOE_BLOCK_M", 64);
-        if (std::any_of(layout::kCandidateBlockM, layout::kCandidateBlockM + layout::kNumCandidateBlockMs,
-                        [=](const auto& c){ return c == env_bm; })) {
-            block_m = env_bm;
-        }
-    }
+    auto [block_m, num_epilogue_threads] = get_block_config_for_mega_moe_sm90();
+    const int block_n = 128;
     const int block_k = 128;
     // NOTES: cluster_size=1 for SM90 in this initial implementation. Cluster=2
     // multicast on A is feasible (each pair of CTAs shares m_block, splits N),

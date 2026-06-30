@@ -365,15 +365,10 @@ template <
     uint32_t kNumSMs, uint32_t kNumRanks,
     float kActivationClamp,
     bool kFastMath,
-    bool kDirectL2ScatterRequested = false,
     bool kL2DualAccumRequested = false,
     bool kPhaseProfileRequested = false,
     bool kL2ArrivalCounterRequested = false,
-    bool kDirectScatterMetadataBroadcastRequested = false,
-    bool kL1DualKAccumRequested = false,
     bool kLoaderDequantRequested = false,
-    bool kPackedBScratchRequested = false,
-    bool kFusedBScaleLayoutRequested = false,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
     uint32_t L2_SHAPE_N = kHidden,
@@ -402,7 +397,6 @@ sm90_nvfp4_mega_moe_fused_impl(void* y,
                        const uint8_t* __restrict__ l2_weights_sf,
                        const float* __restrict__ l1_global_scales,
                        const float* __restrict__ l2_global_scales) {
-    constexpr bool kTrueSplitNoL2ReadyMask = false;
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_fused_body.inl>
 }
 
@@ -422,15 +416,10 @@ template <
     uint32_t kNumSMs, uint32_t kNumRanks,
     float kActivationClamp,
     bool kFastMath,
-    bool kDirectL2ScatterRequested = false,
     bool kL2DualAccumRequested = false,
     bool kPhaseProfileRequested = false,
     bool kL2ArrivalCounterRequested = false,
-    bool kDirectScatterMetadataBroadcastRequested = false,
-    bool kL1DualKAccumRequested = false,
     bool kLoaderDequantRequested = false,
-    bool kPackedBScratchRequested = false,
-    bool kFusedBScaleLayoutRequested = false,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
     uint32_t L2_SHAPE_N = kHidden,
@@ -441,8 +430,7 @@ template <
     uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4,
     uint32_t kNumThreads = kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads,
     uint32_t kNumTokensPerWarp = 32 / kNumTopk,
-    uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks,
-    bool kTrueSplitNoL2ReadyMask = false
+    uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks
 >
 CUTLASS_GLOBAL __launch_bounds__(kNumThreads, 1) void
 sm90_nvfp4_mega_moe_split_l1_impl(int* cumulative_local_expert_recv_stats,
@@ -474,15 +462,10 @@ template <
     uint32_t kNumSMs, uint32_t kNumRanks,
     float kActivationClamp,
     bool kFastMath,
-    bool kDirectL2ScatterRequested = false,
     bool kL2DualAccumRequested = false,
     bool kPhaseProfileRequested = false,
     bool kL2ArrivalCounterRequested = false,
-    bool kDirectScatterMetadataBroadcastRequested = false,
-    bool kL1DualKAccumRequested = false,
     bool kLoaderDequantRequested = false,
-    bool kPackedBScratchRequested = false,
-    bool kFusedBScaleLayoutRequested = false,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
     uint32_t L2_SHAPE_N = kHidden,
@@ -493,8 +476,7 @@ template <
     uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4,
     uint32_t kNumThreads = kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads,
     uint32_t kNumTokensPerWarp = 32 / kNumTopk,
-    uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks,
-    bool kTrueSplitNoL2ReadyMask = false
+    uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks
 >
 CUTLASS_GLOBAL __launch_bounds__(kNumThreads, 1) void
 sm90_nvfp4_mega_moe_split_l2_impl(void* y,

@@ -298,10 +298,6 @@ static void nvfp4_mega_moe(
         hidden_storage == hidden / 2 &&
         intermediate_hidden_storage == intermediate_hidden / 2;
     DG_HOST_ASSERT(layout_fused_b_scale || layout_plain_b_scale);
-    const auto fused_b_scale_env = get_env<std::string>("DG_SM90_NVFP4_FUSED_B_SCALE", "");
-    const bool nvfp4_fused_b_scale_layout = fused_b_scale_env.empty() ?
-        layout_fused_b_scale : (get_env<int>("DG_SM90_NVFP4_FUSED_B_SCALE", 0) != 0);
-    DG_HOST_ASSERT(nvfp4_fused_b_scale_layout == layout_fused_b_scale);
     DG_HOST_ASSERT(num_tokens <= num_max_tokens_per_rank);
     DG_HOST_ASSERT(num_experts_per_rank == num_experts_per_rank_);
     DG_HOST_ASSERT(hidden == hidden_);

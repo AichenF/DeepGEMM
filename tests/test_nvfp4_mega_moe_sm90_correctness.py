@@ -25,8 +25,12 @@ from deep_gemm.utils import per_token_cast_to_fp8
 from deep_gemm.utils.dist import init_dist
 
 
-def _nvfp4_bn256_fused_m(num_tokens: int) -> bool:
-    return num_tokens <= int(os.environ.get("DG_SM90_NVFP4_BN256_FUSED_MAX_M", "511")) or num_tokens == 512
+def _expected_tokens_per_local_expert(num_tokens: int, num_topk: int, num_local_experts: int) -> float:
+    return num_tokens * num_topk / num_local_experts
+
+
+def _nvfp4_bn256_fused_shape(num_tokens: int, num_topk: int, num_local_experts: int) -> bool:
+    return _expected_tokens_per_local_expert(num_tokens, num_topk, num_local_experts) <= 128.0
 
 
 def _interleave_l1_n(tensor: torch.Tensor, gran: int = 8) -> torch.Tensor:
@@ -179,8 +183,12 @@ def _silu(x: torch.Tensor) -> torch.Tensor:
 
 
 def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
+              global_scale_mode: str,
               rank_idx: int, group: dist.ProcessGroup) -> None:
-    torch.manual_seed(args.seed + m_tokens + int(weight_scale * 1000000))
+    torch.manual_seed(
+        args.seed + m_tokens + int(weight_scale * 1000000) +
+        (100000 if global_scale_mode != "none" else 0)
+    )
 
     hidden = args.hidden
     intermediate_hidden = args.intermediate_hidden
@@ -199,6 +207,7 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
             f"=== NVFP4 single-rank correctness M={m_tokens}, "
             f"NE={num_experts}, NL={num_local_experts}, NK={num_topk}, "
             f"NMT={num_max_tokens_per_rank}, weight_scale={weight_scale:g}, "
+            f"global_scale_mode={global_scale_mode}, "
             "reference=exact-nvfp4 ===",
             flush=True,
         )
@@ -235,14 +244,24 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
     l1_dequant = dequantize_nvfp4_to_fp32(l1_packed, l1_scale, group_size=16)
     l2_dequant = dequantize_nvfp4_to_fp32(l2_packed, l2_scale, group_size=16)
 
-    nvfp4_use_bn256 = _nvfp4_bn256_fused_m(m_tokens)
+    nvfp4_use_bn256 = _nvfp4_bn256_fused_shape(m_tokens, num_topk, num_local_experts)
     nvfp4_block_n = 256 if nvfp4_use_bn256 else 128
-    nvfp4_fused_b_scale_env = os.environ.get("DG_SM90_NVFP4_FUSED_B_SCALE")
-    nvfp4_fused_b_scale = None if nvfp4_fused_b_scale_env is not None else (True if nvfp4_use_bn256 else None)
     transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
         (l1_packed, l1_scale), (l2_packed, l2_scale),
-        block_n=nvfp4_block_n, fused_b_scale=nvfp4_fused_b_scale,
+        block_n=nvfp4_block_n,
     )
+    if global_scale_mode == "none":
+        l1_global_scales = None
+        l2_global_scales = None
+    elif global_scale_mode == "expert":
+        l1_global_scales = torch.linspace(
+            0.73, 1.37, num_local_experts, dtype=torch.float32, device="cuda"
+        )
+        l2_global_scales = torch.linspace(
+            1.31, 0.67, num_local_experts, dtype=torch.float32, device="cuda"
+        )
+    else:
+        raise ValueError(f"unsupported global_scale_mode={global_scale_mode}")
 
     cumulative_stats = torch.zeros(num_local_experts, dtype=torch.int, device="cuda")
     buffer.x[:m_tokens].copy_(x_fp8)
@@ -257,6 +276,8 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
         transformed_l2,
         buffer,
         cumulative_local_expert_recv_stats=cumulative_stats,
+        l1_global_scales=l1_global_scales,
+        l2_global_scales=l2_global_scales,
         recipe=(128, 128, 128),
         activation="swiglu",
         activation_clamp=args.activation_clamp,
@@ -273,13 +294,17 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
     for token_idx in range(m_tokens):
         for topk_i in range(num_topk):
             expert_idx = topk_idx[token_idx, topk_i].item()
+            local_expert_idx = expert_idx - rank_idx * num_local_experts
+            assert 0 <= local_expert_idx < num_local_experts
             route_weight = topk_weights[token_idx, topk_i].item()
-            l1_out = l1_dequant[expert_idx].float() @ x_ref[token_idx]
+            l1_global_scale = 1.0 if l1_global_scales is None else l1_global_scales[local_expert_idx].item()
+            l2_global_scale = 1.0 if l2_global_scales is None else l2_global_scales[local_expert_idx].item()
+            l1_out = (l1_dequant[local_expert_idx].float() @ x_ref[token_idx]) * l1_global_scale
             gate, up = l1_out[:intermediate_hidden], l1_out[intermediate_hidden:]
             gate = gate.clamp(max=args.activation_clamp)
             up = up.clamp(min=-args.activation_clamp, max=args.activation_clamp)
             intermediate = _silu(gate) * up * route_weight
-            y_ref[token_idx] += l2_dequant[expert_idx].float() @ intermediate
+            y_ref[token_idx] += (l2_dequant[local_expert_idx].float() @ intermediate) * l2_global_scale
 
     finite = torch.isfinite(y_kernel).all().item()
     diff = y_kernel.float() - y_ref
@@ -348,6 +373,7 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
     if rank_idx == 0:
         print(
             f"PASS M={m_tokens} weight_scale={weight_scale:g}: "
+            f"global_scale_mode={global_scale_mode} "
             f"cosine_min={cosine_min:.4f} cosine_mean={cosine_mean:.4f}",
             flush=True,
         )
@@ -367,8 +393,9 @@ def _worker(local_rank: int, num_local_ranks: int, args: argparse.Namespace) -> 
                 print(f"[SKIP] requires SM90, got SM{get_arch_major()}0", flush=True)
             return
         for weight_scale in args.weight_scales:
-            for m_tokens in args.batches:
-                _run_case(args, m_tokens, weight_scale, rank_idx, group)
+            for global_scale_mode in args.global_scale_modes:
+                for m_tokens in args.batches:
+                    _run_case(args, m_tokens, weight_scale, global_scale_mode, rank_idx, group)
     finally:
         dist.destroy_process_group()
 
@@ -385,6 +412,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--fast-math", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--weight-scales", nargs="+", type=float, default=[0.05])
+    parser.add_argument(
+        "--global-scale-modes",
+        nargs="+",
+        choices=["none", "expert"],
+        default=["none", "expert"],
+        help="Run with no global scales and/or per-expert non-unit L1/L2 global scales.",
+    )
     parser.add_argument("--cosine-mean-threshold", type=float, default=0.9)
     parser.add_argument("--cosine-min-threshold", type=float, default=0.9)
     parser.add_argument("--norm-ratio-min", type=float, default=0.5)
