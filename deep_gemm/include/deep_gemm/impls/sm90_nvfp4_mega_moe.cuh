@@ -365,9 +365,7 @@ template <
     uint32_t kNumSMs, uint32_t kNumRanks,
     float kActivationClamp,
     bool kFastMath,
-    bool kL2DualAccumRequested = false,
     bool kPhaseProfileRequested = false,
-    bool kL2ArrivalCounterRequested = false,
     bool kLoaderDequantRequested = false,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
@@ -389,12 +387,10 @@ sm90_nvfp4_mega_moe_fused_impl(void* y,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts_sf,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l1_weights,
-                       const uint8_t* __restrict__ l1_weights_sf,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l1_output,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts_sf,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weights,
-                       const uint8_t* __restrict__ l2_weights_sf,
                        const float* __restrict__ l1_global_scales,
                        const float* __restrict__ l2_global_scales) {
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_fused_body.inl>
@@ -416,7 +412,6 @@ template <
     uint32_t kNumSMs, uint32_t kNumRanks,
     float kActivationClamp,
     bool kFastMath,
-    bool kL2DualAccumRequested = false,
     bool kPhaseProfileRequested = false,
     bool kL2ArrivalCounterRequested = false,
     bool kLoaderDequantRequested = false,
@@ -439,10 +434,8 @@ sm90_nvfp4_mega_moe_split_l1_impl(int* cumulative_local_expert_recv_stats,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts_sf,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l1_weights,
-                       const uint8_t* __restrict__ l1_weights_sf,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l1_output,
-                       const float* __restrict__ l1_global_scales,
-                       const float* __restrict__ l2_global_scales) {
+                       const float* __restrict__ l1_global_scales) {
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_split_l1_body.inl>
 }
 
@@ -464,7 +457,6 @@ template <
     bool kFastMath,
     bool kL2DualAccumRequested = false,
     bool kPhaseProfileRequested = false,
-    bool kL2ArrivalCounterRequested = false,
     bool kLoaderDequantRequested = false,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
@@ -486,7 +478,6 @@ sm90_nvfp4_mega_moe_split_l2_impl(void* y,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts_sf,
                        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weights,
-                       const uint8_t* __restrict__ l2_weights_sf,
                        const float* __restrict__ l2_global_scales) {
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_split_l2_body.inl>
 }

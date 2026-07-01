@@ -56,19 +56,14 @@ public:
         int num_tokens;
         layout::SymBuffer<> sym_buffer_ptrs;
 
-        // Tensormaps for activations and packed weights. UE4M3 weight scale
-        // factors are raw uint8 pointers with tile-major shape
-        // (E, N/128, K/128, 128, 8); the math warpgroup loads them directly
-        // from global memory.
+        // Tensormaps for activations and fused packed weights.
         CUtensorMap tensor_map_l1_acts;
         CUtensorMap tensor_map_l1_acts_sf;
         CUtensorMap tensor_map_l1_weights;
-        const uint8_t* l1_weights_sf;
         CUtensorMap tensor_map_l1_output;
         CUtensorMap tensor_map_l2_acts;
         CUtensorMap tensor_map_l2_acts_sf;
         CUtensorMap tensor_map_l2_weights;
-        const uint8_t* l2_weights_sf;
         const float* l1_global_scales;
         const float* l2_global_scales;
 
@@ -81,6 +76,19 @@ public:
         const char* kernel_symbol = args.phase_mode == kFusedPhaseMode ? "sm90_nvfp4_mega_moe_fused_impl" :
             (args.phase_mode == kSplitL1PhaseMode ?
                 "sm90_nvfp4_mega_moe_split_l1_impl" : "sm90_nvfp4_mega_moe_split_l2_impl");
+        const std::string phase_template_args = args.phase_mode == kFusedPhaseMode ?
+            fmt::format("{},\n        {},\n",
+                        args.phase_profile ? "true" : "false",
+                        args.loader_dequant ? "true" : "false") :
+            (args.phase_mode == kSplitL1PhaseMode ?
+                fmt::format("{},\n        {},\n        {},\n",
+                            args.phase_profile ? "true" : "false",
+                            args.l2_arrival_counter ? "true" : "false",
+                            args.loader_dequant ? "true" : "false") :
+                fmt::format("{},\n        {},\n        {},\n",
+                            args.l2_dual_accum ? "true" : "false",
+                            args.phase_profile ? "true" : "false",
+                            args.loader_dequant ? "true" : "false"));
         return fmt::format(R"(
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe.cuh>
 
@@ -101,8 +109,7 @@ static void __instantiate_kernel() {{
         {}, {},
         {},
         {},
-        {}, {}, {},
-        {},
+        {}
         {}, {}, {}, {},
         {}, {}, {}, {}, {}, {}, {}
     >);
@@ -122,8 +129,7 @@ static void __instantiate_kernel() {{
     args.launch_args.grid_dim.first, args.num_ranks,
     to_string(args.activation_clamp),
     args.fast_math ? "true" : "false",
-    args.l2_dual_accum ? "true" : "false", args.phase_profile ? "true" : "false", args.l2_arrival_counter ? "true" : "false",
-    args.loader_dequant ? "true" : "false",
+    phase_template_args,
     args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
     args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks);
     }
@@ -138,12 +144,10 @@ static void __instantiate_kernel() {{
                 args.tensor_map_l1_acts,
                 args.tensor_map_l1_acts_sf,
                 args.tensor_map_l1_weights,
-                args.l1_weights_sf,
                 args.tensor_map_l1_output,
                 args.tensor_map_l2_acts,
                 args.tensor_map_l2_acts_sf,
                 args.tensor_map_l2_weights,
-                args.l2_weights_sf,
                 args.l1_global_scales,
                 args.l2_global_scales
             ));
@@ -157,10 +161,8 @@ static void __instantiate_kernel() {{
                 args.tensor_map_l1_acts,
                 args.tensor_map_l1_acts_sf,
                 args.tensor_map_l1_weights,
-                args.l1_weights_sf,
                 args.tensor_map_l1_output,
-                args.l1_global_scales,
-                args.l2_global_scales
+                args.l1_global_scales
             ));
             return;
         }
@@ -173,7 +175,6 @@ static void __instantiate_kernel() {{
             args.tensor_map_l2_acts,
             args.tensor_map_l2_acts_sf,
             args.tensor_map_l2_weights,
-            args.l2_weights_sf,
             args.l2_global_scales
         ));
     }
@@ -427,12 +428,10 @@ static void sm90_nvfp4_mega_moe(
         .tensor_map_l1_acts = tensor_map_l1_acts,
         .tensor_map_l1_acts_sf = tensor_map_l1_acts_sf,
         .tensor_map_l1_weights = tensor_map_l1_weights,
-        .l1_weights_sf = l1_weights_sf.data_ptr<uint8_t>(),
         .tensor_map_l1_output = tensor_map_l1_output,
         .tensor_map_l2_acts = tensor_map_l2_acts,
         .tensor_map_l2_acts_sf = tensor_map_l2_acts_sf,
         .tensor_map_l2_weights = tensor_map_l2_weights,
-        .l2_weights_sf = l2_weights_sf.data_ptr<uint8_t>(),
         .l1_global_scales = l1_global_scales_ptr,
         .l2_global_scales = l2_global_scales_ptr,
         .launch_args = LaunchArgs(num_sms, config.num_dispatch_threads + config.num_non_epilogue_threads + config.num_epilogue_threads,
