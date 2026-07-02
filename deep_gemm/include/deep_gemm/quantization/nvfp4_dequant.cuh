@@ -154,19 +154,35 @@ DG_NVFP4_INLINE uint2 load_e2m1_ue4m3_lut(std::uint32_t scale_ue4m3) {
     return kE2M1AndUe4m3ToFp8Lut[scale_ue4m3 & 0x7fu];
 }
 
+template <bool kUseDp4a>
+DG_NVFP4_INLINE std::uint32_t pack_nvfp4_magnitude_selector(std::uint32_t byte_magnitudes) {
+    if constexpr (kUseDp4a) {
+        const std::uint32_t lo = __dp4a(byte_magnitudes, 0x00001001u, 0u);
+        const std::uint32_t hi = __dp4a(byte_magnitudes, 0x10010000u, 0u);
+        return lo + (hi << 8);
+    } else {
+        const std::uint32_t packed_pairs = byte_magnitudes + (byte_magnitudes >> 4);
+        return __byte_perm(packed_pairs, 0u, 0x4420u);
+    }
+}
+
+DG_NVFP4_INLINE std::uint32_t byte_perm_unchecked(std::uint32_t a, std::uint32_t b,
+                                                  std::uint32_t selector) {
+    // Callers provide 0..7 selector nibbles; raw PTX avoids a redundant 0x7777 mask.
+    std::uint32_t out;
+    asm("prmt.b32 %0, %1, %2, %3;" : "=r"(out) : "r"(a), "r"(b), "r"(selector));
+    return out;
+}
+
+template <bool kUseDp4aHi = false, bool kUseDp4aLo = kUseDp4aHi>
 DG_NVFP4_INLINE uint2 dequant_nvfp4_to_fp8_pair_with_lut(std::uint32_t uq, const uint2& lut) {
+    const std::uint32_t sel_hi =
+        pack_nvfp4_magnitude_selector<kUseDp4aHi>((uq >> 4) & 0x07070707u);
+    const std::uint32_t sel_lo =
+        pack_nvfp4_magnitude_selector<kUseDp4aLo>(uq & 0x07070707u);
 
-    const std::uint32_t sel_hi = ((uq >> 4) & 0x00000007u) |
-                                 ((uq >> 8) & 0x00000070u) |
-                                 ((uq >> 12) & 0x00000700u) |
-                                 ((uq >> 16) & 0x00007000u);
-    const std::uint32_t sel_lo = (uq & 0x00000007u) |
-                                 ((uq >> 4) & 0x00000070u) |
-                                 ((uq >> 8) & 0x00000700u) |
-                                 ((uq >> 12) & 0x00007000u);
-
-    std::uint32_t out_hi = __byte_perm(lut.x, lut.y, sel_hi);
-    std::uint32_t out_lo = __byte_perm(lut.x, lut.y, sel_lo);
+    std::uint32_t out_hi = byte_perm_unchecked(lut.x, lut.y, sel_hi);
+    std::uint32_t out_lo = byte_perm_unchecked(lut.x, lut.y, sel_lo);
     out_hi |= uq & 0x80808080u;
     out_lo |= (uq << 4) & 0x80808080u;
     return make_uint2(out_hi, out_lo);

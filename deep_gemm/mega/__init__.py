@@ -105,6 +105,27 @@ def transform_weights_for_mega_moe(
     return l1_weights, l2_weights
 
 
+def choose_nvfp4_block_n_for_mega_moe_sm90(
+    num_tokens: int,
+    num_topk: int,
+    num_experts_per_rank: int,
+    intermediate_hidden: int,
+) -> int:
+    """Select the deployment-time SM90 NVFP4 MegaMoE weight layout.
+
+    The runtime binds BN256 to the fused phase and BN128 to split L1/L2.
+    The framework calls this while prepacking one weight copy for the target
+    serving workload; the result is not changed per request.
+
+    Use routed work per local expert rather than raw M so the rule scales with
+    EP and top-k. H20 eight-rank multi-seed ABBA sweeps place the Flash/middle
+    crossover at expected 192 and the Pro crossover between 190 and 192.
+    """
+    cutoff = 190 if intermediate_hidden >= 3072 else 192
+    routed_tokens = num_tokens * num_topk
+    return 256 if routed_tokens <= cutoff * num_experts_per_rank else 128
+
+
 def transform_nvfp4_weights_for_mega_moe_sm90(
     l1_weights: Tuple[torch.Tensor, torch.Tensor],
     l2_weights: Tuple[torch.Tensor, torch.Tensor],

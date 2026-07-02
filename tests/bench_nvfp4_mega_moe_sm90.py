@@ -26,14 +26,6 @@ from deep_gemm.utils.dist import dist_print, init_dist, uneven_all_gather
 from deep_gemm.testing import bench_kineto, get_arch_major
 
 
-def _expected_tokens_per_local_expert(num_tokens: int, num_topk: int, num_experts_per_rank: int) -> float:
-    return num_tokens * num_topk / num_experts_per_rank
-
-
-def _nvfp4_bn256_fused_shape(num_tokens: int, num_topk: int, num_experts_per_rank: int) -> bool:
-    return _expected_tokens_per_local_expert(num_tokens, num_topk, num_experts_per_rank) <= 128.0
-
-
 def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
                     hidden, intermediate_hidden,
                     num_experts, num_topk, num_ranks, rank_idx, group,
@@ -72,11 +64,9 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     # ABI does not consume.
     l1_packed, l1_scale = quantize_to_nvfp4(l1_bf, group_size=16)
     l2_packed, l2_scale = quantize_to_nvfp4(l2_bf, group_size=16)
-    # The SM90 NVFP4 wrapper uses the BN256 fused path while expected tokens per
-    # local expert are low enough to keep the fused phase efficient; larger
-    # shapes keep the BN128 split path.
-    nvfp4_use_bn256 = _nvfp4_bn256_fused_shape(num_tokens, num_topk, num_experts_per_rank)
-    nvfp4_default_block_n = 256 if nvfp4_use_bn256 else 128
+    # BN256 launches the fused phase; BN128 launches split L1/L2.
+    nvfp4_default_block_n = deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
+        num_tokens, num_topk, num_experts_per_rank, intermediate_hidden)
     nvfp4_block_n = args.nvfp4_block_n or nvfp4_default_block_n
     transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
         (l1_packed, l1_scale), (l2_packed, l2_scale),
@@ -87,6 +77,8 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     phase_profile_enabled = os.environ.get('DG_SM90_MOE_PHASE_PROFILE', '0') != '0'
     phase_profile_ints = 96 if phase_profile_enabled else 0
     cum_stats = torch.zeros(num_experts_per_rank + phase_profile_ints, dtype=torch.int, device='cuda')
+    reuse_output = os.environ.get('DG_BENCH_REUSE_OUTPUT', '0') != '0'
+    output = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device='cuda') if reuse_output else None
 
     # Stage inputs once; bench-loop re-copies them each call (bench helper expects
     # an idempotent ``fn``).
@@ -95,7 +87,8 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         buffer.x_sf[:num_tokens].copy_(x_sf)
         buffer.topk_idx[:num_tokens].copy_(topk_idx)
         buffer.topk_weights[:num_tokens].copy_(topk_w)
-        y = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
+        y = output if output is not None else torch.empty(
+            (num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
         deep_gemm.nvfp4_mega_moe(
             y, transformed_l1, transformed_l2, buffer,
             cumulative_local_expert_recv_stats=cum_stats,
@@ -137,6 +130,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         torch.cuda.synchronize()
         dist.barrier()
     show_kineto = os.environ.get('DG_SHOW_KINETO', '0') != '0'
+    async_bench_barrier = os.environ.get('DG_BENCH_ASYNC_BARRIER', '0') != '0'
     split_l1_l2 = nvfp4_block_n == 128
     # The profiler table exposes the generated CUDA function name, not the
     # JIT build name, so split L1/L2 launches cannot be matched separately
@@ -145,7 +139,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     # average across both split launches; multiply by two to estimate one
     # end-to-end MoE call.
     t_nvfp4 = bench_kineto(run, kernel_name,
-                           barrier=lambda: dist.barrier(),
+                           barrier=lambda: dist.barrier(async_op=async_bench_barrier),
                            num_tests=args.num_tests,
                            suppress_kineto_output=not show_kineto,
                            with_multiple_kernels=split_l1_l2)
@@ -199,6 +193,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
                 'combine_reduce', 'gemm_core', 'l1_epilogue', 'l2_epilogue',
                 'loader_dequant', 'math_dequant_wait', 'l1_tma_wait',
                 'l1_ready_notify', 'l2_ready_wait', 'l2_scatter',
+                'math_full_wait', 'math_dequant',
             ]
             num_phase_metrics = len(names)
             profile = cum_stats[
@@ -248,7 +243,12 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     if args.ncu_profile_only:
         batches = batches[:1]
 
-    num_max_tokens_per_rank = max(batches)
+    num_max_tokens_per_rank = args.num_max_tokens_per_rank or max(batches)
+    if num_max_tokens_per_rank < max(batches):
+        raise ValueError(
+            f"num_max_tokens_per_rank={num_max_tokens_per_rank} is smaller than "
+            f"the largest batch M={max(batches)}"
+        )
     for num_tokens in batches:
         _run_one_config(
             args, num_tokens, num_max_tokens_per_rank,
@@ -280,6 +280,8 @@ if __name__ == '__main__':
     parser.add_argument('--masked-ratio', type=float, default=0.0)
     parser.add_argument('--fast-math', type=int, default=1)
     parser.add_argument('--num-tests', type=int, default=20)
+    parser.add_argument('--num-max-tokens-per-rank', type=int, default=None,
+                        help='Fix buffer capacity independently of the measured batch list')
     parser.add_argument('--nvfp4-block-n', type=int, choices=(128, 256), default=None,
                         help='Override NVFP4 prepacked weight layout: 256=fused, 128=split')
     args = parser.parse_args()

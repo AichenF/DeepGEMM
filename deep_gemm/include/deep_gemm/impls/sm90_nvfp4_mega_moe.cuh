@@ -104,6 +104,8 @@ __device__ __forceinline__ void dequant_smem_b_from_packed(uint8_t* __restrict__
     }
 }
 
+template <bool kPreloadSecondLut = false, bool kUseDp4aHi = false,
+          bool kUseDp4aLo = kUseDp4aHi>
 __device__ __forceinline__ void dequant_smem_b_from_packed_fused_scale(uint8_t* __restrict__ smem_b,
                                                                       const uint8_t* __restrict__ packed_b,
                                                                       uint32_t tid_in_wg,
@@ -125,23 +127,67 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_fused_scale(uint8_t* 
         const uint4 fp4_quad = fp4_quads[quad_i];
         const uint32_t scale_word = quad_i < 2 ? scale_word_lo : scale_word_hi;
 
-        const int scale_i0 = quad_i * 2;
-        const uint32_t scale_ue4m3_0 = (scale_word >> ((scale_i0 & 3) * 8)) & 0xffu;
-        const uint2 lut0 = lut_smem[scale_ue4m3_0 & 0x7fu];
-        const uint2 q0_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_quad.x, lut0);
-        const uint2 q0_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_quad.y, lut0);
-        const uint32_t physical0 = (scale_i0 * 16) ^ row_swizzle;
-        *reinterpret_cast<uint4*>(fp8_dst_base + physical0) =
-            make_uint4(q0_s0.x, q0_s0.y, q0_s1.x, q0_s1.y);
+        if constexpr (kPreloadSecondLut) {
+            const int scale_i0 = quad_i * 2;
+            const uint32_t scale_ue4m3_0 = (scale_word >> ((scale_i0 & 3) * 8)) & 0xffu;
+            const int scale_i1 = scale_i0 + 1;
+            const uint32_t scale_ue4m3_1 = (scale_word >> ((scale_i1 & 3) * 8)) & 0xffu;
+            const uint2 lut0 = lut_smem[scale_ue4m3_0 & 0x7fu];
+            const uint2 lut1 = lut_smem[scale_ue4m3_1 & 0x7fu];
+            const uint2 q0_s0 =
+                deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut<
+                    kUseDp4aHi, kUseDp4aLo>(
+                    fp4_quad.x, lut0);
+            const uint2 q0_s1 =
+                deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut<
+                    kUseDp4aHi, kUseDp4aLo>(
+                    fp4_quad.y, lut0);
+            const uint32_t physical0 = (scale_i0 * 16) ^ row_swizzle;
+            *reinterpret_cast<uint4*>(fp8_dst_base + physical0) =
+                make_uint4(q0_s0.x, q0_s0.y, q0_s1.x, q0_s1.y);
 
-        const int scale_i1 = scale_i0 + 1;
-        const uint32_t scale_ue4m3_1 = (scale_word >> ((scale_i1 & 3) * 8)) & 0xffu;
-        const uint2 lut1 = lut_smem[scale_ue4m3_1 & 0x7fu];
-        const uint2 q1_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_quad.z, lut1);
-        const uint2 q1_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_quad.w, lut1);
-        const uint32_t physical1 = (scale_i1 * 16) ^ row_swizzle;
-        *reinterpret_cast<uint4*>(fp8_dst_base + physical1) =
-            make_uint4(q1_s0.x, q1_s0.y, q1_s1.x, q1_s1.y);
+            const uint2 q1_s0 =
+                deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut<
+                    kUseDp4aHi, kUseDp4aLo>(
+                    fp4_quad.z, lut1);
+            const uint2 q1_s1 =
+                deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut<
+                    kUseDp4aHi, kUseDp4aLo>(
+                    fp4_quad.w, lut1);
+            const uint32_t physical1 = (scale_i1 * 16) ^ row_swizzle;
+            *reinterpret_cast<uint4*>(fp8_dst_base + physical1) =
+                make_uint4(q1_s0.x, q1_s0.y, q1_s1.x, q1_s1.y);
+        } else {
+            const int scale_i0 = quad_i * 2;
+            const uint32_t scale_ue4m3_0 = (scale_word >> ((scale_i0 & 3) * 8)) & 0xffu;
+            const uint2 lut0 = lut_smem[scale_ue4m3_0 & 0x7fu];
+            const uint2 q0_s0 =
+                deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut<
+                    kUseDp4aHi, kUseDp4aLo>(
+                    fp4_quad.x, lut0);
+            const uint2 q0_s1 =
+                deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut<
+                    kUseDp4aHi, kUseDp4aLo>(
+                    fp4_quad.y, lut0);
+            const uint32_t physical0 = (scale_i0 * 16) ^ row_swizzle;
+            *reinterpret_cast<uint4*>(fp8_dst_base + physical0) =
+                make_uint4(q0_s0.x, q0_s0.y, q0_s1.x, q0_s1.y);
+
+            const int scale_i1 = scale_i0 + 1;
+            const uint32_t scale_ue4m3_1 = (scale_word >> ((scale_i1 & 3) * 8)) & 0xffu;
+            const uint2 lut1 = lut_smem[scale_ue4m3_1 & 0x7fu];
+            const uint2 q1_s0 =
+                deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut<
+                    kUseDp4aHi, kUseDp4aLo>(
+                    fp4_quad.z, lut1);
+            const uint2 q1_s1 =
+                deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut<
+                    kUseDp4aHi, kUseDp4aLo>(
+                    fp4_quad.w, lut1);
+            const uint32_t physical1 = (scale_i1 * 16) ^ row_swizzle;
+            *reinterpret_cast<uint4*>(fp8_dst_base + physical1) =
+                make_uint4(q1_s0.x, q1_s0.y, q1_s1.x, q1_s1.y);
+        }
     }
 }
 
@@ -270,7 +316,8 @@ __device__ __forceinline__ void dequant_smem_b_inplace_two_rows(
     }
 }
 
-template <uint32_t kNumDequantThreads, uint32_t kBarIdx, uint32_t kFusedRowBytes = 80>
+template <uint32_t kNumDequantThreads, uint32_t kBarIdx, uint32_t kFusedRowBytes = 80,
+          bool kUseDp4aHi = false, bool kUseDp4aLo = kUseDp4aHi>
 __device__ __forceinline__ void dequant_smem_b_inplace_two_rows_fused_scale(
         uint8_t* __restrict__ smem_b, uint32_t tid,
         const uint2* __restrict__ lut_smem) {
@@ -311,10 +358,18 @@ __device__ __forceinline__ void dequant_smem_b_inplace_two_rows_fused_scale(
         const int i1 = i0 + 1;
         const uint2 lut0 = lut_smem[scale_ue4m3_0 & 0x7fu];
         const uint2 lut1 = lut_smem[scale_ue4m3_1 & 0x7fu];
-        const uint2 r0_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs0[i0], lut0);
-        const uint2 r0_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs0[i1], lut0);
-        const uint2 r1_s0 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs1[i0], lut1);
-        const uint2 r1_s1 = deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut(fp4_regs1[i1], lut1);
+        const uint2 r0_s0 =
+            deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut<kUseDp4aHi, kUseDp4aLo>(
+                fp4_regs0[i0], lut0);
+        const uint2 r0_s1 =
+            deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut<kUseDp4aHi, kUseDp4aLo>(
+                fp4_regs0[i1], lut0);
+        const uint2 r1_s0 =
+            deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut<kUseDp4aHi, kUseDp4aLo>(
+                fp4_regs1[i0], lut1);
+        const uint2 r1_s1 =
+            deep_gemm::nvfp4::dequant_nvfp4_to_fp8_pair_with_lut<kUseDp4aHi, kUseDp4aLo>(
+                fp4_regs1[i1], lut1);
         const uint32_t logical = i0 * 8;
         const uint32_t physical = logical ^ row_swizzle;
         *reinterpret_cast<uint4*>(fp8_dst_base0 + physical) =
@@ -367,6 +422,9 @@ template <
     bool kFastMath,
     bool kPhaseProfileRequested = false,
     bool kLoaderDequantRequested = false,
+    bool kSwapABRequested = false,
+    bool kDp4aSelectorPack = false,
+    bool kHybridLowSelectorPack = false,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
     uint32_t L2_SHAPE_N = kHidden,

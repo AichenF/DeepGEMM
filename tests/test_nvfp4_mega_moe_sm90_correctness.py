@@ -25,14 +25,6 @@ from deep_gemm.utils import per_token_cast_to_fp8
 from deep_gemm.utils.dist import init_dist
 
 
-def _expected_tokens_per_local_expert(num_tokens: int, num_topk: int, num_local_experts: int) -> float:
-    return num_tokens * num_topk / num_local_experts
-
-
-def _nvfp4_bn256_fused_shape(num_tokens: int, num_topk: int, num_local_experts: int) -> bool:
-    return _expected_tokens_per_local_expert(num_tokens, num_topk, num_local_experts) <= 128.0
-
-
 def _interleave_l1_n(tensor: torch.Tensor, gran: int = 8) -> torch.Tensor:
     groups, n_cols, *rest = tensor.shape
     half = n_cols // 2
@@ -244,8 +236,9 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
     l1_dequant = dequantize_nvfp4_to_fp32(l1_packed, l1_scale, group_size=16)
     l2_dequant = dequantize_nvfp4_to_fp32(l2_packed, l2_scale, group_size=16)
 
-    nvfp4_use_bn256 = _nvfp4_bn256_fused_shape(m_tokens, num_topk, num_local_experts)
-    nvfp4_block_n = 256 if nvfp4_use_bn256 else 128
+    nvfp4_default_block_n = deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
+        m_tokens, num_topk, num_local_experts, intermediate_hidden)
+    nvfp4_block_n = args.nvfp4_block_n or nvfp4_default_block_n
     transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
         (l1_packed, l1_scale), (l2_packed, l2_scale),
         block_n=nvfp4_block_n,
@@ -410,6 +403,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--num-max-tokens-per-rank", type=int, default=0)
     parser.add_argument("--activation-clamp", type=float, default=10.0)
     parser.add_argument("--fast-math", type=int, default=1)
+    parser.add_argument("--nvfp4-block-n", type=int, choices=(128, 256), default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--weight-scales", nargs="+", type=float, default=[0.05])
     parser.add_argument(

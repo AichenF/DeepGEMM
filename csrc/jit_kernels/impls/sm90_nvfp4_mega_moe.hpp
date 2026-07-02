@@ -47,6 +47,9 @@ public:
         bool phase_profile;
         bool l2_arrival_counter;
         bool loader_dequant;
+        bool swap_ab;
+        bool dp4a_selector_pack;
+        bool hybrid_low_selector_pack;
         int phase_mode;
         MegaMoESM90Config config;
 
@@ -77,15 +80,26 @@ public:
             (args.phase_mode == kSplitL1PhaseMode ?
                 "sm90_nvfp4_mega_moe_split_l1_impl" : "sm90_nvfp4_mega_moe_split_l2_impl");
         const std::string phase_template_args = args.phase_mode == kFusedPhaseMode ?
-            fmt::format("{},\n        {},\n",
+            fmt::format("/* kPhaseProfileRequested */ {},\n"
+                        "        /* kLoaderDequantRequested */ {},\n"
+                        "        /* kSwapABRequested */ {},\n"
+                        "        /* kDp4aSelectorPack */ {},\n"
+                        "        /* kHybridLowSelectorPack */ {}",
                         args.phase_profile ? "true" : "false",
-                        args.loader_dequant ? "true" : "false") :
+                        args.loader_dequant ? "true" : "false",
+                        args.swap_ab ? "true" : "false",
+                        args.dp4a_selector_pack ? "true" : "false",
+                        args.hybrid_low_selector_pack ? "true" : "false") :
             (args.phase_mode == kSplitL1PhaseMode ?
-                fmt::format("{},\n        {},\n        {},\n",
+                fmt::format("/* kPhaseProfileRequested */ {},\n"
+                            "        /* kL2ArrivalCounterRequested */ {},\n"
+                            "        /* kLoaderDequantRequested */ {}",
                             args.phase_profile ? "true" : "false",
                             args.l2_arrival_counter ? "true" : "false",
                             args.loader_dequant ? "true" : "false") :
-                fmt::format("{},\n        {},\n        {},\n",
+                fmt::format("/* kL2DualAccumRequested */ {},\n"
+                            "        /* kPhaseProfileRequested */ {},\n"
+                            "        /* kLoaderDequantRequested */ {}",
                             args.l2_dual_accum ? "true" : "false",
                             args.phase_profile ? "true" : "false",
                             args.loader_dequant ? "true" : "false"));
@@ -110,8 +124,6 @@ static void __instantiate_kernel() {{
         {},
         {},
         {}
-        {}, {}, {}, {},
-        {}, {}, {}, {}, {}, {}, {}
     >);
 }};
 )",
@@ -129,9 +141,7 @@ static void __instantiate_kernel() {{
     args.launch_args.grid_dim.first, args.num_ranks,
     to_string(args.activation_clamp),
     args.fast_math ? "true" : "false",
-    phase_template_args,
-    args.intermediate_hidden * 2, args.hidden, args.hidden, args.intermediate_hidden,
-    args.config.num_dispatch_threads / 32, args.config.num_non_epilogue_threads / 32, args.config.num_epilogue_threads / 32, (args.config.num_epilogue_threads / 32) / 4, args.config.num_dispatch_threads + args.config.num_non_epilogue_threads + args.config.num_epilogue_threads, 32 / args.num_topk, args.num_experts / args.num_ranks);
+    phase_template_args);
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -180,6 +190,230 @@ static void __instantiate_kernel() {{
     }
 };
 
+static constexpr int kSM90NVFP4BStoragePerKBlock = 80;
+
+// The prepacked weight layout selects one deployment-time phase plan. Build
+// each phase's final launch config here instead of mutating the generic FP8 one.
+struct SM90NVFP4MegaMoEPlan {
+    MegaMoESM90Config l1_or_fused_config;
+    MegaMoESM90Config split_l2_config;
+    bool use_fused_phase;
+    bool loader_dequant;
+    bool swap_ab;
+    bool dp4a_selector_pack;
+    bool hybrid_low_selector_pack;
+    bool l2_dual_accum;
+    bool l2_arrival_counter;
+};
+
+static std::pair<int, int> get_nvfp4_pipeline_config_for_mega_moe_sm90(
+    const int num_experts, const int hidden,
+    const float expected_tokens_per_local_expert,
+    const MegaMoESM90Config& config,
+    const bool loader_dequant, const bool packed_b_scratch,
+    const bool swap_ab, const bool l2_only
+) {
+    const auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
+    constexpr int kSmemAlignment = 1024;
+    const int num_dispatch_warps = config.num_dispatch_threads / 32;
+    const int num_epilogue_warps = config.num_epilogue_threads / 32;
+    const int num_epilogue_warpgroups = num_epilogue_warps / 4;
+
+    const bool split_n_warpgroups = config.block_m == 64 && config.block_n == 256 &&
+        num_epilogue_warpgroups == 2;
+    const bool split_mn_warpgroups = config.block_m == 128 && config.block_n == 256 &&
+        num_epilogue_warpgroups == 4;
+    const int wg_split_m = split_n_warpgroups ? 1 :
+        (split_mn_warpgroups ? 2 : num_epilogue_warpgroups);
+    const int wg_split_n = split_n_warpgroups ? num_epilogue_warpgroups :
+        (split_mn_warpgroups ? 2 : 1);
+    DG_HOST_ASSERT(wg_split_m * wg_split_n == num_epilogue_warpgroups);
+    const int wg_block_m = config.block_m / wg_split_m;
+    const int wg_block_n = config.block_n / wg_split_n;
+    const int wg_l1_out_block_n = wg_block_n / 2;
+
+    const int smem_expert_count_size = align(
+        num_experts * static_cast<int>(sizeof(uint32_t)), kSmemAlignment);
+    const int smem_send_buffers_size = align(
+        static_cast<int>(layout::Buffer(
+            layout::Data(hidden), num_dispatch_warps, 1).get_num_bytes()),
+        kSmemAlignment);
+    const int smem_dispatch_size = smem_expert_count_size + smem_send_buffers_size;
+    const int smem_nvfp4_lut = align(128 * 8, kSmemAlignment);
+
+    const int smem_cd_l1 = num_epilogue_warpgroups * wg_block_m * wg_l1_out_block_n;
+    const bool split_n_shares_l1_sf = split_n_warpgroups && wg_l1_out_block_n < 64;
+    const int smem_cd_l1_shared_sf_slots = split_n_shares_l1_sf ?
+        num_epilogue_warpgroups * config.block_m : 0;
+    const int smem_cd_l1_swap_amax_slots = swap_ab ?
+        config.block_m * num_epilogue_warps : 0;
+    const int smem_cd_l1_extra_float_slots = std::max(
+        smem_cd_l1_shared_sf_slots, smem_cd_l1_swap_amax_slots);
+    const int smem_cd_l1_shared_sf =
+        smem_cd_l1_extra_float_slots * static_cast<int>(sizeof(float));
+    const int smem_cd_l2 = swap_ab ? config.block_m * config.block_n * 2 : 0;
+    const int smem_cd = l2_only ? 0 : align(
+        std::max(smem_cd_l1, smem_cd_l2) + smem_cd_l1_shared_sf,
+        kSmemAlignment);
+
+    const int smem_sfa_per_stage = align(
+        2 * config.block_m * static_cast<int>(sizeof(float)), 128);
+    const int smem_packed_b_per_stage = packed_b_scratch ?
+        config.block_n * kSM90NVFP4BStoragePerKBlock : 0;
+    const int smem_per_stage = config.block_m * config.block_k +
+        config.block_n * config.block_k + smem_packed_b_per_stage + smem_sfa_per_stage;
+    const int smem_barriers_fixed = (num_dispatch_warps + 2 * num_epilogue_warps) * 8;
+    const int smem_barriers_per_stage = (loader_dequant ? 3 : 2) * 8;
+    const int smem_fixed = smem_dispatch_size + smem_nvfp4_lut +
+        smem_cd + smem_barriers_fixed;
+    const int max_num_stages = (SM90ArchSpec::smem_capacity - smem_fixed) /
+        (smem_per_stage + smem_barriers_per_stage);
+    const int num_stages = !l2_only && config.block_n == 128 &&
+        expected_tokens_per_local_expert > 8.0f && max_num_stages > 6 ?
+        6 : max_num_stages;
+    DG_HOST_ASSERT(max_num_stages >= 2);
+    DG_HOST_ASSERT(num_stages >= 2 && num_stages <= max_num_stages);
+    return {
+        num_stages,
+        smem_fixed + num_stages * (smem_per_stage + smem_barriers_per_stage)
+    };
+}
+
+static SM90NVFP4MegaMoEPlan get_nvfp4_mega_moe_plan_sm90(
+    const int num_ranks, const int num_experts, const int num_experts_per_rank,
+    const int num_max_tokens_per_rank, const int num_tokens, const int num_topk,
+    const int hidden, const int intermediate_hidden,
+    const int num_padded_sf_pool_tokens, const int block_n_from_layout
+) {
+    DG_HOST_ASSERT(block_n_from_layout == 128 || block_n_from_layout == 256);
+    const int routed_tokens = num_tokens * num_topk;
+    const float expected_tokens_per_local_expert =
+        static_cast<float>(routed_tokens) / num_experts_per_rank;
+    const auto expected_eq = [=](int expected) {
+        return routed_tokens == expected * num_experts_per_rank;
+    };
+    const auto expected_in_closed_range = [=](int lower, int upper) {
+        return routed_tokens >= lower * num_experts_per_rank &&
+               routed_tokens <= upper * num_experts_per_rank;
+    };
+
+    const bool use_fused_phase = block_n_from_layout == 256;
+    const int block_m = !use_fused_phase && expected_tokens_per_local_expert >= 64.0f ?
+        128 : 64;
+    const int block_n = block_n_from_layout;
+    const int block_k = 128;
+    const int cluster_size = 1;
+    const int num_dispatch_threads = use_fused_phase ? 64 : 128;
+    const int num_non_epilogue_threads = use_fused_phase ? 64 : 128;
+    const int num_epilogue_threads = use_fused_phase || block_m == 128 ? 256 : 128;
+
+    DG_HOST_ASSERT(block_m == 64 || block_m == 128);
+    DG_HOST_ASSERT((block_n == 128 &&
+                    (num_epilogue_threads == 128 || num_epilogue_threads == 256)) ||
+                   (block_n == 256 && num_epilogue_threads == 256));
+    DG_HOST_ASSERT((num_dispatch_threads + num_non_epilogue_threads) % 128 == 0);
+
+    int num_experts_per_wave = get_num_experts_per_wave_for_mega_moe_sm90(
+        num_experts_per_rank, num_tokens, num_topk,
+        intermediate_hidden, block_m, block_n,
+        device_runtime->get_num_sms());
+    if (block_m == 128 && block_n == 128) {
+        if (expected_eq(256))
+            num_experts_per_wave = num_experts_per_rank;
+        if (expected_eq(512) && num_experts_per_rank % 4 == 0)
+            num_experts_per_wave = 4;
+    }
+
+    const int m_tiles = (num_tokens + block_m - 1) / block_m;
+    const int loader_dequant_default = use_fused_phase ? (m_tiles >= 2 ? 1 : 0) : 1;
+    const bool loader_dequant_requested =
+        get_env<int>("DG_SM90_NVFP4_LOADER_DEQUANT", loader_dequant_default) != 0;
+    const bool bn256_packed_loader_dequant =
+        use_fused_phase && num_non_epilogue_threads == 64;
+    const bool loader_dequant = loader_dequant_requested &&
+        (num_non_epilogue_threads == 128 || bn256_packed_loader_dequant);
+    const bool swap_ab = use_fused_phase && block_m == 64 &&
+        num_epilogue_threads == 256 && expected_in_closed_range(0, 8);
+    const bool fused_policy_eligible = use_fused_phase && block_m == 64;
+    const bool dp4a_selector_pack = fused_policy_eligible &&
+        intermediate_hidden >= 3072 && expected_in_closed_range(0, 8);
+    const bool hybrid_low_selector_pack = fused_policy_eligible &&
+        intermediate_hidden <= 2048 && expected_in_closed_range(3, 8);
+    const bool packed_b_scratch = use_fused_phase;
+    DG_HOST_ASSERT(loader_dequant || packed_b_scratch);
+
+    MegaMoESM90Config l1_or_fused_config = {
+        block_m, block_n, block_k,
+        cluster_size,
+        layout::get_num_max_pool_tokens(
+            num_ranks, num_max_tokens_per_rank, num_topk, num_experts_per_rank),
+        num_padded_sf_pool_tokens,
+        128, 128,
+        num_experts_per_wave,
+        0, 0,
+        num_dispatch_threads, num_non_epilogue_threads, num_epilogue_threads
+    };
+    std::tie(l1_or_fused_config.num_stages, l1_or_fused_config.smem_size) =
+        get_nvfp4_pipeline_config_for_mega_moe_sm90(
+            num_experts, hidden, expected_tokens_per_local_expert,
+            l1_or_fused_config, loader_dequant, packed_b_scratch, swap_ab, false);
+
+    MegaMoESM90Config split_l2_config = l1_or_fused_config;
+    if (!use_fused_phase) {
+        const auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
+        constexpr int kSmemAlignment = 1024;
+        const int full_send_buffers_size = align(
+            static_cast<int>(layout::Buffer(layout::Data(hidden), 4, 1).get_num_bytes()),
+            kSmemAlignment);
+        const int active_send_buffers_size = align(
+            static_cast<int>(layout::Buffer(layout::Data(hidden), 2, 1).get_num_bytes()),
+            kSmemAlignment);
+        l1_or_fused_config.smem_size -= full_send_buffers_size - active_send_buffers_size;
+
+        split_l2_config.num_dispatch_threads = 0;
+        split_l2_config.num_non_epilogue_threads = 128;
+        std::tie(split_l2_config.num_stages, split_l2_config.smem_size) =
+            get_nvfp4_pipeline_config_for_mega_moe_sm90(
+                num_experts, hidden, expected_tokens_per_local_expert,
+                split_l2_config, loader_dequant, false, false, true);
+    }
+
+    const bool l2_dual_accum = !use_fused_phase &&
+        (expected_tokens_per_local_expert <= 64.0f ||
+         expected_tokens_per_local_expert >= 128.0f);
+    const bool l2_arrival_counter = !use_fused_phase &&
+        (expected_tokens_per_local_expert <= 32.0f ||
+         expected_tokens_per_local_expert >= 128.0f);
+
+    if (get_env<int>("DG_JIT_DEBUG") || get_env<int>("DG_PRINT_CONFIGS")) {
+        const auto key = fmt::format(
+            "SM90NVFP4MegaMoEPlan(num_ranks={}, num_experts={}, hidden={}, intermediate_hidden={}, "
+            "num_max_tokens_per_rank={}, num_tokens={}, num_topk={}, block_n={})",
+            num_ranks, num_experts, hidden, intermediate_hidden,
+            num_max_tokens_per_rank, num_tokens, num_topk, block_n);
+        static std::unordered_set<std::string> printed;
+        if (printed.count(key) == 0) {
+            std::cout << key << ": l1_or_fused=" << l1_or_fused_config;
+            if (!use_fused_phase)
+                std::cout << ", split_l2=" << split_l2_config;
+            std::cout << std::endl;
+            printed.insert(key);
+        }
+    }
+
+    return {
+        l1_or_fused_config,
+        split_l2_config,
+        use_fused_phase,
+        loader_dequant,
+        swap_ab,
+        dp4a_selector_pack,
+        hybrid_low_selector_pack,
+        l2_dual_accum,
+        l2_arrival_counter
+    };
+}
+
 static void sm90_nvfp4_mega_moe(
     const torch::Tensor& y,
     const torch::Tensor& l1_acts, const torch::Tensor& l1_acts_sf,
@@ -201,123 +435,22 @@ static void sm90_nvfp4_mega_moe(
     const auto num_experts = num_experts_per_rank * num_ranks;
     const auto num_padded_sf_pool_tokens = static_cast<int>(l1_acts_sf.size(0));
 
-    // Heuristics
-    auto config = get_mega_moe_config_sm90(
-        num_ranks, num_experts, num_experts_per_rank,
-        num_max_tokens_per_rank, num_tokens, num_topk,
-        hidden, intermediate_hidden, num_padded_sf_pool_tokens);
-
-    const auto ceil_div = [](int x, int y) { return (x + y - 1) / y; };
-    const float expected_tokens_per_local_expert =
-        static_cast<float>(num_tokens) * num_topk / num_experts_per_rank;
-    const auto expected_tokens_per_local_expert_eq = [=](int expected) {
-        return num_tokens * num_topk == expected * num_experts_per_rank;
-    };
-
     // The framework chooses the serving phase by passing the corresponding
     // prepacked weight layout: BN256 means fused, BN128 means split L1/L2.
-    const int nvfp4_block_n_from_layout = static_cast<int>(l1_weights_sf.size(3));
-    DG_HOST_ASSERT(nvfp4_block_n_from_layout == 128 || nvfp4_block_n_from_layout == 256);
-    const int nvfp4_block_n = nvfp4_block_n_from_layout;
-    const bool use_fused_phase = nvfp4_block_n == 256;
+    const int block_n_from_layout = static_cast<int>(l1_weights_sf.size(3));
+    const auto plan = get_nvfp4_mega_moe_plan_sm90(
+        num_ranks, num_experts, num_experts_per_rank,
+        num_max_tokens_per_rank, num_tokens, num_topk,
+        hidden, intermediate_hidden, num_padded_sf_pool_tokens,
+        block_n_from_layout);
+    const auto& config = plan.l1_or_fused_config;
+    const bool use_fused_phase = plan.use_fused_phase;
     const bool split_l1_l2 = !use_fused_phase;
-    config.block_m = 64;
-    config.block_n = nvfp4_block_n;
-    config.block_k = 128;
-    config.cluster_size = 1;
-    config.num_epilogue_threads = config.block_n == 256 ? 256 : 128;
-    DG_HOST_ASSERT((config.block_n == 128 and (config.num_epilogue_threads == 128 or config.num_epilogue_threads == 256)) or
-                   (config.block_n == 256 and config.num_epilogue_threads == 256));
-
-    if (expected_tokens_per_local_expert >= 64.0f && config.block_n == 128) {
-        config.block_m = 128;
-        config.num_epilogue_threads = 256;
-    }
-    const int m_tiles = ceil_div(num_tokens, config.block_m);
-
-    config.num_experts_per_wave = get_num_experts_per_wave_for_mega_moe_sm90(
-        num_experts_per_rank, num_tokens, num_topk,
-        intermediate_hidden, config.block_m, config.block_n,
-        device_runtime->get_num_sms());
-    if (config.block_m == 128 && config.block_n == 128) {
-        if (expected_tokens_per_local_expert_eq(256))
-            config.num_experts_per_wave = num_experts_per_rank;
-        if (expected_tokens_per_local_expert_eq(512) && num_experts_per_rank % 4 == 0)
-            config.num_experts_per_wave = 4;
-    }
-
-    // NVFP4 dequant defaults to the idle-warps loader path for the supported
-    // SM90 bridge shape (4 dispatch + 4 non-epilogue + 4 math warps). Set
-    // DG_SM90_NVFP4_LOADER_DEQUANT=0 to use the math-side fallback.
-    // The BLOCK_M=16/32 mma.sync branch is not fully wired for NVFP4.
-    DG_HOST_ASSERT(config.block_m >= 64);
-    DG_HOST_ASSERT(config.block_m == 64 or config.block_m == 128);
-    // UE4M3 scale tensors are prepacked as (E, N/block_n, K/128, block_n, 8).
-    DG_HOST_ASSERT(config.block_n == 128 or config.block_n == 256);
-    const int nvfp4_dispatch_threads = config.block_n == 256 ? 64 : 128;
-    const int nvfp4_non_epilogue_threads = config.block_n == 256 ? 64 : 128;
-    const int nvfp4_loader_dequant_default = config.block_n == 256 ?
-        ((m_tiles >= 2) ? 1 : 0) : 1;
-    const bool nvfp4_loader_dequant_requested =
-        get_env<int>("DG_SM90_NVFP4_LOADER_DEQUANT", nvfp4_loader_dequant_default) != 0;
-    const bool nvfp4_bn256_packed_loader_dequant =
-        config.block_n == 256 && nvfp4_non_epilogue_threads == 64;
-    const bool nvfp4_loader_dequant = nvfp4_loader_dequant_requested &&
-        (nvfp4_non_epilogue_threads == 128 || nvfp4_bn256_packed_loader_dequant);
-    const bool nvfp4_packed_b_scratch = config.block_n == 256;
     const int weight_storage_k = static_cast<int>(l1_weights.size(2));
     const int weight_k_blocks = static_cast<int>(l1_weights_sf.size(2));
-    const bool layout_fused_b_scale = weight_storage_k == weight_k_blocks * 80;
+    const bool layout_fused_b_scale =
+        weight_storage_k == weight_k_blocks * kSM90NVFP4BStoragePerKBlock;
     DG_HOST_ASSERT(layout_fused_b_scale);
-    DG_HOST_ASSERT(nvfp4_loader_dequant || nvfp4_packed_b_scratch);
-    const int nvfp4_b_storage_per_k_block = 80;
-    config.num_dispatch_threads = nvfp4_dispatch_threads;
-    config.num_non_epilogue_threads = nvfp4_non_epilogue_threads;
-    DG_HOST_ASSERT((config.num_dispatch_threads + config.num_non_epilogue_threads) % 128 == 0);
-    DG_HOST_ASSERT(config.block_n == 128 ||
-                   (use_fused_phase && config.block_m == 64 && config.num_epilogue_threads == 256));
-    {
-        auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
-        constexpr int kSmemAlignment = 1024;
-        const int num_dispatch_warps = config.num_dispatch_threads / 32;
-        const int num_epilogue_warps = config.num_epilogue_threads / 32;
-        const int num_epilogue_warpgroups = num_epilogue_warps / 4;
-        const bool split_n_warpgroups = config.block_m == 64 && config.block_n == 256 &&
-            num_epilogue_warpgroups == 2;
-        const bool split_mn_warpgroups = config.block_m == 128 && config.block_n == 256 && num_epilogue_warpgroups == 4;
-        const int wg_split_m = split_n_warpgroups ? 1 : (split_mn_warpgroups ? 2 : num_epilogue_warpgroups);
-        const int wg_split_n = split_n_warpgroups ? num_epilogue_warpgroups : (split_mn_warpgroups ? 2 : 1);
-        DG_HOST_ASSERT(wg_split_m * wg_split_n == num_epilogue_warpgroups);
-        const int wg_block_m = config.block_m / wg_split_m;
-        const int wg_block_n = config.block_n / wg_split_n;
-        const int wg_l1_out_block_n = wg_block_n / 2;
-        const int smem_expert_count_size = align(num_experts * static_cast<int>(sizeof(uint32_t)), kSmemAlignment);
-        const int smem_send_buffers_size = align(
-            static_cast<int>(layout::Buffer(layout::Data(hidden), num_dispatch_warps, 1).get_num_bytes()),
-            kSmemAlignment);
-        const int smem_dispatch_size = smem_expert_count_size + smem_send_buffers_size;
-        const int smem_nvfp4_lut = align(128 * 8, kSmemAlignment);
-        const int smem_cd_l1 = num_epilogue_warpgroups * wg_block_m * wg_l1_out_block_n;
-        const int smem_cd_l2 = 0;
-        const int smem_cd = align(std::max(smem_cd_l1, smem_cd_l2), kSmemAlignment);
-        const int smem_sfa_per_stage = align(2 * config.block_m * static_cast<int>(sizeof(float)), 128);
-        const int smem_packed_b_per_stage = nvfp4_packed_b_scratch ?
-            config.block_n * nvfp4_b_storage_per_k_block : 0;
-        const int smem_per_stage = config.block_m * config.block_k + config.block_n * config.block_k +
-                                   smem_packed_b_per_stage + smem_sfa_per_stage;
-        const int smem_barriers_fixed = (num_dispatch_warps + 2 * num_epilogue_warps) * 8;
-        const int smem_barriers_per_stage = (nvfp4_loader_dequant ? 3 : 2) * 8;
-        const int smem_fixed = smem_dispatch_size + smem_nvfp4_lut + smem_cd + smem_barriers_fixed;
-        const int max_num_stages = (SM90ArchSpec::smem_capacity - smem_fixed) /
-                                   (smem_per_stage + smem_barriers_per_stage);
-        const int default_num_stages =
-            (config.block_n == 128 && expected_tokens_per_local_expert > 8.0f && max_num_stages > 6) ?
-            6 : max_num_stages;
-        DG_HOST_ASSERT(max_num_stages >= 2);
-        DG_HOST_ASSERT(default_num_stages >= 2 && default_num_stages <= max_num_stages);
-        config.num_stages = default_num_stages;
-        config.smem_size = smem_fixed + config.num_stages * (smem_per_stage + smem_barriers_per_stage);
-    }
 
     // Tensormap construction
     // Acts/weights: standard 2D TMA descriptors (FP8 K-major).
@@ -340,7 +473,7 @@ static void sm90_nvfp4_mega_moe(
     const auto tensor_map_l1_weights = make_tma_2d_desc(l1_weights,
                                                         static_cast<int>(l1_weights.size(2)),
                                                         num_experts_per_rank * intermediate_hidden * 2,
-                                                        nvfp4_b_storage_per_k_block, config.block_n,
+                                                        kSM90NVFP4BStoragePerKBlock, config.block_n,
                                                         static_cast<int>(l1_weights.stride(-2)),
                                                         0);
     // UE4M3 SF: accessed via raw uint8 pointer rather than TMA, since the
@@ -385,7 +518,7 @@ static void sm90_nvfp4_mega_moe(
     const auto tensor_map_l2_weights = make_tma_2d_desc(l2_weights,
                                                         static_cast<int>(l2_weights.size(2)),
                                                         num_experts_per_rank * hidden,
-                                                        nvfp4_b_storage_per_k_block, config.block_n,
+                                                        kSM90NVFP4BStoragePerKBlock, config.block_n,
                                                         static_cast<int>(l2_weights.stride(-2)),
                                                         0);
 
@@ -400,13 +533,6 @@ static void sm90_nvfp4_mega_moe(
     const auto num_sms = device_runtime->get_num_sms();
     DG_HOST_ASSERT(use_fused_phase == (config.block_n == 256));
     DG_HOST_ASSERT(split_l1_l2 == (config.block_n == 128));
-    const int l2_dual_accum_default = use_fused_phase ? 0 :
-        ((config.block_n == 128 &&
-          (expected_tokens_per_local_expert <= 64.0f ||
-           expected_tokens_per_local_expert >= 128.0f)) ? 1 : 0);
-    const bool l2_arrival_counter_default = config.block_n == 128 &&
-        (expected_tokens_per_local_expert <= 32.0f ||
-         expected_tokens_per_local_expert >= 128.0f);
 
     const SM90NVFP4MegaMoERuntime::Args args = {
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
@@ -415,10 +541,13 @@ static void sm90_nvfp4_mega_moe(
         .num_ranks = num_ranks,
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
-        .l2_dual_accum = l2_dual_accum_default != 0,
+        .l2_dual_accum = plan.l2_dual_accum,
         .phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0,
-        .l2_arrival_counter = l2_arrival_counter_default,
-        .loader_dequant = nvfp4_loader_dequant,
+        .l2_arrival_counter = plan.l2_arrival_counter,
+        .loader_dequant = plan.loader_dequant,
+        .swap_ab = plan.swap_ab,
+        .dp4a_selector_pack = plan.dp4a_selector_pack,
+        .hybrid_low_selector_pack = plan.hybrid_low_selector_pack,
         .phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode,
         .config = config,
         .y = y.data_ptr(),
@@ -462,58 +591,15 @@ static void sm90_nvfp4_mega_moe(
     const auto launch_split_l1 = [&]() {
         auto phase_args = args;
         phase_args.phase_mode = SM90NVFP4MegaMoERuntime::kSplitL1PhaseMode;
-        if (phase_args.config.block_n == 128 && phase_args.config.num_dispatch_threads == 128) {
-            auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
-            constexpr int kSmemAlignment = 1024;
-            const int full_send_buffers_size = align(
-                static_cast<int>(layout::Buffer(layout::Data(hidden), 4, 1).get_num_bytes()),
-                kSmemAlignment);
-            const int active_send_buffers_size = align(
-                static_cast<int>(layout::Buffer(layout::Data(hidden), 2, 1).get_num_bytes()),
-                kSmemAlignment);
-            phase_args.config.smem_size -= full_send_buffers_size - active_send_buffers_size;
-            refresh_launch_args(phase_args);
-        }
+        DG_HOST_ASSERT(!use_fused_phase && phase_args.config.block_n == 128);
         build_and_launch(phase_args, "sm90_nvfp4_mega_moe_l1");
     };
 
     const auto launch_split_l2 = [&]() {
         auto phase_args = args;
         phase_args.phase_mode = SM90NVFP4MegaMoERuntime::kSplitL2PhaseMode;
+        phase_args.config = plan.split_l2_config;
         DG_HOST_ASSERT(!use_fused_phase && phase_args.config.block_n == 128);
-        phase_args.config.num_dispatch_threads = 0;
-        phase_args.config.num_non_epilogue_threads = 128;
-        std::tie(phase_args.config.num_stages, phase_args.config.smem_size) =
-            get_pipeline_config_for_mega_moe_sm90(
-                SM90ArchSpec::smem_capacity,
-                num_experts, hidden,
-                phase_args.config.block_m, phase_args.config.block_n, phase_args.config.block_k,
-                phase_args.config.num_dispatch_threads / 32,
-                phase_args.config.num_epilogue_threads / 32);
-        auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
-        constexpr int kSmemAlignment = 1024;
-        const int num_dispatch_warps = phase_args.config.num_dispatch_threads / 32;
-        const int num_epilogue_warps = phase_args.config.num_epilogue_threads / 32;
-        const int smem_expert_count_size = align(num_experts * static_cast<int>(sizeof(uint32_t)), kSmemAlignment);
-        const int smem_send_buffers_size = align(
-            static_cast<int>(layout::Buffer(layout::Data(hidden), num_dispatch_warps, 1).get_num_bytes()),
-            kSmemAlignment);
-        const int smem_dispatch_size = smem_expert_count_size + smem_send_buffers_size;
-        const int smem_nvfp4_lut = align(128 * 8, kSmemAlignment);
-        const int smem_cd = 0;
-        const int smem_sfa_per_stage = align(2 * phase_args.config.block_m * static_cast<int>(sizeof(float)), 128);
-        const int smem_packed_b_per_stage = 0;
-        const int smem_per_stage = phase_args.config.block_m * phase_args.config.block_k +
-                                   phase_args.config.block_n * phase_args.config.block_k +
-                                   smem_packed_b_per_stage + smem_sfa_per_stage;
-        const int smem_barriers_fixed = (num_dispatch_warps + 2 * num_epilogue_warps) * 8;
-        const int smem_barriers_per_stage = (phase_args.loader_dequant ? 3 : 2) * 8;
-        const int smem_fixed = smem_dispatch_size + smem_nvfp4_lut + smem_cd + smem_barriers_fixed;
-        phase_args.config.num_stages = (SM90ArchSpec::smem_capacity - smem_fixed) /
-            (smem_per_stage + smem_barriers_per_stage);
-        DG_HOST_ASSERT(phase_args.config.num_stages >= 2);
-        phase_args.config.smem_size = smem_fixed + phase_args.config.num_stages *
-            (smem_per_stage + smem_barriers_per_stage);
         refresh_launch_args(phase_args);
         build_and_launch(phase_args, "sm90_nvfp4_mega_moe_l2");
     };
