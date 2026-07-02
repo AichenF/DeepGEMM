@@ -262,9 +262,9 @@ struct MegaMoESM90Config {
     // Cluster size for TMA multicast (1 or 2). Multicast is on A.
     int cluster_size;
 
-    // Pool capacity and SF-padded token count (SF is per-128 float on SM90)
+    // Pool capacity, allocated SF capacity, and per-config logical SF stride.
     int num_max_pool_tokens;
-    int num_padded_sf_pool_tokens;
+    int num_padded_sf_pool_tokens, sf_pool_stride_tokens;
 
     // Swizzle modes for TMA descriptors (acts/weights). Both are 128B on FP8 K-major.
     int swizzle_acts_mode, swizzle_weights_mode;
@@ -281,7 +281,7 @@ struct MegaMoESM90Config {
     // Chosen scheduler / epilogue modes.  Keeping these in the config makes the
     // SM90 path follow the same single-source-of-truth style as regular GEMM
     // configs: the selector chooses a complete candidate, then launch consumes it.
-    bool direct_l2_scatter, l2_nmajor_schedule, one_warp_cleanup;
+    bool direct_l2_scatter, l2_nmajor_schedule, one_warp_cleanup, swap_ab;
 
     friend std::ostream& operator << (std::ostream& os, const MegaMoESM90Config& config) {
         os << "MegaMoESM90Config("
@@ -289,6 +289,7 @@ struct MegaMoESM90Config {
            << ", cluster_size=" << config.cluster_size
            << ", num_max_pool_tokens=" << config.num_max_pool_tokens
            << ", num_padded_sf_pool_tokens=" << config.num_padded_sf_pool_tokens
+           << ", sf_pool_stride_tokens=" << config.sf_pool_stride_tokens
            << ", swizzle_acts_mode=" << config.swizzle_acts_mode << ", swizzle_weights_mode=" << config.swizzle_weights_mode
            << ", num_experts_per_wave=" << config.num_experts_per_wave
            << ", num_stages=" << config.num_stages << ", smem_size=" << config.smem_size
@@ -297,7 +298,8 @@ struct MegaMoESM90Config {
            << ", num_epilogue_threads=" << config.num_epilogue_threads
            << ", direct_l2_scatter=" << config.direct_l2_scatter
            << ", l2_nmajor_schedule=" << config.l2_nmajor_schedule
-           << ", one_warp_cleanup=" << config.one_warp_cleanup << ")";
+           << ", one_warp_cleanup=" << config.one_warp_cleanup
+           << ", swap_ab=" << config.swap_ab << ")";
         return os;
     }
 };
@@ -335,6 +337,22 @@ static Sm90MoeRuntimeProfile get_sm90_moe_runtime_profile() {
     return Sm90MoeRuntimeProfile::Generic;
 }
 
+static bool should_use_swap_ab_for_mega_moe_sm90(
+    const int& num_experts_per_rank, const int& num_tokens, const int& num_topk,
+    const int& block_m, const int& num_epilogue_threads) {
+    const float expected_tokens_per_expert =
+        static_cast<float>(num_tokens) * num_topk / num_experts_per_rank;
+    const bool main_topk8_profile = num_experts_per_rank == 32 and num_topk == 8;
+    const int default_max_swap_ab_tokens = main_topk8_profile ? 64 : 128;
+    const int max_swap_ab_tokens = get_env<int>(
+        "DG_SM90_MOE_SWAP_AB_MAX_TOKENS", default_max_swap_ab_tokens);
+    DG_HOST_ASSERT(max_swap_ab_tokens >= 0);
+    const bool decode_split_n_path =
+        block_m == 64 and num_epilogue_threads == 256;
+    return decode_split_n_path and num_tokens <= max_swap_ab_tokens and
+           expected_tokens_per_expert > 0.0f;
+}
+
 struct Sm90MoeProfileConfig {
     // A zero wave count means "use the generic SM-count based computation".
     int num_experts_per_wave, num_stages;
@@ -356,10 +374,16 @@ struct Sm90MoeHeuristicPolicy {
         return expected_tokens_per_expert >= low and expected_tokens_per_expert <= high;
     }
 
+    bool main_topk8_direct_l2_mid_suppressed() const {
+        return expected_tokens_per_expert > 64.0f and
+               expected_tokens_per_expert < 256.0f and
+               expected_tokens_per_expert != 128.0f;
+    }
+
     bool uses_bn256_main_tile() const {
         return block_m == 64 and block_n == 256;
     }
-
+    // FFN profiles: main top-k 8 is IH=2048, Hopper top-k 6 is IH=3072; load uses expected tokens/expert.
     bool is_main_topk8() const {
         return num_experts_per_rank == 32 and num_topk == 8 and intermediate_hidden == 2048;
     }
@@ -374,16 +398,19 @@ struct Sm90MoeHeuristicPolicy {
                                           const bool& skew_hint,
                                           const bool& masked_hint) const {
         int wave_override = 0;
-        if (expected_tokens_per_expert == 128.0f or
-            (expected_tokens_per_expert >= 256.0f and expected_tokens_per_expert < 512.0f)) {
+        if (expected_tokens_per_expert == 128.0f) {
+            wave_override = 8;
+        } else if ((expected_tokens_per_expert >= 192.0f and expected_tokens_per_expert < 512.0f) or
+                   (expected_tokens_per_expert > 512.0f and expected_tokens_per_expert <= 768.0f)) {
             wave_override = 16;
         }
 
         const bool direct_l2_scatter_enabled_by_profile =
-            expected_is_one_of(2, 4, 8, 16, 32, 64, 76, 80, 88, 128) or
-            expected_is_between(64.0f, 80.0f) or
-            expected_is_between(96.0f, 120.0f) or
-            expected_tokens_per_expert >= 144.0f;
+            not main_topk8_direct_l2_mid_suppressed() and
+            (expected_is_one_of(2, 4, 8, 16, 32, 64, 76, 80, 88, 128) or
+             expected_is_between(64.0f, 80.0f) or
+             expected_is_between(96.0f, 120.0f) or
+             expected_tokens_per_expert >= 144.0f);
 
         const bool l2_nmajor_schedule_enabled = [&]() {
             if (expected_tokens_per_expert == 256.0f and eplb_hint)
@@ -393,7 +420,9 @@ struct Sm90MoeHeuristicPolicy {
             return expected_tokens_per_expert >= 256.0f;
         }();
 
-        const bool one_warp_cleanup_enabled = expected_tokens_per_expert <= 80.0f;
+        const bool one_warp_cleanup_enabled =
+            (expected_tokens_per_expert <= 80.0f and expected_tokens_per_expert != 64.0f) or
+            expected_tokens_per_expert == 128.0f;
         const bool stage5_pipeline_enabled = [&]() {
             if (not direct_l2_scatter_enabled)
                 return false;
@@ -472,8 +501,10 @@ struct Sm90MoeHeuristicPolicy {
         if (is_hopper_topk6() and expected_tokens_per_expert >= 8.0f and expected_tokens_per_expert <= 32.0f)
             return 16;
         if (is_main_topk8() and expected_tokens_per_expert == 128.0f)
-            return 16;
-        if (is_main_topk8() and expected_tokens_per_expert >= 256.0f and expected_tokens_per_expert < 512.0f)
+            return 8;
+        if (is_main_topk8() and
+            ((expected_tokens_per_expert >= 192.0f and expected_tokens_per_expert < 512.0f) or
+             (expected_tokens_per_expert > 512.0f and expected_tokens_per_expert <= 768.0f)))
             return 16;
         return 0;
     }
@@ -485,6 +516,8 @@ struct Sm90MoeHeuristicPolicy {
         if (device_profile_config(profile_config))
             return profile_config.direct_l2_scatter;
         if (is_main_topk8()) {
+            if (main_topk8_direct_l2_mid_suppressed())
+                return false;
             return expected_is_one_of(2, 4, 8, 16, 32, 64, 76, 80, 88, 128) or
                    expected_is_between(64.0f, 80.0f) or
                    expected_is_between(96.0f, 120.0f) or
@@ -516,7 +549,9 @@ struct Sm90MoeHeuristicPolicy {
         Sm90MoeProfileConfig profile_config;
         if (device_profile_config(profile_config, false, false, false, masked_hint))
             return profile_config.one_warp_cleanup;
-        if (is_main_topk8() and expected_tokens_per_expert <= 80.0f)
+        if (is_main_topk8() and
+            ((expected_tokens_per_expert <= 80.0f and expected_tokens_per_expert != 64.0f) or
+             expected_tokens_per_expert == 128.0f))
             return true;
         if (is_hopper_topk6() and masked_hint and expected_tokens_per_expert == 64.0f)
             return true;
@@ -576,7 +611,9 @@ static int get_num_experts_per_wave_for_mega_moe_sm90(
         num_experts_per_rank, num_tokens, num_topk, intermediate_hidden, block_m, block_n);
     if (const int wave_override = policy.experts_per_wave_override(); wave_override > 0)
         return wave_override;
-    if (block_m == 64 and
+    const bool flash_split_mn = block_m == 128 and block_n == 256 and
+                                policy.is_main_topk8() and policy.expected_tokens_per_expert >= 64.0f;
+    if ((block_m == 64 or flash_split_mn) and
         (policy.expected_tokens_per_expert < 1.0f or policy.expected_tokens_per_expert > 4.0f)) {
         return num_experts_per_rank;
     }
@@ -591,7 +628,8 @@ static std::pair<int, int> get_pipeline_config_for_mega_moe_sm90(
     const int& block_m, const int& block_n, const int& block_k,
     const int& num_dispatch_warps, const int& num_epilogue_warps,
     const bool& direct_l2_scatter_enabled = false,
-    const int& default_num_stages = 0) {
+    const int& default_num_stages = 0,
+    const bool& swap_ab = false) {
     constexpr int kSmemAlignment = 1024;
 
     // Dispatch region (same as SM100)
@@ -605,19 +643,32 @@ static std::pair<int, int> get_pipeline_config_for_mega_moe_sm90(
     // C/D output region: max of L1 FP8 (single-buffered, BLOCK_N/2 post-SwiGLU)
     // and L2 BF16, then 1024-byte aligned (matches kernel's SMEM_CD_SIZE).
     const auto num_epilogue_warpgroups = num_epilogue_warps / 4;
-    const bool split_n_warpgroups = block_m == 64 and block_n == 256 and num_epilogue_warpgroups == 2;
+    const bool split_n_warpgroups =
+        block_m == 64 and num_epilogue_warpgroups > 1 and
+        block_n % num_epilogue_warpgroups == 0 and
+        (block_n / num_epilogue_warpgroups == 64 or block_n / num_epilogue_warpgroups == 128);
+    const bool split_mn_warpgroups =
+        block_m == 128 and block_n == 256 and num_epilogue_warpgroups == 4;
     const bool serial_n_warpgroups = false;
-    const int wg_block_m = split_n_warpgroups ? block_m : block_m / num_epilogue_warpgroups;
-    const int wg_block_n = (split_n_warpgroups or serial_n_warpgroups) ? block_n / 2 : block_n;
+    const int wg_split_m = split_n_warpgroups ? 1 : (split_mn_warpgroups ? 2 : num_epilogue_warpgroups);
+    const int wg_split_n = split_n_warpgroups ? num_epilogue_warpgroups : (split_mn_warpgroups ? 2 : 1);
+    const int wg_block_m = block_m / wg_split_m;
+    const int wg_block_n = block_n / wg_split_n;
     const int smem_cd_l1 = num_epilogue_warpgroups * wg_block_m * (wg_block_n / 2);  // 1 byte/elem (FP8)
     const bool direct_l2_scatter = direct_l2_scatter_enabled and
-                                   not serial_n_warpgroups and wg_block_n == 128;
+                                   not swap_ab and not serial_n_warpgroups and wg_block_n == 128;
     const bool async_l1_tma_store = false;
     const int smem_cd_l2 = direct_l2_scatter ? 0 :
         num_epilogue_warpgroups * wg_block_m * wg_block_n * static_cast<int>(sizeof(nv_bfloat16));
     const int smem_cd_l1_async = async_l1_tma_store ?
         2 * num_epilogue_warpgroups * wg_block_m * (block_n / 2) : 0;
-    const int smem_cd = align(std::max(std::max(smem_cd_l1, smem_cd_l2), smem_cd_l1_async), kSmemAlignment);
+    const int smem_cd_swap_l1 = swap_ab
+        ? block_m * (block_n / 2) *
+              (static_cast<int>(sizeof(float)) + static_cast<int>(sizeof(uint8_t)))
+        : 0;
+    const int smem_cd = align(
+        std::max(std::max(std::max(smem_cd_l1, smem_cd_l2), smem_cd_l1_async), smem_cd_swap_l1),
+        kSmemAlignment);
 
     // SF on SM90:
     //   * SFA per stage must hold the larger of L1 (BLOCK_M floats, per-128 K)
@@ -755,14 +806,29 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
     DG_HOST_ASSERT(forced_block_m == 0 or forced_block_m == 64 or forced_block_m == 128);
     DG_HOST_ASSERT(forced_epilogue_warpgroups == 0 or
                    forced_epilogue_warpgroups == 1 or
-                   forced_epilogue_warpgroups == 2);
+                   forced_epilogue_warpgroups == 2 or
+                   forced_epilogue_warpgroups == 4);
+
+    const float expected_tokens_per_expert =
+        static_cast<float>(num_tokens) * num_topk / num_experts_per_rank;
+    const bool flash_split_mn_candidate =
+        get_env<int>("DG_SM90_MOE_SPLIT_MN", 0) != 0 and
+        forced_block_m == 0 and
+        num_experts_per_rank == 32 and (num_topk == 6 or num_topk == 8) and
+        intermediate_hidden == 2048 and
+        expected_tokens_per_expert >= 64.0f;
 
     const bool use_bn256_split_n_env =
         get_env<int>("DG_SM90_MOE_BN256_2WG", 1) != 0 and
         forced_block_m != 128;
+    const bool swap_ab_env_enabled =
+        get_env<int>("DG_SM90_MOE_SWAP_AB", 1) != 0 and
+        forced_block_m != 128;
 
     std::vector<int> block_m_candidates;
-    append_unique_moe_candidate(block_m_candidates, forced_block_m > 0 ? forced_block_m : 64);
+    append_unique_moe_candidate(block_m_candidates,
+                                forced_block_m > 0 ? forced_block_m :
+                                (flash_split_mn_candidate ? 128 : 64));
 
     const int num_max_pool_tokens = layout::get_num_max_pool_tokens(
         num_ranks, num_max_tokens_per_rank, num_topk, num_experts_per_rank);
@@ -776,35 +842,58 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
             [=](const auto& candidate) { return candidate == block_m; })
         );
 
+        const bool prefer_swap_ab_block =
+            swap_ab_env_enabled and block_m == 64 and
+            should_use_swap_ab_for_mega_moe_sm90(
+                num_experts_per_rank, num_tokens, num_topk,
+                block_m, 256);
+
         std::vector<int> block_n_candidates;
-        if (block_m == 64 and use_bn256_split_n_env) {
+        if (prefer_swap_ab_block) {
+            append_unique_moe_candidate(block_n_candidates, 128);
+        } else if (block_m == 128 and flash_split_mn_candidate) {
+            append_unique_moe_candidate(block_n_candidates, 256);
+        } else if (block_m == 64 and use_bn256_split_n_env) {
             append_unique_moe_candidate(block_n_candidates, 256);
         } else {
             append_unique_moe_candidate(block_n_candidates, 128);
         }
 
         for (const int& block_n: block_n_candidates) {
+            const bool prefer_swap_ab_shape = prefer_swap_ab_block and block_n == 128;
             std::vector<int> epilogue_wg_candidates;
             if (forced_epilogue_warpgroups > 0) {
                 append_unique_moe_candidate(epilogue_wg_candidates, forced_epilogue_warpgroups);
             } else {
-                append_unique_moe_candidate(epilogue_wg_candidates, block_n == 256 ? 2 : 1);
+                const int default_epilogue_warpgroups = block_m == 128 ?
+                    (block_n == 256 ? 4 : 2) :
+                    ((block_n == 256 or prefer_swap_ab_shape) ? 2 : 1);
+                append_unique_moe_candidate(epilogue_wg_candidates, default_epilogue_warpgroups);
             }
 
             for (const int& num_epilogue_warpgroups: epilogue_wg_candidates) {
                 if (block_m % num_epilogue_warpgroups != 0)
                     continue;
-                if (block_m == 128 and num_epilogue_warpgroups != 2)
-                    continue;
+                if (block_m == 128) {
+                    const bool split_mn = block_n == 256 and num_epilogue_warpgroups == 4;
+                    const bool split_m = block_n == 128 and num_epilogue_warpgroups == 2;
+                    if (not split_mn and not split_m)
+                        continue;
+                }
                 if (block_m == 64 and block_n == 256 and num_epilogue_warpgroups != 2)
                     continue;
                 const int num_epilogue_threads = num_epilogue_warpgroups * 128;
+                const bool swap_ab =
+                    swap_ab_env_enabled and block_n == 128 and
+                    should_use_swap_ab_for_mega_moe_sm90(
+                        num_experts_per_rank, num_tokens, num_topk,
+                        block_m, num_epilogue_threads);
 
                 const int cluster_size = 1;
                 const int swizzle_acts_mode = 128;
                 const int swizzle_weights_mode = 128;
 
-                const bool compact_frontend = block_n == 256;
+                const bool compact_frontend = block_n == 256 or swap_ab;
                 const int forced_dispatch_warps = get_env<int>("DG_SM90_MOE_DISPATCH_WARPS", -1);
                 DG_HOST_ASSERT(forced_dispatch_warps == -1 or forced_dispatch_warps == 0 or
                                forced_dispatch_warps == 2 or forced_dispatch_warps == 4 or
@@ -825,15 +914,16 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                     const auto policy = get_sm90_moe_heuristic_policy(
                         num_experts_per_rank, num_tokens, num_topk,
                         intermediate_hidden, block_m, block_n);
-                    const bool direct_l2_scatter_default = policy.direct_l2_scatter();
+                    const bool direct_l2_scatter_default = (not swap_ab) and policy.direct_l2_scatter();
                     const bool l2_nmajor_schedule_default = policy.l2_nmajor_schedule(
                         get_env<int>("DG_SM90_MOE_EPLB_HINT", 0) != 0,
                         get_env<int>("DG_SM90_MOE_SKEW_HINT", 0) != 0);
                     const bool one_warp_cleanup_default = policy.one_warp_cleanup(
                         get_env<int>("DG_SM90_MOE_MASKED_HINT", 0) != 0);
                     const bool direct_l2_scatter_legal =
-                        (block_m == 64 and block_n == 256 and num_epilogue_warpgroups == 2) or
-                        block_n == 128;
+                        (not swap_ab) and
+                        ((block_m == 64 and block_n == 256 and num_epilogue_warpgroups == 2) or
+                         block_n == 128);
 
                     auto direct_candidates = get_sm90_moe_bool_candidates(
                         "DG_SM90_MOE_DIRECT_L2_SCATTER",
@@ -855,11 +945,12 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                         const bool direct_l2_scatter = direct_value != 0;
                         if (direct_l2_scatter and not direct_l2_scatter_legal)
                             continue;
-                        const int empirical_stage = policy.stage5_pipeline(
-                            direct_l2_scatter,
-                            get_env<int>("DG_SM90_MOE_EPLB_HINT", 0) != 0,
-                            get_env<int>("DG_SM90_MOE_SKEW_HINT", 0) != 0,
-                            get_env<int>("DG_SM90_MOE_MASKED_HINT", 0) != 0) ? 5 : 4;
+                        const int empirical_stage = swap_ab ? 0 : (
+                            policy.stage5_pipeline(
+                                direct_l2_scatter,
+                                get_env<int>("DG_SM90_MOE_EPLB_HINT", 0) != 0,
+                                get_env<int>("DG_SM90_MOE_SKEW_HINT", 0) != 0,
+                                get_env<int>("DG_SM90_MOE_MASKED_HINT", 0) != 0) ? 5 : 4);
                         const int forced_num_stages = get_env<int>("DG_SM90_MOE_NUM_STAGES");
                         std::vector<int> stage_candidates;
                         if (forced_num_stages > 0) {
@@ -875,7 +966,8 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                                 block_m, block_n, block_k,
                                 num_dispatch_threads / 32, num_epilogue_threads / 32,
                                 direct_l2_scatter,
-                                requested_num_stages);
+                                requested_num_stages,
+                                swap_ab);
                             for (const int& l2_nmajor_value: l2_nmajor_candidates) {
                                 for (const int& cleanup_value: cleanup_candidates) {
                                     for (const int& num_experts_per_wave: experts_per_wave_candidates) {
@@ -883,15 +975,18 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                                             num_experts_per_wave > num_experts_per_rank or
                                             num_experts_per_rank % num_experts_per_wave != 0)
                                             continue;
+                                        const int sf_pool_stride_tokens =
+                                            layout::get_num_padded_sf_pool_tokens(num_max_pool_tokens, block_m);
                                         candidates.emplace_back(MegaMoESM90Config {
                                             block_m, block_n, block_k,
                                             cluster_size,
-                                            num_max_pool_tokens, num_padded_sf_pool_tokens,
+                                            num_max_pool_tokens, num_padded_sf_pool_tokens, sf_pool_stride_tokens,
                                             swizzle_acts_mode, swizzle_weights_mode,
                                             num_experts_per_wave,
                                             num_stages, smem_size,
                                             num_dispatch_threads, num_non_epilogue_threads, num_epilogue_threads,
-                                            direct_l2_scatter, l2_nmajor_value != 0, cleanup_value != 0
+                                            direct_l2_scatter, l2_nmajor_value != 0, cleanup_value != 0,
+                                            swap_ab
                                         });
                                     }
                                 }
@@ -967,8 +1062,9 @@ static MegaMoESM90Config get_mega_moe_config_sm90(
 
     if (get_env<int>("DG_JIT_DEBUG") or get_env<int>("DG_PRINT_CONFIGS")) {
         const auto key = fmt::format(
-            "MegaMoESM90Config(num_ranks={}, num_experts={}, hidden={}, intermediate_hidden={}, num_max_tokens_per_rank={}, num_tokens={}, num_topk={})",
-            num_ranks, num_experts, hidden, intermediate_hidden, num_max_tokens_per_rank, num_tokens, num_topk);
+            "MegaMoESM90Config(num_ranks={}, num_experts={}, hidden={}, intermediate_hidden={}, num_max_tokens_per_rank={}, num_tokens={}, num_topk={}, swap_ab={})",
+            num_ranks, num_experts, hidden, intermediate_hidden, num_max_tokens_per_rank, num_tokens, num_topk,
+            config.swap_ab);
         static std::unordered_set<std::string> printed;
         if (printed.count(key) == 0) {
             std::cout << key << ": " << config << std::endl;

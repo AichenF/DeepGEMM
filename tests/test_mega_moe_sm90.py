@@ -370,7 +370,7 @@ def _layer1_smoke() -> List[Tuple[str, Dict[str, Any]]]:
 
 
 def _layer2_heuristic_branches(num_ranks: int) -> List[Tuple[str, Dict[str, Any]]]:
-    """Cover generic heuristic bands and the main topk8 profile selector."""
+    """Cover generic heuristic bands and the main Flash profile selectors."""
     base = dict(hidden=1024, intermediate_hidden=1024,
                 num_experts=8 * num_ranks, num_topk=2)
     out: List[Tuple[str, Dict[str, Any]]] = []
@@ -384,6 +384,9 @@ def _layer2_heuristic_branches(num_ranks: int) -> List[Tuple[str, Dict[str, Any]
         cfg = dict(profile_base)
         cfg.update(num_max_tokens_per_rank=tokens, num_tokens=tokens)
         out.append((f'L2.profile_topk8.t{tokens}', cfg))
+    profile_topk6 = dict(profile_base, num_topk=6)
+    profile_topk6.update(num_max_tokens_per_rank=512, num_tokens=512)
+    out.append(('L2.profile_topk6.t512', profile_topk6))
     return out
 
 

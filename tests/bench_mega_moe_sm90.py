@@ -6,7 +6,8 @@ pattern can drive it for SM90.
 
 In normal (non-NCU) mode it runs a list of ``num_tokens`` values (default:
 1, 2, 4, 8, 16, 32) and reports per-call kernel time via the same
-``bench_kineto`` helper used by the SM100 perf test, plus a rough TFLOPS /
+``bench_kineto`` helper used by the SM100 perf test.  ``--model-config``
+provides the built-in Flash and Pro MegaMoE shapes, plus a rough TFLOPS /
 HBM GB/s figure useful for tracking optimisation deltas.
 """
 
@@ -27,6 +28,25 @@ from deep_gemm.utils import per_token_cast_to_fp8
 from deep_gemm.utils.dist import dist_print, init_dist, uneven_all_gather
 from deep_gemm.testing import bench_kineto, calc_diff, get_arch_major
 
+MODEL_CONFIG_PRESETS = {
+    'flash': {
+        'hidden': 4096,
+        'intermediate_hidden': 2048,
+        'num_experts': 256,
+        'num_topk': 6,
+    },
+    'pro': {
+        'hidden': 7168,
+        'intermediate_hidden': 3072,
+        'num_experts': 384,
+        'num_topk': 6,
+    },
+}
+
+
+def _stable_name_seed(name: str) -> int:
+    return sum((i + 1) * ord(ch) for i, ch in enumerate(name)) & 0x7fffffff
+
 
 def _quantize_grouped_fp8_block_128_128(w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     g, n, k = w.shape
@@ -44,7 +64,7 @@ def _quantize_grouped_fp8_block_128_128(w: torch.Tensor) -> Tuple[torch.Tensor, 
     return w_fp8, sf.contiguous()
 
 
-def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
+def _run_one_config(args, config_name, num_tokens, num_max_tokens_per_rank,
                     hidden, intermediate_hidden,
                     num_experts, num_topk, num_ranks, rank_idx, group,
                     activation_clamp, fast_math,
@@ -58,6 +78,13 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         num_max_tokens_per_rank, num_topk,
         hidden, intermediate_hidden,
     )
+
+    # Make each benchmark point independent of the surrounding batch list so
+    # parameter sweeps compare the same token/expert distribution.
+    case_name = f'{config_name}:{num_tokens}:{hidden}:{intermediate_hidden}:{num_experts}:{num_topk}'
+    case_seed = int(args.seed) + rank_idx * 1000003 + _stable_name_seed(case_name)
+    torch.manual_seed(case_seed)
+    random.seed(case_seed)
 
     # Inputs (bf16, then quantised)
     x_bf = torch.randn((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
@@ -187,6 +214,19 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     buffer.destroy()
 
 
+def _resolve_model_configs(args):
+    configs = []
+    for name in args.model_config:
+        if name == 'custom':
+            configs.append((name, args.hidden, args.intermediate_hidden,
+                            args.num_experts, args.num_topk))
+        else:
+            preset = MODEL_CONFIG_PRESETS[name]
+            configs.append((name, preset['hidden'], preset['intermediate_hidden'],
+                            preset['num_experts'], preset['num_topk']))
+    return configs
+
+
 def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     rank_idx, num_ranks, group = init_dist(local_rank, num_local_ranks)
     forced_num_sms = int(os.environ.get('DG_SM90_MOE_SET_NUM_SMS', '0'))
@@ -205,28 +245,30 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     else:
         batches = args.batches
 
-    dist_print(
-        f'SM90 MegaMoE bench: ranks={num_ranks} hidden={args.hidden} '
-        f'ih={args.intermediate_hidden} experts={args.num_experts} topk={args.num_topk} '
-        f'masked_ratio={args.masked_ratio} fast_math={bool(args.fast_math)}',
-        once_in_node=True,
-    )
-
     # In NCU mode we run only one batch (the first one in `batches`) so that
     # ncu's `--launch-count 1` is unambiguous.
     if args.ncu_profile_only:
         batches = batches[:1]
 
     num_max_tokens_per_rank = max(batches)
-    for num_tokens in batches:
-        _run_one_config(
-            args, num_tokens, num_max_tokens_per_rank,
-            args.hidden, args.intermediate_hidden,
-            args.num_experts, args.num_topk,
-            num_ranks, rank_idx, group,
-            activation_clamp=args.activation_clamp,
-            fast_math=bool(args.fast_math),
+    for config_name, hidden, intermediate_hidden, num_experts, num_topk in _resolve_model_configs(args):
+        dist_print(
+            f'SM90 MegaMoE bench[{config_name}]: ranks={num_ranks} hidden={hidden} '
+            f'ih={intermediate_hidden} experts={num_experts} topk={num_topk} '
+            f'masked_ratio={args.masked_ratio} fast_math={bool(args.fast_math)} seed={args.seed}',
+            once_in_node=True,
         )
+        for num_tokens in batches:
+            _run_one_config(
+                args, config_name, num_tokens, num_max_tokens_per_rank,
+                hidden, intermediate_hidden,
+                num_experts, num_topk,
+                num_ranks, rank_idx, group,
+                activation_clamp=args.activation_clamp,
+                fast_math=bool(args.fast_math),
+            )
+        torch.cuda.empty_cache()
+        dist.barrier()
 
     dist.barrier()
     dist.destroy_process_group()
@@ -241,6 +283,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--batches', type=int, nargs='+', default=None,
                         help='List of num_tokens to benchmark (default: 1 2 4 8 16 32)')
+    parser.add_argument('--model-config', type=str, nargs='+', default=['custom'],
+                        choices=['custom'] + sorted(MODEL_CONFIG_PRESETS.keys()),
+                        help='Model shape preset(s) to run. Use "flash pro" for the common MegaMoE shapes.')
     parser.add_argument('--hidden', type=int, default=7168)
     parser.add_argument('--intermediate-hidden', type=int, default=2048)
     parser.add_argument('--num-experts', type=int, default=256)
@@ -249,6 +294,8 @@ if __name__ == '__main__':
     parser.add_argument('--masked-ratio', type=float, default=0.0)
     parser.add_argument('--fast-math', type=int, default=1)
     parser.add_argument('--num-tests', type=int, default=20)
+    parser.add_argument('--seed', type=int, default=0,
+                        help='Base seed for reproducible per-model/per-batch inputs.')
 
     args = parser.parse_args()
 
