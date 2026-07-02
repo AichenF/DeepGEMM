@@ -2730,3 +2730,24 @@ Final fresh JIT caches:
 - Main steady-state deficits versus W8A8 `ours`: Flash M32 `+22.6%`, M64 `+21.5%`, M128 `+10.6%`; Pro M8/M16/M32/M64/M128 `+23.5/+37.7/+30.7/+21.0/+31.4%`. At M>=256, most points are within roughly 0--6%, except Flash M1536 mean20 `+9.0%` and Pro M2048 mean20 `+8.1%`.
 - Long tails materially affect small-M mean20 (for example Flash M16 has a 3.04 ms outlier versus a 401.6 us median), so report both mean20 and steady median rather than attributing the whole mean gap to core compute.
 - Reproducibility artifacts: `/root/fac/scripts/megamoe/nvfp4_vs_w8a8_20260702/` on `10.6.131.7`, including per-point logs and `comparison.csv`.
+
+## 2026-07-02 rejected dequant/WGMMA overlap experiments
+
+Evaluated math-warp K+1 lookahead, three single-kernel producer layouts, and a
+BN256 two-kernel L1/L2 plan. Correctness passed for the runnable Flash/Pro
+variants with unchanged thresholds, but none improved end-to-end latency.
+
+- ptxas serialized math-warp decode stores behind WGMMA and introduced spills.
+- Dispatch-assisted decode regressed Flash/Pro M64 by about 38%/28%.
+- BN256 split regressed Flash/Pro M64 by about 4%/19%.
+- Two-TMA-warp decode regressed M64 by about 85% because it removed TMA
+  lookahead.
+- A one-math-WG wide-N producer layout generated a 920-byte stack and about
+  1003 local load/store instructions, then regressed Flash M64 to 2834 us.
+
+All experimental code and controls were removed. Detailed synchronization,
+resource, correctness, and benchmark results are in
+`docs/plans/2026-07-02-sm90-nvfp4-dequant-overlap-design.md`. Experiment caches
+are under `/root/fac/scripts/megamoe/nvfp4_*dequant*`,
+`/root/fac/scripts/megamoe/nvfp4_dispatch_ab/`, and
+`/root/fac/scripts/megamoe/nvfp4_split_bn256_ab/`.
