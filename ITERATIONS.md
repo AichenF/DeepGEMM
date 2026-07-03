@@ -1089,3 +1089,37 @@ Each measured source or promoted-selector iteration records:
   tuning table.
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_mge128_vs_pr_s101_n10/`.
+
+## Iteration 38: BN256 small-M scheduler screen
+
+- Hypothesis: M=256/512 recover their CTA parallelism with the pre-BN512
+  FP32-accumulator BN256 path, while E5M2 combine plus load-specific stage and
+  N-major choices can close the remaining PR323 gap.
+- Protocol: Pro M=256/512, seed 101, median-10, 8x H200. Use BN256,
+  FP32 accumulation, E5M2 combine, direct scatter disabled; sweep stage3/4 and
+  N-major0/1. Use EPW16 at M=256 and the retained EPW12 parent at M=512.
+- Results (maximum returned latency across ranks):
+
+  | M | EPW | N-major | stages | ours us | current PR323 us | gap |
+  |---:|---:|---:|---:|---:|---:|---:|
+  | 256 | 16 | 0 | 3 | 872.451 | 859.090 | +1.56% |
+  | 256 | 16 | 0 | 4 | 859.046 | 859.090 | -0.01% |
+  | 256 | 16 | 1 | 3 | 857.941 | 859.090 | -0.13% |
+  | 256 | 16 | 1 | 4 | 858.499 | 859.090 | -0.07% |
+  | 512 | 12 | 0 | 3 | 1176.852 | 1086.498 | +8.32% |
+  | 512 | 12 | 0 | 4 | 1157.667 | 1086.498 | +6.55% |
+  | 512 | 12 | 1 | 3 | 1113.959 | 1086.498 | +2.53% |
+  | 512 | 12 | 1 | 4 | 1152.261 | 1086.498 | +6.05% |
+
+- A follow-up old-versus-new JIT-cache diagnostic at M=512 produced
+  1078.710/1113.428 us for the older cache and 1096.323/1114.244 us for the
+  current cache. The overlapping, roughly 3% cross-run movement does not
+  establish a source regression; it reinforces the need for interleaved
+  candidate/PR confirmation.
+- Decision: use N-major1/stage3 as the small-M screening parent. M=256 is only
+  a noise-level lead and M=512 still misses the gate; sweep EPW, then confirm
+  any winner interleaved with PR323. Keep all settings H200-only and
+  default-off.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_smallm_sched_v1_*`
+  and `.../candidates/pro_m512_old_new_jit_compare_s101_n20/`.
