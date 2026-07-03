@@ -78,7 +78,7 @@ def make_bench_kineto(impl: str, stat: str):
                 torch.cuda.synchronize()
                 profiler.step()
 
-        raw_us = []
+        raw_events = []
         for event in profiler.events():
             name = getattr(event, "name", "")
             if any(kernel_name in name for kernel_name in names):
@@ -88,7 +88,9 @@ def make_bench_kineto(impl: str, stat: str):
                     or 0.0
                 )
                 if elapsed > 0:
-                    raw_us.append(elapsed)
+                    raw_events.append((name, elapsed))
+
+        raw_us = [elapsed for _, elapsed in raw_events]
 
         if not raw_us:
             raise RuntimeError(f"no CUDA events matched {names}")
@@ -115,6 +117,35 @@ def make_bench_kineto(impl: str, stat: str):
             else statistics.mean(samples_us)
         )
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        if int(os.environ.get("DG_BENCH_PRINT_KERNEL_BREAKDOWN", "0")):
+            by_kind = {}
+            for name, elapsed in raw_events:
+                if "l1_impl" in name:
+                    kind = "l1"
+                elif "l2_no_reduce" in name or "l2_impl" in name:
+                    kind = "l2"
+                else:
+                    kind = name
+                by_kind.setdefault(kind, []).append(elapsed)
+            print(
+                "KERNEL_BREAKDOWN_JSON "
+                + json.dumps(
+                    {
+                        "impl": impl,
+                        "rank": rank,
+                        "kernels": {
+                            kind: {
+                                "count": len(values),
+                                "median_us": statistics.median(values),
+                                "mean_us": statistics.mean(values),
+                            }
+                            for kind, values in by_kind.items()
+                        },
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
         print(
             "BENCH_STAT_JSON "
             + json.dumps(
