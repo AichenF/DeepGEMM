@@ -859,3 +859,25 @@ Each measured source or promoted-selector iteration records:
   alone; test it once in combination with the best sub-1% L1 wave/stage signals.
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_phasedispatch_v1_*`.
+
+## Iteration 30: combined sub-1% L1 signals
+
+- Hypothesis: the nominal L1-only gains from four dispatch warps, stage4, and
+  EPW48 may be individually small but additive when applied together.
+- Protocol: Pro M=8192 E5M2 parent, seed 101, median-10, 8x H200. Hold L2 at
+  dispatch2/stage3/EPW16 and compare the L1 control against combinations of
+  dispatch4 with stage4 and/or EPW48.
+- Results (maximum returned latency across ranks):
+
+  | L1 dispatch | L1 stages | L1 EPW | us | vs control | vs PR323 |
+  |---:|---:|---:|---:|---:|---:|
+  | 2 | 3 | 16 | 8187.545 | — | +4.40% |
+  | 4 | 4 | 16 | 8186.583 | -0.01% | +4.39% |
+  | 4 | 3 | 48 | 8210.998 | +0.29% | +4.70% |
+  | 4 | 4 | 48 | 8191.486 | +0.05% | +4.45% |
+
+- Decision: reject all combinations. The prior sub-1% observations do not add
+  and are not selector-grade evidence. Return to a structural tile/mainloop or
+  scheduling change rather than stacking shallow host parameters.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_l1combo_v1_*`.
