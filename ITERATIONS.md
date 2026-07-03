@@ -999,3 +999,30 @@ Each measured source or promoted-selector iteration records:
   tuning remains untouched.
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_l1wave_v1_*`.
+
+## Iteration 35: BN256 L2 expert-wave sweep and confirmation
+
+- Hypothesis: after L1 moves to BN512, the changed arrival pattern into L2
+  may shift L2's preferred expert wave away from EPW16.
+- Initial protocol: Pro M=8192, seed 101, median-10, 8x H200. Hold the retained
+  candidate fixed and sweep L2 EPW4/8/12/16/24/48. The initial run suggested
+  EPW12/24 could be about 1.3% faster than its EPW16 control, but that control
+  was itself 1.4% slower than the preceding experiment.
+- Confirmation protocol: interleave EPW12/16/24 in rotating order, three
+  observations each, median-20. Report the maximum returned latency across
+  ranks for every observation, then compare the median of those maxima.
+- Confirmation results:
+
+  | L2 EPW | observation maxima (us) | median us | vs EPW16 |
+  |---:|---|---:|---:|
+  | 12 | 7736.242, 7768.476, 7753.274 | 7753.274 | +0.49% |
+  | 16 | 7705.099, 7776.444, 7715.600 | 7715.600 | — |
+  | 24 | 7773.342, 7776.561, 7750.844 | 7773.342 | +0.75% |
+
+- Decision: reject the apparent first-pass EPW12/24 gain and retain L2
+  EPW16. Interleaving reverses the result and demonstrates that sub-percent
+  sequential sweeps on this node need confirmation before promotion. No H20
+  tuning or default selector is changed.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_l2wave_v1_*`
+  and `.../candidates/pro_bn512_l2wave_confirm_s101_n20/`.
