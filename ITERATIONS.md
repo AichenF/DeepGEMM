@@ -466,3 +466,23 @@ Each measured source or promoted-selector iteration records:
 - Decision: this is a harness-path failure, not evidence about the candidate.
   Retry the identical source and protocol with the campaign runner path.
 - Raw artifacts: none; execution stopped before candidate-directory creation.
+
+## Iteration 15: native FP16-output FP8 WGMMA
+
+- Hypothesis: replacing FP32-output WGMMA plus per-domain FP32-to-FP16
+  conversion with native packed-FP16 WGMMA can materially reduce the dominant
+  GEMM-loop instruction and register cost at Pro M=8192.
+- Source change: use `MMA_64x128x32_F16E4M3E4M3_SS_TN` for the opt-in path,
+  keep its 32 packed accumulator registers correctly fenced, scale-accumulate
+  them with half2 FMA, and convert to FP32 only once for the unchanged
+  epilogue. The flag remains default-off and no H20 selector is modified.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`),
+  BF16 combine, seed 101, median-10, 8x H200; report maximum returned latency
+  across ranks.
+- Result: control was 8404.653 us; native FP16 WGMMA was 8380.051 us, a
+  nominal 0.29% improvement. It remains 6.85% slower than PR323 at
+  7842.460 us.
+- Decision: reject native FP16 WGMMA as an H200 selector candidate. The gain
+  is below the 1% confirmation band and does not justify its additional
+  accumulation rounding or a broad precision campaign.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_nativefp16_v1_*`.
