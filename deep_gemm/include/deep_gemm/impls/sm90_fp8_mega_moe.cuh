@@ -117,6 +117,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     bool kEarlyWeightSFRequested = false, \
     bool kFP16ScaledAccumRequested = false, \
     bool kNativeFP16WGMMARequested = false, \
+    uint32_t kNativeFP16ChunkK = 0, \
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2, \
     uint32_t L1_SHAPE_K = kHidden, \
     uint32_t L2_SHAPE_N = kHidden, \
@@ -177,7 +178,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     kL1DualKAccumRequested, kL2DualAccumRequested, kFP8CombineRequested, \
     kAdjacentScaleDomainRequested, kPrefetchWeightSFRequested, \
     kEarlyWeightSFRequested, kFP16ScaledAccumRequested, \
-    kNativeFP16WGMMARequested, \
+    kNativeFP16WGMMARequested, kNativeFP16ChunkK, \
     L1_SHAPE_N, \
     L1_SHAPE_K, L2_SHAPE_N, L2_SHAPE_K, kNumDispatchWarps, \
     kNumMMANonEpilogueWarps, kNumEpilogueWarps, kNumEpilogueWarpgroups, \
@@ -320,6 +321,11 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     constexpr bool kEarlyWeightSF = kEarlyWeightSFRequested;
     constexpr bool kFP16ScaledAccum = kFP16ScaledAccumRequested;
     constexpr bool kNativeFP16WGMMA = kNativeFP16WGMMARequested;
+    constexpr bool kNativeFP16Chunked =
+        kNativeFP16WGMMA and kNativeFP16ChunkK != 0;
+    DG_STATIC_ASSERT(kNativeFP16ChunkK == 0 or kNativeFP16ChunkK == 32 or
+                     kNativeFP16ChunkK == 64 or kNativeFP16ChunkK == 128,
+                     "Native FP16 chunk K must be 0, 32, 64, or 128");
     constexpr bool kReuseAccumAsFinal =
         kSplitMNWarpgroups or kWideNWarpgroups;
     using L1WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
@@ -1561,7 +1567,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
             using WGMMA = L1WGMMA;
             constexpr uint32_t kAccumPerThread = WGMMA::kNumAccum;  // 64 for M=64,N=128
             float final_accum[kAccumPerThread];
-            if constexpr (not kFP16ScaledAccum and not kNativeFP16WGMMA) {
+            if constexpr (not kFP16ScaledAccum and
+                          (not kNativeFP16WGMMA or kNativeFP16Chunked)) {
                 #pragma unroll
                 for (uint32_t i = 0; i < kAccumPerThread; ++ i)
                     final_accum[i] = 0.0f;
@@ -2264,8 +2271,176 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 }
             };
 
+            const auto run_native_fp16_chunked_wgmma_loop = [&]() {
+                if constexpr (kNativeFP16Chunked) {
+                    DG_STATIC_ASSERT(BLOCK_K == 128 and WG_BLOCK_M == 64 and
+                                     WG_BLOCK_N == 128 and not kSwapABActive,
+                                     "Chunked native FP16 WGMMA expects BK128 M64N128");
+                    using NativeWGMMA =
+                        typename mma::sm90::FP8MMAF16Selector<WG_BLOCK_N>::type;
+                    constexpr uint32_t kPackedAccumPerThread =
+                        NativeWGMMA::kNumAccum;
+                    DG_STATIC_ASSERT(kPackedAccumPerThread * 2 == kAccumPerThread,
+                                     "Unexpected packed FP16 WGMMA register count");
+
+                    uint32_t native_accum[kPackedAccumPerThread];
+
+                    constexpr uint32_t kL1SFKBlocks   = kHidden / 128;
+                    constexpr uint32_t kL2SFKBlocks   = kIntermediateHidden / 128;
+                    constexpr uint32_t kL1SFGateBlks  = kIntermediateHidden / 128;
+                    constexpr uint32_t kL1SFPerExpert =
+                        (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
+                    constexpr uint32_t kL2SFPerExpert =
+                        (kHidden / 128) * kL2SFKBlocks;
+
+                    const auto issue_wgmma = [&]<uint32_t kOffset,
+                                                  uint32_t kNumWGMMAs>() {
+                        #pragma unroll
+                        for (uint32_t i = 0; i < kPackedAccumPerThread; ++ i)
+                            ptx::warpgroup_fence_operand(native_accum[i]);
+                        ptx::warpgroup_arrive();
+                        #pragma unroll
+                        for (uint32_t k = 0; k < kNumWGMMAs; ++ k) {
+                            auto desc_a = mma::sm90::make_smem_desc(
+                                smem_a[stage_idx] + row_block_offset * BLOCK_K +
+                                    kOffset + k * NativeWGMMA::K, 1);
+                            auto desc_b = mma::sm90::make_smem_desc(
+                                smem_b[stage_idx] + wg_n_idx * BLOCK_K +
+                                    kOffset + k * NativeWGMMA::K, 1);
+                            NativeWGMMA::wgmma(
+                                desc_a, desc_b, native_accum, k != 0);
+                        }
+                        ptx::warpgroup_commit_batch();
+                        #pragma unroll
+                        for (uint32_t i = 0; i < kPackedAccumPerThread; ++ i)
+                            ptx::warpgroup_fence_operand(native_accum[i]);
+                        ptx::warpgroup_wait<0>();
+                    };
+
+                    const auto promote_l1_fp32 = [&](const float& scale_a_0,
+                                                      const float& scale_a_1,
+                                                      const float& gate_sf,
+                                                      const float& up_sf) {
+                        #pragma unroll
+                        for (uint32_t i = 0; i < kPackedAccumPerThread; ++ i) {
+                            const float weight_sf =
+                                ((i / 2u) & 1u) ? up_sf : gate_sf;
+                            const float scale_a = (i & 1u) ? scale_a_1 : scale_a_0;
+                            const float scale = scale_a * weight_sf;
+                            const __half2 raw =
+                                reinterpret_cast<const __half2&>(native_accum[i]);
+                            const float2 pair = __half22float2(raw);
+                            final_accum[2 * i] =
+                                fmaf(pair.x, scale, final_accum[2 * i]);
+                            final_accum[2 * i + 1] =
+                                fmaf(pair.y, scale, final_accum[2 * i + 1]);
+                        }
+                    };
+                    const auto promote_l2_fp32 = [&](const float& scale_a_0,
+                                                      const float& scale_a_1,
+                                                      const float& weight_sf) {
+                        #pragma unroll
+                        for (uint32_t i = 0; i < kPackedAccumPerThread; ++ i) {
+                            const float scale_a = (i & 1u) ? scale_a_1 : scale_a_0;
+                            const float scale = scale_a * weight_sf;
+                            const __half2 raw =
+                                reinterpret_cast<const __half2&>(native_accum[i]);
+                            const float2 pair = __half22float2(raw);
+                            final_accum[2 * i] =
+                                fmaf(pair.x, scale, final_accum[2 * i]);
+                            final_accum[2 * i + 1] =
+                                fmaf(pair.y, scale, final_accum[2 * i + 1]);
+                        }
+                    };
+
+                    for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks;
+                         advance_pipeline(k_block_idx)) {
+                        full_barriers[stage_idx]->wait(phase);
+                        const float scale_a_0_lo =
+                            ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r0);
+                        const float scale_a_1_lo =
+                            ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r1);
+
+                        if (is_linear1_phase) {
+                            const uint32_t gate_n =
+                                (n_block_idx * BLOCK_N + wg_n_idx) / 256u;
+                            const uint32_t up_n = kL1SFGateBlks + gate_n;
+                            const float* base = l1_weights_sf +
+                                local_expert_idx * kL1SFPerExpert + k_block_idx;
+                            const float gate_sf =
+                                __ldg(base + gate_n * kL1SFKBlocks);
+                            const float up_sf =
+                                __ldg(base + up_n * kL1SFKBlocks);
+
+                            if constexpr (kNativeFP16ChunkK == 128) {
+                                issue_wgmma.template operator()<0, 4>();
+                                promote_l1_fp32(
+                                    scale_a_0_lo, scale_a_1_lo, gate_sf, up_sf);
+                            } else if constexpr (kNativeFP16ChunkK == 64) {
+                                issue_wgmma.template operator()<0, 2>();
+                                promote_l1_fp32(
+                                    scale_a_0_lo, scale_a_1_lo, gate_sf, up_sf);
+                                issue_wgmma.template operator()<64, 2>();
+                                promote_l1_fp32(
+                                    scale_a_0_lo, scale_a_1_lo, gate_sf, up_sf);
+                            } else {
+                                issue_wgmma.template operator()<0, 1>();
+                                promote_l1_fp32(
+                                    scale_a_0_lo, scale_a_1_lo, gate_sf, up_sf);
+                                issue_wgmma.template operator()<32, 1>();
+                                promote_l1_fp32(
+                                    scale_a_0_lo, scale_a_1_lo, gate_sf, up_sf);
+                                issue_wgmma.template operator()<64, 1>();
+                                promote_l1_fp32(
+                                    scale_a_0_lo, scale_a_1_lo, gate_sf, up_sf);
+                                issue_wgmma.template operator()<96, 1>();
+                                promote_l1_fp32(
+                                    scale_a_0_lo, scale_a_1_lo, gate_sf, up_sf);
+                            }
+                            arrive_empty_barrier(stage_idx);
+                        } else {
+                            const float scale_a_0_hi = ptx::ld_shared(
+                                smem_sfa[stage_idx] + kL2SFAHalfStride +
+                                    row_offset_r0);
+                            const float scale_a_1_hi = ptx::ld_shared(
+                                smem_sfa[stage_idx] + kL2SFAHalfStride +
+                                    row_offset_r1);
+                            const uint32_t sf_n =
+                                (n_block_idx * BLOCK_N + wg_n_idx) / 128u;
+                            const float* base = l2_weights_sf +
+                                local_expert_idx * kL2SFPerExpert + k_block_idx;
+                            const float l2_sf =
+                                __ldg(base + sf_n * kL2SFKBlocks);
+
+                            if constexpr (kNativeFP16ChunkK == 32) {
+                                issue_wgmma.template operator()<0, 1>();
+                                promote_l2_fp32(
+                                    scale_a_0_lo, scale_a_1_lo, l2_sf);
+                                issue_wgmma.template operator()<32, 1>();
+                                promote_l2_fp32(
+                                    scale_a_0_lo, scale_a_1_lo, l2_sf);
+                                issue_wgmma.template operator()<64, 1>();
+                                promote_l2_fp32(
+                                    scale_a_0_hi, scale_a_1_hi, l2_sf);
+                                issue_wgmma.template operator()<96, 1>();
+                                promote_l2_fp32(
+                                    scale_a_0_hi, scale_a_1_hi, l2_sf);
+                            } else {
+                                issue_wgmma.template operator()<0, 2>();
+                                promote_l2_fp32(
+                                    scale_a_0_lo, scale_a_1_lo, l2_sf);
+                                issue_wgmma.template operator()<64, 2>();
+                                promote_l2_fp32(
+                                    scale_a_0_hi, scale_a_1_hi, l2_sf);
+                            }
+                            arrive_empty_barrier(stage_idx);
+                        }
+                    }
+                }
+            };
+
             const auto run_native_fp16_wgmma_loop = [&]() {
-                if constexpr (kNativeFP16WGMMA) {
+                if constexpr (kNativeFP16WGMMA and not kNativeFP16Chunked) {
                     DG_STATIC_ASSERT(WG_BLOCK_M == 64 and WG_BLOCK_N == 128 and
                                      not kSwapABActive,
                                      "Native FP16 WGMMA expects non-swap M64N128");
@@ -2761,6 +2936,8 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
             if constexpr (BLOCK_K == 256) {
                 run_bk256_gemm_loop();
+            } else if constexpr (kNativeFP16Chunked) {
+                run_native_fp16_chunked_wgmma_loop();
             } else if constexpr (kNativeFP16WGMMA) {
                 run_native_fp16_wgmma_loop();
             } else if constexpr (kFP16ScaledAccum) {

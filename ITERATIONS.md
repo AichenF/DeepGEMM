@@ -703,3 +703,25 @@ Each measured source or promoted-selector iteration records:
   campaign was run for this optional path.
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bk256_v1_bk*`.
+
+## Iteration 24: chunked native-FP16 WGMMA accumulation
+
+- Hypothesis: the 4.02% native-FP16 WGMMA speedup from iteration 18 may be
+  recoverable safely by converting its packed FP16 accumulator to FP32 after
+  K128, K64, or K32, then applying the unchanged block scale in FP32.
+- Implementation: add an explicitly selected
+  `DG_SM90_MOE_NATIVE_FP16_CHUNK_K={32,64,128}` mode. L1 promotes after the
+  requested chunk; L2 additionally respects its K64 activation-scale boundary.
+  The existing FP32 path and all default/H20 behavior remain unchanged.
+- Correctness protocol: eight-rank `L2.profile_topk6.t512`, E5M2 combine,
+  tolerance 0.01, testing K128, K64, and the minimum single-instruction K32
+  chunk before any performance measurement.
+- Result: all three chunk sizes returned `calc_diff=nan`. Because K32 is one
+  `m64n128k32.f16.e4m3.e4m3` instruction, the unscaled E4M3 dot product can
+  overflow the packed FP16 destination within a single WGMMA; neither earlier
+  FP32 promotion nor a FP32 final accumulator can make this representation
+  numerically safe.
+- Decision: hard-reject every native-FP16 WGMMA variant for these inputs. Do
+  not benchmark, relax tolerance, or promote it into an H200 selector.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_nativefp16_chunk_correctness_k*`.

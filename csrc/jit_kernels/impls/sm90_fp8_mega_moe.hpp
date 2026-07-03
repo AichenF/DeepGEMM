@@ -57,6 +57,7 @@ public:
         bool early_weight_sf;
         bool fp16_scaled_accum;
         bool native_fp16_wgmma;
+        int native_fp16_chunk_k;
         KernelPhase kernel_phase;
         MegaMoESM90Config config;
 
@@ -119,6 +120,7 @@ static void __instantiate_kernel() {{
         {},
         {},
         {},
+        {},
         {}
     >);
 }};
@@ -151,7 +153,8 @@ static void __instantiate_kernel() {{
     args.prefetch_weight_sf ? "true" : "false",
     args.early_weight_sf ? "true" : "false",
     args.fp16_scaled_accum ? "true" : "false",
-    args.native_fp16_wgmma ? "true" : "false");
+    args.native_fp16_wgmma ? "true" : "false",
+    args.native_fp16_chunk_k);
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -331,8 +334,13 @@ static void sm90_fp8_mega_moe(
         get_env<int>("DG_SM90_MOE_FP16_SCALED_ACCUM", 0) != 0;
     const bool native_fp16_wgmma =
         get_env<int>("DG_SM90_MOE_NATIVE_FP16_WGMMA", 0) != 0;
+    const int native_fp16_chunk_k =
+        get_env<int>("DG_SM90_MOE_NATIVE_FP16_CHUNK_K", 0);
     DG_HOST_ASSERT(not (prefetch_weight_sf and early_weight_sf));
     DG_HOST_ASSERT(not (fp16_scaled_accum and native_fp16_wgmma));
+    DG_HOST_ASSERT(native_fp16_chunk_k == 0 or native_fp16_chunk_k == 32 or
+                   native_fp16_chunk_k == 64 or native_fp16_chunk_k == 128);
+    DG_HOST_ASSERT(native_fp16_chunk_k == 0 or native_fp16_wgmma);
     const auto supports_native_fp16_wgmma = [](const MegaMoESM90Config& phase_config) {
         const int num_epilogue_warpgroups = phase_config.num_epilogue_threads / 128;
         const bool split_n =
@@ -376,6 +384,7 @@ static void sm90_fp8_mega_moe(
         .early_weight_sf = early_weight_sf,
         .fp16_scaled_accum = fp16_scaled_accum,
         .native_fp16_wgmma = native_fp16_wgmma,
+        .native_fp16_chunk_k = native_fp16_chunk_k,
         .kernel_phase = SM90FP8MegaMoERuntime::KernelPhase::Linear1,
         .config = l1_config,
         .y = y.data_ptr(),
