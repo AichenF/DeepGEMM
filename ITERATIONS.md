@@ -914,3 +914,38 @@ Each measured source or promoted-selector iteration records:
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_bf16_correctness_smoke*`
   and `.../candidates/pro_bn512_v1_*`.
+
+## Iteration 32: phase-specific BN512 L1 tile
+
+- Hypothesis: BN512 reduces L1 CTA scheduling and A-tile reloads, while L2
+  still benefits from the lower thread count and three-stage pipeline of
+  BN256. Applying BN512 independently by phase can retain the L1 gain without
+  paying the BN512 L2 regression.
+- Implementation: extend the explicit `DG_SM90_MOE_L1_BLOCK_N` and
+  `DG_SM90_MOE_L2_BLOCK_N` overrides to accept BN512 and derive the matching
+  compact frontend and four-consumer epilogue. Both overrides remain zero by
+  default, so the existing H20 selector and all H20 tuning results are
+  unchanged.
+- Correctness: the exact L1 BN512 / L2 BN256 eight-rank
+  `L2.profile_topk6.t512` scenario passed at `calc_diff=0.0020 < 0.01` with
+  BF16x2 accumulation and E5M2 combine.
+- Performance protocol: Pro M=8192, seed 101, median-10, 8x H200; BF16x2
+  accumulation and E5M2 combine for all four phase-tile combinations. BN256
+  uses three stages and BN512 uses two stages.
+- Results (maximum returned latency across ranks):
+
+  | L1 BN | L2 BN | us | vs 256/256 | vs PR323 |
+  |---:|---:|---:|---:|---:|
+  | 256 | 256 | 8250.647 | — | +5.21% |
+  | 512 | 256 | 7742.250 | -6.16% | -1.28% |
+  | 256 | 512 | 8559.457 | +3.74% | +9.14% |
+  | 512 | 512 | 8052.001 | -2.41% | +2.67% |
+
+- Decision: retain L1 BN512 / L2 BN256 as the first M=8192 H200 candidate
+  that beats PR323. Hard-reject BN512 for L2. Do not add an automatic selector
+  yet: first confirm the 1.28% margin across seeds and tune the phase-specific
+  scheduler neighbors, then validate all required M points and the full
+  precision matrix.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_phase_v1_*`
+  and `.../candidates/pro_bn512_phase_512_256_correctness_smoke/`.

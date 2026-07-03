@@ -219,13 +219,14 @@ static void sm90_fp8_mega_moe(
         const int block_n = get_env<int>(env_name, 0);
         if (block_n == 0)
             return;
-        DG_HOST_ASSERT((block_n == 128 or block_n == 256) and
+        DG_HOST_ASSERT((block_n == 128 or block_n == 256 or block_n == 512) and
                        phase_config.block_m == 64 and not phase_config.swap_ab);
         phase_config.block_n = block_n;
-        const bool compact_frontend = block_n == 256;
+        const bool compact_frontend = block_n >= 256;
         phase_config.num_dispatch_threads = compact_frontend ? 64 : 128;
         phase_config.num_non_epilogue_threads = compact_frontend ? 64 : 128;
-        phase_config.num_epilogue_threads = compact_frontend ? 256 : 128;
+        phase_config.num_epilogue_threads =
+            block_n == 512 ? 512 : (compact_frontend ? 256 : 128);
     };
     apply_phase_block_n_override(l1_config, "DG_SM90_MOE_L1_BLOCK_N");
     apply_phase_block_n_override(l2_config, "DG_SM90_MOE_L2_BLOCK_N");
