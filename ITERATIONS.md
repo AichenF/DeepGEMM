@@ -1197,3 +1197,48 @@ Each measured source or promoted-selector iteration records:
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_m256_tile_v1_*`
   and `.../candidates/pro_smallm_phase_breakdown/`.
+
+## Iteration 41: M256 phase-local wave and stage tuning
+
+- Hypothesis: because L1 is about two thirds of M=256 latency, independent L1
+  and L2 expert waves plus phase-local pipeline depth can remove the global
+  scheduler compromise.
+- First screen: with stage3/3, L1/L2 EPW12/24 reached 851.556 us versus
+  856.818 us for 12/12 (-0.61%). The other useful neighbor was L1/L2 EPW8/12
+  at 852.403 us; all remaining one-phase wave changes were 857.874 us or
+  slower.
+- Stage screen at L1/L2 EPW12/24:
+
+  | L1 stages | L2 stages | us |
+  |---:|---:|---:|
+  | 3 | 3 | 861.715 |
+  | 2 | 3 | 848.371 |
+  | 4 | 3 | 861.411 |
+  | 3 | 2 | 984.662 |
+  | 3 | 4 | 861.363 |
+  | 2 | 4 | 858.354 |
+  | 4 | 4 | 858.643 |
+
+- L1 stage2 is the only material stage signal. A follow-up wave screen with
+  L1/L2 stages2/3 found 852.549 us for EPW12/16, while EPW12/24 varied from
+  848.371 us in the stage screen to 886.451 us in the wave screen. This
+  required an interleaved confirmation rather than promotion of the minimum.
+- Confirmation protocol: compare stage2/3 with L1 EPW12 and L2 EPW16 or 24
+  against PR323, three rotating observations each, median-20.
+- Confirmation results:
+
+  | candidate | observation maxima (us) | median us | vs PR323 median |
+  |---|---|---:|---:|
+  | L2 EPW16 | 860.706, 859.205, 851.956 | 859.205 | +0.50% |
+  | L2 EPW24 | 857.235, 851.601, 906.563 | 857.235 | +0.27% |
+  | PR323 | 854.914, 848.772, 857.058 | 854.914 | — |
+
+- Decision: retain L1 stage2 / L2 stage3 as the next M256 parent, but neither
+  phase-wave candidate meets the PR323 gate after interleaving. Do not encode
+  an H200 selector yet; test bounded L1 accumulator/store scheduling changes.
+  The H20 tuning table remains untouched.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_m256_phasewave_v1_*`,
+  `.../candidates/pro_m256_phasestage_v1_*`,
+  `.../candidates/pro_m256_phasewave_s2_v1_*`, and
+  `.../candidates/pro_m256_phasewave_s2_confirm_s101_n20/`.
