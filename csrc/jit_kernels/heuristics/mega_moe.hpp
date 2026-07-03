@@ -671,12 +671,13 @@ static std::pair<int, int> get_pipeline_config_for_mega_moe_sm90(
         kSmemAlignment);
 
     // SF on SM90:
-    //   * SFA per stage must hold the larger of L1 (BLOCK_M floats, per-128 K)
-    //     and L2 (2 * BLOCK_M floats, per-64 K), aligned to 128 bytes
+    //   * SFA per stage must hold one aligned BLOCK_M-float vector for every
+    //     per-64-K L2 scale group (two for BK128, four for BK256)
     //   * SFB is loaded directly from global by the math warpgroup (block-(128,128)
     //     weight quantization), so no SMEM is reserved for it.
     const int smem_sfa_half_stride_bytes = align(block_m * static_cast<int>(sizeof(float)), 128);
-    const int smem_sfa_per_stage = 2 * smem_sfa_half_stride_bytes;
+    const int smem_sfa_per_stage =
+        (block_k / 64) * smem_sfa_half_stride_bytes;
     const int smem_sfb_per_stage = 0;
 
     // Per-stage: A tile + B tile + SFA tile + SFB tile
@@ -836,7 +837,8 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
 
     const int num_max_pool_tokens = layout::get_num_max_pool_tokens(
         num_ranks, num_max_tokens_per_rank, num_topk, num_experts_per_rank);
-    const int block_k = 128;
+    const int block_k = get_env<int>("DG_SM90_MOE_BLOCK_K", 128);
+    DG_HOST_ASSERT(block_k == 128 or block_k == 256);
     const int num_sms = device_runtime->get_num_sms();
 
     std::vector<MegaMoESM90Config> candidates;

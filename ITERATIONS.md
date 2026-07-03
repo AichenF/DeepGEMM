@@ -675,3 +675,31 @@ Each measured source or promoted-selector iteration records:
   band, so phase-specific pipeline depth is not a structural large-M lever.
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_e5m2_phasestage_v1_*`.
+
+## Iteration 23: two-plane BLOCK_K=256 mainloop
+
+- Hypothesis: grouping two independently scaled K128 input planes into one
+  K256 pipeline stage may reduce producer/barrier iterations enough to improve
+  large-M throughput while preserving the existing K128 scale domains.
+- Implementation: add an explicitly selected `DG_SM90_MOE_BLOCK_K=256` path.
+  Each stage issues two K128 A/B TMA loads; L1 consumes two independent K128
+  scale regions and L2 consumes four K64 activation-scale regions with the
+  corresponding two K128 weight-scale regions. The existing K128 path remains
+  the default, so H20 tuning and default selector behavior are unchanged.
+- Protocol: Pro M=8192 E5M2 parent (`direct0, N-major, EPW16`, seed 101,
+  median-10, 8x H200), changing only `BLOCK_K`. Printed configs confirmed
+  K128/stage3/173760-byte shared memory versus K256/stage2/215216-byte shared
+  memory.
+- Results (maximum returned latency across ranks):
+
+  | BLOCK_K | stages | shared memory | us | vs K128 | vs PR323 |
+  |---:|---:|---:|---:|---:|---:|
+  | 128 | 3 | 173760 B | 8164.657 | — | +4.11% |
+  | 256 | 2 | 215216 B | 8361.760 | +2.41% | +6.62% |
+
+- Decision: reject K256 for H200 selection. Halving the logical K-stage count
+  did not compensate for losing a pipeline stage and increasing per-CTA shared
+  memory. Because the performance gate failed materially, no correctness
+  campaign was run for this optional path.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bk256_v1_bk*`.
