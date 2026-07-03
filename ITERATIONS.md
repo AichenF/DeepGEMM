@@ -881,3 +881,36 @@ Each measured source or promoted-selector iteration records:
   scheduling change rather than stacking shallow host parameters.
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_l1combo_v1_*`.
+
+## Iteration 31: BN512 four-consumer tile with BF16 accumulation
+
+- Hypothesis: BM64/BN512 can halve CTA scheduling and A-tile reloads while
+  retaining four independent M64N128 WGMMA consumers. Packed BF16 accumulation
+  keeps each consumer within the 512-thread CTA register budget, and E5M2
+  combine reduces the L2 shared-output footprint enough for a two-stage pipe.
+- Implementation: add explicit `DG_SM90_MOE_FORCE_BLOCK_N=512` support with
+  four consumers. Split each B load into two legal BN256 tensor-map planes,
+  retain one full-barrier byte expectation, size host shared output using the
+  selected E5M2/BF16 combine element width, and leave all defaults unchanged.
+  The first launch exposed the tensor-map BN limit; the second JIT exposed the
+  old BN<=256 static guard. Both were fixed before producing any result.
+- Correctness: the repaired eight-rank `L2.profile_topk6.t512` smoke passed at
+  `calc_diff=0.0020 < 0.01` with BN512, BF16 accumulation, and E5M2 combine.
+- Performance protocol: Pro M=8192, seed 101, median-10, 8x H200; compare the
+  same-source E5M2 BN256/FP32 parent, BN256/BF16 attribution point, and
+  BN512/BF16 candidate.
+- Results (maximum returned latency across ranks):
+
+  | tile | accumulator | stages | us | vs BN256/FP32 | vs PR323 |
+  |---|---|---:|---:|---:|---:|
+  | BN256 | FP32 | 3 | 8246.554 | — | +5.15% |
+  | BN256 | BF16x2 | 3 | 8260.263 | +0.17% | +5.33% |
+  | BN512 | BF16x2 | 2 | 8017.227 | -2.78% | +2.23% |
+
+- Decision: retain BN512/BF16 as the second material H200 candidate after
+  E5M2 combine. It does not yet meet the PR323 gate and has only smoke-level
+  correctness, so next test mixed L1/L2 tile choices and BN512 scheduler
+  neighbors before broad precision validation or selector promotion.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_bf16_correctness_smoke*`
+  and `.../candidates/pro_bn512_v1_*`.

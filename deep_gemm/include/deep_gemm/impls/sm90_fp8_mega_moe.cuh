@@ -205,7 +205,9 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     DG_STATIC_ASSERT(kNumSMs % kClusterSize == 0, "SM count must be divisible by cluster size");
     DG_STATIC_ASSERT(BLOCK_M % 64 == 0,
                      "BLOCK_M must be a multiple of WGMMA::M (64)");
-    DG_STATIC_ASSERT(BLOCK_N == 64 or BLOCK_N == 128 or BLOCK_N == 256, "BLOCK_N must be 64/128/256 for this SM90 path");
+    DG_STATIC_ASSERT(BLOCK_N == 64 or BLOCK_N == 128 or BLOCK_N == 256 or
+                     BLOCK_N == 512,
+                     "BLOCK_N must be 64/128/256/512 for this SM90 path");
     DG_STATIC_ASSERT(BLOCK_K == 128 or BLOCK_K == 256,
                      "BLOCK_K must be 128 or the opt-in 256 experiment");
     DG_STATIC_ASSERT(kHidden % BLOCK_K == 0 and kIntermediateHidden % BLOCK_K == 0,
@@ -350,6 +352,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     constexpr uint32_t kL2ActsSFGranK  = 64;           // L2 acts SF (per-64 K, SM90 only)
     constexpr uint32_t kTMATileK       = 128;
     constexpr uint32_t kNumTMATilesPerStage = BLOCK_K / kTMATileK;
+    constexpr uint32_t kTMATileN = BLOCK_N > 256 ? 256 : BLOCK_N;
+    constexpr uint32_t kNumTMANTilesPerStage = BLOCK_N / kTMATileN;
 
     // =====================================================================
     // Shared memory layout
@@ -1026,13 +1030,22 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                     const uint32_t n_idx = local_expert_idx * shape_n + n_block_idx * BLOCK_N;
                     const uint32_t k_idx = k_block_idx * BLOCK_K;
 
-                    // TMA load B in the same independent BK128 planes as A.
+                    // TMA load B in independent BK128 x BN<=256 planes. The
+                    // tensor-map box limit requires two N planes for BN512.
                     #pragma unroll
                     for (uint32_t k_tile = 0; k_tile < kNumTMATilesPerStage; ++ k_tile) {
-                        tma::copy<kTMATileK, LOAD_BLOCK_N, kSwizzleBMode, b_dtype_t>(
-                            tensor_map_b_ptr, full_barriers[stage_idx],
-                            smem_b[stage_idx] + k_tile * LOAD_BLOCK_N * kTMATileK,
-                            k_idx + k_tile * kTMATileK, n_idx, kClusterSize);
+                        #pragma unroll
+                        for (uint32_t n_tile = 0;
+                             n_tile < kNumTMANTilesPerStage; ++ n_tile) {
+                            tma::copy<kTMATileK, kTMATileN, kSwizzleBMode, b_dtype_t>(
+                                tensor_map_b_ptr, full_barriers[stage_idx],
+                                smem_b[stage_idx] +
+                                    k_tile * LOAD_BLOCK_N * kTMATileK +
+                                    n_tile * kTMATileN * kTMATileK,
+                                k_idx + k_tile * kTMATileK,
+                                n_idx + n_tile * kTMATileN,
+                                kClusterSize);
+                        }
                     }
 
                     full_barriers[stage_idx]->arrive_and_expect_tx(SMEM_B_SIZE_PER_STAGE);

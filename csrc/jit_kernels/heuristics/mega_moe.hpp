@@ -658,8 +658,11 @@ static std::pair<int, int> get_pipeline_config_for_mega_moe_sm90(
     const bool direct_l2_scatter = direct_l2_scatter_enabled and
                                    not swap_ab and not serial_n_warpgroups and wg_block_n == 128;
     const bool async_l1_tma_store = false;
+    const int combine_element_bytes =
+        get_env<int>("DG_SM90_MOE_FP8_COMBINE", 0) != 0 ? 1 :
+        static_cast<int>(sizeof(nv_bfloat16));
     const int smem_cd_l2 = direct_l2_scatter ? 0 :
-        num_epilogue_warpgroups * wg_block_m * wg_block_n * static_cast<int>(sizeof(nv_bfloat16));
+        num_epilogue_warpgroups * wg_block_m * wg_block_n * combine_element_bytes;
     const int smem_cd_l1_async = async_l1_tma_store ?
         2 * num_epilogue_warpgroups * wg_block_m * (block_n / 2) : 0;
     const int smem_cd_swap_l1 = swap_ab
@@ -803,8 +806,11 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
     const int& hidden, const int& intermediate_hidden,
     const int& num_padded_sf_pool_tokens) {
     const int forced_block_m = get_env<int>("DG_SM90_MOE_FORCE_BLOCK_M");
+    const int forced_block_n = get_env<int>("DG_SM90_MOE_FORCE_BLOCK_N");
     const int forced_epilogue_warpgroups = get_env<int>("DG_SM90_MOE_FORCE_EPILOGUE_WG");
     DG_HOST_ASSERT(forced_block_m == 0 or forced_block_m == 64 or forced_block_m == 128);
+    DG_HOST_ASSERT(forced_block_n == 0 or forced_block_n == 128 or
+                   forced_block_n == 256 or forced_block_n == 512);
     DG_HOST_ASSERT(forced_epilogue_warpgroups == 0 or
                    forced_epilogue_warpgroups == 1 or
                    forced_epilogue_warpgroups == 2 or
@@ -855,7 +861,9 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                 block_m, 256);
 
         std::vector<int> block_n_candidates;
-        if (prefer_swap_ab_block) {
+        if (forced_block_n > 0) {
+            append_unique_moe_candidate(block_n_candidates, forced_block_n);
+        } else if (prefer_swap_ab_block) {
             append_unique_moe_candidate(block_n_candidates, 128);
         } else if (block_m == 128 and split_mn_candidate) {
             append_unique_moe_candidate(block_n_candidates, 256);
@@ -901,6 +909,14 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                     if (not forced_wide_n and not forced_four_way_split_n)
                         continue;
                 }
+                if (block_m == 64 and block_n == 512) {
+                    const bool forced_bn512_four_way =
+                        forced_block_n == 512 and
+                        forced_epilogue_warpgroups == 4 and
+                        num_epilogue_warpgroups == 4;
+                    if (not forced_bn512_four_way)
+                        continue;
+                }
                 const int num_epilogue_threads = num_epilogue_warpgroups * 128;
                 const bool swap_ab =
                     swap_ab_env_enabled and block_n == 128 and
@@ -920,7 +936,7 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                 const int swizzle_acts_mode = 128;
                 const int swizzle_weights_mode = 128;
 
-                const bool compact_frontend = block_n == 256 or swap_ab;
+                const bool compact_frontend = block_n >= 256 or swap_ab;
                 const int forced_dispatch_warps = get_env<int>("DG_SM90_MOE_DISPATCH_WARPS", -1);
                 DG_HOST_ASSERT(forced_dispatch_warps == -1 or forced_dispatch_warps == 0 or
                                forced_dispatch_warps == 2 or forced_dispatch_warps == 4 or

@@ -291,6 +291,8 @@ static void sm90_fp8_mega_moe(
     // and issue two copies; the kernel config/scheduler still advances by 256.
     const int l1_tma_block_k = std::min(l1_config.block_k, kGranK);
     const int l2_tma_block_k = std::min(l2_config.block_k, kGranK);
+    const int l1_tma_block_n = std::min(l1_config.block_n, 256);
+    const int l2_tma_block_n = std::min(l2_config.block_n, 256);
     const auto tensor_map_l1_acts = make_tma_2d_desc(l1_acts,
                                                      hidden, l1_config.num_max_pool_tokens,
                                                      l1_tma_block_k, l1_config.block_m,
@@ -302,7 +304,7 @@ static void sm90_fp8_mega_moe(
                                                         1, 0);
     const auto tensor_map_l1_weights = make_tma_2d_desc(l1_weights,
                                                         hidden, num_experts_per_rank * intermediate_hidden * 2,
-                                                        l1_tma_block_k, l1_config.block_n,
+                                                        l1_tma_block_k, l1_tma_block_n,
                                                         static_cast<int>(l1_weights.stride(-2)),
                                                         l1_config.swizzle_weights_mode);
     // L1 output (post-SwiGLU FP8): N is halved. The SM90 epilogue writes this
@@ -343,7 +345,7 @@ static void sm90_fp8_mega_moe(
                                                         1, 0);
     const auto tensor_map_l2_weights = make_tma_2d_desc(l2_weights,
                                                         intermediate_hidden, num_experts_per_rank * hidden,
-                                                        l2_tma_block_k, l2_config.block_n,
+                                                        l2_tma_block_k, l2_tma_block_n,
                                                         static_cast<int>(l2_weights.stride(-2)),
                                                         l2_config.swizzle_weights_mode);
 
