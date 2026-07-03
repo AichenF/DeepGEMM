@@ -811,11 +811,15 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
 
     const float expected_tokens_per_expert =
         static_cast<float>(num_tokens) * num_topk / num_experts_per_rank;
-    const bool flash_split_mn_candidate =
+    const bool split_mn_shape =
+        (num_experts_per_rank == 32 and (num_topk == 6 or num_topk == 8) and
+         intermediate_hidden == 2048) or
+        (num_experts_per_rank == 48 and num_topk == 6 and
+         intermediate_hidden == 3072);
+    const bool split_mn_candidate =
         get_env<int>("DG_SM90_MOE_SPLIT_MN", 0) != 0 and
         forced_block_m == 0 and
-        num_experts_per_rank == 32 and (num_topk == 6 or num_topk == 8) and
-        intermediate_hidden == 2048 and
+        split_mn_shape and
         expected_tokens_per_expert >= 64.0f;
 
     const bool use_bn256_split_n_env =
@@ -828,7 +832,7 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
     std::vector<int> block_m_candidates;
     append_unique_moe_candidate(block_m_candidates,
                                 forced_block_m > 0 ? forced_block_m :
-                                (flash_split_mn_candidate ? 128 : 64));
+                                (split_mn_candidate ? 128 : 64));
 
     const int num_max_pool_tokens = layout::get_num_max_pool_tokens(
         num_ranks, num_max_tokens_per_rank, num_topk, num_experts_per_rank);
@@ -851,7 +855,7 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
         std::vector<int> block_n_candidates;
         if (prefer_swap_ab_block) {
             append_unique_moe_candidate(block_n_candidates, 128);
-        } else if (block_m == 128 and flash_split_mn_candidate) {
+        } else if (block_m == 128 and split_mn_candidate) {
             append_unique_moe_candidate(block_n_candidates, 256);
         } else if (block_m == 64 and use_bn256_split_n_env) {
             append_unique_moe_candidate(block_n_candidates, 256);

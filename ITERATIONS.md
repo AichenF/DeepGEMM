@@ -167,3 +167,28 @@ Each measured source or promoted-selector iteration records:
   parameter dimension or split-kernel implementation improvement. Preserve
   all H20 selector behavior; do not port PR323 fusion.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_w_*`.
+
+## Iteration 1: expose the existing split-MN tile to Pro experiments
+
+- Hypothesis: BM128xBN256 with four epilogue warpgroups is implemented and
+  legal for the split kernel, but the experiment predicate previously allowed
+  only the Flash shape. A Pro-only explicit experiment may improve large M
+  without changing architecture.
+- Source change: permit the existing `DG_SM90_MOE_SPLIT_MN=1` debug control to
+  select the tile for `(experts/rank=48, top-k=6, IH=3072)`. The default value
+  remains zero, so H20, H100, generic SM90, and production H200 behavior are
+  unchanged.
+- Protocol: Pro M=512/4096/8192, seed 101, median-10, 8x H200. Tested default
+  split-MN, stage3, stage3+EPW24/16, and stage3+N-major.
+- Best split-MN results versus PR323:
+
+  | M | candidate | candidate us | PR323 us | gap |
+  |---:|---|---:|---:|---:|
+  | 512 | split-MN + stage3 | 1130.084 | 1090.546 | +3.63% |
+  | 4096 | split-MN + stage3 + N-major | 4736.657 | 4338.506 | +9.18% |
+  | 8192 | split-MN + stage3 + N-major | 8946.647 | 7842.460 | +14.08% |
+
+- Decision: reject split-MN for the H200 Pro selector; the BM64 combined beam
+  remains materially faster. Retain only the opt-in experiment capability,
+  which has no default-device effect, for reproducibility.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_x_*`.
