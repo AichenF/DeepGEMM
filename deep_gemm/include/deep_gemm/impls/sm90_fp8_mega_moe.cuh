@@ -111,6 +111,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     bool kAsyncL1TMAStoreRequested = false, \
     bool kL1DualKAccumRequested = false, \
     bool kL2DualAccumRequested = false, \
+    bool kFP8CombineRequested = false, \
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2, \
     uint32_t L1_SHAPE_K = kHidden, \
     uint32_t L2_SHAPE_N = kHidden, \
@@ -168,7 +169,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     kNumRanks, kActivationClamp, kFastMath, kDirectL2ScatterRequested, \
     kPhaseProfileRequested, kL2NMajorScheduleRequested, kOneWarpCleanupRequested, kFP8SwapAB, \
     kAsyncL1TMAStoreRequested, \
-    kL1DualKAccumRequested, kL2DualAccumRequested, \
+    kL1DualKAccumRequested, kL2DualAccumRequested, kFP8CombineRequested, \
     L1_SHAPE_N, \
     L1_SHAPE_K, L2_SHAPE_N, L2_SHAPE_K, kNumDispatchWarps, \
     kNumMMANonEpilogueWarps, kNumEpilogueWarps, kNumEpilogueWarpgroups, \
@@ -254,8 +255,13 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     DG_STATIC_ASSERT(kSFPoolStrideTokens <= kNumPaddedSFPoolTokens,
                      "Logical SF pool stride must fit in the allocated SF pool capacity");
 
-    // Combine input area
-    const auto combine_token_buffer = layout::Buffer(bf16_token_layout, kNumTopk, kNumMaxTokensPerRank, l2_sf_buffer.get_end_ptr());
+    // Combine input area. The optional H200 experiment stores the L2
+    // contribution as unscaled E5M2 while retaining BF16 final output.
+    constexpr uint32_t kCombineElementBytes =
+        kFP8CombineRequested ? 1u : sizeof(nv_bfloat16);
+    constexpr auto combine_token_layout = layout::Data(kHidden * kCombineElementBytes);
+    const auto combine_token_buffer = layout::Buffer(
+        combine_token_layout, kNumTopk, kNumMaxTokensPerRank, l2_sf_buffer.get_end_ptr());
 
     // =====================================================================
     // GEMM data types and shape constants
@@ -296,6 +302,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         kL2DualAccumRequested and MegaMoEPhase::runs_linear2;
     constexpr bool kL1DualKAccum =
         kL1DualKAccumRequested and MegaMoEPhase::runs_linear1;
+    constexpr bool kFP8Combine =
+        kFP8CombineRequested and MegaMoEPhase::runs_linear2;
     constexpr bool kReuseAccumAsFinal = kSplitMNWarpgroups;
     using L1WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     using L2WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
@@ -340,12 +348,12 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     constexpr uint32_t SMEM_SFB_SIZE_PER_STAGE = 0;
 
     // CD output: max of L1 FP8 (BLOCK_M * (BLOCK_N/2) * 1 byte * num_wg) and
-    // L2 BF16 (BLOCK_M * BLOCK_N * 2 bytes * num_wg).
+    // L2 contribution (BF16 by default, optional unscaled E5M2).
     constexpr uint32_t SMEM_CD_ACCUM_SIZE = 0u;
     constexpr uint32_t SMEM_CD_L1_SIZE = MegaMoEPhase::runs_linear1 ?
         kNumEpilogueWarpgroups * WG_BLOCK_M * WG_L1_OUT_BLOCK_N * sizeof(cutlass::float_e4m3_t) : 0u;
     constexpr uint32_t SMEM_CD_L2_SIZE = (!MegaMoEPhase::runs_linear2 || kDirectL2Scatter) ? 0u :
-        kNumEpilogueWarpgroups * WG_BLOCK_M * WG_BLOCK_N * sizeof(nv_bfloat16);
+        kNumEpilogueWarpgroups * WG_BLOCK_M * WG_BLOCK_N * kCombineElementBytes;
     constexpr uint32_t SMEM_CD_L1_ASYNC_ELEMS =
         kNumEpilogueWarpgroups * WG_BLOCK_M * L1_OUT_BLOCK_N;
     constexpr uint32_t SMEM_CD_L1_ASYNC_SIZE = kAsyncL1TMAStore ?
@@ -371,21 +379,29 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE + SMEM_CD_SIZE +
         kNumStages * (SMEM_A_SIZE_PER_STAGE + SMEM_B_SIZE_PER_STAGE);
 
-    constexpr uint32_t kCombineHiddenBytes = kHidden * sizeof(nv_bfloat16);
-    constexpr uint32_t kCombineChunkSlots = 3;
+    constexpr uint32_t kCombineInputHiddenBytes = kHidden * kCombineElementBytes;
+    constexpr uint32_t kCombineOutputHiddenBytes = kHidden * sizeof(nv_bfloat16);
     constexpr uint32_t kCombineMaxRegistersForBuffer = 128;
     constexpr bool kCombineOneChunkFits =
-        kCombineChunkSlots * kNumEpilogueWarps * kCombineHiddenBytes <= SMEM_BEFORE_BARRIER_SIZE and
+        kNumEpilogueWarps * (2 * kCombineInputHiddenBytes + kCombineOutputHiddenBytes) <=
+            SMEM_BEFORE_BARRIER_SIZE and
         kHidden <= 32 * kCombineMaxRegistersForBuffer;
     constexpr bool kCombineTwoChunksFits =
         kHidden % 2 == 0 and
-        kCombineChunkSlots * kNumEpilogueWarps * (kCombineHiddenBytes / 2) <= SMEM_BEFORE_BARRIER_SIZE and
+        kNumEpilogueWarps *
+                (2 * (kCombineInputHiddenBytes / 2) + kCombineOutputHiddenBytes / 2) <=
+            SMEM_BEFORE_BARRIER_SIZE and
         kHidden <= 2 * 32 * kCombineMaxRegistersForBuffer;
     constexpr uint32_t kCombineNumChunks = kCombineOneChunkFits ? 1 :
         (kCombineTwoChunksFits ? 2 : 4);
-    constexpr uint32_t kCombineChunkBytes = kCombineHiddenBytes / kCombineNumChunks;
+    constexpr uint32_t kCombineChunkElems = kHidden / kCombineNumChunks;
+    constexpr uint32_t kCombineInputChunkBytes =
+        kCombineInputHiddenBytes / kCombineNumChunks;
+    constexpr uint32_t kCombineOutputChunkBytes =
+        kCombineOutputHiddenBytes / kCombineNumChunks;
     constexpr uint32_t SMEM_COMBINE_ALIAS_SIZE = MegaMoEPhase::needs_combine
-        ? kCombineChunkSlots * kNumEpilogueWarps * kCombineChunkBytes : 0u;
+        ? kNumEpilogueWarps *
+            (2 * kCombineInputChunkBytes + kCombineOutputChunkBytes) : 0u;
     DG_STATIC_ASSERT(kHidden % kCombineNumChunks == 0, "Hidden must be divisible by number of combine chunks");
     DG_STATIC_ASSERT(SMEM_COMBINE_ALIAS_SIZE <= SMEM_BEFORE_BARRIER_SIZE,
                      "Combine SMEM alias exceeds the pre-barrier scratch region");
@@ -400,9 +416,10 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         smem_buffer, SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE);
 
     auto smem_cd_base = math::advance_ptr<uint8_t>(smem_gemm_base, SMEM_CD_ACCUM_SIZE);
-    // CD output is shared by L1 (FP8) and L2 (BF16); reinterpret-cast as needed.
+    // CD output is shared by L1 and L2; reinterpret-cast as needed.
     auto smem_cd_l1 = reinterpret_cast<cutlass::float_e4m3_t*>(smem_cd_base);
     auto smem_cd_l2 = reinterpret_cast<nv_bfloat16*>(smem_cd_base);
+    auto smem_cd_l2_fp8 = reinterpret_cast<__nv_fp8_e5m2*>(smem_cd_base);
     auto smem_cd_swap_l1_fp32 = reinterpret_cast<float*>(smem_cd_base);
     auto smem_cd_swap_l1_fp8 = reinterpret_cast<cutlass::float_e4m3_t*>(
         math::advance_ptr(smem_cd_base, SMEM_CD_SWAP_L1_FP32_SIZE));
@@ -2430,7 +2447,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             const auto dst_token = combine_token_buffer.get_rank_buffer(dst_topk_idx)
                                                    .get_data_buffer(dst_token_idx);
                             auto dst_base = math::advance_ptr<uint8_t>(
-                                dst_token.get_base_ptr(), n_idx * sizeof(nv_bfloat16));
+                                dst_token.get_base_ptr(), n_idx * kCombineElementBytes);
                             auto mapped_dst_base = sym_buffer.map(dst_base, dst_rank_idx);
 
                             #pragma unroll
@@ -2438,14 +2455,25 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                                 const uint32_t chunk_lo = 2 * i, chunk_hi = 2 * i + 1;
                                 const uint32_t col_lo = chunk_lo * 8 + col_idx * 2;
                                 const uint32_t col_hi = chunk_hi * 8 + col_idx * 2;
-                                const uint32_t packed_lo = math::cast_into_bf16_and_pack(
-                                    final_accum[chunk_lo * 4 + row_accum_offset + 0],
-                                    final_accum[chunk_lo * 4 + row_accum_offset + 1]);
-                                const uint32_t packed_hi = math::cast_into_bf16_and_pack(
-                                    final_accum[chunk_hi * 4 + row_accum_offset + 0],
-                                    final_accum[chunk_hi * 4 + row_accum_offset + 1]);
-                                *reinterpret_cast<uint32_t*>(mapped_dst_base + col_lo * sizeof(nv_bfloat16)) = packed_lo;
-                                *reinterpret_cast<uint32_t*>(mapped_dst_base + col_hi * sizeof(nv_bfloat16)) = packed_hi;
+                                if constexpr (kFP8Combine) {
+                                    const __nv_fp8x2_e5m2 packed_lo(make_float2(
+                                        final_accum[chunk_lo * 4 + row_accum_offset + 0],
+                                        final_accum[chunk_lo * 4 + row_accum_offset + 1]));
+                                    const __nv_fp8x2_e5m2 packed_hi(make_float2(
+                                        final_accum[chunk_hi * 4 + row_accum_offset + 0],
+                                        final_accum[chunk_hi * 4 + row_accum_offset + 1]));
+                                    *reinterpret_cast<uint16_t*>(mapped_dst_base + col_lo) = packed_lo.__x;
+                                    *reinterpret_cast<uint16_t*>(mapped_dst_base + col_hi) = packed_hi.__x;
+                                } else {
+                                    const uint32_t packed_lo = math::cast_into_bf16_and_pack(
+                                        final_accum[chunk_lo * 4 + row_accum_offset + 0],
+                                        final_accum[chunk_lo * 4 + row_accum_offset + 1]);
+                                    const uint32_t packed_hi = math::cast_into_bf16_and_pack(
+                                        final_accum[chunk_hi * 4 + row_accum_offset + 0],
+                                        final_accum[chunk_hi * 4 + row_accum_offset + 1]);
+                                    *reinterpret_cast<uint32_t*>(mapped_dst_base + col_lo * sizeof(nv_bfloat16)) = packed_lo;
+                                    *reinterpret_cast<uint32_t*>(mapped_dst_base + col_hi * sizeof(nv_bfloat16)) = packed_hi;
+                                }
                             }
                         }
                     };
@@ -2453,22 +2481,40 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 	                    scatter_direct_row(row_offset_r0, valid_r0, 0);
 	                    scatter_direct_row(row_offset_r1, valid_r1, 2);
 	                } else {
+	                    auto store_l2_scalar = [&](const uint32_t& elem_idx, const float& value) {
+	                        if constexpr (kFP8Combine)
+	                            smem_cd_l2_fp8[elem_idx] = __nv_fp8_e5m2(value);
+	                        else
+	                            smem_cd_l2[elem_idx] = __float2bfloat16_rn(value);
+	                    };
+	                    auto store_l2_pair = [&](const uint32_t& elem_idx,
+	                                             float value0, float value1) {
+	                        if constexpr (kFP8Combine) {
+	                            const __nv_fp8x2_e5m2 pair(make_float2(value0, value1));
+	                            *reinterpret_cast<uint16_t*>(smem_cd_l2_fp8 + elem_idx) = pair.__x;
+	                        } else {
+	                            *reinterpret_cast<uint32_t*>(smem_cd_l2 + elem_idx) =
+	                                math::cast_into_bf16_and_pack(value0, value1);
+	                        }
+	                    };
 	                    if constexpr (kSwapABActive) {
-	                        auto store_bf16 = [&](const uint32_t& token, const uint32_t& col, float value) {
-	                            smem_cd_l2[epilogue_wg_idx * WG_BLOCK_M * WG_BLOCK_N + token * WG_BLOCK_N + col] =
-	                                __float2bfloat16_rn(value);
+	                        auto store_value = [&](const uint32_t& token, const uint32_t& col, float value) {
+	                            store_l2_scalar(
+	                                epilogue_wg_idx * WG_BLOCK_M * WG_BLOCK_N +
+	                                    token * WG_BLOCK_N + col,
+	                                value);
 	                        };
 
 	                        auto store_l2_swap_chunk = [&](const uint32_t& i) {
 	                            const uint32_t token_0 = i * 8 + col_idx * 2;
 	                            const uint32_t token_1 = token_0 + 1;
 	                            if (token_0 < valid_m) {
-	                                store_bf16(token_0, r_0, final_accum[i * 4 + 0]);
-	                                store_bf16(token_0, r_1, final_accum[i * 4 + 2]);
+	                                store_value(token_0, r_0, final_accum[i * 4 + 0]);
+	                                store_value(token_0, r_1, final_accum[i * 4 + 2]);
 	                            }
 	                            if (token_1 < valid_m) {
-	                                store_bf16(token_1, r_0, final_accum[i * 4 + 1]);
-	                                store_bf16(token_1, r_1, final_accum[i * 4 + 3]);
+	                                store_value(token_1, r_0, final_accum[i * 4 + 1]);
+	                                store_value(token_1, r_1, final_accum[i * 4 + 3]);
 	                            }
 	                        };
 
@@ -2496,29 +2542,24 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         // Row r_0 cols [chunk_hi*8 + col_idx*2, chunk_hi*8 + col_idx*2 + 1] = r0_hi
                         // Row r_1 cols [chunk_lo*8 + col_idx*2, chunk_lo*8 + col_idx*2 + 1] = r1_lo
                         // Row r_1 cols [chunk_hi*8 + col_idx*2, chunk_hi*8 + col_idx*2 + 1] = r1_hi
-                        auto write_pair = [&](uint32_t row, uint32_t col, uint32_t packed) {
-                            auto smem_ptr = smem_cd_l2
-                                + epilogue_wg_idx * WG_BLOCK_M * WG_BLOCK_N
-                                + row * WG_BLOCK_N
-                                + col;
-                            // BF16 STS: 2 bf16 elements
-                            *reinterpret_cast<uint32_t*>(smem_ptr) = packed;
+                        auto write_pair = [&](uint32_t row, uint32_t col,
+                                              float value0, float value1) {
+                            const uint32_t elem_idx =
+                                epilogue_wg_idx * WG_BLOCK_M * WG_BLOCK_N +
+                                row * WG_BLOCK_N + col;
+                            store_l2_pair(elem_idx, value0, value1);
                         };
                         if (valid_r0) {
-                            const uint32_t r0_lo = math::cast_into_bf16_and_pack(
+                            write_pair(r_0, chunk_lo * 8 + col_idx * 2,
                                 final_accum[chunk_lo*4 + 0], final_accum[chunk_lo*4 + 1]);
-                            const uint32_t r0_hi = math::cast_into_bf16_and_pack(
+                            write_pair(r_0, chunk_hi * 8 + col_idx * 2,
                                 final_accum[chunk_hi*4 + 0], final_accum[chunk_hi*4 + 1]);
-                            write_pair(r_0, chunk_lo * 8 + col_idx * 2, r0_lo);
-                            write_pair(r_0, chunk_hi * 8 + col_idx * 2, r0_hi);
                         }
                         if (valid_r1) {
-                            const uint32_t r1_lo = math::cast_into_bf16_and_pack(
+                            write_pair(r_1, chunk_lo * 8 + col_idx * 2,
                                 final_accum[chunk_lo*4 + 2], final_accum[chunk_lo*4 + 3]);
-                            const uint32_t r1_hi = math::cast_into_bf16_and_pack(
+                            write_pair(r_1, chunk_hi * 8 + col_idx * 2,
                                 final_accum[chunk_hi*4 + 2], final_accum[chunk_hi*4 + 3]);
-                            write_pair(r_1, chunk_lo * 8 + col_idx * 2, r1_lo);
-	                            write_pair(r_1, chunk_hi * 8 + col_idx * 2, r1_hi);
 	                        }
 	                    }
 	                    }
@@ -2545,34 +2586,35 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         const uint32_t dst_token_idx = src_metadata.token_idx;
                         const uint32_t dst_topk_idx = src_metadata.topk_idx;
 
-                        auto smem_ptr = smem_cd_l2
-                            + epilogue_wg_idx * WG_BLOCK_M * WG_BLOCK_N
-                            + row_in_wg * WG_BLOCK_N
-                            + lane_in_row * cols_per_lane;
+                        const uint32_t smem_elem_idx =
+                            epilogue_wg_idx * WG_BLOCK_M * WG_BLOCK_N +
+                            row_in_wg * WG_BLOCK_N + lane_in_row * cols_per_lane;
+                        auto smem_ptr = smem_cd_base + smem_elem_idx * kCombineElementBytes;
                         const auto dst_token = combine_token_buffer.get_rank_buffer(dst_topk_idx)
                                                .get_data_buffer(dst_token_idx);
+                        constexpr uint32_t kScatterBytesPerLane =
+                            (WG_BLOCK_N / 16) * kCombineElementBytes;
+                        auto dst_ptr = math::advance_ptr<uint8_t>(
+                            dst_token.get_base_ptr(),
+                            n_idx * kCombineElementBytes + lane_in_row * kScatterBytesPerLane);
+                        auto mapped_dst_ptr = sym_buffer.map(dst_ptr, dst_rank_idx);
 
-                        if constexpr (WG_BLOCK_N == 256) {
+                        if constexpr (kScatterBytesPerLane == 32) {
                             const auto packed0 = *reinterpret_cast<uint4*>(smem_ptr);
                             const auto packed1 = *(reinterpret_cast<uint4*>(smem_ptr) + 1);
-                            auto dst_ptr = math::advance_ptr<uint4>(
-                                dst_token.get_base_ptr(),
-                                n_idx * sizeof(nv_bfloat16) + lane_in_row * 2u * sizeof(uint4));
-                            auto mapped_dst_ptr = sym_buffer.map(dst_ptr, dst_rank_idx);
-                            mapped_dst_ptr[0] = packed0;
-                            mapped_dst_ptr[1] = packed1;
-                        } else if constexpr (WG_BLOCK_N == 128) {
+                            reinterpret_cast<uint4*>(mapped_dst_ptr)[0] = packed0;
+                            reinterpret_cast<uint4*>(mapped_dst_ptr)[1] = packed1;
+                        } else if constexpr (kScatterBytesPerLane == 16) {
                             const auto packed = *reinterpret_cast<uint4*>(smem_ptr);
-                            auto dst_ptr = math::advance_ptr<uint4>(
-                                dst_token.get_base_ptr(),
-                                n_idx * sizeof(nv_bfloat16) + lane_in_row * sizeof(uint4));
-                            *sym_buffer.map(dst_ptr, dst_rank_idx) = packed;
-                        } else {
+                            *reinterpret_cast<uint4*>(mapped_dst_ptr) = packed;
+                        } else if constexpr (kScatterBytesPerLane == 8) {
                             const auto packed = *reinterpret_cast<uint2*>(smem_ptr);
-                            auto dst_ptr = math::advance_ptr<uint2>(
-                                dst_token.get_base_ptr(),
-                                n_idx * sizeof(nv_bfloat16) + lane_in_row * sizeof(uint2));
-                            *sym_buffer.map(dst_ptr, dst_rank_idx) = packed;
+                            *reinterpret_cast<uint2*>(mapped_dst_ptr) = packed;
+                        } else {
+                            DG_STATIC_ASSERT(kScatterBytesPerLane == 4,
+                                             "Unexpected L2 scatter width");
+                            *reinterpret_cast<uint32_t*>(mapped_dst_ptr) =
+                                *reinterpret_cast<uint32_t*>(smem_ptr);
                         }
                     }
 
@@ -2611,24 +2653,30 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
         const unsigned long long combine_reduce_start = phase_profile_clock();
 
-        constexpr uint32_t kNumHiddenBytes = kCombineHiddenBytes;
-        constexpr uint32_t kNumElemsPerUint4 = sizeof(uint4) / sizeof(nv_bfloat162);
-
-        constexpr uint32_t kNumChunkSlots = kCombineChunkSlots;
         constexpr uint32_t kNumChunks = kCombineNumChunks;
-        constexpr uint32_t kNumChunkBytes = kCombineChunkBytes;
-        constexpr uint32_t kNumChunkUint4 = kNumChunkBytes / sizeof(uint4);
-        constexpr uint32_t kNumUint4PerLane = kNumChunkUint4 / 32;
-        DG_STATIC_ASSERT(kNumChunkBytes % 16 == 0, "Combine chunk must be TMA-aligned (16 bytes)");
-        DG_STATIC_ASSERT(kNumChunkBytes % sizeof(uint4) == 0, "Combine chunk must be divisible by 16 bytes");
-        DG_STATIC_ASSERT(kNumChunkUint4 % 32 == 0, "Combine chunk must be a multiple of 32 16-byte elements");
+        constexpr uint32_t kInputChunkBytes = kCombineInputChunkBytes;
+        constexpr uint32_t kOutputChunkBytes = kCombineOutputChunkBytes;
+        constexpr uint32_t kElemsPerVector = 8;
+        constexpr uint32_t kInputVectorBytes = kElemsPerVector * kCombineElementBytes;
+        constexpr uint32_t kNumVectorsPerLane =
+            kCombineChunkElems / (32 * kElemsPerVector);
+        constexpr uint32_t kNumBF16PairsPerVector = kElemsPerVector / 2;
+        DG_STATIC_ASSERT(kInputChunkBytes % 16 == 0,
+                         "Combine input chunk must be TMA-aligned");
+        DG_STATIC_ASSERT(kOutputChunkBytes % 16 == 0,
+                         "Combine output chunk must be TMA-aligned");
+        DG_STATIC_ASSERT(kCombineChunkElems % (32 * kElemsPerVector) == 0,
+                         "Combine chunk must distribute evenly across a warp");
         DG_STATIC_ASSERT(kNumTopk <= 32, "Top-k must fit in a single warp");
 
         const auto combine_load_buffer = utils::PatternVisitor([&](const uint32_t& i) {
-            return math::advance_ptr<uint4>(smem_buffer, (epilogue_warp_idx + i * kNumEpilogueWarps) * kNumChunkBytes);
+            return math::advance_ptr<uint8_t>(
+                smem_buffer,
+                (epilogue_warp_idx + i * kNumEpilogueWarps) * kInputChunkBytes);
         });
-        const auto combine_store_buffer = math::advance_ptr<uint4>(
-            smem_buffer, (epilogue_warp_idx + kNumEpilogueWarps * 2) * kNumChunkBytes);
+        const auto combine_store_buffer = math::advance_ptr<uint4>(smem_buffer,
+            2 * kNumEpilogueWarps * kInputChunkBytes +
+                epilogue_warp_idx * kOutputChunkBytes);
 
         auto combine_load_barriers = utils::PatternVisitor([&](const uint32_t& i) {
             return combine_barriers[i + epilogue_warp_idx * 2];
@@ -2644,7 +2692,8 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
             const uint32_t total_mask = __ballot_sync(0xffffffff, stored_topk_slot_idx >= 0);
 
             for (uint32_t chunk = 0; chunk < kNumChunks; ++ chunk) {
-                const uint32_t chunk_byte_offset = chunk * kNumChunkBytes;
+                const uint32_t input_chunk_byte_offset = chunk * kInputChunkBytes;
+                const uint32_t output_chunk_byte_offset = chunk * kOutputChunkBytes;
 
                 uint32_t mask = total_mask;
                 const auto move_mask_and_load = [&](const uint32_t& i) {
@@ -2655,9 +2704,12 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             const auto src_ptr = math::advance_ptr<uint8_t>(
                                 combine_token_buffer.get_rank_buffer(slot_idx)
                                                     .get_data_buffer(token_idx).get_base_ptr(),
-                                chunk_byte_offset);
-                            ptx::tma_load_1d(combine_load_buffer[i], src_ptr, combine_load_barriers[i], kNumChunkBytes);
-                            ptx::mbarrier_arrive_and_set_tx(combine_load_barriers[i], kNumChunkBytes);
+                                input_chunk_byte_offset);
+                            ptx::tma_load_1d(
+                                combine_load_buffer[i], src_ptr,
+                                combine_load_barriers[i], kInputChunkBytes);
+                            ptx::mbarrier_arrive_and_set_tx(
+                                combine_load_barriers[i], kInputChunkBytes);
                         }
                         __syncwarp();
                         return true;
@@ -2667,29 +2719,50 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
                 bool do_reduce = move_mask_and_load(load_stage_idx);
 
-                float2 reduced[kNumUint4PerLane * kNumElemsPerUint4] = {};
+                float2 reduced[kNumVectorsPerLane * kNumBF16PairsPerVector] = {};
                 while (do_reduce) {
                     do_reduce = move_mask_and_load(load_stage_idx ^ 1);
                     combine_load_barriers[load_stage_idx]->wait(combine_phase);
                     #pragma unroll
-                    for (uint32_t j = 0; j < kNumUint4PerLane; ++ j) {
-                        const auto uint4_values = combine_load_buffer[load_stage_idx][j * 32 + lane_idx];
-                        const auto bf16_values = reinterpret_cast<const nv_bfloat162*>(&uint4_values);
-                        #pragma unroll
-                        for (uint32_t l = 0; l < kNumElemsPerUint4; ++ l)
-                            ptx::accumulate(reduced[j * kNumElemsPerUint4 + l], bf16_values[l]);
+                    for (uint32_t j = 0; j < kNumVectorsPerLane; ++ j) {
+                        const uint32_t vector_idx = j * 32 + lane_idx;
+                        if constexpr (kFP8Combine) {
+                            const auto packed = *reinterpret_cast<const uint2*>(
+                                combine_load_buffer[load_stage_idx] +
+                                vector_idx * kInputVectorBytes);
+                            const auto fp8_values =
+                                reinterpret_cast<const __nv_fp8_e5m2*>(&packed);
+                            #pragma unroll
+                            for (uint32_t l = 0; l < kNumBF16PairsPerVector; ++ l) {
+                                auto& value = reduced[j * kNumBF16PairsPerVector + l];
+                                value.x += static_cast<float>(fp8_values[2 * l]);
+                                value.y += static_cast<float>(fp8_values[2 * l + 1]);
+                            }
+                        } else {
+                            const auto packed = *reinterpret_cast<const uint4*>(
+                                combine_load_buffer[load_stage_idx] +
+                                vector_idx * kInputVectorBytes);
+                            const auto bf16_values =
+                                reinterpret_cast<const nv_bfloat162*>(&packed);
+                            #pragma unroll
+                            for (uint32_t l = 0; l < kNumBF16PairsPerVector; ++ l)
+                                ptx::accumulate(
+                                    reduced[j * kNumBF16PairsPerVector + l],
+                                    bf16_values[l]);
+                        }
                     }
                     combine_phase ^= load_stage_idx;
                     load_stage_idx ^= 1;
                 }
 
                 #pragma unroll
-                for (uint32_t j = 0; j < kNumUint4PerLane; ++ j) {
+                for (uint32_t j = 0; j < kNumVectorsPerLane; ++ j) {
                     uint4 casted;
                     auto casted_bf16 = reinterpret_cast<nv_bfloat162*>(&casted);
                     #pragma unroll
-                    for (uint32_t l = 0; l < kNumElemsPerUint4; ++ l)
-                        casted_bf16[l] = __float22bfloat162_rn(reduced[j * kNumElemsPerUint4 + l]);
+                    for (uint32_t l = 0; l < kNumBF16PairsPerVector; ++ l)
+                        casted_bf16[l] = __float22bfloat162_rn(
+                            reduced[j * kNumBF16PairsPerVector + l]);
 
                     if (j == 0) {
                         ptx::tma_store_wait<0>();
@@ -2703,8 +2776,11 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 if (cute::elect_one_sync()) {
                     cute::tma_store_fence();
                     ptx::tma_store_1d(
-                        math::advance_ptr(y, static_cast<uint64_t>(token_idx) * kNumHiddenBytes + chunk_byte_offset),
-                        combine_store_buffer, kNumChunkBytes);
+                        math::advance_ptr(
+                            y,
+                            static_cast<uint64_t>(token_idx) * kCombineOutputHiddenBytes +
+                                output_chunk_byte_offset),
+                        combine_store_buffer, kOutputChunkBytes);
                     cute::tma_store_arrive();
                 }
                 __syncwarp();

@@ -353,3 +353,32 @@ Each measured source or promoted-selector iteration records:
   reuse is already effective enough that B traffic is not the residual
   bottleneck.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_cluster2_*`.
+
+## Iteration 9: unscaled E5M2 combine contributions
+
+- Hypothesis: storing each L2-to-combine contribution as unscaled FP8 E5M2
+  instead of BF16 can halve NVLink scatter and combine-read bytes while the
+  reduction and final output remain FP32/BF16.
+- Source change: add opt-in `DG_SM90_MOE_FP8_COMBINE`, including E5M2 L2
+  epilogue packing, byte-width-aware NVLink scatter, E5M2-to-FP32 combine
+  reduction, and BF16 final output. The default remains the original BF16
+  contribution layout, so no H20 selector or default precision changes.
+- Protocol: current load-specific Pro parents at M=512/4096/8192 (EPW12/4/16,
+  respectively), seed 101, median-10, 8x H200. Compare same-source BF16 and
+  E5M2 modes and report maximum returned latency across ranks. A focused
+  top-k6 correctness scenario passed with `calc_diff=0.0006 < 0.01`.
+- Results:
+
+  | M | BF16 us | E5M2 us | E5M2 vs BF16 | PR323 us | E5M2 vs PR323 |
+  |---:|---:|---:|---:|---:|---:|
+  | 512 | 1121.283 | 1100.999 | -1.81% | 1090.546 | +0.958% |
+  | 4096 | 4432.329 | 4427.793 | -0.10% | 4338.506 | +2.058% |
+  | 8192 | 8415.524 | 8346.194 | -0.82% | 7842.460 | +6.423% |
+
+- Decision: do not promote E5M2 globally; it does not address the large-M
+  GEMM/scheduling gap. Retain it temporarily as an M=512 sub-candidate because
+  the result is inside the 1% remeasurement band. It must beat PR323 on repeat
+  and pass the full precision suite before any H200-only selector use.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_fp8combine_v2_*`,
+  `.../candidates/pro_fp8combine_v3_*`, and
+  `.../candidates/pro_fp8combine_v2_correctness_smoke/`.
