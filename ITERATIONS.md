@@ -556,5 +556,11 @@ Each measured source or promoted-selector iteration records:
   first material H200 candidate, but do not promote it until focused and broad
   numerical validation passes; native F16 accumulation changes rounding inside
   each sequence of K32 WGMMAs.
+- Correctness gate: the focused eight-rank `L2.profile_topk6.t512` scenario
+  failed with `calc_diff=nan`. Native F16 WGMMA accumulates the unscaled
+  E4M3-by-E4M3 dot product before the external block scales are applied, so the
+  packed FP16 destination can overflow. This is a hard rejection regardless of
+  its 4.02% timing gain; no tolerance relaxation or selector promotion is valid.
 - Raw artifacts:
-  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_fp16_effective_v1_*`.
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_fp16_effective_v1_*`
+  and `.../candidates/pro_nativefp16_correctness_smoke/`.
