@@ -52,6 +52,7 @@ public:
         bool l1_dual_k_accum;
         bool l2_dual_accum;
         bool fp8_combine;
+        bool adjacent_scale_domain;
         KernelPhase kernel_phase;
         MegaMoESM90Config config;
 
@@ -109,6 +110,7 @@ static void __instantiate_kernel() {{
         {},
         {},
         {},
+        {},
         {}
     >);
 }};
@@ -136,7 +138,8 @@ static void __instantiate_kernel() {{
     args.async_l1_tma_store ? "true" : "false",
     args.l1_dual_k_accum ? "true" : "false",
     args.l2_dual_accum ? "true" : "false",
-    args.fp8_combine ? "true" : "false");
+    args.fp8_combine ? "true" : "false",
+    args.adjacent_scale_domain ? "true" : "false");
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -301,6 +304,8 @@ static void sm90_fp8_mega_moe(
     const bool l1_dual_k_accum = get_env<int>("DG_SM90_MOE_L1_DUAL_K_ACCUM", 0) != 0;
     const bool l2_dual_accum = get_env<int>("DG_SM90_MOE_L2_DUAL_ACCUM", 0) != 0;
     const bool fp8_combine = get_env<int>("DG_SM90_MOE_FP8_COMBINE", 0) != 0;
+    const bool adjacent_scale_domain =
+        get_env<int>("DG_SM90_MOE_ADJACENT_SCALE_DOMAIN", 0) != 0;
     DG_HOST_ASSERT(l1_num_sms > 0 and l1_num_sms <= num_sms);
     DG_HOST_ASSERT(l2_num_sms > 0 and l2_num_sms <= num_sms);
     DG_HOST_ASSERT(not async_l1_tma_store or not l1_config.direct_l2_scatter);
@@ -319,6 +324,7 @@ static void sm90_fp8_mega_moe(
         .l1_dual_k_accum = l1_dual_k_accum,
         .l2_dual_accum = l2_dual_accum,
         .fp8_combine = fp8_combine,
+        .adjacent_scale_domain = adjacent_scale_domain,
         .kernel_phase = SM90FP8MegaMoERuntime::KernelPhase::Linear1,
         .config = l1_config,
         .y = y.data_ptr(),

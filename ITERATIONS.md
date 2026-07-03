@@ -382,3 +382,19 @@ Each measured source or promoted-selector iteration records:
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_fp8combine_v2_*`,
   `.../candidates/pro_fp8combine_v3_*`, and
   `.../candidates/pro_fp8combine_v2_correctness_smoke/`.
+
+## Iteration 10: adjacent scale-domain accumulation
+
+- Hypothesis: keeping the WGMMA destination in the preceding K segment's
+  scale domain and multiplying by only the adjacent scale ratio can replace
+  the in-place path's two full-accumulator scale passes with one per segment.
+- Source change: add opt-in `DG_SM90_MOE_ADJACENT_SCALE_DOMAIN` for M64N128
+  warpgroups. The default path and all H20 selector behavior remain unchanged.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`),
+  BF16 combine, seed 101, median-10, 8x H200; compare same-source control and
+  adjacent-domain modes using maximum returned latency across ranks.
+- Result: control was 8362.077 us (+6.626% versus PR323); adjacent-domain was
+  8398.652 us (+7.092%), a 0.44% regression.
+- Decision: reject adjacent scale-domain accumulation. Its reciprocal and
+  accumulator dependency costs outweigh the removed scale pass on H200.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_adjscale_v1_*`.

@@ -112,6 +112,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     bool kL1DualKAccumRequested = false, \
     bool kL2DualAccumRequested = false, \
     bool kFP8CombineRequested = false, \
+    bool kAdjacentScaleDomainRequested = false, \
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2, \
     uint32_t L1_SHAPE_K = kHidden, \
     uint32_t L2_SHAPE_N = kHidden, \
@@ -170,6 +171,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     kPhaseProfileRequested, kL2NMajorScheduleRequested, kOneWarpCleanupRequested, kFP8SwapAB, \
     kAsyncL1TMAStoreRequested, \
     kL1DualKAccumRequested, kL2DualAccumRequested, kFP8CombineRequested, \
+    kAdjacentScaleDomainRequested, \
     L1_SHAPE_N, \
     L1_SHAPE_K, L2_SHAPE_N, L2_SHAPE_K, kNumDispatchWarps, \
     kNumMMANonEpilogueWarps, kNumEpilogueWarps, kNumEpilogueWarpgroups, \
@@ -304,6 +306,7 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         kL1DualKAccumRequested and MegaMoEPhase::runs_linear1;
     constexpr bool kFP8Combine =
         kFP8CombineRequested and MegaMoEPhase::runs_linear2;
+    constexpr bool kAdjacentScaleDomain = kAdjacentScaleDomainRequested;
     constexpr bool kReuseAccumAsFinal = kSplitMNWarpgroups;
     using L1WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     using L2WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
@@ -1979,6 +1982,130 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 }
             };
 
+            const auto run_adjacent_scale_domain_gemm_loop = [&]() {
+                DG_STATIC_ASSERT(not kAdjacentScaleDomain or
+                                 (WG_BLOCK_M == 64 and WG_BLOCK_N == 128),
+                                 "Adjacent scale-domain accumulation expects M64N128");
+
+                const auto scale_final = [&](const float& scale_r0_gate,
+                                             const float& scale_r1_gate,
+                                             const float& scale_r0_up,
+                                             const float& scale_r1_up) {
+                    #pragma unroll
+                    for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
+                        const float scale_r0 = (i & 1u) ? scale_r0_up : scale_r0_gate;
+                        const float scale_r1 = (i & 1u) ? scale_r1_up : scale_r1_gate;
+                        final_accum[i*4+0] *= scale_r0;
+                        final_accum[i*4+1] *= scale_r0;
+                        final_accum[i*4+2] *= scale_r1;
+                        final_accum[i*4+3] *= scale_r1;
+                    }
+                };
+                const auto reciprocal = [&](const float& value) {
+                    return kFastMath ? math::fast_rcp(value) : 1.0f / value;
+                };
+
+                float prev_r0_gate = 1.0f, prev_r1_gate = 1.0f;
+                float prev_r0_up = 1.0f, prev_r1_up = 1.0f;
+                bool has_previous_scale = false;
+                const auto transition_scale_domain = [&](const float& cur_r0_gate,
+                                                          const float& cur_r1_gate,
+                                                          const float& cur_r0_up,
+                                                          const float& cur_r1_up) {
+                    if (has_previous_scale) {
+                        scale_final(
+                            prev_r0_gate * reciprocal(cur_r0_gate),
+                            prev_r1_gate * reciprocal(cur_r1_gate),
+                            prev_r0_up * reciprocal(cur_r0_up),
+                            prev_r1_up * reciprocal(cur_r1_up));
+                    }
+                    prev_r0_gate = cur_r0_gate;
+                    prev_r1_gate = cur_r1_gate;
+                    prev_r0_up = cur_r0_up;
+                    prev_r1_up = cur_r1_up;
+                    has_previous_scale = true;
+                };
+
+                const auto issue_raw_wgmma = [&]<uint32_t kOffset,
+                                                 uint32_t kNumWGMMAs>() {
+                    #pragma unroll
+                    for (uint32_t i = 0; i < kAccumPerThread; ++ i)
+                        ptx::warpgroup_fence_operand(final_accum[i]);
+                    ptx::warpgroup_arrive();
+                    #pragma unroll
+                    for (uint32_t k = 0; k < kNumWGMMAs; ++ k) {
+                        auto desc_a = mma::sm90::make_smem_desc(
+                            smem_a[stage_idx] + row_block_offset * BLOCK_K +
+                                kOffset + k * WGMMA::K, 1);
+                        auto desc_b = mma::sm90::make_smem_desc(
+                            smem_b[stage_idx] + wg_n_idx * BLOCK_K +
+                                kOffset + k * WGMMA::K, 1);
+                        WGMMA::wgmma(desc_a, desc_b, final_accum, true);
+                    }
+                    ptx::warpgroup_commit_batch();
+                    #pragma unroll
+                    for (uint32_t i = 0; i < kAccumPerThread; ++ i)
+                        ptx::warpgroup_fence_operand(final_accum[i]);
+                    ptx::warpgroup_wait<0>();
+                };
+
+                constexpr uint32_t kL1SFKBlocks   = kHidden / 128;
+                constexpr uint32_t kL2SFKBlocks   = kIntermediateHidden / 128;
+                constexpr uint32_t kL1SFGateBlks  = kIntermediateHidden / 128;
+                constexpr uint32_t kL1SFPerExpert =
+                    (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
+                constexpr uint32_t kL2SFPerExpert =
+                    (kHidden / 128) * kL2SFKBlocks;
+
+                for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks;
+                     advance_pipeline(k_block_idx)) {
+                    full_barriers[stage_idx]->wait(phase);
+
+                    const float scale_a_0_lo =
+                        ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r0);
+                    const float scale_a_1_lo =
+                        ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r1);
+
+                    if (is_linear1_phase) {
+                        const uint32_t gate_n =
+                            (n_block_idx * BLOCK_N + wg_n_idx) / 256u;
+                        const uint32_t up_n = kL1SFGateBlks + gate_n;
+                        const float* base = l1_weights_sf +
+                            local_expert_idx * kL1SFPerExpert + k_block_idx;
+                        const float gate_sf = __ldg(base + gate_n * kL1SFKBlocks);
+                        const float up_sf = __ldg(base + up_n * kL1SFKBlocks);
+                        transition_scale_domain(
+                            scale_a_0_lo * gate_sf, scale_a_1_lo * gate_sf,
+                            scale_a_0_lo * up_sf, scale_a_1_lo * up_sf);
+                        issue_raw_wgmma.template operator()<0, BLOCK_K / WGMMA::K>();
+                        arrive_empty_barrier(stage_idx);
+                    } else {
+                        const float scale_a_0_hi = ptx::ld_shared(
+                            smem_sfa[stage_idx] + kL2SFAHalfStride + row_offset_r0);
+                        const float scale_a_1_hi = ptx::ld_shared(
+                            smem_sfa[stage_idx] + kL2SFAHalfStride + row_offset_r1);
+                        const float* base = l2_weights_sf +
+                            local_expert_idx * kL2SFPerExpert + k_block_idx;
+                        const uint32_t sf_n =
+                            (n_block_idx * BLOCK_N + wg_n_idx) / 128u;
+                        const float l2_sf = __ldg(base + sf_n * kL2SFKBlocks);
+
+                        transition_scale_domain(
+                            scale_a_0_lo * l2_sf, scale_a_1_lo * l2_sf,
+                            scale_a_0_lo * l2_sf, scale_a_1_lo * l2_sf);
+                        issue_raw_wgmma.template operator()<0, (BLOCK_K / 2) / WGMMA::K>();
+                        transition_scale_domain(
+                            scale_a_0_hi * l2_sf, scale_a_1_hi * l2_sf,
+                            scale_a_0_hi * l2_sf, scale_a_1_hi * l2_sf);
+                        issue_raw_wgmma.template operator()<
+                            BLOCK_K / 2, (BLOCK_K / 2) / WGMMA::K>();
+                        arrive_empty_barrier(stage_idx);
+                    }
+                }
+
+                scale_final(prev_r0_gate, prev_r1_gate, prev_r0_up, prev_r1_up);
+            };
+
             const auto run_l1_dual_k_gemm_loop = [&]() {
                 DG_STATIC_ASSERT((kHidden / BLOCK_K) % 2 == 0, "L1 dual-K expects an even number of K blocks");
                 constexpr uint32_t kL1SFKBlocks   = kHidden / 128;
@@ -2065,7 +2192,9 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 }
             };
 
-            if constexpr (kReuseAccumAsFinal) {
+            if constexpr (kAdjacentScaleDomain) {
+                run_adjacent_scale_domain_gemm_loop();
+            } else if constexpr (kReuseAccumAsFinal) {
                 run_inplace_scaled_gemm_loop();
             } else if constexpr (kL1DualKAccum) {
                 if (is_linear1_phase)
