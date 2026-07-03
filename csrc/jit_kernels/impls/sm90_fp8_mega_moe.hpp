@@ -181,6 +181,23 @@ static void sm90_fp8_mega_moe(
     };
     apply_phase_wave_override(l1_config, "DG_SM90_MOE_L1_EXPERTS_PER_WAVE");
     apply_phase_wave_override(l2_config, "DG_SM90_MOE_L2_EXPERTS_PER_WAVE");
+    const auto apply_phase_stage_override = [&](MegaMoESM90Config& phase_config,
+                                                 const char* env_name) {
+        const int requested = get_env<int>(env_name, phase_config.num_stages);
+        const auto [num_stages, smem_size] = get_pipeline_config_for_mega_moe_sm90(
+            SM90ArchSpec::smem_capacity,
+            num_experts, hidden,
+            phase_config.block_m, phase_config.block_n, phase_config.block_k,
+            phase_config.num_dispatch_threads / 32,
+            phase_config.num_epilogue_threads / 32,
+            phase_config.direct_l2_scatter,
+            requested,
+            phase_config.swap_ab);
+        phase_config.num_stages = num_stages;
+        phase_config.smem_size = smem_size;
+    };
+    apply_phase_stage_override(l1_config, "DG_SM90_MOE_L1_NUM_STAGES");
+    apply_phase_stage_override(l2_config, "DG_SM90_MOE_L2_NUM_STAGES");
 
     // Tensormap construction
     // Acts/weights: standard 2D TMA descriptors (FP8 K-major).
@@ -286,6 +303,12 @@ static void sm90_fp8_mega_moe(
         split_args.kernel_phase = kernel_phase;
         split_args.config = kernel_phase == SM90FP8MegaMoERuntime::KernelPhase::Linear1 ?
             l1_config : l2_config;
+        split_args.launch_args = LaunchArgs(
+            num_sms,
+            split_args.config.num_dispatch_threads + split_args.config.num_non_epilogue_threads +
+                split_args.config.num_epilogue_threads,
+            split_args.config.smem_size,
+            split_args.config.cluster_size);
         const auto code = SM90FP8MegaMoERuntime::generate(split_args);
         const auto runtime = compiler->build(kernel_name, code);
         SM90FP8MegaMoERuntime::launch(runtime, split_args);

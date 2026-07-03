@@ -236,3 +236,20 @@ Each measured source or promoted-selector iteration records:
   are not promoted into the H200 selector. Retain default inheritance and move
   to phase-specific pipeline/tile investigation.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_p_*`.
+
+## Iteration 3: phase-specific pipeline-stage experiment
+
+- Hypothesis: L1 and L2 may prefer different pipeline depths even though the
+  shared stage3 config is the best aggregate candidate.
+- Source change: add opt-in L1/L2 stage overrides that independently recompute
+  each phase's stage count, shared-memory size, and launch configuration.
+  Defaults inherit the selected shared config exactly.
+- Protocol: current Pro M=8192 parent, seed 101, median-10, 8x H200. Test L1
+  or L2 at stage2/4 around the shared stage3 control, plus two crossed pairs.
+- Result: control was 8348.518 us. The best point, L1-stage4 with L2-stage3,
+  was 8329.762 us (about 0.22% faster) and still 6.21% behind PR323. Other
+  combinations ranged from 8333.347 to 8351.656 us.
+- Decision: phase-specific stage depth is not a material residual lever and is
+  not promoted. Continue with phase-specific N tiles while keeping BM and the
+  staging layout shared.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_s_*`.
