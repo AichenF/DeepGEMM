@@ -34,3 +34,33 @@ Each measured source or promoted-selector iteration records:
 4. rank-zero and max-rank latency versus current best and PR323;
 5. decision: retain, reject, or gather more repetitions;
 6. raw artifact paths and commit hash.
+
+## Baseline 0: pinned split FP8 versus PR323 on H200
+
+- Hypothesis: reproduce the pinned comparison on a fresh H200 allocation before
+  changing any selector or kernel parameter.
+- Hardware: Slurm job `2957858`, node `viking-prod-299`, 8x NVIDIA H200
+  (143771 MiB), driver 595.58.03, CUDA 13.2.78, PyTorch 2.12.1+cu132.
+- Sources: ours `3552b62545e3602d60bde6ed3542934f6dcf6232`; PR323
+  `8ddf7f96cb3300011f69458e88c7651a1e305a8c` plus syntax-only CUDA 13.2
+  fix `184d74cb052a028ac9d960d65abd35ec231146df`.
+- Correctness: the existing split-FP8 L1-L4 suite passed 33/33 scenarios with
+  maximum `calc_diff=0.0006` against tolerance 0.01. Coverage included masked
+  and all-masked routes, activation clamp variants, both fast-math modes, and
+  zero/max token boundaries.
+- Performance protocol: Flash and Pro at M=8/16/32/64/128/256/512/1024/2048/
+  4096/8192, seed 101, median of 10 timed samples, alternating ours/PR323
+  process order, capacity 8192, no L2 flush. The split implementation emitted
+  exactly two matched events per call and the harness summed L1+L2; PR323
+  emitted one matched event per call. All eight rank records were retained.
+- Result status: the driver completed all 44 leaf runs with `RUN_EXIT=0`.
+  Representative Pro max-rank observations retained the historical trend:
+  ours/PR323 were about 1186/1091 us at M=512, 3005/2463 us at M=2048, and
+  10047/7843 us at M=8192. The strict route/rank parser produces the complete
+  table after this audit commit.
+- Decision: retain this as the H200 baseline. Begin the H200-only parameter
+  search without modifying the existing H20/H100/generic selector paths.
+- Raw artifacts:
+  `/home/scratch.aichenf_wwfo/greencontext/results/sm90_fp8_h200_retune_job2957858/`
+  (`environment.txt`, `logs/baseline_correctness_l1_l4.log`, 44 baseline leaf
+  logs, and `logs/baseline_driver.log`).
