@@ -1,0 +1,63 @@
+"""Run focused exact-NVFP4 correctness with the Pro braided candidate."""
+
+import importlib.util
+import os
+import sys
+
+import torch
+import torch.distributed as dist
+
+
+REPO_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
+TEST_PATH = os.path.join(REPO_ROOT, "tests", "test_nvfp4_mega_moe_sm90_correctness.py")
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+
+def _load_correctness_module():
+    spec = importlib.util.spec_from_file_location("nvfp4_correctness_gate", TEST_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _worker(local_rank, num_local_ranks, args):
+    import deep_gemm
+    from deep_gemm.utils.dist import init_dist
+    from pro_braided_candidate import (
+        nvfp4_pro_braided_mega_moe,
+        transform_nvfp4_weights_for_mega_moe_sm90_pro_braided,
+    )
+
+    deep_gemm.nvfp4_mega_moe = nvfp4_pro_braided_mega_moe
+    deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90 = (
+        transform_nvfp4_weights_for_mega_moe_sm90_pro_braided
+    )
+    correctness = _load_correctness_module()
+    rank_idx, _, group = init_dist(local_rank, num_local_ranks)
+    try:
+        for weight_scale in args.weight_scales:
+            for global_scale_mode in args.global_scale_modes:
+                for m_tokens in args.batches:
+                    correctness._run_case(
+                        args,
+                        m_tokens,
+                        weight_scale,
+                        global_scale_mode,
+                        rank_idx,
+                        group,
+                    )
+    finally:
+        dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    correctness = _load_correctness_module()
+    args = correctness._parse_args()
+    if args.intermediate_hidden < 3072:
+        raise ValueError("Pro braided candidate requires intermediate_hidden >= 3072")
+    args.nvfp4_block_n = 256
+    torch.multiprocessing.spawn(_worker, args=(1, args), nprocs=1, join=True)

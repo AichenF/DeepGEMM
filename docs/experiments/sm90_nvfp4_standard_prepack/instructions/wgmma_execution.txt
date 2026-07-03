@@ -1,0 +1,15 @@
+Source: cudac-tensor-core-expert/references/wgmma_00_core_concepts.md
+
+wgmma.fence instruction must be used to fence the register accesses of wgmma.mma_async instruction from their prior accesses. Otherwise, the behavior is undefined.
+
+wgmma.commit_group and wgmma.wait_group operations must be used to wait for the completion of the asynchronous matrix multiply and accumulate operations before the results are accessed.
+
+Source: cudac-tensor-core-expert/references/wgmma_05_execution.md
+
+**m64n128k16 variant** (128 columns, 64 output registers):
+
+- `d[8][8]`: 64 float accumulator registers (64x128 output distributed across warp group)
+
+**m64n256k16 variant** (256 columns, 128 output registers):
+
+- `d[16][8]`: 128 float accumulator registers (64x256 output distributed across warp group)

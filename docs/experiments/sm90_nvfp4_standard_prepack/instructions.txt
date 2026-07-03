@@ -1,0 +1,45 @@
+SM90 NVFP4 optimization constraints
+
+1. Preserve the canonical ModelOpt-compatible NVFP4 contract: E2M1 values and one nonnegative UE4M3 scale per 16 values. Deployment prepack may only reorder or add integer metadata; it must not store an FP8 weight/table representation.
+2. Preserve the existing WGMMA fence/commit/wait protocol. Never expose an SMEM stage to WGMMA before its dequant producer has completed and published it.
+3. Screen prepack/dequant changes in isolation before changing the fused pipeline. Require bitwise dequant equivalence, resource accounting, SASS inspection, and repeated timing.
+4. Prefer N128 for the first independent-producer experiment: it uses 64 accumulator registers per thread versus 128 for N256.
+5. A cross-warpgroup pipeline must define full/empty ownership, exactly one arrival per owning warpgroup, correct byte counts, and a parity flip on each ring-slot reuse.
+6. Keep TMA descriptor shape/strides, 128B swizzle, shared-memory indexing, and WGMMA operand interpretation mutually consistent.
+7. Reject variants that spill, reduce useful occupancy, add request-time repacking, or improve only one benchmark seed/order.
+8. Performance acceptance uses ABBA order, multiple routing seeds, Flash/Pro coverage, and comparison against both the current stable NVFP4 kernel and W8A8.
+
+
+Source: cudac-tensor-core-expert/references/wgmma_00_core_concepts.md
+
+wgmma.fence instruction must be used to fence the register accesses of wgmma.mma_async instruction from their prior accesses. Otherwise, the behavior is undefined.
+
+wgmma.commit_group and wgmma.wait_group operations must be used to wait for the completion of the asynchronous matrix multiply and accumulate operations before the results are accessed.
+
+Source: cudac-tensor-core-expert/references/wgmma_05_execution.md
+
+##### WGMMA Synchronization Primitives
+```cpp
+__device__ void warpgroup_arrive() {
+    asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
+}
+
+__device__ void warpgroup_commit_batch() {
+    asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
+}
+
+template <int N>
+__device__ void warpgroup_wait() {
+    static_assert(N >= 0 && N <= 7, "N must be in range [0, 7]");
+    asm volatile("wgmma.wait_group.sync.aligned %0;\n" ::"n"(N) : "memory");
+}
+```
+
+Source: cudac-tensor-core-expert/references/optimization_04_warp_specialization.md
+
+Warp specialization is a **producer/consumer pipeline inside one CTA** that overlaps:
+
+- **Producer warpgroup**: issues TMA loads (global → shared) into a ring buffer.
+- **Consumer warpgroup(s)**: waits for ready tiles, runs WGMMA, then releases ring-buffer slots.
+
+On Hopper, one WGMMA warpgroup is **128 threads (4 warps)**.

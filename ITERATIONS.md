@@ -2751,3 +2751,1036 @@ resource, correctness, and benchmark results are in
 are under `/root/fac/scripts/megamoe/nvfp4_*dequant*`,
 `/root/fac/scripts/megamoe/nvfp4_dispatch_ab/`, and
 `/root/fac/scripts/megamoe/nvfp4_split_bn256_ab/`.
+
+## 2026-07-03 rejected LUT replication and selector-metadata prepack
+
+Screened shared-LUT layouts in an isolated 128-row decoder. The current AoS
+path generated 120 bank conflicts per CTA, matching the production profile's
+9360 conflicts over 78 CTAs. Padded 2/4/8/16-way LUT replicas, split x/y LUTs,
+and direct constant loads all regressed. A lossless two-address scale encoding
+reduced random-input conflicts from 120 to 92, but on model-like UE4M3 scales
+the single-CTA decoder was unchanged for Flash (601 cycles) and slightly worse
+for Pro (526 to 528 cycles). It was rejected before kernel integration.
+
+Then tested deployment-time integer selector metadata without storing FP8
+weights. A full 144-byte row removed selector generation and improved the
+isolated single-CTA decoder by about 23% for Flash and 12% for Pro. A 112-byte
+row storing one 16-bit selector per FP4 word preserved three stages in the
+non-swap Flash configuration and improved its isolated decoder by about 19%.
+Both layouts passed exact-NVFP4 Flash/Pro correctness at M=8/64 in both global
+scale modes (minimum per-token cosine 0.9987). Their real cubins retained 168
+registers, a 56-byte stack, and zero local memory.
+
+The actual eight-rank M64 ABBA rejected the layouts:
+
+- Flash baseline centers were 486.0/473.1 us versus candidate 501.8/483.8 us,
+  about a 2.8% candidate regression.
+- Pro baseline centers were 1352.7/1346.4 us versus candidate 1392.1/1356.9
+  us, about a 1.8% candidate regression.
+- Phase profiling showed no decoder critical-path reduction: Flash math
+  dequant was 10.108 versus 10.102 us per block, and Pro was 17.136 versus
+  17.146 us. Extra shared loads replaced the removed integer instructions;
+  larger TMA rows then increased end-to-end cost.
+
+All candidate API/runtime/kernel wiring was removed and the production source
+was restored. Raw logs are in
+`/root/fac/scripts/megamoe/nvfp4_compact_selector_abba_20260703/`; isolated
+benchmarks remain under `docs/experiments/sm90_nvfp4_standard_prepack/`.
+
+## 2026-07-03 rejected zero-growth padding-selector prepack
+
+Used the existing eight padding bytes in each unchanged 80-byte row to store
+four 16-bit low-magnitude selectors, one for the fourth FP4 word in each
+16-byte quad. The candidate retained all standard E2M1 values and UE4M3 scales,
+did not add TMA bytes, and did not store any FP8-derived value. It was enabled
+only where the existing DP4A or Flash low-selector policy was already active.
+
+The isolated decoder initially looked strong. At 624 concurrent CTAs with
+model-like scales, net cycles fell from 1248 to 981 for Flash and from 1067 to
+732 for Pro. Exact-NVFP4 fused-kernel correctness then passed Flash and Pro at
+expected 4/8 with both global-scale modes; minimum per-token cosine was 0.9987.
+The cubins remained at 168 registers, a 56-byte stack, and zero local memory.
+
+Valid eight-rank M64 ABBA with fixed 8192-token capacity and 20 samples per
+process rejected the candidate:
+
+- Flash baseline medians were 481.377/486.481 us and candidate medians were
+  482.209/487.680 us; the candidate center was about 0.21% slower.
+- Pro baseline medians were 1370.865/1362.898 us and candidate medians were
+  1377.714/1348.289 us; the candidate center was about 0.28% faster, but the
+  two candidate runs moved in opposite directions and the result was noise.
+- Pro SASS removed only 16 of 128 `IDP.4A` instructions. Phase profiling
+  reduced average math-dequant time by about 1%, from 17142 to 16972 timer
+  units per block, with no stable end-to-end reduction.
+
+An orchestration bug was found during validation: the original repository and
+script override was applied only in the parent process and disappeared after
+the matrix runner spawned workers. Those first measurements were discarded.
+`run_v4_repo.py` now reapplies both overrides inside every worker, and valid
+candidate runs were required to create an eight-rank
+`sm90_nvfp4_mega_moe_padding_selector` JIT cache before accepting results.
+
+All candidate API/runtime/kernel/prepack wiring was removed. Valid raw logs are
+in `/root/fac/scripts/megamoe/nvfp4_padding_selector_abba_20260703/`; the
+zero-growth decoder microbenchmark remains in
+`docs/experiments/sm90_nvfp4_standard_prepack/bench_dequant_padding_selector.py`.
+
+## 2026-07-03 promising Flash nibble-group prepack candidate
+
+Added a separate Flash-only BN256 candidate that losslessly permutes the eight
+E2M1 nibbles in each packed `uint32_t`. The low and high 16-bit halves become
+direct four-value magnitude selectors; signs are restored after the LUT
+permutation. The deployment layout remains an 80-byte row with 64 bytes of
+E2M1 payload, 8 bytes of UE4M3 scales, and 8 padding bytes. It stores no FP8
+weight values and adds no metadata or TMA traffic. The production fused and
+split kernel bodies are unchanged.
+
+The grouped decoder reduced the isolated 624-CTA Flash model from about 1260
+to 1134 cycles. In the real M64 kernel, phase profiling reduced math-dequant
+from 10103 to 7358 timer units per block (27.2%) and GEMM-core time from 30351
+to 29075 (4.2%). The matching loader cubin remains at 168 registers, a 56-byte
+stack, and zero local memory; total static SASS instruction count fell from
+6178 to 6146. The same layout did not improve the isolated Pro decoder, so the
+candidate is intentionally restricted to `intermediate_hidden <= 2048` and
+BN256.
+
+Exact-NVFP4 correctness passed the math-side and loader-dequant paths,
+including M128/M256 with `global_scale=none/expert`; minimum per-token cosine
+was 0.9987. A first loader implementation decoded all of row 0 before row 1
+and regressed M256/M1024. Interleaving the two rows at each scale group, as in
+the production loader schedule, removed the M1024 regression.
+
+Eight-rank H20 process-level ABBA used fixed capacity 8192, no L2 flush, 30
+active samples, and routing seeds 101/202/303. Per-point geometric deltas of
+max-rank median latency were:
+
+- M8: -4.6% using seeds 202/303; seed 101 was excluded because the two
+  baseline max-rank runs drifted from 374 to 469 us while the candidate stayed
+  near 312 us.
+- M16/M32/M64: -5.1%/-2.1%/-2.4%.
+- M128/M256/M512: -1.2%/+0.05%/-0.7%.
+- M819/M1024: +0.17%/-1.3%.
+
+Across the nine BN256 points, excluding only the anomalous M8 seed, the
+equal-point geometric latency delta is -1.93%. M256 and M819 are effectively
+flat; no point has a repeatable regression. Raw logs are under
+`/root/fac/scripts/megamoe/nvfp4_nibble_group_abba_20260703/`.
+
+This remains an uncommitted candidate. The experimental API and wrapper have
+not replaced `nvfp4_mega_moe`; no production layout policy, environment
+variable, or runtime argument has been added.
+
+## 2026-07-03 nibble-group Flash M64 swapAB extension
+
+Corrected the W8A8 reference used by the common matrix harness. The previous
+`ours_megamoe_sm90` entry pointed at the older `e7b93e5` branch; the requested
+optimized reference is `aichenf/megamoe_sm90_opt` at `be7c5a3`, mirrored by
+`/root/fac/megamoe/DeepGEMM_fp8_split_swap_ref`. An experimental adapter now
+matches the NVFP4 `rank + seed_offset` routing exactly and prints every W8A8
+rank. Flash M32 rank-0 `recv=180` matched on both implementations.
+
+With the correct reference, the grouped NVFP4 candidate still trailed W8A8 by
+17.1% at M32 and 37.5% at M64 in the initial seed-101 max-rank ABBA. M64 phase
+profiling showed that dequant was not the whole gap: grouped NVFP4 averaged
+7347 timer units in math-dequant and 28963 in GEMM-core, while W8A8 GEMM-core
+averaged 8731. The generated configs explained the difference. W8A8 used two
+BN128/BM64 split kernels with dynamic swapAB; NVFP4 used one BN256/BM64 fused
+kernel with swapAB disabled at expected 12.
+
+The nibble-group-only wrapper was changed to request its existing fused BN256
+swapAB path through expected 16 and to recompute stages/SMEM for that static
+template. Production policy and kernel files were untouched. M64 exact-NVFP4
+correctness passed with `global_scale=none/expert` (minimum per-token cosine
+0.9988), and resources remained 168 registers, 56 bytes of stack, zero local
+memory, and three stages.
+
+Three-seed, 30-sample, no-L2-flush process ABBA improved M64 max-rank latency
+versus the previous grouped-no-swap candidate by 10.4%, 13.2%, and 9.6%; the
+geometric improvement is 11.1%. The stable rank-0 residual gap to optimized
+W8A8 is about 22--26%, down from roughly 38%. One W8A8 seed-202 max-rank run
+spiked to 427.2 us while its paired run and rank-0 values remained near
+340--357 us, so that outlier is not used to claim a smaller gap.
+
+Raw comparisons are under
+`/root/fac/scripts/megamoe/nvfp4_nibble_group_vs_w8a8_20260703/`. This winner
+remains uncommitted and confined to the separate nibble-group candidate.
+
+### Flash M64 fine-grained N24 swapAB bucket
+
+Extended the candidate's existing Flash swapAB dispatch from `8/16/64` to
+`8/16/24/64` for L1 and `8/16/24/32/64` for L2, independent of experts per
+wave. This targets experts with 17--24 routed tokens at canonical M64 expected
+12. Exact-NVFP4 correctness remained at 0.9988 minimum cosine, and the cubin
+still used 168 registers, a 56-byte stack, zero local memory, and three stages.
+
+Against the expected<=16 swapAB winner, three-seed max-rank ABBA improved by
+6.6%, 2.7%, and 8.0% (5.78% geometric). Relative to optimized W8A8 under the
+same routing, the remaining geometric latency gap is 13.8% by max rank and
+13.6% by rank 0. The raw logs are in the `fine24_m64` subdirectory of the
+comparison artifact tree.
+
+Adding an L1 N32 bucket after N24 was rejected at the screening gate. M64
+measured 401.0 us max/rank0 versus roughly 398.2/389.9 us for the N24 winner,
+with unchanged resources. Experts above 24 routed tokens are too rare at
+expected 12 to offset the extra branch/code footprint, so the L1 dispatch was
+restored to `8/16/24/64`.
+
+Extending the candidate swapAB cutoff from expected 16 to 32 exposed M128 to
+the same path. Correctness passed in both global-scale modes, but the coarse
+L1 `8/16/24/64` dispatch regressed the seed-101 screen from about 487 us to
+520.8 us max-rank. This is not accepted as-is; a loader-only N32 bucket is
+screened next because expected 24 puts a substantial fraction of experts in
+the otherwise over-wide N64 bucket.
+
+The loader-only N32 follow-up regressed further to 541.5 us max-rank. This
+rules out insufficient bucket granularity as the primary M128 problem; the
+loader-dequant plus swapAB epilogue combination is itself slower. The
+candidate cutoff was restored to expected 16 and the loader-only N32 branch
+was removed, preserving the M64 N24 winner and the M128 grouped-no-swap path.
+
+### Pro M64 optimized-W8A8 baseline
+
+Measured the production NVFP4 path against the optimized W8A8 split/swap
+reference with identical seed-101 routing (`recv=380` on rank 0), 30 samples,
+and no L2 flush. NVFP4 measured 1372.0 us on rank 0 and 1378.0 us at the
+slowest rank; W8A8 measured 1102.4 us and 1115.5 us respectively. The
+remaining Pro M64 gap is therefore 24.5% on rank 0 and 23.5% by max rank.
+
+Five-sample phase profiling shows that dispatch is not the primary Pro gap:
+rank-0 dispatch-total was about 212483 timer units for NVFP4 versus 199796 for
+W8A8. NVFP4 math-loop averaged 1501590 units over 858 records, while the two
+W8A8 split kernels averaged 569135 over 1716 records. GEMM-core averaged
+38285 versus 13345 units (27456 versus 54912 records), and NVFP4 math-dequant
+accounted for 17161 units per record. Follow-ups should target Pro decode and
+math scheduling/overlap rather than more dispatch specialization. Raw logs
+are in the `pro_m64` subdirectory of the same comparison artifact tree.
+
+### Pro M64 fine-grained swapAB dispatch candidate
+
+Added a separate Pro-only candidate body and runtime while leaving the
+production fused/split bodies unchanged. It keeps the standard 80-byte NVFP4
+deployment row and current paired-LUT/DP4A decoder, but replaces the coarse
+L1 `8/16/64` and L2 `8/16/32/64` swapAB buckets with every 8-token WGMMA N
+shape through 64, matching the optimized W8A8 Pro policy.
+
+Focused exact-NVFP4 correctness passed M=8/64 with both global-scale modes;
+minimum per-token cosine was 0.9987. The real H=7168, I=3072, E/rank=48 cubin
+retained 168 registers, a 56-byte stack, and zero local memory. A first
+seed-101 30-sample screen measured 1329.1 us on rank 0 and 1339.4 us at the
+slowest rank, versus the earlier production centers of 1372.0 and 1378.0 us.
+This roughly 3% signal is promising but remains provisional pending same-run
+multi-seed ABBA. Raw logs are under
+`/root/fac/scripts/megamoe/nvfp4_pro_candidate_20260703/`.
+
+Three-seed A/B/B/A validation retained the candidate, although the confirmed
+gain is smaller than the first screen. Geometric center improvements were
+1.74%/1.73% (rank 0/max rank) for seed 101, 2.25%/1.71% for seed 202, and
+0.02%/0.58% for seed 303. Across the three routing seeds the geometric
+improvement is 1.34% by both rank-0 and max-rank latency. The fine buckets are
+kept as a candidate foundation; they do not by themselves close the remaining
+gap, so the next experiment targets swapAB WGMMA scheduling.
+
+The first WGMMA scheduling follow-up submitted both 64-row weight halves into
+separate accumulators and used `wait_group<1>` to overlap the first half's
+promotion with the second half's QGMMA. Exact-NVFP4 correctness still passed,
+but the longer accumulator lifetimes forced ptxas to use a 920-byte stack and
+generated about 1006 local load/store instructions. Pro M64 regressed to
+2279.0 us max-rank from the roughly 1.33 ms fine-dispatch candidate. The
+ping-pong implementation is rejected and removed; fine dispatch remains the
+candidate baseline.
+
+A narrower K+1 lookahead then kept only one decoded 32-value quad (eight
+32-bit output registers) live across each WGMMA wait. L1 prepared two quads
+per next stage and L2 prepared four; the first stage remained a full-decode
+prologue. Correctness passed, but the real cubin still grew from a 56-byte to
+a 136-byte stack and contained about 138 local load/store instructions. M64
+regressed further to 2483.8 us max-rank.
+
+SASS confirmed that the intended overlap did not occur: after the first QGMMA,
+ptxas emitted only address arithmetic, then `WARPGROUP.DEPBAR`, and placed the
+next-stage `LDS`, selector work, and stores after the wait. This rules out
+ordinary same-warpgroup shared-memory quad lookahead even with a much smaller
+live range. The implementation is removed and the fine-dispatch candidate is
+restored.
+
+The fine-dispatch candidate was then reduced to the statistically relevant
+N24 tail: L1 uses `8/16/24/64` and L2 uses `8/16/24/32/64`. The seed-101
+screen measured 1346.9 us max-rank, still about 1.4% below the paired
+production center but 0.3% above the all-bucket fine candidate's center. The
+smaller candidate reduced cubin size from 196320 to 163552 bytes and SASS
+lines from 11152 to 9096 while retaining 168 registers, a 56-byte stack, and
+zero local memory. Multi-seed validation decides between the simpler N24
+policy and the all-bucket variant.
+
+Three-seed A/B/B/A selected the smaller N24 policy. Rank-0 improvements were
+2.61%, 2.32%, and 1.42%; max-rank improvements were 2.44%, 2.48%, and 1.41%.
+The three-seed geometric gain is 2.12% by rank 0 and 2.11% by max rank, better
+than the 1.34% all-bucket result despite substantially less generated code.
+The Pro candidate therefore retains only the N24 tail specialization.
+
+### Pro compact deployment-layout experiments
+
+Tested a lossless model-load prepack that removes the unused 8-byte padding
+from each BK128 row while preserving standard E2M1 values and UE4M3 scales.
+The first 72-byte interleaved form was rejected by `cuTensorMapEncodeTiled`:
+Hopper does not accept the candidate's `72 x 256` uint8 shared box.
+
+A TMA-aligned two-plane form then stored 64-byte packed rows separately from
+16-byte records containing two adjacent rows' scales. Two TMA loads per stage
+(`64 x 256` packed values plus `16 x 128` scales) passed exact-NVFP4
+correctness at M=8/64 with `global_scale=none/expert`; minimum cosine remained
+0.9987. The small correctness cubin retained 168 registers, a 56-byte stack,
+and zero spills. The real H=7168 shape required retaining the old 4KB of
+per-CTA shared-memory capacity as combine workspace, but this did not restore
+any model-cache or TMA padding.
+
+The real eight-rank Pro M64 seed-101 screen measured 1460.7 us on rank 0 and
+1473.8 us at the slowest rank. This is about 9.4% slower than the N24-only
+80-byte candidate's roughly 1347 us max-rank center. The extra TMA instruction
+per K stage costs more than the 10% payload reduction saves, so the two-TMA
+layout is rejected. Raw output is in
+`/root/fac/scripts/megamoe/nvfp4_pro_compact_20260703/compact_seed101_screen.log`.
+
+A final compact-layout variant TMA-loaded only the 64-byte E2M1 plane and had
+each math thread issue one coalesced 64-bit global load for its UE4M3 scale.
+Candidate-local inline PTX fixed the scale load immediately before the packed
+TMA `mbarrier.try_wait`; SASS showed `LDG.E.64` followed by
+`SYNCS.PHASECHK.TRANS64.TRYWAIT`, so the intended overlap was present.
+Correctness and resources remained unchanged (0.9987 minimum cosine, 168
+registers, 56-byte stack, zero spills).
+
+Despite the overlap, the real seed-101 screen regressed to 1768.5 us on rank 0
+and 1774.0 us max-rank, roughly 31.7% slower than the N24-only winner. The
+per-thread scale dependency extends the decoder critical path much more than
+the saved packed-weight TMA traffic helps. This variant is rejected; raw output
+is in `compact_inline_ldg_seed101_screen.log` beside the two-TMA log. The
+candidate is restored to the 80-byte N24-only layout after this experiment.
+
+A third compact-layout experiment stored each BN256/BK128 tile as one
+contiguous 18KB allocation: a 16KB packed-E2M1 plane followed by a 2KB UE4M3
+plane. One `cp.async.bulk` loaded the complete tile, avoiding both the invalid
+72-byte 2D TMA box and the extra scale transfer. The scale metadata exposed to
+the host was an `as_strided` view into the same allocation, so the deployment
+cache contained exactly one standard 72-byte-per-row representation.
+
+Exact-NVFP4 correctness passed M=8/64 with `global_scale=none/expert`
+(minimum cosine 0.9987). Resources remained 168 registers, a 56-byte stack,
+and zero spills. SASS emitted one 18KB `UBLKCP.S.G` for each B stage. The real
+H=7168, I=3072, E/rank=48, topk=6 seed-101 M64 screen measured 1443.2 us on
+rank 0 and 1455.6 us max-rank, about 8.8% slower than the roughly 1338 us
+N24-only winner. Hopper's 2D TMA path wins despite transferring 10% padding,
+so this single-bulk layout is rejected without a multi-seed run.
+
+### Pro intra-stage K32 streaming experiment
+
+Tested a separate Pro-only body that split each BK128 row into four K32 decode
+quads. The intent was to issue the first swapAB WGMMA and decode later quads
+while tensor-core work was in flight, without keeping a next-stage quad live
+or adding a producer warp.
+
+The quad helper itself was verified: decoding all four quads before WGMMA
+passed exact-NVFP4 correctness and retained 168 registers, a 56-byte stack,
+and zero spills. Both overlap schedules were invalid, however. Direct
+`decode(K32) -> WGMMA(K32)` interleaving failed M=8 correctness even with a
+128-thread warpgroup barrier. A coarser schedule that decoded K0/K1, committed
+their WGMMA group, then decoded K2/K3 before the wait also failed. Outputs were
+finite but had cosine means of only 0.095--0.199 and norms 5--9x the reference.
+
+SASS placed `WARPGROUP.DEPBAR` before every later pair of `STS.128`
+instructions, so no useful decode/WGMMA overlap survived compilation. Together
+with the full-predecode control passing, this rules out partially populating
+the existing 128-byte-swizzled B row during swapAB WGMMA. The experiment was
+rejected before an eight-rank benchmark and its candidate wiring was removed.
+
+### Pro N24 versus optimized W8A8 NCU instruction mix
+
+Collected single-rank NCU profiles for the retained Pro N24 candidate and the
+optimized W8A8 split/swap reference at the same local workload: H=7168,
+I=3072, 48 local experts, topk=6, and M=64. The NVFP4 kernel took 1.287 ms in
+the section profile, while the W8A8 L1 and L2 kernels took 0.658 and 0.383 ms,
+respectively. NVFP4 was not HBM-bound: DRAM throughput was 33.6%, compute and
+memory throughput were both about 52%, ALU activity was 46.2%, and tensor-pipe
+activity was 18.4%. W8A8 was more memory-bound and reached 25.2%/21.5% tensor
+activity in L1/L2.
+
+A dedicated metric replay made the dynamic-work gap explicit. NVFP4 executed
+402.7M warp instructions versus 206.3M for the two W8A8 kernels combined
+(1.95x). It issued 3.96x as many ALU-pipe instructions, 5.45x as many
+FMA-heavy instructions, and 2.55x as many LSU instructions. Both paths issued
+exactly 6.19M GMMA instructions, so the tensor-core work itself is already
+matched. NVFP4 performed 15.51M shared loads and 6.38M shared stores versus
+5.75M and 0.24M for W8A8; the 26.2x shared-store excess is the decoded FP8
+weight materialization plus associated fused-kernel traffic.
+
+CUTLASS confirms that Hopper provides register/shared FP8 WGMMA variants for
+all relevant N buckets. In swapAB form the decoded weights are operand A, and
+`m64nNk32.f32.e4m3.e4m3` RS consumes exactly four 32-bit A registers per
+thread for each 64x32 fragment. A separate RS candidate can therefore decode
+one K32 weight fragment directly into the required per-thread register layout,
+avoiding its FP8 shared-memory stores, descriptor reads, and publication
+barrier while keeping activations in shared memory. This is distinct from the
+rejected intra-stage SS streaming experiment because WGMMA no longer observes
+a partially populated shared A tile.
+
+Raw reports are under
+`/root/fac/scripts/megamoe/nvfp4_pro_n24_ncu_20260703/`, including
+`pro_n24_instruction_mix.ncu-rep` and `w8_instruction_mix.ncu-rep`. No kernel
+code was changed for this profiling step.
+
+### Pro register-source WGMMA experiment
+
+Tested a separate Pro-only candidate that used Hopper FP8 RS-WGMMA after
+swapAB. CUTLASS `ALayout_64x32` maps each thread to four 32-bit A registers,
+so the candidate decoded standard E2M1 plus UE4M3 directly into those
+registers and kept activations in shared memory. This eliminated the decoded
+FP8 weight tile, its publication stores, and the shared A descriptor.
+
+The register mapping was correct. Exact-NVFP4 correctness passed M=8/64 with
+`global_scale=none/expert`; minimum cosine was 0.9988. SASS showed register-A
+QGMMA operands for N=8/16/24/32/64. The real cubin retained 168 registers, a
+56-byte stack, and zero local memory.
+
+The first pair-leader implementation was rejected immediately: Pro M64
+measured 3721.0 us versus the retained N24 candidate's approximately 1338 us.
+NCU explained the regression. Relative to N24, RS executed 2.40x total warp
+instructions, 4.61x LSU instructions, 5.14x shared loads, and 5.47x control
+thread instructions. Shared stores fell by 97% and GMMA/TMA counts were
+identical, but the row-major 80-byte layout required scalar gathers,
+duplicated scale/LUT reads, and lane shuffles.
+
+A branchless version removed pair divergence and shuffles by having adjacent
+lanes use shared broadcast and select opposite nibble halves. It improved M64
+to 1810.5 us but still lost badly. A final model-load prepack reordered every
+unchanged 20KB BN256/BK128 tile into 16KB of pair-native E2M1 records and 4KB
+of duplicated standard UE4M3 records. This consumed exactly the existing
+padding, added no deployment bytes or TMA traffic, and reduced each fragment's
+packed/scale access to one `LDS.128` plus one `LDS.32`. Correctness remained
+unchanged, but M64 reached only 1679.1 us, still about 25% slower than N24.
+
+The remaining loss is structural. Per-row NVFP4 scales split one decoded word
+between adjacent RS lanes. Even with ideal packed access, RS needs roughly
+twice the decoder instruction issue of the current whole-row shared-memory
+decoder, while only removing a much smaller store stream. The RS architecture
+is rejected; its API, runtime, kernel, and prepack wiring are removed. Raw
+reports and screens are under
+`/root/fac/scripts/megamoe/nvfp4_pro_rs_candidate_20260703/`.
+
+### Pro dispatch-only plus compute-only producer experiment
+
+Split the retained Pro N24 path into a 64-thread dispatch/pull kernel followed
+by a 384-thread compute kernel. This removed dispatch from the compute CTA and
+made room for four non-epilogue producer warps while retaining two N128 math
+warpgroups. A control kept the original two-stage math-side decoder; the
+producer used all 128 non-epilogue threads for in-place 80-byte-to-128-byte
+weight expansion. Existing fused/split bodies were not modified.
+
+The standalone compute path required preserving the old dispatch send-buffer
+and packed-B capacities as anonymous combine scratch. The in-place helper also
+needed a producer-wide barrier after FP8 stores and before publishing the
+dequant stage; without it thread 0 could release math early and produce NaNs.
+After that candidate-local fix, control and producer both passed exact-NVFP4
+M=8/64 with `global_scale=none/expert` at H=7168, I=3072, E/rank=48, topk=6;
+minimum cosine was 0.9988 and cumulative receive statistics were correct.
+
+Resource usage was acceptable: producer compute used 168 registers, a 56-byte
+stack, and zero local memory; dispatch used 48 registers, a 32-byte stack, and
+zero local memory. Performance was not. The eight-rank M64 seed-101 control
+measured 1377.3 us median (66.9 us dispatch, 1309.3 us compute), about 2.3%
+slower than the retained N24 approximately 1346.9 us max-rank result. The
+producer measured 2325.3 us median (2292.9 us compute), 68.8% slower than the
+control and 72.6% slower than N24.
+
+All four producer warps, including the TMA warps, must wait for a complete
+stage and join the in-place decode barriers. This prevents the loaders from
+prefetching the next stage and serializes TMA progress behind dequant. The
+architecture is rejected without multi-seed or NCU follow-up; its API,
+runtime, kernel, and harness wiring are removed. Raw logs are in
+`/root/fac/scripts/megamoe/nvfp4_pro_dispatch_compute_20260703/`.
+
+### Pro lane-native RS fragment screening
+
+Screened a zero-growth model-load prepack that follows CUTLASS
+`ALayout_64x32` directly. Each RS lane receives only its own sixteen E2M1
+values, while four lanes share the corresponding four UE4M3 scale bytes. The
+best eight-byte lane record braids each pair of four-value groups so magnitude
+selectors are direct and their sign bits occupy otherwise unused selector
+bits. No FP8 values or expanded FP8 table are stored.
+
+The isolated decoder passed bit-exact comparison over all 127 valid scale
+codes times all 16 E2M1 codes and randomized model-like data. It used 24
+registers with no stack or local memory. Against the branchless pair-native
+control, SASS reduced `IDP.4A` from 16 to zero and `PRMT` from eight to four.
+Median net cycles improved 985 to 811 (17.7%) on exhaustive inputs and 1027
+to 851 (17.1%) on model-like scales.
+
+The fragment misses the approximately 20% integration gate, and the decoder
+is only part of endpoint latency. It therefore cannot recover the prior
+optimized RS kernel's roughly 25% deficit to the retained N24 candidate. The
+full RS MegaMoE body was not restored. The reusable harness remains under
+`docs/experiments/sm90_nvfp4_standard_prepack/`; raw measurements and SASS
+are in `/root/fac/scripts/megamoe/nvfp4_rs_lane_native_20260703/`.
+
+### Pro integer LUT-synthesis screening
+
+Derived the complete positive E2M1/UE4M3-to-E4M3 LUT entry from the raw UE4M3
+code using exact integer rounding, subnormal, exponent, and saturation rules.
+The construction needs no deployment metadata and was exhaustively bit-exact
+for all 127 valid scales and all E2M1 codes.
+
+Performance rejected it immediately. Median net row-decode cycles increased
+from 1549 to 3651 on exhaustive scales and from 649 to 3629 on the model-like
+4--19 scale range. The existing shared LUT benefits strongly from broadcast
+and reuse under the narrow model distribution; replacing one `LDS.64` with a
+long per-thread integer chain is not competitive. No kernel integration was
+attempted. Raw results are under
+`/root/fac/scripts/megamoe/nvfp4_integer_lut_20260703/`.
+
+### Pro BN128 split RS mainloop screening
+
+Built the missing seven-stage BN128 split mainloop in an isolated 384-thread
+microkernel with two math warpgroups. The W8 shared/shared control and three
+lane-native NVFP4 RS schedules used identical K128 work and N=8/16/24/64.
+All RS schedules produced bit-exact accumulators.
+
+The result rejected the architecture. W8 measured
+135.2/185.3/249.1/569.8 cycles per stage, while full RS predecode measured
+484.2/520.3/552.1/1054.1. Per-K32 interleaving was slower at N <= 24 because
+ptxas emitted a `WARPGROUP.ARRIVE` fence for each newly written register
+fragment. A two-fragment pairwise schedule reduced the fence count, but only
+improved N=24 by about 1%. The real L1/L2 task-count projection is
+approximately 1.42--1.44 ms, above the retained N24 candidate's roughly
+1.34 ms. No full split kernel was built. Raw results are under
+`/root/fac/scripts/megamoe/nvfp4_split_rs_mainloop_20260703/`.
+
+### Pro next-quad LUT scheduling and braided prepack
+
+The first rolling-LUT experiment kept the standard packed words and DP4A
+selectors. A full next-quad window varied between a small isolated gain and a
+regression, while raising the row microkernel from 42 to 60 registers. A
+narrow half-quad schedule stayed at 43 registers but regressed model-scale net
+cycles from 661 to 678 at 624 CTAs and from 432 to 448 at 78 CTAs. Neither was
+integrated.
+
+Combining the window with a lossless braided E2M1 layout changed the result.
+Each eight-code word stores two direct magnitude selectors and braids the
+eight original sign bits into otherwise unused selector bits. The 80-byte row,
+UE4M3 scales, and TMA traffic are unchanged. Full 128-byte row output was
+bit-exact for model-like, uniform, and exhaustive scale distributions.
+
+The braided next-quad decoder retained 42 registers with no stack or local
+memory. Net cycles improved from 664 to 559 on model-like scales, 1566 to 1309
+on exhaustive scales, and 796 to 688 on uniform scales. At the real 78-CTA
+count the model-scale result improved from 442 to 295 cycles. The real Pro
+cubin retained 168 registers, a 56-byte stack, and zero local memory; size fell
+from 163,552 to 156,384 bytes, and 128 static `IDP.4A` instructions disappeared.
+
+Exact-NVFP4 M=8/64 correctness passed for `global_scale=none/expert` with a
+minimum per-token cosine of 0.9988. Three-seed M64 ABBA against the retained
+N24 candidate improved geometric rank-0/max-rank latency by about 1.30%/1.34%.
+Phase profiling reduced `math_dequant` from 17386 to 15064 timer units, but
+`math_full_wait` rose from 3459 to 4013, exposing the two-stage TMA pipeline.
+
+### Pro braided three-stage pipeline
+
+The two-stage configuration missed a third 61,968-byte stage by only 5,824
+bytes. A separate compile-time candidate retained both dispatch warps for all
+CTA-wide synchronization but used one warp for routing and token pulls. Its
+single 7,168-byte send buffer reduced dynamic shared memory enough for three
+stages (231,104 bytes, below the 232,448-byte SM90 limit). No layout, env, or
+runtime argument changed.
+
+M=8/64 correctness again passed both global-scale modes. The three-stage cubin
+uses 168 registers, a 56-byte stack, and zero local memory. Across routing
+seeds 101/202/303, M64 A/B/B/A improved over the two-stage braided candidate
+by about 12.0%/11.1%/11.9% on rank 0 and 12.1%/11.5%/11.6% by max-rank. The
+three-seed geometric gain is approximately 11.65%/11.75%.
+
+Phase profiling confirms the gain is pipeline-driven: `math_full_wait` fell
+from 3942 to 1711 (-56.6%), `gemm_core` from 37622 to 33227 (-11.7%), and
+`math_loop` from 1353096 to 1232788. Dispatch pull rose from 17965 to 28163,
+but the extra dispatch cost remained off the critical path.
+
+A seed-101 small-M screen also favored three stages: rank-0 latency changed
+from 956.3 to 806.5 us at M8, 1227.3 to 1053.3 us at M16, 1288.9 to 1108.1 us
+at M32, and the three-seed M64 center is roughly 1.17 ms. Matching optimized
+W8A8 screens were 723.1/885.7/1010.4 us at M8/16/32. Using three-seed ABBA
+centers at M64, the remaining optimized-W8A8 gap is approximately 9% rather
+than the prior roughly 23.5% two-stage gap. Raw logs are under
+`/root/fac/scripts/megamoe/nvfp4_pro_braided_20260703/`.
+
+### Pro dual-warp chunked-pull three-stage experiment
+
+Tested whether restoring both dispatch warps could retain the braided
+three-stage pipeline. Each warp received a 4,096-byte shared pull buffer and
+transferred every 7,168-byte token as 4,096 plus 3,072 bytes. This reduced the
+two send buffers from 14,336 to 8,192 bytes, fitting three GEMM stages in
+232,128 bytes of dynamic shared memory.
+
+Exact-NVFP4 correctness passed at M=8/64 with both global-scale modes; minimum
+cosine remained 0.9988. The cubin used 168 registers, a 64-byte stack, and no
+local memory. At M=16, three-seed process-level ABBA improved geometric rank-0
+latency by about 1.06% and max-rank latency by about 0.95%. Phase profiling
+confirmed the mechanism: per-warp `dispatch_pull` fell from 8,931 to 6,890
+timer units and `math_loop` from 1,192,959 to 1,095,647.
+
+The gain was too narrow. Single-seed boundary screens regressed by about 1.2%
+at M=8/12, were positive but small at M=16/20/24/28, were neutral at M=32,
+and a seed-101 M64 ABBA regressed geometric rank-0 latency by 1.54% (max-rank
+by 0.29%). The second TMA load/store pair outweighs dispatch parallelism once
+token traffic grows. Per the predeclared all-M acceptance gate, the candidate
+is rejected and its API/kernel wiring is removed. Raw logs remain under
+`/root/fac/scripts/megamoe/nvfp4_pro_braided_20260703/chunked_3stage/`.
+
+### Pro braided warp-distributed LUT-cache screening
+
+Screened the fused follow-up from the approved design in an isolated braided
+next-quad row decoder. A 16-entry cache stored one 32-bit LUT half per lane
+and used two shuffles for scales 3--18; a 32-entry cache stored one `uint2`
+per lane and covered scales 0--31. Both retained a shared-LUT fallback for all
+other valid UE4M3 codes, changed no deployment bytes, and had no production
+wiring.
+
+The first 624-CTA model-scale screen was decisively negative. After subtracting
+the identical 53-cycle empty control, the retained shared-LUT window measured
+726 cycles, the warp16 cache measured 936 cycles (+28.9%), and warp32 measured
+1126 cycles (+55.1%). Full 128-row decoded output matched byte-for-byte for
+the model distribution. Two shuffle instructions per lookup plus their longer
+dependency chain cost substantially more than the current conflict-light
+`LDS.64`; neither cache advances to real-kernel integration. The reusable
+harness is `docs/experiments/sm90_nvfp4_standard_prepack/bench_dequant_warp_lut_cache.py`.
+
+The real-count 78-CTA screen reached the same conclusion: shared/warp16/warp32
+net cycles were 396/417/418, so both caches remained about 5.3--5.6% slower
+even when shared latency was less occupancy-hidden. Random inputs and an
+exhaustive 0--126 scale-code sweep also matched the full 16KB decoded tile
+byte-for-byte, validating the fallback. All three compiled decoders used 40
+registers with zero stack and local memory. SASS contained the intended
+`SHFL.IDX` lookups, confirming that the loss is the two-shuffle dependency
+chain rather than compiler failure or spilling.
+
+### Pro three-stage dispatch-assisted dequant experiment
+
+Used the otherwise idle second dispatch warp to decode rows 96--127 and
+224--255 one stage ahead. Each math warpgroup fully decoded the task prologue,
+then skipped its final 32-row warp on later K blocks and waited on one added
+per-stage transaction barrier. The two TMA loader warps remained independent,
+so this did not repeat the rejected producer design that blocked prefetch.
+
+Fresh-JIT exact-NVFP4 correctness passed M=8/64 with
+`global_scale=none/expert`; minimum per-token cosine was 0.9988. The real
+H=7168, I=3072, E/rank=48 cubin used 168 registers, a 56-byte stack, zero
+local/spill traffic, and stayed below the SM90 shared-memory limit.
+
+Performance rejected the schedule. In a same-machine seed-101 M64 screen the
+retained three-stage baseline measured 1174.2 us rank0/max-rank, while the
+helper measured 1390.4/1398.8 us, a 19.1% max-rank regression. Phase profiling
+showed that synchronization itself worked: helper `math_dequant_wait` averaged
+only 37 timer units. The extra decoder warp instead contended with math for
+shared/issue resources. `gemm_core` rose from 33195 to 41007 (+23.5%) and
+`math_loop` from 1.220M to 1.426M (+16.9%); measured math-dequant time did not
+fall (13055 versus 13325). The candidate API, JIT/runtime, Python adapters, and
+compile-time branch are removed. Reports and caches remain under
+`/root/.cache/deep_gemm/pro_braided_dispatch_assist_*`.
+
+### Pro braided 16-bit LUT-offset screening
+
+Screened a zero-growth deployment representation for the eight UE4M3 scales
+in each retained 80-byte braided row. The existing eight scale bytes plus
+eight padding bytes were losslessly rewritten as eight
+`uint16(scale_code * 8)` values, which are direct byte offsets into the shared
+`uint2` LUT. This stores no FP8 weight values, changes neither TMA bytes nor
+shared capacity, and has no production wiring.
+
+The candidate was bit-exact against the retained braided decoder on model-like
+and exhaustive scale/code inputs. Both compiled decoders used 40 registers
+with zero stack/local memory. SASS confirmed the intended transformation: the
+offset path removed eight scale-address `IMAD.SHL ... 0x8` instructions and
+replaced the 64-bit scale metadata load with one 128-bit load.
+
+The gain was below the real-kernel integration threshold. At 624 concurrent
+CTAs, model-scale net cycles changed only from 740 to 735 (0.7%). At the real
+78-CTA count they changed from 340 to 327 (3.8%); exhaustive-scale net cycles
+changed from 1691 to 1612 (4.7%). Since decoder time is only part of endpoint
+latency, this projects to less than roughly 0.5% end to end and does not
+justify another deployment metadata format. The reusable isolated harness is
+`docs/experiments/sm90_nvfp4_standard_prepack/bench_dequant_scale_offsets.py`.
+
+### Pro braided intra-quad ILP screening
+
+Kept the retained 80-byte braided layout and shared LUT unchanged while
+exposing more independent PRMT/sign chains to ptxas. The pair variant expanded
+the two words sharing one LUT together; the quad variant expanded all four
+words and delayed both 128-bit stores. All variants were byte-exact and used
+40 registers with zero stack/local memory.
+
+The compiler was already scheduling nearly all available ILP. At 624 model
+CTAs, word/pair/quad net cycles were 736/732/722, so the best quad form gained
+only 1.9%. At the real 78-CTA count they were 355/371/346: pair expansion
+regressed and quad expansion gained only 2.5%. This is below the integration
+gate and is not added to the real kernel. The isolated harness remains at
+`docs/experiments/sm90_nvfp4_standard_prepack/bench_dequant_braided_ilp.py`.
+
+### Proxy-safe Flash fused W8A8 recalibration
+
+Audited the retained Flash nibble-group experiment after the Pro proxy-fence
+correction. Its math-side decoder also used generic shared-memory stores that
+were consumed by WGMMA through the async proxy, but it did not publish those
+writes. Added the required per-writer
+`fence.proxy.async.shared::cta` immediately after grouped-nibble dequant. The
+change remains confined to the separate nibble-group candidate.
+
+Fresh-JIT exact-NVFP4 correctness passed M=8/16/32/64 for both
+`global_scale=none` and `global_scale=expert`; minimum per-token cosine was
+0.9987. The main three-stage cubin retained 168 registers, a 56-byte stack,
+zero spills, and 231104 bytes of shared memory. SASS contains the expected
+`FENCE.VIEW.ASYNC.S` publication instructions.
+
+Recalibrated against `/root/fac/megamoe/DeepGEMM_fp8_split_swap_ref` at Flash
+H=4096, I=2048, E=256, topk=6. The common protocol used identical routing,
+8 ranks, fixed capacity 8192, no L2 flush, median-30, seeds 101/202/303, and
+A/B/B/A process runs. Each point is the geometric center of all six runs for
+that implementation:
+
+| M | NVFP4 rank0 (us) | W8A8 rank0 (us) | rank0 gap | NVFP4 max-rank (us) | W8A8 max-rank (us) | max-rank gap |
+|---:|---:|---:|---:|---:|---:|---:|
+| 8 | 324.2 | 253.1 | +28.10% | 326.4 | 258.0 | +26.51% |
+| 16 | 348.1 | 281.0 | +23.88% | 352.1 | 284.7 | +23.66% |
+| 32 | 362.2 | 305.1 | +18.70% | 366.6 | 309.9 | +18.29% |
+| 64 | 399.5 | 349.0 | +14.46% | 403.7 | 353.5 | +14.21% |
+
+The equal-point geometric gap is 21.17% by rank 0 and 20.58% by max-rank
+latency. Earlier Flash nibble-group/W8A8 gap figures were measured without the
+required proxy publication and must not be used as deployable results. Raw
+logs are under
+`/root/fac/scripts/megamoe/nvfp4_flash_proxy_safe_vs_w8_20260703/`.
+
+### Pro math-warpgroup phase-skew experiment
+
+Tested whether the two existing N128 math warpgroups could overlap one WG's
+NVFP4 decode with the other's WGMMA while each continued to own and decode
+only its own weight half. A separate Pro three-stage candidate added one
+24-byte set of per-stage barriers; full/empty ownership, swap-AB, braided
+layout, and runtime arguments were unchanged.
+
+Both full-row and half-row releases passed exact-NVFP4 M=8/64 correctness for
+`global_scale=none/expert` with minimum cosine 0.9988. Their real cubins kept
+168 registers, a 56-byte stack, and zero local/spill traffic. The full-row
+variant did reduce the independently measured WG0 `math_dequant` interval
+from 13141 to 11343 timer units, confirming that eight simultaneous decoder
+warps have some issue/shared contention.
+
+Endpoint balance dominated. For seed-101 Pro M64 median-30 A/B/B/A, the
+full-row baseline/candidate max-rank geometric centers were approximately
+1169.1/1187.6 us (1.58% regression). Releasing WG1 after WG0's first two quads
+was worse: baseline/candidate centers were 1173.2/1198.9 us (2.19%
+regression). The existing simultaneous schedule is therefore better at the
+CTA level despite its local contention. No delay sweep advances; candidate
+kernel/API/Python wiring is removed. Raw logs are under
+`/root/fac/scripts/megamoe/nvfp4_pro_phase_skew_20260703/`.
+
+### Pro M16 optimized-W8A8 phase comparison
+
+Profiled the retained three-stage NVFP4 winner and optimized W8A8 reference
+with identical seed-101 routing at M=16 (`recv=88`, 42 touched experts on
+rank 0). Profiled endpoint medians were 1106.2 us for NVFP4 and 894.0 us for
+W8A8; profiling overhead makes these unsuitable as the canonical latency
+numbers, but the phase counters identify the gap.
+
+NVFP4 recorded `gemm_core=33950` over 24024 block samples, or approximately
+815.6M aggregate timer units. The two optimized-W8A8 split launches recorded
+`gemm_core=12996` over 48048 samples, or 624.4M aggregate units. NVFP4's
+191.2M excess is smaller than its measured dequant work alone
+(`math_dequant=13372`, approximately 321.2M aggregate); its full-stage wait
+adds another roughly 82.4M. Dispatch and epilogue aggregates are not larger
+than W8A8's, so they cannot explain the main M16 deficit.
+
+The evidence keeps the target on dequant/fused-code efficiency. Raw logs are
+under `/root/fac/scripts/megamoe/nvfp4_vs_w8_m16_20260703/`. The next bounded
+screen specializes the fused Pro kernel for `num_tokens <= 16`, where an
+expert can never receive more than 16 tokens, and removes unreachable N24/N64
+swap-AB instantiations. This tests the instruction/code-footprint effect
+without changing routing, layout, or decode arithmetic.
+
+### Pro M<=16 narrow fused final gate
+
+Specialized the Pro braided three-stage fused kernel for the mathematically
+bounded `num_tokens <= 16` range. Its L1/L2 bodies retain only N8/N16 swap-AB
+instantiations; N24/N64 cannot be reached when a rank starts with at most 16
+tokens. The deployment layout, NVFP4 arithmetic, routing, runtime arguments,
+and shared-memory footprint are unchanged. M8/M16 correctness passed for both
+`global_scale=none` and `global_scale=expert` with minimum cosine 0.9989. The
+real cubin stayed at 168 registers, a 56-byte stack, and zero local/spill
+traffic, while shrinking from 167,648 to 144,096 bytes.
+
+The final same-machine gate used median-30 A/B/B/A runs and max-rank latency.
+At M8 seed 101, the baseline/candidate geometric centers were 831.5/815.0 us,
+a 1.98% gain with no boundary regression. Across M16 routing seeds
+101/202/303, the baseline and candidate geometric centers were 1080.3 and
+1058.7 us, so the candidate gained 2.00%. Per-seed candidate centers were
+1040.0/1048.9/1087.6 us; all three seeds improved.
+
+Against the matching optimized-W8A8 implementation, max-rank gaps were 5.3%
+at M8, 14.1% at M16 (three-seed geometric center), 10.1% at M32, and 8.8% at
+M64. The four-point geometric gap is approximately 9.5%. M32/M64 continue to
+use the retained general three-stage fused kernel; only M8/M16 use the narrow
+candidate in this comparison. Raw logs are under
+`/root/fac/scripts/megamoe/nvfp4_pro_m16_narrow_20260703/final_gate/`. The
+candidate remains experimental and is not yet selected by the default
+wrapper.
+
+### Pro M<=16 half-row dequant/WGMMA overlap experiment
+
+Tested an intra-warpgroup schedule that decoded the first 64-row weight half,
+submitted its swap-AB WGMMA, and decoded the second 64-row half while that
+WGMMA group was in flight. Two neighboring threads cooperated on each row so
+all 128 threads remained active in both decode waves. The experiment stayed in
+separate kernel/API/Python files and changed neither the deployment layout nor
+runtime arguments.
+
+The isolated decoder was byte-exact. At 624 CTAs, one half-row wave cost 426
+net cycles versus 742 for the retained full-row decoder, but two waves cost
+1273 cycles. At the real 78-CTA count, the corresponding values were
+222/330/464 cycles. The second wave therefore needed substantial WGMMA overlap
+just to recover the decoder's lost ILP and synchronization overhead.
+
+Initial end-to-end output exposed a real generic-to-async proxy visibility
+race. A 128-thread named barrier alone was insufficient; adding
+`fence.proxy.async.shared::cta` after each decode wave restored M8/M16 exact
+NVFP4 correctness for both global-scale modes and the independently failing
+seed 44, with minimum cosine back to approximately 0.9988. The corrected
+nonprofile cubin used 168 registers, a 56-byte stack, and zero local/spill
+traffic. SASS confirmed that ptxas interleaved second-wave PRMT/stores between
+QGMMA instructions, so failure to overlap was not the issue.
+
+Endpoint performance decisively rejected the schedule. Seed-101 median-15
+A/B/B/A max-rank geometric centers were approximately 1036.6 us for the M16
+narrow baseline and 1352.4 us for half-overlap, a 30.5% regression. Phase
+profiling agreed: `gemm_core` rose from 32625 to 43803 timer units and summed
+`math_dequant` from 12129 to 23216. The reduced per-wave ILP plus two
+warpgroup barriers and two cross-proxy fences outweighed the asynchronous
+QGMMA window. Remove all real-kernel/API wiring; retain only the isolated
+decoder harness and raw logs under
+`/root/fac/scripts/megamoe/nvfp4_pro_m16_narrow_20260703/half_overlap_*`.
+
+### Pro M<=16 L1 dual-accumulator WGMMA experiment
+
+Revisited the previously rejected swap-AB ping-pong schedule after the M16
+narrow specialization removed N24/N64 instantiations. The bounded candidate
+kept L2 byte-for-byte identical to narrow and changed only L1: it submitted
+the two 64-row weight halves into separate N8/N16 accumulator fragments, used
+`wait_group<1>` before promoting half 0, then drained and promoted half 1.
+
+Nested generic-lambda forms triggered a CUDA 13 `cicc` crash; an equivalent
+fully explicit half0/half1 implementation compiled. M8/M16 correctness passed
+for both global-scale modes with minimum cosine approximately 0.9988. Unlike
+the old N24/N64 experiment, the real specialization retained 168 registers, a
+56-byte stack, and zero reported local memory, so narrow specialization did
+remove the prior 920-byte spill failure.
+
+Performance still rejected the schedule. Seed-101 median-20 A/B/B/A max-rank
+geometric centers were approximately 1038.6 us for narrow and 1074.1 us for
+the L1 dual-accumulator candidate, a 3.4% regression. N8/N16 QGMMA groups are
+too short for the extra accumulator lifetime and partial wait to hide useful
+work. Do not extend this design to the more complex L2 four-group schedule;
+remove its kernel/API wiring. Raw logs are under
+`/root/fac/scripts/megamoe/nvfp4_pro_m16_narrow_20260703/dual_accum_l1_screen/`.
+
+### Pro M<=16 narrow correctness-boundary correction
+
+Rejected both the M16 narrow and follow-up M8 exact specializations before
+default-wrapper integration. Their host predicates bounded only each source
+rank's `num_tokens`; the GEMM scheduler's `valid_m` is instead derived from
+the destination expert's receive-count sum across all ranks. With eight
+ranks, one local expert can therefore receive up to `8 * M` tokens even when
+every rank satisfies `M <= 16`. Random benchmark routing happened to stay in
+the N8/N16 range, so its passing single-rank correctness and endpoint timing
+did not prove the specialization's required multi-rank invariant.
+
+Deleting N16 from the M8 exact candidate also exposed a generic-store to
+WGMMA async-proxy visibility race: adding `fence.proxy.async.shared::cta`
+restored single-rank correctness, but it could not fix the invalid receive
+count assumption. Neither measured narrow latency nor its apparent 9.5%
+four-point gap to W8A8 is treated as a deployable winner. Remove both
+candidate APIs, JIT implementations, kernel bodies, and Python harnesses;
+continue from the general braided three-stage kernel, whose corresponding
+four-point geometric W8A8 gap is approximately 10.6%.
+
+### Pro M16 correctness-safe chunked-N16 experiment
+
+Replaced the invalid `valid_m <= 16` assumption with a candidate that keeps
+only N8/N16 swap-AB WGMMA shapes and handles a BM64 tile at compile-time token
+bases 0/16/32/48. The common path executes only base 0; receive-heavy experts
+execute additional N16 groups. Activation descriptors and accumulator
+promotion offsets advance with the token base, and the stage empty barrier is
+released only after all active chunks and both 64-row weight halves finish.
+
+The first runtime-indexed implementation passed single-rank exact NVFP4 but
+forced dynamic addressing of `final_accum`: ptxas reported a 288-byte stack
+and a WGMMA-pipeline function-boundary warning. It was rejected before timing.
+Compile-time token bases restored 168 registers, a 56-byte stack, and zero
+spill loads/stores. SASS contains only N8/N16 QGMMA shapes and emits the
+required `FENCE.VIEW.ASYNC.S` after generic shared-memory decode stores.
+
+An eight-rank adversarial test routed all 16 tokens on every rank to rank 0
+expert 0. Both general and chunked kernels recorded 128 received tokens for
+that expert, exercising two BM64 tiles and all four token bases. Candidate and
+general output were bit-identical on every rank for
+`global_scale=none/expert`.
+
+The first normal-routing seed-101 M16 median-20 A/B/B/A screen rejected the
+current schedule on performance. Baseline max-rank measurements were
+1059.3/1070.1 us; chunked measurements were 1124.7/1110.1 us, approximately a
+5% geometric regression. The candidate remains isolated while a bounded
+attribution screen separates the required async-proxy fence cost from the
+cold fallback code-layout cost. Raw logs are under
+`/root/fac/scripts/megamoe/nvfp4_pro_m16_chunked_20260703/quick_s101/`.
+
+The attribution screen showed that removing `FENCE.VIEW.ASYNC.S` restored
+roughly 1% narrow-path performance, but that form is undefined and is not an
+acceptable candidate. A final correct-to-correct A/B/B/A added the same proxy
+fence to the general three-stage baseline. General-safe max-rank centers were
+about 1106.2 us versus 1121.6 us for chunked-safe, a 1.4% regression. The
+fallback code layout therefore still costs performance after normalizing the
+memory protocol. Reject and remove all chunked-N16 API/JIT/kernel/harness
+wiring. Retain the required proxy fence in the braided general experiment and
+target overlap of dequant plus fence latency next. Attribution logs are under
+`/root/fac/scripts/megamoe/nvfp4_pro_m16_chunked_20260703/`.
+
+### Pro M16 K+1 full-row overlap: outlined-lambda screen
+
+The first correctness-safe K+1 candidate decoded stage 0 in a prologue, then
+requested the full next-stage decode after the first current-stage QGMMA
+commit and before its wait. It retained the compile-time N8/N16 token-base
+fallback for receive-heavy multi-rank experts. Single-rank M16 exact-NVFP4
+correctness passed, and ptxas reported 168 registers, a 56-byte stack, and
+zero spill loads/stores.
+
+This source schedule did not survive lowering. Ptxas warned that the WGMMA
+pipeline crossed a function-call boundary, and a cubin-wide SASS audit found
+zero decode/store/fence instructions in all 80 QGMMA-to-DEPBAR intervals.
+The reusable wait/dequant and prepare-next lambdas were outlined, serializing
+the intended overlap. Do not benchmark this form. The next bounded attempt
+duplicates the next-stage wait/dequant block at each L1/L2 submission site so
+the asynchronous interval contains no helper or lambda call.
+
+Duplicating the block removed the source-level helper calls but did not change
+the cubin: ptxas retained the serialization warning and SASS still showed
+zero of 80 QGMMA-to-DEPBAR intervals containing decode work. The common
+remaining obstruction is the next-stage mbarrier wait and its control flow.
+The third screen therefore performs that wait before the QGMMA submission and
+places only straight-line decode stores plus the proxy fence in flight.
+
+The pre-wait form and a final explicit `wait_group<1>` form produced the same
+result. Generated PTX had the requested order (`commit`, `wait_group 1`, full
+decode, proxy fence, `wait_group 0`) and kept the no-spill 168-register/56-byte
+resource profile, but ptxas removed `wait_group 1` and moved the draining
+DEPBAR before every decode. SASS again found zero useful intervals out of 80.
+This reproduces the older K+1 result on the new braided three-stage code:
+same-warpgroup next-stage shared-memory writes are not retained inside the
+WGMMA window by the Hopper backend for this kernel shape. Reject without an
+endpoint benchmark and remove all K+1 candidate API/JIT/kernel/Python wiring.
+
+### Pro braided 16-bit LUT-offset integration
+
+Integrated the previously isolated zero-growth LUT-offset metadata into a
+separate proxy-safe three-stage Pro candidate. The model-load prepack retains
+the 80-byte row and canonical scale tensor, replacing eight scale bytes plus
+eight padding bytes with eight `uint16(scale_code * 8)` values. Exact-NVFP4
+correctness passed M=8/16/64 for `global_scale=none/expert`. Fresh JIT retained
+168 registers, a 56-byte stack, zero spills, and 230080 bytes of shared memory.
+The cubin size was unchanged. Static SASS fell from 8752 to 8728 instructions,
+removing twelve shifts, eight LOP3s, eight IMAD.IADDs, and four IMAD.SHLs while
+replacing two 64-bit metadata loads with two 128-bit loads.
+
+Three-seed M64 A/B/B/A favored the offset candidate by 1.44% on rank 0 and
+1.77% at the slowest rank, although seed 101 contained a cold first baseline;
+seeds 202/303 independently improved rank 0 by 1.16%/0.74%. M16 did not pass
+the cross-point gate: the three-seed aggregate regressed 0.17% on rank 0 and
+0.62% at the slowest rank, with only seed 202 positive. An intra-quad ILP
+schedule retained identical resources and opcode counts but regressed the
+seed-101 M16 rank-0 center by about 1.1%, so it was reverted. Raw logs are
+under `/root/fac/scripts/megamoe/nvfp4_pro_scale_offsets_20260703/`.
+
+The direct-offset candidate remains isolated while a byte-equivalent
+pre-swizzled-row revision removes runtime output-address XORs. It is not a
+default wrapper policy.
+
+The pre-swizzled revision passed exact correctness and reduced static SASS by
+another 40 instructions, but regressed seed-101 M16 from about 1.10 ms to
+2.26 ms. NCU confirmed that the runtime XOR is the conflict-avoidance mapping,
+not redundant address arithmetic: shared-store bank conflicts rose from
+1.39M to 30.11M (21.6x), while the profiled kernel duration rose from 255 to
+486 us. Shared-load conflicts actually fell, isolating the store pattern as
+the cause. Reject the representation.
+
+The proxy-fence audit also found no valid single-warp publication shortcut.
+The CUDA programming guide defines the fence as publishing the executing
+thread's shared writes, and CUTLASS TMA epilogues issue the fence in every
+writer before synchronizing all threads. Keep the per-writer
+`fence.proxy.async.shared::cta`; a CTA barrier followed by one leader fence
+would not order the other threads' generic-proxy stores.
+
+Because the plain offset form improved M64 but failed the predeclared M16/M64
+cross-point gate, remove its API, JIT runtime, kernel header, and Python
+adapters rather than carrying another deployment layout. Retain the isolated
+offset decoder harness and raw reports for future layout work.
+
+### Proxy-safe Pro fused final correctness and W8A8 recalibration
+
+After removing the rejected K+1 and LUT-offset candidates, rebuilt the remote
+extension and ran fresh-JIT exact-NVFP4 correctness on the retained braided
+three-stage fused kernel. M=8/16 with 8 experts and M=64 with 64 experts passed
+for both `global_scale=none` and `global_scale=expert`; minimum per-token cosine
+was 0.9988. The required per-writer
+`fence.proxy.async.shared::cta` remains after math-side dequant publication.
+
+Recalibrated against `/root/fac/megamoe/DeepGEMM_fp8_split_swap_ref` using
+identical routing, 8 ranks, fixed capacity 8192, no L2 flush, median-30, routing
+seeds 101/202/303, and A/B/B/A process runs. Each point below is the geometric
+center of all six runs for that implementation:
+
+| M | NVFP4 rank0 (us) | W8A8 rank0 (us) | rank0 gap | NVFP4 max-rank (us) | W8A8 max-rank (us) | max-rank gap |
+|---:|---:|---:|---:|---:|---:|---:|
+| 8 | 878.0 | 742.7 | +18.22% | 879.7 | 746.0 | +17.92% |
+| 16 | 1123.7 | 913.7 | +22.98% | 1133.3 | 922.6 | +22.84% |
+| 32 | 1148.4 | 998.2 | +15.05% | 1159.3 | 1004.0 | +15.47% |
+| 64 | 1221.4 | 1068.2 | +14.35% | 1225.0 | 1071.5 | +14.33% |
+
+The equal-point geometric gap is 17.60% by rank 0 and 17.59% by max-rank
+latency. M=16 is the clear worst point. Earlier approximately 10.6% four-point
+figures predated normalization to the required generic-store-to-WGMMA async
+proxy fence and must not be used as the current deployable comparison. Raw
+logs are under
+`/root/fac/scripts/megamoe/nvfp4_pro_proxy_safe_vs_w8_20260703/`.
+
+### Pro proxy-fence scheduling screen
+
+Tested an isolated candidate that moved each writer's required
+`fence.proxy.async.shared::cta` from immediately after decoded-B stores to
+after the independent L1/L2 activation-scale shared loads, while still keeping
+the fence before every WGMMA async-proxy read. M=8/16 exact-NVFP4 correctness
+passed for both global-scale modes. Resources were unchanged at 168 registers,
+a 56-byte stack, zero spills, 230080 bytes of shared memory, and a 158432-byte
+cubin.
+
+Ptxas eliminated the proposed scheduling distinction. Baseline and candidate
+both contained 8752 static SASS instructions; a full instruction-stream diff
+found only one changed immediate carrying a source-line value (`0x8dc` versus
+`0x8e1`). The decoded stores, scale-load placeholders, memory barrier, and
+`FENCE.VIEW.ASYNC.S` were emitted in the same order. Reject without an endpoint
+benchmark and remove the candidate API/JIT/kernel/Python wiring.
+
+### Pro braided store-first LUT scheduling screen
+
+Screened the complementary decoder schedule in the isolated braided harness:
+decode and store the current 32-value quad before loading the next pair of LUT
+entries. This gives earlier stores more drain distance before the final proxy
+fence, but exposes more of the dependent shared-LUT latency. Decoded output
+remained byte-exact for model and exhaustive scale patterns.
+
+The trade was decisively negative. With model scales, net decoder cycles rose
+from 740 to 903 at 624 CTAs (+22.0%) and from 398 to 458 at the real 78-CTA
+count (+15.1%). At 78 CTAs with exhaustive scales they rose from 641 to 678
+(+5.8%). Keep the existing next-LUT-before-current-store window and do not
+integrate this schedule into a real kernel. The reusable screen remains in
+`docs/experiments/sm90_nvfp4_standard_prepack/bench_dequant_braided_ilp.py`.

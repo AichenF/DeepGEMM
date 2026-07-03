@@ -1,0 +1,33 @@
+Source: cudac-tensor-core-expert/references/wgmma_00_core_concepts.md
+
+wgmma.fence instruction must be used to fence the register accesses of wgmma.mma_async instruction from their prior accesses. Otherwise, the behavior is undefined.
+
+wgmma.commit_group and wgmma.wait_group operations must be used to wait for the completion of the asynchronous matrix multiply and accumulate operations before the results are accessed.
+
+Source: cudac-tensor-core-expert/references/wgmma_05_execution.md
+
+##### WGMMA Synchronization Primitives
+```cpp
+__device__ void warpgroup_arrive() {
+    asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
+}
+
+__device__ void warpgroup_commit_batch() {
+    asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
+}
+
+template <int N>
+__device__ void warpgroup_wait() {
+    static_assert(N >= 0 && N <= 7, "N must be in range [0, 7]");
+    asm volatile("wgmma.wait_group.sync.aligned %0;\n" ::"n"(N) : "memory");
+}
+```
+
+Source: cudac-tensor-core-expert/references/optimization_04_warp_specialization.md
+
+Warp specialization is a **producer/consumer pipeline inside one CTA** that overlaps:
+
+- **Producer warpgroup**: issues TMA loads (global → shared) into a ring buffer.
+- **Consumer warpgroup(s)**: waits for ready tiles, runs WGMMA, then releases ring-buffer slots.
+
+On Hopper, one WGMMA warpgroup is **128 threads (4 warps)**.
