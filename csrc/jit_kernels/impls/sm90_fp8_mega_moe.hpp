@@ -56,6 +56,7 @@ public:
         bool prefetch_weight_sf;
         bool early_weight_sf;
         bool fp16_scaled_accum;
+        bool native_fp16_wgmma;
         KernelPhase kernel_phase;
         MegaMoESM90Config config;
 
@@ -117,6 +118,7 @@ static void __instantiate_kernel() {{
         {},
         {},
         {},
+        {},
         {}
     >);
 }};
@@ -148,7 +150,8 @@ static void __instantiate_kernel() {{
     args.adjacent_scale_domain ? "true" : "false",
     args.prefetch_weight_sf ? "true" : "false",
     args.early_weight_sf ? "true" : "false",
-    args.fp16_scaled_accum ? "true" : "false");
+    args.fp16_scaled_accum ? "true" : "false",
+    args.native_fp16_wgmma ? "true" : "false");
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -321,7 +324,23 @@ static void sm90_fp8_mega_moe(
         get_env<int>("DG_SM90_MOE_EARLY_WEIGHT_SF", 0) != 0;
     const bool fp16_scaled_accum =
         get_env<int>("DG_SM90_MOE_FP16_SCALED_ACCUM", 0) != 0;
+    const bool native_fp16_wgmma =
+        get_env<int>("DG_SM90_MOE_NATIVE_FP16_WGMMA", 0) != 0;
     DG_HOST_ASSERT(not (prefetch_weight_sf and early_weight_sf));
+    DG_HOST_ASSERT(not (fp16_scaled_accum and native_fp16_wgmma));
+    const auto supports_native_fp16_wgmma = [](const MegaMoESM90Config& phase_config) {
+        const int num_epilogue_warpgroups = phase_config.num_epilogue_threads / 128;
+        const bool split_n =
+            phase_config.block_m == 64 and num_epilogue_warpgroups > 1 and
+            phase_config.block_n % num_epilogue_warpgroups == 0;
+        const int wg_block_n = split_n ?
+            phase_config.block_n / num_epilogue_warpgroups : phase_config.block_n;
+        return phase_config.block_m == 64 and wg_block_n == 128 and
+               not phase_config.swap_ab;
+    };
+    DG_HOST_ASSERT(not native_fp16_wgmma or
+                   (supports_native_fp16_wgmma(l1_config) and
+                    supports_native_fp16_wgmma(l2_config)));
     if (prefetch_weight_sf) {
         constexpr int kWeightSFBytesPerStage = 128;
         l1_config.smem_size += l1_config.num_stages * kWeightSFBytesPerStage;
@@ -351,6 +370,7 @@ static void sm90_fp8_mega_moe(
         .prefetch_weight_sf = prefetch_weight_sf,
         .early_weight_sf = early_weight_sf,
         .fp16_scaled_accum = fp16_scaled_accum,
+        .native_fp16_wgmma = native_fp16_wgmma,
         .kernel_phase = SM90FP8MegaMoERuntime::KernelPhase::Linear1,
         .config = l1_config,
         .y = y.data_ptr(),

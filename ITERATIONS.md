@@ -448,3 +448,21 @@ Each measured source or promoted-selector iteration records:
   F16-output WGMMA, so the next bounded experiment will remove the per-segment
   FP32-to-FP16 conversion rather than treating this small result as final.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_fp16acc_v1_*`.
+
+## Iteration 14: native FP16 WGMMA initial launch
+
+- Hypothesis: native `m64n128k32.f16.e4m3.e4m3` WGMMA can emit two packed
+  FP16 accumulators per register and remove the FP32-to-FP16 conversion paid
+  by iteration 13 after every scale domain.
+- Source change: add an opt-in M64N128 native-FP16 WGMMA wrapper, packed
+  register fencing, and a scaled half2 accumulation loop behind
+  `DG_SM90_MOE_NATIVE_FP16_WGMMA=1`. The default remains disabled and no H20
+  or generic selector behavior changes.
+- Protocol: intended same-source Pro M=8192 control/candidate comparison on
+  job 2957858, seed 101, median-10, 8x H200.
+- Result: no kernel was built or timed because the initial command referenced
+  `scripts/run_h200_fp8_candidate.sh` inside the remote worktree, while the
+  campaign copy lives under the result root.
+- Decision: this is a harness-path failure, not evidence about the candidate.
+  Retry the identical source and protocol with the campaign runner path.
+- Raw artifacts: none; execution stopped before candidate-directory creation.
