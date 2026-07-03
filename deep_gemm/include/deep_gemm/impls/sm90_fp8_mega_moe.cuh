@@ -1303,12 +1303,12 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                                 if (col_idx == 0)
                                     weight = valid_r0 ? *l1_topk_weights_buffer
                                         .get_data_buffer(m_idx + row_offset_r0)
-                                        .get_base_ptr<float>() : 0.0f;
+                                        .template get_base_ptr<float>() : 0.0f;
                                 return __shfl_sync(0xffffffff, weight, static_cast<int>(lane_idx - col_idx));
                             } else {
                                 return valid_r0 ? *l1_topk_weights_buffer
                                     .get_data_buffer(m_idx + row_offset_r0)
-                                    .get_base_ptr<float>() : 0.0f;
+                                    .template get_base_ptr<float>() : 0.0f;
                             }
                         }();
                         const float weight_r1 = [&]() {
@@ -1317,12 +1317,12 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                                 if (col_idx == 0)
                                     weight = valid_r1 ? *l1_topk_weights_buffer
                                         .get_data_buffer(m_idx + row_offset_r1)
-                                        .get_base_ptr<float>() : 0.0f;
+                                        .template get_base_ptr<float>() : 0.0f;
                                 return __shfl_sync(0xffffffff, weight, static_cast<int>(lane_idx - col_idx));
                             } else {
                                 return valid_r1 ? *l1_topk_weights_buffer
                                     .get_data_buffer(m_idx + row_offset_r1)
-                                    .get_base_ptr<float>() : 0.0f;
+                                    .template get_base_ptr<float>() : 0.0f;
                             }
                         }();
                         #pragma unroll
@@ -2099,7 +2099,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             clamp_up(u0);
                             const float weight_0 = *l1_topk_weights_buffer
                                 .get_data_buffer(m_idx + token_0)
-                                .get_base_ptr<float>();
+                                .template get_base_ptr<float>();
                             smem_cd_swap_l1_fp32[token_0 * L1_OUT_BLOCK_N + out_col_base] =
                                 silu(g0) * u0 * weight_0;
                         }
@@ -2110,7 +2110,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             clamp_up(u1);
                             const float weight_1 = *l1_topk_weights_buffer
                                 .get_data_buffer(m_idx + token_1)
-                                .get_base_ptr<float>();
+                                .template get_base_ptr<float>();
                             smem_cd_swap_l1_fp32[token_1 * L1_OUT_BLOCK_N + out_col_base] =
                                 silu(g1) * u1 * weight_1;
                         }
@@ -2252,20 +2252,20 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     if (col_idx == 0) {
                         weight_r0 = valid_r0 ? *l1_topk_weights_buffer
                             .get_data_buffer(m_idx + row_offset_r0)
-                            .get_base_ptr<float>() : 0.0f;
+                            .template get_base_ptr<float>() : 0.0f;
                         weight_r1 = valid_r1 ? *l1_topk_weights_buffer
                             .get_data_buffer(m_idx + row_offset_r1)
-                            .get_base_ptr<float>() : 0.0f;
+                            .template get_base_ptr<float>() : 0.0f;
                     }
                     weight_r0 = __shfl_sync(0xffffffff, weight_r0, topk_weight_src_lane);
                     weight_r1 = __shfl_sync(0xffffffff, weight_r1, topk_weight_src_lane);
                 } else {
                     weight_r0 = valid_r0 ? *l1_topk_weights_buffer
                         .get_data_buffer(m_idx + row_offset_r0)
-                        .get_base_ptr<float>() : 0.0f;
+                        .template get_base_ptr<float>() : 0.0f;
                     weight_r1 = valid_r1 ? *l1_topk_weights_buffer
                         .get_data_buffer(m_idx + row_offset_r1)
-                        .get_base_ptr<float>() : 0.0f;
+                        .template get_base_ptr<float>() : 0.0f;
                 }
                 #pragma unroll
                 for (uint32_t p = 0; p < kNumPairs; ++ p) {
