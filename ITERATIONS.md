@@ -115,3 +115,29 @@ Each measured source or promoted-selector iteration records:
   M=1024/2048 only for survivors. No production selector change yet.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_d0_*`
   and `.../candidates/pro_d1_*`.
+
+## Parameter screen 3: Pro combined beam
+
+- Hypothesis: the direct-off stage3 and N-major gains are at least partly
+  additive; wave count or cleanup may recover the remaining representative-
+  point gaps.
+- Protocol: Pro M=512/4096/8192, seed 101, median-10, 8x H200. Eleven
+  combinations of stage2/3, N-major, EPW16/24, and cleanup completed with
+  isolated caches and complete rank output.
+- Best max-rank results:
+
+  | M | best candidate | candidate us | vs baseline | PR323 us | vs PR323 |
+  |---:|---|---:|---:|---:|---:|
+  | 512 | direct0 + stage3 + N-major + EPW24 | 1111.138 | -6.27% | 1090.546 | +1.89% |
+  | 4096 | direct0 + stage3 + N-major | 4419.630 | -18.30% | 4338.506 | +1.87% |
+  | 8192 | direct0 + stage3 + N-major + EPW16 | 8325.422 | -17.13% | 7842.460 | +6.16% |
+
+- Attribution: N-major improved the stage3 parent at M=4096 and M=8192 but
+  hurt M=512 unless paired with a smaller expert wave. EPW24 was best at
+  M=512, no forced wave was best at M=4096, and EPW16 was best at M=8192.
+  Cleanup was neutral-to-negative. Stage2 regressed all points and is rejected.
+- Decision: retain three load-specific beam winners. They are not yet
+  promotable because no representative point beats PR323. Search neighboring
+  legal waves/stages and fill M=1024/2048 for the best families; do not encode
+  a production H200 selector yet.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_c_*`.
