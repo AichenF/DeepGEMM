@@ -975,3 +975,27 @@ Each measured source or promoted-selector iteration records:
   candidate; no automatic selector or H20 tuning entry is changed.
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_phase_interleaved_s101_n20/`.
+
+## Iteration 34: BN512 L1 expert-wave sweep
+
+- Hypothesis: halving L1 CTA count with BN512 may shift the preferred number
+  of experts scheduled per wave away from the BN256 parent's EPW16.
+- Protocol: Pro M=8192, seed 101, median-10, 8x H200. Hold L1 BN512 / L2
+  BN256, BF16x2 accumulation, E5M2 combine, and L2 EPW16 fixed; sweep L1
+  EPW4/8/12/16/24/48. Report maximum returned latency across ranks.
+- Results:
+
+  | L1 EPW | us | vs EPW16 |
+  |---:|---:|---:|
+  | 4 | 7725.876 | +0.72% |
+  | 8 | 7733.768 | +0.82% |
+  | 12 | 7809.523 | +1.81% |
+  | 16 | 7670.768 | — |
+  | 24 | 7680.280 | +0.12% |
+  | 48 | 7748.728 | +1.02% |
+
+- Decision: retain L1 EPW16. EPW24 is inside the noise band and all other
+  neighbors regress. No selector change is justified, and the existing H20
+  tuning remains untouched.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_l1wave_v1_*`.
