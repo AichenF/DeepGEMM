@@ -649,3 +649,29 @@ Each measured source or promoted-selector iteration records:
   promote a phase-specific wave rule.
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_e5m2_phasewave_v1_*`.
+
+## Iteration 22: effective phase-specific pipeline stages with E5M2
+
+- Hypothesis: L1 and L2 may prefer different TMA pipeline depths after E5M2
+  reduces the combine-side work.
+- Protocol: Pro M=8192 E5M2 parent, shared EPW16, seed 101, median-10, 8x
+  H200. Sweep legal L1/L2 stage counts two through four with fresh caches.
+- Results (maximum returned latency across ranks):
+
+  | L1 stages | L2 stages | us | vs 3/3 |
+  |---:|---:|---:|---:|
++  | 3 | 3 | 8226.000 | — |
+  | 2 | 3 | 8198.978 | -0.33% |
+  | 4 | 3 | 8176.543 | -0.60% |
+  | 3 | 2 | 8184.229 | -0.51% |
+  | 3 | 4 | 8228.157 | 0.03% |
+  | 4 | 2 | 8214.189 | -0.14% |
+  | 2 | 4 | 8199.900 | -0.32% |
+  | 4 | 4 | 8192.161 | -0.41% |
+
+- Decision: the best point is 4/3 stages at 8176.543 us,
+  0.60% faster than the 8226.000 us control and
+  4.26% behind PR323. This remains inside the 1% confirmation
+  band, so phase-specific pipeline depth is not a structural large-M lever.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_e5m2_phasestage_v1_*`.
