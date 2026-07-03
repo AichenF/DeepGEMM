@@ -19,7 +19,9 @@ export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$VENV/lib/python3.12/site-packages/tvm_
 export PYTHONUNBUFFERED=1 DG_USE_LOCAL_VERSION=0 DG_BENCH_FLUSH_L2_BYTES=0
 export DG_OURS_REPO="$OURS"
 export DG_OURS_BENCH="$OURS/tests/bench_mega_moe_sm90.py"
-export TMPDIR="$CASE_ROOT/tmp"
+# torch symmetric-memory creates Unix sockets below TMPDIR; keep this path
+# short enough for sockaddr_un.sun_path on long shared-filesystem roots.
+export TMPDIR=${DG_CANDIDATE_TMPDIR:-/tmp/aichenf_sm90_fp8_$CANDIDATE}
 export DG_JIT_CACHE_DIR="$CASE_ROOT/jit"
 export TORCH_EXTENSIONS_DIR="$CASE_ROOT/torch_extensions"
 mkdir -p "$CASE_ROOT/logs" "$TMPDIR" "$DG_JIT_CACHE_DIR" "$TORCH_EXTENSIONS_DIR"
