@@ -884,8 +884,17 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                     if (not split_mn and not split_m)
                         continue;
                 }
-                if (block_m == 64 and block_n == 256 and num_epilogue_warpgroups != 2)
-                    continue;
+                if (block_m == 64 and block_n == 256 and
+                    num_epilogue_warpgroups != 2) {
+                    // Keep the production/default two-consumer configuration.
+                    // Permit the already-implemented wide-N path only when an
+                    // experiment explicitly requests one epilogue warpgroup.
+                    const bool forced_wide_n =
+                        forced_epilogue_warpgroups == 1 and
+                        num_epilogue_warpgroups == 1;
+                    if (not forced_wide_n)
+                        continue;
+                }
                 const int num_epilogue_threads = num_epilogue_warpgroups * 128;
                 const bool swap_ab =
                     swap_ab_env_enabled and block_n == 128 and

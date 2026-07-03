@@ -486,3 +486,23 @@ Each measured source or promoted-selector iteration records:
   is below the 1% confirmation band and does not justify its additional
   accumulation rounding or a broad precision campaign.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_nativefp16_v1_*`.
+
+## Iteration 16: wide-N single-consumer initial launch
+
+- Hypothesis: one M64N256 consumer warpgroup with in-place scale-domain
+  accumulation can replace the current pair of M64N128 consumers, reducing
+  consumer threads and duplicated control work while retaining the same CTA
+  tile and split L1/L2 architecture.
+- Source change: allow an explicitly forced one-warpgroup BN256 candidate and
+  extend the existing in-place FP32 accumulation path to N256, including the
+  two independent L2 weight-scale regions. Defaults still select two
+  warpgroups, so H20 and generic behavior are unchanged.
+- Protocol: current Pro M=8192 parent, seed 101, median-10, 8x H200; compare
+  explicit epilogue-WG counts two and one.
+- Result: the two-WG control completed at 8378.121 us max-rank. The one-WG
+  candidate stopped before JIT with `not candidates.empty()` at the final
+  heuristic candidate check; no candidate timing was produced.
+- Decision: treat this as an incomplete legality-plumbing iteration, not a
+  performance result. Identify and fix the remaining candidate filter, then
+  rerun the identical source-level design.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_widen_v1_*`.

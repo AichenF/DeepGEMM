@@ -317,7 +317,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     constexpr bool kEarlyWeightSF = kEarlyWeightSFRequested;
     constexpr bool kFP16ScaledAccum = kFP16ScaledAccumRequested;
     constexpr bool kNativeFP16WGMMA = kNativeFP16WGMMARequested;
-    constexpr bool kReuseAccumAsFinal = kSplitMNWarpgroups;
+    constexpr bool kReuseAccumAsFinal =
+        kSplitMNWarpgroups or kWideNWarpgroups;
     using L1WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     using L2WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     static_assert(L1WGMMA::M == 64 and L1WGMMA::N == WG_BLOCK_N and L1WGMMA::K == 32,
@@ -2222,8 +2223,9 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
             const auto run_inplace_scaled_gemm_loop = [&]() {
                 DG_STATIC_ASSERT(not kReuseAccumAsFinal or
-                                 (WG_BLOCK_M == 64 and WG_BLOCK_N == 128),
-                                 "In-place scaled accumulation expects M64N128 per warpgroup");
+                                 (WG_BLOCK_M == 64 and
+                                  (WG_BLOCK_N == 128 or WG_BLOCK_N == 256)),
+                                 "In-place scaled accumulation expects M64N128/N256");
 
                 const auto scale_final = [&](const float& scale_r0_gate,
                                              const float& scale_r1_gate,
@@ -2233,6 +2235,21 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
                         const float scale_r0 = (i & 1u) ? scale_r0_up : scale_r0_gate;
                         const float scale_r1 = (i & 1u) ? scale_r1_up : scale_r1_gate;
+                        final_accum[i*4+0] *= scale_r0;
+                        final_accum[i*4+1] *= scale_r0;
+                        final_accum[i*4+2] *= scale_r1;
+                        final_accum[i*4+3] *= scale_r1;
+                    }
+                };
+                const auto scale_l2_final = [&](const float& scale_r0_lo,
+                                                const float& scale_r1_lo,
+                                                const float& scale_r0_hi,
+                                                const float& scale_r1_hi) {
+                    #pragma unroll
+                    for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
+                        const bool high_n = WG_BLOCK_N > 128 and i >= 16u;
+                        const float scale_r0 = high_n ? scale_r0_hi : scale_r0_lo;
+                        const float scale_r1 = high_n ? scale_r1_hi : scale_r1_lo;
                         final_accum[i*4+0] *= scale_r0;
                         final_accum[i*4+1] *= scale_r0;
                         final_accum[i*4+2] *= scale_r1;
@@ -2306,15 +2323,22 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             l2_weights_sf + local_expert_idx * kL2SFPerExpert + k_block_idx;
                         const uint32_t sf_n =
                             (n_block_idx * BLOCK_N + wg_n_idx) / 128u;
-                        const float l2_sf = __ldg(base + sf_n * kL2SFKBlocks);
+                        const float l2_sf_lo =
+                            __ldg(base + sf_n * kL2SFKBlocks);
+                        const float l2_sf_hi = WG_BLOCK_N > 128 ?
+                            __ldg(base + (sf_n + 1u) * kL2SFKBlocks) :
+                            l2_sf_lo;
 
                         const auto run_l2_half = [&](const uint32_t& k_offset,
                                                      const float& scale_a_0,
                                                      const float& scale_a_1) {
-                            const float scale_r0 = scale_a_0 * l2_sf;
-                            const float scale_r1 = scale_a_1 * l2_sf;
-                            scale_final(reciprocal(scale_r0), reciprocal(scale_r1),
-                                        reciprocal(scale_r0), reciprocal(scale_r1));
+                            const float scale_r0_lo = scale_a_0 * l2_sf_lo;
+                            const float scale_r1_lo = scale_a_1 * l2_sf_lo;
+                            const float scale_r0_hi = scale_a_0 * l2_sf_hi;
+                            const float scale_r1_hi = scale_a_1 * l2_sf_hi;
+                            scale_l2_final(
+                                reciprocal(scale_r0_lo), reciprocal(scale_r1_lo),
+                                reciprocal(scale_r0_hi), reciprocal(scale_r1_hi));
 
                             #pragma unroll
                             for (uint32_t i = 0; i < kAccumPerThread; ++ i)
@@ -2335,7 +2359,8 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             for (uint32_t i = 0; i < kAccumPerThread; ++ i)
                                 ptx::warpgroup_fence_operand(final_accum[i]);
                             ptx::warpgroup_wait<0>();
-                            scale_final(scale_r0, scale_r1, scale_r0, scale_r1);
+                            scale_l2_final(scale_r0_lo, scale_r1_lo,
+                                           scale_r0_hi, scale_r1_hi);
                         };
 
                         run_l2_half(0, scale_a_0_lo, scale_a_1_lo);
