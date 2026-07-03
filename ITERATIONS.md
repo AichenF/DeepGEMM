@@ -1026,3 +1026,38 @@ Each measured source or promoted-selector iteration records:
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_l2wave_v1_*`
   and `.../candidates/pro_bn512_l2wave_confirm_s101_n20/`.
+
+## Iteration 36: BN256 L2 stage and N-major sweep
+
+- Hypothesis: BN512 L1 changes the producer cadence enough that L2 may prefer
+  a different pipeline depth or no longer benefit from N-major scheduling.
+- Initial protocol: Pro M=8192, seed 101, median-10, 8x H200. Sweep L2 stages
+  2/3/4 with N-major enabled and disabled; keep all other retained parameters
+  fixed.
+- Initial results (maximum returned latency across ranks):
+
+  | L2 N-major | L2 stages | us |
+  |---:|---:|---:|
+  | 1 | 2 | 7756.274 |
+  | 1 | 3 | 7707.218 |
+  | 1 | 4 | 7665.443 |
+  | 0 | 2 | 7840.451 |
+  | 0 | 3 | 7822.364 |
+  | 0 | 4 | 7812.259 |
+
+- N-major disabled regressed every stage by 1.4% or more and is rejected.
+  The apparent 0.54% stage4 lead was then checked with three rotating,
+  interleaved median-20 observations per stage.
+- Confirmation results:
+
+  | L2 stages | observation maxima (us) | median us | vs stage3 |
+  |---:|---|---:|---:|
+  | 3 | 7727.468, 7791.515, 7737.307 | 7737.307 | — |
+  | 4 | 7813.226, 7752.464, 7712.187 | 7752.464 | +0.20% |
+
+- Decision: retain L2 N-major with three stages. The sequential stage4 signal
+  does not reproduce under interleaving. No H200 selector is promoted yet and
+  the existing H20 tuning remains unchanged.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_l2sched_v1_*`
+  and `.../candidates/pro_bn512_l2stage_confirm_s101_n20/`.
