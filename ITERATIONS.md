@@ -192,3 +192,26 @@ Each measured source or promoted-selector iteration records:
   remains materially faster. Retain only the opt-in experiment capability,
   which has no default-device effect, for reproducibility.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_x_*`.
+
+## Diagnostic 1: split L1/L2 timing attribution
+
+- Method: enabled event-name breakdown in the audited timing harness and
+  collected median-10 L1/L2 events for the baseline Pro M=8192 and the current
+  load-specific beam winners. Logical-call timing remained the sum of the two
+  ordered events.
+- Worst-rank results:
+
+  | Case | total us | L1 median us | L2 median us |
+  |---|---:|---:|---:|
+  | baseline M=8192 | 9682.652 | 5665.421 | 4098.737 |
+  | winner M=512 | 1097.781 | 681.811 | 413.106 |
+  | winner M=4096 | 4436.979 | 2792.716 | 1624.487 |
+  | winner M=8192 | 8340.630 | 5360.889 | 2964.733 |
+
+- Interpretation: the combined winner removes much more L2 time than L1 time
+  at M=8192, but L1 still accounts for roughly 64% of the remaining latency.
+  The residual PR323 gap cannot be closed by scatter scheduling alone.
+- Decision: expose/test separate L1 and L2 tuning parameters while preserving
+  the two-kernel architecture and existing shared defaults. Do not pursue
+  PR323-style fusion.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_diag_*`.
