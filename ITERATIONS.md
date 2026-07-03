@@ -64,3 +64,28 @@ Each measured source or promoted-selector iteration records:
   `/home/scratch.aichenf_wwfo/greencontext/results/sm90_fp8_h200_retune_job2957858/`
   (`environment.txt`, `logs/baseline_correctness_l1_l4.log`, 44 baseline leaf
   logs, and `logs/baseline_driver.log`).
+
+## Parameter screen 1: disable Pro direct L2 scatter
+
+- Hypothesis: the direct path's scalar remote stores are responsible for the
+  sharp Pro regression beginning at M=512; forcing the existing non-direct
+  vector/TMA path may close the PR323 gap without changing architecture.
+- Exact configuration: `DG_SM90_MOE_DIRECT_L2_SCATTER=0`, all other selector
+  controls at their defaults; Pro M=512/1024/2048/4096/8192, seed 101,
+  median-10, 8x H200. No source or production-selector change was made.
+- Results (max-rank):
+
+  | M | baseline us | direct-off us | vs baseline | PR323 us | vs PR323 |
+  |---:|---:|---:|---:|---:|---:|
+  | 512 | 1185.491 | 1191.638 | +0.52% | 1090.546 | +9.27% |
+  | 1024 | 1892.598 | 1858.309 | -1.81% | 1582.323 | +17.44% |
+  | 2048 | 3004.873 | 2938.806 | -2.20% | 2463.095 | +19.31% |
+  | 4096 | 5409.617 | 4956.729 | -8.37% | 4338.506 | +14.25% |
+  | 8192 | 10046.682 | 8654.320 | -13.86% | 7842.460 | +10.35% |
+
+- Decision: reject direct-off as a complete Pro large-M rule. Retain it as the
+  parent for the M>=4096 beam, where it is a large repeatable-looking
+  improvement, and combine it with H200-only stage/wave/block experiments.
+  Keep the baseline direct path at M=512.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_direct0/`.
