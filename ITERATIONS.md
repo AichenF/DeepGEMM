@@ -564,3 +564,32 @@ Each measured source or promoted-selector iteration records:
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_fp16_effective_v1_*`
   and `.../candidates/pro_nativefp16_correctness_smoke/`.
+
+## Iteration 19: effective internal-candidate screen
+
+- Hypothesis: after rebuilding the host extension, one of the previously
+  unevaluated internal paths may provide a material H200 gain without changing
+  the split L1/L2 architecture.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`),
+  seed 101, median-10, 8x H200. Each mode changed exactly one internal switch
+  from the same-source control and used a fresh cache.
+- Results (maximum returned latency across ranks):
+
+  | Mode | us | vs control |
+  |---|---:|---:|
+  | control | 8358.573 | — |
+  | async L1 store | 8345.627 | -0.15% |
+  | L1 dual-K | 9975.751 | +19.35% |
+  | L2 dual-half | 16026.832 | +91.74% |
+  | both dual | 17459.549 | +108.88% |
+  | E5M2 combine | 8196.752 | -1.94% |
+  | adjacent scale domain | 8624.391 | +3.18% |
+  | B-loader SF prefetch | 8375.747 | +0.21% |
+  | early math-warp SF | 8347.869 | -0.13% |
+
+- Decision: retain E5M2 combine as the only material candidate (-1.94%); it
+  requires focused precision validation and multi-M confirmation. Async L1
+  store and both weight-SF load variants are inside the 1% noise band. Reject
+  adjacent-domain and all dual-accumulator forms, which regress materially.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_effective_screen1_*`.
