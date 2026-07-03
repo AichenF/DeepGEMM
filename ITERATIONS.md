@@ -753,3 +753,27 @@ Each measured source or promoted-selector iteration records:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_splitn4_v1_wg2/`,
   `.../candidates/pro_splitn4_v1_wg4/` (initial JIT legality failure), and
   `.../candidates/pro_splitn4_v2_wg4/`.
+
+## Iteration 26: phase-specific four-way consumers
+
+- Hypothesis: the aggregate four-WG regression may hide a gain in one split
+  phase, especially L1, which accounts for about 64% of Pro M=8192 latency.
+- Implementation: add explicit `DG_SM90_MOE_L1_EPILOGUE_WG` and
+  `DG_SM90_MOE_L2_EPILOGUE_WG` experiment overrides. Each phase independently
+  recomputes its stage/shared-memory launch configuration. Defaults inherit the
+  shared configuration exactly, so H20 and generic behavior are unchanged.
+- Protocol: Pro M=8192 E5M2 parent, seed 101, median-10, 8x H200; compare
+  L1/L2 consumer counts 2/2, 4/2, and 2/4. Cached JIT sources confirmed that
+  the 512-thread specialization appeared only in the requested phase.
+- Results (maximum returned latency across ranks):
+
+  | L1 WG | L2 WG | us | vs 2/2 | vs PR323 |
+  |---:|---:|---:|---:|---:|
+  | 2 | 2 | 8213.641 | — | +4.73% |
+  | 4 | 2 | 8281.242 | +0.82% | +5.60% |
+  | 2 | 4 | 8290.444 | +0.94% | +5.71% |
+
+- Decision: reject four-way consumers for both phases. Neither phase contains
+  a hidden gain, so do not promote a phase-specific consumer-count rule.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_phasewg_v1_*`.
