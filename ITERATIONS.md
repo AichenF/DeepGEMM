@@ -807,3 +807,30 @@ Each measured source or promoted-selector iteration records:
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bf16acc_correctness_wg*`
   and `.../candidates/pro_bf16acc_v1_*`.
+
+## Iteration 28: expanded dispatch/loader frontend
+
+- Hypothesis: Pro M=8192 may benefit from four dispatch warps because built-in
+  phase counters show a nontrivial dispatch interval before the dominant GEMM.
+  The existing register budget exactly supports four dispatch plus four
+  non-epilogue warps alongside the two M64N128 consumers.
+- Implementation: permit the expanded 4+4 frontend only when explicitly
+  requested with `DG_SM90_MOE_DISPATCH_WARPS=4` on a non-swap compact tile.
+  The default BN256 frontend remains 2+2, preserving all H20 behavior.
+- Correctness: eight-rank `L2.profile_topk6.t512` passed at
+  `calc_diff=0.0020 < 0.01` with the expanded frontend.
+- Performance protocol: Pro M=8192 E5M2 parent, seed 101, median-10, 8x H200;
+  compare two versus four dispatch warps.
+- Results (maximum returned latency across ranks):
+
+  | dispatch/non-epilogue warps | shared memory | us | vs 2+2 | vs PR323 |
+  |---|---:|---:|---:|---:|
+  | 2+2 | 173760 B | 8196.514 | — | +4.52% |
+  | 4+4 | 188112 B | 8891.979 | +8.49% | +13.38% |
+
+- Decision: reject the expanded frontend as a shared L1/L2 configuration.
+  Extra threads and shared memory materially outweigh any dispatch gain. Test
+  it once as an L1-only phase override because L2 does not perform dispatch.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_dispatch4_correctness_smoke/`
+  and `.../candidates/pro_dispatch_v1_*`.

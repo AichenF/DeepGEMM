@@ -931,10 +931,16 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                                             (compact_frontend ? 2 : 4));
 
                 for (const int& num_dispatch_warps: dispatch_warp_candidates) {
-                    if (compact_frontend and num_dispatch_warps != 2)
+                    const bool explicitly_expanded_frontend =
+                        compact_frontend and forced_dispatch_warps == 4 and
+                        num_dispatch_warps == 4 and not swap_ab;
+                    if (compact_frontend and num_dispatch_warps != 2 and
+                        not explicitly_expanded_frontend)
                         continue;
                     const int num_dispatch_threads = num_dispatch_warps * 32;
-                    const int num_non_epilogue_threads = compact_frontend ? 64 : 128;
+                    const int num_non_epilogue_threads =
+                        compact_frontend and not explicitly_expanded_frontend ?
+                            64 : 128;
                     if ((num_dispatch_threads + num_non_epilogue_threads) % 128 != 0)
                         continue;
 
