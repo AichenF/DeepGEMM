@@ -14,6 +14,22 @@ def geometric_mean(values):
     return math.exp(sum(math.log(v) for v in values) / len(values))
 
 
+def extract_marked_json(text, marker):
+    """Decode JSON after each marker even when process output is concatenated."""
+    decoder = json.JSONDecoder()
+    rows = []
+    start = 0
+    while True:
+        marker_pos = text.find(marker, start)
+        if marker_pos < 0:
+            return rows
+        payload_pos = marker_pos + len(marker)
+        payload = text[payload_pos:].lstrip()
+        row, consumed = decoder.raw_decode(payload)
+        rows.append(row)
+        start = payload_pos + (len(text[payload_pos:]) - len(payload)) + consumed
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--logs", type=Path, required=True)
@@ -27,15 +43,15 @@ def main():
     # consume only one-run leaf logs here.
     for path in sorted(args.logs.glob("baseline_*_M*_S*_L*_*_N*.log")):
         text = path.read_text(errors="replace")
-        meta_match = re.search(r"^RUN_META_JSON (.+)$", text, re.MULTILINE)
-        if not meta_match:
+        metas = extract_marked_json(text, "RUN_META_JSON ")
+        if not metas:
             continue
-        meta = json.loads(meta_match.group(1))
+        if len(metas) != 1:
+            errors.append(f"{path.name}: metadata records={len(metas)}")
+            continue
+        meta = metas[0]
         exits = re.findall(r"^RUN_EXIT=(\d+)$", text, re.MULTILINE)
-        stats = [
-            json.loads(match)
-            for match in re.findall(r"^BENCH_STAT_JSON (.+)$", text, re.MULTILINE)
-        ]
+        stats = extract_marked_json(text, "BENCH_STAT_JSON ")
         routes = sorted(
             (int(rank), int(tokens), int(recv), int(experts))
             for rank, tokens, recv, experts in re.findall(
