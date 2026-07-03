@@ -1061,3 +1061,31 @@ Each measured source or promoted-selector iteration records:
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_l2sched_v1_*`
   and `.../candidates/pro_bn512_l2stage_confirm_s101_n20/`.
+
+## Iteration 37: BN512 candidate across Pro M>=128
+
+- Hypothesis: the L1 BN512 / L2 BN256 winner is useful across the required
+  Pro load range, but may need an H200-only threshold where low-M CTA
+  parallelism becomes more important than fewer L1 A-tile reloads.
+- Protocol: Pro M=128/256/512/1024/2048/4096/8192, seed 101, median-10,
+  8x H200. Interleave the retained split-FP8 candidate and unmodified PR323 at
+  each M; report the maximum returned latency across ranks.
+- Results:
+
+  | M | ours us | PR323 us | ours vs PR323 |
+  |---:|---:|---:|---:|
+  | 128 | 870.482 | 894.226 | -2.66% |
+  | 256 | 886.226 | 859.090 | +3.16% |
+  | 512 | 1117.651 | 1086.498 | +2.87% |
+  | 1024 | 1541.193 | 1580.518 | -2.49% |
+  | 2048 | 2342.198 | 2446.090 | -4.25% |
+  | 4096 | 4054.989 | 4305.722 | -5.82% |
+  | 8192 | 7765.363 | 7867.802 | -1.30% |
+
+- Decision: retain BN512 for M=128 and M>=1024 on the Pro shape, subject to
+  broader seeds and precision validation. Do not use it at M=256/512; tune a
+  BN256 H200 path for those points. Any eventual thresholds must live in an
+  H200-specific selector branch and must not overwrite the existing H20
+  tuning table.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_mge128_vs_pr_s101_n10/`.
