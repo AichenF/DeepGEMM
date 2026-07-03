@@ -431,3 +431,20 @@ Each measured source or promoted-selector iteration records:
   load scheduling is already effective, while extending scale live ranges is
   slightly harmful.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_earlywsf_v1_*`.
+
+## Iteration 13: FP16x2 scaled accumulator
+
+- Hypothesis: retaining the cross-K scaled sum in FP16x2 can replace 64 scalar
+  FP32 promotions per thread and K segment with 32 packed half2 FMAs.
+- Source change: add opt-in `DG_SM90_MOE_FP16_SCALED_ACCUM`; WGMMA still emits
+  FP32 raw accumulators, which are converted to half2 for scaled accumulation
+  and converted back to FP32 once before the unchanged epilogue. Defaults and
+  H20 behavior remain unchanged.
+- Protocol: current Pro M=8192 parent, BF16 combine, seed 101, median-10,
+  8x H200; report maximum returned latency across ranks.
+- Result: control was 8390.828 us (+6.992% versus PR323); FP16x2 accumulation
+  was 8338.229 us (+6.322%), a 0.63% improvement but still far from the gate.
+- Decision: do not promote this conversion-based form. CUTLASS exposes native
+  F16-output WGMMA, so the next bounded experiment will remove the per-segment
+  FP32-to-FP16 conversion rather than treating this small result as final.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_fp16acc_v1_*`.
