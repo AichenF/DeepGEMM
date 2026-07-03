@@ -1242,3 +1242,74 @@ Each measured source or promoted-selector iteration records:
   `.../candidates/pro_m256_phasestage_v1_*`,
   `.../candidates/pro_m256_phasewave_s2_v1_*`, and
   `.../candidates/pro_m256_phasewave_s2_confirm_s101_n20/`.
+
+## Iteration 42: M256 accumulator and scale-scheduling screen
+
+- Hypothesis: the stage2 L1 parent is now limited by register pressure or
+  scale-factor issue placement; BF16x2 scaled accumulation and earlier weight
+  scale loads may improve the L1-dominated path without changing its tile.
+- Protocol: Pro M=256, seed 101, median-10, 8x H200. Hold L1/L2 stages2/3,
+  BN256, N-major1, FP8 E5M2 combine, and L1/L2 EPW12/16 unless noted. Screen
+  accumulator, store, prefetch, scale-domain, and dual-accumulator features.
+- Screen results (maximum returned latency across ranks):
+
+  | candidate | us | outcome |
+  |---|---:|---|
+  | control | 859.810 | retained parent |
+  | BF16x2 scaled accumulator | 854.050 | useful signal |
+  | FP16x2 scaled accumulator | 862.421 | reject |
+  | asynchronous L1 TMA store | launch failure | reject |
+  | prefetched weight scale | 867.202 | reject |
+  | early weight scale | 851.924 | useful signal |
+  | adjacent scale domain | 863.155 | reject |
+  | L1 dual-K accumulator | 884.899 | reject |
+
+- Combining early weight-scale scheduling with FP32 accumulation and L2
+  EPW16/48 reached 854.003/848.101 us in the sequential screen. BF16x2 did
+  not improve the combination. Interleaved median-20 confirmation did not
+  reproduce the apparent lead:
+
+  | candidate | observation maxima (us) | median us | vs PR323 median |
+  |---|---|---:|---:|
+  | early scale, L2 EPW16 | 859.411, 859.330, 853.569 | 859.330 | +1.10% |
+  | early scale, L2 EPW48 | 856.355, 857.843, 859.075 | 857.843 | +0.92% |
+  | PR323 | 849.235, 850.387, 849.986 | 849.986 | — |
+
+- A follow-up L1 wave sweep with early scale (EPW4/6/8/12 paired with L2
+  EPW16/48) found no candidate below the retained EPW12 screen result.
+- Decision: do not promote a global accumulator or scale-scheduling flag.
+  Because L1 accounts for about two thirds of M256 latency, isolate these
+  knobs by phase before rejecting them. All knobs remain default-off and no
+  H20 selector is changed.
+- Raw artifacts:
+  `.../candidates/pro_m256_feature_v1_*`,
+  `.../candidates/pro_m256_early_combo_v1_*`,
+  `.../candidates/pro_m256_early_confirm_s101_n20/`, and
+  `.../candidates/pro_m256_early_l1wave_v1_*`.
+
+## Iteration 43: M256 L2 BN128 screen
+
+- Hypothesis: L1 must retain BN256, but the shorter L2 K dimension may benefit
+  from BN128 and the additional output-tile parallelism.
+- Protocol: Pro M=256, seed 101, median-10, 8x H200. Keep L1 BN256/stage2,
+  early weight-scale scheduling, FP32 accumulation, and E5M2 combine. Set only
+  L2 to BN128 and sweep stage3/4, EPW6/12/16/24/48, plus direct scatter at the
+  stage3/EPW16 point.
+- Results (maximum returned latency across ranks):
+
+  | L2 stages | L2 EPW | direct scatter | us |
+  |---:|---:|---:|---:|
+  | 3 | 6 | 0 | 1016.196 |
+  | 3 | 12 | 0 | 893.490 |
+  | 3 | 16 | 0 | 898.882 |
+  | 3 | 24 | 0 | 896.002 |
+  | 3 | 48 | 0 | 895.219 |
+  | 4 | 16 | 0 | 896.310 |
+  | 3 | 16 | 1 | 877.891 |
+
+- Decision: reject L2 BN128. Even its best direct-scatter result is about
+  3.3% slower than the contemporaneous PR323 reference near 850 us. Continue
+  with BN256 and phase-local accumulator/scale scheduling. The experiment is
+  H200-only; H20 tuning and defaults remain untouched.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_m256_l2bn128_v1_*`.
