@@ -215,3 +215,24 @@ Each measured source or promoted-selector iteration records:
   the two-kernel architecture and existing shared defaults. Do not pursue
   PR323-style fusion.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_diag_*`.
+
+## Iteration 2: phase-specific expert-wave experiment
+
+- Hypothesis: the shared EPW16 winner at Pro M=8192 may be a compromise
+  between L1 and L2; independently tuning each split kernel could reduce both
+  phases without architectural changes.
+- Source change: add opt-in `DG_SM90_MOE_L1_EXPERTS_PER_WAVE` and
+  `DG_SM90_MOE_L2_EXPERTS_PER_WAVE` overrides after selecting the shared
+  config. Both default to the existing shared value, so all production and
+  non-H200 behavior is unchanged.
+- Protocol: current M=8192 parent (`direct0, stage3, N-major, shared EPW16`),
+  seed 101, median-10, 8x H200. Sweep L1 or L2 independently over
+  EPW4/8/12/24/48 while holding the other phase at 16.
+- Result: control was 8344.677 us. The best L1 point was EPW48 at
+  8323.244 us and the best L2 point was EPW48 at 8323.972 us, improvements of
+  only about 0.26% and still 6.13%-6.14% behind PR323. The response was shallow
+  and within the confirmation band.
+- Decision: phase-specific waves do not explain the residual large-M gap and
+  are not promoted into the H200 selector. Retain default inheritance and move
+  to phase-specific pipeline/tile investigation.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_p_*`.

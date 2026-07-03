@@ -170,6 +170,17 @@ static void sm90_fp8_mega_moe(
         num_ranks, num_experts, num_experts_per_rank,
         num_max_tokens_per_rank, num_tokens, num_topk,
         hidden, intermediate_hidden, num_padded_sf_pool_tokens);
+    auto l1_config = config;
+    auto l2_config = config;
+    const auto apply_phase_wave_override = [&](MegaMoESM90Config& phase_config,
+                                                const char* env_name) {
+        const int value = get_env<int>(env_name, phase_config.num_experts_per_wave);
+        DG_HOST_ASSERT(value > 0 and value <= num_experts_per_rank and
+                       num_experts_per_rank % value == 0);
+        phase_config.num_experts_per_wave = value;
+    };
+    apply_phase_wave_override(l1_config, "DG_SM90_MOE_L1_EXPERTS_PER_WAVE");
+    apply_phase_wave_override(l2_config, "DG_SM90_MOE_L2_EXPERTS_PER_WAVE");
 
     // Tensormap construction
     // Acts/weights: standard 2D TMA descriptors (FP8 K-major).
@@ -252,7 +263,7 @@ static void sm90_fp8_mega_moe(
         .l2_nmajor_schedule = config.l2_nmajor_schedule,
         .one_warp_cleanup = config.one_warp_cleanup,
         .kernel_phase = SM90FP8MegaMoERuntime::KernelPhase::Linear1,
-        .config = config,
+        .config = l1_config,
         .y = y.data_ptr(),
         .cumulative_local_expert_recv_stats = cumulative_local_expert_recv_stats_ptr,
         .num_tokens = num_tokens,
@@ -273,6 +284,8 @@ static void sm90_fp8_mega_moe(
                                        const char* kernel_name) {
         auto split_args = args;
         split_args.kernel_phase = kernel_phase;
+        split_args.config = kernel_phase == SM90FP8MegaMoERuntime::KernelPhase::Linear1 ?
+            l1_config : l2_config;
         const auto code = SM90FP8MegaMoERuntime::generate(split_args);
         const auto runtime = compiler->build(kernel_name, code);
         SM90FP8MegaMoERuntime::launch(runtime, split_args);
