@@ -54,6 +54,7 @@ public:
         bool fp8_combine;
         bool adjacent_scale_domain;
         bool prefetch_weight_sf;
+        bool early_weight_sf;
         KernelPhase kernel_phase;
         MegaMoESM90Config config;
 
@@ -113,6 +114,7 @@ static void __instantiate_kernel() {{
         {},
         {},
         {},
+        {},
         {}
     >);
 }};
@@ -142,7 +144,8 @@ static void __instantiate_kernel() {{
     args.l2_dual_accum ? "true" : "false",
     args.fp8_combine ? "true" : "false",
     args.adjacent_scale_domain ? "true" : "false",
-    args.prefetch_weight_sf ? "true" : "false");
+    args.prefetch_weight_sf ? "true" : "false",
+    args.early_weight_sf ? "true" : "false");
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -311,6 +314,9 @@ static void sm90_fp8_mega_moe(
         get_env<int>("DG_SM90_MOE_ADJACENT_SCALE_DOMAIN", 0) != 0;
     const bool prefetch_weight_sf =
         get_env<int>("DG_SM90_MOE_PREFETCH_WEIGHT_SF", 0) != 0;
+    const bool early_weight_sf =
+        get_env<int>("DG_SM90_MOE_EARLY_WEIGHT_SF", 0) != 0;
+    DG_HOST_ASSERT(not (prefetch_weight_sf and early_weight_sf));
     if (prefetch_weight_sf) {
         constexpr int kWeightSFBytesPerStage = 128;
         l1_config.smem_size += l1_config.num_stages * kWeightSFBytesPerStage;
@@ -338,6 +344,7 @@ static void sm90_fp8_mega_moe(
         .fp8_combine = fp8_combine,
         .adjacent_scale_domain = adjacent_scale_domain,
         .prefetch_weight_sf = prefetch_weight_sf,
+        .early_weight_sf = early_weight_sf,
         .kernel_phase = SM90FP8MegaMoERuntime::KernelPhase::Linear1,
         .config = l1_config,
         .y = y.data_ptr(),

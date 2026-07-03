@@ -114,6 +114,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     bool kFP8CombineRequested = false, \
     bool kAdjacentScaleDomainRequested = false, \
     bool kPrefetchWeightSFRequested = false, \
+    bool kEarlyWeightSFRequested = false, \
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2, \
     uint32_t L1_SHAPE_K = kHidden, \
     uint32_t L2_SHAPE_N = kHidden, \
@@ -173,6 +174,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     kAsyncL1TMAStoreRequested, \
     kL1DualKAccumRequested, kL2DualAccumRequested, kFP8CombineRequested, \
     kAdjacentScaleDomainRequested, kPrefetchWeightSFRequested, \
+    kEarlyWeightSFRequested, \
     L1_SHAPE_N, \
     L1_SHAPE_K, L2_SHAPE_N, L2_SHAPE_K, kNumDispatchWarps, \
     kNumMMANonEpilogueWarps, kNumEpilogueWarps, kNumEpilogueWarpgroups, \
@@ -309,6 +311,7 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         kFP8CombineRequested and MegaMoEPhase::runs_linear2;
     constexpr bool kAdjacentScaleDomain = kAdjacentScaleDomainRequested;
     constexpr bool kPrefetchWeightSF = kPrefetchWeightSFRequested;
+    constexpr bool kEarlyWeightSF = kEarlyWeightSFRequested;
     constexpr bool kReuseAccumAsFinal = kSplitMNWarpgroups;
     using L1WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     using L2WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
@@ -1528,7 +1531,44 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
 
             const unsigned long long block_gemm_start = phase_profile_clock();
             const auto run_default_gemm_loop = [&]() {
+                constexpr uint32_t kL1SFKBlocks   = kHidden / 128;
+                constexpr uint32_t kL2SFKBlocks   = kIntermediateHidden / 128;
+                constexpr uint32_t kL1SFGateBlks  = kIntermediateHidden / 128;
+                constexpr uint32_t kL1SFPerExpert =
+                    (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
+                constexpr uint32_t kL2SFPerExpert =
+                    (kHidden / 128) * kL2SFKBlocks;
 for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
+                float gate_sf = 0.0f, up_sf = 0.0f;
+                float l2_sf_lo = 0.0f, l2_sf_hi = 0.0f;
+                if constexpr (kEarlyWeightSF) {
+                    if (is_linear1_phase) {
+                        const uint32_t gate_n =
+                            (n_block_idx * BLOCK_N + wg_n_idx) / 256u;
+                        const uint32_t up_n = kL1SFGateBlks + gate_n;
+                        const float* base = l1_weights_sf +
+                            local_expert_idx * kL1SFPerExpert + k_block_idx;
+                        gate_sf = __ldg(base + gate_n * kL1SFKBlocks);
+                        up_sf = __ldg(base + up_n * kL1SFKBlocks);
+                    } else {
+                        const uint32_t sf_n =
+                            (n_block_idx * BLOCK_N + wg_n_idx) / 128u;
+                        const float* base = l2_weights_sf +
+                            local_expert_idx * kL2SFPerExpert + k_block_idx;
+                        l2_sf_lo = __ldg(base + sf_n * kL2SFKBlocks);
+                        if constexpr (WG_BLOCK_N > 128)
+                            l2_sf_hi = __ldg(base + (sf_n + 1u) * kL2SFKBlocks);
+                        else
+                            l2_sf_hi = l2_sf_lo;
+                    }
+                    if (is_linear1_phase) {
+                        ptx::warpgroup_fence_operand(gate_sf);
+                        ptx::warpgroup_fence_operand(up_sf);
+                    } else {
+                        ptx::warpgroup_fence_operand(l2_sf_lo);
+                        ptx::warpgroup_fence_operand(l2_sf_hi);
+                    }
+                }
                 full_barriers[stage_idx]->wait(phase);
 
                 // Read SF (must precede warpgroup_arrive)
@@ -1556,21 +1596,13 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 // L2 weight SF shape: (E, H/128, IH/128) MN-major. One scalar per
                 // (BLOCK_N, BLOCK_K) tile, broadcast across all WGMMA accumulators.
                 //
-                // Keep the simple parallel post-wait load; same-address LDGs
-                // are handled efficiently by Hopper's read-only cache.
-                constexpr uint32_t kL1SFKBlocks   = kHidden / 128;
-                constexpr uint32_t kL2SFKBlocks   = kIntermediateHidden / 128;
-                constexpr uint32_t kL1SFGateBlks  = kIntermediateHidden / 128;
-                constexpr uint32_t kL1SFPerExpert = (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
-                constexpr uint32_t kL2SFPerExpert = (kHidden / 128) * kL2SFKBlocks;
-                float gate_sf = 0.0f, up_sf = 0.0f, l2_sf_lo = 0.0f, l2_sf_hi = 0.0f;
                 if (is_linear1_phase) {
                     const uint32_t gate_n = (n_block_idx * BLOCK_N + wg_n_idx) / 256u;
                     const uint32_t up_n   = kL1SFGateBlks + gate_n;
                     if constexpr (kPrefetchWeightSF) {
                         gate_sf = ptx::ld_shared(smem_sfb[stage_idx] + 0);
                         up_sf = ptx::ld_shared(smem_sfb[stage_idx] + 1);
-                    } else {
+                    } else if constexpr (not kEarlyWeightSF) {
                         const float* base = l1_weights_sf +
                             local_expert_idx * kL1SFPerExpert + k_block_idx;
                         gate_sf = __ldg(base + gate_n * kL1SFKBlocks);
@@ -1586,7 +1618,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                                 smem_sfb[stage_idx] + stage_sf_idx + 1u);
                         else
                             l2_sf_hi = l2_sf_lo;
-                    } else {
+                    } else if constexpr (not kEarlyWeightSF) {
                         const float* base = l2_weights_sf +
                             local_expert_idx * kL2SFPerExpert + k_block_idx;
                         l2_sf_lo = __ldg(base + sf_n * kL2SFKBlocks);

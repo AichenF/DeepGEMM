@@ -415,3 +415,19 @@ Each measured source or promoted-selector iteration records:
   lower-overhead test that issues the same LDG from math warps before their
   full-barrier wait, avoiding the extra shared stage and producer arrival.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_prefetchwsf_v1_*`.
+
+## Iteration 12: pre-barrier math-warp weight-scale loads
+
+- Hypothesis: issuing each math warp's uniform weight-SF LDG before the stage
+  full-barrier wait can hide its latency without the shared-memory producer
+  overhead seen in iteration 11.
+- Source change: add opt-in `DG_SM90_MOE_EARLY_WEIGHT_SF`; force the LDG value
+  live before the full-barrier wait. The default and H20 behavior are unchanged.
+- Protocol: current Pro M=8192 parent, BF16 combine, seed 101, median-10,
+  8x H200; report maximum returned latency across ranks.
+- Result: control was 8359.339 us (+6.591% versus PR323); early LDG was
+  8387.056 us (+6.944%), a 0.33% regression.
+- Decision: reject early math-warp LDG. Hopper's existing uniform read-only
+  load scheduling is already effective, while extending scale live ranges is
+  slightly harmful.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_earlywsf_v1_*`.
