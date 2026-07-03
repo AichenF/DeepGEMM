@@ -1159,3 +1159,41 @@ Each measured source or promoted-selector iteration records:
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_smallm_wave_v1_*`
   and `.../candidates/pro_smallm_wave_vs_pr_confirm_s101_n20/`.
+
+## Iteration 40: M256 tile and frontend screen
+
+- Hypothesis: M=256 needs more CTA or warp-level parallelism than the retained
+  M64N256 two-consumer tile, and may benefit from BN128, a different consumer
+  count, direct scatter, cleanup, or a wider frontend.
+- Protocol: Pro M=256, seed 101, median-10, 8x H200. Hold FP32 accumulation,
+  E5M2 combine, stage3, N-major1, and EPW12 unless the candidate changes the
+  tile/frontend mode. Report maximum returned latency across ranks.
+- Results:
+
+  | candidate | us | outcome |
+  |---|---:|---|
+  | BM64 BN256, 2 consumers | 852.868 | retained control |
+  | BM64 BN256, 1 consumer | 897.426 | reject |
+  | BM64 BN256, 4 consumers | 864.661 | reject |
+  | BM64 BN256, direct scatter | 854.210 | reject |
+  | BM64 BN256, cleanup | 877.234 | reject |
+  | BM64 BN256, 4-warp frontend | 1005.044 | reject |
+  | BM64 BN128, 1 consumer | 945.667 | reject |
+  | BM64 BN128, 1 consumer + direct | 926.630 | reject |
+  | BM128 BN128, 2 consumers | 1316.292 | reject |
+  | BM128 BN256, 4 consumers | 1007.859 | reject |
+
+- BN128 with two consumers is not a legal existing layout: each L1 consumer
+  would own only 32 post-SwiGLU columns and fails the compile-time 64-column
+  scale-domain requirement. Cluster2 produced an unspecified launch failure
+  and hung surviving ranks; the run was terminated and GPU processes were
+  cleaned before continuing. Neither mode is retained.
+- Phase timing of the retained control showed about 551 us in L1 versus
+  304 us in L2 at M=256, so subsequent tuning focuses on phase-local L1
+  scheduling rather than further global tile changes.
+- Decision: retain BM64 BN256 with two M64N128 consumers and the compact
+  frontend. All tested structural alternatives regress or are invalid. These
+  were explicit H200 experiments; H20 defaults remain unchanged.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_m256_tile_v1_*`
+  and `.../candidates/pro_smallm_phase_breakdown/`.
