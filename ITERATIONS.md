@@ -334,3 +334,22 @@ Each measured source or promoted-selector iteration records:
 - Decision: reject both dual-accumulator paths as H200 selector candidates;
   they do not materially close the large-M gap.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_dacc2_*`.
+
+## Iteration 8: two-CTA weight-multicast experiment
+
+- Hypothesis: H200 may benefit from pairing adjacent M tiles in a two-CTA
+  cluster and multicasting each B/weight TMA load to both CTAs, reducing the
+  dominant large-M weight traffic without changing the split architecture.
+- Source change: restore an opt-in `DG_SM90_MOE_CLUSTER_SIZE` selector for the
+  already-implemented cluster scheduler and multicast path. The default
+  remains cluster size one, preserving the existing H20 and generic behavior.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`),
+  seed 101, median-10, 8x H200. Compare explicit cluster sizes one and two;
+  report the maximum returned time across ranks.
+- Result: cluster one was 8372.159 us (+6.754% versus PR323); cluster two was
+  8348.770 us (+6.456%). The nominal 0.28% gain is inside the confirmation
+  band and does not materially close the gap.
+- Decision: reject two-CTA B multicast as an H200 selector candidate. H200 L2
+  reuse is already effective enough that B traffic is not the residual
+  bottleneck.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_cluster2_*`.

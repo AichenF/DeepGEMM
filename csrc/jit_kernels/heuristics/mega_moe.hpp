@@ -893,7 +893,15 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                         num_experts_per_rank, num_tokens, num_topk,
                         block_m, num_epilogue_threads);
 
-                const int cluster_size = 1;
+                const int forced_cluster_size =
+                    get_env<int>("DG_SM90_MOE_CLUSTER_SIZE", 0);
+                DG_HOST_ASSERT(forced_cluster_size == 0 or
+                               forced_cluster_size == 1 or
+                               forced_cluster_size == 2);
+                const int cluster_size = forced_cluster_size > 0 ?
+                    forced_cluster_size : 1;
+                if (num_sms % cluster_size != 0)
+                    continue;
                 const int swizzle_acts_mode = 128;
                 const int swizzle_weights_mode = 128;
 
