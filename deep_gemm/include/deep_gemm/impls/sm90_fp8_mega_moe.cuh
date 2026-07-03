@@ -3089,8 +3089,13 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 // output cols (p*8 + col_idx*2 + {0,1}) for both r0 and r1.
 
                 constexpr uint32_t kNumPairs = kAccumPerThread / 8;
-                constexpr uint32_t kNumSFGroups = WG_L1_OUT_BLOCK_N / 64;
-                DG_STATIC_ASSERT(WG_L1_OUT_BLOCK_N % 64 == 0, "L1 output SF is per 64 columns");
+                constexpr bool kPairWGsForL1SF =
+                    kSplitNWarpgroups and kNumEpilogueWarpgroups == 4 and
+                    WG_L1_OUT_BLOCK_N == 32;
+                constexpr uint32_t kNumSFGroups =
+                    (WG_L1_OUT_BLOCK_N + 63) / 64;
+                DG_STATIC_ASSERT(WG_L1_OUT_BLOCK_N % 64 == 0 or kPairWGsForL1SF,
+                                 "L1 output SF must cover 64 columns locally or across paired WGs");
                 float swiglu_r0[kNumPairs][2];
                 float swiglu_r1[kNumPairs][2];
 
@@ -3189,6 +3194,28 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     amax_r1[g] = math::warp_reduce<4, false>(amax_r1[g], math::ReduceMax<float>());
                 }
 
+                // Four N64 WGMMA consumers each produce 32 post-SwiGLU
+                // columns. Pair adjacent warpgroups so their combined 64
+                // columns retain the original L2 activation-scale domain.
+                if constexpr (kPairWGsForL1SF) {
+                    auto* smem_l1_amax = reinterpret_cast<float*>(smem_cd_base);
+                    if (col_idx == 0) {
+                        smem_l1_amax[epilogue_wg_idx * BLOCK_M + row_offset_r0] =
+                            amax_r0[0];
+                        smem_l1_amax[epilogue_wg_idx * BLOCK_M + row_offset_r1] =
+                            amax_r1[0];
+                    }
+                    ptx::sync_aligned(
+                        kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                    const uint32_t paired_wg = epilogue_wg_idx ^ 1u;
+                    amax_r0[0] = cute::max(
+                        amax_r0[0],
+                        smem_l1_amax[paired_wg * BLOCK_M + row_offset_r0]);
+                    amax_r1[0] = cute::max(
+                        amax_r1[0],
+                        smem_l1_amax[paired_wg * BLOCK_M + row_offset_r1]);
+                }
+
                 float sf_r0[kNumSFGroups], sf_inv_r0[kNumSFGroups];
                 float sf_r1[kNumSFGroups], sf_inv_r1[kNumSFGroups];
                 #pragma unroll
@@ -3199,6 +3226,12 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     sf_r0[g] = sf_pair.x; sf_inv_r0[g] = sf_inv_pair.x;
                     sf_r1[g] = sf_pair.y; sf_inv_r1[g] = sf_inv_pair.y;
                 }
+
+                // Every lane has consumed the paired amax values into scale
+                // registers; shared memory can now be reused for FP8 output.
+                if constexpr (kPairWGsForL1SF)
+                    ptx::sync_aligned(
+                        kNumEpilogueThreads, kEpilogueFullBarrierIdx);
 
                 // Quantize and write to smem_cd_l1 (row-major, no swizzle).
                 const uint32_t l1_store_stage = kAsyncL1TMAStore ? async_l1_store_stage : 0u;
@@ -3232,7 +3265,8 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 }
 
                 // Write L2-activation SF as float, one value per 64 output columns.
-                if (col_idx == 0) {
+                if (col_idx == 0 and
+                    (not kPairWGsForL1SF or (epilogue_wg_idx & 1u) == 0u)) {
                     auto sf_base_ptr = l2_sf_buffer.get_base_ptr<float>();
                     const uint32_t token_r0 = pool_block_idx * BLOCK_M + row_offset_r0;
                     const uint32_t token_r1 = pool_block_idx * BLOCK_M + row_offset_r1;

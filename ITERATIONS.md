@@ -725,3 +725,31 @@ Each measured source or promoted-selector iteration records:
   not benchmark, relax tolerance, or promote it into an H200 selector.
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_nativefp16_chunk_correctness_k*`.
+
+## Iteration 25: four-way M64N64 split-N consumers
+
+- Hypothesis: four independent M64N64 WGMMA consumer warpgroups may hide more
+  math latency than the default pair of M64N128 consumers without changing
+  the BM64/BN256/BK128 CTA tile or split L1/L2 architecture.
+- Implementation: permit the already represented four-way split-N layout only
+  for explicit `DG_SM90_MOE_FORCE_EPILOGUE_WG=4`. The first JIT exposed that
+  each WG's 32 post-SwiGLU columns are half of the required 64-column L2 scale
+  domain. The repaired path exchanges per-row amax values between adjacent WGs,
+  computes one shared 64-column scale, then quantizes and TMA-stores the same
+  output layout. The default remains two consumers, preserving H20 behavior.
+- Protocol: Pro M=8192 E5M2 parent (`direct0, stage3, N-major, EPW16`), seed
+  101, median-10, 8x H200; compare two versus four epilogue warpgroups.
+- Results (maximum returned latency across ranks):
+
+  | consumer layout | epilogue threads | us | vs 2 WG | vs PR323 |
+  |---|---:|---:|---:|---:|
+  | 2 x M64N128 | 256 | 8204.985 | — | +4.62% |
+  | 4 x M64N64 | 512 | 8403.626 | +2.42% | +7.16% |
+
+- Decision: reject four-way split-N. Additional WGMMA consumers do not offset
+  the 512-thread CTA and cross-WG scale-domain synchronization overhead. The
+  performance gate failed, so no broader correctness campaign is warranted.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_splitn4_v1_wg2/`,
+  `.../candidates/pro_splitn4_v1_wg4/` (initial JIT legality failure), and
+  `.../candidates/pro_splitn4_v2_wg4/`.
