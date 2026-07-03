@@ -116,6 +116,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     bool kPrefetchWeightSFRequested = false, \
     bool kEarlyWeightSFRequested = false, \
     bool kFP16ScaledAccumRequested = false, \
+    bool kBF16ScaledAccumRequested = false, \
     bool kNativeFP16WGMMARequested = false, \
     uint32_t kNativeFP16ChunkK = 0, \
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2, \
@@ -178,7 +179,8 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     kL1DualKAccumRequested, kL2DualAccumRequested, kFP8CombineRequested, \
     kAdjacentScaleDomainRequested, kPrefetchWeightSFRequested, \
     kEarlyWeightSFRequested, kFP16ScaledAccumRequested, \
-    kNativeFP16WGMMARequested, kNativeFP16ChunkK, \
+    kBF16ScaledAccumRequested, kNativeFP16WGMMARequested, \
+    kNativeFP16ChunkK, \
     L1_SHAPE_N, \
     L1_SHAPE_K, L2_SHAPE_N, L2_SHAPE_K, kNumDispatchWarps, \
     kNumMMANonEpilogueWarps, kNumEpilogueWarps, kNumEpilogueWarpgroups, \
@@ -320,6 +322,7 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     constexpr bool kPrefetchWeightSF = kPrefetchWeightSFRequested;
     constexpr bool kEarlyWeightSF = kEarlyWeightSFRequested;
     constexpr bool kFP16ScaledAccum = kFP16ScaledAccumRequested;
+    constexpr bool kBF16ScaledAccum = kBF16ScaledAccumRequested;
     constexpr bool kNativeFP16WGMMA = kNativeFP16WGMMARequested;
     constexpr bool kNativeFP16Chunked =
         kNativeFP16WGMMA and kNativeFP16ChunkK != 0;
@@ -1567,7 +1570,7 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
             using WGMMA = L1WGMMA;
             constexpr uint32_t kAccumPerThread = WGMMA::kNumAccum;  // 64 for M=64,N=128
             float final_accum[kAccumPerThread];
-            if constexpr (not kFP16ScaledAccum and
+            if constexpr (not kFP16ScaledAccum and not kBF16ScaledAccum and
                           (not kNativeFP16WGMMA or kNativeFP16Chunked)) {
                 #pragma unroll
                 for (uint32_t i = 0; i < kAccumPerThread; ++ i)
@@ -2000,7 +2003,8 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     DG_STATIC_ASSERT(not kSwapABActive and not kL1DualKAccum and
                                      not kL2DualAccum and not kAdjacentScaleDomain and
                                      not kPrefetchWeightSF and not kEarlyWeightSF and
-                                     not kFP16ScaledAccum and not kNativeFP16WGMMA,
+                                     not kFP16ScaledAccum and not kBF16ScaledAccum and
+                                     not kNativeFP16WGMMA,
                                      "BK256 experiment supports the default FP32 math path");
                     constexpr uint32_t kL1SFKBlocks = kHidden / kGranK;
                     constexpr uint32_t kL2SFKBlocks =
@@ -2266,6 +2270,151 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 #pragma unroll
                 for (uint32_t i = 0; i < kAccumPerThread / 2; ++ i) {
                     const float2 pair = __half22float2(final_half[i]);
+                    final_accum[2 * i] = pair.x;
+                    final_accum[2 * i + 1] = pair.y;
+                }
+            };
+
+            const auto run_bf16_scaled_accum_gemm_loop = [&]() {
+                DG_STATIC_ASSERT(not kBF16ScaledAccum or
+                                 (WG_BLOCK_M == 64 and
+                                  (WG_BLOCK_N == 128 or WG_BLOCK_N == 256) and
+                                  not kSwapABActive),
+                                 "BF16 scaled accumulation expects non-swap M64N128/N256");
+                nv_bfloat162 final_bf16[kAccumPerThread / 2];
+                #pragma unroll
+                for (uint32_t i = 0; i < kAccumPerThread / 2; ++ i)
+                    final_bf16[i] = __float2bfloat162_rn(0.0f);
+
+                constexpr uint32_t kL1SFKBlocks   = kHidden / 128;
+                constexpr uint32_t kL2SFKBlocks   = kIntermediateHidden / 128;
+                constexpr uint32_t kL1SFGateBlks  = kIntermediateHidden / 128;
+                constexpr uint32_t kL1SFPerExpert =
+                    (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
+                constexpr uint32_t kL2SFPerExpert =
+                    (kHidden / 128) * kL2SFKBlocks;
+
+                const auto issue_wgmma = [&]<uint32_t kOffset,
+                                              uint32_t kNumWGMMAs>() {
+                    #pragma unroll
+                    for (uint32_t i = 0; i < kAccumPerThread; ++ i)
+                        ptx::warpgroup_fence_operand(accum[i]);
+                    ptx::warpgroup_arrive();
+                    #pragma unroll
+                    for (uint32_t k = 0; k < kNumWGMMAs; ++ k) {
+                        auto desc_a = mma::sm90::make_smem_desc(
+                            smem_a[stage_idx] + row_block_offset * BLOCK_K +
+                                kOffset + k * WGMMA::K, 1);
+                        auto desc_b = mma::sm90::make_smem_desc(
+                            smem_b[stage_idx] + wg_n_idx * BLOCK_K +
+                                kOffset + k * WGMMA::K, 1);
+                        WGMMA::wgmma(desc_a, desc_b, accum, k);
+                    }
+                    ptx::warpgroup_commit_batch();
+                    #pragma unroll
+                    for (uint32_t i = 0; i < kAccumPerThread; ++ i)
+                        ptx::warpgroup_fence_operand(accum[i]);
+                    ptx::warpgroup_wait<0>();
+                };
+
+                const auto promote_l1 = [&](const float& scale_a_0,
+                                             const float& scale_a_1,
+                                             const float& gate_sf,
+                                             const float& up_sf) {
+                    #pragma unroll
+                    for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
+                        const float weight_sf = (i & 1u) ? up_sf : gate_sf;
+                        const nv_bfloat162 scale0 =
+                            __float2bfloat162_rn(scale_a_0 * weight_sf);
+                        const nv_bfloat162 scale1 =
+                            __float2bfloat162_rn(scale_a_1 * weight_sf);
+                        final_bf16[2 * i] = __hfma2(
+                            __floats2bfloat162_rn(
+                                accum[4 * i], accum[4 * i + 1]),
+                            scale0, final_bf16[2 * i]);
+                        final_bf16[2 * i + 1] = __hfma2(
+                            __floats2bfloat162_rn(
+                                accum[4 * i + 2], accum[4 * i + 3]),
+                            scale1, final_bf16[2 * i + 1]);
+                    }
+                };
+                const auto promote_l2 = [&](const float& scale_a_0,
+                                             const float& scale_a_1,
+                                             const float& weight_sf_lo,
+                                             const float& weight_sf_hi) {
+                    #pragma unroll
+                    for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
+                        const bool high_n = WG_BLOCK_N > 128 and i >= 16u;
+                        const float weight_sf = high_n ? weight_sf_hi : weight_sf_lo;
+                        const nv_bfloat162 scale0 =
+                            __float2bfloat162_rn(scale_a_0 * weight_sf);
+                        const nv_bfloat162 scale1 =
+                            __float2bfloat162_rn(scale_a_1 * weight_sf);
+                        final_bf16[2 * i] = __hfma2(
+                            __floats2bfloat162_rn(
+                                accum[4 * i], accum[4 * i + 1]),
+                            scale0, final_bf16[2 * i]);
+                        final_bf16[2 * i + 1] = __hfma2(
+                            __floats2bfloat162_rn(
+                                accum[4 * i + 2], accum[4 * i + 3]),
+                            scale1, final_bf16[2 * i + 1]);
+                    }
+                };
+
+                for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks;
+                     advance_pipeline(k_block_idx)) {
+                    full_barriers[stage_idx]->wait(phase);
+                    const float scale_a_0_lo =
+                        ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r0);
+                    const float scale_a_1_lo =
+                        ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r1);
+
+                    if (is_linear1_phase) {
+                        const uint32_t gate_n =
+                            (n_block_idx * BLOCK_N + wg_n_idx) / 256u;
+                        const uint32_t up_n = kL1SFGateBlks + gate_n;
+                        const float* base = l1_weights_sf +
+                            local_expert_idx * kL1SFPerExpert + k_block_idx;
+                        const float gate_sf =
+                            __ldg(base + gate_n * kL1SFKBlocks);
+                        const float up_sf =
+                            __ldg(base + up_n * kL1SFKBlocks);
+                        issue_wgmma.template operator()<
+                            0, BLOCK_K / WGMMA::K>();
+                        arrive_empty_barrier(stage_idx);
+                        promote_l1(
+                            scale_a_0_lo, scale_a_1_lo, gate_sf, up_sf);
+                    } else {
+                        const float scale_a_0_hi = ptx::ld_shared(
+                            smem_sfa[stage_idx] + kL2SFAHalfStride +
+                                row_offset_r0);
+                        const float scale_a_1_hi = ptx::ld_shared(
+                            smem_sfa[stage_idx] + kL2SFAHalfStride +
+                                row_offset_r1);
+                        const uint32_t sf_n =
+                            (n_block_idx * BLOCK_N + wg_n_idx) / 128u;
+                        const float* base = l2_weights_sf +
+                            local_expert_idx * kL2SFPerExpert + k_block_idx;
+                        const float l2_sf_lo =
+                            __ldg(base + sf_n * kL2SFKBlocks);
+                        const float l2_sf_hi = WG_BLOCK_N > 128 ?
+                            __ldg(base + (sf_n + 1u) * kL2SFKBlocks) :
+                            l2_sf_lo;
+                        issue_wgmma.template operator()<
+                            0, (BLOCK_K / 2) / WGMMA::K>();
+                        promote_l2(
+                            scale_a_0_lo, scale_a_1_lo, l2_sf_lo, l2_sf_hi);
+                        issue_wgmma.template operator()<
+                            BLOCK_K / 2, (BLOCK_K / 2) / WGMMA::K>();
+                        arrive_empty_barrier(stage_idx);
+                        promote_l2(
+                            scale_a_0_hi, scale_a_1_hi, l2_sf_lo, l2_sf_hi);
+                    }
+                }
+
+                #pragma unroll
+                for (uint32_t i = 0; i < kAccumPerThread / 2; ++ i) {
+                    const float2 pair = __bfloat1622float2(final_bf16[i]);
                     final_accum[2 * i] = pair.x;
                     final_accum[2 * i + 1] = pair.y;
                 }
@@ -2942,6 +3091,8 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 run_native_fp16_wgmma_loop();
             } else if constexpr (kFP16ScaledAccum) {
                 run_fp16_scaled_accum_gemm_loop();
+            } else if constexpr (kBF16ScaledAccum) {
+                run_bf16_scaled_accum_gemm_loop();
             } else if constexpr (kAdjacentScaleDomain) {
                 run_adjacent_scale_domain_gemm_loop();
             } else if constexpr (kReuseAccumAsFinal) {

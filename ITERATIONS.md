@@ -777,3 +777,33 @@ Each measured source or promoted-selector iteration records:
   a hidden gain, so do not promote a phase-specific consumer-count rule.
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_phasewg_v1_*`.
+
+## Iteration 27: packed-BF16 scaled accumulation
+
+- Hypothesis: packed BF16x2 accumulation can retain FP32's exponent range while
+  halving scale-accumulation instructions and registers. In particular, it may
+  make one M64N256 consumer faster by replacing that path's two full FP32
+  reciprocal/rescale passes per K segment.
+- Implementation: add explicit `DG_SM90_MOE_BF16_SCALED_ACCUM`. WGMMA still
+  produces FP32 raw dot products; each block-scaled contribution is converted
+  to BF16x2 and accumulated with packed FMA, then converted to FP32 once for
+  the unchanged epilogue. It supports M64N128 and M64N256 and defaults off.
+- Correctness: the eight-rank `L2.profile_topk6.t512` smoke passed for both
+  two-WG N128 and one-WG N256 at `calc_diff=0.0020 < 0.01`; unlike native FP16,
+  BF16's FP32-sized exponent range produced no NaN/Inf.
+- Performance protocol: Pro M=8192 E5M2 parent, seed 101, median-10, 8x H200;
+  compare FP32/two-WG, BF16/two-WG, and BF16/one-WG.
+- Results (maximum returned latency across ranks):
+
+  | accumulator | consumers | us | vs FP32/2WG | vs PR323 |
+  |---|---:|---:|---:|---:|
+  | FP32 | 2 | 8203.120 | — | +4.60% |
+  | BF16x2 | 2 | 8244.344 | +0.50% | +5.12% |
+  | BF16x2 | 1 | 9107.493 | +11.03% | +16.13% |
+
+- Decision: reject packed-BF16 accumulation for H200 selection. Conversion
+  and packing erase the instruction-count benefit for two consumers, while a
+  single consumer still lacks sufficient WGMMA latency hiding.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bf16acc_correctness_wg*`
+  and `.../candidates/pro_bf16acc_v1_*`.
