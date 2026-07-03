@@ -593,3 +593,29 @@ Each measured source or promoted-selector iteration records:
   adjacent-domain and all dual-accumulator forms, which regress materially.
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_effective_screen1_*`.
+
+## Iteration 20: effective E5M2 combine across Pro loads
+
+- Hypothesis: halving the L2-contribution scatter and combine-read bytes with
+  unscaled E5M2 is a repeatable gain across the load-specific Pro parents, not
+  only a single M=8192 observation.
+- Protocol: Pro M=512/4096/8192 with their retained EPW12/4/16 parents,
+  respectively; `direct0, stage3, N-major`, seed 101, median-10, 8x H200.
+  Compare BF16 and E5M2 contribution storage from the same rebuilt host runtime.
+- Results (maximum returned latency across ranks):
+
+  | M | BF16 us | E5M2 us | E5M2 vs BF16 | PR323 us | E5M2 vs PR323 |
+  |---:|---:|---:|---:|---:|---:|
++  | 512 | 1119.474 | 1079.510 | -3.57% | 1090.546 | -1.01% |
+  | 4096 | 4451.371 | 4341.600 | -2.47% | 4338.506 | 0.07% |
+  | 8192 | 8332.095 | 8179.550 | -1.83% | 7842.460 | 4.30% |
+
+- Correctness: the effective eight-rank `L2.profile_topk6.t512` smoke passed
+  at `calc_diff=0.0020 < 0.01`. This confirms finite output and the E5M2
+  pack/scatter/reduce mapping, but it is not the full 112-case precision gate.
+- Decision: retain E5M2 combine. It beats PR323 at M=512 and provides a
+  repeatable material gain at M=4096/8192, but still needs the 112-case
+  precision campaign and does not alone close the two large-M gaps.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_fp8combine_effective_v2_*`
+  and `.../candidates/pro_fp8combine_effective_correctness_smoke/`.
