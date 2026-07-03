@@ -253,3 +253,20 @@ Each measured source or promoted-selector iteration records:
   not promoted. Continue with phase-specific N tiles while keeping BM and the
   staging layout shared.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_s_*`.
+
+## Iteration 4: phase-specific N-tile experiment
+
+- Hypothesis: the shared BN128 regression may come from only one split phase;
+  keeping the other phase at BN256 could recover a better phase-specific tile.
+- Source change: add opt-in L1/L2 BN128/BN256 overrides for BM64. Rebuild each
+  phase's dispatch/epilogue thread layout, pipeline shared memory, TMA weight
+  descriptors, and L1 output/L2 input descriptors independently. Defaults do
+  not apply an override.
+- Protocol: current Pro M=8192 parent, seed 101, median-10, 8x H200. Compare
+  BN256/256 control, BN128/256, BN256/128, and BN128/128.
+- Result: control was 8350.336 us; L1-only BN128 was 8343.746 us, L2-only
+  BN128 was 8334.010 us, and both BN128 was 8322.295 us. The best nominal
+  change is only 0.34% and remains 6.12% behind PR323.
+- Decision: phase-specific N tiles are not a material residual lever and are
+  not promoted. Investigate per-phase persistent-grid/SM allocation next.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_n_*`.

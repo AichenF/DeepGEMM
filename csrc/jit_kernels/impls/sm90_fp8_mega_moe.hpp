@@ -181,6 +181,21 @@ static void sm90_fp8_mega_moe(
     };
     apply_phase_wave_override(l1_config, "DG_SM90_MOE_L1_EXPERTS_PER_WAVE");
     apply_phase_wave_override(l2_config, "DG_SM90_MOE_L2_EXPERTS_PER_WAVE");
+    const auto apply_phase_block_n_override = [&](MegaMoESM90Config& phase_config,
+                                                   const char* env_name) {
+        const int block_n = get_env<int>(env_name, 0);
+        if (block_n == 0)
+            return;
+        DG_HOST_ASSERT((block_n == 128 or block_n == 256) and
+                       phase_config.block_m == 64 and not phase_config.swap_ab);
+        phase_config.block_n = block_n;
+        const bool compact_frontend = block_n == 256;
+        phase_config.num_dispatch_threads = compact_frontend ? 64 : 128;
+        phase_config.num_non_epilogue_threads = compact_frontend ? 64 : 128;
+        phase_config.num_epilogue_threads = compact_frontend ? 256 : 128;
+    };
+    apply_phase_block_n_override(l1_config, "DG_SM90_MOE_L1_BLOCK_N");
+    apply_phase_block_n_override(l2_config, "DG_SM90_MOE_L2_BLOCK_N");
     const auto apply_phase_stage_override = [&](MegaMoESM90Config& phase_config,
                                                  const char* env_name) {
         const int requested = get_env<int>(env_name, phase_config.num_stages);
@@ -206,19 +221,19 @@ static void sm90_fp8_mega_moe(
     constexpr int kGranK = 128;
     constexpr int kL2ActsSFGranK = 64;
     const auto tensor_map_l1_acts = make_tma_2d_desc(l1_acts,
-                                                     hidden, config.num_max_pool_tokens,
-                                                     config.block_k, config.block_m,
+                                                     hidden, l1_config.num_max_pool_tokens,
+                                                     l1_config.block_k, l1_config.block_m,
                                                      static_cast<int>(l1_acts.stride(-2)),
-                                                     config.swizzle_acts_mode);
+                                                     l1_config.swizzle_acts_mode);
     const auto tensor_map_l1_acts_sf = make_tma_sf_desc(cute::UMMA::Major::MN, l1_acts_sf,
-                                                        config.sf_pool_stride_tokens, hidden,
-                                                        config.block_m, kGranK,
+                                                        l1_config.sf_pool_stride_tokens, hidden,
+                                                        l1_config.block_m, kGranK,
                                                         1, 0);
     const auto tensor_map_l1_weights = make_tma_2d_desc(l1_weights,
                                                         hidden, num_experts_per_rank * intermediate_hidden * 2,
-                                                        config.block_k, config.block_n,
+                                                        l1_config.block_k, l1_config.block_n,
                                                         static_cast<int>(l1_weights.stride(-2)),
-                                                        config.swizzle_weights_mode);
+                                                        l1_config.swizzle_weights_mode);
     // L1 output (post-SwiGLU FP8): N is halved. The SM90 epilogue writes this
     // staging tile to SMEM as plain row-major bytes, so the TMA store descriptor
     // must use no shared-memory swizzle. Later L2 TMA loads may still swizzle
@@ -226,40 +241,40 @@ static void sm90_fp8_mega_moe(
     // The default TMA store is issued per warpgroup, each writing a WG_BLOCK_M
     // row tile. In split-N mode, two WGs produce different N halves of the same
     // M rows, then one TMA store writes the full 64x128 post-SwiGLU tile.
-    const int num_epilogue_warpgroups_h = config.num_epilogue_threads / 128;
+    const int num_epilogue_warpgroups_h = l1_config.num_epilogue_threads / 128;
     const bool split_n_warpgroups_h =
-        config.block_m == 64 and num_epilogue_warpgroups_h > 1 and
-        config.block_n % num_epilogue_warpgroups_h == 0 and
-        (config.block_n / num_epilogue_warpgroups_h == 64 or
-         config.block_n / num_epilogue_warpgroups_h == 128);
+        l1_config.block_m == 64 and num_epilogue_warpgroups_h > 1 and
+        l1_config.block_n % num_epilogue_warpgroups_h == 0 and
+        (l1_config.block_n / num_epilogue_warpgroups_h == 64 or
+         l1_config.block_n / num_epilogue_warpgroups_h == 128);
     const bool split_mn_warpgroups_h =
-        config.block_m == 128 and config.block_n == 256 and num_epilogue_warpgroups_h == 4;
+        l1_config.block_m == 128 and l1_config.block_n == 256 and num_epilogue_warpgroups_h == 4;
     const int wg_split_m = split_n_warpgroups_h ? 1 : (split_mn_warpgroups_h ? 2 : num_epilogue_warpgroups_h);
     const int wg_split_n = split_n_warpgroups_h ? num_epilogue_warpgroups_h : (split_mn_warpgroups_h ? 2 : 1);
-    const int wg_block_m = config.block_m / wg_split_m;
-    const int wg_block_n = config.block_n / wg_split_n;
+    const int wg_block_m = l1_config.block_m / wg_split_m;
+    const int wg_block_n = l1_config.block_n / wg_split_n;
     const int wg_l1_out_block_n = wg_block_n / 2;
-    const int l1_output_box_n = split_n_warpgroups_h ? config.block_n / 2 : wg_l1_out_block_n;
-    const int l1_output_box_m = split_n_warpgroups_h ? config.block_m : wg_block_m;
+    const int l1_output_box_n = split_n_warpgroups_h ? l1_config.block_n / 2 : wg_l1_out_block_n;
+    const int l1_output_box_m = split_n_warpgroups_h ? l1_config.block_m : wg_block_m;
     const auto tensor_map_l1_output = make_tma_2d_desc(l2_acts,
-                                                       intermediate_hidden, config.num_max_pool_tokens,
+                                                       intermediate_hidden, l1_config.num_max_pool_tokens,
                                                        l1_output_box_n, l1_output_box_m,
                                                        static_cast<int>(l2_acts.stride(-2)),
                                                        0);
     const auto tensor_map_l2_acts = make_tma_2d_desc(l2_acts,
-                                                     intermediate_hidden, config.num_max_pool_tokens,
-                                                     config.block_k, config.block_m,
+                                                     intermediate_hidden, l2_config.num_max_pool_tokens,
+                                                     l2_config.block_k, l2_config.block_m,
                                                      static_cast<int>(l2_acts.stride(-2)),
-                                                     config.swizzle_acts_mode);
+                                                     l2_config.swizzle_acts_mode);
     const auto tensor_map_l2_acts_sf = make_tma_sf_desc(cute::UMMA::Major::MN, l2_acts_sf,
-                                                        config.sf_pool_stride_tokens, intermediate_hidden,
-                                                        config.block_m, kL2ActsSFGranK,
+                                                        l2_config.sf_pool_stride_tokens, intermediate_hidden,
+                                                        l2_config.block_m, kL2ActsSFGranK,
                                                         1, 0);
     const auto tensor_map_l2_weights = make_tma_2d_desc(l2_weights,
                                                         intermediate_hidden, num_experts_per_rank * hidden,
-                                                        config.block_k, config.block_n,
+                                                        l2_config.block_k, l2_config.block_n,
                                                         static_cast<int>(l2_weights.stride(-2)),
-                                                        config.swizzle_weights_mode);
+                                                        l2_config.swizzle_weights_mode);
 
     // Stats can be optional
     int* cumulative_local_expert_recv_stats_ptr = nullptr;
