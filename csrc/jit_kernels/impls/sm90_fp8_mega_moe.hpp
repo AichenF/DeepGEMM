@@ -49,6 +49,8 @@ public:
         bool l2_nmajor_schedule;
         bool one_warp_cleanup;
         bool async_l1_tma_store;
+        bool l1_dual_k_accum;
+        bool l2_dual_accum;
         KernelPhase kernel_phase;
         MegaMoESM90Config config;
 
@@ -103,6 +105,8 @@ static void __instantiate_kernel() {{
         {},
         {},
         {},
+        {},
+        {},
         {}
     >);
 }};
@@ -127,7 +131,9 @@ static void __instantiate_kernel() {{
     args.l2_nmajor_schedule ? "true" : "false",
     args.one_warp_cleanup ? "true" : "false",
     args.config.swap_ab ? "true" : "false",
-    args.async_l1_tma_store ? "true" : "false");
+    args.async_l1_tma_store ? "true" : "false",
+    args.l1_dual_k_accum ? "true" : "false",
+    args.l2_dual_accum ? "true" : "false");
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -289,6 +295,8 @@ static void sm90_fp8_mega_moe(
     const int l1_num_sms = get_env<int>("DG_SM90_MOE_L1_NUM_SMS", num_sms);
     const int l2_num_sms = get_env<int>("DG_SM90_MOE_L2_NUM_SMS", num_sms);
     const bool async_l1_tma_store = get_env<int>("DG_SM90_MOE_ASYNC_L1_TMA_STORE", 0) != 0;
+    const bool l1_dual_k_accum = get_env<int>("DG_SM90_MOE_L1_DUAL_K_ACCUM", 0) != 0;
+    const bool l2_dual_accum = get_env<int>("DG_SM90_MOE_L2_DUAL_ACCUM", 0) != 0;
     DG_HOST_ASSERT(l1_num_sms > 0 and l1_num_sms <= num_sms);
     DG_HOST_ASSERT(l2_num_sms > 0 and l2_num_sms <= num_sms);
     DG_HOST_ASSERT(not async_l1_tma_store or not l1_config.direct_l2_scatter);
@@ -304,6 +312,8 @@ static void sm90_fp8_mega_moe(
         .l2_nmajor_schedule = config.l2_nmajor_schedule,
         .one_warp_cleanup = config.one_warp_cleanup,
         .async_l1_tma_store = async_l1_tma_store,
+        .l1_dual_k_accum = l1_dual_k_accum,
+        .l2_dual_accum = l2_dual_accum,
         .kernel_phase = SM90FP8MegaMoERuntime::KernelPhase::Linear1,
         .config = l1_config,
         .y = y.data_ptr(),

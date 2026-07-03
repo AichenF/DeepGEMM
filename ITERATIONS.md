@@ -314,3 +314,23 @@ Each measured source or promoted-selector iteration records:
   synchronous winners (+0.79%, +1.44%, +6.16%).
 - Decision: reject async L1 TMA stores and keep the default synchronous path.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_a_*`.
+
+## Iteration 7: phase-local dual-accumulator experiment
+
+- Hypothesis: the already-implemented L1 dual-K and L2 dual-half accumulator
+  paths may expose more independent WGMMA work and reduce the long dependency
+  chain that dominates Pro M=8192.
+- Source change: expose the two existing paths through opt-in
+  `DG_SM90_MOE_L1_DUAL_K_ACCUM` and `DG_SM90_MOE_L2_DUAL_ACCUM` switches.
+  Both default to false, so the existing H20 and generic selector behavior is
+  unchanged.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`),
+  seed 101, median-10, 8x H200. Compare control, L1-only, L2-only, and both;
+  report the maximum returned time across ranks.
+- Result: control was 8371.925 us (+6.751% versus PR323), L1-only was
+  8369.825 us (+6.724%), L2-only was 8336.957 us (+6.305%), and both was
+  8354.491 us (+6.529%). The best nominal gain was only 0.42% and remained
+  well behind PR323.
+- Decision: reject both dual-accumulator paths as H200 selector candidates;
+  they do not materially close the large-M gap.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_dacc2_*`.
