@@ -834,3 +834,28 @@ Each measured source or promoted-selector iteration records:
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_dispatch4_correctness_smoke/`
   and `.../candidates/pro_dispatch_v1_*`.
+
+## Iteration 29: phase-specific dispatch frontend
+
+- Hypothesis: the shared 4+4 frontend may regress because L2 pays for extra
+  threads despite not running dispatch; expanding only L1 could retain a
+  dispatch gain while leaving L2 unchanged.
+- Implementation: add explicit `DG_SM90_MOE_L1_DISPATCH_WARPS` and
+  `DG_SM90_MOE_L2_DISPATCH_WARPS` overrides. Each phase independently selects
+  the 2+2 or 4+4 frontend and recomputes its pipeline/shared-memory launch
+  configuration. Defaults inherit the shared 2+2 configuration exactly.
+- Protocol: Pro M=8192 E5M2 parent, seed 101, median-10, 8x H200; compare
+  L1/L2 dispatch-warp counts 2/2, 4/2, and 2/4.
+- Results (maximum returned latency across ranks):
+
+  | L1 dispatch warps | L2 dispatch warps | us | vs 2/2 | vs PR323 |
+  |---:|---:|---:|---:|---:|
+  | 2 | 2 | 8232.724 | — | +4.98% |
+  | 4 | 2 | 8185.800 | -0.57% | +4.38% |
+  | 2 | 4 | 8864.429 | +7.67% | +13.03% |
+
+- Decision: hard-reject an expanded L2 frontend. The L1-only result is inside
+  the 1% confirmation band and remains well behind PR323, so do not promote it
+  alone; test it once in combination with the best sub-1% L1 wave/stage signals.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_phasedispatch_v1_*`.

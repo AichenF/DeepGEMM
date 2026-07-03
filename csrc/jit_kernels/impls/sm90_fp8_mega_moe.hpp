@@ -229,6 +229,23 @@ static void sm90_fp8_mega_moe(
     };
     apply_phase_block_n_override(l1_config, "DG_SM90_MOE_L1_BLOCK_N");
     apply_phase_block_n_override(l2_config, "DG_SM90_MOE_L2_BLOCK_N");
+    const auto apply_phase_dispatch_override = [&] (
+            MegaMoESM90Config& phase_config, const char* env_name) {
+        const int requested = get_env<int>(
+            env_name, phase_config.num_dispatch_threads / 32);
+        if (requested == phase_config.num_dispatch_threads / 32)
+            return;
+        DG_HOST_ASSERT(phase_config.block_m == 64 and
+                       phase_config.block_n == 256 and
+                       (requested == 2 or requested == 4) and
+                       not phase_config.swap_ab);
+        phase_config.num_dispatch_threads = requested * 32;
+        phase_config.num_non_epilogue_threads = requested == 4 ? 128 : 64;
+    };
+    apply_phase_dispatch_override(
+        l1_config, "DG_SM90_MOE_L1_DISPATCH_WARPS");
+    apply_phase_dispatch_override(
+        l2_config, "DG_SM90_MOE_L2_DISPATCH_WARPS");
     const auto apply_phase_epilogue_wg_override = [&] (
             MegaMoESM90Config& phase_config, const char* env_name) {
         const int requested = get_env<int>(
