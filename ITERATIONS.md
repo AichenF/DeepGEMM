@@ -270,3 +270,20 @@ Each measured source or promoted-selector iteration records:
 - Decision: phase-specific N tiles are not a material residual lever and are
   not promoted. Investigate per-phase persistent-grid/SM allocation next.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_n_*`.
+
+## Iteration 5: phase-specific persistent-grid experiment
+
+- Hypothesis: H200's 132-SM grid may create avoidable tail waves for the
+  48-expert Pro shape; phase-specific 128/120/112/96 CTA grids may improve
+  block-wave alignment.
+- Source change: add opt-in L1/L2 grid-size overrides, each bounded by the
+  physical/runtime SM count. Defaults remain the full runtime SM count.
+- Protocol: current Pro M=8192 parent, seed 101, median-10, 8x H200. Compare
+  full 132, L1-only 128, L2-only 128, both 128, and both 120/112/96.
+- Result: control was 8368.946 us; the best result was both-112 at
+  8323.770 us (about 0.54% faster) and still 6.14% behind PR323. All tested
+  grids landed between 8323.770 and 8359.728 us aside from the control.
+- Decision: grid alignment is not a material residual lever and is not
+  promoted. Host-side legal parameter dimensions are exhausted; move to
+  split-kernel internal optimization without introducing fusion.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_g_*`.

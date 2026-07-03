@@ -283,6 +283,10 @@ static void sm90_fp8_mega_moe(
 
     // Launch
     const auto num_sms = device_runtime->get_num_sms();
+    const int l1_num_sms = get_env<int>("DG_SM90_MOE_L1_NUM_SMS", num_sms);
+    const int l2_num_sms = get_env<int>("DG_SM90_MOE_L2_NUM_SMS", num_sms);
+    DG_HOST_ASSERT(l1_num_sms > 0 and l1_num_sms <= num_sms);
+    DG_HOST_ASSERT(l2_num_sms > 0 and l2_num_sms <= num_sms);
     const SM90FP8MegaMoERuntime::Args args = {
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
         .hidden = hidden, .intermediate_hidden = intermediate_hidden,
@@ -318,8 +322,10 @@ static void sm90_fp8_mega_moe(
         split_args.kernel_phase = kernel_phase;
         split_args.config = kernel_phase == SM90FP8MegaMoERuntime::KernelPhase::Linear1 ?
             l1_config : l2_config;
+        const int phase_num_sms =
+            kernel_phase == SM90FP8MegaMoERuntime::KernelPhase::Linear1 ? l1_num_sms : l2_num_sms;
         split_args.launch_args = LaunchArgs(
-            num_sms,
+            phase_num_sms,
             split_args.config.num_dispatch_threads + split_args.config.num_non_epilogue_threads +
                 split_args.config.num_epilogue_threads,
             split_args.config.smem_size,
