@@ -398,3 +398,20 @@ Each measured source or promoted-selector iteration records:
 - Decision: reject adjacent scale-domain accumulation. Its reciprocal and
   accumulator dependency costs outweigh the removed scale pass on H200.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_adjscale_v1_*`.
+
+## Iteration 11: B-loader weight-scale prefetch
+
+- Hypothesis: moving block weight-SF loads from math warpgroups after the full
+  barrier to the B-loader warp can hide their latency under the TMA pipeline.
+- Source change: add opt-in `DG_SM90_MOE_PREFETCH_WEIGHT_SF`; reserve one
+  aligned 128-byte shared line per stage, add a barrier producer, prefetch the
+  L1 gate/up or L2 N-group scales in the B-loader, and consume them from shared
+  memory. The default path and H20 behavior remain unchanged.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`),
+  BF16 combine, seed 101, median-10, 8x H200; report maximum returned latency.
+- Result: control was 8413.468 us (+7.281% versus PR323); prefetch was
+  8342.900 us (+6.381%), a 0.84% improvement but still far from the gate.
+- Decision: do not promote the shared-prefetch form. The signal motivates a
+  lower-overhead test that issues the same LDG from math warps before their
+  full-barrier wait, avoiding the extra shared stage and producer arrival.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_prefetchwsf_v1_*`.

@@ -53,6 +53,7 @@ public:
         bool l2_dual_accum;
         bool fp8_combine;
         bool adjacent_scale_domain;
+        bool prefetch_weight_sf;
         KernelPhase kernel_phase;
         MegaMoESM90Config config;
 
@@ -111,6 +112,7 @@ static void __instantiate_kernel() {{
         {},
         {},
         {},
+        {},
         {}
     >);
 }};
@@ -139,7 +141,8 @@ static void __instantiate_kernel() {{
     args.l1_dual_k_accum ? "true" : "false",
     args.l2_dual_accum ? "true" : "false",
     args.fp8_combine ? "true" : "false",
-    args.adjacent_scale_domain ? "true" : "false");
+    args.adjacent_scale_domain ? "true" : "false",
+    args.prefetch_weight_sf ? "true" : "false");
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -306,6 +309,15 @@ static void sm90_fp8_mega_moe(
     const bool fp8_combine = get_env<int>("DG_SM90_MOE_FP8_COMBINE", 0) != 0;
     const bool adjacent_scale_domain =
         get_env<int>("DG_SM90_MOE_ADJACENT_SCALE_DOMAIN", 0) != 0;
+    const bool prefetch_weight_sf =
+        get_env<int>("DG_SM90_MOE_PREFETCH_WEIGHT_SF", 0) != 0;
+    if (prefetch_weight_sf) {
+        constexpr int kWeightSFBytesPerStage = 128;
+        l1_config.smem_size += l1_config.num_stages * kWeightSFBytesPerStage;
+        l2_config.smem_size += l2_config.num_stages * kWeightSFBytesPerStage;
+        DG_HOST_ASSERT(l1_config.smem_size <= SM90ArchSpec::smem_capacity and
+                       l2_config.smem_size <= SM90ArchSpec::smem_capacity);
+    }
     DG_HOST_ASSERT(l1_num_sms > 0 and l1_num_sms <= num_sms);
     DG_HOST_ASSERT(l2_num_sms > 0 and l2_num_sms <= num_sms);
     DG_HOST_ASSERT(not async_l1_tma_store or not l1_config.direct_l2_scatter);
@@ -325,6 +337,7 @@ static void sm90_fp8_mega_moe(
         .l2_dual_accum = l2_dual_accum,
         .fp8_combine = fp8_combine,
         .adjacent_scale_domain = adjacent_scale_domain,
+        .prefetch_weight_sf = prefetch_weight_sf,
         .kernel_phase = SM90FP8MegaMoERuntime::KernelPhase::Linear1,
         .config = l1_config,
         .y = y.data_ptr(),

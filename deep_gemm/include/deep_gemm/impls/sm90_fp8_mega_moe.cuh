@@ -113,6 +113,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     bool kL2DualAccumRequested = false, \
     bool kFP8CombineRequested = false, \
     bool kAdjacentScaleDomainRequested = false, \
+    bool kPrefetchWeightSFRequested = false, \
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2, \
     uint32_t L1_SHAPE_K = kHidden, \
     uint32_t L2_SHAPE_N = kHidden, \
@@ -171,7 +172,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     kPhaseProfileRequested, kL2NMajorScheduleRequested, kOneWarpCleanupRequested, kFP8SwapAB, \
     kAsyncL1TMAStoreRequested, \
     kL1DualKAccumRequested, kL2DualAccumRequested, kFP8CombineRequested, \
-    kAdjacentScaleDomainRequested, \
+    kAdjacentScaleDomainRequested, kPrefetchWeightSFRequested, \
     L1_SHAPE_N, \
     L1_SHAPE_K, L2_SHAPE_N, L2_SHAPE_K, kNumDispatchWarps, \
     kNumMMANonEpilogueWarps, kNumEpilogueWarps, kNumEpilogueWarpgroups, \
@@ -307,6 +308,7 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     constexpr bool kFP8Combine =
         kFP8CombineRequested and MegaMoEPhase::runs_linear2;
     constexpr bool kAdjacentScaleDomain = kAdjacentScaleDomainRequested;
+    constexpr bool kPrefetchWeightSF = kPrefetchWeightSFRequested;
     constexpr bool kReuseAccumAsFinal = kSplitMNWarpgroups;
     using L1WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     using L2WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
@@ -345,10 +347,10 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     constexpr uint32_t kL2SFAHalfStride =
         math::constexpr_align<uint32_t>(BLOCK_M * sizeof(float), 128u) / sizeof(float);
     constexpr uint32_t SMEM_SFA_SIZE_PER_STAGE = 2 * kL2SFAHalfStride * sizeof(float);
-    // Block (128, 128) weight SF: 1 float per (BLOCK_N, BLOCK_K) tile for L2,
-    // 2 floats (gate/up) for L1. Loaded by math warpgroup directly from global,
-    // so no SMEM is needed.
-    constexpr uint32_t SMEM_SFB_SIZE_PER_STAGE = 0;
+    // Optional B-loader prefetch for the tiny block-(128,128) weight-SF set.
+    // A full 128-byte line per stage keeps every stage naturally aligned.
+    constexpr uint32_t SMEM_SFB_SIZE_PER_STAGE =
+        kPrefetchWeightSF ? 128u : 0u;
 
     // CD output: max of L1 FP8 (BLOCK_M * (BLOCK_N/2) * 1 byte * num_wg) and
     // L2 contribution (BF16 by default, optional unscaled E5M2).
@@ -438,10 +440,14 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     auto smem_sfa = utils::PatternVisitor([=](const uint32_t& i) {
         return reinterpret_cast<float*>(sf_start_ptr + i * SMEM_SFA_SIZE_PER_STAGE);
     });
+    auto sfb_start_ptr = sf_start_ptr + kNumStages * SMEM_SFA_SIZE_PER_STAGE;
+    auto smem_sfb = utils::PatternVisitor([=](const uint32_t& i) {
+        return reinterpret_cast<float*>(sfb_start_ptr + i * SMEM_SFB_SIZE_PER_STAGE);
+    });
 
-    // Barriers live after SF (SFB is loaded directly from global, no SMEM)
+    // Barriers live after the activation- and optional weight-SF stages.
     auto barrier_start_ptr = reinterpret_cast<Barrier*>(
-        sf_start_ptr + kNumStages * SMEM_SFA_SIZE_PER_STAGE);
+        sfb_start_ptr + kNumStages * SMEM_SFB_SIZE_PER_STAGE);
     auto dispatch_barriers = utils::PatternVisitor([=](const uint32_t& i) { return barrier_start_ptr + i; });
     auto full_barriers     = utils::PatternVisitor([=](const uint32_t& i) { return barrier_start_ptr + kNumDispatchWarps + i; });
     auto empty_barriers    = utils::PatternVisitor([=](const uint32_t& i) { return barrier_start_ptr + kNumDispatchWarps + kNumStages + i; });
@@ -468,7 +474,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
             for (uint32_t i = 0; i < kNumStages; ++ i) {
                 // Producer arrivals: A(+SFA) + B, or A + B + SFA when
                 // split-SFA uses an otherwise idle TMA warp.
-                full_barriers[i]->init(kSplitSFATMA ? 3 : 2);
+                full_barriers[i]->init((kSplitSFATMA ? 3 : 2) +
+                                       (kPrefetchWeightSF ? 1 : 0));
                 // With cluster multicast the leader CTA's TMA warp waits on peer
                 // empty barriers too, so every math warp releases both CTAs.
                 empty_barriers[i]->init(kClusterSize * kNumEpilogueWarps);
@@ -983,6 +990,40 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                         k_idx, n_idx, kClusterSize);
 
                     full_barriers[stage_idx]->arrive_and_expect_tx(SMEM_B_SIZE_PER_STAGE);
+                }
+                if constexpr (kPrefetchWeightSF) {
+                    if (is_linear1_phase) {
+                        constexpr uint32_t kL1SFKBlocks = kHidden / 128;
+                        constexpr uint32_t kL1SFGateBlks = kIntermediateHidden / 128;
+                        constexpr uint32_t kL1SFPerExpert =
+                            (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
+                        if (lane_idx < 2) {
+                            const uint32_t gate_n = n_block_idx * BLOCK_N / 256u;
+                            const uint32_t sf_n = lane_idx == 0 ?
+                                gate_n : kL1SFGateBlks + gate_n;
+                            const float* base = l1_weights_sf +
+                                local_expert_idx * kL1SFPerExpert + k_block_idx;
+                            smem_sfb[stage_idx][lane_idx] =
+                                __ldg(base + sf_n * kL1SFKBlocks);
+                        }
+                    } else {
+                        constexpr uint32_t kL2SFKBlocks = kIntermediateHidden / 128;
+                        constexpr uint32_t kL2SFPerExpert =
+                            (kHidden / 128) * kL2SFKBlocks;
+                        constexpr uint32_t kNumL2StageSF =
+                            math::constexpr_ceil_div(BLOCK_N, 128u);
+                        if (lane_idx < kNumL2StageSF) {
+                            const uint32_t sf_n =
+                                (n_block_idx * BLOCK_N) / 128u + lane_idx;
+                            const float* base = l2_weights_sf +
+                                local_expert_idx * kL2SFPerExpert + k_block_idx;
+                            smem_sfb[stage_idx][lane_idx] =
+                                __ldg(base + sf_n * kL2SFKBlocks);
+                        }
+                    }
+                    __syncwarp();
+                    if (cute::elect_one_sync())
+                        full_barriers[stage_idx]->arrive();
                 }
                 __syncwarp();
             }
@@ -1526,16 +1567,35 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 if (is_linear1_phase) {
                     const uint32_t gate_n = (n_block_idx * BLOCK_N + wg_n_idx) / 256u;
                     const uint32_t up_n   = kL1SFGateBlks + gate_n;
-                    const float* base = l1_weights_sf + local_expert_idx * kL1SFPerExpert + k_block_idx;
-                    gate_sf = __ldg(base + gate_n * kL1SFKBlocks);
-                    up_sf   = __ldg(base + up_n   * kL1SFKBlocks);
+                    if constexpr (kPrefetchWeightSF) {
+                        gate_sf = ptx::ld_shared(smem_sfb[stage_idx] + 0);
+                        up_sf = ptx::ld_shared(smem_sfb[stage_idx] + 1);
+                    } else {
+                        const float* base = l1_weights_sf +
+                            local_expert_idx * kL1SFPerExpert + k_block_idx;
+                        gate_sf = __ldg(base + gate_n * kL1SFKBlocks);
+                        up_sf   = __ldg(base + up_n * kL1SFKBlocks);
+                    }
                 } else {
-                    const float* base = l2_weights_sf + local_expert_idx * kL2SFPerExpert + k_block_idx;
                     const uint32_t sf_n = (n_block_idx * BLOCK_N + wg_n_idx) / 128u;
-                    l2_sf_lo = __ldg(base + sf_n * kL2SFKBlocks);
-                    if constexpr (WG_BLOCK_N > 128)
-                        l2_sf_hi = __ldg(base + (sf_n + 1u) * kL2SFKBlocks);
-                    else
+                    if constexpr (kPrefetchWeightSF) {
+                        const uint32_t stage_sf_idx = wg_n_idx / 128u;
+                        l2_sf_lo = ptx::ld_shared(smem_sfb[stage_idx] + stage_sf_idx);
+                        if constexpr (WG_BLOCK_N > 128)
+                            l2_sf_hi = ptx::ld_shared(
+                                smem_sfb[stage_idx] + stage_sf_idx + 1u);
+                        else
+                            l2_sf_hi = l2_sf_lo;
+                    } else {
+                        const float* base = l2_weights_sf +
+                            local_expert_idx * kL2SFPerExpert + k_block_idx;
+                        l2_sf_lo = __ldg(base + sf_n * kL2SFKBlocks);
+                        if constexpr (WG_BLOCK_N > 128)
+                            l2_sf_hi = __ldg(base + (sf_n + 1u) * kL2SFKBlocks);
+                        else
+                            l2_sf_hi = l2_sf_lo;
+                    }
+                    if constexpr (WG_BLOCK_N <= 128)
                         l2_sf_hi = l2_sf_lo;
                 }
 
