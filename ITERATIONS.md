@@ -141,3 +141,29 @@ Each measured source or promoted-selector iteration records:
   legal waves/stages and fill M=1024/2048 for the best families; do not encode
   a production H200 selector yet.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_c_*`.
+
+## Parameter screen 4: remaining Pro wave and direct-stage neighbors
+
+- Hypothesis: smaller expert waves or direct-on stage3 variants may close the
+  final representative-point gaps left by the combined beam.
+- Protocol: Pro M=512/4096/8192, seed 101, median-10, 8x H200. Tested
+  direct-off stage3+N-major with EPW12/8/6/4, stage3 without N-major at
+  EPW12/8, and five direct-on stage3/N-major/EPW variants.
+- Best updated max-rank results:
+
+  | M | best candidate | candidate us | PR323 us | gap |
+  |---:|---|---:|---:|---:|
+  | 512 | direct0 + stage3 + N-major + EPW12 | 1099.110 | 1090.546 | +0.79% |
+  | 4096 | direct0 + stage3 + N-major + EPW4 | 4400.872 | 4338.506 | +1.44% |
+  | 8192 | direct0 + stage3 + N-major + EPW16 | 8325.422 | 7842.460 | +6.16% |
+
+- Attribution: M=512 improves as the combined beam moves from EPW24 toward
+  EPW12, then worsens at EPW8/6/4. M=4096 favors EPW4. M=8192 has a shallow
+  minimum around EPW16. Every direct-on stage3 variant remained 2.99% to
+  19.19% behind PR323 and is rejected.
+- Decision: existing public force dimensions are exhausted for the Pro
+  representative points and have not met the strict gate. M=512 is within the
+  1% remeasurement band, but M=4096/8192 still require an additional
+  parameter dimension or split-kernel implementation improvement. Preserve
+  all H20 selector behavior; do not port PR323 fusion.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_w_*`.
