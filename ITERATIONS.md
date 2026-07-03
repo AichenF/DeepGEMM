@@ -506,3 +506,36 @@ Each measured source or promoted-selector iteration records:
   performance result. Identify and fix the remaining candidate filter, then
   rerun the identical source-level design.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_widen_v1_*`.
+
+## Diagnostic 3: stale host-extension audit
+
+- The remote worktree's `_C.cpython-312-x86_64-linux-gnu.so` predated the
+  source campaign. `strings` contained the original public SM90 knobs but none
+  of the subsequently added `FP8_COMBINE`, `PREFETCH_WEIGHT_SF`,
+  `FP16_SCALED_ACCUM`, `NATIVE_FP16_WGMMA`, phase-specific, or dual-accumulator
+  environment names.
+- Consequence: source-dependent iterations 1-15 did not have evidence that
+  their new host flags reached the generated kernel template. Their nominal
+  sub-1% deltas must be treated as same-configuration noise and are not valid
+  selector evidence. The original baseline and parameter screens using
+  pre-existing public knobs remain valid.
+- Repair: force-rebuilt the in-place extension with CUDA 13.2 and the campaign
+  venv. The rebuilt binary timestamp is 2026-07-03 13:05:40 PDT, and binary
+  strings now contain every added host flag. All subsequent candidate runs use
+  fresh candidate/JIT cache names and printed concrete configs.
+
+## Iteration 17: wide-N single-consumer after host rebuild
+
+- Hypothesis: after making the host configuration effective, one M64N256
+  consumer with in-place FP32 scale-domain accumulation may outperform the
+  standard pair of M64N128 consumers.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`),
+  seed 101, median-10, 8x H200. Fresh caches were used after rebuilding the
+  host extension. Printed configs confirmed 256 versus 128 epilogue threads
+  for the control and wide-N candidate, respectively.
+- Result: the two-WG control was 8472.745 us max-rank; the one-WG N256 path was
+  10011.301 us, an 18.16% regression and 27.66% slower than PR323.
+- Decision: reject the wide-N single-consumer path. One consumer does not
+  provide enough WGMMA latency hiding, and its in-place full-accumulator scale
+  passes are substantially more expensive than the dual-consumer layout.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_widen_v2_*`.
