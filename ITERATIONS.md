@@ -287,3 +287,30 @@ Each measured source or promoted-selector iteration records:
   promoted. Host-side legal parameter dimensions are exhausted; move to
   split-kernel internal optimization without introducing fusion.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_g_*`.
+
+## Diagnostic 2: PTXAS resources and phase counters
+
+- PTXAS verbose rebuild of the Pro M=8192 winner reported 168 registers for
+  both L1 and L2, zero-byte stack frames, and zero spill loads/stores. L1 used
+  three barriers and L2 used sixteen. Raising register redistribution limits
+  therefore has no spill-removal justification.
+- Built-in counters attributed the remaining work primarily to math/GEMM;
+  combine barrier/reduce and per-block epilogues were smaller. Event timing
+  remained roughly 5.3 ms L1 plus 3.0 ms L2 for the instrumented run.
+- Artifacts: `.../candidates/pro_ptxas8192/` and
+  `.../candidates/pro_phase8192/`.
+
+## Iteration 6: asynchronous L1 TMA-store experiment
+
+- Hypothesis: the existing double-buffered asynchronous L1 output-store path
+  can hide synchronous TMA-store waits behind the next GEMM block.
+- Source change: expose the already-implemented path through opt-in
+  `DG_SM90_MOE_ASYNC_L1_TMA_STORE`; default remains false. The experiment is
+  restricted to non-direct configs whose shared host SMEM allocation already
+  covers the double buffer.
+- Protocol: current Pro winners at M=512/4096/8192 with EPW12/4/16,
+  respectively; seed 101, median-10, 8x H200.
+- Results versus PR323 were +5.94%, +2.38%, and +7.30%, all worse than the
+  synchronous winners (+0.79%, +1.44%, +6.16%).
+- Decision: reject async L1 TMA stores and keep the default synchronous path.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_a_*`.

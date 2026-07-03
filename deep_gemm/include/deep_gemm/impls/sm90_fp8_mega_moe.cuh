@@ -108,6 +108,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     bool kL2NMajorScheduleRequested = false, \
     bool kOneWarpCleanupRequested = false, \
     bool kFP8SwapAB = false, \
+    bool kAsyncL1TMAStoreRequested = false, \
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2, \
     uint32_t L1_SHAPE_K = kHidden, \
     uint32_t L2_SHAPE_N = kHidden, \
@@ -164,6 +165,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     kNumNonEpilogueThreads, kNumEpilogueThreads, kClusterSize, kNumSMs, \
     kNumRanks, kActivationClamp, kFastMath, kDirectL2ScatterRequested, \
     kPhaseProfileRequested, kL2NMajorScheduleRequested, kOneWarpCleanupRequested, kFP8SwapAB, \
+    kAsyncL1TMAStoreRequested, \
     L1_SHAPE_N, \
     L1_SHAPE_K, L2_SHAPE_N, L2_SHAPE_K, kNumDispatchWarps, \
     kNumMMANonEpilogueWarps, kNumEpilogueWarps, kNumEpilogueWarpgroups, \
@@ -282,7 +284,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     constexpr uint32_t kSwapABTokenChunks = BLOCK_M / 8;
     DG_STATIC_ASSERT(not kSwapABEligible or (BLOCK_M % 8 == 0),
                      "swapAB epilogue token chunks assume BLOCK_M is a multiple of 8");
-    constexpr bool kAsyncL1TMAStore = false;
+    constexpr bool kAsyncL1TMAStore =
+        kAsyncL1TMAStoreRequested and MegaMoEPhase::runs_linear1;
     constexpr bool kSplitSFATMA = false;
     constexpr bool kDirectL2Scatter = (!kSwapABActive) && kDirectL2ScatterRequested && MegaMoEPhase::runs_linear2 &&
         (!kSerialNWarpgroups) && WG_BLOCK_N == 128;
