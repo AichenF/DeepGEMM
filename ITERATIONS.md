@@ -949,3 +949,29 @@ Each measured source or promoted-selector iteration records:
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_phase_v1_*`
   and `.../candidates/pro_bn512_phase_512_256_correctness_smoke/`.
+
+## Iteration 33: interleaved M8192 confirmation
+
+- Hypothesis: the 1.28% M8192 lead from iteration 32 is large enough to
+  survive longer samples and interleaved execution with PR323, rather than
+  being caused by a favorable single-run clock or load state.
+- Protocol: Pro M=8192, seed 101, median-20, 8x H200. Interleave three runs of
+  the retained L1 BN512 / L2 BN256 candidate with three unmodified PR323 runs.
+  For each run, report the maximum returned latency across ranks.
+- Results:
+
+  | observation | ours us | PR323 us | ours vs PR323 |
+  |---:|---:|---:|---:|
+  | 1 | 7728.855 | 7844.184 | -1.47% |
+  | 2 | 7711.712 | 7866.673 | -1.97% |
+  | 3 | 7751.338 | 7867.560 | -1.48% |
+
+- The median of the three run maxima is 7728.855 us for ours and
+  7866.673 us for PR323, a 1.75% lead. The conservative cross-run comparison
+  (slowest ours versus fastest PR323) still leads by 1.18%. Ours spans 0.51%
+  across observations and PR323 spans 0.30%.
+- Decision: confirm L1 BN512 / L2 BN256 as a stable H200 M8192 winner and use
+  it as the next tuning parent. This is still an explicit, default-off H200
+  candidate; no automatic selector or H20 tuning entry is changed.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_phase_interleaved_s101_n20/`.
