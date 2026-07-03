@@ -619,3 +619,33 @@ Each measured source or promoted-selector iteration records:
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_fp8combine_effective_v2_*`
   and `.../candidates/pro_fp8combine_effective_correctness_smoke/`.
+
+## Iteration 21: effective phase-specific expert waves with E5M2
+
+- Hypothesis: L1 and L2 may prefer different expert-wave sizes once the E5M2
+  combine path removes part of L2's scatter/reduce cost.
+- Protocol: Pro M=8192 E5M2 parent (`direct0, stage3, N-major, shared EPW16`),
+  seed 101, median-10, 8x H200. Sweep one phase over EPW4/8/12/24/48 while
+  holding the other at 16, using the rebuilt host runtime.
+- Results (maximum returned latency across ranks):
+
+  | L1 EPW | L2 EPW | us | vs 16/16 |
+  |---:|---:|---:|---:|
++  | 16 | 16 | 8211.883 | — |
+  | 4 | 16 | 8185.451 | -0.32% |
+  | 8 | 16 | 8196.595 | -0.19% |
+  | 12 | 16 | 8289.427 | 0.94% |
+  | 24 | 16 | 8197.039 | -0.18% |
+  | 48 | 16 | 8167.025 | -0.55% |
+  | 16 | 4 | 8226.518 | 0.18% |
+  | 16 | 8 | 8191.213 | -0.25% |
+  | 16 | 12 | 8199.580 | -0.15% |
+  | 16 | 24 | 8186.790 | -0.31% |
+  | 16 | 48 | 8205.725 | -0.07% |
+
+- Decision: the best point is L1 EPW48 / L2 EPW16 at 8167.025 us,
+  only 0.55% faster than the 8211.883 us control. This is below the
+  1% confirmation band and remains 4.14% behind PR323, so do not
+  promote a phase-specific wave rule.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_e5m2_phasewave_v1_*`.
