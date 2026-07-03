@@ -89,3 +89,29 @@ Each measured source or promoted-selector iteration records:
   Keep the baseline direct path at M=512.
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_direct0/`.
+
+## Parameter screen 2: Pro representative-point beam expansion
+
+- Hypothesis: combine the useful direct-off parent with one existing scheduler,
+  pipeline, wave, or tile-axis change; retain a direct-on branch for M=512.
+- Protocol: Pro M=512/4096/8192, seed 101, median-10, 8x H200, one axis per
+  candidate, isolated JIT caches. Ten candidates and 30 points completed with
+  eight rank records each.
+- Best max-rank results by representative point:
+
+  | M | best candidate | candidate us | vs baseline | PR323 us | vs PR323 |
+  |---:|---|---:|---:|---:|---:|
+  | 512 | direct0 + stage3 | 1132.499 | -4.47% | 1090.546 | +3.85% |
+  | 4096 | direct0 + stage3 | 4500.249 | -16.81% | 4338.506 | +3.73% |
+  | 8192 | direct0 + N-major | 8432.094 | -16.07% | 7842.460 | +7.52% |
+
+- Other useful signals: direct0+EPW16 reached 4822.348 us at M=4096;
+  direct0+EPW24 reached 8598.828 us at M=8192; direct-on+stage4 improved the
+  baseline by 1.40%, 4.63%, and 7.54% but remained behind the direct-off beam.
+- Rejected axes: BN128 and BM128 regressed all three points by 3.68% to
+  17.55% versus baseline. Direct-on+EPW24 also failed to improve M=512/4096.
+- Decision: retain `direct0+stage3` and `direct0+N-major` as beam parents.
+  Test their combination and neighboring EPW/cleanup combinations, then fill
+  M=1024/2048 only for survivors. No production selector change yet.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_d0_*`
+  and `.../candidates/pro_d1_*`.
