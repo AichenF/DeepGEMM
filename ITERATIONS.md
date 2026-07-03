@@ -539,3 +539,22 @@ Each measured source or promoted-selector iteration records:
   provide enough WGMMA latency hiding, and its in-place full-accumulator scale
   passes are substantially more expensive than the dual-consumer layout.
 - Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_widen_v2_*`.
+
+## Iteration 18: effective FP16 accumulation comparison
+
+- Hypothesis: with the rebuilt host runtime actually forwarding the template
+  flags, native F16-output FP8 WGMMA may remove enough accumulator conversion
+  and register traffic to close a material part of the large-M gap.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`, two
+  M64N128 consumers), BF16 combine, seed 101, median-10, 8x H200. Compare
+  control, FP32-output WGMMA plus half2 scaled accumulation, and native
+  F16-output WGMMA in fresh caches. Printed configs matched on all host tiles.
+- Results (max-rank): control 8371.610 us; conversion-based half2 accumulation
+  8367.652 us (-0.05%); native F16 WGMMA 8034.813 us (-4.02%). The native path
+  is 2.45% slower than PR323 at 7842.460 us, versus roughly 6.75% for control.
+- Decision: reject the conversion-based form. Retain native F16 WGMMA as the
+  first material H200 candidate, but do not promote it until focused and broad
+  numerical validation passes; native F16 accumulation changes rounding inside
+  each sequence of K32 WGMMAs.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_fp16_effective_v1_*`.
