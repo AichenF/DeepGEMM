@@ -1123,3 +1123,39 @@ Each measured source or promoted-selector iteration records:
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_smallm_sched_v1_*`
   and `.../candidates/pro_m512_old_new_jit_compare_s101_n20/`.
+
+## Iteration 39: BN256 small-M expert waves
+
+- Hypothesis: M=256 and M=512 need different expert-wave sizes after E5M2
+  combine; the wave can recover scheduler utilization without changing the
+  kernel structure.
+- Screen protocol: Pro M=256/512, seed 101, median-10, 8x H200. Hold BN256,
+  FP32 accumulation, E5M2 combine, N-major1, and stage3; sweep
+  EPW8/12/16/24/48.
+- Screen results (maximum returned latency across ranks):
+
+  | EPW | M256 us | M512 us |
+  |---:|---:|---:|
+  | 8 | 871.846 | 1117.557 |
+  | 12 | 851.154 | 1119.348 |
+  | 16 | 862.563 | 1109.572 |
+  | 24 | 854.418 | 1088.051 |
+  | 48 | 856.979 | 1163.685 |
+
+- Confirmation protocol: interleave the M256/EPW12 and M512/EPW24 winners
+  with PR323, three observations each, median-20. Compare the median of each
+  run's maximum-rank latency.
+- Confirmation results:
+
+  | M | ours observation maxima (us) | ours median | PR323 maxima (us) | PR323 median | gap |
+  |---:|---|---:|---|---:|---:|
+  | 256 | 853.523, 880.067, 862.018 | 862.018 | 852.435, 863.330, 858.386 | 858.386 | +0.42% |
+  | 512 | 1081.414, 1086.163, 1122.420 | 1086.163 | 1093.012, 1101.043, 1083.410 | 1093.012 | -0.63% |
+
+- Decision: retain EPW24 as the provisional M512 H200 candidate, but require
+  broader confirmation because one observation was noisy. EPW12 does not meet
+  the M256 gate after interleaving; continue with tile/frontend structure at
+  M256. No H20 selector or tuning result is changed.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_smallm_wave_v1_*`
+  and `.../candidates/pro_smallm_wave_vs_pr_confirm_s101_n20/`.
