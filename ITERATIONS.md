@@ -1674,3 +1674,45 @@ Each measured source or promoted-selector iteration records:
   `.../candidates/flash_m128_e4_confirm_s101_n20_v2/`,
   `.../candidates/pro_m128_bn512_clean_confirm_s101_n20_v2/`, and
   `.../candidates/pro_m256_l1bk256_sms128_clean_confirm_s101_n20_v2/`.
+
+## Iteration 54: clean-node large-M closure and Flash M8192 retune
+
+- Three interleaved median-20 observations on the clean H200 node confirmed
+  the retained Pro L1-BN512/L2-BN256 global-BF16 parent at every M above 512:
+
+  | M | ours median (us) | PR323 median (us) | gap |
+  |---:|---:|---:|---:|
+  | 1024 | 1555.068 | 1576.030 | -1.33% |
+  | 2048 | 2324.749 | 2434.126 | -4.49% |
+  | 4096 | 4117.554 | 4313.020 | -4.53% |
+  | 8192 | 7749.587 | 7926.971 | -2.24% |
+
+- The unmodified Flash default path was also rerun to separate retained
+  defaults from opt-in candidate effects:
+
+  | M | ours median (us) | PR323 median (us) | gap |
+  |---:|---:|---:|---:|
+  | 256 | 289.888 | 300.752 | -3.61% |
+  | 1024 | 589.793 | 599.632 | -1.64% |
+  | 2048 | 947.056 | 991.297 | -4.46% |
+  | 4096 | 1740.819 | 1756.705 | -0.90% |
+  | 8192 | 3344.431 | 3309.310 | +1.06% |
+
+  M8192 no longer passed the gate under repeated clean-node measurement, so
+  it was retuned instead of relying on the older single observation.
+- A bounded Flash M8192 sweep retained E5M2 combine, non-direct N-major
+  scheduling, stage3, and EPW32.  Its three median-20 observation maxima were
+  3200.650/3177.536/3194.191 us versus PR323
+  3301.935/3308.713/3302.333 us.  The median is 3194.191 versus 3302.333 us,
+  a stable 3.27% lead.
+- Exact eight-rank focused correctness for the retained E5M2/EPW32/stage3
+  calculation path passed at `calc_diff=0.0020 < 0.01`.
+- Decision: retain the Pro M1024--8192 parent, the default Flash M256 and
+  M1024--4096 points, and the new explicit Flash M8192 candidate.  The only
+  remaining performance gaps are Flash M512 and Pro M512.
+- Raw artifacts:
+  `.../candidates/pro_large_clean_confirm_s101_n20_v2/`,
+  `.../candidates/flash_default_large_clean_s101_n20_v2/`,
+  `.../candidates/flash_m8192_tune_v1_*`,
+  `.../candidates/flash_m8192_e32_s3_n1_confirm_s101_n20_v1/`, and
+  `.../candidates/flash_m8192_e32_s3_n1_correctness/`.
