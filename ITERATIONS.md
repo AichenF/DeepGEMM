@@ -1801,3 +1801,29 @@ Each measured source or promoted-selector iteration records:
   tuning, or PR323 implementation changed.
 - Raw artifacts:
   `.../candidates/pro_m8_same_node_alternating_ab_v2/`.
+
+## Iteration 59: paired Flash small-M no-regression closure
+
+- Hypothesis: the current default-off source does not materially regress the
+  original Flash path below M128; the older Flash M16 +0.41% comparison was
+  cross-allocation noise.
+- Protocol: exact `3552b62` baseline and current default source on job
+  `2963787`, Flash M8/16/32/64, seed 101, median-20, eight ranks, three paired
+  observations per M.  Baseline/current execution order alternated by
+  observation.
+
+  | M | baseline observations (us) | baseline median us | current observations (us) | current median us | gap |
+  |---:|---|---:|---|---:|---:|
+  | 8 | 223.8, 223.3, 223.1 | 223.3 | 218.0, 220.3, 214.3 | 218.0 | -2.37% |
+  | 16 | 249.6, 252.0, 254.1 | 252.0 | 273.5, 242.6, 249.1 | 249.1 | -1.15% |
+  | 32 | 257.9, 254.0, 259.6 | 257.9 | 256.5, 258.2, 255.0 | 256.5 | -0.54% |
+  | 64 | 267.7, 287.6, 268.1 | 268.1 | 266.1, 268.8, 268.8 | 268.8 | +0.26% |
+
+- Flash M8/M16/M32 are faster than the original source.  M64 differs by only
+  +0.26%, within the repeated-run noise demonstrated by the 287.6-us baseline
+  outlier, and is accepted as no material regression.
+- Decision: the same-node `M < 128` no-regression gate is now closed for both
+  Flash and Pro.  No source, selector, H20 tuning, or PR323 implementation
+  changed.
+- Raw artifacts:
+  `.../candidates/flash_small_same_node_alternating_ab_v1/`.
