@@ -1313,3 +1313,112 @@ Each measured source or promoted-selector iteration records:
   H200-only; H20 tuning and defaults remain untouched.
 - Raw artifacts:
   `.../sm90_fp8_h200_retune_job2957858/candidates/pro_m256_l2bn128_v1_*`.
+
+## Iteration 44: M256 phase-local feature and frontend isolation
+
+- Hypothesis: the earlier global BF16/early-scale signals may belong only to
+  L1, which contributes roughly two thirds of M256 latency; alternatively a
+  phase-local frontend or BN512 L1 tile may remove scheduler overhead.
+- Temporary implementation: allow L1/L2 to select early weight-SF and BF16x2
+  accumulation independently. These experiment-only overrides stayed off by
+  default and were removed after the screen.
+- Phase-feature screen (Pro M=256, seed 101, median-10, 8x H200, maximum rank):
+
+  | candidate | us |
+  |---|---:|
+  | control | 893.138 |
+  | L1 early weight-SF | 882.596 |
+  | L2 early weight-SF | 894.885 |
+  | L1 BF16x2 | 880.563 |
+  | L2 BF16x2 | 888.276 |
+
+- Three-observation median-20 follow-up did not reproduce a useful feature
+  gain: control was 889.379 us, L1 BF16x2 888.693 us, L1 early scale
+  893.858 us, and PR323 851.526 us.
+- BN512 L1 with BN256 L2 reached 870.531 us at its best L1/L2 wave setting,
+  still well behind PR323. L1 four-consumer and four-dispatch-warp variants
+  were 884.113 and 895.941 us, respectively; the other phase-local frontend
+  changes were slower.
+- Decision: reject all phase-local feature/frontend variants and remove their
+  temporary host plumbing. Keep BN256 and the compact two-consumer frontend.
+  H20 defaults and tuning are unchanged.
+- Raw artifacts:
+  `.../candidates/pro_m256_phasefeat_v1_*`,
+  `.../candidates/pro_m256_phasefeat_confirm_s101_n20/`,
+  `.../candidates/pro_m256_l1bn512_v1_*`, and
+  `.../candidates/pro_m256_phasefrontend_v1_*`.
+
+## Iteration 45: M256 phase-local L1 BLOCK_K=256
+
+- Hypothesis: M256 L1 already runs only two pipeline stages at BK128, so
+  grouping two independently scaled K128 planes into one BK256 stage can
+  halve its 56 logical K-stage iterations without sacrificing pipeline depth.
+  L2 remains BK128/stage3.
+- Implementation: add independent `DG_SM90_MOE_L1_BLOCK_K` and
+  `DG_SM90_MOE_L2_BLOCK_K` host overrides. They inherit the existing config
+  and remain opt-in; the H20 selector is not modified.
+- Initial same-source screen improved the maximum-rank latency from
+  889.410 us at L1 BK128 to 860.628 us at L1 BK256. Focused eight-rank
+  correctness on `L2.profile_topk6.t512` passed at
+  `calc_diff=0.0020 < 0.01` with E5M2 combine.
+- Wave screen found L1 EPW8 and L2 EPW48 as the best stable parent. The useful
+  neighbors were L1 EPW8/12/48 at 852.146/853.124/852.837 us and L2
+  EPW24/48 at 852.978/852.755 us.
+- Interleaved median-20 confirmation:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | L1 BK256, L1/L2 EPW8/48 | 857.091, 859.493, 851.174 | 857.091 |
+  | PR323 | 857.075, 855.890, 851.814 | 855.890 |
+
+  The initial confirmed gap is +0.14%; later interleaved batches continued to
+  alternate around parity rather than establish the required lead.
+- PTXAS/SASS audit reported 168 registers, zero spill stores/loads, and three
+  barriers for L1. Weight-scale reads already lower to `LDG.E.CONSTANT`, so
+  warp shuffle or manual scale prefetch is not a remaining opportunity.
+- Decision: retain phase-local L1 BK256 as the M256 H200 parent and keep its
+  focused correctness evidence, but do not encode an H200 selector until it
+  has a stable margin over PR323. H20 remains on its existing BK128 tuning.
+- Raw artifacts:
+  `.../candidates/pro_m256_l1bk256_*`,
+  `.../candidates/pro_m256_l1bk256_confirm_s101_n20/`,
+  `.../candidates/pro_m256_l1bk256_correctness_smoke/`, and
+  `.../candidates/pro_m256_l1bk256_resource_v1/`.
+
+## Iteration 46: BK256 bounded microarchitecture follow-ups
+
+- Hypothesis: after BK256 reaches parity, one small producer, accumulator, or
+  cache-policy change may provide the remaining stable margin without fusing
+  L1/L2 or changing the H20 path.
+- Results:
+
+  | candidate | result | decision |
+  |---|---|---|
+  | packed L1 SFA TMA | 863.236 us vs 852.164 us control median | reject (+1.30%) |
+  | packed L2 SFA TMA | 876.195 us screen | reject |
+  | dual-plane accumulators | 863.780 us vs 859.237 us control median | reject (+0.53%) |
+  | BK256 BF16x2, EPW8 | 857.701 us vs 858.101 us control; PR 853.027 us | reject (noise-level) |
+  | BK256 BF16x2, EPW24 | 864.657 us vs 862.659 us control median | reject |
+  | initialize from first plane | 862.981 us vs 856.932 us old path median | reject (+0.71%) |
+  | B-TMA `EVICT_FIRST` | 871.955 us screen | reject |
+  | move empty-barrier release earlier | 859.842 us vs 858.738 us | reject |
+  | precompute scale products | 865.827 us vs 853.780 us | reject |
+  | vectorized paired weight-SF load | 862.645 us vs 854.097 us | reject |
+
+- The BK256+BF16 focused correctness smoke passed at
+  `calc_diff=0.0020 < 0.01`; it was rejected for performance, not accuracy.
+- Cross-load checks also rejected L1 BK256 at Pro M512
+  (1144.579 us versus 1130.339 us BK128) and L2 BN512/BF16 at Pro M256
+  (1001.123 us versus roughly 857 us for BN256).
+- Decision: revert every microarchitecture candidate and keep only the clean
+  L1-BK256/L2-BK128 parent. No PR323 fused code was copied or implemented;
+  PR323 remained a black-box timing reference. H20 tuning and selectors remain
+  untouched.
+- Raw artifacts:
+  `.../candidates/pro_m256_l1bk256_packsfa_*`,
+  `.../candidates/pro_m256_l1bk256_dualplane_*`,
+  `.../candidates/pro_m256_l1bk256_bf16_*`,
+  `.../candidates/pro_m256_l1bk256_initfirst_*`,
+  `.../candidates/pro_m256_l1bk256_bevictfirst_v1/`,
+  `.../candidates/pro_m512_l1bk256_*`, and
+  `.../candidates/pro_m256_l1bk256_l2bn512_bf16_v1/`.

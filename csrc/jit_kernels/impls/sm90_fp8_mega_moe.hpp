@@ -230,6 +230,14 @@ static void sm90_fp8_mega_moe(
     };
     apply_phase_block_n_override(l1_config, "DG_SM90_MOE_L1_BLOCK_N");
     apply_phase_block_n_override(l2_config, "DG_SM90_MOE_L2_BLOCK_N");
+    const auto apply_phase_block_k_override = [&](MegaMoESM90Config& phase_config,
+                                                   const char* env_name) {
+        const int block_k = get_env<int>(env_name, phase_config.block_k);
+        DG_HOST_ASSERT(block_k == 128 or block_k == 256);
+        phase_config.block_k = block_k;
+    };
+    apply_phase_block_k_override(l1_config, "DG_SM90_MOE_L1_BLOCK_K");
+    apply_phase_block_k_override(l2_config, "DG_SM90_MOE_L2_BLOCK_K");
     const auto apply_phase_dispatch_override = [&] (
             MegaMoESM90Config& phase_config, const char* env_name) {
         const int requested = get_env<int>(
