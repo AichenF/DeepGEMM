@@ -1855,3 +1855,17 @@ Each measured source or promoted-selector iteration records:
   source, selector, H20 tuning, or PR323 implementation changed.
 - Raw artifacts:
   `.../candidates/flash_m512_frontend_tile_screen_v1/`.
+
+## Iteration 61: interrupted Flash M512 cross-seed L1-wave screen
+
+- Intended protocol: compare L1 EPW8/12/16 on route seeds 7/23/101/509 for
+  the retained cluster2/BF16 parent, using median-20 and maximum latency across
+  eight ranks.
+- Result: seed 7 EPW8 completed at 342.8 us.  EPW12 then failed the existing
+  legality condition because Flash has 32 local experts and the wave size must
+  divide that count.  The batch stopped before EPW16 or the other seeds ran.
+- Decision: remove only the illegal EPW12 point and rerun EPW8 versus EPW16
+  under the same cross-seed protocol.  No source, selector, H20 tuning, or
+  PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l1wave_crossseed_screen_v1/`.
