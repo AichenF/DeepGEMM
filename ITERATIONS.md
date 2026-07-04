@@ -2278,3 +2278,27 @@ Each measured source or promoted-selector iteration records:
   no selector or precision change.
 - Raw artifacts:
   `$ROOT/candidates/pro_m256_l2bk256_screen_*_v1/`.
+
+## Iteration 81 — Pro M256 128-SM expert-wave interaction screen
+
+- Hypothesis: expert waves selected before the 128-SM grid change may need
+  retuning at the final grid size.
+- Protocol: fixed L1/L2 BK256/BK128, stages2/3, FP32 accumulation, E5M2
+  combine, and symmetric 128-SM grids.  Run two median-20/max-rank observations
+  for current EPW8/48, then 8/24, 12/24, 12/48, and a closing 8/48 control.
+- Results:
+
+  | L1/L2 EPW | observation maxima (us) | center us |
+  |---|---|---:|
+  | 8/48 opening control | 862.078, 863.917 | 862.998 |
+  | 8/24 | 862.718, 864.127 | 863.423 |
+  | 12/24 | 865.967, 870.430 | 868.199 |
+  | 12/48 | 868.670, 875.215 | 871.943 |
+  | 8/48 closing control | 948.720, 896.749 | 922.735 |
+
+- Decision: reject all three neighbors.  Before the late run-state degradation,
+  8/24 was already slightly slower than the stable opening control, and both
+  L1-EPW12 variants regressed materially.  Retain EPW8/48 and do not promote
+  the anomalous closing-control timings as a source effect.
+- Raw artifacts:
+  `$ROOT/candidates/pro_m256_sms128_wave_*_v1/`.
