@@ -274,6 +274,7 @@ def worker(local_rank: int, num_processes: int, cfg: Dict):
     torch.set_float32_matmul_precision("highest")
     num_experts_per_rank = NUM_EXPERTS // num_ranks
     failures = []
+    case_summaries = []
 
     for seed in cfg["seeds"]:
         if rank_idx == 0:
@@ -356,6 +357,7 @@ def worker(local_rank: int, num_processes: int, cfg: Dict):
                 )
             if not passed:
                 failures.append((seed, m, summary))
+            case_summaries.append({"seed": seed, "m": m, **summary})
             del x_fp8, x_sf, topk_idx, topk_weights
             del fp32_output, bf16_output, golden
             torch.cuda.empty_cache()
@@ -370,6 +372,19 @@ def worker(local_rank: int, num_processes: int, cfg: Dict):
     failure_count = torch.tensor([len(failures)], dtype=torch.int, device="cuda")
     dist.all_reduce(failure_count, op=dist.ReduceOp.MAX)
     if rank_idx == 0:
+        worst = {}
+        for metric in (
+            "max_fp32_vs_golden",
+            "max_bf16_vs_golden",
+            "max_bf16_vs_fp32",
+            "max_bf16_vs_fp32_abs",
+        ):
+            row = max(case_summaries, key=lambda item: item[metric])
+            worst[metric] = {
+                "value": row[metric],
+                "seed": row["seed"],
+                "m": row["m"],
+            }
         print(
             "VALIDATION_FINAL_JSON "
             + json.dumps(
@@ -379,6 +394,7 @@ def worker(local_rank: int, num_processes: int, cfg: Dict):
                     "num_cases": len(cfg["seeds"]) * len(cfg["ms"]),
                     "passed": failure_count.item() == 0,
                     "failure_count": failure_count.item(),
+                    "worst": worst,
                 },
                 sort_keys=True,
             ),
