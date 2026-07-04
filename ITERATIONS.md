@@ -1827,3 +1827,31 @@ Each measured source or promoted-selector iteration records:
   changed.
 - Raw artifacts:
   `.../candidates/flash_small_same_node_alternating_ab_v1/`.
+
+## Iteration 60: Flash M512 phase frontend and BN128 screen
+
+- Hypothesis: the retained cluster2/BF16 parent may reduce its dominant L1
+  time by expanding the phase-local dispatch frontend, or improve tail
+  utilization by using a narrower N tile in one phase.  These are existing
+  default-off controls and require no new kernel structure.
+- Parent: Flash M512, E5M2 combine, non-direct N-major scheduling, cluster2,
+  global BF16x2 accumulation, L1/L2 EPW16/4 and stage4/4.
+- Protocol: job `2963787`, node `viking-prod-651`, seed 101, median-10, maximum
+  returned latency across eight ranks.  Screen only our implementation before
+  spending paired PR323 observations on a survivor.
+
+  | candidate | max-rank us | versus parent |
+  |---|---:|---:|
+  | parent | 339.3 | -- |
+  | L1 dispatch warps 4 | 356.9 | +5.19% |
+  | L2 dispatch warps 4 | 378.6 | +11.58% |
+  | L1/L2 dispatch warps 4/4 | 346.9 | +2.24% |
+  | L1 BN128 | 415.0 | +22.31% |
+  | L2 BN128 | 414.3 | +22.10% |
+  | L1/L2 BN128/128 | 458.0 | +34.98% |
+
+- Decision: reject expanded phase frontends and BN128 for Flash M512.  None
+  beats the same-state parent, so no PR323 confirmation is warranted.  No
+  source, selector, H20 tuning, or PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_frontend_tile_screen_v1/`.
