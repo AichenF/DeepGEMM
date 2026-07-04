@@ -2014,3 +2014,29 @@ Each measured source or promoted-selector iteration records:
   changed.
 - Raw artifacts:
   `.../candidates/flash_m512_l2epw8_crossseed_screen_v1/`.
+
+## Iteration 68: Flash M512 EPW8/8 cross-seed PR323 verdict
+
+- Hypothesis: the fixed L1/L2 EPW8/8 compromise beats PR323 on all four route
+  seeds and removes the complementary EPW4/EPW32 failures.
+- Protocol: seeds 7/23/101/509, three median-20 observations per
+  implementation and seed, maximum latency across eight ranks, alternating
+  ours and PR323 on every observation.
+
+  | seed | ours observations (us) | ours median us | PR323 observations (us) | PR323 median us | gap |
+  |---:|---|---:|---|---:|---:|
+  | 7 | 344.1, 347.2, 351.1 | 347.2 | 342.6, 342.5, 353.3 | 342.6 | +1.34% |
+  | 23 | 365.5, 345.5, 340.5 | 345.5 | 342.4, 352.5, 344.0 | 344.0 | +0.44% |
+  | 101 | 340.4, 343.0, 354.3 | 343.0 | 345.5, 341.1, 350.2 | 345.5 | -0.72% |
+  | 509 | 340.8, 343.2, 335.8 | 340.8 | 349.1, 343.4, 354.7 | 349.1 | -2.38% |
+
+- EPW8/8 wins seeds 101/509 but loses seeds 7/23.  It is therefore less
+  robust than L1/L2 EPW8/4, which won seeds 7/23/101, lost only seed 509 by
+  0.43%, and led the four-seed center by 0.40%.
+- Decision: reject EPW8/8 and retain EPW8/4 as the best fixed Flash M512
+  candidate.  It closes the official seed-101 benchmark point by 1.69%, but
+  no tested fixed L2 wave wins every route seed; retain that limitation in the
+  final report rather than claiming distribution-independent performance.
+  No source, selector, H20 tuning, or PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l1e8_l2e8_pr_confirm_s{7,23,101,509}_v1/`.
