@@ -2221,3 +2221,21 @@ Each measured source or promoted-selector iteration records:
   no benchmark subprocess or GPU kernel ran.
 - Decision: explicitly create each candidate directory inside the loop and
   rerun the unchanged screen.  No source or selector setting changed.
+
+## Iteration 78 — Aborted Pro M256 asymmetric phase-grid screen
+
+- Hypothesis: keeping the L1-dominant phase at 128 SMs while changing only the
+  L2 grid could recover the remaining few microseconds at Pro M256.
+- Protocol: intended two median-20 observations for nine bounded L1/L2 grids,
+  beginning with 128/128 control and 128/124.
+- Result: the 128/128 control completed at 889.342 and 861.374 us.  The first
+  128/124 process emitted all rank run configurations but did not reach the
+  profiler after more than four minutes.  This reproduces the prior unsafe
+  asymmetric-grid behavior.  The batch was interrupted; later combinations
+  did not run.
+- Decision: reject asymmetric L1/L2 SM grids as operationally unsafe and do
+  not encode one in the selector.  Clean any surviving processes, verify GPU
+  health, and restrict further M256 work to symmetric grids or already-safe
+  scheduling controls.
+- Raw artifacts:
+  `$ROOT/candidates/pro_m256_phasegrid_128_{128,124}_v1/`.
