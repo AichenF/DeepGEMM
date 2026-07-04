@@ -1919,3 +1919,25 @@ Each measured source or promoted-selector iteration records:
   changed.
 - Raw artifacts:
   `.../candidates/flash_m512_l1e8_pr_confirm_s{7,23,101,509}_v1/`.
+
+## Iteration 64: Flash M512 L2 large-wave tail screen
+
+- Hypothesis: after moving L1 to EPW8, a larger L2 expert wave may remove the
+  remaining seed-509 tail without materially hurting the seed-101 winner.
+- Protocol: retained Flash M512 cluster2/BF16/E5M2 candidate with L1 EPW8;
+  compare L2 EPW4/16/32 at seeds 101 and 509, median-20, maximum latency across
+  eight ranks.  Candidate order was reversed on seed 509.
+
+  | seed | L2 EPW4 us | L2 EPW16 us | L2 EPW32 us |
+  |---:|---:|---:|---:|
+  | 101 | 345.2 | 350.0 | 346.2 |
+  | 509 | 349.3 | 342.6 | 338.5 |
+
+- EPW16 is not competitive.  EPW32 costs 1.0 us on seed 101 but improves seed
+  509 by 10.8 us, turning the only PR323-losing route seed into a promising
+  candidate while preserving enough of seed 101's prior margin.
+- Decision: reject EPW16.  Extend the EPW4-versus-EPW32 screen to seeds 7 and
+  23 before full PR323 confirmation.  No source, selector, H20 tuning, or
+  PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l2wave_tail_screen_v1/`.
