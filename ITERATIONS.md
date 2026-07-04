@@ -2360,3 +2360,18 @@ Each measured source or promoted-selector iteration records:
   existing two-warp cleanup path and make no selector change.
 - Raw artifacts:
   `$ROOT/candidates/pro_m256_final_cleanup_*_v1/`.
+
+## Iteration 85 — Pro M256 low symmetric-grid screen
+
+- Hypothesis: symmetric 96 or 112 SM grids may trade some parallelism for exact
+  divisibility of the 1152 L1 and/or 1344 L2 N-tile tasks, reducing the final
+  scheduler tail.  M256 had previously only screened 124--132 SMs.
+- Protocol: one seed-101 median-20/max-rank observation in 128 control, 96,
+  112, 120, and closing-128 order.  L1 and L2 always used the same grid.
+- Results: 128 opening 874.025 us, 96 881.662 us, 112 875.502 us, 120
+  875.454 us, and 128 closing 865.535 us.
+- Decision: reject 96/112/120.  Exact tile-count divisibility does not offset
+  lower active-SM parallelism; all are slower than the closing 128 control and
+  none improves even the noisier opening control.  Retain symmetric 128 SMs.
+- Raw artifacts:
+  `$ROOT/candidates/pro_m256_low_symmetric_sms_*_v1/`.
