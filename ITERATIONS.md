@@ -1765,3 +1765,14 @@ Each measured source or promoted-selector iteration records:
 - No source, selector, H20 tuning, or PR323 implementation changed.
 - Raw artifacts:
   `.../candidates/pro_small_current_head_same_node_full_v1/`.
+
+## Iteration 57: failed Pro M8 alternating A/B invocation
+
+- Intended protocol: five paired, order-alternating observations of the exact
+  `3552b62` baseline and current default source at Pro M8, seed 101 and
+  median-20, to resolve iteration 56's 0.62% difference.
+- Result: the remote login shell interpreted an embedded awk variable before
+  the requested `bash -lc` payload and exited with `Illegal variable name`.
+  No benchmark subprocess launched and no performance evidence was produced.
+- Decision: fix only the command quoting and rerun the identical protocol.  No
+  source, selector, H20 tuning, or PR323 implementation changed.
