@@ -1636,3 +1636,41 @@ Each measured source or promoted-selector iteration records:
   `.../candidates/pro_m512_{cleanup,global_bf16,l1bn512,l2bn128,l2bk256,fp16acc}*`,
   `.../candidates/pro_m512_bn512_{grid,wave}*`, and the corresponding
   `*_confirm_s101_n20*` directories.
+
+## Iteration 53: clean-node closure of the retained M128/M256 points
+
+- The retained candidates were rerun from the clean host runtime on
+  `viking-prod-651`, interleaving each implementation for three median-20
+  observations at seed 101.
+- Flash M128, E5M2 combine with non-direct N-major scheduling and EPW4:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | ours | 268.445, 285.053, 285.406 | 285.053 |
+  | PR323 | 291.471, 386.380, 299.999 | 299.999 |
+
+  Ours leads the median by 4.98%.  The PR323 second observation is an outlier,
+  but ours also beats the other two individual PR323 observations.
+- Pro M128, L1-BN512/L2-BN256 global-BF16 parent:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | ours | 865.032, 869.053, 876.086 | 869.053 |
+  | PR323 | 899.903, 904.909, 911.365 | 904.909 |
+
+  Ours leads by 3.96%.
+- Pro M256, phase-local L1-BK256/L2-BK128 with 128 SMs:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | ours | 865.198, 862.303, 865.685 | 865.198 |
+  | PR323 | 861.166, 872.349, 880.253 | 872.349 |
+
+  Ours leads by 0.82%, reproducing the prior node's 0.80% margin.  Its focused
+  correctness evidence remains `calc_diff=0.0020 < 0.01`.
+- Decision: retain all three candidates.  The clean rebuild did not regress
+  these points; only Flash and Pro M512 remain unclosed.
+- Raw artifacts:
+  `.../candidates/flash_m128_e4_confirm_s101_n20_v2/`,
+  `.../candidates/pro_m128_bn512_clean_confirm_s101_n20_v2/`, and
+  `.../candidates/pro_m256_l1bk256_sms128_clean_confirm_s101_n20_v2/`.
