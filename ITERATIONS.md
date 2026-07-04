@@ -1488,3 +1488,40 @@ Each measured source or promoted-selector iteration records:
   `.../candidates/pro_m512_*`,
   `.../candidates/flash_small_wave_v1_*`, and
   `.../candidates/flash_m512_*`.
+
+## Iteration 49: Flash M512 cluster and tail-wave search
+
+- Hypothesis: Flash M512 remains close to PR323 and may benefit from the
+  existing two-CTA B multicast path plus load-specific expert waves, reducing
+  repeated weight traffic without changing the split L1/L2 architecture.
+- An asymmetric L1/L2 SM-grid experiment (128/132 and 132/128) was rejected
+  as illegal in practice: the first run timed out before profiling and the
+  reverse order failed after the stale rendezvous. Symmetric 128/120-SM grids
+  also regressed, so phase grid sizes must remain equal.
+- Cluster2 was legal for Flash M512. The initial global wave screen produced
+  max-rank 350.704, 343.249, 346.337, and 344.386 us for EPW2/4/8/32.
+  Exact eight-rank focused correctness passed at
+  `calc_diff=0.0020 < 0.01`.
+- Fresh interleaved median-20 confirmation showed that the pinned historical
+  PR result near 359 us was no longer representative of the current node
+  state. Global EPW4 confirmed at 350.193 us versus 347.330 us for PR323
+  (+0.82%).
+- Phase-local cluster waves reduced the screen minimum to 342.689 us at
+  L1/L2 EPW16/4. Its three-observation confirmation was 365.362, 349.248,
+  and 347.794 us (median 349.248), versus PR323 at 347.730, 346.962, and
+  346.914 us (median 346.962), still +0.66%.
+- A final stage screen selected L1/L2 stage4/4 at 345.056 us, but confirmation
+  again failed: ours 347.378, 362.528, 351.777 us (median 351.777) versus
+  PR323 346.609, 346.752, 355.664 us (median 346.752), or +1.45%. Combining
+  cluster2 with 128/120 SMs regressed further.
+- Pro M512 cluster2 was not legal for this implementation and failed on the
+  first EPW4 launch with `CUDA_ERROR_LAUNCH_FAILED`; no Pro cluster result is
+  retained.
+- Decision: do not promote cluster2 or any new Flash M512 selector. It closes
+  most of the gap in favorable screens but does not beat PR323 under the
+  required interleaved confirmation. No source change, H20 selector change,
+  or M<128 change is retained.
+- Raw artifacts:
+  `.../candidates/flash_m512_cluster2_*`,
+  `.../candidates/flash_m512_phasesms_*`, and
+  `.../candidates/pro_m512_cluster2_v1_*`.
