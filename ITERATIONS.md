@@ -1741,3 +1741,27 @@ Each measured source or promoted-selector iteration records:
   selector, H20 tuning, or PR323 implementation changed in this iteration.
 - Raw artifacts:
   `.../candidates/pro_small_baseline3552_same_node_full_v1/`.
+
+## Iteration 56: same-node current-source check below M128
+
+- Hypothesis: default-off experimental machinery in the current source does
+  not materially regress the original Pro path below M128.
+- Protocol: current source on job `2963787`, node `viking-prod-651`, no
+  candidate environment overrides, seed 101, three median-20 observations,
+  and the maximum returned latency across eight ranks.  This matches iteration
+  55's original-source baseline.
+
+  | M | current observation maxima (us) | current median us | baseline median us | gap |
+  |---:|---|---:|---:|---:|
+  | 16 | 780.767, 778.929, 777.024 | 778.929 | 777.057 | +0.24% |
+  | 32 | 833.625, 838.465, 858.399 | 838.465 | 842.671 | -0.50% |
+  | 64 | 868.591, 872.568, 865.585 | 868.591 | 868.240 | +0.04% |
+
+- M16, M32, and M64 satisfy the no-regression gate within repeated-run noise.
+  The outer summary command failed after all benchmark subprocesses ran because
+  one M8 JSON line was interleaved with concurrent stdout and rejected by
+  `jq`; its first two observation maxima were 650.832 and 648.363 us.  Preserve
+  the raw log and recover or rerun M8 before closing the full small-M gate.
+- No source, selector, H20 tuning, or PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/pro_small_current_head_same_node_full_v1/`.
