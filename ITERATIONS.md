@@ -1776,3 +1776,28 @@ Each measured source or promoted-selector iteration records:
   No benchmark subprocess launched and no performance evidence was produced.
 - Decision: fix only the command quoting and rerun the identical protocol.  No
   source, selector, H20 tuning, or PR323 implementation changed.
+
+## Iteration 58: paired Pro M8 no-regression closure
+
+- Hypothesis: iteration 56's 0.62% M8 difference is smaller than run-state
+  noise and does not represent a material default-path regression.
+- Protocol: exact `3552b62` baseline and current default source, Pro M8, seed
+  101, median-20, eight ranks, five paired observations.  Execution order was
+  alternated on every pair to reduce monotonic clock or node-state bias.
+
+  | pair | first | baseline us | current us | current - baseline us |
+  |---:|---|---:|---:|---:|
+  | 1 | baseline | 679.2 | 648.1 | -31.1 |
+  | 2 | current | 650.6 | 647.5 | -3.1 |
+  | 3 | baseline | 643.4 | 649.2 | +5.8 |
+  | 4 | current | 640.9 | 646.9 | +6.0 |
+  | 5 | baseline | 646.8 | 670.4 | +23.6 |
+
+- The baseline median is 646.8 us and the current median is 648.1 us, a
+  +0.20% difference.  Both sides contain a single opposite-direction system
+  outlier, and the central values overlap the earlier three-observation ranges.
+- Decision: accept Pro M8 as no material regression.  Together with iteration
+  56, the same-node `M < 128` Pro gate is closed.  No source, selector, H20
+  tuning, or PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/pro_m8_same_node_alternating_ab_v2/`.
