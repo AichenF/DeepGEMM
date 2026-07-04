@@ -2178,3 +2178,13 @@ Each measured source or promoted-selector iteration records:
   - `$ROOT/candidates/h200_auto_selector_final_v1/report.md`
   - `$ROOT/candidates/h200_auto_selector_final_v1/summary.csv`
   - `$ROOT/candidates/h200_auto_selector_final_v1/logs/`
+
+## Iteration 75 — Failed Pro M256 five-observation invocation
+
+- Intended protocol: rerun the unchanged automatic Pro-M256 selector against
+  PR323 for five order-alternating median-20 observations.
+- Result: shell redirection attempted to open the candidate driver log before
+  its parent directory existed, so the command exited immediately with
+  `No such file or directory`.  No benchmark subprocess or GPU kernel ran.
+- Decision: create the candidate directory before redirection and rerun the
+  identical protocol.  No source, selector, H20 tuning, or PR323 code changed.
