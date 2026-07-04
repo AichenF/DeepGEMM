@@ -1963,3 +1963,30 @@ Each measured source or promoted-selector iteration records:
   selector, H20 tuning, or PR323 implementation changed.
 - Raw artifacts:
   `.../candidates/flash_m512_l2wave_tail_screen_v2/`.
+
+## Iteration 66: Flash M512 EPW8/32 cross-seed PR323 verdict
+
+- Hypothesis: the fixed L1/L2 EPW8/32 configuration beats PR323 on all four
+  route seeds by trading a small seed-23 screen regression for much better
+  seed-7/509 tails.
+- Protocol: seeds 7/23/101/509, three median-20 observations per
+  implementation and seed, maximum latency across eight ranks, with ours and
+  PR323 alternating order on every observation.
+
+  | seed | ours observations (us) | ours median us | PR323 observations (us) | PR323 median us | gap |
+  |---:|---|---:|---|---:|---:|
+  | 7 | 349.9, 363.3, 344.4 | 349.9 | 363.9, 346.2, 346.9 | 346.9 | +0.86% |
+  | 23 | 339.5, 337.5, 339.4 | 339.4 | 342.3, 346.0, 352.4 | 346.0 | -1.91% |
+  | 101 | 342.6, 340.4, 350.3 | 342.6 | 343.7, 347.3, 345.2 | 345.2 | -0.75% |
+  | 509 | 338.3, 340.7, 347.2 | 340.7 | 348.1, 349.4, 352.3 | 349.4 | -2.49% |
+
+- EPW8/32 wins seeds 23/101/509 with useful margin, but loses seed 7 by
+  0.86% because of a slow second observation.  It therefore does not satisfy
+  the strict all-seed gate even though its aggregate result is stronger than
+  EPW8/4.
+- Decision: do not promote EPW32 yet.  Screen the intermediate legal L2 EPW8
+  as the final fixed-wave compromise; it must preserve the three current wins
+  and remove the seed-7 loss before confirmation.  No source, selector, H20
+  tuning, or PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l1e8_l2e32_pr_confirm_s{7,23,101,509}_v1/`.
