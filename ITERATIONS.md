@@ -1990,3 +1990,27 @@ Each measured source or promoted-selector iteration records:
   tuning, or PR323 implementation changed.
 - Raw artifacts:
   `.../candidates/flash_m512_l1e8_l2e32_pr_confirm_s{7,23,101,509}_v1/`.
+
+## Iteration 67: Flash M512 L2 EPW8 compromise screen
+
+- Hypothesis: L2 EPW8 balances EPW4's seed-509 weakness and EPW32's seed-7
+  variability, yielding one fixed configuration with enough margin on all
+  four route seeds.
+- Protocol: retained cluster2/BF16/E5M2 configuration with L1/L2 EPW8/8;
+  seeds 7/23/101/509, median-20, maximum latency across eight ranks.
+
+  | seed | ours max-rank us | latest paired PR323 median us | indicative gap |
+  |---:|---:|---:|---:|
+  | 7 | 338.7 | 346.9 | -2.36% |
+  | 23 | 345.5 | 346.0 | -0.14% |
+  | 101 | 343.2 | 345.2 | -0.58% |
+  | 509 | 348.8 | 349.4 | -0.17% |
+
+- A single EPW8 observation is below the latest directly paired PR323 median
+  at every route seed, unlike EPW4 or EPW32.  The margins at seeds 23 and 509
+  are small, so cross-run comparison alone is not selector-grade evidence.
+- Decision: promote L1/L2 EPW8/8 to the final four-seed interleaved PR323
+  confirmation.  No source, selector, H20 tuning, or PR323 implementation
+  changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l2epw8_crossseed_screen_v1/`.
