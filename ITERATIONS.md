@@ -1422,3 +1422,69 @@ Each measured source or promoted-selector iteration records:
   `.../candidates/pro_m256_l1bk256_bevictfirst_v1/`,
   `.../candidates/pro_m512_l1bk256_*`, and
   `.../candidates/pro_m256_l1bk256_l2bn512_bf16_v1/`.
+
+## Iteration 47: M256 cache-policy and asynchronous-store closure
+
+- Hypothesis: after BK256 reaches parity, a cache-policy adjustment or a
+  corrected double-buffered L1 TMA store may provide the final few
+  microseconds without changing the split architecture.
+- Weight TensorMap L2-promotion screening retained the original 256-byte
+  promotion policy: 256/128/64/NONE produced 853.843/859.105/858.389/
+  867.411 us. B-TMA `EVICT_FIRST` and A-TMA `EVICT_LAST` were also rejected at
+  871.955 and 863.011 us.
+- A bounded joint-wave screen produced 858.354, 856.627, and 861.218 us for
+  L1/L2 EPW 8/24, 12/24, and 48/48. The sub-2-us signal was not promoted.
+- The prior asynchronous-store launch failure was traced to three
+  experiment-only defects: host SMEM sizing did not reserve the double
+  buffer, split-N over-allocated the buffer stride, and stage one stored from
+  the stage-zero base. After correcting all three, the candidate ran without
+  a CUDA fault, but reached 861.600 us versus 856.193 us for the synchronous
+  control (+0.63%).
+- Decision: reject and fully revert every cache/TMA experiment. The retained
+  source remains the clean BK256 parent from iteration 46; H20 defaults and
+  selectors are unchanged.
+- Raw artifacts:
+  `.../candidates/pro_m256_l1bk256_l2promotion_v1/`,
+  `.../candidates/pro_m256_l1bk256_{aevictlast,bevictfirst}_v1/`,
+  `.../candidates/pro_m256_l1bk256_jointwave_*`, and
+  `.../candidates/pro_m256_l1bk256_asyncfix_*`.
+
+## Iteration 48: H200 grid alignment and remaining small-M points
+
+- M256 grid hypothesis: using 128 of H200's 132 SMs may align persistent CTA
+  waves better than the full grid. The BK256 parent was screened at 124, 128,
+  130, and 132 SMs; 128 SMs was the only useful point.
+- Interleaved Pro M256 median-20 confirmation:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | BK256, 128 SM | 849.746, 867.493, 846.675 | 849.746 |
+  | BK256, 132 SM | 868.465, 872.996, 863.394 | 868.465 |
+  | PR323 | 855.331, 856.610, 858.755 | 856.610 |
+
+  The 128-SM candidate leads PR323 by 0.80%. Exact eight-rank focused
+  correctness passed at `calc_diff=0.0020 < 0.01`. This remains an explicit
+  H200 parameter candidate; no H20 entry is overwritten.
+- Pro M512 did not obtain a stable winner. The old BN256/EPW24 candidate
+  reconfirmed at 1117.910 us versus 1090.839 us for PR323. Phase-local wave
+  searches reached isolated low screens but failed median-20 confirmation.
+  L1-BN512/BF16 plus L2-BN256/FP32 passed focused correctness and screened at
+  1065.970 us, but confirmed at 1091.810 us versus 1085.427 us for PR323
+  (+0.59%). Wave and 120/128-SM follow-ups did not reproduce a lead. The
+  temporary phase-BF16 host override was therefore removed.
+- Flash M128 improved to 262.785 us with E5M2, non-direct N-major scheduling,
+  and EPW4, versus the pinned PR323 result near 295.0 us (-10.9%). Flash M512
+  improved from the original 425.5-us baseline to a best screen of 363.265 us
+  with E5M2, non-direct N-major scheduling, and EPW16, but remains about 1.1%
+  behind the pinned PR323 result near 359.3 us. Phase waves, stages, SM-grid
+  sizes, L1 BN512, L1 BK256, direct scatter, cleanup, and phase-local BF16
+  attribution did not establish a better candidate.
+- Decision: retain the confirmed Pro M256 128-SM result and the Flash M128
+  parameter result. Pro M512 and Flash M512 remain the two unsolved M>=128
+  points. Do not encode final H200 selector thresholds yet; M<128 and every
+  H20 path remain unchanged.
+- Raw artifacts:
+  `.../candidates/pro_m256_l1bk256_sms*`,
+  `.../candidates/pro_m512_*`,
+  `.../candidates/flash_small_wave_v1_*`, and
+  `.../candidates/flash_m512_*`.
