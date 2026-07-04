@@ -2239,3 +2239,27 @@ Each measured source or promoted-selector iteration records:
   scheduling controls.
 - Raw artifacts:
   `$ROOT/candidates/pro_m256_phasegrid_128_{128,124}_v1/`.
+
+## Iteration 79 — Pro M256 safe symmetric-grid closure
+
+- Hypothesis: an untested symmetric grid immediately adjacent to 128 SMs may
+  improve wave alignment without the hang risk of unequal phase grids.
+- Protocol: seed 101, one median-20/max-rank screen each, ordered as 128
+  control, 127, 129, 126, and a final 128 control.  All non-grid settings were
+  the retained automatic M256 configuration.
+- Results:
+
+  | symmetric L1/L2 grid | max-rank us |
+  |---:|---:|
+  | 128 (opening control) | 896.558 |
+  | 127 | 912.970 |
+  | 129 | 899.057 |
+  | 126 | 876.944 |
+  | 128 (closing control) | 869.246 |
+
+- Decision: reject 126/127/129; each is slower than the closing 128-SM
+  control, while the opening control demonstrates the run-state noise that
+  makes single minima unsafe to promote.  Together with earlier 124/130/132
+  results, 128 remains the best safe symmetric grid.  No selector change.
+- Raw artifacts:
+  `$ROOT/candidates/pro_m256_symmetric_sms_*_v1/`.
