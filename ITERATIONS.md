@@ -2091,3 +2091,25 @@ Each measured source or promoted-selector iteration records:
   - `$ROOT/candidates/h200_auto_selector_flash_smoke_v1`
   - `$ROOT/candidates/h200_auto_selector_pro_smoke_v1`
   - `$ROOT/jit/h200_auto_selector_smoke_v1`
+
+## Iteration 72 — Exact Pro global-BF16 numerical-gate smoke
+
+- Hypothesis: the actual Pro-shape validation harness can compare the retained
+  E5M2 configuration with FP32 versus global packed-BF16 scaled accumulation
+  on identical inputs and against a distributed FP32 golden reference.
+- Protocol: H200 job `2968183`, eight ranks, H7168/I3072/E384/top-k6, M128,
+  seed 101.  Both kernel runs used the same FP8 inputs, weights, routing, and
+  E5M2 combine path; only `DG_SM90_MOE_BF16_SCALED_ACCUM` changed.  The
+  distributed reference computed each rank's local experts and reduce-scattered
+  the BF16 contribution slots.  The unchanged gate was finite output and
+  `calc_diff < 0.01` on every rank for FP32-vs-golden, BF16-vs-golden, and
+  BF16-vs-FP32.
+- Result: all eight ranks passed.  Worst-rank differences were
+  FP32-vs-golden `0.001984`, BF16-vs-golden `0.002106`, and BF16-vs-FP32
+  `0.001847`; all outputs were finite.  The largest absolute BF16-vs-FP32
+  element difference was 144, recorded for visibility but not used as a
+  scale-independent acceptance metric.
+- Decision: the harness and M128 global-BF16 path are valid.  Proceed to the
+  full four-seed by five-M exact-Pro campaign.
+- Raw artifact:
+  `$ROOT/candidates/h200_pro_bf16_gate_smoke_v1/validation.log`.
