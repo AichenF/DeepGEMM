@@ -1716,3 +1716,28 @@ Each measured source or promoted-selector iteration records:
   `.../candidates/flash_m8192_tune_v1_*`,
   `.../candidates/flash_m8192_e32_s3_n1_confirm_s101_n20_v1/`, and
   `.../candidates/flash_m8192_e32_s3_n1_correctness/`.
+
+## Iteration 55: same-node original-baseline characterization below M128
+
+- Hypothesis: the apparent Pro M64 regression against an older single-run
+  number is allocation noise rather than a default-path source regression.
+  Measure the exact pre-retune commit on the current H200 node before drawing
+  any conclusion from cross-allocation numbers.
+- Baseline source: detached worktree at `3552b62` (`[repair] Add SM90 dependent
+  template qualifiers for CUDA 13.2`).  No candidate environment override was
+  enabled.  The test used job `2963787` on `viking-prod-651`, seed 101, three
+  median-20 observations, and the maximum returned latency across eight ranks.
+
+  | M | observation maxima (us) | median us |
+  |---:|---|---:|
+  | 8 | 644.384, 640.864, 647.600 | 644.384 |
+  | 16 | 775.392, 780.975, 777.057 | 777.057 |
+  | 32 | 842.671, 835.969, 851.545 | 842.671 |
+  | 64 | 867.887, 877.329, 868.240 | 868.240 |
+
+- Decision: retain these values as the authoritative same-node denominator.
+  Run the current default-off source under the identical protocol before
+  accepting or rejecting the `M < 128` no-regression gate.  No source,
+  selector, H20 tuning, or PR323 implementation changed in this iteration.
+- Raw artifacts:
+  `.../candidates/pro_small_baseline3552_same_node_full_v1/`.
