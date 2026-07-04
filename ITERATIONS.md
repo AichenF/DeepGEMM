@@ -2113,3 +2113,27 @@ Each measured source or promoted-selector iteration records:
   full four-seed by five-M exact-Pro campaign.
 - Raw artifact:
   `$ROOT/candidates/h200_pro_bf16_gate_smoke_v1/validation.log`.
+
+## Iteration 73 — Exact Pro global-BF16 four-seed numerical gate
+
+- Hypothesis: the retained global packed-BF16 scaled-accumulation candidates
+  remain numerically acceptable across the complete selected Pro M set and
+  route/weight seeds, not only the seed-101 smoke.
+- Protocol: H200 job `2968183`, eight ranks, exact Pro H7168/I3072/E384/top-k6,
+  M={128,1024,2048,4096,8192}, seeds={7,23,101,509}.  For every one of the
+  20 cases, run identical FP8 inputs/weights/routes with FP32 accumulation and
+  global BF16x2 accumulation while holding E5M2 combine fixed, then compare
+  both outputs to the distributed FP32 golden and directly to each other.
+  Require finite output and `calc_diff < 0.01` independently on every rank.
+- Result: all 20 cases and all 160 per-rank outputs passed; no NaN or Inf.
+  Worst values across the campaign were:
+  - FP32-vs-golden: `0.00198835` at seed 23, M128.
+  - BF16-vs-golden: `0.00210961` at seed 23, M128.
+  - BF16-vs-FP32: `0.00184732` at seed 101, M128.
+  - Maximum absolute BF16-vs-FP32 element delta: 192 at seed 23, M8192
+    (reported only for scale context; the normalized acceptance metric passed).
+- Decision: the previously validated global-BF16 Pro rows clear the full
+  numerical gate with substantial margin.  Keep them in the conservative H200
+  selector and proceed to automatic-selector performance confirmation.
+- Raw artifact:
+  `$ROOT/candidates/h200_pro_bf16_gate_4seed_5m_v1/validation.log`.
