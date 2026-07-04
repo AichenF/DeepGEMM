@@ -2055,3 +2055,18 @@ Each measured source or promoted-selector iteration records:
   selector, H20 tuning, or PR323 implementation changed.
 - Raw artifact:
   `.../candidates/flash_m512_l1e8_l2e4_correctness_v1/correctness.log`.
+
+## Iteration 70: Flash M512 exact-shape correctness
+
+- Hypothesis: the retained EPW8/4 candidate remains within the unchanged
+  numerical tolerance at the actual Flash production dimensions, rather than
+  only the smaller heuristic-branch test shape.
+- Protocol: eight H200 ranks; H4096, I2048, E256, top-k6, M512; E5M2 combine,
+  cluster2, global BF16x2 accumulation, L1/L2 EPW8/4 and stage4/4.  Compare
+  directly against the existing FP32/BF16 reference with `calc_diff < 0.01`.
+- Result: `diff=0.0021 < 0.01`, process exit zero.
+- Decision: exact Flash M512 shape correctness is confirmed without tolerance
+  relaxation.  Retain EPW8/4 as the final Flash M512 candidate.  No source,
+  selector, H20 tuning, or PR323 implementation changed.
+- Raw artifact:
+  `.../candidates/flash_m512_l1e8_l2e4_exact_shape_correctness_v1/correctness.log`.
