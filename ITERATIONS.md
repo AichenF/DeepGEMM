@@ -2302,3 +2302,25 @@ Each measured source or promoted-selector iteration records:
   the anomalous closing-control timings as a source effect.
 - Raw artifacts:
   `$ROOT/candidates/pro_m256_sms128_wave_*_v1/`.
+
+## Iteration 82 — Pro M256 final-grid N-major/stage interaction
+
+- Hypothesis: the pre-BK256 near-parity N-major0/stage4 result may interact
+  favorably with the final L1-BK256 and 128-SM configuration.
+- Protocol: two median-20/max-rank observations in current N-major1/L2-stage3,
+  N-major0/stage3, N-major0/stage4, N-major1/stage4, and closing-control order.
+- Results:
+
+  | N-major / L2 stage | observation maxima (us) | center us |
+  |---|---|---:|
+  | 1 / 3 opening control | 882.365, 865.926 | 874.146 |
+  | 0 / 3 | 878.727, 876.710 | 877.719 |
+  | 0 / 4 | 890.192, 871.366 | 880.779 |
+  | 1 / 4 | 877.582, 887.862 | 882.722 |
+  | 1 / 3 closing control | 871.918, 860.447 | 866.183 |
+
+- Decision: reject N-major0 and L2 stage4.  Every neighbor is slower than the
+  closing current control, and the opening/closing movement again argues
+  against promoting isolated minima.  Keep N-major1/L2-stage3 unchanged.
+- Raw artifacts:
+  `$ROOT/candidates/pro_m256_sms128_sched_*_v1/`.
