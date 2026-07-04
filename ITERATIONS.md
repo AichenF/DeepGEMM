@@ -2263,3 +2263,18 @@ Each measured source or promoted-selector iteration records:
   results, 128 remains the best safe symmetric grid.  No selector change.
 - Raw artifacts:
   `$ROOT/candidates/pro_m256_symmetric_sms_*_v1/`.
+
+## Iteration 80 — Pro M256 L2-BK256 screen
+
+- Hypothesis: extending the existing two-plane BK256 implementation from L1
+  to L2 could halve L2 pipeline-block advances while keeping the same FP32
+  accumulation and E5M2 combine path.
+- Protocol: 128-SM retained M256 configuration, seed 101, one median-20/max-rank
+  observation in control / L2-BK256-stage2 / control order.
+- Results: the opening control was 872.749 us, L2 BK256/stage2 was 898.086 us,
+  and the closing control was 888.846 us.
+- Decision: reject L2 BK256.  Its reduced pipeline depth and more complex
+  per-64 scale grouping outweigh fewer block advances.  Keep L2 BK128/stage3;
+  no selector or precision change.
+- Raw artifacts:
+  `$ROOT/candidates/pro_m256_l2bk256_screen_*_v1/`.
