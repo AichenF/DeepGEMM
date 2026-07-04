@@ -1941,3 +1941,25 @@ Each measured source or promoted-selector iteration records:
   PR323 implementation changed.
 - Raw artifacts:
   `.../candidates/flash_m512_l2wave_tail_screen_v1/`.
+
+## Iteration 65: Flash M512 L2 EPW32 remaining-seed screen
+
+- Hypothesis: L2 EPW32's seed-509 tail improvement extends to seed 7/23 and
+  leaves a fixed configuration that can beat PR323 across all four routes.
+- Protocol: same L1-EPW8 parent and median-20/max-rank method as iteration 64;
+  compare L2 EPW4 and EPW32 at seeds 7 and 23, reversing order on seed 23.
+
+  | seed | L2 EPW4 us | L2 EPW32 us | EPW32 difference |
+  |---:|---:|---:|---:|
+  | 7 | 348.3 | 339.3 | -2.58% |
+  | 23 | 337.6 | 345.7 | +2.40% |
+
+- EPW32 materially improves seed 7 and 509, modestly regresses seed 101, and
+  materially regresses seed 23.  Even the seed-23 screen remains close to the
+  prior same-seed PR323 median of 346.1 us, so a direct interleaved verdict is
+  still necessary.
+- Decision: run the fixed L1/L2 EPW8/32 candidate against PR323 for all four
+  route seeds.  Do not select it from cross-run comparisons alone.  No source,
+  selector, H20 tuning, or PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l2wave_tail_screen_v2/`.
