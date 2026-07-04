@@ -2188,3 +2188,26 @@ Each measured source or promoted-selector iteration records:
   `No such file or directory`.  No benchmark subprocess or GPU kernel ran.
 - Decision: create the candidate directory before redirection and rerun the
   identical protocol.  No source, selector, H20 tuning, or PR323 code changed.
+
+## Iteration 76 — Unchanged Pro M256 five-observation remeasurement
+
+- Hypothesis: the formal matrix's +0.45% Pro-M256 result may be a three-run
+  ordering fluctuation because the identical configuration previously led
+  PR323 by about 0.8%.
+- Protocol: unchanged automatic selector, no tuning environment variables,
+  seed 101, five order-alternating observations, rank-local median-20, and
+  maximum latency across eight ranks.
+- Result:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | ours | 881.879, 869.752, 865.712, 863.770, 864.007 | 865.712 |
+  | PR323 | 870.522, 869.952, 859.584, 861.502, 863.407 | 863.407 |
+
+  Ours is 0.27% slower.  The result narrows the formal +0.45% gap but does not
+  close the strict faster-than-PR323 gate.
+- Decision: measurement noise alone is not sufficient evidence to accept the
+  current row.  Keep all other selector rows fixed and perform a bounded
+  Pro-M256 phase-grid screen using only existing H200 experiment controls.
+- Raw artifacts:
+  `$ROOT/candidates/h200_auto_pro_m256_remeasure_v1/`.
