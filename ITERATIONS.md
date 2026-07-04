@@ -1525,3 +1525,35 @@ Each measured source or promoted-selector iteration records:
   `.../candidates/flash_m512_cluster2_*`,
   `.../candidates/flash_m512_phasesms_*`, and
   `.../candidates/pro_m512_cluster2_v1_*`.
+
+## Iteration 50: Flash M512 cluster2 BF16 candidate
+
+- Hypothesis: after cluster2 plus phase waves/stages closes most of the Flash
+  M512 gap, packed BF16x2 scaled accumulation may remove enough L1 promotion
+  work to establish a stable lead while retaining BF16's FP32-sized exponent
+  range.
+- Parent: Flash M512, E5M2 combine, non-direct N-major scheduling, cluster2,
+  L1/L2 EPW16/4, and L1/L2 stage4/4. Built-in event attribution measured
+  roughly 220 us in L1 and 125 us in L2, confirming L1 as the remaining
+  optimization target.
+- Feature screen (max-rank, median-10): early weight-SF 353.793 us, shared
+  weight-SF prefetch 346.818 us, adjacent scale domain 365.792 us, and global
+  BF16x2 accumulation 345.602 us. Only BF16x2 was retained for confirmation.
+- Interleaved median-20 confirmation:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | cluster2 + BF16x2 | 367.473, 345.953, 341.746 | 345.953 |
+  | PR323 | 351.026, 355.378, 344.273 | 351.026 |
+
+  The candidate leads the fresh PR323 median by 1.45%, despite one slow first
+  observation. Exact eight-rank focused correctness passed at
+  `calc_diff=0.0020 < 0.01`.
+- Decision: retain this as the current Flash M512 H200 candidate, but do not
+  encode an automatic selector until it passes broader precision and
+  cross-seed confirmation. Cluster2 failed to launch for Pro M512, so this
+  candidate is Flash-specific. H20 and M<128 behavior remain unchanged.
+- Raw artifacts:
+  `.../candidates/flash_m512_cluster2_feature_v1_*`,
+  `.../candidates/flash_m512_cluster2_bf16_confirm_s101_n20/`, and
+  `.../candidates/flash_m512_cluster2_bf16_correctness_smoke/`.
