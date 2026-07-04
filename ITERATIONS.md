@@ -2040,3 +2040,18 @@ Each measured source or promoted-selector iteration records:
   No source, selector, H20 tuning, or PR323 implementation changed.
 - Raw artifacts:
   `.../candidates/flash_m512_l1e8_l2e8_pr_confirm_s{7,23,101,509}_v1/`.
+
+## Iteration 69: Flash M512 EPW8/4 focused correctness
+
+- Exact candidate controls: E5M2 combine, non-direct N-major scheduling,
+  cluster2, global BF16x2 scaled accumulation, L1/L2 EPW8/4 and stage4/4.
+- Protocol: eight H200 ranks, unchanged `calc_diff` tolerance 0.01, focused
+  top-k6/M512 heuristic scenario.
+- Result: `diff=0.0020 < 0.01`; the scenario passed on all eight ranks and the
+  test process exited zero.
+- Decision: retain EPW8/4 as the numerically valid Flash M512 benchmark
+  winner.  This test changes only expert-wave scheduling relative to the prior
+  correct parent and does not relax precision or tolerance.  No source,
+  selector, H20 tuning, or PR323 implementation changed.
+- Raw artifact:
+  `.../candidates/flash_m512_l1e8_l2e4_correctness_v1/correctness.log`.
