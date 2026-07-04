@@ -1869,3 +1869,26 @@ Each measured source or promoted-selector iteration records:
   PR323 implementation changed.
 - Raw artifacts:
   `.../candidates/flash_m512_l1wave_crossseed_screen_v1/`.
+
+## Iteration 62: Flash M512 legal L1-wave cross-seed screen
+
+- Hypothesis: L1 EPW8 is less sensitive than the retained EPW16 parent to
+  route-dependent tail imbalance at Flash M512.
+- Protocol: retained cluster2/global-BF16/E5M2 parent, job `2963787`, seeds
+  7/23/101/509, median-20, maximum returned latency across eight ranks.  EPW8
+  and EPW16 execution order alternated by seed; all other settings were held
+  fixed.
+
+  | seed | L1 EPW8 us | L1 EPW16 us | EPW8 difference |
+  |---:|---:|---:|---:|
+  | 7 | 343.8 | 344.0 | -0.06% |
+  | 23 | 338.1 | 345.3 | -2.09% |
+  | 101 | 343.1 | 348.9 | -1.66% |
+  | 509 | 345.1 | 352.0 | -1.96% |
+
+- EPW8 wins all four route seeds.  Its cross-seed center is 343.45 us versus
+  347.10 us for EPW16, a 1.05% improvement, and its range is also narrower.
+- Decision: promote L1 EPW8 to paired PR323 cross-seed confirmation.  Keep L2
+  at EPW4.  No source, selector, H20 tuning, or PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l1wave_crossseed_screen_v2/`.
