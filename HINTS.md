@@ -10,8 +10,10 @@
   `(H=7168, I=3072, E=384, top-k=6)`.
 - Required M points are `8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096,
   8192`.
+- `M=512` is excluded from the current selector and faster-than-PR323 gate;
+  leave it on the existing default path.
 - At every point with `M >= 128`, confirmed max-rank latency must be lower than
-  the pinned PR323 FP8 implementation.
+  the pinned PR323 FP8 implementation, except the explicitly excluded M512.
 - Points with `M < 128` must not show a confirmed regression from the current
   `megamoe_sm90_opt` FP8 baseline.
 - Use identical routes, capacity, rank topology, and timing boundaries for
@@ -20,5 +22,7 @@
   behavior.
 - Temporary experiment controls are allowed, but the final production selector
   must not depend on a new environment variable.
+- Do not add phase-specific BF16 accumulation. Previously validated global
+  BF16 accumulation for Pro candidates remains allowed, subject to the final
+  exact-shape numerical gate.
 - Commits are allowed. Do not push any commit or branch.
-
