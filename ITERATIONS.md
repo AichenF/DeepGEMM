@@ -1892,3 +1892,30 @@ Each measured source or promoted-selector iteration records:
   at EPW4.  No source, selector, H20 tuning, or PR323 implementation changed.
 - Raw artifacts:
   `.../candidates/flash_m512_l1wave_crossseed_screen_v2/`.
+
+## Iteration 63: Flash M512 EPW8 cross-seed PR323 confirmation
+
+- Hypothesis: the cross-seed L1 EPW8 improvement is large enough to turn the
+  retained Flash M512 parent into a route-robust PR323 winner.
+- Protocol: seeds 7/23/101/509, three median-20 observations per
+  implementation and seed, maximum returned latency across eight ranks.
+  Ours and unmodified PR323 alternated order on every observation.
+
+  | seed | ours observations (us) | ours median us | PR323 observations (us) | PR323 median us | gap |
+  |---:|---|---:|---|---:|---:|
+  | 7 | 350.9, 346.8, 341.4 | 346.8 | 347.3, 344.4, 347.1 | 347.1 | -0.09% |
+  | 23 | 343.6, 353.1, 341.4 | 343.6 | 346.1, 345.1, 348.4 | 346.1 | -0.72% |
+  | 101 | 360.6, 336.9, 343.6 | 343.6 | 360.0, 349.5, 344.7 | 349.5 | -1.69% |
+  | 509 | 347.5, 358.5, 341.5 | 347.5 | 347.1, 346.0, 344.8 | 346.0 | +0.43% |
+
+- Ours wins three of four seeds.  The median of the four per-seed medians is
+  345.2 us versus 346.6 us for PR323, a 0.40% aggregate lead.  However, seed
+  509 remains 0.43% slower and individual ours observations still have larger
+  upper tails.
+- Decision: EPW8 is the best Flash M512 candidate so far, but do not call the
+  strict per-seed gate closed.  Use it as the parent for one final legal L2
+  wave/tail screen; reject any neighbor that does not improve seed 509 without
+  losing the other seeds.  No source, H20 tuning, or PR323 implementation
+  changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l1e8_pr_confirm_s{7,23,101,509}_v1/`.
