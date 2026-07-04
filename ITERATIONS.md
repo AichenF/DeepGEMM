@@ -2345,3 +2345,18 @@ Each measured source or promoted-selector iteration records:
   Avoid adding epilogue complexity and retain the current precision path.
 - Raw artifact:
   `$ROOT/candidates/pro_m256_final_phase_profile_v1/`.
+
+## Iteration 84 — Final Pro M256 one-warp-cleanup check
+
+- Hypothesis: after L1 BK256 and the 128-SM grid, one-warp workspace cleanup
+  might reduce the dispatch/cleanup tail exposed by iteration 83.
+- Protocol: two median-20/max-rank observations in control, one-warp cleanup,
+  and closing-control order; all other automatic M256 settings unchanged.
+- Results: opening control 869.606/865.815 us (center 867.711), one-warp
+  cleanup 860.938/874.976 us (center 867.957), and closing control
+  875.479/869.255 us (center 872.367).
+- Decision: reject one-warp cleanup.  It is effectively flat versus the opening
+  control and does not provide the required stable margin.  Retain the
+  existing two-warp cleanup path and make no selector change.
+- Raw artifacts:
+  `$ROOT/candidates/pro_m256_final_cleanup_*_v1/`.
