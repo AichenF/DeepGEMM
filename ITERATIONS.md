@@ -2324,3 +2324,24 @@ Each measured source or promoted-selector iteration records:
   against promoting isolated minima.  Keep N-major1/L2-stage3 unchanged.
 - Raw artifacts:
   `$ROOT/candidates/pro_m256_sms128_sched_*_v1/`.
+
+## Iteration 83 — Final Pro M256 in-kernel phase profile
+
+- Goal: replace further blind parameter sweeps with direct timing evidence for
+  the retained L1-BK256/L2-BK128, 128-SM configuration.
+- Protocol: enable the existing `DG_SM90_MOE_PHASE_PROFILE` counters for one
+  seed-101 median-10 run.  This instrumentation is diagnostic only and is not
+  selected automatically.
+- Result: maximum returned rank latency was 866.247 us.  Across ranks, the
+  representative per-record averages were roughly 420k--445k cycles for the
+  math loop, 128k--174k for dispatch total, 56k--62k for dispatch pull,
+  21k--41k for the combine barrier, about 36k for each GEMM-core block, and
+  only about 2.6k for either L1 or L2 epilogue records.  Math-loop maxima
+  reached about 1.28M cycles on the slow ranks, while combine-reduce itself was
+  only about 2.7k cycles.
+- Decision: epilogue arithmetic is not the remaining M256 limiter.  The gap is
+  dominated by math-loop/task-tail and dispatch/combine synchronization;
+  previous grid/wave/direct/cleanup experiments already target those regions.
+  Avoid adding epilogue complexity and retain the current precision path.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_final_phase_profile_v1/`.
