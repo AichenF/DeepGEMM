@@ -2137,3 +2137,44 @@ Each measured source or promoted-selector iteration records:
   selector and proceed to automatic-selector performance confirmation.
 - Raw artifact:
   `$ROOT/candidates/h200_pro_bf16_gate_4seed_5m_v1/validation.log`.
+
+## Iteration 74 — Automatic H200 selector formal performance matrix
+
+- Hypothesis: the conservative automatic selector reproduces the retained
+  explicit-candidate wins at every in-scope M while M512 remains on the generic
+  path.
+- Protocol: H200 job `2968183`, no `DG_SM90_MOE_*` tuning variables, seed 101,
+  three order-alternating observations per implementation, rank-local
+  median-20, and the median of the three eight-rank maxima.  Compare the
+  automatic selector with unmodified PR323 at Flash/Pro
+  M={128,256,1024,2048,4096,8192}; record M512 ours-only.
+- Results:
+
+  | shape | M | ours median us | PR323 median us | gap |
+  |---|---:|---:|---:|---:|
+  | Flash | 128 | 271.7 | 295.0 | -7.90% |
+  | Flash | 256 | 289.1 | 302.3 | -4.37% |
+  | Flash | 512 | 413.8 | not gated | — |
+  | Flash | 1024 | 592.8 | 605.5 | -2.11% |
+  | Flash | 2048 | 950.7 | 999.6 | -4.89% |
+  | Flash | 4096 | 1745.5 | 1760.3 | -0.84% |
+  | Flash | 8192 | 3192.2 | 3307.2 | -3.48% |
+  | Pro | 128 | 880.9 | 899.8 | -2.10% |
+  | Pro | 256 | 866.4 | 862.5 | +0.45% |
+  | Pro | 512 | 1231.3 | not gated | — |
+  | Pro | 1024 | 1551.9 | 1581.6 | -1.88% |
+  | Pro | 2048 | 2323.7 | 2435.0 | -4.57% |
+  | Pro | 4096 | 4098.5 | 4296.3 | -4.60% |
+  | Pro | 8192 | 7715.6 | 7897.0 | -2.30% |
+
+- Validation: the strict parser accepted all 78 leaf runs, each with eight
+  ranks, 20 timed samples per rank, three observation IDs, zero exit status,
+  and identical routes between paired implementations.
+- Decision: 11/12 in-scope points beat PR323.  Do not call the performance gate
+  closed because Pro M256 is 0.45% slower in this formal run, despite its prior
+  0.82% win.  Preserve every other automatic row and perform a focused paired
+  Pro-M256 remeasurement/tuning step only; M512 remains excluded.
+- Raw artifacts:
+  - `$ROOT/candidates/h200_auto_selector_final_v1/report.md`
+  - `$ROOT/candidates/h200_auto_selector_final_v1/summary.csv`
+  - `$ROOT/candidates/h200_auto_selector_final_v1/logs/`
