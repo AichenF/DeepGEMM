@@ -1557,3 +1557,82 @@ Each measured source or promoted-selector iteration records:
   `.../candidates/flash_m512_cluster2_feature_v1_*`,
   `.../candidates/flash_m512_cluster2_bf16_confirm_s101_n20/`, and
   `.../candidates/flash_m512_cluster2_bf16_correctness_smoke/`.
+
+## Iteration 51: clean-rebuild and cross-seed Flash M512 validation
+
+- A replacement 8x H200 allocation (`2963787`, `viking-prod-651`) was used
+  after the prior allocation expired.  Before rebuilding with CUDA 13.2, the
+  remote host runtime was restored byte-for-byte to the committed local
+  source; this removed the temporary phase-specific BF16 experiment plumbing.
+- A clean-JIT, three-observation median-20 confirmation at seed 101 produced:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | cluster2 + global BF16x2 | 344.348, 344.992, 341.151 | 344.348 |
+  | PR323 | 344.735, 353.677, 345.408 | 345.408 |
+
+  The candidate remains faster by 0.31%, but its margin is substantially
+  smaller than the earlier 1.45% observation set.
+- Independent median-20 route seeds did not establish a distribution-robust
+  lead:
+
+  | seed | ours us | PR323 us | gap |
+  |---:|---:|---:|---:|
+  | 7 | 346.013 | 361.611 | -4.31% |
+  | 23 | 351.311 | 347.135 | +1.20% |
+  | 509 | 351.951 | 349.983 | +0.56% |
+
+  Combining those seeds with the seed-101 medians places both implementations
+  at parity (ours is about 0.03% slower).  A seed-23 wave/stage/grid rescreen
+  moved the identical parent from 351.311 to 339.965 us, while its best
+  neighbor, L1 EPW8, was only another 0.26% faster.  The run-state movement is
+  larger than the parameter signal, so neither neighbor was promoted.
+- Decision: retain the candidate as useful seed-101 evidence, but withdraw the
+  claim that Flash M512 is stably closed.  Do not encode an automatic selector
+  until a candidate has margin across repeated runs and route seeds.
+- Raw artifacts:
+  `.../candidates/flash_m512_clean_rebuild_s101_n20/`,
+  `.../candidates/flash_m512_crossseed_v2/`, and
+  `.../candidates/flash_m512_seed23_neigh_v3_*`.
+
+## Iteration 52: bounded Pro M512 parameter-space closure
+
+- Clean-source phase attribution on the BN256 FP32 parent measured L1 at
+  roughly 663--760 us and L2 at 355--465 us across ranks.  The two phases had
+  complementary rank tails, so optimizing only one phase was insufficient.
+- Existing legal knobs were screened without copying or implementing PR323's
+  fused kernel.  The material observations were:
+
+  | candidate | screen max-rank (us) | confirmed result / decision |
+  |---|---:|---|
+  | BN256 global BF16x2, EPW24/16 | 1118.6 | wave/stage neighbors all slower |
+  | BN256 one-warp cleanup | 1107.944 | 1133.872 vs PR323 1091.168; reject |
+  | L1-BN512/L2-BN256 global BF16, EPW16/16 | 1090.639 | 1107.452 vs PR323 1086.780; reject |
+  | same tile, EPW16/12 | 1087.842 | 1132.843 vs PR323 1090.011; reject |
+  | same tile, EPW12/12 | 1103.478 | 1119.740 vs PR323 1093.886; reject |
+  | FP16x2 scaled accumulation, EPW16/12 | 1067.439 | `diff=nan`; hard reject |
+
+- The FP16x2 point was not allowed to proceed on timing alone.  An 8-rank
+  focused test of the same FP16 accumulator and BN512 calculation path
+  returned `calc_diff=nan`, so it is numerically invalid under the unchanged
+  `0.01` gate.
+- All remaining existing parameter families were negative or invalid:
+  direct scatter, global-BF16 wave/stage neighbors, adjacent/prefetch/early
+  scale scheduling, L2 BN128/BN512, L2 BK256, phase-local frontend widths,
+  and 112--130-SM grids.  A phase grid of L1/L2=96/112 SM entered a persistent
+  scheduling hang and was terminated; same-grid reductions were legal but
+  slower.  Compile-time guards correctly rejected BF16 with BK256 and BF16
+  with four N64 consumer warpgroups.
+- The closest repeatable historical result remains the temporary
+  L1-BN512/BF16 plus L2-BN256/FP32 configuration at 1091.810 us versus PR323
+  1085.427 us (+0.59%).  Its phase-specific host plumbing was deliberately
+  removed, and the current clean source does not expose that mode.
+- Decision: existing default-off parameter overrides do not provide a stable
+  Pro M512 winner.  Further progress requires an explicitly approved,
+  H200-only source experiment (for example phase-specific accumulation or a
+  new tile), followed by correctness and interleaved confirmation.  No H20
+  selector, generic default, or PR323 source was changed.
+- Raw artifacts:
+  `.../candidates/pro_m512_{cleanup,global_bf16,l1bn512,l2bn128,l2bk256,fp16acc}*`,
+  `.../candidates/pro_m512_bn512_{grid,wave}*`, and the corresponding
+  `*_confirm_s101_n20*` directories.

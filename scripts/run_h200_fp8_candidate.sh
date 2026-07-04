@@ -22,7 +22,7 @@ export DG_OURS_BENCH="$OURS/tests/bench_mega_moe_sm90.py"
 # torch symmetric-memory creates Unix sockets below TMPDIR; keep this path
 # short enough for sockaddr_un.sun_path on long shared-filesystem roots.
 export TMPDIR=${DG_CANDIDATE_TMPDIR:-/tmp/aichenf_sm90_fp8_$CANDIDATE}
-export DG_JIT_CACHE_DIR="$CASE_ROOT/jit"
+export DG_JIT_CACHE_DIR="${DG_CANDIDATE_JIT_CACHE_DIR:-$CASE_ROOT/jit}"
 export TORCH_EXTENSIONS_DIR="$CASE_ROOT/torch_extensions"
 mkdir -p "$CASE_ROOT/logs" "$TMPDIR" "$DG_JIT_CACHE_DIR" "$TORCH_EXTENSIONS_DIR"
 
