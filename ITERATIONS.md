@@ -2070,3 +2070,24 @@ Each measured source or promoted-selector iteration records:
   selector, H20 tuning, or PR323 implementation changed.
 - Raw artifact:
   `.../candidates/flash_m512_l1e8_l2e4_exact_shape_correctness_v1/correctness.log`.
+
+## Iteration 71 — Conservative automatic H200 FP8 selector smoke
+
+- Hypothesis: an H200-only, exact-shape/exact-M selector can reproduce the previously verified explicit FP8 candidate configurations while leaving M512 and all unmatched workloads on the existing generic path.
+- Changes:
+  - Added H200 device detection and an optional `DG_SM90_MOE_H200_POLICY` debug override.
+  - Added exact Flash/Pro workload policies for the retained M points only.
+  - Applied policy defaults to base and phase-specific FP8 configuration, with explicit environment variables retaining precedence.
+  - Kept the already validated global BF16 Pro candidates; added no new phase-specific BF16 path.
+- Protocol: H200 job 2968183 (`viking-prod-651`), no tuning environment variables, `DG_PRINT_CONFIGS=1`, one timing iteration for compile/config smoke. Tested Flash M={128,512,8192} and Pro M={128,256,512,1024}.
+- Evidence:
+  - Flash M8192 selected BM64/BN256/BK128, cluster1, direct0, N-major1, cleanup0, L1/L2 EPW32 and stage3, FP8 combine enabled, BF16 scaled accumulation disabled.
+  - Pro M128 selected L1 BN512/EPW16/stage2 and L2 BN256/EPW16/stage3, direct0, N-major1, cleanup0, FP8 combine enabled, global BF16 scaled accumulation enabled.
+  - Pro M256 selected L1 BN256/BK256/EPW8/stage2/SMS128 and L2 BN256/BK128/EPW48/stage3/SMS128, direct0, N-major1, cleanup0, FP8 combine enabled, BF16 scaled accumulation disabled.
+  - Flash M512 and Pro M512 printed only the generic base configuration and no H200 policy, confirming conservative fallthrough.
+  - All smoke runs completed successfully. Timing is compile/config smoke only and is not used as the final performance verdict.
+- Decision: retain the selector implementation and proceed to multi-seed numerical validation plus interleaved performance verification.
+- Artifacts:
+  - `$ROOT/candidates/h200_auto_selector_flash_smoke_v1`
+  - `$ROOT/candidates/h200_auto_selector_pro_smoke_v1`
+  - `$ROOT/jit/h200_auto_selector_smoke_v1`

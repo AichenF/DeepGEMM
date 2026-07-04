@@ -203,20 +203,31 @@ static void sm90_fp8_mega_moe(
         num_ranks, num_experts, num_experts_per_rank,
         num_max_tokens_per_rank, num_tokens, num_topk,
         hidden, intermediate_hidden, num_padded_sf_pool_tokens);
+    const auto h200_policy = get_sm90_moe_h200_policy(
+        num_ranks, num_experts, num_experts_per_rank,
+        num_tokens, num_topk, hidden, intermediate_hidden);
     auto l1_config = config;
     auto l2_config = config;
     const auto apply_phase_wave_override = [&](MegaMoESM90Config& phase_config,
-                                                const char* env_name) {
-        const int value = get_env<int>(env_name, phase_config.num_experts_per_wave);
+                                                const char* env_name,
+                                                const int& automatic_value) {
+        const int default_value = automatic_value > 0 ?
+            automatic_value : phase_config.num_experts_per_wave;
+        const int value = get_env<int>(env_name, default_value);
         DG_HOST_ASSERT(value > 0 and value <= num_experts_per_rank and
                        num_experts_per_rank % value == 0);
         phase_config.num_experts_per_wave = value;
     };
-    apply_phase_wave_override(l1_config, "DG_SM90_MOE_L1_EXPERTS_PER_WAVE");
-    apply_phase_wave_override(l2_config, "DG_SM90_MOE_L2_EXPERTS_PER_WAVE");
+    apply_phase_wave_override(
+        l1_config, "DG_SM90_MOE_L1_EXPERTS_PER_WAVE",
+        h200_policy.l1_experts_per_wave);
+    apply_phase_wave_override(
+        l2_config, "DG_SM90_MOE_L2_EXPERTS_PER_WAVE",
+        h200_policy.l2_experts_per_wave);
     const auto apply_phase_block_n_override = [&](MegaMoESM90Config& phase_config,
-                                                   const char* env_name) {
-        const int block_n = get_env<int>(env_name, 0);
+                                                   const char* env_name,
+                                                   const int& automatic_value) {
+        const int block_n = get_env<int>(env_name, automatic_value);
         if (block_n == 0)
             return;
         DG_HOST_ASSERT((block_n == 128 or block_n == 256 or block_n == 512) and
@@ -228,20 +239,28 @@ static void sm90_fp8_mega_moe(
         phase_config.num_epilogue_threads =
             block_n == 512 ? 512 : (compact_frontend ? 256 : 128);
     };
-    apply_phase_block_n_override(l1_config, "DG_SM90_MOE_L1_BLOCK_N");
-    apply_phase_block_n_override(l2_config, "DG_SM90_MOE_L2_BLOCK_N");
+    apply_phase_block_n_override(
+        l1_config, "DG_SM90_MOE_L1_BLOCK_N", h200_policy.l1_block_n);
+    apply_phase_block_n_override(
+        l2_config, "DG_SM90_MOE_L2_BLOCK_N", h200_policy.l2_block_n);
     const auto apply_phase_block_k_override = [&](MegaMoESM90Config& phase_config,
-                                                   const char* env_name) {
-        const int block_k = get_env<int>(env_name, phase_config.block_k);
+                                                   const char* env_name,
+                                                   const int& automatic_value) {
+        const int block_k = get_env<int>(
+            env_name, automatic_value > 0 ? automatic_value : phase_config.block_k);
         DG_HOST_ASSERT(block_k == 128 or block_k == 256);
         phase_config.block_k = block_k;
     };
-    apply_phase_block_k_override(l1_config, "DG_SM90_MOE_L1_BLOCK_K");
-    apply_phase_block_k_override(l2_config, "DG_SM90_MOE_L2_BLOCK_K");
+    apply_phase_block_k_override(
+        l1_config, "DG_SM90_MOE_L1_BLOCK_K", h200_policy.l1_block_k);
+    apply_phase_block_k_override(
+        l2_config, "DG_SM90_MOE_L2_BLOCK_K", h200_policy.l2_block_k);
     const auto apply_phase_dispatch_override = [&] (
-            MegaMoESM90Config& phase_config, const char* env_name) {
+            MegaMoESM90Config& phase_config, const char* env_name,
+            const int& automatic_value) {
         const int requested = get_env<int>(
-            env_name, phase_config.num_dispatch_threads / 32);
+            env_name, automatic_value > 0 ?
+                automatic_value : phase_config.num_dispatch_threads / 32);
         if (requested == phase_config.num_dispatch_threads / 32)
             return;
         DG_HOST_ASSERT(phase_config.block_m == 64 and
@@ -252,13 +271,15 @@ static void sm90_fp8_mega_moe(
         phase_config.num_non_epilogue_threads = requested == 4 ? 128 : 64;
     };
     apply_phase_dispatch_override(
-        l1_config, "DG_SM90_MOE_L1_DISPATCH_WARPS");
+        l1_config, "DG_SM90_MOE_L1_DISPATCH_WARPS", 0);
     apply_phase_dispatch_override(
-        l2_config, "DG_SM90_MOE_L2_DISPATCH_WARPS");
+        l2_config, "DG_SM90_MOE_L2_DISPATCH_WARPS", 0);
     const auto apply_phase_epilogue_wg_override = [&] (
-            MegaMoESM90Config& phase_config, const char* env_name) {
+            MegaMoESM90Config& phase_config, const char* env_name,
+            const int& automatic_value) {
         const int requested = get_env<int>(
-            env_name, phase_config.num_epilogue_threads / 128);
+            env_name, automatic_value > 0 ?
+                automatic_value : phase_config.num_epilogue_threads / 128);
         if (requested == phase_config.num_epilogue_threads / 128)
             return;
         DG_HOST_ASSERT(phase_config.block_m == 64 and
@@ -268,12 +289,14 @@ static void sm90_fp8_mega_moe(
         phase_config.num_epilogue_threads = requested * 128;
     };
     apply_phase_epilogue_wg_override(
-        l1_config, "DG_SM90_MOE_L1_EPILOGUE_WG");
+        l1_config, "DG_SM90_MOE_L1_EPILOGUE_WG", 0);
     apply_phase_epilogue_wg_override(
-        l2_config, "DG_SM90_MOE_L2_EPILOGUE_WG");
+        l2_config, "DG_SM90_MOE_L2_EPILOGUE_WG", 0);
     const auto apply_phase_stage_override = [&](MegaMoESM90Config& phase_config,
-                                                 const char* env_name) {
-        const int requested = get_env<int>(env_name, phase_config.num_stages);
+                                                 const char* env_name,
+                                                 const int& automatic_value) {
+        const int requested = get_env<int>(
+            env_name, automatic_value > 0 ? automatic_value : phase_config.num_stages);
         const auto [num_stages, smem_size] = get_pipeline_config_for_mega_moe_sm90(
             SM90ArchSpec::smem_capacity,
             num_experts, hidden,
@@ -282,12 +305,15 @@ static void sm90_fp8_mega_moe(
             phase_config.num_epilogue_threads / 32,
             phase_config.direct_l2_scatter,
             requested,
-            phase_config.swap_ab);
+            phase_config.swap_ab,
+            h200_policy.fp8_combine != 0);
         phase_config.num_stages = num_stages;
         phase_config.smem_size = smem_size;
     };
-    apply_phase_stage_override(l1_config, "DG_SM90_MOE_L1_NUM_STAGES");
-    apply_phase_stage_override(l2_config, "DG_SM90_MOE_L2_NUM_STAGES");
+    apply_phase_stage_override(
+        l1_config, "DG_SM90_MOE_L1_NUM_STAGES", h200_policy.l1_num_stages);
+    apply_phase_stage_override(
+        l2_config, "DG_SM90_MOE_L2_NUM_STAGES", h200_policy.l2_num_stages);
 
     // Tensormap construction
     // Acts/weights: standard 2D TMA descriptors (FP8 K-major).
@@ -365,12 +391,17 @@ static void sm90_fp8_mega_moe(
 
     // Launch
     const auto num_sms = device_runtime->get_num_sms();
-    const int l1_num_sms = get_env<int>("DG_SM90_MOE_L1_NUM_SMS", num_sms);
-    const int l2_num_sms = get_env<int>("DG_SM90_MOE_L2_NUM_SMS", num_sms);
+    const int l1_num_sms = get_env<int>(
+        "DG_SM90_MOE_L1_NUM_SMS",
+        h200_policy.l1_num_sms > 0 ? h200_policy.l1_num_sms : num_sms);
+    const int l2_num_sms = get_env<int>(
+        "DG_SM90_MOE_L2_NUM_SMS",
+        h200_policy.l2_num_sms > 0 ? h200_policy.l2_num_sms : num_sms);
     const bool async_l1_tma_store = get_env<int>("DG_SM90_MOE_ASYNC_L1_TMA_STORE", 0) != 0;
     const bool l1_dual_k_accum = get_env<int>("DG_SM90_MOE_L1_DUAL_K_ACCUM", 0) != 0;
     const bool l2_dual_accum = get_env<int>("DG_SM90_MOE_L2_DUAL_ACCUM", 0) != 0;
-    const bool fp8_combine = get_env<int>("DG_SM90_MOE_FP8_COMBINE", 0) != 0;
+    const bool fp8_combine = get_env<int>(
+        "DG_SM90_MOE_FP8_COMBINE", h200_policy.fp8_combine) != 0;
     const bool adjacent_scale_domain =
         get_env<int>("DG_SM90_MOE_ADJACENT_SCALE_DOMAIN", 0) != 0;
     const bool prefetch_weight_sf =
@@ -379,8 +410,8 @@ static void sm90_fp8_mega_moe(
         get_env<int>("DG_SM90_MOE_EARLY_WEIGHT_SF", 0) != 0;
     const bool fp16_scaled_accum =
         get_env<int>("DG_SM90_MOE_FP16_SCALED_ACCUM", 0) != 0;
-    const bool bf16_scaled_accum =
-        get_env<int>("DG_SM90_MOE_BF16_SCALED_ACCUM", 0) != 0;
+    const bool bf16_scaled_accum = get_env<int>(
+        "DG_SM90_MOE_BF16_SCALED_ACCUM", h200_policy.bf16_scaled_accum) != 0;
     const bool native_fp16_wgmma =
         get_env<int>("DG_SM90_MOE_NATIVE_FP16_WGMMA", 0) != 0;
     const int native_fp16_chunk_k =
@@ -415,6 +446,21 @@ static void sm90_fp8_mega_moe(
     DG_HOST_ASSERT(l1_num_sms > 0 and l1_num_sms <= num_sms);
     DG_HOST_ASSERT(l2_num_sms > 0 and l2_num_sms <= num_sms);
     DG_HOST_ASSERT(not async_l1_tma_store or not l1_config.direct_l2_scatter);
+    if ((get_env<int>("DG_JIT_DEBUG") or get_env<int>("DG_PRINT_CONFIGS")) and
+        h200_policy.enabled()) {
+        const auto key = fmt::format(
+            "Sm90MoeH200Policy(num_ranks={}, num_experts={}, hidden={}, intermediate_hidden={}, num_tokens={}, num_topk={})",
+            num_ranks, num_experts, hidden, intermediate_hidden, num_tokens, num_topk);
+        static std::unordered_set<std::string> printed;
+        if (printed.count(key) == 0) {
+            std::cout << key << ": " << h200_policy << std::endl;
+            std::cout << "  H200 L1 config: " << l1_config << ", num_sms=" << l1_num_sms << std::endl;
+            std::cout << "  H200 L2 config: " << l2_config << ", num_sms=" << l2_num_sms << std::endl;
+            std::cout << "  H200 features: fp8_combine=" << fp8_combine
+                      << ", bf16_scaled_accum=" << bf16_scaled_accum << std::endl;
+            printed.insert(key);
+        }
+    }
     const SM90FP8MegaMoERuntime::Args args = {
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
         .hidden = hidden, .intermediate_hidden = intermediate_hidden,

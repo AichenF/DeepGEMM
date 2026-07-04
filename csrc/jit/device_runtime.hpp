@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cublasLt.h>
+#include <string>
 #include <torch/version.h>
 #include <ATen/cuda/CUDAContext.h>
 
@@ -98,6 +99,12 @@ public:
 
     int get_arch_major() {
         return get_arch_pair().first;
+    }
+
+    bool is_h200() {
+        const auto prop = get_prop();
+        return prop->major == 9 and
+               std::string(prop->name).find("H200") != std::string::npos;
     }
 
     void set_num_sms(const int& new_num_sms) {

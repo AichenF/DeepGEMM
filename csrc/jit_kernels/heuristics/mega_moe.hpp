@@ -310,6 +310,66 @@ enum class Sm90MoeRuntimeProfile {
     HighSm
 };
 
+enum class Sm90MoeH200Workload {
+    None,
+    Flash,
+    Pro
+};
+
+struct Sm90MoeH200Policy {
+    Sm90MoeH200Workload workload = Sm90MoeH200Workload::None;
+
+    // Shared/base configuration. Zero means inherit the existing selector;
+    // boolean selectors use -1 for inherit.
+    int block_m = 0, block_n = 0, block_k = 0;
+    int cluster_size = 0, dispatch_warps = 0, epilogue_warpgroups = 0;
+    int direct_l2_scatter = -1, l2_nmajor_schedule = -1;
+    int one_warp_cleanup = -1;
+
+    // Phase-local configuration. Zero means inherit the shared configuration.
+    int l1_block_n = 0, l2_block_n = 0;
+    int l1_block_k = 0, l2_block_k = 0;
+    int l1_experts_per_wave = 0, l2_experts_per_wave = 0;
+    int l1_num_stages = 0, l2_num_stages = 0;
+    int l1_num_sms = 0, l2_num_sms = 0;
+
+    // Global execution features selected by the retained candidates.
+    int fp8_combine = 0;
+    int bf16_scaled_accum = 0;
+
+    bool enabled() const {
+        return workload != Sm90MoeH200Workload::None;
+    }
+
+    friend std::ostream& operator << (std::ostream& os, const Sm90MoeH200Policy& policy) {
+        const char* workload = policy.workload == Sm90MoeH200Workload::Flash ? "flash" :
+                               policy.workload == Sm90MoeH200Workload::Pro ? "pro" : "none";
+        os << "Sm90MoeH200Policy(workload=" << workload
+           << ", block_m=" << policy.block_m
+           << ", block_n=" << policy.block_n
+           << ", block_k=" << policy.block_k
+           << ", cluster_size=" << policy.cluster_size
+           << ", dispatch_warps=" << policy.dispatch_warps
+           << ", epilogue_warpgroups=" << policy.epilogue_warpgroups
+           << ", direct_l2_scatter=" << policy.direct_l2_scatter
+           << ", l2_nmajor_schedule=" << policy.l2_nmajor_schedule
+           << ", one_warp_cleanup=" << policy.one_warp_cleanup
+           << ", l1_block_n=" << policy.l1_block_n
+           << ", l2_block_n=" << policy.l2_block_n
+           << ", l1_block_k=" << policy.l1_block_k
+           << ", l2_block_k=" << policy.l2_block_k
+           << ", l1_experts_per_wave=" << policy.l1_experts_per_wave
+           << ", l2_experts_per_wave=" << policy.l2_experts_per_wave
+           << ", l1_num_stages=" << policy.l1_num_stages
+           << ", l2_num_stages=" << policy.l2_num_stages
+           << ", l1_num_sms=" << policy.l1_num_sms
+           << ", l2_num_sms=" << policy.l2_num_sms
+           << ", fp8_combine=" << policy.fp8_combine
+           << ", bf16_scaled_accum=" << policy.bf16_scaled_accum << ")";
+        return os;
+    }
+};
+
 static std::string get_sm90_moe_lowercase(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char c) {
         return static_cast<char>(std::tolower(c));
@@ -335,6 +395,84 @@ static Sm90MoeRuntimeProfile get_sm90_moe_runtime_profile() {
     if (num_sms >= 100)
         return Sm90MoeRuntimeProfile::HighSm;
     return Sm90MoeRuntimeProfile::Generic;
+}
+
+static bool should_use_sm90_moe_h200_policy() {
+    const int forced = get_env<int>("DG_SM90_MOE_H200_POLICY", -1);
+    DG_HOST_ASSERT(forced == -1 or forced == 0 or forced == 1);
+    return forced >= 0 ? forced != 0 : device_runtime->is_h200();
+}
+
+static Sm90MoeH200Policy get_sm90_moe_h200_policy(
+    const int& num_ranks, const int& num_experts, const int& num_experts_per_rank,
+    const int& num_tokens, const int& num_topk,
+    const int& hidden, const int& intermediate_hidden) {
+    Sm90MoeH200Policy policy;
+    if (not should_use_sm90_moe_h200_policy())
+        return policy;
+
+    const bool is_flash =
+        num_ranks == 8 and num_experts == 256 and num_experts_per_rank == 32 and
+        num_topk == 6 and hidden == 4096 and intermediate_hidden == 2048;
+    const bool is_pro =
+        num_ranks == 8 and num_experts == 384 and num_experts_per_rank == 48 and
+        num_topk == 6 and hidden == 7168 and intermediate_hidden == 3072;
+
+    const auto set_common = [&](const Sm90MoeH200Workload workload) {
+        policy.workload = workload;
+        policy.block_m = 64;
+        policy.block_n = 256;
+        policy.block_k = 128;
+        policy.cluster_size = 1;
+        policy.dispatch_warps = 2;
+        policy.epilogue_warpgroups = 2;
+        policy.direct_l2_scatter = 0;
+        policy.l2_nmajor_schedule = 1;
+        policy.fp8_combine = 1;
+    };
+
+    if (is_flash and num_tokens == 128) {
+        set_common(Sm90MoeH200Workload::Flash);
+        policy.one_warp_cleanup = 0;
+        policy.l1_experts_per_wave = policy.l2_experts_per_wave = 4;
+        policy.l1_num_stages = policy.l2_num_stages = 3;
+    } else if (is_flash and num_tokens == 8192) {
+        set_common(Sm90MoeH200Workload::Flash);
+        policy.one_warp_cleanup = 0;
+        policy.l1_experts_per_wave = policy.l2_experts_per_wave = 32;
+        policy.l1_num_stages = policy.l2_num_stages = 3;
+    } else if (is_pro and num_tokens == 128) {
+        set_common(Sm90MoeH200Workload::Pro);
+        policy.one_warp_cleanup = 0;
+        policy.l1_block_n = 512;
+        policy.l2_block_n = 256;
+        policy.l1_experts_per_wave = policy.l2_experts_per_wave = 16;
+        policy.l1_num_stages = 2;
+        policy.l2_num_stages = 3;
+        policy.bf16_scaled_accum = 1;
+    } else if (is_pro and num_tokens == 256) {
+        set_common(Sm90MoeH200Workload::Pro);
+        policy.one_warp_cleanup = 0;
+        policy.l1_block_n = policy.l2_block_n = 256;
+        policy.l1_block_k = 256;
+        policy.l2_block_k = 128;
+        policy.l1_experts_per_wave = 8;
+        policy.l2_experts_per_wave = 48;
+        policy.l1_num_stages = 2;
+        policy.l2_num_stages = 3;
+        policy.l1_num_sms = policy.l2_num_sms = 128;
+    } else if (is_pro and
+               (num_tokens == 1024 or num_tokens == 2048 or
+                num_tokens == 4096 or num_tokens == 8192)) {
+        set_common(Sm90MoeH200Workload::Pro);
+        policy.l1_block_n = 512;
+        policy.l2_block_n = 256;
+        policy.l1_experts_per_wave = policy.l2_experts_per_wave = 16;
+        policy.l1_num_stages = 2;
+        policy.l2_num_stages = 3;
+        policy.bf16_scaled_accum = 1;
+    }
+    return policy;
 }
 
 static bool should_use_swap_ab_for_mega_moe_sm90(
@@ -629,7 +767,8 @@ static std::pair<int, int> get_pipeline_config_for_mega_moe_sm90(
     const int& num_dispatch_warps, const int& num_epilogue_warps,
     const bool& direct_l2_scatter_enabled = false,
     const int& default_num_stages = 0,
-    const bool& swap_ab = false) {
+    const bool& swap_ab = false,
+    const bool& default_fp8_combine = false) {
     constexpr int kSmemAlignment = 1024;
 
     // Dispatch region (same as SM100)
@@ -659,7 +798,7 @@ static std::pair<int, int> get_pipeline_config_for_mega_moe_sm90(
                                    not swap_ab and not serial_n_warpgroups and wg_block_n == 128;
     const bool async_l1_tma_store = false;
     const int combine_element_bytes =
-        get_env<int>("DG_SM90_MOE_FP8_COMBINE", 0) != 0 ? 1 :
+        get_env<int>("DG_SM90_MOE_FP8_COMBINE", default_fp8_combine ? 1 : 0) != 0 ? 1 :
         static_cast<int>(sizeof(nv_bfloat16));
     const int smem_cd_l2 = direct_l2_scatter ? 0 :
         num_epilogue_warpgroups * wg_block_m * wg_block_n * combine_element_bytes;
@@ -805,9 +944,15 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
     const int& num_max_tokens_per_rank, const int& num_tokens, const int& num_topk,
     const int& hidden, const int& intermediate_hidden,
     const int& num_padded_sf_pool_tokens) {
-    const int forced_block_m = get_env<int>("DG_SM90_MOE_FORCE_BLOCK_M");
-    const int forced_block_n = get_env<int>("DG_SM90_MOE_FORCE_BLOCK_N");
-    const int forced_epilogue_warpgroups = get_env<int>("DG_SM90_MOE_FORCE_EPILOGUE_WG");
+    const auto h200_policy = get_sm90_moe_h200_policy(
+        num_ranks, num_experts, num_experts_per_rank,
+        num_tokens, num_topk, hidden, intermediate_hidden);
+    const int forced_block_m = get_env<int>(
+        "DG_SM90_MOE_FORCE_BLOCK_M", h200_policy.block_m);
+    const int forced_block_n = get_env<int>(
+        "DG_SM90_MOE_FORCE_BLOCK_N", h200_policy.block_n);
+    const int forced_epilogue_warpgroups = get_env<int>(
+        "DG_SM90_MOE_FORCE_EPILOGUE_WG", h200_policy.epilogue_warpgroups);
     DG_HOST_ASSERT(forced_block_m == 0 or forced_block_m == 64 or forced_block_m == 128);
     DG_HOST_ASSERT(forced_block_n == 0 or forced_block_n == 128 or
                    forced_block_n == 256 or forced_block_n == 512);
@@ -843,7 +988,8 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
 
     const int num_max_pool_tokens = layout::get_num_max_pool_tokens(
         num_ranks, num_max_tokens_per_rank, num_topk, num_experts_per_rank);
-    const int block_k = get_env<int>("DG_SM90_MOE_BLOCK_K", 128);
+    const int block_k = get_env<int>(
+        "DG_SM90_MOE_BLOCK_K", h200_policy.block_k > 0 ? h200_policy.block_k : 128);
     DG_HOST_ASSERT(block_k == 128 or block_k == 256);
     const int num_sms = device_runtime->get_num_sms();
 
@@ -924,8 +1070,8 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                         num_experts_per_rank, num_tokens, num_topk,
                         block_m, num_epilogue_threads);
 
-                const int forced_cluster_size =
-                    get_env<int>("DG_SM90_MOE_CLUSTER_SIZE", 0);
+                const int forced_cluster_size = get_env<int>(
+                    "DG_SM90_MOE_CLUSTER_SIZE", h200_policy.cluster_size);
                 DG_HOST_ASSERT(forced_cluster_size == 0 or
                                forced_cluster_size == 1 or
                                forced_cluster_size == 2);
@@ -937,7 +1083,9 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                 const int swizzle_weights_mode = 128;
 
                 const bool compact_frontend = block_n >= 256 or swap_ab;
-                const int forced_dispatch_warps = get_env<int>("DG_SM90_MOE_DISPATCH_WARPS", -1);
+                const int forced_dispatch_warps = get_env<int>(
+                    "DG_SM90_MOE_DISPATCH_WARPS",
+                    h200_policy.dispatch_warps > 0 ? h200_policy.dispatch_warps : -1);
                 DG_HOST_ASSERT(forced_dispatch_warps == -1 or forced_dispatch_warps == 0 or
                                forced_dispatch_warps == 2 or forced_dispatch_warps == 4 or
                                forced_dispatch_warps == 8);
@@ -963,12 +1111,19 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                     const auto policy = get_sm90_moe_heuristic_policy(
                         num_experts_per_rank, num_tokens, num_topk,
                         intermediate_hidden, block_m, block_n);
-                    const bool direct_l2_scatter_default = (not swap_ab) and policy.direct_l2_scatter();
-                    const bool l2_nmajor_schedule_default = policy.l2_nmajor_schedule(
+                    const bool direct_l2_scatter_default =
+                        h200_policy.direct_l2_scatter >= 0 ?
+                            h200_policy.direct_l2_scatter != 0 :
+                            ((not swap_ab) and policy.direct_l2_scatter());
+                    const bool l2_nmajor_schedule_default =
+                        h200_policy.l2_nmajor_schedule >= 0 ?
+                            h200_policy.l2_nmajor_schedule != 0 : policy.l2_nmajor_schedule(
                         get_env<int>("DG_SM90_MOE_EPLB_HINT", 0) != 0,
                         get_env<int>("DG_SM90_MOE_SKEW_HINT", 0) != 0);
-                    const bool one_warp_cleanup_default = policy.one_warp_cleanup(
-                        get_env<int>("DG_SM90_MOE_MASKED_HINT", 0) != 0);
+                    const bool one_warp_cleanup_default =
+                        h200_policy.one_warp_cleanup >= 0 ?
+                            h200_policy.one_warp_cleanup != 0 : policy.one_warp_cleanup(
+                                get_env<int>("DG_SM90_MOE_MASKED_HINT", 0) != 0);
                     const bool direct_l2_scatter_legal =
                         (not swap_ab) and
                         ((block_m == 64 and block_n == 256 and num_epilogue_warpgroups == 2) or
@@ -1016,7 +1171,8 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                                 num_dispatch_threads / 32, num_epilogue_threads / 32,
                                 direct_l2_scatter,
                                 requested_num_stages,
-                                swap_ab);
+                                swap_ab,
+                                h200_policy.fp8_combine != 0);
                             for (const int& l2_nmajor_value: l2_nmajor_candidates) {
                                 for (const int& cleanup_value: cleanup_candidates) {
                                     for (const int& num_experts_per_wave: experts_per_wave_candidates) {
