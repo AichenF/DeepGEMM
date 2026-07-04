@@ -2211,3 +2211,13 @@ Each measured source or promoted-selector iteration records:
   Pro-M256 phase-grid screen using only existing H200 experiment controls.
 - Raw artifacts:
   `$ROOT/candidates/h200_auto_pro_m256_remeasure_v1/`.
+
+## Iteration 77 — Failed Pro M256 phase-grid screen invocation
+
+- Intended protocol: two median-20 observations for nine bounded L1/L2 SM-grid
+  combinations around the retained 128/128 point.
+- Result: as in iteration 75, driver-log redirection preceded creation of the
+  per-candidate directory.  The first shell redirection failed immediately;
+  no benchmark subprocess or GPU kernel ran.
+- Decision: explicitly create each candidate directory inside the loop and
+  rerun the unchanged screen.  No source or selector setting changed.
