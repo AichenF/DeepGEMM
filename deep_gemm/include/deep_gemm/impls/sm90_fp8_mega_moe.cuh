@@ -101,7 +101,6 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     uint32_t kNumEpilogueThreads, \
     uint32_t kClusterSize, \
     uint32_t kNumSMs, uint32_t kNumRanks, \
-    uint32_t kNumDispatchSMs, \
     float kActivationClamp, \
     bool kFastMath, \
     bool kDirectL2ScatterRequested = false, \
@@ -174,7 +173,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     kNumExpertsPerWave, BLOCK_M, BLOCK_N, BLOCK_K, kNumMaxPoolTokens, \
     kNumPaddedSFPoolTokens, kSFPoolStrideTokens, kNumStages, kNumDispatchThreads, \
     kNumNonEpilogueThreads, kNumEpilogueThreads, kClusterSize, kNumSMs, \
-    kNumRanks, kNumDispatchSMs, kActivationClamp, kFastMath, kDirectL2ScatterRequested, \
+    kNumRanks, kActivationClamp, kFastMath, kDirectL2ScatterRequested, \
     kPhaseProfileRequested, kL2NMajorScheduleRequested, kOneWarpCleanupRequested, kFP8SwapAB, \
     kAsyncL1TMAStoreRequested, \
     kL1DualKAccumRequested, kL2DualAccumRequested, kFP8CombineRequested, \
@@ -532,8 +531,7 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         L1_SHAPE_N, L1_SHAPE_K,
         L2_SHAPE_N, L2_SHAPE_K,
         kNumExpertsPerRank, kNumExpertsPerWave,
-        kNumSMs, kNumRanks, kNumDispatchSMs,
-        kClusterSize, kL2NMajorScheduleRequested, false>(workspace);
+        kNumSMs, kNumRanks, kClusterSize, kL2NMajorScheduleRequested, false>(workspace);
 
     // Pipeline state shared by TMA loaders and math warpgroups
     uint32_t stage_idx = 0, phase = 0;
