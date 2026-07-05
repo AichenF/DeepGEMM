@@ -2402,3 +2402,22 @@ Each measured source or promoted-selector iteration records:
   `NCCL_NVLS_ENABLE=0`.  This affects only NCCL's process-group transport used
   by the harness; it does not select or modify the MegaMoE kernel.  No source,
   selector, H20 tuning, or PR323 implementation changed.
+
+## Iteration 88 — Dispatch-grid equal-control JIT smoke
+
+- Hypothesis: separating the dispatch producer count from the phase launch
+  grid preserves the existing equal-grid behavior when both values are 128.
+- Protocol: new H200 job `2980566` on `viking-prod-303`, eight ranks, exact
+  Pro H7168/I3072/E384/top-k6 at M256, seed 101, explicit L1/L2 grids 128/128,
+  a fresh candidate JIT cache, and one max-rank median-5 observation.  Set
+  `NCCL_NVLS_ENABLE=0` only to bypass this node's broken NCCL multicast
+  initialization; the MegaMoE kernel configuration was unchanged.
+- Result: both new JIT kernels compiled and the run exited 0.  The eight
+  rank-local medians ranged from 843.139 to 862.625 us; max-rank latency was
+  862.625 us.  The benchmark's setup/correctness path completed without an
+  assertion or non-finite failure.
+- Decision: the same-grid compatibility check passes and the control is in the
+  recent 128/128 timing band.  Proceed to the bounded 128/112 and 128/132
+  asymmetric Linear2 screens; do not change the selector yet.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_dispatchgrid_equal_128_v1/`.
