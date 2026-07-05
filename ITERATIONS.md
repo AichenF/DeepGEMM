@@ -2443,3 +2443,22 @@ Each measured source or promoted-selector iteration records:
   measurements for any survivor.
 - Raw artifact:
   `$ROOT/candidates/pro_m256_dispatchgrid_l1_128_l2_112_v1/`.
+
+## Iteration 90 — Pro M256 asymmetric 128/132 first screen
+
+- Hypothesis: using all 132 H200 SMs for Linear2 while retaining the
+  128-CTA Linear1 dispatch producer may reduce Linear2 latency through added
+  parallelism now that the completion count is decoupled safely.
+- Protocol: identical to iteration 89 except L1/L2 grids were 128/132; one
+  max-rank median-20 observation with per-rank kernel breakdown and a fresh
+  JIT cache.
+- Result: the run exited 0.  Rank-local total medians were
+  842.566--851.753 us and max-rank latency was 851.753 us.  L1 medians ranged
+  from 534.466 to 545.261 us; L2 medians ranged from 297.805 to 310.366 us.
+  This candidate also completed without the former asymmetric-grid hang.
+- Decision: 128/132 is 1.271 us slower than 128/112 in their first screens,
+  while both appear better than historical 128/128 results.  Keep 128/112 as
+  the leading candidate and run an ordered median-20 128/128 control followed
+  by repeated 128/112 confirmation before any selector change.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_dispatchgrid_l1_128_l2_132_v1/`.
