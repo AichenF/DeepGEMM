@@ -2462,3 +2462,23 @@ Each measured source or promoted-selector iteration records:
   by repeated 128/112 confirmation before any selector change.
 - Raw artifact:
   `$ROOT/candidates/pro_m256_dispatchgrid_l1_128_l2_132_v1/`.
+
+## Iteration 91 — Pro M256 same-node 128/128 control
+
+- Goal: distinguish a true asymmetric-grid improvement from replacement-node
+  and run-state differences by measuring the unchanged 128/128 configuration
+  with the same H200 node, median-20 protocol, and diagnostics as iterations
+  89--90.
+- Protocol: job `2980566`, exact Pro M256, seed 101, explicit L1/L2 grids
+  128/128, one max-rank median-20 observation and per-rank kernel breakdown;
+  all other selector and harness settings were identical.
+- Result: the run exited 0.  Rank-local medians were 836.809--849.251 us and
+  max-rank latency was 849.251 us.  L1 medians ranged from 533.680 to
+  542.412 us; L2 medians ranged from 294.622 to 306.173 us.
+- Decision: the controlled result reverses the apparent first-screen win.
+  Relative to this control, 128/112 is 1.231 us (0.14%) slower and 128/132 is
+  2.502 us (0.29%) slower.  Do not update the selector.  Run one ordered
+  128/112 confirmation and a closing 128/128 control before deciding whether
+  to retain or revert the source capability.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_dispatchgrid_control_128_v2/`.
