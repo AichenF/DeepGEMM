@@ -2520,3 +2520,24 @@ Each measured source or promoted-selector iteration records:
   retain the design, plan, and iteration evidence.
 - Raw artifact:
   `$ROOT/candidates/pro_m256_dispatchgrid_control_128_v3/`.
+
+## Iteration 94 — Final post-revert Pro M256 verification
+
+- Goal: verify that the conservative final source, after reverting the
+  asymmetric-grid capability, still force-builds, generates fresh CUDA JIT
+  kernels, and runs the automatic H200 Pro M256 selector successfully.
+- Protocol: force-rebuilt extension from reverted source, no
+  `DG_SM90_MOE_*` tuning overrides, fresh candidate JIT cache, exact Pro M256,
+  seed 101, and one max-rank median-20 observation on H200 job `2980566`.
+  `NCCL_NVLS_ENABLE=0` remained only as the node-specific harness workaround.
+- Result: the extension and both original-signature JIT kernels compiled; the
+  eight-rank run exited 0.  Rank-local medians were 843.347--857.490 us and
+  max-rank latency was 857.490 us.  Several synchronized system outliers were
+  present, including one roughly 3.9 ms sample on seven ranks, but the
+  median-20 statistic remained in the established control band.
+- Decision: final post-revert build/runtime verification passes.  Keep the
+  existing automatic H200 Pro M256 128/128 selector, retain no asymmetric-grid
+  kernel code, and close this bounded source experiment without a performance
+  promotion.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_dispatchgrid_revert_final_v1/`.
