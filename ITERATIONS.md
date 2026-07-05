@@ -2375,3 +2375,16 @@ Each measured source or promoted-selector iteration records:
   none improves even the noisier opening control.  Retain symmetric 128 SMs.
 - Raw artifacts:
   `$ROOT/candidates/pro_m256_low_symmetric_sms_*_v1/`.
+
+## Iteration 86 — Failed asymmetric-grid equal-control invocation
+
+- Intended protocol: force a fresh JIT of the dispatch-counter-grid change and
+  run the existing H200 Pro M256 configuration with equal 128/128 phase grids,
+  seed 101, and one max-rank median-5 observation.
+- Result: the remote worktree did not contain
+  `scripts/run_h200_fp8_candidate.sh`, so the driver exited before launching
+  Python or any GPU kernel.  The follow-up summary naturally found no log and
+  printed a zero placeholder; it is not a timing result.
+- Decision: sync the unchanged benchmark driver and matrix runner from the
+  local worktree, then rerun the identical control.  No selector, H20 tuning,
+  PR323 code, or kernel source changed because of this invocation failure.
