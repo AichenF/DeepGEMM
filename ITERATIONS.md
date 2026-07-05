@@ -2482,3 +2482,24 @@ Each measured source or promoted-selector iteration records:
   to retain or revert the source capability.
 - Raw artifact:
   `$ROOT/candidates/pro_m256_dispatchgrid_control_128_v2/`.
+
+## Iteration 92 — Pro M256 128/112 confirmation
+
+- Goal: confirm whether the leading asymmetric candidate can beat the
+  immediately preceding 128/128 median-20 control before retaining any new
+  source capability or selector entry.
+- Protocol: exact iteration-89 configuration on the same H200 allocation,
+  rerun as a new candidate/JIT cache after iteration 91; seed 101 and one
+  max-rank median-20 observation.
+- Result: the run exited 0 and max-rank latency was 853.768 us, with rank-local
+  medians from 841.170 to 853.768 us.  Several synchronized late samples were
+  large, but the median remained well-defined.  This is 4.517 us (0.53%)
+  slower than the immediately preceding 128/128 control and 3.286 us slower
+  than the first 128/112 screen.
+- Decision: 128/112 does not provide a stable improvement and fails the
+  conservative >=0.5% source-change criterion.  Run the planned closing
+  128/128 control to complete the ordered comparison; absent a reversal, do
+  not change the selector and revert the experimental three-file source
+  capability.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_dispatchgrid_l1_128_l2_112_v2/`.
