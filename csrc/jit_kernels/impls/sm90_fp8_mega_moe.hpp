@@ -42,6 +42,7 @@ public:
         int hidden, intermediate_hidden;
         int num_experts, num_topk;
         int num_ranks;
+        int dispatch_num_sms;
         float activation_clamp;
         bool fast_math;
         bool direct_l2_scatter;
@@ -101,7 +102,7 @@ static void __instantiate_kernel() {{
         {},
         {}, {}, {},
         {},
-        {}, {},
+        {}, {}, {},
         {},
         {}, {}, {},
         {},
@@ -140,6 +141,7 @@ static void __instantiate_kernel() {{
     args.config.num_dispatch_threads, args.config.num_non_epilogue_threads, args.config.num_epilogue_threads,
     args.config.cluster_size,
     args.launch_args.grid_dim.first, args.num_ranks,
+    args.dispatch_num_sms,
     to_string(args.activation_clamp),
     args.fast_math ? "true" : "false",
     args.direct_l2_scatter ? "true" : "false",
@@ -466,6 +468,7 @@ static void sm90_fp8_mega_moe(
         .hidden = hidden, .intermediate_hidden = intermediate_hidden,
         .num_experts = num_experts, .num_topk = num_topk,
         .num_ranks = num_ranks,
+        .dispatch_num_sms = l1_num_sms,
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
         .direct_l2_scatter = config.direct_l2_scatter,

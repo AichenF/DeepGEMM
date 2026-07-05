@@ -22,6 +22,7 @@ template <uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t BLOCK_K,
           uint32_t kNumExpertsPerRank,
           uint32_t kNumExpertsPerWave,
           uint32_t kNumSMs, uint32_t kNumRanks,
+          uint32_t kNumDispatchSMs = kNumSMs,
           uint32_t kClusterSize = 2,
           bool kL2NMajorSchedule = false,
           bool kL1NMajorSchedule = false,
@@ -36,6 +37,7 @@ struct MegaMoEScheduler {
     DG_STATIC_ASSERT(L1_SHAPE_K % BLOCK_K == 0, "Invalid shape");
     DG_STATIC_ASSERT(L2_SHAPE_K % BLOCK_K == 0, "Invalid shape");
     DG_STATIC_ASSERT(kNumExpertsPerRank % kNumExpertsPerWave == 0, "Invalid wave config");
+    DG_STATIC_ASSERT(kNumDispatchSMs > 0, "Invalid dispatch SM count");
 
     // For 2-CTA clusters, neighbour SMs share the same m_block_idx with adjacent
     // n_block_idx; the asserts below guarantee that pairing is always possible.
@@ -215,7 +217,7 @@ struct MegaMoEScheduler {
             if (expert_idx < kNumExpertsPerRank) {
                 do {
                     value = ptx::ld_volatile(workspace.get_expert_recv_count_sum_ptr(expert_idx));
-                } while (static_cast<uint32_t>(value >> 32) != kNumSMs * kNumRanks);
+                } while (static_cast<uint32_t>(value >> 32) != kNumDispatchSMs * kNumRanks);
             }
             stored_num_tokens_per_expert[i] = static_cast<uint32_t>(value);
         }
