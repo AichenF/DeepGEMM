@@ -2388,3 +2388,17 @@ Each measured source or promoted-selector iteration records:
 - Decision: sync the unchanged benchmark driver and matrix runner from the
   local worktree, then rerun the identical control.  No selector, H20 tuning,
   PR323 code, or kernel source changed because of this invocation failure.
+
+## Iteration 87 — H200 node NVLS initialization failure
+
+- Intended protocol: rerun the unchanged equal-grid Pro M256 control after
+  syncing the existing candidate driver and matrix runner.
+- Result: all eight processes started, but NCCL process-group initialization
+  failed before benchmark setup or CUDA-kernel JIT.  Node `viking-prod-303`
+  could not bind a 2 MiB NVLink SHARP multicast allocation and returned CUDA
+  error 401 (`the operation cannot be performed in the present state`).  The
+  driver exited 1 and produced no timing result.
+- Decision: follow NCCL's explicit recovery path and rerun with
+  `NCCL_NVLS_ENABLE=0`.  This affects only NCCL's process-group transport used
+  by the harness; it does not select or modify the MegaMoE kernel.  No source,
+  selector, H20 tuning, or PR323 implementation changed.
