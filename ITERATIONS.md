@@ -2421,3 +2421,25 @@ Each measured source or promoted-selector iteration records:
   asymmetric Linear2 screens; do not change the selector yet.
 - Raw artifact:
   `$ROOT/candidates/pro_m256_dispatchgrid_equal_128_v1/`.
+
+## Iteration 89 — Pro M256 asymmetric 128/112 first screen
+
+- Hypothesis: retaining 128 Linear1 producer CTAs while reducing only the
+  Linear2 scheduler/launch grid to 112 can reduce its task tail; the new
+  dispatch-count parameter should let Linear2 wait on the correct 128-SM
+  producer total without hanging.
+- Protocol: H200 job `2980566`, exact Pro M256, seed 101, L1/L2 grids 128/112,
+  fresh JIT, one max-rank median-20 observation, plus per-rank kernel
+  breakdown.  All other settings came from the unchanged automatic selector;
+  `NCCL_NVLS_ENABLE=0` remained a harness workaround for this node.
+- Result: the run exited 0 with no correctness/setup failure.  Rank-local
+  total medians were 836.136--850.482 us and max-rank latency was 850.482 us.
+  L1 kernel medians ranged from 530.556 to 554.364 us; L2 medians ranged from
+  294.606 to 306.481 us.  Unlike the old coupled implementation, the
+  asymmetric grid completed normally.
+- Decision: 128/112 is a promising first result, but a single observation on
+  a replacement node is not sufficient to update the selector.  Complete the
+  pre-approved 128/132 screen, then run ordered controls and repeated paired
+  measurements for any survivor.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_dispatchgrid_l1_128_l2_112_v1/`.
