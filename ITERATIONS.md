@@ -2503,3 +2503,20 @@ Each measured source or promoted-selector iteration records:
   capability.
 - Raw artifact:
   `$ROOT/candidates/pro_m256_dispatchgrid_l1_128_l2_112_v2/`.
+
+## Iteration 93 — Pro M256 closing 128/128 control
+
+- Goal: close the ordered asymmetric-grid comparison with an unchanged
+  128/128 control under the same node and harness state as iteration 92.
+- Protocol: exact Pro M256, seed 101, one max-rank median-20 observation with
+  explicit L1/L2 grids 128/128 and a fresh candidate JIT cache.
+- Result: the run exited 0.  Rank-local medians were 838.035--852.855 us and
+  max-rank latency was 852.855 us.  The synchronized outliers seen in the
+  preceding run also occurred here, so they are not specific to 128/112.
+- Decision: 128/112 is 0.913 us (0.11%) slower than this closing control.  It
+  was also 1.231 us slower than the earlier control, so both ordered pairs
+  reject a stable asymmetric-grid gain.  Keep the H200 Pro M256 selector at
+  128/128 and revert the experimental scheduler/kernel/host source change;
+  retain the design, plan, and iteration evidence.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_dispatchgrid_control_128_v3/`.
