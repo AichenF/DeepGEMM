@@ -1,0 +1,10 @@
+{
+  "tool": "ncu 2025.3.1",
+  "gpu": "NVIDIA H20-3e",
+  "shape": [8192, 4096, 7168, 8],
+  "kernel": "sm90_nvfp4_grouped_gemm_impl",
+  "status": "counter_permission_denied",
+  "error": "ERR_NVGPUCTRPERM",
+  "correctness_during_probe": "PASS"
+}
+

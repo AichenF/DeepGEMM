@@ -1,0 +1,326 @@
+##### 9.7.14.5.10. [Matrix Fragments for `mma.m16n8k32`](#warp-level-matrix-fragment-mma-16832)
+
+A warp executing `mma.m16n8k32` will compute an MMA operation of shape `.m16n8k32`.
+
+Elements of the matrix are distributed across the threads in a warp so each thread of the warp holds
+a fragment of the matrix.
+
+* Multiplicand A:
+
+  + `.s8` or `.u8` or `.e4m3` or `.e5m2` or `.e3m2` or `.e2m3` or `.e2m1`:
+
+    > | .atype | Fragment | Elements (low to high) |
+    > | --- | --- | --- |
+    > | `.s8` / `.u8` | A vector expression containing four `.b32` registers, with each register containing four `.s8` / `.u8` elements from the matrix A. | a0, a1, .., a14, a15 |
+    > | `.e4m3` / `.e5m2` / `.e3m2` / `.e2m3` / `.e2m1` | A vector expression containing four `.b32` registers, with each register containing four `.e4m3` / `.e5m2` / `.e3m2` / `.e2m3` / `.e2m1` elements from the matrix A. | a0, a1, …, a14, a15 |
+    >
+    > The layout of the fragments held by different threads is shown in [Figure 88](#mma-16832-a-i8).
+    >
+    > The row and column of a matrix fragment can be computed as:
+    >
+    > ```ptx
+    > groupID = %laneid >> 2
+    > threadID_in_group = %laneid % 4
+    >
+    > row =   groupID                                        for ai where 0 <= i < 4 || 8 <= i < 12
+    >        groupID + 8                                     otherwise
+    >
+    > col =    (threadID_in_group * 4) + (i & 0x3)           for ai where i < 8
+    >          (threadID_in_group * 4) + (i & 0x3) + 16      for ai where i >= 8
+    > ```
+
+* Multiplicand B:
+
+  + `.s8` or `.u8` or `.e4m3` or `.e5m2` or `.e3m2` or `.e2m3` or `.e2m1`:
+
+    > | .btype | Fragment | Elements (low to high) |
+    > | --- | --- | --- |
+    > | `.s8` / `.u8` | A vector expression containing two `.b32` registers, with each register containing four `.s8` / `.u8` elements from the matrix B. | b0, b1, b2, b3, b4, b5, b6, b7 |
+    > | `.e4m3` / `.e5m2` / `.e3m2` / `.e2m3` / `.e2m1` | A vector expression containing two `.b32` registers, with each register containing four `.e4m3` / `.e5m2` / `.e3m2` / `.e2m3` / `.e2m1` elements from the matrix B. | b0, b1, b2, b3, b4, b5, b6, b7 |
+    >
+    > The row and column of a matrix fragment can be computed as:
+    >
+    > ```ptx
+    > groupID           = %laneid >> 2
+    > threadID_in_group = %laneid % 4
+    >
+    > row =      (threadID_in_group * 4) + (i & 0x3)           for bi where i < 4
+    >            (threadID_in_group * 4) + (i & 0x3) + 16      for bi where i >= 4
+    >
+    > col =   groupID
+    > ```
+
+* Accumulators (C or D):
+
+  | .ctype / .dtype | Fragment | Elements (low to high) |
+  | --- | --- | --- |
+  | `.s32` | A vector expression containing four `.s32` registers, containing four `.s32` elements from the matrix C (or D). | c0, c1, c2, c3 |
+  | `.f32` | A vector expression containing four `.f32` registers, containing four `.f32` elements from the matrix C (or D). | c0, c1, c2, c3 |
+  | `.f16` | A vector expression containing two `.f16x2` registers, with each register containing two `.f16` elements from the matrix C (or D). | c0, c1, c2, c3 |
+
+  The row and column of a matrix fragment can be computed as:
+
+  ```ptx
+  groupID           = %laneid >> 2
+  threadID_in_group = %laneid % 4
+
+  row =      groupID                           for ci where i <  2
+           groupID + 8                         for ci where i >= 2
+
+  col =  (threadID_in_group * 2) + (i & 0x1)    for ci where i = {0,..,3}
+  ```
+
+Alternate floating point type:
+
+```ptx
+mma.sync.aligned.m16n8k4.row.col.f32.tf32.tf32.f32        d, a, b, c;
+mma.sync.aligned.m16n8k8.row.col.f32.atype.btype.f32      d, a, b, c;
+mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32       d, a, b, c;
+mma.sync.aligned.shape.row.col.dtype.f8type.f8type.ctype  d, a, b, c;
+
+.f8type     = {.e4m3, .e5m2};
+.ctype      = {.f16, .f32};
+.dtype      = {.f16, .f32};
+.shape      = {.m16n8k16, .m16n8k32};
+```
+
+The mandatory `.sync` qualifier indicates that `mma` instruction causes the executing thread to
+wait until all threads in the warp execute the same `mma` instruction before resuming execution.
+
+The mandatory `.aligned` qualifier indicates that all threads in the warp must execute the same
+`mma` instruction. In conditionally executed code, a `mma` instruction should only be used if it
+is known that all threads in the warp evaluate the condition identically, otherwise behavior is
+undefined.
+
+`.e4m3` and `.e5m2` alternate floating point type `mma` operation requires `sm_89` or higher.
+
+```ptx
+.reg .b32 %Ra<4>, %Rb<4>;
+.reg .f32 %Rc<4>, %Rd<4>;
+mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e5m2.f32
+  {%Rd0, %Rd1, %Rd2, %Rd3},
+  {%Ra0, %Ra1, %Ra2, %Ra3},
+  {%Rb0, %Rb1},
+  {%Rc0, %Rc1, %Rc2, %Rc3};
+```
+
+
+# Group GEMM Advanced Optimization Strategies
+
+These optimization techniques are derived from high-performance implementations like SonicMoE.
+
+## 1. L2 Cache Locality via Tile Grouping
+
+Group adjacent tiles to maximize L2 cache reuse. Tiles that share input data should be scheduled close together.
+
+## 2. Raster Order Optimization
+
+Choose tile traversal order based on problem shape for optimal cache behavior.
+
+## 7. Variable-Length M Dimension (Varlen Scheduling)
+
+Handle problems where different batches have different sequence lengths:
+
+```cpp
+struct VarlenScheduler {
+    int* cu_seqlens;
+    int num_batches;
+    int tile_m;
+
+    __device__ void find_batch_for_tile(
+        int tile_m_idx,
+        int* out_batch_idx,
+        int* out_m_start,
+        int* out_m_end
+    ) {
+        int m_global = tile_m_idx * tile_m;
+
+        int lo = 0, hi = num_batches;
+        while (lo < hi) {
+            int mid = (lo + hi) / 2;
+            if (cu_seqlens[mid + 1] <= m_global) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+
+        *out_batch_idx = lo;
+        *out_m_start = cu_seqlens[lo];
+        *out_m_end = cu_seqlens[lo + 1];
+    }
+};
+```
+
+## 10. L2 Cache Policy Tuning
+
+Use cache eviction hints to control L2 residency based on data size and reuse patterns.
+
+```cpp
+// A data: small footprint, high reuse across N-tiles → always keep in L2
+uint64_t cA = EVICT_LAST;
+
+// B data: size-dependent policy
+// Large B thrashes L2, hurting A reuse; evict large B early
+uint64_t total_B_bytes = sum_of_all_groups_B_size;
+uint64_t global_cb = (total_B_bytes > 72LL*1024*1024) ? EVICT_FIRST : EVICT_LAST;
+
+// High-K groups always evict B first (many K-iterations = many B loads)
+if (K > 4096) cB = EVICT_FIRST;
+```
+
+**Applied via inline PTX load hints**:
+```cpp
+asm volatile("ld.global.L2::evict_last.b32 %0, [%1];" : "=r"(val) : "l"(ptr));
+asm volatile("ld.global.L2::evict_first.b32 %0, [%1];" : "=r"(val) : "l"(ptr));
+```
+
+## 12. Persistent vs Simple Kernel Split
+
+Use two kernel variants based on workload size for optimal performance:
+
+- **Persistent kernel**: For large workloads (total_tiles > NUM_SMS). All SMs stay active, tiles distributed via lookup table.
+- **Simple kernel**: For small workloads (total_tiles ≤ NUM_SMS). One tile per block, no persistence loop.
+
+The simple kernel benefits from:
+- Smaller argument copy
+- No persistence loop overhead
+
+### Memory Bandwidth
+- Loading pointer arrays and strides adds global memory traffic
+- Amortize by processing multiple tiles per problem fetch
+- Prefetch problem info to shared memory when possible
+
+
+#### 9.7.9.7. [Data Movement and Conversion Instructions: `prmt`](#data-movement-and-conversion-instructions-prmt)
+
+`prmt`
+
+Permute bytes from register pair.
+
+Syntax
+
+```ptx
+prmt.b32{.mode}  d, a, b, c;
+
+.mode = { .f4e, .b4e, .rc8, .ecl, .ecr, .rc16 };
+```
+
+Description
+
+Pick four arbitrary bytes from two 32-bit registers, and reassemble them into a 32-bit destination
+register.
+
+In the generic form (no mode specified), the permute control consists of four 4-bit selection
+values. The bytes in the two source registers are numbered from 0 to 7: `{b, a} = {{b7, b6, b5,
+b4}, {b3, b2, b1, b0}}`. For each byte in the target register, a 4-bit selection value is defined.
+
+The 3 lsbs of the selection value specify which of the 8 source bytes should be moved into the
+target position. The msb defines if the byte value should be copied, or if the sign (msb of the
+byte) should be replicated over all 8 bits of the target position (sign extend of the byte value);
+`msb=0` means copy the literal value; `msb=1` means replicate the sign. Note that the sign
+extension is only performed as part of generic form.
+
+Thus, the four 4-bit values fully specify an arbitrary byte permute, as a `16b` permute code.
+
+Semantics
+
+```ptx
+tmp64 = (b<<32) | a;  // create 8 byte source
+
+if ( ! mode ) {
+   ctl[0] = (c >>  0) & 0xf;
+   ctl[1] = (c >>  4) & 0xf;
+   ctl[2] = (c >>  8) & 0xf;
+   ctl[3] = (c >> 12) & 0xf;
+} else {
+   ctl[0] = ctl[1] = ctl[2] = ctl[3] = (c >>  0) & 0x3;
+}
+
+tmp[07:00] = ReadByte( mode, ctl[0], tmp64 );
+tmp[15:08] = ReadByte( mode, ctl[1], tmp64 );
+tmp[23:16] = ReadByte( mode, ctl[2], tmp64 );
+tmp[31:24] = ReadByte( mode, ctl[3], tmp64 );
+```
+
+`prmt` requires `sm_20` or higher.
+
+
+# Hopper TMA activation-overlap excerpts
+
+Source: `cudac-tensor-core-expert/references/wgmma_03_tma_tensor_map_creation.md`
+
+**Important Note on BK and Swizzling**:
+Take K-major matrix loading for example (including Row-Major Matrix A [M, K] and Column-Major Matrix B [K, N]), when using 128B swizzling mode with bf16 elements, BK must be set to 64 or a multiple thereof.
+This ensures proper alignment with the swizzle layout atom structure (8x64 for K-major layout with 128B swizzling), which is critical for TMA to function correctly.
+Using BK=16 will cause memory access errors because it doesn't align with the swizzle atom boundaries required by the 128B swizzling pattern.
+
+Similarly:
+When using 128B swizzling mode with fp16 elements, BK must be set to 64 or a multiple thereof.
+When using 128B swizzling mode with fp8 elements, BK must be set to 128 or a multiple thereof.
+When using 128B swizzling mode with tf32 elements, BK must be set to 32 or a multiple thereof.
+
+**Important Note on OOB Fill when `global_width < box_width`**:
+When `box_width` exceeds `global_width` (e.g., `box_width=64` but `global_width=32` for a small head dimension), TMA fills out-of-bounds elements according to the `oob_fill` parameter:
+
+- `CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE`: TMA **skips writing** OOB positions — smem retains prior contents (often zeros on fresh allocation, but **not guaranteed**). Appears to work on B200 due to zero-initialized dynamic smem, but is **unstable** — relies on implementation-specific behavior that may break across GPU generations or with smem reuse.
+- `CU_TENSOR_MAP_FLOAT_OOB_FILL_NAN_REQUEST_ZERO_FMA`: TMA **actively writes NaN** into OOB positions. Classic FMA treats NaN as zero, but **Gen5 `tcgen05.mma` does NOT honor this semantic** — NaN propagates through MMA and corrupts results. **Proven broken on B200 for tcgen05.mma.**
+
+Source: `cudac-tensor-core-expert/references/wgmma_04_tma_loading_pattern.md`
+
+##### Barrier Initialization
+
+```cpp
+#include <cuda/barrier>
+
+using barrier = cuda::barrier<cuda::thread_scope_block>;
+namespace cde = cuda::device::experimental;
+
+###pragma nv_diag_suppress static_var_with_dynamic_init
+__shared__ barrier barA;
+__shared__ barrier barB;
+
+if (threadIdx.x == 0) {
+    init(&barA, blockDim.x);
+    init(&barB, blockDim.x);
+    cde::fence_proxy_async_shared_cta();
+}
+__syncthreads();
+```
+
+**Key Point**: Only thread 0 initiates TMA; all threads must arrive at barrier.
+
+WIDTH is the maximum number of elements that fit in a 128-byte swizzle block for a given data type. The swizzle width depends on the element type:
+When using 128B swizzling mode, TMA requires input in contiguous blocks aligned to the swizzle width.
+
+- **bf16/fp16**: WIDTH = 64 elements (128 bytes / 2 bytes)
+- **fp8**: WIDTH = 128 elements (128 bytes / 1 byte)
+- **tf32**: WIDTH = 32 elements (128 bytes / 4 bytes)
+
+Key Insight: When the major dimension (e.g., BLOCK_K) is larger than the swizzling atom leading dimension (WIDTH), you
+must issue **multiple 2D TMA loads** to fetch the complete tile. Each TMA load fetches a [WIDTH, :] slice.
+
+Source: `cudac-tensor-core-expert/references/optimization_01_mbarrier.md`
+
+#### 2. Concept: phases, parity, and tx-count
+
+An `mbarrier` phase completes when:
+
+- arrival count reaches 0, and
+- tx-count reaches 0
+
+We reuse each slot across many phases. The **parity bit** tells you which phase you’re waiting for.
+
+#### 7. Critical tips / common failure modes
+
+- [ ] `full[]` and `empty[]` are `.b64` aligned to 8 bytes in shared memory.
+- [ ] Barriers are initialized exactly once per block before use.
+- [ ] Parity bit `p` flips consistently on slot reuse (commonly on `qidx` wrap).
+- [ ] `full[]` expected arrivals is **1** (producer only); consumers do not call `arrive()` on it.
+- [ ] `empty[]` expected arrivals equals `num_consumers` and **exactly one thread per consumer warpgroup** calls `arrive()` per slot.
+- [ ] Producer calls `expect_bytes(full[q], bytes_total)` **before** issuing all copies linked to `full[q]`.
+- [ ] The sum of copy bytes linked to `full[q]` equals `bytes_total`.
+- [ ] Do not mix CUDA barrier objects with `mbarrier` in the same queue protocol.
+- [ ] Do not reinitialize `mbarrier` objects per tile or per K-iteration; reuse phases via parity.
+- [ ] If results “sometimes pass, sometimes fail”, suspect: wrong byte count, wrong parity flip, or tensor-map addressability (tma pointer not in device memory).
+- [ ] Store mapping uses warpgroup-local indexing (`tid = threadIdx.x % 128`) when writing WGMMA fragments.

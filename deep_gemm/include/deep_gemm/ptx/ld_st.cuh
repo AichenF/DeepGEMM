@@ -159,7 +159,43 @@ CUTLASS_DEVICE void st_shared_bulk(void* smem_ptr, const uint32_t& num_bytes) {
                  "l"(__cvta_generic_to_shared(smem_ptr)), "l"(static_cast<uint64_t>(num_bytes)));
 }
 
+CUTLASS_DEVICE void cp_async_global_to_shared_16(
+        void* smem_dst, const void* global_src) {
+    const auto smem_addr =
+        static_cast<uint32_t>(__cvta_generic_to_shared(smem_dst));
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;"
+                 :: "r"(smem_addr), "l"(global_src) : "memory");
+}
+
+CUTLASS_DEVICE void cp_async_commit_group() {
+    asm volatile("cp.async.commit_group;" ::: "memory");
+}
+
+template <int kNumPendingGroups>
+CUTLASS_DEVICE void cp_async_wait_group() {
+    DG_STATIC_ASSERT(kNumPendingGroups >= 0 && kNumPendingGroups <= 7,
+                     "Invalid cp.async wait group");
+    asm volatile("cp.async.wait_group %0;" :: "n"(kNumPendingGroups) : "memory");
+}
+
 /// Global memory
+CUTLASS_DEVICE uint4 ld_global_stream(const uint4* ptr) {
+    uint4 ret;
+    asm volatile(
+        "ld.global.nc.L1::no_allocate.v4.u32 {%0, %1, %2, %3}, [%4];"
+        : "=r"(ret.x), "=r"(ret.y), "=r"(ret.z), "=r"(ret.w)
+        : "l"(ptr)
+        : "memory");
+    return ret;
+}
+
+CUTLASS_DEVICE uint32_t ld_global_stream(const uint32_t* ptr) {
+    uint32_t ret;
+    asm volatile("ld.global.nc.L1::no_allocate.u32 %0, [%1];"
+                 : "=r"(ret) : "l"(ptr) : "memory");
+    return ret;
+}
+
 CUTLASS_DEVICE uint64_t ld_volatile(const uint64_t* ptr) {
     uint64_t ret;
     asm volatile("ld.volatile.global.b64 %0, [%1];" : "=l"(ret) : "l"(ptr));

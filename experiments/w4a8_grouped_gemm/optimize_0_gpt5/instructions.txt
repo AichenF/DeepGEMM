@@ -1,0 +1,287 @@
+##### WGMMA Operation
+- **Instruction**: `wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16`
+- **Tile Size**: Computes a 64x64 output tile using 64x16 (A) and 16x64 (B) input tiles
+- **Data Flow**: D[64x64] = A[64x16] x B[16x64] + D[64x64]
+- **K-dimension**: Must iterate K/16 times to accumulate full result
+
+Instruction wgmma.mma_async issues a MxNxK matrix multiply and accumulate operation, D = A*B+D, where the A matrix is MxK, the B matrix is KxN, and the D matrix is MxN.
+
+The operation of the form D = A*B is issued when the input predicate argument scale-d is false.
+
+wgmma.fence instruction must be used to fence the register accesses of wgmma.mma_async instruction from their prior accesses. Otherwise, the behavior is undefined.
+
+wgmma.commit_group and wgmma.wait_group operations must be used to wait for the completion of the asynchronous matrix multiply and accumulate operations before the results are accessed.
+
+##### WGMMA Synchronization Primitives
+```cpp
+__device__ void warpgroup_arrive() {
+    asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
+}
+
+__device__ void warpgroup_commit_batch() {
+    asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
+}
+
+template <int N>
+__device__ void warpgroup_wait() {
+    static_assert(N >= 0 && N <= 7, "N must be in range [0, 7]");
+    asm volatile("wgmma.wait_group.sync.aligned %0;\n" ::"n"(N) : "memory");
+}
+```
+
+
+
+#### 1. Motivation: overlap TMA loads with tensor-core compute
+
+TMA loads (global → shared) have latency. If a single warpgroup does:
+
+- load A/B tile
+- wait for completion
+- run WGMMA
+
+then WGMMA execution is often blocked by loads.
+
+Warp specialization turns the kernel into a producer/consumer pipeline:
+
+- **Producer warpgroup** keeps loading upcoming tiles into a shared-memory ring buffer.
+- **Consumer warpgroup(s)** keep running WGMMA as soon as tiles are ready.
+
+With `QSIZE > 1`, producer and consumers can run mostly independently, hiding load latency.
+
+#### 3. Required queue protocol (per-slot)
+
+Producer (per K-tile, per slot):
+
+1. Wait until slot is empty: `empty[q].wait(empty[q].arrive())`
+2. Issue TMA loads for A/B into that slot, associating them with `full[q]`
+3. Mark the total bytes via `barrier_arrive_tx(full[q], 1, bytes_total)`
+
+Consumer (per K-tile, per slot):
+
+1. Wait until slot is full: `full[q].wait(full[q].arrive())`
+2. Run WGMMA using `sA[q]`, `sB[q]`
+3. Release slot: `empty[q].arrive()`
+
+#### 4. Practical notes (layout/indexing + tuning)
+
+These are common sources of subtle correctness/perf issues:
+
+- **Indexing consistency**: Your tensor-map encoding (global shape/stride), your shared-memory indexing, and your WGMMA `TransA/TransB` flags must all agree.
+- **Queue depth** (`QSIZE`): typical values are **2–8**. Larger `QSIZE` improves latency hiding but increases dynamic shared memory.
+- **Single-thread producer**: start with `wg_idx==0 && tid==0` issuing TMA to avoid duplicated loads and complicated barrier accounting.
+- **Dynamic shared memory**: ring buffers typically require dynamic shared memory; make sure host launch sets both:
+  - the dynamic shared memory **bytes**, and
+  - `cudaFuncAttributeMaxDynamicSharedMemorySize` for the kernel.
+
+
+
+#### 2. Concept: one worker per SM + a software scheduler
+
+Instead of launching one block per output tile, a persistent GEMM kernel:
+
+- Launches **~one worker CTA per SM** (or per “worker slot”).
+- Each CTA computes **multiple** output tiles \((m,n)\) selected by a **software scheduler**.
+
+This is most natural if you already have a warp-specialized (producer/consumer) kernel for a single tile.
+
+Rule of thumb for `NUM_WORKERS`:
+
+- `NUM_WORKERS = min(total_tiles, sm_count)` is a good default.
+- Some schedules prefer a grouping-friendly value (e.g. 128 on a 132-SM GPU).
+
+Correctness properties your scheduler must satisfy:
+
+- **Exactly-once coverage**: every output tile is produced exactly once (no duplicates, no missing tiles).
+- **Deterministic iteration**: if both producer and consumers call `schedule.next(...)`, they must see the **same tile sequence** (or you must centralize scheduling so they stay consistent).
+- **Termination**: all warpgroups must agree on when work is finished (avoid producer waiting forever on `empty[]` after consumers stop, or consumers waiting forever on `full[]` after producer stops).
+
+## Summary of Key Insights
+
+1. **Single kernel, multiple problems**: Amortize launch overhead
+2. **Pointer arrays**: Flexible memory layout for variable sizes
+3. **Persistent loop**: Threadblocks process many tiles via work-stealing
+4. **Tile-based work division**: Natural unit for parallelization
+5. **Two scheduling modes**: Dynamic (device) vs static (host precompute)
+6. **Load balancing via sorting**: Put large-K problems first
+7. **Warp-level primitives**: Efficient scheduling with `__shfl_sync` and `__ballot_sync`
+
+
+
+## 4. Multi-Stage Software Pipelining
+
+Overlap memory loads with computation using multiple pipeline stages.
+
+## 9. Packed TileInfo Lookup Table
+
+Replace O(ng) linear scan + integer division for tile-to-group mapping with O(1) pre-computed lookup. This is the single most impactful optimization (~4-5% improvement).
+
+## 12. Persistent vs Simple Kernel Split
+
+Use two kernel variants based on workload size for optimal performance:
+
+- **Persistent kernel**: For large workloads (total_tiles > NUM_SMS). All SMs stay active, tiles distributed via lookup table. Uses full `KernelParams` (~3.5KB).
+- **Simple kernel**: For small workloads (total_tiles ≤ NUM_SMS). One tile per block, no persistence loop. Uses compact `SimpleKernelParams` (~984B).
+
+The simple kernel benefits from:
+- 72% smaller argument copy (984B vs 3.5KB)
+- Single-group TMA patching (only patch the group this block needs)
+- No persistence loop overhead
+
+### Common Anti-Patterns (Empirically Confirmed Regressions)
+
+| Anti-Pattern | Regression | Why |
+|-------------|-----------|-----|
+| `cudaLaunchKernel` replacing `cuLaunchKernelEx` | -15 to -30% | Loses programmatic serialization |
+| Device global + `cudaMemcpyAsync` per call | -10 to -60% | H2D memcpy overhead exceeds benefit |
+| pybind11 / torch extension for launch | -8 to -540% | Python/C++ bridging overhead |
+| BLOCK_N=64 (doubling tile count) | -10 to -21% | Per-tile overhead increase |
+| Reducing NUM_STAGES below 6 | -2 to -7% | Less TMA/MMA overlap |
+| Dual-path epilogue (full-tile + partial) | -2 to -4% | Register pressure from code duplication |
+
+
+
+###### FP8 floating point type
+
+wgmma.mma_async.sync.aligned.shape.dtype.atype.btype  d, a-desc, b-desc, scale-d, imm-scale-a, imm-scale-b;
+
+wgmma.mma_async.sync.aligned.shape.dtype.atype.btype  d, a, b-desc, scale-d, imm-scale-a, imm-scale-b;
+
+.shape   = {.m64n8k32, .m64n16k32, .m64n24k32, .m64n32k32,
+            .m64n40k32, .m64n48k32, .m64n56k32, .m64n64k32,
+            .m64n72k32, .m64n80k32, .m64n88k32, .m64n96k32,
+            .m64n104k32, .m64n112k32, .m64n120k32, .m64n128k32,
+            .m64n136k32, .m64n144k32, .m64n152k32, .m64n160k32,
+            .m64n168k32, .m64n176k32, .m64n184k32, .m64n192k32,
+            .m64n200k32, .m64n208k32, .m64n216k32, .m64n224k32,
+            .m64n232k32, .m64n240k32, .m64n248k32, .m64n256k32};
+.atype  = {.e4m3, .e5m2};
+.btype  = {.e4m3, .e5m2};
+.dtype  = {.f16, .f32};
+
+##### WGMMA Register Distribution
+Each thread in the warp group holds a portion of the 64x64 result:
+- **d[4][8]**: 32 float registers per thread
+- Distribution pattern: 2x2 element blocks per thread across the tile
+
+##### 2.1 Thread layout: warpgroups
+
+On Hopper, one WGMMA warpgroup is **128 threads (4 warps)**. Partition the CTA into warpgroups:
+
+```cpp
+constexpr int NUM_THREADS = 128 * (1 + num_consumers);
+const int wg_idx = threadIdx.x / 128;   // 0 = producer, >=1 = consumer
+const int tid    = threadIdx.x % 128;   // 0..127 within warpgroup
+```
+
+Rule of thumb: start with `num_consumers = 1` (one producer + one consumer).
+
+#### 5. Critical tip: store mapping must use warpgroup-local `tid`
+
+WGMMA register layouts and the standard store mapping are defined **within a single warpgroup**. Always compute store indices from warpgroup-local `tid`:
+
+```cpp
+const int tid  = threadIdx.x % 128;
+const int lane = tid % 32;
+const int warp = tid / 32; // 0..3
+```
+
+#### 7. Critical tips / common failure modes
+
+- [ ] `full[]` and `empty[]` are `.b64` aligned to 8 bytes in shared memory.
+- [ ] Barriers are initialized exactly once per block before use.
+- [ ] Parity bit `p` flips consistently on slot reuse (commonly on `qidx` wrap).
+- [ ] `full[]` expected arrivals is **1** (producer only); consumers do not call `arrive()` on it.
+- [ ] `empty[]` expected arrivals equals `num_consumers` and **exactly one thread per consumer warpgroup** calls `arrive()` per slot.
+- [ ] Producer calls `expect_bytes(full[q], bytes_total)` **before** issuing all copies linked to `full[q]`.
+- [ ] The sum of copy bytes linked to `full[q]` equals `bytes_total`.
+- [ ] Do not mix CUDA barrier objects with `mbarrier` in the same queue protocol.
+- [ ] Do not reinitialize `mbarrier` objects per tile or per K-iteration; reuse phases via parity.
+- [ ] If results “sometimes pass, sometimes fail”, suspect: wrong byte count, wrong parity flip, or tensor-map addressability (tma pointer not in device memory).
+- [ ] Store mapping uses warpgroup-local indexing (`tid = threadIdx.x % 128`) when writing WGMMA fragments.
+
+## 12. Persistent vs Simple Kernel Split
+
+Use two kernel variants based on workload size for optimal performance:
+
+- **Persistent kernel**: For large workloads (total_tiles > NUM_SMS). All SMs stay active, tiles distributed via lookup table. Uses full `KernelParams` (~3.5KB).
+- **Simple kernel**: For small workloads (total_tiles ≤ NUM_SMS). One tile per block, no persistence loop. Uses compact `SimpleKernelParams` (~984B).
+
+
+
+  // Logical/Physical ElementA per Chunk
+  using LogicalElemsAPerChunk = conditional_t<IsTF32, _2, _4>;
+  using PhysicalElemsAPerChunk = Int<LogicalElemsAPerChunk{} / ElementASparsity{}>;
+
+  // Metadata Bits
+  using ElementEBitsPerChunk = _4;
+  using ElementEBitsPerElementAMma = cute::conditional_t<IsTF32, _4, _2>;
+
+  struct MetadataOneChunk2to4{
+
+    CUTE_DEVICE
+    void set_metadata_bits(int elt_log_idx, int elt_phy_idx) {
+      auto metadata_bits = [&]() -> uint8_t {
+        CUTLASS_ASSERT(elt_log_idx >= 0 && elt_log_idx < 4);
+        switch (elt_log_idx) {
+          case 0:
+            return 0b00;
+          case 1:
+            return 0b01;
+          case 2:
+            return 0b10;
+          case 3:
+            return 0b11;
+          default:
+            CUTLASS_ASSERT(false);
+            CUTE_GCC_UNREACHABLE;
+            return 0b00;
+        }
+      };
+
+      storage_ |= (metadata_bits() << (2 * elt_phy_idx));
+    }
+
+    CUTE_DEVICE
+    ElementEChunk storage() const {
+      return ElementEChunk{storage_};
+    }
+
+  private:
+    uint8_t storage_ = 0b0000;
+  };
+
+// SPARSE GMMA 64x128x64 TN F32+=E4M3*E4M3
+template <
+  GMMA::ScaleIn  scaleA = GMMA::ScaleIn::One,
+  GMMA::ScaleIn  scaleB = GMMA::ScaleIn::One,
+  GMMA::SparseSel spsel = GMMA::SparseSel::Zero
+>
+struct GMMA_64x128x64_F32E4M3E4M3_SS_TN
+{
+  using DRegisters = void;
+  using ARegisters = uint64_t[1];
+  using ERegisters = uint32_t[1];
+  using BRegisters = uint64_t[1];
+  using CRegisters = float[64];
+
+  CUTE_HOST_DEVICE static void
+  fma(uint64_t const& desc_a,
+      uint64_t const& desc_b,
+      float         & d00, float         & d01, float         & d02, float         & d03,
+      float         & d04, float         & d05, float         & d06, float         & d07,
+      float         & d08, float         & d09, float         & d10, float         & d11,
+      float         & d12, float         & d13, float         & d14, float         & d15,
+      float         & d16, float         & d17, float         & d18, float         & d19,
+      float         & d20, float         & d21, float         & d22, float         & d23,
+      float         & d24, float         & d25, float         & d26, float         & d27,
+      float         & d28, float         & d29, float         & d30, float         & d31,
+      float         & d32, float         & d33, float         & d34, float         & d35,
+      float         & d36, float         & d37, float         & d38, float         & d39,
+      float         & d40, float         & d41, float         & d42, float         & d43,
+      float         & d44, float         & d45, float         & d46, float         & d47,
+      float         & d48, float         & d49, float         & d50, float         & d51,
+      float         & d52, float         & d53, float         & d54, float         & d55,
+      float         & d56, float         & d57, float         & d58, float         & d59,
+      float         & d60, float         & d61, float         & d62, float         & d63,
+      uint32_t const& e,
+      GMMA::ScaleOut const scale_D = GMMA::ScaleOut::One)

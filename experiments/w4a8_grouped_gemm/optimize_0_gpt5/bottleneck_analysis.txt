@@ -1,0 +1,24 @@
+Baseline bottleneck analysis
+============================
+
+Observed performance
+--------------------
+- Large-M task shapes sustain only 7.19-8.76 useful TFLOPS, or 2.43-2.96% of the 296 TFLOPS H20 FP8 peak used by Cupra.
+- NCU 2025.3.1 was probed once on shape 8192x4096x7168/E8. Hardware counters are disabled for the user (ERR_NVGPUCTRPERM); the same profiled invocation still passed correctness.
+
+Static critical path
+--------------------
+1. Each 64x64x128 K tile performs scalar FP4 E2M1 -> half conversion, half multiply, half -> FP8 conversion, residual subtraction, and a second half -> FP8 conversion for every weight.
+2. The expanded weight is written to two 8 KiB shared-memory buffers.
+3. The CTA waits at __syncthreads(), issues four primary WGMMA operations, waits for completion, then issues four residual WGMMA operations and waits again.
+4. A second __syncthreads() serializes the next K tile.
+5. A 64-column output tile doubles tile/scheduler/epilogue overhead versus the reference branch's wider-N policies.
+6. Every persistent tile scans all expert offsets and performs integer division instead of consuming an O(1) precomputed tile descriptor.
+
+Implications
+------------
+- Two WGMMA passes per useful multiply cap useful FP8-peak utilization below 50% before decode, synchronization, memory, and scheduling overhead; this cannot meet the requested 80% target.
+- The first structural gate is a single-pass FP8 approximation using the megamoe_nvfp4 LUT/PRMT dequant path. It must pass the unchanged Cupra elementwise tolerance.
+- After that gate, use a wider N tile and a multistage producer/consumer pipeline so packed-weight load/dequant overlaps WGMMA.
+- Large workloads should use a persistent O(1) tile schedule; small workloads need a separate simple path to avoid persistent setup and excess residency overhead.
+

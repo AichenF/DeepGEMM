@@ -5,6 +5,7 @@
 #if DG_FP8_COMPATIBLE and DG_TENSORMAP_COMPATIBLE
 #include "../jit_kernels/impls/sm90_fp8_gemm_1d1d.hpp"
 #include "../jit_kernels/impls/sm90_fp8_gemm_1d2d.hpp"
+#include "../jit_kernels/impls/sm90_nvfp4_grouped_gemm.hpp"
 #include "../jit_kernels/impls/sm90_bf16_gemm.hpp"
 #include "../jit_kernels/impls/sm100_fp8_fp4_gemm_1d1d.hpp"
 #include "../jit_kernels/impls/sm100_bf16_gemm.hpp"
@@ -69,6 +70,86 @@ static int check_k_grouped_args(const std::optional<std::vector<int>>& ks_cpu,
 }
 
 #if DG_FP8_COMPATIBLE and DG_TENSORMAP_COMPATIBLE
+
+static void m_grouped_nvfp4_gemm_nt_contiguous(
+        const torch::Tensor& a,
+        const torch::Tensor& a_scale,
+        const torch::Tensor& w_packed,
+        const torch::Tensor& block_scale,
+        const torch::Tensor& global_scale,
+        const torch::Tensor& d,
+        const torch::Tensor& offsets) {
+    const auto [m, k] = get_shape<2>(a);
+    const auto [m_, n__] = get_shape<2>(d);
+    const bool exact_byte_fused_weights =
+        w_packed.dim() == 4 && w_packed.size(2) == 72;
+    const bool pretransformed_weights =
+        w_packed.dim() == 4 && !exact_byte_fused_weights;
+    int num_groups, n, packed_k, scale_k;
+    if (exact_byte_fused_weights) {
+        const auto [num_groups_, k_blocks, bytes_per_row, n_] =
+            get_shape<4>(w_packed);
+        DG_HOST_ASSERT(bytes_per_row == 72 && block_scale.numel() == 0);
+        num_groups = num_groups_;
+        n = n_;
+        packed_k = k_blocks * 64;
+        scale_k = k_blocks * 8;
+    } else if (pretransformed_weights) {
+        const auto [num_groups_, scale_k_, n_, pack_bytes] =
+            get_shape<4>(w_packed);
+        const auto [scale_groups, scale_k__, n__] =
+            get_shape<3>(block_scale);
+        DG_HOST_ASSERT(pack_bytes == 8 && num_groups_ == scale_groups &&
+                       scale_k_ == scale_k__ && n_ == n__);
+        num_groups = num_groups_;
+        n = n_;
+        scale_k = scale_k_;
+        packed_k = scale_k * 8;
+    } else {
+        const auto [num_groups_, n_, packed_k_] = get_shape<3>(w_packed);
+        const auto [scale_groups, n__, scale_k_] = get_shape<3>(block_scale);
+        DG_HOST_ASSERT(num_groups_ == scale_groups && n_ == n__);
+        num_groups = num_groups_;
+        n = n_;
+        packed_k = packed_k_;
+        scale_k = scale_k_;
+    }
+
+    DG_HOST_ASSERT(num_groups > 0 && num_groups <= 32);
+    DG_HOST_ASSERT(m == m_ && n == n__ && packed_k * 2 == k);
+    DG_HOST_ASSERT(scale_k * 16 == k);
+    DG_HOST_ASSERT(k > 0 && k % 128 == 0 && n > 0 && n % 64 == 0);
+    DG_HOST_ASSERT(a.scalar_type() == torch::kFloat8_e4m3fn);
+    DG_HOST_ASSERT(a_scale.scalar_type() == torch::kFloat32 &&
+                   a_scale.numel() == m);
+    DG_HOST_ASSERT(w_packed.scalar_type() == torch::kUInt8);
+    DG_HOST_ASSERT(block_scale.scalar_type() == torch::kFloat8_e4m3fn);
+    DG_HOST_ASSERT(global_scale.scalar_type() == torch::kFloat32 &&
+                   global_scale.numel() == num_groups);
+    DG_HOST_ASSERT(offsets.scalar_type() == torch::kInt &&
+                   offsets.numel() == num_groups + 1);
+    DG_HOST_ASSERT(d.scalar_type() == torch::kBFloat16);
+
+    DG_HOST_ASSERT(a.is_cuda() && a_scale.is_cuda() && w_packed.is_cuda() &&
+                   block_scale.is_cuda() && global_scale.is_cuda() &&
+                   d.is_cuda() && offsets.is_cuda());
+    DG_HOST_ASSERT(a.device() == d.device() && a_scale.device() == d.device() &&
+                   w_packed.device() == d.device() && block_scale.device() == d.device() &&
+                   global_scale.device() == d.device() && offsets.device() == d.device());
+    DG_HOST_ASSERT(a.is_contiguous() && a_scale.is_contiguous() &&
+                   w_packed.is_contiguous() && block_scale.is_contiguous() &&
+                   global_scale.is_contiguous() && d.is_contiguous() &&
+                   offsets.is_contiguous());
+
+    if (m == 0)
+        return;
+
+    DG_HOST_ASSERT(device_runtime->get_arch_major() == 9);
+    sm90_m_grouped_nvfp4_gemm_nt_contiguous(
+        a, a_scale, w_packed, block_scale, global_scale, d, offsets,
+        m, n, k, num_groups, pretransformed_weights,
+        exact_byte_fused_weights);
+}
 
 static void fp8_fp4_gemm_nt(const std::pair<torch::Tensor, torch::Tensor>& a,
                             const std::pair<torch::Tensor, torch::Tensor>& b,
@@ -646,6 +727,11 @@ static void register_apis(pybind11::module_& m) {
 
 #if DG_FP8_COMPATIBLE and DG_TENSORMAP_COMPATIBLE
     // FP8 FP4 GEMMs
+    m.def("m_grouped_nvfp4_gemm_nt_contiguous",
+          &m_grouped_nvfp4_gemm_nt_contiguous,
+          py::arg("a"), py::arg("a_scale"),
+          py::arg("w_packed"), py::arg("block_scale"),
+          py::arg("global_scale"), py::arg("d"), py::arg("offsets"));
     m.def("fp8_fp4_gemm_nt", &fp8_fp4_gemm_nt,
           py::arg("a"), py::arg("b"), py::arg("d"),
           py::arg("c") = std::nullopt, py::arg("recipe") = std::nullopt,

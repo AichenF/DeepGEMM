@@ -1,0 +1,13 @@
+# Hints
+
+- The branch must remain based on `main`; use `github/megamoe_nvfp4` only as an implementation reference.
+- Optimize the six Cupra `grouped_gemm` task shapes without weakening their correctness contract.
+- For large-M shapes, target at least 80% of the H20 FP8 peak reported by Cupra.
+- Continue optimizing small-M latency; do not declare success after only improving large M.
+- Persistent weights must remain genuine packed NVFP4: FP4 codes plus the original block/global scales. `prepare()` may only perform a lossless, byte-preserving layout permutation; it must not create FP8/BF16 replicas, duplicate weight payloads, add correction tables, or otherwise increase persistent weight-data bytes. Any FP8 representation must be transient inside kernel shared memory or registers, and the timed `run()` must produce the full result from the packed FP4 payload.
+- The SM90 dense fallback must default to one transient primary FP8 staging value per NVFP4 weight. A primary/residual split is not intrinsically required and must not be used unless an independently measured correctness failure justifies its cost. Report useful problem FLOPs, not the inflated physical WGMMA work, and report the exact elementwise violation count when evaluating the single-primary path.
+- Iteration 56 established that one E4M3 term fails both K=7168 shapes (1,412,726 and 22,098 elementwise violations). Do not present it as a valid 6/6 solution. Prefer one exact higher-precision on-chip staging term over restoring a persistent expansion or an unconditional primary/residual FP8 decomposition.
+- For the current performance campaign, follow the user's directive to set the known single-E4M3 representation error aside. Do not weaken or modify Cupra's checker, but allow focused raw timing of PRECFAIL candidates and report that status honestly.
+- Treat `8192x4096x7168/E8` as the primary 80% target: at Cupra's 296 TFLOP/s H20 FP8 peak, success means at least 236.8 useful TFLOP/s or at most 2.032 ms. Continue reducing the other five shapes, but do not redefine this primary target around an aggregate or physical-work metric.
+- Per the user's current directive, remove the active NVFP4 complementary-2:4 sparse kernel, dequant tables, MMA selector, and dispatch completely; retain only historical design/experiment/iteration records.
+- After sparse removal, optimize the official memory-bound `128x4096x7168/E8` shape to at least 70% bound-aware roofline SOL. With the accepted H20-3e peaks of 296 TFLOP/s and 4.814304 TB/s, this requires at most 39.79 us while preserving packed-FP4 persistent storage. Keep the large `8192x4096x7168/E8` shape at or above 80% compute SOL.

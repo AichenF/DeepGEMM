@@ -1,0 +1,9 @@
+Error Category: Correctness Error
+
+Error Output:
+================================================================================
+Small SM90 case (M=70,N=128,K=128,E=4, offsets=[0,17,17,69,70]) compiled and ran, but produced n_bad=6196, max_abs_diff=27.375, cosine=0.92267513 against the exact NVFP4 reference.
+================================================================================
+
+Additional Context:
+Compilation succeeds. Diagnose FP4-to-FP8 conversion, 128B shared-memory swizzle/descriptors, and WGMMA accumulator store mapping independently.

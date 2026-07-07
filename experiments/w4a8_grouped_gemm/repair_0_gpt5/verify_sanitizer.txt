@@ -1,0 +1,7 @@
+compute-sanitizer memcheck
+shape=(70, 128, 128, 4) n_bad=0 max_abs=0.250000 cosine=0.99999952
+ERROR SUMMARY: 0 errors
+
+compute-sanitizer synccheck
+shape=(70, 128, 128, 4) n_bad=0 max_abs=0.250000 cosine=0.99999952
+ERROR SUMMARY: 0 errors

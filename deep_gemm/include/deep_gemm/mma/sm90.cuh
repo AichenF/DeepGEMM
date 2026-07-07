@@ -5,8 +5,10 @@
 #include <cute/arch/mma_sm90_gmma.hpp>
 #include <cute/arch/mma_sm90_gmma_ext.hpp>
 #include <cute/arch/mma_sm100_desc.hpp>
+#include <cute/numeric/integer_sequence.hpp>
 
 #include <deep_gemm/common/exception.cuh>
+#include <deep_gemm/common/math.cuh>
 
 namespace deep_gemm::mma::sm90 {
 

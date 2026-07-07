@@ -1,0 +1,6 @@
+- Target NVIDIA H20 / Hopper SM90 and use FP8 WGMMA with FP32 accumulation.
+- Integrate the implementation into DeepGEMM main as a new SM90 grouped API; do not merge the megamoe_nvfp4 branch.
+- Keep canonical packed E2M1 weights packed through preparation. Preparation may only change layout; the timed CUDA kernel must apply per-16 E4M3 block scales while expanding FP4 to FP8 in shared memory.
+- Apply the per-token FP32 activation scale and per-expert FP32 global weight scale in the epilogue and store BF16.
+- Accept contiguous expert offsets on device, including empty experts and unaligned expert tails, without copying offsets to the host.
+- Prioritize passing all six cuda-practice/grouped_gemm elementwise checks before performance tuning.

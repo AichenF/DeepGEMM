@@ -1,0 +1,86 @@
+{
+  "problem": "grouped_gemm",
+  "shapes": [
+    [
+      512,
+      2048,
+      2048,
+      8
+    ],
+    [
+      4096,
+      2048,
+      2048,
+      8
+    ],
+    [
+      8192,
+      4096,
+      2048,
+      16
+    ],
+    [
+      4096,
+      7168,
+      2048,
+      32
+    ],
+    [
+      8192,
+      4096,
+      7168,
+      8
+    ],
+    [
+      128,
+      4096,
+      7168,
+      8
+    ]
+  ],
+  "results": {
+    "aichen": {
+      "rc": 0,
+      "crash_shape": 6,
+      "records": [
+        {
+          "cosine": 0.9999980926513672,
+          "rel_err": 0.0007696613320149481,
+          "nan": false,
+          "status": "PASS_PREC"
+        },
+        {
+          "cosine": 0.9999980926513672,
+          "rel_err": 0.0007631750195287168,
+          "nan": false,
+          "status": "PASS_PREC"
+        },
+        {
+          "cosine": 0.9999979734420776,
+          "rel_err": 0.0007631489424966276,
+          "nan": false,
+          "status": "PASS_PREC"
+        },
+        {
+          "cosine": 0.9999980926513672,
+          "rel_err": 0.0007614676142111421,
+          "nan": false,
+          "status": "PASS_PREC"
+        },
+        {
+          "cosine": 0.9999955892562866,
+          "rel_err": 0.0016988551942631602,
+          "nan": false,
+          "status": "PASS_PREC"
+        },
+        {
+          "cosine": 0.9999955892562866,
+          "rel_err": 0.0016831279499456286,
+          "nan": false,
+          "status": "PASS_PREC"
+        }
+      ]
+    }
+  },
+  "baselines": {}
+}
