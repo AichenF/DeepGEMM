@@ -1,0 +1,4366 @@
+# AKO Iterations: SM90 FP8 MegaMoE H200 Retuning
+
+## Objective and fixed references
+
+- Optimization branch: `opt/megamoe-sm90-fp8-h200-retune`.
+- Current FP8 baseline: `3552b62545e3602d60bde6ed3542934f6dcf6232`.
+- PR323 upstream head: `8ddf7f96cb3300011f69458e88c7651a1e305a8c`.
+- PR323 CUDA 13.2 syntax-only fix: `184d74cb052a028ac9d960d65abd35ec231146df`.
+- Hardware evidence accepted for new decisions: 8x NVIDIA H200 only.
+- Architecture constraint: retain the existing split L1/L2 FP8 kernels; no
+  PR323 fused-kernel implementation.
+- Success gate: every Flash/Pro M >= 128 point faster than PR323; M < 128 no
+  confirmed regression from the current FP8 baseline.
+
+## Prior evidence motivating iteration 1
+
+- The previous three-way H200 matrix showed Pro gaps versus PR323 of 1.26%,
+  1.18%, 11.88%, 19.16%, 19.99%, 27.79%, and 21.81% at M 128 through 8192.
+- The Pro selector enables direct L2 scatter when expected tokens per expert
+  reach 64, which is exactly M=512 for top-k 6 and 48 local experts.
+- The direct path emits 32-bit remote stores, while the non-direct path packs
+  128-bit stores. This is the first H200-only parameter attribution to test.
+- At Pro M >= 2048, ours and PR323 already use the same main tile, stage count,
+  thread layout, SM count, and experts per wave. Therefore the first search
+  focuses on existing epilogue/scheduler modes rather than only BM/BN.
+
+## Iteration record template
+
+Each measured source or promoted-selector iteration records:
+
+1. hypothesis and exact source/config change;
+2. hardware, source commits, command, routes, and cache identity;
+3. correctness result;
+4. rank-zero and max-rank latency versus current best and PR323;
+5. decision: retain, reject, or gather more repetitions;
+6. raw artifact paths and commit hash.
+
+## Baseline 0: pinned split FP8 versus PR323 on H200
+
+- Hypothesis: reproduce the pinned comparison on a fresh H200 allocation before
+  changing any selector or kernel parameter.
+- Hardware: Slurm job `2957858`, node `viking-prod-299`, 8x NVIDIA H200
+  (143771 MiB), driver 595.58.03, CUDA 13.2.78, PyTorch 2.12.1+cu132.
+- Sources: ours `3552b62545e3602d60bde6ed3542934f6dcf6232`; PR323
+  `8ddf7f96cb3300011f69458e88c7651a1e305a8c` plus syntax-only CUDA 13.2
+  fix `184d74cb052a028ac9d960d65abd35ec231146df`.
+- Correctness: the existing split-FP8 L1-L4 suite passed 33/33 scenarios with
+  maximum `calc_diff=0.0006` against tolerance 0.01. Coverage included masked
+  and all-masked routes, activation clamp variants, both fast-math modes, and
+  zero/max token boundaries.
+- Performance protocol: Flash and Pro at M=8/16/32/64/128/256/512/1024/2048/
+  4096/8192, seed 101, median of 10 timed samples, alternating ours/PR323
+  process order, capacity 8192, no L2 flush. The split implementation emitted
+  exactly two matched events per call and the harness summed L1+L2; PR323
+  emitted one matched event per call. All eight rank records were retained.
+- Result status: the driver completed all 44 leaf runs with `RUN_EXIT=0`.
+  Representative Pro max-rank observations retained the historical trend:
+  ours/PR323 were about 1186/1091 us at M=512, 3005/2463 us at M=2048, and
+  10047/7843 us at M=8192. The strict route/rank parser produces the complete
+  table after this audit commit.
+- Decision: retain this as the H200 baseline. Begin the H200-only parameter
+  search without modifying the existing H20/H100/generic selector paths.
+- Raw artifacts:
+  `/home/scratch.aichenf_wwfo/greencontext/results/sm90_fp8_h200_retune_job2957858/`
+  (`environment.txt`, `logs/baseline_correctness_l1_l4.log`, 44 baseline leaf
+  logs, and `logs/baseline_driver.log`).
+
+## Parameter screen 1: disable Pro direct L2 scatter
+
+- Hypothesis: the direct path's scalar remote stores are responsible for the
+  sharp Pro regression beginning at M=512; forcing the existing non-direct
+  vector/TMA path may close the PR323 gap without changing architecture.
+- Exact configuration: `DG_SM90_MOE_DIRECT_L2_SCATTER=0`, all other selector
+  controls at their defaults; Pro M=512/1024/2048/4096/8192, seed 101,
+  median-10, 8x H200. No source or production-selector change was made.
+- Results (max-rank):
+
+  | M | baseline us | direct-off us | vs baseline | PR323 us | vs PR323 |
+  |---:|---:|---:|---:|---:|---:|
+  | 512 | 1185.491 | 1191.638 | +0.52% | 1090.546 | +9.27% |
+  | 1024 | 1892.598 | 1858.309 | -1.81% | 1582.323 | +17.44% |
+  | 2048 | 3004.873 | 2938.806 | -2.20% | 2463.095 | +19.31% |
+  | 4096 | 5409.617 | 4956.729 | -8.37% | 4338.506 | +14.25% |
+  | 8192 | 10046.682 | 8654.320 | -13.86% | 7842.460 | +10.35% |
+
+- Decision: reject direct-off as a complete Pro large-M rule. Retain it as the
+  parent for the M>=4096 beam, where it is a large repeatable-looking
+  improvement, and combine it with H200-only stage/wave/block experiments.
+  Keep the baseline direct path at M=512.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_direct0/`.
+
+## Parameter screen 2: Pro representative-point beam expansion
+
+- Hypothesis: combine the useful direct-off parent with one existing scheduler,
+  pipeline, wave, or tile-axis change; retain a direct-on branch for M=512.
+- Protocol: Pro M=512/4096/8192, seed 101, median-10, 8x H200, one axis per
+  candidate, isolated JIT caches. Ten candidates and 30 points completed with
+  eight rank records each.
+- Best max-rank results by representative point:
+
+  | M | best candidate | candidate us | vs baseline | PR323 us | vs PR323 |
+  |---:|---|---:|---:|---:|---:|
+  | 512 | direct0 + stage3 | 1132.499 | -4.47% | 1090.546 | +3.85% |
+  | 4096 | direct0 + stage3 | 4500.249 | -16.81% | 4338.506 | +3.73% |
+  | 8192 | direct0 + N-major | 8432.094 | -16.07% | 7842.460 | +7.52% |
+
+- Other useful signals: direct0+EPW16 reached 4822.348 us at M=4096;
+  direct0+EPW24 reached 8598.828 us at M=8192; direct-on+stage4 improved the
+  baseline by 1.40%, 4.63%, and 7.54% but remained behind the direct-off beam.
+- Rejected axes: BN128 and BM128 regressed all three points by 3.68% to
+  17.55% versus baseline. Direct-on+EPW24 also failed to improve M=512/4096.
+- Decision: retain `direct0+stage3` and `direct0+N-major` as beam parents.
+  Test their combination and neighboring EPW/cleanup combinations, then fill
+  M=1024/2048 only for survivors. No production selector change yet.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_d0_*`
+  and `.../candidates/pro_d1_*`.
+
+## Parameter screen 3: Pro combined beam
+
+- Hypothesis: the direct-off stage3 and N-major gains are at least partly
+  additive; wave count or cleanup may recover the remaining representative-
+  point gaps.
+- Protocol: Pro M=512/4096/8192, seed 101, median-10, 8x H200. Eleven
+  combinations of stage2/3, N-major, EPW16/24, and cleanup completed with
+  isolated caches and complete rank output.
+- Best max-rank results:
+
+  | M | best candidate | candidate us | vs baseline | PR323 us | vs PR323 |
+  |---:|---|---:|---:|---:|---:|
+  | 512 | direct0 + stage3 + N-major + EPW24 | 1111.138 | -6.27% | 1090.546 | +1.89% |
+  | 4096 | direct0 + stage3 + N-major | 4419.630 | -18.30% | 4338.506 | +1.87% |
+  | 8192 | direct0 + stage3 + N-major + EPW16 | 8325.422 | -17.13% | 7842.460 | +6.16% |
+
+- Attribution: N-major improved the stage3 parent at M=4096 and M=8192 but
+  hurt M=512 unless paired with a smaller expert wave. EPW24 was best at
+  M=512, no forced wave was best at M=4096, and EPW16 was best at M=8192.
+  Cleanup was neutral-to-negative. Stage2 regressed all points and is rejected.
+- Decision: retain three load-specific beam winners. They are not yet
+  promotable because no representative point beats PR323. Search neighboring
+  legal waves/stages and fill M=1024/2048 for the best families; do not encode
+  a production H200 selector yet.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_c_*`.
+
+## Parameter screen 4: remaining Pro wave and direct-stage neighbors
+
+- Hypothesis: smaller expert waves or direct-on stage3 variants may close the
+  final representative-point gaps left by the combined beam.
+- Protocol: Pro M=512/4096/8192, seed 101, median-10, 8x H200. Tested
+  direct-off stage3+N-major with EPW12/8/6/4, stage3 without N-major at
+  EPW12/8, and five direct-on stage3/N-major/EPW variants.
+- Best updated max-rank results:
+
+  | M | best candidate | candidate us | PR323 us | gap |
+  |---:|---|---:|---:|---:|
+  | 512 | direct0 + stage3 + N-major + EPW12 | 1099.110 | 1090.546 | +0.79% |
+  | 4096 | direct0 + stage3 + N-major + EPW4 | 4400.872 | 4338.506 | +1.44% |
+  | 8192 | direct0 + stage3 + N-major + EPW16 | 8325.422 | 7842.460 | +6.16% |
+
+- Attribution: M=512 improves as the combined beam moves from EPW24 toward
+  EPW12, then worsens at EPW8/6/4. M=4096 favors EPW4. M=8192 has a shallow
+  minimum around EPW16. Every direct-on stage3 variant remained 2.99% to
+  19.19% behind PR323 and is rejected.
+- Decision: existing public force dimensions are exhausted for the Pro
+  representative points and have not met the strict gate. M=512 is within the
+  1% remeasurement band, but M=4096/8192 still require an additional
+  parameter dimension or split-kernel implementation improvement. Preserve
+  all H20 selector behavior; do not port PR323 fusion.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_w_*`.
+
+## Iteration 1: expose the existing split-MN tile to Pro experiments
+
+- Hypothesis: BM128xBN256 with four epilogue warpgroups is implemented and
+  legal for the split kernel, but the experiment predicate previously allowed
+  only the Flash shape. A Pro-only explicit experiment may improve large M
+  without changing architecture.
+- Source change: permit the existing `DG_SM90_MOE_SPLIT_MN=1` debug control to
+  select the tile for `(experts/rank=48, top-k=6, IH=3072)`. The default value
+  remains zero, so H20, H100, generic SM90, and production H200 behavior are
+  unchanged.
+- Protocol: Pro M=512/4096/8192, seed 101, median-10, 8x H200. Tested default
+  split-MN, stage3, stage3+EPW24/16, and stage3+N-major.
+- Best split-MN results versus PR323:
+
+  | M | candidate | candidate us | PR323 us | gap |
+  |---:|---|---:|---:|---:|
+  | 512 | split-MN + stage3 | 1130.084 | 1090.546 | +3.63% |
+  | 4096 | split-MN + stage3 + N-major | 4736.657 | 4338.506 | +9.18% |
+  | 8192 | split-MN + stage3 + N-major | 8946.647 | 7842.460 | +14.08% |
+
+- Decision: reject split-MN for the H200 Pro selector; the BM64 combined beam
+  remains materially faster. Retain only the opt-in experiment capability,
+  which has no default-device effect, for reproducibility.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_x_*`.
+
+## Diagnostic 1: split L1/L2 timing attribution
+
+- Method: enabled event-name breakdown in the audited timing harness and
+  collected median-10 L1/L2 events for the baseline Pro M=8192 and the current
+  load-specific beam winners. Logical-call timing remained the sum of the two
+  ordered events.
+- Worst-rank results:
+
+  | Case | total us | L1 median us | L2 median us |
+  |---|---:|---:|---:|
+  | baseline M=8192 | 9682.652 | 5665.421 | 4098.737 |
+  | winner M=512 | 1097.781 | 681.811 | 413.106 |
+  | winner M=4096 | 4436.979 | 2792.716 | 1624.487 |
+  | winner M=8192 | 8340.630 | 5360.889 | 2964.733 |
+
+- Interpretation: the combined winner removes much more L2 time than L1 time
+  at M=8192, but L1 still accounts for roughly 64% of the remaining latency.
+  The residual PR323 gap cannot be closed by scatter scheduling alone.
+- Decision: expose/test separate L1 and L2 tuning parameters while preserving
+  the two-kernel architecture and existing shared defaults. Do not pursue
+  PR323-style fusion.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_diag_*`.
+
+## Iteration 2: phase-specific expert-wave experiment
+
+- Hypothesis: the shared EPW16 winner at Pro M=8192 may be a compromise
+  between L1 and L2; independently tuning each split kernel could reduce both
+  phases without architectural changes.
+- Source change: add opt-in `DG_SM90_MOE_L1_EXPERTS_PER_WAVE` and
+  `DG_SM90_MOE_L2_EXPERTS_PER_WAVE` overrides after selecting the shared
+  config. Both default to the existing shared value, so all production and
+  non-H200 behavior is unchanged.
+- Protocol: current M=8192 parent (`direct0, stage3, N-major, shared EPW16`),
+  seed 101, median-10, 8x H200. Sweep L1 or L2 independently over
+  EPW4/8/12/24/48 while holding the other phase at 16.
+- Result: control was 8344.677 us. The best L1 point was EPW48 at
+  8323.244 us and the best L2 point was EPW48 at 8323.972 us, improvements of
+  only about 0.26% and still 6.13%-6.14% behind PR323. The response was shallow
+  and within the confirmation band.
+- Decision: phase-specific waves do not explain the residual large-M gap and
+  are not promoted into the H200 selector. Retain default inheritance and move
+  to phase-specific pipeline/tile investigation.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_p_*`.
+
+## Iteration 3: phase-specific pipeline-stage experiment
+
+- Hypothesis: L1 and L2 may prefer different pipeline depths even though the
+  shared stage3 config is the best aggregate candidate.
+- Source change: add opt-in L1/L2 stage overrides that independently recompute
+  each phase's stage count, shared-memory size, and launch configuration.
+  Defaults inherit the selected shared config exactly.
+- Protocol: current Pro M=8192 parent, seed 101, median-10, 8x H200. Test L1
+  or L2 at stage2/4 around the shared stage3 control, plus two crossed pairs.
+- Result: control was 8348.518 us. The best point, L1-stage4 with L2-stage3,
+  was 8329.762 us (about 0.22% faster) and still 6.21% behind PR323. Other
+  combinations ranged from 8333.347 to 8351.656 us.
+- Decision: phase-specific stage depth is not a material residual lever and is
+  not promoted. Continue with phase-specific N tiles while keeping BM and the
+  staging layout shared.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_s_*`.
+
+## Iteration 4: phase-specific N-tile experiment
+
+- Hypothesis: the shared BN128 regression may come from only one split phase;
+  keeping the other phase at BN256 could recover a better phase-specific tile.
+- Source change: add opt-in L1/L2 BN128/BN256 overrides for BM64. Rebuild each
+  phase's dispatch/epilogue thread layout, pipeline shared memory, TMA weight
+  descriptors, and L1 output/L2 input descriptors independently. Defaults do
+  not apply an override.
+- Protocol: current Pro M=8192 parent, seed 101, median-10, 8x H200. Compare
+  BN256/256 control, BN128/256, BN256/128, and BN128/128.
+- Result: control was 8350.336 us; L1-only BN128 was 8343.746 us, L2-only
+  BN128 was 8334.010 us, and both BN128 was 8322.295 us. The best nominal
+  change is only 0.34% and remains 6.12% behind PR323.
+- Decision: phase-specific N tiles are not a material residual lever and are
+  not promoted. Investigate per-phase persistent-grid/SM allocation next.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_n_*`.
+
+## Iteration 5: phase-specific persistent-grid experiment
+
+- Hypothesis: H200's 132-SM grid may create avoidable tail waves for the
+  48-expert Pro shape; phase-specific 128/120/112/96 CTA grids may improve
+  block-wave alignment.
+- Source change: add opt-in L1/L2 grid-size overrides, each bounded by the
+  physical/runtime SM count. Defaults remain the full runtime SM count.
+- Protocol: current Pro M=8192 parent, seed 101, median-10, 8x H200. Compare
+  full 132, L1-only 128, L2-only 128, both 128, and both 120/112/96.
+- Result: control was 8368.946 us; the best result was both-112 at
+  8323.770 us (about 0.54% faster) and still 6.14% behind PR323. All tested
+  grids landed between 8323.770 and 8359.728 us aside from the control.
+- Decision: grid alignment is not a material residual lever and is not
+  promoted. Host-side legal parameter dimensions are exhausted; move to
+  split-kernel internal optimization without introducing fusion.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_g_*`.
+
+## Diagnostic 2: PTXAS resources and phase counters
+
+- PTXAS verbose rebuild of the Pro M=8192 winner reported 168 registers for
+  both L1 and L2, zero-byte stack frames, and zero spill loads/stores. L1 used
+  three barriers and L2 used sixteen. Raising register redistribution limits
+  therefore has no spill-removal justification.
+- Built-in counters attributed the remaining work primarily to math/GEMM;
+  combine barrier/reduce and per-block epilogues were smaller. Event timing
+  remained roughly 5.3 ms L1 plus 3.0 ms L2 for the instrumented run.
+- Artifacts: `.../candidates/pro_ptxas8192/` and
+  `.../candidates/pro_phase8192/`.
+
+## Iteration 6: asynchronous L1 TMA-store experiment
+
+- Hypothesis: the existing double-buffered asynchronous L1 output-store path
+  can hide synchronous TMA-store waits behind the next GEMM block.
+- Source change: expose the already-implemented path through opt-in
+  `DG_SM90_MOE_ASYNC_L1_TMA_STORE`; default remains false. The experiment is
+  restricted to non-direct configs whose shared host SMEM allocation already
+  covers the double buffer.
+- Protocol: current Pro winners at M=512/4096/8192 with EPW12/4/16,
+  respectively; seed 101, median-10, 8x H200.
+- Results versus PR323 were +5.94%, +2.38%, and +7.30%, all worse than the
+  synchronous winners (+0.79%, +1.44%, +6.16%).
+- Decision: reject async L1 TMA stores and keep the default synchronous path.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_a_*`.
+
+## Iteration 7: phase-local dual-accumulator experiment
+
+- Hypothesis: the already-implemented L1 dual-K and L2 dual-half accumulator
+  paths may expose more independent WGMMA work and reduce the long dependency
+  chain that dominates Pro M=8192.
+- Source change: expose the two existing paths through opt-in
+  `DG_SM90_MOE_L1_DUAL_K_ACCUM` and `DG_SM90_MOE_L2_DUAL_ACCUM` switches.
+  Both default to false, so the existing H20 and generic selector behavior is
+  unchanged.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`),
+  seed 101, median-10, 8x H200. Compare control, L1-only, L2-only, and both;
+  report the maximum returned time across ranks.
+- Result: control was 8371.925 us (+6.751% versus PR323), L1-only was
+  8369.825 us (+6.724%), L2-only was 8336.957 us (+6.305%), and both was
+  8354.491 us (+6.529%). The best nominal gain was only 0.42% and remained
+  well behind PR323.
+- Decision: reject both dual-accumulator paths as H200 selector candidates;
+  they do not materially close the large-M gap.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_dacc2_*`.
+
+## Iteration 8: two-CTA weight-multicast experiment
+
+- Hypothesis: H200 may benefit from pairing adjacent M tiles in a two-CTA
+  cluster and multicasting each B/weight TMA load to both CTAs, reducing the
+  dominant large-M weight traffic without changing the split architecture.
+- Source change: restore an opt-in `DG_SM90_MOE_CLUSTER_SIZE` selector for the
+  already-implemented cluster scheduler and multicast path. The default
+  remains cluster size one, preserving the existing H20 and generic behavior.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`),
+  seed 101, median-10, 8x H200. Compare explicit cluster sizes one and two;
+  report the maximum returned time across ranks.
+- Result: cluster one was 8372.159 us (+6.754% versus PR323); cluster two was
+  8348.770 us (+6.456%). The nominal 0.28% gain is inside the confirmation
+  band and does not materially close the gap.
+- Decision: reject two-CTA B multicast as an H200 selector candidate. H200 L2
+  reuse is already effective enough that B traffic is not the residual
+  bottleneck.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_cluster2_*`.
+
+## Iteration 9: unscaled E5M2 combine contributions
+
+- Hypothesis: storing each L2-to-combine contribution as unscaled FP8 E5M2
+  instead of BF16 can halve NVLink scatter and combine-read bytes while the
+  reduction and final output remain FP32/BF16.
+- Source change: add opt-in `DG_SM90_MOE_FP8_COMBINE`, including E5M2 L2
+  epilogue packing, byte-width-aware NVLink scatter, E5M2-to-FP32 combine
+  reduction, and BF16 final output. The default remains the original BF16
+  contribution layout, so no H20 selector or default precision changes.
+- Protocol: current load-specific Pro parents at M=512/4096/8192 (EPW12/4/16,
+  respectively), seed 101, median-10, 8x H200. Compare same-source BF16 and
+  E5M2 modes and report maximum returned latency across ranks. A focused
+  top-k6 correctness scenario passed with `calc_diff=0.0006 < 0.01`.
+- Results:
+
+  | M | BF16 us | E5M2 us | E5M2 vs BF16 | PR323 us | E5M2 vs PR323 |
+  |---:|---:|---:|---:|---:|---:|
+  | 512 | 1121.283 | 1100.999 | -1.81% | 1090.546 | +0.958% |
+  | 4096 | 4432.329 | 4427.793 | -0.10% | 4338.506 | +2.058% |
+  | 8192 | 8415.524 | 8346.194 | -0.82% | 7842.460 | +6.423% |
+
+- Decision: do not promote E5M2 globally; it does not address the large-M
+  GEMM/scheduling gap. Retain it temporarily as an M=512 sub-candidate because
+  the result is inside the 1% remeasurement band. It must beat PR323 on repeat
+  and pass the full precision suite before any H200-only selector use.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_fp8combine_v2_*`,
+  `.../candidates/pro_fp8combine_v3_*`, and
+  `.../candidates/pro_fp8combine_v2_correctness_smoke/`.
+
+## Iteration 10: adjacent scale-domain accumulation
+
+- Hypothesis: keeping the WGMMA destination in the preceding K segment's
+  scale domain and multiplying by only the adjacent scale ratio can replace
+  the in-place path's two full-accumulator scale passes with one per segment.
+- Source change: add opt-in `DG_SM90_MOE_ADJACENT_SCALE_DOMAIN` for M64N128
+  warpgroups. The default path and all H20 selector behavior remain unchanged.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`),
+  BF16 combine, seed 101, median-10, 8x H200; compare same-source control and
+  adjacent-domain modes using maximum returned latency across ranks.
+- Result: control was 8362.077 us (+6.626% versus PR323); adjacent-domain was
+  8398.652 us (+7.092%), a 0.44% regression.
+- Decision: reject adjacent scale-domain accumulation. Its reciprocal and
+  accumulator dependency costs outweigh the removed scale pass on H200.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_adjscale_v1_*`.
+
+## Iteration 11: B-loader weight-scale prefetch
+
+- Hypothesis: moving block weight-SF loads from math warpgroups after the full
+  barrier to the B-loader warp can hide their latency under the TMA pipeline.
+- Source change: add opt-in `DG_SM90_MOE_PREFETCH_WEIGHT_SF`; reserve one
+  aligned 128-byte shared line per stage, add a barrier producer, prefetch the
+  L1 gate/up or L2 N-group scales in the B-loader, and consume them from shared
+  memory. The default path and H20 behavior remain unchanged.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`),
+  BF16 combine, seed 101, median-10, 8x H200; report maximum returned latency.
+- Result: control was 8413.468 us (+7.281% versus PR323); prefetch was
+  8342.900 us (+6.381%), a 0.84% improvement but still far from the gate.
+- Decision: do not promote the shared-prefetch form. The signal motivates a
+  lower-overhead test that issues the same LDG from math warps before their
+  full-barrier wait, avoiding the extra shared stage and producer arrival.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_prefetchwsf_v1_*`.
+
+## Iteration 12: pre-barrier math-warp weight-scale loads
+
+- Hypothesis: issuing each math warp's uniform weight-SF LDG before the stage
+  full-barrier wait can hide its latency without the shared-memory producer
+  overhead seen in iteration 11.
+- Source change: add opt-in `DG_SM90_MOE_EARLY_WEIGHT_SF`; force the LDG value
+  live before the full-barrier wait. The default and H20 behavior are unchanged.
+- Protocol: current Pro M=8192 parent, BF16 combine, seed 101, median-10,
+  8x H200; report maximum returned latency across ranks.
+- Result: control was 8359.339 us (+6.591% versus PR323); early LDG was
+  8387.056 us (+6.944%), a 0.33% regression.
+- Decision: reject early math-warp LDG. Hopper's existing uniform read-only
+  load scheduling is already effective, while extending scale live ranges is
+  slightly harmful.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_earlywsf_v1_*`.
+
+## Iteration 13: FP16x2 scaled accumulator
+
+- Hypothesis: retaining the cross-K scaled sum in FP16x2 can replace 64 scalar
+  FP32 promotions per thread and K segment with 32 packed half2 FMAs.
+- Source change: add opt-in `DG_SM90_MOE_FP16_SCALED_ACCUM`; WGMMA still emits
+  FP32 raw accumulators, which are converted to half2 for scaled accumulation
+  and converted back to FP32 once before the unchanged epilogue. Defaults and
+  H20 behavior remain unchanged.
+- Protocol: current Pro M=8192 parent, BF16 combine, seed 101, median-10,
+  8x H200; report maximum returned latency across ranks.
+- Result: control was 8390.828 us (+6.992% versus PR323); FP16x2 accumulation
+  was 8338.229 us (+6.322%), a 0.63% improvement but still far from the gate.
+- Decision: do not promote this conversion-based form. CUTLASS exposes native
+  F16-output WGMMA, so the next bounded experiment will remove the per-segment
+  FP32-to-FP16 conversion rather than treating this small result as final.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_fp16acc_v1_*`.
+
+## Iteration 14: native FP16 WGMMA initial launch
+
+- Hypothesis: native `m64n128k32.f16.e4m3.e4m3` WGMMA can emit two packed
+  FP16 accumulators per register and remove the FP32-to-FP16 conversion paid
+  by iteration 13 after every scale domain.
+- Source change: add an opt-in M64N128 native-FP16 WGMMA wrapper, packed
+  register fencing, and a scaled half2 accumulation loop behind
+  `DG_SM90_MOE_NATIVE_FP16_WGMMA=1`. The default remains disabled and no H20
+  or generic selector behavior changes.
+- Protocol: intended same-source Pro M=8192 control/candidate comparison on
+  job 2957858, seed 101, median-10, 8x H200.
+- Result: no kernel was built or timed because the initial command referenced
+  `scripts/run_h200_fp8_candidate.sh` inside the remote worktree, while the
+  campaign copy lives under the result root.
+- Decision: this is a harness-path failure, not evidence about the candidate.
+  Retry the identical source and protocol with the campaign runner path.
+- Raw artifacts: none; execution stopped before candidate-directory creation.
+
+## Iteration 15: native FP16-output FP8 WGMMA
+
+- Hypothesis: replacing FP32-output WGMMA plus per-domain FP32-to-FP16
+  conversion with native packed-FP16 WGMMA can materially reduce the dominant
+  GEMM-loop instruction and register cost at Pro M=8192.
+- Source change: use `MMA_64x128x32_F16E4M3E4M3_SS_TN` for the opt-in path,
+  keep its 32 packed accumulator registers correctly fenced, scale-accumulate
+  them with half2 FMA, and convert to FP32 only once for the unchanged
+  epilogue. The flag remains default-off and no H20 selector is modified.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`),
+  BF16 combine, seed 101, median-10, 8x H200; report maximum returned latency
+  across ranks.
+- Result: control was 8404.653 us; native FP16 WGMMA was 8380.051 us, a
+  nominal 0.29% improvement. It remains 6.85% slower than PR323 at
+  7842.460 us.
+- Decision: reject native FP16 WGMMA as an H200 selector candidate. The gain
+  is below the 1% confirmation band and does not justify its additional
+  accumulation rounding or a broad precision campaign.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_nativefp16_v1_*`.
+
+## Iteration 16: wide-N single-consumer initial launch
+
+- Hypothesis: one M64N256 consumer warpgroup with in-place scale-domain
+  accumulation can replace the current pair of M64N128 consumers, reducing
+  consumer threads and duplicated control work while retaining the same CTA
+  tile and split L1/L2 architecture.
+- Source change: allow an explicitly forced one-warpgroup BN256 candidate and
+  extend the existing in-place FP32 accumulation path to N256, including the
+  two independent L2 weight-scale regions. Defaults still select two
+  warpgroups, so H20 and generic behavior are unchanged.
+- Protocol: current Pro M=8192 parent, seed 101, median-10, 8x H200; compare
+  explicit epilogue-WG counts two and one.
+- Result: the two-WG control completed at 8378.121 us max-rank. The one-WG
+  candidate stopped before JIT with `not candidates.empty()` at the final
+  heuristic candidate check; no candidate timing was produced.
+- Decision: treat this as an incomplete legality-plumbing iteration, not a
+  performance result. Identify and fix the remaining candidate filter, then
+  rerun the identical source-level design.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_widen_v1_*`.
+
+## Diagnostic 3: stale host-extension audit
+
+- The remote worktree's `_C.cpython-312-x86_64-linux-gnu.so` predated the
+  source campaign. `strings` contained the original public SM90 knobs but none
+  of the subsequently added `FP8_COMBINE`, `PREFETCH_WEIGHT_SF`,
+  `FP16_SCALED_ACCUM`, `NATIVE_FP16_WGMMA`, phase-specific, or dual-accumulator
+  environment names.
+- Consequence: source-dependent iterations 1-15 did not have evidence that
+  their new host flags reached the generated kernel template. Their nominal
+  sub-1% deltas must be treated as same-configuration noise and are not valid
+  selector evidence. The original baseline and parameter screens using
+  pre-existing public knobs remain valid.
+- Repair: force-rebuilt the in-place extension with CUDA 13.2 and the campaign
+  venv. The rebuilt binary timestamp is 2026-07-03 13:05:40 PDT, and binary
+  strings now contain every added host flag. All subsequent candidate runs use
+  fresh candidate/JIT cache names and printed concrete configs.
+
+## Iteration 17: wide-N single-consumer after host rebuild
+
+- Hypothesis: after making the host configuration effective, one M64N256
+  consumer with in-place FP32 scale-domain accumulation may outperform the
+  standard pair of M64N128 consumers.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`),
+  seed 101, median-10, 8x H200. Fresh caches were used after rebuilding the
+  host extension. Printed configs confirmed 256 versus 128 epilogue threads
+  for the control and wide-N candidate, respectively.
+- Result: the two-WG control was 8472.745 us max-rank; the one-WG N256 path was
+  10011.301 us, an 18.16% regression and 27.66% slower than PR323.
+- Decision: reject the wide-N single-consumer path. One consumer does not
+  provide enough WGMMA latency hiding, and its in-place full-accumulator scale
+  passes are substantially more expensive than the dual-consumer layout.
+- Raw artifacts: `.../sm90_fp8_h200_retune_job2957858/candidates/pro_widen_v2_*`.
+
+## Iteration 18: effective FP16 accumulation comparison
+
+- Hypothesis: with the rebuilt host runtime actually forwarding the template
+  flags, native F16-output FP8 WGMMA may remove enough accumulator conversion
+  and register traffic to close a material part of the large-M gap.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`, two
+  M64N128 consumers), BF16 combine, seed 101, median-10, 8x H200. Compare
+  control, FP32-output WGMMA plus half2 scaled accumulation, and native
+  F16-output WGMMA in fresh caches. Printed configs matched on all host tiles.
+- Results (max-rank): control 8371.610 us; conversion-based half2 accumulation
+  8367.652 us (-0.05%); native F16 WGMMA 8034.813 us (-4.02%). The native path
+  is 2.45% slower than PR323 at 7842.460 us, versus roughly 6.75% for control.
+- Decision: reject the conversion-based form. Retain native F16 WGMMA as the
+  first material H200 candidate, but do not promote it until focused and broad
+  numerical validation passes; native F16 accumulation changes rounding inside
+  each sequence of K32 WGMMAs.
+- Correctness gate: the focused eight-rank `L2.profile_topk6.t512` scenario
+  failed with `calc_diff=nan`. Native F16 WGMMA accumulates the unscaled
+  E4M3-by-E4M3 dot product before the external block scales are applied, so the
+  packed FP16 destination can overflow. This is a hard rejection regardless of
+  its 4.02% timing gain; no tolerance relaxation or selector promotion is valid.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_fp16_effective_v1_*`
+  and `.../candidates/pro_nativefp16_correctness_smoke/`.
+
+## Iteration 19: effective internal-candidate screen
+
+- Hypothesis: after rebuilding the host extension, one of the previously
+  unevaluated internal paths may provide a material H200 gain without changing
+  the split L1/L2 architecture.
+- Protocol: current Pro M=8192 parent (`direct0, stage3, N-major, EPW16`),
+  seed 101, median-10, 8x H200. Each mode changed exactly one internal switch
+  from the same-source control and used a fresh cache.
+- Results (maximum returned latency across ranks):
+
+  | Mode | us | vs control |
+  |---|---:|---:|
+  | control | 8358.573 | — |
+  | async L1 store | 8345.627 | -0.15% |
+  | L1 dual-K | 9975.751 | +19.35% |
+  | L2 dual-half | 16026.832 | +91.74% |
+  | both dual | 17459.549 | +108.88% |
+  | E5M2 combine | 8196.752 | -1.94% |
+  | adjacent scale domain | 8624.391 | +3.18% |
+  | B-loader SF prefetch | 8375.747 | +0.21% |
+  | early math-warp SF | 8347.869 | -0.13% |
+
+- Decision: retain E5M2 combine as the only material candidate (-1.94%); it
+  requires focused precision validation and multi-M confirmation. Async L1
+  store and both weight-SF load variants are inside the 1% noise band. Reject
+  adjacent-domain and all dual-accumulator forms, which regress materially.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_effective_screen1_*`.
+
+## Iteration 20: effective E5M2 combine across Pro loads
+
+- Hypothesis: halving the L2-contribution scatter and combine-read bytes with
+  unscaled E5M2 is a repeatable gain across the load-specific Pro parents, not
+  only a single M=8192 observation.
+- Protocol: Pro M=512/4096/8192 with their retained EPW12/4/16 parents,
+  respectively; `direct0, stage3, N-major`, seed 101, median-10, 8x H200.
+  Compare BF16 and E5M2 contribution storage from the same rebuilt host runtime.
+- Results (maximum returned latency across ranks):
+
+  | M | BF16 us | E5M2 us | E5M2 vs BF16 | PR323 us | E5M2 vs PR323 |
+  |---:|---:|---:|---:|---:|---:|
++  | 512 | 1119.474 | 1079.510 | -3.57% | 1090.546 | -1.01% |
+  | 4096 | 4451.371 | 4341.600 | -2.47% | 4338.506 | 0.07% |
+  | 8192 | 8332.095 | 8179.550 | -1.83% | 7842.460 | 4.30% |
+
+- Correctness: the effective eight-rank `L2.profile_topk6.t512` smoke passed
+  at `calc_diff=0.0020 < 0.01`. This confirms finite output and the E5M2
+  pack/scatter/reduce mapping, but it is not the full 112-case precision gate.
+- Decision: retain E5M2 combine. It beats PR323 at M=512 and provides a
+  repeatable material gain at M=4096/8192, but still needs the 112-case
+  precision campaign and does not alone close the two large-M gaps.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_fp8combine_effective_v2_*`
+  and `.../candidates/pro_fp8combine_effective_correctness_smoke/`.
+
+## Iteration 21: effective phase-specific expert waves with E5M2
+
+- Hypothesis: L1 and L2 may prefer different expert-wave sizes once the E5M2
+  combine path removes part of L2's scatter/reduce cost.
+- Protocol: Pro M=8192 E5M2 parent (`direct0, stage3, N-major, shared EPW16`),
+  seed 101, median-10, 8x H200. Sweep one phase over EPW4/8/12/24/48 while
+  holding the other at 16, using the rebuilt host runtime.
+- Results (maximum returned latency across ranks):
+
+  | L1 EPW | L2 EPW | us | vs 16/16 |
+  |---:|---:|---:|---:|
++  | 16 | 16 | 8211.883 | — |
+  | 4 | 16 | 8185.451 | -0.32% |
+  | 8 | 16 | 8196.595 | -0.19% |
+  | 12 | 16 | 8289.427 | 0.94% |
+  | 24 | 16 | 8197.039 | -0.18% |
+  | 48 | 16 | 8167.025 | -0.55% |
+  | 16 | 4 | 8226.518 | 0.18% |
+  | 16 | 8 | 8191.213 | -0.25% |
+  | 16 | 12 | 8199.580 | -0.15% |
+  | 16 | 24 | 8186.790 | -0.31% |
+  | 16 | 48 | 8205.725 | -0.07% |
+
+- Decision: the best point is L1 EPW48 / L2 EPW16 at 8167.025 us,
+  only 0.55% faster than the 8211.883 us control. This is below the
+  1% confirmation band and remains 4.14% behind PR323, so do not
+  promote a phase-specific wave rule.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_e5m2_phasewave_v1_*`.
+
+## Iteration 22: effective phase-specific pipeline stages with E5M2
+
+- Hypothesis: L1 and L2 may prefer different TMA pipeline depths after E5M2
+  reduces the combine-side work.
+- Protocol: Pro M=8192 E5M2 parent, shared EPW16, seed 101, median-10, 8x
+  H200. Sweep legal L1/L2 stage counts two through four with fresh caches.
+- Results (maximum returned latency across ranks):
+
+  | L1 stages | L2 stages | us | vs 3/3 |
+  |---:|---:|---:|---:|
++  | 3 | 3 | 8226.000 | — |
+  | 2 | 3 | 8198.978 | -0.33% |
+  | 4 | 3 | 8176.543 | -0.60% |
+  | 3 | 2 | 8184.229 | -0.51% |
+  | 3 | 4 | 8228.157 | 0.03% |
+  | 4 | 2 | 8214.189 | -0.14% |
+  | 2 | 4 | 8199.900 | -0.32% |
+  | 4 | 4 | 8192.161 | -0.41% |
+
+- Decision: the best point is 4/3 stages at 8176.543 us,
+  0.60% faster than the 8226.000 us control and
+  4.26% behind PR323. This remains inside the 1% confirmation
+  band, so phase-specific pipeline depth is not a structural large-M lever.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_e5m2_phasestage_v1_*`.
+
+## Iteration 23: two-plane BLOCK_K=256 mainloop
+
+- Hypothesis: grouping two independently scaled K128 input planes into one
+  K256 pipeline stage may reduce producer/barrier iterations enough to improve
+  large-M throughput while preserving the existing K128 scale domains.
+- Implementation: add an explicitly selected `DG_SM90_MOE_BLOCK_K=256` path.
+  Each stage issues two K128 A/B TMA loads; L1 consumes two independent K128
+  scale regions and L2 consumes four K64 activation-scale regions with the
+  corresponding two K128 weight-scale regions. The existing K128 path remains
+  the default, so H20 tuning and default selector behavior are unchanged.
+- Protocol: Pro M=8192 E5M2 parent (`direct0, N-major, EPW16`, seed 101,
+  median-10, 8x H200), changing only `BLOCK_K`. Printed configs confirmed
+  K128/stage3/173760-byte shared memory versus K256/stage2/215216-byte shared
+  memory.
+- Results (maximum returned latency across ranks):
+
+  | BLOCK_K | stages | shared memory | us | vs K128 | vs PR323 |
+  |---:|---:|---:|---:|---:|---:|
+  | 128 | 3 | 173760 B | 8164.657 | — | +4.11% |
+  | 256 | 2 | 215216 B | 8361.760 | +2.41% | +6.62% |
+
+- Decision: reject K256 for H200 selection. Halving the logical K-stage count
+  did not compensate for losing a pipeline stage and increasing per-CTA shared
+  memory. Because the performance gate failed materially, no correctness
+  campaign was run for this optional path.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bk256_v1_bk*`.
+
+## Iteration 24: chunked native-FP16 WGMMA accumulation
+
+- Hypothesis: the 4.02% native-FP16 WGMMA speedup from iteration 18 may be
+  recoverable safely by converting its packed FP16 accumulator to FP32 after
+  K128, K64, or K32, then applying the unchanged block scale in FP32.
+- Implementation: add an explicitly selected
+  `DG_SM90_MOE_NATIVE_FP16_CHUNK_K={32,64,128}` mode. L1 promotes after the
+  requested chunk; L2 additionally respects its K64 activation-scale boundary.
+  The existing FP32 path and all default/H20 behavior remain unchanged.
+- Correctness protocol: eight-rank `L2.profile_topk6.t512`, E5M2 combine,
+  tolerance 0.01, testing K128, K64, and the minimum single-instruction K32
+  chunk before any performance measurement.
+- Result: all three chunk sizes returned `calc_diff=nan`. Because K32 is one
+  `m64n128k32.f16.e4m3.e4m3` instruction, the unscaled E4M3 dot product can
+  overflow the packed FP16 destination within a single WGMMA; neither earlier
+  FP32 promotion nor a FP32 final accumulator can make this representation
+  numerically safe.
+- Decision: hard-reject every native-FP16 WGMMA variant for these inputs. Do
+  not benchmark, relax tolerance, or promote it into an H200 selector.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_nativefp16_chunk_correctness_k*`.
+
+## Iteration 25: four-way M64N64 split-N consumers
+
+- Hypothesis: four independent M64N64 WGMMA consumer warpgroups may hide more
+  math latency than the default pair of M64N128 consumers without changing
+  the BM64/BN256/BK128 CTA tile or split L1/L2 architecture.
+- Implementation: permit the already represented four-way split-N layout only
+  for explicit `DG_SM90_MOE_FORCE_EPILOGUE_WG=4`. The first JIT exposed that
+  each WG's 32 post-SwiGLU columns are half of the required 64-column L2 scale
+  domain. The repaired path exchanges per-row amax values between adjacent WGs,
+  computes one shared 64-column scale, then quantizes and TMA-stores the same
+  output layout. The default remains two consumers, preserving H20 behavior.
+- Protocol: Pro M=8192 E5M2 parent (`direct0, stage3, N-major, EPW16`), seed
+  101, median-10, 8x H200; compare two versus four epilogue warpgroups.
+- Results (maximum returned latency across ranks):
+
+  | consumer layout | epilogue threads | us | vs 2 WG | vs PR323 |
+  |---|---:|---:|---:|---:|
+  | 2 x M64N128 | 256 | 8204.985 | — | +4.62% |
+  | 4 x M64N64 | 512 | 8403.626 | +2.42% | +7.16% |
+
+- Decision: reject four-way split-N. Additional WGMMA consumers do not offset
+  the 512-thread CTA and cross-WG scale-domain synchronization overhead. The
+  performance gate failed, so no broader correctness campaign is warranted.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_splitn4_v1_wg2/`,
+  `.../candidates/pro_splitn4_v1_wg4/` (initial JIT legality failure), and
+  `.../candidates/pro_splitn4_v2_wg4/`.
+
+## Iteration 26: phase-specific four-way consumers
+
+- Hypothesis: the aggregate four-WG regression may hide a gain in one split
+  phase, especially L1, which accounts for about 64% of Pro M=8192 latency.
+- Implementation: add explicit `DG_SM90_MOE_L1_EPILOGUE_WG` and
+  `DG_SM90_MOE_L2_EPILOGUE_WG` experiment overrides. Each phase independently
+  recomputes its stage/shared-memory launch configuration. Defaults inherit the
+  shared configuration exactly, so H20 and generic behavior are unchanged.
+- Protocol: Pro M=8192 E5M2 parent, seed 101, median-10, 8x H200; compare
+  L1/L2 consumer counts 2/2, 4/2, and 2/4. Cached JIT sources confirmed that
+  the 512-thread specialization appeared only in the requested phase.
+- Results (maximum returned latency across ranks):
+
+  | L1 WG | L2 WG | us | vs 2/2 | vs PR323 |
+  |---:|---:|---:|---:|---:|
+  | 2 | 2 | 8213.641 | — | +4.73% |
+  | 4 | 2 | 8281.242 | +0.82% | +5.60% |
+  | 2 | 4 | 8290.444 | +0.94% | +5.71% |
+
+- Decision: reject four-way consumers for both phases. Neither phase contains
+  a hidden gain, so do not promote a phase-specific consumer-count rule.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_phasewg_v1_*`.
+
+## Iteration 27: packed-BF16 scaled accumulation
+
+- Hypothesis: packed BF16x2 accumulation can retain FP32's exponent range while
+  halving scale-accumulation instructions and registers. In particular, it may
+  make one M64N256 consumer faster by replacing that path's two full FP32
+  reciprocal/rescale passes per K segment.
+- Implementation: add explicit `DG_SM90_MOE_BF16_SCALED_ACCUM`. WGMMA still
+  produces FP32 raw dot products; each block-scaled contribution is converted
+  to BF16x2 and accumulated with packed FMA, then converted to FP32 once for
+  the unchanged epilogue. It supports M64N128 and M64N256 and defaults off.
+- Correctness: the eight-rank `L2.profile_topk6.t512` smoke passed for both
+  two-WG N128 and one-WG N256 at `calc_diff=0.0020 < 0.01`; unlike native FP16,
+  BF16's FP32-sized exponent range produced no NaN/Inf.
+- Performance protocol: Pro M=8192 E5M2 parent, seed 101, median-10, 8x H200;
+  compare FP32/two-WG, BF16/two-WG, and BF16/one-WG.
+- Results (maximum returned latency across ranks):
+
+  | accumulator | consumers | us | vs FP32/2WG | vs PR323 |
+  |---|---:|---:|---:|---:|
+  | FP32 | 2 | 8203.120 | — | +4.60% |
+  | BF16x2 | 2 | 8244.344 | +0.50% | +5.12% |
+  | BF16x2 | 1 | 9107.493 | +11.03% | +16.13% |
+
+- Decision: reject packed-BF16 accumulation for H200 selection. Conversion
+  and packing erase the instruction-count benefit for two consumers, while a
+  single consumer still lacks sufficient WGMMA latency hiding.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bf16acc_correctness_wg*`
+  and `.../candidates/pro_bf16acc_v1_*`.
+
+## Iteration 28: expanded dispatch/loader frontend
+
+- Hypothesis: Pro M=8192 may benefit from four dispatch warps because built-in
+  phase counters show a nontrivial dispatch interval before the dominant GEMM.
+  The existing register budget exactly supports four dispatch plus four
+  non-epilogue warps alongside the two M64N128 consumers.
+- Implementation: permit the expanded 4+4 frontend only when explicitly
+  requested with `DG_SM90_MOE_DISPATCH_WARPS=4` on a non-swap compact tile.
+  The default BN256 frontend remains 2+2, preserving all H20 behavior.
+- Correctness: eight-rank `L2.profile_topk6.t512` passed at
+  `calc_diff=0.0020 < 0.01` with the expanded frontend.
+- Performance protocol: Pro M=8192 E5M2 parent, seed 101, median-10, 8x H200;
+  compare two versus four dispatch warps.
+- Results (maximum returned latency across ranks):
+
+  | dispatch/non-epilogue warps | shared memory | us | vs 2+2 | vs PR323 |
+  |---|---:|---:|---:|---:|
+  | 2+2 | 173760 B | 8196.514 | — | +4.52% |
+  | 4+4 | 188112 B | 8891.979 | +8.49% | +13.38% |
+
+- Decision: reject the expanded frontend as a shared L1/L2 configuration.
+  Extra threads and shared memory materially outweigh any dispatch gain. Test
+  it once as an L1-only phase override because L2 does not perform dispatch.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_dispatch4_correctness_smoke/`
+  and `.../candidates/pro_dispatch_v1_*`.
+
+## Iteration 29: phase-specific dispatch frontend
+
+- Hypothesis: the shared 4+4 frontend may regress because L2 pays for extra
+  threads despite not running dispatch; expanding only L1 could retain a
+  dispatch gain while leaving L2 unchanged.
+- Implementation: add explicit `DG_SM90_MOE_L1_DISPATCH_WARPS` and
+  `DG_SM90_MOE_L2_DISPATCH_WARPS` overrides. Each phase independently selects
+  the 2+2 or 4+4 frontend and recomputes its pipeline/shared-memory launch
+  configuration. Defaults inherit the shared 2+2 configuration exactly.
+- Protocol: Pro M=8192 E5M2 parent, seed 101, median-10, 8x H200; compare
+  L1/L2 dispatch-warp counts 2/2, 4/2, and 2/4.
+- Results (maximum returned latency across ranks):
+
+  | L1 dispatch warps | L2 dispatch warps | us | vs 2/2 | vs PR323 |
+  |---:|---:|---:|---:|---:|
+  | 2 | 2 | 8232.724 | — | +4.98% |
+  | 4 | 2 | 8185.800 | -0.57% | +4.38% |
+  | 2 | 4 | 8864.429 | +7.67% | +13.03% |
+
+- Decision: hard-reject an expanded L2 frontend. The L1-only result is inside
+  the 1% confirmation band and remains well behind PR323, so do not promote it
+  alone; test it once in combination with the best sub-1% L1 wave/stage signals.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_phasedispatch_v1_*`.
+
+## Iteration 30: combined sub-1% L1 signals
+
+- Hypothesis: the nominal L1-only gains from four dispatch warps, stage4, and
+  EPW48 may be individually small but additive when applied together.
+- Protocol: Pro M=8192 E5M2 parent, seed 101, median-10, 8x H200. Hold L2 at
+  dispatch2/stage3/EPW16 and compare the L1 control against combinations of
+  dispatch4 with stage4 and/or EPW48.
+- Results (maximum returned latency across ranks):
+
+  | L1 dispatch | L1 stages | L1 EPW | us | vs control | vs PR323 |
+  |---:|---:|---:|---:|---:|---:|
+  | 2 | 3 | 16 | 8187.545 | — | +4.40% |
+  | 4 | 4 | 16 | 8186.583 | -0.01% | +4.39% |
+  | 4 | 3 | 48 | 8210.998 | +0.29% | +4.70% |
+  | 4 | 4 | 48 | 8191.486 | +0.05% | +4.45% |
+
+- Decision: reject all combinations. The prior sub-1% observations do not add
+  and are not selector-grade evidence. Return to a structural tile/mainloop or
+  scheduling change rather than stacking shallow host parameters.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_l1combo_v1_*`.
+
+## Iteration 31: BN512 four-consumer tile with BF16 accumulation
+
+- Hypothesis: BM64/BN512 can halve CTA scheduling and A-tile reloads while
+  retaining four independent M64N128 WGMMA consumers. Packed BF16 accumulation
+  keeps each consumer within the 512-thread CTA register budget, and E5M2
+  combine reduces the L2 shared-output footprint enough for a two-stage pipe.
+- Implementation: add explicit `DG_SM90_MOE_FORCE_BLOCK_N=512` support with
+  four consumers. Split each B load into two legal BN256 tensor-map planes,
+  retain one full-barrier byte expectation, size host shared output using the
+  selected E5M2/BF16 combine element width, and leave all defaults unchanged.
+  The first launch exposed the tensor-map BN limit; the second JIT exposed the
+  old BN<=256 static guard. Both were fixed before producing any result.
+- Correctness: the repaired eight-rank `L2.profile_topk6.t512` smoke passed at
+  `calc_diff=0.0020 < 0.01` with BN512, BF16 accumulation, and E5M2 combine.
+- Performance protocol: Pro M=8192, seed 101, median-10, 8x H200; compare the
+  same-source E5M2 BN256/FP32 parent, BN256/BF16 attribution point, and
+  BN512/BF16 candidate.
+- Results (maximum returned latency across ranks):
+
+  | tile | accumulator | stages | us | vs BN256/FP32 | vs PR323 |
+  |---|---|---:|---:|---:|---:|
+  | BN256 | FP32 | 3 | 8246.554 | — | +5.15% |
+  | BN256 | BF16x2 | 3 | 8260.263 | +0.17% | +5.33% |
+  | BN512 | BF16x2 | 2 | 8017.227 | -2.78% | +2.23% |
+
+- Decision: retain BN512/BF16 as the second material H200 candidate after
+  E5M2 combine. It does not yet meet the PR323 gate and has only smoke-level
+  correctness, so next test mixed L1/L2 tile choices and BN512 scheduler
+  neighbors before broad precision validation or selector promotion.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_bf16_correctness_smoke*`
+  and `.../candidates/pro_bn512_v1_*`.
+
+## Iteration 32: phase-specific BN512 L1 tile
+
+- Hypothesis: BN512 reduces L1 CTA scheduling and A-tile reloads, while L2
+  still benefits from the lower thread count and three-stage pipeline of
+  BN256. Applying BN512 independently by phase can retain the L1 gain without
+  paying the BN512 L2 regression.
+- Implementation: extend the explicit `DG_SM90_MOE_L1_BLOCK_N` and
+  `DG_SM90_MOE_L2_BLOCK_N` overrides to accept BN512 and derive the matching
+  compact frontend and four-consumer epilogue. Both overrides remain zero by
+  default, so the existing H20 selector and all H20 tuning results are
+  unchanged.
+- Correctness: the exact L1 BN512 / L2 BN256 eight-rank
+  `L2.profile_topk6.t512` scenario passed at `calc_diff=0.0020 < 0.01` with
+  BF16x2 accumulation and E5M2 combine.
+- Performance protocol: Pro M=8192, seed 101, median-10, 8x H200; BF16x2
+  accumulation and E5M2 combine for all four phase-tile combinations. BN256
+  uses three stages and BN512 uses two stages.
+- Results (maximum returned latency across ranks):
+
+  | L1 BN | L2 BN | us | vs 256/256 | vs PR323 |
+  |---:|---:|---:|---:|---:|
+  | 256 | 256 | 8250.647 | — | +5.21% |
+  | 512 | 256 | 7742.250 | -6.16% | -1.28% |
+  | 256 | 512 | 8559.457 | +3.74% | +9.14% |
+  | 512 | 512 | 8052.001 | -2.41% | +2.67% |
+
+- Decision: retain L1 BN512 / L2 BN256 as the first M=8192 H200 candidate
+  that beats PR323. Hard-reject BN512 for L2. Do not add an automatic selector
+  yet: first confirm the 1.28% margin across seeds and tune the phase-specific
+  scheduler neighbors, then validate all required M points and the full
+  precision matrix.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_phase_v1_*`
+  and `.../candidates/pro_bn512_phase_512_256_correctness_smoke/`.
+
+## Iteration 33: interleaved M8192 confirmation
+
+- Hypothesis: the 1.28% M8192 lead from iteration 32 is large enough to
+  survive longer samples and interleaved execution with PR323, rather than
+  being caused by a favorable single-run clock or load state.
+- Protocol: Pro M=8192, seed 101, median-20, 8x H200. Interleave three runs of
+  the retained L1 BN512 / L2 BN256 candidate with three unmodified PR323 runs.
+  For each run, report the maximum returned latency across ranks.
+- Results:
+
+  | observation | ours us | PR323 us | ours vs PR323 |
+  |---:|---:|---:|---:|
+  | 1 | 7728.855 | 7844.184 | -1.47% |
+  | 2 | 7711.712 | 7866.673 | -1.97% |
+  | 3 | 7751.338 | 7867.560 | -1.48% |
+
+- The median of the three run maxima is 7728.855 us for ours and
+  7866.673 us for PR323, a 1.75% lead. The conservative cross-run comparison
+  (slowest ours versus fastest PR323) still leads by 1.18%. Ours spans 0.51%
+  across observations and PR323 spans 0.30%.
+- Decision: confirm L1 BN512 / L2 BN256 as a stable H200 M8192 winner and use
+  it as the next tuning parent. This is still an explicit, default-off H200
+  candidate; no automatic selector or H20 tuning entry is changed.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_phase_interleaved_s101_n20/`.
+
+## Iteration 34: BN512 L1 expert-wave sweep
+
+- Hypothesis: halving L1 CTA count with BN512 may shift the preferred number
+  of experts scheduled per wave away from the BN256 parent's EPW16.
+- Protocol: Pro M=8192, seed 101, median-10, 8x H200. Hold L1 BN512 / L2
+  BN256, BF16x2 accumulation, E5M2 combine, and L2 EPW16 fixed; sweep L1
+  EPW4/8/12/16/24/48. Report maximum returned latency across ranks.
+- Results:
+
+  | L1 EPW | us | vs EPW16 |
+  |---:|---:|---:|
+  | 4 | 7725.876 | +0.72% |
+  | 8 | 7733.768 | +0.82% |
+  | 12 | 7809.523 | +1.81% |
+  | 16 | 7670.768 | — |
+  | 24 | 7680.280 | +0.12% |
+  | 48 | 7748.728 | +1.02% |
+
+- Decision: retain L1 EPW16. EPW24 is inside the noise band and all other
+  neighbors regress. No selector change is justified, and the existing H20
+  tuning remains untouched.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_l1wave_v1_*`.
+
+## Iteration 35: BN256 L2 expert-wave sweep and confirmation
+
+- Hypothesis: after L1 moves to BN512, the changed arrival pattern into L2
+  may shift L2's preferred expert wave away from EPW16.
+- Initial protocol: Pro M=8192, seed 101, median-10, 8x H200. Hold the retained
+  candidate fixed and sweep L2 EPW4/8/12/16/24/48. The initial run suggested
+  EPW12/24 could be about 1.3% faster than its EPW16 control, but that control
+  was itself 1.4% slower than the preceding experiment.
+- Confirmation protocol: interleave EPW12/16/24 in rotating order, three
+  observations each, median-20. Report the maximum returned latency across
+  ranks for every observation, then compare the median of those maxima.
+- Confirmation results:
+
+  | L2 EPW | observation maxima (us) | median us | vs EPW16 |
+  |---:|---|---:|---:|
+  | 12 | 7736.242, 7768.476, 7753.274 | 7753.274 | +0.49% |
+  | 16 | 7705.099, 7776.444, 7715.600 | 7715.600 | — |
+  | 24 | 7773.342, 7776.561, 7750.844 | 7773.342 | +0.75% |
+
+- Decision: reject the apparent first-pass EPW12/24 gain and retain L2
+  EPW16. Interleaving reverses the result and demonstrates that sub-percent
+  sequential sweeps on this node need confirmation before promotion. No H20
+  tuning or default selector is changed.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_l2wave_v1_*`
+  and `.../candidates/pro_bn512_l2wave_confirm_s101_n20/`.
+
+## Iteration 36: BN256 L2 stage and N-major sweep
+
+- Hypothesis: BN512 L1 changes the producer cadence enough that L2 may prefer
+  a different pipeline depth or no longer benefit from N-major scheduling.
+- Initial protocol: Pro M=8192, seed 101, median-10, 8x H200. Sweep L2 stages
+  2/3/4 with N-major enabled and disabled; keep all other retained parameters
+  fixed.
+- Initial results (maximum returned latency across ranks):
+
+  | L2 N-major | L2 stages | us |
+  |---:|---:|---:|
+  | 1 | 2 | 7756.274 |
+  | 1 | 3 | 7707.218 |
+  | 1 | 4 | 7665.443 |
+  | 0 | 2 | 7840.451 |
+  | 0 | 3 | 7822.364 |
+  | 0 | 4 | 7812.259 |
+
+- N-major disabled regressed every stage by 1.4% or more and is rejected.
+  The apparent 0.54% stage4 lead was then checked with three rotating,
+  interleaved median-20 observations per stage.
+- Confirmation results:
+
+  | L2 stages | observation maxima (us) | median us | vs stage3 |
+  |---:|---|---:|---:|
+  | 3 | 7727.468, 7791.515, 7737.307 | 7737.307 | — |
+  | 4 | 7813.226, 7752.464, 7712.187 | 7752.464 | +0.20% |
+
+- Decision: retain L2 N-major with three stages. The sequential stage4 signal
+  does not reproduce under interleaving. No H200 selector is promoted yet and
+  the existing H20 tuning remains unchanged.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_l2sched_v1_*`
+  and `.../candidates/pro_bn512_l2stage_confirm_s101_n20/`.
+
+## Iteration 37: BN512 candidate across Pro M>=128
+
+- Hypothesis: the L1 BN512 / L2 BN256 winner is useful across the required
+  Pro load range, but may need an H200-only threshold where low-M CTA
+  parallelism becomes more important than fewer L1 A-tile reloads.
+- Protocol: Pro M=128/256/512/1024/2048/4096/8192, seed 101, median-10,
+  8x H200. Interleave the retained split-FP8 candidate and unmodified PR323 at
+  each M; report the maximum returned latency across ranks.
+- Results:
+
+  | M | ours us | PR323 us | ours vs PR323 |
+  |---:|---:|---:|---:|
+  | 128 | 870.482 | 894.226 | -2.66% |
+  | 256 | 886.226 | 859.090 | +3.16% |
+  | 512 | 1117.651 | 1086.498 | +2.87% |
+  | 1024 | 1541.193 | 1580.518 | -2.49% |
+  | 2048 | 2342.198 | 2446.090 | -4.25% |
+  | 4096 | 4054.989 | 4305.722 | -5.82% |
+  | 8192 | 7765.363 | 7867.802 | -1.30% |
+
+- Decision: retain BN512 for M=128 and M>=1024 on the Pro shape, subject to
+  broader seeds and precision validation. Do not use it at M=256/512; tune a
+  BN256 H200 path for those points. Any eventual thresholds must live in an
+  H200-specific selector branch and must not overwrite the existing H20
+  tuning table.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_bn512_mge128_vs_pr_s101_n10/`.
+
+## Iteration 38: BN256 small-M scheduler screen
+
+- Hypothesis: M=256/512 recover their CTA parallelism with the pre-BN512
+  FP32-accumulator BN256 path, while E5M2 combine plus load-specific stage and
+  N-major choices can close the remaining PR323 gap.
+- Protocol: Pro M=256/512, seed 101, median-10, 8x H200. Use BN256,
+  FP32 accumulation, E5M2 combine, direct scatter disabled; sweep stage3/4 and
+  N-major0/1. Use EPW16 at M=256 and the retained EPW12 parent at M=512.
+- Results (maximum returned latency across ranks):
+
+  | M | EPW | N-major | stages | ours us | current PR323 us | gap |
+  |---:|---:|---:|---:|---:|---:|---:|
+  | 256 | 16 | 0 | 3 | 872.451 | 859.090 | +1.56% |
+  | 256 | 16 | 0 | 4 | 859.046 | 859.090 | -0.01% |
+  | 256 | 16 | 1 | 3 | 857.941 | 859.090 | -0.13% |
+  | 256 | 16 | 1 | 4 | 858.499 | 859.090 | -0.07% |
+  | 512 | 12 | 0 | 3 | 1176.852 | 1086.498 | +8.32% |
+  | 512 | 12 | 0 | 4 | 1157.667 | 1086.498 | +6.55% |
+  | 512 | 12 | 1 | 3 | 1113.959 | 1086.498 | +2.53% |
+  | 512 | 12 | 1 | 4 | 1152.261 | 1086.498 | +6.05% |
+
+- A follow-up old-versus-new JIT-cache diagnostic at M=512 produced
+  1078.710/1113.428 us for the older cache and 1096.323/1114.244 us for the
+  current cache. The overlapping, roughly 3% cross-run movement does not
+  establish a source regression; it reinforces the need for interleaved
+  candidate/PR confirmation.
+- Decision: use N-major1/stage3 as the small-M screening parent. M=256 is only
+  a noise-level lead and M=512 still misses the gate; sweep EPW, then confirm
+  any winner interleaved with PR323. Keep all settings H200-only and
+  default-off.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_smallm_sched_v1_*`
+  and `.../candidates/pro_m512_old_new_jit_compare_s101_n20/`.
+
+## Iteration 39: BN256 small-M expert waves
+
+- Hypothesis: M=256 and M=512 need different expert-wave sizes after E5M2
+  combine; the wave can recover scheduler utilization without changing the
+  kernel structure.
+- Screen protocol: Pro M=256/512, seed 101, median-10, 8x H200. Hold BN256,
+  FP32 accumulation, E5M2 combine, N-major1, and stage3; sweep
+  EPW8/12/16/24/48.
+- Screen results (maximum returned latency across ranks):
+
+  | EPW | M256 us | M512 us |
+  |---:|---:|---:|
+  | 8 | 871.846 | 1117.557 |
+  | 12 | 851.154 | 1119.348 |
+  | 16 | 862.563 | 1109.572 |
+  | 24 | 854.418 | 1088.051 |
+  | 48 | 856.979 | 1163.685 |
+
+- Confirmation protocol: interleave the M256/EPW12 and M512/EPW24 winners
+  with PR323, three observations each, median-20. Compare the median of each
+  run's maximum-rank latency.
+- Confirmation results:
+
+  | M | ours observation maxima (us) | ours median | PR323 maxima (us) | PR323 median | gap |
+  |---:|---|---:|---|---:|---:|
+  | 256 | 853.523, 880.067, 862.018 | 862.018 | 852.435, 863.330, 858.386 | 858.386 | +0.42% |
+  | 512 | 1081.414, 1086.163, 1122.420 | 1086.163 | 1093.012, 1101.043, 1083.410 | 1093.012 | -0.63% |
+
+- Decision: retain EPW24 as the provisional M512 H200 candidate, but require
+  broader confirmation because one observation was noisy. EPW12 does not meet
+  the M256 gate after interleaving; continue with tile/frontend structure at
+  M256. No H20 selector or tuning result is changed.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_smallm_wave_v1_*`
+  and `.../candidates/pro_smallm_wave_vs_pr_confirm_s101_n20/`.
+
+## Iteration 40: M256 tile and frontend screen
+
+- Hypothesis: M=256 needs more CTA or warp-level parallelism than the retained
+  M64N256 two-consumer tile, and may benefit from BN128, a different consumer
+  count, direct scatter, cleanup, or a wider frontend.
+- Protocol: Pro M=256, seed 101, median-10, 8x H200. Hold FP32 accumulation,
+  E5M2 combine, stage3, N-major1, and EPW12 unless the candidate changes the
+  tile/frontend mode. Report maximum returned latency across ranks.
+- Results:
+
+  | candidate | us | outcome |
+  |---|---:|---|
+  | BM64 BN256, 2 consumers | 852.868 | retained control |
+  | BM64 BN256, 1 consumer | 897.426 | reject |
+  | BM64 BN256, 4 consumers | 864.661 | reject |
+  | BM64 BN256, direct scatter | 854.210 | reject |
+  | BM64 BN256, cleanup | 877.234 | reject |
+  | BM64 BN256, 4-warp frontend | 1005.044 | reject |
+  | BM64 BN128, 1 consumer | 945.667 | reject |
+  | BM64 BN128, 1 consumer + direct | 926.630 | reject |
+  | BM128 BN128, 2 consumers | 1316.292 | reject |
+  | BM128 BN256, 4 consumers | 1007.859 | reject |
+
+- BN128 with two consumers is not a legal existing layout: each L1 consumer
+  would own only 32 post-SwiGLU columns and fails the compile-time 64-column
+  scale-domain requirement. Cluster2 produced an unspecified launch failure
+  and hung surviving ranks; the run was terminated and GPU processes were
+  cleaned before continuing. Neither mode is retained.
+- Phase timing of the retained control showed about 551 us in L1 versus
+  304 us in L2 at M=256, so subsequent tuning focuses on phase-local L1
+  scheduling rather than further global tile changes.
+- Decision: retain BM64 BN256 with two M64N128 consumers and the compact
+  frontend. All tested structural alternatives regress or are invalid. These
+  were explicit H200 experiments; H20 defaults remain unchanged.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_m256_tile_v1_*`
+  and `.../candidates/pro_smallm_phase_breakdown/`.
+
+## Iteration 41: M256 phase-local wave and stage tuning
+
+- Hypothesis: because L1 is about two thirds of M=256 latency, independent L1
+  and L2 expert waves plus phase-local pipeline depth can remove the global
+  scheduler compromise.
+- First screen: with stage3/3, L1/L2 EPW12/24 reached 851.556 us versus
+  856.818 us for 12/12 (-0.61%). The other useful neighbor was L1/L2 EPW8/12
+  at 852.403 us; all remaining one-phase wave changes were 857.874 us or
+  slower.
+- Stage screen at L1/L2 EPW12/24:
+
+  | L1 stages | L2 stages | us |
+  |---:|---:|---:|
+  | 3 | 3 | 861.715 |
+  | 2 | 3 | 848.371 |
+  | 4 | 3 | 861.411 |
+  | 3 | 2 | 984.662 |
+  | 3 | 4 | 861.363 |
+  | 2 | 4 | 858.354 |
+  | 4 | 4 | 858.643 |
+
+- L1 stage2 is the only material stage signal. A follow-up wave screen with
+  L1/L2 stages2/3 found 852.549 us for EPW12/16, while EPW12/24 varied from
+  848.371 us in the stage screen to 886.451 us in the wave screen. This
+  required an interleaved confirmation rather than promotion of the minimum.
+- Confirmation protocol: compare stage2/3 with L1 EPW12 and L2 EPW16 or 24
+  against PR323, three rotating observations each, median-20.
+- Confirmation results:
+
+  | candidate | observation maxima (us) | median us | vs PR323 median |
+  |---|---|---:|---:|
+  | L2 EPW16 | 860.706, 859.205, 851.956 | 859.205 | +0.50% |
+  | L2 EPW24 | 857.235, 851.601, 906.563 | 857.235 | +0.27% |
+  | PR323 | 854.914, 848.772, 857.058 | 854.914 | — |
+
+- Decision: retain L1 stage2 / L2 stage3 as the next M256 parent, but neither
+  phase-wave candidate meets the PR323 gate after interleaving. Do not encode
+  an H200 selector yet; test bounded L1 accumulator/store scheduling changes.
+  The H20 tuning table remains untouched.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_m256_phasewave_v1_*`,
+  `.../candidates/pro_m256_phasestage_v1_*`,
+  `.../candidates/pro_m256_phasewave_s2_v1_*`, and
+  `.../candidates/pro_m256_phasewave_s2_confirm_s101_n20/`.
+
+## Iteration 42: M256 accumulator and scale-scheduling screen
+
+- Hypothesis: the stage2 L1 parent is now limited by register pressure or
+  scale-factor issue placement; BF16x2 scaled accumulation and earlier weight
+  scale loads may improve the L1-dominated path without changing its tile.
+- Protocol: Pro M=256, seed 101, median-10, 8x H200. Hold L1/L2 stages2/3,
+  BN256, N-major1, FP8 E5M2 combine, and L1/L2 EPW12/16 unless noted. Screen
+  accumulator, store, prefetch, scale-domain, and dual-accumulator features.
+- Screen results (maximum returned latency across ranks):
+
+  | candidate | us | outcome |
+  |---|---:|---|
+  | control | 859.810 | retained parent |
+  | BF16x2 scaled accumulator | 854.050 | useful signal |
+  | FP16x2 scaled accumulator | 862.421 | reject |
+  | asynchronous L1 TMA store | launch failure | reject |
+  | prefetched weight scale | 867.202 | reject |
+  | early weight scale | 851.924 | useful signal |
+  | adjacent scale domain | 863.155 | reject |
+  | L1 dual-K accumulator | 884.899 | reject |
+
+- Combining early weight-scale scheduling with FP32 accumulation and L2
+  EPW16/48 reached 854.003/848.101 us in the sequential screen. BF16x2 did
+  not improve the combination. Interleaved median-20 confirmation did not
+  reproduce the apparent lead:
+
+  | candidate | observation maxima (us) | median us | vs PR323 median |
+  |---|---|---:|---:|
+  | early scale, L2 EPW16 | 859.411, 859.330, 853.569 | 859.330 | +1.10% |
+  | early scale, L2 EPW48 | 856.355, 857.843, 859.075 | 857.843 | +0.92% |
+  | PR323 | 849.235, 850.387, 849.986 | 849.986 | — |
+
+- A follow-up L1 wave sweep with early scale (EPW4/6/8/12 paired with L2
+  EPW16/48) found no candidate below the retained EPW12 screen result.
+- Decision: do not promote a global accumulator or scale-scheduling flag.
+  Because L1 accounts for about two thirds of M256 latency, isolate these
+  knobs by phase before rejecting them. All knobs remain default-off and no
+  H20 selector is changed.
+- Raw artifacts:
+  `.../candidates/pro_m256_feature_v1_*`,
+  `.../candidates/pro_m256_early_combo_v1_*`,
+  `.../candidates/pro_m256_early_confirm_s101_n20/`, and
+  `.../candidates/pro_m256_early_l1wave_v1_*`.
+
+## Iteration 43: M256 L2 BN128 screen
+
+- Hypothesis: L1 must retain BN256, but the shorter L2 K dimension may benefit
+  from BN128 and the additional output-tile parallelism.
+- Protocol: Pro M=256, seed 101, median-10, 8x H200. Keep L1 BN256/stage2,
+  early weight-scale scheduling, FP32 accumulation, and E5M2 combine. Set only
+  L2 to BN128 and sweep stage3/4, EPW6/12/16/24/48, plus direct scatter at the
+  stage3/EPW16 point.
+- Results (maximum returned latency across ranks):
+
+  | L2 stages | L2 EPW | direct scatter | us |
+  |---:|---:|---:|---:|
+  | 3 | 6 | 0 | 1016.196 |
+  | 3 | 12 | 0 | 893.490 |
+  | 3 | 16 | 0 | 898.882 |
+  | 3 | 24 | 0 | 896.002 |
+  | 3 | 48 | 0 | 895.219 |
+  | 4 | 16 | 0 | 896.310 |
+  | 3 | 16 | 1 | 877.891 |
+
+- Decision: reject L2 BN128. Even its best direct-scatter result is about
+  3.3% slower than the contemporaneous PR323 reference near 850 us. Continue
+  with BN256 and phase-local accumulator/scale scheduling. The experiment is
+  H200-only; H20 tuning and defaults remain untouched.
+- Raw artifacts:
+  `.../sm90_fp8_h200_retune_job2957858/candidates/pro_m256_l2bn128_v1_*`.
+
+## Iteration 44: M256 phase-local feature and frontend isolation
+
+- Hypothesis: the earlier global BF16/early-scale signals may belong only to
+  L1, which contributes roughly two thirds of M256 latency; alternatively a
+  phase-local frontend or BN512 L1 tile may remove scheduler overhead.
+- Temporary implementation: allow L1/L2 to select early weight-SF and BF16x2
+  accumulation independently. These experiment-only overrides stayed off by
+  default and were removed after the screen.
+- Phase-feature screen (Pro M=256, seed 101, median-10, 8x H200, maximum rank):
+
+  | candidate | us |
+  |---|---:|
+  | control | 893.138 |
+  | L1 early weight-SF | 882.596 |
+  | L2 early weight-SF | 894.885 |
+  | L1 BF16x2 | 880.563 |
+  | L2 BF16x2 | 888.276 |
+
+- Three-observation median-20 follow-up did not reproduce a useful feature
+  gain: control was 889.379 us, L1 BF16x2 888.693 us, L1 early scale
+  893.858 us, and PR323 851.526 us.
+- BN512 L1 with BN256 L2 reached 870.531 us at its best L1/L2 wave setting,
+  still well behind PR323. L1 four-consumer and four-dispatch-warp variants
+  were 884.113 and 895.941 us, respectively; the other phase-local frontend
+  changes were slower.
+- Decision: reject all phase-local feature/frontend variants and remove their
+  temporary host plumbing. Keep BN256 and the compact two-consumer frontend.
+  H20 defaults and tuning are unchanged.
+- Raw artifacts:
+  `.../candidates/pro_m256_phasefeat_v1_*`,
+  `.../candidates/pro_m256_phasefeat_confirm_s101_n20/`,
+  `.../candidates/pro_m256_l1bn512_v1_*`, and
+  `.../candidates/pro_m256_phasefrontend_v1_*`.
+
+## Iteration 45: M256 phase-local L1 BLOCK_K=256
+
+- Hypothesis: M256 L1 already runs only two pipeline stages at BK128, so
+  grouping two independently scaled K128 planes into one BK256 stage can
+  halve its 56 logical K-stage iterations without sacrificing pipeline depth.
+  L2 remains BK128/stage3.
+- Implementation: add independent `DG_SM90_MOE_L1_BLOCK_K` and
+  `DG_SM90_MOE_L2_BLOCK_K` host overrides. They inherit the existing config
+  and remain opt-in; the H20 selector is not modified.
+- Initial same-source screen improved the maximum-rank latency from
+  889.410 us at L1 BK128 to 860.628 us at L1 BK256. Focused eight-rank
+  correctness on `L2.profile_topk6.t512` passed at
+  `calc_diff=0.0020 < 0.01` with E5M2 combine.
+- Wave screen found L1 EPW8 and L2 EPW48 as the best stable parent. The useful
+  neighbors were L1 EPW8/12/48 at 852.146/853.124/852.837 us and L2
+  EPW24/48 at 852.978/852.755 us.
+- Interleaved median-20 confirmation:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | L1 BK256, L1/L2 EPW8/48 | 857.091, 859.493, 851.174 | 857.091 |
+  | PR323 | 857.075, 855.890, 851.814 | 855.890 |
+
+  The initial confirmed gap is +0.14%; later interleaved batches continued to
+  alternate around parity rather than establish the required lead.
+- PTXAS/SASS audit reported 168 registers, zero spill stores/loads, and three
+  barriers for L1. Weight-scale reads already lower to `LDG.E.CONSTANT`, so
+  warp shuffle or manual scale prefetch is not a remaining opportunity.
+- Decision: retain phase-local L1 BK256 as the M256 H200 parent and keep its
+  focused correctness evidence, but do not encode an H200 selector until it
+  has a stable margin over PR323. H20 remains on its existing BK128 tuning.
+- Raw artifacts:
+  `.../candidates/pro_m256_l1bk256_*`,
+  `.../candidates/pro_m256_l1bk256_confirm_s101_n20/`,
+  `.../candidates/pro_m256_l1bk256_correctness_smoke/`, and
+  `.../candidates/pro_m256_l1bk256_resource_v1/`.
+
+## Iteration 46: BK256 bounded microarchitecture follow-ups
+
+- Hypothesis: after BK256 reaches parity, one small producer, accumulator, or
+  cache-policy change may provide the remaining stable margin without fusing
+  L1/L2 or changing the H20 path.
+- Results:
+
+  | candidate | result | decision |
+  |---|---|---|
+  | packed L1 SFA TMA | 863.236 us vs 852.164 us control median | reject (+1.30%) |
+  | packed L2 SFA TMA | 876.195 us screen | reject |
+  | dual-plane accumulators | 863.780 us vs 859.237 us control median | reject (+0.53%) |
+  | BK256 BF16x2, EPW8 | 857.701 us vs 858.101 us control; PR 853.027 us | reject (noise-level) |
+  | BK256 BF16x2, EPW24 | 864.657 us vs 862.659 us control median | reject |
+  | initialize from first plane | 862.981 us vs 856.932 us old path median | reject (+0.71%) |
+  | B-TMA `EVICT_FIRST` | 871.955 us screen | reject |
+  | move empty-barrier release earlier | 859.842 us vs 858.738 us | reject |
+  | precompute scale products | 865.827 us vs 853.780 us | reject |
+  | vectorized paired weight-SF load | 862.645 us vs 854.097 us | reject |
+
+- The BK256+BF16 focused correctness smoke passed at
+  `calc_diff=0.0020 < 0.01`; it was rejected for performance, not accuracy.
+- Cross-load checks also rejected L1 BK256 at Pro M512
+  (1144.579 us versus 1130.339 us BK128) and L2 BN512/BF16 at Pro M256
+  (1001.123 us versus roughly 857 us for BN256).
+- Decision: revert every microarchitecture candidate and keep only the clean
+  L1-BK256/L2-BK128 parent. No PR323 fused code was copied or implemented;
+  PR323 remained a black-box timing reference. H20 tuning and selectors remain
+  untouched.
+- Raw artifacts:
+  `.../candidates/pro_m256_l1bk256_packsfa_*`,
+  `.../candidates/pro_m256_l1bk256_dualplane_*`,
+  `.../candidates/pro_m256_l1bk256_bf16_*`,
+  `.../candidates/pro_m256_l1bk256_initfirst_*`,
+  `.../candidates/pro_m256_l1bk256_bevictfirst_v1/`,
+  `.../candidates/pro_m512_l1bk256_*`, and
+  `.../candidates/pro_m256_l1bk256_l2bn512_bf16_v1/`.
+
+## Iteration 47: M256 cache-policy and asynchronous-store closure
+
+- Hypothesis: after BK256 reaches parity, a cache-policy adjustment or a
+  corrected double-buffered L1 TMA store may provide the final few
+  microseconds without changing the split architecture.
+- Weight TensorMap L2-promotion screening retained the original 256-byte
+  promotion policy: 256/128/64/NONE produced 853.843/859.105/858.389/
+  867.411 us. B-TMA `EVICT_FIRST` and A-TMA `EVICT_LAST` were also rejected at
+  871.955 and 863.011 us.
+- A bounded joint-wave screen produced 858.354, 856.627, and 861.218 us for
+  L1/L2 EPW 8/24, 12/24, and 48/48. The sub-2-us signal was not promoted.
+- The prior asynchronous-store launch failure was traced to three
+  experiment-only defects: host SMEM sizing did not reserve the double
+  buffer, split-N over-allocated the buffer stride, and stage one stored from
+  the stage-zero base. After correcting all three, the candidate ran without
+  a CUDA fault, but reached 861.600 us versus 856.193 us for the synchronous
+  control (+0.63%).
+- Decision: reject and fully revert every cache/TMA experiment. The retained
+  source remains the clean BK256 parent from iteration 46; H20 defaults and
+  selectors are unchanged.
+- Raw artifacts:
+  `.../candidates/pro_m256_l1bk256_l2promotion_v1/`,
+  `.../candidates/pro_m256_l1bk256_{aevictlast,bevictfirst}_v1/`,
+  `.../candidates/pro_m256_l1bk256_jointwave_*`, and
+  `.../candidates/pro_m256_l1bk256_asyncfix_*`.
+
+## Iteration 48: H200 grid alignment and remaining small-M points
+
+- M256 grid hypothesis: using 128 of H200's 132 SMs may align persistent CTA
+  waves better than the full grid. The BK256 parent was screened at 124, 128,
+  130, and 132 SMs; 128 SMs was the only useful point.
+- Interleaved Pro M256 median-20 confirmation:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | BK256, 128 SM | 849.746, 867.493, 846.675 | 849.746 |
+  | BK256, 132 SM | 868.465, 872.996, 863.394 | 868.465 |
+  | PR323 | 855.331, 856.610, 858.755 | 856.610 |
+
+  The 128-SM candidate leads PR323 by 0.80%. Exact eight-rank focused
+  correctness passed at `calc_diff=0.0020 < 0.01`. This remains an explicit
+  H200 parameter candidate; no H20 entry is overwritten.
+- Pro M512 did not obtain a stable winner. The old BN256/EPW24 candidate
+  reconfirmed at 1117.910 us versus 1090.839 us for PR323. Phase-local wave
+  searches reached isolated low screens but failed median-20 confirmation.
+  L1-BN512/BF16 plus L2-BN256/FP32 passed focused correctness and screened at
+  1065.970 us, but confirmed at 1091.810 us versus 1085.427 us for PR323
+  (+0.59%). Wave and 120/128-SM follow-ups did not reproduce a lead. The
+  temporary phase-BF16 host override was therefore removed.
+- Flash M128 improved to 262.785 us with E5M2, non-direct N-major scheduling,
+  and EPW4, versus the pinned PR323 result near 295.0 us (-10.9%). Flash M512
+  improved from the original 425.5-us baseline to a best screen of 363.265 us
+  with E5M2, non-direct N-major scheduling, and EPW16, but remains about 1.1%
+  behind the pinned PR323 result near 359.3 us. Phase waves, stages, SM-grid
+  sizes, L1 BN512, L1 BK256, direct scatter, cleanup, and phase-local BF16
+  attribution did not establish a better candidate.
+- Decision: retain the confirmed Pro M256 128-SM result and the Flash M128
+  parameter result. Pro M512 and Flash M512 remain the two unsolved M>=128
+  points. Do not encode final H200 selector thresholds yet; M<128 and every
+  H20 path remain unchanged.
+- Raw artifacts:
+  `.../candidates/pro_m256_l1bk256_sms*`,
+  `.../candidates/pro_m512_*`,
+  `.../candidates/flash_small_wave_v1_*`, and
+  `.../candidates/flash_m512_*`.
+
+## Iteration 49: Flash M512 cluster and tail-wave search
+
+- Hypothesis: Flash M512 remains close to PR323 and may benefit from the
+  existing two-CTA B multicast path plus load-specific expert waves, reducing
+  repeated weight traffic without changing the split L1/L2 architecture.
+- An asymmetric L1/L2 SM-grid experiment (128/132 and 132/128) was rejected
+  as illegal in practice: the first run timed out before profiling and the
+  reverse order failed after the stale rendezvous. Symmetric 128/120-SM grids
+  also regressed, so phase grid sizes must remain equal.
+- Cluster2 was legal for Flash M512. The initial global wave screen produced
+  max-rank 350.704, 343.249, 346.337, and 344.386 us for EPW2/4/8/32.
+  Exact eight-rank focused correctness passed at
+  `calc_diff=0.0020 < 0.01`.
+- Fresh interleaved median-20 confirmation showed that the pinned historical
+  PR result near 359 us was no longer representative of the current node
+  state. Global EPW4 confirmed at 350.193 us versus 347.330 us for PR323
+  (+0.82%).
+- Phase-local cluster waves reduced the screen minimum to 342.689 us at
+  L1/L2 EPW16/4. Its three-observation confirmation was 365.362, 349.248,
+  and 347.794 us (median 349.248), versus PR323 at 347.730, 346.962, and
+  346.914 us (median 346.962), still +0.66%.
+- A final stage screen selected L1/L2 stage4/4 at 345.056 us, but confirmation
+  again failed: ours 347.378, 362.528, 351.777 us (median 351.777) versus
+  PR323 346.609, 346.752, 355.664 us (median 346.752), or +1.45%. Combining
+  cluster2 with 128/120 SMs regressed further.
+- Pro M512 cluster2 was not legal for this implementation and failed on the
+  first EPW4 launch with `CUDA_ERROR_LAUNCH_FAILED`; no Pro cluster result is
+  retained.
+- Decision: do not promote cluster2 or any new Flash M512 selector. It closes
+  most of the gap in favorable screens but does not beat PR323 under the
+  required interleaved confirmation. No source change, H20 selector change,
+  or M<128 change is retained.
+- Raw artifacts:
+  `.../candidates/flash_m512_cluster2_*`,
+  `.../candidates/flash_m512_phasesms_*`, and
+  `.../candidates/pro_m512_cluster2_v1_*`.
+
+## Iteration 50: Flash M512 cluster2 BF16 candidate
+
+- Hypothesis: after cluster2 plus phase waves/stages closes most of the Flash
+  M512 gap, packed BF16x2 scaled accumulation may remove enough L1 promotion
+  work to establish a stable lead while retaining BF16's FP32-sized exponent
+  range.
+- Parent: Flash M512, E5M2 combine, non-direct N-major scheduling, cluster2,
+  L1/L2 EPW16/4, and L1/L2 stage4/4. Built-in event attribution measured
+  roughly 220 us in L1 and 125 us in L2, confirming L1 as the remaining
+  optimization target.
+- Feature screen (max-rank, median-10): early weight-SF 353.793 us, shared
+  weight-SF prefetch 346.818 us, adjacent scale domain 365.792 us, and global
+  BF16x2 accumulation 345.602 us. Only BF16x2 was retained for confirmation.
+- Interleaved median-20 confirmation:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | cluster2 + BF16x2 | 367.473, 345.953, 341.746 | 345.953 |
+  | PR323 | 351.026, 355.378, 344.273 | 351.026 |
+
+  The candidate leads the fresh PR323 median by 1.45%, despite one slow first
+  observation. Exact eight-rank focused correctness passed at
+  `calc_diff=0.0020 < 0.01`.
+- Decision: retain this as the current Flash M512 H200 candidate, but do not
+  encode an automatic selector until it passes broader precision and
+  cross-seed confirmation. Cluster2 failed to launch for Pro M512, so this
+  candidate is Flash-specific. H20 and M<128 behavior remain unchanged.
+- Raw artifacts:
+  `.../candidates/flash_m512_cluster2_feature_v1_*`,
+  `.../candidates/flash_m512_cluster2_bf16_confirm_s101_n20/`, and
+  `.../candidates/flash_m512_cluster2_bf16_correctness_smoke/`.
+
+## Iteration 51: clean-rebuild and cross-seed Flash M512 validation
+
+- A replacement 8x H200 allocation (`2963787`, `viking-prod-651`) was used
+  after the prior allocation expired.  Before rebuilding with CUDA 13.2, the
+  remote host runtime was restored byte-for-byte to the committed local
+  source; this removed the temporary phase-specific BF16 experiment plumbing.
+- A clean-JIT, three-observation median-20 confirmation at seed 101 produced:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | cluster2 + global BF16x2 | 344.348, 344.992, 341.151 | 344.348 |
+  | PR323 | 344.735, 353.677, 345.408 | 345.408 |
+
+  The candidate remains faster by 0.31%, but its margin is substantially
+  smaller than the earlier 1.45% observation set.
+- Independent median-20 route seeds did not establish a distribution-robust
+  lead:
+
+  | seed | ours us | PR323 us | gap |
+  |---:|---:|---:|---:|
+  | 7 | 346.013 | 361.611 | -4.31% |
+  | 23 | 351.311 | 347.135 | +1.20% |
+  | 509 | 351.951 | 349.983 | +0.56% |
+
+  Combining those seeds with the seed-101 medians places both implementations
+  at parity (ours is about 0.03% slower).  A seed-23 wave/stage/grid rescreen
+  moved the identical parent from 351.311 to 339.965 us, while its best
+  neighbor, L1 EPW8, was only another 0.26% faster.  The run-state movement is
+  larger than the parameter signal, so neither neighbor was promoted.
+- Decision: retain the candidate as useful seed-101 evidence, but withdraw the
+  claim that Flash M512 is stably closed.  Do not encode an automatic selector
+  until a candidate has margin across repeated runs and route seeds.
+- Raw artifacts:
+  `.../candidates/flash_m512_clean_rebuild_s101_n20/`,
+  `.../candidates/flash_m512_crossseed_v2/`, and
+  `.../candidates/flash_m512_seed23_neigh_v3_*`.
+
+## Iteration 52: bounded Pro M512 parameter-space closure
+
+- Clean-source phase attribution on the BN256 FP32 parent measured L1 at
+  roughly 663--760 us and L2 at 355--465 us across ranks.  The two phases had
+  complementary rank tails, so optimizing only one phase was insufficient.
+- Existing legal knobs were screened without copying or implementing PR323's
+  fused kernel.  The material observations were:
+
+  | candidate | screen max-rank (us) | confirmed result / decision |
+  |---|---:|---|
+  | BN256 global BF16x2, EPW24/16 | 1118.6 | wave/stage neighbors all slower |
+  | BN256 one-warp cleanup | 1107.944 | 1133.872 vs PR323 1091.168; reject |
+  | L1-BN512/L2-BN256 global BF16, EPW16/16 | 1090.639 | 1107.452 vs PR323 1086.780; reject |
+  | same tile, EPW16/12 | 1087.842 | 1132.843 vs PR323 1090.011; reject |
+  | same tile, EPW12/12 | 1103.478 | 1119.740 vs PR323 1093.886; reject |
+  | FP16x2 scaled accumulation, EPW16/12 | 1067.439 | `diff=nan`; hard reject |
+
+- The FP16x2 point was not allowed to proceed on timing alone.  An 8-rank
+  focused test of the same FP16 accumulator and BN512 calculation path
+  returned `calc_diff=nan`, so it is numerically invalid under the unchanged
+  `0.01` gate.
+- All remaining existing parameter families were negative or invalid:
+  direct scatter, global-BF16 wave/stage neighbors, adjacent/prefetch/early
+  scale scheduling, L2 BN128/BN512, L2 BK256, phase-local frontend widths,
+  and 112--130-SM grids.  A phase grid of L1/L2=96/112 SM entered a persistent
+  scheduling hang and was terminated; same-grid reductions were legal but
+  slower.  Compile-time guards correctly rejected BF16 with BK256 and BF16
+  with four N64 consumer warpgroups.
+- The closest repeatable historical result remains the temporary
+  L1-BN512/BF16 plus L2-BN256/FP32 configuration at 1091.810 us versus PR323
+  1085.427 us (+0.59%).  Its phase-specific host plumbing was deliberately
+  removed, and the current clean source does not expose that mode.
+- Decision: existing default-off parameter overrides do not provide a stable
+  Pro M512 winner.  Further progress requires an explicitly approved,
+  H200-only source experiment (for example phase-specific accumulation or a
+  new tile), followed by correctness and interleaved confirmation.  No H20
+  selector, generic default, or PR323 source was changed.
+- Raw artifacts:
+  `.../candidates/pro_m512_{cleanup,global_bf16,l1bn512,l2bn128,l2bk256,fp16acc}*`,
+  `.../candidates/pro_m512_bn512_{grid,wave}*`, and the corresponding
+  `*_confirm_s101_n20*` directories.
+
+## Iteration 53: clean-node closure of the retained M128/M256 points
+
+- The retained candidates were rerun from the clean host runtime on
+  `viking-prod-651`, interleaving each implementation for three median-20
+  observations at seed 101.
+- Flash M128, E5M2 combine with non-direct N-major scheduling and EPW4:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | ours | 268.445, 285.053, 285.406 | 285.053 |
+  | PR323 | 291.471, 386.380, 299.999 | 299.999 |
+
+  Ours leads the median by 4.98%.  The PR323 second observation is an outlier,
+  but ours also beats the other two individual PR323 observations.
+- Pro M128, L1-BN512/L2-BN256 global-BF16 parent:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | ours | 865.032, 869.053, 876.086 | 869.053 |
+  | PR323 | 899.903, 904.909, 911.365 | 904.909 |
+
+  Ours leads by 3.96%.
+- Pro M256, phase-local L1-BK256/L2-BK128 with 128 SMs:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | ours | 865.198, 862.303, 865.685 | 865.198 |
+  | PR323 | 861.166, 872.349, 880.253 | 872.349 |
+
+  Ours leads by 0.82%, reproducing the prior node's 0.80% margin.  Its focused
+  correctness evidence remains `calc_diff=0.0020 < 0.01`.
+- Decision: retain all three candidates.  The clean rebuild did not regress
+  these points; only Flash and Pro M512 remain unclosed.
+- Raw artifacts:
+  `.../candidates/flash_m128_e4_confirm_s101_n20_v2/`,
+  `.../candidates/pro_m128_bn512_clean_confirm_s101_n20_v2/`, and
+  `.../candidates/pro_m256_l1bk256_sms128_clean_confirm_s101_n20_v2/`.
+
+## Iteration 54: clean-node large-M closure and Flash M8192 retune
+
+- Three interleaved median-20 observations on the clean H200 node confirmed
+  the retained Pro L1-BN512/L2-BN256 global-BF16 parent at every M above 512:
+
+  | M | ours median (us) | PR323 median (us) | gap |
+  |---:|---:|---:|---:|
+  | 1024 | 1555.068 | 1576.030 | -1.33% |
+  | 2048 | 2324.749 | 2434.126 | -4.49% |
+  | 4096 | 4117.554 | 4313.020 | -4.53% |
+  | 8192 | 7749.587 | 7926.971 | -2.24% |
+
+- The unmodified Flash default path was also rerun to separate retained
+  defaults from opt-in candidate effects:
+
+  | M | ours median (us) | PR323 median (us) | gap |
+  |---:|---:|---:|---:|
+  | 256 | 289.888 | 300.752 | -3.61% |
+  | 1024 | 589.793 | 599.632 | -1.64% |
+  | 2048 | 947.056 | 991.297 | -4.46% |
+  | 4096 | 1740.819 | 1756.705 | -0.90% |
+  | 8192 | 3344.431 | 3309.310 | +1.06% |
+
+  M8192 no longer passed the gate under repeated clean-node measurement, so
+  it was retuned instead of relying on the older single observation.
+- A bounded Flash M8192 sweep retained E5M2 combine, non-direct N-major
+  scheduling, stage3, and EPW32.  Its three median-20 observation maxima were
+  3200.650/3177.536/3194.191 us versus PR323
+  3301.935/3308.713/3302.333 us.  The median is 3194.191 versus 3302.333 us,
+  a stable 3.27% lead.
+- Exact eight-rank focused correctness for the retained E5M2/EPW32/stage3
+  calculation path passed at `calc_diff=0.0020 < 0.01`.
+- Decision: retain the Pro M1024--8192 parent, the default Flash M256 and
+  M1024--4096 points, and the new explicit Flash M8192 candidate.  The only
+  remaining performance gaps are Flash M512 and Pro M512.
+- Raw artifacts:
+  `.../candidates/pro_large_clean_confirm_s101_n20_v2/`,
+  `.../candidates/flash_default_large_clean_s101_n20_v2/`,
+  `.../candidates/flash_m8192_tune_v1_*`,
+  `.../candidates/flash_m8192_e32_s3_n1_confirm_s101_n20_v1/`, and
+  `.../candidates/flash_m8192_e32_s3_n1_correctness/`.
+
+## Iteration 55: same-node original-baseline characterization below M128
+
+- Hypothesis: the apparent Pro M64 regression against an older single-run
+  number is allocation noise rather than a default-path source regression.
+  Measure the exact pre-retune commit on the current H200 node before drawing
+  any conclusion from cross-allocation numbers.
+- Baseline source: detached worktree at `3552b62` (`[repair] Add SM90 dependent
+  template qualifiers for CUDA 13.2`).  No candidate environment override was
+  enabled.  The test used job `2963787` on `viking-prod-651`, seed 101, three
+  median-20 observations, and the maximum returned latency across eight ranks.
+
+  | M | observation maxima (us) | median us |
+  |---:|---|---:|
+  | 8 | 644.384, 640.864, 647.600 | 644.384 |
+  | 16 | 775.392, 780.975, 777.057 | 777.057 |
+  | 32 | 842.671, 835.969, 851.545 | 842.671 |
+  | 64 | 867.887, 877.329, 868.240 | 868.240 |
+
+- Decision: retain these values as the authoritative same-node denominator.
+  Run the current default-off source under the identical protocol before
+  accepting or rejecting the `M < 128` no-regression gate.  No source,
+  selector, H20 tuning, or PR323 implementation changed in this iteration.
+- Raw artifacts:
+  `.../candidates/pro_small_baseline3552_same_node_full_v1/`.
+
+## Iteration 56: same-node current-source check below M128
+
+- Hypothesis: default-off experimental machinery in the current source does
+  not materially regress the original Pro path below M128.
+- Protocol: current source on job `2963787`, node `viking-prod-651`, no
+  candidate environment overrides, seed 101, three median-20 observations,
+  and the maximum returned latency across eight ranks.  This matches iteration
+  55's original-source baseline.
+
+  | M | current observation maxima (us) | current median us | baseline median us | gap |
+  |---:|---|---:|---:|---:|
+  | 16 | 780.767, 778.929, 777.024 | 778.929 | 777.057 | +0.24% |
+  | 32 | 833.625, 838.465, 858.399 | 838.465 | 842.671 | -0.50% |
+  | 64 | 868.591, 872.568, 865.585 | 868.591 | 868.240 | +0.04% |
+
+- M16, M32, and M64 satisfy the no-regression gate within repeated-run noise.
+  The outer summary command failed after all benchmark subprocesses ran because
+  one M8 JSON line was interleaved with concurrent stdout and rejected by
+  `jq`; its first two observation maxima were 650.832 and 648.363 us.  Preserve
+  the raw log and recover or rerun M8 before closing the full small-M gate.
+- No source, selector, H20 tuning, or PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/pro_small_current_head_same_node_full_v1/`.
+
+## Iteration 57: failed Pro M8 alternating A/B invocation
+
+- Intended protocol: five paired, order-alternating observations of the exact
+  `3552b62` baseline and current default source at Pro M8, seed 101 and
+  median-20, to resolve iteration 56's 0.62% difference.
+- Result: the remote login shell interpreted an embedded awk variable before
+  the requested `bash -lc` payload and exited with `Illegal variable name`.
+  No benchmark subprocess launched and no performance evidence was produced.
+- Decision: fix only the command quoting and rerun the identical protocol.  No
+  source, selector, H20 tuning, or PR323 implementation changed.
+
+## Iteration 58: paired Pro M8 no-regression closure
+
+- Hypothesis: iteration 56's 0.62% M8 difference is smaller than run-state
+  noise and does not represent a material default-path regression.
+- Protocol: exact `3552b62` baseline and current default source, Pro M8, seed
+  101, median-20, eight ranks, five paired observations.  Execution order was
+  alternated on every pair to reduce monotonic clock or node-state bias.
+
+  | pair | first | baseline us | current us | current - baseline us |
+  |---:|---|---:|---:|---:|
+  | 1 | baseline | 679.2 | 648.1 | -31.1 |
+  | 2 | current | 650.6 | 647.5 | -3.1 |
+  | 3 | baseline | 643.4 | 649.2 | +5.8 |
+  | 4 | current | 640.9 | 646.9 | +6.0 |
+  | 5 | baseline | 646.8 | 670.4 | +23.6 |
+
+- The baseline median is 646.8 us and the current median is 648.1 us, a
+  +0.20% difference.  Both sides contain a single opposite-direction system
+  outlier, and the central values overlap the earlier three-observation ranges.
+- Decision: accept Pro M8 as no material regression.  Together with iteration
+  56, the same-node `M < 128` Pro gate is closed.  No source, selector, H20
+  tuning, or PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/pro_m8_same_node_alternating_ab_v2/`.
+
+## Iteration 59: paired Flash small-M no-regression closure
+
+- Hypothesis: the current default-off source does not materially regress the
+  original Flash path below M128; the older Flash M16 +0.41% comparison was
+  cross-allocation noise.
+- Protocol: exact `3552b62` baseline and current default source on job
+  `2963787`, Flash M8/16/32/64, seed 101, median-20, eight ranks, three paired
+  observations per M.  Baseline/current execution order alternated by
+  observation.
+
+  | M | baseline observations (us) | baseline median us | current observations (us) | current median us | gap |
+  |---:|---|---:|---|---:|---:|
+  | 8 | 223.8, 223.3, 223.1 | 223.3 | 218.0, 220.3, 214.3 | 218.0 | -2.37% |
+  | 16 | 249.6, 252.0, 254.1 | 252.0 | 273.5, 242.6, 249.1 | 249.1 | -1.15% |
+  | 32 | 257.9, 254.0, 259.6 | 257.9 | 256.5, 258.2, 255.0 | 256.5 | -0.54% |
+  | 64 | 267.7, 287.6, 268.1 | 268.1 | 266.1, 268.8, 268.8 | 268.8 | +0.26% |
+
+- Flash M8/M16/M32 are faster than the original source.  M64 differs by only
+  +0.26%, within the repeated-run noise demonstrated by the 287.6-us baseline
+  outlier, and is accepted as no material regression.
+- Decision: the same-node `M < 128` no-regression gate is now closed for both
+  Flash and Pro.  No source, selector, H20 tuning, or PR323 implementation
+  changed.
+- Raw artifacts:
+  `.../candidates/flash_small_same_node_alternating_ab_v1/`.
+
+## Iteration 60: Flash M512 phase frontend and BN128 screen
+
+- Hypothesis: the retained cluster2/BF16 parent may reduce its dominant L1
+  time by expanding the phase-local dispatch frontend, or improve tail
+  utilization by using a narrower N tile in one phase.  These are existing
+  default-off controls and require no new kernel structure.
+- Parent: Flash M512, E5M2 combine, non-direct N-major scheduling, cluster2,
+  global BF16x2 accumulation, L1/L2 EPW16/4 and stage4/4.
+- Protocol: job `2963787`, node `viking-prod-651`, seed 101, median-10, maximum
+  returned latency across eight ranks.  Screen only our implementation before
+  spending paired PR323 observations on a survivor.
+
+  | candidate | max-rank us | versus parent |
+  |---|---:|---:|
+  | parent | 339.3 | -- |
+  | L1 dispatch warps 4 | 356.9 | +5.19% |
+  | L2 dispatch warps 4 | 378.6 | +11.58% |
+  | L1/L2 dispatch warps 4/4 | 346.9 | +2.24% |
+  | L1 BN128 | 415.0 | +22.31% |
+  | L2 BN128 | 414.3 | +22.10% |
+  | L1/L2 BN128/128 | 458.0 | +34.98% |
+
+- Decision: reject expanded phase frontends and BN128 for Flash M512.  None
+  beats the same-state parent, so no PR323 confirmation is warranted.  No
+  source, selector, H20 tuning, or PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_frontend_tile_screen_v1/`.
+
+## Iteration 61: interrupted Flash M512 cross-seed L1-wave screen
+
+- Intended protocol: compare L1 EPW8/12/16 on route seeds 7/23/101/509 for
+  the retained cluster2/BF16 parent, using median-20 and maximum latency across
+  eight ranks.
+- Result: seed 7 EPW8 completed at 342.8 us.  EPW12 then failed the existing
+  legality condition because Flash has 32 local experts and the wave size must
+  divide that count.  The batch stopped before EPW16 or the other seeds ran.
+- Decision: remove only the illegal EPW12 point and rerun EPW8 versus EPW16
+  under the same cross-seed protocol.  No source, selector, H20 tuning, or
+  PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l1wave_crossseed_screen_v1/`.
+
+## Iteration 62: Flash M512 legal L1-wave cross-seed screen
+
+- Hypothesis: L1 EPW8 is less sensitive than the retained EPW16 parent to
+  route-dependent tail imbalance at Flash M512.
+- Protocol: retained cluster2/global-BF16/E5M2 parent, job `2963787`, seeds
+  7/23/101/509, median-20, maximum returned latency across eight ranks.  EPW8
+  and EPW16 execution order alternated by seed; all other settings were held
+  fixed.
+
+  | seed | L1 EPW8 us | L1 EPW16 us | EPW8 difference |
+  |---:|---:|---:|---:|
+  | 7 | 343.8 | 344.0 | -0.06% |
+  | 23 | 338.1 | 345.3 | -2.09% |
+  | 101 | 343.1 | 348.9 | -1.66% |
+  | 509 | 345.1 | 352.0 | -1.96% |
+
+- EPW8 wins all four route seeds.  Its cross-seed center is 343.45 us versus
+  347.10 us for EPW16, a 1.05% improvement, and its range is also narrower.
+- Decision: promote L1 EPW8 to paired PR323 cross-seed confirmation.  Keep L2
+  at EPW4.  No source, selector, H20 tuning, or PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l1wave_crossseed_screen_v2/`.
+
+## Iteration 63: Flash M512 EPW8 cross-seed PR323 confirmation
+
+- Hypothesis: the cross-seed L1 EPW8 improvement is large enough to turn the
+  retained Flash M512 parent into a route-robust PR323 winner.
+- Protocol: seeds 7/23/101/509, three median-20 observations per
+  implementation and seed, maximum returned latency across eight ranks.
+  Ours and unmodified PR323 alternated order on every observation.
+
+  | seed | ours observations (us) | ours median us | PR323 observations (us) | PR323 median us | gap |
+  |---:|---|---:|---|---:|---:|
+  | 7 | 350.9, 346.8, 341.4 | 346.8 | 347.3, 344.4, 347.1 | 347.1 | -0.09% |
+  | 23 | 343.6, 353.1, 341.4 | 343.6 | 346.1, 345.1, 348.4 | 346.1 | -0.72% |
+  | 101 | 360.6, 336.9, 343.6 | 343.6 | 360.0, 349.5, 344.7 | 349.5 | -1.69% |
+  | 509 | 347.5, 358.5, 341.5 | 347.5 | 347.1, 346.0, 344.8 | 346.0 | +0.43% |
+
+- Ours wins three of four seeds.  The median of the four per-seed medians is
+  345.2 us versus 346.6 us for PR323, a 0.40% aggregate lead.  However, seed
+  509 remains 0.43% slower and individual ours observations still have larger
+  upper tails.
+- Decision: EPW8 is the best Flash M512 candidate so far, but do not call the
+  strict per-seed gate closed.  Use it as the parent for one final legal L2
+  wave/tail screen; reject any neighbor that does not improve seed 509 without
+  losing the other seeds.  No source, H20 tuning, or PR323 implementation
+  changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l1e8_pr_confirm_s{7,23,101,509}_v1/`.
+
+## Iteration 64: Flash M512 L2 large-wave tail screen
+
+- Hypothesis: after moving L1 to EPW8, a larger L2 expert wave may remove the
+  remaining seed-509 tail without materially hurting the seed-101 winner.
+- Protocol: retained Flash M512 cluster2/BF16/E5M2 candidate with L1 EPW8;
+  compare L2 EPW4/16/32 at seeds 101 and 509, median-20, maximum latency across
+  eight ranks.  Candidate order was reversed on seed 509.
+
+  | seed | L2 EPW4 us | L2 EPW16 us | L2 EPW32 us |
+  |---:|---:|---:|---:|
+  | 101 | 345.2 | 350.0 | 346.2 |
+  | 509 | 349.3 | 342.6 | 338.5 |
+
+- EPW16 is not competitive.  EPW32 costs 1.0 us on seed 101 but improves seed
+  509 by 10.8 us, turning the only PR323-losing route seed into a promising
+  candidate while preserving enough of seed 101's prior margin.
+- Decision: reject EPW16.  Extend the EPW4-versus-EPW32 screen to seeds 7 and
+  23 before full PR323 confirmation.  No source, selector, H20 tuning, or
+  PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l2wave_tail_screen_v1/`.
+
+## Iteration 65: Flash M512 L2 EPW32 remaining-seed screen
+
+- Hypothesis: L2 EPW32's seed-509 tail improvement extends to seed 7/23 and
+  leaves a fixed configuration that can beat PR323 across all four routes.
+- Protocol: same L1-EPW8 parent and median-20/max-rank method as iteration 64;
+  compare L2 EPW4 and EPW32 at seeds 7 and 23, reversing order on seed 23.
+
+  | seed | L2 EPW4 us | L2 EPW32 us | EPW32 difference |
+  |---:|---:|---:|---:|
+  | 7 | 348.3 | 339.3 | -2.58% |
+  | 23 | 337.6 | 345.7 | +2.40% |
+
+- EPW32 materially improves seed 7 and 509, modestly regresses seed 101, and
+  materially regresses seed 23.  Even the seed-23 screen remains close to the
+  prior same-seed PR323 median of 346.1 us, so a direct interleaved verdict is
+  still necessary.
+- Decision: run the fixed L1/L2 EPW8/32 candidate against PR323 for all four
+  route seeds.  Do not select it from cross-run comparisons alone.  No source,
+  selector, H20 tuning, or PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l2wave_tail_screen_v2/`.
+
+## Iteration 66: Flash M512 EPW8/32 cross-seed PR323 verdict
+
+- Hypothesis: the fixed L1/L2 EPW8/32 configuration beats PR323 on all four
+  route seeds by trading a small seed-23 screen regression for much better
+  seed-7/509 tails.
+- Protocol: seeds 7/23/101/509, three median-20 observations per
+  implementation and seed, maximum latency across eight ranks, with ours and
+  PR323 alternating order on every observation.
+
+  | seed | ours observations (us) | ours median us | PR323 observations (us) | PR323 median us | gap |
+  |---:|---|---:|---|---:|---:|
+  | 7 | 349.9, 363.3, 344.4 | 349.9 | 363.9, 346.2, 346.9 | 346.9 | +0.86% |
+  | 23 | 339.5, 337.5, 339.4 | 339.4 | 342.3, 346.0, 352.4 | 346.0 | -1.91% |
+  | 101 | 342.6, 340.4, 350.3 | 342.6 | 343.7, 347.3, 345.2 | 345.2 | -0.75% |
+  | 509 | 338.3, 340.7, 347.2 | 340.7 | 348.1, 349.4, 352.3 | 349.4 | -2.49% |
+
+- EPW8/32 wins seeds 23/101/509 with useful margin, but loses seed 7 by
+  0.86% because of a slow second observation.  It therefore does not satisfy
+  the strict all-seed gate even though its aggregate result is stronger than
+  EPW8/4.
+- Decision: do not promote EPW32 yet.  Screen the intermediate legal L2 EPW8
+  as the final fixed-wave compromise; it must preserve the three current wins
+  and remove the seed-7 loss before confirmation.  No source, selector, H20
+  tuning, or PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l1e8_l2e32_pr_confirm_s{7,23,101,509}_v1/`.
+
+## Iteration 67: Flash M512 L2 EPW8 compromise screen
+
+- Hypothesis: L2 EPW8 balances EPW4's seed-509 weakness and EPW32's seed-7
+  variability, yielding one fixed configuration with enough margin on all
+  four route seeds.
+- Protocol: retained cluster2/BF16/E5M2 configuration with L1/L2 EPW8/8;
+  seeds 7/23/101/509, median-20, maximum latency across eight ranks.
+
+  | seed | ours max-rank us | latest paired PR323 median us | indicative gap |
+  |---:|---:|---:|---:|
+  | 7 | 338.7 | 346.9 | -2.36% |
+  | 23 | 345.5 | 346.0 | -0.14% |
+  | 101 | 343.2 | 345.2 | -0.58% |
+  | 509 | 348.8 | 349.4 | -0.17% |
+
+- A single EPW8 observation is below the latest directly paired PR323 median
+  at every route seed, unlike EPW4 or EPW32.  The margins at seeds 23 and 509
+  are small, so cross-run comparison alone is not selector-grade evidence.
+- Decision: promote L1/L2 EPW8/8 to the final four-seed interleaved PR323
+  confirmation.  No source, selector, H20 tuning, or PR323 implementation
+  changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l2epw8_crossseed_screen_v1/`.
+
+## Iteration 68: Flash M512 EPW8/8 cross-seed PR323 verdict
+
+- Hypothesis: the fixed L1/L2 EPW8/8 compromise beats PR323 on all four route
+  seeds and removes the complementary EPW4/EPW32 failures.
+- Protocol: seeds 7/23/101/509, three median-20 observations per
+  implementation and seed, maximum latency across eight ranks, alternating
+  ours and PR323 on every observation.
+
+  | seed | ours observations (us) | ours median us | PR323 observations (us) | PR323 median us | gap |
+  |---:|---|---:|---|---:|---:|
+  | 7 | 344.1, 347.2, 351.1 | 347.2 | 342.6, 342.5, 353.3 | 342.6 | +1.34% |
+  | 23 | 365.5, 345.5, 340.5 | 345.5 | 342.4, 352.5, 344.0 | 344.0 | +0.44% |
+  | 101 | 340.4, 343.0, 354.3 | 343.0 | 345.5, 341.1, 350.2 | 345.5 | -0.72% |
+  | 509 | 340.8, 343.2, 335.8 | 340.8 | 349.1, 343.4, 354.7 | 349.1 | -2.38% |
+
+- EPW8/8 wins seeds 101/509 but loses seeds 7/23.  It is therefore less
+  robust than L1/L2 EPW8/4, which won seeds 7/23/101, lost only seed 509 by
+  0.43%, and led the four-seed center by 0.40%.
+- Decision: reject EPW8/8 and retain EPW8/4 as the best fixed Flash M512
+  candidate.  It closes the official seed-101 benchmark point by 1.69%, but
+  no tested fixed L2 wave wins every route seed; retain that limitation in the
+  final report rather than claiming distribution-independent performance.
+  No source, selector, H20 tuning, or PR323 implementation changed.
+- Raw artifacts:
+  `.../candidates/flash_m512_l1e8_l2e8_pr_confirm_s{7,23,101,509}_v1/`.
+
+## Iteration 69: Flash M512 EPW8/4 focused correctness
+
+- Exact candidate controls: E5M2 combine, non-direct N-major scheduling,
+  cluster2, global BF16x2 scaled accumulation, L1/L2 EPW8/4 and stage4/4.
+- Protocol: eight H200 ranks, unchanged `calc_diff` tolerance 0.01, focused
+  top-k6/M512 heuristic scenario.
+- Result: `diff=0.0020 < 0.01`; the scenario passed on all eight ranks and the
+  test process exited zero.
+- Decision: retain EPW8/4 as the numerically valid Flash M512 benchmark
+  winner.  This test changes only expert-wave scheduling relative to the prior
+  correct parent and does not relax precision or tolerance.  No source,
+  selector, H20 tuning, or PR323 implementation changed.
+- Raw artifact:
+  `.../candidates/flash_m512_l1e8_l2e4_correctness_v1/correctness.log`.
+
+## Iteration 70: Flash M512 exact-shape correctness
+
+- Hypothesis: the retained EPW8/4 candidate remains within the unchanged
+  numerical tolerance at the actual Flash production dimensions, rather than
+  only the smaller heuristic-branch test shape.
+- Protocol: eight H200 ranks; H4096, I2048, E256, top-k6, M512; E5M2 combine,
+  cluster2, global BF16x2 accumulation, L1/L2 EPW8/4 and stage4/4.  Compare
+  directly against the existing FP32/BF16 reference with `calc_diff < 0.01`.
+- Result: `diff=0.0021 < 0.01`, process exit zero.
+- Decision: exact Flash M512 shape correctness is confirmed without tolerance
+  relaxation.  Retain EPW8/4 as the final Flash M512 candidate.  No source,
+  selector, H20 tuning, or PR323 implementation changed.
+- Raw artifact:
+  `.../candidates/flash_m512_l1e8_l2e4_exact_shape_correctness_v1/correctness.log`.
+
+## Iteration 71 — Conservative automatic H200 FP8 selector smoke
+
+- Hypothesis: an H200-only, exact-shape/exact-M selector can reproduce the previously verified explicit FP8 candidate configurations while leaving M512 and all unmatched workloads on the existing generic path.
+- Changes:
+  - Added H200 device detection and an optional `DG_SM90_MOE_H200_POLICY` debug override.
+  - Added exact Flash/Pro workload policies for the retained M points only.
+  - Applied policy defaults to base and phase-specific FP8 configuration, with explicit environment variables retaining precedence.
+  - Kept the already validated global BF16 Pro candidates; added no new phase-specific BF16 path.
+- Protocol: H200 job 2968183 (`viking-prod-651`), no tuning environment variables, `DG_PRINT_CONFIGS=1`, one timing iteration for compile/config smoke. Tested Flash M={128,512,8192} and Pro M={128,256,512,1024}.
+- Evidence:
+  - Flash M8192 selected BM64/BN256/BK128, cluster1, direct0, N-major1, cleanup0, L1/L2 EPW32 and stage3, FP8 combine enabled, BF16 scaled accumulation disabled.
+  - Pro M128 selected L1 BN512/EPW16/stage2 and L2 BN256/EPW16/stage3, direct0, N-major1, cleanup0, FP8 combine enabled, global BF16 scaled accumulation enabled.
+  - Pro M256 selected L1 BN256/BK256/EPW8/stage2/SMS128 and L2 BN256/BK128/EPW48/stage3/SMS128, direct0, N-major1, cleanup0, FP8 combine enabled, BF16 scaled accumulation disabled.
+  - Flash M512 and Pro M512 printed only the generic base configuration and no H200 policy, confirming conservative fallthrough.
+  - All smoke runs completed successfully. Timing is compile/config smoke only and is not used as the final performance verdict.
+- Decision: retain the selector implementation and proceed to multi-seed numerical validation plus interleaved performance verification.
+- Artifacts:
+  - `$ROOT/candidates/h200_auto_selector_flash_smoke_v1`
+  - `$ROOT/candidates/h200_auto_selector_pro_smoke_v1`
+  - `$ROOT/jit/h200_auto_selector_smoke_v1`
+
+## Iteration 72 — Exact Pro global-BF16 numerical-gate smoke
+
+- Hypothesis: the actual Pro-shape validation harness can compare the retained
+  E5M2 configuration with FP32 versus global packed-BF16 scaled accumulation
+  on identical inputs and against a distributed FP32 golden reference.
+- Protocol: H200 job `2968183`, eight ranks, H7168/I3072/E384/top-k6, M128,
+  seed 101.  Both kernel runs used the same FP8 inputs, weights, routing, and
+  E5M2 combine path; only `DG_SM90_MOE_BF16_SCALED_ACCUM` changed.  The
+  distributed reference computed each rank's local experts and reduce-scattered
+  the BF16 contribution slots.  The unchanged gate was finite output and
+  `calc_diff < 0.01` on every rank for FP32-vs-golden, BF16-vs-golden, and
+  BF16-vs-FP32.
+- Result: all eight ranks passed.  Worst-rank differences were
+  FP32-vs-golden `0.001984`, BF16-vs-golden `0.002106`, and BF16-vs-FP32
+  `0.001847`; all outputs were finite.  The largest absolute BF16-vs-FP32
+  element difference was 144, recorded for visibility but not used as a
+  scale-independent acceptance metric.
+- Decision: the harness and M128 global-BF16 path are valid.  Proceed to the
+  full four-seed by five-M exact-Pro campaign.
+- Raw artifact:
+  `$ROOT/candidates/h200_pro_bf16_gate_smoke_v1/validation.log`.
+
+## Iteration 73 — Exact Pro global-BF16 four-seed numerical gate
+
+- Hypothesis: the retained global packed-BF16 scaled-accumulation candidates
+  remain numerically acceptable across the complete selected Pro M set and
+  route/weight seeds, not only the seed-101 smoke.
+- Protocol: H200 job `2968183`, eight ranks, exact Pro H7168/I3072/E384/top-k6,
+  M={128,1024,2048,4096,8192}, seeds={7,23,101,509}.  For every one of the
+  20 cases, run identical FP8 inputs/weights/routes with FP32 accumulation and
+  global BF16x2 accumulation while holding E5M2 combine fixed, then compare
+  both outputs to the distributed FP32 golden and directly to each other.
+  Require finite output and `calc_diff < 0.01` independently on every rank.
+- Result: all 20 cases and all 160 per-rank outputs passed; no NaN or Inf.
+  Worst values across the campaign were:
+  - FP32-vs-golden: `0.00198835` at seed 23, M128.
+  - BF16-vs-golden: `0.00210961` at seed 23, M128.
+  - BF16-vs-FP32: `0.00184732` at seed 101, M128.
+  - Maximum absolute BF16-vs-FP32 element delta: 192 at seed 23, M8192
+    (reported only for scale context; the normalized acceptance metric passed).
+- Decision: the previously validated global-BF16 Pro rows clear the full
+  numerical gate with substantial margin.  Keep them in the conservative H200
+  selector and proceed to automatic-selector performance confirmation.
+- Raw artifact:
+  `$ROOT/candidates/h200_pro_bf16_gate_4seed_5m_v1/validation.log`.
+
+## Iteration 74 — Automatic H200 selector formal performance matrix
+
+- Hypothesis: the conservative automatic selector reproduces the retained
+  explicit-candidate wins at every in-scope M while M512 remains on the generic
+  path.
+- Protocol: H200 job `2968183`, no `DG_SM90_MOE_*` tuning variables, seed 101,
+  three order-alternating observations per implementation, rank-local
+  median-20, and the median of the three eight-rank maxima.  Compare the
+  automatic selector with unmodified PR323 at Flash/Pro
+  M={128,256,1024,2048,4096,8192}; record M512 ours-only.
+- Results:
+
+  | shape | M | ours median us | PR323 median us | gap |
+  |---|---:|---:|---:|---:|
+  | Flash | 128 | 271.7 | 295.0 | -7.90% |
+  | Flash | 256 | 289.1 | 302.3 | -4.37% |
+  | Flash | 512 | 413.8 | not gated | — |
+  | Flash | 1024 | 592.8 | 605.5 | -2.11% |
+  | Flash | 2048 | 950.7 | 999.6 | -4.89% |
+  | Flash | 4096 | 1745.5 | 1760.3 | -0.84% |
+  | Flash | 8192 | 3192.2 | 3307.2 | -3.48% |
+  | Pro | 128 | 880.9 | 899.8 | -2.10% |
+  | Pro | 256 | 866.4 | 862.5 | +0.45% |
+  | Pro | 512 | 1231.3 | not gated | — |
+  | Pro | 1024 | 1551.9 | 1581.6 | -1.88% |
+  | Pro | 2048 | 2323.7 | 2435.0 | -4.57% |
+  | Pro | 4096 | 4098.5 | 4296.3 | -4.60% |
+  | Pro | 8192 | 7715.6 | 7897.0 | -2.30% |
+
+- Validation: the strict parser accepted all 78 leaf runs, each with eight
+  ranks, 20 timed samples per rank, three observation IDs, zero exit status,
+  and identical routes between paired implementations.
+- Decision: 11/12 in-scope points beat PR323.  Do not call the performance gate
+  closed because Pro M256 is 0.45% slower in this formal run, despite its prior
+  0.82% win.  Preserve every other automatic row and perform a focused paired
+  Pro-M256 remeasurement/tuning step only; M512 remains excluded.
+- Raw artifacts:
+  - `$ROOT/candidates/h200_auto_selector_final_v1/report.md`
+  - `$ROOT/candidates/h200_auto_selector_final_v1/summary.csv`
+  - `$ROOT/candidates/h200_auto_selector_final_v1/logs/`
+
+## Iteration 75 — Failed Pro M256 five-observation invocation
+
+- Intended protocol: rerun the unchanged automatic Pro-M256 selector against
+  PR323 for five order-alternating median-20 observations.
+- Result: shell redirection attempted to open the candidate driver log before
+  its parent directory existed, so the command exited immediately with
+  `No such file or directory`.  No benchmark subprocess or GPU kernel ran.
+- Decision: create the candidate directory before redirection and rerun the
+  identical protocol.  No source, selector, H20 tuning, or PR323 code changed.
+
+## Iteration 76 — Unchanged Pro M256 five-observation remeasurement
+
+- Hypothesis: the formal matrix's +0.45% Pro-M256 result may be a three-run
+  ordering fluctuation because the identical configuration previously led
+  PR323 by about 0.8%.
+- Protocol: unchanged automatic selector, no tuning environment variables,
+  seed 101, five order-alternating observations, rank-local median-20, and
+  maximum latency across eight ranks.
+- Result:
+
+  | implementation | observation maxima (us) | median us |
+  |---|---|---:|
+  | ours | 881.879, 869.752, 865.712, 863.770, 864.007 | 865.712 |
+  | PR323 | 870.522, 869.952, 859.584, 861.502, 863.407 | 863.407 |
+
+  Ours is 0.27% slower.  The result narrows the formal +0.45% gap but does not
+  close the strict faster-than-PR323 gate.
+- Decision: measurement noise alone is not sufficient evidence to accept the
+  current row.  Keep all other selector rows fixed and perform a bounded
+  Pro-M256 phase-grid screen using only existing H200 experiment controls.
+- Raw artifacts:
+  `$ROOT/candidates/h200_auto_pro_m256_remeasure_v1/`.
+
+## Iteration 77 — Failed Pro M256 phase-grid screen invocation
+
+- Intended protocol: two median-20 observations for nine bounded L1/L2 SM-grid
+  combinations around the retained 128/128 point.
+- Result: as in iteration 75, driver-log redirection preceded creation of the
+  per-candidate directory.  The first shell redirection failed immediately;
+  no benchmark subprocess or GPU kernel ran.
+- Decision: explicitly create each candidate directory inside the loop and
+  rerun the unchanged screen.  No source or selector setting changed.
+
+## Iteration 78 — Aborted Pro M256 asymmetric phase-grid screen
+
+- Hypothesis: keeping the L1-dominant phase at 128 SMs while changing only the
+  L2 grid could recover the remaining few microseconds at Pro M256.
+- Protocol: intended two median-20 observations for nine bounded L1/L2 grids,
+  beginning with 128/128 control and 128/124.
+- Result: the 128/128 control completed at 889.342 and 861.374 us.  The first
+  128/124 process emitted all rank run configurations but did not reach the
+  profiler after more than four minutes.  This reproduces the prior unsafe
+  asymmetric-grid behavior.  The batch was interrupted; later combinations
+  did not run.
+- Decision: reject asymmetric L1/L2 SM grids as operationally unsafe and do
+  not encode one in the selector.  Clean any surviving processes, verify GPU
+  health, and restrict further M256 work to symmetric grids or already-safe
+  scheduling controls.
+- Raw artifacts:
+  `$ROOT/candidates/pro_m256_phasegrid_128_{128,124}_v1/`.
+
+## Iteration 79 — Pro M256 safe symmetric-grid closure
+
+- Hypothesis: an untested symmetric grid immediately adjacent to 128 SMs may
+  improve wave alignment without the hang risk of unequal phase grids.
+- Protocol: seed 101, one median-20/max-rank screen each, ordered as 128
+  control, 127, 129, 126, and a final 128 control.  All non-grid settings were
+  the retained automatic M256 configuration.
+- Results:
+
+  | symmetric L1/L2 grid | max-rank us |
+  |---:|---:|
+  | 128 (opening control) | 896.558 |
+  | 127 | 912.970 |
+  | 129 | 899.057 |
+  | 126 | 876.944 |
+  | 128 (closing control) | 869.246 |
+
+- Decision: reject 126/127/129; each is slower than the closing 128-SM
+  control, while the opening control demonstrates the run-state noise that
+  makes single minima unsafe to promote.  Together with earlier 124/130/132
+  results, 128 remains the best safe symmetric grid.  No selector change.
+- Raw artifacts:
+  `$ROOT/candidates/pro_m256_symmetric_sms_*_v1/`.
+
+## Iteration 80 — Pro M256 L2-BK256 screen
+
+- Hypothesis: extending the existing two-plane BK256 implementation from L1
+  to L2 could halve L2 pipeline-block advances while keeping the same FP32
+  accumulation and E5M2 combine path.
+- Protocol: 128-SM retained M256 configuration, seed 101, one median-20/max-rank
+  observation in control / L2-BK256-stage2 / control order.
+- Results: the opening control was 872.749 us, L2 BK256/stage2 was 898.086 us,
+  and the closing control was 888.846 us.
+- Decision: reject L2 BK256.  Its reduced pipeline depth and more complex
+  per-64 scale grouping outweigh fewer block advances.  Keep L2 BK128/stage3;
+  no selector or precision change.
+- Raw artifacts:
+  `$ROOT/candidates/pro_m256_l2bk256_screen_*_v1/`.
+
+## Iteration 81 — Pro M256 128-SM expert-wave interaction screen
+
+- Hypothesis: expert waves selected before the 128-SM grid change may need
+  retuning at the final grid size.
+- Protocol: fixed L1/L2 BK256/BK128, stages2/3, FP32 accumulation, E5M2
+  combine, and symmetric 128-SM grids.  Run two median-20/max-rank observations
+  for current EPW8/48, then 8/24, 12/24, 12/48, and a closing 8/48 control.
+- Results:
+
+  | L1/L2 EPW | observation maxima (us) | center us |
+  |---|---|---:|
+  | 8/48 opening control | 862.078, 863.917 | 862.998 |
+  | 8/24 | 862.718, 864.127 | 863.423 |
+  | 12/24 | 865.967, 870.430 | 868.199 |
+  | 12/48 | 868.670, 875.215 | 871.943 |
+  | 8/48 closing control | 948.720, 896.749 | 922.735 |
+
+- Decision: reject all three neighbors.  Before the late run-state degradation,
+  8/24 was already slightly slower than the stable opening control, and both
+  L1-EPW12 variants regressed materially.  Retain EPW8/48 and do not promote
+  the anomalous closing-control timings as a source effect.
+- Raw artifacts:
+  `$ROOT/candidates/pro_m256_sms128_wave_*_v1/`.
+
+## Iteration 82 — Pro M256 final-grid N-major/stage interaction
+
+- Hypothesis: the pre-BK256 near-parity N-major0/stage4 result may interact
+  favorably with the final L1-BK256 and 128-SM configuration.
+- Protocol: two median-20/max-rank observations in current N-major1/L2-stage3,
+  N-major0/stage3, N-major0/stage4, N-major1/stage4, and closing-control order.
+- Results:
+
+  | N-major / L2 stage | observation maxima (us) | center us |
+  |---|---|---:|
+  | 1 / 3 opening control | 882.365, 865.926 | 874.146 |
+  | 0 / 3 | 878.727, 876.710 | 877.719 |
+  | 0 / 4 | 890.192, 871.366 | 880.779 |
+  | 1 / 4 | 877.582, 887.862 | 882.722 |
+  | 1 / 3 closing control | 871.918, 860.447 | 866.183 |
+
+- Decision: reject N-major0 and L2 stage4.  Every neighbor is slower than the
+  closing current control, and the opening/closing movement again argues
+  against promoting isolated minima.  Keep N-major1/L2-stage3 unchanged.
+- Raw artifacts:
+  `$ROOT/candidates/pro_m256_sms128_sched_*_v1/`.
+
+## Iteration 83 — Final Pro M256 in-kernel phase profile
+
+- Goal: replace further blind parameter sweeps with direct timing evidence for
+  the retained L1-BK256/L2-BK128, 128-SM configuration.
+- Protocol: enable the existing `DG_SM90_MOE_PHASE_PROFILE` counters for one
+  seed-101 median-10 run.  This instrumentation is diagnostic only and is not
+  selected automatically.
+- Result: maximum returned rank latency was 866.247 us.  Across ranks, the
+  representative per-record averages were roughly 420k--445k cycles for the
+  math loop, 128k--174k for dispatch total, 56k--62k for dispatch pull,
+  21k--41k for the combine barrier, about 36k for each GEMM-core block, and
+  only about 2.6k for either L1 or L2 epilogue records.  Math-loop maxima
+  reached about 1.28M cycles on the slow ranks, while combine-reduce itself was
+  only about 2.7k cycles.
+- Decision: epilogue arithmetic is not the remaining M256 limiter.  The gap is
+  dominated by math-loop/task-tail and dispatch/combine synchronization;
+  previous grid/wave/direct/cleanup experiments already target those regions.
+  Avoid adding epilogue complexity and retain the current precision path.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_final_phase_profile_v1/`.
+
+## Iteration 84 — Final Pro M256 one-warp-cleanup check
+
+- Hypothesis: after L1 BK256 and the 128-SM grid, one-warp workspace cleanup
+  might reduce the dispatch/cleanup tail exposed by iteration 83.
+- Protocol: two median-20/max-rank observations in control, one-warp cleanup,
+  and closing-control order; all other automatic M256 settings unchanged.
+- Results: opening control 869.606/865.815 us (center 867.711), one-warp
+  cleanup 860.938/874.976 us (center 867.957), and closing control
+  875.479/869.255 us (center 872.367).
+- Decision: reject one-warp cleanup.  It is effectively flat versus the opening
+  control and does not provide the required stable margin.  Retain the
+  existing two-warp cleanup path and make no selector change.
+- Raw artifacts:
+  `$ROOT/candidates/pro_m256_final_cleanup_*_v1/`.
+
+## Iteration 85 — Pro M256 low symmetric-grid screen
+
+- Hypothesis: symmetric 96 or 112 SM grids may trade some parallelism for exact
+  divisibility of the 1152 L1 and/or 1344 L2 N-tile tasks, reducing the final
+  scheduler tail.  M256 had previously only screened 124--132 SMs.
+- Protocol: one seed-101 median-20/max-rank observation in 128 control, 96,
+  112, 120, and closing-128 order.  L1 and L2 always used the same grid.
+- Results: 128 opening 874.025 us, 96 881.662 us, 112 875.502 us, 120
+  875.454 us, and 128 closing 865.535 us.
+- Decision: reject 96/112/120.  Exact tile-count divisibility does not offset
+  lower active-SM parallelism; all are slower than the closing 128 control and
+  none improves even the noisier opening control.  Retain symmetric 128 SMs.
+- Raw artifacts:
+  `$ROOT/candidates/pro_m256_low_symmetric_sms_*_v1/`.
+
+## Iteration 86 — Failed asymmetric-grid equal-control invocation
+
+- Intended protocol: force a fresh JIT of the dispatch-counter-grid change and
+  run the existing H200 Pro M256 configuration with equal 128/128 phase grids,
+  seed 101, and one max-rank median-5 observation.
+- Result: the remote worktree did not contain
+  `scripts/run_h200_fp8_candidate.sh`, so the driver exited before launching
+  Python or any GPU kernel.  The follow-up summary naturally found no log and
+  printed a zero placeholder; it is not a timing result.
+- Decision: sync the unchanged benchmark driver and matrix runner from the
+  local worktree, then rerun the identical control.  No selector, H20 tuning,
+  PR323 code, or kernel source changed because of this invocation failure.
+
+## Iteration 87 — H200 node NVLS initialization failure
+
+- Intended protocol: rerun the unchanged equal-grid Pro M256 control after
+  syncing the existing candidate driver and matrix runner.
+- Result: all eight processes started, but NCCL process-group initialization
+  failed before benchmark setup or CUDA-kernel JIT.  Node `viking-prod-303`
+  could not bind a 2 MiB NVLink SHARP multicast allocation and returned CUDA
+  error 401 (`the operation cannot be performed in the present state`).  The
+  driver exited 1 and produced no timing result.
+- Decision: follow NCCL's explicit recovery path and rerun with
+  `NCCL_NVLS_ENABLE=0`.  This affects only NCCL's process-group transport used
+  by the harness; it does not select or modify the MegaMoE kernel.  No source,
+  selector, H20 tuning, or PR323 implementation changed.
+
+## Iteration 88 — Dispatch-grid equal-control JIT smoke
+
+- Hypothesis: separating the dispatch producer count from the phase launch
+  grid preserves the existing equal-grid behavior when both values are 128.
+- Protocol: new H200 job `2980566` on `viking-prod-303`, eight ranks, exact
+  Pro H7168/I3072/E384/top-k6 at M256, seed 101, explicit L1/L2 grids 128/128,
+  a fresh candidate JIT cache, and one max-rank median-5 observation.  Set
+  `NCCL_NVLS_ENABLE=0` only to bypass this node's broken NCCL multicast
+  initialization; the MegaMoE kernel configuration was unchanged.
+- Result: both new JIT kernels compiled and the run exited 0.  The eight
+  rank-local medians ranged from 843.139 to 862.625 us; max-rank latency was
+  862.625 us.  The benchmark's setup/correctness path completed without an
+  assertion or non-finite failure.
+- Decision: the same-grid compatibility check passes and the control is in the
+  recent 128/128 timing band.  Proceed to the bounded 128/112 and 128/132
+  asymmetric Linear2 screens; do not change the selector yet.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_dispatchgrid_equal_128_v1/`.
+
+## Iteration 89 — Pro M256 asymmetric 128/112 first screen
+
+- Hypothesis: retaining 128 Linear1 producer CTAs while reducing only the
+  Linear2 scheduler/launch grid to 112 can reduce its task tail; the new
+  dispatch-count parameter should let Linear2 wait on the correct 128-SM
+  producer total without hanging.
+- Protocol: H200 job `2980566`, exact Pro M256, seed 101, L1/L2 grids 128/112,
+  fresh JIT, one max-rank median-20 observation, plus per-rank kernel
+  breakdown.  All other settings came from the unchanged automatic selector;
+  `NCCL_NVLS_ENABLE=0` remained a harness workaround for this node.
+- Result: the run exited 0 with no correctness/setup failure.  Rank-local
+  total medians were 836.136--850.482 us and max-rank latency was 850.482 us.
+  L1 kernel medians ranged from 530.556 to 554.364 us; L2 medians ranged from
+  294.606 to 306.481 us.  Unlike the old coupled implementation, the
+  asymmetric grid completed normally.
+- Decision: 128/112 is a promising first result, but a single observation on
+  a replacement node is not sufficient to update the selector.  Complete the
+  pre-approved 128/132 screen, then run ordered controls and repeated paired
+  measurements for any survivor.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_dispatchgrid_l1_128_l2_112_v1/`.
+
+## Iteration 90 — Pro M256 asymmetric 128/132 first screen
+
+- Hypothesis: using all 132 H200 SMs for Linear2 while retaining the
+  128-CTA Linear1 dispatch producer may reduce Linear2 latency through added
+  parallelism now that the completion count is decoupled safely.
+- Protocol: identical to iteration 89 except L1/L2 grids were 128/132; one
+  max-rank median-20 observation with per-rank kernel breakdown and a fresh
+  JIT cache.
+- Result: the run exited 0.  Rank-local total medians were
+  842.566--851.753 us and max-rank latency was 851.753 us.  L1 medians ranged
+  from 534.466 to 545.261 us; L2 medians ranged from 297.805 to 310.366 us.
+  This candidate also completed without the former asymmetric-grid hang.
+- Decision: 128/132 is 1.271 us slower than 128/112 in their first screens,
+  while both appear better than historical 128/128 results.  Keep 128/112 as
+  the leading candidate and run an ordered median-20 128/128 control followed
+  by repeated 128/112 confirmation before any selector change.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_dispatchgrid_l1_128_l2_132_v1/`.
+
+## Iteration 91 — Pro M256 same-node 128/128 control
+
+- Goal: distinguish a true asymmetric-grid improvement from replacement-node
+  and run-state differences by measuring the unchanged 128/128 configuration
+  with the same H200 node, median-20 protocol, and diagnostics as iterations
+  89--90.
+- Protocol: job `2980566`, exact Pro M256, seed 101, explicit L1/L2 grids
+  128/128, one max-rank median-20 observation and per-rank kernel breakdown;
+  all other selector and harness settings were identical.
+- Result: the run exited 0.  Rank-local medians were 836.809--849.251 us and
+  max-rank latency was 849.251 us.  L1 medians ranged from 533.680 to
+  542.412 us; L2 medians ranged from 294.622 to 306.173 us.
+- Decision: the controlled result reverses the apparent first-screen win.
+  Relative to this control, 128/112 is 1.231 us (0.14%) slower and 128/132 is
+  2.502 us (0.29%) slower.  Do not update the selector.  Run one ordered
+  128/112 confirmation and a closing 128/128 control before deciding whether
+  to retain or revert the source capability.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_dispatchgrid_control_128_v2/`.
+
+## Iteration 92 — Pro M256 128/112 confirmation
+
+- Goal: confirm whether the leading asymmetric candidate can beat the
+  immediately preceding 128/128 median-20 control before retaining any new
+  source capability or selector entry.
+- Protocol: exact iteration-89 configuration on the same H200 allocation,
+  rerun as a new candidate/JIT cache after iteration 91; seed 101 and one
+  max-rank median-20 observation.
+- Result: the run exited 0 and max-rank latency was 853.768 us, with rank-local
+  medians from 841.170 to 853.768 us.  Several synchronized late samples were
+  large, but the median remained well-defined.  This is 4.517 us (0.53%)
+  slower than the immediately preceding 128/128 control and 3.286 us slower
+  than the first 128/112 screen.
+- Decision: 128/112 does not provide a stable improvement and fails the
+  conservative >=0.5% source-change criterion.  Run the planned closing
+  128/128 control to complete the ordered comparison; absent a reversal, do
+  not change the selector and revert the experimental three-file source
+  capability.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_dispatchgrid_l1_128_l2_112_v2/`.
+
+## Iteration 93 — Pro M256 closing 128/128 control
+
+- Goal: close the ordered asymmetric-grid comparison with an unchanged
+  128/128 control under the same node and harness state as iteration 92.
+- Protocol: exact Pro M256, seed 101, one max-rank median-20 observation with
+  explicit L1/L2 grids 128/128 and a fresh candidate JIT cache.
+- Result: the run exited 0.  Rank-local medians were 838.035--852.855 us and
+  max-rank latency was 852.855 us.  The synchronized outliers seen in the
+  preceding run also occurred here, so they are not specific to 128/112.
+- Decision: 128/112 is 0.913 us (0.11%) slower than this closing control.  It
+  was also 1.231 us slower than the earlier control, so both ordered pairs
+  reject a stable asymmetric-grid gain.  Keep the H200 Pro M256 selector at
+  128/128 and revert the experimental scheduler/kernel/host source change;
+  retain the design, plan, and iteration evidence.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_dispatchgrid_control_128_v3/`.
+
+## Iteration 94 — Final post-revert Pro M256 verification
+
+- Goal: verify that the conservative final source, after reverting the
+  asymmetric-grid capability, still force-builds, generates fresh CUDA JIT
+  kernels, and runs the automatic H200 Pro M256 selector successfully.
+- Protocol: force-rebuilt extension from reverted source, no
+  `DG_SM90_MOE_*` tuning overrides, fresh candidate JIT cache, exact Pro M256,
+  seed 101, and one max-rank median-20 observation on H200 job `2980566`.
+  `NCCL_NVLS_ENABLE=0` remained only as the node-specific harness workaround.
+- Result: the extension and both original-signature JIT kernels compiled; the
+  eight-rank run exited 0.  Rank-local medians were 843.347--857.490 us and
+  max-rank latency was 857.490 us.  Several synchronized system outliers were
+  present, including one roughly 3.9 ms sample on seven ranks, but the
+  median-20 statistic remained in the established control band.
+- Decision: final post-revert build/runtime verification passes.  Keep the
+  existing automatic H200 Pro M256 128/128 selector, retain no asymmetric-grid
+  kernel code, and close this bounded source experiment without a performance
+  promotion.
+- Raw artifact:
+  `$ROOT/candidates/pro_m256_dispatchgrid_revert_final_v1/`.
+
+## Iteration 95 — Packed-BF16 scaled accumulation for BK256
+
+- Goal: make the retained H200 Pro M256 L1-BK256 schedule support the same
+  global packed-BF16x2 numerical path as the other Pro points.
+- Implementation: keep every WGMMA raw dot product in FP32, apply each L1
+  128-K or L2 64-K activation/weight scale domain independently, accumulate
+  pairs in `nv_bfloat162`, and convert once to FP32 for the unchanged
+  epilogue.  FP32 specialization and all schedules remain unchanged.
+- Correctness: exact Pro M256 with seeds 7/23/101/509 passed all four cases
+  and all 32 rank outputs with no NaN/Inf.  Worst BF16-vs-golden was
+  `0.002108240638186598`, worst BF16-vs-FP32 was
+  `0.00184866342735035`, both below 0.01.
+- Performance protocol: H200 job `2980566`, full-NVSwitch
+  `viking-prod-303`, seed 101, three alternating observations,
+  rank-local median-20, maximum across eight ranks, identical schedule and
+  E5M2 combine; only global scaled-accumulator precision changed.
+
+  | observation | FP32 max-rank us | BF16x2 max-rank us |
+  |---:|---:|---:|
+  | 1 | 854.098 | 851.801 |
+  | 2 | 858.649 | 873.345 |
+  | 3 | 852.337 | 961.721 |
+  | center | 854.098 | 873.345 |
+
+- BF16x2 is 2.253% slower at the three-observation center and
+  fails the approved 0.5% regression gate.
+  Keep the capability experimental and leave Pro M256 on FP32.
+- Raw artifacts:
+  `$ROOT/logs/pro_M256_bk256_bf16_correctness.log` and
+  `$ROOT/logs/pro_M256_bk256_S101_O*_{fp32,bf16}_N20.log`.
+
+## Iteration 96 — Invalid BK256 confirmation invocation
+
+- Intended protocol: five alternating median-20 FP32/BF16 observations for
+  the Pro M256 BK256 candidate.
+- Result: the first process group failed during symmetric-memory rendezvous
+  because its short TMPDIR socket directory had not been created.  No MegaMoE
+  kernel or timed sample ran.
+- Decision: create each mode's TMPDIR before launch and rerun the unchanged
+  confirmation.  This invocation provides no performance evidence.
+
+## Iteration 97 — BK256 BF16 five-observation confirmation
+
+- Protocol: unchanged Pro M256 BK256 implementation, seed 101, five
+  order-alternating FP32/BF16 observations, rank-local median-20 and maximum
+  latency across eight H200 ranks.  Each symmetric-memory TMPDIR was created
+  before process-group initialization.
+- Results:
+
+  | observation | FP32 max-rank us | BF16x2 max-rank us |
+  |---:|---:|---:|
+  | 1 | 852.277 | 878.498 |
+  | 2 | 858.200 | 850.371 |
+  | 3 | 854.600 | 861.552 |
+  | 4 | 853.971 | 855.538 |
+  | 5 | 859.665 | 852.920 |
+  | center | 854.600 | 855.538 |
+
+- BF16x2 is 0.110% slower at the five-observation center.
+  It passes the approved 0.5% regression budget.
+  The Pro M256 numerical policy may default to BF16.
+- Raw artifacts:
+  `$ROOT/logs/pro_M256_bk256_confirm2_S101_O*_{fp32,bf16}_N20.log`.
+
+## Iteration 98 — Invalid low-M swap-AB BF16 smoke invocation
+
+- Intended protocol: compile and run the first packed-BF16x2 swap-AB
+  candidate at exact Flash M8 on H200 job `2980566`.
+- Result: the candidate wrapper resolved its default matrix runner below the
+  result directory, where that script does not exist.  Python exited before
+  importing DeepGEMM, so no JIT compilation, MegaMoE kernel, or timed sample
+  ran.
+- Decision: pass the worktree's matrix runner explicitly and rerun the
+  unchanged source.  This invocation provides no correctness or performance
+  evidence.
+- Raw artifact:
+  `$ROOT/candidates/lowm_swap_bf16_smoke_v1/`.
+
+## Iteration 99 — Low-M swap-AB BF16 compile/runtime smoke
+
+- Goal: verify that the new packed-BF16x2 swap-AB specialization compiles and
+  executes before starting numerical and comparative performance gates.
+- Protocol: exact Flash M8, seed 101, two timed samples per rank on H200 job
+  `2980566`; force global BF16 scaled accumulation and E5M2 combine while
+  retaining the existing low-M swap-AB schedule.
+- Result: the JIT compilation and eight-rank run exited 0.  The maximum
+  rank-local median-of-two latency was `210.433 us`.  This short run is only a
+  compile/runtime smoke signal and is not used as performance evidence.
+- Decision: proceed to the low-M numerical gate, then compare repeated FP32
+  and BF16 observations with the same schedules.
+- Raw artifact:
+  `$ROOT/candidates/lowm_swap_bf16_smoke_v2/`.
+
+## Iteration 100 — Flash low-M swap-AB BF16 numerical gate
+
+- Protocol: exact Flash shape at M `8/16/32/64`, seeds
+  `7/23/101/509`, eight H200 ranks.  For each of 16 cases, compare the same
+  swap-AB schedule in FP32-scaled and packed-BF16x2-scaled modes against the
+  distributed FP32 golden reference; require finite outputs and every
+  `calc_diff < 0.01`.
+- Result: all 16 cases and all 128 rank outputs passed with no NaN/Inf.  Worst
+  BF16-vs-golden was `0.0021123750029843347`; worst BF16-vs-FP32 was
+  `0.0017299150625957882`; worst FP32-vs-golden was
+  `0.002007906524397862`.
+- Decision: Flash low-M packed-BF16x2 swap-AB passes the unchanged numerical
+  gate.  Validate the exact Pro low-M shape before performance promotion.
+- Raw artifact:
+  `$ROOT/logs/lowm_swap_bf16_correctness_flash.log`.
+
+## Iteration 101 — Pro low-M swap-AB BF16 numerical gate
+
+- Protocol: exact Pro shape at M `8/16/32/64`, seeds
+  `7/23/101/509`, eight H200 ranks, using the same FP32/BF16/distributed-golden
+  comparison and `calc_diff < 0.01` criterion as iteration 100.
+- Result: all 16 cases and all 128 rank outputs passed with no NaN/Inf.  Worst
+  BF16-vs-golden was `0.0021393775829661177`; worst BF16-vs-FP32 was
+  `0.0018901052975739407`; worst FP32-vs-golden was
+  `0.002017175083535938`.
+- Decision: packed-BF16x2 swap-AB passes the exact low-M numerical gate for
+  both H200 target shapes.  Proceed to repeated same-schedule performance
+  comparisons before making it the numerical-policy default.
+- Raw artifact:
+  `$ROOT/logs/lowm_swap_bf16_correctness_pro.log`.
+
+## Iteration 102 — Low-M swap-AB BF16 three-observation performance gate
+
+- Protocol: exact Flash and Pro shapes at M `8/16/32/64`, seed 101,
+  order-alternating FP32/BF16 modes, three observations per mode and point,
+  rank-local median-20 with the maximum across eight H200 ranks.  E5M2 combine
+  and every schedule choice were held identical; only scaled-accumulator
+  precision changed.
+- Result: all 48 distributed runs exited 0.  Max-rank observations and
+  three-observation centers were:
+
+  | shape | M | FP32 observations us | BF16x2 observations us | FP32 center us | BF16x2 center us | BF16 gap |
+  |---|---:|---|---|---:|---:|---:|
+  | Flash | 8 | 229.229 / 215.632 / 217.152 | 213.853 / 213.120 / 225.009 | 217.152 | 213.853 | -1.519% |
+  | Flash | 16 | 247.856 / 358.096 / 261.681 | 245.696 / 240.830 / 245.022 | 261.681 | 245.022 | -6.366% |
+  | Flash | 32 | 261.037 / 254.573 / 253.726 | 257.024 / 256.286 / 248.496 | 254.573 | 256.286 | +0.673% |
+  | Flash | 64 | 289.693 / 271.249 / 264.030 | 267.969 / 270.941 / 268.897 | 271.249 | 268.897 | -0.867% |
+  | Pro | 8 | 656.801 / 677.474 / 661.778 | 651.410 / 656.114 / 650.001 | 661.778 | 651.410 | -1.567% |
+  | Pro | 16 | 792.450 / 796.329 / 803.736 | 785.207 / 780.086 / 787.623 | 796.329 | 785.207 | -1.397% |
+  | Pro | 32 | 834.838 / 844.744 / 839.443 | 832.499 / 838.400 / 832.102 | 839.443 | 832.499 | -0.827% |
+  | Pro | 64 | 859.928 / 854.231 / 882.440 | 866.041 / 865.362 / 855.585 | 859.928 | 865.362 | +0.632% |
+
+- Decision: six points pass the 0.5% gate directly.  Flash M32 and Pro M64
+  are only `0.173` and `0.132` percentage points beyond the gate and have
+  overlapping per-observation distributions, so extend those two points to
+  five order-alternating observations before deciding on FP32 exceptions.
+- Raw artifacts:
+  `$ROOT/candidates/lowm_{flash,pro}_{fp32,bf16}_v1/`.
+
+## Iteration 103 — Five-observation confirmation of low-M borderline points
+
+- Protocol: extend only Flash M32 and Pro M64 from three to five
+  order-alternating FP32/BF16 median-20 observations, retaining the exact
+  schedules, seed, routes, E5M2 combine, and eight-rank max-latency statistic
+  from iteration 102.
+- Result: all eight additional distributed runs exited 0.
+
+  | shape | M | FP32 observations us | BF16x2 observations us | FP32 center us | BF16x2 center us | BF16 gap |
+  |---|---:|---|---|---:|---:|---:|
+  | Flash | 32 | 261.037 / 254.573 / 253.726 / 259.820 / 280.365 | 257.024 / 256.286 / 248.496 / 267.936 / 269.569 | 259.820 | 257.024 | -1.076% |
+  | Pro | 64 | 859.928 / 854.231 / 882.440 / 856.985 / 856.024 | 866.041 / 865.362 / 855.585 / 871.142 / 863.321 | 856.985 | 865.362 | +0.978% |
+
+- Decision: Flash M32 passes after confirmation.  Pro M64 remains 0.978%
+  slower over five observations and exceeds the approved 0.5% budget; make
+  Pro M64 the explicit FP32 numerical-policy exception while defaulting all
+  other validated low-M Flash/Pro points to BF16.
+- Raw artifacts: observations 4--5 below
+  `$ROOT/candidates/lowm_{flash,pro}_{fp32,bf16}_v1/`.
+
+## Iteration 104 — Refactored selector host/JIT smoke
+
+- Implementation: classify exact H200 Flash/Pro workload identity independently
+  of M; split schedule and numerical policy into distinct structures/tables;
+  default packed-BF16x2 on the 11-point matrix with an explicit Pro M64 FP32
+  exception; preserve the original E5M2-combine coverage; and assert that both
+  resolved phase configs support BF16 rather than silently falling back.
+- Host validation: the standalone C++ policy test compiled and passed locally,
+  then the H200 extension force-rebuilt from the dirty worktree without error.
+- GPU protocol: no `DG_SM90_MOE_*` tuning overrides, fresh JIT caches,
+  median-of-two compile/config smoke at Flash M `8/64/256/512/8192` and Pro M
+  `8/64/256/512/1024` on job `2980566`, with config printing enabled.
+- Result: all 10 eight-rank cases exited 0.  Printed policies confirmed low-M
+  swap-AB BF16, Pro M64 BF16 disabled, Pro M256 L1-BK256 with BF16 enabled,
+  M512 generic schedule with BF16 enabled, and unchanged exact tuned schedules
+  at Flash M8192 and Pro M1024.
+- Decision: selector composition, capability checks, host plumbing, and all
+  newly required kernel specializations pass the bounded smoke gate.  Proceed
+  to the full automatic 22-point matrix and final numerical sampling.
+- Raw artifacts:
+  `$ROOT/candidates/selector_refactor_smoke_{flash,pro}_v1/`.
+
+## Iteration 105 — Full automatic-selector FP32/BF16 attribution matrix
+
+- Protocol: all 11 required M points for exact Flash and Pro, automatic
+  numerical policy versus the same policy/schedule with global BF16 forced
+  off, seed 101, three order-alternating observations, rank-local median-20,
+  and maximum across eight H200 ranks.  Unlike the earlier low-M isolation
+  run, E5M2 combine follows the production numerical policy at each point.
+- Result: all 132 distributed runs completed with `RUN_EXIT=0`; every expected
+  shape/mode/M/observation log is present.  Three-observation centers were:
+
+  | shape | M | FP32 center us | automatic center us | automatic gap |
+  |---|---:|---:|---:|---:|
+  | Flash | 8 | 214.113 | 213.471 | -0.300% |
+  | Flash | 16 | 242.941 | 241.135 | -0.744% |
+  | Flash | 32 | 251.630 | 260.046 | +3.345% |
+  | Flash | 64 | 268.493 | 269.726 | +0.459% |
+  | Flash | 128 | 270.174 | 262.879 | -2.700% |
+  | Flash | 256 | 287.630 | 285.758 | -0.651% |
+  | Flash | 512 | 421.676 | 410.589 | -2.629% |
+  | Flash | 1024 | 588.865 | 593.195 | +0.735% |
+  | Flash | 2048 | 955.189 | 950.841 | -0.455% |
+  | Flash | 4096 | 1711.062 | 1720.992 | +0.580% |
+  | Flash | 8192 | 3164.398 | 3229.780 | +2.066% |
+  | Pro | 8 | 654.897 | 651.300 | -0.549% |
+  | Pro | 16 | 789.203 | 787.147 | -0.261% |
+  | Pro | 32 | 836.156 | 829.035 | -0.852% |
+  | Pro | 64 | 864.039 | 855.771 | -0.957% (both FP32) |
+  | Pro | 128 | 1469.753 | 866.009 | -41.078% |
+  | Pro | 256 | 865.387 | 862.450 | -0.339% |
+  | Pro | 512 | 1196.791 | 1210.453 | +1.142% |
+  | Pro | 1024 | 3366.659 | 1520.008 | -54.851% |
+  | Pro | 2048 | 5746.790 | 2336.141 | -59.349% |
+  | Pro | 4096 | 10850.545 | 4067.056 | -62.518% |
+  | Pro | 8192 | 21030.313 | 7734.708 | -63.221% |
+
+- Decision: 16 BF16-enabled points pass directly.  Pro M64 is the explicit
+  FP32 policy row, so its identical-path delta is only a noise diagnostic.
+  Extend Flash M32/M1024/M4096/M8192 and Pro M512 to five observations before
+  adding or rejecting further FP32 exceptions.
+- Raw artifacts:
+  `$ROOT/candidates/selector_matrix_{flash,pro}_{auto,fp32}_v1/`.
+
+## Iteration 106 — Five-observation confirmation of full-policy borderline points
+
+- Protocol: extend Flash M `32/1024/4096/8192` and Pro M512 from three to five
+  order-alternating automatic/forced-FP32 median-20 observations.  Production
+  schedule and combine policy remain identical between modes.
+- Result: all 20 additional eight-rank runs exited 0.
+
+  | shape | M | FP32 observations us | automatic observations us | FP32 center us | automatic center us | automatic gap |
+  |---|---:|---|---|---:|---:|---:|
+  | Flash | 32 | 256.606 / 251.630 / 249.374 / 254.049 / 265.361 | 254.782 / 260.046 / 260.973 / 283.261 / 247.249 | 254.049 | 260.046 | +2.361% |
+  | Flash | 1024 | 588.865 / 576.235 / 611.820 / 586.577 / 591.680 | 577.132 / 593.195 / 598.737 / 587.773 / 577.009 | 588.865 | 587.773 | -0.186% |
+  | Flash | 4096 | 1711.062 / 1712.775 / 1709.632 / 1740.615 / 1709.170 | 1720.992 / 1722.420 / 1710.417 / 1742.949 / 1716.482 | 1711.062 | 1720.992 | +0.580% |
+  | Flash | 8192 | 3164.398 / 3161.773 / 3179.292 / 3159.421 / 3155.622 | 3248.646 / 3225.596 / 3229.780 / 3228.715 / 3242.524 | 3161.773 | 3229.780 | +2.151% |
+  | Pro | 512 | 1195.859 / 1243.015 / 1196.791 / 1222.437 / 1205.588 | 1210.453 / 1249.172 / 1192.583 / 1197.477 / 1196.448 | 1205.588 | 1197.477 | -0.673% |
+
+- Decision: Flash M1024 and Pro M512 pass after confirmation.  Add explicit
+  FP32 numerical-policy exceptions for Flash M32, M4096, and M8192; each stays
+  above the approved 0.5% budget after five observations.  Together with the
+  earlier Pro M64 exception, all other validated matrix points default to
+  packed BF16x2.
+- Raw artifacts: observations 4--5 in
+  `$ROOT/candidates/selector_matrix_{flash,pro}_{auto,fp32}_v1/`.
+
+## Iteration 107 — Final numerical-exception selector smoke
+
+- Implementation: update the single numerical exception table to keep Flash
+  M32/M4096/M8192 and Pro M64 on FP32; leave every other validated point on
+  packed BF16x2.  No schedule row changed.
+- Validation: CPU policy test passed, the H200 host extension force-rebuilt,
+  and six no-override config/runtime smokes ran at Flash M
+  `32/1024/4096/8192` and Pro M `64/512`.
+- Result: all six eight-rank runs exited 0.  Printed policies/features showed
+  BF16 disabled at the four exception points and enabled at Flash M1024 and
+  Pro M512.  Existing schedule selection/fallthrough remained unchanged.
+- Decision: final exception plumbing is active without environment variables.
+  Proceed to the remaining broad-seed numerical gate and final source audit.
+- Raw artifacts:
+  `$ROOT/candidates/selector_final_exception_smoke_{flash,pro}_v1/`.
+
+## Iteration 108 — Flash mid-M four-seed production-policy numerical gate
+
+- Protocol: exact Flash M `128/256/512/1024/2048`, seeds
+  `7/23/101/509`, eight H200 ranks, production automatic combine selection,
+  and identical FP32/BF16 schedules and inputs.  Compare both modes against
+  the distributed FP32 golden and each other with finite output and
+  `calc_diff < 0.01` required per rank.
+- Result: all 20 cases and all 160 rank outputs passed.  Worst
+  BF16-vs-golden was `0.0020701160914070593`; worst BF16-vs-FP32 was
+  `0.0016542390100511284`; worst FP32-vs-golden was
+  `0.001981827275498449`.  No NaN or Inf occurred.
+- Decision: all remaining BF16-enabled Flash points pass the broad-seed
+  production-policy numerical gate.
+- Raw artifact:
+  `$ROOT/logs/final_bf16_correctness_flash_mid_4seed.log`.
+
+## Iteration 109 — Pro M512 four-seed production-policy numerical gate
+
+- Protocol: exact Pro M512, seeds `7/23/101/509`, eight H200 ranks,
+  production automatic combine selection, and identical FP32/BF16 schedules
+  and inputs.  Compare both modes against the distributed FP32 golden and
+  each other with finite output and `calc_diff < 0.01` required per rank.
+- Result: all four cases and all 32 rank outputs passed.  Worst
+  BF16-vs-golden was `0.0007066493943833629`; worst BF16-vs-FP32 was
+  `0.0004699344765030089`; worst FP32-vs-golden was
+  `0.0005920887235298933`.  No NaN or Inf occurred.
+- Decision: the generic-schedule Pro M512 packed-BF16 numerical policy passes
+  the broad-seed production-policy gate.
+- Raw artifact:
+  `$ROOT/logs/final_bf16_correctness_pro512_4seed.log`.
+
+## Iteration 110 — Final selector/kernel source audit
+
+- Validation: `git diff --check`, the standalone C++ H200 policy test, and
+  Python syntax compilation of the generalized numerical validator all
+  passed.  The local and H200 copies of the six selector/kernel/test sources
+  used by the final GPU runs have identical SHA-256 hashes.
+- Scope audit: automatic selection remains guarded by
+  `device_runtime->is_h200()`; the exact pre-existing H200 schedule rows and
+  E5M2-combine coverage are unchanged.  H20 receives no automatic numerical
+  or schedule policy.  Source, plan, and iteration records contain no
+  benchmark-only out-of-scope workload markers.
+- Repository state: HEAD remains `63224ef`; all implementation, test, and
+  result-record changes are uncommitted, and nothing was pushed.
+
+## Iteration 111 — Final no-override production-selector matrix
+
+- Protocol: run the production selector without any `DG_SM90_MOE_*`
+  overrides at all 11 required M points for both Flash and Pro.  Each point
+  used three observations, eight H200 ranks, 20 timed samples per rank, and
+  the max-rank median as the distributed latency.  All 66 valid leaf runs
+  exited 0; one unrelated port-collision attempt was preserved separately
+  and rerun successfully.
+- Result:
+
+  | M | Flash us | Pro us |
+  |---:|---:|---:|
+  | 8 | 216.2 | 654.1 |
+  | 16 | 245.8 | 783.2 |
+  | 32 | 255.8 | 830.5 |
+  | 64 | 266.5 | 877.1 |
+  | 128 | 266.1 | 868.4 |
+  | 256 | 297.6 | 858.6 |
+  | 512 | 414.3 | 1217.4 |
+  | 1024 | 591.8 | 1513.6 |
+  | 2048 | 960.6 | 2339.3 |
+  | 4096 | 1719.4 | 4053.3 |
+  | 8192 | 3186.0 | 7769.4 |
+
+- Raw artifacts:
+  `$ROOT/candidates/selector_final_production_{flash,pro}_v1/`.
+
+## Iteration 112 — Direct final-selector PR323 gate
+
+- Protocol: compare the no-override production selector directly with the
+  pinned PR323 FP8 implementation at M `128/256/1024/2048/4096/8192` for
+  both shapes.  Three order-alternating observations per implementation,
+  eight ranks and 20 samples per rank produced 72 valid leaf runs.  The
+  strict parser also verified matching routes and complete rank/sample sets.
+- Result: 11 of 12 points passed.  Flash M1024 was nominally `+0.11%` slower
+  and therefore required a larger confirmation rather than an immediate
+  selector change.
+
+  | shape | M | ours us | PR323 us | ours gap |
+  |---|---:|---:|---:|---:|
+  | Flash | 128 | 265.1 | 292.2 | -9.28% |
+  | Flash | 256 | 289.4 | 307.3 | -5.84% |
+  | Flash | 1024 | 590.8 | 590.2 | +0.11% |
+  | Flash | 2048 | 952.6 | 982.4 | -3.03% |
+  | Flash | 4096 | 1712.8 | 1746.9 | -1.95% |
+  | Flash | 8192 | 3170.7 | 3304.0 | -4.04% |
+  | Pro | 128 | 869.4 | 888.7 | -2.17% |
+  | Pro | 256 | 859.0 | 864.9 | -0.68% |
+  | Pro | 1024 | 1509.9 | 1579.1 | -4.38% |
+  | Pro | 2048 | 2331.6 | 2430.4 | -4.06% |
+  | Pro | 4096 | 4048.7 | 4299.9 | -5.84% |
+  | Pro | 8192 | 7718.8 | 7886.1 | -2.12% |
+
+- Raw artifact: `$ROOT/candidates/selector_final_pr_gate_v1/`.
+
+## Iteration 113 — Flash M1024 regression confirmation
+
+- Protocol: extend the single ambiguous Flash M1024 comparison to nine
+  order-alternating observations with otherwise identical inputs and timing.
+- Result: ours centered at `596.1 us` versus PR323 at `589.3 us`, a confirmed
+  `+1.16%` regression.  Phase profiling placed L1 around `336--344 us` and L2
+  around `208--220 us`; the production configuration was the generic
+  BM64/BN256/BK128, cluster1, EPW32/stage4, M-major, FP8-combine-off path.
+- Decision: isolate only Flash M1024 for a bounded H200 retune.  Do not disturb
+  the other 11 already passing direct PR points.
+- Raw artifact:
+  `$ROOT/candidates/selector_final_pr_gate_flash_m1024_confirm_v1/`.
+
+## Iteration 114 — Flash M1024 bounded schedule/numerical screen
+
+- Single-axis screen (us): control `599.627`, combine1 `572.385`, N-major1
+  `565.952`, stage3 `586.044`, L1 EPW16 `558.490`, L2 EPW16 `595.650`.
+  Cluster2 produced a CUDA launch failure and was rejected; direct-scatter1
+  was separately measured at `655.723 us` and rejected.
+- Interaction screen (us): control-open `576.097`, L1e16 `568.811`,
+  N-major1 `568.177`, L1e16+N-major1 `609.576`, L1e16+combine1 `584.288`,
+  N-major1+combine1 `552.283`, triple `549.184`, L1e8+N-major1 `575.392`,
+  control-close `586.818`.
+- Three-observation survivor centers: control `565.5 us`,
+  N-major1+combine1 `552.0 us`, and the triple with L1 EPW16 `571.1 us`.
+- Decision: retain the simpler N-major1+combine1 pair.  Keep the generic
+  EPW32/stage4 schedule because adding the apparent single-run EPW16 win did
+  not survive balanced repetition.
+
+## Iteration 115 — Flash M1024 winner direct PR323 confirmation
+
+- Protocol: five order-alternating observations of N-major1+E5M2-combine
+  against pinned PR323, eight ranks and 20 samples per rank.
+- Result: ours observations were
+  `566.978/550.946/581.714/546.850/548.641 us` (median `550.9 us`); PR323
+  observations were `592.329/584.034/599.659/587.664/684.330 us` (median
+  `592.3 us`).  The candidate is `6.99%` faster and all ten leaf runs passed
+  strict validation.
+- Raw artifact: `$ROOT/candidates/flash_m1024_nc_pr_confirm_v1/`.
+
+## Iteration 116 — Flash M1024 E5M2-combine numerical gate
+
+- Protocol: exact Flash M1024 with N-major1, E5M2 combine and packed BF16
+  accumulation; seeds `7/23/101/509`, eight ranks, compared against both the
+  same-schedule FP32 mode and the distributed FP32 golden.
+- Result: all four cases and all 32 rank outputs passed with no NaN or Inf.
+  Worst BF16-vs-golden was `0.0020577141512897468`, worst BF16-vs-FP32 was
+  `0.0016434837288559212`, and worst FP32-vs-golden was
+  `0.001978573254466598`, all below the unchanged `0.01` gate.
+- Decision: Flash M1024 is eligible for the targeted H200 selector row and
+  the separately validated extension of E5M2-combine coverage.
+- Raw artifact:
+  `$ROOT/candidates/flash_m1024_nc_correctness_v1/correctness.log`.
+
+## Iteration 117 — Production-row smoke invocation failure
+
+- Intended protocol: run Flash M1024 once with the newly integrated
+  production selector, no `DG_SM90_MOE_*` overrides, config printing enabled,
+  and a fresh JIT cache.
+- Result: no GPU work was launched.  The campaign wrapper defaulted `RUNNER`
+  to `$ROOT/scripts/h200_fp8_matrix_runner.py`, but this result directory does
+  not contain that file; Python exited 2 before importing the benchmark.
+- Decision: preserve this failed invocation and rerun with `RUNNER` explicitly
+  set to the identical script in the synced worktree.  This is a harness-path
+  error and supplies no performance or correctness evidence.
+- Raw artifact:
+  `$ROOT/candidates/flash_m1024_production_row_smoke_v1/`.
+
+## Iteration 118 — Production-row config proof; host JIT failure
+
+- Protocol: repeat Iteration 117 with `RUNNER` explicitly set to the synced
+  worktree copy, all `DG_SM90_MOE_*` variables unset, config printing enabled,
+  and a fresh candidate JIT directory.
+- Selector result: all ranks reached the production policy.  The printed
+  configuration proves `schedule_selected=1`, BM64/BN256/BK128, cluster1,
+  N-major1, inherited EPW32/stage4, E5M2 combine enabled, and packed BF16
+  accumulation enabled.  No experimental selector override was present.
+- Benchmark result: the first fresh JIT compile stopped before a timed sample
+  because the direct SSH host namespace does not contain the configured
+  `/usr/local/cuda/bin/nvcc`; the JIT compiler assertion failed and the run
+  exited 1.  This supplies selector-plumbing evidence but no latency evidence.
+- Decision: preserve the failure, then execute through job 2980566's container
+  context (or point CUDA_HOME at its actual toolkit) before accepting the
+  production-row performance smoke.
+- Raw artifact:
+  `$ROOT/candidates/flash_m1024_production_row_smoke_v1/`.
+
+## Iteration 119 — Container JIT include-permission failure
+
+- Protocol: start the allocation's persisted Enroot container directly,
+  bind the campaign filesystem at `/work`, keep all selector overrides unset,
+  and use a new candidate/JIT directory.
+- Environment result: all eight H200s and `/usr/local/cuda/bin/nvcc` were
+  visible.  The production selector again printed BM64/BN256/BK128, cluster1,
+  N-major1, inherited EPW32/stage4, E5M2 combine and packed BF16 exactly as
+  intended.
+- Benchmark result: nvcc started, but reading
+  `deep_gemm/include/cutlass/arch/barrier.h` through the `/work` bind mount
+  failed with `Permission denied` on every rank.  No timed sample ran and the
+  wrapper exited 1.
+- Decision: inspect the mounted file and reproduce the previously successful
+  container mount layout before retrying; do not interpret this as a kernel
+  failure.
+- Raw artifact:
+  `$ROOT/candidates/flash_m1024_production_row_smoke_container_v1/`.
+
+## Iteration 120 — Flash M1024 production-row fresh-JIT smoke
+
+- Protocol: launch through the allocation's Enroot container with both the
+  `/work` and absolute `/home/scratch.aichenf_wwfo` mounts, a new JIT cache,
+  all `DG_SM90_MOE_*` variables unset, config printing enabled, eight ranks,
+  and 20 timed samples per rank.
+- Selector result: the no-override production path selected BM64/BN256/BK128,
+  cluster1, dispatch2, epilogue2, N-major1, inherited EPW32/stage4, E5M2
+  combine and packed BF16 accumulation on every rank.
+- Performance result: all eight ranks and all 160 timed samples were present;
+  the distributed max-rank median was `554.4265 us` and the wrapper exited 0.
+- Decision: the integrated production selector reproduces the tuned candidate
+  without development overrides.  Proceed to the final interleaved PR323 gate.
+- Raw artifact:
+  `$ROOT/candidates/flash_m1024_production_row_smoke_dualmount_v1/`.
+
+## Iteration 121 — Flash M1024 production selector final PR323 gate
+
+- Protocol: run the integrated no-override selector against pinned PR323 in
+  five order-alternating observations, eight H200 ranks and 20 timed samples
+  per rank.  The ours path used a fresh production JIT cache and no
+  `DG_SM90_MOE_*` environment override.
+- Result: all ten leaf runs exited 0.  Preliminary max-rank observations were
+  ours `564.299/580.290/561.627/563.377/587.273 us` and PR323
+  `587.531/587.762/585.682/591.481/587.231 us`.  Observation medians are
+  `564.299 us` versus `587.531 us`, so the integrated selector is about
+  `3.95%` faster.  This is separate from, and consistent with, the earlier
+  tuned-candidate confirmation.
+- Decision: run the strict campaign parser to verify complete rank/sample
+  sets and route identity, then use that result as the final gate.
+- Strict parser result: PASS.  It accepted all ten leaf runs, verified eight
+  rank rows and 20 samples per rank, confirmed identical route signatures,
+  and reproduced `564.3 us` versus `587.5 us` (`-3.95%`).
+- Raw artifact:
+  `$ROOT/candidates/flash_m1024_production_pr_final_v1/`.
+
+## Iteration 122 — Flash M1024 production-policy correctness replay
+
+- Protocol: run the final production selector at exact Flash M1024 with no
+  schedule or combine override, `--fp8-combine auto`, seeds `7/23/101/509`,
+  and eight H200 ranks.  The validator switches only packed-BF16 accumulation
+  on/off so both kernel modes can be compared against the independent
+  distributed FP32 PyTorch golden on identical inputs.
+- Result: all four cases and all 32 rank outputs passed with no NaN or Inf.
+  Worst BF16-vs-golden was `0.0020577141512897468`, worst BF16-vs-FP32 was
+  `0.0016434837288559212`, and worst FP32-vs-golden was
+  `0.001978573254466598`, all below the unchanged `0.01` threshold.
+- Decision: the selector-integrated N-major1/E5M2-combine configuration has
+  both direct PR323 performance evidence and independent production-policy
+  numerical evidence.
+- Raw artifact:
+  `$ROOT/candidates/flash_m1024_production_correctness_v1/correctness.log`.
+
+## Iteration 123 — Final post-M1024 source and scope audit
+
+- Validation: the standalone C++ H200 policy test compiled with
+  `-Wall -Wextra -Werror` and passed; `git diff --check` and Python syntax
+  compilation of the numerical validator passed.  The six selector, kernel,
+  validator, and policy-test files used on H200 have byte-identical local and
+  remote SHA-256 hashes.
+- Scope audit: automatic policy selection remains guarded by
+  `device_runtime->is_h200()`; no out-of-scope benchmark-only workload marker
+  is present in the implementation, policy, tests, plan, hints, or iteration
+  record.  PR323 remains a benchmark-only performance reference.
+- Repository state: branch is `opt/megamoe-sm90-fp8-h200-retune`; HEAD remains
+  `63224efeeb243886da66f89718eef9a1a91bd142`.  All changes remain local and
+  uncommitted; nothing was pushed.
+
+## Iteration 124 — M8192 standalone grouped-FP8 GEMM harness smoke
+
+- Goal: compare the two mathematical GEMMs inside current MegaMoE with
+  DeepGEMM's standalone SM90 FP8 M-grouped contiguous GEMM, without changing
+  the production selector or kernel.
+- Protocol: exact Flash M8192/seed101 routing on eight H200 ranks; recreate the
+  benchmark RNG order, derive every local expert's token count, use psum
+  grouped layout with alignment 128 and expected M/expert 1536, and time only
+  `sm90_fp8_gemm_1d2d_impl`.  A and B use the same per-token/K128 and
+  128x128-block FP8 scale domains as MegaMoE.  This smoke used one observation
+  of two samples per phase.
+- Validation: rank receives were `48872--49351`, individual expert M values
+  were `1429--1633`, matching the production route totals; both outputs were
+  finite and all eight ranks completed.
+- Result: max-rank L1 was `1269.716 us`, L2 was `666.426 us`, and the
+  max-rank per-rank sum was `1936.142 us`, corresponding to `1277.75 TFLOPS`
+  or `64.57%` of the H200 dense-FP8 peak.
+- Decision: the API, grouped layout, kernel-event filter, and route recreation
+  are valid.  Proceed to three order-alternating median-20 observations for
+  both Flash and Pro, then measure current MegaMoE phase times on the same
+  allocation.
+- Raw artifact:
+  `$ROOT/candidates/grouped_gemm_vs_megamoe_m8192_v1/smoke_flash.log`.
+
+## Iteration 125 — Flash M8192 standalone grouped-FP8 GEMMs
+
+- Protocol: exact Iteration-124 Flash routing and data formats, three
+  order-alternating observations, 20 profiled kernel samples per phase/rank,
+  eight H200 ranks, no L2 flush, and max-rank reporting.  DeepGEMM selected
+  BM128/BN192/BK128, cluster2 and stage4 for both grouped GEMMs.
+- Result: L1 max-rank medians were
+  `1266.997/1272.548/1268.725 us`; L2 were
+  `663.530/665.547/663.819 us`.  The max-rank per-rank sums were
+  `1930.527/1938.095/1932.544 us`, giving a three-observation center of
+  `1932.544 us`.
+- Derived performance: the two mathematical GEMMs together reach
+  `1280.13 TFLOPS`, or `64.69%` of H200's 1979-TFLOPS dense-FP8 peak.
+- Validation: route counts repeated exactly, all 8x20x2x3 kernel events were
+  present, all outputs were finite, and the run exited 0.
+- Decision: retain as the standalone-GEMM denominator for the same-node
+  MegaMoE phase comparison; run the identical Pro experiment next.
+- Raw artifact:
+  `$ROOT/candidates/grouped_gemm_vs_megamoe_m8192_v1/grouped_flash_final.log`.
+
+## Iteration 126 — Pro M8192 standalone grouped-FP8 GEMMs
+
+- Protocol: exact benchmark RNG/order and actual seed-101 routes; eight H200 ranks; three order-alternating observations, each reporting a 20-sample median; no L2 flush.
+- Route distribution: per-rank received tokens 48,777–49,322; per-expert M 923–1,112; aligned total M 51,584–52,864.
+- Both GEMMs selected BM128/BN192/BK128, cluster 2, stage 4, 132 SMs, 384 threads.
+- L1 observations: 3479.521 / 3455.682 / 3475.026 us; center 3475.026 us.
+- L2 observations: 1736.416 / 1733.937 / 1736.336 us; center 1736.336 us.
+- Max-rank per-rank L1+L2 observations: 5215.937 / 5189.619 / 5211.362 us; center 5211.362 us.
+- Combined logical throughput: 1246.122 TFLOP/s, or 62.967% of the 1979-TFLOP/s dense FP8 compute roof.
+- Correctness sanity: all outputs finite; all expected profiler events present; exit 0.
+- Decision: proceed to a same-node current-MegaMoE M8192 phase/total benchmark.
+- Raw artifact: `/work/greencontext/results/sm90_fp8_bf16_policy_job2980566/candidates/grouped_gemm_vs_megamoe_m8192_v1/grouped_pro_final.log`.
+
+## Iteration 127 — Flash M8192 current MegaMoE phase/total benchmark
+
+- Protocol: same H200 node/job and seed-101 routes as the standalone grouped-GEMM run; current production selector with no `DG_SM90_MOE_*` overrides; eight ranks; three observations of 20 samples; profiler phase breakdown enabled; no L2 flush.
+- Observation max-rank total medians: 3148.314 / 3177.844 / 3151.700 us; center 3151.700 us.
+- Observation max-rank L1 event medians: 1982.470 / 2005.862 / 1982.831 us; center 1982.831 us.
+- Observation max-rank L2 event medians: 1184.596 / 1180.851 / 1196.149 us; center 1184.596 us.
+- All three observations completed with eight ranks, 20 logical calls per rank, exactly two matched phase events per call, and exit 0.
+- Decision: preserve this no-override same-node baseline, then run the identical Pro M8192 protocol before calculating the final comparison.
+- Raw artifact: `/work/greencontext/results/sm90_fp8_bf16_policy_job2980566/candidates/megamoe_m8192_phase_compare_flash_v1/driver.log`.
+
+## Iteration 128 — Pro M8192 current MegaMoE phase/total benchmark
+
+- Protocol: same H200 node/job, seed-101 routes, no-override production selector, eight ranks, three observations of 20 samples, profiler phase breakdown, and no L2 flush as Iteration 127.
+- Observation max-rank total medians: 7721.374 / 7713.851 / 7730.317 us; center 7721.374 us.
+- Observation max-rank L1 event medians: 4753.653 / 4725.936 / 4748.006 us; center 4748.006 us.
+- Observation max-rank L2 event medians: 3091.221 / 3107.487 / 3142.432 us; center 3107.487 us.
+- All three observations completed with eight ranks, 20 logical calls per rank, exactly two matched phase events per call, and exit 0.
+- Decision: parse both shape logs strictly and compare the standalone grouped-FP8 mathematical GEMMs against MegaMoE phase and total timings.
+- Raw artifact: `/work/greencontext/results/sm90_fp8_bf16_policy_job2980566/candidates/megamoe_m8192_phase_compare_pro_v1/driver.log`.
+
+## Iteration 129 — M8192 standalone grouped-FP8 versus current MegaMoE
+
+- Strict parser validation: both MegaMoE shape logs contain three observations, eight ranks per observation, 20 L1 and 20 L2 events per rank, two phase events per logical call, and `DRIVER_EXIT=0`; both grouped-GEMM logs contain three complete eight-rank observations and `RUN_EXIT=0`.
+- Flash centers: standalone grouped FP8 L1/L2/sum = 1268.725 / 663.819 / 1932.544 us; current MegaMoE L1/L2/authoritative total = 1982.831 / 1184.596 / 3151.700 us.
+- Flash comparison: MegaMoE/grouped ratios = 1.563x L1, 1.785x L2, 1.631x total; standalone grouped time is 38.682% lower end-to-end. Logical throughput/SOL = 1280.127 TFLOP/s and 64.686% for grouped versus 784.942 TFLOP/s and 39.664% for MegaMoE.
+- Pro centers: standalone grouped FP8 L1/L2/sum = 3475.026 / 1736.336 / 5211.362 us; current MegaMoE L1/L2/authoritative total = 4748.006 / 3107.487 / 7721.374 us.
+- Pro comparison: MegaMoE/grouped ratios = 1.366x L1, 1.790x L2, 1.482x total; standalone grouped time is 32.507% lower end-to-end. Logical throughput/SOL = 1246.122 TFLOP/s and 62.967% for grouped versus 841.041 TFLOP/s and 42.498% for MegaMoE.
+- Interpretation boundary: the standalone path measures only routed grouped GEMMs with E4M3 block scaling and BF16 outputs. MegaMoE L1 additionally includes remote dispatch plus SwiGLU/amax/E4M3 requantization, while L2 additionally includes output conversion, NVLink scatter, and top-k combine. Therefore the delta is fused/distributed phase overhead plus custom-mainloop/scheduling efficiency, not a drop-in kernel speedup.
+- No production source was changed and no commit or push was made for this benchmark.
+
+## Iteration 130 — Flash M8192 cold-L2 MegaMoE smoke
+
+- Protocol: current no-override production selector, seed 101, eight H200 ranks, one three-sample observation, and an 8,000,000,000-byte per-rank zero-fill before every timed call. The flush kernel is outside the matched MegaMoE L1/L2 event time.
+- Validation: every rank emitted exactly three logical samples and six matched phase events; all eight ranks completed and the driver exited 0.
+- Max-rank median was 3272.221 us. One synchronized sample on seven ranks was about 5.87 ms while the remaining samples were about 3.14–3.27 ms; the formal median-20 protocol is required before interpreting the cold/warm delta.
+- Decision: the 8 GB flush is memory-safe and preserves the two-kernel timing boundary; proceed to the full three-shape/all-M cold-L2 matrix.
+- Raw artifact: `/work/greencontext/results/sm90_fp8_bf16_policy_job2980566/candidates/megamoe_coldl2_flash_smoke_m8192_v1/driver.log`.
+- No commit or push was made.
+
+
+## Iteration 144 — cold-L2 baseline versus MegaMoE SOL report
+
+- Inputs: the strict 33-point DeepEP+grouped-FP8 baseline from Iteration 143 and the strict cold-L2 MegaMoE Flash, Pro, and MiMo-Pro matrices from Iterations 131--133.
+- Compute model per H200: logical GEMM work `6 * M * top_k * H * I` FLOPs, divided by measured max-rank latency and the 1,979-TFLOP/s dense-FP8 roof.
+- Whole-MoE memory model per H200: one FP8 input plus per-token FP32 K128 scales, one BF16 output, all local L1/L2 FP8 weights plus FP32 128x128 weight scales. Thus `B = 3*(E/8)*H*I*(1 + 4/16384) + M*H*(1 + 4/128) + 2*M*H`; dispatch/combine metadata and intermediate activations are excluded as requested. Memory SOL uses the 4.8-TB/s HBM roof.
+- Geometric-mean MegaMoE speedups over the baseline across all M were 1.409x Flash, 1.179x Pro, and 1.267x MiMo-Pro. Ranges were 1.204--1.585x, 0.965--1.482x, and 0.982--1.680x respectively.
+- Exceptions: the baseline was 3.6% faster at Pro M512 and 1.9% faster at MiMo-Pro M512; every other point favored MegaMoE. M512 remains excluded from the production tuning gate.
+- Peak reported MegaMoE memory SOL was 99.5% at Pro M8; peak MegaMoE compute SOL was 42.4% at Pro M8192. The corresponding baseline values were 82.4% and 35.6%.
+- Comparison boundary: MiMo-Pro is same-node (`viking-prod-259`). Flash/Pro MegaMoE cold data came from `viking-prod-303`, while the baseline ran on `viking-prod-259`; gaps near 1% should not be treated as confirmed, but the main conclusions are materially larger.
+- Artifacts: `comparison_sol.csv` and `comparison_sol.md` in `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/deepep_grouped_fp8_dynamic_coldl2_allm_s101_n20_o3_v1/`.
+- No commit or push was made.
+
+
+## Iteration 133 — MiMo-Pro all-M cold-L2 MegaMoE matrix
+
+- Protocol: current no-override production selector; MiMo-Pro H6144/I2048/E384/top-k8; M=8/16/32/64/128/256/512/1024/2048/4096/8192; seed 101; eight H200 ranks; three observations per point; 20 timed calls per rank; 8,000,000,000-byte per-rank L2 flush before every call and outside matched L1/L2 event time.
+- Completion: all 33 leaf runs report `RUN_EXIT=0`; the campaign reports `DRIVER_EXIT=0`. Strict parsing accepted all 33 leaves, each with eight ranks, three observations, and 20 samples per rank.
+- Strict max-rank observation medians in M order were 432.8, 493.6, 523.0,
+  539.4, 584.1, 541.6, 879.9, 1179.8, 1988.0, 3438.8, and 6544.8 us.
+- Parsed artifacts: `summary.csv` and `report.md` beside the raw driver log.
+- Node/allocation: Slurm job 2985479 on `viking-prod-259` (8x H200).
+- Raw artifact: `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/megamoe_coldl2_mimo_pro_allm_s101_n20_o3_v1/driver.log`.
+- No commit or push was made.
+
+
+## Iteration 134 — baseline-only Flash M8 cold-L2 smoke (environment failure)
+
+- Protocol: standalone DeepEP dispatch -> grouped-FP8 L1 -> Triton SwiGLU plus FP8 quantization -> grouped-FP8 L2 -> DeepEP combine; Flash H4096/I2048/E256/top-k6; M=8; seed 101; eight H200 ranks; one warmup; one observation of three samples requested; 8,000,000,000-byte per-rank flush requested.
+- Completion: failed before any warmup or timed sample. Worker rank 0 reported `DeepEP import failed: No module named 'deep_ep'`; multiprocessing terminated the remaining workers. The leaf and driver both exited 1.
+- Classification: environment/bootstrap failure, not a kernel correctness or performance result. Repair the DeepEP import path/build and rerun under a new smoke candidate before accepting data.
+- Node/allocation: Slurm job 2985479 on `viking-prod-259` (8x H200).
+- Raw artifact: `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/deepep_grouped_fp8_coldl2_smoke_flash_m8_v1/driver.log`.
+- No commit or push was made.
+
+
+## Iteration 135 — baseline-only Flash M8 cold-L2 smoke v2 (ElasticBuffer transport failure)
+
+- Protocol: same standalone five-stage baseline as Iteration 134; Flash H4096/I2048/E256/top-k6; M=8; seed 101; eight H200 ranks; one warmup; one observation of three samples requested; 8,000,000,000-byte per-rank flush requested. DeepEP was imported from its built package with the exact build-time NCCL overlaid into the container.
+- Completion: DeepEP import and NCCL binary validation passed, but the run failed before warmup/timing while constructing `ElasticBuffer`. Rank 6 reported `NCCL GIN is unavailable`; the leaf and driver both exited 1.
+- Classification: DeepEP ElasticBuffer transport/bootstrap incompatibility on this single-node allocation, not a kernel correctness or performance result. The compatibility path must use the legacy intranode `Buffer` API here.
+- Node/allocation: Slurm job 2985479 on `viking-prod-259` (8x H200).
+- Raw artifact: `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/deepep_grouped_fp8_coldl2_smoke_flash_m8_v2/driver.log`.
+- No commit or push was made.
+
+
+## Iteration 136 — baseline-only Flash M8 cold-L2 smoke v3 (legacy padding mismatch)
+
+- Protocol: same standalone five-stage baseline; legacy single-node DeepEP Buffer selected explicitly; Flash H4096/I2048/E256/top-k6; M=8; seed 101; eight H200 ranks; one warmup; one observation of three samples requested; 8,000,000,000-byte per-rank flush requested.
+- Completion: DeepEP construction, dispatch, and grouped-FP8 L1 advanced successfully. The run failed before timing in the Triton SwiGLU/quantize stage because the legacy dispatch output's padded token extent did not match `recv_topk_weights.numel()`; rank 6 raised the shape assertion. The leaf and driver both exited 1.
+- Classification: baseline adapter shape bug in the legacy DeepEP compatibility path, not a kernel correctness or performance result. Inspect the dispatched token/weight shapes and normalize padding before rerunning.
+- Node/allocation: Slurm job 2985479 on `viking-prod-259` (8x H200).
+- Raw artifact: `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/deepep_grouped_fp8_coldl2_smoke_flash_m8_v3/driver.log`.
+- No commit or push was made.
+
+
+## Iteration 137 — legacy DeepEP dispatch shape diagnostic
+
+- Protocol: Flash M8, seed 101, eight H200 ranks; legacy DeepEP Buffer; a single pre-timing execution with shape diagnostics enabled. No timing result was accepted.
+- Completion: all ranks reached dispatch and emitted shapes before the expected SwiGLU guard stopped the run; the leaf and driver exited 1.
+- Finding: legacy dispatch returns unique rank-local tokens (`recv_x` rows 31--41 in this sample) plus `[recv_rows, top-k]` expert indices/weights, while its aligned per-expert counts are 0 or 128. It does not implement ElasticBuffer's `do_expand=True` expert-grouped layout, so it cannot be passed directly to contiguous grouped GEMM. Flattening the `[recv_rows, top-k]` weights would be incorrect, and the PR323 compatibility fallback is not a valid standalone baseline for this API combination.
+- Decision: do not add unaccounted Torch expansion/reduction kernels to the requested five-stage baseline. Return to ElasticBuffer and enable its supported hybrid transport mode if available.
+- Node/allocation: Slurm job 2985479 on `viking-prod-259` (8x H200).
+- Raw artifact: `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/deepep_grouped_fp8_legacy_shape_diag_flash_m8_v4/driver.log`.
+- No commit or push was made.
+
+
+## Iteration 138 — ElasticBuffer NCCL transport diagnostic
+
+- Protocol: baseline-only Flash M8 smoke with ElasticBuffer, exact DeepEP build-time NCCL 2.30.4, `NCCL_NVLS_ENABLE=1`, and NCCL INIT/NET/GRAPH diagnostics. One warmup and one observation of three cold-L2 samples were requested; no timing sample was reached.
+- Completion: failed during ElasticBuffer construction on all-rank bootstrap; the leaf and driver exited 1.
+- Finding: the container loaded `/opt/hpcx/nccl_rdma_sharp_plugin/lib/libnccl-net.so`, but no IB device was exposed, `libnccl-gin.so` was absent, and the installed v11 network plugin exported neither `ncclGinPlugin_v12` nor `ncclGinPlugin_v11`. NCCL therefore fell back to Socket with `GIN_TYPE_NONE`; enabling NVLS did not fix ElasticBuffer.
+- Classification: allocation/container transport dependency gap, not a kernel correctness or performance result.
+- Node/allocation: Slurm job 2985479 on `viking-prod-259` (8x H200).
+- Raw artifact: `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/deepep_grouped_fp8_elastic_nvls_smoke_flash_m8_v5/driver.log`.
+- No commit or push was made.
+
+
+## Iteration 139 — ElasticBuffer non-GIN baseline smoke succeeds
+
+- Protocol: baseline-only Flash M8; ElasticBuffer with expert expansion; documented `EP_DISABLE_GIN=1` intranode fallback; `NCCL_NVLS_ENABLE=0`; seed 101; eight H200 ranks; one warmup; one observation of three samples; an actual 8,000,000,000-byte per-rank flush before each timed call.
+- Completion: all eight ranks emitted three samples and finite BF16 outputs of the requested shape; the leaf and driver exited 0. Strict max-rank returned median was 1631.0 us.
+- Transport finding: the documented non-GIN ElasticBuffer path is viable on this node and preserves the requested dispatch -> grouped-FP8 L1 -> Triton SwiGLU/FP8 -> grouped-FP8 L2 -> combine sequence.
+- Capacity warning: `recv_x` exposed 397,312 rows at M8 because the benchmark used cap=8192 with `do_cpu_sync=False`; this is a fixed-capacity graphable extent, not the 39--54 unique routed tokens observed per rank. The 1631.0-us smoke number is therefore not yet accepted as the intended dynamic-M baseline. Resolve the extent policy before the formal matrix.
+- Node/allocation: Slurm job 2985479 on `viking-prod-259` (8x H200).
+- Raw artifact: `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/deepep_grouped_fp8_elastic_nogin_smoke_flash_m8_v6/driver.log`.
+- No commit or push was made.
+
+
+## Iteration 140 — dynamic-extent ElasticBuffer baseline smoke
+
+- Protocol: baseline-only Flash M8; cap=M=8; ElasticBuffer expert expansion; DeepEP `do_cpu_sync=1`; documented `EP_DISABLE_GIN=1`; seed 101; eight H200 ranks; one warmup; one observation of three samples; actual 8,000,000,000-byte flush per rank before each timed call.
+- Completion: all eight ranks emitted three samples and finite BF16 outputs of shape `[8, 4096]`; the leaf and driver exited 0. Strict max-rank returned median was 362.2 us.
+- Extent result: expanded buffer rows were 2,688--3,456 across ranks rather than the fixed 397,312 rows from cap=8192/no-sync. This confirms the dynamic-M policy removes the artificial small-M work inflation. The handle's final psum entry was up to 127 rows below the allocated extent on some ranks, so parser semantics need to treat it as the last expert's starting boundary rather than total rows.
+- Status: successful smoke and valid timing mechanics; update the strict extent invariant, then rerun a formal 3x20 smoke before launching the 33-point matrix.
+- Node/allocation: Slurm job 2985479 on `viking-prod-259` (8x H200).
+- Raw artifact: `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/deepep_grouped_fp8_dynamic_coldl2_smoke_flash_m8_v7/driver.log`.
+- No commit or push was made.
+
+
+## Iteration 141 — dynamic-extent baseline endpoint matrix smoke
+
+- Protocol: baseline-only Flash at M=8 and M=8192; cap=M; ElasticBuffer expert expansion; DeepEP `do_cpu_sync=1`; `EP_DISABLE_GIN=1`; seed 101; eight H200 ranks; five warmups and three observations of 20 samples; actual 8,000,000,000-byte flush per rank before every timed call.
+- Completion: both leaf runs report `RUN_EXIT=0` and the campaign reports `DRIVER_EXIT=0`. Strict parsing accepted all eight ranks, three observations, 20 raw samples per rank/observation, stable routes, exact cap=M, dynamic CPU-synchronized extents, and an actual 8 GB flush.
+- Accepted centers: M8 observations 346.592/343.168/342.304 us, center 343.2 us; M8192 observations 4318.368/4311.152/4311.936 us, center 4311.9 us. A few synchronized M8 raw-sample outliers are rejected by the per-observation median.
+- Parsed artifacts: `summary.csv` and `report.md` beside the raw driver log.
+- Node/allocation: Slurm job 2985479 on `viking-prod-259` (8x H200).
+- Raw artifact: `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/deepep_grouped_fp8_dynamic_coldl2_endpoint_smoke_flash_v8/driver.log`.
+- No commit or push was made.
+
+
+## Iteration 142 — dynamic-extent baseline full matrix v1 interrupted
+
+- Protocol: baseline-only Flash/Pro/MiMo-Pro all-M matrix; cap=M; ElasticBuffer; `do_cpu_sync=1`; `EP_DISABLE_GIN=1`; seed 101; eight H200 ranks; five warmups and three observations of 20 samples; actual 8,000,000,000-byte cold-L2 flush requested per timed call.
+- Completion: 20 leaf runs completed with `RUN_EXIT=0` (all 11 Flash points and Pro M8 through M2048); no completed leaf failed. Pro M4096 then exited 1 before warmup/timing. Completed leaves are retained and will be skipped by the runner.
+- Root cause: `/home/aichenf` was at its 5.0 GB quota (32 KB free). DeepEP's default home JIT cache produced a truncated 32,768-byte M4096 dispatch CUBIN with missing ELF headers, so its `cuobjdump -symbols` validation exited nonzero. This is a cache-storage failure, not a dispatch/GEMM failure. Resume with `EP_JIT_CACHE_DIR` under the scratch candidate directory.
+- Schema validation observed during the run: schema-v2 actual expert assignments exactly matched independent route counts, and all expanded extents matched 128-row padding.
+- Node/allocation: Slurm job 2985479 on `viking-prod-259` (8x H200).
+- Raw artifact: `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/deepep_grouped_fp8_dynamic_coldl2_allm_s101_n20_o3_v1/driver.log`.
+- No commit or push was made.
+
+
+## Iteration 143 — dynamic-extent baseline full matrix resume completes
+
+- Protocol: resumed the same baseline-only Flash/Pro/MiMo-Pro all-M candidate after moving DeepEP JIT cache to scratch; cap=M; ElasticBuffer; `do_cpu_sync=1`; `EP_DISABLE_GIN=1`; seed 101; eight H200 ranks; five warmups and three observations of 20 samples; 8,000,000,000-byte cold-L2 flush per timed call.
+- Completion: the resume campaign exited 0. Strict parsing accepted all 33 leaves, each with eight ranks, three observations, 20 raw samples per rank/observation, recomputed medians, stable routes, exact cap=M, ElasticBuffer CPU-synchronized extents, exact assignment counts, and an actual 8 GB flush.
+- Accepted Flash centers in M order: 348.0, 395.4, 394.4, 402.6, 414.0, 439.3, 496.8, 705.0, 1208.0, 2238.1, and 4317.6 us.
+- Accepted Pro centers in M order: 801.8, 946.4, 1244.4, 1022.8, 1042.5, 1085.2, 1178.7, 1617.5, 2678.6, 4832.9, and 9207.9 us.
+- Accepted MiMo-Pro centers in M order: 579.2, 829.4, 700.4, 696.0, 705.0, 761.0, 863.9, 1355.4, 2298.2, 4278.5, and 8290.4 us.
+- Parsed artifacts: `summary.csv` and `report.md` beside the raw driver logs.
+- Cache handling: no user home cache was deleted; new DeepEP JIT artifacts were written under the scratch candidate directory.
+- Node/allocation: Slurm job 2985479 on `viking-prod-259` (8x H200).
+- Raw artifacts: `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/deepep_grouped_fp8_dynamic_coldl2_allm_s101_n20_o3_v1/driver.log` and `driver.resume1.log`.
+- No commit or push was made.
+
+## Iteration 132 — Pro all-M cold-L2 MegaMoE matrix
+
+- Protocol: current no-override production selector; Pro H7168/I3072/E384/top-k6; M=8/16/32/64/128/256/512/1024/2048/4096/8192; seed 101; eight H200 ranks; three observations per point; 20 timed calls per rank; 8,000,000,000-byte per-rank L2 flush before every call and outside matched L1/L2 event time.
+- Completion: all 33 leaf runs report `RUN_EXIT=0`; the campaign reports `DRIVER_EXIT=0`. Strict rank/sample parsing follows before any result is accepted.
+- Strict max-rank observation medians in M order were 664.2, 790.2, 839.7,
+  865.6, 873.3, 877.6, 1220.9, 1541.4, 2342.5, 4070.8, and 7734.2 us.
+  Every point has three complete eight-rank observations and 20 samples per
+  rank.
+- Parsed artifacts: `summary.csv` and `report.md` beside the raw driver log.
+- Raw artifact: `/work/greencontext/results/sm90_fp8_bf16_policy_job2980566/candidates/megamoe_coldl2_pro_allm_s101_n20_o3_v1/driver.log`.
+- No commit or push was made.
+
+
+## Iteration 131 — Flash all-M cold-L2 MegaMoE matrix
+
+- Protocol: current no-override production selector; Flash H4096/I2048/E256/top-k6; M=8/16/32/64/128/256/512/1024/2048/4096/8192; seed 101; eight H200 ranks; three observations per point; 20 timed calls per rank; 8,000,000,000-byte per-rank L2 flush before every call and outside matched L1/L2 event time.
+- Completion: all 33 leaf runs report `RUN_EXIT=0`; the campaign reports `DRIVER_EXIT=0`. Strict rank/sample parsing follows before any result is accepted.
+- Strict max-rank observation medians in M order were 226.1, 249.4, 261.5,
+  272.2, 267.6, 291.9, 412.6, 558.9, 950.7, 1715.9, and 3167.9 us.
+  Every point has three complete eight-rank observations and 20 samples per
+  rank.  Flash M8 contained one 332.6-us observation, but its other two
+  observations were 226.1/219.0 us; the three-observation center remains
+  226.1 us.
+- Parsed artifacts: `summary.csv` and `report.md` beside the raw driver log.
+- Raw artifact: `/work/greencontext/results/sm90_fp8_bf16_policy_job2980566/candidates/megamoe_coldl2_flash_allm_s101_n20_o3_v1/driver.log`.
+- No commit or push was made.
+## Iteration 145 — low-latency Flash M8 smoke v1 (Triton cache ENOSPC)
+
+- Scope: standalone DeepEP low-latency dispatch/combine + current masked FP8 grouped GEMM path; Flash `(M=8, H=4096, I=2048, E=256, top-k=6)`, seed 101, 8 H200 ranks.
+- Protocol: 1 warmup, 1 observation × 3 timed repeats, cold-L2 flush configured outside timing; this smoke produced no valid timed samples.
+- Result: DeepEP/NVSHMEM initialization advanced past the earlier IBGDA messages, then Triton compilation failed with `OSError: [Errno 28] No space left on device` while writing `/home/aichenf/.triton/cache/...`.
+- Artifact: `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/deepep_ll_masked_coldl2_smoke_flash_m8_v1/driver.log` on H200 job `2985479`, node `viking-prod-259`.
+- Conclusion: benchmark/kernel correctness and latency were not evaluated; redirect Triton cache to scratch and rerun the same smoke before expanding the matrix.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 146 — low-latency Flash M8 smoke v2 (scratch Triton cache)
+
+- Scope: standalone DeepEP low-latency dispatch/combine + current masked FP8 grouped GEMM path; Flash `(M=8, H=4096, I=2048, E=256, top-k=6)`, seed 101, 8 H200 ranks.
+- Protocol: 1 warmup, 1 observation × 3 timed repeats, 8,000,000,000-byte per-rank cold-L2 flush outside the timed interval; returned sample is each rank's median and the observation uses the maximum rank.
+- Result: `RUN_EXIT=0`; max-rank latency `415.072 us` (rank 0). All eight ranks emitted three samples, exact per-expert route-count checks passed, output shape/dtype/finite assertions passed, and every rank confirmed the requested flush size.
+- Environment: Triton cache redirected to the candidate scratch directory. NVSHMEM printed IBGDA transport warnings, but DeepEP low-latency completed through the enabled intra-node NVLink/P2P path.
+- Artifact: `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/deepep_ll_masked_coldl2_smoke_flash_m8_v2/logs/deepep_ll_masked_coldl2_smoke_flash_m8_v2_flash_M8_S101_O1_N3.log` on H200 job `2985479`, node `viking-prod-259`.
+- Conclusion: smoke gate passes; proceed to the full 15-point Flash/Pro/MiMo-Pro × M=8/16/32/64/128 matrix with the approved 5-warmup, 3-observation × 20-sample protocol.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 147 — DeepEP low-latency masked-FP8 small-M cold-L2 matrix
+
+- Scope: Flash, Pro, and MiMo-Pro at `M=8/16/32/64/128`; standalone DeepEP low-latency dispatch/combine around the current masked FP8 grouped-GEMM L1/L2 path. Seed 101, 8 H200 ranks.
+- Protocol: 5 warmups; 3 observations per point; 20 timed calls per rank per observation; 8,000,000,000-byte per-rank L2 flush before each call and outside the timed interval. Each rank reports its 20-sample median, each observation reports the maximum rank, and the final point reports the median of three observations.
+- Completion: all 15 leaf runs and the campaign exited with `RUN_EXIT=0`; no PR323 fused kernel or NVFP4 path was invoked. Strict rank/sample/route/flush parsing and result-table generation follow.
+- Strict parse: accepted 15/15 points. Final max-rank observation medians in `M=8/16/32/64/128` order were Flash `264.0/398.4/405.2/309.1/419.7 us`, Pro `712.5/850.7/911.3/976.9/948.2 us`, and MiMo-Pro `543.2/567.6/572.1/584.5/670.4 us`. Every point has 3 observations, every observation has all 8 ranks, every rank has 20 raw samples, route signatures are stable, and the minimum actual flush is 8,000,000,000 bytes.
+- Comparison: relative to the existing high-throughput DeepEP baseline, low latency reduced latency at 11/15 points (Flash M8/M64; every Pro point; every MiMo-Pro point). It regressed Flash M16/M32/M128 by `0.7%/2.7%/1.4%`. Current fused MegaMoE remained faster at all 15 points; its advantage over low latency ranged from 7.3% to 59.7% when expressed relative to MegaMoE latency.
+- SOL model: reused `6*M*top_k*H*I` logical FLOPs with the 1,979-TFLOP/s roof and `3*(E/8)*H*I*(1+4/16384) + M*H*(1+4/128) + 2*M*H` whole-MoE bytes with the 4.8-TB/s roof. Low-latency compute SOL ranged from 0.45% to 5.83%; memory SOL ranged from 40.1% to 92.7% across this small-M matrix.
+- Artifact root: `/work/greencontext/results/sm90_fp8_deepep_job2985479/candidates/deepep_ll_masked_coldl2_smallm_s101_n20_o3_v1` on H200 job `2985479`, node `viking-prod-259`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 148 — Parameterized-selector cold-L2 parity invocation failure
+
+- Change under test: replace model-name/exact-M H200 schedule rows with H/I
+  bands plus exact rational expected-tokens-per-expert ranges; materialize the
+  previously inherited effective Flash M1024 and Pro large-M choices; keep the
+  numerical-format table unchanged.
+- Intended protocol: Pro M512/M1024, seed 101, eight H200 ranks, one
+  observation of 20 samples, max-rank latency, 8,000,000,000-byte L2 flush,
+  and per-phase kernel breakdown on job `3005033` / `viking-prod-298`.
+- Result: the campaign stopped before Python import, input construction, JIT,
+  or timing. `run_h200_fp8_candidate.sh` inherited its default runner path
+  from the new result root, but that root has no `scripts/` copy; Python exited
+  2 for missing
+  `/work/greencontext/results/sm90_h200_selector_job3005033/scripts/h200_fp8_matrix_runner.py`.
+- Decision: environment-path failure only. Rerun the unchanged source and
+  protocol with `RUNNER=$OURS/scripts/h200_fp8_matrix_runner.py`; do not treat
+  this as correctness or performance evidence.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/selector_range_parity_cold_pro_m512_1024_s101_n20_o1_v1/driver.log`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 149 — Parameterized-selector cold-L2 parity and phase baseline
+
+- Change under test: the approved H/I-band plus expected-load selector
+  refactor, with no tuning override. Numerical policy is unchanged. Previously
+  inherited effective fields are explicit in the H200 rule.
+- Protocol: Pro M512/M1024, seed 101, job `3005033` on `viking-prod-298`, one
+  observation of 20 samples, eight ranks, max-rank median, explicit
+  8,000,000,000-byte L2 flush before each call, and L1/L2 event breakdown.
+- Correctness/runtime status: both leaves exited 0, emitted all eight ranks and
+  20 samples per rank, and produced finite benchmark outputs. The CPU golden
+  selector test and a forced host-extension rebuild had already passed on the
+  same allocation.
+- Resolved-config proof: M512 remains on the generic BM64/BN256/BK128,
+  EPW48/stage5, direct-scatter/M-major, global-BF16 path. M1024 resolves to the
+  unchanged L1 BM64/BN512/BK128/EPW16/stage2 and L2
+  BM64/BN256/BK128/EPW16/stage3 config, with non-direct N-major cleanup,
+  E5M2 combine, and global packed-BF16 accumulation. Both use 132 SMs.
+- Results:
+
+  | M | refactor max-rank us | prior cold-L2 us | delta | DeepEP target us | remaining gap |
+  |---:|---:|---:|---:|---:|---:|
+  | 512 | 1229.442 | 1220.9 | +0.70% | 1060.8 | +15.90% |
+  | 1024 | 1504.148 | 1541.4 | -2.42% | 1455.8 | +3.32% |
+
+- Phase attribution: at the max-total rank, M512 had L1/L2 medians
+  738.833/487.489 us; M1024 had 975.730/526.721 us. Other ranks show the same
+  complementary L1/L2 tail pattern, so phase-independent tuning remains
+  necessary.
+- Decision: selector parity passes at the config level and latency is within
+  cross-node variance of the prior matrix. Use this as the new same-node
+  cold-L2 control. Profile/tune M1024 first because it is 3.3% from the target;
+  M512 requires a new tile or kernel mechanism rather than selector cleanup
+  alone.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/selector_range_parity_cold_pro_m512_1024_s101_n20_o1_v2/`.
+- Git: no commit and no push, per user instruction.
+
+## Diagnostic 2 — NCU distributed replay is not safe for the fused protocol
+
+- Attempt: Nsight Compute 2026.1.1 basic set, all child processes, one
+  `sm90_fp8_mega_moe_l1_impl` launch at Pro M1024, with the existing eight-rank
+  distributed harness and cold-cache control.
+- Result: NCU attached to all eight workers and completed the single metric
+  pass for one L1 launch, then reported `LaunchFailed`; the distributed
+  application exited 9 during replay/shutdown. No correctness or standalone
+  latency result is accepted from the profiled run.
+- Interpretation: kernel replay perturbs the cross-rank persistent
+  dispatch/symmetric-buffer protocol. Per the AKO best-effort rule, do not
+  repeatedly probe the same incompatible mode in this session. Use the valid
+  Kineto phase breakdown plus controlled parameter experiments; range replay
+  is deferred unless a later bottleneck cannot be resolved analytically.
+- Raw artifacts:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/ncu/pro_m1024_l1_basic_v1/`.
+
+## Iteration 150 — Pro M1024 cold-L2 phase/scheduler screen
+
+- Hypothesis: M1024 is only 3.3% above the DeepEP target, so an existing
+  phase-local wave, stage, grid, or L2 execution control may close it without a
+  new kernel mode.
+- Protocol: job `3005033`, Pro M1024, seed 101, one max-rank median-10
+  observation per candidate, eight ranks, explicit 8 GB L2 flush. The unchanged
+  control ran first and last; all candidates shared a JIT cache.
+- Results:
+
+  | candidate | max-rank us | versus opening control |
+  |---|---:|---:|
+  | control A | 1505.123 | — |
+  | L2 stage4 | 1523.735 | +1.24% |
+  | L2 stage2 | 1590.917 | +5.70% |
+  | L1/L2 EPW 8/16 | 1492.070 | -0.87% |
+  | L1/L2 EPW 16/24 | 1529.274 | +1.60% |
+  | L1/L2 EPW 24/24 | 1517.621 | +0.83% |
+  | 128/128 SM grid | 1490.951 | -0.94% |
+  | cleanup off | 1513.575 | +0.56% |
+  | M-major L2 | 1592.328 | +5.79% |
+  | direct L2 scatter | 1695.720 | +12.66% |
+  | control B | 1617.352 | +7.46% |
+
+- Interpretation: stage2/4, larger L2 waves, M-major, direct scatter, and
+  cleanup-off are rejected. EPW8/16 and the 128-SM grid are the only positive
+  signals, but the closing control drifted by 7.5%, so their sub-1% apparent
+  gains are not confirmed. Neither reaches the 1455.8-us target alone.
+- Decision: run an interleaved control / EPW8 / 128-SM / combined EPW8+128-SM
+  screen with repeated observations. Do not promote any selector row from this
+  order-confounded screen.
+- Raw artifacts:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_cold_screen_*_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 151 — Pro M1024 focused grid/wave run stopped on asymmetric hang
+
+- Intended protocol: repeated forward/reverse cold-L2 comparisons of the
+  unchanged control, L1 EPW8, symmetric 128-SM, their combination, and
+  L1-only/L2-only 128-SM grids. Each leaf used eight ranks and one max-rank
+  median-20 observation.
+- Completed results before the stop:
+
+  | candidate | max-rank us |
+  |---|---:|
+  | control | 1503.212 |
+  | L1 EPW8 + symmetric 128-SM | 1488.379 |
+
+- Failure: the next L1-only 128-SM / L2-132-SM leaf initialized all eight
+  ranks but produced no sample for more than ten minutes. This matches the
+  persistent-counter/scheduler hangs previously observed for asymmetric phase
+  grids. The campaign was interrupted rather than waiting for its one-hour
+  leaf timeout; later leaves were not run.
+- Decision: reject asymmetric phase grids as unsafe. Treat the completed
+  combined result as a screen only because it has one observation and no
+  closing control. Continue with symmetric grids and wave changes in short,
+  separately bounded leaves.
+- Raw artifacts:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_focus_*_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 152 — Pro M1024 L1-BN384 compile smoke
+
+- Hypothesis: an L1 BN384 tile with three N128 consumer warpgroups and stage3
+  may sit between BN256/stage3 and BN512/stage2, retaining more pipeline depth
+  while reducing L1 block count. The mode was added only as an opt-in H200
+  phase override; no selector row used it.
+- Protocol: Pro M1024, L1 BN384/BK128/EPW16/stage3, unchanged L2, global
+  packed-BF16 and E5M2 combine, eight ranks, one cold-L2 median-5 smoke.
+- Result: all ranks reached JIT, but NVCC rejected the specialization before
+  launch. Two independent constraints fired:
+  1. the shared `MegaMoEScheduler` template still requires `BLOCK_N` to divide
+     both L1 N=6144 and L2 N=7168, although the phases launch separately;
+  2. three consumer warpgroups with the current per-WG allocation exceed the
+     64K CTA register-budget assertion.
+- Decision: no correctness or timing evidence exists. Do not weaken either
+  guard blindly. BN384 would require a phase-dimension scheduler decoupling and
+  a smaller verified consumer register allocation, so reject it for the
+  bounded M1024 tuning loop and remove the unused experiment before finalizing.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_bn384_smoke_s3_e16_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 153 — BN384 compile-fix smoke launcher failure
+
+- Change under test: keep the active split phase's exact scheduler shape,
+  align only the inactive phase N shape, and allocate 144 registers/thread to
+  the three BN384 consumer warpgroups. The mode remains opt-in and is not used
+  by the production selector.
+- Result: the Slurm step imported the container but exited before importing
+  DeepGEMM or compiling CUDA because `RUNNER` pointed at the absent
+  `$ROOT/scripts/h200_fp8_matrix_runner.py`. This is a launcher-path failure;
+  it provides no compilation, correctness, or timing evidence.
+- Decision: preserve the candidate source unchanged and rerun with the runner
+  from the synced worktree. Do not count this failed leaf as a BN384 result.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_bn384_smoke_s3_e16_v2/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 154 — Pro M1024 L1-BN384 repaired smoke
+
+- Change under test: L1 BN384/BK128/EPW16/stage3 with three N128 consumer
+  warpgroups; the inactive scheduler phase is padded only inside the split
+  kernel, and the BN384 consumers use 144 registers/thread. L2 and the global
+  BF16/E5M2 numerical policy are unchanged.
+- Protocol: job `3005033`, Pro M1024, seed 101, eight ranks, one cold-L2
+  median-5 smoke, max-rank result.
+- Result: the specialization compiled and all eight ranks completed. The
+  max-rank median was **1669.193 us**, versus about 1503--1505 us for the
+  same-node BN512 control (roughly 11% slower). The rank-4 phase medians were
+  L1 1128.358 us and L2 540.803 us; the larger L1 cost dominates the loss.
+- Decision: reject BN384 on performance. It remains outside the selector and
+  its experimental support will be removed before production validation.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_bn384_smoke_s3_e16_v3/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 155 — Pro M1024 BK256 screen opening control
+
+- Change under test: none; this is the post-BN384-cleanup same-node control
+  for the bounded BK256 screen.
+- Protocol: job `3005033`, Pro M1024, seed 101, eight ranks, one cold-L2
+  median-10 observation, max-rank result.
+- Result: **1509.464 us**. The resolved production schedule remains L1
+  BN512/BK128/EPW16/stage2 and L2 BN256/BK128/EPW16/stage3, with global packed
+  BF16 accumulation and E5M2 combine.
+- Decision: use 1509.464 us as the opening control for the immediately
+  following BK256 candidates; require a materially larger gain than run noise.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_bk256_screen_control_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 156 — Pro M1024 L2 BK256/stage2 screen
+
+- Change under test: keep L1 at BN512/BK128/EPW16/stage2 and change only L2
+  from BK128/stage3 to BK256/stage2. The global BF16/E5M2 policy is unchanged.
+- Protocol: job `3005033`, Pro M1024, seed 101, eight ranks, one cold-L2
+  median-10 observation, max-rank result.
+- Result: **1480.615 us**, 1.91% faster than the 1509.464-us opening control.
+  This is a positive existing-kernel signal, but it is still 1.70% above the
+  1455.8-us target.
+- Decision: retain as a candidate and test it together with the previously
+  positive symmetric 128-SM/EPW8 schedule. Do not promote from one observation.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_l2_bk256_s2_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 157 — M1024 BK256 + EPW8/128-SM mixed-transient observation
+
+- Change under test: L2 BK256/stage2 plus L1 EPW8 and a symmetric 128-SM
+  grid; L2 remains EPW16. Numerical policy is unchanged.
+- Protocol: job `3005033`, Pro M1024, seed 101, eight ranks, one cold-L2
+  median-10 observation.
+- Result: the run exited 0, but it is not a valid steady-state comparison.
+  Six samples per affected rank were 4.7--9.2 ms while the final four samples
+  returned to roughly 1420--1478 us. The max-rank median was therefore
+  9213.571 us and reflects a startup/counter transient rather than the final
+  steady cluster.
+- Decision: do not accept or reject the combination from this observation.
+  Repeat once in the same process-independent candidate cache; only a fully
+  stable sample population may be compared with the BK256 control.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_l2_bk256_s2_l1e8_sm128_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 158 — M1024 BK256 + EPW8/128-SM repeat is unstable
+
+- Change under test: identical to Iteration 157, using the same JIT cache in a
+  second process observation.
+- Result: the instability repeated and became steady rather than transient.
+  Most ranks measured about 9.19--9.23 ms, with two ranks around 4.95--4.98
+  ms; no rank remained near the 1.48-ms BK256 control cluster. The run exited
+  0 but the cross-rank timing is pathological.
+- Decision: reject the symmetric 128-SM combination as unsafe for this split
+  persistent protocol. Do not place it in the selector. Continue with L1 EPW8
+  at the normal 132-SM grid so the positive BK256 tile can be isolated from
+  the grid instability.
+- Raw artifact: observation 2 under
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_l2_bk256_s2_l1e8_sm128_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 159 — M1024 L2 BK256 plus L1 EPW8 at 132 SM
+
+- Change under test: retain the positive L2 BK256/stage2 tile, set only L1
+  EPW16 to EPW8, and restore the normal symmetric 132-SM grid.
+- Protocol: job `3005033`, Pro M1024, seed 101, eight ranks, one cold-L2
+  median-10 observation, max-rank result.
+- Result: **1489.512 us**. The run is stable, but it is 0.60% slower than the
+  1480.615-us L2-BK256-only candidate.
+- Decision: reject L1 EPW8 in combination with L2 BK256. Keep EPW16 and the
+  full 132-SM grid for the retained candidate.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_l2_bk256_s2_l1e8_sm132_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 160 — M1024 L1 BN256/BK256/stage2 screen
+
+- Change under test: replace L1 BN512/BK128/stage2 with
+  BN256/BK256/stage2; leave L2 and the numerical policy unchanged.
+- Protocol: job `3005033`, Pro M1024, seed 101, eight ranks, one cold-L2
+  median-10 observation, max-rank result.
+- Result: **1651.288 us**, 9.40% slower than the 1509.464-us opening control.
+  L1 phase medians rose to roughly 1.05--1.15 ms depending on rank.
+- Decision: reject the L1 BN256/BK256 tile for M1024. Continue searching only
+  L2 tile/wave variants around the positive BN256/BK256/stage2 result.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_l1_bn256_bk256_s2_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 161 — M1024 L2 BN512/BK128/stage2 is unsafe
+
+- Change under test: replace L2 BN256/BK128/stage3 with
+  BN512/BK128/stage2; keep L1 and numerical policy unchanged.
+- Protocol: job `3005033`, Pro M1024, seed 101, eight ranks, one cold-L2
+  median-10 observation.
+- Result: the run exited 0 but produced pathological cross-rank timing:
+  approximately 4.61--9.23 ms depending on rank. Both phase event times were
+  inflated by the persistent-protocol synchronization tail.
+- Decision: reject L2 BN512 as unsafe for this split protocol and do not use
+  it in the selector. Continue with BN128/BK256, which retains the established
+  per-WG N128 execution shape without adding four consumer warpgroups.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_l2_bn512_bk128_s2_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 162 — M1024 L2 BN128/BK256/stage3 is unsafe
+
+- Change under test: replace L2 BN256/BK128/stage3 with
+  BN128/BK256/stage3; keep L1 and numerical policy unchanged.
+- Protocol: job `3005033`, Pro M1024, seed 101, eight ranks, one cold-L2
+  median-10 observation.
+- Result: the run exited 0 but again produced pathological persistent-tail
+  timing: about 5.43--9.21 ms depending on rank. This is not a usable kernel
+  latency result.
+- Decision: reject phase-local L2 block-N changes for this split protocol.
+  Continue only with the safe BN256/BK256/stage2 tile and vary its L2 wave
+  size, keeping launch topology unchanged.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_l2_bn128_bk256_s3_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 163 — M1024 L2 BK256/EPW8 is unsafe
+
+- Change under test: retain L2 BN256/BK256/stage2 and change only its wave
+  from EPW16 to EPW8; L1 remains EPW16.
+- Protocol: job `3005033`, Pro M1024, seed 101, eight ranks, one cold-L2
+  median-10 observation.
+- Result: the run exited 0 but the phase-wave mismatch produced severe
+  persistent tails: approximately 5.04--13.78 ms across ranks.
+- Decision: reject phase-specific L2 EPW8 as unsafe. Keep matched EPW16 for
+  the retained BK256 candidate and do not spend the allocation on further
+  mismatched L2 wave sizes.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_l2_bk256_s2_e8_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 164 — M1024 L2 BK256 median-20 repeat after unsafe screens
+
+- Change under test: return to the retained L2 BN256/BK256/stage2, matched
+  EPW16, 132-SM candidate and run two median-20 observations using its existing
+  JIT cache.
+- Result: observation 1 inherited a pathological cross-rank tail from the
+  preceding unsafe experiments (max-rank median 9228.625 us). Observation 2
+  returned to a coherent **1479.312 us** max-rank median, consistent with the
+  original 1480.615-us screen. The second observation's rank medians span
+  1473.042--1479.312 us.
+- Interpretation: the BK256 timing signal reproduces once the distributed
+  state is clean, but a single clean repeat is not enough after observing
+  state contamination within the persistent allocation.
+- Decision: run a third immediately consecutive observation without changing
+  configuration. Accept the candidate only if it remains in the same stable
+  cluster; then restart the Slurm step before final correctness/regression.
+- Raw artifact: N20 observations 1--2 under
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_l2_bk256_s2_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 165 — M1024 L2 BK256 third consecutive observation
+
+- Change under test: identical retained L2 BN256/BK256/stage2 configuration,
+  immediately after Iteration 164 observation 2.
+- Result: max-rank median was **1485.250 us**, again in the retained candidate
+  cluster. Most samples were 1425--1553 us, but every rank still contained one
+  or two 4.6/9.2-ms contaminated samples; median-20 remained robust to them.
+- Interpretation: the approximately 1.5-ms central latency reproduces, but the
+  long-tail samples prove this persistent Slurm step is no longer clean enough
+  for final acceptance or fine-grained sub-percent tuning.
+- Decision: terminate the persistent benchmark step and start a fresh step.
+  Re-run control and BK256 in balanced order before any selector promotion.
+- Raw artifact: N20 observation 3 under
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_l2_bk256_s2_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 166 — Fresh Slurm-step control still sees persistent tails
+
+- Change under test: none; a new container/Slurm step ran the unchanged
+  M1024 production control with a new candidate directory and shared fresh JIT
+  cache.
+- Result: the first process in the new step remained pathological: rank
+  medians split between roughly 4.91 ms and 9.19 ms. Therefore restarting only
+  the step does not reset the underlying allocation/device communication state.
+- Decision: do not use this observation for performance. Run the same control
+  once more as a state-clearing process; if it does not return to the 1.5-ms
+  cluster, stop fine-grained tuning on this allocation and request a clean
+  H200 allocation for final validation.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_fresh_control_a_s101_n20_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 167 — Second fresh-step M1024 control is stable
+
+- Change under test: identical production control, immediately following the
+  pathological first process in the new Slurm step.
+- Result: all ranks returned to a coherent latency cluster. The max-rank
+  median-20 was **1493.075 us** and rank medians spanned
+  1487.268--1493.075 us, with no multi-millisecond sample.
+- Decision: treat the first process as state clearing and use this stable
+  control as the opening point for a direct BK256/control/BK256 sequence in
+  the same clean state.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_fresh_control_b_s101_n20_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 168 — Fresh-state M1024 BK256 comparison A
+
+- Change under test: only L2 BK128/stage3 to BK256/stage2, following the stable
+  production control in Iteration 167.
+- Result: max-rank median-20 was **1482.996 us**, with rank medians spanning
+  1477.617--1482.996 us and no pathological sample. This is 0.68% faster than
+  the adjacent 1493.075-us control.
+- Interpretation: BK256 remains positive, but the clean paired gain is smaller
+  than the initial 1.9% single-observation estimate and does not close the
+  1455.8-us target.
+- Decision: run a closing control and a second BK256 point before deciding
+  whether the sub-1% gain is robust enough for the selector.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_fresh_bk256_a_s101_n20_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 169 — Fresh-state M1024 closing control
+
+- Change under test: return to the unchanged production BK128/stage3 control
+  after the first clean BK256 comparison.
+- Result: max-rank median-20 was **1498.260 us**, with all rank medians in
+  1493.141--1498.260 us and no pathological sample.
+- Decision: the clean-state control drifted upward by 0.35% from Iteration
+  167. Run BK256 once more immediately; compare it with both bracketing
+  controls rather than a single ordering.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_fresh_control_c_s101_n20_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 170 — Fresh-state M1024 BK256 comparison B
+
+- Change under test: identical L2 BN256/BK256/stage2 candidate immediately
+  after the closing control.
+- Result: max-rank median-20 was **1481.750 us**, with all rank medians in
+  1474.677--1481.750 us and no pathological sample.
+- Balanced conclusion: the two clean controls were 1493.075/1498.260 us and
+  the two clean BK256 runs were 1482.996/1481.750 us. Their pair averages are
+  1495.668 and 1482.373 us, respectively: a reproducible **0.89%** BK256 gain.
+  This is still 1.82% above the 1455.8-us target.
+- Decision: retain BK256 as a valid candidate but do not promote it yet. Test
+  whether a legal expanded L1 dispatch frontend can remove the remaining
+  roughly 27 us without changing numerical precision.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_fresh_bk256_b_s101_n20_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 171 — BN512 L1-dispatch4 smoke used a stale host object
+
+- Change under test: opt-in L1 dispatch4 on BN512 together with the retained
+  L2 BK256/stage2 candidate. Production selector defaults remain unchanged.
+- Result: the process exited before CUDA JIT. The in-place `build_ext` command
+  copied its cached host object without recompiling the modified header, so
+  the old host assertion still rejected BN512 dispatch4.
+- Decision: this is a build-cache failure and gives no kernel correctness or
+  timing evidence. Rebuild the host extension with `build_ext --force`, verify
+  the new assertion text is present, and rerun the unchanged candidate.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_l1d4_l2bk256_s101_n20_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 172 — BN512 L1-dispatch4 cannot satisfy launch-bound registers
+
+- Change under test: same opt-in L1 dispatch4 plus retained L2 BK256 after a
+  forced host-extension rebuild.
+- Result: the new host path reached CUDA JIT, but PTXAS rejected the L1 kernel:
+  768 CTA threads force an 80-register compile target while the BF16 BN512
+  math path requires at least 90 registers. No kernel launched.
+- Decision: reject four dispatch warps for BN512. Static inspection also rules
+  out a three-dispatch-warp variant: with the required two TMA warps, the math
+  consumers would begin at warp 5 instead of a four-warp boundary, violating
+  WGMMA warpgroup alignment. Remove the entire BN512 frontend experiment.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_l1d4_l2bk256_s101_n20_v2/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 173 — Async L1 TMA store with BK256 is invalid
+
+- Change under test: enable the existing opt-in asynchronous L1 output TMA
+  store while retaining L2 BN256/BK256/stage2 and the unchanged numerical
+  policy.
+- Result: all ranks reached the kernel, then the candidate caused CUDA illegal
+  memory accesses during warmup/teardown and exited nonzero. No timing result
+  is valid.
+- Decision: reject async L1 TMA store for this configuration and do not place
+  it in the selector. The default synchronous store remains unchanged.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_async_l1_l2bk256_s101_n20_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 174 — Post-async control restores clean state
+
+- Change under test: none; one short production-control process after the
+  async-store illegal-address run.
+- Result: all ranks completed normally; the median-5 max-rank latency was
+  1485.383 us with no multi-millisecond tail. This run is only a device-state
+  check, not a performance comparison.
+- Decision: communication/device state is clean again. Continue with the
+  existing early-weight-scale scheduling toggle around the retained BK256
+  candidate.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_post_async_state_clear_control_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 175 — Early weight-SF scheduling is unsupported with BK256
+
+- Change under test: enable the existing early weight-scale load toggle around
+  the retained L2 BK256/stage2 candidate.
+- Result: CUDA JIT correctly rejected the combination at compile time. The
+  BK256 implementation supports its FP32/packed-BF16 accumulation path but
+  explicitly excludes early/prefetched scale scheduling. No kernel launched.
+- Decision: do not weaken the guard without a dedicated BK256 scale-load
+  implementation. Reject this combination for the bounded tuning loop.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_earlysf_l2bk256_s101_n20_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 176 — BK256 paired-half dual accumulator is much slower
+
+- Change under test: for each L2 BK256 128-K plane, issue the two 64-K scale
+  halves into separate accumulator arrays in one four-WGMMA group, wait once,
+  then promote both into the existing packed-BF16 final accumulator. The mode
+  was opt-in through `DG_SM90_MOE_L2_DUAL_ACCUM`; selector defaults were not
+  changed.
+- Result: the specialization compiled and ran, but L2 phase medians rose from
+  roughly 0.5--0.6 ms to 3.6--3.75 ms. Total max-rank median-5 was 9229.312 us
+  with a 4.63/9.23-ms cross-rank split. The second accumulator's register/live
+  range cost overwhelms the removed waits.
+- Decision: reject and remove the BK256 dual-accumulator implementation. Keep
+  the safe single-accumulator BK256 candidate only.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_bk256_dualpair_smoke_s101_n5_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 177 — M512 post-experiment state-clear control
+
+- Change under test: none; restored production source after removing the
+  BK256 dual-accumulator experiment, then ran a short Pro M512 control.
+- Result: max-rank median-5 was **1215.720 us**. Each affected rank contained
+  one approximately 4-ms tail sample, but the central rank medians remained
+  1195.877--1215.720 us, consistent with the earlier 1220--1229-us cold-L2
+  controls. This is a state check rather than an acceptance measurement.
+- Decision: proceed with the historically strongest global-BF16 M512 tile
+  (L1 BN512/L2 BN256, EPW16/16) under the current cold-L2 protocol.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m512_post_dual_state_clear_control_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 178 — Pro M512 cold-L2 BN512/EPW16 candidate
+
+- Change under test: use L1 BN512/BK128/EPW16/stage2 and L2
+  BN256/BK128/EPW16/stage3 with non-direct N-major scheduling and cleanup off;
+  retain the already validated global packed-BF16 policy and do not enable
+  E5M2 combine at M512.
+- Protocol: job `3005033`, Pro M512, seed 101, eight ranks, one cold-L2
+  median-10 observation, max-rank result.
+- Result: **1104.889 us**, 9.11% faster than the adjacent 1215.720-us short
+  control and consistent with the historical 1090--1107-us BN512 range. It is
+  6.26% faster than the 1178.7-us DeepEP baseline, but still 4.16% above the
+  1060.8-us 10%-lead target.
+- Decision: retain as the M512 parent. Test only L2 BK256/stage2 and cleanup1
+  around it; historical broad screens make other existing axes low priority.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m512_bn512_e16_nmajor_c0_s101_n10_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 179 — Pro M512 BN512 parent with L2 BK256
+
+- Change under test: retain the Iteration 178 L1 BN512/BK128/EPW16/stage2
+  parent and change only L2 from BN256/BK128/stage3 to
+  BN256/BK256/stage2. Keep non-direct N-major scheduling, cleanup off, and
+  the unchanged global packed-BF16 numerical policy.
+- Protocol: job `3005033`, Pro M512, seed 101, eight ranks, one cold-L2
+  median-10 observation, max-rank result.
+- Result: **1139.687 us**, 3.15% slower than the 1104.889-us BK128 parent.
+  Rank medians were 1124.259--1139.687 us; one roughly 1.46-ms sample appeared
+  on seven ranks, but there was no multi-millisecond protocol failure. The L2
+  phase did not improve enough to compensate for the configuration change.
+- Decision: reject L2 BK256 for the M512 range. Retain the Iteration 178
+  BK128 parent and test the remaining bounded cleanup toggle only.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m512_bn512_l2bk256_e16_nmajor_c0_s101_n10_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 180 — Pro M512 BN512 parent with one-warp cleanup
+
+- Change under test: retain the Iteration 178 BN512/BK128/EPW16 parent and
+  change only `DG_SM90_MOE_ONE_WARP_CLEANUP` from 0 to 1.
+- Protocol: job `3005033`, Pro M512, seed 101, eight ranks, one cold-L2
+  median-10 observation, max-rank result.
+- Result: **1157.813 us**, 4.79% slower than the 1104.889-us cleanup-off
+  parent. Several ranks contained one approximately 3.8-ms tail sample and
+  one 1.6-ms sample; even the central max-rank median regressed, so this is
+  not merely a mean/tail artifact.
+- Decision: reject one-warp cleanup for this M512 range. Existing schedule
+  knobs are now exhausted around the strongest safe parent; reaching the
+  1060.8-us target would require a deeper kernel change rather than another
+  selector-only toggle.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m512_bn512_e16_nmajor_c1_s101_n10_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 181 — Pro M512 BN512 internal phase attribution
+
+- Change under test: no production schedule change. Rebuild the Iteration 178
+  parent with the existing `DG_SM90_MOE_PHASE_PROFILE=1` instrumentation and
+  collect three cold-L2 calls so the remaining gap can be attributed before
+  considering a kernel change.
+- Result: the max-rank median-3 total was **1097.127 us**; this short run is
+  diagnostic only, not a replacement acceptance measurement. Across ranks,
+  per-CTA average `math_loop` was about 475--535 us and `dispatch_total` about
+  134--214 us. `combine_reduce` was only about 6.4--7.5 us, while the
+  synchronization-only `combine_barrier` varied much more widely at about
+  41--130 us. Per-block L1/L2 epilogues were only about 3.1--3.3 us and
+  2.5--2.7 us respectively.
+- Interpretation: the missing 36--44 us is not concentrated in SwiGLU,
+  quantization, or combine arithmetic. It is dominated by phase/rank arrival
+  imbalance before combine, so a local epilogue rewrite is unlikely to reach
+  the target. Any deeper change should reduce the L1 work-tail or overlap the
+  final synchronization; it must not alter the numerical policy.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m512_bn512_e16_phaseprofile_s101_n3_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 182 — Pro M512 L1 N-major screen exceeds the 10% target
+
+- Change under test: add a temporary, default-off
+  `DG_SM90_MOE_L1_NMAJOR` JIT specialization and use the scheduler's existing
+  L1 N-major mapping. Retain the Iteration 178 BN512/BK128/EPW16 parent,
+  L2 N-major, cleanup off, and the unchanged global packed-BF16 numerical
+  policy. No production selector rule was changed.
+- Rationale: for experts with two M tiles, N-major assigns the same weight-N
+  tile to adjacent work before moving to the next N tile. This increases L2
+  weight reuse and reduces the L1 completion tail identified in Iteration 181.
+- Protocol: job `3005033`, Pro M512, seed 101, eight ranks, one cold-L2
+  median-10 observation, max-rank result.
+- Result: **1005.285 us**, 9.02% faster than the 1104.889-us M-major parent,
+  14.71% faster than the 1178.7-us DeepEP high-throughput baseline, and 5.23%
+  below the 1060.8-us acceptance target. Rank medians were
+  975.379--1005.285 us. Several calls showed correlated 1.14--1.20-ms tails,
+  so this first result requires an interleaved control and a repeated
+  observation before promotion.
+- Decision: retain the experiment and immediately run control/candidate
+  interleaving. If the gain repeats, run focused correctness and adjacent
+  load-bucket validation before adding a continuous selector field.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m512_bn512_l1nmajor_e16_s101_n10_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 183 — Pro M512 interleaved opening M-major control
+
+- Change under test: disable only the temporary L1 N-major switch while using
+  the same rebuilt host/runtime source and the same BN512/BK128/EPW16 parent.
+- Protocol: job `3005033`, Pro M512, seed 101, eight ranks, one cold-L2
+  median-20 observation, max-rank result.
+- Result: **1101.699 us**. Rank medians were 1082.163--1101.699 us. This is
+  consistent with the 1104.889-us pre-experiment parent and establishes the
+  same-source opening control for the L1 N-major confirmation.
+- Decision: run the N-major candidate next with the identical median-20
+  protocol, then close with another control if allocation time permits.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m512_bn512_l1mmajor_control_s101_n20_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 184 — Pro M512 L1 N-major median-20 confirmation
+
+- Change under test: enable only the temporary L1 N-major scheduler mapping
+  against the Iteration 183 same-source opening control.
+- Protocol: job `3005033`, Pro M512, seed 101, eight ranks, one cold-L2
+  median-20 observation, max-rank result.
+- Result: **985.632 us**, 10.54% faster than the adjacent 1101.699-us
+  M-major control, 16.38% faster than the 1178.7-us DeepEP baseline, and
+  7.09% below the 1060.8-us acceptance target. Rank medians were
+  971.490--985.632 us. Seven ranks shared one approximately 4.7-ms protocol
+  tail and other correlated slow calls, but the central distribution and the
+  median-20 speedup remained clear.
+- Decision: the performance signal is large enough to retain. Run a closing
+  M-major control to rule out directional drift, then execute focused
+  numerical correctness and validate neighboring expected-load points before
+  production promotion.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m512_bn512_l1nmajor_e16_s101_n20_v2/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 185 — Pro M512 interleaved closing M-major control
+
+- Change under test: disable L1 N-major again, preserving every other field,
+  to close the control/candidate/control sequence.
+- Protocol: job `3005033`, Pro M512, seed 101, eight ranks, one cold-L2
+  median-20 observation, max-rank result.
+- Result: **1126.499 us**. The opening/closing M-major controls average
+  1114.099 us, making the intervening 985.632-us N-major candidate 11.53%
+  faster despite control drift. The candidate remains 16.38% faster than the
+  DeepEP baseline and comfortably meets the 10%-lead target.
+- Decision: performance confirmation passes. Proceed to the unchanged
+  numerical correctness gate; after that, test adjacent points that share the
+  proposed `(48, 96]` expected-token range and verify M1024 behavior before
+  exposing L1 N-major as a production schedule field.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m512_bn512_l1mmajor_control_s101_n20_v2/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 186 — L1 N-major four-seed correctness invocation hits ENOSPC
+
+- Intended protocol: exact Pro M512, L1 N-major BN512 parent, seeds
+  `7/23/101/509`, eight H200 ranks, automatic combine policy, and the existing
+  distributed FP32 golden with `calc_diff < 0.01`.
+- Result: seed 7 reached the first FP32 launch, then one rank failed before
+  CUDA JIT with `Failed to make directory: /home/aichenf/.deep_gemm/tmp/...`
+  and errno 28 (filesystem full). The spawn supervisor terminated the other
+  ranks. No numerical result was produced and this is not a kernel failure.
+- Decision: keep the candidate unpromoted. Redirect DeepGEMM temporary/cache
+  storage to the scratch result filesystem, clear no shared/user data, and
+  rerun the identical validation.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 187 — Pro M512 L1 N-major four-seed correctness passes
+
+- Change under test: identical L1 N-major BN512/BK128/EPW16 candidate as the
+  performance confirmation, with DeepGEMM JIT storage redirected to the job
+  scratch filesystem after Iteration 186.
+- Protocol: exact Pro M512, seeds `7/23/101/509`, eight H200 ranks,
+  automatic combine selection (BF16 combine at M512), identical FP32/BF16
+  schedules and inputs, and the existing distributed FP32 golden. Every rank
+  must be finite and each `calc_diff` must be below 0.01.
+- Result: **all 4 cases / 32 rank outputs passed**. Worst BF16-vs-golden was
+  `0.0007066493943833629`, worst BF16-vs-FP32 was
+  `0.0004699344765030089`, and worst FP32-vs-golden was
+  `0.0005920887235298933`; all are more than an order of magnitude below the
+  0.01 limit. No NaN or Inf occurred.
+- Decision: exact-target numerical correctness passes. The remaining gate is
+  schedule generalization: validate neighboring points in the continuous
+  `(48, 96]` expected-token bucket and ensure the separate M1024 bucket does
+  not inherit L1 N-major accidentally.
+- Scratch JIT artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/jit_correctness_m512_l1nmajor_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 188 — Pro M1024 L1 N-major also exceeds the 10% target
+
+- Change under test: enable the same temporary L1 N-major mapping on the
+  existing wide-load production parent: L1 BN512/BK128/EPW16/stage2, L2
+  BN256/BK128/EPW16/stage3, L2 N-major, cleanup on, with the unchanged
+  automatic packed-BF16 plus E5M2-combine numerical policy.
+- Protocol: job `3005033`, Pro M1024, seed 101, eight ranks, one cold-L2
+  median-20 observation, max-rank result.
+- Result: **1367.848 us**. This is 8.55% faster than the 1495.668-us average
+  of the clean M-major controls from Iterations 167/169, 15.43% faster than
+  the 1617.5-us DeepEP baseline, and 6.04% below the 1455.8-us acceptance
+  target. Rank medians were 1355.862--1367.848 us.
+- Decision: retain L1 N-major for the wide `expected_load > 96` parent as
+  well. Do not combine it with the marginal L2 BK256 experiment unless the
+  retained BK128 result fails confirmation; first run a same-source M-major
+  control and exact-target correctness.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_bn512_l1nmajor_l2bk128_s101_n20_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 189 — Pro M1024 same-source M-major control
+
+- Change under test: disable only temporary L1 N-major while retaining the
+  exact M1024 configuration and rebuilt runtime used by Iteration 188.
+- Protocol: job `3005033`, Pro M1024, seed 101, eight ranks, one cold-L2
+  median-20 observation, max-rank result.
+- Result: **1540.934 us**, so the adjacent 1367.848-us N-major candidate is
+  11.23% faster under the same source and run state. The control's rank
+  medians were 1496.956--1540.934 us; N-major reduced the maximum rank as
+  well as every individual rank median.
+- Decision: M1024 performance confirmation passes without L2 BK256. Run the
+  existing four-seed exact-target numerical gate with L1 N-major, then add a
+  production schedule field if it passes.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m1024_bn512_l1mmajor_l2bk128_s101_n20_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 190 — Pro M1024 L1 N-major four-seed correctness passes
+
+- Change under test: exact Iteration 188 L1 N-major M1024 candidate using the
+  existing automatic packed-BF16 plus E5M2-combine policy.
+- Protocol: exact Pro M1024, seeds `7/23/101/509`, eight H200 ranks,
+  identical FP32/BF16 schedules and inputs, distributed FP32 golden, finite
+  outputs, and `calc_diff < 0.01` on every rank.
+- Result: **all 4 cases / 32 rank outputs passed**. Worst BF16-vs-golden was
+  `0.002101873673471588`, worst BF16-vs-FP32 was
+  `0.0018417821682433777`, and worst FP32-vs-golden was
+  `0.001982653962158798`; all pass the unchanged 0.01 threshold. No NaN or
+  Inf occurred.
+- Decision: both performance and exact-target numerical gates pass for Pro
+  M512 and M1024. Promote L1 N-major as an H200 schedule field for the wide
+  `(48, 96]` and `(96, +inf)` load bands, then run selector config proof,
+  boundary tests, and focused GPU smoke before the allocation ends.
+- Scratch JIT artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/jit_correctness_m1024_l1nmajor_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 191 — Zero-override production-selector Pro M512 smoke
+
+- Change under test: no schedule environment overrides. Use the rebuilt
+  production selector after adding phase-local `nmajor`; enable config printing
+  only for proof.
+- Selector proof: expected load resolved to 64 in the wide `(48, 96]` band.
+  The policy printed L1 BN512/BK128/EPW16/stage2 with `nmajor=1`, L2
+  BN256/BK128/EPW16/stage3 with `nmajor=1`, cleanup off, packed BF16 on, and
+  E5M2 combine off. No model name or exact M selected the schedule.
+- Result: cold-L2 max-rank median-10 was **991.953 us**, consistent with the
+  explicit 985.632-us median-20 confirmation and 15.84% faster than the
+  1178.7-us DeepEP baseline. It remains 6.49% below the 1060.8-us target.
+- Decision: automatic M512 selection passes config and performance smoke.
+  Run the corresponding zero-override M1024 proof.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/selector_auto_m512_l1nmajor_s101_n10_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 192 — Zero-override production-selector Pro M1024 smoke
+
+- Change under test: no schedule environment overrides; use only production
+  selector decisions with config printing enabled.
+- Selector proof: expected load resolved to 128 in the wide `(96, +inf)`
+  band. The policy printed L1 BN512/BK128/EPW16/stage2 with `nmajor=1`, L2
+  BN256/BK128/EPW16/stage3 with `nmajor=1`, cleanup on, packed BF16 on, and
+  E5M2 combine on.
+- Result: cold-L2 max-rank median-10 was **1371.915 us**, consistent with the
+  explicit 1367.848-us median-20 confirmation. It is 15.18% faster than the
+  1617.5-us DeepEP baseline and 5.76% below the 1455.8-us target.
+- Decision: automatic M1024 config and performance smoke pass. Run one
+  interior/boundary point for the new continuous M512 bucket, then finish the
+  source/test audit; the existing four-seed target correctness is already
+  green.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/selector_auto_m1024_l1nmajor_s101_n10_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 193 — Wide-bucket upper boundary M768 M-major control
+
+- Change under test: at expected load 96 (the inclusive upper edge of the new
+  wide bucket), force only L1 M-major while retaining the bucket's
+  BN512/BK128/EPW16 schedule. M768 is not in the exact numerical matrix, so
+  it correctly retains FP32 scaled accumulation and no E5M2 combine.
+- Result: cold-L2 max-rank median-10 was **2593.414 us**, with L1 alone near
+  2.1 ms. This is not an acceptance result: it is the BN512 M-major control
+  needed to measure N-major, and it also shows that schedule generalization
+  cannot assume the M512 packed-BF16 performance carries to unvalidated M.
+- Decision: run N-major at the same boundary, then compare it against the
+  pre-bucket generic BN256/FP32 schedule. If BN512/FP32 regresses, narrow or
+  otherwise guard the schedule range without broadening numerical policy.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/selector_boundary_m768_l1mmajor_control_s101_n10_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 194 — Wide-bucket upper boundary M768 N-major regresses
+
+- Change under test: enable the automatic L1 N-major mapping at expected load
+  96 with the same BN512/FP32 schedule as Iteration 193.
+- Result: cold-L2 max-rank median-10 was **2704.990 us**, 4.30% slower than
+  the adjacent 2593.414-us M-major control. L1 rose from roughly 2.1 ms to
+  2.2--2.27 ms. This is a real central-distribution regression, not just the
+  single approximately 3.5-ms tail in the N-major run.
+- Decision: reject a blanket `(48, 96]` schedule interpolation under the
+  unchanged exact numerical policy. Measure the generic BN256/FP32 reference,
+  then constrain the new schedule to a parameter predicate that preserves the
+  validated M512 behavior without an exact-M table; do not enable BF16 at
+  unvalidated M768.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/selector_boundary_m768_l1nmajor_auto_s101_n10_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 195 — M768 pre-bucket generic BN256/FP32 reference
+
+- Change under test: reproduce the generic schedule that existed before the
+  new `(48, 96]` bucket: BN256/BK128, EPW48, stage5, direct L2 scatter,
+  M-major L1, and the unchanged FP32/no-E5M2 numerical policy.
+- Result: cold-L2 max-rank median-10 was **1545.650 us**. The proposed
+  BN512/L1-N-major bucket result of 2704.990 us is 75.0% slower, so retaining
+  the full interval would be an unacceptable regression even though M512 is
+  strongly positive.
+- Decision: the schedule range must not cover arbitrary unvalidated M up to
+  expected load 96. Keep expected-load range selection, but add an explicit
+  representation-capability predicate: the BN512 N-major parent is selected
+  only when the independent numerical policy has validated packed-BF16 for
+  that shape/load. This preserves generic FP32 behavior for M768 without
+  encoding a model name; M512 remains the validated `(48, 96]` anchor.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/m768_generic_bn256_fp32_control_s101_n10_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 196 — M768 automatic representation guard restores generic path
+
+- Change under test: after adding `requires_bf16_scaled_accum` to the measured
+  BN512/N-major schedule rules, run Pro M768 with no schedule overrides and
+  config printing enabled.
+- Selector proof: the independent numerical policy did not select packed
+  BF16 for unvalidated M768, so policy composition rejected the measured
+  BN512 patch. The runtime printed the original generic BN256/BK128, EPW48,
+  stage5, direct-scatter, M-major/FP32 configuration.
+- Result: cold-L2 max-rank median-10 was **1537.530 us**, matching the
+  1545.650-us explicit generic reference within 0.53% and eliminating the
+  2704.990-us regression.
+- Decision: the continuous range selector is now safe at the tested upper
+  boundary without broadening numerical formats. M512/M1024 retain their
+  validated N-major schedule because their independent packed-BF16 policy is
+  enabled; unvalidated representations fall back cleanly.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/selector_guard_m768_generic_fallback_s101_n10_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 197 — Final guarded-selector Pro M512 smoke
+
+- Change under test: no overrides on the final selector after adding the
+  packed-BF16 representation guard and the `(96, 192]` M1024 subrange.
+- Result: cold-L2 max-rank median-5 was **992.044 us**, consistent with both
+  prior automatic/explicit confirmations. It is 15.84% faster than the
+  1178.7-us DeepEP baseline and 6.48% below the 1060.8-us target.
+- Decision: the representation guard preserves the accepted M512 path.
+  Complete the corresponding final M1024 smoke and source audit.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/selector_guard_final_m512_s101_n5_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 198 — Final guarded-selector Pro M1024 smoke
+
+- Change under test: no overrides on the final guarded production selector.
+- Result: cold-L2 max-rank median-5 was **1382.157 us**, consistent with the
+  prior 1367.848-us median-20 and 1371.915-us automatic observations. It is
+  14.55% faster than the 1617.5-us DeepEP baseline and 5.06% below the
+  1455.8-us target.
+- Decision: the final guard preserves both accepted target points. Proceed to
+  the final CPU/source/hash audit only; no further tuning is required in this
+  allocation.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_selector_job3005033/candidates/selector_guard_final_m1024_s101_n5_v1/`.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 199 — Final guarded-selector source and scope audit
+
+- CPU verification: the parameterized H200 policy golden, exact boundary,
+  representation-fallback, illegal-config, non-H200, and numerical-matrix
+  tests all passed. Modified Python benchmark/validator files compile, and
+  `git diff --check` is clean.
+- H200 build verification: the final host extension rebuilt successfully
+  after the representation guard was generalized to every wide-FFN BN512
+  rule. The local and H200 copies of the four selector/kernel source files
+  have matching SHA-256 hashes.
+- Scope verification: the branch remains
+  `opt/megamoe-sm90-fp8-h200-retune` at original HEAD
+  `63224efeeb243886da66f89718eef9a1a91bd142`; all work remains uncommitted.
+  H200 gating remains explicit, numerical coverage was not broadened, H20 and
+  generic SM90 defaults were not overwritten, and no PR323/NVFP4 fused path
+  was added.
+- Final target evidence: explicit median-20 results are **985.632 us** at Pro
+  M512 and **1367.848 us** at Pro M1024, respectively 16.38% and 15.43%
+  faster than the DeepEP high-throughput baselines. Four-seed, eight-rank
+  correctness passed at both points with the unchanged 0.01 threshold.
+- Git: no commit and no push, per user instruction.
+
+## Iteration 200 — Final parameterized-selector all-M cold-L2 matrix
+
+- Change under test: the final no-override H200 parameterized selector after
+  the representation guard, including the accepted wide-FFN N-major parent.
+  No `DG_SM90_MOE_*` selector or kernel override was present.
+- Protocol: H200 job `3010836` on `viking-prod-296`; full NV18 connectivity
+  between all eight H200 GPUs; Torch 2.12.1+cu132 / CUDA 13.2; Flash, Pro,
+  and MiMo-Pro at M `8/16/32/64/128/256/512/1024/2048/4096/8192`; seed 101;
+  three independent observations per point; 20 timed calls per rank; max-rank
+  reporting; 8,000,000,000-byte per-rank cold-L2 flush before every call and
+  outside the matched L1/L2 kernel-event sum.
+- Source audit: the four selector/kernel files on H200 matched the final local
+  sources with SHA-256 prefixes `5ab02822`, `96925a6f`, `a8f54f80`, and
+  `3d6f5802`. The local intended branch remains
+  `opt/megamoe-sm90-fp8-h200-retune` at `63224efe`; the H200 compatibility
+  worktree has its existing CUDA-13.2 repair base and was not committed.
+- Strict parse: accepted **99/99** leaf runs. Every leaf exited 0, emitted all
+  eight rank rows, and contained 20 logical-call samples per rank.
+- Final max-rank observation medians in ascending-M order were:
+  - Flash: `222.7/265.7/265.4/291.5/269.0/301.1/426.6/579.7/953.9/1726.7/3176.1 us`.
+  - Pro: `658.8/788.9/833.1/871.0/872.1/866.3/982.9/1365.5/2304.9/4094.6/7735.1 us`.
+  - MiMo-Pro: `439.4/498.2/523.6/544.5/573.8/541.7/882.8/1218.5/2010.1/3461.4/6572.6 us`.
+- Interpretation: this is the requested full rerun with the final new
+  selector. The parser's printed `PR323 gate: FAIL (0/0)` is not a measured
+  failure: no PR323 runs were requested or present in this candidate.
+- DeepEP comparison: against the existing high-throughput baseline, the new
+  selector is faster at 32/33 points with geometric-mean speedups of 1.377x
+  Flash, 1.220x Pro, and 1.259x MiMo-Pro (1.284x over all 33 points). The
+  sole exception is MiMo-Pro M512 at -2.2%; that comparison is cross-node.
+  Against the measured low-latency M=8--128 matrix, the new selector is
+  faster at 15/15 points with 1.350x/1.092x/1.141x shape geometric means
+  (1.189x overall). Pro M512/M1024 reduce latency versus high throughput by
+  16.6% and 15.6%, respectively.
+- Raw artifact:
+  `/work/greencontext/results/sm90_h200_final_selector_matrix_job3010836/candidates/selector_final_coldl2_allm_s101_n20_o3_v1/`.
+- Git: no commit and no push, per user instruction.
