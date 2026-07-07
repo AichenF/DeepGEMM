@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the H200 Pro global-BF16 MegaMoE candidates on identical inputs.
+"""Validate H200 global-BF16 MegaMoE candidates on identical inputs.
 
 For every requested ``(seed, M)`` pair this runner compares:
 
@@ -41,10 +41,25 @@ from tests.test_mega_moe_sm90 import (
 )
 
 
-HIDDEN = 7168
-INTERMEDIATE = 3072
-NUM_EXPERTS = 384
-NUM_TOPK = 6
+SHAPES = {
+    "flash": {
+        "hidden": 4096,
+        "intermediate": 2048,
+        "num_experts": 256,
+        "num_topk": 6,
+    },
+    "pro": {
+        "hidden": 7168,
+        "intermediate": 3072,
+        "num_experts": 384,
+        "num_topk": 6,
+    },
+}
+
+HIDDEN = SHAPES["pro"]["hidden"]
+INTERMEDIATE = SHAPES["pro"]["intermediate"]
+NUM_EXPERTS = SHAPES["pro"]["num_experts"]
+NUM_TOPK = SHAPES["pro"]["num_topk"]
 ACTIVATION_CLAMP = 10.0
 CAPACITY = 8192
 
@@ -146,9 +161,13 @@ def _launch(
     topk_idx: torch.Tensor,
     topk_weights: torch.Tensor,
     use_bf16_accum: bool,
+    fp8_combine: str,
     num_experts_per_rank: int,
 ) -> torch.Tensor:
-    os.environ["DG_SM90_MOE_FP8_COMBINE"] = "1"
+    if fp8_combine == "auto":
+        os.environ.pop("DG_SM90_MOE_FP8_COMBINE", None)
+    else:
+        os.environ["DG_SM90_MOE_FP8_COMBINE"] = fp8_combine
     os.environ["DG_SM90_MOE_BF16_SCALED_ACCUM"] = "1" if use_bf16_accum else "0"
     m = x_fp8.shape[0]
     buffer.x[:m].copy_(x_fp8)
@@ -268,6 +287,13 @@ def _make_case(seed: int, m: int, rank_idx: int):
 
 
 def worker(local_rank: int, num_processes: int, cfg: Dict):
+    global HIDDEN, INTERMEDIATE, NUM_EXPERTS, NUM_TOPK
+    shape = SHAPES[cfg["shape"]]
+    HIDDEN = shape["hidden"]
+    INTERMEDIATE = shape["intermediate"]
+    NUM_EXPERTS = shape["num_experts"]
+    NUM_TOPK = shape["num_topk"]
+
     rank_idx, num_ranks, group = init_dist(local_rank, num_processes)
     assert num_ranks == 8, f"expected 8 ranks, got {num_ranks}"
     assert "H200" in torch.cuda.get_device_name(), torch.cuda.get_device_name()
@@ -303,6 +329,7 @@ def worker(local_rank: int, num_processes: int, cfg: Dict):
                 topk_idx,
                 topk_weights,
                 False,
+                cfg["fp8_combine"],
                 num_experts_per_rank,
             )
             bf16_output = _launch(
@@ -314,6 +341,7 @@ def worker(local_rank: int, num_processes: int, cfg: Dict):
                 topk_idx,
                 topk_weights,
                 True,
+                cfg["fp8_combine"],
                 num_experts_per_rank,
             )
             if rank_idx == 0:
@@ -344,6 +372,8 @@ def worker(local_rank: int, num_processes: int, cfg: Dict):
                     "VALIDATION_JSON "
                     + json.dumps(
                         {
+                            "shape": cfg["shape"],
+                            "fp8_combine": cfg["fp8_combine"],
                             "seed": seed,
                             "m": m,
                             "diff_tol": cfg["diff_tol"],
@@ -389,6 +419,8 @@ def worker(local_rank: int, num_processes: int, cfg: Dict):
             "VALIDATION_FINAL_JSON "
             + json.dumps(
                 {
+                    "shape": cfg["shape"],
+                    "fp8_combine": cfg["fp8_combine"],
                     "seeds": cfg["seeds"],
                     "ms": cfg["ms"],
                     "num_cases": len(cfg["seeds"]) * len(cfg["ms"]),
@@ -408,6 +440,8 @@ def worker(local_rank: int, num_processes: int, cfg: Dict):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--shape", choices=tuple(SHAPES), default="pro")
+    parser.add_argument("--fp8-combine", choices=("auto", "0", "1"), default="auto")
     parser.add_argument("--seeds", type=int, nargs="+", default=[7, 23, 101, 509])
     parser.add_argument(
         "--ms", type=int, nargs="+", default=[128, 1024, 2048, 4096, 8192]

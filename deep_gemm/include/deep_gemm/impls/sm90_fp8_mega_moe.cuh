@@ -106,6 +106,7 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     bool kDirectL2ScatterRequested = false, \
     bool kPhaseProfileRequested = false, \
     bool kL2NMajorScheduleRequested = false, \
+    bool kL1NMajorScheduleRequested = false, \
     bool kOneWarpCleanupRequested = false, \
     bool kFP8SwapAB = false, \
     bool kAsyncL1TMAStoreRequested = false, \
@@ -174,7 +175,8 @@ using MegaMoELinear2Phase = MegaMoEPhasePolicy<MegaMoEPhaseKind::Linear2>;
     kNumPaddedSFPoolTokens, kSFPoolStrideTokens, kNumStages, kNumDispatchThreads, \
     kNumNonEpilogueThreads, kNumEpilogueThreads, kClusterSize, kNumSMs, \
     kNumRanks, kActivationClamp, kFastMath, kDirectL2ScatterRequested, \
-    kPhaseProfileRequested, kL2NMajorScheduleRequested, kOneWarpCleanupRequested, kFP8SwapAB, \
+    kPhaseProfileRequested, kL2NMajorScheduleRequested, kL1NMajorScheduleRequested, \
+    kOneWarpCleanupRequested, kFP8SwapAB, \
     kAsyncL1TMAStoreRequested, \
     kL1DualKAccumRequested, kL2DualAccumRequested, kFP8CombineRequested, \
     kAdjacentScaleDomainRequested, kPrefetchWeightSFRequested, \
@@ -531,7 +533,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         L1_SHAPE_N, L1_SHAPE_K,
         L2_SHAPE_N, L2_SHAPE_K,
         kNumExpertsPerRank, kNumExpertsPerWave,
-        kNumSMs, kNumRanks, kClusterSize, kL2NMajorScheduleRequested, false>(workspace);
+        kNumSMs, kNumRanks, kClusterSize,
+        kL2NMajorScheduleRequested, kL1NMajorScheduleRequested>(workspace);
 
     // Pipeline state shared by TMA loaders and math warpgroups
     uint32_t stage_idx = 0, phase = 0;
@@ -1600,7 +1603,15 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                     (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
                 constexpr uint32_t kL2SFPerExpert =
                     (kHidden / 128) * kL2SFKBlocks;
-for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
+                nv_bfloat162 swap_final_bf16[kAccumPerThread / 2];
+                if constexpr (kBF16ScaledAccum and kSwapABActive) {
+                    #pragma unroll
+                    for (uint32_t i = 0; i < kAccumPerThread / 2; ++ i)
+                        swap_final_bf16[i] = __float2bfloat162_rn(0.0f);
+                }
+
+                for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks;
+                     advance_pipeline(k_block_idx)) {
                 float gate_sf = 0.0f, up_sf = 0.0f;
                 float l2_sf_lo = 0.0f, l2_sf_hi = 0.0f;
                 if constexpr (kEarlyWeightSF) {
@@ -1726,10 +1737,29 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                                     ptx::ld_shared(smem_sfa[stage_idx] + token_0) : 0.0f;
                                 const float scale_1 = token_1 < valid_m ?
                                     ptx::ld_shared(smem_sfa[stage_idx] + token_1) : 0.0f;
-                                final_accum[i * 4 + 0] += scale_0 * gate_sf * swap_accum[i * 4 + 0];
-                                final_accum[i * 4 + 2] += scale_0 * up_sf * swap_accum[i * 4 + 2];
-                                final_accum[i * 4 + 1] += scale_1 * gate_sf * swap_accum[i * 4 + 1];
-                                final_accum[i * 4 + 3] += scale_1 * up_sf * swap_accum[i * 4 + 3];
+                                if constexpr (kBF16ScaledAccum) {
+                                    swap_final_bf16[2 * i] = __hfma2(
+                                        __floats2bfloat162_rn(
+                                            swap_accum[4 * i], swap_accum[4 * i + 1]),
+                                        __floats2bfloat162_rn(
+                                            scale_0 * gate_sf, scale_1 * gate_sf),
+                                        swap_final_bf16[2 * i]);
+                                    swap_final_bf16[2 * i + 1] = __hfma2(
+                                        __floats2bfloat162_rn(
+                                            swap_accum[4 * i + 2], swap_accum[4 * i + 3]),
+                                        __floats2bfloat162_rn(
+                                            scale_0 * up_sf, scale_1 * up_sf),
+                                        swap_final_bf16[2 * i + 1]);
+                                } else {
+                                    final_accum[i * 4 + 0] +=
+                                        scale_0 * gate_sf * swap_accum[i * 4 + 0];
+                                    final_accum[i * 4 + 2] +=
+                                        scale_0 * up_sf * swap_accum[i * 4 + 2];
+                                    final_accum[i * 4 + 1] +=
+                                        scale_1 * gate_sf * swap_accum[i * 4 + 1];
+                                    final_accum[i * 4 + 3] +=
+                                        scale_1 * up_sf * swap_accum[i * 4 + 3];
+                                }
                             }
 
                             arrive_empty_barrier(stage_idx);
@@ -1806,10 +1836,33 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                                         ptx::ld_shared(smem_sfa[stage_idx] + sf_group * kL2SFAHalfStride + token_0) : 0.0f;
                                     const float scale_1 = token_1 < valid_m ?
                                         ptx::ld_shared(smem_sfa[stage_idx] + sf_group * kL2SFAHalfStride + token_1) : 0.0f;
-                                    final_accum[i * 4 + 0] += scale_0 * l2_sf_lo * swap_accum[i * 4 + 0];
-                                    final_accum[i * 4 + 2] += scale_0 * l2_sf_lo * swap_accum[i * 4 + 2];
-                                    final_accum[i * 4 + 1] += scale_1 * l2_sf_lo * swap_accum[i * 4 + 1];
-                                    final_accum[i * 4 + 3] += scale_1 * l2_sf_lo * swap_accum[i * 4 + 3];
+                                    if constexpr (kBF16ScaledAccum) {
+                                        swap_final_bf16[2 * i] = __hfma2(
+                                            __floats2bfloat162_rn(
+                                                swap_accum[4 * i],
+                                                swap_accum[4 * i + 1]),
+                                            __floats2bfloat162_rn(
+                                                scale_0 * l2_sf_lo,
+                                                scale_1 * l2_sf_lo),
+                                            swap_final_bf16[2 * i]);
+                                        swap_final_bf16[2 * i + 1] = __hfma2(
+                                            __floats2bfloat162_rn(
+                                                swap_accum[4 * i + 2],
+                                                swap_accum[4 * i + 3]),
+                                            __floats2bfloat162_rn(
+                                                scale_0 * l2_sf_lo,
+                                                scale_1 * l2_sf_lo),
+                                            swap_final_bf16[2 * i + 1]);
+                                    } else {
+                                        final_accum[i * 4 + 0] +=
+                                            scale_0 * l2_sf_lo * swap_accum[i * 4 + 0];
+                                        final_accum[i * 4 + 2] +=
+                                            scale_0 * l2_sf_lo * swap_accum[i * 4 + 2];
+                                        final_accum[i * 4 + 1] +=
+                                            scale_1 * l2_sf_lo * swap_accum[i * 4 + 1];
+                                        final_accum[i * 4 + 3] +=
+                                            scale_1 * l2_sf_lo * swap_accum[i * 4 + 3];
+                                    }
                                 }
                             };
 
@@ -2008,7 +2061,17 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     }
                     }
                 }
-            }
+                }
+
+                if constexpr (kBF16ScaledAccum and kSwapABActive) {
+                    #pragma unroll
+                    for (uint32_t i = 0; i < kAccumPerThread / 2; ++ i) {
+                        const float2 pair =
+                            __bfloat1622float2(swap_final_bf16[i]);
+                        final_accum[2 * i] = pair.x;
+                        final_accum[2 * i + 1] = pair.y;
+                    }
+                }
             };
 
             const auto run_bk256_gemm_loop = [&]() {
@@ -2016,9 +2079,9 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     DG_STATIC_ASSERT(not kSwapABActive and not kL1DualKAccum and
                                      not kL2DualAccum and not kAdjacentScaleDomain and
                                      not kPrefetchWeightSF and not kEarlyWeightSF and
-                                     not kFP16ScaledAccum and not kBF16ScaledAccum and
+                                     not kFP16ScaledAccum and
                                      not kNativeFP16WGMMA,
-                                     "BK256 experiment supports the default FP32 math path");
+                                     "BK256 supports FP32 or packed-BF16 scaled accumulation");
                     constexpr uint32_t kL1SFKBlocks = kHidden / kGranK;
                     constexpr uint32_t kL2SFKBlocks =
                         kIntermediateHidden / kGranK;
@@ -2028,6 +2091,12 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         (kIntermediateHidden * 2 / kGranK) * kL1SFKBlocks;
                     constexpr uint32_t kL2SFPerExpert =
                         (kHidden / kGranK) * kL2SFKBlocks;
+                    nv_bfloat162 final_bf16[kAccumPerThread / 2];
+                    if constexpr (kBF16ScaledAccum) {
+                        #pragma unroll
+                        for (uint32_t i = 0; i < kAccumPerThread / 2; ++ i)
+                            final_bf16[i] = __float2bfloat162_rn(0.0f);
+                    }
 
                     const auto issue_wgmma = [&]<uint32_t kNumWGMMAs>(
                                                      const uint32_t& k_plane,
@@ -2066,14 +2135,29 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         #pragma unroll
                         for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
                             const float weight_sf = (i & 1u) ? up_sf : gate_sf;
-                            final_accum[i*4+0] +=
-                                scale_a_0 * weight_sf * accum[i*4+0];
-                            final_accum[i*4+1] +=
-                                scale_a_0 * weight_sf * accum[i*4+1];
-                            final_accum[i*4+2] +=
-                                scale_a_1 * weight_sf * accum[i*4+2];
-                            final_accum[i*4+3] +=
-                                scale_a_1 * weight_sf * accum[i*4+3];
+                            if constexpr (kBF16ScaledAccum) {
+                                const nv_bfloat162 scale0 =
+                                    __float2bfloat162_rn(scale_a_0 * weight_sf);
+                                const nv_bfloat162 scale1 =
+                                    __float2bfloat162_rn(scale_a_1 * weight_sf);
+                                final_bf16[2 * i] = __hfma2(
+                                    __floats2bfloat162_rn(
+                                        accum[4 * i], accum[4 * i + 1]),
+                                    scale0, final_bf16[2 * i]);
+                                final_bf16[2 * i + 1] = __hfma2(
+                                    __floats2bfloat162_rn(
+                                        accum[4 * i + 2], accum[4 * i + 3]),
+                                    scale1, final_bf16[2 * i + 1]);
+                            } else {
+                                final_accum[i*4+0] +=
+                                    scale_a_0 * weight_sf * accum[i*4+0];
+                                final_accum[i*4+1] +=
+                                    scale_a_0 * weight_sf * accum[i*4+1];
+                                final_accum[i*4+2] +=
+                                    scale_a_1 * weight_sf * accum[i*4+2];
+                                final_accum[i*4+3] +=
+                                    scale_a_1 * weight_sf * accum[i*4+3];
+                            }
                         }
                     };
                     const auto promote_l2 = [&](const float& scale_a_0,
@@ -2085,14 +2169,29 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             const float weight_sf =
                                 (WG_BLOCK_N > 128 and i >= 16u) ?
                                     l2_sf_hi : l2_sf_lo;
-                            final_accum[i*4+0] +=
-                                scale_a_0 * weight_sf * accum[i*4+0];
-                            final_accum[i*4+1] +=
-                                scale_a_0 * weight_sf * accum[i*4+1];
-                            final_accum[i*4+2] +=
-                                scale_a_1 * weight_sf * accum[i*4+2];
-                            final_accum[i*4+3] +=
-                                scale_a_1 * weight_sf * accum[i*4+3];
+                            if constexpr (kBF16ScaledAccum) {
+                                const nv_bfloat162 scale0 =
+                                    __float2bfloat162_rn(scale_a_0 * weight_sf);
+                                const nv_bfloat162 scale1 =
+                                    __float2bfloat162_rn(scale_a_1 * weight_sf);
+                                final_bf16[2 * i] = __hfma2(
+                                    __floats2bfloat162_rn(
+                                        accum[4 * i], accum[4 * i + 1]),
+                                    scale0, final_bf16[2 * i]);
+                                final_bf16[2 * i + 1] = __hfma2(
+                                    __floats2bfloat162_rn(
+                                        accum[4 * i + 2], accum[4 * i + 3]),
+                                    scale1, final_bf16[2 * i + 1]);
+                            } else {
+                                final_accum[i*4+0] +=
+                                    scale_a_0 * weight_sf * accum[i*4+0];
+                                final_accum[i*4+1] +=
+                                    scale_a_0 * weight_sf * accum[i*4+1];
+                                final_accum[i*4+2] +=
+                                    scale_a_1 * weight_sf * accum[i*4+2];
+                                final_accum[i*4+3] +=
+                                    scale_a_1 * weight_sf * accum[i*4+3];
+                            }
                         }
                     };
 
@@ -2159,6 +2258,15 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             }
                         }
                         arrive_empty_barrier(stage_idx);
+                    }
+
+                    if constexpr (kBF16ScaledAccum) {
+                        #pragma unroll
+                        for (uint32_t i = 0; i < kAccumPerThread / 2; ++ i) {
+                            const float2 pair = __bfloat1622float2(final_bf16[i]);
+                            final_accum[2 * i] = pair.x;
+                            final_accum[2 * i + 1] = pair.y;
+                        }
                     }
                 }
             };
@@ -2290,10 +2398,11 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
             const auto run_bf16_scaled_accum_gemm_loop = [&]() {
                 DG_STATIC_ASSERT(not kBF16ScaledAccum or
+                                 kSwapABActive or
                                  (WG_BLOCK_M == 64 and
                                   (WG_BLOCK_N == 128 or WG_BLOCK_N == 256) and
                                   not kSwapABActive),
-                                 "BF16 scaled accumulation expects non-swap M64N128/N256");
+                                 "BF16 scaled accumulation expects swap-AB or non-swap M64N128/N256");
                 nv_bfloat162 final_bf16[kAccumPerThread / 2];
                 #pragma unroll
                 for (uint32_t i = 0; i < kAccumPerThread / 2; ++ i)
@@ -3104,7 +3213,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 run_native_fp16_wgmma_loop();
             } else if constexpr (kFP16ScaledAccum) {
                 run_fp16_scaled_accum_gemm_loop();
-            } else if constexpr (kBF16ScaledAccum) {
+            } else if constexpr (kBF16ScaledAccum and not kSwapABActive) {
                 run_bf16_scaled_accum_gemm_loop();
             } else if constexpr (kAdjacentScaleDomain) {
                 run_adjacent_scale_domain_gemm_loop();

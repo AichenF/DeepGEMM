@@ -30,6 +30,12 @@ SHAPES = {
         "num_experts": 384,
         "num_topk": 6,
     },
+    "mimo_pro": {
+        "hidden": 6144,
+        "intermediate_hidden": 2048,
+        "num_experts": 384,
+        "num_topk": 8,
+    },
 }
 
 

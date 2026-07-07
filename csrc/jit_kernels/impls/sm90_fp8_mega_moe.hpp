@@ -47,6 +47,7 @@ public:
         bool direct_l2_scatter;
         bool phase_profile;
         bool l2_nmajor_schedule;
+        bool l1_nmajor_schedule;
         bool one_warp_cleanup;
         bool async_l1_tma_store;
         bool l1_dual_k_accum;
@@ -123,6 +124,7 @@ static void __instantiate_kernel() {{
         {},
         {},
         {},
+        {},
         {}
     >);
 }};
@@ -145,6 +147,7 @@ static void __instantiate_kernel() {{
     args.direct_l2_scatter ? "true" : "false",
     args.phase_profile ? "true" : "false",
     args.l2_nmajor_schedule ? "true" : "false",
+    args.l1_nmajor_schedule ? "true" : "false",
     args.one_warp_cleanup ? "true" : "false",
     args.config.swap_ab ? "true" : "false",
     args.async_l1_tma_store ? "true" : "false",
@@ -206,6 +209,8 @@ static void sm90_fp8_mega_moe(
     const auto h200_policy = get_sm90_moe_h200_policy(
         num_ranks, num_experts, num_experts_per_rank,
         num_tokens, num_topk, hidden, intermediate_hidden);
+    const auto& h200_schedule = h200_policy.schedule;
+    const auto& h200_numerical = h200_policy.numerical;
     auto l1_config = config;
     auto l2_config = config;
     const auto apply_phase_wave_override = [&](MegaMoESM90Config& phase_config,
@@ -220,29 +225,29 @@ static void sm90_fp8_mega_moe(
     };
     apply_phase_wave_override(
         l1_config, "DG_SM90_MOE_L1_EXPERTS_PER_WAVE",
-        h200_policy.l1_experts_per_wave);
+        h200_schedule.l1.experts_per_wave);
     apply_phase_wave_override(
         l2_config, "DG_SM90_MOE_L2_EXPERTS_PER_WAVE",
-        h200_policy.l2_experts_per_wave);
+        h200_schedule.l2.experts_per_wave);
     const auto apply_phase_block_n_override = [&](MegaMoESM90Config& phase_config,
                                                    const char* env_name,
                                                    const int& automatic_value) {
         const int block_n = get_env<int>(env_name, automatic_value);
         if (block_n == 0)
             return;
-        DG_HOST_ASSERT((block_n == 128 or block_n == 256 or block_n == 512) and
+        DG_HOST_ASSERT((block_n == 128 or block_n == 256 or
+                        block_n == 512) and
                        phase_config.block_m == 64 and not phase_config.swap_ab);
         phase_config.block_n = block_n;
         const bool compact_frontend = block_n >= 256;
         phase_config.num_dispatch_threads = compact_frontend ? 64 : 128;
         phase_config.num_non_epilogue_threads = compact_frontend ? 64 : 128;
-        phase_config.num_epilogue_threads =
-            block_n == 512 ? 512 : (compact_frontend ? 256 : 128);
+        phase_config.num_epilogue_threads = compact_frontend ? block_n : 128;
     };
     apply_phase_block_n_override(
-        l1_config, "DG_SM90_MOE_L1_BLOCK_N", h200_policy.l1_block_n);
+        l1_config, "DG_SM90_MOE_L1_BLOCK_N", h200_schedule.l1.block_n);
     apply_phase_block_n_override(
-        l2_config, "DG_SM90_MOE_L2_BLOCK_N", h200_policy.l2_block_n);
+        l2_config, "DG_SM90_MOE_L2_BLOCK_N", h200_schedule.l2.block_n);
     const auto apply_phase_block_k_override = [&](MegaMoESM90Config& phase_config,
                                                    const char* env_name,
                                                    const int& automatic_value) {
@@ -252,9 +257,17 @@ static void sm90_fp8_mega_moe(
         phase_config.block_k = block_k;
     };
     apply_phase_block_k_override(
-        l1_config, "DG_SM90_MOE_L1_BLOCK_K", h200_policy.l1_block_k);
+        l1_config, "DG_SM90_MOE_L1_BLOCK_K", h200_schedule.l1.block_k);
     apply_phase_block_k_override(
-        l2_config, "DG_SM90_MOE_L2_BLOCK_K", h200_policy.l2_block_k);
+        l2_config, "DG_SM90_MOE_L2_BLOCK_K", h200_schedule.l2.block_k);
+    DG_HOST_ASSERT((2 * intermediate_hidden) % l1_config.block_n == 0 and
+                   hidden % l2_config.block_n == 0);
+    // The current kernel template requires either phase's K tile to divide
+    // both dimensions, even though L1 and L2 otherwise resolve independently.
+    DG_HOST_ASSERT(hidden % l1_config.block_k == 0 and
+                   intermediate_hidden % l1_config.block_k == 0 and
+                   hidden % l2_config.block_k == 0 and
+                   intermediate_hidden % l2_config.block_k == 0);
     const auto apply_phase_dispatch_override = [&] (
             MegaMoESM90Config& phase_config, const char* env_name,
             const int& automatic_value) {
@@ -295,8 +308,9 @@ static void sm90_fp8_mega_moe(
     const auto apply_phase_stage_override = [&](MegaMoESM90Config& phase_config,
                                                  const char* env_name,
                                                  const int& automatic_value) {
-        const int requested = get_env<int>(
-            env_name, automatic_value > 0 ? automatic_value : phase_config.num_stages);
+        const int phase_forced_value = get_env<int>(env_name, 0);
+        const int requested = phase_forced_value > 0 ? phase_forced_value :
+            (automatic_value > 0 ? automatic_value : phase_config.num_stages);
         const auto [num_stages, smem_size] = get_pipeline_config_for_mega_moe_sm90(
             SM90ArchSpec::smem_capacity,
             num_experts, hidden,
@@ -306,14 +320,21 @@ static void sm90_fp8_mega_moe(
             phase_config.direct_l2_scatter,
             requested,
             phase_config.swap_ab,
-            h200_policy.fp8_combine != 0);
+            h200_numerical.fp8_combine != 0);
+        const int globally_forced_value = get_env<int>("DG_SM90_MOE_NUM_STAGES", 0);
+        if (automatic_value > 0 and phase_forced_value <= 0 and
+            globally_forced_value <= 0) {
+            // Production policy values are measured configurations. Do not
+            // silently turn an over-sized request into a different pipeline.
+            DG_HOST_ASSERT(num_stages == automatic_value);
+        }
         phase_config.num_stages = num_stages;
         phase_config.smem_size = smem_size;
     };
     apply_phase_stage_override(
-        l1_config, "DG_SM90_MOE_L1_NUM_STAGES", h200_policy.l1_num_stages);
+        l1_config, "DG_SM90_MOE_L1_NUM_STAGES", h200_schedule.l1.num_stages);
     apply_phase_stage_override(
-        l2_config, "DG_SM90_MOE_L2_NUM_STAGES", h200_policy.l2_num_stages);
+        l2_config, "DG_SM90_MOE_L2_NUM_STAGES", h200_schedule.l2.num_stages);
 
     // Tensormap construction
     // Acts/weights: standard 2D TMA descriptors (FP8 K-major).
@@ -393,15 +414,15 @@ static void sm90_fp8_mega_moe(
     const auto num_sms = device_runtime->get_num_sms();
     const int l1_num_sms = get_env<int>(
         "DG_SM90_MOE_L1_NUM_SMS",
-        h200_policy.l1_num_sms > 0 ? h200_policy.l1_num_sms : num_sms);
+        h200_schedule.l1.num_sms > 0 ? h200_schedule.l1.num_sms : num_sms);
     const int l2_num_sms = get_env<int>(
         "DG_SM90_MOE_L2_NUM_SMS",
-        h200_policy.l2_num_sms > 0 ? h200_policy.l2_num_sms : num_sms);
+        h200_schedule.l2.num_sms > 0 ? h200_schedule.l2.num_sms : num_sms);
     const bool async_l1_tma_store = get_env<int>("DG_SM90_MOE_ASYNC_L1_TMA_STORE", 0) != 0;
     const bool l1_dual_k_accum = get_env<int>("DG_SM90_MOE_L1_DUAL_K_ACCUM", 0) != 0;
     const bool l2_dual_accum = get_env<int>("DG_SM90_MOE_L2_DUAL_ACCUM", 0) != 0;
     const bool fp8_combine = get_env<int>(
-        "DG_SM90_MOE_FP8_COMBINE", h200_policy.fp8_combine) != 0;
+        "DG_SM90_MOE_FP8_COMBINE", h200_numerical.fp8_combine) != 0;
     const bool adjacent_scale_domain =
         get_env<int>("DG_SM90_MOE_ADJACENT_SCALE_DOMAIN", 0) != 0;
     const bool prefetch_weight_sf =
@@ -411,7 +432,7 @@ static void sm90_fp8_mega_moe(
     const bool fp16_scaled_accum =
         get_env<int>("DG_SM90_MOE_FP16_SCALED_ACCUM", 0) != 0;
     const bool bf16_scaled_accum = get_env<int>(
-        "DG_SM90_MOE_BF16_SCALED_ACCUM", h200_policy.bf16_scaled_accum) != 0;
+        "DG_SM90_MOE_BF16_SCALED_ACCUM", h200_numerical.bf16_scaled_accum) != 0;
     const bool native_fp16_wgmma =
         get_env<int>("DG_SM90_MOE_NATIVE_FP16_WGMMA", 0) != 0;
     const int native_fp16_chunk_k =
@@ -423,6 +444,24 @@ static void sm90_fp8_mega_moe(
     DG_HOST_ASSERT(native_fp16_chunk_k == 0 or native_fp16_chunk_k == 32 or
                    native_fp16_chunk_k == 64 or native_fp16_chunk_k == 128);
     DG_HOST_ASSERT(native_fp16_chunk_k == 0 or native_fp16_wgmma);
+    const auto supports_bf16_scaled_accum = [](const MegaMoESM90Config& phase_config) {
+        const int num_epilogue_warpgroups = phase_config.num_epilogue_threads / 128;
+        if (phase_config.swap_ab) {
+            return phase_config.block_m == 64 and phase_config.block_n == 128 and
+                   phase_config.block_k == 128 and num_epilogue_warpgroups == 2;
+        }
+        const bool split_n =
+            phase_config.block_m == 64 and num_epilogue_warpgroups > 1 and
+            phase_config.block_n % num_epilogue_warpgroups == 0;
+        const int wg_block_n = split_n ?
+            phase_config.block_n / num_epilogue_warpgroups : phase_config.block_n;
+        return phase_config.block_m == 64 and
+               (wg_block_n == 128 or wg_block_n == 256) and
+               (phase_config.block_k == 128 or phase_config.block_k == 256);
+    };
+    DG_HOST_ASSERT(not bf16_scaled_accum or
+                   (supports_bf16_scaled_accum(l1_config) and
+                    supports_bf16_scaled_accum(l2_config)));
     const auto supports_native_fp16_wgmma = [](const MegaMoESM90Config& phase_config) {
         const int num_epilogue_warpgroups = phase_config.num_epilogue_threads / 128;
         const bool split_n =
@@ -468,10 +507,13 @@ static void sm90_fp8_mega_moe(
         .num_ranks = num_ranks,
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
-        .direct_l2_scatter = config.direct_l2_scatter,
+        .direct_l2_scatter = l2_config.direct_l2_scatter,
         .phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0,
-        .l2_nmajor_schedule = config.l2_nmajor_schedule,
-        .one_warp_cleanup = config.one_warp_cleanup,
+        .l2_nmajor_schedule = l2_config.l2_nmajor_schedule,
+        .l1_nmajor_schedule = get_env<int>(
+            "DG_SM90_MOE_L1_NMAJOR",
+            h200_schedule.l1.nmajor >= 0 ? h200_schedule.l1.nmajor : 0) != 0,
+        .one_warp_cleanup = l2_config.one_warp_cleanup,
         .async_l1_tma_store = async_l1_tma_store,
         .l1_dual_k_accum = l1_dual_k_accum,
         .l2_dual_accum = l2_dual_accum,

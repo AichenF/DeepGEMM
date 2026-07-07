@@ -16,7 +16,8 @@ OBSERVATIONS=${OBSERVATIONS:-1}
 CASE_ROOT="$ROOT/candidates/$CANDIDATE"
 export PATH="$CUDA_HOME/bin:$VENV/bin:$PATH"
 export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$VENV/lib/python3.12/site-packages/tvm_ffi/lib:${LD_LIBRARY_PATH:-}"
-export PYTHONUNBUFFERED=1 DG_USE_LOCAL_VERSION=0 DG_BENCH_FLUSH_L2_BYTES=0
+export PYTHONUNBUFFERED=1 DG_USE_LOCAL_VERSION=0
+export DG_BENCH_FLUSH_L2_BYTES=${DG_BENCH_FLUSH_L2_BYTES:-0}
 export DG_OURS_REPO="$OURS"
 export DG_OURS_BENCH="$OURS/tests/bench_mega_moe_sm90.py"
 # torch symmetric-memory creates Unix sockets below TMPDIR; keep this path
@@ -27,8 +28,9 @@ export TORCH_EXTENSIONS_DIR="$CASE_ROOT/torch_extensions"
 mkdir -p "$CASE_ROOT/logs" "$TMPDIR" "$DG_JIT_CACHE_DIR" "$TORCH_EXTENSIONS_DIR"
 
 {
-    printf 'candidate=%s\nshape=%s\nms=%s\nseed=%s\nnum_tests=%s\n' \
-        "$CANDIDATE" "$SHAPE" "$MS" "$SEED" "$NUM_TESTS"
+    printf 'candidate=%s\nshape=%s\nms=%s\nseed=%s\nnum_tests=%s\nflush_l2_bytes=%s\n' \
+        "$CANDIDATE" "$SHAPE" "$MS" "$SEED" "$NUM_TESTS" \
+        "$DG_BENCH_FLUSH_L2_BYTES"
     env | LC_ALL=C sort | grep '^DG_SM90_MOE_' || true
 } > "$CASE_ROOT/config.txt"
 

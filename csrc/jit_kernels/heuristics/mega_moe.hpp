@@ -350,6 +350,7 @@ static Sm90MoeH200Policy get_sm90_moe_h200_policy(
     const int& hidden, const int& intermediate_hidden) {
     return select_sm90_moe_h200_policy(
         should_use_sm90_moe_h200_policy(),
+        device_runtime->get_num_sms(),
         num_ranks, num_experts, num_experts_per_rank,
         num_tokens, num_topk, hidden, intermediate_hidden);
 }
@@ -826,12 +827,14 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
     const auto h200_policy = get_sm90_moe_h200_policy(
         num_ranks, num_experts, num_experts_per_rank,
         num_tokens, num_topk, hidden, intermediate_hidden);
+    const auto& h200_schedule = h200_policy.schedule;
+    const auto& h200_numerical = h200_policy.numerical;
     const int forced_block_m = get_env<int>(
-        "DG_SM90_MOE_FORCE_BLOCK_M", h200_policy.block_m);
+        "DG_SM90_MOE_FORCE_BLOCK_M", h200_schedule.block_m);
     const int forced_block_n = get_env<int>(
-        "DG_SM90_MOE_FORCE_BLOCK_N", h200_policy.block_n);
+        "DG_SM90_MOE_FORCE_BLOCK_N", h200_schedule.seed_block_n());
     const int forced_epilogue_warpgroups = get_env<int>(
-        "DG_SM90_MOE_FORCE_EPILOGUE_WG", h200_policy.epilogue_warpgroups);
+        "DG_SM90_MOE_FORCE_EPILOGUE_WG", 0);
     DG_HOST_ASSERT(forced_block_m == 0 or forced_block_m == 64 or forced_block_m == 128);
     DG_HOST_ASSERT(forced_block_n == 0 or forced_block_n == 128 or
                    forced_block_n == 256 or forced_block_n == 512);
@@ -868,7 +871,8 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
     const int num_max_pool_tokens = layout::get_num_max_pool_tokens(
         num_ranks, num_max_tokens_per_rank, num_topk, num_experts_per_rank);
     const int block_k = get_env<int>(
-        "DG_SM90_MOE_BLOCK_K", h200_policy.block_k > 0 ? h200_policy.block_k : 128);
+        "DG_SM90_MOE_BLOCK_K",
+        h200_schedule.seed_block_k() > 0 ? h200_schedule.seed_block_k() : 128);
     DG_HOST_ASSERT(block_k == 128 or block_k == 256);
     const int num_sms = device_runtime->get_num_sms();
 
@@ -950,7 +954,7 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                         block_m, num_epilogue_threads);
 
                 const int forced_cluster_size = get_env<int>(
-                    "DG_SM90_MOE_CLUSTER_SIZE", h200_policy.cluster_size);
+                    "DG_SM90_MOE_CLUSTER_SIZE", h200_schedule.cluster_size);
                 DG_HOST_ASSERT(forced_cluster_size == 0 or
                                forced_cluster_size == 1 or
                                forced_cluster_size == 2);
@@ -963,8 +967,7 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
 
                 const bool compact_frontend = block_n >= 256 or swap_ab;
                 const int forced_dispatch_warps = get_env<int>(
-                    "DG_SM90_MOE_DISPATCH_WARPS",
-                    h200_policy.dispatch_warps > 0 ? h200_policy.dispatch_warps : -1);
+                    "DG_SM90_MOE_DISPATCH_WARPS", -1);
                 DG_HOST_ASSERT(forced_dispatch_warps == -1 or forced_dispatch_warps == 0 or
                                forced_dispatch_warps == 2 or forced_dispatch_warps == 4 or
                                forced_dispatch_warps == 8);
@@ -991,17 +994,17 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                         num_experts_per_rank, num_tokens, num_topk,
                         intermediate_hidden, block_m, block_n);
                     const bool direct_l2_scatter_default =
-                        h200_policy.direct_l2_scatter >= 0 ?
-                            h200_policy.direct_l2_scatter != 0 :
+                        h200_schedule.l2_execution.direct_scatter >= 0 ?
+                            h200_schedule.l2_execution.direct_scatter != 0 :
                             ((not swap_ab) and policy.direct_l2_scatter());
                     const bool l2_nmajor_schedule_default =
-                        h200_policy.l2_nmajor_schedule >= 0 ?
-                            h200_policy.l2_nmajor_schedule != 0 : policy.l2_nmajor_schedule(
+                        h200_schedule.l2.nmajor >= 0 ?
+                            h200_schedule.l2.nmajor != 0 : policy.l2_nmajor_schedule(
                         get_env<int>("DG_SM90_MOE_EPLB_HINT", 0) != 0,
                         get_env<int>("DG_SM90_MOE_SKEW_HINT", 0) != 0);
                     const bool one_warp_cleanup_default =
-                        h200_policy.one_warp_cleanup >= 0 ?
-                            h200_policy.one_warp_cleanup != 0 : policy.one_warp_cleanup(
+                        h200_schedule.l2_execution.one_warp_cleanup >= 0 ?
+                            h200_schedule.l2_execution.one_warp_cleanup != 0 : policy.one_warp_cleanup(
                                 get_env<int>("DG_SM90_MOE_MASKED_HINT", 0) != 0);
                     const bool direct_l2_scatter_legal =
                         (not swap_ab) and
@@ -1051,7 +1054,7 @@ static std::vector<MegaMoESM90Config> get_mega_moe_config_candidates_sm90(
                                 direct_l2_scatter,
                                 requested_num_stages,
                                 swap_ab,
-                                h200_policy.fp8_combine != 0);
+                                h200_numerical.fp8_combine != 0);
                             for (const int& l2_nmajor_value: l2_nmajor_candidates) {
                                 for (const int& cleanup_value: cleanup_candidates) {
                                     for (const int& num_experts_per_wave: experts_per_wave_candidates) {

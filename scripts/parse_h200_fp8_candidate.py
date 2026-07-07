@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 MS = (8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192)
+SHAPES = ("flash", "pro", "mimo_pro")
 
 
 def extract_marked_json(text: str, marker: str):
@@ -88,7 +89,7 @@ def main():
         grouped[(row["shape"], row["m"], row["impl"])].append(row)
 
     final = []
-    for shape in ("flash", "pro"):
+    for shape in SHAPES:
         for m in MS:
             ours = grouped.get((shape, m, "ours"), [])
             pr323 = grouped.get((shape, m, "pr323"), [])
