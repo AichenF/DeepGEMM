@@ -10,6 +10,7 @@
 #include "../jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe_nibble_group.hpp"
+#include "../jit_kernels/impls/sm90_nvfp4_mega_moe_per128_pro_braided_3stage.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe_pro_candidate.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe_pro_braided.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe_pro_braided_3stage.hpp"
@@ -374,6 +375,7 @@ static void nvfp4_mega_moe(
 }
 
 #include "nvfp4_nibble_group_mega.inl"
+#include "nvfp4_per128_pro_braided_3stage_mega.inl"
 #include "nvfp4_pro_candidate_mega.inl"
 #include "nvfp4_pro_braided_mega.inl"
 #include "nvfp4_pro_braided_3stage_mega.inl"
@@ -385,6 +387,7 @@ static void register_apis(pybind11::module_& m) {
     m.def("fp8_fp4_mega_moe", &fp8_fp4_mega_moe);
     m.def("nvfp4_mega_moe", &nvfp4_mega_moe);
     m.def("nvfp4_nibble_group_mega_moe", &nvfp4_nibble_group_mega_moe);
+    m.def("nvfp4_per128_pro_braided_3stage_mega_moe", &nvfp4_per128_pro_braided_3stage_mega_moe);
     m.def("nvfp4_pro_candidate_mega_moe", &nvfp4_pro_candidate_mega_moe);
     m.def("nvfp4_pro_braided_mega_moe", &nvfp4_pro_braided_mega_moe);
     m.def("nvfp4_pro_braided_3stage_mega_moe", &nvfp4_pro_braided_3stage_mega_moe);

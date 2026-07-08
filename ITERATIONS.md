@@ -3784,3 +3784,145 @@ count (+15.1%). At 78 CTAs with exhaustive scales they rose from 641 to 678
 (+5.8%). Keep the existing next-LUT-before-current-store window and do not
 integrate this schedule into a real kernel. The reusable screen remains in
 `docs/experiments/sm90_nvfp4_standard_prepack/bench_dequant_braided_ilp.py`.
+
+### Flash single packed-slot four-stage screen
+
+Built an isolated Flash-only candidate that keeps the compact 80-byte NVFP4
+row in HBM, replaces the packed-B allocation in every pipeline stage with one
+20 KiB CTA-wide slot, and raises expanded A/B staging from three to four. A
+dedicated mbarrier prevents the B TMA producer from overwriting that slot
+until all eight math warps have finished dequantizing it. One of the two
+allocated dispatch warps is active, saving one hidden-sized pull buffer so the
+swapAB configuration fits within the 232448-byte CTA limit.
+
+Fresh-JIT exact-NVFP4 correctness passed M=8/16/32/64/128 for both
+`global_scale=none` and `global_scale=expert`. Performance rejected the design:
+on the H20 eight-rank Flash shape at M=8, cap 8192, routing seed 101, no L2
+flush, and median-30, the single-slot candidate took 446.2 us versus 324.4 us
+for the current three-stage nibble-group baseline, a 37.6% regression. A
+single slot constrains the B producer to at most one K tile of lookahead, so
+the nominal fourth expanded stage cannot recover the lost packed-B TMA
+prefetch depth. Continue with a two-slot ping-pong screen; do not promote the
+single-slot schedule.
+
+The follow-up moved dequantization to the two non-epilogue loader warps so the
+single packed slot could be released immediately after expansion and the
+producer could genuinely fill four FP8 stages ahead of math. It also repaired
+the generic-store-to-WGMMA contract locally: both loader warps execute a
+per-writer async-proxy fence, and both arrive on the dequant-ready barrier.
+M=8 exact-NVFP4 correctness passed, but median-30 latency rose further to
+764.3 us, 135.6% above the 324.4 us baseline. Sixty-four loader threads make
+the 256-row expansion an exposed producer bottleneck; deeper staging hides B
+TMA but cannot hide that serialized expansion. Reject loader-side dequant for
+this small-M candidate as well.
+
+A third schedule restored 256-thread math-side dequant and moved K+1 expansion
+between `warpgroup_commit_batch` and `warpgroup_wait`, preserving the required
+per-writer proxy fence. It passed M=8 correctness but remained slower across
+the full Flash small-M sweep: M=8/16/32/64/128 measured
+478.9/532.4/542.4/575.3/663.4 us, versus prior same-shape baselines of roughly
+324.4/355.3/355.1/407.0/483.5 us. The WGMMA window does not cover the added
+slot handoff and serialized B-TMA lookahead costs.
+
+For the non-swap M=128 template, two packed slots and both dispatch warps fit
+with four expanded stages. This restored two B tiles of TMA lookahead and
+improved the candidate to 555.9 us, but it was still about 15.0% slower than
+the 483.5 us baseline. Continue only with early slot release after each thread
+has copied its complete 80-byte row into registers; if that does not close the
+gap, reject packed-slot decoupling for M<=128.
+
+Early slot release after the 80-byte row reached registers improved M=8 from
+478.9 to 421.1 us and M=128 from 555.9 to 544.8 us, but remained negative.
+Expanding the compact tile directly inside the 32 KiB FP8 stage removed the
+slot handoff entirely. A single 256-thread pre-store barrier reached 338.6 us
+at M=8 but regressed M=128 to 664.0 us.
+
+Splitting the compact B TMA into two legal 80x128-row transactions was the
+first positive screen. Each packed half lands in its own 16 KiB WGMMA region,
+so each math WG captures 10 KiB into registers, synchronizes only its 128
+threads, and expands in place. The HBM representation remains the same
+contiguous 80-byte row format. Fresh correctness passed M=8 and M=128. On the
+seed-101 H20 screen, M=8 measured 331.1 us versus a 324.4 us baseline (+2.1%),
+while M=128 measured 479.0 us versus roughly 483.5 us (-0.9%); max-rank M=128
+was 482.4 us versus roughly 497.2 us. Treat this as provisional until a
+multi-seed A/B/B/A comparison confirms the M=128 gain.
+
+The three-seed A/B/B/A gate rejected M=64 (+4.50% rank 0, +3.31% max rank)
+but initially favored M=128 (-2.41% rank 0, -2.06% max rank). A boundary sweep
+showed expected=16.5 tied at max rank, expected=18 tied overall, and
+expected=21 improved rank 0 but regressed three-seed max rank by 0.36%.
+Reversing M=128 order to B/A/A/B removed the apparent win: rank 0 tied
+(-0.01%) and max rank regressed 0.38%. Combining both process orders leaves
+only about a 1% signal, too small for a production policy branch. Screen one
+smaller in-place synchronization granularity before the final decision.
+
+The 64-row/two-warp variant passed correctness but measured 482.6 us at M=128,
+slower than the 479.0 us 128-row WG version; two extra B TMA transactions cost
+more than the smaller barrier saved. Reject the compact-scratch decoupling
+track for production. The best form is technically valid and close at M=128,
+but it does not clear the multi-seed/max-rank gate, while M<=64 is clearly
+negative. Remove the candidate API, JIT wrapper, kernel files, and temporary
+harness rather than adding a narrow policy branch. Raw reports remain under
+`/root/fac/scripts/megamoe/nvfp4_inplace_wg_*_20260703/` on the H20 host.
+
+### BN256 fused per-128 E4M3 intermediate control
+
+Created an isolated candidate API and kernel body while retaining the production
+per-64 intermediate scale semantics and physical layout. Fresh JIT correctness
+passed M=8/64/128 on both Flash (H=4096, I=2048) and Pro (H=7168, I=3072), with
+both absent and per-expert global scales. This establishes the candidate wiring
+as the control before changing L1 quantization. The first semantic screen shares
+one amax/scale across the two 64-column split-N outputs and duplicates that scale
+into the existing two per-64 slots, leaving L2 TMA and WGMMA scheduling unchanged.
+That screen passed the same M=8/128 matrix on Flash, Middle-I, and Pro. Its Flash
+ABBA timing showed no stable benefit, as expected for a version that adds the
+cross-warpgroup reduction without yet removing an L2 scale load. Proceed to the
+physical per-128 screen: retain the framework's oversized per-64 allocation, use
+the first half as a dense per-128 layout, issue one SFA TMA per K128 tile, and
+reduce SFA shared memory from 512 B to 256 B per pipeline stage.
+
+The physical per-128 candidate then merged each L2 K128 tile into one accumulator
+promotion. Repository-reference correctness passed M=8/16/32/64/128 for Flash
+and Middle-I and M=128 for standard-layout Pro, with absent and per-expert global
+scales. The Pro braided candidate separately passed M=8/16/32/64 in both scale
+modes. All outputs were finite and the minimum observed cosine was 0.9987. These
+checks use weights dequantized from the exact NVFP4 E2M1 and UE4M3 representation;
+the Cupra elementwise tolerance is not part of this experiment.
+
+Resource usage stayed at 168 registers and a 56-byte stack. The standard cubin
+removed four static UTMALDG sites (44 to 40), and the braided cubin removed the
+same four sites (36 to 32), while preserving QGMMA count. Hopper code generation
+still emitted one dependency barrier per QGMMA, so the source-level K128 commit
+group did not reduce that SASS count. The braided three-stage form saves 768 B of
+dynamic shared memory over its per-64 control.
+
+Three-seed process-level ABBA rejected making per-128 an all-BN256 policy. Flash
+rank-zero/max-rank deltas were +1.28%/+0.56% at M=8, +0.66%/-0.33% at M=64, and
+-1.26%/+1.65% at M=128; direction also changed across seeds. Standard-layout Pro
+at M=128 improved only 0.69%/0.74%, below the acceptance margin even though all
+three seeds had the same direction.
+
+The isolated Pro braided three-stage form did show a repeatable useful region.
+Rank-zero/max-rank deltas were -2.03%/-1.61% at M=8, -2.53%/-2.52% at M=32,
+and -3.25%/-3.19% at M=64. Every seed improved at those three points. The first
+M=16 ABBA was only -0.53%/-0.47% and changed direction across seeds. Reversing
+the process order produced -2.19%/-2.40%; combining both process orders gives
+-1.36%/-1.44%, with all three per-seed combined comparisons now positive.
+A seed-101 non-power-of-two boundary sweep also improved M=12/20/24/28/40/48/56;
+the rank-zero paired deltas were -1.99%, -2.09%, -1.60%, -2.46%, -2.97%,
+-5.43%, and -3.79%, respectively. M=40/48 had elevated cross-rank noise, so
+their magnitudes are not used to set policy.
+
+Do not promote the generic standard-layout candidate. Retain the separate Pro
+braided candidate as the winner for the deployment region with expected tokens
+per local expert in the continuous interval from one through eight. Production
+dispatch remains unchanged in this experimental worktree; no commit or push was
+requested. Final cleanup removed the now-constant single-replica scale-store
+loops. Fresh correctness still passed, resources remained 168 registers, a
+56-byte stack, and zero local memory, and old/new SASS differed only in one
+source-line immediate (`0x8b9` versus `0x8ab`). Raw reports are under
+`/root/fac/scripts/megamoe/nvfp4_per128_multiseed_20260706/`,
+`/root/fac/scripts/megamoe/nvfp4_per128_pro_braided_mid_multiseed_20260706/`,
+`/root/fac/scripts/megamoe/nvfp4_per128_pro_braided_boundary_20260706/`, and
+`/root/fac/scripts/megamoe/nvfp4_per128_pro_braided_m16_reverse_control_20260706/`
+on the H20 host.
