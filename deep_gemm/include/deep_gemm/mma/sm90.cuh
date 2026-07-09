@@ -74,46 +74,6 @@ struct FP8MMASelector {
     using type = decltype(select_type());
 };
 
-// Native FP16-output FP8 WGMMA candidate. Unlike FP8MMA, each uint32_t
-// accumulator register contains two packed FP16 results. Keep the selector
-// deliberately restricted to the M64N128 warpgroup shape used by the H200
-// experiment so existing SM90 configurations cannot select it accidentally.
-template <int N_, typename MMA>
-struct FP8MMAF16 {
-    template <size_t ...Idx>
-    CUTLASS_DEVICE static void call_fma_impl(uint64_t const& desc_a,
-                                             uint64_t const& desc_b,
-                                             uint32_t* d,
-                                             bool scale_d,
-                                             cute::index_sequence<Idx...>) {
-        using namespace cute::SM90::GMMA;
-        MMA::fma(desc_a, desc_b, d[Idx]...,
-                 (scale_d ? ScaleOut::One : ScaleOut::Zero));
-    }
-
-    CUTLASS_DEVICE static void wgmma(uint64_t const& desc_a,
-                                     uint64_t const& desc_b,
-                                     uint32_t* d,
-                                     bool scale_d) {
-        call_fma_impl(desc_a, desc_b, d, scale_d,
-                      cute::make_index_sequence<N_ / 4>{});
-    }
-
-    static constexpr int M = 64;
-    static constexpr int N = N_;
-    static constexpr int K = 32;
-    static constexpr int kNumAccum = M * N / 256;
-};
-
-template <int N>
-struct FP8MMAF16Selector;
-
-template <>
-struct FP8MMAF16Selector<128> {
-    using MMA = cute::SM90::GMMA::MMA_64x128x32_F16E4M3E4M3_SS_TN<>;
-    using type = FP8MMAF16<128, MMA>;
-};
-
 template <int N_, typename MMA>
 struct BF16MMA {
     template <size_t ...Idx>

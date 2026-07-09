@@ -1,7 +1,6 @@
 import os
 import sys
 import torch
-import torch.distributed as dist
 from typing import Callable, Optional
 
 
@@ -90,13 +89,10 @@ def bench_kineto(fn, kernel_names, num_tests: int = 30,
     if int(os.environ.get('DG_USE_NVIDIA_TOOLS', 0)):
         return (1, ) * len(kernel_names) if is_tuple else 1
 
-    # Flush L2 between timed calls. Large MoE benchmark runs can use shared nodes
-    # with limited free memory, so allow lowering only the flush buffer while
-    # preserving the default behavior.
-    flush_l2_bytes = int(os.environ.get('DG_BENCH_FLUSH_L2_BYTES', str(int(8e9))))
-    flush_l2_size = max(0, flush_l2_bytes // 4)
+    # By default, flush L2 with an excessive 8 GB memset to give the GPU some (literal) chill time without full idle
+    flush_l2_size = int(8e9 // 4)
 
-    # Warm up once before profiling.
+    # For some auto-tuning kernels with prints
     fn()
 
     # Profile
@@ -108,7 +104,7 @@ def bench_kineto(fn, kernel_names, num_tests: int = 30,
         with profiler:
             for i in range(2):
                 for _ in range(num_tests):
-                    if flush_l2 and flush_l2_size > 0:
+                    if flush_l2:
                         torch.empty(flush_l2_size, dtype=torch.int, device='cuda').zero_()
                     if barrier is not None:
                         # NOTES: use a large kernel and a barrier to eliminate the unbalanced CPU launch overhead
@@ -120,32 +116,11 @@ def bench_kineto(fn, kernel_names, num_tests: int = 30,
                 profiler.step()
 
     # Parse the profiling table
-    report_split_kernels = int(os.environ.get('DG_SM90_MOE_REPORT_SPLIT_KERNELS', 0)) != 0
-    max_name_column_width = int(os.environ.get('DG_BENCH_MAX_NAME_COLUMN_WIDTH', 100))
-    if report_split_kernels and with_multiple_kernels:
-        max_name_column_width = max(max_name_column_width, 512)
-    prof_lines = profiler.key_averages().table(
-        sort_by='cuda_time_total',
-        max_name_column_width=max_name_column_width).split('\n')
+    prof_lines = profiler.key_averages().table(sort_by='cuda_time_total', max_name_column_width=100).split('\n')
     kernel_names = (kernel_names, ) if isinstance(kernel_names, str) else kernel_names
     if not with_multiple_kernels:
         for name in kernel_names:
             assert sum([name in line for line in prof_lines]) <= 1, f'Errors of the kernel {name} in the profiling table {prof_lines}'
-    elif report_split_kernels:
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        for line in prof_lines:
-            if any(name in line for name in kernel_names):
-                phase = '?'
-                if 'sm90_fp8_mega_moe_l1_impl<' in line:
-                    phase = 'l1'
-                elif 'sm90_fp8_mega_moe_l2_impl<' in line:
-                    phase = 'l2'
-                fields = line.split()
-                cuda_time = fields[-2] if len(fields) >= 2 else 'unknown'
-                count = fields[-1] if fields else 'unknown'
-                print(f' > split_kernel rank={rank} phase={phase} cuda_time={cuda_time} count={count}')
-                if int(os.environ.get('DG_SM90_MOE_REPORT_SPLIT_KERNELS_RAW', 0)) != 0:
-                    print(f' > split_kernel_raw rank={rank}: {" ".join(fields)}')
 
     # Save chrome traces
     if trace_path is not None:
@@ -166,11 +141,6 @@ def bench_kineto(fn, kernel_names, num_tests: int = 30,
                         total_time += float(time_str.replace(unit, '')) / scale * int(num_str)
                         total_num += int(num_str)
                         break
-        if total_num > 0 and with_multiple_kernels:
-            # Multiple matching kernels can belong to one logical benchmarked op
-            # (e.g. split MegaMoE L1/L2). Report summed CUDA time per fn() call.
-            kernel_times.append(total_time / num_tests)
-        else:
-            kernel_times.append(total_time / total_num if total_num > 0 else 0)
+        kernel_times.append(total_time / total_num if total_num > 0 else 0)
 
     return tuple(kernel_times) if is_tuple else kernel_times[0]

@@ -65,6 +65,9 @@ void sm100_fp8_paged_mqa_logits(const uint32_t batch_size,
     static constexpr uint32_t SMEM_KV_SIZE_PER_STAGE = SPLIT_KV * kHeadDim * sizeof(__nv_fp8_e4m3);
     static constexpr uint32_t SMEM_KV_SCALE_SIZE_PER_STAGE = SPLIT_KV * sizeof(float);
     static constexpr uint32_t SMEM_WEIGHT_SIZE_PER_STAGE = kNextNAtom * kNumHeads * sizeof(float);
+    // TMA requires 128B - aligned shared memory addresses, so pad the per - stage stride
+    // (e.g. `kNextNAtom == 1` with 16 heads gives only 64B per stage)
+    static constexpr uint32_t SMEM_WEIGHT_STRIDE_PER_STAGE = SMEM_WEIGHT_SIZE_PER_STAGE < 128 ? 128 : SMEM_WEIGHT_SIZE_PER_STAGE;
 
     // Align to swizzling alignment bytes
     extern __shared__ __align__(kSwizzleAlignment) uint8_t smem_buffer[];
@@ -83,7 +86,7 @@ void sm100_fp8_paged_mqa_logits(const uint32_t batch_size,
         return reinterpret_cast<float*>(smem_buffer + smem_offset + SMEM_KV_SCALE_SIZE_PER_STAGE * i);
     });
     auto smem_weights = utils::PatternVisitor([&](const uint32_t& i) {
-        return reinterpret_cast<float*>(smem_buffer + smem_offset + SMEM_KV_SCALE_SIZE_PER_STAGE * kNumKVStages + SMEM_WEIGHT_SIZE_PER_STAGE * i);
+        return reinterpret_cast<float*>(smem_buffer + smem_offset + SMEM_KV_SCALE_SIZE_PER_STAGE * kNumKVStages + SMEM_WEIGHT_STRIDE_PER_STAGE * i);
     });
 
     // Barriers and TMEM pointer on shared memory
@@ -184,8 +187,7 @@ void sm100_fp8_paged_mqa_logits(const uint32_t batch_size,
 
         while (fetched_next_task) {
             // Prefetch next Q when (q, atom) changes
-            const auto next_advance = scheduler.get_atom_advance(next_q_atom_idx, batch_size);
-            bool prefetch_q = (q_atom_idx != next_q_atom_idx) and scheduler.exist_q_atom_idx(next_q_atom_idx + next_advance);
+            bool prefetch_q = (q_atom_idx != next_q_atom_idx) and scheduler.exist_q_atom_idx(next_q_atom_idx + scheduler.get_last_advance());
 
             if (q_atom_idx != next_q_atom_idx)
                 kv_block_idx_ptr = 32;
@@ -209,7 +211,7 @@ void sm100_fp8_paged_mqa_logits(const uint32_t batch_size,
             if (prefetch_q) {
                 CUTE_TIE_DECL(get_q_pipeline(q_iter_idx ++), q_stage_idx, q_phase);
                 empty_q_barriers[q_stage_idx]->wait(q_phase ^ 1);
-                issue_tma_q(q_stage_idx, q_atom_idx + next_advance);
+                issue_tma_q(q_stage_idx, next_q_atom_idx + scheduler.get_last_advance());
             }
 
             uint32_t kv_block_idx[kNumBlocksPerSplit];
@@ -307,10 +309,11 @@ void sm100_fp8_paged_mqa_logits(const uint32_t batch_size,
         // Helper lambda for loading tensor memory
         auto tmem_load = [](auto num_elems_c, const uint32_t& tmem_addr, float* accum) {
             constexpr int N = decltype(num_elems_c)::value;
-            DG_STATIC_ASSERT(N == 32 or N == 64, "Unsupported TMEM load size");
-            using Loader = cute::conditional_t<N == 32,
-                cute::SM100_TMEM_LOAD_32dp32b32x,
-                cute::SM100_TMEM_LOAD_32dp32b64x>;
+            DG_STATIC_ASSERT(N == 8 or N == 16 or N == 32 or N == 64, "Unsupported TMEM load size");
+            using Loader = cute::conditional_t<N == 8, cute::SM100_TMEM_LOAD_32dp32b8x,
+                           cute::conditional_t<N == 16, cute::SM100_TMEM_LOAD_32dp32b16x,
+                           cute::conditional_t<N == 32, cute::SM100_TMEM_LOAD_32dp32b32x,
+                                                        cute::SM100_TMEM_LOAD_32dp32b64x>>>;
             [&]<size_t... Is>(cute::index_sequence<Is...>) {
                 Loader::copy(tmem_addr, reinterpret_cast<uint32_t*>(accum)[Is]...);
             }(cute::make_index_sequence<N>{});
@@ -347,7 +350,7 @@ void sm100_fp8_paged_mqa_logits(const uint32_t batch_size,
                 }
 
                 if constexpr (kIsVarlen) {
-                    is_paired_atom = (scheduler.get_atom_advance(next_q_atom_idx, batch_size) == 2);
+                    is_paired_atom = (scheduler.get_last_advance() == 2);
                 }
             }
 

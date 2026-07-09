@@ -175,7 +175,10 @@ def _reference_fused(
 
     # Iterate (cheap; reference is for small test configs only)
     # Token-chunked to keep gathered (S, 2*IH, H) dequant tensors below GPU memory.
-    _CHUNK = 256
+    # Wide H200 Pro weights make a 256-token gathered dequantization exceed
+    # 40 GiB. Keep the reference chunk small enough for the full production
+    # shape while preserving exactly the same arithmetic.
+    _CHUNK = 32
     for k in range(num_topk):
         # Skip masked
         mask = topk_idx_g[:, k] >= 0
@@ -296,7 +299,7 @@ def _run_scenario(
 
     # ---- Allocate symm buffer -----------------------------------------------
     _trace('alloc_symm_buffer')
-    buffer = deep_gemm.get_symm_buffer_for_mega_moe(
+    buffer = deep_gemm.get_symm_buffer_for_sm90_mega_moe(
         group, num_experts,
         num_max, num_topk,
         hidden, intermediate_hidden,
@@ -340,17 +343,19 @@ def _run_scenario(
 
     diff = calc_diff(y_fused, y_ref)
     ok = diff < diff_tol
+    failed = torch.tensor([not ok], dtype=torch.int, device='cuda')
+    dist.all_reduce(failed, op=dist.ReduceOp.MAX, group=group)
+    any_rank_failed = bool(failed.item())
     dist_print(f'  [{name:<32}] diff={diff:.4f} '
-               f'(tol={diff_tol:.2f}) {"OK" if ok else "FAIL"}',
+               f'(tol={diff_tol:.2f}) {"OK" if not any_rank_failed else "FAIL"}',
                once_in_node=True)
-    assert ok, f'{name}: diff={diff} >= tol={diff_tol}'
-
-    # Verify cum_stats has been incremented (i.e. dispatch ran)
-    if num_tokens > 0 and masked_ratio < 1.0:
-        assert cum_stats.sum().item() >= 0  # non-negative; can be 0 if nothing routed here
 
     buffer.destroy()
     dist.barrier()
+    assert not any_rank_failed, (
+        f'{name}: at least one rank exceeded diff tolerance {diff_tol}; '
+        f'local diff={diff}'
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -370,7 +375,7 @@ def _layer1_smoke() -> List[Tuple[str, Dict[str, Any]]]:
 
 
 def _layer2_heuristic_branches(num_ranks: int) -> List[Tuple[str, Dict[str, Any]]]:
-    """Cover generic heuristic bands and the main Flash profile selectors."""
+    """Cover generic heuristic bands across alternate top-k values."""
     base = dict(hidden=1024, intermediate_hidden=1024,
                 num_experts=8 * num_ranks, num_topk=2)
     out: List[Tuple[str, Dict[str, Any]]] = []
@@ -378,15 +383,15 @@ def _layer2_heuristic_branches(num_ranks: int) -> List[Tuple[str, Dict[str, Any]
         cfg = dict(base)
         cfg.update(num_max_tokens_per_rank=tokens, num_tokens=tokens)
         out.append((f'L2.heur.{label}.t{tokens}', cfg))
-    profile_base = dict(hidden=512, intermediate_hidden=2048,
-                        num_experts=32 * num_ranks, num_topk=8)
+    generic_topk8_base = dict(hidden=512, intermediate_hidden=2048,
+                              num_experts=32 * num_ranks, num_topk=8)
     for tokens in (16, 64, 260, 1024):
-        cfg = dict(profile_base)
+        cfg = dict(generic_topk8_base)
         cfg.update(num_max_tokens_per_rank=tokens, num_tokens=tokens)
-        out.append((f'L2.profile_topk8.t{tokens}', cfg))
-    profile_topk6 = dict(profile_base, num_topk=6)
-    profile_topk6.update(num_max_tokens_per_rank=512, num_tokens=512)
-    out.append(('L2.profile_topk6.t512', profile_topk6))
+        out.append((f'L2.generic_topk8.t{tokens}', cfg))
+    generic_topk6 = dict(generic_topk8_base, num_topk=6)
+    generic_topk6.update(num_max_tokens_per_rank=512, num_tokens=512)
+    out.append(('L2.generic_topk6.t512', generic_topk6))
     return out
 
 
@@ -402,6 +407,30 @@ def _layer3_shape_cases(num_ranks: int) -> List[Tuple[str, Dict[str, Any]]]:
                            hidden=hidden, intermediate_hidden=ih,
                            num_experts=base_experts, num_topk=topk)
                 out.append((f'L3.h{hidden}_ih{ih}_k{topk}', cfg))
+    # Production H200 shapes. Pro M128 covers the BN512/BF16 path and M256
+    # covers the BK256 split-phase path when this runs on a full H200 node.
+    out.extend([
+        ('L3.h200_flash_m128', dict(
+            num_max_tokens_per_rank=128, num_tokens=128,
+            hidden=4096, intermediate_hidden=2048,
+            num_experts=32 * num_ranks, num_topk=6)),
+        ('L3.h200_pro_m128', dict(
+            num_max_tokens_per_rank=128, num_tokens=128,
+            hidden=7168, intermediate_hidden=3072,
+            num_experts=48 * num_ranks, num_topk=6)),
+        ('L3.h200_pro_m256', dict(
+            num_max_tokens_per_rank=256, num_tokens=256,
+            hidden=7168, intermediate_hidden=3072,
+            num_experts=48 * num_ranks, num_topk=6)),
+        ('L3.h200_range_alt_compact_load24', dict(
+            num_max_tokens_per_rank=72, num_tokens=72,
+            hidden=4096, intermediate_hidden=2048,
+            num_experts=24 * num_ranks, num_topk=8)),
+        ('L3.h200_range_alt_wide_load32', dict(
+            num_max_tokens_per_rank=128, num_tokens=128,
+            hidden=7168, intermediate_hidden=3072,
+            num_experts=32 * num_ranks, num_topk=8)),
+    ])
     return out
 
 
@@ -457,7 +486,7 @@ def _layer5_stress(num_ranks: int, num_tests: int) -> List[Tuple[str, Dict[str, 
 # Entry point
 # ----------------------------------------------------------------------------
 
-def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
+def _test_worker(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     rank_idx, num_ranks, group = init_dist(local_rank, num_local_ranks)
 
     # Skip on non-SM90
@@ -529,4 +558,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     np = args.num_processes
-    torch.multiprocessing.spawn(test, args=(np, args), nprocs=np)
+    torch.multiprocessing.spawn(_test_worker, args=(np, args), nprocs=np)

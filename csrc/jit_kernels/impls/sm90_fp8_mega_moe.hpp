@@ -10,7 +10,7 @@
 #include <deep_gemm/layout/mega_moe.cuh>
 #include <deep_gemm/layout/sym_buffer.cuh>
 
-#include "../heuristics/mega_moe.hpp"
+#include "../heuristics/sm90_mega_moe.hpp"
 
 namespace deep_gemm {
 
@@ -26,7 +26,7 @@ namespace deep_gemm {
 //   * Activation/weight scale factors (SF) are per-128-channel float (not UE8M0
 //     int + per-32 UTCCP layout).
 //   * No tensor memory: WGMMA accumulators are register-resident.
-//   * Cluster size is at most 2 (TMA multicast on A); no 2-CTA UMMA.
+//   * One CTA processes each work item; there is no cluster multicast or 2-CTA UMMA.
 // ============================================================================
 
 class SM90FP8MegaMoERuntime final : public LaunchRuntime<SM90FP8MegaMoERuntime> {
@@ -44,22 +44,7 @@ public:
         int num_ranks;
         float activation_clamp;
         bool fast_math;
-        bool direct_l2_scatter;
-        bool phase_profile;
-        bool l2_nmajor_schedule;
-        bool l1_nmajor_schedule;
-        bool one_warp_cleanup;
-        bool async_l1_tma_store;
-        bool l1_dual_k_accum;
-        bool l2_dual_accum;
-        bool fp8_combine;
-        bool adjacent_scale_domain;
-        bool prefetch_weight_sf;
-        bool early_weight_sf;
-        bool fp16_scaled_accum;
         bool bf16_scaled_accum;
-        bool native_fp16_wgmma;
-        int native_fp16_chunk_k;
         KernelPhase kernel_phase;
         MegaMoESM90Config config;
 
@@ -89,6 +74,12 @@ public:
     static std::string generate_impl(const Args& args) {
         const char* kernel_symbol = args.kernel_phase == KernelPhase::Linear1 ? "sm90_fp8_mega_moe_l1_impl" :
             "sm90_fp8_mega_moe_l2_impl";
+        const auto phase_template_args = args.kernel_phase == KernelPhase::Linear1 ?
+            fmt::format(",\n        {}", args.config.nmajor_schedule ? "true" : "false") :
+            fmt::format(",\n        {}, {}, {}",
+                        args.config.direct_l2_scatter ? "true" : "false",
+                        args.config.nmajor_schedule ? "true" : "false",
+                        args.config.one_warp_cleanup ? "true" : "false");
         return fmt::format(R"(
 #include <deep_gemm/impls/sm90_fp8_mega_moe.cuh>
 
@@ -105,27 +96,11 @@ static void __instantiate_kernel() {{
         {}, {},
         {},
         {}, {}, {},
-        {},
         {}, {},
         {},
         {},
         {},
-        {},
-        {},
-        {},
-        {},
-        {},
-        {},
-        {},
-        {},
-        {},
-        {},
-        {},
-        {},
-        {},
-        {},
-        {},
-        {}
+        {}{}
     >);
 }};
 )",
@@ -140,27 +115,12 @@ static void __instantiate_kernel() {{
     args.config.sf_pool_stride_tokens,
     args.config.num_stages,
     args.config.num_dispatch_threads, args.config.num_non_epilogue_threads, args.config.num_epilogue_threads,
-    args.config.cluster_size,
-    args.launch_args.grid_dim.first, args.num_ranks,
+    args.config.num_sms, args.num_ranks,
     to_string(args.activation_clamp),
     args.fast_math ? "true" : "false",
-    args.direct_l2_scatter ? "true" : "false",
-    args.phase_profile ? "true" : "false",
-    args.l2_nmajor_schedule ? "true" : "false",
-    args.l1_nmajor_schedule ? "true" : "false",
-    args.one_warp_cleanup ? "true" : "false",
     args.config.swap_ab ? "true" : "false",
-    args.async_l1_tma_store ? "true" : "false",
-    args.l1_dual_k_accum ? "true" : "false",
-    args.l2_dual_accum ? "true" : "false",
-    args.fp8_combine ? "true" : "false",
-    args.adjacent_scale_domain ? "true" : "false",
-    args.prefetch_weight_sf ? "true" : "false",
-    args.early_weight_sf ? "true" : "false",
-    args.fp16_scaled_accum ? "true" : "false",
     args.bf16_scaled_accum ? "true" : "false",
-    args.native_fp16_wgmma ? "true" : "false",
-    args.native_fp16_chunk_k);
+    phase_template_args);
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -201,140 +161,19 @@ static void sm90_fp8_mega_moe(
     const auto num_experts = num_experts_per_rank * num_ranks;
     const auto num_padded_sf_pool_tokens = static_cast<int>(l1_acts_sf.size(0));
 
-    // Heuristics
-    const auto config = get_mega_moe_config_sm90(
+    // Resolve hardware, generic fallback, phase schedules, and numerical modes
+    // once. The runtime only consumes the resulting complete launch config.
+    const int num_sms = device_runtime->get_num_sms();
+    const Sm90MoeHeuristicInput heuristic_input {
+        num_sms,
         num_ranks, num_experts, num_experts_per_rank,
         num_max_tokens_per_rank, num_tokens, num_topk,
-        hidden, intermediate_hidden, num_padded_sf_pool_tokens);
-    const auto h200_policy = get_sm90_moe_h200_policy(
-        num_ranks, num_experts, num_experts_per_rank,
-        num_tokens, num_topk, hidden, intermediate_hidden);
-    const auto& h200_schedule = h200_policy.schedule;
-    const auto& h200_numerical = h200_policy.numerical;
-    auto l1_config = config;
-    auto l2_config = config;
-    const auto apply_phase_wave_override = [&](MegaMoESM90Config& phase_config,
-                                                const char* env_name,
-                                                const int& automatic_value) {
-        const int default_value = automatic_value > 0 ?
-            automatic_value : phase_config.num_experts_per_wave;
-        const int value = get_env<int>(env_name, default_value);
-        DG_HOST_ASSERT(value > 0 and value <= num_experts_per_rank and
-                       num_experts_per_rank % value == 0);
-        phase_config.num_experts_per_wave = value;
+        hidden, intermediate_hidden,
+        num_padded_sf_pool_tokens
     };
-    apply_phase_wave_override(
-        l1_config, "DG_SM90_MOE_L1_EXPERTS_PER_WAVE",
-        h200_schedule.l1.experts_per_wave);
-    apply_phase_wave_override(
-        l2_config, "DG_SM90_MOE_L2_EXPERTS_PER_WAVE",
-        h200_schedule.l2.experts_per_wave);
-    const auto apply_phase_block_n_override = [&](MegaMoESM90Config& phase_config,
-                                                   const char* env_name,
-                                                   const int& automatic_value) {
-        const int block_n = get_env<int>(env_name, automatic_value);
-        if (block_n == 0)
-            return;
-        DG_HOST_ASSERT((block_n == 128 or block_n == 256 or
-                        block_n == 512) and
-                       phase_config.block_m == 64 and not phase_config.swap_ab);
-        phase_config.block_n = block_n;
-        const bool compact_frontend = block_n >= 256;
-        phase_config.num_dispatch_threads = compact_frontend ? 64 : 128;
-        phase_config.num_non_epilogue_threads = compact_frontend ? 64 : 128;
-        phase_config.num_epilogue_threads = compact_frontend ? block_n : 128;
-    };
-    apply_phase_block_n_override(
-        l1_config, "DG_SM90_MOE_L1_BLOCK_N", h200_schedule.l1.block_n);
-    apply_phase_block_n_override(
-        l2_config, "DG_SM90_MOE_L2_BLOCK_N", h200_schedule.l2.block_n);
-    const auto apply_phase_block_k_override = [&](MegaMoESM90Config& phase_config,
-                                                   const char* env_name,
-                                                   const int& automatic_value) {
-        const int block_k = get_env<int>(
-            env_name, automatic_value > 0 ? automatic_value : phase_config.block_k);
-        DG_HOST_ASSERT(block_k == 128 or block_k == 256);
-        phase_config.block_k = block_k;
-    };
-    apply_phase_block_k_override(
-        l1_config, "DG_SM90_MOE_L1_BLOCK_K", h200_schedule.l1.block_k);
-    apply_phase_block_k_override(
-        l2_config, "DG_SM90_MOE_L2_BLOCK_K", h200_schedule.l2.block_k);
-    DG_HOST_ASSERT((2 * intermediate_hidden) % l1_config.block_n == 0 and
-                   hidden % l2_config.block_n == 0);
-    // The current kernel template requires either phase's K tile to divide
-    // both dimensions, even though L1 and L2 otherwise resolve independently.
-    DG_HOST_ASSERT(hidden % l1_config.block_k == 0 and
-                   intermediate_hidden % l1_config.block_k == 0 and
-                   hidden % l2_config.block_k == 0 and
-                   intermediate_hidden % l2_config.block_k == 0);
-    const auto apply_phase_dispatch_override = [&] (
-            MegaMoESM90Config& phase_config, const char* env_name,
-            const int& automatic_value) {
-        const int requested = get_env<int>(
-            env_name, automatic_value > 0 ?
-                automatic_value : phase_config.num_dispatch_threads / 32);
-        if (requested == phase_config.num_dispatch_threads / 32)
-            return;
-        DG_HOST_ASSERT(phase_config.block_m == 64 and
-                       phase_config.block_n == 256 and
-                       (requested == 2 or requested == 4) and
-                       not phase_config.swap_ab);
-        phase_config.num_dispatch_threads = requested * 32;
-        phase_config.num_non_epilogue_threads = requested == 4 ? 128 : 64;
-    };
-    apply_phase_dispatch_override(
-        l1_config, "DG_SM90_MOE_L1_DISPATCH_WARPS", 0);
-    apply_phase_dispatch_override(
-        l2_config, "DG_SM90_MOE_L2_DISPATCH_WARPS", 0);
-    const auto apply_phase_epilogue_wg_override = [&] (
-            MegaMoESM90Config& phase_config, const char* env_name,
-            const int& automatic_value) {
-        const int requested = get_env<int>(
-            env_name, automatic_value > 0 ?
-                automatic_value : phase_config.num_epilogue_threads / 128);
-        if (requested == phase_config.num_epilogue_threads / 128)
-            return;
-        DG_HOST_ASSERT(phase_config.block_m == 64 and
-                       phase_config.block_n == 256 and
-                       (requested == 2 or requested == 4) and
-                       not phase_config.swap_ab);
-        phase_config.num_epilogue_threads = requested * 128;
-    };
-    apply_phase_epilogue_wg_override(
-        l1_config, "DG_SM90_MOE_L1_EPILOGUE_WG", 0);
-    apply_phase_epilogue_wg_override(
-        l2_config, "DG_SM90_MOE_L2_EPILOGUE_WG", 0);
-    const auto apply_phase_stage_override = [&](MegaMoESM90Config& phase_config,
-                                                 const char* env_name,
-                                                 const int& automatic_value) {
-        const int phase_forced_value = get_env<int>(env_name, 0);
-        const int requested = phase_forced_value > 0 ? phase_forced_value :
-            (automatic_value > 0 ? automatic_value : phase_config.num_stages);
-        const auto [num_stages, smem_size] = get_pipeline_config_for_mega_moe_sm90(
-            SM90ArchSpec::smem_capacity,
-            num_experts, hidden,
-            phase_config.block_m, phase_config.block_n, phase_config.block_k,
-            phase_config.num_dispatch_threads / 32,
-            phase_config.num_epilogue_threads / 32,
-            phase_config.direct_l2_scatter,
-            requested,
-            phase_config.swap_ab,
-            h200_numerical.fp8_combine != 0);
-        const int globally_forced_value = get_env<int>("DG_SM90_MOE_NUM_STAGES", 0);
-        if (automatic_value > 0 and phase_forced_value <= 0 and
-            globally_forced_value <= 0) {
-            // Production policy values are measured configurations. Do not
-            // silently turn an over-sized request into a different pipeline.
-            DG_HOST_ASSERT(num_stages == automatic_value);
-        }
-        phase_config.num_stages = num_stages;
-        phase_config.smem_size = smem_size;
-    };
-    apply_phase_stage_override(
-        l1_config, "DG_SM90_MOE_L1_NUM_STAGES", h200_schedule.l1.num_stages);
-    apply_phase_stage_override(
-        l2_config, "DG_SM90_MOE_L2_NUM_STAGES", h200_schedule.l2.num_stages);
+    const auto launch_config = select_mega_moe_sm90(heuristic_input);
+    const auto& l1_config = launch_config.l1;
+    const auto& l2_config = launch_config.l2;
 
     // Tensormap construction
     // Acts/weights: standard 2D TMA descriptors (FP8 K-major).
@@ -353,7 +192,7 @@ static void sm90_fp8_mega_moe(
                                                      hidden, l1_config.num_max_pool_tokens,
                                                      l1_tma_block_k, l1_config.block_m,
                                                      static_cast<int>(l1_acts.stride(-2)),
-                                                     l1_config.swizzle_acts_mode);
+                                                     128);
     const auto tensor_map_l1_acts_sf = make_tma_sf_desc(cute::UMMA::Major::MN, l1_acts_sf,
                                                         l1_config.sf_pool_stride_tokens, hidden,
                                                         l1_config.block_m, kGranK,
@@ -362,7 +201,7 @@ static void sm90_fp8_mega_moe(
                                                         hidden, num_experts_per_rank * intermediate_hidden * 2,
                                                         l1_tma_block_k, l1_tma_block_n,
                                                         static_cast<int>(l1_weights.stride(-2)),
-                                                        l1_config.swizzle_weights_mode);
+                                                        128);
     // L1 output (post-SwiGLU FP8): N is halved. The SM90 epilogue writes this
     // staging tile to SMEM as plain row-major bytes, so the TMA store descriptor
     // must use no shared-memory swizzle. Later L2 TMA loads may still swizzle
@@ -371,20 +210,13 @@ static void sm90_fp8_mega_moe(
     // row tile. In split-N mode, two WGs produce different N halves of the same
     // M rows, then one TMA store writes the full 64x128 post-SwiGLU tile.
     const int num_epilogue_warpgroups_h = l1_config.num_epilogue_threads / 128;
-    const bool split_n_warpgroups_h =
-        l1_config.block_m == 64 and num_epilogue_warpgroups_h > 1 and
-        l1_config.block_n % num_epilogue_warpgroups_h == 0 and
-        (l1_config.block_n / num_epilogue_warpgroups_h == 64 or
-         l1_config.block_n / num_epilogue_warpgroups_h == 128);
-    const bool split_mn_warpgroups_h =
-        l1_config.block_m == 128 and l1_config.block_n == 256 and num_epilogue_warpgroups_h == 4;
-    const int wg_split_m = split_n_warpgroups_h ? 1 : (split_mn_warpgroups_h ? 2 : num_epilogue_warpgroups_h);
-    const int wg_split_n = split_n_warpgroups_h ? num_epilogue_warpgroups_h : (split_mn_warpgroups_h ? 2 : 1);
-    const int wg_block_m = l1_config.block_m / wg_split_m;
-    const int wg_block_n = l1_config.block_n / wg_split_n;
+    const auto wg_layout = layout::get_sm90_moe_warpgroup_layout(
+        l1_config.block_m, l1_config.block_n, num_epilogue_warpgroups_h);
+    const int wg_block_m = static_cast<int>(wg_layout.block_m);
+    const int wg_block_n = static_cast<int>(wg_layout.block_n);
     const int wg_l1_out_block_n = wg_block_n / 2;
-    const int l1_output_box_n = split_n_warpgroups_h ? l1_config.block_n / 2 : wg_l1_out_block_n;
-    const int l1_output_box_m = split_n_warpgroups_h ? l1_config.block_m : wg_block_m;
+    const int l1_output_box_n = wg_layout.split_n ? l1_config.block_n / 2 : wg_l1_out_block_n;
+    const int l1_output_box_m = wg_layout.split_n ? l1_config.block_m : wg_block_m;
     const auto tensor_map_l1_output = make_tma_2d_desc(l2_acts,
                                                        intermediate_hidden, l1_config.num_max_pool_tokens,
                                                        l1_output_box_n, l1_output_box_m,
@@ -394,7 +226,7 @@ static void sm90_fp8_mega_moe(
                                                      intermediate_hidden, l2_config.num_max_pool_tokens,
                                                      l2_tma_block_k, l2_config.block_m,
                                                      static_cast<int>(l2_acts.stride(-2)),
-                                                     l2_config.swizzle_acts_mode);
+                                                     128);
     const auto tensor_map_l2_acts_sf = make_tma_sf_desc(cute::UMMA::Major::MN, l2_acts_sf,
                                                         l2_config.sf_pool_stride_tokens, intermediate_hidden,
                                                         l2_config.block_m, kL2ActsSFGranK,
@@ -403,7 +235,7 @@ static void sm90_fp8_mega_moe(
                                                         intermediate_hidden, num_experts_per_rank * hidden,
                                                         l2_tma_block_k, l2_tma_block_n,
                                                         static_cast<int>(l2_weights.stride(-2)),
-                                                        l2_config.swizzle_weights_mode);
+                                                        128);
 
     // Stats can be optional
     int* cumulative_local_expert_recv_stats_ptr = nullptr;
@@ -411,95 +243,7 @@ static void sm90_fp8_mega_moe(
         cumulative_local_expert_recv_stats_ptr = cumulative_local_expert_recv_stats->data_ptr<int>();
 
     // Launch
-    const auto num_sms = device_runtime->get_num_sms();
-    const int l1_num_sms = get_env<int>(
-        "DG_SM90_MOE_L1_NUM_SMS",
-        h200_schedule.l1.num_sms > 0 ? h200_schedule.l1.num_sms : num_sms);
-    const int l2_num_sms = get_env<int>(
-        "DG_SM90_MOE_L2_NUM_SMS",
-        h200_schedule.l2.num_sms > 0 ? h200_schedule.l2.num_sms : num_sms);
-    const bool async_l1_tma_store = get_env<int>("DG_SM90_MOE_ASYNC_L1_TMA_STORE", 0) != 0;
-    const bool l1_dual_k_accum = get_env<int>("DG_SM90_MOE_L1_DUAL_K_ACCUM", 0) != 0;
-    const bool l2_dual_accum = get_env<int>("DG_SM90_MOE_L2_DUAL_ACCUM", 0) != 0;
-    const bool fp8_combine = get_env<int>(
-        "DG_SM90_MOE_FP8_COMBINE", h200_numerical.fp8_combine) != 0;
-    const bool adjacent_scale_domain =
-        get_env<int>("DG_SM90_MOE_ADJACENT_SCALE_DOMAIN", 0) != 0;
-    const bool prefetch_weight_sf =
-        get_env<int>("DG_SM90_MOE_PREFETCH_WEIGHT_SF", 0) != 0;
-    const bool early_weight_sf =
-        get_env<int>("DG_SM90_MOE_EARLY_WEIGHT_SF", 0) != 0;
-    const bool fp16_scaled_accum =
-        get_env<int>("DG_SM90_MOE_FP16_SCALED_ACCUM", 0) != 0;
-    const bool bf16_scaled_accum = get_env<int>(
-        "DG_SM90_MOE_BF16_SCALED_ACCUM", h200_numerical.bf16_scaled_accum) != 0;
-    const bool native_fp16_wgmma =
-        get_env<int>("DG_SM90_MOE_NATIVE_FP16_WGMMA", 0) != 0;
-    const int native_fp16_chunk_k =
-        get_env<int>("DG_SM90_MOE_NATIVE_FP16_CHUNK_K", 0);
-    DG_HOST_ASSERT(not (prefetch_weight_sf and early_weight_sf));
-    DG_HOST_ASSERT(static_cast<int>(fp16_scaled_accum) +
-                   static_cast<int>(bf16_scaled_accum) +
-                   static_cast<int>(native_fp16_wgmma) <= 1);
-    DG_HOST_ASSERT(native_fp16_chunk_k == 0 or native_fp16_chunk_k == 32 or
-                   native_fp16_chunk_k == 64 or native_fp16_chunk_k == 128);
-    DG_HOST_ASSERT(native_fp16_chunk_k == 0 or native_fp16_wgmma);
-    const auto supports_bf16_scaled_accum = [](const MegaMoESM90Config& phase_config) {
-        const int num_epilogue_warpgroups = phase_config.num_epilogue_threads / 128;
-        if (phase_config.swap_ab) {
-            return phase_config.block_m == 64 and phase_config.block_n == 128 and
-                   phase_config.block_k == 128 and num_epilogue_warpgroups == 2;
-        }
-        const bool split_n =
-            phase_config.block_m == 64 and num_epilogue_warpgroups > 1 and
-            phase_config.block_n % num_epilogue_warpgroups == 0;
-        const int wg_block_n = split_n ?
-            phase_config.block_n / num_epilogue_warpgroups : phase_config.block_n;
-        return phase_config.block_m == 64 and
-               (wg_block_n == 128 or wg_block_n == 256) and
-               (phase_config.block_k == 128 or phase_config.block_k == 256);
-    };
-    DG_HOST_ASSERT(not bf16_scaled_accum or
-                   (supports_bf16_scaled_accum(l1_config) and
-                    supports_bf16_scaled_accum(l2_config)));
-    const auto supports_native_fp16_wgmma = [](const MegaMoESM90Config& phase_config) {
-        const int num_epilogue_warpgroups = phase_config.num_epilogue_threads / 128;
-        const bool split_n =
-            phase_config.block_m == 64 and num_epilogue_warpgroups > 1 and
-            phase_config.block_n % num_epilogue_warpgroups == 0;
-        const int wg_block_n = split_n ?
-            phase_config.block_n / num_epilogue_warpgroups : phase_config.block_n;
-        return phase_config.block_m == 64 and wg_block_n == 128 and
-               not phase_config.swap_ab;
-    };
-    DG_HOST_ASSERT(not native_fp16_wgmma or
-                   (supports_native_fp16_wgmma(l1_config) and
-                    supports_native_fp16_wgmma(l2_config)));
-    if (prefetch_weight_sf) {
-        constexpr int kWeightSFBytesPerStage = 128;
-        l1_config.smem_size += l1_config.num_stages * kWeightSFBytesPerStage;
-        l2_config.smem_size += l2_config.num_stages * kWeightSFBytesPerStage;
-        DG_HOST_ASSERT(l1_config.smem_size <= SM90ArchSpec::smem_capacity and
-                       l2_config.smem_size <= SM90ArchSpec::smem_capacity);
-    }
-    DG_HOST_ASSERT(l1_num_sms > 0 and l1_num_sms <= num_sms);
-    DG_HOST_ASSERT(l2_num_sms > 0 and l2_num_sms <= num_sms);
-    DG_HOST_ASSERT(not async_l1_tma_store or not l1_config.direct_l2_scatter);
-    if ((get_env<int>("DG_JIT_DEBUG") or get_env<int>("DG_PRINT_CONFIGS")) and
-        h200_policy.enabled()) {
-        const auto key = fmt::format(
-            "Sm90MoeH200Policy(num_ranks={}, num_experts={}, hidden={}, intermediate_hidden={}, num_tokens={}, num_topk={})",
-            num_ranks, num_experts, hidden, intermediate_hidden, num_tokens, num_topk);
-        static std::unordered_set<std::string> printed;
-        if (printed.count(key) == 0) {
-            std::cout << key << ": " << h200_policy << std::endl;
-            std::cout << "  H200 L1 config: " << l1_config << ", num_sms=" << l1_num_sms << std::endl;
-            std::cout << "  H200 L2 config: " << l2_config << ", num_sms=" << l2_num_sms << std::endl;
-            std::cout << "  H200 features: fp8_combine=" << fp8_combine
-                      << ", bf16_scaled_accum=" << bf16_scaled_accum << std::endl;
-            printed.insert(key);
-        }
-    }
+    const bool bf16_scaled_accum = launch_config.numerical.bf16_scaled_accum;
     const SM90FP8MegaMoERuntime::Args args = {
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
         .hidden = hidden, .intermediate_hidden = intermediate_hidden,
@@ -507,24 +251,7 @@ static void sm90_fp8_mega_moe(
         .num_ranks = num_ranks,
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
-        .direct_l2_scatter = l2_config.direct_l2_scatter,
-        .phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0,
-        .l2_nmajor_schedule = l2_config.l2_nmajor_schedule,
-        .l1_nmajor_schedule = get_env<int>(
-            "DG_SM90_MOE_L1_NMAJOR",
-            h200_schedule.l1.nmajor >= 0 ? h200_schedule.l1.nmajor : 0) != 0,
-        .one_warp_cleanup = l2_config.one_warp_cleanup,
-        .async_l1_tma_store = async_l1_tma_store,
-        .l1_dual_k_accum = l1_dual_k_accum,
-        .l2_dual_accum = l2_dual_accum,
-        .fp8_combine = fp8_combine,
-        .adjacent_scale_domain = adjacent_scale_domain,
-        .prefetch_weight_sf = prefetch_weight_sf,
-        .early_weight_sf = early_weight_sf,
-        .fp16_scaled_accum = fp16_scaled_accum,
         .bf16_scaled_accum = bf16_scaled_accum,
-        .native_fp16_wgmma = native_fp16_wgmma,
-        .native_fp16_chunk_k = native_fp16_chunk_k,
         .kernel_phase = SM90FP8MegaMoERuntime::KernelPhase::Linear1,
         .config = l1_config,
         .y = y.data_ptr(),
@@ -540,23 +267,23 @@ static void sm90_fp8_mega_moe(
         .tensor_map_l2_acts_sf = tensor_map_l2_acts_sf,
         .tensor_map_l2_weights = tensor_map_l2_weights,
         .l2_weights_sf = l2_weights_sf.data_ptr<float>(),
-        .launch_args = LaunchArgs(num_sms, config.num_dispatch_threads + config.num_non_epilogue_threads + config.num_epilogue_threads,
-                                  config.smem_size, config.cluster_size)
+        .launch_args = LaunchArgs(l1_config.num_sms,
+                                  l1_config.num_dispatch_threads + l1_config.num_non_epilogue_threads +
+                                      l1_config.num_epilogue_threads,
+                                  l1_config.smem_size, 1)
     };
     const auto launch_with_phase = [&](const SM90FP8MegaMoERuntime::KernelPhase kernel_phase,
                                        const char* kernel_name) {
         auto split_args = args;
         split_args.kernel_phase = kernel_phase;
-        split_args.config = kernel_phase == SM90FP8MegaMoERuntime::KernelPhase::Linear1 ?
-            l1_config : l2_config;
-        const int phase_num_sms =
-            kernel_phase == SM90FP8MegaMoERuntime::KernelPhase::Linear1 ? l1_num_sms : l2_num_sms;
+        const bool is_linear2 =
+            kernel_phase == SM90FP8MegaMoERuntime::KernelPhase::Linear2;
+        split_args.config = is_linear2 ? l2_config : l1_config;
         split_args.launch_args = LaunchArgs(
-            phase_num_sms,
+            split_args.config.num_sms,
             split_args.config.num_dispatch_threads + split_args.config.num_non_epilogue_threads +
                 split_args.config.num_epilogue_threads,
-            split_args.config.smem_size,
-            split_args.config.cluster_size);
+            split_args.config.smem_size, 1);
         const auto code = SM90FP8MegaMoERuntime::generate(split_args);
         const auto runtime = compiler->build(kernel_name, code);
         SM90FP8MegaMoERuntime::launch(runtime, split_args);

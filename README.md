@@ -94,7 +94,7 @@ Take the non-paged version `fp8_mqa_logits` as an example. It has 6 inputs:
 
 - `q`, E4M3 tensor with shape `[seq_len, num_heads, head_dim]`
 - `kv`, E4M3 tensor (shaped as `[seq_len_kv, head_dim]`) with float SF (shaped as `[seq_len_kv]`)
-- `weights`, float tensor with shape `[seq_len, num_heads]`
+- `weights`, FP32 or FP16 tensor with shape `[seq_len, num_heads]`. The `weights` dtype explicitly selects the accumulation precision: passing **FP16** weights on SM100 selects a faster kernel (`sm100_fp8_mqa_logits_f16_weights`) whose MMA accumulator is FP16 — the Q·K score and the per-head weighted-sum reduction are both accumulated in FP16, and only the final per-`(token, kv)` `kv_scale` multiply is promoted to FP32 before the output cast. It requires `seq_len % 4 == 0`, and FP16's smaller range can overflow, so scale inputs accordingly. Passing **FP32** weights uses the generic kernel, which accumulates the score in FP32 and supports any `seq_len`
 - `cu_seq_len_k_start` and `cu_seq_len_k_end`, int tensor with shape `[seq_len]`
 - `clean_logits`, whether to clean the unfilled logits into `-inf`
 
@@ -138,6 +138,36 @@ deep_gemm.fp8_fp4_mega_moe(y, transformed_l1, transformed_l2, buffer)
 ```
 
 For the full example with multi-process setup and benchmarking, please refer to `tests/test_mega_moe.py`.
+
+##### SM90 FP8xFP8
+
+The SM90 implementation uses FP8 E4M3 activations and weights. It launches separate linear 1 and linear 2 kernels while preserving the same overlapped EP dispatch/combine contract. Allocate the SM90 symmetric buffer and use the SM90 weight transform and entry point:
+
+```python
+# NOTES: requires PyTorch >= 2.9
+buffer = deep_gemm.get_symm_buffer_for_sm90_mega_moe(
+    group, num_experts, num_max_tokens_per_rank, num_topk,
+    hidden, intermediate_hidden,
+)
+
+# Each weight is paired with an FP32 block-(128, 128) scaling-factor tensor.
+transformed_l1, transformed_l2 = deep_gemm.transform_weights_for_mega_moe_sm90(
+    (l1_weight_fp8, l1_weight_sf),
+    (l2_weight_fp8, l2_weight_sf),
+)
+
+buffer.x[:num_tokens].copy_(x_fp8)
+buffer.x_sf[:num_tokens].copy_(x_sf)
+buffer.topk_idx[:num_tokens].copy_(topk_idx)
+buffer.topk_weights[:num_tokens].copy_(topk_weights)
+
+y = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
+deep_gemm.fp8_mega_moe(y, transformed_l1, transformed_l2, buffer)
+```
+
+The input activation SF is FP32 with shape `[num_tokens, hidden / 128]`, using one scale per token and 128 K elements. Weight SF tensors follow the framework contract and must be contiguous FP32 tensors in their natural block layout: L1 uses `[experts_per_rank, 2 * intermediate_hidden / 128, hidden / 128]`, and L2 uses `[experts_per_rank, hidden / 128, intermediate_hidden / 128]`. `transform_weights_for_mega_moe_sm90` interleaves the L1 gate/up FP8 weights but leaves both weight SF tensors in this layout.
+
+For the distributed correctness and benchmark driver, refer to `tests/test_mega_moe_sm90.py`.
 
 #### Utilities
 
