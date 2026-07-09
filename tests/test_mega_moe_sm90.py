@@ -175,7 +175,10 @@ def _reference_fused(
 
     # Iterate (cheap; reference is for small test configs only)
     # Token-chunked to keep gathered (S, 2*IH, H) dequant tensors below GPU memory.
-    _CHUNK = 256
+    # Wide H200 Pro weights make a 256-token gathered dequantization exceed
+    # 40 GiB. Keep the reference chunk small enough for the full production
+    # shape while preserving exactly the same arithmetic.
+    _CHUNK = 32
     for k in range(num_topk):
         # Skip masked
         mask = topk_idx_g[:, k] >= 0
@@ -240,7 +243,12 @@ def _run_scenario(
     diff_tol: float,
 ):
     num_max = cfg['num_max_tokens_per_rank']
-    num_tokens = cfg.get('num_tokens', num_max)
+    if 'num_tokens_per_rank' in cfg:
+        num_tokens_per_rank = cfg['num_tokens_per_rank']
+        assert len(num_tokens_per_rank) == num_ranks
+        num_tokens = num_tokens_per_rank[rank_idx]
+    else:
+        num_tokens = cfg.get('num_tokens', num_max)
     hidden = cfg['hidden']
     intermediate_hidden = cfg['intermediate_hidden']
     num_experts = cfg['num_experts']
@@ -402,6 +410,22 @@ def _layer3_shape_cases(num_ranks: int) -> List[Tuple[str, Dict[str, Any]]]:
                            hidden=hidden, intermediate_hidden=ih,
                            num_experts=base_experts, num_topk=topk)
                 out.append((f'L3.h{hidden}_ih{ih}_k{topk}', cfg))
+    # Production H200 shapes. Pro M128 covers the BN512/BF16 path and M256
+    # covers the BK256 split-phase path when this runs on a full H200 node.
+    out.extend([
+        ('L3.h200_flash_m128', dict(
+            num_max_tokens_per_rank=128, num_tokens=128,
+            hidden=4096, intermediate_hidden=2048,
+            num_experts=32 * num_ranks, num_topk=6)),
+        ('L3.h200_pro_m128', dict(
+            num_max_tokens_per_rank=128, num_tokens=128,
+            hidden=7168, intermediate_hidden=3072,
+            num_experts=48 * num_ranks, num_topk=6)),
+        ('L3.h200_pro_m256', dict(
+            num_max_tokens_per_rank=256, num_tokens=256,
+            hidden=7168, intermediate_hidden=3072,
+            num_experts=48 * num_ranks, num_topk=6)),
+    ])
     return out
 
 
@@ -430,6 +454,19 @@ def _layer4_edges(num_ranks: int) -> List[Tuple[str, Dict[str, Any]]]:
     out.append(('L4.tokens0', cfg))
     cfg = dict(base); cfg.update(num_tokens=base['num_max_tokens_per_rank'])
     out.append(('L4.tokens_max', cfg))
+    # Cross the former local-M FP8-combine gate within one collective call.
+    # The combine representation must be process-wide (ENV-controlled), while
+    # rank-local token counts remain free to differ.
+    uneven = dict(
+        num_max_tokens_per_rank=128,
+        num_tokens_per_rank=[128 if rank % 2 == 0 else 64
+                             for rank in range(num_ranks)],
+        hidden=4096,
+        intermediate_hidden=2048,
+        num_experts=32 * num_ranks,
+        num_topk=6,
+    )
+    out.append(('L4.uneven_m64_m128', uneven))
     return out
 
 
