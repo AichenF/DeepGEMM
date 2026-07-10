@@ -18,8 +18,11 @@
 
 namespace deep_gemm::mega {
 
+static constexpr int kSM90MegaMoECandidateBlockMs[] = {64, 128};
+static constexpr int kSM90MegaMoETokenAlignment = 128;
+
 static int get_token_alignment_for_sm90_mega_moe() {
-    return layout::kLCMCandidateBlockM;
+    return kSM90MegaMoETokenAlignment;
 }
 
 static std::tuple<int64_t, std::function<std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>(const torch::Tensor&)>>
@@ -62,7 +65,7 @@ get_symm_buffer_size_for_sm90_mega_moe(
     // Buffer configs
     const auto num_max_pool_tokens = static_cast<int>(workspace.num_max_pool_tokens);
     int num_max_padded_sf_pool_tokens = 0;
-    for (int block_m: layout::kCandidateBlockM) {
+    for (int block_m: kSM90MegaMoECandidateBlockMs) {
         num_max_padded_sf_pool_tokens = std::max(
             num_max_padded_sf_pool_tokens,
             layout::get_num_padded_sf_pool_tokens(num_max_pool_tokens, block_m)
