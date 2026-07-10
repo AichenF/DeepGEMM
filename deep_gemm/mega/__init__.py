@@ -60,6 +60,50 @@ class SymmBuffer:
         self.x_sf = None
 
 
+class SM90SymmBuffer:
+    def __init__(self, group: dist.ProcessGroup,
+                 num_experts: int,
+                 num_max_tokens_per_rank: int, num_topk: int,
+                 hidden: int, intermediate_hidden: int,
+                 use_fp8_dispatch: bool = True,
+                 activation: str = 'swiglu'):
+        self.group = group
+        self.num_experts = num_experts
+        self.num_max_tokens_per_rank = num_max_tokens_per_rank
+        self.num_topk = num_topk
+        self.hidden = hidden
+        self.intermediate_hidden = intermediate_hidden
+
+        num_bytes, slice_input_buffers = _C.get_symm_buffer_size_for_sm90_mega_moe(
+            group.size(), num_experts,
+            num_max_tokens_per_rank, num_topk,
+            hidden, intermediate_hidden,
+            use_fp8_dispatch, activation
+        )
+        allocator = torch if group.size() == 1 else symm_mem
+        self.buffer = allocator.empty(num_bytes, dtype=torch.int8, device='cuda')
+        self.handle = (
+            types.SimpleNamespace(buffer_ptrs=[self.buffer.data_ptr()])
+            if group.size() == 1
+            else symm_mem.rendezvous(self.buffer, group=group)
+        )
+        self.buffer.zero_()
+        self.group.barrier()
+        torch.cuda.synchronize()
+
+        (self.x, self.x_sf,
+         self.topk_idx, self.topk_weights,
+         self.l1_acts, self.l1_acts_sf,
+         self.l2_acts, self.l2_acts_sf) = slice_input_buffers(self.buffer)
+
+    def destroy(self):
+        self.handle = None
+        self.buffer = None
+        self.group = None
+        self.x = None
+        self.x_sf = None
+
+
 def get_symm_buffer_for_mega_moe(group: dist.ProcessGroup,
                                  num_experts: int,
                                  num_max_tokens_per_rank: int, num_topk: int,
@@ -70,6 +114,22 @@ def get_symm_buffer_for_mega_moe(group: dist.ProcessGroup,
     num_max_tokens_per_rank = align(num_max_tokens_per_rank, _C.get_token_alignment_for_mega_moe())
 
     return SymmBuffer(
+        group, num_experts,
+        num_max_tokens_per_rank, num_topk,
+        hidden, intermediate_hidden,
+        use_fp8_dispatch, activation
+    )
+
+
+def get_symm_buffer_for_sm90_mega_moe(group: dist.ProcessGroup,
+                                      num_experts: int,
+                                      num_max_tokens_per_rank: int, num_topk: int,
+                                      hidden: int, intermediate_hidden: int,
+                                      use_fp8_dispatch: bool = True,
+                                      activation: str = 'swiglu') -> SM90SymmBuffer:
+    num_max_tokens_per_rank = align(
+        num_max_tokens_per_rank, _C.get_token_alignment_for_sm90_mega_moe())
+    return SM90SymmBuffer(
         group, num_experts,
         num_max_tokens_per_rank, num_topk,
         hidden, intermediate_hidden,
@@ -123,16 +183,7 @@ def transform_weights_for_mega_moe_sm90(
     preserved.
     """
     l1_fp8, l1_sf = l1_weights
-    # Reuse the gran-8 N interleave on the FP8 weight only; the block SF stays
-    # in its natural ``(E, 2*IH/128, H/128)`` layout (gate then up along N).
-    def _interleave_one(t, gran: int = 8) -> torch.Tensor:
-        g, n, *rest = t.shape
-        half = n // 2
-        gate = t[:, :half].reshape(g, half // gran, gran, *rest)
-        up = t[:, half:].reshape(g, half // gran, gran, *rest)
-        return torch.empty_like(t).copy_(torch.stack([gate, up], dim=2).reshape(g, n, *rest))
-
-    return (_interleave_one(l1_fp8), l1_sf), l2_weights
+    return (_interleave_weights(l1_fp8), l1_sf), l2_weights
 
 
 def fp8_fp4_mega_moe(y: torch.Tensor,
@@ -160,7 +211,7 @@ def fp8_fp4_mega_moe(y: torch.Tensor,
 def fp8_mega_moe(y: torch.Tensor,
                  l1_weights: Tuple[torch.Tensor, torch.Tensor],
                  l2_weights: Tuple[torch.Tensor, torch.Tensor],
-                 sym_buffer: SymmBuffer,
+                 sym_buffer: SM90SymmBuffer,
                  cumulative_local_expert_recv_stats: Optional[torch.Tensor] = None,
                  recipe: Tuple[int, int, int] = (128, 128, 128),
                  activation: str = 'swiglu',

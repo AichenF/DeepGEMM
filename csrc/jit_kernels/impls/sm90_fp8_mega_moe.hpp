@@ -10,7 +10,7 @@
 #include <deep_gemm/layout/mega_moe.cuh>
 #include <deep_gemm/layout/sym_buffer.cuh>
 
-#include "../heuristics/mega_moe.hpp"
+#include "../heuristics/sm90_mega_moe.hpp"
 
 namespace deep_gemm {
 
@@ -44,10 +44,7 @@ public:
         int num_ranks;
         float activation_clamp;
         bool fast_math;
-        bool direct_l2_scatter;
         bool phase_profile;
-        bool nmajor_schedule;
-        bool one_warp_cleanup;
         bool fp8_combine;
         bool bf16_scaled_accum;
         KernelPhase kernel_phase;
@@ -80,11 +77,11 @@ public:
         const char* kernel_symbol = args.kernel_phase == KernelPhase::Linear1 ? "sm90_fp8_mega_moe_l1_impl" :
             "sm90_fp8_mega_moe_l2_impl";
         const auto phase_template_args = args.kernel_phase == KernelPhase::Linear1 ?
-            fmt::format(",\n        {}", args.nmajor_schedule ? "true" : "false") :
+            fmt::format(",\n        {}", args.config.nmajor_schedule ? "true" : "false") :
             fmt::format(",\n        {}, {}, {}",
-                        args.direct_l2_scatter ? "true" : "false",
-                        args.nmajor_schedule ? "true" : "false",
-                        args.one_warp_cleanup ? "true" : "false");
+                        args.config.direct_l2_scatter ? "true" : "false",
+                        args.config.nmajor_schedule ? "true" : "false",
+                        args.config.one_warp_cleanup ? "true" : "false");
         return fmt::format(R"(
 #include <deep_gemm/impls/sm90_fp8_mega_moe.cuh>
 
@@ -122,7 +119,7 @@ static void __instantiate_kernel() {{
     args.config.sf_pool_stride_tokens,
     args.config.num_stages,
     args.config.num_dispatch_threads, args.config.num_non_epilogue_threads, args.config.num_epilogue_threads,
-    args.launch_args.grid_dim.first, args.num_ranks,
+    args.config.num_sms, args.num_ranks,
     to_string(args.activation_clamp),
     args.fast_math ? "true" : "false",
     args.phase_profile ? "true" : "false",
@@ -211,7 +208,7 @@ static void sm90_fp8_mega_moe(
                                                      hidden, l1_config.num_max_pool_tokens,
                                                      l1_tma_block_k, l1_config.block_m,
                                                      static_cast<int>(l1_acts.stride(-2)),
-                                                     l1_config.swizzle_acts_mode);
+                                                     128);
     const auto tensor_map_l1_acts_sf = make_tma_sf_desc(cute::UMMA::Major::MN, l1_acts_sf,
                                                         l1_config.sf_pool_stride_tokens, hidden,
                                                         l1_config.block_m, kGranK,
@@ -220,7 +217,7 @@ static void sm90_fp8_mega_moe(
                                                         hidden, num_experts_per_rank * intermediate_hidden * 2,
                                                         l1_tma_block_k, l1_tma_block_n,
                                                         static_cast<int>(l1_weights.stride(-2)),
-                                                        l1_config.swizzle_weights_mode);
+                                                        128);
     // L1 output (post-SwiGLU FP8): N is halved. The SM90 epilogue writes this
     // staging tile to SMEM as plain row-major bytes, so the TMA store descriptor
     // must use no shared-memory swizzle. Later L2 TMA loads may still swizzle
@@ -245,7 +242,7 @@ static void sm90_fp8_mega_moe(
                                                      intermediate_hidden, l2_config.num_max_pool_tokens,
                                                      l2_tma_block_k, l2_config.block_m,
                                                      static_cast<int>(l2_acts.stride(-2)),
-                                                     l2_config.swizzle_acts_mode);
+                                                     128);
     const auto tensor_map_l2_acts_sf = make_tma_sf_desc(cute::UMMA::Major::MN, l2_acts_sf,
                                                         l2_config.sf_pool_stride_tokens, intermediate_hidden,
                                                         l2_config.block_m, kL2ActsSFGranK,
@@ -254,7 +251,7 @@ static void sm90_fp8_mega_moe(
                                                         intermediate_hidden, num_experts_per_rank * hidden,
                                                         l2_tma_block_k, l2_tma_block_n,
                                                         static_cast<int>(l2_weights.stride(-2)),
-                                                        l2_config.swizzle_weights_mode);
+                                                        128);
 
     // Stats can be optional
     int* cumulative_local_expert_recv_stats_ptr = nullptr;
@@ -270,10 +267,7 @@ static void sm90_fp8_mega_moe(
         .num_ranks = num_ranks,
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
-        .direct_l2_scatter = false,
         .phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0,
-        .nmajor_schedule = l1_config.nmajor_schedule,
-        .one_warp_cleanup = false,
         .fp8_combine = launch_config.numerical.fp8_combine,
         .bf16_scaled_accum = bf16_scaled_accum,
         .kernel_phase = SM90FP8MegaMoERuntime::KernelPhase::Linear1,
@@ -291,7 +285,7 @@ static void sm90_fp8_mega_moe(
         .tensor_map_l2_acts_sf = tensor_map_l2_acts_sf,
         .tensor_map_l2_weights = tensor_map_l2_weights,
         .l2_weights_sf = l2_weights_sf.data_ptr<float>(),
-        .launch_args = LaunchArgs(num_sms,
+        .launch_args = LaunchArgs(l1_config.num_sms,
                                   l1_config.num_dispatch_threads + l1_config.num_non_epilogue_threads +
                                       l1_config.num_epilogue_threads,
                                   l1_config.smem_size, 1)
@@ -303,11 +297,6 @@ static void sm90_fp8_mega_moe(
         const bool is_linear2 =
             kernel_phase == SM90FP8MegaMoERuntime::KernelPhase::Linear2;
         split_args.config = is_linear2 ? l2_config : l1_config;
-        split_args.direct_l2_scatter =
-            is_linear2 and split_args.config.direct_l2_scatter;
-        split_args.nmajor_schedule = split_args.config.nmajor_schedule;
-        split_args.one_warp_cleanup =
-            is_linear2 and split_args.config.one_warp_cleanup;
         split_args.launch_args = LaunchArgs(
             split_args.config.num_sms,
             split_args.config.num_dispatch_threads + split_args.config.num_non_epilogue_threads +

@@ -304,7 +304,7 @@ def _run_scenario(
 
     # ---- Allocate symm buffer -----------------------------------------------
     _trace('alloc_symm_buffer')
-    buffer = deep_gemm.get_symm_buffer_for_mega_moe(
+    buffer = deep_gemm.get_symm_buffer_for_sm90_mega_moe(
         group, num_experts,
         num_max, num_topk,
         hidden, intermediate_hidden,

@@ -19,8 +19,9 @@
 #include <deep_gemm/comm/barrier.cuh>
 #include <deep_gemm/layout/sym_buffer.cuh>
 #include <deep_gemm/layout/mega_moe.cuh>
+#include <deep_gemm/layout/sm90_mega_moe.cuh>
 #include <deep_gemm/mma/sm90.cuh>
-#include <deep_gemm/scheduler/mega_moe.cuh>
+#include <deep_gemm/scheduler/sm90_mega_moe.cuh>
 #include <deep_gemm/ptx/ld_st.cuh>
 #include <deep_gemm/ptx/tma.cuh>
 #include <deep_gemm/ptx/utils.cuh>
@@ -53,6 +54,17 @@ enum class MegaMoEPhaseKind {
     Linear2
 };
 
+__forceinline__ __device__ void sm90_fp8_mega_moe_get_e4m3_sf_and_sf_inv(
+    const float2& amax, float2& sf, float2& sf_inv) {
+    constexpr float kScale = 1.0f / 448.0f;
+    const auto scaled = make_float2(
+        __fmul_rn(amax.x, kScale), __fmul_rn(amax.y, kScale));
+    const auto exp_x = math::fast_log2_ceil(scaled.x);
+    const auto exp_y = math::fast_log2_ceil(scaled.y);
+    sf.x = math::fast_pow2(exp_x), sf_inv.x = math::fast_pow2(-exp_x);
+    sf.y = math::fast_pow2(exp_y), sf_inv.y = math::fast_pow2(-exp_y);
+}
+
 template <MegaMoEPhaseKind kKind,
           bool kNMajorScheduleRequested,
           bool kDirectL2ScatterRequested = false,
@@ -69,22 +81,69 @@ struct MegaMoEPhasePolicy {
     template <typename Scheduler, typename Func>
     CUTLASS_DEVICE static void for_each_selected_block(Scheduler& scheduler, Func&& func) {
         if constexpr (runs_linear1) {
-            scheduler.template for_each_phase_block<sched::BlockPhase::Linear1>(
+            scheduler.template for_each_phase_block<sched::SM90BlockPhase::Linear1>(
                 [&](const uint32_t& local_expert_idx, const uint32_t& num_k_blocks,
                     const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
-                    func(sched::BlockPhase::Linear1, local_expert_idx,
-                         num_k_blocks, m_block_idx, n_block_idx);
+                    func(local_expert_idx, num_k_blocks, m_block_idx, n_block_idx);
                 });
         } else {
-            scheduler.template for_each_phase_block<sched::BlockPhase::Linear2>(
+            scheduler.template for_each_phase_block<sched::SM90BlockPhase::Linear2>(
                 [&](const uint32_t& local_expert_idx, const uint32_t& num_k_blocks,
                     const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
-                    func(sched::BlockPhase::Linear2, local_expert_idx,
-                         num_k_blocks, m_block_idx, n_block_idx);
+                    func(local_expert_idx, num_k_blocks, m_block_idx, n_block_idx);
                 });
         }
     }
 };
+
+// Keep the SM90 MegaMoE barrier on the legacy trap-only timeout path.  The
+// shared SM100 barrier intentionally retains nv_dev's diagnostic printf, but
+// compiling that printf into this register-heavy Hopper kernel creates a
+// per-thread stack frame and slows both L1 and L2.  This SM90-local adapter
+// preserves the same synchronization and 300-second timeout semantics without
+// changing the shared SM100 implementation.
+template <uint32_t kNumRanks, uint32_t kNumSMs, uint32_t kNumThreads,
+          uint32_t kGridSyncIndex, uint32_t kTag, typename sync_scope_t>
+CUTLASS_DEVICE void sm90_nvlink_barrier(
+    const layout::Workspace& workspace,
+    const layout::SymBuffer<kNumRanks>& sym_buffer,
+    const uint32_t& sm_idx, const uint32_t& thread_idx,
+    const sync_scope_t& sync_scope,
+    const bool& sync_prologue = true,
+    const bool& sync_epilogue = true) {
+    DG_STATIC_ASSERT(kNumRanks <= kNumThreads, "Insufficient threads");
+
+    if (sync_prologue)
+        comm::grid_sync<kNumSMs, kGridSyncIndex>(
+            workspace, sm_idx, thread_idx, sync_scope);
+
+    if (sm_idx == 0) {
+        auto* counter_ptr = workspace.get_nvl_barrier_counter_ptr();
+        const auto status = (*counter_ptr) & 3;
+        const auto signal_phase = status & 1, signal_sign = status >> 1;
+        auto* signal_ptr = workspace.get_nvl_barrier_signal_ptr(signal_phase);
+
+        if (thread_idx < kNumRanks)
+            ptx::red_add_rel_sys(
+                sym_buffer.map(signal_ptr, thread_idx), signal_sign ? -1 : 1);
+        sync_scope();
+
+        constexpr int64_t kNumTimeoutCycles = 300ll * 2000000000ll;
+        if (thread_idx == 0) {
+            ptx::red_add(counter_ptr, 1);
+            const int target = signal_sign ? 0 : static_cast<int>(kNumRanks);
+            const auto start_clock = clock64();
+            while (ptx::ld_acq_sys(signal_ptr) != target) {
+                if (clock64() - start_clock >= kNumTimeoutCycles)
+                    DG_TRAP_ONLY_DEVICE_ASSERT(false and "NVLink barrier timeout");
+            }
+        }
+    }
+
+    if (sync_epilogue)
+        comm::grid_sync<kNumSMs, kGridSyncIndex>(
+            workspace, sm_idx, thread_idx, sync_scope);
+}
 
 #define DG_SM90_FP8_MOE_TEMPLATE_PARAMS \
     uint32_t kNumMaxTokensPerRank, \
@@ -442,12 +501,11 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     // =====================================================================
     // Scheduler (cluster=1)
     // =====================================================================
-    auto scheduler = sched::MegaMoEScheduler<
+    auto scheduler = sched::SM90MegaMoESchedulerAdapter<
         BLOCK_M, BLOCK_N, BLOCK_K,
         L1_SHAPE_N, L1_SHAPE_K,
         L2_SHAPE_N, L2_SHAPE_K,
-        kNumExpertsPerRank, kNumExpertsPerWave,
-        kNumSMs, kNumRanks, 1,
+        kNumExpertsPerRank, kNumExpertsPerWave, kNumSMs, kNumRanks,
         MegaMoEPhase::runs_linear2 and MegaMoEPhase::nmajor_schedule,
         MegaMoEPhase::runs_linear1 and MegaMoEPhase::nmajor_schedule>(workspace);
 
@@ -593,8 +651,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
             ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
             ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
             cleanup_workspace();
-            comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
-                                 kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
+            sm90_nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
+                                kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
                 workspace, sym_buffer, sm_idx, thread_idx,
                 [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
                 true, false);
@@ -663,8 +721,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         }
         ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
 
-        comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
-                             kDispatchGridSyncIndex, kBeforeDispatchPullBarrierTag>(
+        sm90_nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
+                            kDispatchGridSyncIndex, kBeforeDispatchPullBarrierTag>(
             workspace, sym_buffer, sm_idx, thread_idx,
             [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
             false, true);
@@ -829,11 +887,9 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     } else if (warp_idx == kNumDispatchWarps) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
-        for_each_selected_block([&](const sched::BlockPhase& block_phase,
-                                     const uint32_t& local_expert_idx,
+        for_each_selected_block([&](const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
-            (void)block_phase;
             constexpr bool is_linear1_phase = MegaMoEPhase::runs_linear1;
             const auto tensor_map_a_ptr = !is_linear1_phase
                 ? &tensor_map_l2_acts : &tensor_map_l1_acts;
@@ -916,11 +972,9 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     } else if (warp_idx == kNumDispatchWarps + 1) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
-        for_each_selected_block([&](const sched::BlockPhase& block_phase,
-                                     const uint32_t& local_expert_idx,
+        for_each_selected_block([&](const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
-            (void)block_phase;
             constexpr bool is_linear1_phase = MegaMoEPhase::runs_linear1;
             const auto tensor_map_b_ptr =
                 !is_linear1_phase ? &tensor_map_l2_weights : &tensor_map_l1_weights;
@@ -999,11 +1053,9 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
         const unsigned long long math_loop_start = phase_profile_clock();
 
-        for_each_selected_block([&](const sched::BlockPhase& block_phase,
-                                     const uint32_t& local_expert_idx,
+        for_each_selected_block([&](const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
-            (void)block_phase;
             constexpr bool is_linear1_phase = MegaMoEPhase::runs_linear1;
             const uint32_t valid_m = scheduler.template get_valid_m<false>();
             const uint32_t pool_block_idx = scheduler.get_current_pool_block_offset() + m_block_idx;
@@ -1823,7 +1875,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                         }
                         float2 amax_pair = {amax, amax};
                         float2 sf_pair, sf_inv_pair;
-                        math::get_e4m3_sf_and_sf_inv(amax_pair, sf_pair, sf_inv_pair);
+                        sm90_fp8_mega_moe_get_e4m3_sf_and_sf_inv(
+                            amax_pair, sf_pair, sf_inv_pair);
                         const float sf = sf_pair.x;
                         const float sf_inv = sf_inv_pair.x;
 
@@ -1978,7 +2031,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                 for (uint32_t g = 0; g < kNumSFGroups; ++ g) {
                     float2 amax_pair = {amax_r0[g], amax_r1[g]};
                     float2 sf_pair, sf_inv_pair;
-                    math::get_e4m3_sf_and_sf_inv(amax_pair, sf_pair, sf_inv_pair);
+                    sm90_fp8_mega_moe_get_e4m3_sf_and_sf_inv(
+                        amax_pair, sf_pair, sf_inv_pair);
                     sf_r0[g] = sf_pair.x; sf_inv_r0[g] = sf_inv_pair.x;
                     sf_r1[g] = sf_pair.y; sf_inv_r1[g] = sf_inv_pair.y;
                 }
@@ -2283,8 +2337,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         // NVLink barrier first: signals remote ranks that this rank's GEMM
         // outputs (NVLink scatter targets) are fully written.
         const unsigned long long combine_barrier_start = phase_profile_clock();
-        comm::nvlink_barrier<kNumRanks, kNumSMs, kNumEpilogueThreads,
-                             kEpilogueGridSyncIndex, kBeforeCombineReduceBarrierTag>(
+        sm90_nvlink_barrier<kNumRanks, kNumSMs, kNumEpilogueThreads,
+                            kEpilogueGridSyncIndex, kBeforeCombineReduceBarrierTag>(
             workspace, sym_buffer, sm_idx, epilogue_thread_idx,
             [&]() { ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx); }
         );
