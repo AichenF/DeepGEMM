@@ -556,6 +556,7 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     constexpr uint32_t kProfileL1Epilogue = 6;
     constexpr uint32_t kProfileL2Epilogue = 7;
     constexpr uint32_t kNumProfileMetrics = 8;
+    constexpr uint32_t kProfileStatsOffset = (kNumExpertsPerRank + 1u) / 2u * 2u;
     const auto phase_profile_clock = [&]() -> unsigned long long {
         if constexpr (kPhaseProfileRequested) {
             unsigned long long t;
@@ -569,7 +570,7 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         if constexpr (kPhaseProfileRequested) {
             if (cumulative_local_expert_recv_stats != nullptr and cycles > 0) {
                 auto profile = reinterpret_cast<unsigned long long*>(
-                    cumulative_local_expert_recv_stats + kNumExpertsPerRank);
+                    cumulative_local_expert_recv_stats + kProfileStatsOffset);
                 atomicAdd(profile + metric, cycles);
                 atomicMax(profile + kNumProfileMetrics + metric, cycles);
                 atomicAdd(profile + 2 * kNumProfileMetrics + metric, 1ull);

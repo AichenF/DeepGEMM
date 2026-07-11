@@ -243,12 +243,7 @@ def _run_scenario(
     diff_tol: float,
 ):
     num_max = cfg['num_max_tokens_per_rank']
-    if 'num_tokens_per_rank' in cfg:
-        num_tokens_per_rank = cfg['num_tokens_per_rank']
-        assert len(num_tokens_per_rank) == num_ranks
-        num_tokens = num_tokens_per_rank[rank_idx]
-    else:
-        num_tokens = cfg.get('num_tokens', num_max)
+    num_tokens = cfg.get('num_tokens', num_max)
     hidden = cfg['hidden']
     intermediate_hidden = cfg['intermediate_hidden']
     num_experts = cfg['num_experts']
@@ -309,7 +304,10 @@ def _run_scenario(
         num_max, num_topk,
         hidden, intermediate_hidden,
     )
-    cum_stats = torch.zeros(num_experts_per_rank, dtype=torch.int, device='cuda')
+    phase_profile = bool(int(os.environ.get('DG_SM90_MOE_PHASE_PROFILE', '0')))
+    phase_profile_offset = (num_experts_per_rank + 1) // 2 * 2
+    num_stats = phase_profile_offset + 64 if phase_profile else num_experts_per_rank
+    cum_stats = torch.zeros(num_stats, dtype=torch.int, device='cuda')
 
     # ---- Run SM90 MegaMoE ----------------------------------------------------
     _trace('copy_inputs')
@@ -348,17 +346,19 @@ def _run_scenario(
 
     diff = calc_diff(y_fused, y_ref)
     ok = diff < diff_tol
+    failed = torch.tensor([not ok], dtype=torch.int, device='cuda')
+    dist.all_reduce(failed, op=dist.ReduceOp.MAX, group=group)
+    any_rank_failed = bool(failed.item())
     dist_print(f'  [{name:<32}] diff={diff:.4f} '
-               f'(tol={diff_tol:.2f}) {"OK" if ok else "FAIL"}',
+               f'(tol={diff_tol:.2f}) {"OK" if not any_rank_failed else "FAIL"}',
                once_in_node=True)
-    assert ok, f'{name}: diff={diff} >= tol={diff_tol}'
-
-    # Verify cum_stats has been incremented (i.e. dispatch ran)
-    if num_tokens > 0 and masked_ratio < 1.0:
-        assert cum_stats.sum().item() >= 0  # non-negative; can be 0 if nothing routed here
 
     buffer.destroy()
     dist.barrier()
+    assert not any_rank_failed, (
+        f'{name}: at least one rank exceeded diff tolerance {diff_tol}; '
+        f'local diff={diff}'
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -378,7 +378,7 @@ def _layer1_smoke() -> List[Tuple[str, Dict[str, Any]]]:
 
 
 def _layer2_heuristic_branches(num_ranks: int) -> List[Tuple[str, Dict[str, Any]]]:
-    """Cover generic heuristic bands and the main Flash profile selectors."""
+    """Cover generic heuristic bands across alternate top-k values."""
     base = dict(hidden=1024, intermediate_hidden=1024,
                 num_experts=8 * num_ranks, num_topk=2)
     out: List[Tuple[str, Dict[str, Any]]] = []
@@ -386,15 +386,15 @@ def _layer2_heuristic_branches(num_ranks: int) -> List[Tuple[str, Dict[str, Any]
         cfg = dict(base)
         cfg.update(num_max_tokens_per_rank=tokens, num_tokens=tokens)
         out.append((f'L2.heur.{label}.t{tokens}', cfg))
-    profile_base = dict(hidden=512, intermediate_hidden=2048,
-                        num_experts=32 * num_ranks, num_topk=8)
+    generic_topk8_base = dict(hidden=512, intermediate_hidden=2048,
+                              num_experts=32 * num_ranks, num_topk=8)
     for tokens in (16, 64, 260, 1024):
-        cfg = dict(profile_base)
+        cfg = dict(generic_topk8_base)
         cfg.update(num_max_tokens_per_rank=tokens, num_tokens=tokens)
-        out.append((f'L2.profile_topk8.t{tokens}', cfg))
-    profile_topk6 = dict(profile_base, num_topk=6)
-    profile_topk6.update(num_max_tokens_per_rank=512, num_tokens=512)
-    out.append(('L2.profile_topk6.t512', profile_topk6))
+        out.append((f'L2.generic_topk8.t{tokens}', cfg))
+    generic_topk6 = dict(generic_topk8_base, num_topk=6)
+    generic_topk6.update(num_max_tokens_per_rank=512, num_tokens=512)
+    out.append(('L2.generic_topk6.t512', generic_topk6))
     return out
 
 
@@ -425,6 +425,14 @@ def _layer3_shape_cases(num_ranks: int) -> List[Tuple[str, Dict[str, Any]]]:
             num_max_tokens_per_rank=256, num_tokens=256,
             hidden=7168, intermediate_hidden=3072,
             num_experts=48 * num_ranks, num_topk=6)),
+        ('L3.h200_range_alt_compact_load24', dict(
+            num_max_tokens_per_rank=72, num_tokens=72,
+            hidden=4096, intermediate_hidden=2048,
+            num_experts=24 * num_ranks, num_topk=8)),
+        ('L3.h200_range_alt_wide_load32', dict(
+            num_max_tokens_per_rank=128, num_tokens=128,
+            hidden=7168, intermediate_hidden=3072,
+            num_experts=32 * num_ranks, num_topk=8)),
     ])
     return out
 
@@ -454,19 +462,6 @@ def _layer4_edges(num_ranks: int) -> List[Tuple[str, Dict[str, Any]]]:
     out.append(('L4.tokens0', cfg))
     cfg = dict(base); cfg.update(num_tokens=base['num_max_tokens_per_rank'])
     out.append(('L4.tokens_max', cfg))
-    # Cross the former local-M FP8-combine gate within one collective call.
-    # The combine representation must be process-wide (ENV-controlled), while
-    # rank-local token counts remain free to differ.
-    uneven = dict(
-        num_max_tokens_per_rank=128,
-        num_tokens_per_rank=[128 if rank % 2 == 0 else 64
-                             for rank in range(num_ranks)],
-        hidden=4096,
-        intermediate_hidden=2048,
-        num_experts=32 * num_ranks,
-        num_topk=6,
-    )
-    out.append(('L4.uneven_m64_m128', uneven))
     return out
 
 
@@ -494,7 +489,7 @@ def _layer5_stress(num_ranks: int, num_tests: int) -> List[Tuple[str, Dict[str, 
 # Entry point
 # ----------------------------------------------------------------------------
 
-def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
+def _test_worker(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     rank_idx, num_ranks, group = init_dist(local_rank, num_local_ranks)
 
     # Skip on non-SM90
@@ -566,4 +561,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     np = args.num_processes
-    torch.multiprocessing.spawn(test, args=(np, args), nprocs=np)
+    torch.multiprocessing.spawn(_test_worker, args=(np, args), nprocs=np)

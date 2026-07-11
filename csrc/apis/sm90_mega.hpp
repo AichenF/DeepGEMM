@@ -213,8 +213,10 @@ static void fp8_mega_moe(
         DG_HOST_ASSERT(cumulative_local_expert_recv_stats->scalar_type() == torch::kInt);
         const auto stats_numel = cumulative_local_expert_recv_stats->numel();
         const bool phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0;
-        DG_HOST_ASSERT(stats_numel == num_experts_per_rank or
-                       (phase_profile and stats_numel >= num_experts_per_rank + 64));
+        const auto phase_profile_offset = (num_experts_per_rank + 1) / 2 * 2;
+        DG_HOST_ASSERT(phase_profile
+            ? stats_numel >= phase_profile_offset + 64
+            : stats_numel == num_experts_per_rank);
         DG_HOST_ASSERT(cumulative_local_expert_recv_stats->is_contiguous());
     }
 

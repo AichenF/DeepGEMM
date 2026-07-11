@@ -20,7 +20,8 @@ class SymmBuffer:
                  num_max_tokens_per_rank: int, num_topk: int,
                  hidden: int, intermediate_hidden: int,
                  use_fp8_dispatch: bool = True,
-                 activation: str = 'swiglu'):
+                 activation: str = 'swiglu',
+                 _get_size_fn=_C.get_symm_buffer_size_for_mega_moe):
         self.group = group
         self.num_experts = num_experts
         self.num_max_tokens_per_rank = num_max_tokens_per_rank
@@ -29,7 +30,7 @@ class SymmBuffer:
         self.intermediate_hidden = intermediate_hidden
 
         # Allocate a symmetric buffer
-        num_bytes, slice_input_buffers = _C.get_symm_buffer_size_for_mega_moe(
+        num_bytes, slice_input_buffers = _get_size_fn(
             group.size(), num_experts,
             num_max_tokens_per_rank, num_topk,
             hidden, intermediate_hidden,
@@ -54,54 +55,17 @@ class SymmBuffer:
 
     def destroy(self):
         self.handle = None
+        for name in (
+            'x', 'x_sf', 'topk_idx', 'topk_weights',
+            'l1_acts', 'l1_acts_sf', 'l2_acts', 'l2_acts_sf',
+        ):
+            setattr(self, name, None)
         self.buffer = None
         self.group = None
-        self.x = None
-        self.x_sf = None
 
 
-class SM90SymmBuffer:
-    def __init__(self, group: dist.ProcessGroup,
-                 num_experts: int,
-                 num_max_tokens_per_rank: int, num_topk: int,
-                 hidden: int, intermediate_hidden: int,
-                 use_fp8_dispatch: bool = True,
-                 activation: str = 'swiglu'):
-        self.group = group
-        self.num_experts = num_experts
-        self.num_max_tokens_per_rank = num_max_tokens_per_rank
-        self.num_topk = num_topk
-        self.hidden = hidden
-        self.intermediate_hidden = intermediate_hidden
-
-        num_bytes, slice_input_buffers = _C.get_symm_buffer_size_for_sm90_mega_moe(
-            group.size(), num_experts,
-            num_max_tokens_per_rank, num_topk,
-            hidden, intermediate_hidden,
-            use_fp8_dispatch, activation
-        )
-        allocator = torch if group.size() == 1 else symm_mem
-        self.buffer = allocator.empty(num_bytes, dtype=torch.int8, device='cuda')
-        self.handle = (
-            types.SimpleNamespace(buffer_ptrs=[self.buffer.data_ptr()])
-            if group.size() == 1
-            else symm_mem.rendezvous(self.buffer, group=group)
-        )
-        self.buffer.zero_()
-        self.group.barrier()
-        torch.cuda.synchronize()
-
-        (self.x, self.x_sf,
-         self.topk_idx, self.topk_weights,
-         self.l1_acts, self.l1_acts_sf,
-         self.l2_acts, self.l2_acts_sf) = slice_input_buffers(self.buffer)
-
-    def destroy(self):
-        self.handle = None
-        self.buffer = None
-        self.group = None
-        self.x = None
-        self.x_sf = None
+# Keep the public name while sharing one implementation.
+SM90SymmBuffer = SymmBuffer
 
 
 def get_symm_buffer_for_mega_moe(group: dist.ProcessGroup,
@@ -133,7 +97,8 @@ def get_symm_buffer_for_sm90_mega_moe(group: dist.ProcessGroup,
         group, num_experts,
         num_max_tokens_per_rank, num_topk,
         hidden, intermediate_hidden,
-        use_fp8_dispatch, activation
+        use_fp8_dispatch, activation,
+        _get_size_fn=_C.get_symm_buffer_size_for_sm90_mega_moe,
     )
 
 

@@ -30,3 +30,14 @@ target_link_libraries(_C PRIVATE ${TORCH_LIBRARIES} torch_python)
 
 # Enable kernel code indexing with CMake-based IDEs
 cuda_add_library(deep_gemm_indexing_cuda STATIC csrc/indexing/main.cu)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(sm90_moe_selector_test tests/sm90_moe_selector_test.cpp)
+    target_compile_options(sm90_moe_selector_test PRIVATE
+        -Wno-deprecated-declarations -Wno-unused-parameter)
+    target_link_libraries(sm90_moe_selector_test PRIVATE
+        ${TORCH_LIBRARIES} pybind11::embed
+        CUDA::cudart CUDA::cublas CUDA::cublasLt)
+    add_test(NAME sm90_moe_selector COMMAND sm90_moe_selector_test)
+endif()
