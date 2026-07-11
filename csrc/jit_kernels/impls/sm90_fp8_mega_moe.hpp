@@ -44,8 +44,6 @@ public:
         int num_ranks;
         float activation_clamp;
         bool fast_math;
-        bool phase_profile;
-        bool fp8_combine;
         bool bf16_scaled_accum;
         KernelPhase kernel_phase;
         MegaMoESM90Config config;
@@ -102,8 +100,6 @@ static void __instantiate_kernel() {{
         {},
         {},
         {},
-        {},
-        {},
         {}{}
     >);
 }};
@@ -122,9 +118,7 @@ static void __instantiate_kernel() {{
     args.config.num_sms, args.num_ranks,
     to_string(args.activation_clamp),
     args.fast_math ? "true" : "false",
-    args.phase_profile ? "true" : "false",
     args.config.swap_ab ? "true" : "false",
-    args.fp8_combine ? "true" : "false",
     args.bf16_scaled_accum ? "true" : "false",
     phase_template_args);
     }
@@ -166,11 +160,6 @@ static void sm90_fp8_mega_moe(
     const auto num_ranks = static_cast<int>(sym_buffer_ptrs.size());
     const auto num_experts = num_experts_per_rank * num_ranks;
     const auto num_padded_sf_pool_tokens = static_cast<int>(l1_acts_sf.size(0));
-    const int fp8_combine_env = get_env<int>("DG_SM90_MOE_FP8_COMBINE", 0);
-    DG_HOST_ASSERT(fp8_combine_env == 0 or fp8_combine_env == 1);
-    // Combine storage is a cross-rank symmetric-buffer ABI. Keep it disabled
-    // unless every rank explicitly opts into the same FP8 representation.
-    const bool fp8_combine = fp8_combine_env == 1;
 
     // Resolve hardware, generic fallback, phase schedules, and numerical modes
     // once. The runtime only consumes the resulting complete launch config.
@@ -180,12 +169,7 @@ static void sm90_fp8_mega_moe(
         num_ranks, num_experts, num_experts_per_rank,
         num_max_tokens_per_rank, num_tokens, num_topk,
         hidden, intermediate_hidden,
-        num_padded_sf_pool_tokens,
-        fp8_combine,
-        get_env<int>("DG_SM90_MOE_EPLB_HINT", 0) != 0,
-        get_env<int>("DG_SM90_MOE_SKEW_HINT", 0) != 0,
-        get_env<int>("DG_SM90_MOE_MASKED_HINT", 0) != 0,
-        get_env<std::string>("DG_SM90_MOE_DEVICE_PROFILE", "")
+        num_padded_sf_pool_tokens
     };
     const auto launch_config = select_mega_moe_sm90(heuristic_input);
     const auto& l1_config = launch_config.l1;
@@ -267,8 +251,6 @@ static void sm90_fp8_mega_moe(
         .num_ranks = num_ranks,
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
-        .phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0,
-        .fp8_combine = launch_config.numerical.fp8_combine,
         .bf16_scaled_accum = bf16_scaled_accum,
         .kernel_phase = SM90FP8MegaMoERuntime::KernelPhase::Linear1,
         .config = l1_config,

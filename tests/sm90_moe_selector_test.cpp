@@ -2,7 +2,6 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
-#include <string>
 
 #include "../csrc/jit_kernels/heuristics/sm90_mega_moe.hpp"
 
@@ -29,14 +28,8 @@ constexpr int kH200Sms = 132;
             fail_check(#expression, __FILE__, __LINE__); \
     } while (false)
 
-static void clear_selector_env() {
-    for (const char* name : {
-            "DG_JIT_DEBUG", "DG_PRINT_CONFIGS",
-            "DG_SM90_MOE_FORCE_BLOCK_M", "DG_SM90_MOE_FORCE_EPILOGUE_WG",
-            "DG_SM90_MOE_BN256_2WG", "DG_SM90_MOE_SWAP_AB",
-            "DG_SM90_MOE_DISPATCH_WARPS", "DG_SM90_MOE_DIRECT_L2_SCATTER",
-            "DG_SM90_MOE_L2_NMAJOR", "DG_SM90_MOE_ONE_WARP_CLEANUP",
-            "DG_SM90_MOE_EXPERTS_PER_WAVE", "DG_SM90_MOE_NUM_STAGES"}) {
+static void clear_debug_env() {
+    for (const char* name : {"DG_JIT_DEBUG", "DG_PRINT_CONFIGS"}) {
         unsetenv(name);
     }
 }
@@ -48,11 +41,7 @@ static Sm90MoeHeuristicInput make_input(
     const int num_tokens,
     const int num_topk,
     const int hidden,
-    const int intermediate_hidden,
-    const bool eplb_hint = false,
-    const bool skew_hint = false,
-    const bool masked_hint = false,
-    const std::string& profile_override = "") {
+    const int intermediate_hidden) {
     const int num_experts = num_ranks * num_experts_per_rank;
     const int num_max_tokens_per_rank = std::max(128, num_tokens);
     const int num_max_pool_tokens = deep_gemm::layout::get_num_max_pool_tokens(
@@ -65,9 +54,6 @@ static Sm90MoeHeuristicInput make_input(
         num_max_tokens_per_rank, num_tokens, num_topk,
         hidden, intermediate_hidden,
         num_padded_sf_pool_tokens,
-        false,
-        eplb_hint, skew_hint, masked_hint,
-        profile_override,
     };
 }
 
@@ -92,9 +78,14 @@ static bool same_phase_schedule(
 static bool has_specialized_schedule(
     const Sm90MoeHeuristicInput& input,
     const Sm90MoeLaunchConfig& config) {
-    auto generic_input = input;
-    generic_input.device_profile_override = "generic";
-    const auto generic = select_mega_moe_sm90(generic_input);
+    auto generic_phase = deep_gemm::make_generic_mega_moe_config_sm90(input);
+    Sm90MoeLaunchConfig generic {generic_phase, generic_phase, {}};
+    generic.l1.nmajor_schedule = false;
+    if (not is_sm90_moe_launch_config_legal(input, generic, false)) {
+        generic_phase = deep_gemm::make_generic_mega_moe_config_sm90(input, true);
+        generic.l1 = generic.l2 = generic_phase;
+        generic.l1.nmajor_schedule = false;
+    }
     return not (same_phase_schedule(config.l1, generic.l1) and
                 same_phase_schedule(config.l2, generic.l2));
 }
@@ -170,15 +161,15 @@ static void check_low_sm_golden(
 }
 
 int main() {
-    clear_selector_env();
+    clear_debug_env();
 
-    TEST_CHECK(classify_sm90_moe_hardware(kH20Sms, "") ==
+    TEST_CHECK(classify_sm90_moe_hardware(kH20Sms) ==
            Sm90MoeHardwareProfile::LowSm);
-    TEST_CHECK(classify_sm90_moe_hardware(99, "") ==
+    TEST_CHECK(classify_sm90_moe_hardware(99) ==
            Sm90MoeHardwareProfile::LowSm);
-    TEST_CHECK(classify_sm90_moe_hardware(100, "") ==
+    TEST_CHECK(classify_sm90_moe_hardware(100) ==
            Sm90MoeHardwareProfile::HighSm);
-    TEST_CHECK(classify_sm90_moe_hardware(kH200Sms, "") ==
+    TEST_CHECK(classify_sm90_moe_hardware(kH200Sms) ==
            Sm90MoeHardwareProfile::HighSm);
 
     constexpr std::array<HighSmGolden, 11> compact_golden {{
@@ -330,7 +321,7 @@ int main() {
     }
 
     const auto fallback_input = make_input(
-        kH200Sms, 3, 30, 128, 7, 4224, 2304, false, false, false, "generic");
+        kH200Sms, 3, 30, 128, 7, 4224, 2304);
     const auto fallback = select_mega_moe_sm90(fallback_input);
     TEST_CHECK(is_sm90_moe_launch_config_legal(fallback_input, fallback));
     TEST_CHECK(fallback.l1.block_n == 128 and fallback.l2.block_n == 128);

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -64,7 +63,6 @@ struct MegaMoESM90Config {
 };
 
 enum class Sm90MoeHardwareProfile {
-    Generic,
     LowSm,
     HighSm
 };
@@ -76,14 +74,9 @@ struct Sm90MoeHeuristicInput {
     int num_max_tokens_per_rank, num_tokens, num_topk;
     int hidden, intermediate_hidden;
     int num_padded_sf_pool_tokens;
-
-    bool fp8_combine;
-    bool eplb_hint, skew_hint, masked_hint;
-    std::string device_profile_override;
 };
 
 struct Sm90MoeNumericalConfig {
-    bool fp8_combine = false;
     bool bf16_scaled_accum = false;
 };
 
@@ -93,26 +86,8 @@ struct Sm90MoeLaunchConfig {
     Sm90MoeNumericalConfig numerical;
 };
 
-static std::string get_sm90_moe_lowercase(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return value;
-}
-
 static Sm90MoeHardwareProfile classify_sm90_moe_hardware(
-    const int launch_num_sms,
-    const std::string& profile_override) {
-    const auto forced = get_sm90_moe_lowercase(profile_override);
-    if (not forced.empty() and forced != "auto") {
-        DG_HOST_ASSERT(forced == "generic" or forced == "low_sm" or forced == "high_sm");
-        if (forced == "low_sm")
-            return Sm90MoeHardwareProfile::LowSm;
-        if (forced == "high_sm")
-            return Sm90MoeHardwareProfile::HighSm;
-        return Sm90MoeHardwareProfile::Generic;
-    }
-
+    const int launch_num_sms) {
     DG_HOST_ASSERT(launch_num_sms > 0);
     return launch_num_sms < 100
         ? Sm90MoeHardwareProfile::LowSm
@@ -194,12 +169,6 @@ static int get_num_experts_per_wave_for_mega_moe_sm90(
     const Sm90MoeLoad& load,
     const int& num_experts_per_rank, const int& num_tokens, const int& num_topk,
     const int& intermediate_hidden, const int& block_m, const int& block_n, const int& num_sms) {
-    if (const int forced = get_env<int>("DG_SM90_MOE_EXPERTS_PER_WAVE"); forced > 0) {
-        DG_HOST_ASSERT(forced <= num_experts_per_rank);
-        DG_HOST_ASSERT(num_experts_per_rank % forced == 0);
-        return forced;
-    }
-
     if (block_m == 64 and (load.less_than(1) or load.greater_than(4))) {
         return num_experts_per_rank;
     }
@@ -236,7 +205,6 @@ static std::pair<int, int> get_pipeline_config_for_mega_moe_sm90(
     const bool& direct_l2_scatter_enabled = false,
     const int& default_num_stages = 0,
     const bool& swap_ab = false,
-    const bool& fp8_combine = false,
     const bool& require_exact_default_stages = false) {
     constexpr int kSmemAlignment = 1024;
 
@@ -258,10 +226,9 @@ static std::pair<int, int> get_pipeline_config_for_mega_moe_sm90(
     const int smem_cd_l1 = num_epilogue_warpgroups * wg_block_m * (wg_block_n / 2);  // 1 byte/elem (FP8)
     const bool direct_l2_scatter =
         direct_l2_scatter_enabled and not swap_ab and wg_block_n == 128;
-    const int combine_element_bytes = fp8_combine ?
-        1 : static_cast<int>(sizeof(nv_bfloat16));
     const int smem_cd_l2 = direct_l2_scatter ? 0 :
-        num_epilogue_warpgroups * wg_block_m * wg_block_n * combine_element_bytes;
+        num_epilogue_warpgroups * wg_block_m * wg_block_n *
+            static_cast<int>(sizeof(nv_bfloat16));
     const int smem_cd_swap_l1 = swap_ab
         ? block_m * (block_n / 2) *
               (static_cast<int>(sizeof(float)) + static_cast<int>(sizeof(uint8_t)))
@@ -296,27 +263,17 @@ static std::pair<int, int> get_pipeline_config_for_mega_moe_sm90(
     if (max_num_stages < 2)
         return {0, 0};
     const bool prefer_bn256_n_tile = block_n == 256;
-    const int forced_num_stages = get_env<int>("DG_SM90_MOE_NUM_STAGES");
-    if (require_exact_default_stages and forced_num_stages <= 0 and
-        default_num_stages > max_num_stages)
+    if (require_exact_default_stages and default_num_stages > max_num_stages)
         return {0, 0};
     const int preferred_num_stages = default_num_stages > 0
         ? std::min(default_num_stages, max_num_stages)
         : (prefer_bn256_n_tile ? std::min(4, max_num_stages) : 0);
-    const int num_stages = forced_num_stages > 0
-        ? std::min(forced_num_stages, max_num_stages)
-        : (preferred_num_stages > 0 ? preferred_num_stages : max_num_stages);
+    const int num_stages = preferred_num_stages > 0 ?
+        preferred_num_stages : max_num_stages;
     if (num_stages < 2 or num_stages > max_num_stages)
         return {0, 0};
     return {num_stages,
             smem_fixed + num_stages * (smem_per_stage + smem_barriers_per_stage)};
-}
-
-static bool get_sm90_moe_bool_config(
-    const std::string& env_name, const bool default_value) {
-    const int forced = get_env<int>(env_name, -1);
-    DG_HOST_ASSERT(forced == -1 or forced == 0 or forced == 1);
-    return forced == -1 ? default_value : forced != 0;
 }
 
 static bool supports_sm90_moe_bf16_scaled_accum(
@@ -399,7 +356,6 @@ static bool is_sm90_moe_phase_config_legal(
         config.direct_l2_scatter,
         config.num_stages,
         config.swap_ab,
-        input.fp8_combine,
         true);
     return num_stages == config.num_stages and smem_size == config.smem_size;
 }
@@ -430,23 +386,7 @@ static bool is_sm90_moe_launch_config_legal(
 static MegaMoESM90Config make_generic_mega_moe_config_sm90(
     const Sm90MoeHeuristicInput& input,
     const bool conservative = false) {
-    const int forced_block_m = conservative ? 0 :
-        get_env<int>("DG_SM90_MOE_FORCE_BLOCK_M", 0);
-    const int forced_epilogue_warpgroups = get_env<int>(
-        "DG_SM90_MOE_FORCE_EPILOGUE_WG", 0);
-    DG_HOST_ASSERT(forced_block_m == 0 or forced_block_m == 64 or forced_block_m == 128);
-    DG_HOST_ASSERT(forced_epilogue_warpgroups == 0 or
-                   forced_epilogue_warpgroups == 1 or
-                   forced_epilogue_warpgroups == 2 or
-                   forced_epilogue_warpgroups == 4);
-
-    const bool use_bn256_split_n_env =
-        not conservative and get_env<int>("DG_SM90_MOE_BN256_2WG", 1) != 0 and
-        forced_block_m != 128;
-    const bool swap_ab_env_enabled =
-        not conservative and get_env<int>("DG_SM90_MOE_SWAP_AB", 1) != 0 and
-        forced_block_m != 128;
-    const int block_m = forced_block_m > 0 ? forced_block_m : 64;
+    const int block_m = 64;
     const int num_max_pool_tokens = layout::get_num_max_pool_tokens(
         input.num_ranks, input.num_max_tokens_per_rank,
         input.num_topk, input.num_experts_per_rank);
@@ -456,17 +396,14 @@ static MegaMoESM90Config make_generic_mega_moe_config_sm90(
         input.hidden, input.intermediate_hidden);
 
     const bool prefer_swap_ab_block =
-        swap_ab_env_enabled and block_m == 64 and
+        not conservative and
         should_use_swap_ab_for_mega_moe_sm90(
             load, shape_family, block_m, 256);
     const int block_n = prefer_swap_ab_block ? 128 :
-        (block_m == 64 and use_bn256_split_n_env ? 256 : 128);
+        (conservative ? 128 : 256);
     const bool prefer_swap_ab_shape = prefer_swap_ab_block and block_n == 128;
-    const int default_epilogue_warpgroups = block_m == 128 ? 2 :
-        ((block_n == 256 or prefer_swap_ab_shape) ? 2 : 1);
-    const int num_epilogue_warpgroups = conservative ? default_epilogue_warpgroups :
-        (forced_epilogue_warpgroups > 0 ?
-            forced_epilogue_warpgroups : default_epilogue_warpgroups);
+    const int num_epilogue_warpgroups =
+        (block_n == 256 or prefer_swap_ab_shape) ? 2 : 1;
     DG_HOST_ASSERT(block_m % num_epilogue_warpgroups == 0);
     DG_HOST_ASSERT(block_m != 128 or
                    (block_n == 128 and num_epilogue_warpgroups == 2));
@@ -474,37 +411,20 @@ static MegaMoESM90Config make_generic_mega_moe_config_sm90(
                    num_epilogue_warpgroups == 2);
     const int num_epilogue_threads = num_epilogue_warpgroups * 128;
     const bool swap_ab =
-        swap_ab_env_enabled and block_n == 128 and
+        not conservative and block_n == 128 and
         should_use_swap_ab_for_mega_moe_sm90(
             load, shape_family, block_m, num_epilogue_threads);
 
     const bool compact_frontend = block_n >= 256 or swap_ab;
-    const int forced_dispatch_warps = conservative ? -1 :
-        get_env<int>("DG_SM90_MOE_DISPATCH_WARPS", -1);
-    DG_HOST_ASSERT(forced_dispatch_warps == -1 or forced_dispatch_warps == 0 or
-                   forced_dispatch_warps == 2 or forced_dispatch_warps == 4 or
-                   forced_dispatch_warps == 8);
-    const int num_dispatch_warps = forced_dispatch_warps > 0 ?
-        forced_dispatch_warps : (compact_frontend ? 2 : 4);
+    const int num_dispatch_warps = compact_frontend ? 2 : 4;
     DG_HOST_ASSERT(not compact_frontend or num_dispatch_warps == 2);
     const int num_dispatch_threads = num_dispatch_warps * 32;
     const int num_non_epilogue_threads = compact_frontend ? 64 : 128;
     DG_HOST_ASSERT((num_dispatch_threads + num_non_epilogue_threads) % 128 == 0);
 
-    const bool direct_l2_scatter_legal =
-        (not swap_ab) and
-        ((block_m == 64 and block_n == 256 and num_epilogue_warpgroups == 2) or
-         block_n == 128);
-    const bool direct_l2_scatter = conservative ? false :
-        get_sm90_moe_bool_config(
-            "DG_SM90_MOE_DIRECT_L2_SCATTER", false);
-    DG_HOST_ASSERT(not direct_l2_scatter or direct_l2_scatter_legal);
-    const bool l2_nmajor_schedule = conservative ? false :
-        get_sm90_moe_bool_config(
-            "DG_SM90_MOE_L2_NMAJOR", false);
-    const bool one_warp_cleanup = conservative ? false :
-        get_sm90_moe_bool_config(
-            "DG_SM90_MOE_ONE_WARP_CLEANUP", false);
+    constexpr bool direct_l2_scatter = false;
+    constexpr bool l2_nmajor_schedule = false;
+    constexpr bool one_warp_cleanup = false;
 
     const int requested_num_experts_per_wave = conservative ?
         get_num_experts_per_wave_for_mega_moe(
@@ -528,8 +448,7 @@ static MegaMoESM90Config make_generic_mega_moe_config_sm90(
         num_dispatch_threads / 32, num_epilogue_threads / 32,
         direct_l2_scatter,
         0,
-        swap_ab,
-        input.fp8_combine);
+        swap_ab);
     DG_HOST_ASSERT(num_stages >= 2 and smem_size > 0);
     const int sf_pool_stride_tokens =
         layout::get_num_padded_sf_pool_tokens(num_max_pool_tokens, block_m);
@@ -658,8 +577,7 @@ static Sm90MoeScheduleTuning select_sm90_moe_low_sm_tuning(
         } else if (load.greater_than(48) and load.less_than(96)) {
             range_selected = true;
             direct_l2_scatter = true;
-            num_stages = (input.eplb_hint or input.skew_hint or
-                          input.masked_hint) ? 5 : 4;
+            num_stages = 4;
         } else if (load.in_closed(96, 160)) {
             range_selected = true;
             target_epw = 8;
@@ -671,14 +589,13 @@ static Sm90MoeScheduleTuning select_sm90_moe_low_sm_tuning(
             target_epw = 16;
             num_stages = 5;
             direct_l2_scatter = true;
-            l2_nmajor = load.greater_equal(256) and
-                        not input.eplb_hint and not input.skew_hint;
+            l2_nmajor = load.greater_equal(256);
         } else if (load.greater_than(384)) {
             range_selected = true;
             target_epw = 32;
             num_stages = 5;
             direct_l2_scatter = true;
-            l2_nmajor = not input.skew_hint;
+            l2_nmajor = true;
         }
     } else if (shape_family == Sm90MoeShapeFamily::Wide) {
         if (load.in_open_closed(16, 48)) {
@@ -689,7 +606,7 @@ static Sm90MoeScheduleTuning select_sm90_moe_low_sm_tuning(
             target_epw = input.num_experts_per_rank;
             num_stages = 5;
             direct_l2_scatter = true;
-            one_warp_cleanup = input.masked_hint;
+            one_warp_cleanup = false;
         } else if (load.in_open_closed(96, 192)) {
             range_selected = true;
             target_epw = input.num_experts_per_rank;
@@ -854,7 +771,6 @@ static bool try_materialize_sm90_moe_phase_tuning(
         config.direct_l2_scatter,
         tuning.num_stages,
         config.swap_ab,
-        input.fp8_combine,
         true);
     if (num_stages == 0 or smem_size == 0)
         return false;
@@ -869,31 +785,13 @@ static bool try_apply_sm90_moe_tuning(
     Sm90MoeLaunchConfig& config) {
     if (not tuning.selected)
         return true;
-    if (const int forced = get_env<int>("DG_SM90_MOE_EXPERTS_PER_WAVE"); forced > 0) {
-        DG_HOST_ASSERT(forced <= input.num_experts_per_rank);
-        DG_HOST_ASSERT(input.num_experts_per_rank % forced == 0);
-        tuning.l1.num_experts_per_wave = forced;
-        tuning.l2.num_experts_per_wave = forced;
-    }
-    const bool direct_l2_scatter = get_sm90_moe_bool_config(
-        "DG_SM90_MOE_DIRECT_L2_SCATTER", tuning.l2.direct_l2_scatter);
-    tuning.l1.direct_l2_scatter = direct_l2_scatter;
-    tuning.l2.direct_l2_scatter = direct_l2_scatter;
-    tuning.l2.nmajor_schedule = get_sm90_moe_bool_config(
-        "DG_SM90_MOE_L2_NMAJOR", tuning.l2.nmajor_schedule);
-    const bool one_warp_cleanup = get_sm90_moe_bool_config(
-        "DG_SM90_MOE_ONE_WARP_CLEANUP", tuning.l2.one_warp_cleanup);
-    tuning.l1.one_warp_cleanup = one_warp_cleanup;
-    tuning.l2.one_warp_cleanup = one_warp_cleanup;
     return try_materialize_sm90_moe_phase_tuning(input, config.l1, tuning.l1) and
            try_materialize_sm90_moe_phase_tuning(input, config.l2, tuning.l2);
 }
 
 static Sm90MoeLaunchConfig select_mega_moe_sm90(
     const Sm90MoeHeuristicInput& input) {
-    const auto hardware_profile = classify_sm90_moe_hardware(
-        input.launch_num_sms,
-        input.device_profile_override);
+    const auto hardware_profile = classify_sm90_moe_hardware(input.launch_num_sms);
     const auto shape_family = classify_sm90_moe_shape(
         input.hidden, input.intermediate_hidden);
     const auto load = get_sm90_moe_load(input);
@@ -901,13 +799,12 @@ static Sm90MoeLaunchConfig select_mega_moe_sm90(
     auto generic = make_generic_mega_moe_config_sm90(input);
     Sm90MoeLaunchConfig result {
         generic, generic,
-        {input.fp8_combine, false}
+        {}
     };
     result.l1.nmajor_schedule = false;
 
-    // The computed generic route is always available. If debug ENV overrides
-    // make it illegal, replace it with the conservative computed route before
-    // applying any hardware-specific range tuning.
+    // Shapes that cannot use the BN256 frontend fall back to the conservative
+    // BN128 route before hardware-specific range tuning is applied.
     if (not is_sm90_moe_launch_config_legal(input, result, false)) {
         generic = make_generic_mega_moe_config_sm90(input, true);
         result.l1 = result.l2 = generic;
@@ -915,18 +812,15 @@ static Sm90MoeLaunchConfig select_mega_moe_sm90(
     }
     DG_HOST_ASSERT(is_sm90_moe_launch_config_legal(input, result, false));
 
-    if (hardware_profile != Sm90MoeHardwareProfile::Generic) {
-        auto candidate = result;
-        candidate.numerical.bf16_scaled_accum =
-            hardware_profile == Sm90MoeHardwareProfile::HighSm and
-            select_sm90_moe_high_sm_bf16_scaled_accum(
-                shape_family, load);
-        const auto tuning = select_sm90_moe_tuning(
-            input, hardware_profile, shape_family, load, result);
-        if (try_apply_sm90_moe_tuning(input, tuning, candidate) and
-            is_sm90_moe_launch_config_legal(input, candidate, tuning.selected)) {
-            result = candidate;
-        }
+    auto candidate = result;
+    candidate.numerical.bf16_scaled_accum =
+        hardware_profile == Sm90MoeHardwareProfile::HighSm and
+        select_sm90_moe_high_sm_bf16_scaled_accum(shape_family, load);
+    const auto tuning = select_sm90_moe_tuning(
+        input, hardware_profile, shape_family, load, result);
+    if (try_apply_sm90_moe_tuning(input, tuning, candidate) and
+        is_sm90_moe_launch_config_legal(input, candidate, tuning.selected)) {
+        result = candidate;
     }
     if (get_env<int>("DG_JIT_DEBUG") or get_env<int>("DG_PRINT_CONFIGS")) {
         const auto key = fmt::format(
@@ -940,7 +834,6 @@ static Sm90MoeLaunchConfig select_mega_moe_sm90(
                       << ", shape_family=" << static_cast<int>(shape_family)
                       << ", l1=" << result.l1
                       << ", l2=" << result.l2
-                      << ", fp8_combine=" << result.numerical.fp8_combine
                       << ", bf16_scaled_accum=" << result.numerical.bf16_scaled_accum
                       << std::endl;
             printed.insert(key);

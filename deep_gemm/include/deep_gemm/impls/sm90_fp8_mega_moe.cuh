@@ -160,9 +160,7 @@ CUTLASS_DEVICE void sm90_nvlink_barrier(
     uint32_t kNumSMs, uint32_t kNumRanks, \
     float kActivationClamp, \
     bool kFastMath, \
-    bool kPhaseProfileRequested = false, \
     bool kFP8SwapAB = false, \
-    bool kFP8CombineRequested = false, \
     bool kBF16ScaledAccumRequested = false
 
 #define DG_SM90_FP8_MOE_KERNEL_ARGS_DECL \
@@ -206,8 +204,7 @@ CUTLASS_DEVICE void sm90_nvlink_barrier(
     kNumExpertsPerWave, BLOCK_M, BLOCK_N, BLOCK_K, kNumMaxPoolTokens, \
     kNumPaddedSFPoolTokens, kSFPoolStrideTokens, kNumStages, kNumDispatchThreads, \
     kNumNonEpilogueThreads, kNumEpilogueThreads, kNumSMs, kNumRanks, \
-    kActivationClamp, kFastMath, kPhaseProfileRequested, kFP8SwapAB, \
-    kFP8CombineRequested, kBF16ScaledAccumRequested
+    kActivationClamp, kFastMath, kFP8SwapAB, kBF16ScaledAccumRequested
 
 template <typename MegaMoEPhase, DG_SM90_FP8_MOE_TEMPLATE_PARAMS>
 CUTLASS_DEVICE void
@@ -301,10 +298,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     DG_STATIC_ASSERT(kSFPoolStrideTokens <= kNumPaddedSFPoolTokens,
                      "Logical SF pool stride must fit in the allocated SF pool capacity");
 
-    // Combine input area. Selected H200 configurations store the L2
-    // contribution as unscaled E5M2 while retaining BF16 final output.
-    constexpr uint32_t kCombineElementBytes =
-        kFP8CombineRequested ? 1u : sizeof(nv_bfloat16);
+    // Combine input area stores BF16 L2 contributions for the final reduction.
+    constexpr uint32_t kCombineElementBytes = sizeof(nv_bfloat16);
     constexpr auto combine_token_layout = layout::Data(kHidden * kCombineElementBytes);
     const auto combine_token_buffer = layout::Buffer(
         combine_token_layout, kNumTopk, kNumMaxTokensPerRank, l2_sf_buffer.get_end_ptr());
@@ -332,8 +327,6 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                      "swapAB epilogue token chunks assume BLOCK_M is a multiple of 8");
     constexpr bool kDirectL2Scatter =
         (!kSwapABActive) && MegaMoEPhase::direct_l2_scatter && WG_BLOCK_N == 128;
-    constexpr bool kFP8Combine =
-        kFP8CombineRequested and MegaMoEPhase::runs_linear2;
     constexpr bool kBF16ScaledAccum = kBF16ScaledAccumRequested;
     using L1WGMMA = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     static_assert(L1WGMMA::M == 64 and L1WGMMA::N == WG_BLOCK_N and L1WGMMA::K == 32,
@@ -376,7 +369,7 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     constexpr uint32_t SMEM_SFA_SIZE_PER_STAGE =
         kNumL2SFAKGroups * kL2SFAHalfStride * sizeof(float);
     // CD output: max of L1 FP8 (BLOCK_M * (BLOCK_N/2) * 1 byte * num_wg) and
-    // L2 contribution (BF16 by default, optional unscaled E5M2).
+    // L2 BF16 contribution.
     constexpr uint32_t SMEM_CD_ACCUM_SIZE = 0u;
     constexpr uint32_t SMEM_CD_L1_SIZE = MegaMoEPhase::runs_linear1 ?
         kNumEpilogueWarpgroups * WG_BLOCK_M * WG_L1_OUT_BLOCK_N * sizeof(cutlass::float_e4m3_t) : 0u;
@@ -441,7 +434,6 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     // CD output is shared by L1 and L2; reinterpret-cast as needed.
     auto smem_cd_l1 = reinterpret_cast<cutlass::float_e4m3_t*>(smem_cd_base);
     auto smem_cd_l2 = reinterpret_cast<nv_bfloat16*>(smem_cd_base);
-    auto smem_cd_l2_fp8 = reinterpret_cast<__nv_fp8_e5m2*>(smem_cd_base);
     auto smem_cd_swap_l1_fp32 = reinterpret_cast<float*>(smem_cd_base);
     auto smem_cd_swap_l1_fp8 = reinterpret_cast<cutlass::float_e4m3_t*>(
         math::advance_ptr(smem_cd_base, SMEM_CD_SWAP_L1_FP32_SIZE));
@@ -547,37 +539,6 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     constexpr uint32_t kDispatchGridSyncIndex = 0;
     constexpr uint32_t kEpilogueGridSyncIndex = 1;
 
-    constexpr uint32_t kProfileDispatchTotal = 0;
-    constexpr uint32_t kProfileDispatchPull = 1;
-    constexpr uint32_t kProfileMathLoop = 2;
-    constexpr uint32_t kProfileCombineBarrier = 3;
-    constexpr uint32_t kProfileCombineReduce = 4;
-    constexpr uint32_t kProfileGemmCore = 5;
-    constexpr uint32_t kProfileL1Epilogue = 6;
-    constexpr uint32_t kProfileL2Epilogue = 7;
-    constexpr uint32_t kNumProfileMetrics = 8;
-    constexpr uint32_t kProfileStatsOffset = (kNumExpertsPerRank + 1u) / 2u * 2u;
-    const auto phase_profile_clock = [&]() -> unsigned long long {
-        if constexpr (kPhaseProfileRequested) {
-            unsigned long long t;
-            asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
-            return t;
-        } else {
-            return 0ull;
-        }
-    };
-    const auto phase_profile_record = [&](const uint32_t& metric, const unsigned long long& cycles) {
-        if constexpr (kPhaseProfileRequested) {
-            if (cumulative_local_expert_recv_stats != nullptr and cycles > 0) {
-                auto profile = reinterpret_cast<unsigned long long*>(
-                    cumulative_local_expert_recv_stats + kProfileStatsOffset);
-                atomicAdd(profile + metric, cycles);
-                atomicMax(profile + kNumProfileMetrics + metric, cycles);
-                atomicAdd(profile + 2 * kNumProfileMetrics + metric, 1ull);
-            }
-        }
-    };
-
     const auto for_each_selected_block = [&](auto&& func) {
         MegaMoEPhase::for_each_selected_block(scheduler, func);
     };
@@ -645,7 +606,6 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     // =====================================================================
     if (warp_idx < kNumDispatchWarps) {
         cutlass::arch::warpgroup_reg_dealloc<kNumDispatchRegisters>();
-        const unsigned long long dispatch_total_start = phase_profile_clock();
 
         if constexpr (MegaMoEPhase::runs_linear2) {
             scheduler.fetch_expert_recv_count();
@@ -730,7 +690,6 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
 
         // Sync with epilogue warps before pulling tokens
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
-        const unsigned long long dispatch_pull_start = phase_profile_clock();
 
         // Token / SF pull loop
         uint32_t pull_mbarrier_phase = 0;
@@ -869,14 +828,6 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
             __syncwarp();
         }
 
-
-
-        // Cleanup workspace, overlapping with combine
-        const unsigned long long dispatch_pull_end = phase_profile_clock();
-        if (lane_idx == 0) {
-            phase_profile_record(kProfileDispatchPull, dispatch_pull_end - dispatch_pull_start);
-            phase_profile_record(kProfileDispatchTotal, dispatch_pull_end - dispatch_total_start);
-        }
         return;
 
     // =====================================================================
@@ -1052,7 +1003,6 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
 
         // Sync with dispatch
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
-        const unsigned long long math_loop_start = phase_profile_clock();
 
         for_each_selected_block([&](const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
@@ -1084,7 +1034,6 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
             }
             float accum[kAccumPerThread];
 
-            const unsigned long long block_gemm_start = phase_profile_clock();
             const auto run_default_gemm_loop = [&]() {
                 constexpr uint32_t kL1SFKBlocks   = kHidden / 128;
                 constexpr uint32_t kL2SFKBlocks   = kIntermediateHidden / 128;
@@ -1796,10 +1745,6 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                 run_default_gemm_loop();
             }
 
-            const unsigned long long block_gemm_end = phase_profile_clock();
-            if (epilogue_warp_idx == 0 and lane_idx == 0)
-                phase_profile_record(kProfileGemmCore, block_gemm_end - block_gemm_start);
-
             // Skip epilogue when block is past valid M (still must release via empty).
             if (row_block_offset >= valid_m) {
                 if constexpr (MegaMoEPhase::runs_linear1 and kWarpgroupSplitM > 1 and not kSplitNWarpgroups) {
@@ -1810,7 +1755,6 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                 return;
             }
 
-            const unsigned long long block_epilogue_start = phase_profile_clock();
             if (is_linear1_phase) {
                 if constexpr (kSwapABActive) {
                     auto silu = [](float x) -> float {
@@ -1911,9 +1855,6 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                     __syncwarp();
                     ptx::tma_store_wait<0>();
 
-                    const unsigned long long block_epilogue_end = phase_profile_clock();
-                    if (epilogue_warp_idx == 0 and lane_idx == 0)
-                        phase_profile_record(kProfileL1Epilogue, block_epilogue_end - block_epilogue_start);
                 } else {
                 // ---------------- L1 EPILOGUE: SwiGLU + FP8 quantize + TMA store ----------------
                 // Layout in `final_accum`:
@@ -2118,9 +2059,6 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                     __syncwarp();
                     ptx::tma_store_wait<0>();
                 }
-                const unsigned long long block_epilogue_end = phase_profile_clock();
-                if (epilogue_warp_idx == 0 and lane_idx == 0)
-                    phase_profile_record(kProfileL1Epilogue, block_epilogue_end - block_epilogue_start);
                 }
             } else {
                 // ---------------- L2 EPILOGUE: BF16 cast + NVLink scatter ----------------
@@ -2156,116 +2094,96 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                                 const uint32_t chunk_lo = 2 * i, chunk_hi = 2 * i + 1;
                                 const uint32_t col_lo = chunk_lo * 8 + col_idx * 2;
                                 const uint32_t col_hi = chunk_hi * 8 + col_idx * 2;
-                                if constexpr (kFP8Combine) {
-                                    const __nv_fp8x2_e5m2 packed_lo(make_float2(
-                                        final_accum[chunk_lo * 4 + row_accum_offset + 0],
-                                        final_accum[chunk_lo * 4 + row_accum_offset + 1]));
-                                    const __nv_fp8x2_e5m2 packed_hi(make_float2(
-                                        final_accum[chunk_hi * 4 + row_accum_offset + 0],
-                                        final_accum[chunk_hi * 4 + row_accum_offset + 1]));
-                                    *reinterpret_cast<uint16_t*>(mapped_dst_base + col_lo) = packed_lo.__x;
-                                    *reinterpret_cast<uint16_t*>(mapped_dst_base + col_hi) = packed_hi.__x;
-                                } else {
-                                    const uint32_t packed_lo = math::cast_into_bf16_and_pack(
-                                        final_accum[chunk_lo * 4 + row_accum_offset + 0],
-                                        final_accum[chunk_lo * 4 + row_accum_offset + 1]);
-                                    const uint32_t packed_hi = math::cast_into_bf16_and_pack(
-                                        final_accum[chunk_hi * 4 + row_accum_offset + 0],
-                                        final_accum[chunk_hi * 4 + row_accum_offset + 1]);
-                                    *reinterpret_cast<uint32_t*>(mapped_dst_base + col_lo * sizeof(nv_bfloat16)) = packed_lo;
-                                    *reinterpret_cast<uint32_t*>(mapped_dst_base + col_hi * sizeof(nv_bfloat16)) = packed_hi;
-                                }
+                                const uint32_t packed_lo = math::cast_into_bf16_and_pack(
+                                    final_accum[chunk_lo * 4 + row_accum_offset + 0],
+                                    final_accum[chunk_lo * 4 + row_accum_offset + 1]);
+                                const uint32_t packed_hi = math::cast_into_bf16_and_pack(
+                                    final_accum[chunk_hi * 4 + row_accum_offset + 0],
+                                    final_accum[chunk_hi * 4 + row_accum_offset + 1]);
+                                *reinterpret_cast<uint32_t*>(
+                                    mapped_dst_base + col_lo * sizeof(nv_bfloat16)) = packed_lo;
+                                *reinterpret_cast<uint32_t*>(
+                                    mapped_dst_base + col_hi * sizeof(nv_bfloat16)) = packed_hi;
                             }
                         }
                     };
 
-	                    scatter_direct_row(row_offset_r0, valid_r0, 0);
-	                    scatter_direct_row(row_offset_r1, valid_r1, 2);
-	                } else {
-	                    auto store_l2_scalar = [&](const uint32_t& elem_idx, const float& value) {
-	                        if constexpr (kFP8Combine)
-	                            smem_cd_l2_fp8[elem_idx] = __nv_fp8_e5m2(value);
-	                        else
-	                            smem_cd_l2[elem_idx] = __float2bfloat16_rn(value);
-	                    };
-	                    auto store_l2_pair = [&](const uint32_t& elem_idx,
-	                                             float value0, float value1) {
-	                        if constexpr (kFP8Combine) {
-	                            const __nv_fp8x2_e5m2 pair(make_float2(value0, value1));
-	                            *reinterpret_cast<uint16_t*>(smem_cd_l2_fp8 + elem_idx) = pair.__x;
-	                        } else {
-	                            *reinterpret_cast<uint32_t*>(smem_cd_l2 + elem_idx) =
-	                                math::cast_into_bf16_and_pack(value0, value1);
-	                        }
-	                    };
-	                    if constexpr (kSwapABActive) {
-	                        auto store_value = [&](const uint32_t& token, const uint32_t& col, float value) {
-	                            store_l2_scalar(
-	                                epilogue_wg_idx * WG_BLOCK_M * WG_BLOCK_N +
-	                                    token * WG_BLOCK_N + col,
-	                                value);
-	                        };
-
-	                        auto store_l2_swap_chunk = [&](const uint32_t& i) {
-	                            const uint32_t token_0 = i * 8 + col_idx * 2;
-	                            const uint32_t token_1 = token_0 + 1;
-	                            if (token_0 < valid_m) {
-	                                store_value(token_0, r_0, final_accum[i * 4 + 0]);
-	                                store_value(token_0, r_1, final_accum[i * 4 + 2]);
-	                            }
-	                            if (token_1 < valid_m) {
-	                                store_value(token_1, r_0, final_accum[i * 4 + 1]);
-	                                store_value(token_1, r_1, final_accum[i * 4 + 3]);
-	                            }
-	                        };
-
-	                        const uint32_t num_swap_token_chunks = (valid_m + 7u) / 8u;
-	                        store_l2_swap_chunk(0);
-	                        if (valid_m > 8) {
-	                            #pragma unroll
-	                            for (uint32_t i = 1; i < kSwapABTokenChunks; ++ i) {
-	                                if (i < num_swap_token_chunks)
-	                                    store_l2_swap_chunk(i);
-	                            }
-	                        }
-	                    } else {
-	                    // STSM into smem_cd_l2 (BF16). Reuse SM100 column-swizzle layout.
-	                    #pragma unroll
-	                    for (uint32_t i = 0; i < kAccumPerThread / 8; ++ i) {
-                        // Each i consumes 8 floats (one 16x256b chunk in SM100 terms).
-                        // For SM90 WGMMA layout, 8 floats per i correspond to 2 chunks of 4 floats:
-                        //   final_accum[i*8 + (0..3)] = chunk 2i: (r0c0, r0c1, r1c0, r1c1)
-                        //   final_accum[i*8 + (4..7)] = chunk 2i+1: same shape
-                        const uint32_t chunk_lo = 2 * i, chunk_hi = 2 * i + 1;
-
-                        // Write to SMEM at appropriate position
-                        // Row r_0 cols [chunk_lo*8 + col_idx*2, chunk_lo*8 + col_idx*2 + 1] = r0_lo
-                        // Row r_0 cols [chunk_hi*8 + col_idx*2, chunk_hi*8 + col_idx*2 + 1] = r0_hi
-                        // Row r_1 cols [chunk_lo*8 + col_idx*2, chunk_lo*8 + col_idx*2 + 1] = r1_lo
-                        // Row r_1 cols [chunk_hi*8 + col_idx*2, chunk_hi*8 + col_idx*2 + 1] = r1_hi
-                        auto write_pair = [&](uint32_t row, uint32_t col,
-                                              float value0, float value1) {
-                            const uint32_t elem_idx =
+                    scatter_direct_row(row_offset_r0, valid_r0, 0);
+                    scatter_direct_row(row_offset_r1, valid_r1, 2);
+                } else {
+                    auto store_l2_scalar = [&](const uint32_t& elem_idx, const float& value) {
+                        smem_cd_l2[elem_idx] = __float2bfloat16_rn(value);
+                    };
+                    auto store_l2_pair = [&](const uint32_t& elem_idx,
+                                             float value0, float value1) {
+                        *reinterpret_cast<uint32_t*>(smem_cd_l2 + elem_idx) =
+                            math::cast_into_bf16_and_pack(value0, value1);
+                    };
+                    if constexpr (kSwapABActive) {
+                        auto store_value = [&](const uint32_t& token,
+                                               const uint32_t& col,
+                                               const float value) {
+                            store_l2_scalar(
                                 epilogue_wg_idx * WG_BLOCK_M * WG_BLOCK_N +
-                                row * WG_BLOCK_N + col;
-                            store_l2_pair(elem_idx, value0, value1);
+                                    token * WG_BLOCK_N + col,
+                                value);
                         };
-                        if (valid_r0) {
-                            write_pair(r_0, chunk_lo * 8 + col_idx * 2,
-                                final_accum[chunk_lo*4 + 0], final_accum[chunk_lo*4 + 1]);
-                            write_pair(r_0, chunk_hi * 8 + col_idx * 2,
-                                final_accum[chunk_hi*4 + 0], final_accum[chunk_hi*4 + 1]);
-                        }
-                        if (valid_r1) {
-                            write_pair(r_1, chunk_lo * 8 + col_idx * 2,
-                                final_accum[chunk_lo*4 + 2], final_accum[chunk_lo*4 + 3]);
-                            write_pair(r_1, chunk_hi * 8 + col_idx * 2,
-                                final_accum[chunk_hi*4 + 2], final_accum[chunk_hi*4 + 3]);
-	                        }
-	                    }
-	                    }
 
-	                    ptx::sync_aligned(128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
+                        auto store_l2_swap_chunk = [&](const uint32_t& i) {
+                            const uint32_t token_0 = i * 8 + col_idx * 2;
+                            const uint32_t token_1 = token_0 + 1;
+                            if (token_0 < valid_m) {
+                                store_value(token_0, r_0, final_accum[i * 4 + 0]);
+                                store_value(token_0, r_1, final_accum[i * 4 + 2]);
+                            }
+                            if (token_1 < valid_m) {
+                                store_value(token_1, r_0, final_accum[i * 4 + 1]);
+                                store_value(token_1, r_1, final_accum[i * 4 + 3]);
+                            }
+                        };
+
+                        const uint32_t num_swap_token_chunks = (valid_m + 7u) / 8u;
+                        store_l2_swap_chunk(0);
+                        if (valid_m > 8) {
+                            #pragma unroll
+                            for (uint32_t i = 1; i < kSwapABTokenChunks; ++ i) {
+                                if (i < num_swap_token_chunks)
+                                    store_l2_swap_chunk(i);
+                            }
+                        }
+                    } else {
+                        #pragma unroll
+                        for (uint32_t i = 0; i < kAccumPerThread / 8; ++ i) {
+                            const uint32_t chunk_lo = 2 * i, chunk_hi = 2 * i + 1;
+                            auto write_pair = [&](const uint32_t row,
+                                                  const uint32_t col,
+                                                  const float value0,
+                                                  const float value1) {
+                                const uint32_t elem_idx =
+                                    epilogue_wg_idx * WG_BLOCK_M * WG_BLOCK_N +
+                                    row * WG_BLOCK_N + col;
+                                store_l2_pair(elem_idx, value0, value1);
+                            };
+                            if (valid_r0) {
+                                write_pair(r_0, chunk_lo * 8 + col_idx * 2,
+                                    final_accum[chunk_lo * 4 + 0],
+                                    final_accum[chunk_lo * 4 + 1]);
+                                write_pair(r_0, chunk_hi * 8 + col_idx * 2,
+                                    final_accum[chunk_hi * 4 + 0],
+                                    final_accum[chunk_hi * 4 + 1]);
+                            }
+                            if (valid_r1) {
+                                write_pair(r_1, chunk_lo * 8 + col_idx * 2,
+                                    final_accum[chunk_lo * 4 + 2],
+                                    final_accum[chunk_lo * 4 + 3]);
+                                write_pair(r_1, chunk_hi * 8 + col_idx * 2,
+                                    final_accum[chunk_hi * 4 + 2],
+                                    final_accum[chunk_hi * 4 + 3]);
+                            }
+                        }
+                    }
+
+                    ptx::sync_aligned(128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
 
                     // Scatter to remote ranks via NVLink (one row per warp-pair)
                     // Each warpgroup-warp covers 8 unique rows × 2 (r_0 + r_1 doubled by warps)
@@ -2321,14 +2239,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
 
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 }
-                const unsigned long long block_epilogue_end = phase_profile_clock();
-                if (epilogue_warp_idx == 0 and lane_idx == 0)
-                    phase_profile_record(kProfileL2Epilogue, block_epilogue_end - block_epilogue_start);
             }
         });
-        const unsigned long long math_loop_end = phase_profile_clock();
-        if (epilogue_warp_idx == 0 and lane_idx == 0)
-            phase_profile_record(kProfileMathLoop, math_loop_end - math_loop_start);
 
         if constexpr (!MegaMoEPhase::runs_linear2) {
             return;
@@ -2337,20 +2249,14 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         // ---------------- COMBINE ----------------
         // NVLink barrier first: signals remote ranks that this rank's GEMM
         // outputs (NVLink scatter targets) are fully written.
-        const unsigned long long combine_barrier_start = phase_profile_clock();
         sm90_nvlink_barrier<kNumRanks, kNumSMs, kNumEpilogueThreads,
                             kEpilogueGridSyncIndex, kBeforeCombineReduceBarrierTag>(
             workspace, sym_buffer, sm_idx, epilogue_thread_idx,
             [&]() { ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx); }
         );
-        const unsigned long long combine_barrier_end = phase_profile_clock();
-        if (epilogue_warp_idx == 0 and lane_idx == 0)
-            phase_profile_record(kProfileCombineBarrier, combine_barrier_end - combine_barrier_start);
-
         // Sync with dispatch (paired with dispatch's pre-cleanup sync) so that
         // dispatch may now safely clean workspace state.
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
-        const unsigned long long combine_reduce_start = phase_profile_clock();
 
         constexpr uint32_t kNumChunks = kCombineNumChunks;
         constexpr uint32_t kInputChunkBytes = kCombineInputChunkBytes;
@@ -2425,30 +2331,16 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                     #pragma unroll
                     for (uint32_t j = 0; j < kNumVectorsPerLane; ++ j) {
                         const uint32_t vector_idx = j * 32 + lane_idx;
-                        if constexpr (kFP8Combine) {
-                            const auto packed = *reinterpret_cast<const uint2*>(
-                                combine_load_buffer[load_stage_idx] +
-                                vector_idx * kInputVectorBytes);
-                            const auto fp8_values =
-                                reinterpret_cast<const __nv_fp8_e5m2*>(&packed);
-                            #pragma unroll
-                            for (uint32_t l = 0; l < kNumBF16PairsPerVector; ++ l) {
-                                auto& value = reduced[j * kNumBF16PairsPerVector + l];
-                                value.x += static_cast<float>(fp8_values[2 * l]);
-                                value.y += static_cast<float>(fp8_values[2 * l + 1]);
-                            }
-                        } else {
-                            const auto packed = *reinterpret_cast<const uint4*>(
-                                combine_load_buffer[load_stage_idx] +
-                                vector_idx * kInputVectorBytes);
-                            const auto bf16_values =
-                                reinterpret_cast<const nv_bfloat162*>(&packed);
-                            #pragma unroll
-                            for (uint32_t l = 0; l < kNumBF16PairsPerVector; ++ l)
-                                ptx::accumulate(
-                                    reduced[j * kNumBF16PairsPerVector + l],
-                                    bf16_values[l]);
-                        }
+                        const auto packed = *reinterpret_cast<const uint4*>(
+                            combine_load_buffer[load_stage_idx] +
+                            vector_idx * kInputVectorBytes);
+                        const auto bf16_values =
+                            reinterpret_cast<const nv_bfloat162*>(&packed);
+                        #pragma unroll
+                        for (uint32_t l = 0; l < kNumBF16PairsPerVector; ++ l)
+                            ptx::accumulate(
+                                reduced[j * kNumBF16PairsPerVector + l],
+                                bf16_values[l]);
                     }
                     combine_phase ^= load_stage_idx;
                     load_stage_idx ^= 1;
@@ -2485,9 +2377,6 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                 __syncwarp();
             }
         }
-        const unsigned long long combine_reduce_end = phase_profile_clock();
-        if (epilogue_warp_idx == 0 and lane_idx == 0)
-            phase_profile_record(kProfileCombineReduce, combine_reduce_end - combine_reduce_start);
     }
 #else
     if (blockIdx.x == 0 and threadIdx.x == 0)

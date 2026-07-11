@@ -304,10 +304,7 @@ def _run_scenario(
         num_max, num_topk,
         hidden, intermediate_hidden,
     )
-    phase_profile = bool(int(os.environ.get('DG_SM90_MOE_PHASE_PROFILE', '0')))
-    phase_profile_offset = (num_experts_per_rank + 1) // 2 * 2
-    num_stats = phase_profile_offset + 64 if phase_profile else num_experts_per_rank
-    cum_stats = torch.zeros(num_stats, dtype=torch.int, device='cuda')
+    cum_stats = torch.zeros(num_experts_per_rank, dtype=torch.int, device='cuda')
 
     # ---- Run SM90 MegaMoE ----------------------------------------------------
     _trace('copy_inputs')

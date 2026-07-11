@@ -45,8 +45,8 @@ launch legality requires L1 and L2 to equal it. On a full H200 this is 132.
 Rank-local routed load may change tiles, stages, EPW, and local scheduler modes,
 but it cannot change a cross-rank completion count.
 
-FP8 combine remains an explicit engine/runtime ABI choice and is never derived
-from local load. No additional rank broadcast is added.
+The combine buffer always uses BF16. No combine representation is selected from
+rank-local state.
 
 ## Numerical Policy
 
