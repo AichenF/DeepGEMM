@@ -20,17 +20,8 @@
 
 namespace deep_gemm {
 
-// ============================================================================
-// SM90 (Hopper) MegaMoE configuration
-// ----------------------------------------------------------------------------
-// SM90 differs from SM100 in:
-//   - No tensor memory (TMEM): WGMMA accumulators live in registers.
-//   - No FP4: weights are FP8 e4m3, scales are per-128 channel float.
-//   - No 2-CTA cluster MMA or TMA multicast.
-//   - SF for activations is float (not UE8M0 int) and per-128 (not per-32).
-// The kernel is in `deep_gemm/impls/sm90_fp8_mega_moe.cuh`; this config is
-// what the host runtime reads when instantiating a shape-specialized variant.
-// ============================================================================
+// SM90 uses register-resident WGMMA accumulators and FP8 weights with per-128
+// float scale factors; it has no TMEM, FP4, cluster MMA, or TMA multicast.
 
 struct MegaMoESM90Config {
     // Block tiling (no STORE_BLOCK_M / SF_BLOCK_M concept on SM90)
@@ -40,21 +31,16 @@ struct MegaMoESM90Config {
     int num_max_pool_tokens;
     int num_padded_sf_pool_tokens, sf_pool_stride_tokens;
 
-    // Number of experts to process per wave
     int num_experts_per_wave;
 
-    // Number of SMs used by this phase
     int num_sms;
 
-    // Pipeline stages and shared memory
     int num_stages, smem_size;
 
     // Thread layout: dispatch + non-epilogue (TMA) + epilogue (math)
     int num_dispatch_threads, num_non_epilogue_threads, num_epilogue_threads;
 
-    // Chosen scheduler / epilogue modes.  Keeping these in the config makes the
-    // SM90 path follow the same single-source-of-truth style as regular GEMM
-    // configs: the selector chooses a complete phase config, then launch consumes it.
+    // Scheduler and epilogue modes selected for this phase.
     bool direct_l2_scatter, nmajor_schedule, one_warp_cleanup, swap_ab;
 
     friend std::ostream& operator << (std::ostream& os, const MegaMoESM90Config& config) {
@@ -165,6 +151,10 @@ struct Sm90MoeLoad {
 
     bool in_open_closed(const int64_t low, const int64_t high) const {
         return greater_than(low) and less_equal(high);
+    }
+
+    bool in_closed(const int64_t low, const int64_t high) const {
+        return greater_equal(low) and less_equal(high);
     }
 };
 
@@ -299,10 +289,8 @@ static std::pair<int, int> get_pipeline_config_for_mega_moe_sm90(
     const int smem_barriers_fixed = (num_dispatch_warps + 2 * num_epilogue_warps) * 8;
     const int smem_barriers_per_stage = 2 * 8;
 
-    // Fixed total
     const int smem_fixed = smem_dispatch_size + smem_cd + smem_barriers_fixed;
 
-    // Select the retained stage count for the current shape.
     const int max_num_stages = (smem_capacity - smem_fixed) /
                                (smem_per_stage + smem_barriers_per_stage);
     if (max_num_stages < 2)
@@ -622,178 +610,186 @@ static int derive_sm90_moe_tuned_epw(
         num_experts_per_rank, requested);
 }
 
-static Sm90MoeScheduleTuning lookup_sm90_moe_tuning(
-    const Sm90MoeHeuristicInput& input,
-    const Sm90MoeHardwareProfile hardware_profile,
-    const Sm90MoeShapeFamily shape_family,
-    const Sm90MoeLoad& load,
+static Sm90MoeScheduleTuning make_sm90_moe_schedule_tuning(
     const Sm90MoeLaunchConfig& generic) {
-    Sm90MoeScheduleTuning tuning {
+    return {
         false,
         make_sm90_moe_phase_tuning(generic.l1),
         make_sm90_moe_phase_tuning(generic.l2),
     };
+}
 
-    if (hardware_profile == Sm90MoeHardwareProfile::LowSm) {
-        // Low-SM compact decode needs more expert waves before the generic
-        // frontend transitions from swap-AB to BN256.
-        if (shape_family == Sm90MoeShapeFamily::Compact and
-            load.greater_than(8) and load.less_than(16)) {
-            const int tuned_epw = derive_sm90_moe_tuned_epw(
-                input.num_experts_per_rank, 16);
-            tuning.selected = true;
-            tuning.l1.num_experts_per_wave = tuned_epw;
-            tuning.l2.num_experts_per_wave = tuned_epw;
-        }
+static bool uses_sm90_moe_bn256_frontend(
+    const Sm90MoePhaseTuning& tuning) {
+    return tuning.block_m == 64 and tuning.block_n == 256;
+}
 
-        // Execution-mode tuning below is specific to the compact BN256
-        // frontend. Other legal generic tiles keep their computed schedule.
-        if (tuning.l1.block_m != 64 or tuning.l1.block_n != 256)
-            return tuning;
-
-        int target_epw = 0;
-        int num_stages = 4;
-        bool direct_l2_scatter = false;
-        bool l2_nmajor = false;
-        bool one_warp_cleanup = false;
-        bool range_selected = false;
-
-        if (shape_family == Sm90MoeShapeFamily::Compact) {
-            if (load.in_open_closed(16, 32)) {
-                range_selected = true;
-                num_stages = 5;
-                direct_l2_scatter = true;
-                one_warp_cleanup = true;
-            } else if (load.greater_than(48) and load.less_than(96)) {
-                range_selected = true;
-                direct_l2_scatter = true;
-                num_stages = (input.eplb_hint or input.skew_hint or
-                              input.masked_hint) ? 5 : 4;
-            } else if (load.in_open_closed(96, 160)) {
-                range_selected = true;
-                target_epw = 8;
-                num_stages = 5;
-                direct_l2_scatter = true;
-                one_warp_cleanup = true;
-            } else if (load.in_open_closed(160, 384)) {
-                range_selected = true;
-                target_epw = 16;
-                num_stages = 5;
-                direct_l2_scatter = true;
-                l2_nmajor = load.greater_equal(256) and
-                            not input.eplb_hint and not input.skew_hint;
-            } else if (load.greater_than(384)) {
-                range_selected = true;
-                target_epw = 32;
-                num_stages = 5;
-                direct_l2_scatter = true;
-                l2_nmajor = not input.skew_hint;
-            }
-        } else if (shape_family == Sm90MoeShapeFamily::Wide) {
-            if (load.in_open_closed(16, 48)) {
-                range_selected = true;
-                target_epw = 16;
-            } else if (load.in_open_closed(48, 96)) {
-                range_selected = true;
-                target_epw = input.num_experts_per_rank;
-                num_stages = 5;
-                direct_l2_scatter = true;
-                one_warp_cleanup = input.masked_hint;
-            } else if (load.in_open_closed(96, 192)) {
-                range_selected = true;
-                target_epw = input.num_experts_per_rank;
-                num_stages = 5;
-                direct_l2_scatter = true;
-                one_warp_cleanup = true;
-            } else if (load.in_open_closed(192, 384)) {
-                range_selected = true;
-                target_epw = input.num_experts_per_rank;
-                direct_l2_scatter = true;
-            } else if (load.greater_than(384)) {
-                range_selected = true;
-                target_epw = input.num_experts_per_rank;
-                num_stages = 5;
-                direct_l2_scatter = true;
-            }
-        }
-
-        if (not range_selected)
-            return tuning;
-
+static Sm90MoeScheduleTuning select_sm90_moe_low_sm_tuning(
+    const Sm90MoeHeuristicInput& input,
+    const Sm90MoeShapeFamily shape_family,
+    const Sm90MoeLoad& load,
+    Sm90MoeScheduleTuning tuning) {
+    if (shape_family == Sm90MoeShapeFamily::Compact and
+        load.greater_than(8) and load.less_than(16)) {
+        const int tuned_epw = derive_sm90_moe_tuned_epw(
+            input.num_experts_per_rank, 16);
         tuning.selected = true;
-        if (target_epw > 0) {
-            const int tuned_epw = derive_sm90_moe_tuned_epw(
-                input.num_experts_per_rank, target_epw);
-            tuning.l1.num_experts_per_wave = tuned_epw;
-            tuning.l2.num_experts_per_wave = tuned_epw;
-        }
-        tuning.l1.num_stages = tuning.l2.num_stages = num_stages;
-        tuning.l1.direct_l2_scatter = tuning.l2.direct_l2_scatter =
-            direct_l2_scatter;
-        tuning.l1.nmajor_schedule = false;
-        tuning.l2.nmajor_schedule = l2_nmajor;
-        tuning.l1.one_warp_cleanup = tuning.l2.one_warp_cleanup =
-            one_warp_cleanup;
-        return tuning;
+        tuning.l1.num_experts_per_wave = tuned_epw;
+        tuning.l2.num_experts_per_wave = tuned_epw;
     }
 
-    if (hardware_profile != Sm90MoeHardwareProfile::HighSm)
+    if (not uses_sm90_moe_bn256_frontend(tuning.l1) or
+        not uses_sm90_moe_bn256_frontend(tuning.l2))
         return tuning;
 
+    int target_epw = 0;
+    int num_stages = 4;
+    bool direct_l2_scatter = false;
+    bool l2_nmajor = false;
+    bool one_warp_cleanup = false;
+    bool range_selected = false;
+
+    if (shape_family == Sm90MoeShapeFamily::Compact) {
+        if (load.in_open_closed(16, 32)) {
+            range_selected = true;
+            num_stages = 5;
+            direct_l2_scatter = true;
+            one_warp_cleanup = true;
+        } else if (load.greater_than(48) and load.less_than(96)) {
+            range_selected = true;
+            direct_l2_scatter = true;
+            num_stages = (input.eplb_hint or input.skew_hint or
+                          input.masked_hint) ? 5 : 4;
+        } else if (load.in_closed(96, 160)) {
+            range_selected = true;
+            target_epw = 8;
+            num_stages = 5;
+            direct_l2_scatter = true;
+            one_warp_cleanup = true;
+        } else if (load.in_open_closed(160, 384)) {
+            range_selected = true;
+            target_epw = 16;
+            num_stages = 5;
+            direct_l2_scatter = true;
+            l2_nmajor = load.greater_equal(256) and
+                        not input.eplb_hint and not input.skew_hint;
+        } else if (load.greater_than(384)) {
+            range_selected = true;
+            target_epw = 32;
+            num_stages = 5;
+            direct_l2_scatter = true;
+            l2_nmajor = not input.skew_hint;
+        }
+    } else if (shape_family == Sm90MoeShapeFamily::Wide) {
+        if (load.in_open_closed(16, 48)) {
+            range_selected = true;
+            target_epw = 16;
+        } else if (load.in_open_closed(48, 96)) {
+            range_selected = true;
+            target_epw = input.num_experts_per_rank;
+            num_stages = 5;
+            direct_l2_scatter = true;
+            one_warp_cleanup = input.masked_hint;
+        } else if (load.in_open_closed(96, 192)) {
+            range_selected = true;
+            target_epw = input.num_experts_per_rank;
+            num_stages = 5;
+            direct_l2_scatter = true;
+            one_warp_cleanup = true;
+        } else if (load.in_open_closed(192, 384)) {
+            range_selected = true;
+            target_epw = input.num_experts_per_rank;
+            direct_l2_scatter = true;
+        } else if (load.greater_than(384)) {
+            range_selected = true;
+            target_epw = input.num_experts_per_rank;
+            num_stages = 5;
+            direct_l2_scatter = true;
+        }
+    }
+
+    if (not range_selected)
+        return tuning;
+
+    tuning.selected = true;
+    if (target_epw > 0) {
+        const int tuned_epw = derive_sm90_moe_tuned_epw(
+            input.num_experts_per_rank, target_epw);
+        tuning.l1.num_experts_per_wave = tuned_epw;
+        tuning.l2.num_experts_per_wave = tuned_epw;
+    }
+    tuning.l1.num_stages = tuning.l2.num_stages = num_stages;
+    tuning.l1.direct_l2_scatter = tuning.l2.direct_l2_scatter =
+        direct_l2_scatter;
+    tuning.l1.nmajor_schedule = false;
+    tuning.l2.nmajor_schedule = l2_nmajor;
+    tuning.l1.one_warp_cleanup = tuning.l2.one_warp_cleanup =
+        one_warp_cleanup;
+    return tuning;
+}
+
+static Sm90MoeScheduleTuning select_sm90_moe_high_sm_tuning(
+    const Sm90MoeHeuristicInput& input,
+    const Sm90MoeShapeFamily shape_family,
+    const Sm90MoeLoad& load,
+    Sm90MoeScheduleTuning tuning) {
     int l1_block_n = 256, l1_block_k = 128, l1_epw = 0, l1_stages = 0;
     int l2_block_n = 256, l2_block_k = 128, l2_epw = 0, l2_stages = 0;
     bool l1_nmajor = false, one_warp_cleanup = false;
     bool specialized = false;
 
-    if (shape_family == Sm90MoeShapeFamily::Compact and load.in_open_closed(12, 32)) {
-        specialized = true;
-        l1_epw = l2_epw = 4;
-        l1_stages = l2_stages = 3;
-    } else if (shape_family == Sm90MoeShapeFamily::Compact and load.in_open_closed(128, 256)) {
-        specialized = true;
-        l1_epw = l2_epw = 32;
-        l1_stages = l2_stages = 4;
-    } else if (shape_family == Sm90MoeShapeFamily::Compact and load.greater_than(1024)) {
-        specialized = true;
-        l1_epw = l2_epw = 32;
-        // Keep the previously validated value. A 4 -> 3 stage retune is a
-        // performance change and must not be hidden inside this refactor.
-        l1_stages = l2_stages = 4;
-    } else if (shape_family == Sm90MoeShapeFamily::Wide and load.in_open_closed(8, 24)) {
-        specialized = true;
-        l1_block_n = 512;
-        l1_epw = l2_epw = 16;
-        l1_stages = 2;
-        l2_stages = 3;
-    } else if (shape_family == Sm90MoeShapeFamily::Wide and load.in_open_closed(24, 48)) {
-        specialized = true;
-        l1_block_k = 256;
-        l1_epw = 8;
-        l2_epw = 48;
-        l1_stages = 2;
-        l2_stages = 3;
-    } else if (shape_family == Sm90MoeShapeFamily::Wide and load.in_open_closed(48, 96)) {
-        specialized = true;
-        l1_block_n = 512;
-        l1_epw = l2_epw = 16;
-        l1_stages = 2;
-        l2_stages = 3;
-        l1_nmajor = true;
-    } else if (shape_family == Sm90MoeShapeFamily::Wide and load.in_open_closed(96, 192)) {
-        specialized = true;
-        l1_block_n = 512;
-        l1_epw = l2_epw = 16;
-        l1_stages = 2;
-        l2_stages = 3;
-        l1_nmajor = true;
-        one_warp_cleanup = true;
-    } else if (shape_family == Sm90MoeShapeFamily::Wide and load.greater_than(192)) {
-        specialized = true;
-        l1_block_n = 512;
-        l1_epw = l2_epw = 16;
-        l1_stages = 2;
-        l2_stages = 3;
-        one_warp_cleanup = true;
+    if (shape_family == Sm90MoeShapeFamily::Compact) {
+        if (load.in_open_closed(12, 32)) {
+            specialized = true;
+            l1_epw = l2_epw = 4;
+            l1_stages = l2_stages = 3;
+        } else if (load.in_open_closed(128, 256)) {
+            specialized = true;
+            l1_epw = l2_epw = 32;
+            l1_stages = l2_stages = 4;
+        } else if (load.greater_than(1024)) {
+            specialized = true;
+            l1_epw = l2_epw = 32;
+            // Four stages is the validated H200 setting.
+            l1_stages = l2_stages = 4;
+        }
+    } else if (shape_family == Sm90MoeShapeFamily::Wide) {
+        if (load.in_open_closed(8, 24)) {
+            specialized = true;
+            l1_block_n = 512;
+            l1_epw = l2_epw = 16;
+            l1_stages = 2;
+            l2_stages = 3;
+        } else if (load.in_open_closed(24, 48)) {
+            specialized = true;
+            l1_block_k = 256;
+            l1_epw = 8;
+            l2_epw = 48;
+            l1_stages = 2;
+            l2_stages = 3;
+        } else if (load.in_open_closed(48, 96)) {
+            specialized = true;
+            l1_block_n = 512;
+            l1_epw = l2_epw = 16;
+            l1_stages = 2;
+            l2_stages = 3;
+            l1_nmajor = true;
+        } else if (load.in_open_closed(96, 192)) {
+            specialized = true;
+            l1_block_n = 512;
+            l1_epw = l2_epw = 16;
+            l1_stages = 2;
+            l2_stages = 3;
+            l1_nmajor = true;
+            one_warp_cleanup = true;
+        } else if (load.greater_than(192)) {
+            specialized = true;
+            l1_block_n = 512;
+            l1_epw = l2_epw = 16;
+            l1_stages = 2;
+            l2_stages = 3;
+            one_warp_cleanup = true;
+        }
     }
     if (not specialized)
         return tuning;
@@ -810,6 +806,24 @@ static Sm90MoeScheduleTuning lookup_sm90_moe_tuning(
     tuning.l1.nmajor_schedule = l1_nmajor;
     tuning.l2.nmajor_schedule = true;
     tuning.l2.one_warp_cleanup = one_warp_cleanup;
+    return tuning;
+}
+
+static Sm90MoeScheduleTuning select_sm90_moe_tuning(
+    const Sm90MoeHeuristicInput& input,
+    const Sm90MoeHardwareProfile hardware_profile,
+    const Sm90MoeShapeFamily shape_family,
+    const Sm90MoeLoad& load,
+    const Sm90MoeLaunchConfig& generic) {
+    auto tuning = make_sm90_moe_schedule_tuning(generic);
+    if (hardware_profile == Sm90MoeHardwareProfile::LowSm) {
+        return select_sm90_moe_low_sm_tuning(
+            input, shape_family, load, tuning);
+    }
+    if (hardware_profile == Sm90MoeHardwareProfile::HighSm) {
+        return select_sm90_moe_high_sm_tuning(
+            input, shape_family, load, tuning);
+    }
     return tuning;
 }
 
@@ -907,7 +921,7 @@ static Sm90MoeLaunchConfig select_mega_moe_sm90(
             hardware_profile == Sm90MoeHardwareProfile::HighSm and
             select_sm90_moe_high_sm_bf16_scaled_accum(
                 shape_family, load);
-        const auto tuning = lookup_sm90_moe_tuning(
+        const auto tuning = select_sm90_moe_tuning(
             input, hardware_profile, shape_family, load, result);
         if (try_apply_sm90_moe_tuning(input, tuning, candidate) and
             is_sm90_moe_launch_config_legal(input, candidate, tuning.selected)) {
