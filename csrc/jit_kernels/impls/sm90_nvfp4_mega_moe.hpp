@@ -50,6 +50,7 @@ public:
         bool swap_ab;
         bool dp4a_selector_pack;
         bool hybrid_low_selector_pack;
+        bool single_active_dispatch_warp;
         int phase_mode;
         MegaMoESM90Config config;
 
@@ -84,12 +85,14 @@ public:
                         "        /* kLoaderDequantRequested */ {},\n"
                         "        /* kSwapABRequested */ {},\n"
                         "        /* kDp4aSelectorPack */ {},\n"
-                        "        /* kHybridLowSelectorPack */ {}",
+                        "        /* kHybridLowSelectorPack */ {},\n"
+                        "        /* kSingleActiveDispatchWarp */ {}",
                         args.phase_profile ? "true" : "false",
                         args.loader_dequant ? "true" : "false",
                         args.swap_ab ? "true" : "false",
                         args.dp4a_selector_pack ? "true" : "false",
-                        args.hybrid_low_selector_pack ? "true" : "false") :
+                        args.hybrid_low_selector_pack ? "true" : "false",
+                        args.single_active_dispatch_warp ? "true" : "false") :
             (args.phase_mode == kSplitL1PhaseMode ?
                 fmt::format("/* kPhaseProfileRequested */ {},\n"
                             "        /* kL2ArrivalCounterRequested */ {},\n"
@@ -204,6 +207,7 @@ struct SM90NVFP4MegaMoEPlan {
     bool hybrid_low_selector_pack;
     bool l2_dual_accum;
     bool l2_arrival_counter;
+    bool single_active_dispatch_warp;
 };
 
 static std::pair<int, int> get_nvfp4_pipeline_config_for_mega_moe_sm90(
@@ -211,11 +215,13 @@ static std::pair<int, int> get_nvfp4_pipeline_config_for_mega_moe_sm90(
     const float expected_tokens_per_local_expert,
     const MegaMoESM90Config& config,
     const bool loader_dequant, const bool packed_b_scratch,
-    const bool swap_ab, const bool l2_only
+    const bool swap_ab, const bool l2_only,
+    const bool single_active_dispatch_warp = false
 ) {
     const auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
     constexpr int kSmemAlignment = 1024;
     const int num_dispatch_warps = config.num_dispatch_threads / 32;
+    const int num_active_dispatch_warps = single_active_dispatch_warp ? 1 : num_dispatch_warps;
     const int num_epilogue_warps = config.num_epilogue_threads / 32;
     const int num_epilogue_warpgroups = num_epilogue_warps / 4;
 
@@ -236,7 +242,7 @@ static std::pair<int, int> get_nvfp4_pipeline_config_for_mega_moe_sm90(
         num_experts * static_cast<int>(sizeof(uint32_t)), kSmemAlignment);
     const int smem_send_buffers_size = align(
         static_cast<int>(layout::Buffer(
-            layout::Data(hidden), num_dispatch_warps, 1).get_num_bytes()),
+            layout::Data(hidden), num_active_dispatch_warps, 1).get_num_bytes()),
         kSmemAlignment);
     const int smem_dispatch_size = smem_expert_count_size + smem_send_buffers_size;
     const int smem_nvfp4_lut = align(128 * 8, kSmemAlignment);
@@ -358,6 +364,23 @@ static SM90NVFP4MegaMoEPlan get_nvfp4_mega_moe_plan_sm90(
             num_experts, hidden, expected_tokens_per_local_expert,
             l1_or_fused_config, loader_dequant, packed_b_scratch, swap_ab, false);
 
+    // swapAB decode shapes with wide hidden (e.g. 7168) only fit 2 pipeline
+    // stages with both dispatch send buffers resident. Dropping to a single
+    // active dispatch warp frees one send buffer; adopt it when that buys an
+    // extra stage (measured +11.65% at Pro M64, ITERATIONS.md 3-stage exp).
+    bool single_active_dispatch_warp = false;
+    if (use_fused_phase && swap_ab && l1_or_fused_config.num_stages == 2) {
+        MegaMoESM90Config candidate = l1_or_fused_config;
+        std::tie(candidate.num_stages, candidate.smem_size) =
+            get_nvfp4_pipeline_config_for_mega_moe_sm90(
+                num_experts, hidden, expected_tokens_per_local_expert,
+                candidate, loader_dequant, packed_b_scratch, swap_ab, false, true);
+        if (candidate.num_stages > l1_or_fused_config.num_stages) {
+            l1_or_fused_config = candidate;
+            single_active_dispatch_warp = true;
+        }
+    }
+
     MegaMoESM90Config split_l2_config = l1_or_fused_config;
     if (!use_fused_phase) {
         const auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
@@ -410,7 +433,8 @@ static SM90NVFP4MegaMoEPlan get_nvfp4_mega_moe_plan_sm90(
         dp4a_selector_pack,
         hybrid_low_selector_pack,
         l2_dual_accum,
-        l2_arrival_counter
+        l2_arrival_counter,
+        single_active_dispatch_warp
     };
 }
 
@@ -548,6 +572,7 @@ static void sm90_nvfp4_mega_moe(
         .swap_ab = plan.swap_ab,
         .dp4a_selector_pack = plan.dp4a_selector_pack,
         .hybrid_low_selector_pack = plan.hybrid_low_selector_pack,
+        .single_active_dispatch_warp = plan.single_active_dispatch_warp,
         .phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode,
         .config = config,
         .y = y.data_ptr(),

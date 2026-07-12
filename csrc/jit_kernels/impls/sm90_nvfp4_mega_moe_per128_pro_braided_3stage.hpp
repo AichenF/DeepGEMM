@@ -117,7 +117,11 @@ static void sm90_nvfp4_per128_pro_braided_3stage_mega_moe(
     auto config = plan.l1_or_fused_config;
     DG_HOST_ASSERT(config.block_m == 64 && config.block_n == 256);
     DG_HOST_ASSERT(plan.swap_ab && plan.dp4a_selector_pack);
-    DG_HOST_ASSERT(!plan.loader_dequant && config.num_stages == 2);
+    DG_HOST_ASSERT(!plan.loader_dequant);
+    // The base plan may already have adopted the single-active-dispatch-warp
+    // 3-stage pipeline; in that case only the per-128 SF saving still applies.
+    const bool plan_already_three_stage = plan.single_active_dispatch_warp;
+    DG_HOST_ASSERT(plan_already_three_stage || config.num_stages == 2);
 
     const auto align_up = [](const int value, const int alignment) {
         return ((value + alignment - 1) / alignment) * alignment;
@@ -140,9 +144,12 @@ static void sm90_nvfp4_per128_pro_braided_3stage_mega_moe(
         config.block_n * kSM90NVFP4BStoragePerKBlock +
         smem_sfa_per_stage;
     constexpr int kSmemBarriersPerStage = 2 * static_cast<int>(sizeof(uint64_t));
-    config.num_stages = 3;
-    config.smem_size += active_send_buffers_size - full_send_buffers_size +
-        smem_per_stage + kSmemBarriersPerStage;
+    if (!plan_already_three_stage) {
+        config.num_stages = 3;
+        config.smem_size += active_send_buffers_size - full_send_buffers_size +
+            smem_per_stage + kSmemBarriersPerStage;
+    }
+    DG_HOST_ASSERT(config.num_stages == 3);
     constexpr int kPer128SFStageSaving = 64 * static_cast<int>(sizeof(float));
     config.smem_size -= config.num_stages * kPer128SFStageSaving;
     DG_HOST_ASSERT(config.smem_size <= SM90ArchSpec::smem_capacity);

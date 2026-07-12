@@ -98,8 +98,11 @@
         BLOCK_M == 64 && BLOCK_N == 256 && WG_BLOCK_N == 128;
     constexpr bool kSwapABL1Active = kSwapABEligible;
     constexpr bool kSwapABL2Active = kSwapABEligible;
-    constexpr bool kSwapABFlashN24Dispatch =
-        kSwapABEligible && kIntermediateHidden <= 2048 && kNumExpertsPerWave == 16;
+    // N24 swapAB bucket: validated on Flash-like shapes (I<=2048, 16-expert
+    // waves) and on Pro-like shapes (I>=3072, the pro_candidate experiment).
+    constexpr bool kSwapABN24Dispatch =
+        kSwapABEligible && ((kIntermediateHidden <= 2048 && kNumExpertsPerWave == 16) ||
+                            kIntermediateHidden >= 3072);
     constexpr uint32_t kSwapABTokenChunks = BLOCK_M / 8;
     constexpr uint32_t kSwapABWeightHalves = WG_BLOCK_N / 64;
     constexpr uint32_t kSwapABHalfAccumPerThread = 64 * 64 / 128;
@@ -109,7 +112,11 @@
     // but only use two warps for BN128 split L1 dispatch. The extra NVFP4
     // dispatch warps mostly add fixed small/mid-M overhead while loader-dequant
     // still needs its aligned 4-warp non-epilogue group.
-    constexpr uint32_t kNumActiveDispatchWarps = kNumDispatchWarps;
+    // With kSingleActiveDispatchWarp both dispatch warps stay resident for
+    // CTA-wide barriers, but only one performs routing and token pulls so its
+    // send buffer can be reassigned to an extra GEMM pipeline stage.
+    constexpr uint32_t kNumActiveDispatchWarps =
+        kSingleActiveDispatchWarp ? 1u : kNumDispatchWarps;
     constexpr uint32_t kNumActiveDispatchThreads = kNumActiveDispatchWarps * 32;
     constexpr bool kLoaderDequant = kLoaderDequantRequested && kNumMMANonEpilogueWarps == 4;
     constexpr bool kPackedBScratch = BLOCK_N == 256 && (!kLoaderDequant);
@@ -1458,7 +1465,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         };
 
                         const uint32_t n_swap = ((valid_m + 7u) / 8u) * 8u;
-                        if constexpr (kSwapABFlashN24Dispatch) {
+                        if constexpr (kSwapABN24Dispatch) {
                             if (n_swap <= 8) {
                                 run_swap_ab_l1.template operator()<8>();
                             } else if (n_swap <= 16) {
@@ -1584,7 +1591,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         };
 
                         const uint32_t n_swap = ((valid_m + 7u) / 8u) * 8u;
-                        if constexpr (kSwapABFlashN24Dispatch) {
+                        if constexpr (kSwapABN24Dispatch) {
                             if (n_swap <= 8) {
                                 run_swap_ab_l2.template operator()<8>();
                             } else if (n_swap <= 16) {

@@ -425,6 +425,7 @@ template <
     bool kSwapABRequested = false,
     bool kDp4aSelectorPack = false,
     bool kHybridLowSelectorPack = false,
+    bool kSingleActiveDispatchWarp = false,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
     uint32_t L2_SHAPE_N = kHidden,
