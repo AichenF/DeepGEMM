@@ -873,6 +873,13 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
                             _tid_in_wg, smem_nvfp4_lut);
                     }
+                    // Same generic-to-async proxy hazard as the fused math-side
+                    // dequant; the B tile is shared across all epilogue WGs, so
+                    // publish with an epilogue-wide barrier. Unreachable with the
+                    // current host plans (split forces loader dequant) but kept
+                    // race-free for future configs.
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 }
 
                 // Read SF (must precede warpgroup_arrive)
