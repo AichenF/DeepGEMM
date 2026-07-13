@@ -307,6 +307,8 @@
                         reinterpret_cast<uint8_t*>(smem_b[s]),
                         reinterpret_cast<const uint8_t*>(smem_packed_b[s]),
                         row, smem_nvfp4_lut);
+                cutlass::arch::fence_view_async_shared();
+                ptx::sync_aligned(64, 8);
                 if (non_epilogue_thread_idx == 0)
                     dequant_barriers[s]->arrive();
             } else if constexpr (kNumMMANonEpilogueWarps == 4) {
@@ -317,6 +319,8 @@
                         128u, 8u, 80u, kDp4aSelectorPack,
                         kDp4aSelectorPack || kHybridLowSelectorPack>(
                         reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(128, 8);
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
                 } else if (non_epilogue_thread_idx >= 64u) {
@@ -326,6 +330,8 @@
                         64u, 8u, 80u, kDp4aSelectorPack,
                         kDp4aSelectorPack || kHybridLowSelectorPack>(
                         reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(64, 8);
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
                 }
@@ -1376,6 +1382,10 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         if constexpr (kPhaseProfileRequested)
                             block_math_dequant += dequant_end - dequant_start;
                     }
+                    // Publish generic-proxy dequant stores to the WGMMA async proxy
+                    // (same race fix as the production fused body).
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
                 }
 
                 // Read SF (must precede warpgroup_arrive)
