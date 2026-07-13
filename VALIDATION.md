@@ -85,3 +85,26 @@ hardware, so it is not a safe production configuration.
   it is now clean: 448x2 large-M + 448x2 small-M, zero fails).
 - The E2/E3 5-9% decode-band gain is quantified from a single-sample 1-rank sweep
   (8-rank small-M timing noise is +/-36-62%); direction confirmed on two machines.
+
+---
+
+# Addendum — `megamoe_nvfp4_mimo_opt` (2026-07-13)
+
+Branch = `megamoe_nvfp4_fix_opt` @ `d1c00cb` + grouped-nibble productization:
+
+| commit | content |
+|---|---|
+| `e65435f` | Grouped-nibble decode as the default for BN256 / I<=2048 deployments: chunked in-place lossless transform + lazy python-wrapper dispatch (env kill-switch DG_SM90_NVFP4_NIBBLE_GROUP=0); kSingleActiveDispatchWarp ported into the nibble kernel (closes a latent smem-overrun hazard, enables the 3-stage pipeline there) |
+| `b784815` | Nibble swapAB cutoff aligned to production (16 -> 8): cutoff-16 measured regressive on 48-local-expert geometry |
+
+Perf vs `d1c00cb` (interleaved ABBA medians, 8x H200): MiMo-V2.5-Pro geometry
+~-4% full-domain geomean (max -7.8%, no reliable point regressing >+1%);
+DeepSeek-R1 -3.4~-4.9% at m_e>=16, +~2% in the micro-decode band (m_e<=3).
+
+Correctness at the adopted set: gate 8x20 PASS across both commits; forced-BN256
+probes 448/config zero-fail in the small-M swapAB/pipeline domain (m_e 4-24,
+re-run after the cutoff change), the large-M race domain (m_e 1024/2048) and
+BN128 large-M; the standard-path (I>2048 / BN128) dispatch is byte-unchanged.
+DeepSeek-R1 GSM8K e2e (grouped decode live in serving): see below.
+
+E2E RESULT: timed round accuracy 0.957 (in-band), invalid 0.000, 117.2 s, 1208.9 tok/s — the fastest e2e of the whole campaign (prior optimized head 123.7 s / 1151 tok/s; buggy original baseline anchor 122.1 s / 1159 tok/s). Warmup round 0.959 / 152.5 s. Harness sha256 verified unchanged.
