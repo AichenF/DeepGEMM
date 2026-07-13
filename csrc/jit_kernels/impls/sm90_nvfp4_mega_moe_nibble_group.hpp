@@ -119,8 +119,13 @@ static void sm90_nvfp4_nibble_group_mega_moe(
     const int routed_tokens = num_tokens * num_topk;
     const float expected_tokens_per_local_expert =
         static_cast<float>(routed_tokens) / num_experts_per_rank;
+    // Match the production swapAB cutoff. The candidate's original cutoff-16
+    // was validated on Flash-like shapes only; 8-rank ABBA medians on
+    // MiMo-Pro (48 local experts) show +2.0%/+8.5% regressions at expected
+    // 9/16 vs the default path, mirroring the production-decoder E4 result.
+    // Revisit per-geometry if Flash-like shapes land on this path.
     const bool candidate_swap_ab =
-        routed_tokens <= 16 * num_experts_per_rank;
+        routed_tokens <= 8 * num_experts_per_rank;
     // The kernel now carries kSingleActiveDispatchWarp, so a verbatim copy of a
     // single-active-warp 3-stage plan is consistent. When this candidate widens
     // swapAB to expected 9..16 the plan config was built without swapAB —
