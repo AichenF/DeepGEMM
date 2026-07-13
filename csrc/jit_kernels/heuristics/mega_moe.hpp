@@ -311,6 +311,10 @@ static std::tuple<int, int> get_block_config_for_mega_moe_sm90() {
 static int get_num_experts_per_wave_for_mega_moe_sm90(
     const int& num_experts_per_rank, const int& num_tokens, const int& num_topk,
     const int& intermediate_hidden, const int& block_m, const int& block_n, const int& num_sms) {
+    // Tuning override (must divide the per-rank expert count).
+    const int forced_wave = get_env<int>("DG_SM90_MOE_EXPERTS_PER_WAVE", 0);
+    if (forced_wave > 0 && num_experts_per_rank % forced_wave == 0)
+        return forced_wave;
     // SM90 (Hopper) wave heuristic.
     //
     // The generic heuristic is useful in the middle of the block_m=64 band, but

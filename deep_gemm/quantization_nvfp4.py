@@ -205,3 +205,34 @@ if __name__ == "__main__":
     rel_err = (err[mask] / w_fp32_ref.abs()[mask]).mean().item()
     print(f"Element rel error (|ref|>0.05): {rel_err*100:.2f}%")
     print("OK")
+
+
+def nvfp4_group_nibbles_for_mega_moe_sm90(fused_weight: torch.Tensor,
+                                          chunk_rows: int = 512) -> torch.Tensor:
+    """Lossless in-place nibble regrouping of a fused 80B/row NVFP4 weight.
+
+    Within each 80-byte row block the 64 payload bytes are permuted so that each
+    4-byte group's eight E2M1 nibbles are stored as (4 high nibbles -> low u16,
+    4 low nibbles -> high u16), matching the SM90 grouped-nibble decode kernel.
+    Scale bytes and padding are untouched; the transform is a pure permutation
+    (zero growth) and processes bounded chunks so temporaries stay small.
+    """
+    assert fused_weight.dtype == torch.uint8 and fused_weight.dim() == 3
+    if getattr(fused_weight, '_dg_sm90_nvfp4_nibble_group', False):
+        return fused_weight
+    experts, rows, storage_k = fused_weight.shape
+    assert storage_k % 80 == 0
+    k_blocks = storage_k // 80
+    rows_view = fused_weight.view(experts, rows, k_blocks, 80)
+    for e in range(experts):
+        for r0 in range(0, rows, chunk_rows):
+            chunk = rows_view[e, r0:r0 + chunk_rows, :, :64]
+            q = chunk.reshape(-1, 16, 4).to(torch.int32)
+            high = (q >> 4) & 0xf
+            low = q & 0xf
+            h16 = high[..., 0] | (high[..., 1] << 4) | (high[..., 2] << 8) | (high[..., 3] << 12)
+            l16 = low[..., 0] | (low[..., 1] << 4) | (low[..., 2] << 8) | (low[..., 3] << 12)
+            grouped = (h16 | (l16 << 16)).to(torch.int32)
+            chunk.copy_(grouped.contiguous().view(torch.uint8).view(chunk.shape))
+    fused_weight._dg_sm90_nvfp4_nibble_group = True
+    return fused_weight

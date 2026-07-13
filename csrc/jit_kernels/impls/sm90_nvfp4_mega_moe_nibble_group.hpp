@@ -16,12 +16,14 @@ public:
             "        /* kLoaderDequantRequested */ {},\n"
             "        /* kSwapABRequested */ {},\n"
             "        /* kDp4aSelectorPack */ {},\n"
-            "        /* kHybridLowSelectorPack */ {}",
+            "        /* kHybridLowSelectorPack */ {},\n"
+            "        /* kSingleActiveDispatchWarp */ {}",
             args.phase_profile ? "true" : "false",
             args.loader_dequant ? "true" : "false",
             args.swap_ab ? "true" : "false",
             args.dp4a_selector_pack ? "true" : "false",
-            args.hybrid_low_selector_pack ? "true" : "false");
+            args.hybrid_low_selector_pack ? "true" : "false",
+            args.single_active_dispatch_warp ? "true" : "false");
         return fmt::format(R"(
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_nibble_group.cuh>
 
@@ -119,11 +121,30 @@ static void sm90_nvfp4_nibble_group_mega_moe(
         static_cast<float>(routed_tokens) / num_experts_per_rank;
     const bool candidate_swap_ab =
         routed_tokens <= 16 * num_experts_per_rank;
+    // The kernel now carries kSingleActiveDispatchWarp, so a verbatim copy of a
+    // single-active-warp 3-stage plan is consistent. When this candidate widens
+    // swapAB to expected 9..16 the plan config was built without swapAB —
+    // recompute, then attempt the same 3-stage single-active-warp upgrade the
+    // production plan builder applies at expected<=8.
+    bool single_active_dispatch_warp = plan.single_active_dispatch_warp;
     if (candidate_swap_ab != plan.swap_ab) {
+        single_active_dispatch_warp = false;
         std::tie(config.num_stages, config.smem_size) =
             get_nvfp4_pipeline_config_for_mega_moe_sm90(
                 num_experts, hidden, expected_tokens_per_local_expert,
                 config, plan.loader_dequant, true, candidate_swap_ab, false);
+        if (candidate_swap_ab && config.num_stages == 2) {
+            MegaMoESM90Config upgraded = config;
+            std::tie(upgraded.num_stages, upgraded.smem_size) =
+                get_nvfp4_pipeline_config_for_mega_moe_sm90(
+                    num_experts, hidden, expected_tokens_per_local_expert,
+                    upgraded, plan.loader_dequant, true, candidate_swap_ab, false,
+                    true);
+            if (upgraded.num_stages > config.num_stages) {
+                config = upgraded;
+                single_active_dispatch_warp = true;
+            }
+        }
     }
     const int weight_storage_k = static_cast<int>(l1_weights.size(2));
     const int weight_k_blocks = static_cast<int>(l1_weights_sf.size(2));
@@ -193,8 +214,11 @@ static void sm90_nvfp4_nibble_group_mega_moe(
         .l2_arrival_counter = false,
         .loader_dequant = plan.loader_dequant,
         .swap_ab = candidate_swap_ab,
-        .dp4a_selector_pack = plan.dp4a_selector_pack,
-        .hybrid_low_selector_pack = plan.hybrid_low_selector_pack,
+        // Both selector-pack variants are unused by the grouped-nibble decode
+        // helpers; force them off so they don't multiply JIT variants.
+        .dp4a_selector_pack = false,
+        .hybrid_low_selector_pack = false,
+        .single_active_dispatch_warp = single_active_dispatch_warp,
         .phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode,
         .config = config,
         .y = y.data_ptr(),

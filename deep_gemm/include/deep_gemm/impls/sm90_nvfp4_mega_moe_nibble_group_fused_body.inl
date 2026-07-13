@@ -113,7 +113,11 @@
     // but only use two warps for BN128 split L1 dispatch. The extra NVFP4
     // dispatch warps mostly add fixed small/mid-M overhead while loader-dequant
     // still needs its aligned 4-warp non-epilogue group.
-    constexpr uint32_t kNumActiveDispatchWarps = kNumDispatchWarps;
+    // With kSingleActiveDispatchWarp both dispatch warps stay resident for
+    // CTA-wide barriers, but only one performs routing and token pulls so its
+    // send buffer can be reassigned to an extra GEMM pipeline stage.
+    constexpr uint32_t kNumActiveDispatchWarps =
+        kSingleActiveDispatchWarp ? 1u : kNumDispatchWarps;
     constexpr uint32_t kNumActiveDispatchThreads = kNumActiveDispatchWarps * 32;
     constexpr bool kLoaderDequant = kLoaderDequantRequested && kNumMMANonEpilogueWarps == 4;
     constexpr bool kPackedBScratch = BLOCK_N == 256 && (!kLoaderDequant);

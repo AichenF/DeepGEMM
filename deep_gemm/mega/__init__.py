@@ -208,7 +208,41 @@ def nvfp4_mega_moe(y: torch.Tensor,
     the L1 gate/up interleave and prepack UE4M3 scales into
     ``(E, N/block_n, K/128, block_n, 8)``. ``block_n=256`` launches the fused
     phase; ``block_n=128`` launches split L1/L2.
+
+    For BN256 fused deployments with intermediate_hidden<=2048 the weights are
+    lazily regrouped (lossless nibble permutation, done once, tagged) and the
+    grouped-nibble decode kernel is used instead; disable with
+    ``DG_SM90_NVFP4_NIBBLE_GROUP=0``.
     """
+    import os
+    l1_packed, l1_scale = l1_weights
+    l2_packed, l2_scale = l2_weights
+    use_nibble = (
+        os.environ.get('DG_SM90_NVFP4_NIBBLE_GROUP', '1') != '0'
+        and l1_scale.dim() == 5 and l1_scale.size(3) == 256
+        and l2_scale.size(2) * 128 <= 2048
+        and l1_packed.size(2) == l1_scale.size(2) * 80
+        and l2_packed.size(2) == l2_scale.size(2) * 80
+    )
+    if use_nibble:
+        if not (getattr(l1_packed, '_dg_sm90_nvfp4_nibble_group', False)
+                and getattr(l2_packed, '_dg_sm90_nvfp4_nibble_group', False)):
+            assert not torch.cuda.is_current_stream_capturing(), \
+                'NVFP4 nibble regrouping must happen before CUDA graph capture'
+            from ..quantization_nvfp4 import nvfp4_group_nibbles_for_mega_moe_sm90
+            nvfp4_group_nibbles_for_mega_moe_sm90(l1_packed)
+            nvfp4_group_nibbles_for_mega_moe_sm90(l2_packed)
+        _C.nvfp4_nibble_group_mega_moe(
+            y, l1_weights, l2_weights,
+            cumulative_local_expert_recv_stats,
+            l1_global_scales, l2_global_scales,
+            sym_buffer.buffer,
+            sym_buffer.handle.buffer_ptrs, sym_buffer.group.rank(),
+            sym_buffer.num_max_tokens_per_rank,
+            sym_buffer.num_experts, sym_buffer.num_topk,
+            recipe, activation, activation_clamp, fast_math,
+        )
+        return
     _C.nvfp4_mega_moe(
         y, l1_weights, l2_weights,
         cumulative_local_expert_recv_stats,
