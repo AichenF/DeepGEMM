@@ -326,7 +326,8 @@ def nvfp4_group_nibbles_for_mega_moe_sm90(fused_weight: torch.Tensor,
     persistent layout marker. CUDA tensors use one native kernel launch for the
     whole tensor. The CPU fallback retains bounded chunks for offline/debug
     use. State is attached to the underlying storage, making the operation safe
-    for aliases and concurrent first use.
+    for aliases and concurrent first use. Later expert moves must copy complete
+    80-byte rows (including the marker); payload-only hot updates are unsupported.
     """
     assert fused_weight.dtype == torch.uint8 and fused_weight.dim() == 3
     assert fused_weight.is_contiguous()
