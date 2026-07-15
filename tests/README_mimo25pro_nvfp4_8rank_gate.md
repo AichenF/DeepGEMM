@@ -21,7 +21,7 @@
 每个 case 使用同一份随机 BF16 权重量化得到的 NVFP4 数据，构造两个独立存储副本：
 
 1. **standard**：保留标准 80-byte row 布局，强制走标准 decoder。
-2. **grouped**：只对 64-byte FP4 payload 做无损 nibble regroup，走最新版 grouped decoder；scale 和 padding 不变。
+2. **grouped**：只对 64-byte FP4 payload 做无损 nibble regroup，走最新版 grouped decoder；scale 不变，每个未使用的 padding word 写入布局标记，防止加载或搬运后选错 decoder。
 
 脚本检查：
 
@@ -30,6 +30,7 @@
 - kernel 输出全部为有限值，不允许 NaN/Inf 或未写出的 NaN；
 - kernel 回报的每个本地专家收包数与全局路由表逐项一致；
 - standard 输出与独立 PyTorch 参考计算比较。参考计算使用实际 FP8 输入值、实际 NVFP4 反量化权重、SwiGLU、route weight 和八 rank 汇总，不拿另一个 kernel 当参考答案；
+- 独立参考的默认门槛为：每 token cosine 最小值不低于 0.998、平均值不低于 0.9985，整体输出范数比例位于 0.99 到 1.01；
 - `uniform`：每个 token 向八个 rank 各发一个 route；
 - `hot`：每个 rank 固定一个热门专家，制造严重热点，同时每个 token 仍跨八个 rank；
 - `zipf`：按 Zipf 长尾分布采样，并保证每个源 rank 至少有一条远端 route；

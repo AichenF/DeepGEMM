@@ -23,6 +23,22 @@ __global__ void group_nvfp4_nibbles_kernel(std::uint8_t* data,
     // payload word, so 16 consecutive threads cover one payload block.
     const auto row_block_idx = word_idx >> 4;
     const auto word_in_payload = word_idx & 15;
+    auto* marker_ptr = reinterpret_cast<std::uint64_t*>(
+        data + row_block_idx * 80 + 72);
+    const auto warp_mask = __activemask();
+    const int lane_in_warp = threadIdx.x & 31;
+    int row_is_already_grouped = 0;
+    if ((lane_in_warp & 15) == 0)
+        row_is_already_grouped = *marker_ptr == kGroupedNibbleLayoutMarker;
+    // A row is exactly one aligned half-warp. Its leader samples the old marker
+    // and broadcasts it before any lane can publish the new one. This makes a
+    // sequential direct launch idempotent; the public wrapper additionally
+    // serializes concurrent callers.
+    row_is_already_grouped = __shfl_sync(
+        warp_mask, row_is_already_grouped, lane_in_warp & 16);
+    if (row_is_already_grouped)
+        return;
+
     auto* word_ptr = reinterpret_cast<std::uint32_t*>(
         data + row_block_idx * 80 + word_in_payload * sizeof(std::uint32_t));
     const std::uint32_t packed = *word_ptr;
@@ -40,9 +56,10 @@ __global__ void group_nvfp4_nibbles_kernel(std::uint8_t* data,
         ((packed >> 8)  & 0x00000f00u) |
         ((packed >> 12) & 0x0000f000u);
     *word_ptr = high_nibbles | (low_nibbles << 16);
+    // Publish the row marker only after all 16 payload words are visible.
+    __syncwarp(__activemask());
     if (word_in_payload == 0)
-        *reinterpret_cast<std::uint64_t*>(data + row_block_idx * 80 + 72) =
-            kGroupedNibbleLayoutMarker;
+        *marker_ptr = kGroupedNibbleLayoutMarker;
 }
 
 } // namespace
@@ -55,6 +72,10 @@ void nvfp4_group_nibbles_inplace_sm90(const torch::Tensor& fused_weight) {
     TORCH_CHECK(fused_weight.is_contiguous(), "NVFP4 fused weights must be contiguous");
     TORCH_CHECK(fused_weight.size(2) % 80 == 0,
                 "NVFP4 fused weight storage width must be divisible by 80 bytes");
+    TORCH_CHECK(fused_weight.storage_offset() == 0 and
+                    fused_weight.nbytes() == fused_weight.storage().nbytes(),
+                "raw NVFP4 nibble grouping requires a dedicated full storage; "
+                "use nvfp4_group_nibbles_for_mega_moe_sm90 for managed aliases");
 
     c10::cuda::CUDAGuard device_guard(fused_weight.device());
     const std::int64_t num_row_blocks =

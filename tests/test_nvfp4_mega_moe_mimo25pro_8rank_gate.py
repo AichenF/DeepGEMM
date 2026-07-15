@@ -720,10 +720,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--fast-math", type=int, choices=(0, 1), default=1)
     parser.add_argument("--candidate-atol", type=float, default=0.0)
     parser.add_argument("--stability-atol", type=float, default=0.0)
-    parser.add_argument("--cosine-mean-threshold", type=float, default=0.90)
-    parser.add_argument("--cosine-min-threshold", type=float, default=0.90)
-    parser.add_argument("--norm-ratio-min", type=float, default=0.50)
-    parser.add_argument("--norm-ratio-max", type=float, default=2.00)
+    parser.add_argument("--cosine-mean-threshold", type=float, default=0.9985)
+    parser.add_argument("--cosine-min-threshold", type=float, default=0.998)
+    parser.add_argument("--norm-ratio-min", type=float, default=0.99)
+    parser.add_argument("--norm-ratio-max", type=float, default=1.01)
     parser.add_argument(
         "--allow-non-h200",
         action="store_true",
@@ -740,6 +740,10 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--repeats must be positive")
     if args.candidate_atol < 0 or args.stability_atol < 0:
         parser.error("output tolerances must be non-negative")
+    if not 0.0 <= args.cosine_min_threshold <= args.cosine_mean_threshold <= 1.0:
+        parser.error("cosine thresholds must satisfy 0 <= min <= mean <= 1")
+    if args.norm_ratio_min <= 0.0 or args.norm_ratio_min > args.norm_ratio_max:
+        parser.error("norm ratio thresholds must satisfy 0 < min <= max")
     return args
 
 

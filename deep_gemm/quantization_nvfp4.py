@@ -19,6 +19,8 @@ UE4M3_MAX_FINITE = 448.0
 _NVFP4_NIBBLE_GROUP_LOCK = threading.RLock()
 _NVFP4_NIBBLE_GROUP_STORAGE_ATTR = '_dg_sm90_nvfp4_nibble_group_state'
 _NVFP4_NIBBLE_GROUP_MARKER = b'DGNGv1!!'
+_NVFP4_NIBBLE_GROUP_MARKER_U64 = int.from_bytes(
+    _NVFP4_NIBBLE_GROUP_MARKER, byteorder='little', signed=False)
 
 
 def _set_nvfp4_storage_layout(fused_weight: torch.Tensor, layout: str) -> None:
@@ -51,9 +53,10 @@ def nvfp4_is_nibble_grouped_for_mega_moe_sm90(fused_weight: torch.Tensor) -> boo
         if state.get('version') == int(fused_weight._version):
             return layout == 'sm90_nvfp4_grouped_nibbles_v1'
 
-    # Tensor wrapper attributes disappear across clone/.to()/torch.save. Fused
-    # layouts therefore reserve the first and last padding words as an in-band
-    # marker. Reading them is only needed once when storage metadata is absent.
+    # Tensor wrapper attributes disappear across clone/.to()/torch.save. Every
+    # fused 80-byte row therefore carries an in-band marker. Validate all rows
+    # whenever metadata is absent or its Tensor version is stale: checking only
+    # the allocation endpoints would misclassify a partially copied expert.
     if (
         fused_weight.dtype != torch.uint8
         or fused_weight.dim() != 3
@@ -61,21 +64,38 @@ def nvfp4_is_nibble_grouped_for_mega_moe_sm90(fused_weight: torch.Tensor) -> boo
         or fused_weight.numel() == 0
     ):
         return False
+
+    def count_grouped_markers() -> tuple[int, int]:
+        rows = fused_weight.view(-1, 80)
+        # Padding words are naturally 8-byte aligned (72 mod 8 == 0). Viewing
+        # them as int64 avoids allocating an eight-times-larger bytewise mask.
+        marker_words = rows[:, 72:80].view(torch.int64).reshape(-1)
+        count = int(torch.count_nonzero(
+            marker_words == _NVFP4_NIBBLE_GROUP_MARKER_U64).item())
+        return count, marker_words.numel()
+
     if fused_weight.is_cuda:
         with torch.cuda.device(fused_weight.device):
             if torch.cuda.is_current_stream_capturing():
                 raise RuntimeError(
                     'NVFP4 layout metadata must be restored before CUDA graph capture')
-            first_marker = bytes(fused_weight[0, 0, 72:80].cpu().tolist())
-            last_marker = bytes(fused_weight[-1, -1, -8:].cpu().tolist())
+            num_grouped, num_rows = count_grouped_markers()
     else:
-        first_marker = bytes(fused_weight[0, 0, 72:80].tolist())
-        last_marker = bytes(fused_weight[-1, -1, -8:].tolist())
-    grouped = first_marker == _NVFP4_NIBBLE_GROUP_MARKER and last_marker == _NVFP4_NIBBLE_GROUP_MARKER
-    _set_nvfp4_storage_layout(
-        fused_weight,
-        'sm90_nvfp4_grouped_nibbles_v1' if grouped else 'sm90_nvfp4_plain_nibbles_v1',
-    )
+        num_grouped, num_rows = count_grouped_markers()
+    if num_grouped not in (0, num_rows):
+        _set_nvfp4_storage_layout(fused_weight, 'sm90_nvfp4_failed_v1')
+        raise RuntimeError(
+            'NVFP4 storage contains a mix of grouped and plain row markers; '
+            'reload and prepack the complete weight before use (fail-closed)')
+    grouped = num_grouped == num_rows
+    # Storage metadata describes the whole allocation, so do not publish it
+    # from a partial view whose out-of-view rows were not validated. Managed
+    # aliases normally inherit the state already attached by the full tensor.
+    if fused_weight.storage_offset() == 0 and storage.nbytes() == fused_weight.numel():
+        _set_nvfp4_storage_layout(
+            fused_weight,
+            'sm90_nvfp4_grouped_nibbles_v1' if grouped else 'sm90_nvfp4_plain_nibbles_v1',
+        )
     return grouped
 
 
@@ -334,7 +354,7 @@ def nvfp4_group_nibbles_for_mega_moe_sm90(fused_weight: torch.Tensor,
             if fused_weight.is_cuda:
                 with torch.cuda.device(fused_weight.device):
                     from . import _C
-                    _C.nvfp4_group_nibbles_inplace_sm90(fused_weight)
+                    _C._nvfp4_group_nibbles_inplace_sm90(fused_weight)
                     # Do not publish the process-local grouped state until the
                     # payload and all persistent markers finish successfully.
                     completion = torch.cuda.Event()

@@ -1,10 +1,13 @@
 #pragma once
 
 #include <ATen/cuda/CUDAContext.h>
+#include <cerrno>
+#include <cstdio>
 #include <cuda_runtime.h>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <nvrtc.h>
 #include <regex>
 #include <string>
@@ -29,11 +32,33 @@ public:
     explicit ScopedJITFileLock(const std::filesystem::path& path) {
         fd = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0666);
         DG_HOST_ASSERT(fd >= 0 and "failed to open the DeepGEMM JIT lock file");
-        if (::flock(fd, LOCK_EX) != 0) {
-            ::close(fd);
-            fd = -1;
-            DG_HOST_ASSERT(false and "failed to lock the DeepGEMM JIT cache");
+        int lock_result;
+        do {
+            lock_result = ::flock(fd, LOCK_EX);
+        } while (lock_result != 0 and errno == EINTR);
+        if (lock_result == 0)
+            return;
+
+        const int lock_errno = errno;
+        ::close(fd);
+        fd = -1;
+        if (lock_errno == ENOLCK or lock_errno == ENOSYS or lock_errno == EOPNOTSUPP) {
+            // Some shared filesystems do not implement flock. Correctness does
+            // not depend on the advisory lock: every contender still compiles
+            // into a private directory, fsyncs it, and atomically renames the
+            // whole directory into the cache. The fallback only permits
+            // duplicate cold compilation; it never exposes a partial CUBIN.
+            static std::once_flag warning_once;
+            std::call_once(warning_once, [&] {
+                std::fprintf(
+                    stderr,
+                    "Warning: DeepGEMM JIT cache locking is unavailable for %s "
+                    "(errno=%d); continuing with atomic-publish fallback\n",
+                    path.c_str(), lock_errno);
+            });
+            return;
         }
+        DG_HOST_ASSERT(false and "failed to lock the DeepGEMM JIT cache");
     }
 
     ScopedJITFileLock(const ScopedJITFileLock&) = delete;

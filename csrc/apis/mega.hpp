@@ -387,7 +387,10 @@ static void register_apis(pybind11::module_& m) {
     m.def("get_symm_buffer_size_for_mega_moe", &get_symm_buffer_size_for_mega_moe);
     m.def("fp8_fp4_mega_moe", &fp8_fp4_mega_moe);
     m.def("nvfp4_mega_moe", &nvfp4_mega_moe);
-    m.def("nvfp4_group_nibbles_inplace_sm90", &nvfp4_group_nibbles_inplace_sm90);
+    // The raw mutating launch is intentionally private. Public callers must go
+    // through the Python storage-state wrapper, which provides alias,
+    // persistence, stream-completion, and fail-closed guarantees.
+    m.def("_nvfp4_group_nibbles_inplace_sm90", &nvfp4_group_nibbles_inplace_sm90);
     m.def("nvfp4_nibble_group_mega_moe", &nvfp4_nibble_group_mega_moe);
     m.def("nvfp4_per128_pro_braided_3stage_mega_moe", &nvfp4_per128_pro_braided_3stage_mega_moe);
     m.def("nvfp4_pro_candidate_mega_moe", &nvfp4_pro_candidate_mega_moe);

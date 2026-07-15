@@ -100,7 +100,7 @@ def _require_sm90_devices(count: int = 1) -> list[int]:
         pytest.skip("CUDA is not available")
     if not hasattr(
         getattr(deep_gemm, "_C", object()),
-        "nvfp4_group_nibbles_inplace_sm90",
+        "_nvfp4_group_nibbles_inplace_sm90",
     ):
         pytest.skip("DeepGEMM native nibble-group transform is not built")
     if torch.cuda.device_count() < count:
@@ -183,6 +183,20 @@ def test_cpu_copy_invalidates_cached_layout_via_tensor_version() -> None:
     assert _storage_layout(destination) == _GROUPED_LAYOUT
 
 
+def test_cpu_partial_expert_copy_is_rejected_as_mixed_layout() -> None:
+    grouped, _ = _make_fused_weight(seed=39)
+    plain, _ = _make_fused_weight(seed=40)
+    nvfp4.nvfp4_group_nibbles_for_mega_moe_sm90(grouped)
+
+    # This mirrors an expert hot-swap/EPLB-style view update, but deliberately
+    # copies standard-layout bytes into grouped storage. Endpoint-only marker
+    # checks miss the middle expert; all-row validation must fail closed.
+    grouped[1].copy_(plain[1])
+    with pytest.raises(RuntimeError, match="mix of grouped and plain"):
+        nvfp4.nvfp4_is_nibble_grouped_for_mega_moe_sm90(grouped)
+    assert _storage_layout(grouped) == _FAILED_LAYOUT
+
+
 def test_cpu_transform_failure_is_fail_closed() -> None:
     fused, _ = _make_fused_weight(seed=41)
     with pytest.raises((AssertionError, ValueError)):
@@ -218,6 +232,20 @@ def test_cuda_alias_double_call_and_two_stream_visibility() -> None:
         nvfp4.nvfp4_group_nibbles_for_mega_moe_sm90(fused.view_as(fused))
     consumer.synchronize()
     assert torch.equal(fused, snapshot)
+
+    # The private native entry is not a supported public API, but keeping a
+    # sequential launch idempotent makes accidental internal reuse fail safe.
+    with torch.cuda.stream(consumer):
+        deep_gemm._C._nvfp4_group_nibbles_inplace_sm90(fused)
+    consumer.synchronize()
+    assert torch.equal(fused, snapshot)
+
+
+def test_cuda_private_native_entry_rejects_plain_slice() -> None:
+    device = _require_sm90_devices()[0]
+    fused, _ = _make_fused_weight(device=f"cuda:{device}", seed=51)
+    with pytest.raises(RuntimeError, match="dedicated full storage"):
+        deep_gemm._C._nvfp4_group_nibbles_inplace_sm90(fused[1:2])
 
 
 def test_cuda_transform_uses_weight_device_not_current_device() -> None:
