@@ -312,15 +312,15 @@ def nvfp4_group_nibbles_for_mega_moe_sm90(fused_weight: torch.Tensor,
     assert fused_weight.is_contiguous()
     assert fused_weight.shape[2] % 80 == 0
     storage = fused_weight.untyped_storage()
-    if fused_weight.storage_offset() != 0 or storage.nbytes() != fused_weight.numel():
-        raise ValueError(
-            'NVFP4 nibble grouping requires a dedicated, full uint8 storage; '
-            'sliced weight views are not safe to transform in place')
 
     with _NVFP4_NIBBLE_GROUP_LOCK:
         if nvfp4_is_nibble_grouped_for_mega_moe_sm90(fused_weight):
             fused_weight._dg_sm90_nvfp4_nibble_group = True
             return fused_weight
+        if fused_weight.storage_offset() != 0 or storage.nbytes() != fused_weight.numel():
+            raise ValueError(
+                'NVFP4 nibble grouping requires a dedicated, full uint8 storage; '
+                'sliced plain-weight views are not safe to transform in place')
 
         experts, rows, storage_k = fused_weight.shape
         k_blocks = storage_k // 80
