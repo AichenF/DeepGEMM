@@ -86,6 +86,9 @@ def check_layout_policy() -> None:
         # Pro crosses between expected 190 and 192.
         (1520, 6, 48, 3072, 256),
         (1521, 6, 48, 3072, 128),
+        # MiMo 2.5 Pro uses the measured all-range fused layout.
+        (1, 8, 48, 2048, 256),
+        (8192, 8, 48, 2048, 256),
     ]
     for num_tokens, topk, local_experts, intermediate, expected_block_n in cases:
         actual_block_n = choose_nvfp4_block_n_for_mega_moe_sm90(

@@ -120,7 +120,20 @@ def choose_nvfp4_block_n_for_mega_moe_sm90(
     Use routed work per local expert rather than raw M so the rule scales with
     EP and top-k. H20 eight-rank multi-seed ABBA sweeps place the Flash/middle
     crossover at expected 192 and the Pro crossover between 190 and 192.
+
+    MiMo 2.5 Pro is kept on the fused BN256 layout for the whole serving range.
+    An eight-H200 NVSwitch A/B/B/A sweep at its exact local geometry
+    (48 experts/rank, top-8, intermediate 2048) found BN256 neutral at the two
+    ends and 2.8--17.9% faster for M=1024--4096.  Prepacking one static layout
+    therefore performs better than switching to the split layout above the
+    legacy routed-work cutoff.
     """
+    if (
+        num_topk == 8
+        and num_experts_per_rank == 48
+        and intermediate_hidden == 2048
+    ):
+        return 256
     cutoff = 190 if intermediate_hidden >= 3072 else 192
     routed_tokens = num_tokens * num_topk
     return 256 if routed_tokens <= cutoff * num_experts_per_rank else 128
