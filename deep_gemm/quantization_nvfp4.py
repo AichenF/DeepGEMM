@@ -1,4 +1,6 @@
 """Offline NVFP4 quantization for SM90 fused MegaMoE."""
+import threading
+
 import torch
 
 
@@ -12,6 +14,69 @@ UE4M3_MIN_DENORM = 2.0 ** -9
 UE4M3_MAX_DENORM = 7.0 * UE4M3_MIN_DENORM
 UE4M3_MIN_NORMAL = 2.0 ** -6
 UE4M3_MAX_FINITE = 448.0
+
+
+_NVFP4_NIBBLE_GROUP_LOCK = threading.RLock()
+_NVFP4_NIBBLE_GROUP_STORAGE_ATTR = '_dg_sm90_nvfp4_nibble_group_state'
+_NVFP4_NIBBLE_GROUP_MARKER = b'DGNGv1!!'
+
+
+def _set_nvfp4_storage_layout(fused_weight: torch.Tensor, layout: str) -> None:
+    storage = fused_weight.untyped_storage()
+    setattr(storage, _NVFP4_NIBBLE_GROUP_STORAGE_ATTR, {
+        'layout': layout,
+        'nbytes': storage.nbytes(),
+        'version': int(fused_weight._version),
+    })
+
+
+def nvfp4_is_nibble_grouped_for_mega_moe_sm90(fused_weight: torch.Tensor) -> bool:
+    """Return whether the underlying storage uses the grouped-nibble layout.
+
+    The marker lives on ``UntypedStorage`` rather than on a Tensor wrapper so
+    views and aliases observe the same state and cannot regroup the bytes.
+    """
+    storage = fused_weight.untyped_storage()
+    state = getattr(storage, _NVFP4_NIBBLE_GROUP_STORAGE_ATTR, None)
+    state_matches_storage = (
+        isinstance(state, dict)
+        and state.get('nbytes') == storage.nbytes()
+    )
+    if state_matches_storage:
+        layout = state.get('layout')
+        if layout in ('sm90_nvfp4_transforming_v1', 'sm90_nvfp4_failed_v1'):
+            raise RuntimeError(
+                f'NVFP4 storage is in fail-closed layout state {layout!r}; '
+                'reload and prepack the weights before use')
+        if state.get('version') == int(fused_weight._version):
+            return layout == 'sm90_nvfp4_grouped_nibbles_v1'
+
+    # Tensor wrapper attributes disappear across clone/.to()/torch.save. Fused
+    # layouts therefore reserve the first and last padding words as an in-band
+    # marker. Reading them is only needed once when storage metadata is absent.
+    if (
+        fused_weight.dtype != torch.uint8
+        or fused_weight.dim() != 3
+        or fused_weight.shape[2] % 80 != 0
+        or fused_weight.numel() == 0
+    ):
+        return False
+    if fused_weight.is_cuda:
+        with torch.cuda.device(fused_weight.device):
+            if torch.cuda.is_current_stream_capturing():
+                raise RuntimeError(
+                    'NVFP4 layout metadata must be restored before CUDA graph capture')
+            first_marker = bytes(fused_weight[0, 0, 72:80].cpu().tolist())
+            last_marker = bytes(fused_weight[-1, -1, -8:].cpu().tolist())
+    else:
+        first_marker = bytes(fused_weight[0, 0, 72:80].tolist())
+        last_marker = bytes(fused_weight[-1, -1, -8:].tolist())
+    grouped = first_marker == _NVFP4_NIBBLE_GROUP_MARKER and last_marker == _NVFP4_NIBBLE_GROUP_MARKER
+    _set_nvfp4_storage_layout(
+        fused_weight,
+        'sm90_nvfp4_grouped_nibbles_v1' if grouped else 'sm90_nvfp4_plain_nibbles_v1',
+    )
+    return grouped
 
 
 def fp32_to_fp4_nibble(x: torch.Tensor) -> torch.Tensor:
@@ -144,14 +209,21 @@ def nvfp4_fuse_packed_with_scale_tile_major(
     )
     fused[..., :scale_offset] = packed_tile
     fused[..., scale_offset : scale_offset + groups_per_k_block] = scale_tile_major
-    return (
+    result = (
         fused.permute(0, 1, 3, 2, 4)
         .reshape(E, N, k_blocks * fused_row_bytes)
         .contiguous()
     )
+    # Padding was previously left uninitialized. Zeroing it makes the standard
+    # layout deterministic and reserves its first/last words for a persistent
+    # grouped-layout marker.
+    result.view(E, N, k_blocks, fused_row_bytes)[..., scale_offset + groups_per_k_block:].zero_()
+    _set_nvfp4_storage_layout(result, 'sm90_nvfp4_plain_nibbles_v1')
+    return result
 
 
 def dequantize_nvfp4_to_fp32(packed: torch.Tensor, scale_ue4m3: torch.Tensor, group_size: int = 16) -> torch.Tensor:
+    grouped_nibble_layout = nvfp4_is_nibble_grouped_for_mega_moe_sm90(packed)
     if scale_ue4m3.dim() == 5:
         E, n_blocks, k_blocks, block_n, groups_per_k_block = scale_ue4m3.shape
         fused_row_bytes = 80
@@ -169,6 +241,22 @@ def dequantize_nvfp4_to_fp32(packed: torch.Tensor, scale_ue4m3: torch.Tensor, gr
             .contiguous()
             .view(E, n_blocks * block_n, k_blocks * groups_per_k_block)
         )
+    if grouped_nibble_layout:
+        # Convert the debug/reference copy back to Marlin byte order. The
+        # serving tensor itself remains grouped and is never mutated here.
+        *packed_outer_shape, packed_k_half = packed.shape
+        q = packed.view(*packed_outer_shape, packed_k_half // 4, 4)
+        high = torch.stack(
+            [q[..., 0] & 0x0F, q[..., 0] >> 4,
+             q[..., 1] & 0x0F, q[..., 1] >> 4],
+            dim=-1,
+        )
+        low = torch.stack(
+            [q[..., 2] & 0x0F, q[..., 2] >> 4,
+             q[..., 3] & 0x0F, q[..., 3] >> 4],
+            dim=-1,
+        )
+        packed = (low | (high << 4)).reshape(*packed_outer_shape, packed_k_half).contiguous()
     *outer_shape, K_half = packed.shape
     K = K_half * 2
     G = K // group_size
@@ -214,25 +302,68 @@ def nvfp4_group_nibbles_for_mega_moe_sm90(fused_weight: torch.Tensor,
     Within each 80-byte row block the 64 payload bytes are permuted so that each
     4-byte group's eight E2M1 nibbles are stored as (4 high nibbles -> low u16,
     4 low nibbles -> high u16), matching the SM90 grouped-nibble decode kernel.
-    Scale bytes and padding are untouched; the transform is a pure permutation
-    (zero growth) and processes bounded chunks so temporaries stay small.
+    Scale bytes are untouched; every otherwise-unused padding word receives a
+    persistent layout marker. CUDA tensors use one native kernel launch for the
+    whole tensor. The CPU fallback retains bounded chunks for offline/debug
+    use. State is attached to the underlying storage, making the operation safe
+    for aliases and concurrent first use.
     """
     assert fused_weight.dtype == torch.uint8 and fused_weight.dim() == 3
-    if getattr(fused_weight, '_dg_sm90_nvfp4_nibble_group', False):
-        return fused_weight
-    experts, rows, storage_k = fused_weight.shape
-    assert storage_k % 80 == 0
-    k_blocks = storage_k // 80
-    rows_view = fused_weight.view(experts, rows, k_blocks, 80)
-    for e in range(experts):
-        for r0 in range(0, rows, chunk_rows):
-            chunk = rows_view[e, r0:r0 + chunk_rows, :, :64]
-            q = chunk.reshape(-1, 16, 4).to(torch.int32)
-            high = (q >> 4) & 0xf
-            low = q & 0xf
-            h16 = high[..., 0] | (high[..., 1] << 4) | (high[..., 2] << 8) | (high[..., 3] << 12)
-            l16 = low[..., 0] | (low[..., 1] << 4) | (low[..., 2] << 8) | (low[..., 3] << 12)
-            grouped = (h16 | (l16 << 16)).to(torch.int32)
-            chunk.copy_(grouped.contiguous().view(torch.uint8).view(chunk.shape))
-    fused_weight._dg_sm90_nvfp4_nibble_group = True
+    assert fused_weight.is_contiguous()
+    assert fused_weight.shape[2] % 80 == 0
+    storage = fused_weight.untyped_storage()
+    if fused_weight.storage_offset() != 0 or storage.nbytes() != fused_weight.numel():
+        raise ValueError(
+            'NVFP4 nibble grouping requires a dedicated, full uint8 storage; '
+            'sliced weight views are not safe to transform in place')
+
+    with _NVFP4_NIBBLE_GROUP_LOCK:
+        if nvfp4_is_nibble_grouped_for_mega_moe_sm90(fused_weight):
+            fused_weight._dg_sm90_nvfp4_nibble_group = True
+            return fused_weight
+
+        experts, rows, storage_k = fused_weight.shape
+        k_blocks = storage_k // 80
+        if fused_weight.is_cuda:
+            with torch.cuda.device(fused_weight.device):
+                if torch.cuda.is_current_stream_capturing():
+                    raise RuntimeError(
+                        'NVFP4 nibble grouping must finish before CUDA graph capture')
+        _set_nvfp4_storage_layout(fused_weight, 'sm90_nvfp4_transforming_v1')
+        try:
+            if fused_weight.is_cuda:
+                with torch.cuda.device(fused_weight.device):
+                    from . import _C
+                    _C.nvfp4_group_nibbles_inplace_sm90(fused_weight)
+                    # Do not publish the process-local grouped state until the
+                    # payload and all persistent markers finish successfully.
+                    completion = torch.cuda.Event()
+                    completion.record(torch.cuda.current_stream(fused_weight.device))
+                    completion.synchronize()
+            else:
+                assert chunk_rows > 0
+                rows_view = fused_weight.view(experts, rows, k_blocks, 80)
+                for e in range(experts):
+                    for r0 in range(0, rows, chunk_rows):
+                        chunk = rows_view[e, r0:r0 + chunk_rows, :, :64]
+                        q = chunk.reshape(-1, 16, 4).to(torch.int32)
+                        high = (q >> 4) & 0xf
+                        low = q & 0xf
+                        h16 = high[..., 0] | (high[..., 1] << 4) | (high[..., 2] << 8) | (high[..., 3] << 12)
+                        l16 = low[..., 0] | (low[..., 1] << 4) | (low[..., 2] << 8) | (low[..., 3] << 12)
+                        grouped = (h16 | (l16 << 16)).to(torch.int32)
+                        chunk.copy_(grouped.contiguous().view(torch.uint8).view(chunk.shape))
+
+                marker = torch.tensor(
+                    list(_NVFP4_NIBBLE_GROUP_MARKER), dtype=torch.uint8,
+                    device=fused_weight.device)
+                rows_view[..., 72:80].copy_(marker)
+        except BaseException:
+            _set_nvfp4_storage_layout(fused_weight, 'sm90_nvfp4_failed_v1')
+            raise
+
+        _set_nvfp4_storage_layout(fused_weight, 'sm90_nvfp4_grouped_nibbles_v1')
+        # Retain the legacy Tensor marker for callers that inspect it, while
+        # correctness decisions use the alias-safe storage marker above.
+        fused_weight._dg_sm90_nvfp4_nibble_group = True
     return fused_weight

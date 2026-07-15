@@ -14,7 +14,7 @@ from setuptools import find_packages
 from setuptools.command.build_py import build_py
 from packaging.version import parse
 from pathlib import Path
-from torch.utils.cpp_extension import CUDAExtension, CUDA_HOME
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME
 from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 from scripts.generate_pyi import generate_pyi_file
 
@@ -24,21 +24,29 @@ DG_FORCE_BUILD = int(os.getenv('DG_FORCE_BUILD', '0')) == 1
 DG_USE_LOCAL_VERSION = int(os.getenv('DG_USE_LOCAL_VERSION', '1')) == 1
 DG_JIT_USE_RUNTIME_API = int(os.environ.get('DG_JIT_USE_RUNTIME_API', '0')) == 1
 
+# The only statically compiled CUDA kernel in this extension is an SM90 weight
+# prepack helper. Keep headless/CI builds deterministic; serving kernels remain
+# architecture-specialized by DeepGEMM's runtime JIT.
+os.environ.setdefault('TORCH_CUDA_ARCH_LIST', '9.0')
+
 # Compiler flags
 cxx_flags = ['-std=c++17', '-O3', '-fPIC', '-Wno-psabi', '-Wno-deprecated-declarations',
              f'-D_GLIBCXX_USE_CXX11_ABI={int(torch.compiled_with_cxx11_abi())}']
+nvcc_flags = ['-std=c++17', '-O3',
+              f'-D_GLIBCXX_USE_CXX11_ABI={int(torch.compiled_with_cxx11_abi())}']
 if DG_JIT_USE_RUNTIME_API:
     cxx_flags.append('-DDG_JIT_USE_RUNTIME_API')
+    nvcc_flags.append('-DDG_JIT_USE_RUNTIME_API')
 
 # Sources
 current_dir = os.path.dirname(os.path.realpath(__file__))
-sources = ['csrc/python_api.cpp']
+sources = ['csrc/python_api.cpp', 'csrc/kernels/nvfp4_nibble_group.cu']
 build_include_dirs = [
     f'{CUDA_HOME}/include',
     f'{CUDA_HOME}/include/cccl',
-    'deep_gemm/include',
-    'third-party/cutlass/include',
-    'third-party/fmt/include',
+    os.path.join(current_dir, 'deep_gemm/include'),
+    os.path.join(current_dir, 'third-party/cutlass/include'),
+    os.path.join(current_dir, 'third-party/fmt/include'),
 ]
 build_libraries = ['cudart', 'nvrtc']
 build_library_dirs = [f'{CUDA_HOME}/lib64']
@@ -108,7 +116,7 @@ def get_ext_modules():
                           include_dirs=build_include_dirs,
                           libraries=build_libraries,
                           library_dirs=build_library_dirs,
-                          extra_compile_args=cxx_flags)]
+                          extra_compile_args={'cxx': cxx_flags, 'nvcc': nvcc_flags})]
 
 
 class CustomBuildPy(build_py):
@@ -209,6 +217,7 @@ if __name__ == '__main__':
         zip_safe=False,
         cmdclass={
             'build_py': CustomBuildPy,
+            'build_ext': BuildExtension,
             'bdist_wheel': CachedWheelsCommand,
         },
     )

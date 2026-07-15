@@ -8,6 +8,8 @@
 #include <nvrtc.h>
 #include <regex>
 #include <string>
+#include <sys/file.h>
+#include <unistd.h>
 
 #include "../utils/exception.hpp"
 #include "../utils/format.hpp"
@@ -19,6 +21,31 @@
 #include "include_parser.hpp"
 
 namespace deep_gemm {
+
+class ScopedJITFileLock final {
+    int fd = -1;
+
+public:
+    explicit ScopedJITFileLock(const std::filesystem::path& path) {
+        fd = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0666);
+        DG_HOST_ASSERT(fd >= 0 and "failed to open the DeepGEMM JIT lock file");
+        if (::flock(fd, LOCK_EX) != 0) {
+            ::close(fd);
+            fd = -1;
+            DG_HOST_ASSERT(false and "failed to lock the DeepGEMM JIT cache");
+        }
+    }
+
+    ScopedJITFileLock(const ScopedJITFileLock&) = delete;
+    ScopedJITFileLock& operator=(const ScopedJITFileLock&) = delete;
+
+    ~ScopedJITFileLock() {
+        if (fd >= 0) {
+            ::flock(fd, LOCK_UN);
+            ::close(fd);
+        }
+    }
+};
 
 class Compiler {
 public:
@@ -114,44 +141,54 @@ public:
         if (const auto runtime = kernel_runtime_cache->get(dir_path); runtime != nullptr)
             return runtime;
 
-        // Compile into a temporary directory, then atomically rename the whole directory
-        // NOTES: renaming a directory is atomic on both local and distributed filesystems,
-        // avoiding the stale inode issue that occurs when renaming individual files
-        const auto tmp_dir_path = make_tmp_dir() / get_uuid();
-        make_dirs(tmp_dir_path);
+        // Multiple local ranks commonly reach the same cold kernel at once.
+        // Serialize compilation by signature and recheck after acquiring the
+        // process-shared lock so one rank builds while the others reuse its
+        // atomically published CUBIN. flock is released automatically if the
+        // compiler process exits, so a stale lock file cannot deadlock restart.
+        const auto lock_dir_path = make_dirs(cache_dir_path / "locks");
+        const auto lock_path = lock_dir_path / fmt::format("{}.lock", dir_path.filename().string());
+        {
+            const ScopedJITFileLock compile_lock(lock_path);
+            if (not KernelRuntime::check_validity(dir_path)) {
+                // Compile into a temporary directory, then atomically rename the whole directory
+                // NOTES: renaming a directory is atomic on both local and distributed filesystems,
+                // avoiding the stale inode issue that occurs when renaming individual files
+                const auto tmp_dir_path = make_tmp_dir() / get_uuid();
+                make_dirs(tmp_dir_path);
 
-        // Compile into the temporary directory
-        const auto tmp_cubin_path = tmp_dir_path / "kernel.cubin";
-        if (get_env<int>("DG_JIT_DUMP_ASM") or get_env<int>("DG_JIT_DUMP_PTX")) {
-            const auto tmp_ptx_path = tmp_dir_path / "kernel.ptx";
-            compile(code, tmp_dir_path, tmp_cubin_path, tmp_ptx_path);
-        } else {
-            compile(code, tmp_dir_path, tmp_cubin_path);
+                // Compile into the temporary directory
+                const auto tmp_cubin_path = tmp_dir_path / "kernel.cubin";
+                if (get_env<int>("DG_JIT_DUMP_ASM") or get_env<int>("DG_JIT_DUMP_PTX")) {
+                    const auto tmp_ptx_path = tmp_dir_path / "kernel.ptx";
+                    compile(code, tmp_dir_path, tmp_cubin_path, tmp_ptx_path);
+                } else {
+                    compile(code, tmp_dir_path, tmp_cubin_path);
+                }
+
+                // Disassemble if needed
+                if (get_env<int>("DG_JIT_DUMP_ASM") or get_env<int>("DG_JIT_DUMP_SASS")) {
+                    const auto tmp_sass_path = tmp_dir_path / "kernel.sass";
+                    disassemble(tmp_cubin_path, tmp_sass_path);
+                }
+
+                // Fsync before rename to ensure visibility on distributed filesystems
+                fsync_dir(tmp_dir_path);
+
+                // Atomically rename the temporary directory to the final cache path
+                make_dirs(dir_path.parent_path());
+                std::error_code error_code;
+                std::filesystem::rename(tmp_dir_path, dir_path, error_code);
+                if (error_code) {
+                    // Another rank beat us, then clean up our temporary directory.
+                    safe_remove_all(tmp_dir_path);
+                }
+            }
         }
 
-        // Disassemble if needed
-        if (get_env<int>("DG_JIT_DUMP_ASM") or get_env<int>("DG_JIT_DUMP_SASS")) {
-            const auto tmp_sass_path = tmp_dir_path / "kernel.sass";
-            disassemble(tmp_cubin_path, tmp_sass_path);
-        }
-
-        // Fsync before rename to ensure visibility on distributed filesystems
-        fsync_dir(tmp_dir_path);
-
-        // Atomically rename the temporary directory to the final cache path
-        // NOTES: if another rank already created dir_path, rename will fail — that's fine
-        make_dirs(dir_path.parent_path());
-        std::error_code error_code;
-        std::filesystem::rename(tmp_dir_path, dir_path, error_code);
-        if (error_code) {
-            // Another rank beat us, then clean up our dir and use the existing one
-            // NOTES: avoid `std::filesystem::remove_all` here — it can segfault on
-            // distributed filesystems, when concurrent processes operate
-            // on the same parent directory, causing stale directory entries
-            safe_remove_all(tmp_dir_path);
-        }
-
-        // Put into the runtime cache
+        // The compile lock is deliberately released before CUBIN inspection
+        // and module loading so all ranks can load the published image in
+        // parallel and reach the first collective kernel together.
         const auto runtime = kernel_runtime_cache->get(dir_path);
         DG_HOST_ASSERT(runtime != nullptr);
         return runtime;

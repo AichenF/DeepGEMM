@@ -7,6 +7,7 @@
 #include "../jit/compiler.hpp"
 #endif
 #include "../jit/device_runtime.hpp"
+#include "../kernels/nvfp4_nibble_group.hpp"
 #include "../jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe_nibble_group.hpp"
@@ -386,6 +387,7 @@ static void register_apis(pybind11::module_& m) {
     m.def("get_symm_buffer_size_for_mega_moe", &get_symm_buffer_size_for_mega_moe);
     m.def("fp8_fp4_mega_moe", &fp8_fp4_mega_moe);
     m.def("nvfp4_mega_moe", &nvfp4_mega_moe);
+    m.def("nvfp4_group_nibbles_inplace_sm90", &nvfp4_group_nibbles_inplace_sm90);
     m.def("nvfp4_nibble_group_mega_moe", &nvfp4_nibble_group_mega_moe);
     m.def("nvfp4_per128_pro_braided_3stage_mega_moe", &nvfp4_per128_pro_braided_3stage_mega_moe);
     m.def("nvfp4_pro_candidate_mega_moe", &nvfp4_pro_candidate_mega_moe);

@@ -159,6 +159,20 @@ def transform_nvfp4_weights_for_mega_moe_sm90(
         l1_packed_il.contiguous(), l1_scale_tm, block_k=block_k)
     l2_packed_out = nvfp4_fuse_packed_with_scale_tile_major(
         l2_packed.contiguous(), l2_scale_tm, block_k=block_k)
+
+    # The MiMo-class BN256 fast path consumes a losslessly regrouped payload.
+    # Perform that conversion during weight prepack, before the first request,
+    # instead of issuing thousands of Python tensor operations in first forward.
+    import os
+    if (
+        os.environ.get('DG_SM90_NVFP4_NIBBLE_GROUP', '1') != '0'
+        and block_n == 256
+        and l1_packed_out.is_cuda and l2_packed_out.is_cuda
+        and l2_scale_tm.size(2) * block_k <= 2048
+    ):
+        from ..quantization_nvfp4 import nvfp4_group_nibbles_for_mega_moe_sm90
+        nvfp4_group_nibbles_for_mega_moe_sm90(l1_packed_out)
+        nvfp4_group_nibbles_for_mega_moe_sm90(l2_packed_out)
     return (
         l1_packed_out,
         l1_scale_tm,
@@ -209,29 +223,52 @@ def nvfp4_mega_moe(y: torch.Tensor,
     ``(E, N/block_n, K/128, block_n, 8)``. ``block_n=256`` launches the fused
     phase; ``block_n=128`` launches split L1/L2.
 
-    For BN256 fused deployments with intermediate_hidden<=2048 the weights are
-    lazily regrouped (lossless nibble permutation, done once, tagged) and the
-    grouped-nibble decode kernel is used instead; disable with
-    ``DG_SM90_NVFP4_NIBBLE_GROUP=0``.
+    For BN256 fused deployments with intermediate_hidden<=2048 the prepack step
+    losslessly regroups FP4 nibbles once and the grouped-nibble decoder is used.
+    ``DG_SM90_NVFP4_NIBBLE_GROUP=0`` must be set before prepack to keep the
+    standard layout. Decoder selection always follows the actual storage layout
+    so changing the environment later cannot silently corrupt results.
     """
     import os
     l1_packed, l1_scale = l1_weights
     l2_packed, l2_scale = l2_weights
-    use_nibble = (
-        os.environ.get('DG_SM90_NVFP4_NIBBLE_GROUP', '1') != '0'
-        and l1_scale.dim() == 5 and l1_scale.size(3) == 256
+    nibble_eligible = (
+        l1_scale.dim() == 5 and l1_scale.size(3) == 256
         and l2_scale.size(2) * 128 <= 2048
         and l1_packed.size(2) == l1_scale.size(2) * 80
         and l2_packed.size(2) == l2_scale.size(2) * 80
     )
-    if use_nibble:
-        if not (getattr(l1_packed, '_dg_sm90_nvfp4_nibble_group', False)
-                and getattr(l2_packed, '_dg_sm90_nvfp4_nibble_group', False)):
+    from ..quantization_nvfp4 import (
+        nvfp4_group_nibbles_for_mega_moe_sm90,
+        nvfp4_is_nibble_grouped_for_mega_moe_sm90,
+    )
+    l1_grouped = nvfp4_is_nibble_grouped_for_mega_moe_sm90(l1_packed)
+    l2_grouped = nvfp4_is_nibble_grouped_for_mega_moe_sm90(l2_packed)
+    if l1_grouped != l2_grouped:
+        raise RuntimeError(
+            'L1 and L2 NVFP4 weights use different nibble layouts; reload and '
+            'prepack both weights together before serving')
+    if l1_grouped and not nibble_eligible:
+        raise RuntimeError(
+            'grouped-nibble NVFP4 weights were passed to an unsupported layout')
+
+    use_nibble = l1_grouped
+    if (
+        not use_nibble
+        and nibble_eligible
+        and os.environ.get('DG_SM90_NVFP4_NIBBLE_GROUP', '1') != '0'
+    ):
+        # Compatibility fallback for callers that constructed a fused layout
+        # without the public prepack helper. This is one native launch per
+        # tensor, guarded and synchronized, rather than a Python chunk loop.
+        if not use_nibble:
             assert not torch.cuda.is_current_stream_capturing(), \
                 'NVFP4 nibble regrouping must happen before CUDA graph capture'
-            from ..quantization_nvfp4 import nvfp4_group_nibbles_for_mega_moe_sm90
             nvfp4_group_nibbles_for_mega_moe_sm90(l1_packed)
             nvfp4_group_nibbles_for_mega_moe_sm90(l2_packed)
+            use_nibble = True
+
+    if use_nibble:
         _C.nvfp4_nibble_group_mega_moe(
             y, l1_weights, l2_weights,
             cumulative_local_expert_recv_stats,
