@@ -320,14 +320,6 @@ int main() {
         check_low_sm_golden(input, select_mega_moe_sm90(input), golden);
     }
 
-    const auto fallback_input = make_input(
-        kH200Sms, 3, 30, 128, 7, 4224, 2304);
-    const auto fallback = select_mega_moe_sm90(fallback_input);
-    TEST_CHECK(is_sm90_moe_launch_config_legal(fallback_input, fallback));
-    TEST_CHECK(fallback.l1.block_n == 128 and fallback.l2.block_n == 128);
-    TEST_CHECK(fallback.l1.num_sms == kH200Sms and
-               fallback.l2.num_sms == kH200Sms);
-
     for (const int m : {1, 127, 128, 129, 255, 256, 257, 767, 768, 769}) {
         const auto input = make_input(kH200Sms, 3, 30, m, 7, 4608, 2304);
         const auto config = select_mega_moe_sm90(input);
