@@ -1,0 +1,47 @@
+
+=============
+== PyTorch ==
+=============
+
+NVIDIA Release 26.03 (build 286725635)
+PyTorch Version 2.11.0a0+a6c236b
+Container image Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+NOTE: Mellanox network driver detected, but NVIDIA peer memory driver not
+      detected.  Multi-node communication performance may be reduced.
+
+SM90 MegaMoE bench: ranks=8 hidden=6144 ih=2048 experts=384 topk=8 masked_ratio=0.0 fast_math=True
+/usr/local/lib/python3.12/dist-packages/torch/utils/_device.py:124: UserWarning: Specified kernel cache directory could not be created! This disables kernel caching. Specified directory is /root/.cache/torch/kernels. This warning will appear only once per process. (Triggered internally at /opt/pytorch/pytorch/aten/src/ATen/native/cuda/jit_utils.cpp:1487.)
+  return func(*args, **kwargs)
+/usr/local/lib/python3.12/dist-packages/torch/utils/_device.py:124: UserWarning: Specified kernel cache directory could not be created! This disables kernel caching. Specified directory is /root/.cache/torch/kernels. This warning will appear only once per process. (Triggered internally at /opt/pytorch/pytorch/aten/src/ATen/native/cuda/jit_utils.cpp:1487.)
+  return func(*args, **kwargs)
+ tokens=   8  recv=   64  experts=  39  nvfp4=  461.6us mean_rank=  458.6us max_rank=  467.1us ( 10.5TF, 1797GB/s)  (rank0)
+ tokens=  16  recv=  118  experts=  45  nvfp4=  513.2us mean_rank=  512.9us max_rank=  519.0us ( 17.4TF, 1867GB/s)  (rank0)
+ tokens=  32  recv=  241  experts=  48  nvfp4=  531.8us mean_rank=  525.2us max_rank=  533.0us ( 34.2TF, 1927GB/s)  (rank0)
+ tokens=  64  recv=  546  experts=  48  nvfp4=  593.7us mean_rank=  583.6us max_rank=  596.5us ( 69.4TF, 1737GB/s)  (rank0)
+ tokens= 128  recv=  984  experts=  48  nvfp4=  634.0us mean_rank=  620.7us max_rank=  640.2us (117.2TF, 1643GB/s)  (rank0)
+ tokens= 256  recv= 2037  experts=  48  nvfp4=  592.6us mean_rank=  586.6us max_rank=  596.0us (259.5TF, 1797GB/s)  (rank0)
+ tokens= 512  recv= 4097  experts=  48  nvfp4= 1031.0us mean_rank= 1029.2us max_rank= 1035.0us (300.0TF, 1078GB/s)  (rank0)
+ tokens=1024  recv= 8140  experts=  48  nvfp4= 1560.0us mean_rank= 1552.8us max_rank= 1561.0us (393.9TF,  771GB/s)  (rank0)
+ tokens=2048  recv=16409  experts=  48  nvfp4= 2925.0us mean_rank= 2918.1us max_rank= 2930.0us (423.5TF,  475GB/s)  (rank0)
+ tokens=4096  recv=32686  experts=  48  nvfp4= 5459.0us mean_rank= 5454.5us max_rank= 5459.0us (452.0TF,  322GB/s)  (rank0)
+ tokens=8192  recv=65538  experts=  48  nvfp4=10546.0us mean_rank=10539.4us max_rank=10547.0us (469.2TF,  237GB/s)  (rank0)

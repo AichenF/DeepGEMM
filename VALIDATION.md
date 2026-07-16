@@ -108,3 +108,30 @@ BN128 large-M; the standard-path (I>2048 / BN128) dispatch is byte-unchanged.
 DeepSeek-R1 GSM8K e2e (grouped decode live in serving): see below.
 
 E2E RESULT: timed round accuracy 0.957 (in-band), invalid 0.000, 117.2 s, 1208.9 tok/s — the fastest e2e of the whole campaign (prior optimized head 123.7 s / 1151 tok/s; buggy original baseline anchor 122.1 s / 1159 tok/s). Warmup round 0.959 / 152.5 s. Harness sha256 verified unchanged.
+
+---
+
+# Addendum — `megamoe_nvfp4_mimo25pro_cuda132_final` (2026-07-16)
+
+The `0.957 / 117.2 s` result immediately above belongs to historical ancestor
+`eb8bb43`; it must not be reported as a new E2E result for final commit `75186dd`.
+
+The final MiMo release source is the linear descendant `75186dd`, plus the
+three-file/16-site CUDA 13.2 syntax compatibility commit `a8f17ad`. The exact
+performance method, all eleven M values, both sets of 30 raw logs and the
+deployment limits are in
+[`docs/experiments/mimo25pro_cuda132_20260716/`](docs/experiments/mimo25pro_cuda132_20260716/).
+
+MiMo H=6144/I=2048/E=384/top-k=8 rank0 median30 results show an equal-weight
+11-point latency change of `-2.779%` versus the frozen `ba7ee094` baseline
+(`1.02858×` speedup). M=8/16/32 improve by about 9.6–11.1%, while M=8192
+regresses by 3.56%; the latter remains an explicit release decision. The
+corresponding 11-point max-rank latency change is `-2.749%`; per-point rank0 and
+max-rank median30 values are both included in the linked report.
+
+A new DSR1 full-model warmup at `75186dd` completed all 1316 GSM8K regression
+questions. Independent raw-output scoring produced `1266/1316 = 0.962006`,
+invalid `0`, and corruption signatures `0`, passing the preregistered
+`1260/1316` gate. The run then stopped at a host-side JIT-cache evidence gate
+before its formal timed round. This is preliminary full-model accuracy evidence,
+not a completed timed E2E acceptance result and not a CUDA 13.2 binary E2E run.

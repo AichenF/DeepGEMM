@@ -1,0 +1,1 @@
+{"task": "gsm8k", "backend": "srt", "num_gpus": 1, "latency": 363.423, "accuracy": 0.962, "num_requests": 1316, "other": {"num_questions": 1316, "parallel": 1316}}

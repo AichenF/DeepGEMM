@@ -1,0 +1,8 @@
+{
+  "evaluated_rows": 1316,
+  "leakage_disclosure": "the first 8 test rows are both demonstrations and scored rows",
+  "rows": 1319,
+  "sha256": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14",
+  "shots": 8,
+  "source_commit": "3101c7d5072418e28b9008a6636bde82a006892c"
+}

@@ -1,0 +1,16 @@
+{
+  "accuracy_exact": 0.9620060790273556,
+  "accuracy_reported": 0.962,
+  "benchmark_log_sha256": "ed8552f6a575e78e54f90d0d578cb74cb9e35d04f2798e30977af06fae036083",
+  "correct": 1266,
+  "corrupt_outputs": 0,
+  "invalid": 0,
+  "latency_s": 363.423,
+  "name": "warmup",
+  "output_throughput_tok_s": 390.171,
+  "pass_status": true,
+  "raw_sha256": "225b08acc512250767e9ca4243565932b282eda2a46c85d9c4976bd8982274f0",
+  "result_num_gpus_field": 1,
+  "result_sha256": "0b4d67d3b532a884156b4bd3b62ac778d02c86093d7e3ab7fe40d3e2a0b8c44b",
+  "total": 1316
+}
