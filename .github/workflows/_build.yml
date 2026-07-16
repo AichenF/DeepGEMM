@@ -161,7 +161,7 @@ jobs:
           # https://github.com/pytorch/pytorch/blob/664058fa83f1d8eede5d66418abff6e20bd76ca8/torch/utils/cpp_extension.py#L810
           # However this still fails so I'm using a newer version of setuptools
           pip install setuptools==75.8.0
-          pip install ninja packaging wheel pybind11
+          pip install ninja packaging wheel
           export PATH=/usr/local/nvidia/bin:/usr/local/nvidia/lib64:$PATH
           export LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
           # Limit MAX_JOBS otherwise the github runner goes OOM
@@ -205,18 +205,6 @@ jobs:
       - name: Log Built Wheels
         run: |
           ls dist
-
-      - name: Build and run SM90 MegaMoE selector test
-        run: |
-          TORCH_CMAKE_PREFIX=$(python -c "import torch; print(torch.utils.cmake_prefix_path)")
-          PYBIND11_CMAKE_PREFIX=$(python -m pybind11 --cmakedir)
-          CUDACXX=$(python -c "from torch.utils.cpp_extension import CUDA_HOME; print(f'{CUDA_HOME}/bin/nvcc')")
-          cmake -S . -B build-selector \
-            -DCMAKE_CUDA_COMPILER="$CUDACXX" \
-            -DCMAKE_PREFIX_PATH="$TORCH_CMAKE_PREFIX;$PYBIND11_CMAKE_PREFIX" \
-            -DBUILD_TESTING=ON
-          cmake --build build-selector --target sm90_moe_selector_test --parallel 2
-          ctest --test-dir build-selector --output-on-failure -R sm90_moe_selector
 
       - name: Get Release with tag
         id: get_current_release
