@@ -278,6 +278,10 @@
                         reinterpret_cast<uint8_t*>(smem_b[s]),
                         reinterpret_cast<const uint8_t*>(smem_packed_b[s]),
                         row, smem_nvfp4_lut);
+                // Publish all writers' generic-proxy stores to the async proxy before
+                // the single-thread arrive; mbarrier arrive only orders thread 0's ops.
+                cutlass::arch::fence_view_async_shared();
+                ptx::sync_aligned(64, 8);
                 if (non_epilogue_thread_idx == 0)
                     dequant_barriers[s]->arrive();
             } else if constexpr (kNumMMANonEpilogueWarps == 4) {
@@ -286,6 +290,8 @@
                     const uint32_t dequant_tid = non_epilogue_thread_idx;
                     deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_fused_scale<128u, 8u>(
                         reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(128, 8);
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
                 } else if (non_epilogue_thread_idx >= 64u) {
@@ -293,6 +299,8 @@
                     const uint32_t dequant_tid = non_epilogue_thread_idx - 64u;
                     deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_fused_scale<64u, 8u>(
                         reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(64, 8);
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
                 }
@@ -1121,6 +1129,10 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
                             _tid_in_wg, smem_nvfp4_lut);
                     }
+                    // The B tile is shared by every epilogue WG, so all generic-proxy
+                    // writers publish before any WG can consume it through WGMMA.
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 }
 
                 // Read SF (must precede warpgroup_arrive)

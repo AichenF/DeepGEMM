@@ -307,6 +307,10 @@
                         reinterpret_cast<uint8_t*>(smem_b[s]),
                         reinterpret_cast<const uint8_t*>(smem_packed_b[s]),
                         row, smem_nvfp4_lut);
+                // Publish all writers' generic-proxy stores to the async proxy before
+                // the single-thread arrive; mbarrier arrive only orders thread 0's ops.
+                cutlass::arch::fence_view_async_shared();
+                ptx::sync_aligned(64, 8);
                 if (non_epilogue_thread_idx == 0)
                     dequant_barriers[s]->arrive();
             } else if constexpr (kNumMMANonEpilogueWarps == 4) {
@@ -317,6 +321,8 @@
                         128u, 8u, 80u, kDp4aSelectorPack,
                         kDp4aSelectorPack || kHybridLowSelectorPack>(
                         reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(128, 8);
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
                 } else if (non_epilogue_thread_idx >= 64u) {
@@ -326,6 +332,8 @@
                         64u, 8u, 80u, kDp4aSelectorPack,
                         kDp4aSelectorPack || kHybridLowSelectorPack>(
                         reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(64, 8);
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
                 }
@@ -1200,10 +1208,10 @@
 
                         float weight_r0 = valid_r0 ? *l1_topk_weights_buffer
                             .get_data_buffer(m_idx + row_offset_r0)
-                            .get_base_ptr<float>() : 0.0f;
+                            .template get_base_ptr<float>() : 0.0f;
                         float weight_r1 = valid_r1 ? *l1_topk_weights_buffer
                             .get_data_buffer(m_idx + row_offset_r1)
-                            .get_base_ptr<float>() : 0.0f;
+                            .template get_base_ptr<float>() : 0.0f;
                         #pragma unroll
                         for (uint32_t p = 0; p < kNumPairs; ++ p) {
                             swiglu_r0[p][0] *= weight_r0;
@@ -1376,6 +1384,10 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         if constexpr (kPhaseProfileRequested)
                             block_math_dequant += dequant_end - dequant_start;
                     }
+                    // Generic-proxy stores must be visible to the WGMMA async proxy,
+                    // and every writer in this WG must publish before MMA is issued.
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
                 }
 
                 // Read SF (must precede warpgroup_arrive)
@@ -1773,7 +1785,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                                 clamp_up(u0);
                                 const float weight_0 = *l1_topk_weights_buffer
                                     .get_data_buffer(m_idx + token_0)
-                                    .get_base_ptr<float>();
+                                    .template get_base_ptr<float>();
                                 v0 = silu(g0) * u0 * weight_0;
                                 swap_v0[half][i] = v0;
                                 v0_amax = cute::max(v0_amax, cute::abs(v0));
@@ -1787,7 +1799,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                                 clamp_up(u1);
                                 const float weight_1 = *l1_topk_weights_buffer
                                     .get_data_buffer(m_idx + token_1)
-                                    .get_base_ptr<float>();
+                                    .template get_base_ptr<float>();
                                 v1 = silu(g1) * u1 * weight_1;
                                 swap_v1[half][i] = v1;
                                 v1_amax = cute::max(v1_amax, cute::abs(v1));
@@ -1956,10 +1968,10 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
                 const float weight_r0 = valid_r0 ? *l1_topk_weights_buffer
                     .get_data_buffer(m_idx + row_offset_r0)
-                    .get_base_ptr<float>() : 0.0f;
+                    .template get_base_ptr<float>() : 0.0f;
                 const float weight_r1 = valid_r1 ? *l1_topk_weights_buffer
                     .get_data_buffer(m_idx + row_offset_r1)
-                    .get_base_ptr<float>() : 0.0f;
+                    .template get_base_ptr<float>() : 0.0f;
                 #pragma unroll
                 for (uint32_t p = 0; p < kNumPairs; ++ p) {
                     swiglu_r0[p][0] *= weight_r0;
