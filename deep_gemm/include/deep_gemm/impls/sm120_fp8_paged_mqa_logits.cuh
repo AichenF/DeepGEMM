@@ -18,7 +18,7 @@
 #include <deep_gemm/mma/sm120.cuh>
 #include <deep_gemm/ptx/ld_st.cuh>
 #include <deep_gemm/ptx/utils.cuh>
-#include <deep_gemm/scheduler/paged_mqa_logits.cuh>
+#include <deep_gemm/scheduler/sm120_paged_mqa_logits.cuh>
 
 namespace deep_gemm {
 
@@ -149,7 +149,7 @@ void sm120_fp8_paged_mqa_logits(const uint32_t batch_size,
     // Scheduler
     static constexpr bool kPadOddN = (not kIsVarlen) and (kNextN % 2 == 1) and (kNextN >= 3);
     static constexpr uint32_t kNumNextNAtoms = math::constexpr_ceil_div(kNextN, kNextNAtom);
-    auto scheduler = sched::PagedMQALogitsScheduler<kNextN, kIsContextLens2D, kIsVarlen, BLOCK_KV, kNumGroups, kNumNextNAtoms>(
+    auto scheduler = sched::SM120PagedMQALogitsScheduler<kNextN, kIsContextLens2D, kIsVarlen, BLOCK_KV, kNumGroups, kNumNextNAtoms>(
         blockIdx.x, batch_size, context_lens, schedule_meta, indices);
     DG_STATIC_ASSERT(SPLIT_KV % BLOCK_KV == 0, "Unaligned SPLIT_KV");
 
@@ -192,21 +192,12 @@ void sm120_fp8_paged_mqa_logits(const uint32_t batch_size,
         uint32_t kv_block_idx_storage;
 
         while (fetched_next_task) {
-            const auto next_advance = scheduler.get_last_advance();
-            bool prefetch_q = (q_idx != next_q_idx and scheduler.exist_q_atom_idx(next_q_idx + next_advance));
-
             if (q_idx != next_q_idx)
                 kv_block_idx_ptr = 32;
 
             q_idx = next_q_idx;
             kv_idx = next_kv_idx;
             num_kv = next_num_kv;
-
-            if (prefetch_q) {
-                CUTE_TIE_DECL(get_q_pipeline(q_iter_idx ++), q_stage_idx, q_phase);
-                empty_q_barriers[q_stage_idx]->wait(q_phase ^ 1);
-                issue_tma_q(q_stage_idx, q_idx + next_advance);
-            }
 
             // Read KV block index via block table
             if (kv_block_idx_ptr == 32) {
@@ -231,6 +222,13 @@ void sm120_fp8_paged_mqa_logits(const uint32_t batch_size,
             }
 
             fetched_next_task = scheduler.fetch_next_task(next_q_idx, next_kv_idx, next_num_kv);
+            // Use the scheduler's actual next task: zero-context atoms can be
+            // skipped, so q_idx + last_advance may point at the wrong Q tile.
+            if (fetched_next_task and q_idx != next_q_idx) {
+                CUTE_TIE_DECL(get_q_pipeline(q_iter_idx ++), q_stage_idx, q_phase);
+                empty_q_barriers[q_stage_idx]->wait(q_phase ^ 1);
+                issue_tma_q(q_stage_idx, next_q_idx);
+            }
         }
     } else {
         // Math warps
