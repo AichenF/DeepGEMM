@@ -42,6 +42,20 @@ Do not substitute the older baseline compatibility patch. That patch covers only
 - Shape: H=6144, I=2048, E=384, top-k=8, ranks=8
 - Protocol: one excluded full warmup, then 30 fresh full processes; each process ran all 11 M values and `--num-tests 20`
 
+### Supplemental Flash/Pro execution
+
+The same sealed final source and CUDA 13.2 image were later measured on two additional ImagePerf geometries:
+
+- Flash: H=4096, I=2048, E=256, top-k=6, ranks=8
+- Pro: H=7168, I=3072, E=384, top-k=6, ranks=8
+- Final protocol: one excluded full warmup per model, then 30 fresh full processes per model, alternating Flash/Pro order; every process ran all 11 M values with `--num-tests 20`
+- Baseline identity: original `ba7ee0944c1fe31874b049ae354657ff62dae20b` plus its sealed two-file/ten-site CUDA 13.2 syntax-only compatibility patch
+- Hardware relation: baseline and final used the same physical H200 node, exact GPU UUID order, driver and container, but in separate allocations and time windows; this was not an interleaved baseline/final A/B run
+- Health gates before the final run: 56/56 mapped-P2P pairs, baseline Pro M=8192 `--num-tests 500`, and final Pro M=8192 `--num-tests 500` all passed
+- Result boundary: the run is structurally complete, but Flash and Pro are not overall performance wins; see the [supplemental comparison](evidence/perf/final_comparison_flash_pro_baseline_vs_final_30.md)
+
+The ImagePerf values in that comparison are frozen reference constants transcribed from the supplied chart. They were not produced by rerunning ImagePerf code in the supplemental allocation.
+
 The SGLang integration reviewed with this release is `b6a68c9acb6590b2849febe2b66807553923fc71`; it lives in the separate SGLang repository and is not part of this branch.
 
 ## Source history after `ba7ee094`

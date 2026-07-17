@@ -1,0 +1,43 @@
+
+=============
+== PyTorch ==
+=============
+
+NVIDIA Release 26.03 (build 286725635)
+PyTorch Version 2.11.0a0+a6c236b
+Container image Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+NOTE: Mellanox network driver detected, but NVIDIA peer memory driver not
+      detected.  Multi-node communication performance may be reduced.
+
+SM90 MegaMoE bench: ranks=8 hidden=4096 ih=2048 experts=256 topk=6 masked_ratio=0.0 fast_math=True
+ tokens=   8  recv=   46  experts=  24  nvfp4=  231.1us mean_rank=  231.9us max_rank=  236.6us ( 10.0TF, 1474GB/s)  (rank0)
+ tokens=  16  recv=   92  experts=  30  nvfp4=  258.4us mean_rank=  258.4us max_rank=  266.2us ( 17.9TF, 1649GB/s)  (rank0)
+ tokens=  32  recv=  170  experts=  32  nvfp4=  285.5us mean_rank=  282.9us max_rank=  292.7us ( 30.0TF, 1596GB/s)  (rank0)
+ tokens=  64  recv=  378  experts=  32  nvfp4=  300.3us mean_rank=  296.1us max_rank=  308.8us ( 63.4TF, 1529GB/s)  (rank0)
+ tokens= 128  recv=  784  experts=  32  nvfp4=  282.8us mean_rank=  283.5us max_rank=  291.1us (139.5TF, 1647GB/s)  (rank0)
+ tokens= 256  recv= 1568  experts=  32  nvfp4=  326.1us mean_rank=  318.4us max_rank=  329.7us (242.0TF, 1468GB/s)  (rank0)
+ tokens= 512  recv= 3147  experts=  32  nvfp4=  510.0us mean_rank=  509.9us max_rank=  521.2us (310.5TF,  989GB/s)  (rank0)
+ tokens=1024  recv= 6221  experts=  32  nvfp4=  839.3us mean_rank=  837.6us max_rank=  847.2us (373.1TF,  661GB/s)  (rank0)
+ tokens=2048  recv=12365  experts=  32  nvfp4= 1652.8us mean_rank= 1651.6us max_rank= 1661.7us (376.5TF,  397GB/s)  (rank0)
+ tokens=4096  recv=24547  experts=  32  nvfp4= 2843.0us mean_rank= 2844.1us max_rank= 2858.0us (434.6TF,  301GB/s)  (rank0)
+ tokens=8192  recv=49065  experts=  32  nvfp4= 5391.0us mean_rank= 5385.4us max_rank= 5399.0us (458.1TF,  233GB/s)  (rank0)

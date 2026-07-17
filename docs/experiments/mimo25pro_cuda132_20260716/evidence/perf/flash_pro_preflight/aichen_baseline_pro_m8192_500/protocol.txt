@@ -1,0 +1,2 @@
+mode=default
+num_tests=500

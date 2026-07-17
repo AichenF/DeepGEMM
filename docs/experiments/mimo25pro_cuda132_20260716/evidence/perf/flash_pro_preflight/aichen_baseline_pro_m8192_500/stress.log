@@ -1,0 +1,141 @@
+
+=============
+== PyTorch ==
+=============
+
+NVIDIA Release 26.03 (build 286725635)
+PyTorch Version 2.11.0a0+a6c236b
+Container image Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+NOTE: Mellanox network driver detected, but NVIDIA peer memory driver not
+      detected.  Multi-node communication performance may be reduced.
+
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2026 NVIDIA Corporation
+Built on Mon_Mar_02_09:52:23_PM_PST_2026
+Cuda compilation tools, release 13.2, V13.2.51
+Build cuda_13.2.r13.2/compiler.37434383_0
+AWS_OFI_NCCL_VERSION=1.17.3
+BASH_ENV=/etc/bash.bashrc
+COCOAPI_VERSION=2.0+nv0.8.1
+CUBLASMP_VERSION=0.8.0.2023
+CUBLAS_VERSION=13.3.0.5
+CUDA_ARCH_LIST=7.5 8.0 8.6 9.0 10.0 12.0
+CUDA_BINARY_LOADER_THREAD_COUNT=8
+CUDA_COMPONENT_LIST=cccl crt nvrtc driver-dev culibos-dev cudart cudart-dev nvcc tileiras
+CUDA_DRIVER_VERSION=595.45.04
+CUDA_HOME=/usr/local/cuda
+CUDA_MODULE_LOADING=LAZY
+CUDA_VERSION=13.2.0.046
+CUDLA_VERSION=13.2.51
+CUDNN_FRONTEND_VERSION=1.18.0
+CUDNN_VERSION=9.20.0.48
+CUFFT_VERSION=12.2.0.37
+CUFILE_VERSION=1.17.0.44
+CURAND_VERSION=10.4.2.51
+CUSOLVER_VERSION=12.1.0.51
+CUSPARSELT_VERSION=0.9.0.3
+CUSPARSE_VERSION=12.7.9.17
+CUTILE_PYTHON_VERSION=1.1.0
+DALI_BUILD=
+DALI_URL_SUFFIX=130
+DALI_VERSION=2.0.0
+DG_JIT_CACHE_DIR=/out/dg_jit_cache
+DOCA_VERSION=3.2.0
+EFA_VERSION=1.46.0
+ENV=/etc/shinit_v2
+GDRCOPY_VERSION=2.5.1
+HOME=/root
+HOSTNAME=viking-prod-217
+HPCX_VERSION=2.26
+JUPYTER_PORT=8888
+LC_ALL=C.UTF-8
+LD_LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/torch/lib:/usr/local/lib/python3.12/dist-packages/torch_tensorrt/lib:/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+LIBRARY_PATH=/usr/local/cuda/lib64/stubs:/usr/local/cuda/lib64/stubs:
+MAXSMVER=120
+MODEL_OPT_VERSION=0.41.0
+MOFED_VERSION=5.4-rdmacore59.1
+NCCL_VERSION=2.29.7
+NIXL_VERSION=0.10.0
+NPP_VERSION=13.1.0.44
+NSIGHT_COMPUTE_VERSION=2026.1.0.9
+NSIGHT_SYSTEMS_VERSION=2026.1.2.63
+NVFATBIN_VERSION=13.2.51
+NVFUSER_BUILD_VERSION=67530f5
+NVFUSER_VERSION=67530f5
+NVIDIA_BUILD_ID=286725635
+NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+NVIDIA_PRODUCT_NAME=PyTorch
+NVIDIA_PYTORCH_VERSION=26.03
+NVIDIA_REQUIRE_CUDA=cuda>=9.0
+NVIDIA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+NVJITLINK_VERSION=13.2.51
+NVJPEG_VERSION=13.0.4.44
+NVPL_LAPACK_MATH_MODE=PEDANTIC
+NVPTXCOMPILER_VERSION=13.2.51
+NVRX_VERSION=0.5.0
+NVSHMEM_VERSION=3.5.21
+NVVM_VERSION=13.2.51
+OMPI_MCA_coll_hcoll_enable=0
+OPAL_PREFIX=/usr/local/mpi
+OPENMPI_VERSION=4.1.7
+OPENUCX_VERSION=1.20.0
+PATH=/usr/local/lib/python3.12/dist-packages/torch_tensorrt/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/mpi/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/ucx/bin:/opt/amazon/efa/bin:/opt/tensorrt/bin:/opt/mellanox/doca/tools/
+PIP_BREAK_SYSTEM_PACKAGES=1
+PIP_CONSTRAINT=/etc/pip/constraint.txt
+PIP_DEFAULT_TIMEOUT=100
+POLYGRAPHY_VERSION=0.49.26
+PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+PWD=/workspace/DeepGEMM
+PYTHONIOENCODING=utf-8
+PYTHONPATH=/workspace/DeepGEMM
+PYTORCH_BUILD_NUMBER=0
+PYTORCH_BUILD_VERSION=2.11.0a0+a6c236b
+PYTORCH_HOME=/opt/pytorch/pytorch
+PYTORCH_VERSION=2.11.0a0+a6c236b
+RDMACORE_VERSION=59.1
+SHELL=/bin/bash
+SHLVL=1
+TENSORBOARD_PORT=6006
+TORCHAO_BUILD_VERSION=+gitd9881220
+TORCHINDUCTOR_LOOP_ORDERING_AFTER_FUSION=0
+TORCHTITAN_BUILD_VERSION=0.2.1+git71517cf6
+TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=1
+TORCH_CUDA_ARCH_LIST=9.0a
+TORCH_NCCL_USE_COMM_NONBLOCKING=0
+TRANSFORMER_ENGINE_VERSION=2.13
+TRITON_CUDACRT_PATH=/usr/local/cuda/include
+TRITON_CUDART_PATH=/usr/local/cuda/include
+TRITON_CUOBJDUMP_PATH=/usr/local/cuda/bin/cuobjdump
+TRITON_CUPTI_INCLUDE_PATH=/usr/local/cuda/include
+TRITON_CUPTI_LIB_PATH=/usr/local/cuda/lib64
+TRITON_NVDISASM_PATH=/usr/local/cuda/bin/nvdisasm
+TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
+TRTOSS_VERSION=
+TRT_VERSION=10.16.0.72
+UCC_CL_BASIC_TLS=^sharp
+UCC_EC_CUDA_EXEC_NUM_THREADS=256
+_=/usr/bin/env
+_CUDA_COMPAT_PATH=/usr/local/cuda/compat
+_CUDA_COMPAT_STATUS=System has unsupported display driver / cuda driver combination (CUDA_ERROR_SYSTEM_DRIVER_MISMATCH) cuInit()=803
+SM90 MegaMoE bench: ranks=8 hidden=7168 ih=3072 experts=384 topk=6 masked_ratio=0.0 fast_math=True
+ tokens=8192  recv=49051  experts=  48  nvfp4=13252.0us mean_rank=13246.4us max_rank=13254.0us (489.0TF,  237GB/s)  (rank0)

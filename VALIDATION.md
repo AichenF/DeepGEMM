@@ -129,6 +129,18 @@ regresses by 3.56%; the latter remains an explicit release decision. The
 corresponding 11-point max-rank latency change is `-2.749%`; per-point rank0 and
 max-rank median30 values are both included in the linked report.
 
+Supplemental CUDA 13.2 runs used the same eleven M values and 30 fresh processes
+per model for the ImagePerf Flash (H=4096/I=2048/E=256/top-k=6) and Pro
+(H=7168/I=3072/E=384/top-k=6) geometries. They are not overall performance wins:
+final-versus-baseline rank0/mean/max 11-point latency changes are
+`+0.475%/+1.460%/+1.773%` for Flash and `+0.233%/+0.037%/+0.238%` for Pro
+(positive means slower). Pro improves consistently at M=8..64 but regresses at
+every M>=128; Flash regresses consistently at M>=2048. The final rank0 is slower
+than the frozen ImagePerf reference at all 22 Flash/Pro points. These results
+support MiMo-specific dispatch, not a global replacement of the original
+Flash/Pro policy. Full rank0 and max-rank tables, raw logs and machine-readable
+data are in the linked experiment directory.
+
 A new DSR1 full-model warmup at `75186dd` completed all 1316 GSM8K regression
 questions. Independent raw-output scoring produced `1266/1316 = 0.962006`,
 invalid `0`, and corruption signatures `0`, passing the preregistered

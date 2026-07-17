@@ -1,0 +1,45 @@
+
+=============
+== PyTorch ==
+=============
+
+NVIDIA Release 26.03 (build 286725635)
+PyTorch Version 2.11.0a0+a6c236b
+Container image Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+NOTE: Mellanox network driver detected, but NVIDIA peer memory driver not
+      detected.  Multi-node communication performance may be reduced.
+
+SM90 MegaMoE bench: ranks=8 hidden=4096 ih=2048 experts=256 topk=6 masked_ratio=0.0 fast_math=True
+/usr/local/lib/python3.12/dist-packages/torch/utils/_device.py:124: UserWarning: Specified kernel cache directory could not be created! This disables kernel caching. Specified directory is /root/.cache/torch/kernels. This warning will appear only once per process. (Triggered internally at /opt/pytorch/pytorch/aten/src/ATen/native/cuda/jit_utils.cpp:1487.)
+  return func(*args, **kwargs)
+ tokens=   8  recv=   46  experts=  24  nvfp4=  227.7us mean_rank=  240.1us max_rank=  245.7us ( 10.2TF, 1495GB/s)  (rank0)
+ tokens=  16  recv=   92  experts=  30  nvfp4=  255.0us mean_rank=  261.5us max_rank=  271.9us ( 18.2TF, 1671GB/s)  (rank0)
+ tokens=  32  recv=  170  experts=  32  nvfp4=  275.0us mean_rank=  267.7us max_rank=  275.0us ( 31.1TF, 1658GB/s)  (rank0)
+ tokens=  64  recv=  378  experts=  32  nvfp4=  284.7us mean_rank=  279.1us max_rank=  288.4us ( 66.8TF, 1613GB/s)  (rank0)
+ tokens= 128  recv=  784  experts=  32  nvfp4=  283.9us mean_rank=  285.7us max_rank=  294.6us (139.0TF, 1641GB/s)  (rank0)
+ tokens= 256  recv= 1568  experts=  32  nvfp4=  336.6us mean_rank=  328.6us max_rank=  339.4us (234.4TF, 1422GB/s)  (rank0)
+ tokens= 512  recv= 3147  experts=  32  nvfp4=  509.5us mean_rank=  505.4us max_rank=  512.5us (310.9TF,  990GB/s)  (rank0)
+ tokens=1024  recv= 6221  experts=  32  nvfp4=  844.9us mean_rank=  840.2us max_rank=  849.2us (370.6TF,  657GB/s)  (rank0)
+ tokens=2048  recv=12365  experts=  32  nvfp4= 1596.2us mean_rank= 1590.5us max_rank= 1599.2us (389.9TF,  411GB/s)  (rank0)
+ tokens=4096  recv=24547  experts=  32  nvfp4= 2731.0us mean_rank= 2728.9us max_rank= 2737.0us (452.4TF,  313GB/s)  (rank0)
+ tokens=8192  recv=49065  experts=  32  nvfp4= 5209.0us mean_rank= 5196.0us max_rank= 5209.0us (474.1TF,  241GB/s)  (rank0)

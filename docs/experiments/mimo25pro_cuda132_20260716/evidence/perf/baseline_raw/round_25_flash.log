@@ -1,0 +1,49 @@
+
+=============
+== PyTorch ==
+=============
+
+NVIDIA Release 26.03 (build 286725635)
+PyTorch Version 2.11.0a0+a6c236b
+Container image Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+NOTE: Mellanox network driver detected, but NVIDIA peer memory driver not
+      detected.  Multi-node communication performance may be reduced.
+
+SM90 MegaMoE bench: ranks=8 hidden=4096 ih=2048 experts=256 topk=6 masked_ratio=0.0 fast_math=True
+/usr/local/lib/python3.12/dist-packages/torch/utils/_device.py:124: UserWarning: Specified kernel cache directory could not be created! This disables kernel caching. Specified directory is /root/.cache/torch/kernels. This warning will appear only once per process. (Triggered internally at /opt/pytorch/pytorch/aten/src/ATen/native/cuda/jit_utils.cpp:1487.)
+  return func(*args, **kwargs)
+/usr/local/lib/python3.12/dist-packages/torch/utils/_device.py:124: UserWarning: Specified kernel cache directory could not be created! This disables kernel caching. Specified directory is /root/.cache/torch/kernels. This warning will appear only once per process. (Triggered internally at /opt/pytorch/pytorch/aten/src/ATen/native/cuda/jit_utils.cpp:1487.)
+  return func(*args, **kwargs)
+/usr/local/lib/python3.12/dist-packages/torch/utils/_device.py:124: UserWarning: Specified kernel cache directory could not be created! This disables kernel caching. Specified directory is /root/.cache/torch/kernels. This warning will appear only once per process. (Triggered internally at /opt/pytorch/pytorch/aten/src/ATen/native/cuda/jit_utils.cpp:1487.)
+  return func(*args, **kwargs)
+ tokens=   8  recv=   46  experts=  24  nvfp4=  336.3us mean_rank=  319.4us max_rank=  341.2us (  6.9TF, 1013GB/s)  (rank0)
+ tokens=  16  recv=   92  experts=  30  nvfp4=  403.3us mean_rank=  410.2us max_rank=  440.3us ( 11.5TF, 1057GB/s)  (rank0)
+ tokens=  32  recv=  170  experts=  32  nvfp4=  362.1us mean_rank=  342.1us max_rank=  364.1us ( 23.6TF, 1259GB/s)  (rank0)
+ tokens=  64  recv=  378  experts=  32  nvfp4=  271.6us mean_rank=  266.2us max_rank=  271.6us ( 70.1TF, 1691GB/s)  (rank0)
+ tokens= 128  recv=  784  experts=  32  nvfp4=  276.6us mean_rank=  274.4us max_rank=  278.9us (142.6TF, 1684GB/s)  (rank0)
+ tokens= 256  recv= 1568  experts=  32  nvfp4=  294.3us mean_rank=  292.9us max_rank=  300.3us (268.2TF, 1627GB/s)  (rank0)
+ tokens= 512  recv= 3147  experts=  32  nvfp4=  514.3us mean_rank=  522.5us max_rank=  531.4us (308.0TF,  981GB/s)  (rank0)
+ tokens=1024  recv= 6221  experts=  32  nvfp4=  835.8us mean_rank=  833.1us max_rank=  836.8us (374.6TF,  664GB/s)  (rank0)
+ tokens=2048  recv=12365  experts=  32  nvfp4= 1659.5us mean_rank= 1710.9us max_rank= 1734.0us (375.0TF,  395GB/s)  (rank0)
+ tokens=4096  recv=24547  experts=  32  nvfp4= 2728.0us mean_rank= 2727.2us max_rank= 2733.0us (452.9TF,  313GB/s)  (rank0)
+ tokens=8192  recv=49065  experts=  32  nvfp4= 5184.0us mean_rank= 5180.4us max_rank= 5187.0us (476.4TF,  242GB/s)  (rank0)

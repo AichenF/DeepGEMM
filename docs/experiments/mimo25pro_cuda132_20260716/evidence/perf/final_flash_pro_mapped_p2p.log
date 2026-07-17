@@ -1,0 +1,88 @@
+
+=============
+== PyTorch ==
+=============
+
+NVIDIA Release 26.03 (build 286725635)
+PyTorch Version 2.11.0a0+a6c236b
+Container image Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+NOTE: Mellanox network driver detected, but NVIDIA peer memory driver not
+      detected.  Multi-node communication performance may be reduced.
+
+source=0 target=1 mapped_write=True mapped_read=True
+source=0 target=2 mapped_write=True mapped_read=True
+source=0 target=3 mapped_write=True mapped_read=True
+source=0 target=4 mapped_write=True mapped_read=True
+source=0 target=5 mapped_write=True mapped_read=True
+source=0 target=6 mapped_write=True mapped_read=True
+source=0 target=7 mapped_write=True mapped_read=True
+source=1 target=0 mapped_write=True mapped_read=True
+source=1 target=2 mapped_write=True mapped_read=True
+source=1 target=3 mapped_write=True mapped_read=True
+source=1 target=4 mapped_write=True mapped_read=True
+source=1 target=5 mapped_write=True mapped_read=True
+source=1 target=6 mapped_write=True mapped_read=True
+source=1 target=7 mapped_write=True mapped_read=True
+source=2 target=0 mapped_write=True mapped_read=True
+source=2 target=1 mapped_write=True mapped_read=True
+source=2 target=3 mapped_write=True mapped_read=True
+source=2 target=4 mapped_write=True mapped_read=True
+source=2 target=5 mapped_write=True mapped_read=True
+source=2 target=6 mapped_write=True mapped_read=True
+source=2 target=7 mapped_write=True mapped_read=True
+source=3 target=0 mapped_write=True mapped_read=True
+source=3 target=1 mapped_write=True mapped_read=True
+source=3 target=2 mapped_write=True mapped_read=True
+source=3 target=4 mapped_write=True mapped_read=True
+source=3 target=5 mapped_write=True mapped_read=True
+source=3 target=6 mapped_write=True mapped_read=True
+source=3 target=7 mapped_write=True mapped_read=True
+source=4 target=0 mapped_write=True mapped_read=True
+source=4 target=1 mapped_write=True mapped_read=True
+source=4 target=2 mapped_write=True mapped_read=True
+source=4 target=3 mapped_write=True mapped_read=True
+source=4 target=5 mapped_write=True mapped_read=True
+source=4 target=6 mapped_write=True mapped_read=True
+source=4 target=7 mapped_write=True mapped_read=True
+source=5 target=0 mapped_write=True mapped_read=True
+source=5 target=1 mapped_write=True mapped_read=True
+source=5 target=2 mapped_write=True mapped_read=True
+source=5 target=3 mapped_write=True mapped_read=True
+source=5 target=4 mapped_write=True mapped_read=True
+source=5 target=6 mapped_write=True mapped_read=True
+source=5 target=7 mapped_write=True mapped_read=True
+source=6 target=0 mapped_write=True mapped_read=True
+source=6 target=1 mapped_write=True mapped_read=True
+source=6 target=2 mapped_write=True mapped_read=True
+source=6 target=3 mapped_write=True mapped_read=True
+source=6 target=4 mapped_write=True mapped_read=True
+source=6 target=5 mapped_write=True mapped_read=True
+source=6 target=7 mapped_write=True mapped_read=True
+source=7 target=0 mapped_write=True mapped_read=True
+source=7 target=1 mapped_write=True mapped_read=True
+source=7 target=2 mapped_write=True mapped_read=True
+source=7 target=3 mapped_write=True mapped_read=True
+source=7 target=4 mapped_write=True mapped_read=True
+source=7 target=5 mapped_write=True mapped_read=True
+source=7 target=6 mapped_write=True mapped_read=True
+ALL_PAIRS_MAPPED_P2P_PASS pairs=56

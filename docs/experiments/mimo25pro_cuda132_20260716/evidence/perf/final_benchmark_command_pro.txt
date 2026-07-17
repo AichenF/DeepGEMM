@@ -1,0 +1,6 @@
+set -euo pipefail
+bad_dg="$(env | awk -F= '$1 ~ /^DG_/ && $1 != "DG_JIT_CACHE_DIR" {print $1}')"
+if [[ -n "${bad_dg}" ]]; then echo "unexpected DG environment: ${bad_dg}" >&2; exit 3; fi
+if [[ "${DG_JIT_CACHE_DIR:-}" != "/out/dg_jit_cache" ]]; then echo bad DG_JIT_CACHE_DIR >&2; exit 3; fi
+if env | grep -E '^(SGLANG_MEGAMOE_NVFP4_REQUANTIZE|NSYS_ITERS)='; then echo unexpected external benchmark override >&2; exit 3; fi
+exec python3 tests/bench_nvfp4_mega_moe_sm90.py --num-processes 8 --batches 8 16 32 64 128 256 512 1024 2048 4096 8192 --hidden 7168 --intermediate-hidden 3072 --num-experts 384 --num-topk 6 --num-tests 20

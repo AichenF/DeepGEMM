@@ -1,0 +1,1835 @@
+{
+  "protocol": {
+    "structural_status": "PASS",
+    "performance_is_exit_gate": false,
+    "baseline_source": "ba7ee094 + cuda132-dependent-template-compat",
+    "final_source": "75186dd + 16-site cuda132-dependent-template-compat",
+    "baseline_raw_processes_per_model": 30,
+    "final_excluded_warmups": 2,
+    "final_raw_measured_processes_per_model": 30,
+    "final_measurement_order": "FP/PF alternating",
+    "ordered_m": [
+      8,
+      16,
+      32,
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "num_tests": 20,
+    "primary_metric": "rank0 nvfp4= median30",
+    "secondary_metrics": [
+      "mean-rank median30",
+      "max-rank median30"
+    ],
+    "outlier_policy": "none; no retry, deletion, replacement, or best-of-N",
+    "median_ci": "95.7226% X10-X21"
+  },
+  "models": {
+    "flash": {
+      "shape": {
+        "hidden": 4096,
+        "intermediate_hidden": 2048,
+        "num_experts": 256,
+        "num_topk": 6,
+        "num_ranks": 8
+      },
+      "equal_weight_geomean_latency_change_pct": {
+        "final_vs_baseline": {
+          "rank0": 0.47460322740018324,
+          "mean_rank": 1.4599636463614063,
+          "max_rank": 1.7731965898683422
+        },
+        "baseline_rank0_vs_imageperf": 5.326457393179318,
+        "final_rank0_vs_imageperf": 5.826340159273613
+      },
+      "results": [
+        {
+          "model": "flash",
+          "display_name": "Flash",
+          "m": 8,
+          "recv": 46,
+          "touched_experts": 24,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-grouped",
+          "imageperf_rank0_us": 226.6,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 4.854368932038833,
+          "final_vs_imageperf_rank0_median_delta_pct": 1.9858781994704255,
+          "baseline": {
+            "rank0": {
+              "median": 237.6,
+              "p10": 227.67,
+              "p90": 271.44,
+              "min": 220.4,
+              "max": 336.3,
+              "median_ci_x10_low": 232.1,
+              "median_ci_x21_high": 251.0
+            },
+            "mean_rank": {
+              "median": 241.6,
+              "p10": 230.99,
+              "p90": 264.38,
+              "min": 229.5,
+              "max": 319.4,
+              "median_ci_x10_low": 235.4,
+              "median_ci_x21_high": 251.2
+            },
+            "max_rank": {
+              "median": 246.89999999999998,
+              "p10": 235.31,
+              "p90": 276.14,
+              "min": 233.4,
+              "max": 341.2,
+              "median_ci_x10_low": 238.7,
+              "median_ci_x21_high": 260.4
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 231.1,
+              "p10": 226.24,
+              "p90": 258.89,
+              "min": 222.5,
+              "max": 273.8,
+              "median_ci_x10_low": 228.3,
+              "median_ci_x21_high": 234.6
+            },
+            "mean_rank": {
+              "median": 233.55,
+              "p10": 227.39,
+              "p90": 251.99,
+              "min": 226.2,
+              "max": 269.5,
+              "median_ci_x10_low": 230.9,
+              "median_ci_x21_high": 237.1
+            },
+            "max_rank": {
+              "median": 239.35,
+              "p10": 232.78000000000003,
+              "p90": 262.28,
+              "min": 229.9,
+              "max": 283.3,
+              "median_ci_x10_low": 236.6,
+              "median_ci_x21_high": 244.2
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": -2.7356902356902357,
+            "mean_rank": -3.3319536423841,
+            "max_rank": -3.057918185500197
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 1.0281263522284725,
+            "mean_rank": 1.034467994005566,
+            "max_rank": 1.0315437643618133
+          }
+        },
+        {
+          "model": "flash",
+          "display_name": "Flash",
+          "m": 16,
+          "recv": 92,
+          "touched_experts": 30,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-grouped",
+          "imageperf_rank0_us": 237.6,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 15.193602693602726,
+          "final_vs_imageperf_rank0_median_delta_pct": 8.880471380471388,
+          "baseline": {
+            "rank0": {
+              "median": 273.70000000000005,
+              "p10": 249.54,
+              "p90": 350.39,
+              "min": 242.6,
+              "max": 403.3,
+              "median_ci_x10_low": 256.0,
+              "median_ci_x21_high": 288.2
+            },
+            "mean_rank": {
+              "median": 270.55,
+              "p10": 252.57999999999998,
+              "p90": 335.75,
+              "min": 245.6,
+              "max": 410.2,
+              "median_ci_x10_low": 261.5,
+              "median_ci_x21_high": 290.9
+            },
+            "max_rank": {
+              "median": 279.05,
+              "p10": 255.57,
+              "p90": 351.27000000000004,
+              "min": 251.0,
+              "max": 440.3,
+              "median_ci_x10_low": 270.6,
+              "median_ci_x21_high": 300.0
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 258.7,
+              "p10": 246.32000000000002,
+              "p90": 337.1500000000001,
+              "min": 236.8,
+              "max": 498.7,
+              "median_ci_x10_low": 252.5,
+              "median_ci_x21_high": 267.4
+            },
+            "mean_rank": {
+              "median": 276.0,
+              "p10": 247.27,
+              "p90": 376.01000000000005,
+              "min": 245.6,
+              "max": 481.7,
+              "median_ci_x10_low": 261.5,
+              "median_ci_x21_high": 305.1
+            },
+            "max_rank": {
+              "median": 286.7,
+              "p10": 252.67000000000002,
+              "p90": 400.68,
+              "min": 249.1,
+              "max": 523.6,
+              "median_ci_x10_low": 266.7,
+              "median_ci_x21_high": 318.8
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": -5.48045305078555,
+            "mean_rank": 2.014415080391796,
+            "max_rank": 2.7414441856298044
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 1.057982218786239,
+            "mean_rank": 0.9802536231884058,
+            "max_rank": 0.973317056156261
+          }
+        },
+        {
+          "model": "flash",
+          "display_name": "Flash",
+          "m": 32,
+          "recv": 170,
+          "touched_experts": 32,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-grouped",
+          "imageperf_rank0_us": 249.6,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 5.649038461538458,
+          "final_vs_imageperf_rank0_median_delta_pct": 8.193108974358964,
+          "baseline": {
+            "rank0": {
+              "median": 263.7,
+              "p10": 250.56,
+              "p90": 289.0100000000001,
+              "min": 248.8,
+              "max": 387.7,
+              "median_ci_x10_low": 259.8,
+              "median_ci_x21_high": 272.7
+            },
+            "mean_rank": {
+              "median": 265.95000000000005,
+              "p10": 256.43,
+              "p90": 287.0400000000001,
+              "min": 251.3,
+              "max": 373.2,
+              "median_ci_x10_low": 259.9,
+              "median_ci_x21_high": 273.7
+            },
+            "max_rank": {
+              "median": 274.5,
+              "p10": 260.44,
+              "p90": 298.28000000000003,
+              "min": 254.7,
+              "max": 396.0,
+              "median_ci_x10_low": 265.9,
+              "median_ci_x21_high": 282.3
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 270.04999999999995,
+              "p10": 254.24,
+              "p90": 405.88000000000005,
+              "min": 245.2,
+              "max": 483.5,
+              "median_ci_x10_low": 262.5,
+              "median_ci_x21_high": 329.2
+            },
+            "mean_rank": {
+              "median": 279.15,
+              "p10": 258.64,
+              "p90": 384.31,
+              "min": 255.9,
+              "max": 464.2,
+              "median_ci_x10_low": 263.1,
+              "median_ci_x21_high": 331.0
+            },
+            "max_rank": {
+              "median": 288.1,
+              "p10": 263.5,
+              "p90": 407.58000000000004,
+              "min": 258.6,
+              "max": 499.6,
+              "median_ci_x10_low": 271.5,
+              "median_ci_x21_high": 345.8
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": 2.40803943875616,
+            "mean_rank": 4.963338973491238,
+            "max_rank": 4.9544626593807095
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 0.9764858359563046,
+            "mean_rank": 0.9527135948414833,
+            "max_rank": 0.9527941686914265
+          }
+        },
+        {
+          "model": "flash",
+          "display_name": "Flash",
+          "m": 64,
+          "recv": 378,
+          "touched_experts": 32,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-grouped",
+          "imageperf_rank0_us": 263.5,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 5.4269449715369955,
+          "final_vs_imageperf_rank0_median_delta_pct": 6.6034155597722854,
+          "baseline": {
+            "rank0": {
+              "median": 277.8,
+              "p10": 263.61,
+              "p90": 298.63,
+              "min": 253.7,
+              "max": 355.1,
+              "median_ci_x10_low": 271.8,
+              "median_ci_x21_high": 284.7
+            },
+            "mean_rank": {
+              "median": 279.45000000000005,
+              "p10": 268.44,
+              "p90": 312.96000000000004,
+              "min": 262.7,
+              "max": 342.1,
+              "median_ci_x10_low": 273.9,
+              "median_ci_x21_high": 284.9
+            },
+            "max_rank": {
+              "median": 285.75,
+              "p10": 272.77,
+              "p90": 322.44,
+              "min": 266.6,
+              "max": 357.7,
+              "median_ci_x10_low": 279.1,
+              "median_ci_x21_high": 292.9
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 280.9,
+              "p10": 256.14,
+              "p90": 335.51,
+              "min": 251.3,
+              "max": 409.8,
+              "median_ci_x10_low": 273.3,
+              "median_ci_x21_high": 292.8
+            },
+            "mean_rank": {
+              "median": 286.75,
+              "p10": 268.46999999999997,
+              "p90": 342.14,
+              "min": 261.5,
+              "max": 389.2,
+              "median_ci_x10_low": 278.7,
+              "median_ci_x21_high": 297.7
+            },
+            "max_rank": {
+              "median": 295.15,
+              "p10": 273.74,
+              "p90": 356.92999999999995,
+              "min": 266.4,
+              "max": 411.4,
+              "median_ci_x10_low": 287.0,
+              "median_ci_x21_high": 309.0
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": 1.1159107271418112,
+            "mean_rank": 2.6122741098586255,
+            "max_rank": 3.289588801399823
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 0.9889640441438236,
+            "mean_rank": 0.9745422842197037,
+            "max_rank": 0.9681517872268339
+          }
+        },
+        {
+          "model": "flash",
+          "display_name": "Flash",
+          "m": 128,
+          "recv": 784,
+          "touched_experts": 32,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-grouped",
+          "imageperf_rank0_us": 260.4,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 8.486943164362536,
+          "final_vs_imageperf_rank0_median_delta_pct": 6.931643625192008,
+          "baseline": {
+            "rank0": {
+              "median": 282.5,
+              "p10": 264.3,
+              "p90": 309.26000000000005,
+              "min": 257.4,
+              "max": 335.1,
+              "median_ci_x10_low": 276.6,
+              "median_ci_x21_high": 288.4
+            },
+            "mean_rank": {
+              "median": 285.35,
+              "p10": 272.62,
+              "p90": 310.73,
+              "min": 266.5,
+              "max": 319.6,
+              "median_ci_x10_low": 278.3,
+              "median_ci_x21_high": 290.3
+            },
+            "max_rank": {
+              "median": 291.2,
+              "p10": 277.84999999999997,
+              "p90": 321.1,
+              "min": 270.4,
+              "max": 335.1,
+              "median_ci_x10_low": 287.2,
+              "median_ci_x21_high": 299.3
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 278.45,
+              "p10": 263.2,
+              "p90": 300.78000000000003,
+              "min": 259.0,
+              "max": 376.5,
+              "median_ci_x10_low": 268.2,
+              "median_ci_x21_high": 284.9
+            },
+            "mean_rank": {
+              "median": 281.4,
+              "p10": 265.41,
+              "p90": 311.72,
+              "min": 263.0,
+              "max": 402.9,
+              "median_ci_x10_low": 275.2,
+              "median_ci_x21_high": 285.5
+            },
+            "max_rank": {
+              "median": 288.70000000000005,
+              "p10": 269.98,
+              "p90": 322.06,
+              "min": 267.6,
+              "max": 426.4,
+              "median_ci_x10_low": 282.4,
+              "median_ci_x21_high": 293.9
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": -1.4336283185840792,
+            "mean_rank": -1.3842649377957095,
+            "max_rank": -0.8585164835164694
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 1.0145448015801761,
+            "mean_rank": 1.014036958066809,
+            "max_rank": 1.0086595081399374
+          }
+        },
+        {
+          "model": "flash",
+          "display_name": "Flash",
+          "m": 256,
+          "recv": 1568,
+          "touched_experts": 32,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-grouped",
+          "imageperf_rank0_us": 292.0,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 1.2328767123287676,
+          "final_vs_imageperf_rank0_median_delta_pct": 3.287671232876721,
+          "baseline": {
+            "rank0": {
+              "median": 295.6,
+              "p10": 278.95,
+              "p90": 308.49,
+              "min": 273.1,
+              "max": 349.9,
+              "median_ci_x10_low": 286.4,
+              "median_ci_x21_high": 299.6
+            },
+            "mean_rank": {
+              "median": 296.65,
+              "p10": 285.68,
+              "p90": 309.41,
+              "min": 282.6,
+              "max": 339.0,
+              "median_ci_x10_low": 292.9,
+              "median_ci_x21_high": 301.4
+            },
+            "max_rank": {
+              "median": 303.0,
+              "p10": 291.58000000000004,
+              "p90": 319.57000000000005,
+              "min": 286.2,
+              "max": 350.9,
+              "median_ci_x10_low": 299.3,
+              "median_ci_x21_high": 308.2
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 301.6,
+              "p10": 280.15000000000003,
+              "p90": 349.88,
+              "min": 275.9,
+              "max": 451.8,
+              "median_ci_x10_low": 290.4,
+              "median_ci_x21_high": 313.4
+            },
+            "mean_rank": {
+              "median": 301.35,
+              "p10": 283.43,
+              "p90": 343.95,
+              "min": 281.3,
+              "max": 431.9,
+              "median_ci_x10_low": 292.9,
+              "median_ci_x21_high": 312.4
+            },
+            "max_rank": {
+              "median": 310.20000000000005,
+              "p10": 287.03,
+              "p90": 359.40999999999997,
+              "min": 283.8,
+              "max": 457.2,
+              "median_ci_x10_low": 298.5,
+              "median_ci_x21_high": 323.2
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": 2.0297699594046037,
+            "mean_rank": 1.5843586718355063,
+            "max_rank": 2.3762376237624006
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 0.980106100795756,
+            "mean_rank": 0.9844035175045627,
+            "max_rank": 0.9767891682785298
+          }
+        },
+        {
+          "model": "flash",
+          "display_name": "Flash",
+          "m": 512,
+          "recv": 3147,
+          "touched_experts": 32,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-grouped",
+          "imageperf_rank0_us": 481.2,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 5.351205320033259,
+          "final_vs_imageperf_rank0_median_delta_pct": 5.579800498753129,
+          "baseline": {
+            "rank0": {
+              "median": 506.95,
+              "p10": 491.79,
+              "p90": 520.87,
+              "min": 485.1,
+              "max": 600.8,
+              "median_ci_x10_low": 501.3,
+              "median_ci_x21_high": 514.3
+            },
+            "mean_rank": {
+              "median": 510.0,
+              "p10": 495.15999999999997,
+              "p90": 528.64,
+              "min": 492.7,
+              "max": 586.0,
+              "median_ci_x10_low": 503.8,
+              "median_ci_x21_high": 518.8
+            },
+            "max_rank": {
+              "median": 516.8499999999999,
+              "p10": 499.28999999999996,
+              "p90": 538.46,
+              "min": 497.7,
+              "max": 602.1,
+              "median_ci_x10_low": 509.9,
+              "median_ci_x21_high": 528.3
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 508.05,
+              "p10": 485.8,
+              "p90": 591.34,
+              "min": 477.9,
+              "max": 653.5,
+              "median_ci_x10_low": 497.6,
+              "median_ci_x21_high": 520.1
+            },
+            "mean_rank": {
+              "median": 508.5,
+              "p10": 489.39,
+              "p90": 572.71,
+              "min": 485.4,
+              "max": 629.7,
+              "median_ci_x10_low": 502.3,
+              "median_ci_x21_high": 518.7
+            },
+            "max_rank": {
+              "median": 516.9,
+              "p10": 494.39000000000004,
+              "p90": 591.45,
+              "min": 489.3,
+              "max": 654.5,
+              "median_ci_x10_low": 510.6,
+              "median_ci_x21_high": 529.2
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": 0.21698392346385376,
+            "mean_rank": -0.2941176470588225,
+            "max_rank": 0.009673986649905153
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 0.9978348587737427,
+            "mean_rank": 1.0029498525073746,
+            "max_rank": 0.9999032694911973
+          }
+        },
+        {
+          "model": "flash",
+          "display_name": "Flash",
+          "m": 1024,
+          "recv": 6221,
+          "touched_experts": 32,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-grouped",
+          "imageperf_rank0_us": 813.6,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 2.8207964601769886,
+          "final_vs_imageperf_rank0_median_delta_pct": 1.7760570304818035,
+          "baseline": {
+            "rank0": {
+              "median": 836.55,
+              "p10": 825.5899999999999,
+              "p90": 868.9000000000001,
+              "min": 818.9,
+              "max": 905.1,
+              "median_ci_x10_low": 827.9,
+              "median_ci_x21_high": 840.9
+            },
+            "mean_rank": {
+              "median": 837.85,
+              "p10": 827.99,
+              "p90": 865.71,
+              "min": 824.9,
+              "max": 890.1,
+              "median_ci_x10_low": 833.3,
+              "median_ci_x21_high": 849.2
+            },
+            "max_rank": {
+              "median": 844.05,
+              "p10": 832.23,
+              "p90": 876.89,
+              "min": 829.0,
+              "max": 905.4,
+              "median_ci_x10_low": 839.0,
+              "median_ci_x21_high": 857.6
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 828.05,
+              "p10": 816.0800000000002,
+              "p90": 848.72,
+              "min": 811.6,
+              "max": 890.5,
+              "median_ci_x10_low": 823.1,
+              "median_ci_x21_high": 839.3
+            },
+            "mean_rank": {
+              "median": 832.75,
+              "p10": 819.4200000000001,
+              "p90": 843.98,
+              "min": 817.9,
+              "max": 880.6,
+              "median_ci_x10_low": 826.3,
+              "median_ci_x21_high": 840.3
+            },
+            "max_rank": {
+              "median": 839.8499999999999,
+              "p10": 824.02,
+              "p90": 852.21,
+              "min": 822.4,
+              "max": 894.0,
+              "median_ci_x10_low": 830.4,
+              "median_ci_x21_high": 847.9
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": -1.016077939154858,
+            "mean_rank": -0.6087008414394024,
+            "max_rank": -0.49760085303004464
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 1.0102650806110742,
+            "mean_rank": 1.0061242870009006,
+            "max_rank": 1.00500089301661
+          }
+        },
+        {
+          "model": "flash",
+          "display_name": "Flash",
+          "m": 2048,
+          "recv": 12365,
+          "touched_experts": 32,
+          "baseline_layout": "BN128-split",
+          "final_layout": "BN128-split",
+          "imageperf_rank0_us": 1440.5,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 9.947934744880271,
+          "final_vs_imageperf_rank0_median_delta_pct": 13.984727525164864,
+          "baseline": {
+            "rank0": {
+              "median": 1583.8000000000002,
+              "p10": 1571.3400000000001,
+              "p90": 1602.55,
+              "min": 1568.9,
+              "max": 1659.5,
+              "median_ci_x10_low": 1576.9,
+              "median_ci_x21_high": 1592.0
+            },
+            "mean_rank": {
+              "median": 1585.25,
+              "p10": 1577.9499999999998,
+              "p90": 1598.5500000000002,
+              "min": 1571.4,
+              "max": 1710.9,
+              "median_ci_x10_low": 1581.7,
+              "median_ci_x21_high": 1590.5
+            },
+            "max_rank": {
+              "median": 1592.5,
+              "p10": 1582.0600000000002,
+              "p90": 1608.2900000000002,
+              "min": 1576.3,
+              "max": 1734.0,
+              "median_ci_x10_low": 1586.4,
+              "median_ci_x21_high": 1599.2
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 1641.9499999999998,
+              "p10": 1630.31,
+              "p90": 1656.0700000000002,
+              "min": 1623.0,
+              "max": 1730.6,
+              "median_ci_x10_low": 1634.5,
+              "median_ci_x21_high": 1647.0
+            },
+            "mean_rank": {
+              "median": 1642.1999999999998,
+              "p10": 1627.8899999999999,
+              "p90": 1660.81,
+              "min": 1621.9,
+              "max": 1710.9,
+              "median_ci_x10_low": 1637.6,
+              "median_ci_x21_high": 1651.6
+            },
+            "max_rank": {
+              "median": 1650.0,
+              "p10": 1632.21,
+              "p90": 1672.5000000000002,
+              "min": 1626.9,
+              "max": 1730.6,
+              "median_ci_x10_low": 1646.0,
+              "median_ci_x21_high": 1661.7
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": 3.6715494380603397,
+            "mean_rank": 3.5924932975871293,
+            "max_rank": 3.610675039246458
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 0.9645847924723654,
+            "mean_rank": 0.965320910973085,
+            "max_rank": 0.9651515151515152
+          }
+        },
+        {
+          "model": "flash",
+          "display_name": "Flash",
+          "m": 4096,
+          "recv": 24547,
+          "touched_experts": 32,
+          "baseline_layout": "BN128-split",
+          "final_layout": "BN128-split",
+          "imageperf_rank0_us": 2684.3,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 1.5348507990910143,
+          "final_vs_imageperf_rank0_median_delta_pct": 4.980814365011366,
+          "baseline": {
+            "rank0": {
+              "median": 2725.5,
+              "p10": 2710.0,
+              "p90": 2737.0,
+              "min": 2704.0,
+              "max": 2752.0,
+              "median_ci_x10_low": 2718.0,
+              "median_ci_x21_high": 2730.0
+            },
+            "mean_rank": {
+              "median": 2724.7,
+              "p10": 2713.37,
+              "p90": 2734.77,
+              "min": 2709.5,
+              "max": 2745.3,
+              "median_ci_x10_low": 2719.6,
+              "median_ci_x21_high": 2728.1
+            },
+            "max_rank": {
+              "median": 2731.0,
+              "p10": 2717.9,
+              "p90": 2743.0,
+              "min": 2713.0,
+              "max": 2756.0,
+              "median_ci_x10_low": 2726.0,
+              "median_ci_x21_high": 2734.0
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 2818.0,
+              "p10": 2810.9,
+              "p90": 2840.3,
+              "min": 2804.0,
+              "max": 2851.0,
+              "median_ci_x10_low": 2814.0,
+              "median_ci_x21_high": 2827.0
+            },
+            "mean_rank": {
+              "median": 2824.35,
+              "p10": 2812.08,
+              "p90": 2838.06,
+              "min": 2806.1,
+              "max": 2844.1,
+              "median_ci_x10_low": 2819.6,
+              "median_ci_x21_high": 2830.9
+            },
+            "max_rank": {
+              "median": 2831.5,
+              "p10": 2817.7000000000003,
+              "p90": 2850.1,
+              "min": 2810.0,
+              "max": 2858.0,
+              "median_ci_x10_low": 2825.0,
+              "median_ci_x21_high": 2840.0
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": 3.3938726839112032,
+            "mean_rank": 3.6572833706463026,
+            "max_rank": 3.6799707067008525
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 0.9671753016323634,
+            "mean_rank": 0.9647175456299679,
+            "max_rank": 0.9645064453469893
+          }
+        },
+        {
+          "model": "flash",
+          "display_name": "Flash",
+          "m": 8192,
+          "recv": 49065,
+          "touched_experts": 32,
+          "baseline_layout": "BN128-split",
+          "final_layout": "BN128-split",
+          "imageperf_rank0_us": 5215.5,
+          "baseline_vs_imageperf_rank0_median_delta_pct": -0.9490940465918918,
+          "final_vs_imageperf_rank0_median_delta_pct": 2.5021570319240682,
+          "baseline": {
+            "rank0": {
+              "median": 5166.0,
+              "p10": 5149.5,
+              "p90": 5192.099999999999,
+              "min": 5132.0,
+              "max": 5226.0,
+              "median_ci_x10_low": 5158.0,
+              "median_ci_x21_high": 5176.0
+            },
+            "mean_rank": {
+              "median": 5165.549999999999,
+              "p10": 5150.29,
+              "p90": 5196.0199999999995,
+              "min": 5131.5,
+              "max": 5216.6,
+              "median_ci_x10_low": 5158.4,
+              "median_ci_x21_high": 5180.4
+            },
+            "max_rank": {
+              "median": 5172.0,
+              "p10": 5153.700000000001,
+              "p90": 5207.200000000001,
+              "min": 5136.0,
+              "max": 5229.0,
+              "median_ci_x10_low": 5164.0,
+              "median_ci_x21_high": 5190.0
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 5346.0,
+              "p10": 5328.0,
+              "p90": 5426.1,
+              "min": 5324.0,
+              "max": 5480.0,
+              "median_ci_x10_low": 5337.0,
+              "median_ci_x21_high": 5356.0
+            },
+            "mean_rank": {
+              "median": 5350.65,
+              "p10": 5328.249999999999,
+              "p90": 5418.68,
+              "min": 5325.8,
+              "max": 5465.3,
+              "median_ci_x10_low": 5342.4,
+              "median_ci_x21_high": 5360.9
+            },
+            "max_rank": {
+              "median": 5356.5,
+              "p10": 5334.0,
+              "p90": 5436.0,
+              "min": 5332.0,
+              "max": 5491.0,
+              "median_ci_x10_low": 5349.0,
+              "median_ci_x21_high": 5369.0
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": 3.4843205574912828,
+            "mean_rank": 3.5833551122339324,
+            "max_rank": 3.5672853828306206
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 0.9663299663299664,
+            "mean_rank": 0.9654060721594572,
+            "max_rank": 0.9655558667040045
+          }
+        }
+      ]
+    },
+    "pro": {
+      "shape": {
+        "hidden": 7168,
+        "intermediate_hidden": 3072,
+        "num_experts": 384,
+        "num_topk": 6,
+        "num_ranks": 8
+      },
+      "equal_weight_geomean_latency_change_pct": {
+        "final_vs_baseline": {
+          "rank0": 0.23253767600948105,
+          "mean_rank": 0.037230586715897296,
+          "max_rank": 0.23817152038565492
+        },
+        "baseline_rank0_vs_imageperf": 4.432124192850928,
+        "final_rank0_vs_imageperf": 4.674968227456322
+      },
+      "results": [
+        {
+          "model": "pro",
+          "display_name": "Pro",
+          "m": 8,
+          "recv": 50,
+          "touched_experts": 33,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-standard",
+          "imageperf_rank0_us": 594.6,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 11.72216616212578,
+          "final_vs_imageperf_rank0_median_delta_pct": 5.919946182307423,
+          "baseline": {
+            "rank0": {
+              "median": 664.3,
+              "p10": 652.8,
+              "p90": 713.37,
+              "min": 646.0,
+              "max": 755.6,
+              "median_ci_x10_low": 659.9,
+              "median_ci_x21_high": 675.0
+            },
+            "mean_rank": {
+              "median": 667.45,
+              "p10": 653.04,
+              "p90": 713.5900000000001,
+              "min": 650.6,
+              "max": 740.7,
+              "median_ci_x10_low": 657.5,
+              "median_ci_x21_high": 670.5
+            },
+            "max_rank": {
+              "median": 673.6,
+              "p10": 656.5600000000001,
+              "p90": 726.09,
+              "min": 652.4,
+              "max": 756.3,
+              "median_ci_x10_low": 662.4,
+              "median_ci_x21_high": 676.6
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 629.8,
+              "p10": 607.8999999999999,
+              "p90": 657.78,
+              "min": 603.6,
+              "max": 682.1,
+              "median_ci_x10_low": 620.7,
+              "median_ci_x21_high": 634.6
+            },
+            "mean_rank": {
+              "median": 631.95,
+              "p10": 615.53,
+              "p90": 654.98,
+              "min": 614.3,
+              "max": 690.2,
+              "median_ci_x10_low": 625.8,
+              "median_ci_x21_high": 639.5
+            },
+            "max_rank": {
+              "median": 641.5,
+              "p10": 622.94,
+              "p90": 666.44,
+              "min": 618.3,
+              "max": 708.7,
+              "median_ci_x10_low": 631.6,
+              "median_ci_x21_high": 650.6
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": -5.193436700286014,
+            "mean_rank": -5.3187504681998625,
+            "max_rank": -4.765439429928742
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 1.0547792950142902,
+            "mean_rank": 1.0561753303267662,
+            "max_rank": 1.0500389711613407
+          }
+        },
+        {
+          "model": "pro",
+          "display_name": "Pro",
+          "m": 16,
+          "recv": 89,
+          "touched_experts": 39,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-standard",
+          "imageperf_rank0_us": 760.0,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 7.927631578947358,
+          "final_vs_imageperf_rank0_median_delta_pct": 2.697368421052637,
+          "baseline": {
+            "rank0": {
+              "median": 820.25,
+              "p10": 806.65,
+              "p90": 864.13,
+              "min": 800.2,
+              "max": 1045.0,
+              "median_ci_x10_low": 815.1,
+              "median_ci_x21_high": 838.6
+            },
+            "mean_rank": {
+              "median": 824.15,
+              "p10": 810.27,
+              "p90": 858.01,
+              "min": 804.2,
+              "max": 1016.8,
+              "median_ci_x10_low": 817.7,
+              "median_ci_x21_high": 840.0
+            },
+            "max_rank": {
+              "median": 831.15,
+              "p10": 814.9899999999999,
+              "p90": 870.5600000000001,
+              "min": 806.4,
+              "max": 1050.0,
+              "median_ci_x10_low": 823.6,
+              "median_ci_x21_high": 849.7
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 780.5,
+              "p10": 756.82,
+              "p90": 887.6100000000001,
+              "min": 744.0,
+              "max": 1058.0,
+              "median_ci_x10_low": 773.6,
+              "median_ci_x21_high": 795.2
+            },
+            "mean_rank": {
+              "median": 781.45,
+              "p10": 762.21,
+              "p90": 868.9000000000001,
+              "min": 753.4,
+              "max": 1032.5,
+              "median_ci_x10_low": 775.8,
+              "median_ci_x21_high": 807.8
+            },
+            "max_rank": {
+              "median": 792.5,
+              "p10": 769.05,
+              "p90": 893.37,
+              "min": 760.5,
+              "max": 1076.0,
+              "median_ci_x10_low": 782.2,
+              "median_ci_x21_high": 822.4
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": -4.846083511124655,
+            "mean_rank": -5.181095674331115,
+            "max_rank": -4.650183480719483
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 1.0509288917360666,
+            "mean_rank": 1.0546420116450188,
+            "max_rank": 1.048769716088328
+          }
+        },
+        {
+          "model": "pro",
+          "display_name": "Pro",
+          "m": 32,
+          "recv": 187,
+          "touched_experts": 47,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-standard",
+          "imageperf_rank0_us": 809.3,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 9.020140862473735,
+          "final_vs_imageperf_rank0_median_delta_pct": 3.2002965525763205,
+          "baseline": {
+            "rank0": {
+              "median": 882.3,
+              "p10": 874.74,
+              "p90": 919.28,
+              "min": 860.2,
+              "max": 962.6,
+              "median_ci_x10_low": 876.8,
+              "median_ci_x21_high": 898.5
+            },
+            "mean_rank": {
+              "median": 890.3499999999999,
+              "p10": 875.3499999999999,
+              "p90": 914.02,
+              "min": 869.7,
+              "max": 968.9,
+              "median_ci_x10_low": 878.8,
+              "median_ci_x21_high": 895.8
+            },
+            "max_rank": {
+              "median": 898.5999999999999,
+              "p10": 882.31,
+              "p90": 927.91,
+              "min": 875.4,
+              "max": 988.0,
+              "median_ci_x10_low": 884.8,
+              "median_ci_x21_high": 905.6
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 835.2,
+              "p10": 817.86,
+              "p90": 894.63,
+              "min": 803.6,
+              "max": 999.9,
+              "median_ci_x10_low": 828.0,
+              "median_ci_x21_high": 858.4
+            },
+            "mean_rank": {
+              "median": 840.3,
+              "p10": 817.87,
+              "p90": 885.9000000000001,
+              "min": 814.8,
+              "max": 971.2,
+              "median_ci_x10_low": 828.4,
+              "median_ci_x21_high": 853.6
+            },
+            "max_rank": {
+              "median": 851.3,
+              "p10": 823.36,
+              "p90": 899.4,
+              "min": 820.9,
+              "max": 999.9,
+              "median_ci_x10_low": 835.2,
+              "median_ci_x21_high": 867.9
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": -5.338320299217947,
+            "mean_rank": -5.62138484865502,
+            "max_rank": -5.263743601157356
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 1.0563936781609193,
+            "mean_rank": 1.0595620611686303,
+            "max_rank": 1.0555620815223774
+          }
+        },
+        {
+          "model": "pro",
+          "display_name": "Pro",
+          "m": 64,
+          "recv": 348,
+          "touched_experts": 48,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-standard",
+          "imageperf_rank0_us": 831.4,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 8.016598508539818,
+          "final_vs_imageperf_rank0_median_delta_pct": 4.28193408708204,
+          "baseline": {
+            "rank0": {
+              "median": 898.05,
+              "p10": 884.4100000000001,
+              "p90": 913.78,
+              "min": 875.4,
+              "max": 1102.0,
+              "median_ci_x10_low": 894.2,
+              "median_ci_x21_high": 907.4
+            },
+            "mean_rank": {
+              "median": 900.15,
+              "p10": 889.54,
+              "p90": 913.0899999999999,
+              "min": 882.8,
+              "max": 1072.0,
+              "median_ci_x10_low": 894.5,
+              "median_ci_x21_high": 907.1
+            },
+            "max_rank": {
+              "median": 908.6500000000001,
+              "p10": 893.96,
+              "p90": 921.83,
+              "min": 886.8,
+              "max": 1103.0,
+              "median_ci_x10_low": 900.2,
+              "median_ci_x21_high": 914.1
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 867.0,
+              "p10": 842.2900000000001,
+              "p90": 962.22,
+              "min": 838.4,
+              "max": 1032.0,
+              "median_ci_x10_low": 854.1,
+              "median_ci_x21_high": 878.1
+            },
+            "mean_rank": {
+              "median": 866.3,
+              "p10": 847.4899999999999,
+              "p90": 940.9899999999999,
+              "min": 841.9,
+              "max": 1001.9,
+              "median_ci_x10_low": 855.6,
+              "median_ci_x21_high": 879.2
+            },
+            "max_rank": {
+              "median": 874.95,
+              "p10": 852.8199999999999,
+              "p90": 963.05,
+              "min": 844.9,
+              "max": 1032.0,
+              "median_ci_x10_low": 863.6,
+              "median_ci_x21_high": 890.5
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": -3.457491231000498,
+            "mean_rank": -3.7604843637171648,
+            "max_rank": -3.7087987674021994
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 1.0358131487889273,
+            "mean_rank": 1.0390742237100312,
+            "max_rank": 1.0385164866563805
+          }
+        },
+        {
+          "model": "pro",
+          "display_name": "Pro",
+          "m": 128,
+          "recv": 789,
+          "touched_experts": 48,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-standard",
+          "imageperf_rank0_us": 878.4,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 0.10815118397085044,
+          "final_vs_imageperf_rank0_median_delta_pct": 3.210382513661214,
+          "baseline": {
+            "rank0": {
+              "median": 879.3499999999999,
+              "p10": 868.55,
+              "p90": 909.0,
+              "min": 859.7,
+              "max": 935.2,
+              "median_ci_x10_low": 874.1,
+              "median_ci_x21_high": 891.2
+            },
+            "mean_rank": {
+              "median": 882.4000000000001,
+              "p10": 868.2299999999999,
+              "p90": 905.0,
+              "min": 865.7,
+              "max": 925.0,
+              "median_ci_x10_low": 875.4,
+              "median_ci_x21_high": 894.9
+            },
+            "max_rank": {
+              "median": 889.55,
+              "p10": 872.5300000000001,
+              "p90": 914.1500000000001,
+              "min": 868.9,
+              "max": 935.2,
+              "median_ci_x10_low": 881.8,
+              "median_ci_x21_high": 903.2
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 906.6,
+              "p10": 891.2499999999999,
+              "p90": 935.7000000000002,
+              "min": 881.0,
+              "max": 1079.0,
+              "median_ci_x10_low": 895.9,
+              "median_ci_x21_high": 917.4
+            },
+            "mean_rank": {
+              "median": 907.15,
+              "p10": 890.3,
+              "p90": 939.97,
+              "min": 888.0,
+              "max": 1052.6,
+              "median_ci_x10_low": 898.3,
+              "median_ci_x21_high": 914.2
+            },
+            "max_rank": {
+              "median": 914.4,
+              "p10": 897.58,
+              "p90": 956.84,
+              "min": 894.4,
+              "max": 1080.0,
+              "median_ci_x10_low": 905.5,
+              "median_ci_x21_high": 923.8
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": 3.0988798544379526,
+            "mean_rank": 2.804850407978221,
+            "max_rank": 2.7935472991962307
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 0.9699426428413853,
+            "mean_rank": 0.972716750261809,
+            "max_rank": 0.9728237095363079
+          }
+        },
+        {
+          "model": "pro",
+          "display_name": "Pro",
+          "m": 256,
+          "recv": 1574,
+          "touched_experts": 48,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-standard",
+          "imageperf_rank0_us": 886.1,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 1.6307414513034635,
+          "final_vs_imageperf_rank0_median_delta_pct": 5.213858480984079,
+          "baseline": {
+            "rank0": {
+              "median": 900.55,
+              "p10": 884.96,
+              "p90": 925.91,
+              "min": 881.2,
+              "max": 1104.0,
+              "median_ci_x10_low": 890.4,
+              "median_ci_x21_high": 910.2
+            },
+            "mean_rank": {
+              "median": 899.75,
+              "p10": 883.71,
+              "p90": 923.9100000000001,
+              "min": 881.3,
+              "max": 1095.8,
+              "median_ci_x10_low": 895.7,
+              "median_ci_x21_high": 908.1
+            },
+            "max_rank": {
+              "median": 905.6500000000001,
+              "p10": 887.35,
+              "p90": 933.37,
+              "min": 884.6,
+              "max": 1132.0,
+              "median_ci_x10_low": 900.4,
+              "median_ci_x21_high": 916.4
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 932.3,
+              "p10": 908.46,
+              "p90": 1013.0,
+              "min": 902.4,
+              "max": 1082.0,
+              "median_ci_x10_low": 915.7,
+              "median_ci_x21_high": 941.5
+            },
+            "mean_rank": {
+              "median": 928.8499999999999,
+              "p10": 906.4900000000001,
+              "p90": 993.5,
+              "min": 903.8,
+              "max": 1059.1,
+              "median_ci_x10_low": 918.7,
+              "median_ci_x21_high": 942.7
+            },
+            "max_rank": {
+              "median": 939.15,
+              "p10": 913.5,
+              "p90": 1015.0999999999999,
+              "min": 907.8,
+              "max": 1090.0,
+              "median_ci_x10_low": 925.8,
+              "median_ci_x21_high": 956.8
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": 3.525623230248187,
+            "mean_rank": 3.2342317310363855,
+            "max_rank": 3.6990007177165385
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 0.9659444384854661,
+            "mean_rank": 0.9686709371803844,
+            "max_rank": 0.964329446840228
+          }
+        },
+        {
+          "model": "pro",
+          "display_name": "Pro",
+          "m": 512,
+          "recv": 3089,
+          "touched_experts": 48,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-standard",
+          "imageperf_rank0_us": 1345.9,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 3.2023181514228227,
+          "final_vs_imageperf_rank0_median_delta_pct": 5.579909354335388,
+          "baseline": {
+            "rank0": {
+              "median": 1389.0,
+              "p10": 1380.9,
+              "p90": 1412.5,
+              "min": 1375.0,
+              "max": 1443.0,
+              "median_ci_x10_low": 1386.0,
+              "median_ci_x21_high": 1406.0
+            },
+            "mean_rank": {
+              "median": 1389.9499999999998,
+              "p10": 1380.6,
+              "p90": 1410.23,
+              "min": 1374.1,
+              "max": 1439.8,
+              "median_ci_x10_low": 1385.7,
+              "median_ci_x21_high": 1402.5
+            },
+            "max_rank": {
+              "median": 1397.0,
+              "p10": 1386.0,
+              "p90": 1419.5,
+              "min": 1379.0,
+              "max": 1453.0,
+              "median_ci_x10_low": 1390.0,
+              "median_ci_x21_high": 1411.0
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 1421.0,
+              "p10": 1403.8000000000002,
+              "p90": 1442.4,
+              "min": 1397.0,
+              "max": 1468.0,
+              "median_ci_x10_low": 1411.0,
+              "median_ci_x21_high": 1427.0
+            },
+            "mean_rank": {
+              "median": 1418.65,
+              "p10": 1405.95,
+              "p90": 1432.52,
+              "min": 1400.0,
+              "max": 1453.3,
+              "median_ci_x10_low": 1411.7,
+              "median_ci_x21_high": 1425.0
+            },
+            "max_rank": {
+              "median": 1426.5,
+              "p10": 1411.8999999999999,
+              "p90": 1444.6,
+              "min": 1405.0,
+              "max": 1468.0,
+              "median_ci_x10_low": 1420.0,
+              "median_ci_x21_high": 1437.0
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": 2.3038156947444266,
+            "mean_rank": 2.064822475628647,
+            "max_rank": 2.111667859699362
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 0.9774806474313863,
+            "mean_rank": 0.9797694991717476,
+            "max_rank": 0.9793200140203295
+          }
+        },
+        {
+          "model": "pro",
+          "display_name": "Pro",
+          "m": 1024,
+          "recv": 6102,
+          "touched_experts": 48,
+          "baseline_layout": "BN256-standard",
+          "final_layout": "BN256-standard",
+          "imageperf_rank0_us": 2143.3,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 0.055988429057984845,
+          "final_vs_imageperf_rank0_median_delta_pct": 2.9253954182802078,
+          "baseline": {
+            "rank0": {
+              "median": 2144.5,
+              "p10": 2136.9,
+              "p90": 2162.0,
+              "min": 2128.0,
+              "max": 2211.0,
+              "median_ci_x10_low": 2142.0,
+              "median_ci_x21_high": 2152.0
+            },
+            "mean_rank": {
+              "median": 2147.15,
+              "p10": 2139.44,
+              "p90": 2163.96,
+              "min": 2135.2,
+              "max": 2198.5,
+              "median_ci_x10_low": 2143.8,
+              "median_ci_x21_high": 2153.8
+            },
+            "max_rank": {
+              "median": 2153.0,
+              "p10": 2144.0,
+              "p90": 2173.3,
+              "min": 2138.0,
+              "max": 2211.0,
+              "median_ci_x10_low": 2149.0,
+              "median_ci_x21_high": 2161.0
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 2206.0,
+              "p10": 2186.9,
+              "p90": 2239.6,
+              "min": 2172.0,
+              "max": 2247.0,
+              "median_ci_x10_low": 2194.0,
+              "median_ci_x21_high": 2214.0
+            },
+            "mean_rank": {
+              "median": 2202.95,
+              "p10": 2188.13,
+              "p90": 2232.49,
+              "min": 2178.6,
+              "max": 2244.6,
+              "median_ci_x10_low": 2196.3,
+              "median_ci_x21_high": 2209.6
+            },
+            "max_rank": {
+              "median": 2211.0,
+              "p10": 2193.8,
+              "p90": 2243.5,
+              "min": 2185.0,
+              "max": 2262.0,
+              "median_ci_x10_low": 2203.0,
+              "median_ci_x21_high": 2218.0
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": 2.8678013522965617,
+            "mean_rank": 2.5987937498544555,
+            "max_rank": 2.6939154667905196
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 0.9721214868540344,
+            "mean_rank": 0.9746703284232507,
+            "max_rank": 0.973767526006332
+          }
+        },
+        {
+          "model": "pro",
+          "display_name": "Pro",
+          "m": 2048,
+          "recv": 12294,
+          "touched_experts": 48,
+          "baseline_layout": "BN128-split",
+          "final_layout": "BN128-split",
+          "imageperf_rank0_us": 3763.6,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 6.533638006164311,
+          "final_vs_imageperf_rank0_median_delta_pct": 10.359761930066957,
+          "baseline": {
+            "rank0": {
+              "median": 4009.5,
+              "p10": 3972.9,
+              "p90": 4027.3,
+              "min": 3955.0,
+              "max": 4039.0,
+              "median_ci_x10_low": 4004.0,
+              "median_ci_x21_high": 4014.0
+            },
+            "mean_rank": {
+              "median": 4008.8,
+              "p10": 3971.5499999999997,
+              "p90": 4028.6299999999997,
+              "min": 3960.6,
+              "max": 4038.8,
+              "median_ci_x10_low": 4003.7,
+              "median_ci_x21_high": 4013.4
+            },
+            "max_rank": {
+              "median": 4014.0,
+              "p10": 3977.8,
+              "p90": 4036.4,
+              "min": 3965.0,
+              "max": 4051.0,
+              "median_ci_x10_low": 4008.0,
+              "median_ci_x21_high": 4020.0
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 4153.5,
+              "p10": 4116.8,
+              "p90": 4229.2,
+              "min": 4109.0,
+              "max": 4309.0,
+              "median_ci_x10_low": 4147.0,
+              "median_ci_x21_high": 4162.0
+            },
+            "mean_rank": {
+              "median": 4153.05,
+              "p10": 4115.79,
+              "p90": 4222.24,
+              "min": 4103.4,
+              "max": 4292.4,
+              "median_ci_x10_low": 4149.2,
+              "median_ci_x21_high": 4163.1
+            },
+            "max_rank": {
+              "median": 4161.0,
+              "p10": 4123.8,
+              "p90": 4239.7,
+              "min": 4109.0,
+              "max": 4316.0,
+              "median_ci_x10_low": 4155.0,
+              "median_ci_x21_high": 4171.0
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": 3.5914702581369307,
+            "mean_rank": 3.5983336659349385,
+            "max_rank": 3.6621823617339233
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 0.9653304442036836,
+            "mean_rank": 0.9652664908922358,
+            "max_rank": 0.9646719538572458
+          }
+        },
+        {
+          "model": "pro",
+          "display_name": "Pro",
+          "m": 4096,
+          "recv": 24323,
+          "touched_experts": 48,
+          "baseline_layout": "BN128-split",
+          "final_layout": "BN128-split",
+          "imageperf_rank0_us": 6964.8,
+          "baseline_vs_imageperf_rank0_median_delta_pct": 1.5248104755341219,
+          "final_vs_imageperf_rank0_median_delta_pct": 5.056857339765686,
+          "baseline": {
+            "rank0": {
+              "median": 7071.0,
+              "p10": 7053.9,
+              "p90": 7094.200000000001,
+              "min": 7049.0,
+              "max": 7174.0,
+              "median_ci_x10_low": 7065.0,
+              "median_ci_x21_high": 7080.0
+            },
+            "mean_rank": {
+              "median": 7071.85,
+              "p10": 7053.849999999999,
+              "p90": 7087.76,
+              "min": 7050.3,
+              "max": 7160.8,
+              "median_ci_x10_low": 7064.8,
+              "median_ci_x21_high": 7077.2
+            },
+            "max_rank": {
+              "median": 7079.5,
+              "p10": 7058.799999999999,
+              "p90": 7097.3,
+              "min": 7053.0,
+              "max": 7183.0,
+              "median_ci_x10_low": 7071.0,
+              "median_ci_x21_high": 7085.0
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 7317.0,
+              "p10": 7295.0,
+              "p90": 7351.7,
+              "min": 7289.0,
+              "max": 7427.0,
+              "median_ci_x10_low": 7310.0,
+              "median_ci_x21_high": 7329.0
+            },
+            "mean_rank": {
+              "median": 7317.15,
+              "p10": 7297.86,
+              "p90": 7342.299999999999,
+              "min": 7291.0,
+              "max": 7404.4,
+              "median_ci_x10_low": 7307.7,
+              "median_ci_x21_high": 7324.2
+            },
+            "max_rank": {
+              "median": 7325.0,
+              "p10": 7304.7,
+              "p90": 7355.5,
+              "min": 7294.0,
+              "max": 7427.0,
+              "median_ci_x10_low": 7318.0,
+              "median_ci_x21_high": 7332.0
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": 3.4789987271955924,
+            "mean_rank": 3.4686821694464465,
+            "max_rank": 3.4677590225298482
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 0.966379663796638,
+            "mean_rank": 0.9664760186684708,
+            "max_rank": 0.9664846416382252
+          }
+        },
+        {
+          "model": "pro",
+          "display_name": "Pro",
+          "m": 8192,
+          "recv": 49566,
+          "touched_experts": 48,
+          "baseline_layout": "BN128-split",
+          "final_layout": "BN128-split",
+          "imageperf_rank0_us": 13336.8,
+          "baseline_vs_imageperf_rank0_median_delta_pct": -0.13346529902225068,
+          "final_vs_imageperf_rank0_median_delta_pct": 3.2069162017875463,
+          "baseline": {
+            "rank0": {
+              "median": 13319.0,
+              "p10": 13303.9,
+              "p90": 13337.2,
+              "min": 13301.0,
+              "max": 13382.0,
+              "median_ci_x10_low": 13314.0,
+              "median_ci_x21_high": 13326.0
+            },
+            "mean_rank": {
+              "median": 13318.1,
+              "p10": 13304.92,
+              "p90": 13334.809999999998,
+              "min": 13303.4,
+              "max": 13369.0,
+              "median_ci_x10_low": 13313.5,
+              "median_ci_x21_high": 13323.4
+            },
+            "max_rank": {
+              "median": 13325.0,
+              "p10": 13311.9,
+              "p90": 13345.300000000001,
+              "min": 13307.0,
+              "max": 13382.0,
+              "median_ci_x10_low": 13319.0,
+              "median_ci_x21_high": 13330.0
+            }
+          },
+          "final": {
+            "rank0": {
+              "median": 13764.5,
+              "p10": 13719.1,
+              "p90": 13796.4,
+              "min": 13694.0,
+              "max": 13816.0,
+              "median_ci_x10_low": 13758.0,
+              "median_ci_x21_high": 13775.0
+            },
+            "mean_rank": {
+              "median": 13766.3,
+              "p10": 13713.92,
+              "p90": 13798.09,
+              "min": 13692.2,
+              "max": 13830.4,
+              "median_ci_x10_low": 13761.0,
+              "median_ci_x21_high": 13781.2
+            },
+            "max_rank": {
+              "median": 13773.0,
+              "p10": 13719.2,
+              "p90": 13809.8,
+              "min": 13697.0,
+              "max": 13846.0,
+              "median_ci_x10_low": 13770.0,
+              "median_ci_x21_high": 13792.0
+            }
+          },
+          "final_vs_baseline_delta_pct": {
+            "rank0": 3.344845709137312,
+            "mean_rank": 3.365344906555734,
+            "max_rank": 3.36210131332082
+          },
+          "baseline_over_final_speedup": {
+            "rank0": 0.9676341312797414,
+            "mean_rank": 0.9674422321175625,
+            "max_rank": 0.9674725913018224
+          }
+        }
+      ]
+    }
+  }
+}
