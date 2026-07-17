@@ -11,6 +11,15 @@ public:
 
     static std::string generate_impl(const Args& args) {
         DG_HOST_ASSERT(args.phase_mode == SM90NVFP4MegaMoERuntime::kFusedPhaseMode);
+        // Exact MiMo Pro M32/BM16 has room for both full dispatch buffers and
+        // benefits from parallel token pulls.  Keep one active dispatch warp
+        // for every other deployment shape, including generic Pro M32.
+        const bool mimo_pro_m32_dual_dispatch =
+            args.num_tokens == 32 && args.hidden == 6144 &&
+            args.intermediate_hidden == 2048 && args.num_topk == 8 &&
+            args.num_ranks > 0 && args.num_experts == 48 * args.num_ranks &&
+            args.config.block_m == 16 && args.config.num_stages == 3;
+        const bool single_active_dispatch_warp = !mimo_pro_m32_dual_dispatch;
         const std::string phase_template_args = fmt::format(
             "/* kPhaseProfileRequested */ {},\n"
             "        /* kLoaderDequantRequested */ {},\n"
@@ -23,7 +32,7 @@ public:
             args.swap_ab ? "true" : "false",
             args.dp4a_selector_pack ? "true" : "false",
             args.hybrid_low_selector_pack ? "true" : "false",
-            "true");
+            single_active_dispatch_warp ? "true" : "false");
         return fmt::format(R"(
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_per128_pro_braided.cuh>
 
@@ -102,7 +111,12 @@ static void sm90_nvfp4_per128_pro_braided_3stage_mega_moe(
     const float& activation_clamp,
     const bool& fast_math
 ) {
-    DG_HOST_ASSERT(intermediate_hidden >= 3072);
+    const bool mimo_pro_small_m_candidate =
+        (num_tokens == 8 || num_tokens == 16 ||
+         num_tokens == 32 || num_tokens == 64) &&
+        num_topk == 8 && num_experts_per_rank == 48 &&
+        hidden == 6144 && intermediate_hidden == 2048;
+    DG_HOST_ASSERT(intermediate_hidden >= 3072 || mimo_pro_small_m_candidate);
     const int num_ranks = static_cast<int>(sym_buffer_ptrs.size());
     const int num_experts = num_experts_per_rank * num_ranks;
     const int num_padded_sf_pool_tokens = static_cast<int>(l1_acts_sf.size(0));
@@ -115,8 +129,18 @@ static void sm90_nvfp4_per128_pro_braided_3stage_mega_moe(
         block_n_from_layout);
     DG_HOST_ASSERT(plan.use_fused_phase);
     auto config = plan.l1_or_fused_config;
+    const bool mimo_pro_m8_epw16_candidate =
+        num_tokens == 8 && num_topk == 8 && num_experts_per_rank == 48 &&
+        hidden == 6144 && intermediate_hidden == 2048;
+    if (mimo_pro_m8_epw16_candidate)
+        config.num_experts_per_wave = 16;
+    const bool mimo_pro_m32_dual_dispatch_candidate =
+        num_tokens == 32 && num_topk == 8 && num_experts_per_rank == 48 &&
+        hidden == 6144 && intermediate_hidden == 2048;
+    DG_HOST_ASSERT(num_experts_per_rank % config.num_experts_per_wave == 0);
     DG_HOST_ASSERT(config.block_m == 64 && config.block_n == 256);
-    DG_HOST_ASSERT(plan.swap_ab && plan.dp4a_selector_pack);
+    DG_HOST_ASSERT(plan.swap_ab &&
+                   (plan.dp4a_selector_pack || mimo_pro_small_m_candidate));
     DG_HOST_ASSERT(!plan.loader_dequant && config.num_stages == 2);
 
     const auto align_up = [](const int value, const int alignment) {
@@ -146,6 +170,28 @@ static void sm90_nvfp4_per128_pro_braided_3stage_mega_moe(
     constexpr int kPer128SFStageSaving = 64 * static_cast<int>(sizeof(float));
     config.smem_size -= config.num_stages * kPer128SFStageSaving;
     DG_HOST_ASSERT(config.smem_size <= SM90ArchSpec::smem_capacity);
+    // Match the scheduler M tile to the observed per-expert route envelope.
+    // Extra-heavy experts remain legal because the scheduler emits more tiles.
+    // Keep the conservative BM64 launch allocation for this isolated screen.
+    if (num_tokens == 8 || num_tokens == 16)
+        config.block_m = 8;
+    else if (num_tokens == 32)
+        config.block_m = 16;
+    else if (num_tokens == 64)
+        config.block_m = 24;
+    if (num_tokens == 8 || num_tokens == 16) {
+        // BM8 leaves just enough shared memory for a fourth A/B pipeline
+        // stage (232144 bytes including barriers). Reserve the full SM90
+        // opt-in capacity so the dynamic allocation covers that layout.
+        config.num_stages = 4;
+        config.smem_size = SM90ArchSpec::smem_capacity;
+    } else if (mimo_pro_m32_dual_dispatch_candidate) {
+        // Route-sized BM16 needs 191040 bytes with both dispatch pull warps
+        // active and the retained three GEMM stages.  Allocate the full
+        // opt-in capacity so the generated two-buffer layout is covered
+        // without changing occupancy (still one CTA/SM).
+        config.smem_size = SM90ArchSpec::smem_capacity;
+    }
     const int weight_storage_k = static_cast<int>(l1_weights.size(2));
     const int weight_k_blocks = static_cast<int>(l1_weights_sf.size(2));
     DG_HOST_ASSERT(weight_storage_k == weight_k_blocks * kSM90NVFP4BStoragePerKBlock);
@@ -167,8 +213,10 @@ static void sm90_nvfp4_per128_pro_braided_3stage_mega_moe(
         static_cast<int>(l1_weights.stride(-2)), 0);
 
     const int num_epilogue_warpgroups = config.num_epilogue_threads / 128;
-    const bool split_n_warpgroups = config.block_m == 64 && config.block_n == 256 &&
-        num_epilogue_warpgroups == 2;
+    const bool split_n_warpgroups =
+        (config.block_m == 8 || config.block_m == 16 ||
+         config.block_m == 24 || config.block_m == 32 || config.block_m == 64) &&
+        config.block_n == 256 && num_epilogue_warpgroups == 2;
     DG_HOST_ASSERT(split_n_warpgroups);
     const int wg_block_m = config.block_m;
     const int wg_block_n = config.block_n / num_epilogue_warpgroups;

@@ -57,7 +57,17 @@ def _worker(local_rank, num_local_ranks, args):
 if __name__ == "__main__":
     correctness = _load_correctness_module()
     args = correctness._parse_args()
-    if args.intermediate_hidden < 3072:
-        raise ValueError("Three-stage Pro braided candidate requires intermediate_hidden >= 3072")
+    mimo_pro_small_m_candidate = (
+        bool(args.batches)
+        and all(m in (8, 16, 32, 64) for m in args.batches)
+        and args.hidden == 6144
+        and args.intermediate_hidden == 2048
+        and args.num_experts == 48
+        and args.num_topk == 8
+    )
+    if args.intermediate_hidden < 3072 and not mimo_pro_small_m_candidate:
+        raise ValueError(
+            "Three-stage braided candidate requires Pro or the MiMo Pro M=8/16/32/64 screen"
+        )
     args.nvfp4_block_n = 256
     torch.multiprocessing.spawn(_worker, args=(1, args), nprocs=1, join=True)

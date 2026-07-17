@@ -41,7 +41,12 @@ static void nvfp4_per128_pro_braided_3stage_mega_moe(
         get_shape<3>(l2_weights);
     const int hidden = static_cast<int>(l1_weights_sf.size(2)) * 128;
     const int intermediate_hidden = static_cast<int>(l2_weights_sf.size(2)) * 128;
-    DG_HOST_ASSERT(intermediate_hidden >= 3072);
+    const bool mimo_pro_small_m_candidate =
+        (num_tokens == 8 || num_tokens == 16 ||
+         num_tokens == 32 || num_tokens == 64) &&
+        num_topk == 8 && num_experts_per_rank == 48 &&
+        hidden == 6144 && intermediate_hidden == 2048;
+    DG_HOST_ASSERT(intermediate_hidden >= 3072 || mimo_pro_small_m_candidate);
     DG_HOST_ASSERT(l1_weights_sf.size(3) == kBlockN);
     DG_HOST_ASSERT(l2_weights_sf.size(3) == kBlockN);
     DG_HOST_ASSERT(hidden_storage == (hidden / 128) * kSM90NVFP4BStoragePerKBlock);

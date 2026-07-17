@@ -332,8 +332,18 @@ static SM90NVFP4MegaMoEPlan get_nvfp4_mega_moe_plan_sm90(
         use_fused_phase && num_non_epilogue_threads == 64;
     const bool loader_dequant = loader_dequant_requested &&
         (num_non_epilogue_threads == 128 || bn256_packed_loader_dequant);
+    // Isolated H20 tuning screen: the retained <=8 load gate excludes Mimo
+    // Pro M=64 (64 * topk8 / 48 local experts = 10.67), even though the fused
+    // swap-AB implementation has a legal N_SWAP=64 specialization.  Force only
+    // that exact deployment point so its real kernel effect can be measured
+    // without changing any neighboring selector region.
+    const bool mimo_pro_m64_swap_ab_candidate =
+        use_fused_phase && num_tokens == 64 && num_topk == 8 &&
+        num_experts_per_rank == 48 && hidden == 6144 &&
+        intermediate_hidden == 2048;
     const bool swap_ab = use_fused_phase && block_m == 64 &&
-        num_epilogue_threads == 256 && expected_in_closed_range(0, 8);
+        num_epilogue_threads == 256 &&
+        (expected_in_closed_range(0, 8) || mimo_pro_m64_swap_ab_candidate);
     const bool fused_policy_eligible = use_fused_phase && block_m == 64;
     const bool dp4a_selector_pack = fused_policy_eligible &&
         intermediate_hidden >= 3072 && expected_in_closed_range(0, 8);

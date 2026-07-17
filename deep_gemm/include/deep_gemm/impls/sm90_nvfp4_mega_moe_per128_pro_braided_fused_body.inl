@@ -13,7 +13,9 @@
     DG_STATIC_ASSERT(kNumExperts % kNumRanks == 0, "Invalid number of experts or ranks");
     DG_STATIC_ASSERT(kClusterSize == 1 or kClusterSize == 2, "Invalid cluster size");
     DG_STATIC_ASSERT(kNumSMs % kClusterSize == 0, "SM count must be divisible by cluster size");
-    DG_STATIC_ASSERT(BLOCK_M % 64 == 0, "BLOCK_M must be a multiple of WGMMA::M (64)");
+    DG_STATIC_ASSERT(BLOCK_M == 8 || BLOCK_M == 16 || BLOCK_M == 24 || BLOCK_M == 32 || BLOCK_M % 64 == 0,
+                     "BLOCK_M must be BM8/BM16/BM24/BM32 swap-AB or a multiple of "
+                     "WGMMA::M (64)");
     DG_STATIC_ASSERT(BLOCK_N == 64 or BLOCK_N == 128 or BLOCK_N == 256, "BLOCK_N must be 64/128/256 for this SM90 path");
     DG_STATIC_ASSERT(BLOCK_N == 128 or BLOCK_N == 256,
                      "NVFP4 smem dequant supports BN128 and opt-in BN256 scale tile layouts");
@@ -83,7 +85,7 @@
     using a_dtype_t = cutlass::float_e4m3_t;
     using b_dtype_t = cutlass::float_e4m3_t;
     constexpr bool kSplitNWarpgroups =
-        BLOCK_M == 64 && BLOCK_N == 256 && kNumEpilogueWarpgroups == 2;
+        BLOCK_N == 256 && kNumEpilogueWarpgroups == 2;
     constexpr bool kSerialNWarpgroups = false;
     constexpr bool kWideNWarpgroups =
         BLOCK_N == 256 && kNumEpilogueWarpgroups == 1;
@@ -96,11 +98,15 @@
     constexpr bool kSkipL2ReadyMask = false;
     constexpr bool kSkipL1ReadyNotify = false;
     constexpr bool kSwapABEligible = kSwapABRequested && kSplitNWarpgroups &&
-        BLOCK_M == 64 && BLOCK_N == 256 && WG_BLOCK_N == 128;
+        (BLOCK_M == 8 || BLOCK_M == 16 || BLOCK_M == 24 || BLOCK_M == 32 || BLOCK_M == 64) &&
+        BLOCK_N == 256 && WG_BLOCK_N == 128;
     constexpr bool kSwapABL1Active = kSwapABEligible;
     constexpr bool kSwapABL2Active = kSwapABEligible;
     constexpr bool kSwapABProN24Dispatch =
-        kSwapABEligible && kIntermediateHidden >= 3072;
+        kSwapABEligible &&
+        (kIntermediateHidden >= 3072 ||
+         (kHidden == 6144 && kIntermediateHidden == 2048 &&
+          kNumExpertsPerRank == 48 && kNumTopk == 8));
     constexpr uint32_t kSwapABTokenChunks = BLOCK_M / 8;
     constexpr uint32_t kSwapABWeightHalves = WG_BLOCK_N / 64;
     constexpr uint32_t kSwapABHalfAccumPerThread = 64 * 64 / 128;
@@ -114,13 +120,18 @@
     constexpr uint32_t kNumActiveDispatchThreads = kNumActiveDispatchWarps * 32;
     constexpr bool kLoaderDequant = kLoaderDequantRequested && kNumMMANonEpilogueWarps == 4;
     constexpr bool kPackedBScratch = BLOCK_N == 256 && (!kLoaderDequant);
+    constexpr bool kBraidedQuadIlp =
+        !kLoaderDequant && BLOCK_M == 8 && kNumStages == 4 &&
+        kHidden == 6144 && kIntermediateHidden == 2048 &&
+        kNumExpertsPerRank == 48 && kNumTopk == 8;
     DG_STATIC_ASSERT(kLoaderDequant || kPackedBScratch,
                      "Fused NVFP4 B+scale layout requires loader dequant or packed scratch");
     using L1WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     using L2WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     static_assert(L1WGMMA::M == 64 and L1WGMMA::N == WG_BLOCK_N and L1WGMMA::K == 32,
                   "Unexpected WGMMA shape");
-    DG_STATIC_ASSERT((!kSplitNWarpgroups) or (BLOCK_M == 64 and (WG_BLOCK_N == 64 or WG_BLOCK_N == 128)),
+    DG_STATIC_ASSERT((!kSplitNWarpgroups) or kSwapABEligible or
+                     (BLOCK_M == 64 and (WG_BLOCK_N == 64 or WG_BLOCK_N == 128)),
                      "Split-N path expects M64N64 or M64N128 WGMMA consumers");
 
     // A is always CTA-local.  When kClusterSize=2 the scheduler pairs adjacent
@@ -966,7 +977,8 @@
 
         DG_STATIC_ASSERT(kSplitNWarpgroups || (BLOCK_M % kNumEpilogueWarpgroups == 0), "Invalid block M");
         if constexpr (kSplitNWarpgroups) {
-            DG_STATIC_ASSERT(WG_BLOCK_M == L1WGMMA::M and WG_BLOCK_N == L1WGMMA::N,
+            DG_STATIC_ASSERT(kSwapABEligible ||
+                             (WG_BLOCK_M == L1WGMMA::M and WG_BLOCK_N == L1WGMMA::N),
                              "Split-N WGs must each run one M64N128 WGMMA per K-block");
         } else if constexpr (kSerialNWarpgroups) {
             DG_STATIC_ASSERT(WG_BLOCK_M == L1WGMMA::M and WG_BLOCK_N == L1WGMMA::N,
@@ -1362,7 +1374,8 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         DG_STATIC_ASSERT(kPackedBScratch,
                                          "Math-side NVFP4 fused-layout dequant requires packed scratch");
                         const uint32_t _tid_in_wg = epilogue_thread_idx;
-                        deep_gemm::nvfp4::dequant_smem_b_from_packed_braided_lut_window(
+                        deep_gemm::nvfp4::dequant_smem_b_from_packed_braided_lut_window<
+                            kBraidedQuadIlp>(
                             reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
                             reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
                             _tid_in_wg, smem_nvfp4_lut);
@@ -1440,7 +1453,33 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         };
 
                         const uint32_t n_swap = ((valid_m + 7u) / 8u) * 8u;
-                        if constexpr (kSwapABProN24Dispatch) {
+                        if constexpr (BLOCK_M == 8) {
+                            run_swap_ab_l1.template operator()<8>();
+                        } else if constexpr (BLOCK_M == 16) {
+                            if (n_swap <= 8) {
+                                run_swap_ab_l1.template operator()<8>();
+                            } else {
+                                run_swap_ab_l1.template operator()<16>();
+                            }
+                        } else if constexpr (BLOCK_M == 24) {
+                            if (n_swap <= 8) {
+                                run_swap_ab_l1.template operator()<8>();
+                            } else if (n_swap <= 16) {
+                                run_swap_ab_l1.template operator()<16>();
+                            } else {
+                                run_swap_ab_l1.template operator()<24>();
+                            }
+                        } else if constexpr (BLOCK_M == 32) {
+                            if (n_swap <= 8) {
+                                run_swap_ab_l1.template operator()<8>();
+                            } else if (n_swap <= 16) {
+                                run_swap_ab_l1.template operator()<16>();
+                            } else if (n_swap <= 24) {
+                                run_swap_ab_l1.template operator()<24>();
+                            } else {
+                                run_swap_ab_l1.template operator()<32>();
+                            }
+                        } else if constexpr (kSwapABProN24Dispatch) {
                             if (n_swap <= 8) {
                                 run_swap_ab_l1.template operator()<8>();
                             } else if (n_swap <= 16) {
@@ -1546,7 +1585,33 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         };
 
                         const uint32_t n_swap = ((valid_m + 7u) / 8u) * 8u;
-                        if constexpr (kSwapABProN24Dispatch) {
+                        if constexpr (BLOCK_M == 8) {
+                            run_swap_ab_l2.template operator()<8>();
+                        } else if constexpr (BLOCK_M == 16) {
+                            if (n_swap <= 8) {
+                                run_swap_ab_l2.template operator()<8>();
+                            } else {
+                                run_swap_ab_l2.template operator()<16>();
+                            }
+                        } else if constexpr (BLOCK_M == 24) {
+                            if (n_swap <= 8) {
+                                run_swap_ab_l2.template operator()<8>();
+                            } else if (n_swap <= 16) {
+                                run_swap_ab_l2.template operator()<16>();
+                            } else {
+                                run_swap_ab_l2.template operator()<24>();
+                            }
+                        } else if constexpr (BLOCK_M == 32) {
+                            if (n_swap <= 8) {
+                                run_swap_ab_l2.template operator()<8>();
+                            } else if (n_swap <= 16) {
+                                run_swap_ab_l2.template operator()<16>();
+                            } else if (n_swap <= 24) {
+                                run_swap_ab_l2.template operator()<24>();
+                            } else {
+                                run_swap_ab_l2.template operator()<32>();
+                            }
+                        } else if constexpr (kSwapABProN24Dispatch) {
                             if (n_swap <= 8) {
                                 run_swap_ab_l2.template operator()<8>();
                             } else if (n_swap <= 16) {
@@ -2056,7 +2121,9 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     phase_profile_record(kProfileL1Epilogue, block_epilogue_end - block_epilogue_start);
             } else {
                 // ---------------- L2 EPILOGUE: BF16 cast + NVLink scatter ----------------
-                constexpr uint32_t kNumRowsPerWarp = WG_BLOCK_M / 8;
+                // Each active warp scatters a contiguous group of up to 16 rows.
+                constexpr uint32_t kNumRowsPerWarp =
+                    BLOCK_M == 8 ? 4u : 8u;
 
                 if constexpr (kSwapABL2Active) {
                     auto store_swap_bf16 = [&](const uint32_t& token, const uint32_t& col, const float& value) {

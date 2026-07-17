@@ -34,7 +34,49 @@ __device__ __forceinline__ void dequant_braided_quad(
         make_uint4(q2.x, q2.y, q3.x, q3.y);
 }
 
-template <int kQuad>
+__device__ __forceinline__ void dequant_braided_quad_ilp(
+        uint8_t* __restrict__ fp8_dst,
+        const uint4& q,
+        const uint2& lut0,
+        const uint2& lut1,
+        const int scale_i0,
+        const uint32_t row_swizzle) {
+    // Expose all four independent PRMT chains together so ptxas can overlap
+    // their selector/sign work before either 128-bit shared-memory store.
+    const uint32_t q0_sel0 = q.x & 0x00007777u;
+    const uint32_t q0_sel1 = (q.x >> 16) & 0x00007777u;
+    const uint32_t q1_sel0 = q.y & 0x00007777u;
+    const uint32_t q1_sel1 = (q.y >> 16) & 0x00007777u;
+    const uint32_t q2_sel0 = q.z & 0x00007777u;
+    const uint32_t q2_sel1 = (q.z >> 16) & 0x00007777u;
+    const uint32_t q3_sel0 = q.w & 0x00007777u;
+    const uint32_t q3_sel1 = (q.w >> 16) & 0x00007777u;
+
+    uint32_t q0_out0 = byte_perm_unchecked(lut0.x, lut0.y, q0_sel0);
+    uint32_t q0_out1 = byte_perm_unchecked(lut0.x, lut0.y, q0_sel1);
+    uint32_t q1_out0 = byte_perm_unchecked(lut0.x, lut0.y, q1_sel0);
+    uint32_t q1_out1 = byte_perm_unchecked(lut0.x, lut0.y, q1_sel1);
+    uint32_t q2_out0 = byte_perm_unchecked(lut1.x, lut1.y, q2_sel0);
+    uint32_t q2_out1 = byte_perm_unchecked(lut1.x, lut1.y, q2_sel1);
+    uint32_t q3_out0 = byte_perm_unchecked(lut1.x, lut1.y, q3_sel0);
+    uint32_t q3_out1 = byte_perm_unchecked(lut1.x, lut1.y, q3_sel1);
+
+    q0_out0 |= q.x & 0x80808080u;
+    q0_out1 |= (q.x << 4) & 0x80808080u;
+    q1_out0 |= q.y & 0x80808080u;
+    q1_out1 |= (q.y << 4) & 0x80808080u;
+    q2_out0 |= q.z & 0x80808080u;
+    q2_out1 |= (q.z << 4) & 0x80808080u;
+    q3_out0 |= q.w & 0x80808080u;
+    q3_out1 |= (q.w << 4) & 0x80808080u;
+
+    *reinterpret_cast<uint4*>(fp8_dst + ((scale_i0 * 16) ^ row_swizzle)) =
+        make_uint4(q0_out0, q0_out1, q1_out0, q1_out1);
+    *reinterpret_cast<uint4*>(fp8_dst + (((scale_i0 + 1) * 16) ^ row_swizzle)) =
+        make_uint4(q2_out0, q2_out1, q3_out0, q3_out1);
+}
+
+template <int kQuad, bool kQuadIlp>
 __device__ __forceinline__ void dequant_braided_quad_lut_window(
         uint8_t* __restrict__ fp8_dst,
         const uint4 (&fp4_quads)[4],
@@ -58,16 +100,22 @@ __device__ __forceinline__ void dequant_braided_quad_lut_window(
         next_lut1 = lut_smem[next_scale1];
     }
 
-    dequant_braided_quad(
-        fp8_dst, fp4_quads[kQuad], lut0, lut1, kQuad * 2, row_swizzle);
+    if constexpr (kQuadIlp) {
+        dequant_braided_quad_ilp(
+            fp8_dst, fp4_quads[kQuad], lut0, lut1, kQuad * 2, row_swizzle);
+    } else {
+        dequant_braided_quad(
+            fp8_dst, fp4_quads[kQuad], lut0, lut1, kQuad * 2, row_swizzle);
+    }
 
     if constexpr (kQuad + 1 < 4) {
-        dequant_braided_quad_lut_window<kQuad + 1>(
+        dequant_braided_quad_lut_window<kQuad + 1, kQuadIlp>(
             fp8_dst, fp4_quads, scale_word_lo, scale_word_hi, lut_smem,
             next_lut0, next_lut1, row_swizzle);
     }
 }
 
+template <bool kQuadIlp = false>
 __device__ __forceinline__ void dequant_smem_b_from_packed_braided_lut_window(
         uint8_t* __restrict__ smem_b,
         const uint8_t* __restrict__ packed_b,
@@ -83,7 +131,7 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_braided_lut_window(
     const uint2 scale_words = *reinterpret_cast<const uint2*>(row_ptr + 64);
     const uint2 lut0 = lut_smem[scale_words.x & 0x7fu];
     const uint2 lut1 = lut_smem[(scale_words.x >> 8) & 0x7fu];
-    dequant_braided_quad_lut_window<0>(
+    dequant_braided_quad_lut_window<0, kQuadIlp>(
         smem_b + row * 128, fp4_quads, scale_words.x, scale_words.y,
         lut_smem, lut0, lut1, (row & 7u) << 4);
 }
