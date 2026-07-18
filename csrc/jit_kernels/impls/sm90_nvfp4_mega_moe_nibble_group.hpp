@@ -116,7 +116,26 @@ static void sm90_nvfp4_nibble_group_mega_moe(
         block_n_from_layout);
     DG_HOST_ASSERT(plan.use_fused_phase);
     auto config = plan.l1_or_fused_config;
-    DG_HOST_ASSERT(config.block_m == 64 && config.block_n == 256);
+    const bool h200_mimo_large_bm128 =
+        num_sms >= 132 && num_ranks == 8 &&
+        (num_tokens == 2048 || num_tokens == 8192) &&
+        num_topk == 8 && num_experts_per_rank == 48 &&
+        hidden == 6144 && intermediate_hidden == 2048;
+    if (h200_mimo_large_bm128) {
+        const float expected_tokens_per_local_expert =
+            static_cast<float>(num_tokens * num_topk) / num_experts_per_rank;
+        config.block_m = 128;
+        config.block_n = 128;
+        // Four concurrent experts smooth the tail of the BM128 waves at both
+        // selected MiMo sizes without fragmenting the H200 CTA schedule.
+        config.num_experts_per_wave = 4;
+        std::tie(config.num_stages, config.smem_size) =
+            get_nvfp4_pipeline_config_for_mega_moe_sm90(
+                num_experts, hidden, expected_tokens_per_local_expert,
+                config, false, true, false, false);
+    }
+    DG_HOST_ASSERT((config.block_m == 64 && config.block_n == 256) ||
+                   (config.block_m == 128 && config.block_n == 128));
     const bool h200_mimo_m512_epw8 =
         num_sms >= 132 && num_ranks == 8 && num_tokens == 512 &&
         num_topk == 8 && num_experts_per_rank == 48 &&
@@ -143,7 +162,7 @@ static void sm90_nvfp4_nibble_group_mega_moe(
     const bool candidate_swap_ab =
         routed_tokens <= 16 * num_experts_per_rank &&
         !h200_mimo_m64_no_swap_ab;
-    if (candidate_swap_ab != plan.swap_ab) {
+    if (!h200_mimo_large_bm128 && candidate_swap_ab != plan.swap_ab) {
         std::tie(config.num_stages, config.smem_size) =
             get_nvfp4_pipeline_config_for_mega_moe_sm90(
                 num_experts, hidden, expected_tokens_per_local_expert,
@@ -172,9 +191,13 @@ static void sm90_nvfp4_nibble_group_mega_moe(
     const int num_epilogue_warpgroups = config.num_epilogue_threads / 128;
     const bool split_n_warpgroups = config.block_m == 64 && config.block_n == 256 &&
         num_epilogue_warpgroups == 2;
-    DG_HOST_ASSERT(split_n_warpgroups);
-    const int wg_block_m = config.block_m;
-    const int wg_block_n = config.block_n / num_epilogue_warpgroups;
+    const bool split_m_warpgroups = config.block_m == 128 && config.block_n == 128 &&
+        num_epilogue_warpgroups == 2;
+    DG_HOST_ASSERT(split_n_warpgroups || split_m_warpgroups);
+    const int wg_block_m = split_n_warpgroups ?
+        config.block_m : config.block_m / num_epilogue_warpgroups;
+    const int wg_block_n = split_n_warpgroups ?
+        config.block_n / num_epilogue_warpgroups : config.block_n;
     const int l1_output_store_block_n = config.block_n / 2;
     const auto tensor_map_l1_output = make_tma_2d_desc(
         l2_acts, intermediate_hidden, config.num_max_pool_tokens,
@@ -213,13 +236,16 @@ static void sm90_nvfp4_nibble_group_mega_moe(
         .l2_dual_accum = false,
         .phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0,
         .l2_arrival_counter = false,
-        .loader_dequant = plan.loader_dequant,
-        .swap_ab = candidate_swap_ab,
-        .dp4a_selector_pack = plan.dp4a_selector_pack,
-        .hybrid_low_selector_pack = plan.hybrid_low_selector_pack,
+        .loader_dequant = h200_mimo_large_bm128 ? false : plan.loader_dequant,
+        .swap_ab = h200_mimo_large_bm128 ? false : candidate_swap_ab,
+        .dp4a_selector_pack = h200_mimo_large_bm128 ?
+            false : plan.dp4a_selector_pack,
+        .hybrid_low_selector_pack = h200_mimo_large_bm128 ?
+            false : plan.hybrid_low_selector_pack,
         .grouped_nibble_weights = false,
-        .quad_dequant_mask = h200_mimo_m1024_quad_ilp ?
-            3u : (h200_mimo_m256_l2_quad_ilp ? 2u : 0u),
+        .quad_dequant_mask = h200_mimo_large_bm128 ? 0u :
+            (h200_mimo_m1024_quad_ilp ?
+             3u : (h200_mimo_m256_l2_quad_ilp ? 2u : 0u)),
         .phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode,
         .config = config,
         .y = y.data_ptr(),

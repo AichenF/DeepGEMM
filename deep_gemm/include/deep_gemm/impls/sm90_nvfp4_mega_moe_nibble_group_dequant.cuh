@@ -82,6 +82,47 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_grouped_nibble(
         (row & 7u) << 4, lut_smem);
 }
 
+__device__ __forceinline__ void dequant_smem_b_half_row_grouped_nibble(
+        uint8_t* __restrict__ smem_b,
+        const uint8_t* __restrict__ packed_b,
+        const uint32_t thread,
+        const uint2* __restrict__ lut_smem) {
+    const uint32_t row = thread >> 1;
+    const uint32_t half = thread & 1u;
+    const uint8_t* __restrict__ row_ptr = packed_b + row * 80;
+    const uint4* __restrict__ fp4_src = reinterpret_cast<const uint4*>(row_ptr);
+    const uint32_t scale_word =
+        reinterpret_cast<const uint32_t*>(row_ptr + 64)[half];
+    const uint32_t scale_i_base = half * 4;
+    const uint32_t row_swizzle = (row & 7u) << 4;
+    uint8_t* __restrict__ fp8_dst = smem_b + row * 128;
+
+    #pragma unroll
+    for (uint32_t local_quad = 0; local_quad < 2; ++local_quad) {
+        const uint4 q = fp4_src[half * 2 + local_quad];
+        const uint32_t scale_i0 = scale_i_base + local_quad * 2;
+        const uint32_t scale_i1 = scale_i0 + 1;
+        const uint32_t scale0 =
+            (scale_word >> (local_quad * 16)) & 0x7fu;
+        const uint32_t scale1 =
+            (scale_word >> (local_quad * 16 + 8)) & 0x7fu;
+        const uint2 lut0 = lut_smem[scale0];
+        const uint2 lut1 = lut_smem[scale1];
+
+        const uint2 q0 = dequant_grouped_nibble_word(q.x, lut0);
+        const uint2 q1 = dequant_grouped_nibble_word(q.y, lut0);
+        *reinterpret_cast<uint4*>(
+            fp8_dst + ((scale_i0 * 16) ^ row_swizzle)) =
+            make_uint4(q0.x, q0.y, q1.x, q1.y);
+
+        const uint2 q2 = dequant_grouped_nibble_word(q.z, lut1);
+        const uint2 q3 = dequant_grouped_nibble_word(q.w, lut1);
+        *reinterpret_cast<uint4*>(
+            fp8_dst + ((scale_i1 * 16) ^ row_swizzle)) =
+            make_uint4(q2.x, q2.y, q3.x, q3.y);
+    }
+}
+
 template <uint32_t kNumDequantThreads, uint32_t kBarIdx,
           uint32_t kFusedRowBytes = 80>
 __device__ __forceinline__ void dequant_smem_b_inplace_two_rows_grouped_nibble(

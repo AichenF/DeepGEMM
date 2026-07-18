@@ -20,8 +20,9 @@
     DG_STATIC_ASSERT(BLOCK_K == 128, "BLOCK_K is fixed to 128 (per-128 SF)");
     DG_STATIC_ASSERT(kIntermediateHidden <= 2048,
                      "nibble-group candidate is restricted to Flash layouts");
-    DG_STATIC_ASSERT(BLOCK_M == 64 && BLOCK_N == 256,
-                     "nibble-group candidate is restricted to small-M BN256");
+    DG_STATIC_ASSERT((BLOCK_M == 64 && BLOCK_N == 256) ||
+                     (BLOCK_M == 128 && BLOCK_N == 128),
+                     "nibble-group candidate supports M64N256 or M128N128");
     DG_STATIC_ASSERT((!kLoaderDequantRequested) or kNumNonEpilogueThreads == 128 or
                      (kNumNonEpilogueThreads == 64 and BLOCK_N == 256),
                      "NVFP4 loader dequant expects four non-epilogue warps or the BN256 packed-scratch path");
@@ -88,6 +89,8 @@
     constexpr bool kSplitNWarpgroups =
         BLOCK_M == 64 && BLOCK_N == 256 && kNumEpilogueWarpgroups == 2;
     constexpr bool kSerialNWarpgroups = false;
+    constexpr bool kSplitMWarpgroups =
+        BLOCK_M == 128 && BLOCK_N == 128 && kNumEpilogueWarpgroups == 2;
     constexpr bool kWideNWarpgroups =
         BLOCK_N == 256 && kNumEpilogueWarpgroups == 1;
     constexpr uint32_t WG_BLOCK_M = kSplitNWarpgroups ? BLOCK_M : BLOCK_M / kNumEpilogueWarpgroups;
@@ -116,7 +119,7 @@
     constexpr uint32_t kNumActiveDispatchWarps = kNumDispatchWarps;
     constexpr uint32_t kNumActiveDispatchThreads = kNumActiveDispatchWarps * 32;
     constexpr bool kLoaderDequant = kLoaderDequantRequested && kNumMMANonEpilogueWarps == 4;
-    constexpr bool kPackedBScratch = BLOCK_N == 256 && (!kLoaderDequant);
+    constexpr bool kPackedBScratch = !kLoaderDequant;
     // The host selects EPW8 only for the H200 MiMo M512 plan.
     constexpr bool kH200MimoM512QuadILP =
         kNumSMs >= 132 && kNumRanks == 8 && kNumTopk == 8 &&
@@ -1390,7 +1393,12 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         DG_STATIC_ASSERT(kPackedBScratch,
                                          "Math-side NVFP4 fused-layout dequant requires packed scratch");
                         const uint32_t _tid_in_wg = epilogue_thread_idx;
-                        if constexpr (kL1QuadDequantILP == kL2QuadDequantILP) {
+                        if constexpr (kSplitMWarpgroups) {
+                            deep_gemm::nvfp4::dequant_smem_b_half_row_grouped_nibble(
+                                reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
+                                reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
+                                _tid_in_wg, smem_nvfp4_lut);
+                        } else if constexpr (kL1QuadDequantILP == kL2QuadDequantILP) {
                             deep_gemm::nvfp4::dequant_smem_b_from_packed_grouped_nibble<
                                 kL1QuadDequantILP>(
                                 reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
@@ -1416,7 +1424,10 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             block_math_dequant += dequant_end - dequant_start;
                     }
                     cutlass::arch::fence_view_async_shared();
-                    ptx::sync_aligned(128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
+                    if constexpr (kSplitMWarpgroups)
+                        ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                    else
+                        ptx::sync_aligned(128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
                 }
 
                 // Read SF (must precede warpgroup_arrive)
