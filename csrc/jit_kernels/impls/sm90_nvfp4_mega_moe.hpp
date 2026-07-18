@@ -211,7 +211,9 @@ static std::pair<int, int> get_nvfp4_pipeline_config_for_mega_moe_sm90(
     const float expected_tokens_per_local_expert,
     const MegaMoESM90Config& config,
     const bool loader_dequant, const bool packed_b_scratch,
-    const bool swap_ab, const bool l2_only
+    const bool swap_ab, const bool l2_only,
+    const bool register_weight_rs = false,
+    const int requested_num_stages = 0
 ) {
     const auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
     constexpr int kSmemAlignment = 1024;
@@ -260,17 +262,21 @@ static std::pair<int, int> get_nvfp4_pipeline_config_for_mega_moe_sm90(
         2 * config.block_m * static_cast<int>(sizeof(float)), 128);
     const int smem_packed_b_per_stage = packed_b_scratch ?
         config.block_n * kSM90NVFP4BStoragePerKBlock : 0;
+    const int smem_fp8_b_per_stage = register_weight_rs ? 0 :
+        config.block_n * config.block_k;
     const int smem_per_stage = config.block_m * config.block_k +
-        config.block_n * config.block_k + smem_packed_b_per_stage + smem_sfa_per_stage;
+        smem_fp8_b_per_stage + smem_packed_b_per_stage + smem_sfa_per_stage;
     const int smem_barriers_fixed = (num_dispatch_warps + 2 * num_epilogue_warps) * 8;
     const int smem_barriers_per_stage = (loader_dequant ? 3 : 2) * 8;
     const int smem_fixed = smem_dispatch_size + smem_nvfp4_lut +
         smem_cd + smem_barriers_fixed;
     const int max_num_stages = (SM90ArchSpec::smem_capacity - smem_fixed) /
         (smem_per_stage + smem_barriers_per_stage);
-    const int num_stages = !l2_only && config.block_n == 128 &&
+    const int default_num_stages = !l2_only && config.block_n == 128 &&
         expected_tokens_per_local_expert > 8.0f && max_num_stages > 6 ?
         6 : max_num_stages;
+    const int num_stages = requested_num_stages > 0 ?
+        requested_num_stages : default_num_stages;
     DG_HOST_ASSERT(max_num_stages >= 2);
     DG_HOST_ASSERT(num_stages >= 2 && num_stages <= max_num_stages);
     return {

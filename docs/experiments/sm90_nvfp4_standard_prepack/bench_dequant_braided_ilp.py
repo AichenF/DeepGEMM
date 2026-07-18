@@ -52,6 +52,53 @@ __device__ __forceinline__ uint2 decode_word_serial(
     return make_uint2(out0, out1);
 }
 
+__device__ __forceinline__ uint2 decode_two_seed_pair(
+        const uint32_t packed_e2m1, const uint32_t base_codes) {
+    const uint32_t buffer10 =
+        __byte_perm(base_codes, 0u, 0x1004) + 0x00080000u;
+    const uint32_t buffer20 =
+        __byte_perm(base_codes, base_codes, 0x1010) + 0x10180810u;
+    const uint32_t buffer11 =
+        __byte_perm(base_codes, 0u, 0x3224) + 0x00080000u;
+    const uint32_t buffer21 =
+        __byte_perm(base_codes, base_codes, 0x3232) + 0x10180810u;
+    const uint32_t magnitudes0 =
+        __byte_perm(buffer10, buffer20, packed_e2m1);
+    const uint32_t magnitudes1 =
+        __byte_perm(buffer11, buffer21, packed_e2m1 >> 16);
+    uint32_t out0;
+    uint32_t out1;
+    asm("lop3.b32 %0, %1, %2, 0x80808080, 0xf8;"
+        : "=r"(out0) : "r"(magnitudes0), "r"(packed_e2m1 << 4));
+    asm("lop3.b32 %0, %1, %2, 0x80808080, 0xf8;"
+        : "=r"(out1) : "r"(magnitudes1), "r"(packed_e2m1));
+    return make_uint2(out0, out1);
+}
+
+__device__ __forceinline__ void decode_row_two_seed(
+        uint8_t* __restrict__ fp8, const uint8_t* __restrict__ packed,
+        const uint32_t row) {
+    const uint8_t* __restrict__ row_ptr = packed + row * kPackedRowBytes;
+    uint8_t* __restrict__ fp8_dst = fp8 + row * kFp8RowBytes;
+    const uint32_t row_swizzle = (row & 7u) << 4;
+#pragma unroll
+    for (uint32_t k32 = 0; k32 < 4; ++k32) {
+        const uint32_t base_codes = *reinterpret_cast<const uint32_t*>(
+            row_ptr + 64u + k32 * 4u);
+        const uint4 q = *reinterpret_cast<const uint4*>(row_ptr + k32 * 16u);
+        const uint2 out0 = decode_two_seed_pair(q.x, base_codes);
+        const uint2 out1 = decode_two_seed_pair(q.y, base_codes);
+        const uint2 out2 = decode_two_seed_pair(q.z, base_codes);
+        const uint2 out3 = decode_two_seed_pair(q.w, base_codes);
+        *reinterpret_cast<uint4*>(
+            fp8_dst + ((k32 * 32u) ^ row_swizzle)) =
+                make_uint4(out0.x, out1.x, out2.x, out3.x);
+        *reinterpret_cast<uint4*>(
+            fp8_dst + ((k32 * 32u + 16u) ^ row_swizzle)) =
+                make_uint4(out0.y, out1.y, out2.y, out3.y);
+    }
+}
+
 __device__ __forceinline__ uint4 decode_pair_ilp(
         const uint32_t q0, const uint32_t q1, const uint2 lut) {
     const uint32_t q0_sel0 = q0 & 0x00007777u;
@@ -224,7 +271,7 @@ __device__ __forceinline__ void decode_row(
     }
 }
 
-template <bool kDecode, int kSchedule>
+template <bool kDecode, int kSchedule, bool kTwoSeed = false>
 __global__ __launch_bounds__(128) void bench_kernel(
         const uint8_t* __restrict__ input, int64_t* __restrict__ cycles,
         uint8_t* __restrict__ output) {
@@ -245,8 +292,12 @@ __global__ __launch_bounds__(128) void bench_kernel(
     if (tid == 0)
         start = clock64();
     __syncthreads();
-    if constexpr (kDecode)
-        decode_row<kSchedule>(fp8, packed, tid, lut);
+    if constexpr (kDecode) {
+        if constexpr (kTwoSeed)
+            decode_row_two_seed(fp8, packed, tid);
+        else
+            decode_row<kSchedule>(fp8, packed, tid, lut);
+    }
     __syncthreads();
     if (tid == 0)
         cycles[blockIdx.x] = static_cast<int64_t>(clock64() - start);
@@ -257,11 +308,11 @@ __global__ __launch_bounds__(128) void bench_kernel(
     }
 }
 
-template <bool kDecode, int kSchedule>
+template <bool kDecode, int kSchedule, bool kTwoSeed = false>
 void launch(const torch::Tensor& input, torch::Tensor& cycles, torch::Tensor& output) {
     constexpr int kSharedBytes =
         kRows * (kPackedRowBytes + kFp8RowBytes) + 128 * sizeof(uint2);
-    bench_kernel<kDecode, kSchedule><<<cycles.numel(), 128, kSharedBytes>>>(
+    bench_kernel<kDecode, kSchedule, kTwoSeed><<<cycles.numel(), 128, kSharedBytes>>>(
         input.data_ptr<uint8_t>(), cycles.data_ptr<int64_t>(),
         output.data_ptr<uint8_t>());
 }
@@ -280,6 +331,7 @@ std::vector<torch::Tensor> run_dequant_braided_ilp_bench(
         case 2: launch<true,  kPairIlp>(input, cycles, output); break;
         case 3: launch<true,  kQuadIlp>(input, cycles, output); break;
         case 4: launch<true,  kWordStoreFirst>(input, cycles, output); break;
+        case 5: launch<true,  kWordSerial, true>(input, cycles, output); break;
         default: TORCH_CHECK(false, "unknown variant");
     }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -294,6 +346,7 @@ VARIANTS = {
     2: "braided/pair-ilp",
     3: "braided/quad-ilp",
     4: "braided/store-first",
+    5: "two-seed/row-paired",
 }
 
 
@@ -303,7 +356,7 @@ def load_extension():
         "torch::Tensor, int64_t, int64_t);"
     )
     return load_inline(
-        name="deepgemm_sm90_nvfp4_dequant_braided_ilp_v2",
+        name="deepgemm_sm90_nvfp4_dequant_braided_ilp_two_seed",
         cpp_sources=cpp_src,
         cuda_sources=CUDA_SRC,
         functions=["run_dequant_braided_ilp_bench"],
@@ -332,7 +385,61 @@ def braid_rows(rows: torch.Tensor) -> torch.Tensor:
     return result
 
 
-def make_rows(scale_pattern: str) -> torch.Tensor:
+def pack_two_seed_rows(codes: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
+    """Pack the same decoded bytes with Shawn's two-seed row representation."""
+    assert codes.shape == (128, 128) and codes.dtype == torch.uint8
+    assert scales.shape == (128, 8) and scales.dtype == torch.uint8
+    assert bool(((scales >= 16) & (scales <= 105)).all())
+
+    # The retained braided decoder emits each logical K8 group as odd weights
+    # followed by even weights. Preserve that byte order so both variants can
+    # be compared bit-for-bit without involving WGMMA layout semantics.
+    k8 = codes.view(128, 8, 2, 8)
+    decoded_codes = torch.cat((k8[..., 1::2], k8[..., 0::2]), dim=-1).reshape(
+        128, 128
+    )
+
+    words = torch.empty((128, 16), dtype=torch.int32)
+    shifts = torch.arange(0, 32, 4, dtype=torch.int64)
+    for k32 in range(4):
+        for chunk in range(4):
+            out0 = decoded_codes[
+                :, k32 * 32 + chunk * 4 : k32 * 32 + chunk * 4 + 4
+            ]
+            out1 = decoded_codes[
+                :, k32 * 32 + 16 + chunk * 4 :
+                k32 * 32 + 16 + chunk * 4 + 4
+            ]
+            magnitudes = torch.cat((out0, out1), dim=-1) & 0x7
+            signs = torch.stack((out0 >> 3, out1 >> 3), dim=-1).reshape(128, 8)
+            nibbles = magnitudes | (signs << 3)
+            words[:, k32 * 4 + chunk] = (
+                (nibbles.to(torch.int64) << shifts).sum(dim=-1).to(torch.int32)
+            )
+
+    rows = torch.empty((128, 80), dtype=torch.uint8)
+    rows[:, :64] = words.contiguous().view(torch.uint8).reshape(128, 64)
+
+    scale_fp8 = scales.contiguous().view(torch.float8_e4m3fn)
+    scale_rounded = scale_fp8.float()
+    seed_half = (scale_rounded * 0.5).to(torch.float8_e4m3fn).view(torch.uint8)
+    seed_one_half = (
+        (scale_rounded * 1.5).to(torch.float8_e4m3fn).view(torch.uint8)
+    )
+    metadata = torch.stack(
+        (
+            seed_half[:, 0::2],
+            seed_one_half[:, 0::2],
+            seed_half[:, 1::2],
+            seed_one_half[:, 1::2],
+        ),
+        dim=-1,
+    )
+    rows[:, 64:80] = metadata.reshape(128, 16)
+    return rows.cuda().contiguous().view(-1)
+
+
+def make_rows(scale_pattern: str):
     generator = torch.Generator(device="cpu").manual_seed(1234)
     codes = torch.randint(
         0, 16, (128, 128), dtype=torch.uint8, generator=generator
@@ -343,15 +450,26 @@ def make_rows(scale_pattern: str) -> torch.Tensor:
     rows = torch.zeros((128, 80), dtype=torch.uint8)
     rows[:, :64] = packed
 
-    if scale_pattern == "model":
+    if scale_pattern in ("model", "normalized"):
         torch.manual_seed(1234)
-        from deep_gemm.quantization_nvfp4 import fp32_to_ue4m3_ceil
+        from deep_gemm.quantization_nvfp4 import (
+            fp32_to_ue4m3_ceil,
+            ue4m3_to_fp32,
+        )
 
         weights = (
             torch.randn((128, 8, 16), dtype=torch.float32, device="cuda")
             * 0.05
         )
         scales = fp32_to_ue4m3_ceil(weights.abs().amax(dim=-1) / 6.0).cpu()
+        if scale_pattern == "normalized":
+            scale_fp32 = ue4m3_to_fp32(scales)
+            tensor_scale = scale_fp32.max() * (6.0 / 448.0)
+            scales = (
+                (scale_fp32 / tensor_scale)
+                .to(torch.float8_e4m3fn)
+                .view(torch.uint8)
+            )
     elif scale_pattern == "random":
         scales = torch.randint(
             0, 127, (128, 8), dtype=torch.uint8, generator=generator
@@ -363,7 +481,13 @@ def make_rows(scale_pattern: str) -> torch.Tensor:
     else:
         raise ValueError(scale_pattern)
     rows[:, 64:72] = scales
-    return braid_rows(rows).cuda().contiguous().view(-1)
+    braided = braid_rows(rows).cuda().contiguous().view(-1)
+    two_seed = (
+        pack_two_seed_rows(codes, scales)
+        if scale_pattern == "normalized"
+        else None
+    )
+    return braided, two_seed
 
 
 def main() -> None:
@@ -372,8 +496,8 @@ def main() -> None:
     parser.add_argument("--rounds", type=int, default=15)
     parser.add_argument(
         "--scale-pattern",
-        choices=("model", "random", "exhaustive"),
-        default="model",
+        choices=("model", "normalized", "random", "exhaustive"),
+        default="normalized",
     )
     parser.add_argument("--variants", type=int, nargs="+", default=list(VARIANTS))
     args = parser.parse_args()
@@ -382,15 +506,18 @@ def main() -> None:
     if any(variant not in VARIANTS for variant in args.variants):
         raise ValueError(f"variants must be in {list(VARIANTS)}")
 
-    packed = make_rows(args.scale_pattern)
+    packed, two_seed_packed = make_rows(args.scale_pattern)
+    if 5 in args.variants and two_seed_packed is None:
+        raise ValueError("variant 5 requires --scale-pattern normalized")
     ext = load_extension()
     reference = None
     samples = {variant: [] for variant in args.variants}
     for round_idx in range(args.rounds):
         order = args.variants if round_idx % 2 == 0 else list(reversed(args.variants))
         for variant in order:
+            candidate_input = two_seed_packed if variant == 5 else packed
             cycles, output = ext.run_dequant_braided_ilp_bench(
-                packed, variant, args.blocks
+                candidate_input, variant, args.blocks
             )
             torch.cuda.synchronize()
             if variant != 0:

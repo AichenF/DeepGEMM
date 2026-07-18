@@ -117,13 +117,23 @@ static void sm90_nvfp4_nibble_group_mega_moe(
     const int routed_tokens = num_tokens * num_topk;
     const float expected_tokens_per_local_expert =
         static_cast<float>(routed_tokens) / num_experts_per_rank;
+    const bool force_register_weight_rs =
+        get_env<int>("DG_SM90_NVFP4_FORCE_REGISTER_WEIGHT_RS", 0) != 0;
     const bool candidate_swap_ab =
-        routed_tokens <= 16 * num_experts_per_rank;
-    if (candidate_swap_ab != plan.swap_ab) {
+        force_register_weight_rs || routed_tokens <= 16 * num_experts_per_rank;
+    const bool candidate_register_weight_rs = candidate_swap_ab;
+    const bool candidate_loader_dequant =
+        plan.loader_dequant && !candidate_register_weight_rs;
+    if (candidate_swap_ab != plan.swap_ab ||
+        candidate_loader_dequant != plan.loader_dequant ||
+        candidate_register_weight_rs) {
+        const int candidate_rs_stages = candidate_register_weight_rs ?
+            get_env<int>("DG_SM90_NVFP4_RS_STAGES", 0) : 0;
         std::tie(config.num_stages, config.smem_size) =
             get_nvfp4_pipeline_config_for_mega_moe_sm90(
                 num_experts, hidden, expected_tokens_per_local_expert,
-                config, plan.loader_dequant, true, candidate_swap_ab, false);
+                config, candidate_loader_dequant, true, candidate_swap_ab, false,
+                candidate_register_weight_rs, candidate_rs_stages);
     }
     const int weight_storage_k = static_cast<int>(l1_weights.size(2));
     const int weight_k_blocks = static_cast<int>(l1_weights_sf.size(2));
@@ -191,7 +201,7 @@ static void sm90_nvfp4_nibble_group_mega_moe(
         .l2_dual_accum = false,
         .phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0,
         .l2_arrival_counter = false,
-        .loader_dequant = plan.loader_dequant,
+        .loader_dequant = candidate_loader_dequant,
         .swap_ab = candidate_swap_ab,
         .dp4a_selector_pack = plan.dp4a_selector_pack,
         .hybrid_low_selector_pack = plan.hybrid_low_selector_pack,

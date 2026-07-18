@@ -1,9 +1,11 @@
-"""Screen lossless lane-native NVFP4 prepack layouts for SM90 RS WGMMA.
+"""Screen lane-native NVFP4 prepack layouts for SM90 RS WGMMA.
 
 The harness measures only the register-fragment decoder.  It compares the
 previous pair-native strategy, where neighboring lanes consume opposite
 nibble halves, with a layout that gives every lane four independent groups of
-four E2M1 values in the exact CUTLASS ``ALayout_64x32`` register order.
+four E2M1 values in the exact CUTLASS ``ALayout_64x32`` register order.  The
+last variant reproduces grouped_shawn.py's two-seed FP8 reconstruction so its
+register decode cost can be compared directly with the retained LUT decoder.
 """
 
 import argparse
@@ -99,12 +101,51 @@ __device__ __forceinline__ uint2 decode_braided_groups(
     return make_uint2(out0, out1);
 }
 
+__device__ __forceinline__ uint32_t pack_two_seed_metadata(
+        const uint2& lut0, const uint2& lut1) {
+    const uint32_t half0 = (lut0.x >> 8) & 0xffu;
+    const uint32_t one_half0 = (lut0.x >> 24) & 0xffu;
+    const uint32_t half1 = (lut1.x >> 8) & 0xffu;
+    const uint32_t one_half1 = (lut1.x >> 24) & 0xffu;
+    return half0 | (one_half0 << 8) | (half1 << 16) | (one_half1 << 24);
+}
+
+__device__ __forceinline__ uint2 decode_two_seed_groups(
+        uint32_t packed_e2m1, uint32_t base_codes) {
+    uint32_t buffer10 = __byte_perm(base_codes, 0u, 0x1004) + 0x00080000u;
+    uint32_t buffer20 =
+        __byte_perm(base_codes, base_codes, 0x1010) + 0x10180810u;
+    uint32_t buffer11 = __byte_perm(base_codes, 0u, 0x3224) + 0x00080000u;
+    uint32_t buffer21 =
+        __byte_perm(base_codes, base_codes, 0x3232) + 0x10180810u;
+
+    uint32_t magnitudes0 = __byte_perm(buffer10, buffer20, packed_e2m1);
+    uint32_t magnitudes1 =
+        __byte_perm(buffer11, buffer21, packed_e2m1 >> 16);
+    uint32_t out0;
+    uint32_t out1;
+    asm("lop3.b32 %0, %1, %2, 0x80808080, 0xf8;"
+        : "=r"(out0) : "r"(magnitudes0), "r"(packed_e2m1 << 4));
+    asm("lop3.b32 %0, %1, %2, 0x80808080, 0xf8;"
+        : "=r"(out1) : "r"(magnitudes1), "r"(packed_e2m1));
+    return make_uint2(out0, out1);
+}
+
 template <int kVariant>
 __device__ __forceinline__ uint4 decode_fragment(
         const uint8_t* __restrict__ packed,
         const uint8_t* __restrict__ scales,
+        const uint2* __restrict__ seeds,
         const uint2* __restrict__ lut,
         uint32_t tid) {
+    if constexpr (kVariant == 5) {
+        const uint2 q = *reinterpret_cast<const uint2*>(packed + tid * 8u);
+        const uint2 base_codes = seeds[tid >> 2];
+        const uint2 out01 = decode_two_seed_groups(q.x, base_codes.x);
+        const uint2 out23 = decode_two_seed_groups(q.y, base_codes.y);
+        return make_uint4(out01.x, out01.y, out23.x, out23.y);
+    }
+
     const uint32_t scale_word =
         *reinterpret_cast<const uint32_t*>(scales + (tid >> 2) * 4u);
     const uint32_t s0 = scale_word & 0x7fu;
@@ -156,6 +197,7 @@ __global__ __launch_bounds__(kThreads) void bench_kernel(
         uint32_t* __restrict__ witnesses) {
     __shared__ __align__(16) uint8_t packed[kPackedBytes];
     __shared__ __align__(16) uint8_t scales[kScaleBytes];
+    __shared__ __align__(16) uint2 seeds[32];
     __shared__ __align__(16) uint2 lut[128];
 
     const uint32_t tid = threadIdx.x;
@@ -163,6 +205,21 @@ __global__ __launch_bounds__(kThreads) void bench_kernel(
         packed[i] = input_packed[i];
     scales[tid] = input_scales[tid];
     lut[tid] = deep_gemm::nvfp4::kE2M1AndUe4m3ToFp8Lut[tid];
+    if (tid < 32) {
+        const uint32_t scale_word =
+            *reinterpret_cast<const uint32_t*>(input_scales + tid * 4u);
+        const uint2 lut0 =
+            deep_gemm::nvfp4::kE2M1AndUe4m3ToFp8Lut[scale_word & 0x7fu];
+        const uint2 lut1 =
+            deep_gemm::nvfp4::kE2M1AndUe4m3ToFp8Lut[(scale_word >> 8) & 0x7fu];
+        const uint2 lut2 =
+            deep_gemm::nvfp4::kE2M1AndUe4m3ToFp8Lut[(scale_word >> 16) & 0x7fu];
+        const uint2 lut3 =
+            deep_gemm::nvfp4::kE2M1AndUe4m3ToFp8Lut[(scale_word >> 24) & 0x7fu];
+        seeds[tid] = make_uint2(
+            pack_two_seed_metadata(lut0, lut1),
+            pack_two_seed_metadata(lut2, lut3));
+    }
     __syncthreads();
 
     uint64_t start = 0;
@@ -172,7 +229,7 @@ __global__ __launch_bounds__(kThreads) void bench_kernel(
 
     uint4 result = {};
     if constexpr (kVariant != 0)
-        result = decode_fragment<kVariant>(packed, scales, lut, tid);
+        result = decode_fragment<kVariant>(packed, scales, seeds, lut, tid);
     asm volatile("" : : "r"(result.x), "r"(result.y),
                           "r"(result.z), "r"(result.w) : "memory");
     __syncthreads();
@@ -214,6 +271,7 @@ std::vector<torch::Tensor> run_rs_decode_bench(
         case 2: launch<2>(packed, scales, cycles, witnesses); break;
         case 3: launch<3>(packed, scales, cycles, witnesses); break;
         case 4: launch<4>(packed, scales, cycles, witnesses); break;
+        case 5: launch<5>(packed, scales, cycles, witnesses); break;
         default: TORCH_CHECK(false, "unknown variant");
     }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -228,6 +286,7 @@ VARIANTS = {
     2: "pair-native/branchless-both",
     3: "lane-native/grouped-nibble",
     4: "lane-native/braided-signs",
+    5: "lane-native/two-seed-shawn",
 }
 
 
@@ -293,6 +352,28 @@ def _pack_lane_native_braided(groups: torch.Tensor) -> torch.Tensor:
     return packed.contiguous().view(-1)
 
 
+def _pack_lane_native_two_seed(groups: torch.Tensor) -> torch.Tensor:
+    """Pack magnitude selectors and the sign plane expected by Shawn's E91."""
+    packed = torch.zeros((128, 8), dtype=torch.uint8)
+    for tid in range(128):
+        for pair_idx in range(2):
+            group0 = groups[tid, pair_idx * 2].to(torch.int32)
+            group1 = groups[tid, pair_idx * 2 + 1].to(torch.int32)
+            values = torch.cat([group0, group1])
+            magnitudes = values & 0x7
+            signs = values >> 3
+            sign_order = torch.stack(
+                [signs[0], signs[4], signs[1], signs[5],
+                 signs[2], signs[6], signs[3], signs[7]]
+            )
+            nibbles = magnitudes | (sign_order << 3)
+            word = sum(int(nibbles[i].item()) << (4 * i) for i in range(8))
+            byte_offset = pair_idx * 4
+            for byte_idx in range(4):
+                packed[tid, byte_offset + byte_idx] = (word >> (8 * byte_idx)) & 0xFF
+    return packed.contiguous().view(-1)
+
+
 def _pack_scale_records(scales: torch.Tensor) -> torch.Tensor:
     records = torch.empty((32, 4), dtype=torch.uint8)
     for group in range(32):
@@ -305,20 +386,27 @@ def _pack_scale_records(scales: torch.Tensor) -> torch.Tensor:
     return records.contiguous().view(-1)
 
 
-def _make_inputs(exhaustive: bool) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def _make_inputs(exhaustive: bool) -> tuple[torch.Tensor, ...]:
     if exhaustive:
         codes = torch.arange(32, dtype=torch.uint8).view(1, 32).expand(64, 32) & 0xF
-        scale_ids = torch.arange(128, dtype=torch.int16).remainder(127).to(torch.uint8)
+        # The exponent-shift reconstruction is exact only away from FP8
+        # subnormal and saturation boundaries.  grouped_shawn.py enforces the
+        # upper bound by expert-tensor normalization; 16..105 screens the
+        # lossless interior separately from that model-level policy.
+        scale_ids = (
+            torch.arange(128, dtype=torch.int16).remainder(90) + 16
+        ).to(torch.uint8)
         scales = scale_ids.view(64, 2)
     else:
         generator = torch.Generator().manual_seed(1234)
         codes = torch.randint(0, 16, (64, 32), dtype=torch.uint8, generator=generator)
-        scales = torch.randint(4, 20, (64, 2), dtype=torch.uint8, generator=generator)
+        scales = torch.randint(32, 96, (64, 2), dtype=torch.uint8, generator=generator)
     groups = _lane_groups(codes)
     return (
         _pack_pair_native(groups).cuda(),
         _pack_lane_native(groups).cuda(),
         _pack_lane_native_braided(groups).cuda(),
+        _pack_lane_native_two_seed(groups).cuda(),
         _pack_scale_records(scales).cuda(),
     )
 
@@ -329,7 +417,7 @@ def load_extension():
         "torch::Tensor, torch::Tensor, int64_t, int64_t);"
     )
     return load_inline(
-        name="deepgemm_sm90_nvfp4_rs_lane_native_decode_bench",
+        name="deepgemm_sm90_nvfp4_rs_lane_native_decode_bench_two_seed",
         cpp_sources=cpp_src,
         cuda_sources=CUDA_SRC,
         functions=["run_rs_decode_bench"],
@@ -350,7 +438,7 @@ def main() -> None:
     ext = load_extension()
 
     for exhaustive in (True, False):
-        pair_packed, lane_packed, braided_packed, scales = _make_inputs(exhaustive)
+        pair_packed, lane_packed, braided_packed, two_seed_packed, scales = _make_inputs(exhaustive)
         reference = None
         samples = {variant: [] for variant in args.variants}
         for round_idx in range(args.rounds):
@@ -360,6 +448,8 @@ def main() -> None:
                     packed = lane_packed
                 elif variant == 4:
                     packed = braided_packed
+                elif variant == 5:
+                    packed = two_seed_packed
                 else:
                     packed = pair_packed
                 cycles, witnesses = ext.run_rs_decode_bench(
@@ -374,7 +464,7 @@ def main() -> None:
                 samples[variant].append(float(cycles.float().median().item()))
 
         empty = statistics.median(samples[0]) if 0 in samples else 0.0
-        label = "exhaustive" if exhaustive else "model-like"
+        label = "safe-exhaustive" if exhaustive else "safe-model-like"
         print(f"input={label} blocks={args.blocks} rounds={args.rounds} empty={empty:.1f}")
         for variant in args.variants:
             center = statistics.median(samples[variant])
