@@ -105,6 +105,7 @@ static void sm90_nvfp4_nibble_group_mega_moe(
     const int num_experts = num_experts_per_rank * num_ranks;
     const int num_padded_sf_pool_tokens = static_cast<int>(l1_acts_sf.size(0));
     const int block_n_from_layout = static_cast<int>(l1_weights_sf.size(3));
+    const int num_sms = device_runtime->get_num_sms();
     DG_HOST_ASSERT(block_n_from_layout == 256);
     const auto plan = get_nvfp4_mega_moe_plan_sm90(
         num_ranks, num_experts, num_experts_per_rank,
@@ -114,6 +115,12 @@ static void sm90_nvfp4_nibble_group_mega_moe(
     DG_HOST_ASSERT(plan.use_fused_phase);
     auto config = plan.l1_or_fused_config;
     DG_HOST_ASSERT(config.block_m == 64 && config.block_n == 256);
+    const bool h200_mimo_m512_epw8 =
+        num_sms >= 132 && num_ranks == 8 && num_tokens == 512 &&
+        num_topk == 8 && num_experts_per_rank == 48 &&
+        hidden == 6144 && intermediate_hidden == 2048;
+    if (h200_mimo_m512_epw8)
+        config.num_experts_per_wave = 8;
     const int routed_tokens = num_tokens * num_topk;
     const float expected_tokens_per_local_expert =
         static_cast<float>(routed_tokens) / num_experts_per_rank;
@@ -177,8 +184,6 @@ static void sm90_nvfp4_nibble_group_mega_moe(
         l1_global_scales->data_ptr<float>() : nullptr;
     const float* l2_global_scales_ptr = l2_global_scales.has_value() ?
         l2_global_scales->data_ptr<float>() : nullptr;
-    const int num_sms = device_runtime->get_num_sms();
-
     const SM90NVFP4NibbleGroupMegaMoERuntime::Args args = {
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
         .hidden = hidden,
