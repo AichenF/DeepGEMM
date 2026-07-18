@@ -27,6 +27,7 @@ __device__ __forceinline__ uint2 dequant_grouped_nibble_word(
     return make_uint2(out_hi, out_lo);
 }
 
+template <bool kQuadILP = false>
 __device__ __forceinline__ void dequant_grouped_nibble_row_regs(
         uint8_t* __restrict__ fp8_dst,
         const uint4 (&fp4_quads)[4],
@@ -46,16 +47,24 @@ __device__ __forceinline__ void dequant_grouped_nibble_row_regs(
 
         const uint2 q0 = dequant_grouped_nibble_word(q.x, lut0);
         const uint2 q1 = dequant_grouped_nibble_word(q.y, lut0);
-        *reinterpret_cast<uint4*>(fp8_dst + ((scale_i0 * 16) ^ row_swizzle)) =
-            make_uint4(q0.x, q0.y, q1.x, q1.y);
+        if constexpr (!kQuadILP) {
+            *reinterpret_cast<uint4*>(fp8_dst + ((scale_i0 * 16) ^ row_swizzle)) =
+                make_uint4(q0.x, q0.y, q1.x, q1.y);
+        }
 
         const uint2 q2 = dequant_grouped_nibble_word(q.z, lut1);
         const uint2 q3 = dequant_grouped_nibble_word(q.w, lut1);
+        if constexpr (kQuadILP) {
+            // Delay the first vector store so all four decode chains can overlap.
+            *reinterpret_cast<uint4*>(fp8_dst + ((scale_i0 * 16) ^ row_swizzle)) =
+                make_uint4(q0.x, q0.y, q1.x, q1.y);
+        }
         *reinterpret_cast<uint4*>(fp8_dst + ((scale_i1 * 16) ^ row_swizzle)) =
             make_uint4(q2.x, q2.y, q3.x, q3.y);
     }
 }
 
+template <bool kQuadILP = false>
 __device__ __forceinline__ void dequant_smem_b_from_packed_grouped_nibble(
         uint8_t* __restrict__ smem_b,
         const uint8_t* __restrict__ packed_b,
@@ -68,7 +77,7 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_grouped_nibble(
     for (int i = 0; i < 4; ++i)
         fp4_quads[i] = fp4_src[i];
     const uint2 scale_words = *reinterpret_cast<const uint2*>(row_ptr + 64);
-    dequant_grouped_nibble_row_regs(
+    dequant_grouped_nibble_row_regs<kQuadILP>(
         smem_b + row * 128, fp4_quads, scale_words,
         (row & 7u) << 4, lut_smem);
 }
