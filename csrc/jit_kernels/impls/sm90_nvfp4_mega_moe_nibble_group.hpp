@@ -11,6 +11,9 @@ public:
 
     static std::string generate_impl(const Args& args) {
         DG_HOST_ASSERT(args.phase_mode == SM90NVFP4MegaMoERuntime::kFusedPhaseMode);
+        const char* kernel_symbol = args.mode2_nibble_weights ?
+            "sm90_nvfp4_mega_moe_mode2_nibble_group_fused_impl" :
+            "sm90_nvfp4_mega_moe_nibble_group_fused_impl";
         const std::string phase_template_args = fmt::format(
             "/* kPhaseProfileRequested */ {},\n"
             "        /* kLoaderDequantRequested */ {},\n"
@@ -30,7 +33,7 @@ public:
 using namespace deep_gemm;
 
 static void __instantiate_kernel() {{
-    auto ptr = reinterpret_cast<void*>(&sm90_nvfp4_mega_moe_nibble_group_fused_impl<
+    auto ptr = reinterpret_cast<void*>(&{}<
         {},
         {}, {},
         {}, {},
@@ -48,6 +51,7 @@ static void __instantiate_kernel() {{
     >);
 }};
 )",
+            kernel_symbol,
             args.num_max_tokens_per_rank,
             args.hidden, args.intermediate_hidden,
             args.num_experts, args.num_topk,
@@ -100,7 +104,8 @@ static void sm90_nvfp4_nibble_group_mega_moe(
     const int& num_tokens, const int& num_topk,
     const int& hidden, const int& intermediate_hidden,
     const float& activation_clamp,
-    const bool& fast_math
+    const bool& fast_math,
+    const bool& mode2_nibble_weights
 ) {
     DG_HOST_ASSERT(intermediate_hidden <= 2048);
     const int num_ranks = static_cast<int>(sym_buffer_ptrs.size());
@@ -108,6 +113,10 @@ static void sm90_nvfp4_nibble_group_mega_moe(
     const int num_padded_sf_pool_tokens = static_cast<int>(l1_acts_sf.size(0));
     const int block_n_from_layout = static_cast<int>(l1_weights_sf.size(3));
     const int num_sms = device_runtime->get_num_sms();
+    DG_HOST_ASSERT(!mode2_nibble_weights ||
+        (num_sms >= 132 && num_ranks == 8 && num_topk == 8 &&
+         num_experts_per_rank == 48 && hidden == 6144 &&
+         intermediate_hidden == 2048));
     DG_HOST_ASSERT(block_n_from_layout == 256);
     const auto plan = get_nvfp4_mega_moe_plan_sm90(
         num_ranks, num_experts, num_experts_per_rank,
@@ -237,6 +246,7 @@ static void sm90_nvfp4_nibble_group_mega_moe(
         .hybrid_low_selector_pack = h200_mimo_bm128 ?
             false : plan.hybrid_low_selector_pack,
         .grouped_nibble_weights = false,
+        .mode2_nibble_weights = mode2_nibble_weights,
         .quad_dequant_mask = h200_mimo_bm128 ? 0u :
             (h200_mimo_m1024_quad_ilp ?
              3u : (h200_mimo_m256_l2_quad_ilp ? 2u : 0u)),

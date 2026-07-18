@@ -196,7 +196,7 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
 
     if rank_idx == 0:
         print(
-            f"=== NVFP4 single-rank correctness M={m_tokens}, "
+            f"=== NVFP4 correctness M={m_tokens}, "
             f"NE={num_experts}, NL={num_local_experts}, NK={num_topk}, "
             f"NMT={num_max_tokens_per_rank}, weight_scale={weight_scale:g}, "
             f"global_scale_mode={global_scale_mode}, "
@@ -287,6 +287,9 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
     for token_idx in range(m_tokens):
         for topk_i in range(num_topk):
             expert_idx = topk_idx[token_idx, topk_i].item()
+            expert_rank = expert_idx // num_local_experts
+            if expert_rank != rank_idx:
+                continue
             local_expert_idx = expert_idx - rank_idx * num_local_experts
             assert 0 <= local_expert_idx < num_local_experts
             route_weight = topk_weights[token_idx, topk_i].item()
@@ -298,6 +301,9 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
             up = up.clamp(min=-args.activation_clamp, max=args.activation_clamp)
             intermediate = _silu(gate) * up * route_weight
             y_ref[token_idx] += (l2_dequant[local_expert_idx].float() @ intermediate) * l2_global_scale
+
+    if num_ranks > 1:
+        dist.all_reduce(y_ref, op=dist.ReduceOp.SUM, group=group)
 
     finite = torch.isfinite(y_kernel).all().item()
     diff = y_kernel.float() - y_ref

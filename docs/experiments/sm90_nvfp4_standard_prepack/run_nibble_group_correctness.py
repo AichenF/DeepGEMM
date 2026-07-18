@@ -54,4 +54,10 @@ if __name__ == "__main__":
     if args.intermediate_hidden > 2048:
         raise ValueError("nibble-group candidate is Flash-only")
     args.nvfp4_block_n = 256
-    torch.multiprocessing.spawn(_worker, args=(1, args), nprocs=1, join=True)
+    num_local_ranks = int(os.environ.get("DG_NUM_LOCAL_RANKS", "1"))
+    torch.multiprocessing.spawn(
+        _worker,
+        args=(num_local_ranks, args),
+        nprocs=num_local_ranks,
+        join=True,
+    )

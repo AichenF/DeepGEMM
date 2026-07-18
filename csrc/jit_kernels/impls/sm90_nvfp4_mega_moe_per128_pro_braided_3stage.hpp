@@ -20,6 +20,10 @@ public:
             args.num_ranks > 0 && args.num_experts == 48 * args.num_ranks &&
             args.config.block_m == 16 && args.config.num_stages == 3;
         const bool single_active_dispatch_warp = !mimo_pro_m32_dual_dispatch;
+        const char* kernel_symbol =
+            args.mode2_nibble_weights && args.grouped_nibble_weights ?
+                "sm90_nvfp4_mega_moe_per128_mode2_grouped_nibble_fused_impl" :
+                "sm90_nvfp4_mega_moe_per128_pro_braided_fused_impl";
         const std::string phase_template_args = fmt::format(
             "/* kPhaseProfileRequested */ {},\n"
             "        /* kLoaderDequantRequested */ {},\n"
@@ -41,7 +45,7 @@ public:
 using namespace deep_gemm;
 
 static void __instantiate_kernel() {{
-    auto ptr = reinterpret_cast<void*>(&sm90_nvfp4_mega_moe_per128_pro_braided_fused_impl<
+    auto ptr = reinterpret_cast<void*>(&{}<
         {},
         {}, {},
         {}, {},
@@ -59,6 +63,7 @@ static void __instantiate_kernel() {{
     >);
 }};
 )",
+            kernel_symbol,
             args.num_max_tokens_per_rank,
             args.hidden, args.intermediate_hidden,
             args.num_experts, args.num_topk,
@@ -112,7 +117,8 @@ static void sm90_nvfp4_per128_pro_braided_3stage_mega_moe(
     const int& hidden, const int& intermediate_hidden,
     const float& activation_clamp,
     const bool& fast_math,
-    const bool& grouped_nibble_weights = false
+    const bool& grouped_nibble_weights = false,
+    const bool& mode2_nibble_weights = false
 ) {
     const bool mimo_pro_small_m_candidate =
         (num_tokens == 8 || num_tokens == 16 ||
@@ -268,6 +274,7 @@ static void sm90_nvfp4_per128_pro_braided_3stage_mega_moe(
         .dp4a_selector_pack = plan.dp4a_selector_pack,
         .hybrid_low_selector_pack = plan.hybrid_low_selector_pack,
         .grouped_nibble_weights = grouped_nibble_weights,
+        .mode2_nibble_weights = mode2_nibble_weights,
         .phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode,
         .config = config,
         .y = y.data_ptr(),
@@ -293,7 +300,9 @@ static void sm90_nvfp4_per128_pro_braided_3stage_mega_moe(
     const auto code = SM90NVFP4Per128ProBraided3StageMegaMoERuntime::generate(args);
     const auto runtime = compiler->build(
         grouped_nibble_weights ?
-            "sm90_nvfp4_mega_moe_per128_grouped_nibble_3stage" :
+            (mode2_nibble_weights ?
+                "sm90_nvfp4_mega_moe_per128_mode2_grouped_nibble_3stage" :
+                "sm90_nvfp4_mega_moe_per128_grouped_nibble_3stage") :
             "sm90_nvfp4_mega_moe_per128_pro_braided_3stage",
         code);
     SM90NVFP4Per128ProBraided3StageMegaMoERuntime::launch(runtime, args);

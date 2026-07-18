@@ -14,7 +14,8 @@ static void nvfp4_nibble_group_mega_moe(
     const std::tuple<int, int, int>& recipe,
     const std::string& activation,
     const std::optional<float>& activation_clamp_opt,
-    const bool& fast_math
+    const bool& fast_math,
+    const bool& mode2_nibble_weights
 ) {
     const auto [l1_weights, l1_weights_sf] = l1_weights_tuple;
     const auto [l2_weights, l2_weights_sf] = l2_weights_tuple;
@@ -104,7 +105,15 @@ static void nvfp4_nibble_group_mega_moe(
          num_tokens == 32 || num_tokens == 64) &&
         num_topk == 8 && num_experts_per_rank == 48 &&
         hidden == 6144 && intermediate_hidden == 2048;
+    DG_HOST_ASSERT(!mode2_nibble_weights ||
+        (device_runtime->get_num_sms() >= 132 && num_ranks == 8 &&
+         num_topk == 8 && num_experts_per_rank == 48 &&
+         hidden == 6144 && intermediate_hidden == 2048));
     if (full_sm_mimo_small_m_per128) {
+        // Mode-2 M64 is fastest with the existing braided LUT-window decoder;
+        // M8/16/32 retain the grouped decoder with mode-2 sign extraction.
+        const bool grouped_nibble_decoder =
+            !mode2_nibble_weights || num_tokens != 64;
         sm90_nvfp4_per128_pro_braided_3stage_mega_moe(
             y,
             l1_acts, l1_acts_sf,
@@ -119,7 +128,8 @@ static void nvfp4_nibble_group_mega_moe(
             num_tokens, num_topk,
             hidden, intermediate_hidden,
             activation_clamp, fast_math,
-            true);
+            grouped_nibble_decoder,
+            mode2_nibble_weights);
     } else {
         sm90_nvfp4_nibble_group_mega_moe(
             y,
@@ -134,7 +144,8 @@ static void nvfp4_nibble_group_mega_moe(
             num_experts_per_rank,
             num_tokens, num_topk,
             hidden, intermediate_hidden,
-            activation_clamp, fast_math);
+            activation_clamp, fast_math,
+            mode2_nibble_weights);
     }
     if (get_env<int>("DG_COMM_KERNEL_DEBUG"))
         sym_buffer.zero_();
