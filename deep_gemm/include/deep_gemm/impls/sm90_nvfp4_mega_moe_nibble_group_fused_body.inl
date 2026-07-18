@@ -127,9 +127,13 @@
         kNumSMs >= 132 && kNumRanks == 8 && kNumTopk == 8 &&
         kNumExperts == 384 && kNumExpertsPerWave == 48 &&
         kHidden == 6144 && kIntermediateHidden == 2048 &&
-        BLOCK_M == 64 && BLOCK_N == 256 && kQuadDequantILP;
-    constexpr bool kH200MimoQuadILP =
+        BLOCK_M == 64 && BLOCK_N == 256 && kQuadDequantMask == 3;
+    constexpr bool kLoaderQuadDequantILP =
         kH200MimoM512QuadILP || kH200MimoM1024QuadILP;
+    constexpr bool kL1QuadDequantILP =
+        kH200MimoM512QuadILP || (kQuadDequantMask & 1u) != 0;
+    constexpr bool kL2QuadDequantILP =
+        kH200MimoM512QuadILP || (kQuadDequantMask & 2u) != 0;
     DG_STATIC_ASSERT(kLoaderDequant || kPackedBScratch,
                      "Fused NVFP4 B+scale layout requires loader dequant or packed scratch");
     using L1WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
@@ -319,7 +323,7 @@
                 #pragma unroll
                 for (uint32_t row = non_epilogue_thread_idx; row < LOAD_BLOCK_N; row += 64u)
                     deep_gemm::nvfp4::dequant_smem_b_from_packed_grouped_nibble<
-                        kH200MimoQuadILP>(
+                        kLoaderQuadDequantILP>(
                         reinterpret_cast<uint8_t*>(smem_b[s]),
                         reinterpret_cast<const uint8_t*>(smem_packed_b[s]),
                         row, smem_nvfp4_lut);
@@ -1386,11 +1390,27 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         DG_STATIC_ASSERT(kPackedBScratch,
                                          "Math-side NVFP4 fused-layout dequant requires packed scratch");
                         const uint32_t _tid_in_wg = epilogue_thread_idx;
-                        deep_gemm::nvfp4::dequant_smem_b_from_packed_grouped_nibble<
-                            kH200MimoQuadILP>(
-                            reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
-                            reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
-                            _tid_in_wg, smem_nvfp4_lut);
+                        if constexpr (kL1QuadDequantILP == kL2QuadDequantILP) {
+                            deep_gemm::nvfp4::dequant_smem_b_from_packed_grouped_nibble<
+                                kL1QuadDequantILP>(
+                                reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
+                                reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
+                                _tid_in_wg, smem_nvfp4_lut);
+                        } else {
+                            if (block_phase == sched::BlockPhase::Linear1) {
+                                deep_gemm::nvfp4::dequant_smem_b_from_packed_grouped_nibble<
+                                    kL1QuadDequantILP>(
+                                    reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
+                                    reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
+                                    _tid_in_wg, smem_nvfp4_lut);
+                            } else {
+                                deep_gemm::nvfp4::dequant_smem_b_from_packed_grouped_nibble<
+                                    kL2QuadDequantILP>(
+                                    reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
+                                    reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
+                                    _tid_in_wg, smem_nvfp4_lut);
+                            }
+                        }
                         const unsigned long long dequant_end = phase_profile_clock();
                         if constexpr (kPhaseProfileRequested)
                             block_math_dequant += dequant_end - dequant_start;

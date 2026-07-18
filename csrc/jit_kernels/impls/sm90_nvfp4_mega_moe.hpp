@@ -50,7 +50,7 @@ public:
         bool swap_ab;
         bool dp4a_selector_pack;
         bool hybrid_low_selector_pack;
-        bool quad_dequant_ilp;
+        uint32_t quad_dequant_mask;
         int phase_mode;
         MegaMoESM90Config config;
 
