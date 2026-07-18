@@ -116,19 +116,19 @@ static void sm90_nvfp4_nibble_group_mega_moe(
         block_n_from_layout);
     DG_HOST_ASSERT(plan.use_fused_phase);
     auto config = plan.l1_or_fused_config;
-    const bool h200_mimo_large_bm128 =
+    const bool h200_mimo_bm128 =
         num_sms >= 132 && num_ranks == 8 &&
-        (num_tokens == 2048 || num_tokens == 8192) &&
+        (num_tokens == 512 || num_tokens == 2048 || num_tokens == 8192) &&
         num_topk == 8 && num_experts_per_rank == 48 &&
         hidden == 6144 && intermediate_hidden == 2048;
-    if (h200_mimo_large_bm128) {
+    if (h200_mimo_bm128) {
         const float expected_tokens_per_local_expert =
             static_cast<float>(num_tokens * num_topk) / num_experts_per_rank;
         config.block_m = 128;
         config.block_n = 128;
-        // Four concurrent experts smooth the tail of the BM128 waves at both
-        // selected MiMo sizes without fragmenting the H200 CTA schedule.
-        config.num_experts_per_wave = 4;
+        // M512 needs more concurrent experts to fill H200; the larger shapes
+        // retain the four-expert schedule selected by their tail sweep.
+        config.num_experts_per_wave = num_tokens == 512 ? 16 : 4;
         std::tie(config.num_stages, config.smem_size) =
             get_nvfp4_pipeline_config_for_mega_moe_sm90(
                 num_experts, hidden, expected_tokens_per_local_expert,
@@ -136,12 +136,6 @@ static void sm90_nvfp4_nibble_group_mega_moe(
     }
     DG_HOST_ASSERT((config.block_m == 64 && config.block_n == 256) ||
                    (config.block_m == 128 && config.block_n == 128));
-    const bool h200_mimo_m512_epw8 =
-        num_sms >= 132 && num_ranks == 8 && num_tokens == 512 &&
-        num_topk == 8 && num_experts_per_rank == 48 &&
-        hidden == 6144 && intermediate_hidden == 2048;
-    if (h200_mimo_m512_epw8)
-        config.num_experts_per_wave = 8;
     const bool h200_mimo_m1024_quad_ilp =
         num_sms >= 132 && num_ranks == 8 && num_tokens == 1024 &&
         num_topk == 8 && num_experts_per_rank == 48 &&
@@ -162,7 +156,7 @@ static void sm90_nvfp4_nibble_group_mega_moe(
     const bool candidate_swap_ab =
         routed_tokens <= 16 * num_experts_per_rank &&
         !h200_mimo_m64_no_swap_ab;
-    if (!h200_mimo_large_bm128 && candidate_swap_ab != plan.swap_ab) {
+    if (!h200_mimo_bm128 && candidate_swap_ab != plan.swap_ab) {
         std::tie(config.num_stages, config.smem_size) =
             get_nvfp4_pipeline_config_for_mega_moe_sm90(
                 num_experts, hidden, expected_tokens_per_local_expert,
@@ -236,14 +230,14 @@ static void sm90_nvfp4_nibble_group_mega_moe(
         .l2_dual_accum = false,
         .phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0,
         .l2_arrival_counter = false,
-        .loader_dequant = h200_mimo_large_bm128 ? false : plan.loader_dequant,
-        .swap_ab = h200_mimo_large_bm128 ? false : candidate_swap_ab,
-        .dp4a_selector_pack = h200_mimo_large_bm128 ?
+        .loader_dequant = h200_mimo_bm128 ? false : plan.loader_dequant,
+        .swap_ab = h200_mimo_bm128 ? false : candidate_swap_ab,
+        .dp4a_selector_pack = h200_mimo_bm128 ?
             false : plan.dp4a_selector_pack,
-        .hybrid_low_selector_pack = h200_mimo_large_bm128 ?
+        .hybrid_low_selector_pack = h200_mimo_bm128 ?
             false : plan.hybrid_low_selector_pack,
         .grouped_nibble_weights = false,
-        .quad_dequant_mask = h200_mimo_large_bm128 ? 0u :
+        .quad_dequant_mask = h200_mimo_bm128 ? 0u :
             (h200_mimo_m1024_quad_ilp ?
              3u : (h200_mimo_m256_l2_quad_ilp ? 2u : 0u)),
         .phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode,
