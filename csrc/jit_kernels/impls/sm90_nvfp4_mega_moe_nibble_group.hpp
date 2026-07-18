@@ -16,12 +16,14 @@ public:
             "        /* kLoaderDequantRequested */ {},\n"
             "        /* kSwapABRequested */ {},\n"
             "        /* kDp4aSelectorPack */ {},\n"
-            "        /* kHybridLowSelectorPack */ {}",
+            "        /* kHybridLowSelectorPack */ {},\n"
+            "        /* kQuadDequantILP */ {}",
             args.phase_profile ? "true" : "false",
             args.loader_dequant ? "true" : "false",
             args.swap_ab ? "true" : "false",
             args.dp4a_selector_pack ? "true" : "false",
-            args.hybrid_low_selector_pack ? "true" : "false");
+            args.hybrid_low_selector_pack ? "true" : "false",
+            args.quad_dequant_ilp ? "true" : "false");
         return fmt::format(R"(
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_nibble_group.cuh>
 
@@ -121,6 +123,10 @@ static void sm90_nvfp4_nibble_group_mega_moe(
         hidden == 6144 && intermediate_hidden == 2048;
     if (h200_mimo_m512_epw8)
         config.num_experts_per_wave = 8;
+    const bool h200_mimo_m1024_quad_ilp =
+        num_sms >= 132 && num_ranks == 8 && num_tokens == 1024 &&
+        num_topk == 8 && num_experts_per_rank == 48 &&
+        hidden == 6144 && intermediate_hidden == 2048;
     const int routed_tokens = num_tokens * num_topk;
     const float expected_tokens_per_local_expert =
         static_cast<float>(routed_tokens) / num_experts_per_rank;
@@ -200,6 +206,7 @@ static void sm90_nvfp4_nibble_group_mega_moe(
         .swap_ab = candidate_swap_ab,
         .dp4a_selector_pack = plan.dp4a_selector_pack,
         .hybrid_low_selector_pack = plan.hybrid_low_selector_pack,
+        .quad_dequant_ilp = h200_mimo_m1024_quad_ilp,
         .phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode,
         .config = config,
         .y = y.data_ptr(),
