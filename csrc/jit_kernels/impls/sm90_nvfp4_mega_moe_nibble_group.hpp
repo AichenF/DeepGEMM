@@ -134,8 +134,15 @@ static void sm90_nvfp4_nibble_group_mega_moe(
     const int routed_tokens = num_tokens * num_topk;
     const float expected_tokens_per_local_expert =
         static_cast<float>(routed_tokens) / num_experts_per_rank;
+    // On H200 MiMo M64, the regular fused epilogue is faster than swap-AB.
+    // Keep the existing small-M policy for H20 and every other shape.
+    const bool h200_mimo_m64_no_swap_ab =
+        num_sms >= 132 && num_ranks == 8 && num_tokens == 64 &&
+        num_topk == 8 && num_experts_per_rank == 48 &&
+        hidden == 6144 && intermediate_hidden == 2048;
     const bool candidate_swap_ab =
-        routed_tokens <= 16 * num_experts_per_rank;
+        routed_tokens <= 16 * num_experts_per_rank &&
+        !h200_mimo_m64_no_swap_ab;
     if (candidate_swap_ab != plan.swap_ab) {
         std::tie(config.num_stages, config.smem_size) =
             get_nvfp4_pipeline_config_for_mega_moe_sm90(
