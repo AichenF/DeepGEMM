@@ -75,6 +75,9 @@ struct FP8MMARSSelector {
         if constexpr (N == 16) return MMA_64x16x32_F32E4M3E4M3_RS_TN();
         if constexpr (N == 24) return MMA_64x24x32_F32E4M3E4M3_RS_TN();
         if constexpr (N == 32) return MMA_64x32x32_F32E4M3E4M3_RS_TN();
+        if constexpr (N == 40) return MMA_64x40x32_F32E4M3E4M3_RS_TN();
+        if constexpr (N == 48) return MMA_64x48x32_F32E4M3E4M3_RS_TN();
+        if constexpr (N == 56) return MMA_64x56x32_F32E4M3E4M3_RS_TN();
         if constexpr (N == 64) return MMA_64x64x32_F32E4M3E4M3_RS_TN();
         if constexpr (N == 128) return MMA_64x128x32_F32E4M3E4M3_RS_TN();
     }
@@ -154,6 +157,14 @@ __device__ __forceinline__ void fence_a_fragment(uint4& a) {
     asm volatile("" : "+r"(a.x), "+r"(a.y), "+r"(a.z), "+r"(a.w) :: "memory");
 }
 
+// WGMMA B128 is CuTe Swizzle<3, 4, 3>: within each 1024-byte atom,
+// address bits [6:4] are XORed with bits [9:7].  The production TMA path
+// performs this transform while landing W8 in shared memory.  This isolated
+// benchmark copies with CUDA threads, so apply the same transform explicitly.
+__device__ __forceinline__ uint32_t swizzle_128b_offset(uint32_t offset) {
+    return offset ^ ((offset & 0x380u) >> 3u);
+}
+
 template <int kVariant, int N>
 __global__ __launch_bounds__(kThreads, 1) void bench_kernel(
         const uint8_t* __restrict__ input_acts,
@@ -175,8 +186,18 @@ __global__ __launch_bounds__(kThreads, 1) void bench_kernel(
         smem_acts[i] = input_acts[i];
     const uint8_t* input_weights = kVariant == 1 ? input_w8 :
         (kVariant >= 5 ? input_rs_two_seed : input_rs);
-    for (int i = threadIdx.x; i < kWeightBytes; i += kThreads)
-        smem_weights[i] = input_weights[i];
+    for (int i = threadIdx.x; i < kWeightBytes; i += kThreads) {
+        if constexpr (kVariant == 1) {
+            const uint32_t stage = static_cast<uint32_t>(i) /
+                static_cast<uint32_t>(kW8StageBytes);
+            const uint32_t stage_offset = static_cast<uint32_t>(i) -
+                stage * static_cast<uint32_t>(kW8StageBytes);
+            smem_weights[stage * kW8StageBytes +
+                         swizzle_128b_offset(stage_offset)] = input_weights[i];
+        } else {
+            smem_weights[i] = input_weights[i];
+        }
+    }
     if (threadIdx.x < 128)
         smem_lut[threadIdx.x] =
             deep_gemm::nvfp4::kE2M1AndUe4m3ToFp8Lut[threadIdx.x];
@@ -395,6 +416,9 @@ std::vector<torch::Tensor> run_split_rs_mainloop(
     else if (n == 16) dispatch_variant<16>(variant, acts, w8, rs, rs_two_seed, cycles, witnesses, repeats);
     else if (n == 24) dispatch_variant<24>(variant, acts, w8, rs, rs_two_seed, cycles, witnesses, repeats);
     else if (n == 32) dispatch_variant<32>(variant, acts, w8, rs, rs_two_seed, cycles, witnesses, repeats);
+    else if (n == 40) dispatch_variant<40>(variant, acts, w8, rs, rs_two_seed, cycles, witnesses, repeats);
+    else if (n == 48) dispatch_variant<48>(variant, acts, w8, rs, rs_two_seed, cycles, witnesses, repeats);
+    else if (n == 56) dispatch_variant<56>(variant, acts, w8, rs, rs_two_seed, cycles, witnesses, repeats);
     else if (n == 64) dispatch_variant<64>(variant, acts, w8, rs, rs_two_seed, cycles, witnesses, repeats);
     else if (n == 128) dispatch_variant<128>(variant, acts, w8, rs, rs_two_seed, cycles, witnesses, repeats);
     else TORCH_CHECK(false, "unsupported N");
@@ -487,7 +511,7 @@ def make_inputs() -> tuple[
 ]:
     generator = torch.Generator().manual_seed(1234)
     acts = torch.randint(0, 127, (7, 64, 128), dtype=torch.uint8, generator=generator)
-    w8 = torch.randint(0, 127, (7, 128, 128), dtype=torch.uint8, generator=generator)
+    w8_stages = []
     rs_stages = []
     rs_two_seed_stages = []
     for _ in range(7):
@@ -495,6 +519,22 @@ def make_inputs() -> tuple[
         # Keep R and 6R in the normal finite E4M3 range required by the
         # exponent-shift construction used by Shawn's E91 decoder.
         scales = torch.randint(24, 97, (128, 8), dtype=torch.uint8, generator=generator)
+        scale_code = scales.to(torch.int32)
+        scale_exp = (scale_code >> 3) - 7
+        scale_mant = scale_code & 7
+        scale_fp32 = (1.0 + scale_mant.to(torch.float32) * 0.125) * torch.exp2(
+            scale_exp.to(torch.float32)
+        )
+        fp4_values = torch.tensor(
+            [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0],
+            dtype=torch.float32,
+        )
+        code_i32 = codes.to(torch.int32)
+        signed_fp4 = fp4_values[code_i32 & 7] * torch.where(
+            (code_i32 & 8) != 0, -1.0, 1.0
+        )
+        decoded_w8 = signed_fp4 * scale_fp32.repeat_interleave(16, dim=1)
+        w8_stages.append(decoded_w8.to(torch.float8_e4m3fn).view(torch.uint8))
         rs_stages.append(torch.cat([
             _pack_braided_half(codes[:64], scales[:64]),
             _pack_braided_half(codes[64:], scales[64:]),
@@ -507,7 +547,7 @@ def make_inputs() -> tuple[
     rs_two_seed = torch.stack(rs_two_seed_stages)
     return (
         acts.contiguous().view(-1).cuda(),
-        w8.contiguous().view(-1).cuda(),
+        torch.stack(w8_stages).contiguous().view(-1).cuda(),
         rs.contiguous().view(-1).cuda(),
         rs_two_seed.contiguous().view(-1).cuda(),
     )
@@ -539,7 +579,7 @@ def main() -> None:
     parser.add_argument("--repeats", type=int, default=28)
     parser.add_argument("--rounds", type=int, default=11)
     parser.add_argument(
-        "--n", type=int, nargs="+", default=[8, 16, 24, 32, 64, 128]
+        "--n", type=int, nargs="+", default=[8, 16, 24, 32, 40, 48, 56, 64, 128]
     )
     parser.add_argument(
         "--variants", type=int, nargs="+", default=list(VARIANTS)
@@ -566,7 +606,7 @@ def main() -> None:
                     variant, n, args.blocks, args.repeats
                 )
                 torch.cuda.synchronize()
-                if variant in (2, 3, 4, 5, 6, 7):
+                if variant in (1, 2, 3, 4, 5, 6, 7):
                     candidate = witnesses.cpu()
                     if reference is None:
                         reference = candidate
