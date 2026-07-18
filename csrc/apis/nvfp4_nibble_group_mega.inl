@@ -95,20 +95,47 @@ static void nvfp4_nibble_group_mega_moe(
     const auto [x, x_sf, topk_idx, topk_weights,
                 l1_acts, l1_acts_sf, l2_acts, l2_acts_sf] = slice(sym_buffer);
 
-    sm90_nvfp4_nibble_group_mega_moe(
-        y,
-        l1_acts, l1_acts_sf,
-        l2_acts, l2_acts_sf,
-        l1_weights, l2_weights,
-        l1_weights_sf, l2_weights_sf,
-        cumulative_local_expert_recv_stats,
-        l1_global_scales, l2_global_scales,
-        sym_buffer_ptrs,
-        rank_idx, num_max_tokens_per_rank,
-        num_experts_per_rank,
-        num_tokens, num_topk,
-        hidden, intermediate_hidden,
-        activation_clamp, fast_math);
+    // Reuse the validated per-128 schedule while decoding the public
+    // grouped-nibble weight layout.  Gate on the full 132-SM launch so H20
+    // keeps its existing small-M selector and tuning.
+    const bool full_sm_mimo_small_m_per128 =
+        device_runtime->get_num_sms() >= 132 && num_ranks == 8 &&
+        (num_tokens == 8 || num_tokens == 16 ||
+         num_tokens == 32 || num_tokens == 64) &&
+        num_topk == 8 && num_experts_per_rank == 48 &&
+        hidden == 6144 && intermediate_hidden == 2048;
+    if (full_sm_mimo_small_m_per128) {
+        sm90_nvfp4_per128_pro_braided_3stage_mega_moe(
+            y,
+            l1_acts, l1_acts_sf,
+            l2_acts, l2_acts_sf,
+            l1_weights, l2_weights,
+            l1_weights_sf, l2_weights_sf,
+            cumulative_local_expert_recv_stats,
+            l1_global_scales, l2_global_scales,
+            sym_buffer_ptrs,
+            rank_idx, num_max_tokens_per_rank,
+            num_experts_per_rank,
+            num_tokens, num_topk,
+            hidden, intermediate_hidden,
+            activation_clamp, fast_math,
+            true);
+    } else {
+        sm90_nvfp4_nibble_group_mega_moe(
+            y,
+            l1_acts, l1_acts_sf,
+            l2_acts, l2_acts_sf,
+            l1_weights, l2_weights,
+            l1_weights_sf, l2_weights_sf,
+            cumulative_local_expert_recv_stats,
+            l1_global_scales, l2_global_scales,
+            sym_buffer_ptrs,
+            rank_idx, num_max_tokens_per_rank,
+            num_experts_per_rank,
+            num_tokens, num_topk,
+            hidden, intermediate_hidden,
+            activation_clamp, fast_math);
+    }
     if (get_env<int>("DG_COMM_KERNEL_DEBUG"))
         sym_buffer.zero_();
 }

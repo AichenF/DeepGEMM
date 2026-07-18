@@ -120,7 +120,7 @@
     constexpr uint32_t kNumActiveDispatchThreads = kNumActiveDispatchWarps * 32;
     constexpr bool kLoaderDequant = kLoaderDequantRequested && kNumMMANonEpilogueWarps == 4;
     constexpr bool kPackedBScratch = BLOCK_N == 256 && (!kLoaderDequant);
-    constexpr bool kBraidedQuadIlp =
+    constexpr bool kQuadDequantIlp =
         !kLoaderDequant && BLOCK_M == 8 && kNumStages == 4 &&
         kHidden == 6144 && kIntermediateHidden == 2048 &&
         kNumExpertsPerRank == 48 && kNumTopk == 8;
@@ -311,11 +311,21 @@
             if constexpr (kNumMMANonEpilogueWarps == 2 && kPackedBScratch && LOAD_BLOCK_N == 256) {
                 full_barriers[s]->wait(p);
                 #pragma unroll
-                for (uint32_t row = non_epilogue_thread_idx; row < LOAD_BLOCK_N; row += 64u)
-                    deep_gemm::nvfp4::dequant_smem_b_from_packed_braided_lut_window(
-                        reinterpret_cast<uint8_t*>(smem_b[s]),
-                        reinterpret_cast<const uint8_t*>(smem_packed_b[s]),
-                        row, smem_nvfp4_lut);
+                for (uint32_t row = non_epilogue_thread_idx; row < LOAD_BLOCK_N; row += 64u) {
+                    if constexpr (kGroupedNibbleWeights) {
+                        deep_gemm::nvfp4::dequant_smem_b_from_packed_grouped_nibble(
+                            reinterpret_cast<uint8_t*>(smem_b[s]),
+                            reinterpret_cast<const uint8_t*>(smem_packed_b[s]),
+                            row, smem_nvfp4_lut);
+                    } else {
+                        deep_gemm::nvfp4::dequant_smem_b_from_packed_braided_lut_window(
+                            reinterpret_cast<uint8_t*>(smem_b[s]),
+                            reinterpret_cast<const uint8_t*>(smem_packed_b[s]),
+                            row, smem_nvfp4_lut);
+                    }
+                }
+                cutlass::arch::fence_view_async_shared();
+                ptx::sync_aligned(64, 8);
                 if (non_epilogue_thread_idx == 0)
                     dequant_barriers[s]->arrive();
             } else if constexpr (kNumMMANonEpilogueWarps == 4) {
@@ -1374,11 +1384,19 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         DG_STATIC_ASSERT(kPackedBScratch,
                                          "Math-side NVFP4 fused-layout dequant requires packed scratch");
                         const uint32_t _tid_in_wg = epilogue_thread_idx;
-                        deep_gemm::nvfp4::dequant_smem_b_from_packed_braided_lut_window<
-                            kBraidedQuadIlp>(
-                            reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
-                            reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
-                            _tid_in_wg, smem_nvfp4_lut);
+                        if constexpr (kGroupedNibbleWeights) {
+                            deep_gemm::nvfp4::dequant_smem_b_from_packed_grouped_nibble<
+                                kQuadDequantIlp>(
+                                reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
+                                reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
+                                _tid_in_wg, smem_nvfp4_lut);
+                        } else {
+                            deep_gemm::nvfp4::dequant_smem_b_from_packed_braided_lut_window<
+                                kQuadDequantIlp>(
+                                reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
+                                reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
+                                _tid_in_wg, smem_nvfp4_lut);
+                        }
                         const unsigned long long dequant_end = phase_profile_clock();
                         if constexpr (kPhaseProfileRequested)
                             block_math_dequant += dequant_end - dequant_start;

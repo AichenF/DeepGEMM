@@ -1,6 +1,7 @@
 #pragma once
 
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe.cuh>
+#include <deep_gemm/impls/sm90_nvfp4_mega_moe_nibble_group_dequant.cuh>
 
 namespace deep_gemm {
 namespace nvfp4 {
@@ -159,6 +160,7 @@ template <
     bool kDp4aSelectorPack = false,
     bool kHybridLowSelectorPack = false,
     bool kSingleActiveDispatchWarp = false,
+    bool kGroupedNibbleWeights = false,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
     uint32_t L2_SHAPE_N = kHidden,

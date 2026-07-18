@@ -26,13 +26,15 @@ public:
             "        /* kSwapABRequested */ {},\n"
             "        /* kDp4aSelectorPack */ {},\n"
             "        /* kHybridLowSelectorPack */ {},\n"
-            "        /* kSingleActiveDispatchWarp */ {}",
+            "        /* kSingleActiveDispatchWarp */ {},\n"
+            "        /* kGroupedNibbleWeights */ {}",
             args.phase_profile ? "true" : "false",
             args.loader_dequant ? "true" : "false",
             args.swap_ab ? "true" : "false",
             args.dp4a_selector_pack ? "true" : "false",
             args.hybrid_low_selector_pack ? "true" : "false",
-            single_active_dispatch_warp ? "true" : "false");
+            single_active_dispatch_warp ? "true" : "false",
+            args.grouped_nibble_weights ? "true" : "false");
         return fmt::format(R"(
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_per128_pro_braided.cuh>
 
@@ -109,7 +111,8 @@ static void sm90_nvfp4_per128_pro_braided_3stage_mega_moe(
     const int& num_tokens, const int& num_topk,
     const int& hidden, const int& intermediate_hidden,
     const float& activation_clamp,
-    const bool& fast_math
+    const bool& fast_math,
+    const bool& grouped_nibble_weights = false
 ) {
     const bool mimo_pro_small_m_candidate =
         (num_tokens == 8 || num_tokens == 16 ||
@@ -264,6 +267,7 @@ static void sm90_nvfp4_per128_pro_braided_3stage_mega_moe(
         .swap_ab = plan.swap_ab,
         .dp4a_selector_pack = plan.dp4a_selector_pack,
         .hybrid_low_selector_pack = plan.hybrid_low_selector_pack,
+        .grouped_nibble_weights = grouped_nibble_weights,
         .phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode,
         .config = config,
         .y = y.data_ptr(),
@@ -287,7 +291,11 @@ static void sm90_nvfp4_per128_pro_braided_3stage_mega_moe(
     };
 
     const auto code = SM90NVFP4Per128ProBraided3StageMegaMoERuntime::generate(args);
-    const auto runtime = compiler->build("sm90_nvfp4_mega_moe_per128_pro_braided_3stage", code);
+    const auto runtime = compiler->build(
+        grouped_nibble_weights ?
+            "sm90_nvfp4_mega_moe_per128_grouped_nibble_3stage" :
+            "sm90_nvfp4_mega_moe_per128_pro_braided_3stage",
+        code);
     SM90NVFP4Per128ProBraided3StageMegaMoERuntime::launch(runtime, args);
 }
 

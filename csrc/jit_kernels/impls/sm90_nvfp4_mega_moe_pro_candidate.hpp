@@ -185,6 +185,7 @@ static void sm90_nvfp4_pro_candidate_mega_moe(
         .swap_ab = plan.swap_ab,
         .dp4a_selector_pack = plan.dp4a_selector_pack,
         .hybrid_low_selector_pack = plan.hybrid_low_selector_pack,
+        .grouped_nibble_weights = false,
         .phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode,
         .config = config,
         .y = y.data_ptr(),

@@ -217,6 +217,7 @@ static void sm90_nvfp4_nibble_group_mega_moe(
         .swap_ab = candidate_swap_ab,
         .dp4a_selector_pack = plan.dp4a_selector_pack,
         .hybrid_low_selector_pack = plan.hybrid_low_selector_pack,
+        .grouped_nibble_weights = false,
         .quad_dequant_mask = h200_mimo_m1024_quad_ilp ?
             3u : (h200_mimo_m256_l2_quad_ilp ? 2u : 0u),
         .phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode,

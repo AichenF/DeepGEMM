@@ -50,6 +50,7 @@ public:
         bool swap_ab;
         bool dp4a_selector_pack;
         bool hybrid_low_selector_pack;
+        bool grouped_nibble_weights;
         uint32_t quad_dequant_mask;
         int phase_mode;
         MegaMoESM90Config config;
@@ -559,6 +560,7 @@ static void sm90_nvfp4_mega_moe(
         .swap_ab = plan.swap_ab,
         .dp4a_selector_pack = plan.dp4a_selector_pack,
         .hybrid_low_selector_pack = plan.hybrid_low_selector_pack,
+        .grouped_nibble_weights = false,
         .phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode,
         .config = config,
         .y = y.data_ptr(),
