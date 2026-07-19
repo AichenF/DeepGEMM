@@ -127,7 +127,8 @@ static void sm90_nvfp4_nibble_group_mega_moe(
     auto config = plan.l1_or_fused_config;
     const bool h200_mimo_bm128 =
         num_sms >= 132 && num_ranks == 8 &&
-        (num_tokens == 512 || num_tokens == 2048 || num_tokens == 8192) &&
+        (num_tokens == 512 || num_tokens == 2048 || num_tokens == 4096 ||
+         num_tokens == 8192) &&
         num_topk == 8 && num_experts_per_rank == 48 &&
         hidden == 6144 && intermediate_hidden == 2048;
     if (h200_mimo_bm128) {
