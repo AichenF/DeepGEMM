@@ -106,7 +106,12 @@ sm90_nvfp4_mega_moe_mode2_nibble_group_fused_impl(
         const float* __restrict__ l1_global_scales,
         const float* __restrict__ l2_global_scales) {
 #define dequant_smem_b_from_packed_grouped_nibble dequant_smem_b_from_packed_mode2_nibble
-#define dequant_smem_b_half_row_grouped_nibble dequant_smem_b_half_row_mode2_nibble
+#define dequant_smem_b_half_row_grouped_nibble(...) \
+    dequant_smem_b_half_row_mode2_nibble_selected< \
+        (kNumSMs >= 132 && kNumRanks == 8 && kNumTopk == 8 && \
+         kNumExperts == 384 && kNumExpertsPerWave == 16 && \
+         kHidden == 6144 && kIntermediateHidden == 2048 && \
+         BLOCK_M == 128 && BLOCK_N == 128)>(__VA_ARGS__)
 #define dequant_smem_b_inplace_two_rows_grouped_nibble dequant_smem_b_inplace_two_rows_mode2_nibble
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_nibble_group_fused_body.inl>
 #undef dequant_smem_b_inplace_two_rows_grouped_nibble
