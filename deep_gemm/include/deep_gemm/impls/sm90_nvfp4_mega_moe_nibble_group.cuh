@@ -109,7 +109,8 @@ sm90_nvfp4_mega_moe_mode2_nibble_group_fused_impl(
 #define dequant_smem_b_half_row_grouped_nibble(...) \
     dequant_smem_b_half_row_mode2_nibble_selected< \
         (kNumSMs >= 132 && kNumRanks == 8 && kNumTopk == 8 && \
-         kNumExperts == 384 && kNumExpertsPerWave == 16 && \
+         kNumExperts == 384 && \
+         (kNumExpertsPerWave == 16 || kNumExpertsPerWave == 4) && \
          kHidden == 6144 && kIntermediateHidden == 2048 && \
          BLOCK_M == 128 && BLOCK_N == 128)>(__VA_ARGS__)
 #define dequant_smem_b_inplace_two_rows_grouped_nibble dequant_smem_b_inplace_two_rows_mode2_nibble

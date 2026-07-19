@@ -298,7 +298,7 @@ __device__ __forceinline__ void dequant_smem_b_half_row_mode2_nibble(
     }
 }
 
-// H200 MiMo M512 mode-2 path: start the second scale's decode before
+// H200 MiMo BM128 mode-2 path: start the second scale's decode before
 // completing the first scale, but retire the first vector before the fourth
 // word. This keeps two independent PRMT/LOP3 chains in flight without
 // expanding all four words' live ranges.
