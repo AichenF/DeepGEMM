@@ -308,8 +308,11 @@ dequant_smem_b_half_row_mode2_nibble_interleaved(
         const uint8_t* __restrict__ packed_b,
         const uint32_t thread,
         const uint2* __restrict__ lut_smem) {
-    const uint32_t row = thread >> 1;
-    const uint32_t half = thread & 1u;
+    // Keep each warp on one 32-row half.  With the 80-byte packed-row
+    // stride this makes the 16-byte loads cover all 32 banks uniformly,
+    // instead of pairing both halves of 16 rows and replaying each load.
+    const uint32_t half = (thread >> 5) & 1u;
+    const uint32_t row = (thread & 31u) + ((thread >> 6) * 32u);
     const uint8_t* __restrict__ row_ptr = packed_b + row * 80;
     const uint4* __restrict__ fp4_src = reinterpret_cast<const uint4*>(row_ptr);
     const uint32_t scale_word =
