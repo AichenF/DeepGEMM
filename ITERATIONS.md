@@ -3997,3 +3997,22 @@ test-reference ABI mismatch exposed by the intentional layout change, not a
 kernel result. No performance samples were collected. The next iteration must
 make the dequant unit test layout-aware and then rerun the full correctness and
 benchmark matrix.
+
+## 2026-07-20 AKO iteration 2: layout-aware dequant reference
+
+### Change
+
+- Added an exact inverse for the BN256 Mode2 braid in the dequant unit test.
+- Kept the existing standard-layout dequantizer and zero-tolerance comparison,
+  so the test checks the physical layout transformation without weakening the
+  numeric gate.
+
+### Result
+
+The standard and Mode2 round-trip dequant tests passed exactly, as did the CUDA
+LUT unit test. The first kernel JIT then failed to compile because the generated
+common kernel header had been mechanically truncated at the decoder's first
+`template <` declaration rather than at the kernel template. This left the
+namespace open and the common kernel symbol undefined. No kernel result or
+performance sample was collected. The next iteration repairs only that header
+boundary and reruns the same matrix.

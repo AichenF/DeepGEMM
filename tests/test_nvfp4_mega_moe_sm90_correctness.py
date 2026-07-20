@@ -40,6 +40,39 @@ def _pack_nvfp4_marlin(nibbles: torch.Tensor) -> torch.Tensor:
     return (chunks[..., 4:8] | (chunks[..., 0:4] << 4)).to(torch.uint8).view(*outer_shape, k // 2).contiguous()
 
 
+def _unbraid_nvfp4_mode2(fused_weight: torch.Tensor) -> torch.Tensor:
+    experts, rows, storage_k = fused_weight.shape
+    fused_rows = fused_weight.view(
+        experts, rows, storage_k // 80, 80).clone()
+    packed = fused_rows[..., :64].view(
+        experts, rows, storage_k // 80, 16, 4)
+    braided = torch.stack(
+        (
+            packed[..., 0] & 0x0f, packed[..., 0] >> 4,
+            packed[..., 1] & 0x0f, packed[..., 1] >> 4,
+            packed[..., 2] & 0x0f, packed[..., 2] >> 4,
+            packed[..., 3] & 0x0f, packed[..., 3] >> 4,
+        ),
+        dim=-1,
+    )
+    magnitudes = braided & 0x07
+    signs = braided >> 3
+    standard_signs = torch.stack(
+        (
+            signs[..., 1], signs[..., 3],
+            signs[..., 5], signs[..., 7],
+            signs[..., 0], signs[..., 2],
+            signs[..., 4], signs[..., 6],
+        ),
+        dim=-1,
+    )
+    standard = magnitudes | (standard_signs << 3)
+    fused_rows[..., :64] = (
+        (standard[..., :4] << 4) | standard[..., 4:]
+    ).reshape(experts, rows, storage_k // 80, 64)
+    return fused_rows.view(experts, rows, storage_k).contiguous()
+
+
 _CUDA_DEQUANT_EXT = None
 
 
@@ -154,13 +187,21 @@ def _run_dequant_unit_test() -> None:
         (l1_packed, l1_scale), (l2_packed, l2_scale), block_n=256,
     )
     torch.testing.assert_close(
-        dequantize_nvfp4_to_fp32(transformed_l1_bn256[0], transformed_l1_bn256[1], group_size=16),
+        dequantize_nvfp4_to_fp32(
+            _unbraid_nvfp4_mode2(transformed_l1_bn256[0]),
+            transformed_l1_bn256[1],
+            group_size=16,
+        ),
         _interleave_l1_n(dequantize_nvfp4_to_fp32(l1_packed, l1_scale, group_size=16)),
         rtol=0,
         atol=0,
     )
     torch.testing.assert_close(
-        dequantize_nvfp4_to_fp32(transformed_l2_bn256[0], transformed_l2_bn256[1], group_size=16),
+        dequantize_nvfp4_to_fp32(
+            _unbraid_nvfp4_mode2(transformed_l2_bn256[0]),
+            transformed_l2_bn256[1],
+            group_size=16,
+        ),
         dequantize_nvfp4_to_fp32(l2_packed, l2_scale, group_size=16),
         rtol=0,
         atol=0,
