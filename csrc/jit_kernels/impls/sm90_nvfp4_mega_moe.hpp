@@ -325,9 +325,8 @@ static SM90NVFP4MegaMoEPlan get_nvfp4_mega_moe_plan_sm90(
     }
 
     const int m_tiles = (num_tokens + block_m - 1) / block_m;
-    const int loader_dequant_default = use_fused_phase ? (m_tiles >= 2 ? 1 : 0) : 1;
     const bool loader_dequant_requested =
-        get_env<int>("DG_SM90_NVFP4_LOADER_DEQUANT", loader_dequant_default) != 0;
+        use_fused_phase ? m_tiles >= 2 : true;
     const bool bn256_packed_loader_dequant =
         use_fused_phase && num_non_epilogue_threads == 64;
     const bool loader_dequant = loader_dequant_requested &&
@@ -542,7 +541,7 @@ static void sm90_nvfp4_mega_moe(
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
         .l2_dual_accum = plan.l2_dual_accum,
-        .phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0,
+        .phase_profile = false,
         .l2_arrival_counter = plan.l2_arrival_counter,
         .loader_dequant = plan.loader_dequant,
         .swap_ab = plan.swap_ab,

@@ -20,7 +20,6 @@ export DG_BENCH_REUSE_FLUSH_BUFFER=1
 export DG_BENCH_DISCARD_FIRST_ACTIVE=0
 export DG_BENCH_SEED_OFFSET=${DG_AKO_SEED:-101}
 export DG_V4_MATRIX_RUNNER=${MATRIX_RUNNER}
-unset DG_SM90_MOE_SET_NUM_SMS || true
 
 mkdir -p "${RESULT}/jit" "${RESULT}/torch_extensions" "${RESULT}/logs"
 export DG_JIT_CACHE_DIR=${RESULT}/jit

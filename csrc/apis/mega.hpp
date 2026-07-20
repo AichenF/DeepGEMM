@@ -10,11 +10,6 @@
 #include "../jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe_small_m.hpp"
-#include "../jit_kernels/impls/sm90_nvfp4_mega_moe_nibble_group.hpp"
-#include "../jit_kernels/impls/sm90_nvfp4_mega_moe_per128_pro_braided_3stage.hpp"
-#include "../jit_kernels/impls/sm90_nvfp4_mega_moe_pro_candidate.hpp"
-#include "../jit_kernels/impls/sm90_nvfp4_mega_moe_pro_braided.hpp"
-#include "../jit_kernels/impls/sm90_nvfp4_mega_moe_pro_braided_3stage.hpp"
 
 namespace deep_gemm::mega {
 
@@ -329,10 +324,7 @@ static void nvfp4_mega_moe(
     DG_HOST_ASSERT(l2_weights_sf.is_contiguous());
     if (cumulative_local_expert_recv_stats.has_value()) {
         DG_HOST_ASSERT(cumulative_local_expert_recv_stats->scalar_type() == torch::kInt);
-        const auto stats_numel = cumulative_local_expert_recv_stats->numel();
-        const bool phase_profile = get_env<int>("DG_SM90_MOE_PHASE_PROFILE", 0) != 0;
-        DG_HOST_ASSERT(stats_numel == num_experts_per_rank or
-                       (phase_profile and stats_numel >= num_experts_per_rank + 64));
+        DG_HOST_ASSERT(cumulative_local_expert_recv_stats->numel() == num_experts_per_rank);
         DG_HOST_ASSERT(cumulative_local_expert_recv_stats->is_contiguous());
     }
     if (l1_global_scales.has_value()) {
@@ -394,23 +386,12 @@ static void nvfp4_mega_moe(
         sym_buffer.zero_();
 }
 
-#include "nvfp4_nibble_group_mega.inl"
-#include "nvfp4_per128_pro_braided_3stage_mega.inl"
-#include "nvfp4_pro_candidate_mega.inl"
-#include "nvfp4_pro_braided_mega.inl"
-#include "nvfp4_pro_braided_3stage_mega.inl"
-
 static void register_apis(pybind11::module_& m) {
 #if DG_TENSORMAP_COMPATIBLE
     m.def("get_token_alignment_for_mega_moe", &get_token_alignment_for_mega_moe);
     m.def("get_symm_buffer_size_for_mega_moe", &get_symm_buffer_size_for_mega_moe);
     m.def("fp8_fp4_mega_moe", &fp8_fp4_mega_moe);
     m.def("nvfp4_mega_moe", &nvfp4_mega_moe);
-    m.def("nvfp4_nibble_group_mega_moe", &nvfp4_nibble_group_mega_moe);
-    m.def("nvfp4_per128_pro_braided_3stage_mega_moe", &nvfp4_per128_pro_braided_3stage_mega_moe);
-    m.def("nvfp4_pro_candidate_mega_moe", &nvfp4_pro_candidate_mega_moe);
-    m.def("nvfp4_pro_braided_mega_moe", &nvfp4_pro_braided_mega_moe);
-    m.def("nvfp4_pro_braided_3stage_mega_moe", &nvfp4_pro_braided_3stage_mega_moe);
 #endif
 }
 

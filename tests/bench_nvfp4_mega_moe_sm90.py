@@ -74,9 +74,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     )
     kernel_name = 'sm90_nvfp4_mega_moe'
 
-    phase_profile_enabled = os.environ.get('DG_SM90_MOE_PHASE_PROFILE', '0') != '0'
-    phase_profile_ints = 96 if phase_profile_enabled else 0
-    cum_stats = torch.zeros(num_experts_per_rank + phase_profile_ints, dtype=torch.int, device='cuda')
+    cum_stats = torch.zeros(num_experts_per_rank, dtype=torch.int, device='cuda')
     reuse_output = os.environ.get('DG_BENCH_REUSE_OUTPUT', '0') != '0'
     output = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device='cuda') if reuse_output else None
 
@@ -111,24 +109,6 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     # Warm up + benchmark
     run()
     dist.barrier()
-    if phase_profile_enabled:
-        cum_stats.zero_()
-        torch.cuda.synchronize()
-        dist.barrier()
-    # NSYS MULTI-ITER (aichenf): N timed iters with barrier+sleep between them.
-    # bench_kineto returns 1 under DG_USE_NVIDIA_TOOLS=1, but this loop puts
-    # multiple mega_moe instances on the nsys timeline so we can measure variance.
-    import os as _os
-    _nsys_iters = int(_os.environ.get('NSYS_ITERS', '0'))
-    if _nsys_iters > 0:
-        for _it in range(_nsys_iters):
-            torch.cuda.synchronize()
-            dist.barrier()
-            torch.cuda._sleep(int(2e7))  # 10ms gap between iters
-            dist.barrier()
-            run()
-        torch.cuda.synchronize()
-        dist.barrier()
     show_kineto = os.environ.get('DG_SHOW_KINETO', '0') != '0'
     async_bench_barrier = os.environ.get('DG_BENCH_ASYNC_BARRIER', '0') != '0'
     split_l1_l2 = nvfp4_block_n == 128
@@ -186,28 +166,6 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
             f'({tflops_nvfp4:5.1f}TF, {hbm_gbs:4.0f}GB/s)  (rank{rank_idx})',
             once_in_node=True,
         )
-        if phase_profile_enabled:
-            torch.cuda.synchronize()
-            names = [
-                'dispatch_total', 'dispatch_pull', 'math_loop', 'combine_barrier',
-                'combine_reduce', 'gemm_core', 'l1_epilogue', 'l2_epilogue',
-                'loader_dequant', 'math_dequant_wait', 'l1_tma_wait',
-                'l1_ready_notify', 'l2_ready_wait', 'l2_scatter',
-                'math_full_wait', 'math_dequant',
-            ]
-            num_phase_metrics = len(names)
-            profile = cum_stats[
-                num_experts_per_rank:num_experts_per_rank + 3 * num_phase_metrics * 2
-            ].view(torch.int64).cpu().tolist()
-            for i, name in enumerate(names):
-                total = profile[i]
-                max_v = profile[num_phase_metrics + i]
-                count = profile[2 * num_phase_metrics + i]
-                avg = float(total) / count if count else 0.0
-                dist_print(
-                    f'   phase {name:16s} avg={avg:10.0f} max={max_v:10d} count={count}',
-                    once_in_node=True,
-                )
 
     dist.barrier()
     buffer.destroy()
@@ -215,9 +173,6 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
 
 def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     rank_idx, num_ranks, group = init_dist(local_rank, num_local_ranks)
-    forced_num_sms = int(os.environ.get('DG_SM90_MOE_SET_NUM_SMS', '0'))
-    if forced_num_sms > 0:
-        deep_gemm.set_num_sms(forced_num_sms)
     torch.manual_seed(rank_idx)
     random.seed(rank_idx)
 

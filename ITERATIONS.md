@@ -4248,3 +4248,63 @@ No performance decision is made from the contaminated MiMo tail. The completed
 pre-contention Flash/Pro points show no regression. Rerun MiMo on an idle H20
 node before committing any further kernel change; do not kill or otherwise
 interfere with the competing process.
+
+
+## 2026-07-20 AKO iteration 8: prune obsolete experimental paths
+
+### Change
+
+- Removed five superseded candidate pybind APIs, their five JIT runtimes, eight
+  duplicate device header/body files, and the Python candidate adapters that
+  depended on those private APIs: 35 files and about 12.5k lines in total.
+- Kept the public `nvfp4_mega_moe` API, the unified BN256 small-M body, and the
+  original BN128 split L1/L2 body.
+- Removed the inactive phase-profile and forced-SM benchmark controls. The
+  legacy BN128 loader-dequant selection is fixed to its existing production
+  default; its kernel body and tuning policy are unchanged.
+
+### Validation
+
+The CUDA 13.2 H200 clean-source extension build completed without any missing
+C++ function warnings. Exact layout/dequant, CUDA LUT, and all Flash/Pro/MiMo
+M8/M128 correctness cases passed for both global-scale modes; minimum cosine
+remained 0.9988.
+
+All 21 corresponding JIT configurations have byte-identical generated
+`kernel.cu` sources and byte-identical executable `.text` sections. Whole-file
+CUBIN hashes differ because ELF metadata and non-code sections are not stable
+across the two clean builds; they are not used as code-identity evidence.
+
+### Benchmark
+
+H200, eight ranks, all 132 SMs, cold L2, seed 101, median-50 max-rank latency.
+
+| Shape | M | iteration 6 us | cleanup us | delta |
+|---|---:|---:|---:|---:|
+| Flash | 8 | 198.7 | 193.0 | -2.9% |
+| Flash | 16 | 208.3 | 211.8 | +1.7% |
+| Flash | 32 | 234.0 | 237.5 | +1.5% |
+| Flash | 64 | 244.6 | 245.6 | +0.4% |
+| Flash | 128 | 241.7 | 244.2 | +1.0% |
+| Pro | 8 | 570.0 | 571.7 | +0.3% |
+| Pro | 16 | 671.7 | 679.2 | +1.1% |
+| Pro | 32 | 729.4 | 722.6 | -0.9% |
+| Pro | 64 | 755.5 | 753.2 | -0.3% |
+| Pro | 128 | 805.4 | 803.1 | -0.3% |
+| MiMo Pro | 8 | 381.0 | 401.4 | +5.4% |
+| MiMo Pro | 16 | 417.6 | 419.6 | +0.5% |
+| MiMo Pro | 32 | 449.6 | 447.3 | -0.5% |
+| MiMo Pro | 64 | 489.2 | 474.7 | -3.0% |
+| MiMo Pro | 128 | 492.4 | 500.4 | +1.6% |
+
+The small run-to-run deltas are timing noise with byte-identical executable
+code. Against the retained dedicated H200 implementation, this run is 2.9%
+slower at MiMo M8, faster at M16/M32/M64, and effectively equal at M128. The
+earlier iteration-6 run was faster at M8 as well, so no selector or kernel-body
+change is justified by this single noisy point.
+
+### Result
+
+Accept. Production now exposes one NVFP4 API and one BN256 fused kernel body;
+the large-M BN128 split implementation remains available without experimental
+environment switches.
