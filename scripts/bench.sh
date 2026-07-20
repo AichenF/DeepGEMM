@@ -41,6 +41,9 @@ ssh -o BatchMode=yes -o ConnectTimeout=10 "${HOST}" \
         -e DG_AKO_NUM_TESTS='${DG_AKO_NUM_TESTS:-50}' \
         -e DG_AKO_SHAPES='${DG_AKO_SHAPES:-flash pro mimo_pro}' \
         -e DG_AKO_M_VALUES='${DG_AKO_M_VALUES:-8 16 32 64 128}' \
+        -e DG_AKO_CORRECTNESS_M_VALUES='${DG_AKO_CORRECTNESS_M_VALUES:-8 128}' \
+        -e DG_AKO_MAX_TOKENS_PER_RANK='${DG_AKO_MAX_TOKENS_PER_RANK:-128}' \
+        -e DG_AKO_NVFP4_BLOCK_N='${DG_AKO_NVFP4_BLOCK_N:-}' \
         '${CONTAINER}' \
         bash -lc 'cd ${REMOTE_REPO} && bash scripts/ako_sm90_nvfp4_unified_smallm_remote.sh'" \
     2>&1 | tee _bench_output.txt
@@ -53,7 +56,11 @@ cp HINTS.md "${TRAJ_DIR}/"
 cp deep_gemm/mega/__init__.py "${TRAJ_DIR}/"
 cp csrc/apis/mega.hpp "${TRAJ_DIR}/"
 cp csrc/jit_kernels/impls/sm90_nvfp4_mega_moe.hpp "${TRAJ_DIR}/"
+cp deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe.cuh "${TRAJ_DIR}/"
+cp deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_mode2_dequant.cuh "${TRAJ_DIR}/"
 cp deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_fused_body.inl "${TRAJ_DIR}/"
+cp deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_split_l1_body.inl "${TRAJ_DIR}/"
+cp deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_split_l2_body.inl "${TRAJ_DIR}/"
 mv _bench_output.txt "${TRAJ_DIR}/output.txt"
 git diff --binary > "${TRAJ_DIR}/candidate.patch"
 git status --short > "${TRAJ_DIR}/git-status.txt"

@@ -4473,3 +4473,75 @@ regression. Trajectory:
 Accept. The heuristic now follows the FP8 code structure without exact M
 points, while selector decisions, generated device code, correctness, and the
 established no-regression performance result remain unchanged.
+
+## BN128 Mode2 migration baseline: standard-sign H20
+
+### Scaffold
+
+- Parameterized the AKO correctness and performance runners with an optional
+  `DG_AKO_NVFP4_BLOCK_N`, correctness M list, and maximum-token capacity.
+- Expanded each trajectory snapshot to include the generic split kernel, both
+  split bodies, and the common Mode2 decoder.
+- The default small-M runner behavior is unchanged.
+
+### Validation
+
+- Commit under test: `0901b7a9d039c7a00ec2e9702ff80b8566a86baa`
+- Host: `H20-GPU-08`, 8 x H20, idle at launch
+- Environment: PyTorch `2.7.0a0+ecf3bae40a.nv25.02`, CUDA `12.8`
+- Layout: forced BN128 standard-sign; split L1/L2
+- Correctness: Flash, Pro, and MiMo at M256/M512 with absent and per-expert
+  global scales all passed; minimum per-token cosine was `0.9987`.
+- Performance: 10 cold-L2 samples per point, fixed seed 101, table reports the
+  maximum rank median and includes both split kernels.
+
+| Shape | M | Baseline latency (us) |
+|---|---:|---:|
+| Flash | 2048 | 2773.4 |
+| Flash | 4096 | 5206.9 |
+| Flash | 8192 | 10055.1 |
+| Pro | 2048 | 7367.5 |
+| Pro | 4096 | 13529.2 |
+| Pro | 8192 | 25530.9 |
+| MiMo Pro | 2048 | 5387.6 |
+| MiMo Pro | 4096 | 10244.3 |
+| MiMo Pro | 8192 | 19573.6 |
+
+Trajectory: `trajectory/20260720_211001_baseline-bn128-standard-h20`.
+
+### Result
+
+Baseline accepted. This is the frozen H20 comparison point for the BN128
+Mode2 migration.
+
+## BN128 Mode2 migration baseline: standard-sign H200
+
+### Validation
+
+- Commit under test: `097bda752a6318b99398ae5ef77f7252dc4d1abe`
+- Host: `viking-prod-298`, 8 x H200, idle at launch
+- Environment: PyTorch `2.12.1+cu132`, CUDA `13.2`
+- Layout: forced BN128 standard-sign; split L1/L2
+- Correctness: Flash, Pro, and MiMo at M256/M512 with absent and per-expert
+  global scales all passed; minimum per-token cosine was `0.9987`.
+- Performance: 10 cold-L2 samples per point, fixed seed 101, table reports the
+  maximum rank median and includes both split kernels.
+
+| Shape | M | Baseline latency (us) |
+|---|---:|---:|
+| Flash | 2048 | 1534.7 |
+| Flash | 4096 | 2716.5 |
+| Flash | 8192 | 5198.5 |
+| Pro | 2048 | 3893.0 |
+| Pro | 4096 | 7039.0 |
+| Pro | 8192 | 13322.6 |
+| MiMo Pro | 2048 | 2861.4 |
+| MiMo Pro | 4096 | 5424.6 |
+| MiMo Pro | 8192 | 10200.0 |
+
+Trajectory: `trajectory/20260720_211724_baseline-bn128-standard-h200`.
+
+### Result
+
+Baseline accepted. H20 and H200 now have source-matched standard-sign BN128
+comparison points for the Mode2 migration.

@@ -10,6 +10,12 @@ LABEL=${DG_AKO_LABEL:-h200}
 RESULT_ROOT=${DG_AKO_RESULT_ROOT:-${ROOT_BASE}/results/megamoe_nvfp4_dev_ako}
 RESULT=${RESULT_ROOT}/${LABEL}
 MATRIX_RUNNER=${DG_AKO_MATRIX_RUNNER:-${ROOT_BASE}/megamoe_nvfp4_ba7ee09_v4_shape_matrix_runner.py}
+NVFP4_BLOCK_N=${DG_AKO_NVFP4_BLOCK_N:-}
+
+block_n_args=()
+if [[ -n ${NVFP4_BLOCK_N} ]]; then
+    block_n_args=(--nvfp4-block-n "${NVFP4_BLOCK_N}")
+fi
 
 export CUDA_HOME=${SITE}/nvidia/cu13
 export PATH=${CUDA_HOME}/bin:${VENV}/bin:${PATH}
@@ -52,8 +58,8 @@ run_correctness() {
         --intermediate-hidden "${intermediate_hidden}" \
         --num-experts "${local_experts}" \
         --num-topk "${topk}" \
-        --num-max-tokens-per-rank 128 \
-        --nvfp4-block-n 256 \
+        --num-max-tokens-per-rank "${DG_AKO_MAX_TOKENS_PER_RANK:-128}" \
+        "${block_n_args[@]}" \
         --weight-scales 0.05 \
         --global-scale-modes none expert \
         --seed 42 2>&1 | tee "${RESULT}/logs/correctness_${shape}.log"
@@ -83,6 +89,7 @@ if [[ ${DG_AKO_RUN_PERF:-1} == 1 ]]; then
                 --num-tests "${DG_AKO_NUM_TESTS:-50}" \
                 --stat median \
                 --num-processes 8 \
+                "${block_n_args[@]}" \
                 2>&1 | tee "${log}"
         done
     done
