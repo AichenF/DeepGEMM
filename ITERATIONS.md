@@ -3926,3 +3926,53 @@ source-line immediate (`0x8b9` versus `0x8ab`). Raw reports are under
 `/root/fac/scripts/megamoe/nvfp4_per128_pro_braided_boundary_20260706/`, and
 `/root/fac/scripts/megamoe/nvfp4_per128_pro_braided_m16_reverse_control_20260706/`
 on the H20 host.
+
+## 2026-07-20 AKO unified small-M baseline
+
+### Scope
+
+- Source baseline: `ba7ee0944c1fe31874b049ae354657ff62dae20b` from
+  `megamoe_nvfp4`.
+- Target: replace the separate Flash, Pro, and MiMo small-M implementations
+  with one Mode2 braided BN256/BK128 kernel body and one range-based selector.
+- Large-M BN128 split behavior is outside this first unification step.
+
+### Environment
+
+- Host: `H20-GPU-08`, 8 x NVIDIA H20-3e.
+- Container: `mega_moe_box`.
+- PyTorch: `2.7.0a0+ecf3bae40a.nv25.02`; CUDA: `12.8`.
+- Cold L2: 8 GB reusable flush buffer before every measured call.
+- Fixed seed 101, 50 samples per point, median statistic, 8 ranks.
+
+### Correctness
+
+Single-rank repository-reference correctness passed for Flash, Pro, and MiMo at
+M=8 and M=128, with both absent and per-expert global scales. The minimum
+observed cosine was 0.9987 and all outputs were finite.
+
+### Benchmark
+
+| Shape | M | mean_rank us | max_rank us |
+|---|---:|---:|---:|
+| Flash (H4096/I2048/E256/topk6) | 8 | 337.7 | 342.8 |
+| Flash (H4096/I2048/E256/topk6) | 16 | 370.9 | 376.9 |
+| Flash (H4096/I2048/E256/topk6) | 32 | 396.7 | 405.5 |
+| Flash (H4096/I2048/E256/topk6) | 64 | 489.2 | 502.7 |
+| Flash (H4096/I2048/E256/topk6) | 128 | 476.4 | 480.9 |
+| Pro (H7168/I3072/E384/topk6) | 8 | 967.8 | 972.9 |
+| Pro (H7168/I3072/E384/topk6) | 16 | 1243.9 | 1249.6 |
+| Pro (H7168/I3072/E384/topk6) | 32 | 1297.1 | 1300.3 |
+| Pro (H7168/I3072/E384/topk6) | 64 | 1371.7 | 1378.0 |
+| Pro (H7168/I3072/E384/topk6) | 128 | 1624.1 | 1631.3 |
+| MiMo Pro (H6144/I2048/E384/topk8) | 8 | 703.2 | 709.3 |
+| MiMo Pro (H6144/I2048/E384/topk8) | 16 | 855.4 | 860.2 |
+| MiMo Pro (H6144/I2048/E384/topk8) | 32 | 815.1 | 821.2 |
+| MiMo Pro (H6144/I2048/E384/topk8) | 64 | 986.3 | 997.7 |
+| MiMo Pro (H6144/I2048/E384/topk8) | 128 | 977.7 | 982.1 |
+
+### Result
+
+This is the frozen pre-unification baseline. The first implementation iteration
+must preserve the public distributed protocol and large-M BN128 path, pass all
+three correctness shapes, and compare against these max-rank cold-L2 medians.

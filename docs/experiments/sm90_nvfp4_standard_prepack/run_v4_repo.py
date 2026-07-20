@@ -17,6 +17,15 @@ def _load_runner(name: str):
     assert spec.loader is not None
     sys.modules[name] = runner
     spec.loader.exec_module(runner)
+    runner.SHAPES.setdefault(
+        "mimo_pro",
+        {
+            "hidden": 6144,
+            "intermediate_hidden": 2048,
+            "num_experts": 384,
+            "num_topk": 8,
+        },
+    )
     return runner
 
 
