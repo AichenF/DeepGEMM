@@ -4386,3 +4386,25 @@ that the cleanup changes no supported configuration's machine code.
 
 Accept. The production body now contains only selector-reachable block-M
 configurations without changing generated code or performance.
+## Iteration 12: clean H20 MiMo validation
+
+- Commit under test: `a2cf59d61e908d42cf000f0009a3ca95960f3d1a`
+- Host: `H20-GPU-08`, 8 x H20, idle at launch
+- Environment: PyTorch `2.7.0a0+ecf3bae40a.nv25.02`, CUDA `12.8`
+- Command: `DG_AKO_REBUILD=1 DG_AKO_RUN_CORRECTNESS=1 DG_AKO_RUN_PERF=1 DG_AKO_SHAPES=mimo_pro DG_AKO_M_VALUES='8 16 32 64 128' DG_AKO_NUM_TESTS=50 bash scripts/bench.sh iter-12-h20-clean-mimo`
+- Correctness: all 12 Flash/Pro/MiMo cases passed for M=8/128 with absent and per-expert global scales; minimum cosine similarity was `0.9988`. Both NVFP4 dequant unit tests passed.
+- Statistic: 50 cold-L2 samples per point, median per rank, table reports the maximum rank median.
+
+| MiMo M | Unified kernel (us) | Original branch baseline (us) | Latency reduction |
+|---:|---:|---:|---:|
+| 8 | 487.9 | 709.3 | 31.2% |
+| 16 | 567.1 | 860.2 | 34.1% |
+| 32 | 650.3 | 821.2 | 20.8% |
+| 64 | 675.6 | 997.7 | 32.3% |
+| 128 | 936.8 | 982.1 | 4.6% |
+
+All five points completed without the rank stalls seen in the contended
+iteration 7 run. The common Mode2 BN256 body therefore preserves correctness
+and improves the clean H20 MiMo baseline across the full tested small-M range.
+
+Trajectory: `trajectory/20260720_194849_iter-12-h20-clean-mimo`
