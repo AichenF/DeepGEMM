@@ -1274,16 +1274,6 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             } else {
                                 run_swap_ab_l1.template operator()<24>();
                             }
-                        } else if constexpr (BLOCK_M == 32) {
-                            if (n_swap <= 8) {
-                                run_swap_ab_l1.template operator()<8>();
-                            } else if (n_swap <= 16) {
-                                run_swap_ab_l1.template operator()<16>();
-                            } else if (n_swap <= 24) {
-                                run_swap_ab_l1.template operator()<24>();
-                            } else {
-                                run_swap_ab_l1.template operator()<32>();
-                            }
                         } else if constexpr (kSwapABNarrowDispatch) {
                             if (n_swap <= 8) {
                                 run_swap_ab_l1.template operator()<8>();
@@ -1337,7 +1327,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 } else {
                     if constexpr (kSwapABL2Active) {
                         DG_STATIC_ASSERT(kL2ActsSFGranK == 128,
-                                         "L2 swapAB candidate assumes per-128 activation scales");
+                                         "L2 swapAB requires per-128 activation scales");
                         auto run_swap_ab_l2 = [&]<uint32_t N_SWAP>() {
                             using SwapWGMMA = typename mma::sm90::FP8MMASelector<N_SWAP>::type;
                             constexpr uint32_t kSwapAccum = SwapWGMMA::kNumAccum;
@@ -1405,16 +1395,6 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                                 run_swap_ab_l2.template operator()<16>();
                             } else {
                                 run_swap_ab_l2.template operator()<24>();
-                            }
-                        } else if constexpr (BLOCK_M == 32) {
-                            if (n_swap <= 8) {
-                                run_swap_ab_l2.template operator()<8>();
-                            } else if (n_swap <= 16) {
-                                run_swap_ab_l2.template operator()<16>();
-                            } else if (n_swap <= 24) {
-                                run_swap_ab_l2.template operator()<24>();
-                            } else {
-                                run_swap_ab_l2.template operator()<32>();
                             }
                         } else if constexpr (kSwapABNarrowDispatch) {
                             if (n_swap <= 8) {

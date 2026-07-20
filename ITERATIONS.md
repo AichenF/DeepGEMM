@@ -4361,3 +4361,28 @@ section were byte-identical to iteration 8.
 Accept. The code now makes the intended boundary explicit: routed load and
 derived expert waves select tuning, while physical SM count is launch state,
 not a selector fingerprint.
+
+
+## 2026-07-20 AKO iteration 11: remove unreachable small-M branches
+
+### Change
+
+- Removed two `BLOCK_M == 32` compile-time branches from the common body. The
+  selector and kernel static contract support only BM8/BM16/BM24/BM64, so
+  these branches could never be instantiated.
+- Reworded the remaining L2 swap-AB static assertion as a production
+  requirement rather than an experimental candidate description.
+- Kept the valid BM64 runtime choice of a 32-row WGMMA when `valid_m <= 32`;
+  that is a tuning path, not an unsupported BM32 configuration.
+
+### Validation
+
+H200 exact-NVFP4 correctness again passed Flash, Pro, and MiMo at M8/M128 with
+both global-scale modes; minimum per-token cosine was 0.9988. The six fresh
+JIT CUBIN executable `.text` hashes form the same set as iteration 10, proving
+that the cleanup changes no supported configuration's machine code.
+
+### Result
+
+Accept. The production body now contains only selector-reachable block-M
+configurations without changing generated code or performance.
