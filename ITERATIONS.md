@@ -4201,3 +4201,50 @@ MiMo implementation without exact model, token, expert-count, or GPU-model
 fingerprints. This also improves every Flash and Pro point relative to
 iteration 5. Proceed to H20 regression/profile validation, then remove obsolete
 experimental API and kernel paths.
+
+
+## 2026-07-20 AKO iteration 7: H20 regression interrupted by contention
+
+### Change
+
+No code change after iteration 6. This run applies the accepted trap-only barrier
+build to the H20 CUDA 12.8 environment.
+
+### Correctness
+
+The clean-source extension build passed. Exact layout/dequant, CUDA LUT, and all
+Flash/Pro/MiMo M8/M128 correctness cases passed for absent and per-expert global
+scales. Minimum per-token cosine remained 0.9988.
+
+### Benchmark
+
+The run started on an idle eight-GPU H20-08 node with the same 8 GB cold-L2,
+seed-101, median-50 protocol. At 10:51:16 UTC, unrelated PID 1625930 started
+`python -m cupra._child grouped_gemm ...` on GPU 4, held about 4.88 GiB, and
+reported 100% utilization. Points beginning after that time are invalid because
+one delayed rank stalls the distributed launch.
+
+| Shape | M | start | iteration 4 us | observed us | status |
+|---|---:|---:|---:|---:|---|
+| Flash | 8 | - | 305.6 | 264.1 | -13.6% |
+| Flash | 16 | - | 327.8 | 288.3 | -12.1% |
+| Flash | 32 | - | 365.0 | 345.1 | -5.5% |
+| Flash | 64 | - | 391.2 | 370.8 | -5.2% |
+| Flash | 128 | - | 470.6 | 469.8 | -0.2% |
+| Pro | 8 | - | 851.9 | 715.7 | -16.0% |
+| Pro | 16 | - | 1040.6 | 865.8 | -16.8% |
+| Pro | 32 | - | 1187.1 | 1033.7 | -12.9% |
+| Pro | 64 | - | 1220.3 | 1100.6 | -9.8% |
+| Pro | 128 | - | 1585.1 | 1567.0 | -1.1% |
+| MiMo Pro | 8 | - | 554.0 | 494.9 | -10.7% |
+| MiMo Pro | 16 | - | 668.3 | 585.3 | -12.4% |
+| MiMo Pro | 32 | - | 721.9 | 2905.9 | 302.5% |
+| MiMo Pro | 64 | - | 791.5 | 2945.2 | 272.1% |
+| MiMo Pro | 128 | - | 952.0 | 3199.3 | 236.1% |
+
+### Result
+
+No performance decision is made from the contaminated MiMo tail. The completed
+pre-contention Flash/Pro points show no regression. Rerun MiMo on an idle H20
+node before committing any further kernel change; do not kill or otherwise
+interfere with the competing process.
