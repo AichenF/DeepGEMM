@@ -52,9 +52,9 @@ public:
         // SM120: warp layout is kMWarps(4) * MMA_M(16), so BLOCK_M is a multiple of 64
         if (arch_major == 12)
             return {128, 64, 64};
-        // SM100: 16-row MMA steps from 240 down to 32
+        // SM100: follow the upstream 32-row MMA steps from 224 down to 32
         if (arch_major == 10)
-            return {240, 32, 16};
+            return {224, 32, 32};
         // SM90 and others: fixed legacy alignment, no shrinking
         return {kLegacyMKAlignmentForContiguousLayout, kLegacyMKAlignmentForContiguousLayout, 1};
     }

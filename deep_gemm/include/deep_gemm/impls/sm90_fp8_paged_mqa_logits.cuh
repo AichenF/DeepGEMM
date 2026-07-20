@@ -15,7 +15,7 @@
 #include <deep_gemm/ptx/ld_st.cuh>
 #include <deep_gemm/ptx/utils.cuh>
 #include <deep_gemm/ptx/wgmma.cuh>
-#include <deep_gemm/scheduler/paged_mqa_logits.cuh>
+#include <deep_gemm/scheduler/sm90_paged_mqa_logits.cuh>
 
 namespace deep_gemm {
 
@@ -139,10 +139,10 @@ void sm90_fp8_paged_mqa_logits(const uint32_t batch_size,
     cudaGridDependencySynchronize();
 
     // Scheduler
-    // NOTES: when multicasting we launch one cluster of `kNumKVMulticast` CTAs per task, so use cluster id.
-    // SM90 doesn't support varlen — `kIsVarlen` is statically false (asserted above); pass nullptr for indices.
-    auto scheduler = sched::PagedMQALogitsScheduler<kNextN, kIsContextLens2D, kIsVarlen, kComputeBlockKV, kNumMathWarpGroups, 1>(
-        cute::cluster_id_in_grid().x, batch_size, context_lens, schedule_meta, /*indices=*/nullptr);
+    // Multicast launches one cluster of kNumKVMulticast CTAs per task, so
+    // schedule by cluster while retaining the fixed 64-token compute block.
+    auto scheduler = sched::SM90PagedMQALogitsScheduler<kNextN, kIsContextLens2D, kIsVarlen, kComputeBlockKV, kNumMathWarpGroups, 1>(
+        cute::cluster_id_in_grid().x, batch_size, context_lens, schedule_meta, nullptr);
     DG_STATIC_ASSERT(SPLIT_KV % kComputeBlockKV == 0, "Unaligned SPLIT_KV");
 
     // Q and KV pipeline
@@ -189,29 +189,26 @@ void sm90_fp8_paged_mqa_logits(const uint32_t batch_size,
         idx_storage_t kv_block_idx_storage;
 
         while (fetched_next_task) {
-            // Prefetch next Q when current Q changes
-            bool prefetch_q = (q_idx != next_q_idx and scheduler.exist_q_atom_idx(next_q_idx + 1));
             q_idx = next_q_idx;
             kv_idx = next_kv_idx;
             num_kv = next_num_kv;
-
-            // Wait Q consumer release and issue TMA Q
-            if (prefetch_q) {
-                CUTE_TIE_DECL(get_q_pipeline(q_iter_idx ++), q_stage_idx, q_phase);
-                empty_q_barriers[q_stage_idx]->wait(q_phase ^ 1);
-                issue_tma_q(q_stage_idx, q_idx + 1);
-            }
 
             // Read KV block index
             // TODO: deal with `-1`?
             if (kv_idx == 0 or kv_block_idx_ptr == 32) {
                 kv_block_idx_ptr = 0;
                 const uint32_t compute_block_kv_offset = kv_idx + kv_group_idx + lane_idx * kNumMathWarpGroups;
-                const auto* kv_block_idx_global = block_table + q_idx * static_cast<uint64_t>(block_table_stride) + compute_block_kv_offset * kNumBlocksPerMMA;
+                const uint32_t lens_idx = kIsContextLens2D ? q_idx * kNextN + kNextN - 1 : q_idx;
+                const uint32_t num_kv_pages = math::ceil_div(context_lens[lens_idx], BLOCK_KV);
+                const auto* block_table_row = block_table + q_idx * static_cast<uint64_t>(block_table_stride);
                 auto* kv_block_idx_reg = reinterpret_cast<uint32_t*>(&kv_block_idx_storage);
                 #pragma unroll
-                for (uint32_t i = 0; i < kNumBlocksPerMMA; ++ i)
-                    kv_block_idx_reg[i] = compute_block_kv_offset < num_kv ? __ldg(kv_block_idx_global + i) : 0;
+                for (uint32_t i = 0; i < kNumBlocksPerMMA; ++ i) {
+                    const uint32_t page_offset = compute_block_kv_offset * kNumBlocksPerMMA + i;
+                    kv_block_idx_reg[i] = (compute_block_kv_offset < num_kv and page_offset < num_kv_pages)
+                        ? __ldg(block_table_row + page_offset)
+                        : 0;
+                }
             }
             idx_storage_t kv_block_idx = utils::shfl_sync(0xffffffff, kv_block_idx_storage, kv_block_idx_ptr ++);
 
@@ -234,6 +231,14 @@ void sm90_fp8_paged_mqa_logits(const uint32_t batch_size,
 
             // Fetch next task
             fetched_next_task = scheduler.fetch_next_task(next_q_idx, next_kv_idx, next_num_kv);
+            // Drive Q prefetch from the scheduler's actual next task. The
+            // scheduler may skip zero-context requests, so q_idx + 1 is not
+            // necessarily the next Q consumed by the math warp-groups.
+            if (fetched_next_task and q_idx != next_q_idx) {
+                CUTE_TIE_DECL(get_q_pipeline(q_iter_idx ++), q_stage_idx, q_phase);
+                empty_q_barriers[q_stage_idx]->wait(q_phase ^ 1);
+                issue_tma_q(q_stage_idx, next_q_idx);
+            }
         }
     } else {
         // Math warp-groups for WGMMA
