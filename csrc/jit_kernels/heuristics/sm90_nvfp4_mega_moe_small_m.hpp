@@ -167,15 +167,21 @@ static SM90NVFP4SmallMPlan select_sm90_nvfp4_small_m(
         input.num_experts_per_rank;
     const int num_experts_per_wave = get_sm90_nvfp4_wave_divisor(
         input.num_experts_per_rank, target_experts_per_wave);
-    const int num_stages = block_m == 8 ? 4 : 3;
+    int num_stages = block_m == 8 ? 4 : 3;
     const bool swap_ab = load_at_most_12;
     const bool use_mode2_row_decoder =
         load_at_most_6 || !load_at_most_12;
     const bool single_active_dispatch_warp =
         load_at_most_3 || (load_at_most_12 && !load_at_most_6);
-    const int smem_size = get_sm90_nvfp4_small_m_smem_size(
+    int smem_size = get_sm90_nvfp4_small_m_smem_size(
         input, block_m, num_stages, swap_ab,
         single_active_dispatch_warp);
+    if (num_stages == 4 && smem_size > SM90ArchSpec::smem_capacity) {
+        num_stages = 3;
+        smem_size = get_sm90_nvfp4_small_m_smem_size(
+            input, block_m, num_stages, swap_ab,
+            single_active_dispatch_warp);
+    }
 
     DG_HOST_ASSERT(
         input.num_experts_per_rank % num_experts_per_wave == 0);

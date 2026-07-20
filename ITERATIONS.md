@@ -4049,3 +4049,50 @@ shared-memory requirement 768 bytes larger than the SM90 limit. This is a
 derived resource-legality issue, not a model-specific selector issue. The next
 iteration selects four stages only when the calculated footprint fits, and
 otherwise uses the same body with three stages.
+
+## 2026-07-20 AKO iteration 4: resource-fit pipeline depth
+
+### Change
+
+- Kept the preferred BM8 four-stage schedule when its calculated dynamic
+  shared-memory footprint fits.
+- Selected three stages when the same common body would exceed the SM90 shared
+  memory limit. This is derived from the resource footprint and contains no
+  shape or model fingerprint.
+
+### Correctness
+
+The exact layout/dequant tests and CUDA LUT test passed. Repository-reference
+correctness passed for Flash, Pro, and MiMo at M=8 and M=128, with absent and
+per-expert global scales. All outputs were finite and the minimum per-token
+cosine was 0.9988.
+
+### Benchmark
+
+H20, 8 ranks, cold L2, fixed seed 101, 50 samples per point, median statistic.
+
+| Shape | M | baseline max_rank us | iteration 4 max_rank us | delta |
+|---|---:|---:|---:|---:|
+| Flash | 8 | 342.8 | 305.6 | -10.9% |
+| Flash | 16 | 376.9 | 327.8 | -13.0% |
+| Flash | 32 | 405.5 | 365.0 | -10.0% |
+| Flash | 64 | 502.7 | 391.2 | -22.2% |
+| Flash | 128 | 480.9 | 470.6 | -2.1% |
+| Pro | 8 | 972.9 | 851.9 | -12.4% |
+| Pro | 16 | 1249.6 | 1040.6 | -16.7% |
+| Pro | 32 | 1300.3 | 1187.1 | -8.7% |
+| Pro | 64 | 1378.0 | 1220.3 | -11.4% |
+| Pro | 128 | 1631.3 | 1585.1 | -2.8% |
+| MiMo Pro | 8 | 709.3 | 554.0 | -21.9% |
+| MiMo Pro | 16 | 860.2 | 668.3 | -22.3% |
+| MiMo Pro | 32 | 821.2 | 721.9 | -12.1% |
+| MiMo Pro | 64 | 997.7 | 791.5 | -20.7% |
+| MiMo Pro | 128 | 982.1 | 952.0 | -3.1% |
+
+### Result
+
+Accept. One common kernel body, Mode2 BN256 ABI, and continuous routed-load
+selector pass all correctness gates and improve all 15 H20 baseline points.
+The next step is to compare against the retained specialized MiMo results,
+profile one representative point, then remove the obsolete experimental
+small-M APIs and bodies.
