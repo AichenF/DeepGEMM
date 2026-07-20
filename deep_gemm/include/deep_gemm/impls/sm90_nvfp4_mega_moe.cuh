@@ -9,6 +9,7 @@
 #include <cutlass/arch/reg_reconfig.h>
 
 #include <cute/arch/cluster_sm90.hpp>
+#include <deep_gemm/impls/sm90_nvfp4_mega_moe_mode2_dequant.cuh>
 #include <deep_gemm/quantization/nvfp4_dequant.cuh>
 
 #include <cute/arch/copy_sm90_tma.hpp>

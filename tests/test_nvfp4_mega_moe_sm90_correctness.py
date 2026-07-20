@@ -167,45 +167,39 @@ def _run_dequant_unit_test() -> None:
     l2_weight = torch.randn(2, 256, 256, dtype=torch.bfloat16) * 0.1
     l1_packed, l1_scale = quantize_to_nvfp4(l1_weight, group_size=16)
     l2_packed, l2_scale = quantize_to_nvfp4(l2_weight, group_size=16)
-    transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
-        (l1_packed, l1_scale), (l2_packed, l2_scale),
+    expected_l1 = _interleave_l1_n(
+        dequantize_nvfp4_to_fp32(l1_packed, l1_scale, group_size=16)
     )
-    torch.testing.assert_close(
-        dequantize_nvfp4_to_fp32(transformed_l1[0], transformed_l1[1], group_size=16),
-        _interleave_l1_n(dequantize_nvfp4_to_fp32(l1_packed, l1_scale, group_size=16)),
-        rtol=0,
-        atol=0,
-    )
-    torch.testing.assert_close(
-        dequantize_nvfp4_to_fp32(transformed_l2[0], transformed_l2[1], group_size=16),
-        dequantize_nvfp4_to_fp32(l2_packed, l2_scale, group_size=16),
-        rtol=0,
-        atol=0,
-    )
-
-    transformed_l1_bn256, transformed_l2_bn256 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
-        (l1_packed, l1_scale), (l2_packed, l2_scale), block_n=256,
-    )
-    torch.testing.assert_close(
-        dequantize_nvfp4_to_fp32(
-            _unbraid_nvfp4_mode2(transformed_l1_bn256[0]),
-            transformed_l1_bn256[1],
-            group_size=16,
-        ),
-        _interleave_l1_n(dequantize_nvfp4_to_fp32(l1_packed, l1_scale, group_size=16)),
-        rtol=0,
-        atol=0,
-    )
-    torch.testing.assert_close(
-        dequantize_nvfp4_to_fp32(
-            _unbraid_nvfp4_mode2(transformed_l2_bn256[0]),
-            transformed_l2_bn256[1],
-            group_size=16,
-        ),
-        dequantize_nvfp4_to_fp32(l2_packed, l2_scale, group_size=16),
-        rtol=0,
-        atol=0,
-    )
+    expected_l2 = dequantize_nvfp4_to_fp32(
+        l2_packed, l2_scale, group_size=16)
+    for block_n in (128, 256):
+        transformed_l1, transformed_l2 = (
+            deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
+                (l1_packed, l1_scale),
+                (l2_packed, l2_scale),
+                block_n=block_n,
+            )
+        )
+        torch.testing.assert_close(
+            dequantize_nvfp4_to_fp32(
+                _unbraid_nvfp4_mode2(transformed_l1[0]),
+                transformed_l1[1],
+                group_size=16,
+            ),
+            expected_l1,
+            rtol=0,
+            atol=0,
+        )
+        torch.testing.assert_close(
+            dequantize_nvfp4_to_fp32(
+                _unbraid_nvfp4_mode2(transformed_l2[0]),
+                transformed_l2[1],
+                group_size=16,
+            ),
+            expected_l2,
+            rtol=0,
+            atol=0,
+        )
     print('NVFP4 dequant unit test: PASS', flush=True)
 
 

@@ -4545,3 +4545,24 @@ Trajectory: `trajectory/20260720_211724_baseline-bn128-standard-h200`.
 
 Baseline accepted. H20 and H200 now have source-matched standard-sign BN128
 comparison points for the Mode2 migration.
+
+## Iteration 1: Unify BN128 on the Mode2 braided ABI
+
+- Change: braid BN128 L1/L2 weights with the existing Mode2 transform and decode the split BN128 path directly from Mode2 selector/sign nibbles. The split scheduler, communication protocol, and selector are unchanged.
+- Correctness (H200, CUDA 13.2): host prepack round-trip passed for BN128/BN256; CUDA LUT test passed; Flash, Pro, and MiMo Pro passed at M=256/512 with both absent and expert scales. Minimum cosine similarity: 0.9987.
+- Cold-L2 performance (H200, max-rank median, 10 samples):
+
+| Shape | M | Baseline (us) | Mode2 (us) | Latency delta |
+|---|---:|---:|---:|---:|
+| Flash | 2048 | 1534.7 | 1444.8 | -5.86% |
+| Flash | 4096 | 2716.5 | 2565.9 | -5.54% |
+| Flash | 8192 | 5198.5 | 4870.7 | -6.31% |
+| Pro | 2048 | 3893.0 | 3721.1 | -4.42% |
+| Pro | 4096 | 7039.0 | 6579.9 | -6.52% |
+| Pro | 8192 | 13322.6 | 12483.6 | -6.30% |
+| MiMo Pro | 2048 | 2861.4 | 2710.2 | -5.28% |
+| MiMo Pro | 4096 | 5424.6 | 5099.1 | -6.00% |
+| MiMo Pro | 8192 | 10200.0 | 9661.0 | -5.28% |
+
+- Decision: accept. Every measured large-M point improves, with no correctness failure or protocol change.
+- Trajectory: `trajectory/20260720_213142_iter-1`
