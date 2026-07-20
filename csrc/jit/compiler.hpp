@@ -24,6 +24,7 @@ class Compiler {
 public:
     static std::filesystem::path library_root_path;
     static std::filesystem::path library_include_path;
+    static std::filesystem::path cutlass_include_path;
     static std::filesystem::path cuda_home;
     static std::filesystem::path cuobjdump_path;
 
@@ -31,6 +32,7 @@ public:
                              const std::string& cuda_home_path_by_python) {
         Compiler::library_root_path = library_root_path;
         Compiler::library_include_path = Compiler::library_root_path / "include";
+        Compiler::cutlass_include_path = Compiler::library_root_path.parent_path() / "third-party" / "cutlass" / "include";
         Compiler::cuda_home = cuda_home_path_by_python;
         Compiler::cuobjdump_path = Compiler::cuda_home / "bin" / "cuobjdump";
     }
@@ -42,6 +44,7 @@ public:
         // Check `prepare_init`
         DG_HOST_ASSERT(not library_root_path.empty());
         DG_HOST_ASSERT(not library_include_path.empty());
+        DG_HOST_ASSERT(not cutlass_include_path.empty());
         DG_HOST_ASSERT(not cuda_home.empty());
         DG_HOST_ASSERT(not cuobjdump_path.empty());
 
@@ -59,6 +62,12 @@ public:
             flags += " --ptxas-options=--verbose,--warn-on-local-memory-usage";
         if (get_env("DG_JIT_WITH_LINEINFO", 0))
             flags += " -Xcompiler -rdynamic -lineinfo";
+        // NOTES: `--device-debug` (-G) emits full device DWARF so that cuda-gdb
+        // can resolve `__device__` global variables / line numbers in JIT
+        // kernels. It DISABLES device-side optimization and will tank perf, so
+        // it is gated behind an explicit env var.
+        if (get_env("DG_JIT_WITH_DEVICE_DEBUG", 0))
+            flags += " --device-debug";
     }
 
     virtual ~Compiler() = default;
@@ -165,6 +174,7 @@ public:
 
 DG_DECLARE_STATIC_VAR_IN_CLASS(Compiler, library_root_path);
 DG_DECLARE_STATIC_VAR_IN_CLASS(Compiler, library_include_path);
+DG_DECLARE_STATIC_VAR_IN_CLASS(Compiler, cutlass_include_path);
 DG_DECLARE_STATIC_VAR_IN_CLASS(Compiler, cuda_home);
 DG_DECLARE_STATIC_VAR_IN_CLASS(Compiler, cuobjdump_path);
 
@@ -202,10 +212,10 @@ public:
         // The override the compiler flags
         // Only NVCC >= 12.9 supports arch-specific family suffix
         const auto arch = device_runtime->get_arch(false, nvcc_major > 12 or nvcc_minor >= 9);
-        flags = fmt::format("{} -I{} --gpu-architecture=sm_{} "
+        flags = fmt::format("{} -I{} -I{} --gpu-architecture=sm_{} "
                             "--compiler-options=-fPIC,-O3,-fconcepts,-Wno-deprecated-declarations,-Wno-abi "
                             "-O3 --expt-relaxed-constexpr --expt-extended-lambda",
-                            flags, library_include_path.c_str(), arch);
+                            flags, library_include_path.c_str(), cutlass_include_path.c_str(), arch);
     }
 
     void compile(const std::string &code, const std::filesystem::path& dir_path,
@@ -263,6 +273,7 @@ public:
         // Build include directories list
         std::string include_dirs;
         include_dirs += fmt::format("-I{} ", library_include_path.string());
+        include_dirs += fmt::format("-I{} ", cutlass_include_path.string());
         include_dirs += fmt::format("-I{} ", (cuda_home / "include").string());
 
         // Add PCH support for version 12.8 and above

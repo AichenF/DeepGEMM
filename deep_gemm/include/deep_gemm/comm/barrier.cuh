@@ -67,9 +67,13 @@ CUTLASS_DEVICE void nvlink_barrier(const layout::Workspace& workspace,
             const auto start_clock = clock64();
             while (ptx::ld_acq_sys(signal_ptr) != target) {
                 if (clock64() - start_clock >= kNumTimeoutCycles) {
+#if defined(DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT)
+                    DG_TRAP_ONLY_DEVICE_ASSERT(false and "NVLink barrier timeout");
+#else
                     printf("DeepGEMM NVLink barrier timeout (30s): rank=%d, counter=%d, signal=%d, target=%d, phase=%d, sign=%d, tag=%d\n",
                            sym_buffer.rank_idx, *counter_ptr, ptx::ld_acq_sys(signal_ptr), target, signal_phase, signal_sign, kTag);
                     DG_DEVICE_ASSERT(false and "NVLink barrier timeout");
+#endif
                 }
             }
         }

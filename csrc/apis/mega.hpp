@@ -8,8 +8,36 @@
 #endif
 #include "../jit/device_runtime.hpp"
 #include "../jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp"
+#include "../jit_kernels/impls/sm90_nvfp4_mega_moe_per128_pro_braided_3stage.hpp"
 
 namespace deep_gemm::mega {
+
+static void validate_sm90_nvfp4_mega_moe_stats(
+        const std::optional<torch::Tensor>& stats,
+        const int num_experts_per_rank,
+        const torch::Device& device) {
+    if (!stats.has_value())
+        return;
+
+    DG_HOST_ASSERT(stats->scalar_type() == torch::kInt);
+    DG_HOST_ASSERT(stats->is_contiguous());
+    DG_HOST_ASSERT(stats->device() == device);
+
+    DG_HOST_ASSERT(stats->numel() == num_experts_per_rank);
+}
+
+static void validate_sm90_nvfp4_mega_moe_global_scale(
+        const std::optional<torch::Tensor>& scale,
+        const int num_experts_per_rank,
+        const torch::Device& device) {
+    if (!scale.has_value())
+        return;
+
+    DG_HOST_ASSERT(scale->scalar_type() == torch::kFloat32);
+    DG_HOST_ASSERT(scale->numel() == num_experts_per_rank);
+    DG_HOST_ASSERT(scale->is_contiguous());
+    DG_HOST_ASSERT(scale->device() == device);
+}
 
 static int get_token_alignment_for_mega_moe() {
     return layout::kLCMCandidateBlockM;
@@ -23,6 +51,15 @@ get_symm_buffer_size_for_mega_moe(
     const bool& use_fp8_dispatch, const std::string& activation) {
     DG_HOST_ASSERT(num_experts % num_ranks == 0);
 
+    // Architecture-dependent SF dtype for the user-facing tensor view:
+    //   * SM100: per-32 UE8M0 packed 4-into-int (`torch::kInt`).
+    //   * SM90 : per-128 channel float (`torch::kFloat32`).
+    // Both use the same number of bytes per token (hidden / 32), so the symmetric
+    // buffer layout is shared; only the slice view dtype changes.
+    const auto arch_major = device_runtime->get_arch_major();
+    const bool is_sm90 = arch_major == 9;
+    const auto sf_dtype = is_sm90 ? torch::kFloat32 : torch::kInt;
+
     // Workspace bytes
     const auto workspace = layout::Workspace(nullptr, num_ranks, num_experts, num_max_tokens_per_rank, num_topk);
 
@@ -30,8 +67,22 @@ get_symm_buffer_size_for_mega_moe(
     const auto fp8_token_layout = layout::Data(hidden);
     const auto bf16_token_layout = layout::Data(hidden * 2);
     const auto fp8_intermediate_token_layout = layout::Data(intermediate_hidden);
-    const auto fp8_sf_layout = layout::Data(hidden / 32);
-    const auto fp8_intermediate_sf_layout = layout::Data(intermediate_hidden / 32);
+    // SM90 dispatch reads one FP32 per-128 SF at a time, while the L1 SF TMA
+    // view is K-major and gets its 16-byte-aligned column stride from the
+    // padded token count.  The per-token SF record itself therefore need not
+    // be 16-byte sized (for example H=4224 has 33 floats, or 132 bytes).
+    // SM100 still requires the original packed-SF record alignment.
+    const auto fp8_sf_layout = layout::Data(hidden / 32, not is_sm90);
+    // L2 acts SF granularity differs by arch:
+    //   * SM100 packs 4 UE8M0 bytes per int along K, so each token uses
+    //     `intermediate_hidden / 32` bytes (per-32 K).
+    //   * SM90 stores per-64 K floats so that each L1 epilogue block (which
+    //     produces 64 post-SwiGLU columns) can write its own SF independently
+    //     without cross-CTA amax synchronisation; bytes per token become
+    //     `intermediate_hidden / 64 * sizeof(float) = intermediate_hidden / 16`.
+    const int fp8_intermediate_sf_bytes_per_token =
+        is_sm90 ? (intermediate_hidden / 16) : (intermediate_hidden / 32);
+    const auto fp8_intermediate_sf_layout = layout::Data(fp8_intermediate_sf_bytes_per_token);
     const auto input_topk_idx_layout = layout::Data(num_topk * sizeof(int64_t), false);
     const auto input_topk_weights_layout = layout::Data(num_topk * sizeof(float), false);
     const auto l1_topk_weights_layout = layout::Data(sizeof(float), false);
@@ -86,10 +137,14 @@ get_symm_buffer_size_for_mega_moe(
 
     // Check SF buffer requirements
     DG_HOST_ASSERT(hidden % 128 == 0 and intermediate_hidden % 128 == 0);
-    DG_HOST_ASSERT(num_max_padded_sf_pool_tokens % 4 == 0);
+    // SM100 packs 4 UE8M0 bytes per int along K, so the padded SF token count
+    // must be divisible by 4. SM90 stores per-128 floats and has no such constraint.
+    if (not is_sm90)
+        DG_HOST_ASSERT(num_max_padded_sf_pool_tokens % 4 == 0);
 
     // Slice function: creates `(x, x_sf, topk_weights, topk_idx, l1_acts, l1_acts_sf, l2_acts, l2_acts_sf)` tensor views from the raw buffer
     // NOTES: `x_sf` is K-major, while `l1_acts_sf` and `l2_acts_sf` are M-major
+    //        Dtype is per-arch (see `sf_dtype` above): float on SM90, int (packed UE8M0) on SM100.
     auto slice_input_buffers = [=](const torch::Tensor& buffer) {
         auto x = torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(input_token_buffer.base)),
@@ -98,7 +153,7 @@ get_symm_buffer_size_for_mega_moe(
         auto x_sf = torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(input_sf_buffer.base)),
             {num_max_tokens_per_rank, hidden / 128},
-            torch::TensorOptions().dtype(torch::kInt).device(buffer.device()));
+            torch::TensorOptions().dtype(sf_dtype).device(buffer.device()));
         auto topk_idx = torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(input_topk_idx_buffer.base)),
             {num_max_tokens_per_rank, num_topk},
@@ -115,16 +170,16 @@ get_symm_buffer_size_for_mega_moe(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(l1_sf_buffer.base)),
             {num_max_padded_sf_pool_tokens, hidden / 128},
             {1, num_max_padded_sf_pool_tokens},
-            torch::TensorOptions().dtype(torch::kInt).device(buffer.device()));
+            torch::TensorOptions().dtype(sf_dtype).device(buffer.device()));
         auto l2_acts = torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(l2_token_buffer.base)),
             {num_max_pool_tokens, intermediate_hidden},
             torch::TensorOptions().dtype(torch::kFloat8_e4m3fn).device(buffer.device()));
         auto l2_acts_sf = torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(l2_sf_buffer.base)),
-            {num_max_padded_sf_pool_tokens, intermediate_hidden / 128},
+            {num_max_padded_sf_pool_tokens, is_sm90 ? intermediate_hidden / 64 : intermediate_hidden / 128},
             {1, num_max_padded_sf_pool_tokens},
-            torch::TensorOptions().dtype(torch::kInt).device(buffer.device()));
+            torch::TensorOptions().dtype(sf_dtype).device(buffer.device()));
         return std::make_tuple(x, x_sf, topk_idx, topk_weights, l1_acts, l1_acts_sf, l2_acts, l2_acts_sf);
     };
     return {reinterpret_cast<int64_t>(combine_token_buffer.get_end_ptr()), slice_input_buffers};
@@ -224,11 +279,125 @@ static void fp8_fp4_mega_moe(
         sym_buffer.zero_();
 }
 
+// Dedicated H200 MiMo small-M entry. Weights use BN256 Mode2 Braided storage
+// and every supported M launches the single fused kernel body.
+static void nvfp4_mega_moe(
+    const torch::Tensor& y,
+    const std::tuple<torch::Tensor, torch::Tensor>& l1_weights_tuple,
+    const std::tuple<torch::Tensor, torch::Tensor>& l2_weights_tuple,
+    const std::optional<torch::Tensor>& cumulative_local_expert_recv_stats,
+    const std::optional<torch::Tensor>& l1_global_scales,
+    const std::optional<torch::Tensor>& l2_global_scales,
+    const torch::Tensor& sym_buffer,
+    const std::vector<int64_t>& sym_buffer_ptrs, const int& rank_idx,
+    const int& num_max_tokens_per_rank,
+    const int& num_experts, const int& num_topk,
+    const std::tuple<int, int, int>& recipe,
+    const std::string& activation,
+    const std::optional<float>& activation_clamp_opt,
+    const bool& fast_math
+) {
+    const auto [l1_weights, l1_weights_sf] = l1_weights_tuple;
+    const auto [l2_weights, l2_weights_sf] = l2_weights_tuple;
+    DG_HOST_ASSERT(device_runtime->get_arch_major() == 9);
+    const auto num_tokens = static_cast<int>(y.size(0));
+    const auto [rm, rn, rk] = recipe;
+    DG_HOST_ASSERT(rm == 128 and rn == 128 and rk == 128);
+    DG_HOST_ASSERT(activation == "swiglu");
+    const auto activation_clamp = activation_clamp_opt.value_or(std::numeric_limits<float>::infinity());
+    DG_HOST_ASSERT(activation_clamp >= 0);
+    DG_HOST_ASSERT(get_major_type_ab(l1_weights) == cute::UMMA::Major::K);
+    DG_HOST_ASSERT(get_major_type_ab(l2_weights) == cute::UMMA::Major::K);
+    // NVFP4: weights are uint8 packed E2M1 FP4. With the fused B+scale layout,
+    // each BK128 row stores 64B FP4 + 8B UE4M3 scale + 8B padding, so recover
+    // logical K from the tile-major scale tensor instead of the storage width.
+    DG_HOST_ASSERT(l1_weights.scalar_type() == torch::kUInt8);
+    DG_HOST_ASSERT(l2_weights.scalar_type() == torch::kUInt8);
+    DG_HOST_ASSERT(l1_weights_sf.scalar_type() == torch::kUInt8);
+    DG_HOST_ASSERT(l2_weights_sf.scalar_type() == torch::kUInt8);
+    DG_HOST_ASSERT(l1_weights_sf.dim() == 5);
+    DG_HOST_ASSERT(l2_weights_sf.dim() == 5);
+    constexpr int nvfp4_block_n = 256;
+    DG_HOST_ASSERT(l1_weights_sf.size(3) == nvfp4_block_n);
+    const auto [num_experts_per_rank, intermediate_hidden_2, hidden_storage] = get_shape<3>(l1_weights);
+    const auto [num_experts_per_rank_, hidden_, intermediate_hidden_storage] = get_shape<3>(l2_weights);
+    const int hidden = static_cast<int>(l1_weights_sf.size(2)) * 128;
+    const int intermediate_hidden = static_cast<int>(l2_weights_sf.size(2)) * 128;
+    const bool layout_fused_b_scale =
+        hidden_storage == (hidden / 128) * 80 &&
+        intermediate_hidden_storage == (intermediate_hidden / 128) * 80;
+    DG_HOST_ASSERT(layout_fused_b_scale);
+    DG_HOST_ASSERT(num_tokens <= num_max_tokens_per_rank);
+    DG_HOST_ASSERT(num_experts_per_rank == num_experts_per_rank_);
+    DG_HOST_ASSERT(hidden == hidden_);
+    DG_HOST_ASSERT(intermediate_hidden_2 == 2 * intermediate_hidden);
+    DG_HOST_ASSERT(l1_weights.is_contiguous() and l2_weights.is_contiguous());
+    DG_HOST_ASSERT(hidden % 128 == 0 and intermediate_hidden % 128 == 0);
+    DG_HOST_ASSERT(y.scalar_type() == torch::kBFloat16);
+    DG_HOST_ASSERT(y.dim() == 2 && y.size(0) == num_tokens && y.size(1) == hidden);
+    DG_HOST_ASSERT(y.is_contiguous());
+    // NVFP4 UE4M3 SF: tile-major shape
+    //   (E, N/block_n, K/128, block_n, 8)
+    // for contiguous per-WGMMA scale loads.
+    DG_HOST_ASSERT(l1_weights_sf.size(0) == num_experts_per_rank);
+    DG_HOST_ASSERT(l1_weights_sf.size(1) == intermediate_hidden * 2 / nvfp4_block_n);
+    DG_HOST_ASSERT(l1_weights_sf.size(2) == hidden / 128);
+    DG_HOST_ASSERT(l1_weights_sf.size(3) == nvfp4_block_n);
+    DG_HOST_ASSERT(l1_weights_sf.size(4) == 8);
+    DG_HOST_ASSERT(l1_weights_sf.is_contiguous());
+    DG_HOST_ASSERT(l2_weights_sf.dim() == 5);
+    DG_HOST_ASSERT(l2_weights_sf.size(0) == num_experts_per_rank);
+    DG_HOST_ASSERT(l2_weights_sf.size(1) == hidden / nvfp4_block_n);
+    DG_HOST_ASSERT(l2_weights_sf.size(2) == intermediate_hidden / 128);
+    DG_HOST_ASSERT(l2_weights_sf.size(3) == nvfp4_block_n);
+    DG_HOST_ASSERT(l2_weights_sf.size(4) == 8);
+    DG_HOST_ASSERT(l2_weights_sf.is_contiguous());
+    validate_sm90_nvfp4_mega_moe_stats(
+        cumulative_local_expert_recv_stats, num_experts_per_rank, y.device());
+    validate_sm90_nvfp4_mega_moe_global_scale(
+        l1_global_scales, num_experts_per_rank, y.device());
+    validate_sm90_nvfp4_mega_moe_global_scale(
+        l2_global_scales, num_experts_per_rank, y.device());
+    const auto num_ranks = static_cast<int>(sym_buffer_ptrs.size());
+    const SM90NVFP4H200MimoSmallMShape shape = {
+        device_runtime->get_num_sms(), num_ranks, num_experts, num_topk,
+        hidden, intermediate_hidden};
+    DG_HOST_ASSERT(shape.is_h200_mimo_pro());
+    DG_HOST_ASSERT(SM90NVFP4H200MimoSmallMShape::is_supported_batch(num_tokens));
+    DG_HOST_ASSERT(rank_idx >= 0 && rank_idx < num_ranks);
+    const auto num_experts_ = num_experts_per_rank * num_ranks;
+    const auto [num_required_bytes, slice] = get_symm_buffer_size_for_mega_moe(
+        num_ranks, num_experts,
+        num_max_tokens_per_rank, num_topk,
+        hidden, intermediate_hidden,
+        true, activation);
+    DG_HOST_ASSERT(sym_buffer.nbytes() >= static_cast<size_t>(num_required_bytes));
+    DG_HOST_ASSERT(num_experts == num_experts_);
+    const auto [x, x_sf, topk_idx, topk_weights, l1_acts, l1_acts_sf, l2_acts, l2_acts_sf] = slice(sym_buffer);
+    sm90_nvfp4_h200_mimo_small_m_braided_fused_mega_moe(
+        y,
+        l1_acts, l1_acts_sf,
+        l2_acts, l2_acts_sf,
+        l1_weights, l2_weights,
+        l1_weights_sf, l2_weights_sf,
+        cumulative_local_expert_recv_stats,
+        l1_global_scales, l2_global_scales,
+        sym_buffer_ptrs,
+        rank_idx, num_max_tokens_per_rank,
+        num_experts_per_rank,
+        num_tokens, num_topk,
+        hidden, intermediate_hidden,
+        activation_clamp, fast_math);
+    if (get_env<int>("DG_COMM_KERNEL_DEBUG"))
+        sym_buffer.zero_();
+}
+
 static void register_apis(pybind11::module_& m) {
 #if DG_TENSORMAP_COMPATIBLE
     m.def("get_token_alignment_for_mega_moe", &get_token_alignment_for_mega_moe);
     m.def("get_symm_buffer_size_for_mega_moe", &get_symm_buffer_size_for_mega_moe);
     m.def("fp8_fp4_mega_moe", &fp8_fp4_mega_moe);
+    m.def("nvfp4_mega_moe", &nvfp4_mega_moe);
 #endif
 }
 
