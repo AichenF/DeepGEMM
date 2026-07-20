@@ -4386,6 +4386,7 @@ that the cleanup changes no supported configuration's machine code.
 
 Accept. The production body now contains only selector-reachable block-M
 configurations without changing generated code or performance.
+
 ## Iteration 12: clean H20 MiMo validation
 
 - Commit under test: `a2cf59d61e908d42cf000f0009a3ca95960f3d1a`
@@ -4408,3 +4409,11 @@ iteration 7 run. The common Mode2 BN256 body therefore preserves correctness
 and improves the clean H20 MiMo baseline across the full tested small-M range.
 
 Trajectory: `trajectory/20260720_194849_iter-12-h20-clean-mimo`
+
+### Profiling note
+
+An 8-rank NCU application-replay attempt for MiMo M=32 was rejected. NCU
+restarted ranks independently, broke the NCCL rendezvous, and reported an
+inconsistent kernel set across replay passes. All profiler subprocesses were
+terminated and GPU utilization returned to zero. No kernel-performance or
+correctness conclusion is drawn from that failed profiler run.
