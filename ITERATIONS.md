@@ -4126,9 +4126,9 @@ global scales. All outputs were finite and the minimum per-token cosine was
 | Shape | M | unified max-rank us | retained MiMo-specialized us | delta |\n|---|---:|---:|---:|---:|\n| Flash | 8 | 215.5 | - | - |\n| Flash | 16 | 217.2 | - | - |\n| Flash | 32 | 240.6 | - | - |\n| Flash | 64 | 255.4 | - | - |\n| Flash | 128 | 256.0 | - | - |\n| Pro | 8 | 614.0 | - | - |\n| Pro | 16 | 698.8 | - | - |\n| Pro | 32 | 760.7 | - | - |\n| Pro | 64 | 800.8 | - | - |\n| Pro | 128 | 824.6 | - | - |\n| MiMo Pro | 8 | 405.9 | 390.1 | +4.1% |\n| MiMo Pro | 16 | 439.6 | 426.1 | +3.2% |\n| MiMo Pro | 32 | 492.6 | 451.2 | +9.2% |\n| MiMo Pro | 64 | 508.4 | 501.3 | +1.4% |\n| MiMo Pro | 128 | 509.6 | 500.6 | +1.8% |\n
 The retained comparison is iteration 18 of the dedicated H200 MiMo branch,
 whose generated CUBIN text was byte-locked to its pre-clean implementation.
-The unified range selector is within 1.9% at M8/M64/M128 but is slower at M16
-and M32. Those two points are tuning targets; they do not justify restoring an
-exact model-shape selector. Flash and Pro have no equivalent retained
+The unified range selector is within 1.9% at M64/M128 but is slower at M8,
+M16, and M32. Those points are tuning targets; they do not justify restoring
+an exact model-shape selector. Flash and Pro have no equivalent retained
 H200-specialized branch, so this iteration records their clean unified
 baselines.
 
@@ -4138,3 +4138,66 @@ Correctness and portability gate pass. Keep the common body and range selector.
 Before final cleanup, tune the continuous load/wave policy around the MiMo M16
 and M32 regions and recheck H20, then remove the obsolete experimental bindings
 that still emit host-build warnings.
+
+
+## 2026-07-20 AKO iteration 6: trim NVLink timeout diagnostics
+
+### Change
+
+- Made the existing `DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT` opt-in effective in
+  the shared NVLink barrier helper. The unified NVFP4 kernel already defines
+  this macro before including the helper.
+- The timeout still traps. Only the device `printf` and full assertion
+  diagnostic path are omitted for opt-in kernels; synchronization, counters,
+  targets, phases, and every cross-rank protocol field are unchanged.
+- Corrected iteration 5's prose: its MiMo M8 gap was 4.1%, not within 1.9%.
+
+### Correctness
+
+The H200 clean-source build passed. Exact layout/dequant and CUDA LUT tests
+passed. Flash, Pro, and MiMo M8/M128 passed with absent and per-expert global
+scales; all outputs were finite and minimum per-token cosine remained 0.9988.
+
+### Benchmark
+
+H200, eight ranks, all 132 SMs, CUDA 13.2, 8 GB cold-L2 flush, seed 101,
+50 samples per point, max-rank median.
+
+| Shape | M | iteration 5 us | iteration 6 us | delta | retained MiMo-specialized us |
+|---|---:|---:|---:|---:|---:|
+| Flash | 8 | 215.5 | 198.7 | -7.8% | - |
+| Flash | 16 | 217.2 | 208.3 | -4.1% | - |
+| Flash | 32 | 240.6 | 234.0 | -2.7% | - |
+| Flash | 64 | 255.4 | 244.6 | -4.2% | - |
+| Flash | 128 | 256.0 | 241.7 | -5.6% | - |
+| Pro | 8 | 614.0 | 570.0 | -7.2% | - |
+| Pro | 16 | 698.8 | 671.7 | -3.9% | - |
+| Pro | 32 | 760.7 | 729.4 | -4.1% | - |
+| Pro | 64 | 800.8 | 755.5 | -5.7% | - |
+| Pro | 128 | 824.6 | 805.4 | -2.3% | - |
+| MiMo Pro | 8 | 405.9 | 381.0 | -6.1% | 390.1 |
+| MiMo Pro | 16 | 439.6 | 417.6 | -5.0% | 426.1 |
+| MiMo Pro | 32 | 492.6 | 449.6 | -8.7% | 451.2 |
+| MiMo Pro | 64 | 508.4 | 489.2 | -3.8% | 501.3 |
+| MiMo Pro | 128 | 509.6 | 492.4 | -3.4% | 500.6 |
+
+MiMo iteration 6 versus the retained dedicated implementation is -2.2%,
+-0.6%, -0.4%, -2.4%, and -1.6% for M8 through M128 respectively. The common
+shape-parameterized body is therefore no longer slower than the exact-shape
+implementation at any anchor point.
+
+### Generated code
+
+The previous generalized CUBIN text was 8-11 KiB larger at representative MiMo
+points because the old shared barrier ignored the trap-only macro. The latency
+recovery across all shapes is consistent with removal of that repeated device
+diagnostic path; section-size equivalence is audited separately before final
+cleanup.
+
+### Result
+
+Accept. The range selector and common body retain or beat the dedicated H200
+MiMo implementation without exact model, token, expert-count, or GPU-model
+fingerprints. This also improves every Flash and Pro point relative to
+iteration 5. Proceed to H20 regression/profile validation, then remove obsolete
+experimental API and kernel paths.
