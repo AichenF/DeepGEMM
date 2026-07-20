@@ -51,6 +51,12 @@ divisor of the local expert count, and pipeline depth is limited by the
 derived shared-memory footprint. No isolated equality point or exact model,
 expert-count, token-count, or GPU fingerprint is permitted.
 
+As in the SM90 FP8 selector, the implementation separates heuristic input,
+normalized routed load, schedule tuning, configuration materialization, and
+legality validation. The final selector only orchestrates those layers. Tile
+sizes may be discrete compile-time values; the request M is never matched to
+an isolated value.
+
 The physical SM count controls only the local launch grid, work partitioning,
 and grid synchronization. It does not select a tuning policy. Tuning fields do
 not change the NVLink barrier sequence, tags, or targets. Deployment-wide

@@ -12,6 +12,9 @@
   tile/wave counts. The physical SM count controls only the local launch grid
   and grid synchronization; it is not a tuning fingerprint. Every
   protocol-relevant field must be the same on all ranks.
+- Keep the selector layered like the SM90 FP8 implementation: heuristic input,
+  normalized load, schedule tuning, config materialization, and legality. Do
+  not mix exact request-M cases into any layer.
 - Compile-time tuning may vary block M, stages, experts per wave, swap-AB,
   decoder schedule, and active dispatch warps. Do not add hot-loop runtime
   branches to share the kernel body.

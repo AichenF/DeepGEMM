@@ -41,6 +41,34 @@ struct SM90NVFP4SmallMInput {
     int num_padded_sf_pool_tokens;
 };
 
+struct SM90NVFP4SmallMLoad {
+    int64_t routed_tokens;
+    int64_t local_experts;
+
+    bool valid() const {
+        return routed_tokens > 0 and local_experts > 0;
+    }
+
+    bool less_equal(const int64_t value) const {
+        return routed_tokens <= value * local_experts;
+    }
+
+    bool less_equal_ratio(
+            const int64_t numerator,
+            const int64_t denominator) const {
+        return denominator * routed_tokens <= numerator * local_experts;
+    }
+};
+
+struct SM90NVFP4SmallMScheduleTuning {
+    int block_m;
+    int target_num_experts_per_wave;
+    int num_stages;
+    bool swap_ab;
+    bool use_mode2_row_decoder;
+    bool single_active_dispatch_warp;
+};
+
 struct SM90NVFP4SmallMPlan {
     SM90NVFP4SmallMConfig config;
     bool swap_ab;
@@ -48,7 +76,17 @@ struct SM90NVFP4SmallMPlan {
     bool single_active_dispatch_warp;
 };
 
-static int get_sm90_nvfp4_wave_divisor(
+static SM90NVFP4SmallMLoad get_sm90_nvfp4_small_m_load(
+        const SM90NVFP4SmallMInput& input) {
+    const SM90NVFP4SmallMLoad load {
+        static_cast<int64_t>(input.num_tokens) * input.num_topk,
+        input.num_experts_per_rank,
+    };
+    DG_HOST_ASSERT(load.valid());
+    return load;
+}
+
+static int derive_sm90_nvfp4_small_m_epw(
         const int num_experts_per_rank, const int target) {
     int wave = target < num_experts_per_rank ?
         target : num_experts_per_rank;
@@ -56,6 +94,51 @@ static int get_sm90_nvfp4_wave_divisor(
            num_experts_per_rank % wave != 0)
         ++wave;
     return wave;
+}
+
+static SM90NVFP4SmallMScheduleTuning
+select_sm90_nvfp4_small_m_tuning(const SM90NVFP4SmallMLoad& load) {
+    DG_HOST_ASSERT(load.valid());
+    const int all_local_experts = static_cast<int>(load.local_experts);
+
+    if (load.less_equal(3)) {
+        return {
+            8,
+            load.less_equal_ratio(3, 2) ? 16 : 24,
+            4,
+            true,
+            true,
+            true,
+        };
+    }
+    if (load.less_equal(6)) {
+        return {
+            16,
+            all_local_experts,
+            3,
+            true,
+            true,
+            false,
+        };
+    }
+    if (load.less_equal(12)) {
+        return {
+            24,
+            all_local_experts,
+            3,
+            true,
+            false,
+            true,
+        };
+    }
+    return {
+        64,
+        all_local_experts,
+        3,
+        false,
+        true,
+        false,
+    };
 }
 
 static int get_sm90_nvfp4_small_m_smem_size(
@@ -119,6 +202,58 @@ static int get_sm90_nvfp4_small_m_smem_size(
         256);
 }
 
+static SM90NVFP4SmallMPlan materialize_sm90_nvfp4_small_m_tuning(
+        const SM90NVFP4SmallMInput& input,
+        const SM90NVFP4SmallMScheduleTuning& tuning) {
+    const int num_experts_per_wave = derive_sm90_nvfp4_small_m_epw(
+        input.num_experts_per_rank,
+        tuning.target_num_experts_per_wave);
+    int num_stages = tuning.num_stages;
+    int smem_size = get_sm90_nvfp4_small_m_smem_size(
+        input, tuning.block_m, num_stages, tuning.swap_ab,
+        tuning.single_active_dispatch_warp);
+    if (num_stages == 4 && smem_size > SM90ArchSpec::smem_capacity) {
+        num_stages = 3;
+        smem_size = get_sm90_nvfp4_small_m_smem_size(
+            input, tuning.block_m, num_stages, tuning.swap_ab,
+            tuning.single_active_dispatch_warp);
+    }
+
+    return {
+        {
+            tuning.block_m,
+            layout::get_num_max_pool_tokens(
+                input.num_ranks,
+                input.num_max_tokens_per_rank,
+                input.num_topk,
+                input.num_experts_per_rank),
+            input.num_padded_sf_pool_tokens,
+            num_experts_per_wave,
+            num_stages,
+            smem_size,
+        },
+        tuning.swap_ab,
+        tuning.use_mode2_row_decoder,
+        tuning.single_active_dispatch_warp,
+    };
+}
+
+static bool is_sm90_nvfp4_small_m_plan_legal(
+        const SM90NVFP4SmallMInput& input,
+        const SM90NVFP4SmallMPlan& plan) {
+    const auto& config = plan.config;
+    const bool supported_block_m =
+        config.block_m == 8 || config.block_m == 16 ||
+        config.block_m == 24 || config.block_m == 64;
+    return supported_block_m &&
+        config.num_experts_per_wave > 0 &&
+        config.num_experts_per_wave <= input.num_experts_per_rank &&
+        input.num_experts_per_rank % config.num_experts_per_wave == 0 &&
+        config.num_stages >= 3 && config.num_stages <= 4 &&
+        config.smem_size > 0 &&
+        config.smem_size <= SM90ArchSpec::smem_capacity;
+}
+
 static SM90NVFP4SmallMPlan select_sm90_nvfp4_small_m(
         const SM90NVFP4SmallMInput& input) {
     DG_HOST_ASSERT(input.num_ranks > 0);
@@ -143,64 +278,11 @@ static SM90NVFP4SmallMPlan select_sm90_nvfp4_small_m(
             SM90NVFP4SmallMConfig::kBlockK == 0);
     DG_HOST_ASSERT(input.num_padded_sf_pool_tokens > 0);
 
-    const int64_t routed_tokens =
-        static_cast<int64_t>(input.num_tokens) * input.num_topk;
-    const int64_t local_experts = input.num_experts_per_rank;
-    const bool load_at_most_1p5 =
-        2 * routed_tokens <= 3 * local_experts;
-    const bool load_at_most_3 =
-        routed_tokens <= 3 * local_experts;
-    const bool load_at_most_6 =
-        routed_tokens <= 6 * local_experts;
-    const bool load_at_most_12 =
-        routed_tokens <= 12 * local_experts;
-
-    const int block_m =
-        load_at_most_3 ? 8 :
-        load_at_most_6 ? 16 :
-        load_at_most_12 ? 24 : 64;
-    const int target_experts_per_wave =
-        load_at_most_1p5 ? 16 :
-        load_at_most_3 ? 24 :
-        input.num_experts_per_rank;
-    const int num_experts_per_wave = get_sm90_nvfp4_wave_divisor(
-        input.num_experts_per_rank, target_experts_per_wave);
-    int num_stages = block_m == 8 ? 4 : 3;
-    const bool swap_ab = load_at_most_12;
-    const bool use_mode2_row_decoder =
-        load_at_most_6 || !load_at_most_12;
-    const bool single_active_dispatch_warp =
-        load_at_most_3 || (load_at_most_12 && !load_at_most_6);
-    int smem_size = get_sm90_nvfp4_small_m_smem_size(
-        input, block_m, num_stages, swap_ab,
-        single_active_dispatch_warp);
-    if (num_stages == 4 && smem_size > SM90ArchSpec::smem_capacity) {
-        num_stages = 3;
-        smem_size = get_sm90_nvfp4_small_m_smem_size(
-            input, block_m, num_stages, swap_ab,
-            single_active_dispatch_warp);
-    }
-
-    DG_HOST_ASSERT(
-        input.num_experts_per_rank % num_experts_per_wave == 0);
-    DG_HOST_ASSERT(smem_size <= SM90ArchSpec::smem_capacity);
-    return {
-        {
-            block_m,
-            layout::get_num_max_pool_tokens(
-                input.num_ranks,
-                input.num_max_tokens_per_rank,
-                input.num_topk,
-                input.num_experts_per_rank),
-            input.num_padded_sf_pool_tokens,
-            num_experts_per_wave,
-            num_stages,
-            smem_size,
-        },
-        swap_ab,
-        use_mode2_row_decoder,
-        single_active_dispatch_warp,
-    };
+    const auto load = get_sm90_nvfp4_small_m_load(input);
+    const auto tuning = select_sm90_nvfp4_small_m_tuning(load);
+    const auto plan = materialize_sm90_nvfp4_small_m_tuning(input, tuning);
+    DG_HOST_ASSERT(is_sm90_nvfp4_small_m_plan_legal(input, plan));
+    return plan;
 }
 
 }  // namespace deep_gemm

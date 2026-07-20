@@ -4417,3 +4417,59 @@ restarted ranks independently, broke the NCCL rendezvous, and reported an
 inconsistent kernel set across replay passes. All profiler subprocesses were
 terminated and GPU utilization returned to zero. No kernel-performance or
 correctness conclusion is drawn from that failed profiler run.
+
+## Iteration 13: FP8-style selector layering
+
+### Change
+
+- Split the NVFP4 heuristic into the same layers used by the SM90 FP8
+  selector: `HeuristicInput`, normalized `Load`, `ScheduleTuning`, config
+  materialization, legality, and the final selector orchestration.
+- Kept every routed-load boundary and selected block M, EPW, stage count,
+  decoder mode, swap-AB mode, and dispatch-warp mode unchanged.
+- Added no exact request-M, hidden-size, expert-count, model, or GPU
+  fingerprint.
+
+### Validation
+
+- Boundary-equivalence checking covered local expert counts 1-256 and every
+  routed-load transition through 262144 routed tokens. All 6386 boundary and
+  adjacent cases produced the same plan as the pre-refactor selector.
+- A clean CUDA 13.2 H200 build passed. Flash, Pro, and MiMo correctness passed
+  at M8/M128 with absent and per-expert global scales; minimum cosine was
+  0.9988.
+- The six fresh generated `kernel.cu` SHA256 hashes exactly matched the six
+  pre-refactor iteration-11 hashes. The refactor therefore changes host code
+  organization but not generated device code.
+- The final refactored worktree and frozen original-branch baseline use the
+  same H20-08 host, CUDA 12.8 container, seed 101, 8 GB cold-L2 flush, 50
+  samples, and max-rank median.
+
+| Shape | M | Original branch us | Refactored branch us | Delta |
+|---|---:|---:|---:|---:|
+| Flash | 8 | 342.8 | 289.1 | -15.7% |
+| Flash | 16 | 376.9 | 304.0 | -19.3% |
+| Flash | 32 | 405.5 | 344.3 | -15.1% |
+| Flash | 64 | 502.7 | 354.0 | -29.6% |
+| Flash | 128 | 480.9 | 483.1 | +0.5% |
+| Pro | 8 | 972.9 | 715.2 | -26.5% |
+| Pro | 16 | 1249.6 | 872.4 | -30.2% |
+| Pro | 32 | 1300.3 | 1042.2 | -19.8% |
+| Pro | 64 | 1378.0 | 1082.7 | -21.4% |
+| Pro | 128 | 1631.3 | 1569.2 | -3.8% |
+| MiMo Pro | 8 | 709.3 | 462.8 | -34.8% |
+| MiMo Pro | 16 | 860.2 | 562.6 | -34.6% |
+| MiMo Pro | 32 | 821.2 | 645.4 | -21.4% |
+| MiMo Pro | 64 | 997.7 | 682.6 | -31.6% |
+| MiMo Pro | 128 | 982.1 | 935.9 | -4.7% |
+
+Fourteen points improve by 3.8%-34.8%. Flash M128 is the only positive delta
+at +0.5%, which is within the observed run-to-run noise and is not a material
+regression. Trajectory:
+`trajectory/20260720_200941_final-structure-h20`.
+
+### Result
+
+Accept. The heuristic now follows the FP8 code structure without exact M
+points, while selector decisions, generated device code, correctness, and the
+established no-regression performance result remain unchanged.
