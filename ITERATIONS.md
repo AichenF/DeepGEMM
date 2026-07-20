@@ -4096,3 +4096,45 @@ selector pass all correctness gates and improve all 15 H20 baseline points.
 The next step is to compare against the retained specialized MiMo results,
 profile one representative point, then remove the obsolete experimental
 small-M APIs and bodies.
+
+
+## 2026-07-20 AKO iteration 5: H200 validation
+
+### Change
+
+- Added a CUDA 13.2 H200 runner for the same Flash, Pro, and MiMo correctness
+  and cold-L2 benchmark matrix. The runner creates a lightweight remote source
+  tree and reuses only the existing CUTLASS/fmt dependencies.
+- No kernel, selector, layout, or protocol code changed in this iteration.
+
+### Environment
+
+- Host: `viking-prod-298`, 8 x NVIDIA H200, all 132 SMs available.
+- PyTorch: `2.12.1+cu132`; CUDA: `13.2`.
+- Cold L2: 8 GB reusable flush buffer before every measured call.
+- Fixed seed 101, 50 samples per point, median statistic, 8 ranks.
+
+### Correctness
+
+Exact layout/dequant and CUDA LUT tests passed. Repository-reference correctness
+passed for Flash, Pro, and MiMo at M=8 and M=128, with absent and per-expert
+global scales. All outputs were finite and the minimum per-token cosine was
+0.9988.
+
+### Benchmark
+
+| Shape | M | unified max-rank us | retained MiMo-specialized us | delta |\n|---|---:|---:|---:|---:|\n| Flash | 8 | 215.5 | - | - |\n| Flash | 16 | 217.2 | - | - |\n| Flash | 32 | 240.6 | - | - |\n| Flash | 64 | 255.4 | - | - |\n| Flash | 128 | 256.0 | - | - |\n| Pro | 8 | 614.0 | - | - |\n| Pro | 16 | 698.8 | - | - |\n| Pro | 32 | 760.7 | - | - |\n| Pro | 64 | 800.8 | - | - |\n| Pro | 128 | 824.6 | - | - |\n| MiMo Pro | 8 | 405.9 | 390.1 | +4.1% |\n| MiMo Pro | 16 | 439.6 | 426.1 | +3.2% |\n| MiMo Pro | 32 | 492.6 | 451.2 | +9.2% |\n| MiMo Pro | 64 | 508.4 | 501.3 | +1.4% |\n| MiMo Pro | 128 | 509.6 | 500.6 | +1.8% |\n
+The retained comparison is iteration 18 of the dedicated H200 MiMo branch,
+whose generated CUBIN text was byte-locked to its pre-clean implementation.
+The unified range selector is within 1.9% at M8/M64/M128 but is slower at M16
+and M32. Those two points are tuning targets; they do not justify restoring an
+exact model-shape selector. Flash and Pro have no equivalent retained
+H200-specialized branch, so this iteration records their clean unified
+baselines.
+
+### Result
+
+Correctness and portability gate pass. Keep the common body and range selector.
+Before final cleanup, tune the continuous load/wave policy around the MiMo M16
+and M32 regions and recheck H20, then remove the obsolete experimental bindings
+that still emit host-build warnings.
