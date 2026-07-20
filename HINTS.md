@@ -22,6 +22,12 @@
   medians. Use fixed routing seeds and ABBA ordering for retained changes.
 - A retained change must pass exact NVFP4 correctness for Flash, Pro, and MiMo
   with both absent and per-expert global scales, including skewed routing.
-- Preserve large-M behavior until a separately measured migration is ready.
+- Use one Mode2 Braided BK128 weight ABI for both BN128 and BN256. Migrating
+  BN128 may invalidate standard-sign prepacked weights; callers must repack
+  cached BN128 weights instead of selecting a legacy decoder at runtime.
+- Keep the BN128 split communication, scheduler, and selector policy intact
+  while moving its L1/L2 dequantization onto the shared Mode2 implementation.
+- Reject a retained BN128 migration if its stable cold-L2 latency regresses by
+  more than 3% against the current standard-sign split baseline.
 - Do not retain experimental environment-variable switches or disabled code.
 - Do not push this branch unless the user explicitly requests it.
