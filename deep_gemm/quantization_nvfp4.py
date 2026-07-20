@@ -137,7 +137,8 @@ def nvfp4_fuse_packed_with_scale_tile_major(
         .permute(0, 1, 3, 2, 4)
         .contiguous()
     )
-    fused = torch.empty(
+    # Keep the final 8-byte padding in every BK128 row deterministic.
+    fused = torch.zeros(
         (E, n_blocks, k_blocks, block_n, fused_row_bytes),
         dtype=torch.uint8,
         device=packed.device,
@@ -186,22 +187,3 @@ def dequantize_nvfp4_to_fp32(packed: torch.Tensor, scale_ue4m3: torch.Tensor, gr
     scale = ue4m3_to_fp32(scale_ue4m3)
     scale_expanded = scale.unsqueeze(-1).expand(*outer_shape, G, group_size).reshape(*outer_shape, K)
     return values * scale_expanded
-
-
-if __name__ == "__main__":
-    torch.manual_seed(0)
-    E, N, K = 4, 256, 4096
-    w_bf16 = torch.randn(E, N, K, dtype=torch.bfloat16) * 0.3
-    w_fp32_ref = w_bf16.to(torch.float32)
-
-    packed, scale_ue4m3 = quantize_to_nvfp4(w_bf16, group_size=16)
-    print(f"packed shape: {packed.shape}, scale shape: {scale_ue4m3.shape}")
-    print(f"weight bytes: BF16={w_bf16.numel() * 2} -> packed={packed.numel()} + scale={scale_ue4m3.numel()}")
-
-    w_recovered = dequantize_nvfp4_to_fp32(packed, scale_ue4m3, group_size=16)
-    err = (w_recovered - w_fp32_ref).abs()
-    print(f"Element error: max_abs={err.max():.4f}  mean_abs={err.mean():.4f}")
-    mask = w_fp32_ref.abs() > 0.05
-    rel_err = (err[mask] / w_fp32_ref.abs()[mask]).mean().item()
-    print(f"Element rel error (|ref|>0.05): {rel_err*100:.2f}%")
-    print("OK")

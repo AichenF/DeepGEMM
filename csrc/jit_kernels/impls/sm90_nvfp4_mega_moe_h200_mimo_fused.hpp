@@ -15,8 +15,8 @@
 
 namespace deep_gemm {
 
-class SM90NVFP4H200MimoSmallMFusedRuntime final
-    : public LaunchRuntime<SM90NVFP4H200MimoSmallMFusedRuntime> {
+class SM90NVFP4H200MimoFusedRuntime final
+    : public LaunchRuntime<SM90NVFP4H200MimoFusedRuntime> {
 public:
     struct Args {
         int num_max_tokens_per_rank;
@@ -25,7 +25,7 @@ public:
         bool swap_ab;
         bool use_mode2_row_decoder;
         bool single_active_dispatch_warp;
-        SM90NVFP4H200MimoSmallMConfig config;
+        SM90NVFP4H200MimoFusedConfig config;
 
         void* y;
         int* cumulative_local_expert_recv_stats;
@@ -47,7 +47,7 @@ public:
         const std::string kernel_header =
             "#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1\n"
             "#include <deep_gemm/impls/"
-            "sm90_nvfp4_mega_moe_per128_pro_braided.cuh>";
+            "sm90_nvfp4_mega_moe_h200_mimo_fused.cuh>";
         const std::string policy_template_args = fmt::format(
             "/* kSwapABRequested */ {},\n"
             "        /* kSingleActiveDispatchWarp */ {},\n"
@@ -75,7 +75,7 @@ static void __instantiate_kernel() {{
 }};
 )",
             kernel_header,
-            "sm90_nvfp4_mega_moe_h200_mimo_small_m_braided_fused_impl",
+            "sm90_nvfp4_mega_moe_h200_mimo_fused_impl",
             args.num_max_tokens_per_rank,
             args.config.num_experts_per_wave,
             args.config.block_m,
@@ -107,12 +107,11 @@ static void __instantiate_kernel() {{
     }
 };
 
-static void sm90_nvfp4_h200_mimo_small_m_braided_fused_mega_moe(
+static void sm90_nvfp4_h200_mimo_fused_mega_moe(
     const torch::Tensor& y,
     const torch::Tensor& l1_acts, const torch::Tensor& l1_acts_sf,
     const torch::Tensor& l2_acts, const torch::Tensor& l2_acts_sf,
     const torch::Tensor& l1_weights, const torch::Tensor& l2_weights,
-    const torch::Tensor& l1_weights_sf, const torch::Tensor& l2_weights_sf,
     const std::optional<torch::Tensor> cumulative_local_expert_recv_stats,
     const std::optional<torch::Tensor> l1_global_scales,
     const std::optional<torch::Tensor> l2_global_scales,
@@ -128,23 +127,19 @@ static void sm90_nvfp4_h200_mimo_small_m_braided_fused_mega_moe(
     const int num_experts = num_experts_per_rank * num_ranks;
     const int num_sms = device_runtime->get_num_sms();
     const int num_padded_sf_pool_tokens = static_cast<int>(l1_acts_sf.size(0));
-    DG_HOST_ASSERT(l1_weights_sf.size(3) == 256);
-    const SM90NVFP4H200MimoSmallMInput heuristic_input {
+    const SM90NVFP4H200MimoFusedInput heuristic_input {
         num_sms,
         num_ranks, num_experts, num_experts_per_rank,
         num_max_tokens_per_rank, num_tokens, num_topk,
         hidden, intermediate_hidden, num_padded_sf_pool_tokens,
     };
-    const auto plan = select_sm90_nvfp4_h200_mimo_small_m(heuristic_input);
+    const auto plan = select_sm90_nvfp4_h200_mimo_fused(heuristic_input);
     const auto& config = plan.config;
-    using KernelConfig = SM90NVFP4H200MimoSmallMConfig;
+    using KernelConfig = SM90NVFP4H200MimoFusedConfig;
     DG_HOST_ASSERT(num_experts_per_rank % config.num_experts_per_wave == 0);
     DG_HOST_ASSERT((config.block_m == 8 || config.block_m == 16 ||
                     config.block_m == 24 || config.block_m == 64));
     DG_HOST_ASSERT(plan.swap_ab == (num_tokens <= 64));
-    const int weight_storage_k = static_cast<int>(l1_weights.size(2));
-    const int weight_k_blocks = static_cast<int>(l1_weights_sf.size(2));
-    DG_HOST_ASSERT(weight_storage_k == weight_k_blocks * kSM90NVFP4BStoragePerKBlock);
 
     constexpr int kScaleGranK = 128;
     const auto tensor_map_l1_acts = make_tma_2d_desc(
@@ -161,11 +156,10 @@ static void sm90_nvfp4_h200_mimo_small_m_braided_fused_mega_moe(
         kSM90NVFP4BStoragePerKBlock, KernelConfig::kBlockN,
         static_cast<int>(l1_weights.stride(-2)), 0);
 
-    const int wg_block_m = config.block_m;
     constexpr int kL1OutputStoreBlockN = KernelConfig::kBlockN / 2;
     const auto tensor_map_l1_output = make_tma_2d_desc(
         l2_acts, intermediate_hidden, config.num_max_pool_tokens,
-        kL1OutputStoreBlockN, wg_block_m,
+        kL1OutputStoreBlockN, config.block_m,
         static_cast<int>(l2_acts.stride(-2)), 0);
     const auto tensor_map_l2_acts = make_tma_2d_desc(
         l2_acts, intermediate_hidden, config.num_max_pool_tokens,
@@ -187,7 +181,7 @@ static void sm90_nvfp4_h200_mimo_small_m_braided_fused_mega_moe(
     const float* l2_global_scales_ptr = l2_global_scales.has_value() ?
         l2_global_scales->data_ptr<float>() : nullptr;
 
-    const SM90NVFP4H200MimoSmallMFusedRuntime::Args args = {
+    const SM90NVFP4H200MimoFusedRuntime::Args args = {
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
@@ -214,13 +208,13 @@ static void sm90_nvfp4_h200_mimo_small_m_braided_fused_mega_moe(
             config.smem_size, 1)
     };
 
-    const auto code = SM90NVFP4H200MimoSmallMFusedRuntime::generate(args);
+    const auto code = SM90NVFP4H200MimoFusedRuntime::generate(args);
     const auto runtime = compiler->build(
         plan.use_mode2_row_decoder ?
-            "sm90_nvfp4_h200_mimo_small_m_mode2_row" :
-            "sm90_nvfp4_h200_mimo_small_m_lut_window",
+            "sm90_nvfp4_h200_mimo_fused_mode2_row" :
+            "sm90_nvfp4_h200_mimo_fused_lut_window",
         code);
-    SM90NVFP4H200MimoSmallMFusedRuntime::launch(runtime, args);
+    SM90NVFP4H200MimoFusedRuntime::launch(runtime, args);
 }
 
 }  // namespace deep_gemm

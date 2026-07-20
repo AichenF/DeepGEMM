@@ -224,8 +224,6 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
         cumulative_local_expert_recv_stats=cumulative_stats,
         l1_global_scales=l1_global_scales,
         l2_global_scales=l2_global_scales,
-        recipe=(128, 128, 128),
-        activation="swiglu",
         activation_clamp=args.activation_clamp,
         fast_math=bool(args.fast_math),
     )
@@ -372,10 +370,10 @@ def _parse_args() -> argparse.Namespace:
         default=["none", "expert"],
         help="Run with no global scales and/or per-expert non-unit L1/L2 global scales.",
     )
-    parser.add_argument("--cosine-mean-threshold", type=float, default=0.9)
-    parser.add_argument("--cosine-min-threshold", type=float, default=0.9)
-    parser.add_argument("--norm-ratio-min", type=float, default=0.5)
-    parser.add_argument("--norm-ratio-max", type=float, default=2.0)
+    parser.add_argument("--cosine-mean-threshold", type=float, default=0.995)
+    parser.add_argument("--cosine-min-threshold", type=float, default=0.995)
+    parser.add_argument("--norm-ratio-min", type=float, default=0.99)
+    parser.add_argument("--norm-ratio-max", type=float, default=1.01)
     parser.add_argument("--small-signal-ref-abs-max", type=float, default=1e-4)
     parser.add_argument("--small-signal-abs-max-threshold", type=float, default=1e-4)
     parser.add_argument("--small-signal-abs-mean-threshold", type=float, default=2e-5)

@@ -9,7 +9,7 @@ namespace deep_gemm {
 
 static constexpr int kSM90NVFP4BStoragePerKBlock = 80;
 
-struct SM90NVFP4H200MimoSmallMConfig {
+struct SM90NVFP4H200MimoFusedConfig {
     static constexpr int kBlockN = 256;
     static constexpr int kBlockK = 128;
     static constexpr int kSwizzleActsMode = 128;
@@ -26,7 +26,7 @@ struct SM90NVFP4H200MimoSmallMConfig {
     int num_stages, smem_size;
 };
 
-struct SM90NVFP4H200MimoSmallMShape {
+struct SM90NVFP4H200MimoFusedShape {
     static constexpr int kH200NumSMs = 132;
     static constexpr int kMimoNumRanks = 8;
     static constexpr int kMimoExpertsPerRank = 48;
@@ -55,40 +55,40 @@ struct SM90NVFP4H200MimoSmallMShape {
     }
 };
 
-struct SM90NVFP4H200MimoSmallMInput {
+struct SM90NVFP4H200MimoFusedInput {
     int num_sms;
     int num_ranks, num_experts, num_experts_per_rank;
     int num_max_tokens_per_rank, num_tokens, num_topk;
     int hidden, intermediate_hidden;
     int num_padded_sf_pool_tokens;
 
-    SM90NVFP4H200MimoSmallMShape shape() const noexcept {
+    SM90NVFP4H200MimoFusedShape shape() const noexcept {
         return {
             num_sms, num_ranks, num_experts, num_topk,
             hidden, intermediate_hidden};
     }
 };
 
-struct SM90NVFP4H200MimoSmallMPlan {
-    SM90NVFP4H200MimoSmallMConfig config;
+struct SM90NVFP4H200MimoFusedPlan {
+    SM90NVFP4H200MimoFusedConfig config;
     bool swap_ab;
     bool use_mode2_row_decoder;
     bool single_active_dispatch_warp;
 };
 
-static SM90NVFP4H200MimoSmallMPlan
-select_sm90_nvfp4_h200_mimo_small_m(
-        const SM90NVFP4H200MimoSmallMInput& input) {
+static SM90NVFP4H200MimoFusedPlan
+select_sm90_nvfp4_h200_mimo_fused(
+        const SM90NVFP4H200MimoFusedInput& input) {
     DG_HOST_ASSERT(input.shape().is_h200_mimo_pro());
     DG_HOST_ASSERT(
         input.num_experts_per_rank ==
-        SM90NVFP4H200MimoSmallMShape::kMimoExpertsPerRank);
+        SM90NVFP4H200MimoFusedShape::kMimoExpertsPerRank);
     DG_HOST_ASSERT(input.num_experts ==
                    input.num_experts_per_rank * input.num_ranks);
     DG_HOST_ASSERT(input.num_max_tokens_per_rank > 0);
     DG_HOST_ASSERT(input.num_tokens <= input.num_max_tokens_per_rank);
     DG_HOST_ASSERT(
-        SM90NVFP4H200MimoSmallMShape::is_supported_batch(input.num_tokens));
+        SM90NVFP4H200MimoFusedShape::is_supported_batch(input.num_tokens));
     DG_HOST_ASSERT(input.num_padded_sf_pool_tokens > 0);
 
     struct Tuning {

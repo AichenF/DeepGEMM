@@ -140,7 +140,7 @@ def transform_nvfp4_weights_for_mega_moe_sm90(
     l1_weights: Tuple[torch.Tensor, torch.Tensor],
     l2_weights: Tuple[torch.Tensor, torch.Tensor],
 ) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]:
-    """Prepack weights for the H200 MiMo small-M fused kernel.
+    """Prepack weights for the H200 MiMo fused kernel.
 
     Input scale tensors are row-major ``(E, N, K/16)`` UE4M3. Returned scale
     tensors are BN256 tile-major. Packed E2M1 values use the single Mode2
@@ -210,11 +210,9 @@ def nvfp4_mega_moe(y: torch.Tensor,
                   cumulative_local_expert_recv_stats: Optional[torch.Tensor] = None,
                   l1_global_scales: Optional[torch.Tensor] = None,
                   l2_global_scales: Optional[torch.Tensor] = None,
-                  recipe: Tuple[int, int, int] = (128, 128, 128),
-                  activation: str = 'swiglu',
                   activation_clamp: Optional[float] = None,
                   fast_math: bool = True):
-    """H200 MiMo small-M NVFP4 MegaMoE entry.
+    """H200 MiMo fused NVFP4 MegaMoE entry.
 
     Weights must come directly from
     ``transform_nvfp4_weights_for_mega_moe_sm90`` so their sign bits match the
@@ -235,5 +233,5 @@ def nvfp4_mega_moe(y: torch.Tensor,
         sym_buffer.handle.buffer_ptrs, sym_buffer.group.rank(),
         sym_buffer.num_max_tokens_per_rank,
         sym_buffer.num_experts, sym_buffer.num_topk,
-        recipe, activation, activation_clamp, fast_math,
+        activation_clamp, fast_math,
     )

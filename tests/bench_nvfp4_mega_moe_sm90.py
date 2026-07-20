@@ -83,8 +83,6 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         deep_gemm.nvfp4_mega_moe(
             y, transformed_l1, transformed_l2, buffer,
             cumulative_local_expert_recv_stats=cum_stats,
-            recipe=(128, 128, 128),
-            activation='swiglu',
             activation_clamp=activation_clamp,
             fast_math=fast_math,
         )
