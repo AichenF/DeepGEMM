@@ -150,10 +150,10 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
     const int num_ranks = static_cast<int>(sym_buffer_ptrs.size());
     const int num_experts = num_experts_per_rank * num_ranks;
     const int num_sms = device_runtime->get_num_sms();
+    DG_HOST_ASSERT(num_sms > 1);
     const int num_padded_sf_pool_tokens =
         static_cast<int>(l1_acts_sf.size(0));
     const SM90NVFP4SmallMInput heuristic_input {
-        num_sms,
         num_ranks,
         num_experts,
         num_experts_per_rank,

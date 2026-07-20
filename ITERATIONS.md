@@ -4337,3 +4337,27 @@ minimum per-token cosine was 0.9987.
 Accept. The retained large-M split path now compiles under the same CUDA 13.2
 environment as the unified small-M matrix. Its kernel algorithm, selector,
 and performance policy remain unchanged.
+
+
+## 2026-07-20 AKO iteration 10: remove SM count from selector input
+
+### Change
+
+- Removed `num_sms` from `SM90NVFP4SmallMInput` and from the selector itself.
+- Kept the physical SM-count validity check beside the runtime launch-grid
+  construction. The actual SM count still parameterizes local work
+  partitioning and grid synchronization, but it cannot select a tuning plan.
+
+### Validation
+
+The CUDA 13.2 H200 clean-source extension build passed. Exact layout/dequant,
+CUDA LUT, and Flash/Pro/MiMo M8/M128 correctness passed with absent and
+per-expert global scales; minimum per-token cosine was 0.9988. For all six JIT
+configurations, both generated `kernel.cu` and the executable CUBIN `.text`
+section were byte-identical to iteration 8.
+
+### Result
+
+Accept. The code now makes the intended boundary explicit: routed load and
+derived expert waves select tuning, while physical SM count is launch state,
+not a selector fingerprint.

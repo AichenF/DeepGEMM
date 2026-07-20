@@ -30,7 +30,6 @@ struct SM90NVFP4SmallMConfig {
 };
 
 struct SM90NVFP4SmallMInput {
-    int num_sms;
     int num_ranks;
     int num_experts;
     int num_experts_per_rank;
@@ -122,7 +121,6 @@ static int get_sm90_nvfp4_small_m_smem_size(
 
 static SM90NVFP4SmallMPlan select_sm90_nvfp4_small_m(
         const SM90NVFP4SmallMInput& input) {
-    DG_HOST_ASSERT(input.num_sms > 1);
     DG_HOST_ASSERT(input.num_ranks > 0);
     DG_HOST_ASSERT(input.num_experts_per_rank > 0);
     DG_HOST_ASSERT(
