@@ -104,6 +104,76 @@ __device__ __forceinline__ void dequant_braided_quad_ilp(
         make_uint4(q2_out0, q2_out1, q3_out0, q3_out1);
 }
 
+template <int kQuad, bool kQuadIlp>
+__device__ __forceinline__ void dequant_braided_quad_lut_window(
+        uint8_t* __restrict__ fp8_dst,
+        const uint4 (&fp4_quads)[4],
+        const uint32_t scale_word_lo,
+        const uint32_t scale_word_hi,
+        const uint2* __restrict__ lut_smem,
+        const uint2 lut0,
+        const uint2 lut1,
+        const uint32_t row_swizzle) {
+    uint2 next_lut0;
+    uint2 next_lut1;
+    if constexpr (kQuad + 1 < 4) {
+        constexpr int kNextScaleI0 = (kQuad + 1) * 2;
+        constexpr int kNextScaleI1 = kNextScaleI0 + 1;
+        const uint32_t next_scale_word =
+            kQuad + 1 < 2 ? scale_word_lo : scale_word_hi;
+        const uint32_t next_scale0 =
+            (next_scale_word >> ((kNextScaleI0 & 3) * 8)) & 0x7fu;
+        const uint32_t next_scale1 =
+            (next_scale_word >> ((kNextScaleI1 & 3) * 8)) & 0x7fu;
+        next_lut0 = lut_smem[next_scale0];
+        next_lut1 = lut_smem[next_scale1];
+    }
+
+    if constexpr (kQuadIlp) {
+        dequant_braided_quad_ilp(
+            fp8_dst, fp4_quads[kQuad], lut0, lut1,
+            kQuad * 2, row_swizzle);
+    } else {
+        dequant_braided_quad(
+            fp8_dst, fp4_quads[kQuad], lut0, lut1,
+            kQuad * 2, row_swizzle);
+    }
+
+    if constexpr (kQuad + 1 < 4) {
+        dequant_braided_quad_lut_window<kQuad + 1, kQuadIlp>(
+            fp8_dst, fp4_quads, scale_word_lo, scale_word_hi,
+            lut_smem, next_lut0, next_lut1, row_swizzle);
+    }
+}
+
+template <bool kQuadIlp = false>
+__device__ __forceinline__ void
+dequant_smem_b_from_packed_braided_lut_window(
+        uint8_t* __restrict__ smem_b,
+        const uint8_t* __restrict__ packed_b,
+        const uint32_t row,
+        const uint2* __restrict__ lut_smem) {
+    const uint8_t* __restrict__ row_ptr = packed_b + row * 80;
+    const uint4* __restrict__ fp4_src =
+        reinterpret_cast<const uint4*>(row_ptr);
+    uint4 fp4_quads[4];
+#pragma unroll
+    for (int i = 0; i < 4; ++i)
+        fp4_quads[i] = fp4_src[i];
+
+    const uint2 scale_words =
+        *reinterpret_cast<const uint2*>(row_ptr + 64);
+    const uint2 lut0 = lut_smem[scale_words.x & 0x7fu];
+    const uint2 lut1 =
+        lut_smem[(scale_words.x >> 8) & 0x7fu];
+    dequant_braided_quad_lut_window<0, kQuadIlp>(
+        smem_b + row * 128, fp4_quads,
+        scale_words.x, scale_words.y,
+        lut_smem, lut0, lut1, (row & 7u) << 4);
+}
+
+}  // namespace nvfp4
+
 template <
     uint32_t kNumMaxTokensPerRank,
     uint32_t kHidden,

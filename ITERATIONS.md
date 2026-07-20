@@ -4016,3 +4016,36 @@ common kernel header had been mechanically truncated at the decoder's first
 namespace open and the common kernel symbol undefined. No kernel result or
 performance sample was collected. The next iteration repairs only that header
 boundary and reruns the same matrix.
+
+## 2026-07-20 AKO iteration 3: repair common kernel header
+
+### Change
+
+- Restored the LUT-window decoder templates omitted from the generated header.
+- Closed the decoder namespace before the generic kernel template.
+
+### Correctness
+
+Exact layout/dequant tests and the CUDA LUT test passed. Repository-reference
+kernel correctness passed for Flash, Pro, and MiMo at M=8 and M=128, with both
+absent and per-expert global scales. All outputs were finite and the minimum
+per-token cosine was 0.9988.
+
+### Benchmark
+
+| Shape | M | baseline max_rank us | iteration 3 max_rank us | delta |
+|---|---:|---:|---:|---:|
+| Flash | 8 | 342.8 | 317.5 | -7.4% |
+| Flash | 16 | 376.9 | 325.7 | -13.6% |
+| Flash | 32 | 405.5 | 382.4 | -5.7% |
+| Flash | 64 | 502.7 | 408.2 | -18.8% |
+| Flash | 128 | 480.9 | 470.3 | -2.2% |
+
+### Result
+
+The common body is correct and improves every measured Flash point. The run
+stopped at Pro M=8 before launch because H7168 makes the BM8 four-stage dynamic
+shared-memory requirement 768 bytes larger than the SM90 limit. This is a
+derived resource-legality issue, not a model-specific selector issue. The next
+iteration selects four stages only when the calculated footprint fits, and
+otherwise uses the same body with three stages.
