@@ -259,7 +259,7 @@ than config knobs.
 6. DG_SM90_NVFP4_L2_ARRIVAL_COUNTER=0 — M=4096 +1.8% WORSE.
 7. BLOCK_N=256+BLOCK_M=128 — process crash on direct_l2_scatter=False path.
 
-### Phase analysis (DG_SM90_MOE_PHASE_PROFILE=1 at M=4096)
+### Historical phase analysis (temporary profiling build at M=4096)
 
 - math_dequant_wait=48ns, l1_tma_wait=74ns, l1_epilogue=166ns — ALL fully hidden.
 - math_loop max/avg=1.35x: true bottleneck is MoE token routing load imbalance.

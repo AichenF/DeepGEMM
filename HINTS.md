@@ -8,9 +8,10 @@
 - Model shapes and routing topology are JIT shape parameters, not selector
   fingerprints. Do not select on model names, exact hidden sizes, exact expert
   counts, or isolated token-count equality points.
-- Select tuning configurations from expected routed load, derived tile/wave
-  counts, and the device SM count. Every protocol-relevant field must be the
-  same on all ranks.
+- Select tuning configurations from expected routed load and derived
+  tile/wave counts. The physical SM count controls only the local launch grid
+  and grid synchronization; it is not a tuning fingerprint. Every
+  protocol-relevant field must be the same on all ranks.
 - Compile-time tuning may vary block M, stages, experts per wave, swap-AB,
   decoder schedule, and active dispatch warps. Do not add hot-loop runtime
   branches to share the kernel body.
@@ -21,4 +22,3 @@
 - Preserve large-M behavior until a separately measured migration is ready.
 - Do not retain experimental environment-variable switches or disabled code.
 - Do not push this branch unless the user explicitly requests it.
-

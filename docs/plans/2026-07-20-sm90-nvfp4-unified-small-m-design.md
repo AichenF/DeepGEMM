@@ -45,14 +45,18 @@ derived-wave ranges.
 ## Selector
 
 The selector derives expected local expert load as
-`num_tokens * num_topk / num_experts_per_rank`. It combines this value with the
-number of L1/L2 N tiles, candidate M tiles, expert waves, and the device SM
-count. Range boundaries select a compile-time policy. No isolated equality
-point or exact expert-count fingerprint is permitted.
+`num_tokens * num_topk / num_experts_per_rank`. Continuous load ranges select
+block M and the decode/dispatch schedule; the expert wave is rounded to a
+divisor of the local expert count, and pipeline depth is limited by the
+derived shared-memory footprint. No isolated equality point or exact model,
+expert-count, token-count, or GPU fingerprint is permitted.
 
-All ranks derive the same policy from global request and deployment metadata.
-Observed rank-local receive counts remain scheduler inputs and never select a
-protocol-changing kernel configuration.
+The physical SM count controls only the local launch grid, work partitioning,
+and grid synchronization. It does not select a tuning policy. Tuning fields do
+not change the NVLink barrier sequence, tags, or targets. Deployment-wide
+shape and topology fields that define the symmetric-buffer and cross-rank
+protocol remain common to all ranks; observed receive counts remain scheduler
+inputs and never select a protocol-changing configuration.
 
 ## Migration
 
@@ -81,4 +85,3 @@ protocol-changing kernel configuration.
   split path is unchanged.
 - Generated-code comparison for the initial MiMo extraction before accepting
   any tuning change.
-

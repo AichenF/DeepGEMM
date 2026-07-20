@@ -1013,10 +1013,10 @@
 
                         float weight_r0 = valid_r0 ? *l1_topk_weights_buffer
                             .get_data_buffer(m_idx + row_offset_r0)
-                            .get_base_ptr<float>() : 0.0f;
+                            .template get_base_ptr<float>() : 0.0f;
                         float weight_r1 = valid_r1 ? *l1_topk_weights_buffer
                             .get_data_buffer(m_idx + row_offset_r1)
-                            .get_base_ptr<float>() : 0.0f;
+                            .template get_base_ptr<float>() : 0.0f;
                         #pragma unroll
                         for (uint32_t p = 0; p < kNumPairs; ++ p) {
                             swiglu_r0[p][0] *= weight_r0;
@@ -1259,10 +1259,10 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
                 const float weight_r0 = valid_r0 ? *l1_topk_weights_buffer
                     .get_data_buffer(m_idx + row_offset_r0)
-                    .get_base_ptr<float>() : 0.0f;
+                    .template get_base_ptr<float>() : 0.0f;
                 const float weight_r1 = valid_r1 ? *l1_topk_weights_buffer
                     .get_data_buffer(m_idx + row_offset_r1)
-                    .get_base_ptr<float>() : 0.0f;
+                    .template get_base_ptr<float>() : 0.0f;
                 #pragma unroll
                 for (uint32_t p = 0; p < kNumPairs; ++ p) {
                     swiglu_r0[p][0] *= weight_r0;

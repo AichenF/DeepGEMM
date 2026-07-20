@@ -4308,3 +4308,32 @@ change is justified by this single noisy point.
 Accept. Production now exposes one NVFP4 API and one BN256 fused kernel body;
 the large-M BN128 split implementation remains available without experimental
 environment switches.
+
+
+## 2026-07-20 AKO iteration 9: repair BN128 CUDA 13.2 compilation
+
+### Change
+
+- Added the required C++ dependent-template disambiguator to four
+  `get_base_ptr<float>()` calls in the retained BN128 split L1 body. This is a
+  source-compatibility repair; it does not change an expression, branch,
+  memory address, or tuning decision.
+- Corrected the design constraints to state that physical SM count controls
+  the local launch/grid synchronization only and is not a selector
+  fingerprint.
+- Removed the obsolete phase-profile environment-variable name from the
+  historical NVFP4 notes after deleting that debug path in iteration 8.
+
+### Validation
+
+The unmodified BN128 source failed its first CUDA 13.2 JIT instantiation at
+the four dependent member-template calls. After the repair, H200 exact-NVFP4
+correctness passed Flash, Pro, and MiMo at M256 and M512 with both absent and
+per-expert global scales: 12/12 cases passed, all outputs were finite, and the
+minimum per-token cosine was 0.9987.
+
+### Result
+
+Accept. The retained large-M split path now compiles under the same CUDA 13.2
+environment as the unified small-M matrix. Its kernel algorithm, selector,
+and performance policy remain unchanged.
