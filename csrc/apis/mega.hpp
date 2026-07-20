@@ -9,6 +9,7 @@
 #include "../jit/device_runtime.hpp"
 #include "../jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe.hpp"
+#include "../jit_kernels/impls/sm90_nvfp4_mega_moe_small_m.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe_nibble_group.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe_per128_pro_braided_3stage.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe_pro_candidate.hpp"
@@ -356,20 +357,39 @@ static void nvfp4_mega_moe(
     DG_HOST_ASSERT(sym_buffer.nbytes() >= static_cast<size_t>(num_required_bytes));
     DG_HOST_ASSERT(num_experts == num_experts_);
     const auto [x, x_sf, topk_idx, topk_weights, l1_acts, l1_acts_sf, l2_acts, l2_acts_sf] = slice(sym_buffer);
-    sm90_nvfp4_mega_moe(y,
-                      l1_acts, l1_acts_sf,
-                      l2_acts, l2_acts_sf,
-                      l1_weights, l2_weights,
-                      l1_weights_sf, l2_weights_sf,
-                      cumulative_local_expert_recv_stats,
-                      l1_global_scales,
-                      l2_global_scales,
-                      sym_buffer_ptrs,
-                      rank_idx, num_max_tokens_per_rank,
-                      num_experts_per_rank,
-                      num_tokens, num_topk,
-                      hidden, intermediate_hidden,
-                      activation_clamp, fast_math);
+    if (nvfp4_block_n == SM90NVFP4SmallMConfig::kBlockN) {
+        sm90_nvfp4_small_m_fused_mega_moe(
+            y,
+            l1_acts, l1_acts_sf,
+            l2_acts, l2_acts_sf,
+            l1_weights, l2_weights,
+            l1_weights_sf, l2_weights_sf,
+            cumulative_local_expert_recv_stats,
+            l1_global_scales,
+            l2_global_scales,
+            sym_buffer_ptrs,
+            rank_idx, num_max_tokens_per_rank,
+            num_experts_per_rank,
+            num_tokens, num_topk,
+            hidden, intermediate_hidden,
+            activation_clamp, fast_math);
+    } else {
+        sm90_nvfp4_mega_moe(
+            y,
+            l1_acts, l1_acts_sf,
+            l2_acts, l2_acts_sf,
+            l1_weights, l2_weights,
+            l1_weights_sf, l2_weights_sf,
+            cumulative_local_expert_recv_stats,
+            l1_global_scales,
+            l2_global_scales,
+            sym_buffer_ptrs,
+            rank_idx, num_max_tokens_per_rank,
+            num_experts_per_rank,
+            num_tokens, num_topk,
+            hidden, intermediate_hidden,
+            activation_clamp, fast_math);
+    }
     if (get_env<int>("DG_COMM_KERNEL_DEBUG"))
         sym_buffer.zero_();
 }

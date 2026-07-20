@@ -126,6 +126,39 @@ def choose_nvfp4_block_n_for_mega_moe_sm90(
     return 256 if routed_tokens <= cutoff * num_experts_per_rank else 128
 
 
+def _braid_nvfp4_mode2_signs(fused_weight: torch.Tensor) -> torch.Tensor:
+    """Arrange FP4 sign bits for the BN256 Mode2 decoders."""
+    if fused_weight.dtype != torch.uint8 or fused_weight.dim() != 3:
+        raise ValueError("fused NVFP4 weight must be a 3-D uint8 tensor")
+    experts, rows, storage_k = fused_weight.shape
+    if storage_k % 80 != 0:
+        raise ValueError(
+            "fused NVFP4 K storage must contain 80-byte BK128 tiles")
+
+    fused_rows = fused_weight.view(
+        experts, rows, storage_k // 80, 80).clone()
+    packed = fused_rows[..., :64].view(
+        experts, rows, storage_k // 80, 16, 4)
+    codes = torch.cat(((packed >> 4) & 0x0f, packed & 0x0f), dim=-1)
+    magnitudes = codes & 0x07
+    signs = codes >> 3
+    braided_signs = torch.stack(
+        (
+            signs[..., 4], signs[..., 0],
+            signs[..., 5], signs[..., 1],
+            signs[..., 6], signs[..., 2],
+            signs[..., 7], signs[..., 3],
+        ),
+        dim=-1,
+    )
+    braided_nibbles = magnitudes | (braided_signs << 3)
+    fused_rows[..., :64] = (
+        braided_nibbles[..., 0::2] |
+        (braided_nibbles[..., 1::2] << 4)
+    ).reshape(experts, rows, storage_k // 80, 64)
+    return fused_rows.view(experts, rows, storage_k).contiguous()
+
+
 def transform_nvfp4_weights_for_mega_moe_sm90(
     l1_weights: Tuple[torch.Tensor, torch.Tensor],
     l2_weights: Tuple[torch.Tensor, torch.Tensor],
@@ -137,9 +170,9 @@ def transform_nvfp4_weights_for_mega_moe_sm90(
 
     Input scale tensors are row-major ``(E, N, K/16)`` UE4M3. Returned scale
     tensors are tile-major ``(E, N/block_n, K/128, block_n, 8)`` and should be
-    cached at weight-load time rather than rebuilt per forward pass. Packed B
-    weights are always fused with their UE4M3 scale bytes for both BN256
-    fused-phase and BN128 split-phase layouts.
+    cached at weight-load time rather than rebuilt per forward pass. BN256 uses
+    the common Mode2 braided layout for the small-M fused kernel. BN128 retains
+    the standard sign layout used by the large-M split kernels.
     """
     from ..quantization_nvfp4 import (
         nvfp4_fuse_packed_with_scale_tile_major,
@@ -159,6 +192,11 @@ def transform_nvfp4_weights_for_mega_moe_sm90(
         l1_packed_il.contiguous(), l1_scale_tm, block_k=block_k)
     l2_packed_out = nvfp4_fuse_packed_with_scale_tile_major(
         l2_packed.contiguous(), l2_scale_tm, block_k=block_k)
+    if block_n == 256:
+        l1_packed_out = _braid_nvfp4_mode2_signs(l1_packed_out)
+        l2_packed_out = _braid_nvfp4_mode2_signs(l2_packed_out)
+    elif block_n != 128:
+        raise ValueError("SM90 NVFP4 block_n must be 128 or 256")
     return (
         l1_packed_out,
         l1_scale_tm,
@@ -206,8 +244,8 @@ def nvfp4_mega_moe(y: torch.Tensor,
     Weight tensors are packed E2M1 FP4. Use
     ``transform_nvfp4_weights_for_mega_moe_sm90`` at weight-load time to apply
     the L1 gate/up interleave and prepack UE4M3 scales into
-    ``(E, N/block_n, K/128, block_n, 8)``. ``block_n=256`` launches the fused
-    phase; ``block_n=128`` launches split L1/L2.
+    ``(E, N/block_n, K/128, block_n, 8)``. ``block_n=256`` uses the common
+    Mode2 braided small-M fused kernel; ``block_n=128`` uses split L1/L2.
     """
     _C.nvfp4_mega_moe(
         y, l1_weights, l2_weights,

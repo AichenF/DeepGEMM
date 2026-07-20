@@ -3976,3 +3976,24 @@ observed cosine was 0.9987 and all outputs were finite.
 This is the frozen pre-unification baseline. The first implementation iteration
 must preserve the public distributed protocol and large-M BN128 path, pass all
 three correctness shapes, and compare against these max-rank cold-L2 medians.
+
+## 2026-07-20 AKO iteration 1: common Mode2 small-M body
+
+### Change
+
+- Added one shape-parameterized BN256/BK128 fused body shared by Flash, Pro,
+  and MiMo.
+- Added a routed-load range selector with no exact token, hidden-size, expert,
+  or GPU-model fingerprints.
+- Changed BN256 prepack to the Mode2 braided sign layout; BN128 remains on the
+  standard large-M split layout.
+
+### Result
+
+Host extension build passed. The run stopped before JIT kernel compilation in
+the existing fused-weight dequant unit test: it decoded the new braided BN256
+bytes as the old standard layout, producing 228130/262144 mismatches. This is a
+test-reference ABI mismatch exposed by the intentional layout change, not a
+kernel result. No performance samples were collected. The next iteration must
+make the dequant unit test layout-aware and then rerun the full correctness and
+benchmark matrix.
