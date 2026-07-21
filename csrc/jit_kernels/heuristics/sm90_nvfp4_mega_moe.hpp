@@ -10,7 +10,6 @@ namespace deep_gemm {
 static constexpr int kSM90NVFP4BStoragePerKBlock = 80;
 
 struct SM90NVFP4H200MimoFusedConfig {
-    static constexpr int kBlockN = 256;
     static constexpr int kBlockK = 128;
     static constexpr int kSwizzleActsMode = 128;
     static constexpr int kNumDispatchThreads = 64;
@@ -19,7 +18,7 @@ struct SM90NVFP4H200MimoFusedConfig {
     static constexpr int kNumThreads =
         kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads;
 
-    int block_m;
+    int block_m, block_n;
     int num_max_pool_tokens;
     int num_padded_sf_pool_tokens;
     int num_experts_per_wave;
@@ -92,7 +91,7 @@ select_sm90_nvfp4_h200_mimo_fused(
     DG_HOST_ASSERT(input.num_padded_sf_pool_tokens > 0);
 
     struct Tuning {
-        int block_m;
+        int block_m, block_n;
         int num_experts_per_wave;
         int num_stages;
         int smem_size;
@@ -102,19 +101,22 @@ select_sm90_nvfp4_h200_mimo_fused(
     } tuning {};
 
     if (input.num_tokens <= 8)
-        tuning = {8, 16, 4, SM90ArchSpec::smem_capacity,
+        tuning = {8, 256, 16, 4, SM90ArchSpec::smem_capacity,
                   true, true, true};
     else if (input.num_tokens <= 16)
-        tuning = {8, 24, 4, SM90ArchSpec::smem_capacity,
+        tuning = {8, 256, 24, 4, SM90ArchSpec::smem_capacity,
                   true, true, true};
     else if (input.num_tokens <= 32)
-        tuning = {16, 48, 3, SM90ArchSpec::smem_capacity,
+        tuning = {16, 256, 48, 3, SM90ArchSpec::smem_capacity,
                   true, true, false};
     else if (input.num_tokens <= 64)
-        tuning = {24, 48, 3, 229312,
+        tuning = {24, 256, 48, 3, 229312,
                   true, false, true};
+    else if (input.num_tokens <= 256)
+        tuning = {64, 256, 48, 3, 209856,
+                  false, true, false};
     else
-        tuning = {64, 48, 3, 209856,
+        tuning = {128, 128, 48, 6, SM90ArchSpec::smem_capacity,
                   false, true, false};
 
     DG_HOST_ASSERT(
@@ -123,6 +125,7 @@ select_sm90_nvfp4_h200_mimo_fused(
     return {
         {
             tuning.block_m,
+            tuning.block_n,
             layout::get_num_max_pool_tokens(
                 input.num_ranks, input.num_max_tokens_per_rank,
                 input.num_topk, input.num_experts_per_rank),

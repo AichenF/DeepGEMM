@@ -108,6 +108,48 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble(
         (row & 7u) << 4, lut_smem);
 }
 
+// Two split-M warpgroups cooperatively decode one N128 tile. Thread t owns
+// K-half (t / 128) of row (t % 128), halving the per-thread PRMT/LUT chain
+// while both M64 consumers reuse the same decoded weights.
+__device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble_split_m(
+        uint8_t* __restrict__ smem_b,
+        const uint8_t* __restrict__ packed_b,
+        const uint32_t tid,
+        const uint2* __restrict__ lut_smem) {
+    const uint32_t row = tid & 127u;
+    const uint32_t k_half = tid >> 7;
+    const uint8_t* __restrict__ row_ptr = packed_b + row * 80u;
+    const uint4* __restrict__ fp4_src =
+        reinterpret_cast<const uint4*>(row_ptr + k_half * 32u);
+    const uint32_t scale_word = *reinterpret_cast<const uint32_t*>(
+        row_ptr + 64u + k_half * sizeof(uint32_t));
+    uint8_t* __restrict__ fp8_dst = smem_b + row * 128u;
+    const uint32_t row_swizzle = (row & 7u) << 4;
+
+    #pragma unroll
+    for (uint32_t quad_i = 0; quad_i < 2; ++ quad_i) {
+        const uint4 q = fp4_src[quad_i];
+        const uint32_t scale_i0 = quad_i * 2u;
+        const uint32_t scale_i1 = scale_i0 + 1u;
+        const uint32_t scale0 = (scale_word >> (scale_i0 * 8u)) & 0x7fu;
+        const uint32_t scale1 = (scale_word >> (scale_i1 * 8u)) & 0x7fu;
+        const uint2 lut0 = lut_smem[scale0];
+        const uint2 lut1 = lut_smem[scale1];
+        const uint2 q0 = dequant_mode2_nibble_word(q.x, lut0);
+        const uint2 q1 = dequant_mode2_nibble_word(q.y, lut0);
+        const uint2 q2 = dequant_mode2_nibble_word(q.z, lut1);
+        const uint2 q3 = dequant_mode2_nibble_word(q.w, lut1);
+        const uint32_t logical0 =
+            k_half * 64u + scale_i0 * 16u;
+        const uint32_t logical1 =
+            k_half * 64u + scale_i1 * 16u;
+        *reinterpret_cast<uint4*>(fp8_dst + (logical0 ^ row_swizzle)) =
+            make_uint4(q0.x, q0.y, q1.x, q1.y);
+        *reinterpret_cast<uint4*>(fp8_dst + (logical1 ^ row_swizzle)) =
+            make_uint4(q2.x, q2.y, q3.x, q3.y);
+    }
+}
+
 __device__ __forceinline__ uint2 dequant_braided_selector_word(
         const uint32_t braided, const uint2& lut) {
     const uint32_t sel0 = braided & 0x00007777u;
@@ -245,6 +287,7 @@ template <
     uint32_t kNumMaxTokensPerRank,
     uint32_t kNumExpertsPerWave,
     uint32_t BLOCK_M,
+    uint32_t BLOCK_N,
     uint32_t kNumMaxPoolTokens,
     uint32_t kNumPaddedSFPoolTokens,
     uint32_t kNumStages,
@@ -273,7 +316,6 @@ sm90_nvfp4_mega_moe_h200_mimo_fused_impl(
     constexpr uint32_t kIntermediateHidden = 2048;
     constexpr uint32_t kNumExperts = 384;
     constexpr uint32_t kNumTopk = 8;
-    constexpr uint32_t BLOCK_N = 256;
     constexpr uint32_t BLOCK_K = 128;
     constexpr uint32_t kNumDispatchThreads = 64;
     constexpr uint32_t kNumNonEpilogueThreads = 64;
