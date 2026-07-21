@@ -65,6 +65,7 @@ static void __instantiate_kernel() {{
         /* kNumMaxTokensPerRank */ {},
         /* kNumExpertsPerWave */ {},
         /* BLOCK_M */ {},
+        /* BLOCK_N */ {},
         /* kNumMaxPoolTokens */ {},
         /* kNumPaddedSFPoolTokens */ {},
         /* kNumStages */ {},
@@ -79,6 +80,7 @@ static void __instantiate_kernel() {{
             args.num_max_tokens_per_rank,
             args.config.num_experts_per_wave,
             args.config.block_m,
+            args.config.block_n,
             args.config.num_max_pool_tokens,
             args.config.num_padded_sf_pool_tokens,
             args.config.num_stages,
@@ -138,10 +140,13 @@ static void sm90_nvfp4_h200_mimo_fused_mega_moe(
     using KernelConfig = SM90NVFP4H200MimoFusedConfig;
     DG_HOST_ASSERT(num_experts_per_rank % config.num_experts_per_wave == 0);
     DG_HOST_ASSERT((config.block_m == 8 || config.block_m == 16 ||
-                    config.block_m == 24 || config.block_m == 64));
+                    config.block_m == 24 || config.block_m == 64 ||
+                    config.block_m == 128));
+    DG_HOST_ASSERT(config.block_n == 128 || config.block_n == 256);
     DG_HOST_ASSERT(plan.swap_ab == (num_tokens <= 64));
 
-    constexpr int kScaleGranK = 128;
+    constexpr int kL1ScaleGranK = 128;
+    const int l2_scale_gran_k = config.block_n == 128 ? 64 : 128;
     const auto tensor_map_l1_acts = make_tma_2d_desc(
         l1_acts, hidden, config.num_max_pool_tokens,
         KernelConfig::kBlockK, config.block_m,
@@ -149,17 +154,17 @@ static void sm90_nvfp4_h200_mimo_fused_mega_moe(
     const auto tensor_map_l1_acts_sf = make_tma_sf_desc(
         cute::UMMA::Major::MN, l1_acts_sf,
         config.num_padded_sf_pool_tokens, hidden,
-        config.block_m, kScaleGranK, 1, 0);
+        config.block_m, kL1ScaleGranK, 1, 0);
     const auto tensor_map_l1_weights = make_tma_2d_desc(
         l1_weights, static_cast<int>(l1_weights.size(2)),
         num_experts_per_rank * intermediate_hidden * 2,
-        kSM90NVFP4BStoragePerKBlock, KernelConfig::kBlockN,
+        kSM90NVFP4BStoragePerKBlock, config.block_n,
         static_cast<int>(l1_weights.stride(-2)), 0);
 
-    constexpr int kL1OutputStoreBlockN = KernelConfig::kBlockN / 2;
+    const int l1_output_store_block_n = config.block_n / 2;
     const auto tensor_map_l1_output = make_tma_2d_desc(
         l2_acts, intermediate_hidden, config.num_max_pool_tokens,
-        kL1OutputStoreBlockN, config.block_m,
+        l1_output_store_block_n, config.block_m,
         static_cast<int>(l2_acts.stride(-2)), 0);
     const auto tensor_map_l2_acts = make_tma_2d_desc(
         l2_acts, intermediate_hidden, config.num_max_pool_tokens,
@@ -168,11 +173,11 @@ static void sm90_nvfp4_h200_mimo_fused_mega_moe(
     const auto tensor_map_l2_acts_sf = make_tma_sf_desc(
         cute::UMMA::Major::MN, l2_acts_sf,
         config.num_padded_sf_pool_tokens, intermediate_hidden,
-        config.block_m, kScaleGranK, 1, 0);
+        config.block_m, l2_scale_gran_k, 1, 0);
     const auto tensor_map_l2_weights = make_tma_2d_desc(
         l2_weights, static_cast<int>(l2_weights.size(2)),
         num_experts_per_rank * hidden,
-        kSM90NVFP4BStoragePerKBlock, KernelConfig::kBlockN,
+        kSM90NVFP4BStoragePerKBlock, config.block_n,
         static_cast<int>(l2_weights.stride(-2)), 0);
     int* cumulative_stats_ptr = cumulative_local_expert_recv_stats.has_value() ?
         cumulative_local_expert_recv_stats->data_ptr<int>() : nullptr;
