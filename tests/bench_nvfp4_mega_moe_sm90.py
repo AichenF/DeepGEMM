@@ -1,13 +1,3 @@
-"""Eight-rank H200 MiMo NVFP4 MegaMoE benchmark / NCU-profile harness.
-
-This harness drives the sole fused Mode2 Braided path only.
-
-In normal (non-NCU) mode it sweeps a list of ``num_tokens`` values (default:
-8, 16, 32, 64, 128) and reports per-call kernel time via the same
-``bench_kineto`` helper used by the SM100 perf test, plus a rough TFLOPS /
-HBM GB/s figure useful for tracking optimisation deltas.
-"""
-
 import argparse
 import os
 import random
@@ -161,7 +151,7 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
         batches = args.batches
 
     dist_print(
-        f'H200 MiMo NVFP4 MegaMoE bench: ranks={num_ranks} hidden={args.hidden} '
+        f'H200 NVFP4 MegaMoE bench: ranks={num_ranks} hidden={args.hidden} '
         f'ih={args.intermediate_hidden} experts={args.num_experts} topk={args.num_topk} '
         f'masked_ratio={args.masked_ratio} fast_math={bool(args.fast_math)}',
         once_in_node=True,
@@ -193,7 +183,7 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='H200 MiMo NVFP4 MegaMoE benchmark')
+    parser = argparse.ArgumentParser(description='H200 NVFP4 MegaMoE benchmark')
 
     parser.add_argument('--ncu-profile-only', action='store_true')
     parser.add_argument('--num-processes', type=int, default=8)

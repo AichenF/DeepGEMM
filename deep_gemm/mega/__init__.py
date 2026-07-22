@@ -13,8 +13,8 @@ except Exception as exception:
 from .. import _C
 
 
-_SM90_NVFP4_H200_MIMO_LAYOUT_ATTR = "_deep_gemm_nvfp4_h200_mimo_layout"
-_SM90_NVFP4_H200_MIMO_LAYOUT = "mode2_braided"
+_SM90_NVFP4_H200_FUSED_LAYOUT_ATTR = "_deep_gemm_nvfp4_h200_fused_layout"
+_SM90_NVFP4_H200_FUSED_LAYOUT = "mode2_braided"
 
 
 class SymmBuffer:
@@ -140,13 +140,6 @@ def transform_nvfp4_weights_for_mega_moe_sm90(
     l1_weights: Tuple[torch.Tensor, torch.Tensor],
     l2_weights: Tuple[torch.Tensor, torch.Tensor],
 ) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]:
-    """Prepack weights for the H200 MiMo fused kernel.
-
-    Input scale tensors are row-major ``(E, N, K/16)`` UE4M3. Returned scale
-    tensors are BN256 tile-major. Packed E2M1 values use the single Mode2
-    Braided physical layout consumed by both the row and LUT-window decoders.
-    Cache the result at weight-load time rather than rebuilding it per request.
-    """
     block_n, block_k, group_size = 256, 128, 16
     from ..quantization_nvfp4 import (
         nvfp4_fuse_packed_with_scale_tile_major,
@@ -168,10 +161,10 @@ def transform_nvfp4_weights_for_mega_moe_sm90(
     l2_packed_out = _braid_nvfp4_mode2_signs(nvfp4_fuse_packed_with_scale_tile_major(
         l2_packed.contiguous(), l2_scale_tm, block_k=block_k)
     )
-    setattr(l1_packed_out, _SM90_NVFP4_H200_MIMO_LAYOUT_ATTR,
-            _SM90_NVFP4_H200_MIMO_LAYOUT)
-    setattr(l2_packed_out, _SM90_NVFP4_H200_MIMO_LAYOUT_ATTR,
-            _SM90_NVFP4_H200_MIMO_LAYOUT)
+    setattr(l1_packed_out, _SM90_NVFP4_H200_FUSED_LAYOUT_ATTR,
+            _SM90_NVFP4_H200_FUSED_LAYOUT)
+    setattr(l2_packed_out, _SM90_NVFP4_H200_FUSED_LAYOUT_ATTR,
+            _SM90_NVFP4_H200_FUSED_LAYOUT)
     return (
         l1_packed_out,
         l1_scale_tm,
@@ -212,15 +205,9 @@ def nvfp4_mega_moe(y: torch.Tensor,
                   l2_global_scales: Optional[torch.Tensor] = None,
                   activation_clamp: Optional[float] = None,
                   fast_math: bool = True):
-    """H200 MiMo fused NVFP4 MegaMoE entry.
-
-    Weights must come directly from
-    ``transform_nvfp4_weights_for_mega_moe_sm90`` so their sign bits match the
-    fused Mode2 Braided decoder. There is no generic or split-kernel fallback.
-    """
-    l1_layout = getattr(l1_weights[0], _SM90_NVFP4_H200_MIMO_LAYOUT_ATTR, None)
-    l2_layout = getattr(l2_weights[0], _SM90_NVFP4_H200_MIMO_LAYOUT_ATTR, None)
-    if l1_layout != _SM90_NVFP4_H200_MIMO_LAYOUT or l2_layout != l1_layout:
+    l1_layout = getattr(l1_weights[0], _SM90_NVFP4_H200_FUSED_LAYOUT_ATTR, None)
+    l2_layout = getattr(l2_weights[0], _SM90_NVFP4_H200_FUSED_LAYOUT_ATTR, None)
+    if l1_layout != _SM90_NVFP4_H200_FUSED_LAYOUT or l2_layout != l1_layout:
         raise ValueError(
             "NVFP4 weights must use the Mode2 Braided layout produced by "
             "transform_nvfp4_weights_for_mega_moe_sm90"

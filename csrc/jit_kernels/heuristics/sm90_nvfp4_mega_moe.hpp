@@ -9,7 +9,7 @@ namespace deep_gemm {
 
 static constexpr int kSM90NVFP4BStoragePerKBlock = 80;
 
-struct SM90NVFP4H200MimoFusedConfig {
+struct SM90NVFP4H200FusedConfig {
     static constexpr int kBlockK = 128;
     static constexpr int kSwizzleActsMode = 128;
     static constexpr int kNumDispatchThreads = 64;
@@ -25,13 +25,13 @@ struct SM90NVFP4H200MimoFusedConfig {
     int num_stages, smem_size;
 };
 
-struct SM90NVFP4H200MimoFusedShape {
+struct SM90NVFP4H200FusedShape {
     static constexpr int kH200NumSMs = 132;
-    static constexpr int kMimoNumRanks = 8;
-    static constexpr int kMimoExpertsPerRank = 48;
-    static constexpr int kMimoTopk = 8;
-    static constexpr int kMimoHidden = 6144;
-    static constexpr int kMimoIntermediateHidden = 2048;
+    static constexpr int kNumRanks = 8;
+    static constexpr int kExpertsPerRank = 48;
+    static constexpr int kTopk = 8;
+    static constexpr int kHidden = 6144;
+    static constexpr int kIntermediateHidden = 2048;
 
     int num_sms;
     int num_ranks;
@@ -44,50 +44,50 @@ struct SM90NVFP4H200MimoFusedShape {
         return num_tokens > 0;
     }
 
-    constexpr bool is_h200_mimo_pro() const noexcept {
+    constexpr bool is_supported_h200_shape() const noexcept {
         return num_sms == kH200NumSMs &&
-            num_ranks == kMimoNumRanks &&
-            num_experts == kMimoExpertsPerRank * kMimoNumRanks &&
-            num_topk == kMimoTopk &&
-            hidden == kMimoHidden &&
-            intermediate_hidden == kMimoIntermediateHidden;
+            num_ranks == kNumRanks &&
+            num_experts == kExpertsPerRank * kNumRanks &&
+            num_topk == kTopk &&
+            hidden == kHidden &&
+            intermediate_hidden == kIntermediateHidden;
     }
 };
 
-struct SM90NVFP4H200MimoFusedInput {
+struct SM90NVFP4H200FusedInput {
     int num_sms;
     int num_ranks, num_experts, num_experts_per_rank;
     int num_max_tokens_per_rank, num_tokens, num_topk;
     int hidden, intermediate_hidden;
     int num_padded_sf_pool_tokens;
 
-    SM90NVFP4H200MimoFusedShape shape() const noexcept {
+    SM90NVFP4H200FusedShape shape() const noexcept {
         return {
             num_sms, num_ranks, num_experts, num_topk,
             hidden, intermediate_hidden};
     }
 };
 
-struct SM90NVFP4H200MimoFusedPlan {
-    SM90NVFP4H200MimoFusedConfig config;
+struct SM90NVFP4H200FusedPlan {
+    SM90NVFP4H200FusedConfig config;
     bool swap_ab;
     bool use_mode2_row_decoder;
     bool single_active_dispatch_warp;
 };
 
-static SM90NVFP4H200MimoFusedPlan
-select_sm90_nvfp4_h200_mimo_fused(
-        const SM90NVFP4H200MimoFusedInput& input) {
-    DG_HOST_ASSERT(input.shape().is_h200_mimo_pro());
+static SM90NVFP4H200FusedPlan
+select_sm90_nvfp4_h200_fused(
+        const SM90NVFP4H200FusedInput& input) {
+    DG_HOST_ASSERT(input.shape().is_supported_h200_shape());
     DG_HOST_ASSERT(
         input.num_experts_per_rank ==
-        SM90NVFP4H200MimoFusedShape::kMimoExpertsPerRank);
+        SM90NVFP4H200FusedShape::kExpertsPerRank);
     DG_HOST_ASSERT(input.num_experts ==
                    input.num_experts_per_rank * input.num_ranks);
     DG_HOST_ASSERT(input.num_max_tokens_per_rank > 0);
     DG_HOST_ASSERT(input.num_tokens <= input.num_max_tokens_per_rank);
     DG_HOST_ASSERT(
-        SM90NVFP4H200MimoFusedShape::is_supported_batch(input.num_tokens));
+        SM90NVFP4H200FusedShape::is_supported_batch(input.num_tokens));
     DG_HOST_ASSERT(input.num_padded_sf_pool_tokens > 0);
 
     struct Tuning {

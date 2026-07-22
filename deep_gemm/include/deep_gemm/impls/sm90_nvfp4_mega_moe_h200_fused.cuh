@@ -297,7 +297,7 @@ template <
     bool kUseMode2RowDecoder
 >
 CUTLASS_GLOBAL __launch_bounds__(384, 1) void
-sm90_nvfp4_mega_moe_h200_mimo_fused_impl(
+sm90_nvfp4_mega_moe_h200_fused_impl(
         void* y,
         int* cumulative_local_expert_recv_stats,
         const uint32_t num_tokens,
@@ -331,7 +331,7 @@ sm90_nvfp4_mega_moe_h200_mimo_fused_impl(
     constexpr uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4;
     constexpr uint32_t kNumTokensPerWarp = 32 / kNumTopk;
     constexpr uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks;
-#include <deep_gemm/impls/sm90_nvfp4_mega_moe_h200_mimo_fused_body.inl>
+#include <deep_gemm/impls/sm90_nvfp4_mega_moe_h200_fused_body.inl>
 }
 
 }  // namespace deep_gemm

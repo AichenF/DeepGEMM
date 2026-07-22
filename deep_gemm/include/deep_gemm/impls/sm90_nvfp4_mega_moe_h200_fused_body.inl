@@ -7,16 +7,16 @@
     // =====================================================================
     DG_STATIC_ASSERT(BLOCK_M == 8 || BLOCK_M == 16 ||
                      BLOCK_M == 24 || BLOCK_M == 64 || BLOCK_M == 128,
-                     "H200 MiMo fused kernel requires BM8/BM16/BM24/BM64/BM128");
+                     "H200 fused kernel requires BM8/BM16/BM24/BM64/BM128");
     DG_STATIC_ASSERT((BLOCK_M == 8 && kNumStages == 4) ||
                      ((BLOCK_M == 16 || BLOCK_M == 24) && kNumStages == 3) ||
                      (BLOCK_M == 64 && kNumStages == 3) ||
                      (BLOCK_M == 128 && kNumStages == 6),
-                     "Unexpected H200 MiMo pipeline depth");
+                     "Unexpected H200 pipeline depth");
     DG_STATIC_ASSERT((BLOCK_M == 128) == (BLOCK_N == 128),
-                     "MiMo BM128 is paired with the BN128 split-M topology");
+                     "BM128 is paired with the BN128 split-M topology");
     DG_STATIC_ASSERT(!kSwapABRequested || BLOCK_M <= 24,
-                     "MiMo swap-AB is only selected through the M64 bucket");
+                     "swap-AB is only selected through the M64 bucket");
 
     // =====================================================================
     // Thread / warp identification
@@ -110,7 +110,7 @@
         kSplitMDecodedWeightReuse ? 64u : 128u;
     DG_STATIC_ASSERT(kSplitMDecodedWeightReuse ||
                      WG_L1_OUT_BLOCK_N < kL2ActsSFGranK,
-                     "MiMo split-N warpgroups must share one L2 activation scale");
+                     "split-N warpgroups must share one L2 activation scale");
 
     // =====================================================================
     // Shared memory layout
@@ -926,7 +926,7 @@
                 } else {
                     if constexpr (kSwapABRequested) {
                         DG_STATIC_ASSERT(kL2ActsSFGranK == 128,
-                                         "MiMo L2 swap-AB requires per-128 activation scales");
+                                         "L2 swap-AB requires per-128 activation scales");
                         auto run_swap_ab_l2 = [&]<uint32_t N_SWAP>() {
                             using SwapWGMMA = typename mma::sm90::FP8MMASelector<N_SWAP>::type;
                             constexpr uint32_t kSwapAccum = SwapWGMMA::kNumAccum;

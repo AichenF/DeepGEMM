@@ -1,5 +1,3 @@
-"""Exact-NVFP4 correctness gate for the eight-rank H200 MiMo kernel."""
-
 import argparse
 import os
 import sys
@@ -351,7 +349,7 @@ def _worker(local_rank: int, num_local_ranks: int, args: argparse.Namespace) -> 
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="H200 MiMo NVFP4 MegaMoE correctness gate")
+    parser = argparse.ArgumentParser(description="H200 NVFP4 MegaMoE correctness gate")
     parser.add_argument("--batches", nargs="+", type=int, default=[8, 16, 32, 64, 128])
     parser.add_argument("--hidden", type=int, default=6144)
     parser.add_argument("--intermediate-hidden", type=int, default=2048)
