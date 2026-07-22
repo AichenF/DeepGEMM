@@ -108,21 +108,20 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble(
         (row & 7u) << 4, lut_smem);
 }
 
-// Two split-M warpgroups cooperatively decode one N128 tile. Thread t owns
-// K-half (t / 128) of row (t % 128), halving the per-thread PRMT/LUT chain
-// while both M64 consumers reuse the same decoded weights.
+// Threads 0-127 and 128-255 each decode one K64 half of the same N128 tile,
+// allowing the two M64 warpgroups to reuse the decoded weights.
 __device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble_split_m(
         uint8_t* __restrict__ smem_b,
         const uint8_t* __restrict__ packed_b,
-        const uint32_t tid,
+        const uint32_t thread_idx,
         const uint2* __restrict__ lut_smem) {
-    const uint32_t row = tid & 127u;
-    const uint32_t k_half = tid >> 7;
+    const uint32_t row = thread_idx & 127u;
+    const uint32_t k_half_idx = thread_idx >> 7;
     const uint8_t* __restrict__ row_ptr = packed_b + row * 80u;
     const uint4* __restrict__ fp4_src =
-        reinterpret_cast<const uint4*>(row_ptr + k_half * 32u);
+        reinterpret_cast<const uint4*>(row_ptr + k_half_idx * 32u);
     const uint32_t scale_word = *reinterpret_cast<const uint32_t*>(
-        row_ptr + 64u + k_half * sizeof(uint32_t));
+        row_ptr + 64u + k_half_idx * sizeof(uint32_t));
     uint8_t* __restrict__ fp8_dst = smem_b + row * 128u;
     const uint32_t row_swizzle = (row & 7u) << 4;
 
@@ -139,13 +138,13 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble_split_m(
         const uint2 q1 = dequant_mode2_nibble_word(q.y, lut0);
         const uint2 q2 = dequant_mode2_nibble_word(q.z, lut1);
         const uint2 q3 = dequant_mode2_nibble_word(q.w, lut1);
-        const uint32_t logical0 =
-            k_half * 64u + scale_i0 * 16u;
-        const uint32_t logical1 =
-            k_half * 64u + scale_i1 * 16u;
-        *reinterpret_cast<uint4*>(fp8_dst + (logical0 ^ row_swizzle)) =
+        const uint32_t k_offset0 =
+            k_half_idx * 64u + scale_i0 * 16u;
+        const uint32_t k_offset1 =
+            k_half_idx * 64u + scale_i1 * 16u;
+        *reinterpret_cast<uint4*>(fp8_dst + (k_offset0 ^ row_swizzle)) =
             make_uint4(q0.x, q0.y, q1.x, q1.y);
-        *reinterpret_cast<uint4*>(fp8_dst + (logical1 ^ row_swizzle)) =
+        *reinterpret_cast<uint4*>(fp8_dst + (k_offset1 ^ row_swizzle)) =
             make_uint4(q2.x, q2.y, q3.x, q3.y);
     }
 }

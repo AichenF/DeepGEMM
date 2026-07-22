@@ -129,9 +129,8 @@
     // BM128 split-M alternates two decoded-B slots. This lets one WG begin
     // decoding K+1 after its K WGMMA completes without overwriting the slot
     // that the paired WG may still be consuming.
-    constexpr bool kDecoupledDecodedB = kSplitMDecodedWeightReuse;
     constexpr uint32_t kNumDecodedBStages =
-        kDecoupledDecodedB ? 2u : kNumStages;
+        kSplitMDecodedWeightReuse ? 2u : kNumStages;
     constexpr uint32_t B_LOAD_BYTES_PER_ROW = 80u;
     constexpr uint32_t SMEM_PACKED_B_SIZE_PER_STAGE =
         LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW * sizeof(b_dtype_t);
@@ -183,14 +182,16 @@
     auto smem_cd_base = smem_gemm_base;
     // CD output is shared by L1 (FP8) and L2 (BF16); reinterpret-cast as needed.
     auto smem_cd_l1 = reinterpret_cast<cutlass::float_e4m3_t*>(smem_cd_base);
-    auto smem_cd_l1_shared_sf = reinterpret_cast<float*>(smem_cd_base + SMEM_CD_OUTPUT_BASE_SIZE);
+    auto smem_cd_l1_shared_sf =
+        math::advance_ptr<float>(smem_cd_base, SMEM_CD_OUTPUT_BASE_SIZE);
     auto smem_cd_l2 = reinterpret_cast<nv_bfloat16*>(smem_cd_base);
 
     auto smem_a = utils::PatternVisitor([=](const uint32_t& i) {
         return math::advance_ptr<a_dtype_t>(smem_gemm_base, SMEM_CD_SIZE + i * SMEM_A_SIZE_PER_STAGE);
     });
     auto smem_b = utils::PatternVisitor([=](const uint32_t& i) {
-        const uint32_t decoded_stage = kDecoupledDecodedB ? (i & 1u) : i;
+        const uint32_t decoded_stage =
+            kSplitMDecodedWeightReuse ? (i & 1u) : i;
         return math::advance_ptr<b_dtype_t>(
             smem_gemm_base,
             SMEM_CD_SIZE + kNumStages * SMEM_A_SIZE_PER_STAGE +
@@ -749,8 +750,6 @@
                 kSplitMDecodedWeightReuse ? epilogue_wg_idx * WG_BLOCK_M : 0u;
             const uint32_t row_offset_r0 = row_block_offset + r_0;
             const uint32_t row_offset_r1 = row_block_offset + r_1;
-            const bool valid_r0 = row_offset_r0 < valid_m;
-            const bool valid_r1 = row_offset_r1 < valid_m;
             using BlockPhaseTag = std::remove_cv_t<std::remove_reference_t<decltype(block_phase)>>;
             constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
             const float l2_global_scale = l2_global_scales == nullptr ? 1.0f : __ldg(l2_global_scales + local_expert_idx);
@@ -764,7 +763,6 @@
             using WGMMA = L1WGMMA;
             constexpr uint32_t kAccumPerThread = WGMMA::kNumAccum;  // 64 for M=64,N=128
             float final_accum[kAccumPerThread] = {};
-            float accum[kAccumPerThread];
             const auto decode_b_stage = [&](const uint32_t& decoded_stage) {
                 if constexpr (kSplitMDecodedWeightReuse) {
                     // Both M64 consumers share the same decoded N128 tile.
@@ -871,16 +869,17 @@
                             arrive_empty_barrier(stage_idx);
                         };
 
-                        const uint32_t n_swap = ((valid_m + 7u) / 8u) * 8u;
                         if constexpr (BLOCK_M == 8) {
                             run_swap_ab_l1.template operator()<8>();
                         } else if constexpr (BLOCK_M == 16) {
+                            const uint32_t n_swap = ((valid_m + 7u) / 8u) * 8u;
                             if (n_swap <= 8) {
                                 run_swap_ab_l1.template operator()<8>();
                             } else {
                                 run_swap_ab_l1.template operator()<16>();
                             }
                         } else if constexpr (BLOCK_M == 24) {
+                            const uint32_t n_swap = ((valid_m + 7u) / 8u) * 8u;
                             if (n_swap <= 8) {
                                 run_swap_ab_l1.template operator()<8>();
                             } else if (n_swap <= 16) {
@@ -890,6 +889,7 @@
                             }
                         }
                     } else {
+                        float accum[kAccumPerThread];
                         // Single per-128 K-block WGMMA group
                         #pragma unroll
                         for (uint32_t i = 0; i < kAccumPerThread; ++ i)
@@ -979,16 +979,17 @@
                             arrive_empty_barrier(stage_idx);
                         };
 
-                        const uint32_t n_swap = ((valid_m + 7u) / 8u) * 8u;
                         if constexpr (BLOCK_M == 8) {
                             run_swap_ab_l2.template operator()<8>();
                         } else if constexpr (BLOCK_M == 16) {
+                            const uint32_t n_swap = ((valid_m + 7u) / 8u) * 8u;
                             if (n_swap <= 8) {
                                 run_swap_ab_l2.template operator()<8>();
                             } else {
                                 run_swap_ab_l2.template operator()<16>();
                             }
                         } else if constexpr (BLOCK_M == 24) {
+                            const uint32_t n_swap = ((valid_m + 7u) / 8u) * 8u;
                             if (n_swap <= 8) {
                                 run_swap_ab_l2.template operator()<8>();
                             } else if (n_swap <= 16) {
@@ -998,6 +999,7 @@
                             }
                         }
                     } else {
+                        float accum[kAccumPerThread];
                         const auto promote_l2_accum = [&](const float& scale_r0,
                                                           const float& scale_r1) {
                             #pragma unroll
@@ -1222,6 +1224,8 @@
                     notify_l1_ready(pool_block_idx, n_block_idx);
                 } else {
                     // ---------------- L1 EPILOGUE: SwiGLU + FP8 quantize + TMA store ----------------
+                    const bool valid_r0 = row_offset_r0 < valid_m;
+                    const bool valid_r1 = row_offset_r1 < valid_m;
                     // Layout in `final_accum`:
                     //   16 chunks of 8 N-cols, each chunk = 4 floats per thread = (r0c0, r0c1, r1c0, r1c1).
                     //   Gate chunks: even (0, 2, ..., 14). Up chunks: odd (1, 3, ..., 15).
@@ -1414,11 +1418,10 @@
                 }
             } else {
                 // ---------------- L2 EPILOGUE: BF16 cast + NVLink scatter ----------------
-                // Each active warp scatters a contiguous group of up to 16 rows.
-                constexpr uint32_t kNumRowsPerWarp =
-                    BLOCK_M == 8 ? 4u : 8u;
-
                 if constexpr (kSwapABRequested) {
+                    // Each active warp scatters a contiguous group of up to 16 rows.
+                    constexpr uint32_t kNumRowsPerWarp =
+                        BLOCK_M == 8 ? 4u : 8u;
                     auto store_swap_bf16 = [&](const uint32_t& token, const uint32_t& col, const float& value) {
                         if (token < valid_m)
                             smem_cd_l2[token * BLOCK_N + wg_n_idx + col] =
@@ -1492,6 +1495,8 @@
                 } else {
                     DG_STATIC_ASSERT(WG_BLOCK_N == 64 || WG_BLOCK_N == 128,
                                      "Direct L2 scatter requires N64/N128");
+                    const bool valid_r0 = row_offset_r0 < valid_m;
+                    const bool valid_r1 = row_offset_r1 < valid_m;
 
                     auto scatter_direct_row = [&](const uint32_t& row_offset, const bool& valid_row, const uint32_t& row_accum_offset) {
                         if (valid_row) {

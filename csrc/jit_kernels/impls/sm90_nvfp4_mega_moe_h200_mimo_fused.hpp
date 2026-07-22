@@ -146,7 +146,7 @@ static void sm90_nvfp4_h200_mimo_fused_mega_moe(
     DG_HOST_ASSERT(plan.swap_ab == (num_tokens <= 64));
 
     constexpr int kL1ScaleGranK = 128;
-    const int l2_scale_gran_k = config.block_n == 128 ? 64 : 128;
+    const int l2_scale_gran_k = config.block_n / 2;
     const auto tensor_map_l1_acts = make_tma_2d_desc(
         l1_acts, hidden, config.num_max_pool_tokens,
         KernelConfig::kBlockK, config.block_m,
