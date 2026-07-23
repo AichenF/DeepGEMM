@@ -131,6 +131,26 @@ select_sm90_nvfp4_small_m_tuning(const SM90NVFP4SmallMLoad& load) {
             true,
         };
     }
+    if (load.less_equal(18)) {
+        return {
+            24,
+            all_local_experts,
+            3,
+            true,
+            true,
+            false,
+        };
+    }
+    if (load.less_equal(24)) {
+        return {
+            64,
+            16,
+            3,
+            false,
+            true,
+            false,
+        };
+    }
     return {
         64,
         all_local_experts,

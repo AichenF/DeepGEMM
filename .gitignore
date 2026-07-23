@@ -25,7 +25,10 @@ deep_gemm/*.so
 
 # Local cleanup/review artifacts that should not be re-tracked
 /tests/bench_mega_moe_sm90.py
+/docs/
 /HINTS.md
+/ITERATIONS.md
+/NVFP4_MEGAMOE.md
 /trajectory/
 /_bench_output.txt
 *.orig

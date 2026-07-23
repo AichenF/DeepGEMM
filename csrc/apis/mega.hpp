@@ -42,13 +42,13 @@ get_symm_buffer_size_for_mega_moe(
     const auto bf16_token_layout = layout::Data(hidden * 2);
     const auto fp8_intermediate_token_layout = layout::Data(intermediate_hidden);
     const auto fp8_sf_layout = layout::Data(hidden / 32);
-    // L2 acts SF granularity differs by arch:
+    // L2 acts SF physical capacity differs by arch:
     //   * SM100 packs 4 UE8M0 bytes per int along K, so each token uses
     //     `intermediate_hidden / 32` bytes (per-32 K).
-    //   * SM90 stores per-64 K floats so that each L1 epilogue block (which
-    //     produces 64 post-SwiGLU columns) can write its own SF independently
-    //     without cross-CTA amax synchronisation; bytes per token become
-    //     `intermediate_hidden / 64 * sizeof(float) = intermediate_hidden / 16`.
+    //   * SM90 stage 1 retains the old per-64-sized float allocation
+    //     (`intermediate_hidden / 16` bytes/token), while all active NVFP4
+    //     kernels use logical per-128 scales in its dense first half. Physical
+    //     compaction is deliberately deferred to a separate change.
     const int fp8_intermediate_sf_bytes_per_token =
         is_sm90 ? (intermediate_hidden / 16) : (intermediate_hidden / 32);
     const auto fp8_intermediate_sf_layout = layout::Data(fp8_intermediate_sf_bytes_per_token);
@@ -144,6 +144,8 @@ get_symm_buffer_size_for_mega_moe(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(l2_token_buffer.base)),
             {num_max_pool_tokens, intermediate_hidden},
             torch::TensorOptions().dtype(torch::kFloat8_e4m3fn).device(buffer.device()));
+        // Preserve the per-64-capacity view for ABI/workspace stability. SM90
+        // NVFP4 kernels address only columns [0, intermediate_hidden / 128).
         auto l2_acts_sf = torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(l2_sf_buffer.base)),
             {num_max_padded_sf_pool_tokens, is_sm90 ? intermediate_hidden / 64 : intermediate_hidden / 128},

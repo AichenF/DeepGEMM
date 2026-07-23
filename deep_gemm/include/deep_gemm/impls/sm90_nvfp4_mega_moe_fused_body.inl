@@ -301,9 +301,8 @@
                 full_barriers[s]->wait(p);
                 #pragma unroll
                 for (uint32_t row = non_epilogue_thread_idx; row < LOAD_BLOCK_N; row += 64u)
-                    deep_gemm::nvfp4::dequant_smem_b_from_packed_fused_scale<
-                        kIntermediateHidden >= 3072, kDp4aSelectorPack,
-                        kDp4aSelectorPack || kHybridLowSelectorPack>(
+                    deep_gemm::nvfp4::dequant_smem_b_from_packed_mode2_nibble<
+                        kIntermediateHidden >= 3072>(
                         reinterpret_cast<uint8_t*>(smem_b[s]),
                         reinterpret_cast<const uint8_t*>(smem_packed_b[s]),
                         row, smem_nvfp4_lut);
@@ -313,18 +312,14 @@
                 if constexpr (LOAD_BLOCK_N == 256) {
                     full_barriers[s]->wait(p);
                     const uint32_t dequant_tid = non_epilogue_thread_idx;
-                    deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_fused_scale<
-                        128u, 8u, 80u, kDp4aSelectorPack,
-                        kDp4aSelectorPack || kHybridLowSelectorPack>(
+                    deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_mode2_nibble<128u, 8u>(
                         reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
                 } else if (non_epilogue_thread_idx >= 64u) {
                     full_barriers[s]->wait(p);
                     const uint32_t dequant_tid = non_epilogue_thread_idx - 64u;
-                    deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_fused_scale<
-                        64u, 8u, 80u, kDp4aSelectorPack,
-                        kDp4aSelectorPack || kHybridLowSelectorPack>(
+                    deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_mode2_nibble<64u, 8u>(
                         reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
@@ -1366,9 +1361,8 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         DG_STATIC_ASSERT(kPackedBScratch,
                                          "Math-side NVFP4 fused-layout dequant requires packed scratch");
                         const uint32_t _tid_in_wg = epilogue_thread_idx;
-                        deep_gemm::nvfp4::dequant_smem_b_from_packed_fused_scale<
-                            kIntermediateHidden >= 3072, kDp4aSelectorPack,
-                            kDp4aSelectorPack || kHybridLowSelectorPack>(
+                        deep_gemm::nvfp4::dequant_smem_b_from_packed_mode2_nibble<
+                            kIntermediateHidden >= 3072>(
                             reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
                             reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
                             _tid_in_wg, smem_nvfp4_lut);

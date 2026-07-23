@@ -6,7 +6,8 @@
     // Template checks
     // =====================================================================
     DG_STATIC_ASSERT(kNumDispatchThreads == 64 or kNumDispatchThreads % 128 == 0, "Invalid number of dispatch threads");
-    DG_STATIC_ASSERT(kNumNonEpilogueThreads == 64 or kNumNonEpilogueThreads == 128, "Invalid number of GEMM TMA warps (2 or 4 warps expected)");
+    DG_STATIC_ASSERT(kNumNonEpilogueThreads == 64 or kNumNonEpilogueThreads == 128,
+                     "Invalid number of GEMM TMA warps (2 or 4 warps expected)");
     DG_STATIC_ASSERT(kNumEpilogueThreads % 128 == 0, "Invalid number of math/epilogue threads");
     DG_STATIC_ASSERT((kNumDispatchThreads + kNumNonEpilogueThreads) % 128 == 0,
                      "Epilogue warpgroups must start at a warpgroup-aligned thread offset");
@@ -21,6 +22,9 @@
     DG_STATIC_ASSERT((!kLoaderDequantRequested) or kNumNonEpilogueThreads == 128 or
                      (kNumNonEpilogueThreads == 64 and BLOCK_N == 256),
                      "NVFP4 loader dequant expects four non-epilogue warps or the BN256 packed-scratch path");
+    DG_STATIC_ASSERT(kNumDispatchThreads == 0 && kNumNonEpilogueThreads == 128 &&
+                     kNumEpilogueThreads == 256 && BLOCK_M == 128 && BLOCK_N == 128,
+                     "split L2 per-128 consumer requires the BM128/BN128 standalone plan");
 
     // =====================================================================
     // Thread / warp identification
@@ -37,8 +41,9 @@
     }
 
     // =====================================================================
-    // Workspaces and symmetric buffer slicing (mirror SM100 layout, except SF
-    // for L2 activations uses per-64 K granularity)
+    // Workspaces and symmetric buffer slicing. The L2 activation SF allocation
+    // intentionally retains its old per-64 physical capacity in stage 1, while
+    // the active logical layout densely addresses only per-128 groups.
     // =====================================================================
     const auto workspace = layout::Workspace(
         sym_buffer.get_base_ptr(), kNumRanks, kNumExperts, kNumMaxTokensPerRank, kNumTopk);
@@ -48,7 +53,8 @@
     constexpr auto fp8_intermediate_token_layout = layout::Data(kIntermediateHidden);
     // Per-128 K float SF: 4 bytes per per-128 group => `kHidden / 32` bytes/token (same as SM100 packing)
     constexpr auto fp8_sf_layout                 = layout::Data(kHidden / 32);
-    // Per-64 K float SF (SM90 only): 4 bytes per per-64 group => `kIntermediateHidden / 16` bytes/token
+    // Retained physical capacity: 4 bytes per old per-64 group. Logical
+    // per-128 scales occupy the dense first half of this allocation.
     constexpr auto fp8_intermediate_sf_layout    = layout::Data(kIntermediateHidden / 16);
     constexpr auto input_topk_idx_layout         = layout::Data(kNumTopk * sizeof(int64_t), false);
     constexpr auto input_topk_weights_layout     = layout::Data(kNumTopk * sizeof(float), false);
@@ -86,8 +92,7 @@
     constexpr uint32_t WG_BLOCK_N = (kSplitNWarpgroups || kSerialNWarpgroups) ? BLOCK_N / 2 : BLOCK_N;
     constexpr uint32_t L1_OUT_BLOCK_N = BLOCK_N / 2;       // post-SwiGLU tile N
     constexpr uint32_t WG_L1_OUT_BLOCK_N = WG_BLOCK_N / 2; // post-SwiGLU per-WG N
-    constexpr bool kL2DualAccum = kL2DualAccumRequested &&
-        (!kSplitNWarpgroups) && (!kSerialNWarpgroups) && WG_BLOCK_N == 128;
+    constexpr bool kL2DualAccum = false;
     constexpr bool kSkipL2ReadyMask = true;
     constexpr bool kSkipL1ReadyNotify = true;
     // Keep the 4-warp dispatch allocation for warpgroup/register alignment,
@@ -115,7 +120,14 @@
     constexpr uint32_t kSwizzleBMode   = BLOCK_K * sizeof(b_dtype_t);   // 128
     constexpr uint32_t kSwizzleCDMode  = 128;
     constexpr uint32_t kGranK          = 128;          // L1 acts SF, weights SF
-    constexpr uint32_t kL2ActsSFGranK  = 64;           // L2 acts SF (per-64 K, SM90 only)
+    constexpr uint32_t kL2ActsSFGranK  = 128;          // L1 output and L2 input SF granularity
+    // Split L1 and L2 share the same canonical BM128 physical pool-block unit,
+    // so scheduling and pool-prefix accounting use the same granularity.
+    constexpr uint32_t kPoolBlockM     = BLOCK_M;
+    DG_STATIC_ASSERT(BLOCK_M % kPoolBlockM == 0,
+                     "L2 compute BM must be an integer multiple of the physical pool BM");
+    DG_STATIC_ASSERT(kIntermediateHidden / kL2ActsSFGranK <= kIntermediateHidden / 64,
+                     "logical per-128 SF groups must fit retained physical capacity");
 
     // =====================================================================
     // Shared memory layout
@@ -135,12 +147,10 @@
     constexpr uint32_t SMEM_B_LOAD_SIZE_PER_STAGE = LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW;
     constexpr uint32_t SMEM_PACKED_B_SIZE_PER_STAGE = kPackedBScratch ?
         LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW * sizeof(b_dtype_t) : 0u;
-    // SFA per-stage must be sized for the larger of L1 (BLOCK_M floats) and L2
-    // (two per-64-K halves). Each TMA destination must be 128B aligned, so
-    // the second L2 half cannot start immediately after 16 floats in M16 decode.
+    // One per-128 activation scale is loaded for each row and BK128 tile.
     constexpr uint32_t kL2SFAHalfStride =
         math::constexpr_align<uint32_t>(BLOCK_M * sizeof(float), 128u) / sizeof(float);
-    constexpr uint32_t SMEM_SFA_SIZE_PER_STAGE = 2 * kL2SFAHalfStride * sizeof(float);
+    constexpr uint32_t SMEM_SFA_SIZE_PER_STAGE = kL2SFAHalfStride * sizeof(float);
     // CD output: max of L1 FP8 (BLOCK_M * (BLOCK_N/2) * 1 byte * num_wg) and
     // L2 BF16 (BLOCK_M * BLOCK_N * 2 bytes * num_wg).
     constexpr uint32_t SMEM_CD_ACCUM_SIZE = 0u;
@@ -256,7 +266,7 @@
         L1_SHAPE_N, L1_SHAPE_K,
         L2_SHAPE_N, L2_SHAPE_K,
         kNumExpertsPerRank, kNumExpertsPerWave,
-        kNumSMs, kNumRanks, kClusterSize>(workspace);
+        kNumSMs, kNumRanks, kClusterSize, kPoolBlockM>(workspace);
 
     // Pipeline state shared by TMA loaders and math warpgroups
     uint32_t stage_idx = 0, phase = 0;
@@ -319,6 +329,8 @@
     constexpr uint32_t kNumNonEpilogueRegisters =
         (kLoaderDequant && kNumEpilogueThreads == 128) ? 80 :
         (kLoaderDequant && kNumEpilogueThreads == 256 && LOAD_BLOCK_N == 256) ? 80 :
+        (kLoaderDequant && kNumDispatchThreads == 0 &&
+         kNumEpilogueThreads == 256 && LOAD_BLOCK_N == 128) ? 112 :
         (kLoaderDequant && kNumEpilogueThreads == 256) ? 64 : 40;
     constexpr uint32_t kNumEpilogueRegisters    =
         (kLoaderDequant && kNumEpilogueThreads == 256 && LOAD_BLOCK_N == 256) ? 184 :
@@ -391,7 +403,7 @@
             for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
                 const auto num_recv_tokens = static_cast<uint32_t>(
                     *workspace.get_expert_recv_count_sum_ptr(i));
-                const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
+                const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, kPoolBlockM);
                 const auto cleanup_pool_block_offset = scheduler.get_pool_block_offset(i);
 
                 ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
@@ -457,7 +469,7 @@
                 return &tensor_map_l2_acts_sf;
             }();
 
-            const uint32_t pool_block_idx = scheduler.get_current_pool_block_offset() + m_block_idx;
+            const uint32_t pool_token_idx = scheduler.get_current_block_pool_token_idx();
             const uint32_t valid_m = scheduler.template get_valid_m<false>();
             const bool has_valid_m = valid_m > 0;
 
@@ -475,7 +487,7 @@
 
                 if (cute::elect_one_sync()) {
                     if (has_valid_m) {
-                    const uint32_t m_idx = pool_block_idx * BLOCK_M;
+                    const uint32_t m_idx = pool_token_idx;
                     const uint32_t k_idx = k_block_idx * BLOCK_K;
 
                     // TMA load A
@@ -483,21 +495,14 @@
                         tensor_map_a_ptr, full_barriers[stage_idx], smem_a[stage_idx],
                         k_idx, m_idx, 1);
 
-                    // TMA load SFA
-                    
-                        // L2 SFA per-64: descriptor box is (block_mn, 1) (see make_tma_sf_desc),
-                        // so we must issue two single-group TMAs and place them at smem offsets
-                        // 0 and BLOCK_M to match math's load offsets (`+ 0 * BLOCK_M` / `+ 1 * BLOCK_M`).
-                        tma::copy<BLOCK_M, 1, 0, float>(
-                            tensor_map_sfa_ptr, full_barriers[stage_idx], smem_sfa[stage_idx],
-                            m_idx, k_block_idx * 2, 1);
-                        tma::copy<BLOCK_M, 1, 0, float>(
-                            tensor_map_sfa_ptr, full_barriers[stage_idx],
-                            smem_sfa[stage_idx] + kL2SFAHalfStride,
-                            m_idx, k_block_idx * 2 + 1, 1);
-                        full_barriers[stage_idx]->arrive_and_expect_tx(
-                            SMEM_A_SIZE_PER_STAGE + 2 * BLOCK_M * sizeof(float));
-                    
+                    // One dense SFA group per BK128. The physical global
+                    // allocation is still twice as large, but the descriptor
+                    // and transaction address only its logical first half.
+                    tma::copy<BLOCK_M, 1, 0, float>(
+                        tensor_map_sfa_ptr, full_barriers[stage_idx], smem_sfa[stage_idx],
+                        m_idx, k_block_idx, 1);
+                    full_barriers[stage_idx]->arrive_and_expect_tx(
+                        SMEM_A_SIZE_PER_STAGE + BLOCK_M * sizeof(float));
                     } else {
                         full_barriers[stage_idx]->arrive();
                     }
@@ -594,7 +599,7 @@
                 for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
                     const auto num_recv_tokens = static_cast<uint32_t>(
                         *workspace.get_expert_recv_count_sum_ptr(i));
-                    const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
+                    const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, kPoolBlockM);
                     const auto cleanup_pool_block_offset = scheduler.get_pool_block_offset(i);
 
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
@@ -653,8 +658,7 @@
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx) {
             const uint32_t valid_m = scheduler.template get_valid_m<false>();
-            const uint32_t pool_block_idx = scheduler.get_current_pool_block_offset() + m_block_idx;
-            const uint32_t m_idx = pool_block_idx * BLOCK_M;
+            const uint32_t m_idx = scheduler.get_current_block_pool_token_idx();
             const uint32_t wg_n_idx = kSplitNWarpgroups ? epilogue_wg_idx * WG_BLOCK_N : 0;
             const uint32_t wg_l1_out_n_idx = kSplitNWarpgroups ? epilogue_wg_idx * WG_L1_OUT_BLOCK_N : 0;
             const uint32_t n_idx = n_block_idx * BLOCK_N + wg_n_idx;
@@ -867,130 +871,43 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     }
                 }
 
-                // Read SF (must precede warpgroup_arrive)
-                float scale_a_0_lo, scale_a_1_lo;
-                float scale_a_0_hi, scale_a_1_hi;  // Only used in L2 (per-64 K)
-                
-                    // L2: SFA layout is (K=2, M=BLOCK_M) MN-major; first half SF at offset 0, second at BLOCK_M
-                    scale_a_0_lo = ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r0);
-                    scale_a_1_lo = ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r1);
-                    scale_a_0_hi = ptx::ld_shared(smem_sfa[stage_idx] + kL2SFAHalfStride + row_offset_r0);
-                    scale_a_1_hi = ptx::ld_shared(smem_sfa[stage_idx] + kL2SFAHalfStride + row_offset_r1);
-                
+                // One activation scale covers all four K32 WGMMAs in BK128.
+                // Read it before warpgroup_arrive as required by WGMMA.
+                const float scale_a_0 =
+                    ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r0);
+                const float scale_a_1 =
+                    ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r1);
 
                 // NVFP4 UE4M3 weight scales are applied during FP4 -> FP8 smem
                 // expansion, so the WGMMA accumulator only needs activation SF.
 
-                
-                    if constexpr (kL2DualAccum) {
-                        float accum_hi[kAccumPerThread];
+                #pragma unroll
+                for (uint32_t i = 0; i < kAccumPerThread; ++ i)
+                    ptx::warpgroup_fence_operand(accum[i]);
+                ptx::warpgroup_arrive();
+                #pragma unroll
+                for (uint32_t k = 0; k < BLOCK_K / WGMMA::K; ++ k) {
+                    auto desc_a = mma::sm90::make_smem_desc(
+                        smem_a[stage_idx] + row_block_offset * BLOCK_K + k * WGMMA::K, 1);
+                    auto desc_b = mma::sm90::make_smem_desc(
+                        smem_b[stage_idx] + wg_n_idx * BLOCK_K + k * WGMMA::K, 1);
+                    WGMMA::wgmma(desc_a, desc_b, accum, k);
+                }
+                ptx::warpgroup_commit_batch();
+                #pragma unroll
+                for (uint32_t i = 0; i < kAccumPerThread; ++ i)
+                    ptx::warpgroup_fence_operand(accum[i]);
+                ptx::warpgroup_wait<0>();
 
-                        const auto desc_a_lo0 = mma::sm90::make_smem_desc(
-                            smem_a[stage_idx] + row_block_offset * BLOCK_K, 1);
-                        const auto desc_b_lo0 = mma::sm90::make_smem_desc(
-                            smem_b[stage_idx] + wg_n_idx * BLOCK_K, 1);
-                        const auto desc_a_lo1 = mma::sm90::make_smem_desc(
-                            smem_a[stage_idx] + row_block_offset * BLOCK_K + WGMMA::K, 1);
-                        const auto desc_b_lo1 = mma::sm90::make_smem_desc(
-                            smem_b[stage_idx] + wg_n_idx * BLOCK_K + WGMMA::K, 1);
-                        const auto desc_a_hi0 = mma::sm90::make_smem_desc(
-                            smem_a[stage_idx] + row_block_offset * BLOCK_K + BLOCK_K / 2, 1);
-                        const auto desc_b_hi0 = mma::sm90::make_smem_desc(
-                            smem_b[stage_idx] + wg_n_idx * BLOCK_K + BLOCK_K / 2, 1);
-                        const auto desc_a_hi1 = mma::sm90::make_smem_desc(
-                            smem_a[stage_idx] + row_block_offset * BLOCK_K + BLOCK_K / 2 + WGMMA::K, 1);
-                        const auto desc_b_hi1 = mma::sm90::make_smem_desc(
-                            smem_b[stage_idx] + wg_n_idx * BLOCK_K + BLOCK_K / 2 + WGMMA::K, 1);
+                arrive_empty_barrier(stage_idx);
 
-                        #pragma unroll
-                        for (uint32_t i = 0; i < kAccumPerThread; ++ i) {
-                            ptx::warpgroup_fence_operand(accum[i]);
-                            ptx::warpgroup_fence_operand(accum_hi[i]);
-                        }
-                        ptx::warpgroup_arrive();
-                        WGMMA::wgmma(desc_a_lo0, desc_b_lo0, accum, false);
-                        WGMMA::wgmma(desc_a_lo1, desc_b_lo1, accum, true);
-                        WGMMA::wgmma(desc_a_hi0, desc_b_hi0, accum_hi, false);
-                        WGMMA::wgmma(desc_a_hi1, desc_b_hi1, accum_hi, true);
-                        ptx::warpgroup_commit_batch();
-                        #pragma unroll
-                        for (uint32_t i = 0; i < kAccumPerThread; ++ i) {
-                            ptx::warpgroup_fence_operand(accum[i]);
-                            ptx::warpgroup_fence_operand(accum_hi[i]);
-                        }
-                        ptx::warpgroup_wait<0>();
-
-                        arrive_empty_barrier(stage_idx);
-
-                        #pragma unroll
-                        for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
-                            final_accum[i*4+0] += scale_a_0_lo * accum[i*4+0];
-                            final_accum[i*4+1] += scale_a_0_lo * accum[i*4+1];
-                            final_accum[i*4+2] += scale_a_1_lo * accum[i*4+2];
-                            final_accum[i*4+3] += scale_a_1_lo * accum[i*4+3];
-                            final_accum[i*4+0] += scale_a_0_hi * accum_hi[i*4+0];
-                            final_accum[i*4+1] += scale_a_0_hi * accum_hi[i*4+1];
-                            final_accum[i*4+2] += scale_a_1_hi * accum_hi[i*4+2];
-                            final_accum[i*4+3] += scale_a_1_hi * accum_hi[i*4+3];
-                        }
-                    } else {
-                    // L2: split BLOCK_K=128 into two halves (per-64 SFA), each 2 WGMMAs.
-                    // First half: K=0..63, SFA = scale_a_*_lo
-                    #pragma unroll
-                    for (uint32_t i = 0; i < kAccumPerThread; ++ i) ptx::warpgroup_fence_operand(accum[i]);
-                    ptx::warpgroup_arrive();
-                    #pragma unroll
-                    for (uint32_t k = 0; k < (BLOCK_K / 2) / WGMMA::K; ++ k) {
-                        auto desc_a = mma::sm90::make_smem_desc(
-                            smem_a[stage_idx] + row_block_offset * BLOCK_K + k * WGMMA::K, 1);
-                        auto desc_b = mma::sm90::make_smem_desc(
-                            smem_b[stage_idx] + wg_n_idx * BLOCK_K + k * WGMMA::K, 1);
-                        WGMMA::wgmma(desc_a, desc_b, accum, k);
-                    }
-                    ptx::warpgroup_commit_batch();
-                    #pragma unroll
-                    for (uint32_t i = 0; i < kAccumPerThread; ++ i) ptx::warpgroup_fence_operand(accum[i]);
-                    ptx::warpgroup_wait<0>();
-
-                    // L2 weight SF is per 128 output columns; M64N256 spans two SF groups.
-                    #pragma unroll
-                    for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
-                        final_accum[i*4+0] += scale_a_0_lo * accum[i*4+0];
-                        final_accum[i*4+1] += scale_a_0_lo * accum[i*4+1];
-                        final_accum[i*4+2] += scale_a_1_lo * accum[i*4+2];
-                        final_accum[i*4+3] += scale_a_1_lo * accum[i*4+3];
-                    }
-
-                    // Second half: K=64..127, SFA = scale_a_*_hi
-                    #pragma unroll
-                    for (uint32_t i = 0; i < kAccumPerThread; ++ i) ptx::warpgroup_fence_operand(accum[i]);
-                    ptx::warpgroup_arrive();
-                    #pragma unroll
-                    for (uint32_t k = 0; k < (BLOCK_K / 2) / WGMMA::K; ++ k) {
-                        const uint32_t k_off = (BLOCK_K / 2) + k * WGMMA::K;
-                        auto desc_a = mma::sm90::make_smem_desc(
-                            smem_a[stage_idx] + row_block_offset * BLOCK_K + k_off, 1);
-                        auto desc_b = mma::sm90::make_smem_desc(
-                            smem_b[stage_idx] + wg_n_idx * BLOCK_K + k_off, 1);
-                        WGMMA::wgmma(desc_a, desc_b, accum, k);
-                    }
-                    ptx::warpgroup_commit_batch();
-                    #pragma unroll
-                    for (uint32_t i = 0; i < kAccumPerThread; ++ i) ptx::warpgroup_fence_operand(accum[i]);
-                    ptx::warpgroup_wait<0>();
-
-                    arrive_empty_barrier(stage_idx);
-
-                    // L2 second half: same SFA half, still choose weight SF by N chunk.
-                    #pragma unroll
-                    for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
-                        final_accum[i*4+0] += scale_a_0_hi * accum[i*4+0];
-                        final_accum[i*4+1] += scale_a_0_hi * accum[i*4+1];
-                        final_accum[i*4+2] += scale_a_1_hi * accum[i*4+2];
-                        final_accum[i*4+3] += scale_a_1_hi * accum[i*4+3];
-                    }
-                    }
-                
+                #pragma unroll
+                for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
+                    final_accum[i*4+0] += scale_a_0 * accum[i*4+0];
+                    final_accum[i*4+1] += scale_a_0 * accum[i*4+1];
+                    final_accum[i*4+2] += scale_a_1 * accum[i*4+2];
+                    final_accum[i*4+3] += scale_a_1 * accum[i*4+3];
+                }
             }
             };
 

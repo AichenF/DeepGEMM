@@ -24,7 +24,9 @@ namespace deep_gemm {
 // Differences from SM100 native FP4 path:
 //   * Hopper has no native block-scaled FP4 MMA, so B is manually dequantized
 //     to FP8 in shared memory before WGMMA.
-//   * Activation SF remains the SM90 FP8 per-128/per-64 float path.
+//   * Activation SF is logically per-128 for both input and L1-to-L2
+//     intermediates. The intermediate SF allocation deliberately retains its
+//     former per-64 physical capacity until the separate compaction change.
 //   * Weight SF is raw UE4M3 uint8 prepacked as (E, N/128, K/128, 128, 8).
 //   * Cluster size is at most 2 (TMA multicast on A); no 2-CTA UMMA.
 // ============================================================================
@@ -47,9 +49,8 @@ public:
         bool phase_profile;
         bool l2_arrival_counter;
         bool loader_dequant;
+        bool dispatch_dequant;
         bool swap_ab;
-        bool dp4a_selector_pack;
-        bool hybrid_low_selector_pack;
         int phase_mode;
         MegaMoESM90Config config;
 
@@ -82,21 +83,19 @@ public:
         const std::string phase_template_args = args.phase_mode == kFusedPhaseMode ?
             fmt::format("/* kPhaseProfileRequested */ {},\n"
                         "        /* kLoaderDequantRequested */ {},\n"
-                        "        /* kSwapABRequested */ {},\n"
-                        "        /* kDp4aSelectorPack */ {},\n"
-                        "        /* kHybridLowSelectorPack */ {}",
+                        "        /* kSwapABRequested */ {}",
                         args.phase_profile ? "true" : "false",
                         args.loader_dequant ? "true" : "false",
-                        args.swap_ab ? "true" : "false",
-                        args.dp4a_selector_pack ? "true" : "false",
-                        args.hybrid_low_selector_pack ? "true" : "false") :
+                        args.swap_ab ? "true" : "false") :
             (args.phase_mode == kSplitL1PhaseMode ?
                 fmt::format("/* kPhaseProfileRequested */ {},\n"
                             "        /* kL2ArrivalCounterRequested */ {},\n"
-                            "        /* kLoaderDequantRequested */ {}",
+                            "        /* kLoaderDequantRequested */ {},\n"
+                            "        /* kDispatchDequantRequested */ {}",
                             args.phase_profile ? "true" : "false",
                             args.l2_arrival_counter ? "true" : "false",
-                            args.loader_dequant ? "true" : "false") :
+                            args.loader_dequant ? "true" : "false",
+                            args.dispatch_dequant ? "true" : "false") :
                 fmt::format("/* kL2DualAccumRequested */ {},\n"
                             "        /* kPhaseProfileRequested */ {},\n"
                             "        /* kLoaderDequantRequested */ {}",
@@ -199,9 +198,8 @@ struct SM90NVFP4MegaMoEPlan {
     MegaMoESM90Config split_l2_config;
     bool use_fused_phase;
     bool loader_dequant;
+    bool dispatch_dequant;
     bool swap_ab;
-    bool dp4a_selector_pack;
-    bool hybrid_low_selector_pack;
     bool l2_dual_accum;
     bool l2_arrival_counter;
 };
@@ -210,12 +208,16 @@ static std::pair<int, int> get_nvfp4_pipeline_config_for_mega_moe_sm90(
     const int num_experts, const int hidden,
     const float expected_tokens_per_local_expert,
     const MegaMoESM90Config& config,
+    const int num_active_dispatch_warps,
     const bool loader_dequant, const bool packed_b_scratch,
-    const bool swap_ab, const bool l2_only
+    const bool swap_ab, const bool l2_only,
+    const int l2_acts_sf_gran_k
 ) {
     const auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
     constexpr int kSmemAlignment = 1024;
-    const int num_dispatch_warps = config.num_dispatch_threads / 32;
+    DG_HOST_ASSERT(num_active_dispatch_warps >= 0);
+    DG_HOST_ASSERT(num_active_dispatch_warps <= config.num_dispatch_threads / 32);
+    const int num_dispatch_warps = num_active_dispatch_warps;
     const int num_epilogue_warps = config.num_epilogue_threads / 32;
     const int num_epilogue_warpgroups = num_epilogue_warps / 4;
 
@@ -242,7 +244,9 @@ static std::pair<int, int> get_nvfp4_pipeline_config_for_mega_moe_sm90(
     const int smem_nvfp4_lut = align(128 * 8, kSmemAlignment);
 
     const int smem_cd_l1 = num_epilogue_warpgroups * wg_block_m * wg_l1_out_block_n;
-    const bool split_n_shares_l1_sf = split_n_warpgroups && wg_l1_out_block_n < 64;
+    DG_HOST_ASSERT(l2_acts_sf_gran_k == 64 || l2_acts_sf_gran_k == 128);
+    const bool split_n_shares_l1_sf =
+        split_n_warpgroups && wg_l1_out_block_n < l2_acts_sf_gran_k;
     const int smem_cd_l1_shared_sf_slots = split_n_shares_l1_sf ?
         num_epilogue_warpgroups * config.block_m : 0;
     const int smem_cd_l1_swap_amax_slots = swap_ab ?
@@ -256,8 +260,9 @@ static std::pair<int, int> get_nvfp4_pipeline_config_for_mega_moe_sm90(
         std::max(smem_cd_l1, smem_cd_l2) + smem_cd_l1_shared_sf,
         kSmemAlignment);
 
+    const int num_sfa_groups_per_bk = config.block_k / l2_acts_sf_gran_k;
     const int smem_sfa_per_stage = align(
-        2 * config.block_m * static_cast<int>(sizeof(float)), 128);
+        num_sfa_groups_per_bk * config.block_m * static_cast<int>(sizeof(float)), 128);
     const int smem_packed_b_per_stage = packed_b_scratch ?
         config.block_n * kSM90NVFP4BStoragePerKBlock : 0;
     const int smem_per_stage = config.block_m * config.block_k +
@@ -289,97 +294,94 @@ static SM90NVFP4MegaMoEPlan get_nvfp4_mega_moe_plan_sm90(
     const int routed_tokens = num_tokens * num_topk;
     const float expected_tokens_per_local_expert =
         static_cast<float>(routed_tokens) / num_experts_per_rank;
-    const auto expected_eq = [=](int expected) {
-        return routed_tokens == expected * num_experts_per_rank;
-    };
     const auto expected_in_closed_range = [=](int lower, int upper) {
         return routed_tokens >= lower * num_experts_per_rank &&
                routed_tokens <= upper * num_experts_per_rank;
     };
 
     const bool use_fused_phase = block_n_from_layout == 256;
-    const int block_m = !use_fused_phase && expected_tokens_per_local_expert >= 64.0f ?
-        128 : 64;
-    const int block_n = block_n_from_layout;
+    // The split-L1 geometry pairs adjacent N CTAs in a two-CTA Hopper cluster.
+    // Each CTA computes one 64-column post-SwiGLU half; the pair publishes one
+    // direct per-128 activation scale.
+    const int l1_block_m = 128;
+    const int l1_block_n = 128;
+    const int l2_block_m = 128;
+    const int l2_block_n = use_fused_phase ? 256 : 128;
     const int block_k = 128;
-    const int cluster_size = 1;
-    const int num_dispatch_threads = use_fused_phase ? 64 : 128;
-    const int num_non_epilogue_threads = use_fused_phase ? 64 : 128;
-    const int num_epilogue_threads = use_fused_phase || block_m == 128 ? 256 : 128;
+    const int cluster_size = use_fused_phase ? 1 : 2;
+    const int l1_num_dispatch_threads = use_fused_phase ? 64 : 128;
+    const int l1_num_non_epilogue_threads = use_fused_phase ? 64 : 128;
+    const int l1_num_epilogue_threads = 256;
+    const int l2_num_non_epilogue_threads = 128;
+    const int l2_num_epilogue_threads = 256;
 
-    DG_HOST_ASSERT(block_m == 64 || block_m == 128);
-    DG_HOST_ASSERT((block_n == 128 &&
-                    (num_epilogue_threads == 128 || num_epilogue_threads == 256)) ||
-                   (block_n == 256 && num_epilogue_threads == 256));
-    DG_HOST_ASSERT((num_dispatch_threads + num_non_epilogue_threads) % 128 == 0);
+    DG_HOST_ASSERT((l1_num_dispatch_threads + l1_num_non_epilogue_threads) % 128 == 0);
 
-    int num_experts_per_wave = get_num_experts_per_wave_for_mega_moe_sm90(
+    const int l1_num_experts_per_wave = get_num_experts_per_wave_for_mega_moe_sm90(
         num_experts_per_rank, num_tokens, num_topk,
-        intermediate_hidden, block_m, block_n,
+        intermediate_hidden, l1_block_m, l1_block_n,
         device_runtime->get_num_sms());
-    if (block_m == 128 && block_n == 128) {
-        if (expected_eq(256))
-            num_experts_per_wave = num_experts_per_rank;
-        if (expected_eq(512) && num_experts_per_rank % 4 == 0)
-            num_experts_per_wave = 4;
-    }
 
-    const int m_tiles = (num_tokens + block_m - 1) / block_m;
+    const int m_tiles = (num_tokens + l1_block_m - 1) / l1_block_m;
     const bool loader_dequant_requested =
         use_fused_phase ? m_tiles >= 2 : true;
     const bool bn256_packed_loader_dequant =
-        use_fused_phase && num_non_epilogue_threads == 64;
+        use_fused_phase && l1_num_non_epilogue_threads == 64;
     const bool loader_dequant = loader_dequant_requested &&
-        (num_non_epilogue_threads == 128 || bn256_packed_loader_dequant);
-    const bool swap_ab = use_fused_phase && block_m == 64 &&
-        num_epilogue_threads == 256 && expected_in_closed_range(0, 8);
-    const bool fused_policy_eligible = use_fused_phase && block_m == 64;
-    const bool dp4a_selector_pack = fused_policy_eligible &&
-        intermediate_hidden >= 3072 && expected_in_closed_range(0, 8);
-    const bool hybrid_low_selector_pack = fused_policy_eligible &&
-        intermediate_hidden <= 2048 && expected_in_closed_range(3, 8);
+        (l1_num_non_epilogue_threads == 128 || bn256_packed_loader_dequant);
+    const bool dispatch_dequant = !use_fused_phase && l1_block_m == 128 &&
+        l1_block_n == 128 && routed_tokens >= 256 * num_experts_per_rank;
+    const bool swap_ab = use_fused_phase &&
+        l1_num_epilogue_threads == 256 && expected_in_closed_range(0, 8);
     const bool packed_b_scratch = use_fused_phase;
     DG_HOST_ASSERT(loader_dequant || packed_b_scratch);
 
     MegaMoESM90Config l1_or_fused_config = {
-        block_m, block_n, block_k,
+        l1_block_m, l1_block_n, block_k,
         cluster_size,
         layout::get_num_max_pool_tokens(
             num_ranks, num_max_tokens_per_rank, num_topk, num_experts_per_rank),
         num_padded_sf_pool_tokens,
         128, 128,
-        num_experts_per_wave,
+        l1_num_experts_per_wave,
         0, 0,
-        num_dispatch_threads, num_non_epilogue_threads, num_epilogue_threads
+        l1_num_dispatch_threads, l1_num_non_epilogue_threads, l1_num_epilogue_threads
     };
     std::tie(l1_or_fused_config.num_stages, l1_or_fused_config.smem_size) =
         get_nvfp4_pipeline_config_for_mega_moe_sm90(
             num_experts, hidden, expected_tokens_per_local_expert,
-            l1_or_fused_config, loader_dequant, packed_b_scratch, swap_ab, false);
+            l1_or_fused_config,
+            use_fused_phase ? l1_num_dispatch_threads / 32 : 2,
+            loader_dequant, packed_b_scratch, swap_ab, false,
+            // Preserve the six-stage split-L1 allocation. The second SFA slot
+            // is intentionally unused by L1 but keeps the proven stage ring
+            // and producer/barrier addresses unchanged.
+            use_fused_phase ? 64 : 64);
 
     MegaMoESM90Config split_l2_config = l1_or_fused_config;
     if (!use_fused_phase) {
-        const auto align = [](int x, int a) { return ((x + a - 1) / a) * a; };
-        constexpr int kSmemAlignment = 1024;
-        const int full_send_buffers_size = align(
-            static_cast<int>(layout::Buffer(layout::Data(hidden), 4, 1).get_num_bytes()),
-            kSmemAlignment);
-        const int active_send_buffers_size = align(
-            static_cast<int>(layout::Buffer(layout::Data(hidden), 2, 1).get_num_bytes()),
-            kSmemAlignment);
-        l1_or_fused_config.smem_size -= full_send_buffers_size - active_send_buffers_size;
-
+        split_l2_config.block_m = l2_block_m;
+        split_l2_config.block_n = l2_block_n;
+        split_l2_config.cluster_size = 1;
+        split_l2_config.num_experts_per_wave =
+            get_num_experts_per_wave_for_mega_moe_sm90(
+                num_experts_per_rank, num_tokens, num_topk,
+                intermediate_hidden, l2_block_m, l2_block_n,
+                device_runtime->get_num_sms());
         split_l2_config.num_dispatch_threads = 0;
-        split_l2_config.num_non_epilogue_threads = 128;
+        split_l2_config.num_non_epilogue_threads = l2_num_non_epilogue_threads;
+        split_l2_config.num_epilogue_threads = l2_num_epilogue_threads;
         std::tie(split_l2_config.num_stages, split_l2_config.smem_size) =
             get_nvfp4_pipeline_config_for_mega_moe_sm90(
                 num_experts, hidden, expected_tokens_per_local_expert,
-                split_l2_config, loader_dequant, false, false, true);
+                split_l2_config, 0, loader_dequant, false, false, true, 128);
     }
 
-    const bool l2_dual_accum = !use_fused_phase &&
-        (expected_tokens_per_local_expert <= 64.0f ||
-         expected_tokens_per_local_expert >= 128.0f);
+    // One per-128 activation scale covers the entire BK128 L2 accumulation.
+    // Keep split-L1 arrival-counter scheduling because it is part of the
+    // producer/epilogue overlap; only L2 dual accumulation becomes
+    // unnecessary.
+    const bool l2_dual_accum = false;
     const bool l2_arrival_counter = !use_fused_phase &&
         (expected_tokens_per_local_expert <= 32.0f ||
          expected_tokens_per_local_expert >= 128.0f);
@@ -387,9 +389,9 @@ static SM90NVFP4MegaMoEPlan get_nvfp4_mega_moe_plan_sm90(
     if (get_env<int>("DG_JIT_DEBUG") || get_env<int>("DG_PRINT_CONFIGS")) {
         const auto key = fmt::format(
             "SM90NVFP4MegaMoEPlan(num_ranks={}, num_experts={}, hidden={}, intermediate_hidden={}, "
-            "num_max_tokens_per_rank={}, num_tokens={}, num_topk={}, block_n={})",
+            "num_max_tokens_per_rank={}, num_tokens={}, num_topk={}, layout_block_n={})",
             num_ranks, num_experts, hidden, intermediate_hidden,
-            num_max_tokens_per_rank, num_tokens, num_topk, block_n);
+            num_max_tokens_per_rank, num_tokens, num_topk, block_n_from_layout);
         static std::unordered_set<std::string> printed;
         if (printed.count(key) == 0) {
             std::cout << key << ": l1_or_fused=" << l1_or_fused_config;
@@ -405,9 +407,8 @@ static SM90NVFP4MegaMoEPlan get_nvfp4_mega_moe_plan_sm90(
         split_l2_config,
         use_fused_phase,
         loader_dequant,
+        dispatch_dequant,
         swap_ab,
-        dp4a_selector_pack,
-        hybrid_low_selector_pack,
         l2_dual_accum,
         l2_arrival_counter
     };
@@ -434,15 +435,17 @@ static void sm90_nvfp4_mega_moe(
     const auto num_experts = num_experts_per_rank * num_ranks;
     const auto num_padded_sf_pool_tokens = static_cast<int>(l1_acts_sf.size(0));
 
-    // The framework chooses the serving phase by passing the corresponding
-    // prepacked weight layout: BN256 means fused, BN128 means split L1/L2.
+    // The public SM90 entry routes BN256 to the dedicated per-128 small-M
+    // runtime. This general runtime owns only the BN128 deployment layout.
     const int block_n_from_layout = static_cast<int>(l1_weights_sf.size(3));
+    DG_HOST_ASSERT(block_n_from_layout == 128);
     const auto plan = get_nvfp4_mega_moe_plan_sm90(
         num_ranks, num_experts, num_experts_per_rank,
         num_max_tokens_per_rank, num_tokens, num_topk,
         hidden, intermediate_hidden, num_padded_sf_pool_tokens,
         block_n_from_layout);
     const auto& config = plan.l1_or_fused_config;
+    const auto& l2_config = plan.split_l2_config;
     const bool use_fused_phase = plan.use_fused_phase;
     const bool split_l1_l2 = !use_fused_phase;
     const int weight_storage_k = static_cast<int>(l1_weights.size(2));
@@ -453,10 +456,12 @@ static void sm90_nvfp4_mega_moe(
 
     // Tensormap construction
     // Acts/weights: standard 2D TMA descriptors (FP8 K-major).
-    // Activation SF: per-128 channel float for L1, per-64 for L2 (MN-major, no swizzle).
+    // Activation SF: per-128 channel float for both L1 and L2
+    // (MN-major, no swizzle). The physical L2-SF tensor retains its old
+    // per-64 capacity in this stage; only the dense first half is addressed.
     // Weight SF: per-16 K raw UE4M3 pointer (no TMA descriptor).
     constexpr int kGranK = 128;
-    constexpr int kL2ActsSFGranK = 64;
+    constexpr int kL2ActsSFGranK = 128;
     const auto tensor_map_l1_acts = make_tma_2d_desc(l1_acts,
                                                      hidden, config.num_max_pool_tokens,
                                                      config.block_k, config.block_m,
@@ -482,8 +487,8 @@ static void sm90_nvfp4_mega_moe(
     // must use no shared-memory swizzle. Later L2 TMA loads may still swizzle
     // from this row-major global buffer into their own SMEM tile.
     // The default TMA store is issued per warpgroup, each writing a WG_BLOCK_M
-    // row tile. The split-N experiment has two WGs produce different N halves
-    // of the same M rows, then one TMA store writes the full 64x128 post-SwiGLU tile.
+    // row tile. The default BM128/BN128 path uses two M warpgroups; adjacent
+    // CTAs own the two 64-column halves of a per-128 group.
     const int num_epilogue_warpgroups_h = config.num_epilogue_threads / 128;
     const bool split_n_warpgroups_h =
         config.block_m == 64 and config.block_n == 256 and num_epilogue_warpgroups_h == 2;
@@ -504,20 +509,20 @@ static void sm90_nvfp4_mega_moe(
                                                        static_cast<int>(l2_acts.stride(-2)),
                                                        0);
     const auto tensor_map_l2_acts = make_tma_2d_desc(l2_acts,
-                                                     intermediate_hidden, config.num_max_pool_tokens,
-                                                     config.block_k, config.block_m,
+                                                     intermediate_hidden, l2_config.num_max_pool_tokens,
+                                                     l2_config.block_k, l2_config.block_m,
                                                      static_cast<int>(l2_acts.stride(-2)),
-                                                     config.swizzle_acts_mode);
+                                                     l2_config.swizzle_acts_mode);
     const auto tensor_map_l2_acts_sf = make_tma_sf_desc(cute::UMMA::Major::MN, l2_acts_sf,
-                                                        config.num_padded_sf_pool_tokens, intermediate_hidden,
-                                                        config.block_m, kL2ActsSFGranK,
+                                                        l2_config.num_padded_sf_pool_tokens, intermediate_hidden,
+                                                        l2_config.block_m, kL2ActsSFGranK,
                                                         1, 0);
     // NVFP4: packed FP4 weight, optionally fused with row-local UE4M3 scale
     // bytes as 80B per BK128 row. No swizzle (see L1).
     const auto tensor_map_l2_weights = make_tma_2d_desc(l2_weights,
                                                         static_cast<int>(l2_weights.size(2)),
                                                         num_experts_per_rank * hidden,
-                                                        kSM90NVFP4BStoragePerKBlock, config.block_n,
+                                                        kSM90NVFP4BStoragePerKBlock, l2_config.block_n,
                                                         static_cast<int>(l2_weights.stride(-2)),
                                                         0);
 
@@ -530,8 +535,9 @@ static void sm90_nvfp4_mega_moe(
 
     // Launch
     const auto num_sms = device_runtime->get_num_sms();
-    DG_HOST_ASSERT(use_fused_phase == (config.block_n == 256));
-    DG_HOST_ASSERT(split_l1_l2 == (config.block_n == 128));
+    DG_HOST_ASSERT(!use_fused_phase && config.block_m == 128 &&
+                   config.block_n == 128 && config.cluster_size == 2 &&
+                   l2_config.block_m == 128 && l2_config.block_n == 128);
 
     const SM90NVFP4MegaMoERuntime::Args args = {
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
@@ -544,9 +550,8 @@ static void sm90_nvfp4_mega_moe(
         .phase_profile = false,
         .l2_arrival_counter = plan.l2_arrival_counter,
         .loader_dequant = plan.loader_dequant,
+        .dispatch_dequant = plan.dispatch_dequant,
         .swap_ab = plan.swap_ab,
-        .dp4a_selector_pack = plan.dp4a_selector_pack,
-        .hybrid_low_selector_pack = plan.hybrid_low_selector_pack,
         .phase_mode = SM90NVFP4MegaMoERuntime::kFusedPhaseMode,
         .config = config,
         .y = y.data_ptr(),
@@ -590,7 +595,9 @@ static void sm90_nvfp4_mega_moe(
     const auto launch_split_l1 = [&]() {
         auto phase_args = args;
         phase_args.phase_mode = SM90NVFP4MegaMoERuntime::kSplitL1PhaseMode;
-        DG_HOST_ASSERT(!use_fused_phase && phase_args.config.block_n == 128);
+        DG_HOST_ASSERT(!use_fused_phase && phase_args.config.block_m == 128 &&
+                       phase_args.config.block_n == 128 &&
+                       phase_args.config.cluster_size == 2);
         build_and_launch(phase_args, "sm90_nvfp4_mega_moe_l1");
     };
 

@@ -297,6 +297,20 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
     buffer.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int32))
     buffer.topk_weights[:m_tokens].copy_(topk_weights.to(torch.float32))
 
+    # Stage 1 deliberately keeps the old per-64 physical capacity while the
+    # active logical SF layout is per-128 and densely occupies its first half.
+    # A finite negative sentinel makes any residual per-64 producer write
+    # observable and would also corrupt correctness if a consumer still read it.
+    logical_l2_sf_groups = intermediate_hidden // 128
+    physical_l2_sf_groups = intermediate_hidden // 64
+    if buffer.l2_acts_sf.shape[1] != physical_l2_sf_groups:
+        raise AssertionError(
+            f"unexpected L2 SF capacity: {buffer.l2_acts_sf.shape[1]} != "
+            f"{physical_l2_sf_groups}"
+        )
+    unused_l2_sf_sentinel = -123.5
+    buffer.l2_acts_sf[:, logical_l2_sf_groups:].fill_(unused_l2_sf_sentinel)
+
     y_kernel = torch.zeros((m_tokens, hidden), dtype=torch.bfloat16, device="cuda")
     deep_gemm.nvfp4_mega_moe(
         y_kernel,
@@ -313,6 +327,14 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
     )
     torch.cuda.synchronize()
     dist.barrier(group=group)
+
+    unused_l2_sf_untouched = torch.all(
+        buffer.l2_acts_sf[:, logical_l2_sf_groups:] == unused_l2_sf_sentinel
+    ).item()
+    if not unused_l2_sf_untouched:
+        raise AssertionError(
+            "logical per-128 L2 SF path modified the retained physical upper half"
+        )
 
     x_ref = (
         x_fp8.float().view(m_tokens, hidden // 128, 128)
@@ -347,6 +369,13 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
         torch.linalg.vector_norm(y_ref).clamp_min(1e-30)
     ).item()
 
+    num_diagnostic_tokens = min(args.diagnostic_worst_tokens, m_tokens)
+    worst_token_indices = torch.topk(
+        cosine, k=num_diagnostic_tokens, largest=False).indices.cpu().tolist()
+    topk_idx_cpu = topk_idx[worst_token_indices].cpu()
+    topk_weights_cpu = topk_weights[worst_token_indices].cpu()
+    cumulative_stats_cpu = cumulative_stats.cpu()
+
     if rank_idx == 0:
         print(f"cum_stats: {cumulative_stats.cpu().tolist()}", flush=True)
         print(
@@ -369,6 +398,28 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
             flush=True,
         )
         print(f"Norm ratio: kernel/ref={norm_ratio:.4f}", flush=True)
+        for diagnostic_idx, token_idx in enumerate(worst_token_indices):
+            route_experts = topk_idx_cpu[diagnostic_idx].tolist()
+            route_weights = topk_weights_cpu[diagnostic_idx].tolist()
+            route_counts = [int(cumulative_stats_cpu[expert_idx]) for expert_idx in route_experts]
+            route_tails = [count % 192 for count in route_counts]
+            quarter_cosine = torch.nn.functional.cosine_similarity(
+                y_kernel[token_idx].float().view(4, -1),
+                y_ref[token_idx].view(4, -1),
+                dim=-1,
+            ).cpu().tolist()
+            token_norm_ratio = (
+                torch.linalg.vector_norm(y_kernel[token_idx].float()) /
+                torch.linalg.vector_norm(y_ref[token_idx]).clamp_min(1e-30)
+            ).item()
+            print(
+                f"Worst token {token_idx}: cosine={cosine[token_idx].item():.6f} "
+                f"norm_ratio={token_norm_ratio:.6f} experts={route_experts} "
+                f"counts={route_counts} tails_mod_192={route_tails} "
+                f"weights={[round(weight, 6) for weight in route_weights]} "
+                f"quarter_cosine={[round(value, 6) for value in quarter_cosine]}",
+                flush=True,
+            )
 
     if not finite:
         raise AssertionError(f"M={m_tokens}, weight_scale={weight_scale:g}: kernel produced non-finite values")
@@ -423,7 +474,13 @@ def _worker(local_rank: int, num_local_ranks: int, args: argparse.Namespace) -> 
         for weight_scale in args.weight_scales:
             for global_scale_mode in args.global_scale_modes:
                 for m_tokens in args.batches:
-                    _run_case(args, m_tokens, weight_scale, global_scale_mode, rank_idx, group)
+                    for repeat_idx in range(args.repeats):
+                        if rank_idx == 0 and args.repeats > 1:
+                            print(
+                                f"--- deterministic repeat {repeat_idx + 1}/{args.repeats} ---",
+                                flush=True,
+                            )
+                        _run_case(args, m_tokens, weight_scale, global_scale_mode, rank_idx, group)
     finally:
         dist.destroy_process_group()
 
@@ -441,6 +498,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--nvfp4-block-n", type=int, choices=(128, 256), default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--weight-scales", nargs="+", type=float, default=[0.05])
+    parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument("--diagnostic-worst-tokens", type=int, default=8)
     parser.add_argument(
         "--global-scale-modes",
         nargs="+",

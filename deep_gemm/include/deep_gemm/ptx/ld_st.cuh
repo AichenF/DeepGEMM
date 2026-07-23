@@ -118,6 +118,21 @@ CUTLASS_DEVICE void st_shared(const float* ptr, float val) {
     asm volatile("st.shared.f32 [%0], %1;" :: "l"(__cvta_generic_to_shared(ptr)), "f"(val));
 }
 
+CUTLASS_DEVICE void st_shared_cluster_async(
+    const float2* ptr, float2 val,
+    const cutlass::arch::ClusterTransactionBarrier* barrier_ptr,
+    const uint32_t& cta_rank) {
+    const auto remote_addr = cute::set_block_rank(
+        cute::cast_smem_ptr_to_uint(ptr), cta_rank);
+    const auto remote_barrier_addr = cute::set_block_rank(
+        cute::cast_smem_ptr_to_uint(barrier_ptr), cta_rank);
+    asm volatile(
+        "st.async.shared::cluster.mbarrier::complete_tx::bytes.v2.f32 "
+        "[%0], {%1, %2}, [%3];"
+        :: "r"(remote_addr), "f"(val.x), "f"(val.y),
+           "r"(remote_barrier_addr));
+}
+
 CUTLASS_DEVICE void st_shared(const float2* ptr, float2 val) {
     asm volatile("st.shared.v2.f32 [%0], {%1, %2};" :: "l"(__cvta_generic_to_shared(ptr)), "f"(val.x), "f"(val.y));
 }

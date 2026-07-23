@@ -23,6 +23,7 @@ template <uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t BLOCK_K,
           uint32_t kNumExpertsPerWave,
           uint32_t kNumSMs, uint32_t kNumRanks,
           uint32_t kClusterSize = 2,
+          uint32_t kPoolBlockM = BLOCK_M,
           uint32_t kNumExpertsPerLane = math::constexpr_ceil_div(kNumExpertsPerRank, 32u),
           uint32_t kNumL1BlockNs = L1_SHAPE_N / BLOCK_N,
           uint32_t kNumL2BlockNs = L2_SHAPE_N / BLOCK_N,
@@ -34,6 +35,7 @@ struct MegaMoEScheduler {
     DG_STATIC_ASSERT(L1_SHAPE_K % BLOCK_K == 0, "Invalid shape");
     DG_STATIC_ASSERT(L2_SHAPE_K % BLOCK_K == 0, "Invalid shape");
     DG_STATIC_ASSERT(kNumExpertsPerRank % kNumExpertsPerWave == 0, "Invalid wave config");
+    DG_STATIC_ASSERT(kPoolBlockM > 0, "Pool block M must be positive");
 
     // For 2-CTA clusters, neighbour SMs share the same m_block_idx with adjacent
     // n_block_idx; the asserts below guarantee that pairing is always possible.
@@ -85,13 +87,13 @@ struct MegaMoEScheduler {
         #pragma unroll
         for (uint32_t i = 0; i < kNumExpertsPerLane; ++ i) {
             if (i * 32 + ptx::get_lane_idx() < expert_idx)
-                num_blocks += math::ceil_div(stored_num_tokens_per_expert[i], BLOCK_M);
+                num_blocks += math::ceil_div(stored_num_tokens_per_expert[i], kPoolBlockM);
         }
         return __reduce_add_sync(0xffffffff, num_blocks);
     }
 
     CUTLASS_DEVICE void advance_expert_idx() {
-        current_pool_block_offset += get_current_num_m_blocks();
+        current_pool_block_offset += get_current_num_pool_blocks();
         current_local_expert_idx += 1;
         current_num_tokens = get_num_tokens(current_local_expert_idx);
     }
@@ -108,6 +110,18 @@ struct MegaMoEScheduler {
 
     CUTLASS_DEVICE uint32_t get_current_num_m_blocks() const {
         return math::ceil_div(current_num_tokens, BLOCK_M);
+    }
+
+    CUTLASS_DEVICE uint32_t get_current_num_pool_blocks() const {
+        return math::ceil_div(current_num_tokens, kPoolBlockM);
+    }
+
+    CUTLASS_DEVICE uint32_t get_current_pool_token_offset() const {
+        return current_pool_block_offset * kPoolBlockM;
+    }
+
+    CUTLASS_DEVICE uint32_t get_current_block_pool_token_idx() const {
+        return get_current_pool_token_offset() + m_block_idx * BLOCK_M;
     }
 
     template <bool kDoUMMAAligned = false>

@@ -41,6 +41,8 @@ ssh -o BatchMode=yes -o ConnectTimeout=10 "${HOST}" \
         DG_AKO_SHAPES=\"${DG_AKO_SHAPES:-flash pro mimo_pro}\" \
         DG_AKO_M_VALUES=\"${DG_AKO_M_VALUES:-8 16 32 64 128}\" \
         DG_AKO_CORRECTNESS_M_VALUES=\"${DG_AKO_CORRECTNESS_M_VALUES:-8 128}\" \
+        DG_AKO_CORRECTNESS_SHAPES=\"${DG_AKO_CORRECTNESS_SHAPES:-flash pro mimo_pro}\" \
+        DG_AKO_CORRECTNESS_REPEATS=\"${DG_AKO_CORRECTNESS_REPEATS:-1}\" \
         DG_AKO_MAX_TOKENS_PER_RANK=\"${DG_AKO_MAX_TOKENS_PER_RANK:-128}\" \
         DG_AKO_NVFP4_BLOCK_N=\"${DG_AKO_NVFP4_BLOCK_N:-}\" \
         bash scripts/ako_sm90_nvfp4_unified_smallm_h200_remote.sh'" \

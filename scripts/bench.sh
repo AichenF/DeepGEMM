@@ -42,8 +42,11 @@ ssh -o BatchMode=yes -o ConnectTimeout=10 "${HOST}" \
         -e DG_AKO_SHAPES='${DG_AKO_SHAPES:-flash pro mimo_pro}' \
         -e DG_AKO_M_VALUES='${DG_AKO_M_VALUES:-8 16 32 64 128}' \
         -e DG_AKO_CORRECTNESS_M_VALUES='${DG_AKO_CORRECTNESS_M_VALUES:-8 128}' \
+        -e DG_AKO_CORRECTNESS_SHAPES='${DG_AKO_CORRECTNESS_SHAPES:-flash pro mimo_pro}' \
+        -e DG_AKO_CORRECTNESS_REPEATS='${DG_AKO_CORRECTNESS_REPEATS:-1}' \
         -e DG_AKO_MAX_TOKENS_PER_RANK='${DG_AKO_MAX_TOKENS_PER_RANK:-128}' \
         -e DG_AKO_NVFP4_BLOCK_N='${DG_AKO_NVFP4_BLOCK_N:-}' \
+        -e DG_AKO_MATRIX_RUNNER='${DG_AKO_MATRIX_RUNNER:-/root/fac/scripts/megamoe/v4_shape_matrix_runner.py}' \
         '${CONTAINER}' \
         bash -lc 'cd ${REMOTE_REPO} && bash scripts/ako_sm90_nvfp4_unified_smallm_remote.sh'" \
     2>&1 | tee _bench_output.txt

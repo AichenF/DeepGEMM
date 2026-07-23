@@ -21,6 +21,11 @@
     DG_STATIC_ASSERT((!kLoaderDequantRequested) or kNumNonEpilogueThreads == 128 or
                      (kNumNonEpilogueThreads == 64 and BLOCK_N == 256),
                      "NVFP4 loader dequant expects four non-epilogue warps or the BN256 packed-scratch path");
+    DG_STATIC_ASSERT((!kDispatchDequantRequested) or
+                     (kLoaderDequantRequested and kNumDispatchThreads == 128 and
+                      kNumNonEpilogueThreads == 128 and kNumEpilogueThreads == 256 and
+                      BLOCK_M == 128 and BLOCK_N == 128),
+                     "Dispatch-assisted dequant requires the split BM128/BN128 layout");
 
     // =====================================================================
     // Thread / warp identification
@@ -38,8 +43,9 @@
     }
 
     // =====================================================================
-    // Workspaces and symmetric buffer slicing (mirror SM100 layout, except SF
-    // for L2 activations uses per-64 K granularity)
+    // Workspaces and symmetric buffer slicing. The L2 activation SF allocation
+    // intentionally retains its old per-64 physical capacity in stage 1, while
+    // the active logical layout densely addresses only per-128 groups.
     // =====================================================================
     const auto workspace = layout::Workspace(
         sym_buffer.get_base_ptr(), kNumRanks, kNumExperts, kNumMaxTokensPerRank, kNumTopk);
@@ -49,7 +55,8 @@
     constexpr auto fp8_intermediate_token_layout = layout::Data(kIntermediateHidden);
     // Per-128 K float SF: 4 bytes per per-128 group => `kHidden / 32` bytes/token (same as SM100 packing)
     constexpr auto fp8_sf_layout                 = layout::Data(kHidden / 32);
-    // Per-64 K float SF (SM90 only): 4 bytes per per-64 group => `kIntermediateHidden / 16` bytes/token
+    // Retained physical capacity: 4 bytes per old per-64 group. Logical
+    // per-128 scales occupy the dense first half of this allocation.
     constexpr auto fp8_intermediate_sf_layout    = layout::Data(kIntermediateHidden / 16);
     constexpr auto input_topk_idx_layout         = layout::Data(kNumTopk * sizeof(int64_t), false);
     constexpr auto input_topk_weights_layout     = layout::Data(kNumTopk * sizeof(float), false);
@@ -90,14 +97,13 @@
     constexpr bool kL2ArrivalCounter = kL2ArrivalCounterRequested && (!kSplitNWarpgroups) && BLOCK_N == 128;
     constexpr bool kSkipL2ReadyMask = true;
     constexpr bool kSkipL1ReadyNotify = true;
-    // Keep the 4-warp dispatch allocation for warpgroup/register alignment,
-    // but only use two warps for BN128 split L1 dispatch. The extra NVFP4
-    // dispatch warps mostly add fixed small/mid-M overhead while loader-dequant
-    // still needs its aligned 4-warp non-epilogue group.
+    // Use two active dispatch warps. The other two dispatch warps form the
+    // even-stage dequant team when dispatch-assisted dequant is on.
     constexpr uint32_t kNumActiveDispatchWarps =
         (BLOCK_N == 128 && kNumDispatchWarps == 4) ? 2 : kNumDispatchWarps;
     constexpr uint32_t kNumActiveDispatchThreads = kNumActiveDispatchWarps * 32;
     constexpr bool kLoaderDequant = kLoaderDequantRequested && kNumMMANonEpilogueWarps == 4;
+    constexpr bool kDispatchDequant = kDispatchDequantRequested;
     constexpr bool kPackedBScratch = BLOCK_N == 256 && (!kLoaderDequant);
     DG_STATIC_ASSERT(kLoaderDequant || kPackedBScratch,
                      "Fused NVFP4 B+scale layout requires loader dequant or packed scratch");
@@ -116,7 +122,19 @@
     constexpr uint32_t kSwizzleBMode   = BLOCK_K * sizeof(b_dtype_t);   // 128
     constexpr uint32_t kSwizzleCDMode  = 128;
     constexpr uint32_t kGranK          = 128;          // L1 acts SF, weights SF
-    constexpr uint32_t kL2ActsSFGranK  = 64;           // L2 acts SF (per-64 K, SM90 only)
+    constexpr uint32_t kLocalL1ActsSFGranK = 64;       // each CTA's local half
+    constexpr uint32_t kL2ActsSFGranK  = 128;          // final L1 output / L2 input
+    constexpr bool kClusterPairsL1SF =
+        kClusterSize == 2 && BLOCK_M == 128 && BLOCK_N == 128 &&
+        kNumEpilogueWarpgroups == 2 && WG_L1_OUT_BLOCK_N == kLocalL1ActsSFGranK;
+    DG_STATIC_ASSERT(kClusterPairsL1SF,
+                     "direct per-128 split L1 requires paired BM128/BN128 CTAs");
+    DG_STATIC_ASSERT(L1_SHAPE_N / BLOCK_N <= 64,
+                     "paired-N readiness must fit one 64-bit pool-block mask");
+    DG_STATIC_ASSERT((L1_SHAPE_N / BLOCK_N) % kClusterSize == 0,
+                     "every L1 N block must have a cluster peer");
+    DG_STATIC_ASSERT(kIntermediateHidden / kL2ActsSFGranK <= kIntermediateHidden / 64,
+                     "logical per-128 SF groups must fit retained physical capacity");
 
     // =====================================================================
     // Shared memory layout
@@ -136,9 +154,9 @@
     constexpr uint32_t SMEM_B_LOAD_SIZE_PER_STAGE = LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW;
     constexpr uint32_t SMEM_PACKED_B_SIZE_PER_STAGE = kPackedBScratch ?
         LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW * sizeof(b_dtype_t) : 0u;
-    // SFA per-stage must be sized for the larger of L1 (BLOCK_M floats) and L2
-    // (two per-64-K halves). Each TMA destination must be 128B aligned, so
-    // the second L2 half cannot start immediately after 16 floats in M16 decode.
+    // Keep a two-slot SFA stage allocation so the six-stage ring retains its
+    // proven shared-memory/barrier placement. L1 reads only the first per-128
+    // slot.
     constexpr uint32_t kL2SFAHalfStride =
         math::constexpr_align<uint32_t>(BLOCK_M * sizeof(float), 128u) / sizeof(float);
     constexpr uint32_t SMEM_SFA_SIZE_PER_STAGE = 2 * kL2SFAHalfStride * sizeof(float);
@@ -232,7 +250,7 @@
                 full_barriers[i]->init(2);
                 // With cluster multicast the leader CTA's TMA warp waits on peer
                 // empty barriers too, so every math warp releases both CTAs.
-                empty_barriers[i]->init(kClusterSize * kNumEpilogueWarps);
+                empty_barriers[i]->init(kClusterSize * kNumEpilogueWarpgroups);
             }
             if constexpr (kLoaderDequant) {
                 #pragma unroll
@@ -243,6 +261,12 @@
                 combine_barriers[i]->init(1);
         }
         cutlass::arch::fence_barrier_init();
+        if (cute::elect_one_sync()) {
+            // Arm the first DSM amax exchange before cluster peers leave the
+            // initialization rendezvous. Every tile completes one float
+            // transaction for each of its BLOCK_M rows.
+            combine_barriers[0]->arrive_and_expect_tx(BLOCK_M * sizeof(float));
+        }
     }
     if constexpr (kClusterSize > 1) {
         cute::cluster_sync();
@@ -267,7 +291,11 @@
         stage_idx = stage_idx == kNumStages - 1 ? 0 : stage_idx + 1;
         phase ^= stage_idx == 0;
     };
+    // Separate named barriers let the two dequant teams publish K stages independently.
+    constexpr uint32_t kDequantBarrierIdx = 8;
+    constexpr uint32_t kAlternateDequantBarrierIdx = 9;
     const auto dequant_loaded_b_stage = [&](const uint32_t& s, const uint32_t& p,
+                                            const uint32_t& k_block_idx,
                                             const uint32_t& non_epilogue_thread_idx) {
         if constexpr (kLoaderDequant) {
             if constexpr (kNumMMANonEpilogueWarps == 2 && kPackedBScratch && LOAD_BLOCK_N == 256) {
@@ -284,14 +312,26 @@
                 if constexpr (LOAD_BLOCK_N == 256) {
                     full_barriers[s]->wait(p);
                     const uint32_t dequant_tid = non_epilogue_thread_idx;
-                    deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_mode2_nibble<128u, 8u>(
+                    deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_mode2_nibble<
+                        128u, kDequantBarrierIdx>(
                         reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
+                } else if constexpr (kDispatchDequant) {
+                    if (non_epilogue_thread_idx >= 64u && (k_block_idx & 1u)) {
+                        full_barriers[s]->wait(p);
+                        const uint32_t dequant_tid = non_epilogue_thread_idx - 64u;
+                        deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_mode2_nibble<
+                            64u, kAlternateDequantBarrierIdx, true>(
+                            reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
+                        if (dequant_tid == 0)
+                            dequant_barriers[s]->arrive();
+                    }
                 } else if (non_epilogue_thread_idx >= 64u) {
                     full_barriers[s]->wait(p);
                     const uint32_t dequant_tid = non_epilogue_thread_idx - 64u;
-                    deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_mode2_nibble<64u, 8u>(
+                    deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_mode2_nibble<
+                        64u, kDequantBarrierIdx>(
                         reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
@@ -314,16 +354,17 @@
     constexpr uint32_t kAfterWorkspaceCleanBarrierTag   = 3;
 
     // Register reconfiguration counts (chosen to fit in 64512 reg budget).
-    // For the 256-epilogue-thread loader-dequant case (block_m=128, 2 math WGs),
-    // give non-epilogue warps more room for two-row NVFP4 dequant while staying
-    // inside the 64K register file: 128*48 + 128*64 + 256*192 = 63488.
-    constexpr uint32_t kNumDispatchRegisters    = 48;
+    // Dispatch-assisted dequant keeps the same 63488-register CTA budget:
+    // 128*80 + 128*80 + 256*168.
+    constexpr uint32_t kNumDispatchRegisters = kDispatchDequant ? 80 : 48;
     constexpr uint32_t kNumNonEpilogueRegisters =
         (kLoaderDequant && kNumEpilogueThreads == 128) ? 80 :
         (kLoaderDequant && kNumEpilogueThreads == 256 && LOAD_BLOCK_N == 256) ? 80 :
+        (kDispatchDequant) ? 80 :
         (kLoaderDequant && kNumEpilogueThreads == 256) ? 64 : 40;
     constexpr uint32_t kNumEpilogueRegisters    =
         (kLoaderDequant && kNumEpilogueThreads == 256 && LOAD_BLOCK_N == 256) ? 184 :
+        (kDispatchDequant) ? 168 :
         (kLoaderDequant && kNumEpilogueThreads == 256) ? 192 :
         (kSerialNWarpgroups or kWideNWarpgroups) ? 256 :
         208;
@@ -657,6 +698,25 @@
                 phase_profile_record(kProfileDispatchPull, dispatch_pull_end - dispatch_pull_start);
                 phase_profile_record(kProfileDispatchTotal, dispatch_pull_end - dispatch_total_start);
             }
+        } else if constexpr (kDispatchDequant) {
+            const uint32_t dequant_tid =
+                (warp_idx - kNumActiveDispatchWarps) * 32 + lane_idx;
+            for_each_selected_block([&](const auto&, const uint32_t&,
+                                         const uint32_t& num_k_blocks,
+                                         const uint32_t&, const uint32_t&) {
+                for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks;
+                     advance_pipeline(k_block_idx)) {
+                    if ((k_block_idx & 1u) == 0) {
+                        full_barriers[stage_idx]->wait(phase);
+                        deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_mode2_nibble<
+                            64u, kDequantBarrierIdx, true>(
+                            reinterpret_cast<uint8_t*>(smem_b[stage_idx]), dequant_tid,
+                            smem_nvfp4_lut);
+                        if (dequant_tid == 0)
+                            dequant_barriers[stage_idx]->arrive();
+                    }
+                }
+            });
         }
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
         
@@ -705,17 +765,18 @@
                     const uint32_t m_idx = pool_block_idx * BLOCK_M;
                     const uint32_t k_idx = k_block_idx * BLOCK_K;
 
-                    // TMA load A
+                    // Paired N CTAs share the same M/K coordinates, so the
+                    // cluster leader multicasts A and SFA to both CTAs.
                     tma::copy<BLOCK_K, LOAD_BLOCK_M, kSwizzleAMode, a_dtype_t>(
                         tensor_map_a_ptr, full_barriers[stage_idx], smem_a[stage_idx],
-                        k_idx, m_idx, 1);
+                        k_idx, m_idx, kClusterSize);
 
                     // TMA load SFA
                     
                         // L1 SFA per-128: load (BLOCK_M, 1) at K=k_block_idx
                         tma::copy<BLOCK_M, 1, 0, float>(
                             tensor_map_sfa_ptr, full_barriers[stage_idx], smem_sfa[stage_idx],
-                            m_idx, k_block_idx, 1);
+                            m_idx, k_block_idx, kClusterSize);
                         full_barriers[stage_idx]->arrive_and_expect_tx(
                             SMEM_A_SIZE_PER_STAGE + BLOCK_M * sizeof(float));
                     
@@ -724,7 +785,7 @@
                     }
                 }
                 __syncwarp();
-                dequant_loaded_b_stage(stage_idx, phase, lane_idx);
+                dequant_loaded_b_stage(stage_idx, phase, k_block_idx, lane_idx);
             }
         });
 
@@ -748,14 +809,16 @@
                 // UE4M3 scale per BK128 row.
                 const uint32_t k_idx = k_block_idx * B_LOAD_BYTES_PER_ROW;
                 if (cute::elect_one_sync()) {
+                    // The peer owns the adjacent N block, therefore B must be
+                    // loaded independently rather than multicast.
                     tma::copy<B_LOAD_BYTES_PER_ROW, LOAD_BLOCK_N, 0, b_dtype_t>(
                         tensor_map_b_ptr, full_barriers[stage_idx],
                         kPackedBScratch ? smem_packed_b[stage_idx] : smem_b[stage_idx],
-                        k_idx, n_idx, kClusterSize);
+                        k_idx, n_idx, 1);
                     full_barriers[stage_idx]->arrive_and_expect_tx(SMEM_B_LOAD_SIZE_PER_STAGE);
                 }
                 __syncwarp();
-                dequant_loaded_b_stage(stage_idx, phase, 32u + lane_idx);
+                dequant_loaded_b_stage(stage_idx, phase, k_block_idx, 32u + lane_idx);
             }
         });
 
@@ -773,7 +836,7 @@
                                          const uint32_t&, const uint32_t&) {
                 for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                     const unsigned long long loader_dequant_start = phase_profile_clock();
-                    dequant_loaded_b_stage(stage_idx, phase, non_epilogue_thread_idx);
+                    dequant_loaded_b_stage(stage_idx, phase, k_block_idx, non_epilogue_thread_idx);
                     const unsigned long long loader_dequant_end = phase_profile_clock();
                     if (non_epilogue_thread_idx == 64u)
                         phase_profile_record(kProfileLoaderDequant, loader_dequant_end - loader_dequant_start);
@@ -793,6 +856,8 @@
         const uint32_t warp_idx_in_wg     = epilogue_warp_idx % 4;
 
         const auto arrive_empty_barrier = [&](const uint32_t& s) {
+            if (warp_idx_in_wg != 0)
+                return;
             if constexpr (kClusterSize == 1) {
                 if (lane_idx == 0)
                     empty_barriers[s]->arrive();
@@ -861,6 +926,7 @@
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
 
         const unsigned long long math_loop_start = phase_profile_clock();
+        uint32_t pair_scale_phase = 0;
 
         for_each_selected_block([&](const auto& block_phase,
                                      const uint32_t& local_expert_idx,
@@ -877,18 +943,16 @@
             const uint32_t row_offset_r1 = row_block_offset + r_1;
             const bool valid_r0 = row_offset_r0 < valid_m;
             const bool valid_r1 = row_offset_r1 < valid_m;
+            const bool inactive_math_wg = row_block_offset >= valid_m;
 
 
             if constexpr (kLoaderDequant && (!kSplitNWarpgroups)) {
-                if (row_block_offset >= valid_m) {
+                if (inactive_math_wg) {
                     for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                         dequant_barriers[stage_idx]->wait(phase);
                         arrive_empty_barrier(stage_idx);
                         __syncwarp();
                     }
-                    if constexpr (!kL2ArrivalCounter)
-                        ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-                    return;
                 }
             }
 
@@ -1124,12 +1188,10 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 }
 
                 // Read SF (must precede warpgroup_arrive)
-                float scale_a_0_lo, scale_a_1_lo;
-                float scale_a_0_hi, scale_a_1_hi;  // Only used in L2 (per-64 K)
-                
-                    scale_a_0_lo = ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r0);
-                    scale_a_1_lo = ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r1);
-                
+                const float scale_a_0 =
+                    ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r0);
+                const float scale_a_1 =
+                    ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r1);
 
                 // NVFP4 UE4M3 weight scales are applied during FP4 -> FP8 smem
                 // expansion, so the WGMMA accumulator only needs activation SF.
@@ -1159,29 +1221,25 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     // share the same scalar.
                     #pragma unroll
                     for (uint32_t i = 0; i < kAccumPerThread / 4; ++ i) {
-                        final_accum[i*4+0] += scale_a_0_lo * accum[i*4+0];
-                        final_accum[i*4+1] += scale_a_0_lo * accum[i*4+1];
-                        final_accum[i*4+2] += scale_a_1_lo * accum[i*4+2];
-                        final_accum[i*4+3] += scale_a_1_lo * accum[i*4+3];
+                        final_accum[i*4+0] += scale_a_0 * accum[i*4+0];
+                        final_accum[i*4+1] += scale_a_0 * accum[i*4+1];
+                        final_accum[i*4+2] += scale_a_1 * accum[i*4+2];
+                        final_accum[i*4+3] += scale_a_1 * accum[i*4+3];
                     }
                 
             }
             };
 
-            run_default_gemm_loop();
+            if (!inactive_math_wg)
+                run_default_gemm_loop();
 
             const unsigned long long block_gemm_end = phase_profile_clock();
             if (epilogue_warp_idx == 0 and lane_idx == 0)
                 phase_profile_record(kProfileGemmCore, block_gemm_end - block_gemm_start);
 
-            // Skip epilogue when block is past valid M (still must release via empty).
-            // A dummy cluster peer may still carry an async L1 store from the
-            // previous valid block, so drain it before leaving the L1 wave.
-            if (row_block_offset >= valid_m) {
-                if constexpr (!kL2ArrivalCounter)
-                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-                return;
-            }
+            // Even a fully invalid tail warpgroup must participate in the
+            // CTA-wide scale rendezvous. It carries zero accumulators and only
+            // writes padding rows, which L2 never scatters.
 
             const unsigned long long block_epilogue_start = phase_profile_clock();
             const float l1_global_scale = l1_global_scales == nullptr ? 1.0f : __ldg(l1_global_scales + local_expert_idx);
@@ -1196,12 +1254,15 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 // output cols (p*8 + col_idx*2 + {0,1}) for both r0 and r1.
 
                 constexpr uint32_t kNumPairs = kAccumPerThread / 8;
-                constexpr uint32_t kNumSFGroups = WG_L1_OUT_BLOCK_N / 64;
-                DG_STATIC_ASSERT(WG_L1_OUT_BLOCK_N % 64 == 0, "L1 output SF is per 64 columns");
+                constexpr uint32_t kNumSFGroups =
+                    WG_L1_OUT_BLOCK_N / kLocalL1ActsSFGranK;
+                DG_STATIC_ASSERT(kClusterPairsL1SF && kNumSFGroups == 1,
+                                 "each paired CTA must own one local 64-column SF group");
                 float swiglu_r0[kNumPairs][2];
                 float swiglu_r1[kNumPairs][2];
 
-                // Per-row amax, one scale for each 64-col L1 output group.
+                // Each CTA computes one local 64-column amax for all 128 rows.
+                // Its adjacent-N cluster peer owns the other half.
                 float amax_r0[kNumSFGroups] = {};
                 float amax_r1[kNumSFGroups] = {};
 
@@ -1281,30 +1342,75 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     amax_r1[g] = math::warp_reduce<4, false>(amax_r1[g], math::ReduceMax<float>());
                 }
 
+                // Direct per-128 rendezvous across adjacent-N cluster CTAs.
+                // Pack the two output rows owned by each four-lane group into
+                // one contiguous float2 DSM slot. This keeps the same 512-byte
+                // transaction/barrier protocol while halving DSM store and
+                // shared-load instructions versus row-strided scalar slots.
+                auto* l2_sf_base = l2_sf_buffer.get_base_ptr<float>();
+                const uint32_t token_r0 = pool_block_idx * BLOCK_M + row_offset_r0;
+                const uint32_t token_r1 = pool_block_idx * BLOCK_M + row_offset_r1;
+                const uint32_t dense_sf_group_idx = n_block_idx / kClusterSize;
+                const uint32_t peer_cta_rank = cute::block_rank_in_cluster() ^ 1u;
+                auto* smem_cd_l1_wg = smem_cd_l1
+                    + (kSplitNWarpgroups ? 0 : epilogue_wg_idx * WG_BLOCK_M * L1_OUT_BLOCK_N);
+                const uint32_t row_group_idx = epilogue_thread_idx / 4;
+                auto* peer_amax_pair_slot =
+                    reinterpret_cast<float2*>(smem_cd_l1) + row_group_idx;
 
-                float sf_r0[kNumSFGroups], sf_inv_r0[kNumSFGroups];
-                float sf_r1[kNumSFGroups], sf_inv_r1[kNumSFGroups];
-                #pragma unroll
-                for (uint32_t g = 0; g < kNumSFGroups; ++ g) {
-                    float2 amax_pair = {amax_r0[g], amax_r1[g]};
+                if (col_idx == 0) {
+                    ptx::st_shared_cluster_async(
+                        peer_amax_pair_slot, make_float2(amax_r0[0], amax_r1[0]),
+                        combine_barriers[0], peer_cta_rank);
+                }
+                if (epilogue_thread_idx == 0) {
+                    combine_barriers[0]->wait(pair_scale_phase);
+                    pair_scale_phase ^= 1u;
+                    // Pre-arm the next phase. The current quantize/store tail
+                    // and the following GEMM separate this from peer stores.
+                    combine_barriers[0]->arrive_and_expect_tx(BLOCK_M * sizeof(float));
+                }
+                ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+
+                float sf_r0 = 0.0f, sf_inv_r0 = 0.0f;
+                float sf_r1 = 0.0f, sf_inv_r1 = 0.0f;
+                if (col_idx == 0) {
+                    const float2 peer_amax_pair = ptx::ld_shared(peer_amax_pair_slot);
+                    const float2 common_amax_pair = {
+                        cute::max(amax_r0[0], peer_amax_pair.x),
+                        cute::max(amax_r1[0], peer_amax_pair.y)
+                    };
                     float2 sf_pair, sf_inv_pair;
-                    math::get_e4m3_sf_and_sf_inv(amax_pair, sf_pair, sf_inv_pair);
-                    sf_r0[g] = sf_pair.x; sf_inv_r0[g] = sf_inv_pair.x;
-                    sf_r1[g] = sf_pair.y; sf_inv_r1[g] = sf_inv_pair.y;
+                    math::get_e4m3_sf_and_sf_inv(
+                        common_amax_pair, sf_pair, sf_inv_pair);
+                    sf_r0 = sf_pair.x;
+                    sf_inv_r0 = sf_inv_pair.x;
+                    sf_r1 = sf_pair.y;
+                    sf_inv_r1 = sf_inv_pair.y;
+                }
+                const uint32_t row_group_leader = lane_idx & ~3u;
+                sf_inv_r0 = __shfl_sync(0xffffffff, sf_inv_r0, row_group_leader);
+                sf_inv_r1 = __shfl_sync(0xffffffff, sf_inv_r1, row_group_leader);
+
+                // Both CTAs derive the same scale; only the even-N owner
+                // publishes the dense logical per-128 SF entry.
+                if ((n_block_idx & 1u) == 0 && col_idx == 0) {
+                    if (valid_r0)
+                        l2_sf_base[dense_sf_group_idx * kNumPaddedSFPoolTokens + token_r0] = sf_r0;
+                    if (valid_r1)
+                        l2_sf_base[dense_sf_group_idx * kNumPaddedSFPoolTokens + token_r1] = sf_r1;
                 }
 
                 // Quantize and write to smem_cd_l1 (row-major, no swizzle).
                 constexpr uint32_t l1_store_stage = 0u;
-                auto* smem_cd_l1_wg = smem_cd_l1
-                    + l1_store_stage * kNumEpilogueWarpgroups * WG_BLOCK_M * L1_OUT_BLOCK_N
-                    + (kSplitNWarpgroups ? 0 : epilogue_wg_idx * WG_BLOCK_M * L1_OUT_BLOCK_N);
+                smem_cd_l1_wg +=
+                    l1_store_stage * kNumEpilogueWarpgroups * WG_BLOCK_M * L1_OUT_BLOCK_N;
                 #pragma unroll
                 for (uint32_t p = 0; p < kNumPairs; ++ p) {
-                    const uint32_t sf_group = p / 8;
-                    const float v00 = swiglu_r0[p][0] * sf_inv_r0[sf_group];
-                    const float v01 = swiglu_r0[p][1] * sf_inv_r0[sf_group];
-                    const float v10 = swiglu_r1[p][0] * sf_inv_r1[sf_group];
-                    const float v11 = swiglu_r1[p][1] * sf_inv_r1[sf_group];
+                    const float v00 = swiglu_r0[p][0] * sf_inv_r0;
+                    const float v01 = swiglu_r0[p][1] * sf_inv_r0;
+                    const float v10 = swiglu_r1[p][0] * sf_inv_r1;
+                    const float v11 = swiglu_r1[p][1] * sf_inv_r1;
 
                     const __nv_fp8x2_e4m3 r0_pair(make_float2(v00, v01));
                     const __nv_fp8x2_e4m3 r1_pair(make_float2(v10, v11));
@@ -1318,21 +1424,6 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         *p0 = r0_pair.__x;
                     if (valid_r1)
                         *p1 = r1_pair.__x;
-                }
-
-                // Write L2-activation SF as float, one value per 64 output columns.
-                if (col_idx == 0) {
-                    auto sf_base_ptr = l2_sf_buffer.get_base_ptr<float>();
-                    const uint32_t token_r0 = pool_block_idx * BLOCK_M + row_offset_r0;
-                    const uint32_t token_r1 = pool_block_idx * BLOCK_M + row_offset_r1;
-                    const uint32_t base_k_sf_idx = (n_block_idx * L1_OUT_BLOCK_N + wg_l1_out_n_idx) / 64u;
-                    #pragma unroll
-                    for (uint32_t g = 0; g < kNumSFGroups; ++ g) {
-                        if (valid_r0)
-                            sf_base_ptr[(base_k_sf_idx + g) * kNumPaddedSFPoolTokens + token_r0] = sf_r0[g];
-                        if (valid_r1)
-                            sf_base_ptr[(base_k_sf_idx + g) * kNumPaddedSFPoolTokens + token_r1] = sf_r1[g];
-                    }
                 }
 
                 // Issue TMA store of the entire tile. Padding rows beyond

@@ -26,6 +26,11 @@ from deep_gemm.utils.dist import dist_print, init_dist, uneven_all_gather
 from deep_gemm.testing import bench_kineto, get_arch_major
 
 
+SPLIT_PHASE_KERNEL_NAMES = (
+    'sm90_nvfp4_mega_moe_split_l1_impl',
+    'sm90_nvfp4_mega_moe_split_l2_impl',
+)
+
 def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
                     hidden, intermediate_hidden,
                     num_experts, num_topk, num_ranks, rank_idx, group,
@@ -118,13 +123,26 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     # with_multiple_kernels=True, bench_kineto returns the per-kernel
     # average across both split launches; multiply by two to estimate one
     # end-to-end MoE call.
-    t_nvfp4 = bench_kineto(run, kernel_name,
-                           barrier=lambda: dist.barrier(async_op=async_bench_barrier),
-                           num_tests=args.num_tests,
-                           suppress_kineto_output=not show_kineto,
-                           with_multiple_kernels=split_l1_l2)
-    if split_l1_l2:
-        t_nvfp4 *= 2
+    report_phases = getattr(args, 'report_phases', False) and split_l1_l2
+    phase_times = None
+    if report_phases:
+        phase_times = bench_kineto(
+            run, SPLIT_PHASE_KERNEL_NAMES,
+            barrier=lambda: dist.barrier(async_op=async_bench_barrier),
+            num_tests=args.num_tests,
+            suppress_kineto_output=not show_kineto,
+        )
+        t_nvfp4 = sum(phase_times)
+    else:
+        t_nvfp4 = bench_kineto(
+            run, kernel_name,
+            barrier=lambda: dist.barrier(async_op=async_bench_barrier),
+            num_tests=args.num_tests,
+            suppress_kineto_output=not show_kineto,
+            with_multiple_kernels=split_l1_l2,
+        )
+        if split_l1_l2:
+            t_nvfp4 *= 2
 
     t_rank = torch.tensor([t_nvfp4], dtype=torch.float64, device="cuda")
     t_rank_max = t_rank.clone()
@@ -136,6 +154,12 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     t_nvfp4_rank_max = float(t_rank_max.item())
     t_nvfp4_rank_min = float(t_rank_min.item())
     t_nvfp4_rank_mean = float(t_rank_sum.item()) / num_ranks
+    phase_rank_max = None
+    if phase_times is not None:
+        phase_rank_max_tensor = torch.tensor(
+            phase_times, dtype=torch.float64, device='cuda')
+        dist.all_reduce(phase_rank_max_tensor, op=dist.ReduceOp.MAX)
+        phase_rank_max = tuple(float(value) for value in phase_rank_max_tensor.tolist())
 
     # Count tokens that landed on this rank for stats
     gathered_topk_idx = uneven_all_gather(topk_idx, group=group)
@@ -166,6 +190,12 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
             f'({tflops_nvfp4:5.1f}TF, {hbm_gbs:4.0f}GB/s)  (rank{rank_idx})',
             once_in_node=True,
         )
+        if phase_rank_max is not None:
+            dist_print(
+                f'   split phases max-rank: l1={phase_rank_max[0] * 1e6:.1f}us '
+                f'l2={phase_rank_max[1] * 1e6:.1f}us',
+                once_in_node=True,
+            )
 
     dist.barrier()
     buffer.destroy()
@@ -173,8 +203,9 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
 
 def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     rank_idx, num_ranks, group = init_dist(local_rank, num_local_ranks)
-    torch.manual_seed(rank_idx)
-    random.seed(rank_idx)
+    seed = getattr(args, 'seed', 0) + rank_idx
+    torch.manual_seed(seed)
+    random.seed(seed)
 
     if get_arch_major() != 9:
         dist_print(f'[SKIP] requires SM90, got SM{get_arch_major()}0', once_in_node=True)
@@ -234,11 +265,14 @@ if __name__ == '__main__':
     parser.add_argument('--activation-clamp', type=float, default=10.0)
     parser.add_argument('--masked-ratio', type=float, default=0.0)
     parser.add_argument('--fast-math', type=int, default=1)
+    parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--num-tests', type=int, default=20)
     parser.add_argument('--num-max-tokens-per-rank', type=int, default=None,
                         help='Fix buffer capacity independently of the measured batch list')
     parser.add_argument('--nvfp4-block-n', type=int, choices=(128, 256), default=None,
                         help='Override NVFP4 prepacked weight layout: 256=fused, 128=split')
+    parser.add_argument('--report-phases', action='store_true',
+                        help='Report split L1 and L2 kernel times separately')
     args = parser.parse_args()
 
     if args.local_rank_idx is not None:

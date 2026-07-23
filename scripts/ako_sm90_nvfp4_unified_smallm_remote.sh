@@ -56,13 +56,20 @@ run_correctness() {
         "${block_n_args[@]}" \
         --weight-scales 0.05 \
         --global-scale-modes none expert \
+        --repeats "${DG_AKO_CORRECTNESS_REPEATS:-1}" \
         --seed 42 2>&1 | tee "${RESULT}/logs/correctness_${shape}.log"
 }
 
 if [[ ${DG_AKO_RUN_CORRECTNESS:-1} == 1 ]]; then
-    run_correctness flash 4096 2048 32 6
-    run_correctness pro 7168 3072 48 6
-    run_correctness mimo_pro 6144 2048 48 8
+    read -r -a correctness_shapes <<< "${DG_AKO_CORRECTNESS_SHAPES:-flash pro mimo_pro}"
+    for shape in "${correctness_shapes[@]}"; do
+        case "${shape}" in
+            flash) run_correctness flash 4096 2048 32 6 ;;
+            pro) run_correctness pro 7168 3072 48 6 ;;
+            mimo_pro) run_correctness mimo_pro 6144 2048 48 8 ;;
+            *) echo "Unknown correctness shape: ${shape}" >&2; exit 2 ;;
+        esac
+    done
     echo "CORRECT=True"
 fi
 
