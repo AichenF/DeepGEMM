@@ -289,6 +289,8 @@
                         reinterpret_cast<uint8_t*>(smem_b[s]),
                         reinterpret_cast<const uint8_t*>(smem_packed_b[s]),
                         row, smem_nvfp4_lut);
+                cutlass::arch::fence_view_async_shared();
+                ptx::sync_aligned(64, kDequantBarrierIdx);
                 if (non_epilogue_thread_idx == 0)
                     dequant_barriers[s]->arrive();
             } else if constexpr (kNumMMANonEpilogueWarps == 4) {
@@ -298,6 +300,8 @@
                     deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_mode2_nibble<
                         128u, kDequantBarrierIdx>(
                         reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(128, kDequantBarrierIdx);
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
                 } else if constexpr (kDispatchDequant) {
@@ -316,6 +320,8 @@
                     deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_mode2_nibble<
                         64u, kDequantBarrierIdx>(
                         reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(64, kDequantBarrierIdx);
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
                 }
@@ -356,36 +362,6 @@
 
     constexpr uint32_t kDispatchGridSyncIndex = 0;
 
-    constexpr uint32_t kProfileDispatchTotal = 0;
-    constexpr uint32_t kProfileDispatchPull = 1;
-    constexpr uint32_t kProfileMathLoop = 2;
-    constexpr uint32_t kProfileGemmCore = 5;
-    constexpr uint32_t kProfileL1Epilogue = 6;
-    constexpr uint32_t kProfileLoaderDequant = 8;
-    constexpr uint32_t kProfileMathDequantWait = 9;
-    constexpr uint32_t kProfileL1TMAWait = 10;
-    constexpr uint32_t kNumPhaseProfileMetrics = 14;
-    const auto phase_profile_clock = [&]() -> unsigned long long {
-        if constexpr (kPhaseProfileRequested) {
-            unsigned long long t;
-            asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
-            return t;
-        } else {
-            return 0ull;
-        }
-    };
-    const auto phase_profile_record = [&](const uint32_t& metric, const unsigned long long& cycles) {
-        if constexpr (kPhaseProfileRequested) {
-            if (cumulative_local_expert_recv_stats != nullptr and cycles > 0) {
-                auto profile = reinterpret_cast<unsigned long long*>(
-                    cumulative_local_expert_recv_stats + kNumExpertsPerRank);
-                atomicAdd(profile + metric, cycles);
-                atomicMax(profile + kNumPhaseProfileMetrics + metric, cycles);
-                atomicAdd(profile + 2 * kNumPhaseProfileMetrics + metric, 1ull);
-            }
-        }
-    };
-
     const auto for_each_selected_block = [&](auto&& func) {
         scheduler.for_each_linear1_block([&](const uint32_t& local_expert_idx,
                                              const uint32_t& num_k_blocks,
@@ -409,8 +385,6 @@
             return;
         } else {
         cutlass::arch::warpgroup_reg_dealloc<kNumDispatchRegisters>();
-        
-        const unsigned long long dispatch_total_start = phase_profile_clock();
 
         DG_STATIC_ASSERT(kNumTopk <= 32, "Invalid number of topk");
         constexpr uint32_t kNumActivateLanes = kNumTokensPerWarp * kNumTopk;
@@ -485,7 +459,6 @@
 
         // Sync with epilogue warps before pulling tokens
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
-        const unsigned long long dispatch_pull_start = phase_profile_clock();
 
         // Token / SF pull loop
         if (warp_idx < kNumActiveDispatchWarps) {
@@ -625,14 +598,6 @@
                 __syncwarp();
             }
 
-
-
-            // Cleanup workspace, overlapping with combine
-            const unsigned long long dispatch_pull_end = phase_profile_clock();
-            if (lane_idx == 0) {
-                phase_profile_record(kProfileDispatchPull, dispatch_pull_end - dispatch_pull_start);
-                phase_profile_record(kProfileDispatchTotal, dispatch_pull_end - dispatch_total_start);
-            }
         } else if constexpr (kDispatchDequant) {
             const uint32_t dequant_tid =
                 (warp_idx - kNumActiveDispatchWarps) * 32 + lane_idx;
@@ -682,7 +647,6 @@
 
             // Wait for the pool to be ready. Cluster peers can be dummy CTAs for
             // the tail M unit when an expert has an odd number of M blocks.
-            const unsigned long long ready_wait_start = phase_profile_clock();
             if (has_valid_m) {
                 
                     const auto ptr = workspace.get_l1_arrival_count_ptr(pool_block_idx);
@@ -690,7 +654,6 @@
                     while (ptx::ld_acq(ptr) != expected);
                 
             }
-            const unsigned long long ready_wait_end = phase_profile_clock();
             
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 empty_barriers[stage_idx]->wait(phase ^ 1);
@@ -770,11 +733,7 @@
                                          const uint32_t&, const uint32_t& num_k_blocks,
                                          const uint32_t&, const uint32_t&) {
                 for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
-                    const unsigned long long loader_dequant_start = phase_profile_clock();
                     dequant_loaded_b_stage(stage_idx, phase, k_block_idx, non_epilogue_thread_idx);
-                    const unsigned long long loader_dequant_end = phase_profile_clock();
-                    if (non_epilogue_thread_idx == 64u)
-                        phase_profile_record(kProfileLoaderDequant, loader_dequant_end - loader_dequant_start);
                     __syncwarp();
                 }
             });
@@ -822,7 +781,6 @@
         // Sync with dispatch
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
 
-        const unsigned long long math_loop_start = phase_profile_clock();
         uint32_t pair_scale_phase = 0;
 
         for_each_selected_block([&](const auto& block_phase,
@@ -1035,11 +993,7 @@
                         cute::tma_store_arrive();
                     }
                     __syncwarp();
-                    const unsigned long long l1_tma_wait_start = phase_profile_clock();
                     ptx::tma_store_wait<0>();
-                    const unsigned long long l1_tma_wait_end = phase_profile_clock();
-                    if (epilogue_warp_idx == 0 and lane_idx == 0)
-                        phase_profile_record(kProfileL1TMAWait, l1_tma_wait_end - l1_tma_wait_start);
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 
                 return;
@@ -1051,15 +1005,10 @@
             float final_accum[kAccumPerThread] = {};
             float accum[kAccumPerThread];
 
-            const unsigned long long block_gemm_start = phase_profile_clock();
             const auto run_default_gemm_loop = [&]() {
 for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 if constexpr (kLoaderDequant) {
-                    const unsigned long long dequant_wait_start = phase_profile_clock();
                     dequant_barriers[stage_idx]->wait(phase);
-                    const unsigned long long dequant_wait_end = phase_profile_clock();
-                    if (epilogue_warp_idx == 0 && lane_idx == 0)
-                        phase_profile_record(kProfileMathDequantWait, dequant_wait_end - dequant_wait_start);
                 } else {
                     full_barriers[stage_idx]->wait(phase);
 
@@ -1074,6 +1023,9 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
                             _tid_in_wg, smem_nvfp4_lut);
                     }
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(
+                        kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 }
 
                 // Read SF (must precede warpgroup_arrive)
@@ -1122,15 +1074,10 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
             if (!inactive_math_wg)
                 run_default_gemm_loop();
 
-            const unsigned long long block_gemm_end = phase_profile_clock();
-            if (epilogue_warp_idx == 0 and lane_idx == 0)
-                phase_profile_record(kProfileGemmCore, block_gemm_end - block_gemm_start);
-
             // Even a fully invalid tail warpgroup must participate in the
             // CTA-wide scale rendezvous. It carries zero accumulators and only
             // writes padding rows, which L2 never scatters.
 
-            const unsigned long long block_epilogue_start = phase_profile_clock();
             const float l1_global_scale = l1_global_scales == nullptr ? 1.0f : __ldg(l1_global_scales + local_expert_idx);
             
                 // ---------------- L1 EPILOGUE: SwiGLU + FP8 quantize + TMA store ----------------
@@ -1337,11 +1284,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                         cute::tma_store_arrive();
                     }
                     __syncwarp();
-                    const unsigned long long l1_tma_wait_start = phase_profile_clock();
                     ptx::tma_store_wait<0>();
-                    const unsigned long long l1_tma_wait_end = phase_profile_clock();
-                    if (epilogue_warp_idx == 0 and lane_idx == 0)
-                        phase_profile_record(kProfileL1TMAWait, l1_tma_wait_end - l1_tma_wait_start);
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 } else {
                     ptx::sync_aligned(128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
@@ -1357,22 +1300,12 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     }
                     __syncwarp();
 
-                        const unsigned long long l1_tma_wait_start = phase_profile_clock();
                         ptx::tma_store_wait<0>();
-                        const unsigned long long l1_tma_wait_end = phase_profile_clock();
-                        if (epilogue_warp_idx == 0 and lane_idx == 0)
-                            phase_profile_record(kProfileL1TMAWait, l1_tma_wait_end - l1_tma_wait_start);
                         if constexpr (!kL2ArrivalCounter)
                             ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                                     }
-                const unsigned long long block_epilogue_end = phase_profile_clock();
-                if (epilogue_warp_idx == 0 and lane_idx == 0)
-                    phase_profile_record(kProfileL1Epilogue, block_epilogue_end - block_epilogue_start);
             
         });
-        const unsigned long long math_loop_end = phase_profile_clock();
-        if (epilogue_warp_idx == 0 and lane_idx == 0)
-            phase_profile_record(kProfileMathLoop, math_loop_end - math_loop_start);
 
         
             ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);

@@ -132,14 +132,6 @@ static SM90NVFP4MegaMoELoad get_sm90_nvfp4_mega_moe_load(
 static int get_num_experts_per_wave_for_sm90_nvfp4_mega_moe(
         const SM90NVFP4MegaMoEInput& input,
         const SM90NVFP4MegaMoEPhaseTuning& phase) {
-    const float expected_tokens_per_expert =
-        static_cast<float>(input.num_tokens) *
-        input.num_topk /
-        input.num_experts_per_rank;
-    if (phase.block_m == 64 &&
-        (expected_tokens_per_expert <= 1.0f ||
-         expected_tokens_per_expert >= 4.0f))
-        return input.num_experts_per_rank;
     return get_num_experts_per_wave_for_mega_moe(
         input.num_experts_per_rank,
         input.num_tokens,
@@ -197,24 +189,16 @@ get_sm90_nvfp4_mega_moe_pipeline_config(
         phase.num_active_dispatch_warps <=
         config.num_dispatch_threads / 32);
     const int num_dispatch_warps = phase.num_active_dispatch_warps;
-    const int num_epilogue_warps = config.num_epilogue_threads / 32;
-    const int num_epilogue_warpgroups = num_epilogue_warps / 4;
-
-    const bool split_n_warpgroups =
-        config.block_m == 64 && config.block_n == 256 &&
-        num_epilogue_warpgroups == 2;
-    const bool split_mn_warpgroups =
-        config.block_m == 128 && config.block_n == 256 &&
-        num_epilogue_warpgroups == 4;
-    const int wg_split_m = split_n_warpgroups ? 1 :
-        (split_mn_warpgroups ? 2 : num_epilogue_warpgroups);
-    const int wg_split_n = split_n_warpgroups ?
-        num_epilogue_warpgroups : (split_mn_warpgroups ? 2 : 1);
     DG_HOST_ASSERT(
-        wg_split_m * wg_split_n == num_epilogue_warpgroups);
-    const int wg_block_m = config.block_m / wg_split_m;
-    const int wg_block_n = config.block_n / wg_split_n;
-    const int wg_l1_out_block_n = wg_block_n / 2;
+        config.block_m == 128 &&
+        config.block_n == 128 &&
+        config.block_k == 128 &&
+        config.num_non_epilogue_threads == 128 &&
+        config.num_epilogue_threads == 256);
+    constexpr int kNumEpilogueWarps = 8;
+    constexpr int kNumEpilogueWarpgroups = 2;
+    constexpr int kWGBlockM = 64;
+    constexpr int kWGL1OutBlockN = 64;
 
     const int smem_expert_count_size = align(
         input.num_experts * static_cast<int>(sizeof(uint32_t)),
@@ -230,18 +214,11 @@ get_sm90_nvfp4_mega_moe_pipeline_config(
     const int smem_nvfp4_lut = align(128 * 8, kSmemAlignment);
 
     const int smem_cd_l1 =
-        num_epilogue_warpgroups * wg_block_m * wg_l1_out_block_n;
+        kNumEpilogueWarpgroups * kWGBlockM * kWGL1OutBlockN;
     DG_HOST_ASSERT(
         phase.acts_sf_gran_k == 64 || phase.acts_sf_gran_k == 128);
-    const bool split_n_shares_l1_sf =
-        split_n_warpgroups &&
-        wg_l1_out_block_n < phase.acts_sf_gran_k;
-    const int smem_cd_l1_shared_sf_slots = split_n_shares_l1_sf ?
-        num_epilogue_warpgroups * config.block_m : 0;
-    const int smem_cd_l1_shared_sf =
-        smem_cd_l1_shared_sf_slots * static_cast<int>(sizeof(float));
     const int smem_cd = phase.l2_only ? 0 : align(
-        smem_cd_l1 + smem_cd_l1_shared_sf,
+        smem_cd_l1,
         kSmemAlignment);
 
     const int num_sfa_groups_per_bk =
@@ -255,7 +232,7 @@ get_sm90_nvfp4_mega_moe_pipeline_config(
         config.block_n * config.block_k +
         smem_sfa_per_stage;
     const int smem_barriers_fixed =
-        (num_dispatch_warps + 2 * num_epilogue_warps) * 8;
+        (num_dispatch_warps + 2 * kNumEpilogueWarps) * 8;
     // The BN128 split family always dequantizes B in the loader warpgroup, so
     // every stage owns full, empty, and dequant barriers.
     const int smem_barriers_per_stage = 3 * 8;
@@ -269,7 +246,6 @@ get_sm90_nvfp4_mega_moe_pipeline_config(
         (smem_per_stage + smem_barriers_per_stage);
     const int num_stages =
         !phase.l2_only &&
-        config.block_n == 128 &&
         load.expected_tokens_per_local_expert > 8.0f &&
         max_num_stages > 6 ?
         6 : max_num_stages;

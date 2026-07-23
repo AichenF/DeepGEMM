@@ -214,6 +214,9 @@ __device__ __forceinline__ void dequant_smem_b_inplace_two_rows_mode2_nibble(
         scale_words0, scale_words1, row_swizzle, lut_smem,
         lut00, lut10, lut01, lut11);
     if constexpr (kSyncAfter) {
+        // Every writer must publish its generic-proxy stores before the
+        // writer-set rendezvous allows one thread to signal the mbarrier.
+        cutlass::arch::fence_view_async_shared();
         asm volatile("bar.sync %0, %1;"
                      : : "n"(kBarIdx), "n"(kNumDequantThreads));
     }

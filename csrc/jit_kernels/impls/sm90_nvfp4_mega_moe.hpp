@@ -45,7 +45,6 @@ public:
         int num_ranks;
         float activation_clamp;
         bool fast_math;
-        bool phase_profile;
         bool l2_arrival_counter;
         bool dispatch_dequant;
         int phase_mode;
@@ -79,16 +78,14 @@ public:
         const char* kernel_symbol = args.phase_mode == kL1PhaseMode ?
             "sm90_nvfp4_mega_moe_split_l1_impl" :
             "sm90_nvfp4_mega_moe_split_l2_impl";
-        const std::string phase_template_args =
+        const std::string l1_template_args =
             args.phase_mode == kL1PhaseMode ?
-            fmt::format("/* kPhaseProfileRequested */ {},\n"
+            fmt::format(",\n"
                         "        /* kL2ArrivalCounterRequested */ {},\n"
                         "        /* kDispatchDequantRequested */ {}",
-                        args.phase_profile ? "true" : "false",
                         args.l2_arrival_counter ? "true" : "false",
                         args.dispatch_dequant ? "true" : "false") :
-            fmt::format("/* kPhaseProfileRequested */ {}",
-                        args.phase_profile ? "true" : "false");
+            "";
         return fmt::format(R"(
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe.cuh>
 
@@ -108,8 +105,7 @@ static void __instantiate_kernel() {{
         {},
         {}, {},
         {},
-        {},
-        {}
+        {}{}
     >);
 }};
 )",
@@ -127,7 +123,7 @@ static void __instantiate_kernel() {{
     args.launch_args.grid_dim.first, args.num_ranks,
     to_string(args.activation_clamp),
     args.fast_math ? "true" : "false",
-    phase_template_args);
+    l1_template_args);
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -240,26 +236,14 @@ static void sm90_nvfp4_split_mega_moe(
     // staging tile to SMEM as plain row-major bytes, so the TMA store descriptor
     // must use no shared-memory swizzle. Later L2 TMA loads may still swizzle
     // from this row-major global buffer into their own SMEM tile.
-    // The default TMA store is issued per warpgroup, each writing a WG_BLOCK_M
-    // row tile. The default BM128/BN128 path uses two M warpgroups; adjacent
-    // CTAs own the two 64-column halves of a per-128 group.
-    const int num_epilogue_warpgroups_h = config.num_epilogue_threads / 128;
-    const bool split_n_warpgroups_h =
-        config.block_m == 64 and config.block_n == 256 and num_epilogue_warpgroups_h == 2;
-    const bool split_mn_warpgroups_h =
-        config.block_m == 128 and config.block_n == 256 and num_epilogue_warpgroups_h == 4;
-    const int wg_split_m_h = split_n_warpgroups_h ? 1 :
-        (split_mn_warpgroups_h ? 2 : num_epilogue_warpgroups_h);
-    const int wg_split_n_h = split_n_warpgroups_h ? num_epilogue_warpgroups_h :
-        (split_mn_warpgroups_h ? 2 : 1);
-    DG_HOST_ASSERT(wg_split_m_h * wg_split_n_h == num_epilogue_warpgroups_h);
-    const int wg_block_m = config.block_m / wg_split_m_h;
-    const int wg_block_n = config.block_n / wg_split_n_h;
-    const int wg_l1_out_block_n = wg_block_n / 2;
-    const int l1_output_store_block_n = split_n_warpgroups_h ? config.block_n / 2 : wg_l1_out_block_n;
+    // The fixed BM128/BN128 split layout has two M warpgroups. Each stores a
+    // 64x64 post-SwiGLU tile; adjacent CTAs own the two N64 halves of one
+    // logical per-128 activation-scale group.
+    constexpr int kL1OutputStoreBlockM = 64;
+    constexpr int kL1OutputStoreBlockN = 64;
     const auto tensor_map_l1_output = make_tma_2d_desc(l2_acts,
                                                        intermediate_hidden, config.num_max_pool_tokens,
-                                                       l1_output_store_block_n, wg_block_m,
+                                                       kL1OutputStoreBlockN, kL1OutputStoreBlockM,
                                                        static_cast<int>(l2_acts.stride(-2)),
                                                        0);
     const auto tensor_map_l2_acts = make_tma_2d_desc(l2_acts,
@@ -299,7 +283,6 @@ static void sm90_nvfp4_split_mega_moe(
         .num_ranks = num_ranks,
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
-        .phase_profile = false,
         .l2_arrival_counter = plan.l2_arrival_counter,
         .dispatch_dequant = plan.dispatch_dequant,
         .phase_mode = SM90NVFP4SplitMegaMoERuntime::kL1PhaseMode,

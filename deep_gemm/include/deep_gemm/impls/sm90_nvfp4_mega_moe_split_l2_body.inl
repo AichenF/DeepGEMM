@@ -266,6 +266,8 @@
                         reinterpret_cast<uint8_t*>(smem_b[s]),
                         reinterpret_cast<const uint8_t*>(smem_packed_b[s]),
                         row, smem_nvfp4_lut);
+                cutlass::arch::fence_view_async_shared();
+                ptx::sync_aligned(64, 8);
                 if (non_epilogue_thread_idx == 0)
                     dequant_barriers[s]->arrive();
             } else if constexpr (kNumMMANonEpilogueWarps == 4) {
@@ -274,6 +276,8 @@
                     const uint32_t dequant_tid = non_epilogue_thread_idx;
                     deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_mode2_nibble<128u, 8u>(
                         reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(128, 8);
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
                 } else if (non_epilogue_thread_idx >= 64u) {
@@ -281,6 +285,8 @@
                     const uint32_t dequant_tid = non_epilogue_thread_idx - 64u;
                     deep_gemm::nvfp4::dequant_smem_b_inplace_two_rows_mode2_nibble<64u, 8u>(
                         reinterpret_cast<uint8_t*>(smem_b[s]), dequant_tid, smem_nvfp4_lut);
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(64, 8);
                     if (dequant_tid == 0)
                         dequant_barriers[s]->arrive();
                 }
@@ -323,37 +329,6 @@
 
     constexpr uint32_t kDispatchGridSyncIndex = 0;
     constexpr uint32_t kEpilogueGridSyncIndex = 1;
-
-    constexpr uint32_t kProfileMathLoop = 2;
-    constexpr uint32_t kProfileCombineBarrier = 3;
-    constexpr uint32_t kProfileCombineReduce = 4;
-    constexpr uint32_t kProfileGemmCore = 5;
-    constexpr uint32_t kProfileL2Epilogue = 7;
-    constexpr uint32_t kProfileLoaderDequant = 8;
-    constexpr uint32_t kProfileMathDequantWait = 9;
-    constexpr uint32_t kProfileL2ReadyWait = 12;
-    constexpr uint32_t kProfileL2Scatter = 13;
-    constexpr uint32_t kNumPhaseProfileMetrics = 14;
-    const auto phase_profile_clock = [&]() -> unsigned long long {
-        if constexpr (kPhaseProfileRequested) {
-            unsigned long long t;
-            asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
-            return t;
-        } else {
-            return 0ull;
-        }
-    };
-    const auto phase_profile_record = [&](const uint32_t& metric, const unsigned long long& cycles) {
-        if constexpr (kPhaseProfileRequested) {
-            if (cumulative_local_expert_recv_stats != nullptr and cycles > 0) {
-                auto profile = reinterpret_cast<unsigned long long*>(
-                    cumulative_local_expert_recv_stats + kNumExpertsPerRank);
-                atomicAdd(profile + metric, cycles);
-                atomicMax(profile + kNumPhaseProfileMetrics + metric, cycles);
-                atomicAdd(profile + 2 * kNumPhaseProfileMetrics + metric, 1ull);
-            }
-        }
-    };
 
     const auto for_each_selected_block = [&](auto&& func) {
         scheduler.for_each_linear2_block([&](const uint32_t& local_expert_idx,
@@ -449,12 +424,7 @@
 
             // Wait for the pool to be ready. Cluster peers can be dummy CTAs for
             // the tail M unit when an expert has an odd number of M blocks.
-            const unsigned long long ready_wait_start = phase_profile_clock();
             (void)has_valid_m;
-            const unsigned long long ready_wait_end = phase_profile_clock();
-            
-                if (has_valid_m and lane_idx == 0)
-                    phase_profile_record(kProfileL2ReadyWait, ready_wait_end - ready_wait_start);
             
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 empty_barriers[stage_idx]->wait(phase ^ 1);
@@ -530,11 +500,7 @@
                                          const uint32_t&, const uint32_t& num_k_blocks,
                                          const uint32_t&, const uint32_t&) {
                 for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
-                    const unsigned long long loader_dequant_start = phase_profile_clock();
                     dequant_loaded_b_stage(stage_idx, phase, non_epilogue_thread_idx);
-                    const unsigned long long loader_dequant_end = phase_profile_clock();
-                    if (non_epilogue_thread_idx == 64u)
-                        phase_profile_record(kProfileLoaderDequant, loader_dequant_end - loader_dequant_start);
                     __syncwarp();
                 }
             });
@@ -621,8 +587,6 @@
 
         // Sync with dispatch
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
-
-        const unsigned long long math_loop_start = phase_profile_clock();
 
         for_each_selected_block([&](const auto& block_phase,
                                      const uint32_t& local_expert_idx,
@@ -810,15 +774,10 @@
             float final_accum[kAccumPerThread] = {};
             float accum[kAccumPerThread];
 
-            const unsigned long long block_gemm_start = phase_profile_clock();
             const auto run_default_gemm_loop = [&]() {
 for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 if constexpr (kLoaderDequant) {
-                    const unsigned long long dequant_wait_start = phase_profile_clock();
                     dequant_barriers[stage_idx]->wait(phase);
-                    const unsigned long long dequant_wait_end = phase_profile_clock();
-                    if (epilogue_warp_idx == 0 && lane_idx == 0)
-                        phase_profile_record(kProfileMathDequantWait, dequant_wait_end - dequant_wait_start);
                 } else {
                     full_barriers[stage_idx]->wait(phase);
 
@@ -833,6 +792,9 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
                             _tid_in_wg, smem_nvfp4_lut);
                     }
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(
+                        kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 }
 
                 // One activation scale covers all four K32 WGMMAs in BK128.
@@ -877,10 +839,6 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
             run_default_gemm_loop();
 
-            const unsigned long long block_gemm_end = phase_profile_clock();
-            if (epilogue_warp_idx == 0 and lane_idx == 0)
-                phase_profile_record(kProfileGemmCore, block_gemm_end - block_gemm_start);
-
             // Skip epilogue when block is past valid M (still must release via empty).
             // A dummy cluster peer may still carry an async L1 store from the
             // previous valid block, so drain it before leaving the L1 wave.
@@ -889,13 +847,10 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 return;
             }
 
-            const unsigned long long block_epilogue_start = phase_profile_clock();
-            
                 // ---------------- L2 EPILOGUE: BF16 cast + NVLink scatter ----------------
                 constexpr uint32_t kNumRowsPerWarp = WG_BLOCK_M / 8;
 
                 DG_STATIC_ASSERT(WG_BLOCK_N == 128, "Direct L2 scatter requires N128");
-                const unsigned long long l2_scatter_start = phase_profile_clock();
 
                     auto scatter_direct_row = [&](const uint32_t& row_offset, const bool& valid_row, const uint32_t& row_accum_offset) {
                             if (valid_row) {
@@ -939,37 +894,23 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     scatter_direct_row(row_offset_r0, valid_r0, 0);
                     scatter_direct_row(row_offset_r1, valid_r1, 2);
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-                    const unsigned long long l2_scatter_end = phase_profile_clock();
-                    if (epilogue_warp_idx == 0 and lane_idx == 0)
-                        phase_profile_record(kProfileL2Scatter, l2_scatter_end - l2_scatter_start);
-                const unsigned long long block_epilogue_end = phase_profile_clock();
-                if (epilogue_warp_idx == 0 and lane_idx == 0)
-                    phase_profile_record(kProfileL2Epilogue, block_epilogue_end - block_epilogue_start);
             
         });
-        const unsigned long long math_loop_end = phase_profile_clock();
-        if (epilogue_warp_idx == 0 and lane_idx == 0)
-            phase_profile_record(kProfileMathLoop, math_loop_end - math_loop_start);
 
         
 
         // ---------------- COMBINE ----------------
         // NVLink barrier first: signals remote ranks that this rank's GEMM
         // outputs (NVLink scatter targets) are fully written.
-        const unsigned long long combine_barrier_start = phase_profile_clock();
         comm::nvlink_barrier<kNumRanks, kNumSMs, kNumEpilogueThreads,
                              kEpilogueGridSyncIndex, kBeforeCombineReduceBarrierTag>(
             workspace, sym_buffer, sm_idx, epilogue_thread_idx,
             [&]() { ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx); }
         );
-        const unsigned long long combine_barrier_end = phase_profile_clock();
-        if (epilogue_warp_idx == 0 and lane_idx == 0)
-            phase_profile_record(kProfileCombineBarrier, combine_barrier_end - combine_barrier_start);
 
         // Sync with dispatch (paired with dispatch's pre-cleanup sync) so that
         // dispatch may now safely clean workspace state.
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
-        const unsigned long long combine_reduce_start = phase_profile_clock();
 
         constexpr uint32_t kNumHiddenBytes = kHidden * sizeof(nv_bfloat16);
         constexpr uint32_t kNumElemsPerUint4 = sizeof(uint4) / sizeof(nv_bfloat162);
@@ -1079,9 +1020,6 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 __syncwarp();
             }
         }
-        const unsigned long long combine_reduce_end = phase_profile_clock();
-        if (epilogue_warp_idx == 0 and lane_idx == 0)
-            phase_profile_record(kProfileCombineReduce, combine_reduce_end - combine_reduce_start);
         finish_no_dispatch_cleanup();
         
     }

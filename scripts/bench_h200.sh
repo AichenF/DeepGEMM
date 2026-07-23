@@ -8,6 +8,9 @@ HOST=${DG_AKO_H200_HOST:-viking-prod-298}
 ROOT_BASE=${DG_AKO_ROOT_BASE:-/home/scratch.aichenf_wwfo/greencontext}
 REMOTE_REPO=${DG_AKO_REMOTE_REPO:-${ROOT_BASE}/worktrees/megamoe_nvfp4_dev}
 SEED_REPO=${DG_AKO_SEED_REPO:-${ROOT_BASE}/worktrees/megamoe_nvfp4_dev_m}
+VENV=${DG_AKO_VENV:-${ROOT_BASE}/venvs/torchcu132-final}
+RESULT_ROOT=${DG_AKO_RESULT_ROOT:-${ROOT_BASE}/results/megamoe_nvfp4_dev_ako}
+MATRIX_RUNNER=${DG_AKO_MATRIX_RUNNER:-${ROOT_BASE}/megamoe_nvfp4_ba7ee09_v4_shape_matrix_runner.py}
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SOURCE_REVISION=$(git rev-parse HEAD)
 
@@ -33,7 +36,11 @@ ssh -o BatchMode=yes -o ConnectTimeout=10 "${HOST}" \
     "bash -lc 'cd \"${REMOTE_REPO}\" && \
         DG_AKO_LABEL=\"${LABEL}\" \
         DG_AKO_SOURCE_REVISION=\"${SOURCE_REVISION}\" \
+        DG_AKO_ROOT_BASE=\"${ROOT_BASE}\" \
         DG_AKO_REMOTE_REPO=\"${REMOTE_REPO}\" \
+        DG_AKO_VENV=\"${VENV}\" \
+        DG_AKO_RESULT_ROOT=\"${RESULT_ROOT}\" \
+        DG_AKO_MATRIX_RUNNER=\"${MATRIX_RUNNER}\" \
         DG_AKO_REBUILD=\"${DG_AKO_REBUILD:-1}\" \
         DG_AKO_RUN_CORRECTNESS=\"${DG_AKO_RUN_CORRECTNESS:-1}\" \
         DG_AKO_RUN_PERF=\"${DG_AKO_RUN_PERF:-1}\" \
@@ -45,6 +52,8 @@ ssh -o BatchMode=yes -o ConnectTimeout=10 "${HOST}" \
         DG_AKO_CORRECTNESS_REPEATS=\"${DG_AKO_CORRECTNESS_REPEATS:-1}\" \
         DG_AKO_MAX_TOKENS_PER_RANK=\"${DG_AKO_MAX_TOKENS_PER_RANK:-128}\" \
         DG_AKO_NVFP4_BLOCK_N=\"${DG_AKO_NVFP4_BLOCK_N:-}\" \
+        DG_AKO_FLUSH_L2_BYTES=\"${DG_AKO_FLUSH_L2_BYTES:-8000000000}\" \
+        DG_AKO_SEED=\"${DG_AKO_SEED:-101}\" \
         bash scripts/ako_sm90_nvfp4_unified_smallm_h200_remote.sh'" \
     2>&1 | tee _bench_output.txt
 BENCH_EXIT=${PIPESTATUS[0]}

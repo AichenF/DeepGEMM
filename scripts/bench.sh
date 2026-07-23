@@ -35,6 +35,8 @@ ssh -o BatchMode=yes -o ConnectTimeout=10 "${HOST}" \
         -e DG_AKO_LABEL='${LABEL}' \
         -e DG_AKO_SOURCE_REVISION='${SOURCE_REVISION}' \
         -e DG_AKO_REMOTE_REPO='${REMOTE_REPO}' \
+        -e DG_AKO_RESULT_ROOT='${DG_AKO_RESULT_ROOT:-/root/fac/megamoe/results/megamoe_nvfp4_dev_ako}' \
+        -e DG_AKO_PYTHON='${DG_AKO_PYTHON:-python}' \
         -e DG_AKO_REBUILD='${DG_AKO_REBUILD:-1}' \
         -e DG_AKO_RUN_CORRECTNESS='${DG_AKO_RUN_CORRECTNESS:-1}' \
         -e DG_AKO_RUN_PERF='${DG_AKO_RUN_PERF:-1}' \
@@ -47,6 +49,8 @@ ssh -o BatchMode=yes -o ConnectTimeout=10 "${HOST}" \
         -e DG_AKO_MAX_TOKENS_PER_RANK='${DG_AKO_MAX_TOKENS_PER_RANK:-128}' \
         -e DG_AKO_NVFP4_BLOCK_N='${DG_AKO_NVFP4_BLOCK_N:-}' \
         -e DG_AKO_MATRIX_RUNNER='${DG_AKO_MATRIX_RUNNER:-/root/fac/scripts/megamoe/v4_shape_matrix_runner.py}' \
+        -e DG_AKO_FLUSH_L2_BYTES='${DG_AKO_FLUSH_L2_BYTES:-8000000000}' \
+        -e DG_AKO_SEED='${DG_AKO_SEED:-101}' \
         '${CONTAINER}' \
         bash -lc 'cd ${REMOTE_REPO} && bash scripts/ako_sm90_nvfp4_unified_smallm_remote.sh'" \
     2>&1 | tee _bench_output.txt
