@@ -28,8 +28,6 @@
 #include <deep_gemm/ptx/wgmma.cuh>
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_mode2_dequant.cuh>
 
-#define __CLION_IDE__
-
 namespace deep_gemm {
 namespace nvfp4 {
 

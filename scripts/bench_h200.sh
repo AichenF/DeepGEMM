@@ -52,18 +52,29 @@ set -e
 
 TRAJ_DIR=trajectory/${TIMESTAMP}_${LABEL}
 mkdir -p "${TRAJ_DIR}"
-cp HINTS.md "${TRAJ_DIR}/"
-cp deep_gemm/mega/__init__.py "${TRAJ_DIR}/"
-cp csrc/apis/mega.hpp "${TRAJ_DIR}/"
-cp csrc/jit_kernels/impls/sm90_nvfp4_mega_moe.hpp "${TRAJ_DIR}/"
-cp csrc/jit_kernels/heuristics/sm90_nvfp4_mega_moe_small_m.hpp "${TRAJ_DIR}/"
-cp csrc/jit_kernels/impls/sm90_nvfp4_mega_moe_small_m.hpp "${TRAJ_DIR}/"
-cp deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe.cuh "${TRAJ_DIR}/"
-cp deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_mode2_dequant.cuh "${TRAJ_DIR}/"
-cp deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_small_m.cuh "${TRAJ_DIR}/"
-cp deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_small_m_fused_body.inl "${TRAJ_DIR}/"
-cp deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_split_l1_body.inl "${TRAJ_DIR}/"
-cp deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_split_l2_body.inl "${TRAJ_DIR}/"
+copy_trajectory_file() {
+    local source=$1
+    mkdir -p "${TRAJ_DIR}/$(dirname "${source}")"
+    cp "${source}" "${TRAJ_DIR}/${source}"
+}
+for source in \
+    HINTS.md \
+    deep_gemm/mega/__init__.py \
+    csrc/apis/mega.hpp \
+    csrc/jit_kernels/heuristics/sm90_nvfp4_mega_moe.hpp \
+    csrc/jit_kernels/impls/sm90_nvfp4_mega_moe.hpp \
+    csrc/jit_kernels/heuristics/sm90_nvfp4_mega_moe_small_m.hpp \
+    csrc/jit_kernels/impls/sm90_nvfp4_mega_moe_small_m.hpp \
+    deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe.cuh \
+    deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_mode2_dequant.cuh \
+    deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_small_m.cuh \
+    deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_small_m_fused_body.inl \
+    deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_split_l1_body.inl \
+    deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_split_l2_body.inl \
+    deep_gemm/include/deep_gemm/quantization/nvfp4_dequant.cuh
+do
+    copy_trajectory_file "${source}"
+done
 mv _bench_output.txt "${TRAJ_DIR}/output.txt"
 git diff --binary > "${TRAJ_DIR}/candidate.patch"
 git status --short > "${TRAJ_DIR}/git-status.txt"

@@ -297,10 +297,7 @@ static void nvfp4_mega_moe(
     const bool layout_fused_b_scale =
         hidden_storage == (hidden / 128) * 80 &&
         intermediate_hidden_storage == (intermediate_hidden / 128) * 80;
-    const bool layout_plain_b_scale =
-        hidden_storage == hidden / 2 &&
-        intermediate_hidden_storage == intermediate_hidden / 2;
-    DG_HOST_ASSERT(layout_fused_b_scale || layout_plain_b_scale);
+    DG_HOST_ASSERT(layout_fused_b_scale);
     DG_HOST_ASSERT(num_tokens <= num_max_tokens_per_rank);
     DG_HOST_ASSERT(num_experts_per_rank == num_experts_per_rank_);
     DG_HOST_ASSERT(hidden == hidden_);
@@ -314,10 +311,8 @@ static void nvfp4_mega_moe(
     DG_HOST_ASSERT(l1_weights_sf.size(0) == num_experts_per_rank);
     DG_HOST_ASSERT(l1_weights_sf.size(1) == intermediate_hidden * 2 / nvfp4_block_n);
     DG_HOST_ASSERT(l1_weights_sf.size(2) == hidden / 128);
-    DG_HOST_ASSERT(l1_weights_sf.size(3) == nvfp4_block_n);
     DG_HOST_ASSERT(l1_weights_sf.size(4) == 8);
     DG_HOST_ASSERT(l1_weights_sf.is_contiguous());
-    DG_HOST_ASSERT(l2_weights_sf.dim() == 5);
     DG_HOST_ASSERT(l2_weights_sf.size(0) == num_experts_per_rank);
     DG_HOST_ASSERT(l2_weights_sf.size(1) == hidden / nvfp4_block_n);
     DG_HOST_ASSERT(l2_weights_sf.size(2) == intermediate_hidden / 128);
@@ -368,7 +363,7 @@ static void nvfp4_mega_moe(
             hidden, intermediate_hidden,
             activation_clamp, fast_math);
     } else {
-        sm90_nvfp4_mega_moe(
+        sm90_nvfp4_split_mega_moe(
             y,
             l1_acts, l1_acts_sf,
             l2_acts, l2_acts_sf,

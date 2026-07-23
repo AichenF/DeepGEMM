@@ -99,20 +99,15 @@
     constexpr uint32_t kNumActiveDispatchWarps =
         kSingleActiveDispatchWarp ? 1u : kNumDispatchWarps;
     constexpr uint32_t kNumActiveDispatchThreads = kNumActiveDispatchWarps * 32;
-    constexpr bool kPackedBScratch = true;
     constexpr bool kQuadDequantIlp =
         BLOCK_M == 8 && kNumStages == 4;
     using L1WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
-    using L2WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     static_assert(L1WGMMA::M == 64 and L1WGMMA::N == WG_BLOCK_N and L1WGMMA::K == 32,
                   "Unexpected WGMMA shape");
     // A and B are CTA-local in the fixed cluster-size-one plan.
     constexpr uint32_t LOAD_BLOCK_M    = BLOCK_M;
     constexpr uint32_t LOAD_BLOCK_N    = BLOCK_N;
     constexpr uint32_t kSwizzleAMode   = BLOCK_K * sizeof(a_dtype_t);   // 128
-    constexpr uint32_t kSwizzleBMode   = BLOCK_K * sizeof(b_dtype_t);   // 128
-    constexpr uint32_t kSwizzleCDMode  = 128;
-    constexpr uint32_t kGranK          = 128;          // L1 acts SF, weights SF
     constexpr uint32_t kL2ActsSFGranK  = 128;          // L1 output and L2 input SF granularity
     constexpr bool kSplitNSharesSF =
         kSplitNWarpgroups && WG_L1_OUT_BLOCK_N < kL2ActsSFGranK;
@@ -771,43 +766,6 @@
             __syncwarp();
         };
 
-        const auto cleanup_workspace_from_epilogue = [&]() {
-            DG_STATIC_ASSERT(kNumSMs > 1, "Invalid SM count");
-            if (sm_idx == 0) {
-                #pragma unroll
-                for (uint32_t i = epilogue_thread_idx; i < kNumExperts; i += kNumEpilogueThreads)
-                    *workspace.get_expert_send_count_ptr(i) = 0;
-            } else {
-                for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
-                    const auto num_recv_tokens = static_cast<uint32_t>(
-                        *workspace.get_expert_recv_count_sum_ptr(i));
-                    const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
-                    const auto cleanup_pool_block_offset = scheduler.get_pool_block_offset(i);
-
-                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-                    if (epilogue_thread_idx == 0) {
-                        *workspace.get_expert_recv_count_sum_ptr(i) = 0;
-                        if (cumulative_local_expert_recv_stats != nullptr)
-                            ptx::red_add(cumulative_local_expert_recv_stats + i, static_cast<int>(num_recv_tokens));
-                    }
-
-                    for (uint32_t j = epilogue_thread_idx; j < kNumRanks; j += kNumEpilogueThreads)
-                        *workspace.get_expert_recv_count_ptr(j, i) = 0;
-
-                    for (uint32_t j = epilogue_thread_idx; j < num_recv_m_blocks; j += kNumEpilogueThreads) {
-                        *workspace.get_l1_arrival_count_ptr(cleanup_pool_block_offset + j) = 0;
-                        if constexpr (!kSkipL1ReadyNotify && !kSkipL2ReadyMask)
-                            *workspace.get_l2_arrival_mask_ptr(cleanup_pool_block_offset + j) = 0;
-                    }
-                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-                }
-            }
-        };
-
-        const auto finish_no_dispatch_cleanup = [&]() {
-
-        };
-
         // WGMMA-output register layout helpers
         const uint32_t row_idx = lane_idx / 4;
         const uint32_t col_idx = lane_idx % 4;
@@ -875,12 +833,6 @@
                         scale_a_0_hi = scale_a_0_lo;
                         scale_a_1_hi = scale_a_1_lo;
                     }
-
-                    constexpr uint32_t kL1SFKBlocks   = kHidden / 128;
-                    constexpr uint32_t kL2SFKBlocks   = kIntermediateHidden / 128;
-                    constexpr uint32_t kL1SFGateBlks  = kIntermediateHidden / 128;
-                    constexpr uint32_t kL1SFPerExpert = (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
-                    constexpr uint32_t kL2SFPerExpert = (kHidden / 128) * kL2SFKBlocks;
 
                     #pragma unroll
                     for (uint32_t serial_n_idx = 0; serial_n_idx < kNumSerialN; ++serial_n_idx) {
@@ -2117,8 +2069,6 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                 __syncwarp();
             }
         }
-        finish_no_dispatch_cleanup();
-
     }
 #else
     if (blockIdx.x == 0 and threadIdx.x == 0)

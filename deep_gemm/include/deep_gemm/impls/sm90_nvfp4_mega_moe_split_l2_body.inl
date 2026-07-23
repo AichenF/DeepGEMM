@@ -19,9 +19,6 @@
     DG_STATIC_ASSERT(BLOCK_N == 128 or BLOCK_N == 256,
                      "NVFP4 smem dequant supports BN128 and opt-in BN256 scale tile layouts");
     DG_STATIC_ASSERT(BLOCK_K == 128, "BLOCK_K is fixed to 128 (per-128 SF)");
-    DG_STATIC_ASSERT((!kLoaderDequantRequested) or kNumNonEpilogueThreads == 128 or
-                     (kNumNonEpilogueThreads == 64 and BLOCK_N == 256),
-                     "NVFP4 loader dequant expects four non-epilogue warps or the BN256 packed-scratch path");
     DG_STATIC_ASSERT(kNumDispatchThreads == 0 && kNumNonEpilogueThreads == 128 &&
                      kNumEpilogueThreads == 256 && BLOCK_M == 128 && BLOCK_N == 128,
                      "split L2 per-128 consumer requires the BM128/BN128 standalone plan");
@@ -90,23 +87,14 @@
         BLOCK_N == 256 && kNumEpilogueWarpgroups == 1;
     constexpr uint32_t WG_BLOCK_M = kSplitNWarpgroups ? BLOCK_M : BLOCK_M / kNumEpilogueWarpgroups;
     constexpr uint32_t WG_BLOCK_N = (kSplitNWarpgroups || kSerialNWarpgroups) ? BLOCK_N / 2 : BLOCK_N;
-    constexpr uint32_t L1_OUT_BLOCK_N = BLOCK_N / 2;       // post-SwiGLU tile N
-    constexpr uint32_t WG_L1_OUT_BLOCK_N = WG_BLOCK_N / 2; // post-SwiGLU per-WG N
-    constexpr bool kL2DualAccum = false;
-    constexpr bool kSkipL2ReadyMask = true;
-    constexpr bool kSkipL1ReadyNotify = true;
-    // Keep the 4-warp dispatch allocation for warpgroup/register alignment,
-    // but only use two warps for BN128 split L1 dispatch. The extra NVFP4
-    // dispatch warps mostly add fixed small/mid-M overhead while loader-dequant
-    // still needs its aligned 4-warp non-epilogue group.
+    // Split L2 has no dispatch warps; keep the derived count only for the
+    // zero-sized shared-memory layout calculation below.
     constexpr uint32_t kNumActiveDispatchWarps = kNumDispatchWarps;
-    constexpr uint32_t kNumActiveDispatchThreads = kNumActiveDispatchWarps * 32;
-    constexpr bool kLoaderDequant = kLoaderDequantRequested && kNumMMANonEpilogueWarps == 4;
+    constexpr bool kLoaderDequant = true;
     constexpr bool kPackedBScratch = BLOCK_N == 256 && (!kLoaderDequant);
     DG_STATIC_ASSERT(kLoaderDequant || kPackedBScratch,
                      "Fused NVFP4 B+scale layout requires loader dequant or packed scratch");
     using L1WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
-    using L2WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     static_assert(L1WGMMA::M == 64 and L1WGMMA::N == WG_BLOCK_N and L1WGMMA::K == 32,
                   "Unexpected WGMMA shape");
     DG_STATIC_ASSERT((!kSplitNWarpgroups) or (BLOCK_M == 64 and (WG_BLOCK_N == 64 or WG_BLOCK_N == 128)),
@@ -117,9 +105,6 @@
     constexpr uint32_t LOAD_BLOCK_M    = BLOCK_M;
     constexpr uint32_t LOAD_BLOCK_N    = BLOCK_N;
     constexpr uint32_t kSwizzleAMode   = BLOCK_K * sizeof(a_dtype_t);   // 128
-    constexpr uint32_t kSwizzleBMode   = BLOCK_K * sizeof(b_dtype_t);   // 128
-    constexpr uint32_t kSwizzleCDMode  = 128;
-    constexpr uint32_t kGranK          = 128;          // L1 acts SF, weights SF
     constexpr uint32_t kL2ActsSFGranK  = 128;          // L1 output and L2 input SF granularity
     // Split L1 and L2 share the same canonical BM128 physical pool-block unit,
     // so scheduling and pool-prefix accounting use the same granularity.
@@ -169,9 +154,6 @@
 
     // SMEM pointers
     auto smem_expert_count = reinterpret_cast<uint32_t*>(smem_buffer);
-    const auto smem_send_buffers = layout::Buffer(
-        fp8_token_layout, kNumActiveDispatchWarps, 1,
-        math::advance_ptr(smem_buffer, SMEM_EXPERT_COUNT_SIZE));
     auto smem_nvfp4_lut = reinterpret_cast<uint2*>(math::advance_ptr<uint8_t>(
         smem_buffer, SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE));
 
@@ -179,8 +161,6 @@
         smem_buffer, SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE + SMEM_NVFP4_LUT_SIZE);
 
     auto smem_cd_base = smem_gemm_base;
-    // CD output is shared by L1 (FP8) and L2 (BF16); reinterpret-cast as needed.
-    auto smem_cd_l1 = reinterpret_cast<cutlass::float_e4m3_t*>(smem_cd_base);
     auto smem_cd_l2 = reinterpret_cast<nv_bfloat16*>(smem_cd_base);
 
     auto smem_a = utils::PatternVisitor([=](const uint32_t& i) {
@@ -317,7 +297,6 @@
     constexpr uint32_t kEpilogueWGBarrierStartIdx       = 3;
 
     // Cross-rank NVLink barrier tags
-    constexpr uint32_t kBeforeDispatchPullBarrierTag    = 1;
     constexpr uint32_t kBeforeCombineReduceBarrierTag   = 2;
     constexpr uint32_t kAfterWorkspaceCleanBarrierTag   = 3;
 
@@ -345,18 +324,13 @@
     constexpr uint32_t kDispatchGridSyncIndex = 0;
     constexpr uint32_t kEpilogueGridSyncIndex = 1;
 
-    constexpr uint32_t kProfileDispatchTotal = 0;
-    constexpr uint32_t kProfileDispatchPull = 1;
     constexpr uint32_t kProfileMathLoop = 2;
     constexpr uint32_t kProfileCombineBarrier = 3;
     constexpr uint32_t kProfileCombineReduce = 4;
     constexpr uint32_t kProfileGemmCore = 5;
-    constexpr uint32_t kProfileL1Epilogue = 6;
     constexpr uint32_t kProfileL2Epilogue = 7;
     constexpr uint32_t kProfileLoaderDequant = 8;
     constexpr uint32_t kProfileMathDequantWait = 9;
-    constexpr uint32_t kProfileL1TMAWait = 10;
-    constexpr uint32_t kProfileL1ReadyNotify = 11;
     constexpr uint32_t kProfileL2ReadyWait = 12;
     constexpr uint32_t kProfileL2Scatter = 13;
     constexpr uint32_t kNumPhaseProfileMetrics = 14;
@@ -586,9 +560,6 @@
             }
         };
 
-        const auto notify_split_ready = [&](const uint32_t&, const uint32_t&) {
-        };
-
         const auto cleanup_workspace_from_epilogue = [&]() {
             DG_STATIC_ASSERT(kNumSMs > 1, "Invalid SM count");
             if (sm_idx == 0) {
@@ -660,7 +631,6 @@
             const uint32_t valid_m = scheduler.template get_valid_m<false>();
             const uint32_t m_idx = scheduler.get_current_block_pool_token_idx();
             const uint32_t wg_n_idx = kSplitNWarpgroups ? epilogue_wg_idx * WG_BLOCK_N : 0;
-            const uint32_t wg_l1_out_n_idx = kSplitNWarpgroups ? epilogue_wg_idx * WG_L1_OUT_BLOCK_N : 0;
             const uint32_t n_idx = n_block_idx * BLOCK_N + wg_n_idx;
             const uint32_t row_block_offset = kSplitNWarpgroups ? 0 : epilogue_wg_idx * WG_BLOCK_M;
             const uint32_t row_offset_r0 = row_block_offset + r_0;
@@ -707,16 +677,10 @@
                         scale_a_1_hi = ptx::ld_shared(smem_sfa[stage_idx] + kL2SFAHalfStride + row_offset_r1);
                     
 
-                    constexpr uint32_t kL1SFKBlocks   = kHidden / 128;
-                    constexpr uint32_t kL2SFKBlocks   = kIntermediateHidden / 128;
-                    constexpr uint32_t kL1SFGateBlks  = kIntermediateHidden / 128;
-                    constexpr uint32_t kL1SFPerExpert = (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
-                    constexpr uint32_t kL2SFPerExpert = (kHidden / 128) * kL2SFKBlocks;
-
                     #pragma unroll
                     for (uint32_t serial_n_idx = 0; serial_n_idx < kNumSerialN; ++serial_n_idx) {
                         const uint32_t serial_wg_n_idx = serial_n_idx * WG_BLOCK_N;
-                        float gate_sf = 0.0f, up_sf = 0.0f, l2_sf = 0.0f;
+                        float l2_sf = 0.0f;
                         
                             l2_sf = 1.0f;
 

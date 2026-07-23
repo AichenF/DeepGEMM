@@ -10,7 +10,6 @@
 
 #include <cute/arch/cluster_sm90.hpp>
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe_mode2_dequant.cuh>
-#include <deep_gemm/quantization/nvfp4_dequant.cuh>
 
 #include <cute/arch/copy_sm90_tma.hpp>
 #include <cute/arch/mma_sm89.hpp>
@@ -29,14 +28,15 @@
 #include <deep_gemm/ptx/tma.cuh>
 #include <deep_gemm/ptx/utils.cuh>
 #include <deep_gemm/ptx/wgmma.cuh>
-#define __CLION_IDE__
 
 namespace deep_gemm {
 
 // ============================================================================
 // SM90 (Hopper) NVFP4 MegaMoE kernels
 // ----------------------------------------------------------------------------
-// Pipeline (cluster=1, no TMA multicast):
+// Split pipeline:
+//   * L1 uses cluster=2 to pair adjacent 64-column output halves.
+//   * L2 uses independent cluster=1 CTAs.
 //   * Dispatch warps: pull tokens (FP8) and SF (per-128 channel float) from
 //     remote ranks via NVLink into the local L1 pool.
 //   * GEMM TMA-load warps (1 for A+SFA, 1 for B+SFB) feed the pipeline stages.
@@ -53,57 +53,8 @@ namespace deep_gemm {
 //
 // Public BN256 requests use sm90_nvfp4_mega_moe_small_m.cuh. The general host
 // runtime instantiates only the split kernels below for BN128 deployment
-// weights; this prevents the legacy fused template from defining the active
-// intermediate-scale semantic.
+// weights.
 // ============================================================================
-
-template <
-    uint32_t kNumMaxTokensPerRank,
-    uint32_t kHidden, uint32_t kIntermediateHidden,
-    uint32_t kNumExperts, uint32_t kNumTopk,
-    uint32_t kNumExpertsPerWave,
-    uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t BLOCK_K,
-    uint32_t kNumMaxPoolTokens,
-    uint32_t kNumPaddedSFPoolTokens,
-    uint32_t kNumStages,
-    uint32_t kNumDispatchThreads, uint32_t kNumNonEpilogueThreads,
-    uint32_t kNumEpilogueThreads,
-    uint32_t kClusterSize,
-    uint32_t kNumSMs, uint32_t kNumRanks,
-    float kActivationClamp,
-    bool kFastMath,
-    bool kPhaseProfileRequested = false,
-    bool kLoaderDequantRequested = false,
-    bool kSwapABRequested = false,
-    uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
-    uint32_t L1_SHAPE_K = kHidden,
-    uint32_t L2_SHAPE_N = kHidden,
-    uint32_t L2_SHAPE_K = kIntermediateHidden,
-    uint32_t kNumDispatchWarps = kNumDispatchThreads / 32,
-    uint32_t kNumMMANonEpilogueWarps = kNumNonEpilogueThreads / 32,
-    uint32_t kNumEpilogueWarps = kNumEpilogueThreads / 32,
-    uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4,
-    uint32_t kNumThreads = kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads,
-    uint32_t kNumTokensPerWarp = 32 / kNumTopk,
-    uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks
->
-CUTLASS_GLOBAL __launch_bounds__(kNumThreads, 1) void
-sm90_nvfp4_mega_moe_fused_impl(void* y,
-                       int* cumulative_local_expert_recv_stats,
-                       const uint32_t num_tokens,
-                       const __grid_constant__ layout::SymBuffer<kNumRanks> sym_buffer,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts_sf,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l1_weights,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l1_output,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts_sf,
-                       const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weights,
-                       const float* __restrict__ l1_global_scales,
-                       const float* __restrict__ l2_global_scales) {
-#include <deep_gemm/impls/sm90_nvfp4_mega_moe_fused_body.inl>
-}
-
 
 template <
     uint32_t kNumMaxTokensPerRank,
@@ -122,7 +73,6 @@ template <
     bool kFastMath,
     bool kPhaseProfileRequested = false,
     bool kL2ArrivalCounterRequested = false,
-    bool kLoaderDequantRequested = false,
     bool kDispatchDequantRequested = false,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
@@ -164,9 +114,7 @@ template <
     uint32_t kNumSMs, uint32_t kNumRanks,
     float kActivationClamp,
     bool kFastMath,
-    bool kL2DualAccumRequested = false,
     bool kPhaseProfileRequested = false,
-    bool kLoaderDequantRequested = false,
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
     uint32_t L2_SHAPE_N = kHidden,

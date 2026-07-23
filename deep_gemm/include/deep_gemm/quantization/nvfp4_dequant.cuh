@@ -188,47 +188,6 @@ DG_NVFP4_INLINE uint2 dequant_nvfp4_to_fp8_pair_with_lut(std::uint32_t uq, const
     return make_uint2(out_hi, out_lo);
 }
 
-DG_NVFP4_INLINE uint2 dequant_nvfp4_to_fp8_pair(std::uint32_t q, std::uint32_t scale_ue4m3) {
-    return dequant_nvfp4_to_fp8_pair_with_lut(q, load_e2m1_ue4m3_lut(scale_ue4m3));
-}
-
-
-// Branchless: 3-bit E2M1 magnitude code -> FP16 bit pattern.
-// mag3 in 0..7 maps to FP4 values {0, 0.5, 1, 1.5, 2, 3, 4, 6}.
-DG_NVFP4_INLINE uint16_t e2m1_mag_to_fp16_bits(std::uint32_t mag3) {
-    std::uint32_t exp_raw  = mag3 >> 1u;
-    std::uint32_t mant_raw = mag3 & 1u;
-    std::uint32_t is_norm  = (exp_raw != 0u) ? 1u : 0u;
-    // Normal:  fp16 = ((exp_raw+14)<<10) | (mant_raw<<9)
-    // Subnorm (mag3=1, value=0.5): fp16 = 14<<10 = 0x3800 (is_norm=0 zeroes mant)
-    // Zero (mag3=0): masked to 0
-    std::uint32_t fp16 = ((exp_raw + 14u) << 10u) | ((mant_raw & is_norm) << 9u);
-    return static_cast<uint16_t>(fp16 * static_cast<std::uint32_t>(mag3 != 0u));
-}
-
-// LUT-free dequant: identical output to dequant_nvfp4_to_fp8_pair_with_lut
-// but synthesises the 8-byte lut entry arithmetically (no smem LUT load).
-// Cost: 1 fp8->half + 8 hmul + 8 half->fp8 per call vs 1 smem load + 2 byte_perm.
-DG_NVFP4_INLINE uint2 dequant_nvfp4_to_fp8_pair_lut_free(std::uint32_t uq,
-                                                          std::uint32_t scale_ue4m3) {
-    __half scale_h = __nv_cvt_fp8_to_halfraw(scale_ue4m3 & 0x7fu, __NV_E4M3);
-    uint8_t fp8_mag[8];
-#pragma unroll
-    for (int m = 0; m < 8; ++m) {
-        __half mag_h = __ushort_as_half(
-            e2m1_mag_to_fp16_bits(static_cast<std::uint32_t>(m)));
-        __half prod  = __hmul(scale_h, mag_h);
-        fp8_mag[m]   = static_cast<uint8_t>(__nv_cvt_halfraw_to_fp8(
-            __half_raw{__half_as_ushort(prod)}, __NV_SATFINITE, __NV_E4M3));
-    }
-    uint2 lut_c;
-    lut_c.x = (std::uint32_t)fp8_mag[0] | ((std::uint32_t)fp8_mag[1] << 8u) |
-              ((std::uint32_t)fp8_mag[2] << 16u) | ((std::uint32_t)fp8_mag[3] << 24u);
-    lut_c.y = (std::uint32_t)fp8_mag[4] | ((std::uint32_t)fp8_mag[5] << 8u) |
-              ((std::uint32_t)fp8_mag[6] << 16u) | ((std::uint32_t)fp8_mag[7] << 24u);
-    return dequant_nvfp4_to_fp8_pair_with_lut(uq, lut_c);
-}
-
 #undef DG_NVFP4_INLINE
 
 } // namespace nvfp4

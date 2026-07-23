@@ -18,11 +18,10 @@
     DG_STATIC_ASSERT(BLOCK_N == 128 or BLOCK_N == 256,
                      "NVFP4 smem dequant supports BN128 and opt-in BN256 scale tile layouts");
     DG_STATIC_ASSERT(BLOCK_K == 128, "BLOCK_K is fixed to 128 (per-128 SF)");
-    DG_STATIC_ASSERT((!kLoaderDequantRequested) or kNumNonEpilogueThreads == 128 or
-                     (kNumNonEpilogueThreads == 64 and BLOCK_N == 256),
-                     "NVFP4 loader dequant expects four non-epilogue warps or the BN256 packed-scratch path");
+    DG_STATIC_ASSERT(kNumNonEpilogueThreads == 128,
+                     "BN128 split L1 requires the four-warp loader-dequant group");
     DG_STATIC_ASSERT((!kDispatchDequantRequested) or
-                     (kLoaderDequantRequested and kNumDispatchThreads == 128 and
+                     (kNumDispatchThreads == 128 and
                       kNumNonEpilogueThreads == 128 and kNumEpilogueThreads == 256 and
                       BLOCK_M == 128 and BLOCK_N == 128),
                      "Dispatch-assisted dequant requires the split BM128/BN128 layout");
@@ -51,7 +50,6 @@
         sym_buffer.get_base_ptr(), kNumRanks, kNumExperts, kNumMaxTokensPerRank, kNumTopk);
 
     constexpr auto fp8_token_layout              = layout::Data(kHidden);
-    constexpr auto bf16_token_layout             = layout::Data(kHidden * sizeof(nv_bfloat16));
     constexpr auto fp8_intermediate_token_layout = layout::Data(kIntermediateHidden);
     // Per-128 K float SF: 4 bytes per per-128 group => `kHidden / 32` bytes/token (same as SM100 packing)
     constexpr auto fp8_sf_layout                 = layout::Data(kHidden / 32);
@@ -77,9 +75,6 @@
     const auto l2_token_buffer = layout::Buffer(fp8_intermediate_token_layout, 1, kNumMaxPoolTokens, l1_topk_weights_buffer.get_end_ptr());
     const auto l2_sf_buffer    = layout::Buffer(fp8_intermediate_sf_layout, 1, kNumPaddedSFPoolTokens, l2_token_buffer.get_end_ptr());
 
-    // Combine input area
-    const auto combine_token_buffer = layout::Buffer(bf16_token_layout, kNumTopk, kNumMaxTokensPerRank, l2_sf_buffer.get_end_ptr());
-
     // =====================================================================
     // GEMM data types and shape constants
     // =====================================================================
@@ -95,20 +90,17 @@
     constexpr uint32_t L1_OUT_BLOCK_N = BLOCK_N / 2;       // post-SwiGLU tile N
     constexpr uint32_t WG_L1_OUT_BLOCK_N = WG_BLOCK_N / 2; // post-SwiGLU per-WG N
     constexpr bool kL2ArrivalCounter = kL2ArrivalCounterRequested && (!kSplitNWarpgroups) && BLOCK_N == 128;
-    constexpr bool kSkipL2ReadyMask = true;
-    constexpr bool kSkipL1ReadyNotify = true;
     // Use two active dispatch warps. The other two dispatch warps form the
     // even-stage dequant team when dispatch-assisted dequant is on.
     constexpr uint32_t kNumActiveDispatchWarps =
         (BLOCK_N == 128 && kNumDispatchWarps == 4) ? 2 : kNumDispatchWarps;
     constexpr uint32_t kNumActiveDispatchThreads = kNumActiveDispatchWarps * 32;
-    constexpr bool kLoaderDequant = kLoaderDequantRequested && kNumMMANonEpilogueWarps == 4;
+    constexpr bool kLoaderDequant = true;
     constexpr bool kDispatchDequant = kDispatchDequantRequested;
     constexpr bool kPackedBScratch = BLOCK_N == 256 && (!kLoaderDequant);
     DG_STATIC_ASSERT(kLoaderDequant || kPackedBScratch,
                      "Fused NVFP4 B+scale layout requires loader dequant or packed scratch");
     using L1WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
-    using L2WGMMA   = typename mma::sm90::FP8MMASelector<WG_BLOCK_N>::type;
     static_assert(L1WGMMA::M == 64 and L1WGMMA::N == WG_BLOCK_N and L1WGMMA::K == 32,
                   "Unexpected WGMMA shape");
     DG_STATIC_ASSERT((!kSplitNWarpgroups) or (BLOCK_M == 64 and (WG_BLOCK_N == 64 or WG_BLOCK_N == 128)),
@@ -119,9 +111,6 @@
     constexpr uint32_t LOAD_BLOCK_M    = BLOCK_M;
     constexpr uint32_t LOAD_BLOCK_N    = BLOCK_N;
     constexpr uint32_t kSwizzleAMode   = BLOCK_K * sizeof(a_dtype_t);   // 128
-    constexpr uint32_t kSwizzleBMode   = BLOCK_K * sizeof(b_dtype_t);   // 128
-    constexpr uint32_t kSwizzleCDMode  = 128;
-    constexpr uint32_t kGranK          = 128;          // L1 acts SF, weights SF
     constexpr uint32_t kLocalL1ActsSFGranK = 64;       // each CTA's local half
     constexpr uint32_t kL2ActsSFGranK  = 128;          // final L1 output / L2 input
     constexpr bool kClusterPairsL1SF =
@@ -173,10 +162,6 @@
         SMEM_CD_OUTPUT_UNALIGNED_SIZE, kSharedMemoryAlignment);
     constexpr uint32_t SMEM_CD_SIZE = SMEM_CD_ACCUM_SIZE + SMEM_CD_OUTPUT_SIZE;
 
-    constexpr uint32_t SMEM_BEFORE_BARRIER_SIZE =
-        SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE + SMEM_NVFP4_LUT_SIZE + SMEM_CD_SIZE +
-        kNumStages * (SMEM_A_SIZE_PER_STAGE + SMEM_B_SIZE_PER_STAGE + SMEM_PACKED_B_SIZE_PER_STAGE);
-
     // SMEM pointers
     auto smem_expert_count = reinterpret_cast<uint32_t*>(smem_buffer);
     const auto smem_send_buffers = layout::Buffer(
@@ -189,9 +174,7 @@
         smem_buffer, SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE + SMEM_NVFP4_LUT_SIZE);
 
     auto smem_cd_base = smem_gemm_base;
-    // CD output is shared by L1 (FP8) and L2 (BF16); reinterpret-cast as needed.
     auto smem_cd_l1 = reinterpret_cast<cutlass::float_e4m3_t*>(smem_cd_base);
-    auto smem_cd_l2 = reinterpret_cast<nv_bfloat16*>(smem_cd_base);
 
     auto smem_a = utils::PatternVisitor([=](const uint32_t& i) {
         return math::advance_ptr<a_dtype_t>(smem_gemm_base, SMEM_CD_SIZE + i * SMEM_A_SIZE_PER_STAGE);
@@ -275,7 +258,7 @@
     }
 
     // =====================================================================
-    // Scheduler (cluster=1)
+    // Cluster-aware L1 scheduler
     // =====================================================================
     auto scheduler = sched::MegaMoEScheduler<
         BLOCK_M, BLOCK_N, BLOCK_K,
@@ -350,8 +333,6 @@
 
     // Cross-rank NVLink barrier tags
     constexpr uint32_t kBeforeDispatchPullBarrierTag    = 1;
-    constexpr uint32_t kBeforeCombineReduceBarrierTag   = 2;
-    constexpr uint32_t kAfterWorkspaceCleanBarrierTag   = 3;
 
     // Register reconfiguration counts (chosen to fit in 64512 reg budget).
     // Dispatch-assisted dequant keeps the same 63488-register CTA budget:
@@ -374,22 +355,15 @@
                      "Too many registers");
 
     constexpr uint32_t kDispatchGridSyncIndex = 0;
-    constexpr uint32_t kEpilogueGridSyncIndex = 1;
 
     constexpr uint32_t kProfileDispatchTotal = 0;
     constexpr uint32_t kProfileDispatchPull = 1;
     constexpr uint32_t kProfileMathLoop = 2;
-    constexpr uint32_t kProfileCombineBarrier = 3;
-    constexpr uint32_t kProfileCombineReduce = 4;
     constexpr uint32_t kProfileGemmCore = 5;
     constexpr uint32_t kProfileL1Epilogue = 6;
-    constexpr uint32_t kProfileL2Epilogue = 7;
     constexpr uint32_t kProfileLoaderDequant = 8;
     constexpr uint32_t kProfileMathDequantWait = 9;
     constexpr uint32_t kProfileL1TMAWait = 10;
-    constexpr uint32_t kProfileL1ReadyNotify = 11;
-    constexpr uint32_t kProfileL2ReadyWait = 12;
-    constexpr uint32_t kProfileL2Scatter = 13;
     constexpr uint32_t kNumPhaseProfileMetrics = 14;
     const auto phase_profile_clock = [&]() -> unsigned long long {
         if constexpr (kPhaseProfileRequested) {
@@ -419,45 +393,6 @@
             func(std::integral_constant<sched::BlockPhase, sched::BlockPhase::Linear1>{},
                  local_expert_idx, num_k_blocks, m_block_idx, n_block_idx);
         });
-    };
-
-    const auto cleanup_workspace = [&]() {
-        if constexpr (kNumDispatchWarps == 0) {
-            return;
-        } else {
-        DG_STATIC_ASSERT(kNumSMs > 1, "Invalid SM count");
-        if (sm_idx == 0) {
-            #pragma unroll
-            for (uint32_t i = thread_idx; i < kNumExperts; i += kNumDispatchThreads)
-                *workspace.get_expert_send_count_ptr(i) = 0;
-        } else {
-            for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
-                const auto num_recv_tokens = static_cast<uint32_t>(
-                    *workspace.get_expert_recv_count_sum_ptr(i));
-                const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
-                const auto cleanup_pool_block_offset = scheduler.get_pool_block_offset(i);
-
-                ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
-
-                DG_STATIC_ASSERT(kNumDispatchWarps >= 2, "Not enough dispatch warps");
-                if (warp_idx == 0) {
-                    *workspace.get_expert_recv_count_sum_ptr(i) = 0;
-                } else if (warp_idx == 1) {
-                    if (cute::elect_one_sync() and cumulative_local_expert_recv_stats != nullptr)
-                        ptx::red_add(cumulative_local_expert_recv_stats + i, static_cast<int>(num_recv_tokens));
-                    __syncwarp();
-                }
-
-                for (uint32_t j = thread_idx; j < kNumRanks; j += kNumDispatchThreads)
-                    *workspace.get_expert_recv_count_ptr(j, i) = 0;
-                __syncwarp();
-
-                for (uint32_t j = thread_idx; j < num_recv_m_blocks; j += kNumDispatchThreads)
-                    *workspace.get_l1_arrival_count_ptr(cleanup_pool_block_offset + j) = 0;
-                __syncwarp();
-            }
-        }
-        }
     };
 
     // =====================================================================
@@ -867,44 +802,6 @@
             }
         };
 
-        const auto notify_l1_ready = [&](const uint32_t&, const uint32_t&) {
-            // Split L2 is launched after split L1 completes; no in-kernel ready mask is needed.
-        };
-
-        const auto cleanup_workspace_from_epilogue = [&]() {
-            DG_STATIC_ASSERT(kNumSMs > 1, "Invalid SM count");
-            if (sm_idx == 0) {
-                #pragma unroll
-                for (uint32_t i = epilogue_thread_idx; i < kNumExperts; i += kNumEpilogueThreads)
-                    *workspace.get_expert_send_count_ptr(i) = 0;
-            } else {
-                for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
-                    const auto num_recv_tokens = static_cast<uint32_t>(
-                        *workspace.get_expert_recv_count_sum_ptr(i));
-                    const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
-                    const auto cleanup_pool_block_offset = scheduler.get_pool_block_offset(i);
-
-                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-                    if (epilogue_thread_idx == 0) {
-                        *workspace.get_expert_recv_count_sum_ptr(i) = 0;
-                        if (cumulative_local_expert_recv_stats != nullptr)
-                            ptx::red_add(cumulative_local_expert_recv_stats + i, static_cast<int>(num_recv_tokens));
-                    }
-
-                    for (uint32_t j = epilogue_thread_idx; j < kNumRanks; j += kNumEpilogueThreads)
-                        *workspace.get_expert_recv_count_ptr(j, i) = 0;
-
-                    for (uint32_t j = epilogue_thread_idx; j < num_recv_m_blocks; j += kNumEpilogueThreads)
-                        *workspace.get_l1_arrival_count_ptr(cleanup_pool_block_offset + j) = 0;
-                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-                }
-            }
-        };
-
-        const auto finish_no_dispatch_cleanup = [&]() {
-            
-        };
-
         // WGMMA-output register layout helpers
         const uint32_t row_idx = lane_idx / 4;
         const uint32_t col_idx = lane_idx % 4;
@@ -968,22 +865,15 @@
                     full_barriers[stage_idx]->wait(phase);
 
                     float scale_a_0_lo, scale_a_1_lo;
-                    float scale_a_0_hi, scale_a_1_hi;
                     
                         scale_a_0_lo = ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r0);
                         scale_a_1_lo = ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r1);
                     
 
-                    constexpr uint32_t kL1SFKBlocks   = kHidden / 128;
-                    constexpr uint32_t kL2SFKBlocks   = kIntermediateHidden / 128;
-                    constexpr uint32_t kL1SFGateBlks  = kIntermediateHidden / 128;
-                    constexpr uint32_t kL1SFPerExpert = (kIntermediateHidden * 2 / 128) * kL1SFKBlocks;
-                    constexpr uint32_t kL2SFPerExpert = (kHidden / 128) * kL2SFKBlocks;
-
                     #pragma unroll
                     for (uint32_t serial_n_idx = 0; serial_n_idx < kNumSerialN; ++serial_n_idx) {
                         const uint32_t serial_wg_n_idx = serial_n_idx * WG_BLOCK_N;
-                        float gate_sf = 0.0f, up_sf = 0.0f, l2_sf = 0.0f;
+                        float gate_sf = 0.0f, up_sf = 0.0f;
                         
                             gate_sf = 1.0f;
                             up_sf = 1.0f;
@@ -1151,7 +1041,6 @@
                     if (epilogue_warp_idx == 0 and lane_idx == 0)
                         phase_profile_record(kProfileL1TMAWait, l1_tma_wait_end - l1_tma_wait_start);
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-                    notify_l1_ready(pool_block_idx, n_block_idx);
                 
                 return;
             }
@@ -1454,7 +1343,6 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                     if (epilogue_warp_idx == 0 and lane_idx == 0)
                         phase_profile_record(kProfileL1TMAWait, l1_tma_wait_end - l1_tma_wait_start);
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-                    notify_l1_ready(pool_block_idx, n_block_idx);
                 } else {
                     ptx::sync_aligned(128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
                     if (warp_idx_in_wg == 0 and cute::elect_one_sync()) {
@@ -1476,7 +1364,6 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             phase_profile_record(kProfileL1TMAWait, l1_tma_wait_end - l1_tma_wait_start);
                         if constexpr (!kL2ArrivalCounter)
                             ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-                        notify_l1_ready(pool_block_idx, n_block_idx);
                                     }
                 const unsigned long long block_epilogue_end = phase_profile_clock();
                 if (epilogue_warp_idx == 0 and lane_idx == 0)
