@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -22,40 +21,52 @@ namespace deep_gemm {
 // schedule; it never changes the weight layout or selects the fused family.
 
 struct SM90NVFP4MegaMoEConfig {
-    int block_m, block_n, block_k;
+    static constexpr int kBlockM = 128;
+    static constexpr int kBlockN = 128;
+    static constexpr int kBlockK = 128;
+    static constexpr int kWeightStoragePerKBlock = 80;
+    static constexpr int kSwizzleActsMode = 128;
+    static constexpr int kL1ClusterSize = 2;
+    static constexpr int kL2ClusterSize = 1;
+    static constexpr int kL1NumDispatchThreads = 128;
+    static constexpr int kL2NumDispatchThreads = 0;
+    static constexpr int kL1NumActiveDispatchWarps = 2;
+    static constexpr int kL2NumActiveDispatchWarps = 0;
+    static constexpr int kL1ActsSFReservationGranK = 64;
+    static constexpr int kL2ActsSFReservationGranK = 128;
+    static constexpr int kNumNonEpilogueThreads = 128;
+    static constexpr int kNumEpilogueThreads = 256;
+
     int cluster_size;
 
     int num_max_pool_tokens;
     int num_padded_sf_pool_tokens;
 
-    int swizzle_acts_mode;
     int num_experts_per_wave;
 
     int num_stages, smem_size;
 
     int num_dispatch_threads;
-    int num_non_epilogue_threads;
-    int num_epilogue_threads;
 
     friend std::ostream& operator << (
             std::ostream& os,
             const SM90NVFP4MegaMoEConfig& config) {
         os << "SM90NVFP4MegaMoEConfig("
-           << "block_m=" << config.block_m
-           << ", block_n=" << config.block_n
-           << ", block_k=" << config.block_k
+           << "block_m=" << kBlockM
+           << ", block_n=" << kBlockN
+           << ", block_k=" << kBlockK
            << ", cluster_size=" << config.cluster_size
            << ", num_max_pool_tokens=" << config.num_max_pool_tokens
            << ", num_padded_sf_pool_tokens="
            << config.num_padded_sf_pool_tokens
-           << ", swizzle_acts_mode=" << config.swizzle_acts_mode
+           << ", swizzle_acts_mode=" << kSwizzleActsMode
            << ", num_experts_per_wave=" << config.num_experts_per_wave
            << ", num_stages=" << config.num_stages
            << ", smem_size=" << config.smem_size
            << ", num_dispatch_threads=" << config.num_dispatch_threads
            << ", num_non_epilogue_threads="
-           << config.num_non_epilogue_threads
-           << ", num_epilogue_threads=" << config.num_epilogue_threads
+           << kNumNonEpilogueThreads
+           << ", num_epilogue_threads=" << kNumEpilogueThreads
            << ")";
         return os;
     }
@@ -89,24 +100,9 @@ struct SM90NVFP4MegaMoELoad {
     }
 };
 
-struct SM90NVFP4MegaMoEPhaseTuning {
-    int block_m;
-    int block_n;
-    int block_k;
-    int cluster_size;
-    int num_active_dispatch_warps;
-    int num_dispatch_threads;
-    int num_non_epilogue_threads;
-    int num_epilogue_threads;
-    int acts_sf_gran_k;
-    bool l2_only;
-};
-
-struct SM90NVFP4MegaMoEScheduleTuning {
-    SM90NVFP4MegaMoEPhaseTuning l1;
-    SM90NVFP4MegaMoEPhaseTuning l2;
-    bool dispatch_dequant;
-    bool l2_arrival_counter;
+enum class SM90NVFP4MegaMoEPhase {
+    L1,
+    L2,
 };
 
 struct SM90NVFP4MegaMoEPlan {
@@ -130,71 +126,42 @@ static SM90NVFP4MegaMoELoad get_sm90_nvfp4_mega_moe_load(
 }
 
 static int get_num_experts_per_wave_for_sm90_nvfp4_mega_moe(
-        const SM90NVFP4MegaMoEInput& input,
-        const SM90NVFP4MegaMoEPhaseTuning& phase) {
+        const SM90NVFP4MegaMoEInput& input) {
     return get_num_experts_per_wave_for_mega_moe(
         input.num_experts_per_rank,
         input.num_tokens,
         input.num_topk,
         input.intermediate_hidden,
-        phase.block_m,
-        phase.block_n,
+        SM90NVFP4MegaMoEConfig::kBlockM,
+        SM90NVFP4MegaMoEConfig::kBlockN,
         input.launch_num_sms);
-}
-
-static SM90NVFP4MegaMoEScheduleTuning
-select_sm90_nvfp4_mega_moe_tuning(
-        const SM90NVFP4MegaMoELoad& load) {
-    constexpr SM90NVFP4MegaMoEPhaseTuning l1 {
-        128, 128, 128,
-        2,
-        2,
-        128, 128, 256,
-        // This is only the proven split-L1 shared-memory reservation. Kernel
-        // activation-scale semantics remain per-128.
-        64,
-        false,
-    };
-    constexpr SM90NVFP4MegaMoEPhaseTuning l2 {
-        128, 128, 128,
-        1,
-        0,
-        0, 128, 256,
-        128,
-        true,
-    };
-
-    return {
-        l1,
-        l2,
-        load.greater_equal(256),
-        load.expected_tokens_per_local_expert <= 32.0f ||
-            load.expected_tokens_per_local_expert >= 128.0f,
-    };
 }
 
 static std::pair<int, int>
 get_sm90_nvfp4_mega_moe_pipeline_config(
         const SM90NVFP4MegaMoEInput& input,
         const SM90NVFP4MegaMoELoad& load,
-        const SM90NVFP4MegaMoEPhaseTuning& phase,
-        const SM90NVFP4MegaMoEConfig& config) {
+        const SM90NVFP4MegaMoEPhase phase) {
     const auto align = [](int value, int alignment) {
         return ((value + alignment - 1) / alignment) * alignment;
     };
     constexpr int kSmemAlignment = 1024;
+    const bool is_l2 = phase == SM90NVFP4MegaMoEPhase::L2;
+    const int num_dispatch_threads = is_l2 ?
+        SM90NVFP4MegaMoEConfig::kL2NumDispatchThreads :
+        SM90NVFP4MegaMoEConfig::kL1NumDispatchThreads;
+    const int num_active_dispatch_warps = is_l2 ?
+        SM90NVFP4MegaMoEConfig::kL2NumActiveDispatchWarps :
+        SM90NVFP4MegaMoEConfig::kL1NumActiveDispatchWarps;
+    // L1 retains only the proven per-64 physical reservation. Kernel
+    // activation-scale semantics remain per-128.
+    const int acts_sf_gran_k = is_l2 ?
+        SM90NVFP4MegaMoEConfig::kL2ActsSFReservationGranK :
+        SM90NVFP4MegaMoEConfig::kL1ActsSFReservationGranK;
 
-    DG_HOST_ASSERT(phase.num_active_dispatch_warps >= 0);
     DG_HOST_ASSERT(
-        phase.num_active_dispatch_warps <=
-        config.num_dispatch_threads / 32);
-    const int num_dispatch_warps = phase.num_active_dispatch_warps;
-    DG_HOST_ASSERT(
-        config.block_m == 128 &&
-        config.block_n == 128 &&
-        config.block_k == 128 &&
-        config.num_non_epilogue_threads == 128 &&
-        config.num_epilogue_threads == 256);
+        num_active_dispatch_warps <= num_dispatch_threads / 32);
+    const int num_dispatch_warps = num_active_dispatch_warps;
     constexpr int kNumEpilogueWarps = 8;
     constexpr int kNumEpilogueWarpgroups = 2;
     constexpr int kWGBlockM = 64;
@@ -215,21 +182,21 @@ get_sm90_nvfp4_mega_moe_pipeline_config(
 
     const int smem_cd_l1 =
         kNumEpilogueWarpgroups * kWGBlockM * kWGL1OutBlockN;
-    DG_HOST_ASSERT(
-        phase.acts_sf_gran_k == 64 || phase.acts_sf_gran_k == 128);
-    const int smem_cd = phase.l2_only ? 0 : align(
+    const int smem_cd = is_l2 ? 0 : align(
         smem_cd_l1,
         kSmemAlignment);
 
     const int num_sfa_groups_per_bk =
-        config.block_k / phase.acts_sf_gran_k;
+        SM90NVFP4MegaMoEConfig::kBlockK / acts_sf_gran_k;
     const int smem_sfa_per_stage = align(
-        num_sfa_groups_per_bk * config.block_m *
+        num_sfa_groups_per_bk * SM90NVFP4MegaMoEConfig::kBlockM *
             static_cast<int>(sizeof(float)),
         128);
     const int smem_per_stage =
-        config.block_m * config.block_k +
-        config.block_n * config.block_k +
+        SM90NVFP4MegaMoEConfig::kBlockM *
+            SM90NVFP4MegaMoEConfig::kBlockK +
+        SM90NVFP4MegaMoEConfig::kBlockN *
+            SM90NVFP4MegaMoEConfig::kBlockK +
         smem_sfa_per_stage;
     const int smem_barriers_fixed =
         (num_dispatch_warps + 2 * kNumEpilogueWarps) * 8;
@@ -245,7 +212,7 @@ get_sm90_nvfp4_mega_moe_pipeline_config(
         (SM90ArchSpec::smem_capacity - smem_fixed) /
         (smem_per_stage + smem_barriers_per_stage);
     const int num_stages =
-        !phase.l2_only &&
+        !is_l2 &&
         load.expected_tokens_per_local_expert > 8.0f &&
         max_num_stages > 6 ?
         6 : max_num_stages;
@@ -262,65 +229,39 @@ get_sm90_nvfp4_mega_moe_pipeline_config(
 static SM90NVFP4MegaMoEConfig materialize_sm90_nvfp4_mega_moe_phase(
         const SM90NVFP4MegaMoEInput& input,
         const SM90NVFP4MegaMoELoad& load,
-        const SM90NVFP4MegaMoEPhaseTuning& phase) {
+        const SM90NVFP4MegaMoEPhase phase) {
+    const bool is_l2 = phase == SM90NVFP4MegaMoEPhase::L2;
     SM90NVFP4MegaMoEConfig config {
-        phase.block_m,
-        phase.block_n,
-        phase.block_k,
-        phase.cluster_size,
+        is_l2 ?
+            SM90NVFP4MegaMoEConfig::kL2ClusterSize :
+            SM90NVFP4MegaMoEConfig::kL1ClusterSize,
         layout::get_num_max_pool_tokens(
             input.num_ranks,
             input.num_max_tokens_per_rank,
             input.num_topk,
             input.num_experts_per_rank),
         input.num_padded_sf_pool_tokens,
-        128,
         get_num_experts_per_wave_for_sm90_nvfp4_mega_moe(
-            input,
-            phase),
+            input),
         0,
         0,
-        phase.num_dispatch_threads,
-        phase.num_non_epilogue_threads,
-        phase.num_epilogue_threads,
+        is_l2 ?
+            SM90NVFP4MegaMoEConfig::kL2NumDispatchThreads :
+            SM90NVFP4MegaMoEConfig::kL1NumDispatchThreads,
     };
     std::tie(config.num_stages, config.smem_size) =
         get_sm90_nvfp4_mega_moe_pipeline_config(
             input,
             load,
-            phase,
-            config);
+            phase);
     return config;
-}
-
-static SM90NVFP4MegaMoEPlan materialize_sm90_nvfp4_mega_moe_tuning(
-        const SM90NVFP4MegaMoEInput& input,
-        const SM90NVFP4MegaMoELoad& load,
-        const SM90NVFP4MegaMoEScheduleTuning& tuning) {
-    const auto l1_config = materialize_sm90_nvfp4_mega_moe_phase(
-        input,
-        load,
-        tuning.l1);
-    const auto l2_config = materialize_sm90_nvfp4_mega_moe_phase(
-        input,
-        load,
-        tuning.l2);
-    return {
-        l1_config,
-        l2_config,
-        tuning.dispatch_dequant,
-        tuning.l2_arrival_counter,
-    };
 }
 
 static bool is_sm90_nvfp4_mega_moe_plan_legal(
         const SM90NVFP4MegaMoEInput& input,
         const SM90NVFP4MegaMoEPlan& plan) {
     const auto valid_phase = [&](const SM90NVFP4MegaMoEConfig& config) {
-        return config.block_m > 0 &&
-            config.block_n > 0 &&
-            config.block_k > 0 &&
-            config.num_experts_per_wave > 0 &&
+        return config.num_experts_per_wave > 0 &&
             config.num_experts_per_wave <= input.num_experts_per_rank &&
             input.num_experts_per_rank % config.num_experts_per_wave == 0 &&
             config.num_stages >= 2 &&
@@ -329,14 +270,14 @@ static bool is_sm90_nvfp4_mega_moe_plan_legal(
     };
     return valid_phase(plan.l1_config) &&
         valid_phase(plan.l2_config) &&
-        plan.l1_config.block_m == 128 &&
-        plan.l1_config.block_n == 128 &&
-        plan.l1_config.block_k == 128 &&
-        plan.l1_config.cluster_size == 2 &&
-        plan.l2_config.block_m == 128 &&
-        plan.l2_config.block_n == 128 &&
-        plan.l2_config.block_k == 128 &&
-        plan.l2_config.cluster_size == 1;
+        plan.l1_config.cluster_size ==
+            SM90NVFP4MegaMoEConfig::kL1ClusterSize &&
+        plan.l1_config.num_dispatch_threads ==
+            SM90NVFP4MegaMoEConfig::kL1NumDispatchThreads &&
+        plan.l2_config.cluster_size ==
+            SM90NVFP4MegaMoEConfig::kL2ClusterSize &&
+        plan.l2_config.num_dispatch_threads ==
+            SM90NVFP4MegaMoEConfig::kL2NumDispatchThreads;
 }
 
 static SM90NVFP4MegaMoEPlan select_sm90_nvfp4_split_mega_moe(
@@ -359,9 +300,15 @@ static SM90NVFP4MegaMoEPlan select_sm90_nvfp4_split_mega_moe(
     DG_HOST_ASSERT(input.num_padded_sf_pool_tokens > 0);
 
     const auto load = get_sm90_nvfp4_mega_moe_load(input);
-    const auto tuning = select_sm90_nvfp4_mega_moe_tuning(load);
-    const auto plan =
-        materialize_sm90_nvfp4_mega_moe_tuning(input, load, tuning);
+    const SM90NVFP4MegaMoEPlan plan {
+        materialize_sm90_nvfp4_mega_moe_phase(
+            input, load, SM90NVFP4MegaMoEPhase::L1),
+        materialize_sm90_nvfp4_mega_moe_phase(
+            input, load, SM90NVFP4MegaMoEPhase::L2),
+        load.greater_equal(256),
+        load.expected_tokens_per_local_expert <= 32.0f ||
+            load.expected_tokens_per_local_expert >= 128.0f,
+    };
     DG_HOST_ASSERT(is_sm90_nvfp4_mega_moe_plan_legal(input, plan));
 
     if (get_env<int>("DG_JIT_DEBUG") ||

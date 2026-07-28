@@ -4,7 +4,7 @@
 
 namespace deep_gemm::nvfp4 {
 
-__device__ __forceinline__ uint2 dequant_mode2_nibble_word(
+__device__ __forceinline__ uint2 dequant_mode2_lop3_word(
         const uint32_t packed, const uint2& lut) {
     const uint32_t magnitude_selectors = packed & 0x77777777u;
     uint32_t out_hi =
@@ -20,7 +20,7 @@ __device__ __forceinline__ uint2 dequant_mode2_nibble_word(
 }
 
 template <int kQuad, bool kQuadILP>
-__device__ __forceinline__ void dequant_mode2_nibble_row_lut_window(
+__device__ __forceinline__ void dequant_mode2_lop3_row_lut_window(
         uint8_t* __restrict__ fp8_dst,
         const uint4 (&fp4_quads)[4],
         const uint2& scale_words,
@@ -46,16 +46,16 @@ __device__ __forceinline__ void dequant_mode2_nibble_row_lut_window(
     const uint4 q = fp4_quads[kQuad];
     constexpr int kScaleI0 = kQuad * 2;
     constexpr int kScaleI1 = kScaleI0 + 1;
-    const uint2 q0 = dequant_mode2_nibble_word(q.x, lut0);
-    const uint2 q1 = dequant_mode2_nibble_word(q.y, lut0);
+    const uint2 q0 = dequant_mode2_lop3_word(q.x, lut0);
+    const uint2 q1 = dequant_mode2_lop3_word(q.y, lut0);
     if constexpr (!kQuadILP) {
         *reinterpret_cast<uint4*>(
             fp8_dst + ((kScaleI0 * 16) ^ row_swizzle)) =
             make_uint4(q0.x, q0.y, q1.x, q1.y);
     }
 
-    const uint2 q2 = dequant_mode2_nibble_word(q.z, lut1);
-    const uint2 q3 = dequant_mode2_nibble_word(q.w, lut1);
+    const uint2 q2 = dequant_mode2_lop3_word(q.z, lut1);
+    const uint2 q3 = dequant_mode2_lop3_word(q.w, lut1);
     if constexpr (kQuadILP) {
         *reinterpret_cast<uint4*>(
             fp8_dst + ((kScaleI0 * 16) ^ row_swizzle)) =
@@ -66,14 +66,14 @@ __device__ __forceinline__ void dequant_mode2_nibble_row_lut_window(
         make_uint4(q2.x, q2.y, q3.x, q3.y);
 
     if constexpr (kQuad + 1 < 4) {
-        dequant_mode2_nibble_row_lut_window<kQuad + 1, kQuadILP>(
+        dequant_mode2_lop3_row_lut_window<kQuad + 1, kQuadILP>(
             fp8_dst, fp4_quads, scale_words, row_swizzle,
             lut_smem, next_lut0, next_lut1);
     }
 }
 
 template <bool kQuadILP = false>
-__device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble(
+__device__ __forceinline__ void dequant_smem_b_from_packed_mode2_lop3(
         uint8_t* __restrict__ smem_b,
         const uint8_t* __restrict__ packed_b,
         const uint32_t row,
@@ -89,13 +89,13 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble(
 #pragma unroll
     for (int i = 0; i < 4; ++i)
         fp4_quads[i] = fp4_src[i];
-    dequant_mode2_nibble_row_lut_window<0, kQuadILP>(
+    dequant_mode2_lop3_row_lut_window<0, kQuadILP>(
         smem_b + row * 128, fp4_quads, scale_words,
         (row & 7u) << 4, lut_smem, lut0, lut1);
 }
 
 template <int kQuad>
-__device__ __forceinline__ void dequant_mode2_nibble_two_rows_lut_window(
+__device__ __forceinline__ void dequant_mode2_lop3_two_rows_lut_window(
         uint8_t* __restrict__ fp8_dst0,
         uint8_t* __restrict__ fp8_dst1,
         const uint4 (&fp4_quads0)[4],
@@ -137,10 +137,10 @@ __device__ __forceinline__ void dequant_mode2_nibble_two_rows_lut_window(
     const uint4 q1 = fp4_quads1[kQuad];
     constexpr int kScaleI0 = kQuad * 2;
     constexpr int kScaleI1 = kScaleI0 + 1;
-    const uint2 q0x = dequant_mode2_nibble_word(q0.x, lut00);
-    const uint2 q0y = dequant_mode2_nibble_word(q0.y, lut00);
-    const uint2 q1x = dequant_mode2_nibble_word(q1.x, lut10);
-    const uint2 q1y = dequant_mode2_nibble_word(q1.y, lut10);
+    const uint2 q0x = dequant_mode2_lop3_word(q0.x, lut00);
+    const uint2 q0y = dequant_mode2_lop3_word(q0.y, lut00);
+    const uint2 q1x = dequant_mode2_lop3_word(q1.x, lut10);
+    const uint2 q1y = dequant_mode2_lop3_word(q1.y, lut10);
     *reinterpret_cast<uint4*>(
         fp8_dst0 + ((kScaleI0 * 16) ^ row_swizzle)) =
         make_uint4(q0x.x, q0x.y, q0y.x, q0y.y);
@@ -148,10 +148,10 @@ __device__ __forceinline__ void dequant_mode2_nibble_two_rows_lut_window(
         fp8_dst1 + ((kScaleI0 * 16) ^ row_swizzle)) =
         make_uint4(q1x.x, q1x.y, q1y.x, q1y.y);
 
-    const uint2 q0z = dequant_mode2_nibble_word(q0.z, lut01);
-    const uint2 q0w = dequant_mode2_nibble_word(q0.w, lut01);
-    const uint2 q1z = dequant_mode2_nibble_word(q1.z, lut11);
-    const uint2 q1w = dequant_mode2_nibble_word(q1.w, lut11);
+    const uint2 q0z = dequant_mode2_lop3_word(q0.z, lut01);
+    const uint2 q0w = dequant_mode2_lop3_word(q0.w, lut01);
+    const uint2 q1z = dequant_mode2_lop3_word(q1.z, lut11);
+    const uint2 q1w = dequant_mode2_lop3_word(q1.w, lut11);
     *reinterpret_cast<uint4*>(
         fp8_dst0 + ((kScaleI1 * 16) ^ row_swizzle)) =
         make_uint4(q0z.x, q0z.y, q0w.x, q0w.y);
@@ -160,7 +160,7 @@ __device__ __forceinline__ void dequant_mode2_nibble_two_rows_lut_window(
         make_uint4(q1z.x, q1z.y, q1w.x, q1w.y);
 
     if constexpr (kQuad + 1 < 4) {
-        dequant_mode2_nibble_two_rows_lut_window<kQuad + 1>(
+        dequant_mode2_lop3_two_rows_lut_window<kQuad + 1>(
             fp8_dst0, fp8_dst1, fp4_quads0, fp4_quads1,
             scale_words0, scale_words1, row_swizzle, lut_smem,
             next_lut00, next_lut10, next_lut01, next_lut11);
@@ -169,7 +169,7 @@ __device__ __forceinline__ void dequant_mode2_nibble_two_rows_lut_window(
 
 template <uint32_t kNumDequantThreads, uint32_t kBarIdx,
           bool kSyncAfter = false, uint32_t kFusedRowBytes = 80>
-__device__ __forceinline__ void dequant_smem_b_inplace_two_rows_mode2_nibble(
+__device__ __forceinline__ void dequant_smem_b_inplace_two_rows_mode2_lop3(
         uint8_t* __restrict__ smem_b,
         const uint32_t tid,
         const uint2* __restrict__ lut_smem) {
@@ -209,7 +209,7 @@ __device__ __forceinline__ void dequant_smem_b_inplace_two_rows_mode2_nibble(
     uint8_t* __restrict__ fp8_dst0 = smem_b + row0 * 128;
     uint8_t* __restrict__ fp8_dst1 = smem_b + row1 * 128;
     const uint32_t row_swizzle = (tid & 7u) << 4;
-    dequant_mode2_nibble_two_rows_lut_window<0>(
+    dequant_mode2_lop3_two_rows_lut_window<0>(
         fp8_dst0, fp8_dst1, fp4_quads0, fp4_quads1,
         scale_words0, scale_words1, row_swizzle, lut_smem,
         lut00, lut10, lut01, lut11);

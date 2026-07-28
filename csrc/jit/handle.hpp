@@ -120,11 +120,8 @@ using KernelHandle = CUfunction;
 using LaunchConfigHandle = CUlaunchConfig;
 using LaunchAttrHandle = CUlaunchAttribute;
 
-// `cuLibraryEnumerateKernels` is supported since CUDA Driver API 12.4.
-// Define `DG_JIT_FORCE_LEGACY_LOAD` to force the older `cuModuleLoad` path
-// (useful when building against a newer CUDA SDK but running with an older
-// driver that lacks the `cuLibrary*` symbols).
-#if CUDA_VERSION >= 12040 && !defined(DG_JIT_FORCE_LEGACY_LOAD)
+// `cuLibraryEnumerateKernels` is supported since CUDA Driver API 12.4
+#if CUDA_VERSION >= 12040
     #define DG_JIT_USE_LIBRARY_ENUM_KERNELS
     DECL_LAZY_CUDA_DRIVER_FUNCTION(cuLibraryGetKernelCount);
     DECL_LAZY_CUDA_DRIVER_FUNCTION(cuLibraryEnumerateKernels);

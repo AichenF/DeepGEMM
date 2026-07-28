@@ -65,14 +65,14 @@ struct SM90NVFP4SmallMScheduleTuning {
     int target_num_experts_per_wave;
     int num_stages;
     bool swap_ab;
-    bool use_mode2_row_decoder;
+    bool use_mode2_lop3_decoder;
     bool single_active_dispatch_warp;
 };
 
 struct SM90NVFP4SmallMPlan {
     SM90NVFP4SmallMConfig config;
     bool swap_ab;
-    bool use_mode2_row_decoder;
+    bool use_mode2_lop3_decoder;
     bool single_active_dispatch_warp;
 };
 
@@ -253,7 +253,7 @@ static SM90NVFP4SmallMPlan materialize_sm90_nvfp4_small_m_tuning(
             smem_size,
         },
         tuning.swap_ab,
-        tuning.use_mode2_row_decoder,
+        tuning.use_mode2_lop3_decoder,
         tuning.single_active_dispatch_warp,
     };
 }

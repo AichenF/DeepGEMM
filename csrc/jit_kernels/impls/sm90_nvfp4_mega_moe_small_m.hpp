@@ -29,7 +29,7 @@ public:
         float activation_clamp;
         bool fast_math;
         bool swap_ab;
-        bool use_mode2_row_decoder;
+        bool use_mode2_lop3_decoder;
         bool single_active_dispatch_warp;
         SM90NVFP4SmallMConfig config;
 
@@ -77,7 +77,7 @@ static void __instantiate_kernel() {{
         /* kFastMath */ {},
         /* kSwapABRequested */ {},
         /* kSingleActiveDispatchWarp */ {},
-        /* kUseMode2RowDecoder */ {}
+        /* kUseMode2Lop3Decoder */ {}
     >);
 }};
 )",
@@ -98,7 +98,7 @@ static void __instantiate_kernel() {{
             args.fast_math ? "true" : "false",
             args.swap_ab ? "true" : "false",
             args.single_active_dispatch_warp ? "true" : "false",
-            args.use_mode2_row_decoder ? "true" : "false");
+            args.use_mode2_lop3_decoder ? "true" : "false");
     }
 
     static void launch_impl(
@@ -179,7 +179,7 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
         l2_weights.size(2) ==
         l2_weight_k_blocks * KernelConfig::kWeightStoragePerKBlock);
 
-    constexpr int kGranK = 128;
+    constexpr int kActsSFGranK = 128;
     const auto tensor_map_l1_acts = make_tma_2d_desc(
         l1_acts,
         hidden,
@@ -194,7 +194,7 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
         config.num_padded_sf_pool_tokens,
         hidden,
         config.block_m,
-        kGranK,
+        kActsSFGranK,
         1,
         0);
     const auto tensor_map_l1_weights = make_tma_2d_desc(
@@ -229,7 +229,7 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
         config.num_padded_sf_pool_tokens,
         intermediate_hidden,
         config.block_m,
-        kGranK,
+        kActsSFGranK,
         1,
         0);
     const auto tensor_map_l2_weights = make_tma_2d_desc(
@@ -262,7 +262,7 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
         .swap_ab = plan.swap_ab,
-        .use_mode2_row_decoder = plan.use_mode2_row_decoder,
+        .use_mode2_lop3_decoder = plan.use_mode2_lop3_decoder,
         .single_active_dispatch_warp =
             plan.single_active_dispatch_warp,
         .config = config,
@@ -289,9 +289,9 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
 
     const auto code = SM90NVFP4SmallMFusedRuntime::generate(args);
     const auto runtime = compiler->build(
-        plan.use_mode2_row_decoder ?
-            "sm90_nvfp4_small_m_mode2_row" :
-            "sm90_nvfp4_small_m_lut_window",
+        plan.use_mode2_lop3_decoder ?
+            "sm90_nvfp4_small_m_mode2_lop3" :
+            "sm90_nvfp4_small_m_mode2_braided_lut",
         code);
     SM90NVFP4SmallMFusedRuntime::launch(runtime, args);
 }

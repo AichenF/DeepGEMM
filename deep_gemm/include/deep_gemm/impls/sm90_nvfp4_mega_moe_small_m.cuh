@@ -102,7 +102,7 @@ __device__ __forceinline__ void dequant_braided_quad_ilp(
         make_uint4(q2_out0, q2_out1, q3_out0, q3_out1);
 }
 
-template <int kQuad, bool kQuadIlp>
+template <int kQuad, bool kQuadILP>
 __device__ __forceinline__ void dequant_braided_quad_lut_window(
         uint8_t* __restrict__ fp8_dst,
         const uint4 (&fp4_quads)[4],
@@ -127,7 +127,7 @@ __device__ __forceinline__ void dequant_braided_quad_lut_window(
         next_lut1 = lut_smem[next_scale1];
     }
 
-    if constexpr (kQuadIlp) {
+    if constexpr (kQuadILP) {
         dequant_braided_quad_ilp(
             fp8_dst, fp4_quads[kQuad], lut0, lut1,
             kQuad * 2, row_swizzle);
@@ -138,13 +138,13 @@ __device__ __forceinline__ void dequant_braided_quad_lut_window(
     }
 
     if constexpr (kQuad + 1 < 4) {
-        dequant_braided_quad_lut_window<kQuad + 1, kQuadIlp>(
+        dequant_braided_quad_lut_window<kQuad + 1, kQuadILP>(
             fp8_dst, fp4_quads, scale_word_lo, scale_word_hi,
             lut_smem, next_lut0, next_lut1, row_swizzle);
     }
 }
 
-template <bool kQuadIlp = false>
+template <bool kQuadILP = false>
 __device__ __forceinline__ void
 dequant_smem_b_from_packed_braided_lut_window(
         uint8_t* __restrict__ smem_b,
@@ -164,7 +164,7 @@ dequant_smem_b_from_packed_braided_lut_window(
     const uint2 lut0 = lut_smem[scale_words.x & 0x7fu];
     const uint2 lut1 =
         lut_smem[(scale_words.x >> 8) & 0x7fu];
-    dequant_braided_quad_lut_window<0, kQuadIlp>(
+    dequant_braided_quad_lut_window<0, kQuadILP>(
         smem_b + row * 128, fp4_quads,
         scale_words.x, scale_words.y,
         lut_smem, lut0, lut1, (row & 7u) << 4);
@@ -189,7 +189,7 @@ template <
     bool kFastMath,
     bool kSwapABRequested,
     bool kSingleActiveDispatchWarp,
-    bool kUseMode2RowDecoder
+    bool kUseMode2Lop3Decoder
 >
 CUTLASS_GLOBAL __launch_bounds__(384, 1) void
 sm90_nvfp4_mega_moe_small_m_fused_impl(
@@ -211,7 +211,6 @@ sm90_nvfp4_mega_moe_small_m_fused_impl(
     constexpr uint32_t kNumDispatchThreads = 64;
     constexpr uint32_t kNumNonEpilogueThreads = 64;
     constexpr uint32_t kNumEpilogueThreads = 256;
-    constexpr uint32_t kClusterSize = 1;
     constexpr uint32_t L1_SHAPE_N = kIntermediateHidden * 2;
     constexpr uint32_t L1_SHAPE_K = kHidden;
     constexpr uint32_t L2_SHAPE_N = kHidden;

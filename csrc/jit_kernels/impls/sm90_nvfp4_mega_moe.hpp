@@ -78,14 +78,40 @@ public:
         const char* kernel_symbol = args.phase_mode == kL1PhaseMode ?
             "sm90_nvfp4_mega_moe_split_l1_impl" :
             "sm90_nvfp4_mega_moe_split_l2_impl";
-        const std::string l1_template_args =
-            args.phase_mode == kL1PhaseMode ?
-            fmt::format(",\n"
-                        "        /* kL2ArrivalCounterRequested */ {},\n"
-                        "        /* kDispatchDequantRequested */ {}",
-                        args.l2_arrival_counter ? "true" : "false",
-                        args.dispatch_dequant ? "true" : "false") :
-            "";
+        std::string template_args = fmt::format(R"(
+        /* kNumMaxTokensPerRank */ {},
+        /* kHidden */ {},
+        /* kIntermediateHidden */ {},
+        /* kNumExperts */ {},
+        /* kNumTopk */ {},
+        /* kNumExpertsPerWave */ {},
+        /* kNumMaxPoolTokens */ {},
+        /* kNumPaddedSFPoolTokens */ {},
+        /* kNumStages */ {},
+        /* kNumSMs */ {},
+        /* kNumRanks */ {},
+        /* kActivationClamp */ {},
+        /* kFastMath */ {})",
+            args.num_max_tokens_per_rank,
+            args.hidden,
+            args.intermediate_hidden,
+            args.num_experts,
+            args.num_topk,
+            args.config.num_experts_per_wave,
+            args.config.num_max_pool_tokens,
+            args.config.num_padded_sf_pool_tokens,
+            args.config.num_stages,
+            args.launch_args.grid_dim.first,
+            args.num_ranks,
+            to_string(args.activation_clamp),
+            args.fast_math ? "true" : "false");
+        if (args.phase_mode == kL1PhaseMode) {
+            template_args += fmt::format(R"(,
+        /* kL2ArrivalCounterRequested */ {},
+        /* kDispatchDequantRequested */ {})",
+                args.l2_arrival_counter ? "true" : "false",
+                args.dispatch_dequant ? "true" : "false");
+        }
         return fmt::format(R"(
 #include <deep_gemm/impls/sm90_nvfp4_mega_moe.cuh>
 
@@ -93,37 +119,12 @@ using namespace deep_gemm;
 
 static void __instantiate_kernel() {{
     auto ptr = reinterpret_cast<void*>(&{}<
-        {},
-        {}, {},
-        {}, {},
-        {},
-        {}, {}, {},
-        {},
-        {},
-        {},
-        {}, {}, {},
-        {},
-        {}, {},
-        {},
-        {}{}
+{}
     >);
 }};
 )",
     kernel_symbol,
-    args.num_max_tokens_per_rank,
-    args.hidden, args.intermediate_hidden,
-    args.num_experts, args.num_topk,
-    args.config.num_experts_per_wave,
-    args.config.block_m, args.config.block_n, args.config.block_k,
-    args.config.num_max_pool_tokens,
-    args.config.num_padded_sf_pool_tokens,
-    args.config.num_stages,
-    args.config.num_dispatch_threads, args.config.num_non_epilogue_threads, args.config.num_epilogue_threads,
-    args.config.cluster_size,
-    args.launch_args.grid_dim.first, args.num_ranks,
-    to_string(args.activation_clamp),
-    args.fast_math ? "true" : "false",
-    l1_template_args);
+    template_args);
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -153,8 +154,6 @@ static void __instantiate_kernel() {{
         ));
     }
 };
-
-static constexpr int kSM90NVFP4BStoragePerKBlock = 80;
 
 static void sm90_nvfp4_split_mega_moe(
     const torch::Tensor& y,
@@ -198,10 +197,13 @@ static void sm90_nvfp4_split_mega_moe(
         select_sm90_nvfp4_split_mega_moe(heuristic_input);
     const auto& config = plan.l1_config;
     const auto& l2_config = plan.l2_config;
+    using KernelConfig = SM90NVFP4MegaMoEConfig;
     const int weight_storage_k = static_cast<int>(l1_weights.size(2));
     const int weight_k_blocks = static_cast<int>(l1_weights_sf.size(2));
     const bool layout_fused_b_scale =
-        weight_storage_k == weight_k_blocks * kSM90NVFP4BStoragePerKBlock;
+        weight_storage_k ==
+        weight_k_blocks *
+            KernelConfig::kWeightStoragePerKBlock;
     DG_HOST_ASSERT(layout_fused_b_scale);
 
     // Tensormap construction
@@ -210,16 +212,16 @@ static void sm90_nvfp4_split_mega_moe(
     // (MN-major, no swizzle). The physical L2-SF tensor retains its old
     // per-64 capacity in this stage; only the dense first half is addressed.
     // Weight SF: per-16 K raw UE4M3 pointer (no TMA descriptor).
-    constexpr int kGranK = 128;
-    constexpr int kL2ActsSFGranK = 128;
+    constexpr int kActsSFGranK = 128;
     const auto tensor_map_l1_acts = make_tma_2d_desc(l1_acts,
                                                      hidden, config.num_max_pool_tokens,
-                                                     config.block_k, config.block_m,
+                                                     KernelConfig::kBlockK,
+                                                     KernelConfig::kBlockM,
                                                      static_cast<int>(l1_acts.stride(-2)),
-                                                     config.swizzle_acts_mode);
+                                                     KernelConfig::kSwizzleActsMode);
     const auto tensor_map_l1_acts_sf = make_tma_sf_desc(cute::UMMA::Major::MN, l1_acts_sf,
                                                         config.num_padded_sf_pool_tokens, hidden,
-                                                        config.block_m, kGranK,
+                                                        KernelConfig::kBlockM, kActsSFGranK,
                                                         1, 0);
     // NVFP4: packed FP4 weight, optionally fused with row-local UE4M3 scale
     // bytes as 80B per BK128 row. No swizzle since dequant restages into the
@@ -227,7 +229,8 @@ static void sm90_nvfp4_split_mega_moe(
     const auto tensor_map_l1_weights = make_tma_2d_desc(l1_weights,
                                                         static_cast<int>(l1_weights.size(2)),
                                                         num_experts_per_rank * intermediate_hidden * 2,
-                                                        kSM90NVFP4BStoragePerKBlock, config.block_n,
+                                                        KernelConfig::kWeightStoragePerKBlock,
+                                                        KernelConfig::kBlockN,
                                                         static_cast<int>(l1_weights.stride(-2)),
                                                         0);
     // UE4M3 SF: accessed via raw uint8 pointer rather than TMA, since the
@@ -248,19 +251,21 @@ static void sm90_nvfp4_split_mega_moe(
                                                        0);
     const auto tensor_map_l2_acts = make_tma_2d_desc(l2_acts,
                                                      intermediate_hidden, l2_config.num_max_pool_tokens,
-                                                     l2_config.block_k, l2_config.block_m,
+                                                     KernelConfig::kBlockK,
+                                                     KernelConfig::kBlockM,
                                                      static_cast<int>(l2_acts.stride(-2)),
-                                                     l2_config.swizzle_acts_mode);
+                                                     KernelConfig::kSwizzleActsMode);
     const auto tensor_map_l2_acts_sf = make_tma_sf_desc(cute::UMMA::Major::MN, l2_acts_sf,
                                                         l2_config.num_padded_sf_pool_tokens, intermediate_hidden,
-                                                        l2_config.block_m, kL2ActsSFGranK,
+                                                        KernelConfig::kBlockM, kActsSFGranK,
                                                         1, 0);
     // NVFP4: packed FP4 weight, optionally fused with row-local UE4M3 scale
     // bytes as 80B per BK128 row. No swizzle (see L1).
     const auto tensor_map_l2_weights = make_tma_2d_desc(l2_weights,
                                                         static_cast<int>(l2_weights.size(2)),
                                                         num_experts_per_rank * hidden,
-                                                        kSM90NVFP4BStoragePerKBlock, l2_config.block_n,
+                                                        KernelConfig::kWeightStoragePerKBlock,
+                                                        KernelConfig::kBlockN,
                                                         static_cast<int>(l2_weights.stride(-2)),
                                                         0);
 
@@ -272,9 +277,9 @@ static void sm90_nvfp4_split_mega_moe(
     const float* l2_global_scales_ptr = l2_global_scales.has_value() ? l2_global_scales->data_ptr<float>() : nullptr;
 
     // Launch
-    DG_HOST_ASSERT(config.block_m == 128 &&
-                   config.block_n == 128 && config.cluster_size == 2 &&
-                   l2_config.block_m == 128 && l2_config.block_n == 128);
+    DG_HOST_ASSERT(
+        config.cluster_size == KernelConfig::kL1ClusterSize &&
+        l2_config.cluster_size == KernelConfig::kL2ClusterSize);
 
     const SM90NVFP4SplitMegaMoERuntime::Args args = {
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
@@ -300,16 +305,10 @@ static void sm90_nvfp4_split_mega_moe(
         .tensor_map_l2_weights = tensor_map_l2_weights,
         .l1_global_scales = l1_global_scales_ptr,
         .l2_global_scales = l2_global_scales_ptr,
-        .launch_args = LaunchArgs(num_sms, config.num_dispatch_threads + config.num_non_epilogue_threads + config.num_epilogue_threads,
+        .launch_args = LaunchArgs(num_sms, config.num_dispatch_threads +
+                                  KernelConfig::kNumNonEpilogueThreads +
+                                  KernelConfig::kNumEpilogueThreads,
                                   config.smem_size, config.cluster_size)
-    };
-
-    const auto refresh_launch_args = [&](SM90NVFP4SplitMegaMoERuntime::Args& phase_args) {
-        phase_args.launch_args = LaunchArgs(
-            num_sms,
-            phase_args.config.num_dispatch_threads + phase_args.config.num_non_epilogue_threads +
-                phase_args.config.num_epilogue_threads,
-            phase_args.config.smem_size, phase_args.config.cluster_size);
     };
 
     const auto build_and_launch = [&](const SM90NVFP4SplitMegaMoERuntime::Args& phase_args,
@@ -319,26 +318,29 @@ static void sm90_nvfp4_split_mega_moe(
         SM90NVFP4SplitMegaMoERuntime::launch(runtime, phase_args);
     };
 
-    const auto launch_split_l1 = [&]() {
-        auto phase_args = args;
-        phase_args.phase_mode = SM90NVFP4SplitMegaMoERuntime::kL1PhaseMode;
-        DG_HOST_ASSERT(phase_args.config.block_m == 128 &&
-                       phase_args.config.block_n == 128 &&
-                       phase_args.config.cluster_size == 2);
-        build_and_launch(phase_args, "sm90_nvfp4_mega_moe_l1");
-    };
+    DG_HOST_ASSERT(
+        args.config.cluster_size ==
+            KernelConfig::kL1ClusterSize &&
+        args.config.num_dispatch_threads ==
+            KernelConfig::kL1NumDispatchThreads);
+    build_and_launch(args, "sm90_nvfp4_mega_moe_l1");
 
-    const auto launch_split_l2 = [&]() {
-        auto phase_args = args;
-        phase_args.phase_mode = SM90NVFP4SplitMegaMoERuntime::kL2PhaseMode;
-        phase_args.config = plan.l2_config;
-        DG_HOST_ASSERT(phase_args.config.block_n == 128);
-        refresh_launch_args(phase_args);
-        build_and_launch(phase_args, "sm90_nvfp4_mega_moe_l2");
-    };
-
-    launch_split_l1();
-    launch_split_l2();
+    auto l2_args = args;
+    l2_args.phase_mode = SM90NVFP4SplitMegaMoERuntime::kL2PhaseMode;
+    l2_args.config = plan.l2_config;
+    DG_HOST_ASSERT(
+        l2_args.config.cluster_size ==
+            KernelConfig::kL2ClusterSize &&
+        l2_args.config.num_dispatch_threads ==
+            KernelConfig::kL2NumDispatchThreads);
+    l2_args.launch_args = LaunchArgs(
+        num_sms,
+        l2_args.config.num_dispatch_threads +
+            KernelConfig::kNumNonEpilogueThreads +
+            KernelConfig::kNumEpilogueThreads,
+        l2_args.config.smem_size,
+        l2_args.config.cluster_size);
+    build_and_launch(l2_args, "sm90_nvfp4_mega_moe_l2");
 }
 
 } // namespace deep_gemm

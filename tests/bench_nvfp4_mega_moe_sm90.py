@@ -10,7 +10,6 @@ HBM GB/s figure useful for tracking optimisation deltas.
 
 import argparse
 import os
-import random
 import sys
 import torch
 import torch.distributed as dist
@@ -146,13 +145,10 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
 
     t_rank = torch.tensor([t_nvfp4], dtype=torch.float64, device="cuda")
     t_rank_max = t_rank.clone()
-    t_rank_min = t_rank.clone()
     t_rank_sum = t_rank.clone()
     dist.all_reduce(t_rank_max, op=dist.ReduceOp.MAX)
-    dist.all_reduce(t_rank_min, op=dist.ReduceOp.MIN)
     dist.all_reduce(t_rank_sum, op=dist.ReduceOp.SUM)
     t_nvfp4_rank_max = float(t_rank_max.item())
-    t_nvfp4_rank_min = float(t_rank_min.item())
     t_nvfp4_rank_mean = float(t_rank_sum.item()) / num_ranks
     phase_rank_max = None
     if phase_times is not None:
@@ -169,7 +165,6 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
 
     safe_div = lambda a, b: float('nan') if b == 0 else a / b
     tflops_nvfp4 = safe_div(2 * num_recv_tokens * (hidden * intermediate_hidden * 3) / 1e12, t_nvfp4)
-    tflops = tflops_nvfp4  # legacy alias for the rest of the print logic
     num_touched_experts = max(0, torch.unique(gathered_topk_idx.flatten()).numel() - 1)
     # NVFP4 weights = 0.5 byte/value plus 1 UE4M3 scale byte per 16 K values.
     num_hbm_bytes = (
@@ -205,7 +200,6 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     rank_idx, num_ranks, group = init_dist(local_rank, num_local_ranks)
     seed = getattr(args, 'seed', 0) + rank_idx
     torch.manual_seed(seed)
-    random.seed(seed)
 
     if get_arch_major() != 9:
         dist_print(f'[SKIP] requires SM90, got SM{get_arch_major()}0', once_in_node=True)

@@ -84,7 +84,7 @@ if [[ ${DG_AKO_RUN_PERF:-1} == 1 ]]; then
     for shape in "${shapes[@]}"; do
         for m in "${m_values[@]}"; do
             log=${RESULT}/logs/${shape}_M${m}.log
-            "${PY}" "${REPO}/docs/experiments/sm90_nvfp4_standard_prepack/run_v4_repo.py" \
+            "${PY}" "${REPO}/scripts/run_sm90_nvfp4_v4_repo.py" \
                 --repo "${REPO}" \
                 --script "${REPO}/tests/bench_nvfp4_mega_moe_sm90.py" \
                 --impl-key ours_nvfp4 \
