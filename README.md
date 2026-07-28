@@ -139,6 +139,44 @@ deep_gemm.fp8_fp4_mega_moe(y, transformed_l1, transformed_l2, buffer)
 
 For the full example with multi-process setup and benchmarking, please refer to `tests/test_mega_moe.py`.
 
+##### Hopper MXFP4 compatibility
+
+The SM90/Hopper MegaMoE path can consume pre-quantized MXFP4 weights through
+an offline compatibility transform. Hopper does not execute native MXFP4 MMA:
+the bridge converts each per-32 UE8M0 scale into two per-16 UE4M3 scale slots,
+expands E2M1 weights to E4M3 in shared memory, and then runs FP8 WGMMA.
+
+```python
+# Pre-quantized checkpoint tensors:
+#   packed: E2M1 bytes in either "linear" adjacent-pair or "marlin" layout
+#   scale:  row-major uint8 UE8M0, one scale per 32 K values
+transformed_l1, transformed_l2 = (
+    deep_gemm.transform_mxfp4_weights_for_mega_moe_sm90(
+        (l1_packed, l1_scale),
+        (l2_packed, l2_scale),
+        packed_layout="linear",
+    )
+)
+
+deep_gemm.mxfp4_mega_moe(
+    y, transformed_l1, transformed_l2, buffer
+)
+```
+
+`deep_gemm.quantization_mxfp4.quantize_to_mxfp4` produces the supported
+`"marlin"` representation directly when starting from BF16/FP16 weights.
+Because the kernel materializes weights in E4M3 before WGMMA, the exact bridge
+accepts UE8M0 scale exponents from -8 through 6. UE8M0 code-zero blocks are
+accepted only when their E2M1 payload is all zero. Other checkpoint-specific
+packing or scale layouts must be converted by the model loader.
+Optional per-expert global scales can be passed through
+`l1_global_scales` and `l2_global_scales`.
+
+The compatibility layout remains 80 bytes per BK128 weight row, so it provides
+MXFP4 quantization semantics but no MXFP4 storage-bandwidth reduction on
+Hopper. The fused H200 kernel on this development branch retains its original
+8-rank, 384-expert, top-k 8, hidden 6144, intermediate-hidden 2048 shape gate.
+
 #### Utilities
 
 The library provides some utility functions besides the above kernels:

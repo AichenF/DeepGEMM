@@ -10,6 +10,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 import deep_gemm
+from deep_gemm.quantization_mxfp4 import quantize_to_mxfp4
 from deep_gemm.quantization_nvfp4 import quantize_to_nvfp4
 from deep_gemm.utils import per_token_cast_to_fp8
 from deep_gemm.utils.dist import dist_print, init_dist, uneven_all_gather
@@ -46,15 +47,29 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
 
     x_fp8, x_sf = per_token_cast_to_fp8(x_bf, use_ue8m0=False, gran_k=128,
                                         use_packed_ue8m0=False)
-    # NVFP4: quantize real BF16 weights directly to packed NVFP4 + per-16 UE4M3 SF.
-    # Do not route through block-FP8 weight quantization here; that produces
-    # byte-domain FP8 values and requires a separate block SF that this kernel
-    # ABI does not consume.
-    l1_packed, l1_scale = quantize_to_nvfp4(l1_bf, group_size=16)
-    l2_packed, l2_scale = quantize_to_nvfp4(l2_bf, group_size=16)
-    transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
-        (l1_packed, l1_scale), (l2_packed, l2_scale),
-    )
+    # Both formats use the kernel's existing Marlin payload layout.  MXFP4
+    # keeps its per-32 UE8M0 representation at rest and is adapted offline to
+    # the E4M3-safe, 80-byte/BK128 Hopper layout.
+    if args.weight_format == 'nvfp4':
+        l1_packed, l1_scale = quantize_to_nvfp4(l1_bf, group_size=16)
+        l2_packed, l2_scale = quantize_to_nvfp4(l2_bf, group_size=16)
+        transformed_l1, transformed_l2 = (
+            deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
+                (l1_packed, l1_scale), (l2_packed, l2_scale),
+            )
+        )
+        mega_moe = deep_gemm.nvfp4_mega_moe
+    elif args.weight_format == 'mxfp4-compat':
+        l1_packed, l1_scale_mx = quantize_to_mxfp4(l1_bf)
+        l2_packed, l2_scale_mx = quantize_to_mxfp4(l2_bf)
+        transformed_l1, transformed_l2 = (
+            deep_gemm.transform_mxfp4_weights_for_mega_moe_sm90(
+                (l1_packed, l1_scale_mx), (l2_packed, l2_scale_mx),
+            )
+        )
+        mega_moe = deep_gemm.mxfp4_mega_moe
+    else:
+        raise ValueError(f'unsupported weight format: {args.weight_format}')
     kernel_name = 'sm90_nvfp4_mega_moe'
 
     cum_stats = torch.zeros(num_experts_per_rank, dtype=torch.int, device='cuda')
@@ -70,7 +85,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
         buffer.topk_weights[:num_tokens].copy_(topk_w)
         y = output if output is not None else torch.empty(
             (num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
-        deep_gemm.nvfp4_mega_moe(
+        mega_moe(
             y, transformed_l1, transformed_l2, buffer,
             cumulative_local_expert_recv_stats=cum_stats,
             activation_clamp=activation_clamp,
@@ -113,10 +128,12 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     safe_div = lambda a, b: float('nan') if b == 0 else a / b
     tflops_nvfp4 = safe_div(2 * num_recv_tokens * (hidden * intermediate_hidden * 3) / 1e12, t_nvfp4)
     num_touched_experts = max(0, torch.unique(gathered_topk_idx.flatten()).numel() - 1)
-    # NVFP4 weights = 0.5 byte/value plus 1 UE4M3 scale byte per 16 K values.
+    # Both SM90 paths execute from the fused physical layout:
+    # 64B packed FP4 + 8B scale slots + 8B padding per BK128 row.  Count the
+    # actual 80B TMA transfer rather than the 72B logical NVFP4 payload.
     num_hbm_bytes = (
-        num_touched_experts * intermediate_hidden * 2 * (hidden // 2 + hidden // 16) +
-        num_touched_experts * hidden * (intermediate_hidden // 2 + intermediate_hidden // 16) +
+        num_touched_experts * intermediate_hidden * 2 * (hidden // 128 * 80) +
+        num_touched_experts * hidden * (intermediate_hidden // 128 * 80) +
         num_recv_tokens * hidden +                                  # L1 acts read
         num_recv_tokens * intermediate_hidden +                     # L1 out write
         num_recv_tokens * intermediate_hidden +                     # L2 acts read
@@ -126,7 +143,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
 
     dist_print(
         f' tokens={num_tokens:4d}  recv={num_recv_tokens:5d}  experts={num_touched_experts:4d}  '
-        f'nvfp4={t_nvfp4 * 1e6:7.1f}us '
+        f'format={args.weight_format} kernel={t_nvfp4 * 1e6:7.1f}us '
         f'mean_rank={t_nvfp4_rank_mean * 1e6:7.1f}us max_rank={t_nvfp4_rank_max * 1e6:7.1f}us '
         f'({tflops_nvfp4:5.1f}TF, {hbm_gbs:4.0f}GB/s)  (rank{rank_idx})',
         once_in_node=True,
@@ -151,9 +168,10 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
         batches = args.batches
 
     dist_print(
-        f'H200 NVFP4 MegaMoE bench: ranks={num_ranks} hidden={args.hidden} '
+        f'H200 SM90 FP4 MegaMoE bench: ranks={num_ranks} hidden={args.hidden} '
         f'ih={args.intermediate_hidden} experts={args.num_experts} topk={args.num_topk} '
-        f'masked_ratio={args.masked_ratio} fast_math={bool(args.fast_math)}',
+        f'weight_format={args.weight_format} masked_ratio={args.masked_ratio} '
+        f'fast_math={bool(args.fast_math)}',
         once_in_node=True,
     )
 
@@ -183,7 +201,7 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='H200 NVFP4 MegaMoE benchmark')
+    parser = argparse.ArgumentParser(description='H200 SM90 FP4 MegaMoE benchmark')
 
     parser.add_argument('--ncu-profile-only', action='store_true')
     parser.add_argument('--num-processes', type=int, default=8)
@@ -198,6 +216,12 @@ if __name__ == '__main__':
     parser.add_argument('--activation-clamp', type=float, default=10.0)
     parser.add_argument('--masked-ratio', type=float, default=0.0)
     parser.add_argument('--fast-math', type=int, default=1)
+    parser.add_argument(
+        '--weight-format',
+        choices=('nvfp4', 'mxfp4-compat'),
+        default='nvfp4',
+        help='Weight format; MXFP4 is adapted offline for the SM90 FP4-to-FP8 bridge',
+    )
     parser.add_argument('--num-tests', type=int, default=20)
     parser.add_argument('--num-max-tokens-per-rank', type=int, default=None,
                         help='Fix buffer capacity independently of the measured batch list')
