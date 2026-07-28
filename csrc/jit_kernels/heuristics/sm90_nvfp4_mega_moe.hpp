@@ -115,7 +115,7 @@ select_sm90_nvfp4_h200_fused(
     else if (input.num_tokens <= 64)
         tuning = {24, 256, 48, 3, 229312,
                   true, false, true};
-    else if (input.num_tokens <= 256)
+    else if (input.num_tokens <= 2048)
         tuning = {64, 256, 48, 3, 209856,
                   false, true, false};
     else
