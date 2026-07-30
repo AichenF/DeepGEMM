@@ -79,6 +79,7 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
 
     # Settings
     is_bf16xbf16 = args.mma_type == 'bf16xbf16'
+    assert not is_bf16xbf16 or args.activation == 'swiglu', 'SiTU is supported only for FP8xFP4 MegaMoE'
     num_max_tokens_per_rank = args.num_max_tokens_per_rank
     num_tokens = max(0, args.num_max_tokens_per_rank - random.randint(0, args.num_max_removed_tokens)) \
         if args.num_tokens == 0 else args.num_tokens
@@ -95,7 +96,8 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
         num_max_tokens_per_rank, num_topk,
         hidden, intermediate_hidden,
         num_shared_experts=num_shared_experts,
-        mma_type=args.mma_type
+        mma_type=args.mma_type,
+        activation=args.activation
     )
 
     # Cast weights into FP4
@@ -158,10 +160,11 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
                 shared_l2_weights = _cast_fp8_for_mega_moe(shared_l2_weights)[0::2]
 
         transformed_l1_weights, transformed_l2_weights = (
-            deep_gemm.transform_weights_for_mega_moe(l1_weights, l2_weights))
+            deep_gemm.transform_weights_for_mega_moe(l1_weights, l2_weights, activation=args.activation))
         if num_shared_experts > 0:
             transformed_shared_l1_weights, transformed_shared_l2_weights = (
-                deep_gemm.transform_weights_for_mega_moe(shared_l1_weights, shared_l2_weights))
+                deep_gemm.transform_weights_for_mega_moe(
+                    shared_l1_weights, shared_l2_weights, activation=args.activation))
         else:
             transformed_shared_l1_weights = transformed_shared_l2_weights = None
 
@@ -187,8 +190,13 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
             y=y, l1_weights=transformed_l1_weights, l2_weights=transformed_l2_weights,
             sym_buffer=buffer,
             cumulative_local_expert_recv_stats=cumulative_local_expert_recv_stats_fused,
-            activation_clamp=args.activation_clamp,
+            activation=args.activation,
+            activation_clamp=args.activation_clamp if args.activation == 'swiglu' else None,
             fast_math=bool(args.fast_math))
+        if not is_bf16xbf16:
+            kernel_kwargs.update(
+                situ_beta=args.situ_beta if args.activation == 'situ' else None,
+                situ_linear_beta=args.situ_linear_beta if args.activation == 'situ' else None)
         if num_shared_experts > 0:
             kernel_kwargs.update(
                 shared_l1_weights=transformed_shared_l1_weights,
@@ -205,6 +213,7 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     dist_print(f' > Shared experts: {num_shared_experts}', once_in_node=True)
     dist_print(f' > Experts: {num_topk}/{num_experts}', once_in_node=True)
     dist_print(f' > Buffer: {buffer.buffer.nbytes / 2 ** 30:.3f} GiB', once_in_node=True)
+    dist_print(f' > Activation: {args.activation}', once_in_node=True)
     dist_print(once_in_node=True)
 
     # Only do NCU profiling
@@ -223,6 +232,8 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     # Non-overlapped baseline: EP dispatch + GEMM + EP combine
     deep_ep, tilelang_ops, tilelang_bench, is_legacy_loaded = import_baseline()
     alignment = deep_gemm.get_theoretical_mk_alignment_for_contiguous_layout()
+    # The legacy TileLang baseline only implements SwiGLU.
+    is_legacy_loaded = is_legacy_loaded and args.activation == 'swiglu'
     deep_gemm.set_mk_alignment_for_contiguous_layout(alignment)
     num_correctness_tests = 1 if args.num_correctness_tests is None else args.num_correctness_tests
     ep_buffer = deep_ep.ElasticBuffer(
@@ -423,6 +434,10 @@ if __name__ == '__main__':
     parser.add_argument('--masked-ratio', type=float, default=0.0, help='Mask some expert selections')
     parser.add_argument('--fast-math', type=int, default=1, help='Enable fast math (0 or 1, default: 1)')
     parser.add_argument('--mma-type', type=str, default='fp8xfp4', help='MMA type: fp8xfp4 or bf16xbf16')
+
+    parser.add_argument('--activation', choices=('swiglu', 'situ'), default='swiglu', help='Gated activation')
+    parser.add_argument('--situ-beta', type=float, default=4.0, help='SiTU gate tanh beta')
+    parser.add_argument('--situ-linear-beta', type=float, default=25.0, help='SiTU linear tanh beta')
 
     # Test settings
     parser.add_argument('--num-correctness-tests', type=int, default=None, help='Pressure test')
