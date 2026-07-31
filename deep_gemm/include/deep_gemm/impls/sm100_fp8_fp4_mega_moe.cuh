@@ -1060,32 +1060,42 @@ sm100_fp8_fp4_mega_moe_impl(void* y,
                                 bf16_up = __hmin2(bf16_up, {kActivationClamp, kActivationClamp});
                             }
 
-                            // SwiGLU or SiTU
-                            const auto raw_gate = __bfloat1622float2(bf16_gate);
-                            auto neg_gate_exp = make_float2(
-                                kFastMath ? __expf(-raw_gate.x) : expf(-raw_gate.x),
-                                kFastMath ? __expf(-raw_gate.y) : expf(-raw_gate.y));
-                            const auto denom = __fadd2_rn({1.0f, 1.0f}, neg_gate_exp);
-                            auto gate = raw_gate;
-                            auto up = __bfloat1622float2(bf16_up);
+                            // SiTU
                             if constexpr (kUseSiTU) {
+                                const auto raw_gate = __bfloat1622float2(bf16_gate);
+                                const auto raw_up = __bfloat1622float2(bf16_up);
+                                auto neg_gate_exp = make_float2(
+                                    kFastMath ? __expf(-raw_gate.x) : expf(-raw_gate.x),
+                                    kFastMath ? __expf(-raw_gate.y) : expf(-raw_gate.y));
+                                const auto denom = __fadd2_rn({1.0f, 1.0f}, neg_gate_exp);
                                 float2 sigmoid;
                                 if constexpr (kFastMath) {
                                     sigmoid = {math::fast_rcp(denom.x), math::fast_rcp(denom.y)};
                                 } else {
                                     sigmoid = {1.0f / denom.x, 1.0f / denom.y};
                                 }
-                                gate = __fmul2_rn(sigmoid, {
+                                const auto gate = __fmul2_rn(sigmoid, {
                                     kSiTUBeta * tanhf(raw_gate.x / kSiTUBeta),
                                     kSiTUBeta * tanhf(raw_gate.y / kSiTUBeta)});
-                                up = {
-                                    kSiTULinearBeta * tanhf(up.x / kSiTULinearBeta),
-                                    kSiTULinearBeta * tanhf(up.y / kSiTULinearBeta)};
-                            } else if constexpr (kFastMath) {
+                                const auto up = make_float2(
+                                    kSiTULinearBeta * tanhf(raw_up.x / kSiTULinearBeta),
+                                    kSiTULinearBeta * tanhf(raw_up.y / kSiTULinearBeta));
+                                activation_values[i][k] = __fmul2_rn(__fmul2_rn(gate, up), weights);
+                                continue;
+                            }
+
+                            // SwiGLU
+                            auto gate = __bfloat1622float2(bf16_gate);
+                            auto neg_gate_exp = make_float2(
+                                kFastMath ? __expf(-gate.x) : expf(-gate.x),
+                                kFastMath ? __expf(-gate.y) : expf(-gate.y));
+                            const auto denom = __fadd2_rn({1.0f, 1.0f}, neg_gate_exp);
+                            if constexpr (kFastMath) {
                                 gate = __fmul2_rn(gate, {math::fast_rcp(denom.x), math::fast_rcp(denom.y)});
                             } else {
                                 gate = {gate.x / denom.x, gate.y / denom.y};
                             }
+                            const auto up = __bfloat1622float2(bf16_up);
                             activation_values[i][k] = __fmul2_rn(__fmul2_rn(gate, up), weights);
                         }
 

@@ -135,8 +135,9 @@ def transform_weights_for_mega_moe(
     activation: str = 'swiglu'
 ) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
            Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]]:
-    assert activation == 'swiglu' or (activation == 'situ' and isinstance(l1_weights, tuple)), \
-        f'Only FP8xFP4 MegaMoE weights support `situ`, got activation={activation!r}'
+    assert activation in ('swiglu', 'situ'), f'Unsupported activation: {activation!r}'
+    assert activation != 'situ' or (isinstance(l1_weights, tuple) and isinstance(l2_weights, tuple)), \
+        '`situ` requires FP8xFP4 `(weight, sf)` tuples for both L1 and L2 weights'
     if isinstance(l1_weights, tuple):
         # FP8: interleave gate/up for weight and SF, then transpose L1 SF for UTCCP
         l1_w = _interleave_weights(l1_weights[0])
