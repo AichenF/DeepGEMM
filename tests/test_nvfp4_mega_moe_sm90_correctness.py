@@ -11,6 +11,11 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 import deep_gemm
+from deep_gemm.quantization_mxfp4 import (
+    dequantize_mxfp4_to_fp32,
+    mxfp4_ue8m0_scale_to_nvfp4_ue4m3,
+    quantize_to_mxfp4,
+)
 from deep_gemm.quantization_nvfp4 import (
     FP4_VALUES,
     dequantize_nvfp4_to_fp32,
@@ -96,6 +101,26 @@ def _run_cuda_dequant_lut_unit_test() -> None:
     )
     expected = expected.unsqueeze(-1).expand(128, 16, 2).contiguous()
     torch.testing.assert_close(got, expected, rtol=0, atol=0)
+
+    # Verify the MXFP4 compatibility boundary against bytes produced by the
+    # actual CUDA LUT path.  Exponents -8 and 6 are the safe endpoints for
+    # materializing every E2M1 magnitude in E4M3.
+    mx_scale = torch.tensor([119, 120, 127, 133], dtype=torch.uint8)
+    bridged_scale = (
+        mxfp4_ue8m0_scale_to_nvfp4_ue4m3(mx_scale)
+        .view(-1, 2)[:, 0]
+        .long()
+    )
+    mx_expected = (
+        signed.expand(mx_scale.numel(), -1)
+        * torch.exp2((mx_scale.to(torch.int32) - 127).float()).view(-1, 1)
+    ).to(torch.float8_e4m3fn).view(torch.uint8)
+    torch.testing.assert_close(
+        got[bridged_scale, :, 0],
+        mx_expected,
+        rtol=0,
+        atol=0,
+    )
     print("NVFP4 CUDA dequant LUT unit test: PASS", flush=True)
 
 
@@ -151,11 +176,11 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
 
     if rank_idx == 0:
         print(
-            f"=== NVFP4 correctness M={m_tokens}, "
+            f"=== {args.weight_format} correctness M={m_tokens}, "
             f"NE={num_experts}, NL={num_local_experts}, NK={num_topk}, "
             f"NMT={num_max_tokens_per_rank}, weight_scale={weight_scale:g}, "
             f"global_scale_mode={global_scale_mode}, "
-            "reference=exact-nvfp4 ===",
+            f"reference=exact-{args.weight_format} ===",
             flush=True,
         )
 
@@ -186,14 +211,35 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
 
     x_fp8, x_sf = per_token_cast_to_fp8(x_bf, use_ue8m0=False, gran_k=128)
 
-    l1_packed, l1_scale = quantize_to_nvfp4(l1_bf, group_size=16)
-    l2_packed, l2_scale = quantize_to_nvfp4(l2_bf, group_size=16)
-    l1_dequant = dequantize_nvfp4_to_fp32(l1_packed, l1_scale, group_size=16)
-    l2_dequant = dequantize_nvfp4_to_fp32(l2_packed, l2_scale, group_size=16)
+    if args.weight_format == "nvfp4":
+        l1_packed, l1_scale = quantize_to_nvfp4(l1_bf, group_size=16)
+        l2_packed, l2_scale = quantize_to_nvfp4(l2_bf, group_size=16)
+        l1_dequant = dequantize_nvfp4_to_fp32(
+            l1_packed, l1_scale, group_size=16
+        )
+        l2_dequant = dequantize_nvfp4_to_fp32(
+            l2_packed, l2_scale, group_size=16
+        )
+        transformed_l1, transformed_l2 = (
+            deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
+                (l1_packed, l1_scale), (l2_packed, l2_scale),
+            )
+        )
+        mega_moe = deep_gemm.nvfp4_mega_moe
+    elif args.weight_format == "mxfp4-compat":
+        l1_packed, l1_scale_mx = quantize_to_mxfp4(l1_bf)
+        l2_packed, l2_scale_mx = quantize_to_mxfp4(l2_bf)
+        l1_dequant = dequantize_mxfp4_to_fp32(l1_packed, l1_scale_mx)
+        l2_dequant = dequantize_mxfp4_to_fp32(l2_packed, l2_scale_mx)
+        transformed_l1, transformed_l2 = (
+            deep_gemm.transform_mxfp4_weights_for_mega_moe_sm90(
+                (l1_packed, l1_scale_mx), (l2_packed, l2_scale_mx),
+            )
+        )
+        mega_moe = deep_gemm.mxfp4_mega_moe
+    else:
+        raise ValueError(f"unsupported weight_format={args.weight_format}")
 
-    transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
-        (l1_packed, l1_scale), (l2_packed, l2_scale),
-    )
     if global_scale_mode == "none":
         l1_global_scales = None
         l2_global_scales = None
@@ -214,7 +260,7 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
     buffer.topk_weights[:m_tokens].copy_(topk_weights.to(torch.float32))
 
     y_kernel = torch.zeros((m_tokens, hidden), dtype=torch.bfloat16, device="cuda")
-    deep_gemm.nvfp4_mega_moe(
+    mega_moe(
         y_kernel,
         transformed_l1,
         transformed_l2,
@@ -330,12 +376,15 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
 
 
 def _worker(local_rank: int, num_local_ranks: int, args: argparse.Namespace) -> None:
+    # Build and validate the CUDA LUT before creating the NCCL process group.
+    # Loading a torch CUDA extension after NCCL initialization can deadlock
+    # while peer ranks spin in a barrier.
+    if local_rank == 0:
+        _run_dequant_unit_test()
+        _run_cuda_dequant_lut_unit_test()
+
     rank_idx, _, group = init_dist(local_rank, num_local_ranks)
     try:
-        if rank_idx == 0:
-            _run_dequant_unit_test()
-            _run_cuda_dequant_lut_unit_test()
-        dist.barrier(group=group)
         if get_arch_major() != 9:
             if rank_idx == 0:
                 print(f"[SKIP] requires SM90, got SM{get_arch_major()}0", flush=True)
@@ -349,8 +398,13 @@ def _worker(local_rank: int, num_local_ranks: int, args: argparse.Namespace) -> 
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="H200 NVFP4 MegaMoE correctness gate")
-    parser.add_argument("--batches", nargs="+", type=int, default=[8, 16, 32, 64, 128])
+    parser = argparse.ArgumentParser(description="H200 SM90 FP4 MegaMoE correctness gate")
+    parser.add_argument(
+        "--batches",
+        nargs="+",
+        type=int,
+        default=[1, 8, 16, 32, 64, 128, 257],
+    )
     parser.add_argument("--hidden", type=int, default=6144)
     parser.add_argument("--intermediate-hidden", type=int, default=2048)
     parser.add_argument("--num-experts", type=int, default=384)
@@ -359,6 +413,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--num-processes", type=int, default=8)
     parser.add_argument("--activation-clamp", type=float, default=10.0)
     parser.add_argument("--fast-math", type=int, default=1)
+    parser.add_argument(
+        "--weight-format",
+        choices=["nvfp4", "mxfp4-compat"],
+        default="nvfp4",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--weight-scales", nargs="+", type=float, default=[0.05])
     parser.add_argument(

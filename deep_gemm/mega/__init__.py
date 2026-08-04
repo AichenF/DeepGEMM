@@ -173,6 +173,30 @@ def transform_nvfp4_weights_for_mega_moe_sm90(
         l2_scale_tm,
     )
 
+
+def transform_mxfp4_weights_for_mega_moe_sm90(
+    l1_weights: Tuple[torch.Tensor, torch.Tensor],
+    l2_weights: Tuple[torch.Tensor, torch.Tensor],
+    packed_layout: str = "marlin",
+) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]:
+    """Prepare pre-quantized MXFP4 weights for the Hopper MegaMoE bridge.
+
+    Inputs are E2M1 payloads plus row-major, per-32 raw UE8M0 scale bytes.
+    ``packed_layout`` may be ``"marlin"`` or adjacent-pair ``"linear"``.
+    The returned 80-byte/BK128 layout is consumed by the existing SM90
+    FP4-to-FP8 kernel.
+    """
+    from ..quantization_mxfp4 import prepare_mxfp4_weight_for_sm90
+
+    l1_compat = prepare_mxfp4_weight_for_sm90(
+        *l1_weights, packed_layout=packed_layout
+    )
+    l2_compat = prepare_mxfp4_weight_for_sm90(
+        *l2_weights, packed_layout=packed_layout
+    )
+    return transform_nvfp4_weights_for_mega_moe_sm90(l1_compat, l2_compat)
+
+
 def fp8_fp4_mega_moe(y: torch.Tensor,
                      l1_weights: Tuple[torch.Tensor, torch.Tensor],
                      l2_weights: Tuple[torch.Tensor, torch.Tensor],
@@ -209,8 +233,9 @@ def nvfp4_mega_moe(y: torch.Tensor,
     l2_layout = getattr(l2_weights[0], _SM90_NVFP4_H200_FUSED_LAYOUT_ATTR, None)
     if l1_layout != _SM90_NVFP4_H200_FUSED_LAYOUT or l2_layout != l1_layout:
         raise ValueError(
-            "NVFP4 weights must use the Mode2 Braided layout produced by "
-            "transform_nvfp4_weights_for_mega_moe_sm90"
+            "SM90 FP4 weights must use the Mode2 Braided layout produced by "
+            "transform_nvfp4_weights_for_mega_moe_sm90 or "
+            "transform_mxfp4_weights_for_mega_moe_sm90"
         )
     _C.nvfp4_mega_moe(
         y, l1_weights, l2_weights,
@@ -221,4 +246,27 @@ def nvfp4_mega_moe(y: torch.Tensor,
         sym_buffer.num_max_tokens_per_rank,
         sym_buffer.num_experts, sym_buffer.num_topk,
         activation_clamp, fast_math,
+    )
+
+
+def mxfp4_mega_moe(y: torch.Tensor,
+                   l1_weights: Tuple[torch.Tensor, torch.Tensor],
+                   l2_weights: Tuple[torch.Tensor, torch.Tensor],
+                   sym_buffer: SymmBuffer,
+                   cumulative_local_expert_recv_stats: Optional[torch.Tensor] = None,
+                   l1_global_scales: Optional[torch.Tensor] = None,
+                   l2_global_scales: Optional[torch.Tensor] = None,
+                   activation_clamp: Optional[float] = None,
+                   fast_math: bool = True):
+    """Run MXFP4 weights through the SM90 FP4-to-FP8 compatibility bridge."""
+    return nvfp4_mega_moe(
+        y,
+        l1_weights,
+        l2_weights,
+        sym_buffer,
+        cumulative_local_expert_recv_stats=cumulative_local_expert_recv_stats,
+        l1_global_scales=l1_global_scales,
+        l2_global_scales=l2_global_scales,
+        activation_clamp=activation_clamp,
+        fast_math=fast_math,
     )
