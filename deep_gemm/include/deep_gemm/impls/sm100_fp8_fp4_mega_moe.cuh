@@ -35,6 +35,9 @@ template <
     uint32_t kNumSMs, uint32_t kNumRanks,
     float kActivationClamp,
     bool kFastMath,
+    bool kUseSiTU,
+    float kSiTUBeta,
+    float kSiTULinearBeta,
     bool kHasShared = (kNumSharedExperts > 0),
     uint32_t L1_SHAPE_N = kIntermediateHidden * 2,
     uint32_t L1_SHAPE_K = kHidden,
@@ -84,6 +87,7 @@ sm100_fp8_fp4_mega_moe_impl(void* y,
     DG_STATIC_ASSERT(kNumNonEpilogueThreads == 128, "Invalid number of MMA non-epilogue threads");
     DG_STATIC_ASSERT(kNumEpilogueThreads % 128 == 0, "Invalid number of MMA epilogue and combine threads");
     DG_STATIC_ASSERT(kNumExperts % kNumRanks == 0, "Invalid number of experts or ranks");
+    DG_STATIC_ASSERT(not kUseSiTU or (kSiTUBeta > 0 and kSiTULinearBeta > 0), "Invalid SiTU beta");
 
     // Thread indices
     const bool is_leader_cta = cute::block_rank_in_cluster() == 0;
@@ -1042,7 +1046,7 @@ sm100_fp8_fp4_mega_moe_impl(void* y,
                             shared_storage.tmem_empty_barriers[accum_stage_idx].arrive(0u);
                         }
 
-                        // Apply SwiGLU: silu(gate) * up
+                        // Apply SwiGLU or SiTU gated activation
                         auto fp32_values = reinterpret_cast<float2*>(raw_values);
                         #pragma unroll
                         for (uint32_t k = 0; k < 2; ++ k) {
@@ -1054,6 +1058,30 @@ sm100_fp8_fp4_mega_moe_impl(void* y,
                                 bf16_gate = __hmin2(bf16_gate, {kActivationClamp, kActivationClamp});
                                 bf16_up = __hmax2(bf16_up, {-kActivationClamp, -kActivationClamp});
                                 bf16_up = __hmin2(bf16_up, {kActivationClamp, kActivationClamp});
+                            }
+
+                            // SiTU
+                            if constexpr (kUseSiTU) {
+                                const auto raw_gate = __bfloat1622float2(bf16_gate);
+                                const auto raw_up = __bfloat1622float2(bf16_up);
+                                auto neg_gate_exp = make_float2(
+                                    kFastMath ? __expf(-raw_gate.x) : expf(-raw_gate.x),
+                                    kFastMath ? __expf(-raw_gate.y) : expf(-raw_gate.y));
+                                const auto denom = __fadd2_rn({1.0f, 1.0f}, neg_gate_exp);
+                                float2 sigmoid;
+                                if constexpr (kFastMath) {
+                                    sigmoid = {math::fast_rcp(denom.x), math::fast_rcp(denom.y)};
+                                } else {
+                                    sigmoid = {1.0f / denom.x, 1.0f / denom.y};
+                                }
+                                const auto gate = __fmul2_rn(sigmoid, {
+                                    kSiTUBeta * tanhf(raw_gate.x / kSiTUBeta),
+                                    kSiTUBeta * tanhf(raw_gate.y / kSiTUBeta)});
+                                const auto up = make_float2(
+                                    kSiTULinearBeta * tanhf(raw_up.x / kSiTULinearBeta),
+                                    kSiTULinearBeta * tanhf(raw_up.y / kSiTULinearBeta));
+                                activation_values[i][k] = __fmul2_rn(__fmul2_rn(gate, up), weights);
+                                continue;
                             }
 
                             // SwiGLU

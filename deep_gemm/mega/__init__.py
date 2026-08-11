@@ -23,7 +23,8 @@ class SymmBuffer:
                  num_shared_experts: int = 0,
                  mma_type: str = 'fp8xfp4',
                  activation: str = 'swiglu'):
-        assert activation == 'swiglu', f'Only `swiglu` activation is supported, got `{activation}`'
+        assert activation == 'swiglu' or (mma_type == 'fp8xfp4' and activation == 'situ'), \
+            f'Only FP8xFP4 MegaMoE supports `situ`, got mma_type={mma_type!r}, activation={activation!r}'
         self.group = group
         self.num_experts = num_experts
         self.num_max_tokens_per_rank = num_max_tokens_per_rank
@@ -134,7 +135,9 @@ def transform_weights_for_mega_moe(
     activation: str = 'swiglu'
 ) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
            Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]]:
-    assert activation == 'swiglu', f'Only `swiglu` activation is supported, got `{activation}`'
+    assert activation in ('swiglu', 'situ'), f'Unsupported activation: {activation!r}'
+    assert activation != 'situ' or (isinstance(l1_weights, tuple) and isinstance(l2_weights, tuple)), \
+        '`situ` requires FP8xFP4 `(weight, sf)` tuples for both L1 and L2 weights'
     if isinstance(l1_weights, tuple):
         # FP8: interleave gate/up for weight and SF, then transpose L1 SF for UTCCP
         l1_w = _interleave_weights(l1_weights[0])
@@ -160,7 +163,9 @@ def fp8_fp4_mega_moe(y: torch.Tensor,
                      recipe: Tuple[int, int, int] = (1, 1, 32),
                      activation: str = 'swiglu',
                      activation_clamp: Optional[float] = None,
-                     fast_math: bool = True):
+                     fast_math: bool = True,
+                     situ_beta: Optional[float] = None,
+                     situ_linear_beta: Optional[float] = None):
     _C.fp8_fp4_mega_moe(
         y,
         l1_weights, l2_weights,
@@ -172,7 +177,8 @@ def fp8_fp4_mega_moe(y: torch.Tensor,
         sym_buffer.num_experts, sym_buffer.num_topk,
         recipe,
         activation, activation_clamp,
-        fast_math
+        fast_math,
+        situ_beta, situ_linear_beta
     )
 
 def bf16_mega_moe(y: torch.Tensor,

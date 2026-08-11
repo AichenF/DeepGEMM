@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <functional>
 #include <string>
 #include <pybind11/functional.h>
@@ -41,7 +42,7 @@ get_symm_buffer_size_for_mega_moe(
     const std::string& mma_type, const std::string& activation,
     const int& num_shared_experts = 0) {
     DG_HOST_ASSERT(num_experts % num_ranks == 0);
-    DG_HOST_ASSERT(activation == "swiglu");
+    DG_HOST_ASSERT(activation == "swiglu" or (mma_type == "fp8xfp4" and activation == "situ"));
     DG_HOST_ASSERT(num_shared_experts >= 0);
 
     // Ring capacity: worst-case live pool blocks over all candidate BLOCK_M; mirrors the kernel assert.
@@ -168,7 +169,9 @@ static void fp8_fp4_mega_moe(
     const std::tuple<int, int, int>& recipe,
     const std::string& activation,
     const std::optional<float>& activation_clamp_opt,
-    const bool& fast_math
+    const bool& fast_math,
+    const std::optional<float>& situ_beta_opt,
+    const std::optional<float>& situ_linear_beta_opt
 ) {
     const auto [l1_weights, l1_weights_sf] = l1_weights_tuple;
     const auto [l2_weights, l2_weights_sf] = l2_weights_tuple;
@@ -177,13 +180,22 @@ static void fp8_fp4_mega_moe(
     const auto num_tokens = static_cast<int>(y.size(0));
     const auto [rm, rn, rk] = recipe;
     DG_HOST_ASSERT(rm == 1 and rn == 1 and rk == 32);
-    DG_HOST_ASSERT(activation == "swiglu");
+    DG_HOST_ASSERT(activation == "swiglu" or activation == "situ");
     DG_HOST_ASSERT(shared_l1_weights_tuple_opt.has_value() == shared_l2_weights_tuple_opt.has_value());
 
     // Activation checks
+    const auto use_situ = activation == "situ";
     const auto activation_clamp =
         activation_clamp_opt.value_or(std::numeric_limits<float>::infinity());
     DG_HOST_ASSERT(activation_clamp >= 0);
+    const auto situ_beta = situ_beta_opt.value_or(0.0f);
+    const auto situ_linear_beta = situ_linear_beta_opt.value_or(0.0f);
+    DG_HOST_ASSERT(not use_situ or not activation_clamp_opt.has_value());
+    DG_HOST_ASSERT(not use_situ or
+                   (std::isfinite(situ_beta) and situ_beta > 0 and
+                    std::isfinite(situ_linear_beta) and situ_linear_beta > 0));
+    DG_HOST_ASSERT(use_situ or
+                   (not situ_beta_opt.has_value() and not situ_linear_beta_opt.has_value()));
 
     // Tensor checks
     DG_HOST_ASSERT(get_major_type_ab(l1_weights) == cute::UMMA::Major::K);
@@ -274,7 +286,8 @@ static void fp8_fp4_mega_moe(
                                num_shared_experts,
                                num_tokens, num_topk,
                                hidden, intermediate_hidden,
-                               activation_clamp, fast_math);
+                               activation_clamp, fast_math,
+                               use_situ, situ_beta, situ_linear_beta);
     } else {
         DG_HOST_UNREACHABLE("Unsupported architecture");
     }

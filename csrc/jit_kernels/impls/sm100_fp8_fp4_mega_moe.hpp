@@ -25,6 +25,8 @@ public:
         int num_ranks;
         float activation_clamp;
         bool fast_math;
+        bool use_situ;
+        float situ_beta, situ_linear_beta;
         MegaMoEConfig config;
 
         // Runtime arguments
@@ -79,6 +81,9 @@ static void __instantiate_kernel() {{
         {}, {}, {},
         {}, {},
         {},
+        {},
+        {},
+        {},
         {}
     >);
 }};
@@ -96,7 +101,9 @@ static void __instantiate_kernel() {{
     args.config.num_dispatch_threads, args.config.num_non_epilogue_threads, args.config.num_epilogue_threads,
     args.launch_args.grid_dim.first, args.num_ranks,
     to_string(args.activation_clamp),
-    args.fast_math ? "true" : "false");
+    args.fast_math ? "true" : "false",
+    args.use_situ ? "true" : "false",
+    to_string(args.situ_beta), to_string(args.situ_linear_beta));
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -146,7 +153,10 @@ static void sm100_fp8_fp4_mega_moe(
     const int& num_tokens, const int& num_topk,
     const int& hidden, const int& intermediate_hidden,
     const float& activation_clamp,
-    const bool& fast_math
+    const bool& fast_math,
+    const bool& use_situ,
+    const float& situ_beta,
+    const float& situ_linear_beta
 ) {
     const auto num_ranks = static_cast<int>(sym_buffer_ptrs.size());
     const auto num_experts = num_experts_per_rank * num_ranks;
@@ -283,6 +293,9 @@ static void sm100_fp8_fp4_mega_moe(
         .num_ranks = num_ranks,
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
+        .use_situ = use_situ,
+        .situ_beta = situ_beta,
+        .situ_linear_beta = situ_linear_beta,
         .config = config,
         .y = y.data_ptr(),
         .cumulative_local_expert_recv_stats = cumulative_local_expert_recv_stats_ptr,
