@@ -9,8 +9,8 @@ Layers
   L1  Smoke           : single tiny config; only verifies the kernel runs
                         and produces an output close to a PyTorch reference.
   L2  Heuristic       : covers tokens-per-expert bands of the SM90 selector.
-  L3  Shape coverage  : covers divisible-by-128 ``hidden``,
-                        ``intermediate_hidden`` and ``num_topk`` values.
+  L3  Shape coverage  : covers combine-aligned ``hidden`` (multiple of 256),
+                        divisible-by-128 ``intermediate_hidden`` and ``num_topk`` values.
   L4  Edge cases      : masking ratio, activation clamp (finite vs inf),
                         ``fast_math`` 0/1, ``num_tokens`` boundaries.
   L5  Stress          : ``--num-correctness-tests`` repeated random configs.
@@ -255,7 +255,7 @@ def _run_scenario(
     assert num_experts % num_ranks == 0, f'{name}: experts {num_experts} not divisible by ranks {num_ranks}'
     num_experts_per_rank = num_experts // num_ranks
     assert num_tokens <= num_max
-    assert hidden % 128 == 0 and intermediate_hidden % 128 == 0
+    assert hidden % 256 == 0 and intermediate_hidden % 128 == 0
 
     verbose = bool(int(os.environ.get('DG_TEST_VERBOSE', '0')))
     def _trace(stage: str):
@@ -407,8 +407,14 @@ def _layer3_shape_cases(num_ranks: int) -> List[Tuple[str, Dict[str, Any]]]:
                            hidden=hidden, intermediate_hidden=ih,
                            num_experts=base_experts, num_topk=topk)
                 out.append((f'L3.h{hidden}_ih{ih}_k{topk}', cfg))
-    # Production H200 shapes. Pro M128 covers the BN512/BF16 path and M256
-    # covers the BK256 split-phase path when this runs on a full H200 node.
+    # Regression for the removed l2_arrival_mask-era IH <= 4096 cap. The
+    # per-64-K L2 scale row is 264 bytes here, so this also covers a valid SF
+    # row whose size is not independently 16-byte aligned.
+    out.append(('L3.ih4224_stale_cap_regression', dict(
+        num_max_tokens_per_rank=16, num_tokens=16,
+        hidden=512, intermediate_hidden=4224,
+        num_experts=base_experts, num_topk=2)))
+    # Production H200 shapes; expert counts scale with the runtime rank count.
     out.extend([
         ('L3.h200_flash_m128', dict(
             num_max_tokens_per_rank=128, num_tokens=128,

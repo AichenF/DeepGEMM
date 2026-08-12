@@ -96,55 +96,6 @@ struct MegaMoEPhasePolicy {
     }
 };
 
-// Keep the SM90 MegaMoE barrier on the legacy trap-only timeout path.  The
-// shared SM100 barrier intentionally retains nv_dev's diagnostic printf, but
-// compiling that printf into this register-heavy Hopper kernel creates a
-// per-thread stack frame and slows both L1 and L2.  This SM90-local adapter
-// preserves the same synchronization and 300-second timeout semantics without
-// changing the shared SM100 implementation.
-template <uint32_t kNumRanks, uint32_t kNumSMs, uint32_t kNumThreads,
-          uint32_t kGridSyncIndex, uint32_t kTag, typename sync_scope_t>
-CUTLASS_DEVICE void sm90_nvlink_barrier(
-    const layout::Workspace& workspace,
-    const layout::SymBuffer<kNumRanks>& sym_buffer,
-    const uint32_t& sm_idx, const uint32_t& thread_idx,
-    const sync_scope_t& sync_scope,
-    const bool& sync_prologue = true,
-    const bool& sync_epilogue = true) {
-    DG_STATIC_ASSERT(kNumRanks <= kNumThreads, "Insufficient threads");
-
-    if (sync_prologue)
-        comm::grid_sync<kNumSMs, kGridSyncIndex>(
-            workspace, sm_idx, thread_idx, sync_scope);
-
-    if (sm_idx == 0) {
-        auto* counter_ptr = workspace.get_nvl_barrier_counter_ptr();
-        const auto status = (*counter_ptr) & 3;
-        const auto signal_phase = status & 1, signal_sign = status >> 1;
-        auto* signal_ptr = workspace.get_nvl_barrier_signal_ptr(signal_phase);
-
-        if (thread_idx < kNumRanks)
-            ptx::red_add_rel_sys(
-                sym_buffer.map(signal_ptr, thread_idx), signal_sign ? -1 : 1);
-        sync_scope();
-
-        constexpr int64_t kNumTimeoutCycles = 300ll * 2000000000ll;
-        if (thread_idx == 0) {
-            ptx::red_add(counter_ptr, 1);
-            const int target = signal_sign ? 0 : static_cast<int>(kNumRanks);
-            const auto start_clock = clock64();
-            while (ptx::ld_acq_sys(signal_ptr) != target) {
-                if (clock64() - start_clock >= kNumTimeoutCycles)
-                    DG_TRAP_ONLY_DEVICE_ASSERT(false and "NVLink barrier timeout");
-            }
-        }
-    }
-
-    if (sync_epilogue)
-        comm::grid_sync<kNumSMs, kGridSyncIndex>(
-            workspace, sm_idx, thread_idx, sync_scope);
-}
-
 #define DG_SM90_FP8_MOE_TEMPLATE_PARAMS \
     uint32_t kNumMaxTokensPerRank, \
     uint32_t kHidden, uint32_t kIntermediateHidden, \
@@ -240,6 +191,10 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                      "BLOCK_K must be 128 or 256");
     DG_STATIC_ASSERT(kHidden % BLOCK_K == 0 and kIntermediateHidden % BLOCK_K == 0,
                      "GEMM K dimensions must be divisible by BLOCK_K");
+    DG_STATIC_ASSERT(BLOCK_K % 128 == 0,
+                     "BLOCK_K must comprise whole BK128 TMA tiles");
+    DG_STATIC_ASSERT(BLOCK_N <= 512,
+                     "BLOCK_N exceeds the two-box TMA staging contract");
 
     // =====================================================================
     // Thread / warp identification
@@ -273,10 +228,10 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
 
     constexpr auto fp8_token_layout              = layout::Data(kHidden);
     constexpr auto fp8_intermediate_token_layout = layout::Data(kIntermediateHidden);
-    // Per-128 K float SF: 4 bytes per per-128 group => `kHidden / 32` bytes/token (same as SM100 packing)
-    constexpr auto fp8_sf_layout                 = layout::Data(kHidden / 32);
-    // Per-64 K float SF (SM90 only): 4 bytes per per-64 group => `kIntermediateHidden / 16` bytes/token
-    constexpr auto fp8_intermediate_sf_layout    = layout::Data(kIntermediateHidden / 16);
+    // MN-major pool SFs keep a TMA-aligned 128-token outer stride even when
+    // one logical token's SF byte count is not 16-byte aligned.
+    constexpr auto fp8_sf_layout = layout::Data(kHidden / 32, false);
+    constexpr auto fp8_intermediate_sf_layout = layout::Data(kIntermediateHidden / 16, false);
     constexpr auto input_topk_idx_layout         = layout::Data(kNumTopk * sizeof(int64_t), false);
     constexpr auto input_topk_weights_layout     = layout::Data(kNumTopk * sizeof(float), false);
     constexpr auto l1_topk_weights_layout        = layout::Data(sizeof(float), false);
@@ -346,6 +301,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     constexpr uint32_t kNumTMATilesPerStage = BLOCK_K / kTMATileK;
     constexpr uint32_t kTMATileN = BLOCK_N > 256 ? 256 : BLOCK_N;
     constexpr uint32_t kNumTMANTilesPerStage = BLOCK_N / kTMATileN;
+    DG_STATIC_ASSERT(BLOCK_N % kTMATileN == 0,
+                     "BLOCK_N must comprise whole TMA N boxes");
 
     // =====================================================================
     // Shared memory layout
@@ -396,19 +353,9 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
 
     constexpr uint32_t kCombineInputHiddenBytes = kHidden * kCombineElementBytes;
     constexpr uint32_t kCombineOutputHiddenBytes = kHidden * sizeof(nv_bfloat16);
-    constexpr uint32_t kCombineMaxRegistersForBuffer = 128;
-    constexpr bool kCombineOneChunkFits =
-        kNumEpilogueWarps * (2 * kCombineInputHiddenBytes + kCombineOutputHiddenBytes) <=
-            SMEM_BEFORE_BARRIER_SIZE and
-        kHidden <= 32 * kCombineMaxRegistersForBuffer;
-    constexpr bool kCombineTwoChunksFits =
-        kHidden % 2 == 0 and
-        kNumEpilogueWarps *
-                (2 * (kCombineInputHiddenBytes / 2) + kCombineOutputHiddenBytes / 2) <=
-            SMEM_BEFORE_BARRIER_SIZE and
-        kHidden <= 2 * 32 * kCombineMaxRegistersForBuffer;
-    constexpr uint32_t kCombineNumChunks = kCombineOneChunkFits ? 1 :
-        (kCombineTwoChunksFits ? 2 : 4);
+    constexpr uint32_t kCombineNumChunks = layout::get_sm90_moe_combine_num_chunks(
+        kHidden, kNumEpilogueWarps, SMEM_BEFORE_BARRIER_SIZE,
+        kCombineElementBytes, sizeof(nv_bfloat16));
     constexpr uint32_t kCombineChunkElems = kHidden / kCombineNumChunks;
     constexpr uint32_t kCombineInputChunkBytes =
         kCombineInputHiddenBytes / kCombineNumChunks;
@@ -418,6 +365,10 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         ? kNumEpilogueWarps *
             (2 * kCombineInputChunkBytes + kCombineOutputChunkBytes) : 0u;
     DG_STATIC_ASSERT(kHidden % kCombineNumChunks == 0, "Hidden must be divisible by number of combine chunks");
+    DG_STATIC_ASSERT(layout::is_sm90_moe_combine_vectorization_legal(
+                         kHidden, kNumEpilogueWarps, SMEM_BEFORE_BARRIER_SIZE,
+                         kCombineElementBytes, sizeof(nv_bfloat16)),
+                     "Hidden is incompatible with the combine vectorization");
     DG_STATIC_ASSERT(SMEM_COMBINE_ALIAS_SIZE <= SMEM_BEFORE_BARRIER_SIZE,
                      "Combine SMEM alias exceeds the pre-barrier scratch region");
 
@@ -612,8 +563,9 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
             ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
             ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
             cleanup_workspace();
-            sm90_nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
-                                kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
+            comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
+                                 kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag,
+                                 comm::NVLinkBarrierTimeoutPolicy::TrapOnly>(
                 workspace, sym_buffer, sm_idx, thread_idx,
                 [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
                 true, false);
@@ -682,8 +634,9 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         }
         ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
 
-        sm90_nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
-                            kDispatchGridSyncIndex, kBeforeDispatchPullBarrierTag>(
+        comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
+                             kDispatchGridSyncIndex, kBeforeDispatchPullBarrierTag,
+                             comm::NVLinkBarrierTimeoutPolicy::TrapOnly>(
             workspace, sym_buffer, sm_idx, thread_idx,
             [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
             false, true);
@@ -1929,6 +1882,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
 
 
                 float weight_r0 = 0.0f, weight_r1 = 0.0f;
+                // For large-capacity specializations, cached same-address
+                // loads avoid a shuffle dependency in this register-heavy path.
                 if constexpr (kNumMaxTokensPerRank <= 1024) {
                     const int topk_weight_src_lane = static_cast<int>(lane_idx - col_idx);
                     if (col_idx == 0) {
@@ -2249,8 +2204,9 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
         // ---------------- COMBINE ----------------
         // NVLink barrier first: signals remote ranks that this rank's GEMM
         // outputs (NVLink scatter targets) are fully written.
-        sm90_nvlink_barrier<kNumRanks, kNumSMs, kNumEpilogueThreads,
-                            kEpilogueGridSyncIndex, kBeforeCombineReduceBarrierTag>(
+        comm::nvlink_barrier<kNumRanks, kNumSMs, kNumEpilogueThreads,
+                             kEpilogueGridSyncIndex, kBeforeCombineReduceBarrierTag,
+                             comm::NVLinkBarrierTimeoutPolicy::TrapOnly>(
             workspace, sym_buffer, sm_idx, epilogue_thread_idx,
             [&]() { ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx); }
         );

@@ -174,6 +174,17 @@ static void sm90_fp8_mega_moe(
     const auto launch_config = select_mega_moe_sm90(heuristic_input);
     const auto& l1_config = launch_config.l1;
     const auto& l2_config = launch_config.l2;
+    const auto combine_smem_before_barriers =
+        get_sm90_moe_pre_barrier_smem_size_for_combine(
+            heuristic_input, l2_config);
+    if (not layout::is_sm90_moe_combine_vectorization_legal(
+            static_cast<uint32_t>(hidden),
+            static_cast<uint32_t>(l2_config.num_epilogue_threads / 32),
+            combine_smem_before_barriers,
+            static_cast<uint32_t>(sizeof(nv_bfloat16)),
+            static_cast<uint32_t>(sizeof(nv_bfloat16))))
+        DG_HOST_UNREACHABLE(
+            "SM90 FP8 MegaMoE hidden size is incompatible with the selected combine vectorization");
 
     // Tensormap construction
     // Acts/weights: standard 2D TMA descriptors (FP8 K-major).
@@ -181,13 +192,21 @@ static void sm90_fp8_mega_moe(
     // Weight SF: block (128, 128) raw float pointer (no TMA descriptor).
     constexpr int kGranK = 128;
     constexpr int kL2ActsSFGranK = 64;
+    constexpr int kTMATileK = 128;
+    constexpr int kMaxTMABoxN = 256;
     // A BK256 pipeline stage is represented in shared memory as two adjacent
     // independently-swizzled BK128 TMA tiles. Keep the tensor-map box at 128
     // and issue two copies; the kernel config/scheduler still advances by 256.
-    const int l1_tma_block_k = std::min(l1_config.block_k, kGranK);
-    const int l2_tma_block_k = std::min(l2_config.block_k, kGranK);
-    const int l1_tma_block_n = std::min(l1_config.block_n, 256);
-    const int l2_tma_block_n = std::min(l2_config.block_n, 256);
+    const int l1_tma_block_k = std::min(l1_config.block_k, kTMATileK);
+    const int l2_tma_block_k = std::min(l2_config.block_k, kTMATileK);
+    const int l1_tma_block_n = std::min(l1_config.block_n, kMaxTMABoxN);
+    const int l2_tma_block_n = std::min(l2_config.block_n, kMaxTMABoxN);
+    DG_HOST_ASSERT(l1_config.block_k % l1_tma_block_k == 0 and
+                   l2_config.block_k % l2_tma_block_k == 0);
+    DG_HOST_ASSERT(l1_config.block_n <= 2 * kMaxTMABoxN and
+                   l2_config.block_n <= 2 * kMaxTMABoxN and
+                   l1_config.block_n % l1_tma_block_n == 0 and
+                   l2_config.block_n % l2_tma_block_n == 0);
     const auto tensor_map_l1_acts = make_tma_2d_desc(l1_acts,
                                                      hidden, l1_config.num_max_pool_tokens,
                                                      l1_tma_block_k, l1_config.block_m,

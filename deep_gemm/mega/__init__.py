@@ -147,8 +147,45 @@ def transform_weights_for_mega_moe_sm90(
     and require no transformation. Only L1's gate/up FP8 weight interleave is
     preserved.
     """
-    l1_fp8, l1_sf = l1_weights
-    return (_interleave_weights(l1_fp8), l1_sf), l2_weights
+    def validate_pair(name, pair):
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+            raise TypeError(f'{name} must be a (FP8 weight, FP32 scale-factor) pair')
+        weight, sf = pair
+        if not isinstance(weight, torch.Tensor) or not isinstance(sf, torch.Tensor):
+            raise TypeError(f'{name} weight and scale factor must both be tensors')
+        if weight.ndim != 3 or sf.ndim != 3:
+            raise ValueError(f'{name} weight and scale factor must both be rank-3 tensors')
+        if weight.dtype != torch.float8_e4m3fn or sf.dtype != torch.float32:
+            raise TypeError(f'{name} requires an FP8 E4M3 weight and an FP32 scale factor')
+        if weight.device != sf.device:
+            raise ValueError(f'{name} weight and scale factor must be on the same device')
+        if not weight.is_contiguous() or not sf.is_contiguous():
+            raise ValueError(f'{name} weight and scale factor must use contiguous natural layouts')
+        num_experts, n, k = weight.shape
+        if num_experts <= 0 or n <= 0 or k <= 0 or n % 128 != 0 or k % 128 != 0:
+            raise ValueError(
+                f'{name} expert count must be positive and N/K must be positive multiples of 128')
+        expected_sf_shape = (num_experts, n // 128, k // 128)
+        if tuple(sf.shape) != expected_sf_shape:
+            raise ValueError(
+                f'{name} scale-factor shape must be {expected_sf_shape}, got {tuple(sf.shape)}')
+        return weight, sf
+
+    l1_fp8, l1_sf = validate_pair('l1_weights', l1_weights)
+    l2_fp8, l2_sf = validate_pair('l2_weights', l2_weights)
+    if (l1_fp8.shape[0] != l2_fp8.shape[0] or
+        l1_fp8.shape[1] != 2 * l2_fp8.shape[2] or
+        l1_fp8.shape[2] != l2_fp8.shape[1]):
+        raise ValueError(
+            'SM90 MegaMoE weights must have shapes (E, 2*IH, H) and (E, H, IH)')
+    if l2_fp8.shape[1] % 256 != 0:
+        raise ValueError('SM90 MegaMoE hidden must be a multiple of 256 for combine vectorization')
+    if l1_fp8.device != l2_fp8.device:
+        raise ValueError('L1 and L2 SM90 MegaMoE weights must be on the same device')
+
+    l1_transformed = (_interleave_weights(l1_fp8), l1_sf)
+    l2_transformed = (l2_fp8, l2_sf)
+    return l1_transformed, l2_transformed
 
 
 def fp8_fp4_mega_moe(y: torch.Tensor,

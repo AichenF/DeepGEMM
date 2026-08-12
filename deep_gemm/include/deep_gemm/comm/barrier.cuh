@@ -8,6 +8,11 @@
 
 namespace deep_gemm::comm {
 
+enum class NVLinkBarrierTimeoutPolicy {
+    Diagnostic,
+    TrapOnly,
+};
+
 CUTLASS_DEVICE void cluster_sync_with_relaxed_arrive() {
     // Perform cluster_sync with `barrier.cluster.arrive.relaxed`
     // This is slightly faster than `cute::cluster_sync` but has weaker memory ordering guarantee
@@ -34,7 +39,10 @@ CUTLASS_DEVICE void grid_sync(const layout::Workspace& workspace,
     sync_scope();
 }
 
-template <uint32_t kNumRanks, uint32_t kNumSMs, uint32_t kNumThreads, uint32_t kGridSyncIndex, uint32_t kTag, typename sync_scope_t>
+template <uint32_t kNumRanks, uint32_t kNumSMs, uint32_t kNumThreads,
+          uint32_t kGridSyncIndex, uint32_t kTag,
+          NVLinkBarrierTimeoutPolicy kTimeoutPolicy = NVLinkBarrierTimeoutPolicy::Diagnostic,
+          typename sync_scope_t>
 CUTLASS_DEVICE void nvlink_barrier(const layout::Workspace& workspace,
                                    const layout::SymBuffer<kNumRanks>& sym_buffer,
                                    const uint32_t& sm_idx, const uint32_t& thread_idx,
@@ -67,9 +75,15 @@ CUTLASS_DEVICE void nvlink_barrier(const layout::Workspace& workspace,
             const auto start_clock = clock64();
             while (ptx::ld_acq_sys(signal_ptr) != target) {
                 if (clock64() - start_clock >= kNumTimeoutCycles) {
-                    printf("DeepGEMM NVLink barrier timeout (300s): rank=%d, counter=%d, signal=%d, target=%d, phase=%d, sign=%d, tag=%d\n",
-                           sym_buffer.rank_idx, *counter_ptr, ptx::ld_acq_sys(signal_ptr), target, signal_phase, signal_sign, kTag);
-                    DG_DEVICE_ASSERT(false and "NVLink barrier timeout");
+                    if constexpr (kTimeoutPolicy == NVLinkBarrierTimeoutPolicy::Diagnostic) {
+                        printf("DeepGEMM NVLink barrier timeout (300s): rank=%d, counter=%d, signal=%d, target=%d, phase=%d, sign=%d, tag=%d\n",
+                               sym_buffer.rank_idx, *counter_ptr, ptx::ld_acq_sys(signal_ptr), target, signal_phase, signal_sign, kTag);
+                        DG_DEVICE_ASSERT(false and "NVLink barrier timeout");
+                    } else {
+                        // Register-heavy kernels can select a trap-only path so
+                        // device printf does not introduce a per-thread stack frame.
+                        DG_TRAP_ONLY_DEVICE_ASSERT(false and "NVLink barrier timeout");
+                    }
                 }
             }
         }

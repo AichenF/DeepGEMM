@@ -31,8 +31,18 @@ get_symm_buffer_size_for_sm90_mega_moe(
     const int& num_max_tokens_per_rank, const int& num_topk,
     const int& hidden, const int& intermediate_hidden,
     const bool& use_fp8_dispatch, const std::string& activation) {
+    DG_HOST_ASSERT(num_ranks > 0);
     DG_HOST_ASSERT(num_experts % num_ranks == 0);
-    DG_HOST_ASSERT(use_fp8_dispatch);
+    if (not use_fp8_dispatch)
+        DG_HOST_UNREACHABLE("SM90 FP8 MegaMoE currently supports FP8 dispatch only");
+    if (activation != "swiglu")
+        DG_HOST_UNREACHABLE("SM90 FP8 MegaMoE currently supports the swiglu activation only");
+    DG_HOST_ASSERT(num_max_tokens_per_rank > 0 and
+                   num_max_tokens_per_rank % kSM90MegaMoETokenAlignment == 0);
+    if (hidden <= 0 or hidden % 256 != 0)
+        DG_HOST_UNREACHABLE("SM90 FP8 MegaMoE requires hidden to be a positive multiple of 256 for combine vectorization");
+    if (intermediate_hidden <= 0 or intermediate_hidden % 128 != 0)
+        DG_HOST_UNREACHABLE("SM90 FP8 MegaMoE requires intermediate_hidden to be a positive multiple of 128");
 
     // Workspace bytes
     const auto workspace = layout::Workspace(nullptr, num_ranks, num_experts, num_max_tokens_per_rank, num_topk);
@@ -41,9 +51,10 @@ get_symm_buffer_size_for_sm90_mega_moe(
     const auto fp8_token_layout = layout::Data(hidden);
     const auto bf16_token_layout = layout::Data(hidden * 2);
     const auto fp8_intermediate_token_layout = layout::Data(intermediate_hidden);
-    const auto fp8_sf_layout = layout::Data(hidden / 32);
-    // SM90 L2 activations use one float SF per 64 K elements.
-    const auto fp8_intermediate_sf_layout = layout::Data(intermediate_hidden / 16);
+    // Pool SFs are MN-major; their 128-token outer stride remains TMA-aligned
+    // even when one logical token's SF byte count is not.
+    const auto fp8_sf_layout = layout::Data(hidden / 32, false);
+    const auto fp8_intermediate_sf_layout = layout::Data(intermediate_hidden / 16, false);
     const auto input_topk_idx_layout = layout::Data(num_topk * sizeof(int64_t), false);
     const auto input_topk_weights_layout = layout::Data(num_topk * sizeof(float), false);
     const auto l1_topk_weights_layout = layout::Data(sizeof(float), false);
@@ -95,9 +106,6 @@ get_symm_buffer_size_for_sm90_mega_moe(
     const auto combine_token_buffer = layout::Buffer(
         bf16_token_layout, num_topk, num_max_tokens_per_rank,
         l2_sf_buffer.get_end_ptr());
-
-    // Check SF buffer requirements
-    DG_HOST_ASSERT(hidden % 128 == 0 and intermediate_hidden % 128 == 0);
 
     // Slice function: creates `(x, x_sf, topk_weights, topk_idx, l1_acts, l1_acts_sf, l2_acts, l2_acts_sf)` tensor views from the raw buffer
     // NOTES: `x_sf` is K-major, while `l1_acts_sf` and `l2_acts_sf` are M-major
@@ -165,14 +173,17 @@ static void fp8_mega_moe(
 
     // Architecture check
     const auto arch_major = device_runtime->get_arch_major();
-    DG_HOST_ASSERT(arch_major == 9);
+    if (arch_major != 9)
+        DG_HOST_UNREACHABLE("SM90 FP8 MegaMoE requires a compute capability 9.x GPU");
 
     // Config checks: SM90 uses block (128, 128) float SF for weights,
     // per-token per-128-K float SF for activations.
     const auto num_tokens = static_cast<int>(y.size(0));
     const auto [rm, rn, rk] = recipe;
-    DG_HOST_ASSERT(rm == 128 and rn == 128 and rk == 128);
-    DG_HOST_ASSERT(activation == "swiglu");
+    if (rm != 128 or rn != 128 or rk != 128)
+        DG_HOST_UNREACHABLE("SM90 FP8 MegaMoE requires recipe=(128, 128, 128)");
+    if (activation != "swiglu")
+        DG_HOST_UNREACHABLE("SM90 FP8 MegaMoE currently supports the swiglu activation only");
 
     // Activation checks
     const auto activation_clamp =
@@ -192,21 +203,23 @@ static void fp8_mega_moe(
     DG_HOST_ASSERT(intermediate_hidden_2 == 2 * intermediate_hidden);
     DG_HOST_ASSERT(l1_weights.is_contiguous() and l2_weights.is_contiguous());
 
-    // Shape constraints required by the SM90 kernel:
-    //   * Hidden dims must be multiples of 128 (per-128 SF + scheduler integer-tiling).
-    //   * `l2_arrival_mask` is uint64, with one bit per L1-output N-block of size 64 in the
-    //     intermediate dim, so `kNumL1BlockNs = intermediate_hidden / 64` must be ≤ 64.
-    DG_HOST_ASSERT(hidden % 128 == 0 and intermediate_hidden % 128 == 0);
-    DG_HOST_ASSERT(intermediate_hidden / 64 <= 64);
+    // The combine warp consumes eight values per lane, so hidden must satisfy
+    // at least its base 256-element vector width. The selected launch config is
+    // checked against the exact one/two/four-chunk layout before JIT compilation.
+    if (hidden <= 0 or hidden % 256 != 0)
+        DG_HOST_UNREACHABLE("SM90 FP8 MegaMoE requires hidden to be a positive multiple of 256 for combine vectorization");
+    if (intermediate_hidden <= 0 or intermediate_hidden % 128 != 0)
+        DG_HOST_UNREACHABLE("SM90 FP8 MegaMoE requires intermediate_hidden to be a positive multiple of 128");
 
-    // Check weight SF layout (block (128, 128) float, MN-major; not TMA-loaded
-    // so no TMA-stride alignment is required, but we do require contiguity in
-    // the K-direction within each expert).
+    // Weight SFs are raw global-memory loads in natural MN-major order.
     constexpr int kGranMN = 128, kGranK = 128;
     check_sf_layout(l1_weights_sf, intermediate_hidden * 2, hidden, kGranMN, kGranK,
                     num_experts_per_rank, false, true, torch::kFloat);
     check_sf_layout(l2_weights_sf, hidden, intermediate_hidden, kGranMN, kGranK,
                     num_experts_per_rank, false, true, torch::kFloat);
+    if (not l1_weights_sf.is_contiguous() or not l2_weights_sf.is_contiguous())
+        DG_HOST_UNREACHABLE(
+            "SM90 FP8 MegaMoE weight scale factors must use contiguous natural layouts");
 
     // Check stats counter
     if (cumulative_local_expert_recv_stats.has_value()) {

@@ -165,7 +165,7 @@ y = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
 deep_gemm.fp8_mega_moe(y, transformed_l1, transformed_l2, buffer)
 ```
 
-The input activation SF is FP32 with shape `[num_tokens, hidden / 128]`, using one scale per token and 128 K elements. Weight SF tensors follow the framework contract and must be contiguous FP32 tensors in their natural block layout: L1 uses `[experts_per_rank, 2 * intermediate_hidden / 128, hidden / 128]`, and L2 uses `[experts_per_rank, hidden / 128, intermediate_hidden / 128]`. `transform_weights_for_mega_moe_sm90` interleaves the L1 gate/up FP8 weights but leaves both weight SF tensors in this layout.
+The input activation SF is FP32 with shape `[num_tokens, hidden / 128]`, using one scale per token and 128 K elements. Weight SF tensors follow the framework contract and must be contiguous FP32 tensors in their natural block layout: L1 uses `[experts_per_rank, 2 * intermediate_hidden / 128, hidden / 128]`, and L2 uses `[experts_per_rank, hidden / 128, intermediate_hidden / 128]`. `transform_weights_for_mega_moe_sm90` validates both pairs, interleaves the L1 gate/up FP8 weights, and leaves both weight SF tensors in this layout. `hidden` must be a multiple of 256 for combine vectorization, while `intermediate_hidden` must be a multiple of 128.
 
 For the distributed correctness and benchmark driver, refer to `tests/test_mega_moe_sm90.py`.
 

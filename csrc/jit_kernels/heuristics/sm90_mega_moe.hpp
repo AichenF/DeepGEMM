@@ -314,6 +314,37 @@ static std::pair<int, int> get_pipeline_config_for_mega_moe_sm90(
             smem_fixed + num_stages * (smem_per_stage + smem_barriers_per_stage)};
 }
 
+// Mirror the device kernel's pre-barrier alias region so invalid combine
+// vectorization is rejected before NVRTC sees a shape specialization.
+static uint32_t get_sm90_moe_pre_barrier_smem_size_for_combine(
+    const Sm90MoeHeuristicInput& input,
+    const MegaMoESM90Config& config) {
+    constexpr int kSmemAlignment = 1024;
+    const int num_dispatch_warps = config.num_dispatch_threads / 32;
+    const int num_epilogue_warpgroups = config.num_epilogue_threads / 128;
+    const auto wg_layout = layout::get_sm90_moe_warpgroup_layout(
+        config.block_m, config.block_n, num_epilogue_warpgroups);
+
+    const int smem_expert_count = align(
+        input.num_experts * static_cast<int>(sizeof(uint32_t)), kSmemAlignment);
+    const int smem_send_buffers = align(
+        static_cast<int>(layout::Buffer(
+            layout::Data(input.hidden), num_dispatch_warps, 1).get_num_bytes()),
+        kSmemAlignment);
+    const int smem_cd_l2 = config.direct_l2_scatter ? 0 :
+        num_epilogue_warpgroups * static_cast<int>(wg_layout.block_m) *
+        static_cast<int>(wg_layout.block_n) * static_cast<int>(sizeof(nv_bfloat16));
+    const int smem_cd_swap_l1 = config.swap_ab ?
+        config.block_m * (config.block_n / 2) *
+            (static_cast<int>(sizeof(float)) + static_cast<int>(sizeof(uint8_t))) : 0;
+    const int smem_cd = align(
+        std::max(smem_cd_l2, smem_cd_swap_l1), kSmemAlignment);
+    const int smem_gemm = config.num_stages *
+        (config.block_m * config.block_k + config.block_n * config.block_k);
+    return static_cast<uint32_t>(
+        smem_expert_count + smem_send_buffers + smem_cd + smem_gemm);
+}
+
 static bool supports_sm90_moe_bf16_scaled_accum(
     const MegaMoESM90Config& config) {
     const int num_epilogue_warpgroups = config.num_epilogue_threads / 128;
