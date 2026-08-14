@@ -265,7 +265,9 @@ static void nvfp4_mega_moe(
     const std::tuple<int, int, int>& recipe,
     const std::string& activation,
     const std::optional<float>& activation_clamp_opt,
-    const bool& fast_math
+    const bool& fast_math,
+    const int& requested_kernel_block_n,
+    const int& family_threshold
 ) {
     const auto [l1_weights, l1_weights_sf] = l1_weights_tuple;
     const auto [l2_weights, l2_weights_sf] = l2_weights_tuple;
@@ -288,8 +290,10 @@ static void nvfp4_mega_moe(
     DG_HOST_ASSERT(l2_weights_sf.scalar_type() == torch::kUInt8);
     DG_HOST_ASSERT(l1_weights_sf.dim() == 5);
     DG_HOST_ASSERT(l2_weights_sf.dim() == 5);
-    const int nvfp4_block_n = static_cast<int>(l1_weights_sf.size(3));
-    DG_HOST_ASSERT(nvfp4_block_n == 128 or nvfp4_block_n == 256);
+    const int nvfp4_layout_block_n =
+        static_cast<int>(l1_weights_sf.size(3));
+    DG_HOST_ASSERT(
+        nvfp4_layout_block_n == 128 or nvfp4_layout_block_n == 256);
     const auto [num_experts_per_rank, intermediate_hidden_2, hidden_storage] = get_shape<3>(l1_weights);
     const auto [num_experts_per_rank_, hidden_, intermediate_hidden_storage] = get_shape<3>(l2_weights);
     const int hidden = static_cast<int>(l1_weights_sf.size(2)) * 128;
@@ -305,18 +309,34 @@ static void nvfp4_mega_moe(
     DG_HOST_ASSERT(l1_weights.is_contiguous() and l2_weights.is_contiguous());
     DG_HOST_ASSERT(hidden % 128 == 0 and intermediate_hidden % 128 == 0);
     DG_HOST_ASSERT(intermediate_hidden / 64 <= 64);
+    DG_HOST_ASSERT(
+        requested_kernel_block_n == 0 or
+        requested_kernel_block_n == 128 or
+        requested_kernel_block_n == 256);
+    DG_HOST_ASSERT(family_threshold > 0);
+    // One common braided packed-B copy serves both families. Select the
+    // schedule from this forward's routed work, not from the scale-metadata
+    // view used while prepacking the weights.
+    const int selected_kernel_block_n = requested_kernel_block_n != 0 ?
+        requested_kernel_block_n :
+        (static_cast<int64_t>(num_tokens) * num_topk <=
+             static_cast<int64_t>(family_threshold) * num_experts_per_rank ?
+             256 : 128);
     // NVFP4 UE4M3 SF: tile-major shape
     //   (E, N/block_n, K/128, block_n, 8)
     // for contiguous per-WGMMA scale loads.
     DG_HOST_ASSERT(l1_weights_sf.size(0) == num_experts_per_rank);
-    DG_HOST_ASSERT(l1_weights_sf.size(1) == intermediate_hidden * 2 / nvfp4_block_n);
+    DG_HOST_ASSERT(
+        l1_weights_sf.size(1) ==
+        intermediate_hidden * 2 / nvfp4_layout_block_n);
     DG_HOST_ASSERT(l1_weights_sf.size(2) == hidden / 128);
     DG_HOST_ASSERT(l1_weights_sf.size(4) == 8);
     DG_HOST_ASSERT(l1_weights_sf.is_contiguous());
     DG_HOST_ASSERT(l2_weights_sf.size(0) == num_experts_per_rank);
-    DG_HOST_ASSERT(l2_weights_sf.size(1) == hidden / nvfp4_block_n);
+    DG_HOST_ASSERT(
+        l2_weights_sf.size(1) == hidden / nvfp4_layout_block_n);
     DG_HOST_ASSERT(l2_weights_sf.size(2) == intermediate_hidden / 128);
-    DG_HOST_ASSERT(l2_weights_sf.size(3) == nvfp4_block_n);
+    DG_HOST_ASSERT(l2_weights_sf.size(3) == nvfp4_layout_block_n);
     DG_HOST_ASSERT(l2_weights_sf.size(4) == 8);
     DG_HOST_ASSERT(l2_weights_sf.is_contiguous());
     if (cumulative_local_expert_recv_stats.has_value()) {
@@ -346,7 +366,7 @@ static void nvfp4_mega_moe(
     DG_HOST_ASSERT(sym_buffer.nbytes() >= static_cast<size_t>(num_required_bytes));
     DG_HOST_ASSERT(num_experts == num_experts_);
     const auto [x, x_sf, topk_idx, topk_weights, l1_acts, l1_acts_sf, l2_acts, l2_acts_sf] = slice(sym_buffer);
-    if (nvfp4_block_n == SM90NVFP4SmallMConfig::kBlockN) {
+    if (selected_kernel_block_n == SM90NVFP4SmallMConfig::kBlockN) {
         sm90_nvfp4_small_m_fused_mega_moe(
             y,
             l1_acts, l1_acts_sf,

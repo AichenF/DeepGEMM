@@ -127,7 +127,7 @@ select_sm90_nvfp4_small_m_tuning(const SM90NVFP4SmallMLoad& load) {
             all_local_experts,
             3,
             true,
-            false,
+            true,
             true,
         };
     }

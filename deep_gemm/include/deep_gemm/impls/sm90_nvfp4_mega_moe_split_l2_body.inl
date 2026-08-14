@@ -1,3 +1,6 @@
+#ifndef DG_NVFP4_LUT_COMPACT
+#define DG_NVFP4_LUT_COMPACT 0
+#endif
 // Independent SM90 NVFP4 MegaMoE l2 kernel body.
 #if (defined(__CUDA_ARCH__) and (__CUDA_ARCH__ >= 900) and (__CUDA_ARCH__ < 1000)) or defined(__CLION_IDE__)
     using Barrier = cutlass::arch::ClusterTransactionBarrier;
@@ -108,8 +111,29 @@
     auto smem_nvfp4_lut = reinterpret_cast<uint2*>(math::advance_ptr<uint8_t>(
         smem_buffer, SMEM_EXPERT_COUNT_SIZE));
 
-    auto smem_gemm_base = math::advance_ptr(
+    // L2 remote-scatter staging. Epilogue warp `w` owns rows `[16w, 16w + 16)`
+    // of its warpgroup tile, so the tile is warp-private and only one 8-row
+    // half (`r_0` or `r_1`) needs to be resident at a time: a full 16-row tile
+    // would cost 32768 B and drop `max_num_stages` from 6 to 5. The row stride
+    // is padded by 8 BF16 so the 4-byte staging stores are bank-conflict free
+    // (`row * 68` words, all distinct modulo 32) while every staged row start
+    // stays 16-byte aligned for the `ld.shared.v4` read-back.
+    constexpr uint32_t kL2StageRows = 8;
+    constexpr uint32_t kL2StageRowPad = 8;
+    constexpr uint32_t kL2StageRowStride = WG_BLOCK_N + kL2StageRowPad;
+    constexpr uint32_t SMEM_CD_L2_PER_WARP =
+        kL2StageRows * kL2StageRowStride * sizeof(nv_bfloat16);
+    constexpr uint32_t SMEM_CD_L2_SIZE = math::constexpr_align<uint32_t>(
+        kNumEpilogueWarps * SMEM_CD_L2_PER_WARP, kSharedMemoryAlignment);
+    DG_STATIC_ASSERT(kL2StageRowStride % 8 == 0, "Staged rows must stay 16-byte aligned");
+    DG_STATIC_ASSERT(SMEM_CD_L2_SIZE == kNumEpilogueWarps * SMEM_CD_L2_PER_WARP,
+                     "Host and device `smem_cd_l2` must agree exactly");
+
+    auto smem_cd_l2_base = math::advance_ptr<uint8_t>(
         smem_buffer, SMEM_EXPERT_COUNT_SIZE + SMEM_NVFP4_LUT_SIZE);
+
+    auto smem_gemm_base = math::advance_ptr(
+        smem_buffer, SMEM_EXPERT_COUNT_SIZE + SMEM_NVFP4_LUT_SIZE + SMEM_CD_L2_SIZE);
 
     auto smem_a = utils::PatternVisitor([=](const uint32_t& i) {
         return math::advance_ptr<a_dtype_t>(smem_gemm_base, i * SMEM_A_SIZE_PER_STAGE);
@@ -138,7 +162,20 @@
     // =====================================================================
     // Initialization
     // =====================================================================
-    if (thread_idx < 64) {
+    if constexpr (DG_NVFP4_LUT_COMPACT != 0) {
+        // Compact layout: lo[128] (each row's low word), then the eight
+        // subnormal-scale rows' high words verbatim -- 544 B of the 1024-B region.
+        // The high words of rows >= 8 are reconstructed inline by load_nvfp4_lut.
+        if (thread_idx < 32) {
+            const auto* lut_src =
+                deep_gemm::nvfp4::kE2M1AndUe4m3ToFp8Lut + thread_idx * 4;
+            reinterpret_cast<uint4*>(smem_nvfp4_lut)[thread_idx] =
+                make_uint4(lut_src[0].x, lut_src[1].x, lut_src[2].x, lut_src[3].x);
+            if (thread_idx < 8)
+                reinterpret_cast<uint32_t*>(smem_nvfp4_lut)[128 + thread_idx] =
+                    deep_gemm::nvfp4::kE2M1AndUe4m3ToFp8Lut[thread_idx].y;
+        }
+    } else if (thread_idx < 64) {
         reinterpret_cast<uint4*>(smem_nvfp4_lut)[thread_idx] =
             reinterpret_cast<const uint4*>(deep_gemm::nvfp4::kE2M1AndUe4m3ToFp8Lut)[thread_idx];
     }
@@ -397,6 +434,12 @@
         DG_STATIC_ASSERT(WG_BLOCK_M == L1WGMMA::M,
                          "Each warpgroup must run exactly one WGMMA per K-block");
 
+        // The staged scatter writes 16 bytes at a time. The combine row pitch
+        // (`kHidden * 2`) is 16-byte aligned, so every destination row inherits
+        // the buffer base alignment: check it once, not once per row.
+        DG_DEVICE_ASSERT(reinterpret_cast<uint64_t>(
+            combine_token_buffer.get_rank_buffer(0u).get_data_buffer(0u).get_base_ptr()) % 16 == 0);
+
         ptx::sync_unaligned(kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
 
         for_each_selected_block([&](const auto& block_phase,
@@ -482,49 +525,98 @@
 
             run_default_gemm_loop();
 
-                // ---------------- L2 EPILOGUE: BF16 cast + NVLink scatter ----------------
-                    auto scatter_direct_row = [&](const uint32_t& row_offset, const bool& valid_row, const uint32_t& row_accum_offset) {
-                            if (valid_row) {
-                                uint32_t dst_rank_idx = 0;
-                                uint32_t dst_token_idx = 0;
-                                uint32_t dst_topk_idx = 0;
-                                if (col_idx == 0) {
-                                    const auto src_metadata = *workspace.get_token_src_metadata_ptr(m_idx + row_offset);
-                                    dst_rank_idx = src_metadata.rank_idx;
-                                    dst_token_idx = src_metadata.token_idx;
-                                    dst_topk_idx = src_metadata.topk_idx;
-                                }
-                                const uint32_t row_group_leader = lane_idx & ~3u;
-                                const uint32_t row_group_mask = 0xfu << row_group_leader;
-                                dst_rank_idx = __shfl_sync(row_group_mask, dst_rank_idx, row_group_leader);
-                                dst_token_idx = __shfl_sync(row_group_mask, dst_token_idx, row_group_leader);
-                                dst_topk_idx = __shfl_sync(row_group_mask, dst_topk_idx, row_group_leader);
-                                const auto dst_token = combine_token_buffer.get_rank_buffer(dst_topk_idx)
-                                                       .get_data_buffer(dst_token_idx);
-                                auto dst_base = math::advance_ptr<uint8_t>(
-                                    dst_token.get_base_ptr(), n_idx * sizeof(nv_bfloat16));
-                                auto mapped_dst_base = sym_buffer.map(dst_base, dst_rank_idx);
+            // ---------------- L2 EPILOGUE: BF16 cast + staged NVLink scatter ----------------
+            // The direct path stored 4 bytes per lane, so a warp's 8 row groups
+            // produced 8 scattered 16-byte requests per instruction, each billed as
+            // a 32-byte sector. Staging one 8-row half in warp-private shared memory
+            // lets every destination row leave as one 256-byte contiguous burst.
+            auto smem_cd_l2 = math::advance_ptr<nv_bfloat16>(
+                smem_cd_l2_base, epilogue_warp_idx * SMEM_CD_L2_PER_WARP);
 
-                                #pragma unroll
-                                for (uint32_t i = 0; i < kAccumPerThread / 8; ++ i) {
-                                    const uint32_t chunk_lo = 2 * i, chunk_hi = 2 * i + 1;
-                                    const uint32_t col_lo = chunk_lo * 8 + col_idx * 2;
-                                    const uint32_t col_hi = chunk_hi * 8 + col_idx * 2;
-                                    const uint32_t packed_lo = cast_l2_scaled_bf16_pair(
-                                        final_accum[chunk_lo * 4 + row_accum_offset + 0],
-                                        final_accum[chunk_lo * 4 + row_accum_offset + 1]);
-                                    const uint32_t packed_hi = cast_l2_scaled_bf16_pair(
-                                        final_accum[chunk_hi * 4 + row_accum_offset + 0],
-                                        final_accum[chunk_hi * 4 + row_accum_offset + 1]);
-                                    *reinterpret_cast<uint32_t*>(mapped_dst_base + col_lo * sizeof(nv_bfloat16)) = packed_lo;
-                                    *reinterpret_cast<uint32_t*>(mapped_dst_base + col_hi * sizeof(nv_bfloat16)) = packed_hi;
-                                }
-                            }
-                    };
+            // Cast and pack one 8-row half into this warp's private tile. The
+            // arithmetic is unchanged, so the same values reach the same addresses.
+            const auto stage_rows = [&](const bool& valid_row, const uint32_t& row_accum_offset) {
+                // This guard must stay textually equivalent to the scatter guard
+                // below: invalid rows keep stale tile bytes and are skipped there.
+                if (not valid_row)
+                    return;
+                #pragma unroll
+                for (uint32_t i = 0; i < kAccumPerThread / 8; ++ i) {
+                    const uint32_t chunk_lo = 2 * i, chunk_hi = 2 * i + 1;
+                    const uint32_t col_lo = chunk_lo * 8 + col_idx * 2;
+                    const uint32_t col_hi = chunk_hi * 8 + col_idx * 2;
+                    const uint32_t packed_lo = cast_l2_scaled_bf16_pair(
+                        final_accum[chunk_lo * 4 + row_accum_offset + 0],
+                        final_accum[chunk_lo * 4 + row_accum_offset + 1]);
+                    const uint32_t packed_hi = cast_l2_scaled_bf16_pair(
+                        final_accum[chunk_hi * 4 + row_accum_offset + 0],
+                        final_accum[chunk_hi * 4 + row_accum_offset + 1]);
+                    ptx::st_shared(reinterpret_cast<uint32_t*>(
+                        smem_cd_l2 + row_idx * kL2StageRowStride + col_lo), packed_lo);
+                    ptx::st_shared(reinterpret_cast<uint32_t*>(
+                        smem_cd_l2 + row_idx * kL2StageRowStride + col_hi), packed_hi);
+                }
+            };
 
-                    scatter_direct_row(row_offset_r0, valid_r0, 0);
-                    scatter_direct_row(row_offset_r1, valid_r1, 2);
-                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+            // Read the tile back with 16 lanes per destination row, 16 bytes each.
+            constexpr uint32_t kNumScatterLanesPerRow = 16;
+            constexpr uint32_t kScatterBytesPerLane =
+                WG_BLOCK_N * sizeof(nv_bfloat16) / kNumScatterLanesPerRow;
+            DG_STATIC_ASSERT(kScatterBytesPerLane == sizeof(uint4), "Expect one `uint4` per lane");
+            const uint32_t scatter_row_in_pair = lane_idx / kNumScatterLanesPerRow;
+            const uint32_t lane_in_row = lane_idx % kNumScatterLanesPerRow;
+            const uint32_t scatter_group_leader = lane_idx - lane_in_row;
+            const uint32_t scatter_group_mask = 0xffffu << scatter_group_leader;
+
+            const auto scatter_staged_rows = [&](const uint32_t& row_base) {
+                #pragma unroll
+                for (uint32_t j = 0; j < kL2StageRows / 2; ++ j) {
+                    const uint32_t stage_row = j * 2 + scatter_row_in_pair;
+                    const uint32_t row_offset = row_base + stage_row;
+                    // Uniform within each 16-lane group, so the shuffles stay converged.
+                    if (row_offset >= valid_m)
+                        continue;
+                    uint32_t dst_rank_idx = 0;
+                    uint32_t dst_token_idx = 0;
+                    uint32_t dst_topk_idx = 0;
+                    if (lane_in_row == 0) {
+                        const auto src_metadata = *workspace.get_token_src_metadata_ptr(m_idx + row_offset);
+                        dst_rank_idx = src_metadata.rank_idx;
+                        dst_token_idx = src_metadata.token_idx;
+                        dst_topk_idx = src_metadata.topk_idx;
+                    }
+                    dst_rank_idx = __shfl_sync(scatter_group_mask, dst_rank_idx, scatter_group_leader);
+                    dst_token_idx = __shfl_sync(scatter_group_mask, dst_token_idx, scatter_group_leader);
+                    dst_topk_idx = __shfl_sync(scatter_group_mask, dst_topk_idx, scatter_group_leader);
+                    const auto dst_token = combine_token_buffer.get_rank_buffer(dst_topk_idx)
+                                           .get_data_buffer(dst_token_idx);
+                    auto dst_ptr = math::advance_ptr<uint8_t>(
+                        dst_token.get_base_ptr(),
+                        n_idx * sizeof(nv_bfloat16) + lane_in_row * kScatterBytesPerLane);
+                    auto mapped_dst_ptr = sym_buffer.map(dst_ptr, dst_rank_idx);
+                    const auto packed = ptx::ld_shared(reinterpret_cast<const uint4*>(
+                        smem_cd_l2 + stage_row * kL2StageRowStride +
+                        lane_in_row * (kScatterBytesPerLane / sizeof(nv_bfloat16))));
+                    *reinterpret_cast<uint4*>(mapped_dst_ptr) = packed;
+                }
+            };
+
+            // `row_offset_r0 - row_idx`: the first of this warp's 16 rows.
+            const uint32_t warp_row_base = row_block_offset + warp_idx_in_wg * 16;
+
+            // The staging tile is warp-private (producer and consumer are the same
+            // 32 lanes), so `__syncwarp` is a sufficient shared-memory ordering
+            // point and no named barrier index is consumed. The trailing
+            // `kEpilogueFullBarrierIdx` sync also covers the write-after-read on
+            // the tile across scheduled blocks.
+            stage_rows(valid_r0, 0);
+            __syncwarp();
+            scatter_staged_rows(warp_row_base);
+            __syncwarp();
+            stage_rows(valid_r1, 2);
+            __syncwarp();
+            scatter_staged_rows(warp_row_base + kL2StageRows);
+            ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
             
         });
 

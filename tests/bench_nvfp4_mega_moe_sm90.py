@@ -9,7 +9,9 @@ HBM GB/s figure useful for tracking optimisation deltas.
 """
 
 import argparse
+import json
 import os
+import statistics
 import sys
 import torch
 import torch.distributed as dist
@@ -68,13 +70,19 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     # ABI does not consume.
     l1_packed, l1_scale = quantize_to_nvfp4(l1_bf, group_size=16)
     l2_packed, l2_scale = quantize_to_nvfp4(l2_bf, group_size=16)
-    # BN256 launches the fused phase; BN128 launches split L1/L2.
-    nvfp4_default_block_n = deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
+    # One BN128 metadata view backs both schedules. --nvfp4-block-n forces a
+    # family for A/B measurements; unset exercises the runtime rho=192 policy.
+    nvfp4_auto_block_n = deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
         num_tokens, num_topk, num_experts_per_rank, intermediate_hidden)
-    nvfp4_block_n = args.nvfp4_block_n or nvfp4_default_block_n
+    nvfp4_block_n = args.nvfp4_block_n or nvfp4_auto_block_n
+    kernel_family = {
+        None: 'auto',
+        128: 'split',
+        256: 'fused',
+    }[args.nvfp4_block_n]
     transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
         (l1_packed, l1_scale), (l2_packed, l2_scale),
-        block_n=nvfp4_block_n,
+        block_n=128,
     )
     kernel_name = 'sm90_nvfp4_mega_moe'
 
@@ -98,6 +106,8 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
             activation='swiglu',
             activation_clamp=activation_clamp,
             fast_math=fast_math,
+            kernel_family=kernel_family,
+            family_threshold=192,
         )
         return y
 
@@ -123,17 +133,17 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     # average across both split launches; multiply by two to estimate one
     # end-to-end MoE call.
     report_phases = getattr(args, 'report_phases', False) and split_l1_l2
-    phase_times = None
-    if report_phases:
-        phase_times = bench_kineto(
-            run, SPLIT_PHASE_KERNEL_NAMES,
-            barrier=lambda: dist.barrier(async_op=async_bench_barrier),
-            num_tests=args.num_tests,
-            suppress_kineto_output=not show_kineto,
-        )
-        t_nvfp4 = sum(phase_times)
-    else:
-        t_nvfp4 = bench_kineto(
+
+    def _measure_once():
+        if report_phases:
+            local_phase_times = bench_kineto(
+                run, SPLIT_PHASE_KERNEL_NAMES,
+                barrier=lambda: dist.barrier(async_op=async_bench_barrier),
+                num_tests=args.num_tests,
+                suppress_kineto_output=not show_kineto,
+            )
+            return sum(local_phase_times), local_phase_times
+        local_t = bench_kineto(
             run, kernel_name,
             barrier=lambda: dist.barrier(async_op=async_bench_barrier),
             num_tests=args.num_tests,
@@ -141,15 +151,70 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
             with_multiple_kernels=split_l1_l2,
         )
         if split_l1_l2:
-            t_nvfp4 *= 2
+            local_t *= 2
+        return local_t, None
 
-    t_rank = torch.tensor([t_nvfp4], dtype=torch.float64, device="cuda")
-    t_rank_max = t_rank.clone()
-    t_rank_sum = t_rank.clone()
-    dist.all_reduce(t_rank_max, op=dist.ReduceOp.MAX)
-    dist.all_reduce(t_rank_sum, op=dist.ReduceOp.SUM)
-    t_nvfp4_rank_max = float(t_rank_max.item())
-    t_nvfp4_rank_mean = float(t_rank_sum.item()) / num_ranks
+    # Local addition (not upstream): repeat the whole kineto observation so every point
+    # yields a sample distribution instead of a single number. Mirrors the repeats loop in
+    # tests/bench_mega_moe_sm90.py of PR #383 so the W4A8 and W8A8 arms are measured under
+    # identical statistics.
+    repeats = getattr(args, 'repeats', None) or 1
+    rank0_observations = []
+    max_rank_observations = []
+    phase_times = None
+    t_nvfp4 = None
+    t_nvfp4_rank_max = None
+    t_nvfp4_rank_mean = None
+    for repeat_idx in range(repeats):
+        t_nvfp4, phase_times = _measure_once()
+        t_rank = torch.tensor([t_nvfp4], dtype=torch.float64, device="cuda")
+        t_rank_all = [torch.zeros_like(t_rank) for _ in range(num_ranks)]
+        t_rank_max = t_rank.clone()
+        t_rank_sum = t_rank.clone()
+        dist.all_gather(t_rank_all, t_rank, group=group)
+        dist.all_reduce(t_rank_max, op=dist.ReduceOp.MAX)
+        dist.all_reduce(t_rank_sum, op=dist.ReduceOp.SUM)
+        rank_us = [float(value.item()) * 1e6 for value in t_rank_all]
+        t_nvfp4_rank_max = float(t_rank_max.item())
+        t_nvfp4_rank_mean = float(t_rank_sum.item()) / num_ranks
+        rank0_observations.append(t_nvfp4)
+        max_rank_observations.append(t_nvfp4_rank_max)
+        if rank_idx == 0:
+            print('BENCH_OBS_JSON ' + json.dumps({
+                'hidden': hidden,
+                'intermediate_hidden': intermediate_hidden,
+                'num_experts': num_experts,
+                'num_topk': num_topk,
+                'm': num_tokens,
+                'repeat': repeat_idx,
+                'rank0_us': t_nvfp4 * 1e6,
+                'rank_us': rank_us,
+                'max_rank_us': t_nvfp4_rank_max * 1e6,
+                'nvfp4_block_n': nvfp4_block_n,
+                'kernel_family_policy': kernel_family,
+                'weight_layout_block_n': 128,
+                'num_tests': args.num_tests,
+                'seed': args.seed,
+            }, sort_keys=True), flush=True)
+    if rank_idx == 0:
+        print('BENCH_SUMMARY_JSON ' + json.dumps({
+            'hidden': hidden,
+            'intermediate_hidden': intermediate_hidden,
+            'num_experts': num_experts,
+            'num_topk': num_topk,
+            'm': num_tokens,
+            'observations': repeats,
+            'rank0_median_us': statistics.median(rank0_observations) * 1e6,
+            'max_rank_median_us': statistics.median(max_rank_observations) * 1e6,
+            'max_rank_min_us': min(max_rank_observations) * 1e6,
+            'max_rank_max_us': max(max_rank_observations) * 1e6,
+            'nvfp4_block_n': nvfp4_block_n,
+            'kernel_family_policy': kernel_family,
+            'weight_layout_block_n': 128,
+            'num_tests': args.num_tests,
+            'seed': args.seed,
+        }, sort_keys=True), flush=True)
+
     phase_rank_max = None
     if phase_times is not None:
         phase_rank_max_tensor = torch.tensor(
@@ -261,10 +326,13 @@ if __name__ == '__main__':
     parser.add_argument('--fast-math', type=int, default=1)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--num-tests', type=int, default=20)
+    parser.add_argument('--repeats', type=int, default=1,
+                        help='Number of independent kineto observations per point '
+                             '(local addition; matches PR #383 bench semantics).')
     parser.add_argument('--num-max-tokens-per-rank', type=int, default=None,
                         help='Fix buffer capacity independently of the measured batch list')
     parser.add_argument('--nvfp4-block-n', type=int, choices=(128, 256), default=None,
-                        help='Override NVFP4 prepacked weight layout: 256=fused, 128=split')
+                        help='Force runtime family: 256=fused, 128=split; unset=auto')
     parser.add_argument('--report-phases', action='store_true',
                         help='Report split L1 and L2 kernel times separately')
     args = parser.parse_args()

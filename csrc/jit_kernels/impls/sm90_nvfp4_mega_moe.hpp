@@ -112,8 +112,22 @@ public:
                 args.l2_arrival_counter ? "true" : "false",
                 args.dispatch_dequant ? "true" : "false");
         }
+        // Production split has one immutable L1 implementation: dispatch
+        // dequantization, half-stream mode4, and the calibrated physical-warp
+        // remap. Keeping these as emitted compile-time defines makes every
+        // BN128 split JIT key truthful and prevents environment variables from
+        // silently selecting an unvalidated split arm. L2 always uses the
+        // warp-private contiguous scatter body from this delivery.
+        if (args.phase_mode == kL1PhaseMode)
+            DG_HOST_ASSERT(args.dispatch_dequant);
+        const std::string production_split_defines =
+            args.phase_mode == kL1PhaseMode ?
+            "#define DG_NVFP4_L1_DEQUANT_HALF_STREAM 4\n"
+            "#define DG_NVFP4_L1_DEQUANT_WARP_REMAP 1\n" :
+            "";
         return fmt::format(R"(
-#include <deep_gemm/impls/sm90_nvfp4_mega_moe.cuh>
+#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1
+{}#include <deep_gemm/impls/sm90_nvfp4_mega_moe.cuh>
 
 using namespace deep_gemm;
 
@@ -123,6 +137,7 @@ static void __instantiate_kernel() {{
     >);
 }};
 )",
+    production_split_defines,
     kernel_symbol,
     template_args);
     }
@@ -176,10 +191,12 @@ static void sm90_nvfp4_split_mega_moe(
     const auto num_experts = num_experts_per_rank * num_ranks;
     const auto num_padded_sf_pool_tokens = static_cast<int>(l1_acts_sf.size(0));
 
-    // The public SM90 entry routes BN256 to the dedicated per-128 small-M
-    // runtime. This general runtime owns only the BN128 deployment layout.
+    // The public SM90 entry routes BN256 to the fused runtime and BN128 here.
+    // Packed-B is common to both families, so the retained scale metadata may
+    // have either legal tile view and must not drive kernel selection.
     const int block_n_from_layout = static_cast<int>(l1_weights_sf.size(3));
-    DG_HOST_ASSERT(block_n_from_layout == 128);
+    DG_HOST_ASSERT(
+        block_n_from_layout == 128 or block_n_from_layout == 256);
     const auto num_sms = device_runtime->get_num_sms();
     const SM90NVFP4MegaMoEInput heuristic_input {
         num_sms,
@@ -195,7 +212,11 @@ static void sm90_nvfp4_split_mega_moe(
     };
     const auto plan =
         select_sm90_nvfp4_split_mega_moe(heuristic_input);
-    const auto& config = plan.l1_config;
+    DG_HOST_ASSERT(plan.dispatch_dequant);
+    auto config = plan.l1_config;
+    // The heuristic already reserves mode4's additional K[64:128] mbarrier
+    // for every L1 stage.
+    DG_HOST_ASSERT(config.smem_size <= SM90ArchSpec::smem_capacity);
     const auto& l2_config = plan.l2_config;
     using KernelConfig = SM90NVFP4MegaMoEConfig;
     const int weight_storage_k = static_cast<int>(l1_weights.size(2));
@@ -308,7 +329,8 @@ static void sm90_nvfp4_split_mega_moe(
         .launch_args = LaunchArgs(num_sms, config.num_dispatch_threads +
                                   KernelConfig::kNumNonEpilogueThreads +
                                   KernelConfig::kNumEpilogueThreads,
-                                  config.smem_size, config.cluster_size)
+                                  config.smem_size, config.cluster_size,
+                                  false)
     };
 
     const auto build_and_launch = [&](const SM90NVFP4SplitMegaMoERuntime::Args& phase_args,
@@ -339,7 +361,8 @@ static void sm90_nvfp4_split_mega_moe(
             KernelConfig::kNumNonEpilogueThreads +
             KernelConfig::kNumEpilogueThreads,
         l2_args.config.smem_size,
-        l2_args.config.cluster_size);
+        l2_args.config.cluster_size,
+        false);
     build_and_launch(l2_args, "sm90_nvfp4_mega_moe_l2");
 }
 

@@ -143,6 +143,15 @@ def _run_cuda_dequant_lut_unit_test() -> None:
 
 
 def _run_dequant_unit_test() -> None:
+    # The production family selector is model-agnostic and changes exactly at
+    # rho = M * topk / local_experts = 192.
+    assert deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
+        768, 8, 32, 2048) == 256
+    assert deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
+        769, 8, 32, 2048) == 128
+    assert deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
+        768, 8, 32, 4096) == 256
+
     scales = torch.tensor([0x00, 0x01, 0x07, 0x08, 0x38, 0x3F, 0x7E, 0x7F], dtype=torch.uint8)
     nibbles = torch.arange(16, dtype=torch.uint8).view(1, 1, 16).expand(scales.numel(), 1, 16).clone()
     packed = _pack_nvfp4_marlin(nibbles)
@@ -172,6 +181,7 @@ def _run_dequant_unit_test() -> None:
     )
     expected_l2 = dequantize_nvfp4_to_fp32(
         l2_packed, l2_scale, group_size=16)
+    packed_by_block_n = {}
     for block_n in (128, 256):
         transformed_l1, transformed_l2 = (
             deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
@@ -180,6 +190,8 @@ def _run_dequant_unit_test() -> None:
                 block_n=block_n,
             )
         )
+        packed_by_block_n[block_n] = (
+            transformed_l1[0], transformed_l2[0])
         torch.testing.assert_close(
             dequantize_nvfp4_to_fp32(
                 _unbraid_nvfp4_mode2(transformed_l1[0]),
@@ -200,6 +212,13 @@ def _run_dequant_unit_test() -> None:
             rtol=0,
             atol=0,
         )
+    # The BN dimension changes only the retained scale metadata. The fused
+    # braided packed-B tensors are bitwise identical and can be shared by both
+    # runtime families without duplicating model weights.
+    torch.testing.assert_close(
+        packed_by_block_n[128][0], packed_by_block_n[256][0], rtol=0, atol=0)
+    torch.testing.assert_close(
+        packed_by_block_n[128][1], packed_by_block_n[256][1], rtol=0, atol=0)
     print('NVFP4 dequant unit test: PASS', flush=True)
 
 
@@ -271,13 +290,26 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
     l1_dequant = dequantize_nvfp4_to_fp32(l1_packed, l1_scale, group_size=16)
     l2_dequant = dequantize_nvfp4_to_fp32(l2_packed, l2_scale, group_size=16)
 
-    nvfp4_default_block_n = deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
+    nvfp4_auto_block_n = deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
         m_tokens, num_topk, num_local_experts, intermediate_hidden)
-    nvfp4_block_n = args.nvfp4_block_n or nvfp4_default_block_n
+    kernel_family = {
+        None: "auto",
+        128: "split",
+        256: "fused",
+    }[args.nvfp4_block_n]
+    # Keep one universal BN128 metadata view. The packed-B bytes are common to
+    # fused and split; --nvfp4-block-n is now only a forced-family test knob.
     transformed_l1, transformed_l2 = deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(
         (l1_packed, l1_scale), (l2_packed, l2_scale),
-        block_n=nvfp4_block_n,
+        block_n=128,
     )
+    if rank_idx == 0:
+        print(
+            f"kernel_family={kernel_family} "
+            f"auto_family={'fused' if nvfp4_auto_block_n == 256 else 'split'} "
+            "weight_layout_block_n=128",
+            flush=True,
+        )
     if global_scale_mode == "none":
         l1_global_scales = None
         l2_global_scales = None
@@ -324,6 +356,8 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
         activation="swiglu",
         activation_clamp=args.activation_clamp,
         fast_math=bool(args.fast_math),
+        kernel_family=kernel_family,
+        family_threshold=192,
     )
     torch.cuda.synchronize()
     dist.barrier(group=group)
@@ -495,7 +529,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--num-max-tokens-per-rank", type=int, default=0)
     parser.add_argument("--activation-clamp", type=float, default=10.0)
     parser.add_argument("--fast-math", type=int, default=1)
-    parser.add_argument("--nvfp4-block-n", type=int, choices=(128, 256), default=None)
+    parser.add_argument(
+        "--nvfp4-block-n",
+        type=int,
+        choices=(128, 256),
+        default=None,
+        help=(
+            "Force the runtime family for validation: 128=split, 256=fused; "
+            "unset selects dynamically at rho=192. Weight layout remains BN128."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--weight-scales", nargs="+", type=float, default=[0.05])
     parser.add_argument("--repeats", type=int, default=1)

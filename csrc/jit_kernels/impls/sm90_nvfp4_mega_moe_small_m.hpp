@@ -284,7 +284,8 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
             num_sms,
             KernelConfig::kNumThreads,
             config.smem_size,
-            KernelConfig::kClusterSize),
+            KernelConfig::kClusterSize,
+            false),
     };
 
     const auto code = SM90NVFP4SmallMFusedRuntime::generate(args);

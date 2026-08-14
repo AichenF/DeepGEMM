@@ -144,6 +144,11 @@ def nvfp4_fuse_packed_with_scale_tile_major(
     )
     fused[..., :scale_offset] = packed_tile
     fused[..., scale_offset : scale_offset + groups_per_k_block] = scale_tile_major
+    # The final eight bytes of every 80-byte row are alignment padding. Leave
+    # no uninitialized GPU memory in the persistent weight tensor: deterministic
+    # zero padding makes BN128/BN256 prepacking bitwise identical and lets both
+    # runtime families safely share one packed-B allocation.
+    fused[..., scale_offset + groups_per_k_block :].zero_()
     return (
         fused.permute(0, 1, 3, 2, 4)
         .reshape(E, N, k_blocks * fused_row_bytes)

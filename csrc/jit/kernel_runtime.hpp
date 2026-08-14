@@ -141,9 +141,11 @@ public:
         const auto stream = at::cuda::getCurrentCUDAStream();
         LaunchArgs launch_args = args.launch_args;
 
-        // Allow runtime override from Python.
-        // NOTES: the default is enabled.
-        launch_args.enable_pdl = device_runtime->get_pdl();
+        // Allow the process-wide runtime switch to disable PDL while preserving
+        // a per-launch safety veto.  A launch that explicitly opts out must not
+        // be re-enabled by the global switch.
+        launch_args.enable_pdl =
+            launch_args.enable_pdl and device_runtime->get_pdl();
 
         const dim3 grid_dim = {static_cast<unsigned>(launch_args.grid_dim.first),
                                static_cast<unsigned>(launch_args.grid_dim.second),
