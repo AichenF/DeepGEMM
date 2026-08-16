@@ -31,6 +31,7 @@ public:
         void* y;
         int* cumulative_local_expert_recv_stats;
         int num_tokens;
+        float routed_scaling_factor;
         const void* l1_alphas;
         const void* l2_alphas;
         const void* a2_scales;
@@ -104,6 +105,7 @@ static void __instantiate_kernel() {{
             args.y,
             args.cumulative_local_expert_recv_stats,
             args.num_tokens,
+            args.routed_scaling_factor,
             args.l1_alphas, args.l2_alphas, args.a2_scales,
             args.sym_buffer_ptrs,
             args.tensor_map_l1_acts,
@@ -143,7 +145,8 @@ static void sm100_fp4_fp4_mega_moe(
     const int& hidden, const int& intermediate_hidden,
     const float& activation_clamp,
     const bool& fast_math,
-    const void* l1_alphas, const void* l2_alphas, const void* a2_scales
+    const void* l1_alphas, const void* l2_alphas, const void* a2_scales,
+    const float& routed_scaling_factor
 ) {
     const auto num_ranks = static_cast<int>(sym_buffer_ptrs.size());
     const auto num_experts = num_experts_per_rank * num_ranks;
@@ -221,7 +224,10 @@ static void sm100_fp4_fp4_mega_moe(
     const int shared_block_k = config.block_k / 4;
     const auto tensor_map_shared_l1_acts = num_shared_experts > 0 ? make_tma_2d_desc(
         shared_l1_acts,
-        hidden, num_max_tokens_per_rank,
+        // `shared_l1_acts` is the caller's current-token tensor, not a
+        // capacity-sized symmetric buffer.  Describe its real row extent so
+        // TMA zero-fills the partial M tile instead of reading past storage.
+        hidden, num_tokens,
         shared_block_k, config.load_block_m,
         static_cast<int>(shared_l1_acts.stride(-2)),
         config.swizzle_acts_mode) : tensor_map_l1_acts;
@@ -268,6 +274,7 @@ static void sm100_fp4_fp4_mega_moe(
         .y = y.data_ptr(),
         .cumulative_local_expert_recv_stats = cumulative_local_expert_recv_stats_ptr,
         .num_tokens = num_tokens,
+        .routed_scaling_factor = routed_scaling_factor,
         .l1_alphas = l1_alphas, .l2_alphas = l2_alphas, .a2_scales = a2_scales,
         .sym_buffer_ptrs = layout::SymBuffer<>(sym_buffer_ptrs, rank_idx),
         .tensor_map_l1_acts = tensor_map_l1_acts,

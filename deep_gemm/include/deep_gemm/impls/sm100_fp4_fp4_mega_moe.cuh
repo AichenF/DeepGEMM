@@ -102,6 +102,7 @@ CUTLASS_GLOBAL __launch_bounds__(kNumThreads, 1) void
 sm100_fp4_fp4_mega_moe_impl(void* y,
                             int* cumulative_local_expert_recv_stats,
                             const uint32_t num_tokens,
+                            const float routed_scaling_factor,
                             // Optional per-local-expert scales: L1 has separate gate/up factors
                             // (e.g. modelopt's per-projection `weight_scale_2`)
                             const float2* l1_alphas, const float* l2_alphas,
@@ -1620,6 +1621,7 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
         // Iterate over all tokens
         uint32_t combine_phase = 0;
         uint32_t load_stage_idx = 0;
+        bool load_stage_is_shared[2] = {};
         for (uint32_t token_idx = sm_idx * kNumEpilogueWarps + epilogue_warp_idx;
              token_idx < num_tokens;
              token_idx += kNumSMs * kNumEpilogueWarps) {
@@ -1641,6 +1643,8 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                         // Move
                         const uint32_t slot_idx = __ffs(mask) - 1;
                         mask ^= 1 << slot_idx;
+                        if constexpr (kHasShared)
+                            load_stage_is_shared[i] = slot_idx == kNumTopk;
 
                         // Load
                         if (cute::elect_one_sync()) {
@@ -1674,7 +1678,29 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                         const auto bf16_values = reinterpret_cast<const nv_bfloat162*>(&uint4_values);
                         #pragma unroll
                         for (uint32_t l = 0; l < kNumElemsPerUint4; ++ l)
-                            ptx::accumulate(reduced[j * kNumElemsPerUint4 + l], bf16_values[l]);
+                            if constexpr (kHasShared) {
+                                auto& value = reduced[j * kNumElemsPerUint4 + l];
+                                if (load_stage_is_shared[load_stage_idx]) {
+                                    // Match the unfused vLLM order exactly:
+                                    // combine routed slots -> BF16, apply the
+                                    // routed factor -> BF16, then add the BF16
+                                    // shared result -> BF16 at the final cast.
+                                    auto routed = __float22bfloat162_rn(value);
+                                    if (routed_scaling_factor != 1.0f) {
+                                        const float2 factor = {
+                                            routed_scaling_factor,
+                                            routed_scaling_factor};
+                                        routed = __float22bfloat162_rn(__fmul2_rn(
+                                            __bfloat1622float2(routed), factor));
+                                    }
+                                    value = __bfloat1622float2(routed);
+                                }
+                                ptx::accumulate(value, bf16_values[l]);
+                            } else {
+                                ptx::accumulate(
+                                    reduced[j * kNumElemsPerUint4 + l],
+                                    bf16_values[l]);
+                            }
                     }
                     combine_phase ^= load_stage_idx;
                     load_stage_idx ^= 1;
@@ -1710,6 +1736,12 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                 __syncwarp();
             }
         }
+
+        // The last combine store has no following chunk to wait on.  Make it
+        // visible before the kernel returns so a CUDA Graph can immediately
+        // reuse `y` as the next layer's input.
+        ptx::tma_store_wait<0>();
+        __syncwarp();
     }
 #else
     if (blockIdx.x == 0 and threadIdx.x == 0)

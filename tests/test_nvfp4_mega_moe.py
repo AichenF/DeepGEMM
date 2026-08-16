@@ -74,8 +74,8 @@ def _reference_expert_ffn(x_dq: torch.Tensor,
 # noinspection PyShadowingNames
 def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     rank_idx, num_ranks, group = init_dist(local_rank, num_local_ranks)
-    torch.manual_seed(rank_idx)
-    random.seed(rank_idx)
+    torch.manual_seed(args.seed + rank_idx)
+    random.seed(args.seed + rank_idx)
 
     # Settings (defaults follow `nvidia/GLM-5.2-NVFP4` MoE shapes)
     num_max_tokens_per_rank = args.num_max_tokens_per_rank
@@ -109,10 +109,11 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     dist_print(once_in_node=True)
 
     # Create inputs
-    x = torch.randn((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
-    l1_weights_bf16 = 0.1 * torch.randn(
+    x = args.input_scale * torch.randn(
+        (num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
+    l1_weights_bf16 = args.routed_weight_scale * torch.randn(
         (num_experts_per_rank, intermediate_hidden * 2, hidden), dtype=torch.bfloat16, device='cuda')
-    l2_weights_bf16 = 0.1 * torch.randn(
+    l2_weights_bf16 = args.routed_weight_scale * torch.randn(
         (num_experts_per_rank, hidden, intermediate_hidden), dtype=torch.bfloat16, device='cuda')
     scores = torch.randn((num_tokens, num_experts), dtype=torch.float, device='cuda')
     topk_weights, topk_idx = torch.topk(scores, num_topk, dim=-1, largest=True, sorted=False)
@@ -140,9 +141,9 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     # Optional BF16 shared expert (not quantized; folded on N for L1, K for L2)
     if num_shared_experts > 0:
         shared_intermediate_hidden = intermediate_hidden * num_shared_experts
-        shared_l1_weights = 0.1 * torch.randn(
+        shared_l1_weights = args.shared_weight_scale * torch.randn(
             (shared_intermediate_hidden * 2, hidden), dtype=torch.bfloat16, device='cuda')
-        shared_l2_weights = 0.1 * torch.randn(
+        shared_l2_weights = args.shared_weight_scale * torch.randn(
             (hidden, shared_intermediate_hidden), dtype=torch.bfloat16, device='cuda')
         transformed_shared_l1_weights, transformed_shared_l2_weights = (
             deep_gemm.transform_weights_for_mega_moe(shared_l1_weights, shared_l2_weights))
@@ -178,7 +179,8 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
             activation_clamp=activation_clamp,
             fast_math=bool(args.fast_math),
             l1_alphas=l1_alphas, l2_alphas=l2_alphas,
-            a2_scales=a2_scales_for_kernel)
+            a2_scales=a2_scales_for_kernel,
+            routed_scaling_factor=args.routed_scaling_factor)
         return y
 
     # Torch reference: gather all ranks' tokens, compute the local experts' contributions,
@@ -234,8 +236,17 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
         dist.all_reduce(partials, group=group)
         a2_scales_for_kernel = a2_scales
 
-        # Combine: FP32 sum of BF16 partials, cast into BF16
-        y_local = partials[offsets[rank_idx]: offsets[rank_idx] + num_tokens].sum(dim=1)
+        # Match vLLM's serial ordering exactly: reduce routed BF16 partials in
+        # FP32, cast routed output to BF16, apply routed scaling and round to
+        # BF16 again, then add the BF16 shared result.
+        y_local = partials[
+            offsets[rank_idx]: offsets[rank_idx] + num_tokens
+        ].sum(dim=1).bfloat16()
+        if args.routed_scaling_factor != 1.0:
+            y_local = (
+                y_local.float() * args.routed_scaling_factor
+            ).bfloat16()
+        y_local = y_local.float()
 
         # BF16 shared expert on the local tokens (mirror the kernel: FP32 GEMM accumulate
         # -> BF16 gate/up round -> clamp -> SwiGLU in FP32 -> BF16 intermediate
@@ -261,7 +272,12 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     for i in range(args.num_correctness_tests):
         y_fused = run_fused()
         diff = calc_diff(y_fused, y_ref)
-        max_abs_diff = (y_fused.float() - y_ref.float()).abs().max().item()
+        error = y_fused.float() - y_ref.float()
+        max_abs_diff = error.abs().max().item()
+        relative_l2 = (
+            torch.linalg.vector_norm(error)
+            / torch.linalg.vector_norm(y_ref.float()).clamp_min(1e-12)
+        ).item()
         if diff >= 1e-3 and int(os.getenv('DG_TEST_DEBUG', '0')):
             err = (y_fused.float() - y_ref.float()).abs().max(dim=1).values
             bad = (err > 1.0).nonzero().flatten()
@@ -274,9 +290,13 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
                 print(f'DBG rank {rank_idx}: token {t} bad cols {bad_cols.numel()}/{hidden}, '
                       f'first {bad_cols[:16].tolist()}', flush=True)
         assert diff < 1e-3, f'Rank {rank_idx}: diff {diff} is too large (max abs {max_abs_diff})'
+        assert relative_l2 < 2e-2, (
+            f'Rank {rank_idx}: relative L2 {relative_l2} is too large '
+            f'(max abs {max_abs_diff})')
         dist.barrier()
         if i == 0:
-            dist_print(f' > Output diff: {diff:.3e} (max abs diff: {max_abs_diff:.3e})')
+            dist_print(f' > Output diff: {diff:.3e} (relative L2: {relative_l2:.3e}, '
+                       f'max abs diff: {max_abs_diff:.3e})')
 
     # Check cumulative stats: `num_correctness_tests` accumulations over the initial values
     expected_stats = cumulative_stats_initial + args.num_correctness_tests * num_recv_per_expert
@@ -326,6 +346,15 @@ if __name__ == '__main__':
                              'NVFP4 requant (0 or 1)')
     parser.add_argument('--num-shared-experts', type=int, default=0,
                         help='Number of fused BF16 shared experts (0 disables)')
+    parser.add_argument('--seed', type=int, default=0, help='Base random seed')
+    parser.add_argument('--input-scale', type=float, default=1.0,
+                        help='Scale applied to BF16 input samples')
+    parser.add_argument('--routed-weight-scale', type=float, default=0.1,
+                        help='Scale applied to routed-expert weight samples')
+    parser.add_argument('--shared-weight-scale', type=float, default=0.1,
+                        help='Scale applied to shared-expert weight samples')
+    parser.add_argument('--routed-scaling-factor', type=float, default=1.0,
+                        help='Scale routed BF16 output before adding shared output')
 
     # Test settings
     parser.add_argument('--num-correctness-tests', type=int, default=4, help='Number of correctness test rounds')

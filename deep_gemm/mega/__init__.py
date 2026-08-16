@@ -195,7 +195,8 @@ def fp4_fp4_mega_moe(y: torch.Tensor,
                      fast_math: bool = True,
                      l1_alphas: Optional[torch.Tensor] = None,
                      l2_alphas: Optional[torch.Tensor] = None,
-                     a2_scales: Optional[torch.Tensor] = None):
+                     a2_scales: Optional[torch.Tensor] = None,
+                     routed_scaling_factor: float = 1.0):
     # NVFP4 x NVFP4 fused MoE: weights and activations are packed E2M1 with
     # per-16-element E4M3 SFs. `l1_alphas`/`l2_alphas` are optional per-local-expert
     # scales (e.g. modelopt's `weight_scale_2`), applied before the activation
@@ -211,7 +212,9 @@ def fp4_fp4_mega_moe(y: torch.Tensor,
     # `(2 * shared_intermediate, hidden)`, `shared_l2_weights` is
     # `(hidden, shared_intermediate)`, and `x_bf16` provides the BF16 activations of
     # the local tokens (the buffer's `x` is packed FP4 and cannot be reused).
-    # Under CUDA graphs, `x_bf16` must have a stable address, like `y`
+    # `routed_scaling_factor` is applied to the reduced routed contribution
+    # before adding shared output, matching the unfused BF16 execution order.
+    # Under CUDA graphs, `x_bf16` must have a stable address, like `y`.
     assert (shared_l1_weights is None) == (shared_l2_weights is None) == (x_bf16 is None)
     _C.fp4_fp4_mega_moe(
         y,
@@ -225,7 +228,7 @@ def fp4_fp4_mega_moe(y: torch.Tensor,
         recipe,
         activation, activation_clamp,
         fast_math,
-        l1_alphas, l2_alphas, a2_scales
+        l1_alphas, l2_alphas, a2_scales, routed_scaling_factor
     )
 
 def bf16_mega_moe(y: torch.Tensor,

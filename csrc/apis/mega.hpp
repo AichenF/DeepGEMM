@@ -336,7 +336,8 @@ static void fp4_fp4_mega_moe(
     const bool& fast_math,
     const std::optional<torch::Tensor>& l1_alphas_opt,
     const std::optional<torch::Tensor>& l2_alphas_opt,
-    const std::optional<torch::Tensor>& a2_scales_opt
+    const std::optional<torch::Tensor>& a2_scales_opt,
+    const float& routed_scaling_factor
 ) {
     const auto [l1_weights, l1_weights_sf] = l1_weights_tuple;
     const auto [l2_weights, l2_weights_sf] = l2_weights_tuple;
@@ -346,6 +347,7 @@ static void fp4_fp4_mega_moe(
     const auto [rm, rn, rk] = recipe;
     DG_HOST_ASSERT(rm == 1 and rn == 1 and rk == 16);
     DG_HOST_ASSERT(activation == "swiglu");
+    DG_HOST_ASSERT(std::isfinite(routed_scaling_factor));
 
     // Activation checks
     const auto activation_clamp =
@@ -471,7 +473,8 @@ static void fp4_fp4_mega_moe(
                                num_tokens, num_topk,
                                hidden, intermediate_hidden,
                                activation_clamp, fast_math,
-                               l1_alphas_ptr, l2_alphas_ptr, a2_scales_ptr);
+                               l1_alphas_ptr, l2_alphas_ptr, a2_scales_ptr,
+                               routed_scaling_factor);
     } else {
         DG_HOST_UNREACHABLE("Unsupported architecture");
     }
