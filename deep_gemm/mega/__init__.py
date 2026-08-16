@@ -181,6 +181,53 @@ def fp8_fp4_mega_moe(y: torch.Tensor,
         situ_beta, situ_linear_beta
     )
 
+def fp4_fp4_mega_moe(y: torch.Tensor,
+                     l1_weights: Tuple[torch.Tensor, torch.Tensor],
+                     l2_weights: Tuple[torch.Tensor, torch.Tensor],
+                     sym_buffer: SymmBuffer,
+                     shared_l1_weights: Optional[torch.Tensor] = None,
+                     shared_l2_weights: Optional[torch.Tensor] = None,
+                     x_bf16: Optional[torch.Tensor] = None,
+                     cumulative_local_expert_recv_stats: Optional[torch.Tensor] = None,
+                     recipe: Tuple[int, int, int] = (1, 1, 16),
+                     activation: str = 'swiglu',
+                     activation_clamp: Optional[float] = None,
+                     fast_math: bool = True,
+                     l1_alphas: Optional[torch.Tensor] = None,
+                     l2_alphas: Optional[torch.Tensor] = None,
+                     a2_scales: Optional[torch.Tensor] = None):
+    # NVFP4 x NVFP4 fused MoE: weights and activations are packed E2M1 with
+    # per-16-element E4M3 SFs. `l1_alphas`/`l2_alphas` are optional per-local-expert
+    # scales (e.g. modelopt's `weight_scale_2`), applied before the activation
+    # function (L1) and before the combine write-back (L2). `l1_alphas` is FP32 with
+    # shape `(num_local_experts, 2)` holding separate gate/up factors; `l2_alphas`
+    # is FP32 with shape `(num_local_experts, )`.
+    # `a2_scales` is an optional FP32 `(num_local_experts, )` per-expert down-proj
+    # input scale (modelopt's `input_scale`): the kernel normalizes the in-kernel
+    # intermediate NVFP4 requant block SFs by `1 / a2_scale` (keeping them in E4M3's
+    # well-represented range) and folds `a2_scale` back into the L2 alpha. Matches
+    # flashinfer/TRT-LLM's recipe; omit (or `None`) for the plain unit-scale recipe.
+    # Shared experts run in BF16 (no quantization): `shared_l1_weights` is
+    # `(2 * shared_intermediate, hidden)`, `shared_l2_weights` is
+    # `(hidden, shared_intermediate)`, and `x_bf16` provides the BF16 activations of
+    # the local tokens (the buffer's `x` is packed FP4 and cannot be reused).
+    # Under CUDA graphs, `x_bf16` must have a stable address, like `y`
+    assert (shared_l1_weights is None) == (shared_l2_weights is None) == (x_bf16 is None)
+    _C.fp4_fp4_mega_moe(
+        y,
+        l1_weights, l2_weights,
+        shared_l1_weights, shared_l2_weights, x_bf16,
+        cumulative_local_expert_recv_stats,
+        sym_buffer.buffer,
+        sym_buffer.handle.buffer_ptrs, sym_buffer.group.rank(),
+        sym_buffer.num_max_tokens_per_rank,
+        sym_buffer.num_experts, sym_buffer.num_topk,
+        recipe,
+        activation, activation_clamp,
+        fast_math,
+        l1_alphas, l2_alphas, a2_scales
+    )
+
 def bf16_mega_moe(y: torch.Tensor,
                   l1_weights: torch.Tensor,
                   l2_weights: torch.Tensor,

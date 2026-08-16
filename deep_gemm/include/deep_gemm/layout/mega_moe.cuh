@@ -361,24 +361,34 @@ struct MegaMoEBuffer {
                   const uint32_t& num_ring_tokens,
                   const uint32_t& num_sf_ring_tokens,
                   const bool& with_sf,
-                  const uint32_t& num_shared_experts = 0) {
+                  const uint32_t& num_shared_experts = 0,
+                  const uint32_t& num_mma_elem_bits_opt = 0,
+                  const uint32_t& sf_gran_k = 32,
+                  const uint32_t& shared_num_mma_elem_bits_opt = 0) {
         // Workspace
         workspace = Workspace(base, num_ranks, num_experts,
                               num_max_tokens_per_rank, num_topk, num_ring_tokens);
 
-        // Shared
-        const auto shared_intermediate_hidden = intermediate_hidden * num_shared_experts;
-        const auto num_max_shared_sf_tokens = with_sf ? get_num_max_shared_sf_tokens(num_max_tokens_per_rank) : 0u;
-
         // Layouts
-        const uint32_t num_mma_elem_bytes = with_sf ? 1 : 2;
-        const auto input_token_layout = layout::Data(hidden * num_mma_elem_bytes);
+        // NOTES: element sizes are in bits to support sub-byte packed NVFP4 (4 bits);
+        // `num_mma_elem_bits_opt == 0` keeps the legacy behavior (FP8 with SF, BF16 without)
+        const uint32_t num_mma_elem_bits = num_mma_elem_bits_opt != 0 ? num_mma_elem_bits_opt : (with_sf ? 8 : 16);
+
+        // Shared
+        // NOTES: shared experts may use a different (wider) dtype than routed experts,
+        // e.g. BF16 shared experts inside the NVFP4 kernel; 16-bit shared experts carry no SF
+        const uint32_t shared_num_mma_elem_bits = shared_num_mma_elem_bits_opt != 0 ? shared_num_mma_elem_bits_opt : num_mma_elem_bits;
+        const bool shared_with_sf = with_sf and shared_num_mma_elem_bits < 16;
+        const auto shared_intermediate_hidden = intermediate_hidden * num_shared_experts;
+        const auto num_max_shared_sf_tokens = shared_with_sf ? get_num_max_shared_sf_tokens(num_max_tokens_per_rank) : 0u;
+
+        const auto input_token_layout = layout::Data(hidden * num_mma_elem_bits / 8);
         const auto bf16_token_layout = layout::Data(hidden * 2);
-        const auto intermediate_token_layout = layout::Data(intermediate_hidden * num_mma_elem_bytes);
-        const auto shared_intermediate_token_layout = layout::Data(shared_intermediate_hidden * num_mma_elem_bytes);
-        const auto input_sf_layout = layout::Data(with_sf ? hidden / 32 : 0);
-        const auto intermediate_sf_layout = layout::Data(with_sf ? intermediate_hidden / 32 : 0);
-        const auto shared_intermediate_sf_layout = layout::Data(with_sf ? shared_intermediate_hidden / 32 : 0);
+        const auto intermediate_token_layout = layout::Data(intermediate_hidden * num_mma_elem_bits / 8);
+        const auto shared_intermediate_token_layout = layout::Data(shared_intermediate_hidden * shared_num_mma_elem_bits / 8);
+        const auto input_sf_layout = layout::Data(with_sf ? hidden / sf_gran_k : 0);
+        const auto intermediate_sf_layout = layout::Data(with_sf ? intermediate_hidden / sf_gran_k : 0);
+        const auto shared_intermediate_sf_layout = layout::Data(shared_with_sf ? shared_intermediate_hidden / sf_gran_k : 0);
         const auto input_topk_idx_layout = layout::Data(num_topk * sizeof(int64_t), false);
         const auto input_topk_weights_layout = layout::Data(num_topk * sizeof(float), false);
         const auto l1_topk_weights_layout = layout::Data(sizeof(float), false);
