@@ -197,24 +197,13 @@ def fp4_fp4_mega_moe(y: torch.Tensor,
                      l2_alphas: Optional[torch.Tensor] = None,
                      a2_scales: Optional[torch.Tensor] = None,
                      routed_scaling_factor: float = 1.0):
-    # NVFP4 x NVFP4 fused MoE: weights and activations are packed E2M1 with
-    # per-16-element E4M3 SFs. `l1_alphas`/`l2_alphas` are optional per-local-expert
-    # scales (e.g. modelopt's `weight_scale_2`), applied before the activation
-    # function (L1) and before the combine write-back (L2). `l1_alphas` is FP32 with
-    # shape `(num_local_experts, 2)` holding separate gate/up factors; `l2_alphas`
-    # is FP32 with shape `(num_local_experts, )`.
-    # `a2_scales` is an optional FP32 `(num_local_experts, )` per-expert down-proj
-    # input scale (modelopt's `input_scale`): the kernel normalizes the in-kernel
-    # intermediate NVFP4 requant block SFs by `1 / a2_scale` (keeping them in E4M3's
-    # well-represented range) and folds `a2_scale` back into the L2 alpha. Matches
-    # flashinfer/TRT-LLM's recipe; omit (or `None`) for the plain unit-scale recipe.
-    # Shared experts run in BF16 (no quantization): `shared_l1_weights` is
-    # `(2 * shared_intermediate, hidden)`, `shared_l2_weights` is
-    # `(hidden, shared_intermediate)`, and `x_bf16` provides the BF16 activations of
-    # the local tokens (the buffer's `x` is packed FP4 and cannot be reused).
-    # `routed_scaling_factor` is applied to the reduced routed contribution
-    # before adding shared output, matching the unfused BF16 execution order.
-    # Under CUDA graphs, `x_bf16` must have a stable address, like `y`.
+    """Run NVFP4 routed experts, optionally fused with BF16 shared experts.
+
+    NVFP4 operands use packed E2M1 values and per-16-element E4M3 scales.
+    ``l1_alphas``, ``l2_alphas`` and ``a2_scales`` carry optional per-expert
+    model scales. Shared weights and ``x_bf16`` must be provided together;
+    ``routed_scaling_factor`` is applied before adding their BF16 output.
+    """
     assert (shared_l1_weights is None) == (shared_l2_weights is None) == (x_bf16 is None)
     _C.fp4_fp4_mega_moe(
         y,

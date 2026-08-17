@@ -3,12 +3,43 @@ import os
 import random
 import torch
 import torch.distributed as dist
-from typing import Tuple
+from typing import Optional, Tuple
 
 import deep_gemm
-from deep_gemm.utils import per_token_cast_to_nvfp4, unpack_e4m3_sf_from_int, cast_back_from_fp4
+from deep_gemm.utils import cast_back_from_fp4
 from deep_gemm.utils.dist import dist_print, init_dist
 from deep_gemm.testing import bench_kineto, calc_diff
+
+
+def _quantize_to_fp4_e2m1_rne(x: torch.Tensor) -> torch.Tensor:
+    # Match `cvt.rn.satfinite.e2m1x2.f32` on the E2M1 grid.
+    ax = x.abs()
+    code = torch.zeros_like(x, dtype=torch.uint8)
+    for boundary in (0.25, 1.25, 2.5, 5.0):
+        code += (ax > boundary).to(torch.uint8)
+    for boundary in (0.75, 1.75, 3.5):
+        code += (ax >= boundary).to(torch.uint8)
+    code |= (((x < 0) & (code != 0)).to(torch.uint8) << 3)
+    return code.view(torch.int8)
+
+
+def _cast_to_nvfp4(x: torch.Tensor, global_scale: Optional[float] = None,
+                    pack_sf: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+    gran_k = 16
+    m, n = x.shape
+    assert n % (gran_k * 4) == 0
+    blocks = x.float().view(m, n // gran_k, gran_k)
+    inv_global = 1.0 if global_scale is None else 1.0 / global_scale
+    sf_e4m3 = (blocks.abs().amax(dim=2) / 6.0 * inv_global).clamp_min(2.0 ** -9).to(torch.float8_e4m3fn)
+    sf = sf_e4m3.float()
+    elem_scale = sf if global_scale is None else sf * global_scale
+    codes = _quantize_to_fp4_e2m1_rne(blocks / elem_scale.unsqueeze(2)).view(m, n // 2, 2)
+    packed = ((codes[:, :, 0] & 0x0F) | ((codes[:, :, 1] & 0x0F) << 4)).contiguous()
+    return (packed, sf_e4m3.view(torch.uint8).contiguous().view(torch.int32)) if pack_sf else (packed, sf)
+
+
+def _unpack_sf(packed_sf: torch.Tensor) -> torch.Tensor:
+    return packed_sf.contiguous().view(torch.uint8).view(torch.float8_e4m3fn).float()
 
 
 def _quantize_weights_to_nvfp4(bf16_weights: torch.Tensor) -> Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
@@ -19,8 +50,8 @@ def _quantize_weights_to_nvfp4(bf16_weights: torch.Tensor) -> Tuple[Tuple[torch.
     w_sf = torch.empty((num_groups, n, k // 64), device='cuda', dtype=torch.int32)
     w_dq = torch.empty((num_groups, n, k), device='cuda', dtype=torch.float)
     for i in range(num_groups):
-        w[i], w_sf[i] = per_token_cast_to_nvfp4(bf16_weights[i], gran_k=16, use_packed_e4m3=True)
-        w_dq[i] = cast_back_from_fp4(w[i], unpack_e4m3_sf_from_int(w_sf[i]).view(n, k // 16), gran_k=16)
+        w[i], w_sf[i] = _cast_to_nvfp4(bf16_weights[i], pack_sf=True)
+        w_dq[i] = cast_back_from_fp4(w[i], _unpack_sf(w_sf[i]).view(n, k // 16), gran_k=16)
     # The kernel expects TMA-aligned MN-major SF
     w_sf = w_sf.transpose(-1, -2).contiguous().transpose(-1, -2)
     return (w, w_sf), w_dq
@@ -59,7 +90,7 @@ def _reference_expert_ffn(x_dq: torch.Tensor,
         a2_scale = None
 
     # NVFP4 quantization of the intermediate activations (as done by the L1 epilogue)
-    act_packed, act_sf = per_token_cast_to_nvfp4(act, gran_k=16, global_scale=a2_scale)
+    act_packed, act_sf = _cast_to_nvfp4(act, global_scale=a2_scale)
     act_dq = cast_back_from_fp4(act_packed, act_sf, gran_k=16)
     if a2_scale is not None:
         act_dq = act_dq * a2_scale  # undo the block-SF normalization (folded into L2 alpha in-kernel)
@@ -124,8 +155,8 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
         topk_weights.masked_fill_(topk_idx < 0, 0)
 
     # Quantize inputs and weights into NVFP4
-    x_packed, x_sf_packed = per_token_cast_to_nvfp4(x, gran_k=16, use_packed_e4m3=True)
-    x_dq = cast_back_from_fp4(x_packed, unpack_e4m3_sf_from_int(x_sf_packed).view(num_tokens, hidden // 16), gran_k=16)
+    x_packed, x_sf_packed = _cast_to_nvfp4(x, pack_sf=True)
+    x_dq = cast_back_from_fp4(x_packed, _unpack_sf(x_sf_packed).view(num_tokens, hidden // 16), gran_k=16)
     l1_weights, l1_weights_dq = _quantize_weights_to_nvfp4(l1_weights_bf16)
     l2_weights, l2_weights_dq = _quantize_weights_to_nvfp4(l2_weights_bf16)
     transformed_l1_weights, transformed_l2_weights = (

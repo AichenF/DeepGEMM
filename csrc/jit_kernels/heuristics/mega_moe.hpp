@@ -67,9 +67,10 @@ static MmaKind parse_mma_kind(const std::string& mma_type_str) {
     return MmaKind::MXFP8FP4;
 }
 
-static int get_num_mma_elem_bytes(const MmaKind& mma_kind) {
-    DG_HOST_ASSERT(mma_kind != MmaKind::NVFP4 and "NVFP4 elements are sub-byte, use `get_element_bits`");
-    return mma_kind == MmaKind::BF16 ? 2 : 1;
+static int get_num_mma_elem_bits(const MmaKind& mma_kind) {
+    if (mma_kind == MmaKind::NVFP4)
+        return 4;
+    return get_element_size(mma_kind) * 8;
 }
 
 static bool is_mma_with_sf(const MmaKind& mma_kind) {
@@ -109,7 +110,7 @@ static std::tuple<int, int, int, int, int> get_block_config_for_mega_moe(
         }
     }();
     // `block_k` above is in bytes: convert to elements
-    block_k = block_k * 8 / get_element_bits(mma_kind);
+    block_k = block_k * 8 / get_num_mma_elem_bits(mma_kind);
 
     // Check whether our `block_m` lies in `kCandidateBlockM`
     DG_HOST_ASSERT(std::any_of(
@@ -132,7 +133,7 @@ static std::pair<int, int> get_pipeline_config_for_mega_moe(
     constexpr int kSmemAlignment = 1024;
     constexpr int kNumEpilogueStages = 2;
     constexpr int kNumTMAStoreStages = 2;
-    const int num_mma_elem_bits = get_element_bits(mma_kind);
+    const int num_mma_elem_bits = get_num_mma_elem_bits(mma_kind);
 
     // Always multicast on A
     const int load_block_m = block_m / 2;
@@ -219,7 +220,7 @@ static MegaMoEConfig get_mega_moe_config(
 
     // Pull: divide token bytes by 2 until <= kPullThreshold
     constexpr int kPullThreshold = 4096;
-    int num_bytes_per_pull = hidden * get_element_bits(mma_kind) / 8;
+    int num_bytes_per_pull = hidden * get_num_mma_elem_bits(mma_kind) / 8;
     while (num_bytes_per_pull > kPullThreshold) {
         DG_HOST_ASSERT(num_bytes_per_pull % 2 == 0);
         num_bytes_per_pull /= 2;

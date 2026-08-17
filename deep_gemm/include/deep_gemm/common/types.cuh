@@ -19,16 +19,6 @@ constexpr CUTLASS_HOST_DEVICE int get_element_size(const MmaKind& mma_kind) {
     }
 }
 
-// Element sizes in bits (NVFP4 elements are sub-byte)
-constexpr CUTLASS_HOST_DEVICE int get_element_bits(const MmaKind& mma_kind) {
-    switch (mma_kind) {
-        case MmaKind::BF16:     return 16;
-        case MmaKind::MXFP8FP4: return 8;
-        case MmaKind::NVFP4:    return 4;
-        default: return 0;
-    }
-}
-
 enum class GemmType {
     Normal                              = 0,
     MGroupedContiguous                  = 1,

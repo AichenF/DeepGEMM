@@ -68,7 +68,7 @@ get_symm_buffer_size_for_mega_moe(
 
     // Parse MMA type
     const auto mma_kind = parse_mma_kind(mma_type);
-    const auto num_mma_elem_bits = get_element_bits(mma_kind);
+    const auto num_mma_elem_bits = get_num_mma_elem_bits(mma_kind);
     const auto with_sf = is_mma_with_sf(mma_kind);
     const auto sf_gran_k = get_mma_sf_gran_k(mma_kind);
 
