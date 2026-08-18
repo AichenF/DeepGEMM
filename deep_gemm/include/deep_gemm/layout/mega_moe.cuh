@@ -386,9 +386,13 @@ struct MegaMoEBuffer {
         const auto bf16_token_layout = layout::Data(hidden * 2);
         const auto intermediate_token_layout = layout::Data(intermediate_hidden * num_mma_elem_bits / 8);
         const auto shared_intermediate_token_layout = layout::Data(shared_intermediate_hidden * shared_num_mma_elem_bits / 8);
-        const auto input_sf_layout = layout::Data(with_sf ? hidden / sf_gran_k : 0);
-        const auto intermediate_sf_layout = layout::Data(with_sf ? intermediate_hidden / sf_gran_k : 0);
-        const auto shared_intermediate_sf_layout = layout::Data(shared_with_sf ? shared_intermediate_hidden / sf_gran_k : 0);
+        // SF buffers are MN-major: an individual logical token row need not be
+        // 16-byte aligned. Their complete allocations remain aligned through
+        // the token-count constraints checked by the host API.
+        const auto input_sf_layout = layout::Data(with_sf ? hidden / sf_gran_k : 0, false);
+        const auto intermediate_sf_layout = layout::Data(with_sf ? intermediate_hidden / sf_gran_k : 0, false);
+        const auto shared_intermediate_sf_layout = layout::Data(
+            shared_with_sf ? shared_intermediate_hidden / sf_gran_k : 0, false);
         const auto input_topk_idx_layout = layout::Data(num_topk * sizeof(int64_t), false);
         const auto input_topk_weights_layout = layout::Data(num_topk * sizeof(float), false);
         const auto l1_topk_weights_layout = layout::Data(sizeof(float), false);

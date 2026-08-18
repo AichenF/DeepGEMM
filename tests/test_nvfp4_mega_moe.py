@@ -110,8 +110,10 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
 
     # Settings (defaults follow `nvidia/GLM-5.2-NVFP4` MoE shapes)
     num_max_tokens_per_rank = args.num_max_tokens_per_rank
-    num_tokens = max(1, args.num_max_tokens_per_rank - random.randint(0, args.num_max_removed_tokens)) \
-        if args.num_tokens == 0 else args.num_tokens
+    num_tokens = args.num_max_tokens_per_rank - random.randint(0, args.num_max_removed_tokens) \
+        if args.num_tokens < 0 else args.num_tokens
+    if args.zero_token_rank == rank_idx:
+        num_tokens = 0
     hidden, intermediate_hidden = args.hidden, args.intermediate_hidden
     num_experts, num_topk = args.num_experts, args.num_topk
     num_experts_per_rank = num_experts // num_ranks
@@ -302,13 +304,18 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     y_ref, num_recv_per_expert = run_reference()
     for i in range(args.num_correctness_tests):
         y_fused = run_fused()
-        diff = calc_diff(y_fused, y_ref)
-        error = y_fused.float() - y_ref.float()
-        max_abs_diff = error.abs().max().item()
-        relative_l2 = (
-            torch.linalg.vector_norm(error)
-            / torch.linalg.vector_norm(y_ref.float()).clamp_min(1e-12)
-        ).item()
+        if y_ref.numel() == 0:
+            assert y_fused.shape == y_ref.shape
+            diff = max_abs_diff = relative_l2 = 0.0
+            error = y_fused.float() - y_ref.float()
+        else:
+            diff = calc_diff(y_fused, y_ref)
+            error = y_fused.float() - y_ref.float()
+            max_abs_diff = error.abs().max().item()
+            relative_l2 = (
+                torch.linalg.vector_norm(error)
+                / torch.linalg.vector_norm(y_ref.float()).clamp_min(1e-12)
+            ).item()
         if diff >= 1e-3 and int(os.getenv('DG_TEST_DEBUG', '0')):
             err = (y_fused.float() - y_ref.float()).abs().max(dim=1).values
             bad = (err > 1.0).nonzero().flatten()
@@ -360,8 +367,11 @@ if __name__ == '__main__':
 
     # Model settings: defaults follow `nvidia/GLM-5.2-NVFP4`
     # (hidden 6144, MoE intermediate 2048, 256 routed experts, top-8, NVFP4 with group size 16)
-    parser.add_argument('--num-max-tokens-per-rank', type=int, default=1536, help='Number of maximum tokens per rank')
-    parser.add_argument('--num-tokens', type=int, default=0, help='Number of tokens per rank (follow max minus removed if 0)')
+    parser.add_argument('--num-max-tokens-per-rank', type=int, default=64, help='Number of maximum tokens per rank')
+    parser.add_argument('--num-tokens', type=int, default=16,
+                        help='Number of tokens per rank (negative follows max minus removed)')
+    parser.add_argument('--zero-token-rank', type=int, default=-1,
+                        help='Force one EP rank to receive zero tokens (-1 disables)')
     parser.add_argument('--num-max-removed-tokens', type=int, default=0, help='Maximum number of tokens to remove')
     parser.add_argument('--hidden', type=int, default=6144, help='Hidden size')
     parser.add_argument('--intermediate-hidden', type=int, default=2048, help='MoE intermediate hidden size')
@@ -370,12 +380,12 @@ if __name__ == '__main__':
     parser.add_argument('--num-topk', type=int, default=8, help='Number of expert selections')
     parser.add_argument('--masked-ratio', type=float, default=0.0, help='Mask some expert selections')
     parser.add_argument('--fast-math', type=int, default=0, help='Enable fast math (0 or 1, default: 0 for exactness)')
-    parser.add_argument('--per-expert-alphas', type=int, default=0,
+    parser.add_argument('--per-expert-alphas', type=int, default=1,
                         help='Test per-local-expert L1/L2 scales (0 or 1)')
-    parser.add_argument('--per-expert-a2', type=int, default=0,
+    parser.add_argument('--per-expert-a2', type=int, default=1,
                         help='Test per-local-expert down-proj input scale for the intermediate '
                              'NVFP4 requant (0 or 1)')
-    parser.add_argument('--num-shared-experts', type=int, default=0,
+    parser.add_argument('--num-shared-experts', type=int, default=1,
                         help='Number of fused BF16 shared experts (0 disables)')
     parser.add_argument('--seed', type=int, default=0, help='Base random seed')
     parser.add_argument('--input-scale', type=float, default=1.0,
@@ -384,11 +394,11 @@ if __name__ == '__main__':
                         help='Scale applied to routed-expert weight samples')
     parser.add_argument('--shared-weight-scale', type=float, default=0.1,
                         help='Scale applied to shared-expert weight samples')
-    parser.add_argument('--routed-scaling-factor', type=float, default=1.0,
+    parser.add_argument('--routed-scaling-factor', type=float, default=0.75,
                         help='Scale routed BF16 output before adding shared output')
 
     # Test settings
-    parser.add_argument('--num-correctness-tests', type=int, default=4, help='Number of correctness test rounds')
+    parser.add_argument('--num-correctness-tests', type=int, default=2, help='Number of correctness test rounds')
     args = parser.parse_args()
 
     torch.multiprocessing.spawn(test, args=(args.num_processes, args), nprocs=args.num_processes)

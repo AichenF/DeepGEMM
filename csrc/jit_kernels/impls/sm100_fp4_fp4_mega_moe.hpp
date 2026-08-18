@@ -227,7 +227,7 @@ static void sm100_fp4_fp4_mega_moe(
         // `shared_l1_acts` is the caller's current-token tensor, not a
         // capacity-sized symmetric buffer.  Describe its real row extent so
         // TMA zero-fills the partial M tile instead of reading past storage.
-        hidden, num_tokens,
+        hidden, std::max(num_tokens, 1),
         shared_block_k, config.load_block_m,
         static_cast<int>(shared_l1_acts.stride(-2)),
         config.swizzle_acts_mode) : tensor_map_l1_acts;

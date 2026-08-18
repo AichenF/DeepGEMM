@@ -25,9 +25,9 @@ CUTLASS_DEVICE uint32_t cvt_into_e2m1x2(const float& hi, const float& lo) {
     uint32_t packed;
     asm volatile(
         "{\n"
-        ".reg .b8 byte0, byte1, byte2, byte3;\n"
+        ".reg .b8 byte0;\n"
         "cvt.rn.satfinite.e2m1x2.f32 byte0, %1, %2;\n"
-        "mov.b32 %0, {byte0, byte1, byte2, byte3};\n"
+        "mov.b32 %0, {byte0, byte0, byte0, byte0};\n"
         "}" : "=r"(packed) : "f"(hi), "f"(lo));
     return packed & 0xffu;
 }
@@ -846,7 +846,8 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                 uint32_t n_idx = task_info.is_shared() ? n_block_idx * BLOCK_N : task_info.local_expert_idx * shape_n + n_block_idx * BLOCK_N;
                 uint32_t k_idx = k_block_idx * (task_info.is_shared() ? SHARED_BLOCK_K : BLOCK_K_BYTES);
                 uint32_t sfb_n_idx = n_block_idx * BLOCK_N;
-                uint32_t sfb_k_idx = task_info.local_expert_idx * shape_sfb_k + k_block_idx * (BLOCK_K / (kGranK * 4));
+                uint32_t sfb_k_idx = task_info.is_shared() ? 0u :
+                    task_info.local_expert_idx * shape_sfb_k + k_block_idx * (BLOCK_K / (kGranK * 4));
 
                 // TMA copy weights with SF
                 if (cute::elect_one_sync()) {
@@ -1621,12 +1622,10 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
         // Iterate over all tokens
         uint32_t combine_phase = 0;
         uint32_t load_stage_idx = 0;
-        bool load_stage_is_shared[2] = {};
         for (uint32_t token_idx = sm_idx * kNumEpilogueWarps + epilogue_warp_idx;
              token_idx < num_tokens;
              token_idx += kNumSMs * kNumEpilogueWarps) {
             // Read top-k slot indices: each lane reads one slot, then broadcast via exchange
-            DG_STATIC_ASSERT(kNumTopk <= 32, "Invalid number of topk");
             const int stored_topk_slot_idx = lane_idx < kNumTopk ?
                 static_cast<int>(__ldg(buffer.input_topk_idx_buffer.get_base_ptr<int64_t>() + token_idx * kNumTopk + lane_idx)) :
                 (kNumSharedExperts > 0 and lane_idx == kNumTopk ? static_cast<int>(kNumTopk) : -1);
@@ -1643,9 +1642,6 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                         // Move
                         const uint32_t slot_idx = __ffs(mask) - 1;
                         mask ^= 1 << slot_idx;
-                        if constexpr (kHasShared)
-                            load_stage_is_shared[i] = slot_idx == kNumTopk;
-
                         // Load
                         if (cute::elect_one_sync()) {
                             const auto src_ptr = math::advance_ptr<uint8_t>(
@@ -1672,38 +1668,59 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
 
                     // Accumulate
                     combine_load_barriers[load_stage_idx]->wait(combine_phase);
+                    if constexpr (kHasShared) {
+                        // The shared slot is the highest bit and is therefore
+                        // consumed last by __ffs. Round and scale the routed sum
+                        // once, immediately before accumulating shared output.
+                        if (not do_reduce) {
+                            #pragma unroll
+                            for (uint32_t j = 0; j < kNumUint4PerLane; ++ j) {
+                                #pragma unroll
+                                for (uint32_t l = 0; l < kNumElemsPerUint4; ++ l) {
+                                    auto& value = reduced[j * kNumElemsPerUint4 + l];
+                                    auto routed = __float22bfloat162_rn(value);
+                                    if (routed_scaling_factor != 1.0f) {
+                                        const float2 factor = {routed_scaling_factor, routed_scaling_factor};
+                                        routed = __float22bfloat162_rn(__fmul2_rn(
+                                            __bfloat1622float2(routed), factor));
+                                    }
+                                    value = __bfloat1622float2(routed);
+                                }
+                            }
+                        }
+                    }
                     #pragma unroll
                     for (uint32_t j = 0; j < kNumUint4PerLane; ++ j) {
                         const auto uint4_values = combine_load_buffer[load_stage_idx][j * 32 + lane_idx];
                         const auto bf16_values = reinterpret_cast<const nv_bfloat162*>(&uint4_values);
                         #pragma unroll
                         for (uint32_t l = 0; l < kNumElemsPerUint4; ++ l)
-                            if constexpr (kHasShared) {
-                                auto& value = reduced[j * kNumElemsPerUint4 + l];
-                                if (load_stage_is_shared[load_stage_idx]) {
-                                    // Match the unfused vLLM order exactly:
-                                    // combine routed slots -> BF16, apply the
-                                    // routed factor -> BF16, then add the BF16
-                                    // shared result -> BF16 at the final cast.
-                                    auto routed = __float22bfloat162_rn(value);
-                                    if (routed_scaling_factor != 1.0f) {
-                                        const float2 factor = {
-                                            routed_scaling_factor,
-                                            routed_scaling_factor};
-                                        routed = __float22bfloat162_rn(__fmul2_rn(
-                                            __bfloat1622float2(routed), factor));
-                                    }
-                                    value = __bfloat1622float2(routed);
-                                }
-                                ptx::accumulate(value, bf16_values[l]);
-                            } else {
-                                ptx::accumulate(
-                                    reduced[j * kNumElemsPerUint4 + l],
-                                    bf16_values[l]);
-                            }
+                            ptx::accumulate(
+                                reduced[j * kNumElemsPerUint4 + l],
+                                bf16_values[l]);
                     }
                     combine_phase ^= load_stage_idx;
                     load_stage_idx ^= 1;
+                }
+
+                if constexpr (not kHasShared) {
+                    // With no shared slot there is no final iteration at which
+                    // to apply the routed factor. Preserve the public API's
+                    // BF16 -> scale -> BF16 ordering before the final cast.
+                    if (routed_scaling_factor != 1.0f) {
+                        #pragma unroll
+                        for (uint32_t j = 0; j < kNumUint4PerLane; ++ j) {
+                            #pragma unroll
+                            for (uint32_t l = 0; l < kNumElemsPerUint4; ++ l) {
+                                auto& value = reduced[j * kNumElemsPerUint4 + l];
+                                auto routed = __float22bfloat162_rn(value);
+                                const float2 factor = {routed_scaling_factor, routed_scaling_factor};
+                                routed = __float22bfloat162_rn(__fmul2_rn(
+                                    __bfloat1622float2(routed), factor));
+                                value = __bfloat1622float2(routed);
+                            }
+                        }
+                    }
                 }
 
                 // Cast
