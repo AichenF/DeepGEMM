@@ -45,8 +45,8 @@ namespace deep_gemm {
 //         self-contained and no cross-CTA amax synchronisation is needed.
 //       - L2 (Linear2): BF16 cast of the GEMM output, STSM into SMEM, then
 //         NVLink scatter to remote combine buffers.
-//   * After all GEMM blocks, the math warps run the COMBINE step (top-k
-//     reduction in BF16) — ported verbatim from the SM100 kernel.
+//   * After all GEMM blocks, the math warps run the COMBINE step using the
+//     same BF16 top-k reduction scheme as the SM100 path.
 // ============================================================================
 
 enum class MegaMoEPhaseKind {
@@ -224,7 +224,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
     // for L2 activations uses per-64 K granularity)
     // =====================================================================
     const auto workspace = layout::Workspace(
-        sym_buffer.get_base_ptr(), kNumRanks, kNumExperts, kNumMaxTokensPerRank, kNumTopk);
+        sym_buffer.get_base_ptr(), kNumRanks, kNumExperts, kNumMaxTokensPerRank,
+        kNumTopk, kNumMaxPoolTokens);
 
     constexpr auto fp8_token_layout              = layout::Data(kHidden);
     constexpr auto fp8_intermediate_token_layout = layout::Data(kIntermediateHidden);
@@ -532,13 +533,13 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                 if constexpr (MegaMoEPhase::one_warp_cleanup) {
                     if (warp_idx == 0) {
                         for (uint32_t j = lane_idx; j < num_recv_m_blocks; j += 32) {
-                            *workspace.get_l1_arrival_count_ptr(cleanup_pool_block_offset + j) = 0;
+                            *workspace.get_l1_full_count_ptr(cleanup_pool_block_offset + j) = 0;
                         }
                         __syncwarp();
                     }
                 } else {
                     for (uint32_t j = thread_idx; j < num_recv_m_blocks; j += kNumDispatchThreads) {
-                        *workspace.get_l1_arrival_count_ptr(cleanup_pool_block_offset + j) = 0;
+                        *workspace.get_l1_full_count_ptr(cleanup_pool_block_offset + j) = 0;
                     }
                     __syncwarp();
                 }
@@ -613,7 +614,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
             *sym_buffer.map(dst_ptr, dst_rank_idx) = token_topk_idx;
         });
 
-        comm::grid_sync<kNumSMs, kDispatchGridSyncIndex>(
+        comm::grid_sync<kNumSMs, kDispatchGridSyncIndex,
+                        comm::NVLinkBarrierTimeoutPolicy::TrapOnly>(
             workspace, sm_idx, thread_idx,
             [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); }
         );
@@ -776,7 +778,7 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                 cute::tma_store_arrive();
                 ptx::tma_store_wait<0>();
                 ptx::red_add_rel(
-                    workspace.get_l1_arrival_count_ptr(expert_pool_block_offset + token_idx_in_expert / BLOCK_M), 1);
+                    workspace.get_l1_full_count_ptr(expert_pool_block_offset + token_idx_in_expert / BLOCK_M), 1);
             }
             __syncwarp();
         }
@@ -785,9 +787,8 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
 
     // =====================================================================
     // ROLE 2: GEMM TMA LOAD warps (load A+SFA, B+SFB)
-    //   Default: 4 non-epilogue warps, two active and two idle.
-    //   Compact frontend mode: 2 dispatch warps + 2 TMA warps share the first
-    //   warpgroup, reducing total CTA threads for the M128/2WG path.
+    // The first two non-epilogue warps issue the TMA loads. Four-warp
+    // configurations keep the remaining two warps idle for register handoff.
     // =====================================================================
     } else if (warp_idx == kNumDispatchWarps) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
@@ -809,7 +810,7 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
             // the tail M unit when an expert has an odd number of M blocks.
             if (has_valid_m) {
                 if (is_linear1_phase) {
-                    const auto ptr = workspace.get_l1_arrival_count_ptr(pool_block_idx);
+                    const auto ptr = workspace.get_l1_full_count_ptr(pool_block_idx);
                     const auto expected = valid_m;
                     while (ptx::ld_acq(ptr) != expected);
                 }
@@ -1879,7 +1880,6 @@ sm90_fp8_mega_moe_core(DG_SM90_FP8_MOE_CORE_ARGS_DECL) {
                         swiglu_r1[p][1] = 0.0f;
                     }
                 }
-
 
                 float weight_r0 = 0.0f, weight_r1 = 0.0f;
                 // For large-capacity specializations, cached same-address

@@ -45,7 +45,11 @@ get_symm_buffer_size_for_sm90_mega_moe(
         DG_HOST_UNREACHABLE("SM90 FP8 MegaMoE requires intermediate_hidden to be a positive multiple of 128");
 
     // Workspace bytes
-    const auto workspace = layout::Workspace(nullptr, num_ranks, num_experts, num_max_tokens_per_rank, num_topk);
+    const auto num_max_pool_tokens = layout::get_num_max_pool_tokens(
+        num_ranks, num_max_tokens_per_rank, num_topk, num_experts / num_ranks);
+    const auto workspace = layout::Workspace(
+        nullptr, num_ranks, num_experts, num_max_tokens_per_rank, num_topk,
+        num_max_pool_tokens);
 
     // Layouts
     const auto fp8_token_layout = layout::Data(hidden);
@@ -74,12 +78,11 @@ get_symm_buffer_size_for_sm90_mega_moe(
         input_topk_idx_buffer.get_end_ptr());
 
     // Buffer configs
-    const auto num_max_pool_tokens = static_cast<int>(workspace.num_max_pool_tokens);
     int num_max_padded_sf_pool_tokens = 0;
     for (int block_m: kSM90MegaMoECandidateBlockMs) {
         num_max_padded_sf_pool_tokens = std::max(
             num_max_padded_sf_pool_tokens,
-            layout::get_num_padded_sf_pool_tokens(num_max_pool_tokens, block_m)
+            layout::get_num_sf_ring_tokens(num_max_pool_tokens, block_m)
         );
     }
 

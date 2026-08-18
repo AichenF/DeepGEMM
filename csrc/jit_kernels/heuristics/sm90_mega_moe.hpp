@@ -520,7 +520,7 @@ static MegaMoESM90Config make_generic_mega_moe_config_sm90(
         swap_ab);
     DG_HOST_ASSERT(num_stages >= 2 and smem_size > 0);
     const int sf_pool_stride_tokens =
-        layout::get_num_padded_sf_pool_tokens(num_max_pool_tokens, block_m);
+        layout::get_num_sf_ring_tokens(num_max_pool_tokens, block_m);
     return {
         block_m, block_n, block_k,
         num_max_pool_tokens, input.num_padded_sf_pool_tokens, sf_pool_stride_tokens,
@@ -829,7 +829,7 @@ static bool try_materialize_sm90_moe_phase_tuning(
     config.nmajor_schedule = tuning.nmajor_schedule;
     config.one_warp_cleanup = tuning.one_warp_cleanup;
     config.swap_ab = tuning.swap_ab;
-    config.sf_pool_stride_tokens = layout::get_num_padded_sf_pool_tokens(
+    config.sf_pool_stride_tokens = layout::get_num_sf_ring_tokens(
         config.num_max_pool_tokens, config.block_m);
 
     const auto [num_stages, smem_size] = get_pipeline_config_for_mega_moe_sm90(

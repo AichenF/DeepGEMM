@@ -10,15 +10,13 @@
 #include <deep_gemm/common/cute_tie.cuh>
 #include <deep_gemm/common/utils.cuh>
 using namespace deep_gemm::math;
-#include <deep_gemm/common/sm90_utils.cuh>
-#include <deep_gemm/common/sm100_utils.cuh>
+#include <deep_gemm/mma/sm100.cuh>
 #include <deep_gemm/ptx/ld_st.cuh>
+#include <deep_gemm/ptx/tcgen05.cuh>
 #include <deep_gemm/ptx/utils.cuh>
 
 namespace deep_gemm {
 using namespace deep_gemm::ptx;
-using namespace deep_gemm::sm90;
-using namespace deep_gemm::sm100;
 using namespace deep_gemm::utils;
 
 template <uint32_t BLOCK_INNER, uint32_t kSwizzleMode, typename dtype_t>
@@ -247,7 +245,7 @@ void sm100_fp8_mqa_logits_f16_weights(const uint32_t seq_len, const uint32_t seq
         };
     };
 
-    uint32_t seq_k_start[BLOCK_Q_2CTA];
+    uint32_t seq_k_start[BLOCK_Q_2CTA], seq_k_end[BLOCK_Q_2CTA];
     const auto& get_kv_offsets = [&](const uint32_t& q_stage_idx) -> cute::tuple<uint32_t, uint32_t> {
         uint32_t start = cute::numeric_limits<uint32_t>::max();
         uint32_t end = cute::numeric_limits<uint32_t>::min();
@@ -257,6 +255,7 @@ void sm100_fp8_mqa_logits_f16_weights(const uint32_t seq_len, const uint32_t seq
         for (uint32_t i = 0; i < BLOCK_Q_2CTA; ++ i) {
             uint2 kv_offset = kv_offsets_ptr[i];
             seq_k_start[i] = kv_offset.x;
+            seq_k_end[i] = kv_offset.y;
             start = min(start, kv_offset.x);
             end = max(end, kv_offset.y);
         }
@@ -350,11 +349,14 @@ void sm100_fp8_mqa_logits_f16_weights(const uint32_t seq_len, const uint32_t seq
 
                     CUTE_TIE_DECL(get_umma_pipeline(umma_block_idx), umma_stage_idx, umma_phase);
                     empty_umma_barriers[umma_stage_idx]->wait(umma_phase ^ 1);
-                    #pragma unroll
-                    for (uint32_t k = 0; k < kHeadDim / UMMA_K; ++ k) {
-                        auto a_desc = make_umma_desc<cute::UMMA::Major::K, 0, kHeadDim, kHeadDim>(smem_kv[kv_stage_idx], 0, k * UMMA_K);
-                        auto b_desc = make_umma_desc<cute::UMMA::Major::K, 0, kHeadDim, kHeadDim>(smem_q[q_stage_idx], 0, k * UMMA_K);
-                        cute::SM100_MMA_F8F6F4_2x1SM_SS::fma(a_desc, b_desc, umma_stage_idx * UMMA_N, k, runtime_instr_desc);
+                    ptx::tcgen05_after_thread_sync();
+                    if (cute::elect_one_sync()) {
+                        #pragma unroll
+                        for (uint32_t k = 0; k < kHeadDim / UMMA_K; ++ k) {
+                            auto a_desc = mma::sm100::make_umma_desc<cute::UMMA::Major::K, 0, kHeadDim, kHeadDim>(smem_kv[kv_stage_idx], 0, k * UMMA_K);
+                            auto b_desc = mma::sm100::make_umma_desc<cute::UMMA::Major::K, 0, kHeadDim, kHeadDim>(smem_q[q_stage_idx], 0, k * UMMA_K);
+                            ptx::SM100_MMA_F8F6F4_2x1SM_SS::fma(a_desc, b_desc, umma_stage_idx * UMMA_N, k, runtime_instr_desc);
+                        }
                     }
                     cutlass::arch::umma_arrive_multicast_2x1SM(reinterpret_cast<uint64_t*>(full_umma_barriers[umma_stage_idx]), 0x03);
                     umma_block_idx += 1;
@@ -389,12 +391,16 @@ void sm100_fp8_mqa_logits_f16_weights(const uint32_t seq_len, const uint32_t seq
             #pragma unroll 1
             for (uint32_t kv_block_idx = 0; kv_block_idx < num_kv_blocks; ++ kv_block_idx) {
                 CUTE_TIE_DECL(get_kv_pipeline(kv_block_idx), kv_stage_idx, kv_phase);
+                // Each CTA loads its own KV scales. The CTA 0 UMMA completion
+                // does not order CTA 1's local scale TMA.
+                full_kv_barriers[kv_stage_idx]->wait(kv_phase);
 
                 const auto& warp_offset = warp_in_group_idx * 32;
                 const auto& v_offset = lane_idx;
                 
                 CUTE_TIE_DECL(get_umma_pipeline(umma_block_idx), umma_stage_idx, umma_phase);
                 full_umma_barriers[umma_stage_idx]->wait(umma_phase);
+                ptx::tcgen05_after_thread_sync();
                 float scale_kv = ld_shared(smem_kv_scales[kv_stage_idx] + warp_offset + v_offset);
                 empty_kv_barriers[kv_stage_idx]->arrive();
 
@@ -416,6 +422,7 @@ void sm100_fp8_mqa_logits_f16_weights(const uint32_t seq_len, const uint32_t seq
                 [&]<size_t... Is>(cute::index_sequence<Is...>) { tmem_load(tmem_start, Is...); }(cute::make_index_sequence<kNumLDTMElems/2>{});
                 cutlass::arch::fence_view_async_tmem_load();
                 
+                ptx::tcgen05_before_thread_sync();
                 arrive_cta(empty_umma_barriers[umma_stage_idx], 0);
                 umma_block_idx += 1;
                 
@@ -442,9 +449,12 @@ void sm100_fp8_mqa_logits_f16_weights(const uint32_t seq_len, const uint32_t seq
                     auto result = static_cast<logits_dtype_t>(scale_kv * (result1.x + result1.y));
                     
                     const uint32_t& q_idx = block_q_idx * BLOCK_Q_2CTA + warpgroup_idx * BLOCK_Q + i;
+                    const uint32_t row_idx = i + warpgroup_idx * BLOCK_Q;
                     if constexpr (kIsCompressedLogits) {
-                        if (kv_offset + v_offset >= seq_k_start[i])
-                            logits[q_idx * stride_logits + kv_offset + v_offset - seq_k_start[i + warpgroup_idx * BLOCK_Q]] = result;
+                        const uint32_t global_kv_idx = kv_offset + v_offset;
+                        if (global_kv_idx >= seq_k_start[row_idx] and global_kv_idx < seq_k_end[row_idx]) {
+                            logits[q_idx * stride_logits + global_kv_idx - seq_k_start[row_idx]] = result;
+                        }
                     } else {
                         logits[q_idx * stride_logits + kv_offset + v_offset] = result;
                     }

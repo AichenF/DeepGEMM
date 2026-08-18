@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 #include <unordered_set>
 
 #include <deep_gemm/layout/mega_moe.cuh>
@@ -23,15 +24,12 @@ struct MegaMoEConfig {
     // SF block sizes (UTCCP 128-aligned)
     int sf_block_m, sf_block_n;
 
-    // Pool capacity and SF-padded token count
-    int num_max_pool_tokens;
-    int num_padded_sf_pool_tokens;
+    // Ring capacity and SF ring token count
+    int num_ring_tokens;
+    int num_sf_ring_tokens;
 
     // Swizzle modes for TMA descriptors
     int swizzle_acts_mode, swizzle_weights_mode;
-
-    // Number of experts to process per wave
-    int num_experts_per_wave;
 
     // Pipeline stages and shared memory
     int num_stages, smem_size;
@@ -48,10 +46,9 @@ struct MegaMoEConfig {
            << ", load_block_m=" << config.load_block_m << ", load_block_n=" << config.load_block_n
            << ", store_block_m=" << config.store_block_m
            << ", sf_block_m=" << config.sf_block_m << ", sf_block_n=" << config.sf_block_n
-           << ", num_max_pool_tokens=" << config.num_max_pool_tokens
-           << ", num_padded_sf_pool_tokens=" << config.num_padded_sf_pool_tokens
+           << ", num_ring_tokens=" << config.num_ring_tokens
+           << ", num_sf_ring_tokens=" << config.num_sf_ring_tokens
            << ", swizzle_acts_mode=" << config.swizzle_acts_mode << ", swizzle_weights_mode=" << config.swizzle_weights_mode
-           << ", num_experts_per_wave=" << config.num_experts_per_wave
            << ", num_stages=" << config.num_stages << ", smem_size=" << config.smem_size
            << ", num_dispatch_threads=" << config.num_dispatch_threads
            << ", num_non_epilogue_threads=" << config.num_non_epilogue_threads
@@ -61,10 +58,26 @@ struct MegaMoEConfig {
     }
 };
 
+static MmaKind parse_mma_kind(const std::string& mma_type_str) {
+    if (mma_type_str == "bf16xbf16")
+        return MmaKind::BF16;
+    DG_HOST_ASSERT(mma_type_str == "fp8xfp4");
+    return MmaKind::MXFP8FP4;
+}
+
+static int get_num_mma_elem_bytes(const MmaKind& mma_kind) {
+    return mma_kind == MmaKind::BF16 ? 2 : 1;
+}
+
+static bool is_mma_with_sf(const MmaKind& mma_kind) {
+    return mma_kind == MmaKind::MXFP8FP4;
+}
+
 static std::tuple<int, int, int, int, int> get_block_config_for_mega_moe(
     const int& num_ranks, const int& num_experts,
     const int& num_max_tokens_per_rank, const int& num_topk,
-    const int& num_tokens) {
+    const int& num_tokens,
+    const MmaKind& mma_kind) {
     auto [cluster_size, block_m, store_block_m, block_k, num_epilogue_warpgroups] = [&]() -> std::tuple<int, int, int, int, int> {
         float num_expected_tokens_per_expert = static_cast<float>(num_tokens) * num_ranks * num_topk / num_experts;
         if (num_expected_tokens_per_expert <= 8.5) {
@@ -87,6 +100,7 @@ static std::tuple<int, int, int, int, int> get_block_config_for_mega_moe(
             return {2, 192, 32, 128, 2};
         }
     }();
+    block_k /= get_num_mma_elem_bytes(mma_kind);
 
     // Check whether our `block_m` lies in `kCandidateBlockM`
     DG_HOST_ASSERT(std::any_of(
@@ -98,62 +112,18 @@ static std::tuple<int, int, int, int, int> get_block_config_for_mega_moe(
     return {cluster_size, block_m, store_block_m, block_k, num_epilogue_warpgroups * 128};
 }
 
-static int get_num_experts_per_wave_for_mega_moe(
-    const int& num_experts_per_rank, const int& num_tokens, const int& num_topk,
-    const int& intermediate_hidden, const int& block_m, const int& block_n, const int& num_sms) {
-
-    float expected_tokens_per_expert = static_cast<float>(num_tokens) * num_topk / num_experts_per_rank;
-    if (expected_tokens_per_expert < 1) {
-        // Most experts don't have tokens, calculate all experts at once
-        return num_experts_per_rank;
-    }
-
-    // Reduce per-expert block count by this factor since uneven routing leaves some experts with fewer tokens
-    constexpr int kImbalanceFactor = 2;
-
-    // Count L1 blocks per expert assuming tokens are evenly spread across experts
-    const int num_m_blocks = ceil_div(static_cast<int>(std::ceil(expected_tokens_per_expert)), block_m);
-    const int num_n_blocks = (2 * intermediate_hidden) / block_n;
-    const int num_l1_blocks_per_expert = num_m_blocks * num_n_blocks;
-
-    // Pick the smallest value whose total blocks (after imbalance reduction) can keep all SMs busy
-    int min_num_experts_per_wave = num_l1_blocks_per_expert > 0
-        ? ceil_div(kImbalanceFactor * num_sms, num_l1_blocks_per_expert) : 1;
-    if (min_num_experts_per_wave >= num_experts_per_rank)
-        return num_experts_per_rank;
-
-    // When each expert nearly fills all SMs, use the smallest wave to maximize L2 cache reuse
-    if (num_l1_blocks_per_expert >= num_sms)
-        return min_num_experts_per_wave;
-
-    // Otherwise search [min_num_experts_per_wave, min_num_experts_per_wave * 2] for a value where the last partial
-    // wave has as many experts as possible relative to a full wave
-    const int max_num_experts_per_wave = std::min(num_experts_per_rank, min_num_experts_per_wave * 2);
-    int best_num_experts_per_wave = min_num_experts_per_wave;
-    float best_tail_ratio = -1.0f;
-
-    for (int num_experts_per_wave = min_num_experts_per_wave; num_experts_per_wave <= max_num_experts_per_wave; ++ num_experts_per_wave) {
-        int remainder = num_experts_per_rank % num_experts_per_wave;
-        float tail_ratio = (remainder == 0) ? 1.0f : static_cast<float>(remainder) / num_experts_per_wave;
-
-        if (tail_ratio > best_tail_ratio) {
-            best_tail_ratio = tail_ratio;
-            best_num_experts_per_wave = num_experts_per_wave;
-        }
-    }
-    return best_num_experts_per_wave;
-}
-
 static std::pair<int, int> get_pipeline_config_for_mega_moe(
     const int& smem_capacity,
     const int& num_experts, const int& hidden,
     const int& block_m, const int& block_n, const int& block_k,
     const int& num_bytes_per_pull, const int& store_block_m,
     const int& sf_block_m, const int& sf_block_n, const int& gran_k,
-    const int& num_dispatch_warps, const int& num_epilogue_warps) {
+    const int& num_dispatch_warps, const int& num_epilogue_warps,
+    const MmaKind& mma_kind) {
     constexpr int kSmemAlignment = 1024;
     constexpr int kNumEpilogueStages = 2;
     constexpr int kNumTMAStoreStages = 2;
+    const int num_mma_elem_bytes = get_num_mma_elem_bytes(mma_kind);
 
     // Always multicast on A
     const int load_block_m = block_m / 2;
@@ -166,32 +136,42 @@ static std::pair<int, int> get_pipeline_config_for_mega_moe(
         kSmemAlignment);
     const int smem_dispatch_size = smem_expert_count_size + smem_send_buffers_size;
 
-    // C/D output region: max of L1 FP8 (2 TMA stages, BLOCK_N/2 post-SwiGLU) and L2 BF16 (1 stage)
+    // C/D output region: max of L1 output staging and L2 BF16 staging.
     const auto num_epilogue_warpgroups = num_epilogue_warps / 4;
-    const int smem_cd_l1 = num_epilogue_warpgroups * store_block_m * (block_n / 2) * kNumTMAStoreStages;
+    const int smem_cd_l1 = num_epilogue_warpgroups * store_block_m * (block_n / 2) * kNumTMAStoreStages * get_num_mma_elem_bytes(mma_kind);
     const int smem_cd_l2 = num_epilogue_warpgroups * store_block_m * block_n * static_cast<int>(sizeof(nv_bfloat16));
     const int smem_cd = align(std::max(smem_cd_l1, smem_cd_l2), kSmemAlignment);
 
-    // Barriers (stage-independent): dispatch + tensor memory full/empty + combine (2 per epilogue warp)
-    const int smem_barriers = (num_dispatch_warps + kNumEpilogueStages * 2 + num_epilogue_warps * 2) * 8;
+    // Schedule task payloads
+    constexpr int kNumScheduleStages = 2;
+    const int smem_task_info = kNumScheduleStages * static_cast<int>(sizeof(sched::TaskInfo<true>));
 
-    // Amax warp-pair reduction buffer
-    const int smem_amax_reduction = store_block_m * num_epilogue_warps * static_cast<int>(sizeof(float));
+    // Barriers (stage-independent): dispatch + tensor memory full/empty + combine (2 per epilogue warp)
+    // + schedule task publish full/empty barriers.
+    const int smem_barriers = (num_dispatch_warps + kNumEpilogueStages * 2 + num_epilogue_warps * 2 + kNumScheduleStages * 2) * 8;
+
+    // Amax warp-pair reduction buffer for SwiGLU's cross-warp amax exchange.
+    const int smem_amax_reduction = is_mma_with_sf(mma_kind) ?
+        store_block_m * num_epilogue_warps * static_cast<int>(sizeof(float)) : 0;
 
     // Tensor memory pointer
     const int smem_tmem_ptr = 4;
 
     // SF is aligned to UTCCP 128-element granularity
-    const int smem_sfa_per_stage = sf_block_m * (block_k / gran_k);
-    const int smem_sfb_per_stage = sf_block_n * (block_k / gran_k);
+    const int smem_sfa_per_stage = is_mma_with_sf(mma_kind) ? sf_block_m * (block_k / gran_k) : 0;
+    const int smem_sfb_per_stage = is_mma_with_sf(mma_kind) ? sf_block_n * (block_k / gran_k) : 0;
 
-    // Per-stage: A tile + B tile + SF tiles + full/empty barriers
-    const int smem_a_size_per_stage = load_block_m * block_k;
-    const int smem_b_size_per_stage = block_n * block_k;
-    const int smem_size_per_stage = smem_a_size_per_stage + smem_b_size_per_stage + smem_sfa_per_stage + smem_sfb_per_stage + 2 * 8;
+    // Per-stage: A tile + B tile + optional SF tiles + full/empty barriers.
+    const int smem_a_size_per_stage = load_block_m * block_k * num_mma_elem_bytes;
+    const int smem_b_size_per_stage = block_n * block_k * num_mma_elem_bytes;
+    DG_HOST_ASSERT(smem_a_size_per_stage % kSmemAlignment == 0);
+    DG_HOST_ASSERT(smem_b_size_per_stage % kSmemAlignment == 0);
+    const int smem_stage_barriers = 2 * 8;
+    const int smem_size_per_stage = smem_a_size_per_stage + smem_b_size_per_stage + smem_sfa_per_stage + smem_sfb_per_stage + smem_stage_barriers;
 
     // Fixed total
-    const int smem_fixed = smem_dispatch_size + smem_cd + smem_amax_reduction + smem_barriers + smem_tmem_ptr;
+    const int smem_fixed = smem_dispatch_size + smem_cd + smem_amax_reduction + smem_barriers +
+        smem_task_info + smem_tmem_ptr;
 
     // Select maximum number of stages
     const int num_stages = (smem_capacity - smem_fixed) / smem_size_per_stage;
@@ -204,28 +184,22 @@ static MegaMoEConfig get_mega_moe_config(
     const int& num_ranks, const int& num_experts, const int& num_experts_per_rank,
     const int& num_max_tokens_per_rank, const int& num_tokens, const int& num_topk,
     const int& hidden, const int& intermediate_hidden,
-    const int& num_padded_sf_pool_tokens) {
+    const int& num_ring_tokens,
+    const int& num_sf_ring_tokens,
+    const MmaKind& mma_kind) {
 
     // Block config
     const auto [cluster_size, block_m, store_block_m, block_k, num_epilogue_threads] =
-        get_block_config_for_mega_moe(num_ranks, num_experts, num_max_tokens_per_rank, num_topk, num_tokens);
+        get_block_config_for_mega_moe(num_ranks, num_experts, num_max_tokens_per_rank, num_topk, num_tokens, mma_kind);
     const int block_n = 128;
     const int load_block_m = block_m / 2;
     const int load_block_n = block_n;
-    const auto [sf_block_m, sf_block_n] =
-        SM100ArchSpec::get_sf_uttcp_aligned_block_sizes(block_m, block_n, MmaKind::MXFP8FP4);
-    const int num_max_pool_tokens = layout::get_num_max_pool_tokens(
-        num_ranks, num_max_tokens_per_rank, num_topk, num_experts_per_rank);
+    const auto [sf_block_m, sf_block_n] = is_mma_with_sf(mma_kind) ?
+        SM100ArchSpec::get_sf_uttcp_aligned_block_sizes(block_m, block_n, MmaKind::MXFP8FP4) : std::pair(0, 0);
     // NOTES: FP8 activations and FP4 weights (unpacked to 8-bit in smem) both use 128B swizzle
     const int swizzle_acts_mode = 128;
     const int swizzle_weights_mode = 128;
     const int gran_k = 32;
-
-    // Waves
-    const int num_sms = device_runtime->get_num_sms();
-    const int num_experts_per_wave = get_num_experts_per_wave_for_mega_moe(
-        num_experts_per_rank, num_tokens, num_topk,
-        intermediate_hidden, block_m, block_n, num_sms);
 
     // Thread layout
     const int num_dispatch_threads = 128;
@@ -233,7 +207,7 @@ static MegaMoEConfig get_mega_moe_config(
 
     // Pull: divide token bytes by 2 until <= kPullThreshold
     constexpr int kPullThreshold = 4096;
-    int num_bytes_per_pull = hidden;
+    int num_bytes_per_pull = hidden * get_num_mma_elem_bytes(mma_kind);
     while (num_bytes_per_pull > kPullThreshold) {
         DG_HOST_ASSERT(num_bytes_per_pull % 2 == 0);
         num_bytes_per_pull /= 2;
@@ -245,15 +219,15 @@ static MegaMoEConfig get_mega_moe_config(
         num_experts, hidden,
         block_m, block_n, block_k, num_bytes_per_pull, store_block_m,
         sf_block_m, sf_block_n, gran_k,
-        num_dispatch_threads / 32, num_epilogue_threads / 32);
+        num_dispatch_threads / 32, num_epilogue_threads / 32,
+        mma_kind);
 
     const auto config = MegaMoEConfig {
         block_m, block_n, block_k,
         load_block_m, load_block_n, store_block_m,
         sf_block_m, sf_block_n,
-        num_max_pool_tokens, num_padded_sf_pool_tokens,
+        num_ring_tokens, is_mma_with_sf(mma_kind) ? num_sf_ring_tokens : 0,
         swizzle_acts_mode, swizzle_weights_mode,
-        num_experts_per_wave,
         num_stages, smem_size,
         num_dispatch_threads, num_non_epilogue_threads, num_epilogue_threads,
         num_bytes_per_pull
