@@ -351,6 +351,8 @@ static void fp4_fp4_mega_moe(
     DG_HOST_ASSERT(rm == 1 and rn == 1 and rk == 16);
     DG_HOST_ASSERT(activation == "swiglu");
     DG_HOST_ASSERT(std::isfinite(routed_scaling_factor));
+    DG_HOST_ASSERT(shared_l1_weights_opt.has_value() == shared_l2_weights_opt.has_value());
+    DG_HOST_ASSERT(shared_l1_weights_opt.has_value() == x_bf16_opt.has_value());
 
     // Activation checks
     const auto activation_clamp =
@@ -371,6 +373,16 @@ static void fp4_fp4_mega_moe(
     DG_HOST_ASSERT(hidden == hidden_);
     DG_HOST_ASSERT(intermediate_hidden_2 == 2 * intermediate_hidden);
     DG_HOST_ASSERT(l1_weights.is_contiguous() and l2_weights.is_contiguous());
+    DG_HOST_ASSERT(y.is_cuda() and y.scalar_type() == torch::kBFloat16 and y.is_contiguous());
+    DG_HOST_ASSERT(y.dim() == 2 and y.size(1) == hidden);
+
+    const auto output_device = y.device();
+    const auto is_local_cuda_tensor = [&output_device](const torch::Tensor& tensor) {
+        return tensor.is_cuda() and tensor.device() == output_device;
+    };
+    DG_HOST_ASSERT(is_local_cuda_tensor(l1_weights) and is_local_cuda_tensor(l2_weights));
+    DG_HOST_ASSERT(is_local_cuda_tensor(l1_weights_sf) and is_local_cuda_tensor(l2_weights_sf));
+    DG_HOST_ASSERT(is_local_cuda_tensor(sym_buffer));
 
     // Check weight SF layout for E4M3 packing, MN-major, and TMA alignment
     constexpr int kGranMN = 1, kGranK = 16;
@@ -384,6 +396,7 @@ static void fp4_fp4_mega_moe(
         DG_HOST_ASSERT(cumulative_local_expert_recv_stats->scalar_type() == torch::kInt);
         DG_HOST_ASSERT(cumulative_local_expert_recv_stats->numel() == num_experts_per_rank);
         DG_HOST_ASSERT(cumulative_local_expert_recv_stats->is_contiguous());
+        DG_HOST_ASSERT(is_local_cuda_tensor(cumulative_local_expert_recv_stats.value()));
     }
 
     // Check the optional BF16 shared expert tensors
@@ -397,11 +410,11 @@ static void fp4_fp4_mega_moe(
         shared_l2_weights = shared_l2_weights_opt.value();
         x_bf16 = x_bf16_opt.value();
 
+        DG_HOST_ASSERT(shared_l1_weights.dim() == 2 and shared_l2_weights.dim() == 2);
         const auto shared_intermediate_hidden = static_cast<int>(shared_l2_weights.size(1));
         DG_HOST_ASSERT(shared_intermediate_hidden % intermediate_hidden == 0);
         num_shared_experts = shared_intermediate_hidden / intermediate_hidden;
         DG_HOST_ASSERT(num_shared_experts > 0);
-        DG_HOST_ASSERT(shared_l1_weights.dim() == 2 and shared_l2_weights.dim() == 2);
         DG_HOST_ASSERT(shared_l1_weights.size(0) == shared_intermediate_hidden * 2);
         DG_HOST_ASSERT(shared_l1_weights.size(1) == hidden);
         DG_HOST_ASSERT(shared_l2_weights.size(0) == hidden);
@@ -412,6 +425,8 @@ static void fp4_fp4_mega_moe(
         DG_HOST_ASSERT(get_major_type_ab(shared_l2_weights) == cute::UMMA::Major::K);
         DG_HOST_ASSERT(x_bf16.scalar_type() == torch::kBFloat16 and x_bf16.is_contiguous());
         DG_HOST_ASSERT(x_bf16.dim() == 2 and x_bf16.size(0) >= num_tokens and x_bf16.size(1) == hidden);
+        DG_HOST_ASSERT(is_local_cuda_tensor(shared_l1_weights) and is_local_cuda_tensor(shared_l2_weights));
+        DG_HOST_ASSERT(is_local_cuda_tensor(x_bf16));
     }
 
     // Check buffer bytes
@@ -433,12 +448,14 @@ static void fp4_fp4_mega_moe(
         const auto& l1_alphas = l1_alphas_opt.value();
         DG_HOST_ASSERT(l1_alphas.scalar_type() == torch::kFloat and l1_alphas.is_contiguous());
         DG_HOST_ASSERT(l1_alphas.dim() == 2 and l1_alphas.size(0) == num_experts_per_rank and l1_alphas.size(1) == 2);
+        DG_HOST_ASSERT(is_local_cuda_tensor(l1_alphas));
         l1_alphas_ptr = l1_alphas.data_ptr();
     }
     if (l2_alphas_opt.has_value()) {
         const auto& l2_alphas = l2_alphas_opt.value();
         DG_HOST_ASSERT(l2_alphas.scalar_type() == torch::kFloat and l2_alphas.is_contiguous());
         DG_HOST_ASSERT(l2_alphas.dim() == 1 and l2_alphas.size(0) == num_experts_per_rank);
+        DG_HOST_ASSERT(is_local_cuda_tensor(l2_alphas));
         l2_alphas_ptr = l2_alphas.data_ptr();
     }
 
@@ -449,6 +466,7 @@ static void fp4_fp4_mega_moe(
         const auto& a2_scales = a2_scales_opt.value();
         DG_HOST_ASSERT(a2_scales.scalar_type() == torch::kFloat and a2_scales.is_contiguous());
         DG_HOST_ASSERT(a2_scales.dim() == 1 and a2_scales.size(0) == num_experts_per_rank);
+        DG_HOST_ASSERT(is_local_cuda_tensor(a2_scales));
         a2_scales_ptr = a2_scales.data_ptr();
     }
 

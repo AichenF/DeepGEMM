@@ -394,7 +394,10 @@ struct MegaMoEBuffer {
             shared_with_sf ? shared_intermediate_hidden / sf_gran_k : 0);
         const auto input_topk_idx_layout = layout::Data(num_topk * sizeof(int64_t), false);
         const auto input_topk_weights_layout = layout::Data(num_topk * sizeof(float), false);
-        const auto l1_topk_weights_layout = layout::Data(sizeof(float), false);
+        // NVFP4 keeps the routing weight in full-pool metadata because the ring slot may
+        // be reused before combine. The older BF16/MXFP8 kernels still use this ring buffer.
+        const auto l1_topk_weights_layout = layout::Data(
+            num_mma_elem_bits == 4 ? 0 : sizeof(float), false);
 
         // Input buffers
         input_token_buffer = Buffer(

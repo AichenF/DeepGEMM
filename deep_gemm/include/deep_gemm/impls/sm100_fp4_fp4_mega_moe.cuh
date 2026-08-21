@@ -845,7 +845,7 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                 uint32_t n_idx = task_info.is_shared() ? n_block_idx * BLOCK_N : task_info.local_expert_idx * shape_n + n_block_idx * BLOCK_N;
                 uint32_t k_idx = k_block_idx * (task_info.is_shared() ? SHARED_BLOCK_K : BLOCK_K_BYTES);
                 uint32_t sfb_n_idx = n_block_idx * BLOCK_N;
-                uint32_t sfb_k_idx = task_info.is_shared() ? 0u :
+                uint32_t sfb_k_idx =
                     task_info.local_expert_idx * shape_sfb_k + k_block_idx * (BLOCK_K / (kGranK * 4));
 
                 // TMA copy weights with SF
@@ -1226,9 +1226,13 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                 // Per-expert down-proj input scale for the intermediate NVFP4 requant.
                 // `inv_global = 1 / a2_scale` normalizes the block SF into E4M3 range; the
                 // matching `a2_scale` factor is folded back into the L2 alpha (see below).
-                const float l2_input_scale_inv = a2_scales == nullptr ? 1.0f :
-                    (kFastMath ? math::fast_rcp(__ldg(a2_scales + task_info.local_expert_idx))
-                               : 1.0f / __ldg(a2_scales + task_info.local_expert_idx));
+                const float a2_scale = a2_scales == nullptr ?
+                    1.0f : __ldg(a2_scales + task_info.local_expert_idx);
+                if (a2_scales != nullptr and epilogue_warp_idx == 0 and lane_idx == 0) {
+                    DG_DEVICE_ASSERT(isfinite(a2_scale) and a2_scale > 0.0f);
+                }
+                const float l2_input_scale_inv = kFastMath ?
+                    math::fast_rcp(a2_scale) : 1.0f / a2_scale;
 
                 // Unified L1 epilogue: SwiGLU in-place using granularity 8 interleaved weights
                 // With `SM100_TMEM_LOAD_16dp256b1x`, gate/up pairs are in the same thread.

@@ -204,7 +204,8 @@ def fp4_fp4_mega_moe(y: torch.Tensor,
     ``l1_alphas`` and ``l2_alphas`` carry optional per-expert model scales.
     The caller must fold the FC1 input global scale into ``l1_alphas``;
     ``a2_scales`` is separate because the FC2 input is produced and requantized
-    inside this kernel. Shared weights and ``x_bf16`` must be provided together;
+    inside this kernel; when provided, every entry must be finite and strictly
+    positive. Shared weights and ``x_bf16`` must be provided together;
     ``routed_scaling_factor`` is applied before adding their BF16 output.
 
     CUDA Graph replay must reuse the captured ``x_bf16`` allocation and token

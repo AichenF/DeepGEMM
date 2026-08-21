@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 import deep_gemm
 from deep_gemm.utils import cast_back_from_fp4
 from deep_gemm.utils.dist import dist_print, init_dist
-from deep_gemm.testing import bench_kineto, calc_diff
+from deep_gemm.testing import calc_diff
 
 
 def _quantize_to_fp4_e2m1_rne(x: torch.Tensor) -> torch.Tensor:
@@ -349,16 +349,6 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
         f'Rank {rank_idx}: cumulative stats mismatch'
     dist_print(' > All correctness tests passed', once_in_node=True)
     dist_print(once_in_node=True)
-
-    # Benchmark
-    t_fused = bench_kineto(run_fused, 'mega_moe', barrier=lambda: dist.barrier())
-
-    # Count locally received tokens for FLOP statistics
-    num_recv_tokens = num_recv_per_expert.sum().item()
-    safe_div = lambda a, b: float('nan') if b == 0 else a / b
-    tflops = safe_div(2 * num_recv_tokens * (hidden * intermediate_hidden * 3) / 1e12, t_fused)
-    dist_print('Performance:', once_in_node=True)
-    dist_print(f' > EP: {rank_idx:2}/{num_ranks} | {tflops:4.0f} TFLOPS | {t_fused * 1e6:4.0f} us')
 
     # Exit
     dist.barrier()
