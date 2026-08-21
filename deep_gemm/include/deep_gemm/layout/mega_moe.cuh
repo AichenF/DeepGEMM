@@ -41,8 +41,6 @@ struct TokenSrcMetadata {
     uint32_t rank_idx;
     uint32_t token_idx;
     uint32_t topk_idx;
-    // Full-pool storage keeps this alive until L2 finishes, unlike the L1 ring.
-    float topk_weight;
 };
 
 struct Workspace {
@@ -350,7 +348,8 @@ struct MegaMoEBuffer {
            l1_topk_weights_buffer,
            l2_token_buffer,
            l2_sf_buffer,
-           combine_token_buffer;
+           combine_token_buffer,
+           routed_topk_weights_buffer;
 
     CUTLASS_HOST_DEVICE
     MegaMoEBuffer(void* base,
@@ -394,15 +393,23 @@ struct MegaMoEBuffer {
             shared_with_sf ? shared_intermediate_hidden / sf_gran_k : 0);
         const auto input_topk_idx_layout = layout::Data(num_topk * sizeof(int64_t), false);
         const auto input_topk_weights_layout = layout::Data(num_topk * sizeof(float), false);
-        // NVFP4 keeps the routing weight in full-pool metadata because the ring slot may
-        // be reused before combine. The older BF16/MXFP8 kernels still use this ring buffer.
+        // NVFP4 keeps routing weights in the full-pool tail sidecar because the L1 ring
+        // may be reused before L2. The older BF16/MXFP8 kernels use this ring buffer.
         const auto l1_topk_weights_layout = layout::Data(
             num_mma_elem_bits == 4 ? 0 : sizeof(float), false);
+        // NVFP4 applies routing weights after L2, so they must outlive the L1 ring.
+        // Place this NVFP4-only sidecar directly after the compact metadata workspace:
+        // NVFP4 keeps its established input-buffer offsets, while BF16/MXFP8 pay zero bytes.
+        const auto routed_topk_weights_layout = layout::Data(
+            num_mma_elem_bits == 4 ? sizeof(float) : 0, false);
 
         // Input buffers
+        routed_topk_weights_buffer = Buffer(
+            routed_topk_weights_layout, 1, workspace.num_max_pool_tokens,
+            workspace.get_end_ptr());
         input_token_buffer = Buffer(
             input_token_layout, 1, num_max_tokens_per_rank,
-            workspace.get_end_ptr());
+            routed_topk_weights_buffer.get_end_ptr());
         input_sf_buffer = Buffer(
             input_sf_layout, 1, num_max_tokens_per_rank,
             input_token_buffer.get_end_ptr());
@@ -449,6 +456,7 @@ struct MegaMoEBuffer {
         combine_token_buffer = Buffer(
             bf16_token_layout, num_topk + (num_shared_experts > 0 ? 1u : 0u), num_max_tokens_per_rank,
             with_sf ? l2_sf_buffer.get_end_ptr() : l2_token_buffer.get_end_ptr());
+
     }
 
     CUTLASS_HOST_DEVICE

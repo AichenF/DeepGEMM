@@ -655,7 +655,8 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                     current_rank_in_expert_idx);
                 // Write source metadata for combine write-back (logical pool token)
                 *workspace.get_token_src_metadata_ptr(pool_token_idx) =
-                    {current_rank_in_expert_idx, src_token_idx, src_topk_idx, weight};
+                    {current_rank_in_expert_idx, src_token_idx, src_topk_idx};
+                *buffer.routed_topk_weights_buffer.get_data_buffer(pool_token_idx).get_base_ptr<float>() = weight;
 
                 // Complete last chunk's store
                 issue_and_wait_pull_store(kNumChunks - 1);
@@ -1529,11 +1530,13 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                             dst_token_idx = pool_m_idx + m_idx_in_block;
                             dst_topk_idx = kNumTopk;
                         } else {
-                            const auto src_metadata = *workspace.get_token_src_metadata_ptr(pool_m_idx + m_idx_in_block);
+                            const auto pool_token_idx = pool_m_idx + m_idx_in_block;
+                            const auto src_metadata = *workspace.get_token_src_metadata_ptr(pool_token_idx);
                             dst_rank_idx = src_metadata.rank_idx;
                             dst_token_idx = src_metadata.token_idx;
                             dst_topk_idx = src_metadata.topk_idx;
-                            topk_weight = src_metadata.topk_weight;
+                            topk_weight = *buffer.routed_topk_weights_buffer
+                                .get_data_buffer(pool_token_idx).get_base_ptr<float>();
                         }
 
                         // Read from shared memory
