@@ -15,9 +15,9 @@ constexpr CUTLASS_HOST_DEVICE int get_element_size(const MmaKind& mma_kind) {
     switch (mma_kind) {
         case MmaKind::BF16:     return 2;
         case MmaKind::MXFP8FP4: return 1;
-        // NVFP4 values are addressed through packed-byte storage. MegaMoE uses
-        // `get_num_mma_elem_bits()` when it needs the logical 4-bit width.
-        case MmaKind::NVFP4:    return 1;
+        // NVFP4 is sub-byte and has no integer byte size. Bit-aware MegaMoE
+        // helpers handle it explicitly; generic descriptor paths must not.
+        case MmaKind::NVFP4:    return 0;
         default: return 0;
     }
 }

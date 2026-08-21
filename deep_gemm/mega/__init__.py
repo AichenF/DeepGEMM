@@ -139,7 +139,8 @@ def transform_weights_for_mega_moe(
     assert activation != 'situ' or (isinstance(l1_weights, tuple) and isinstance(l2_weights, tuple)), \
         '`situ` requires FP8xFP4 `(weight, sf)` tuples for both L1 and L2 weights'
     if isinstance(l1_weights, tuple):
-        # FP8: interleave gate/up for weight and SF, then transpose L1 SF for UTCCP
+        # Scaled FP8xFP4/NVFP4: both formats use the same MN-major SF layout.
+        # Interleave gate/up for weight and SF, then transpose L1 SF for UTCCP.
         l1_w = _interleave_weights(l1_weights[0])
         l1_sf = _transpose_sf_for_utccp(_interleave_weights(l1_weights[1]))
         l1_transformed = (l1_w, l1_sf)
@@ -200,9 +201,14 @@ def fp4_fp4_mega_moe(y: torch.Tensor,
     """Run NVFP4 routed experts, optionally fused with BF16 shared experts.
 
     NVFP4 operands use packed E2M1 values and per-16-element E4M3 scales.
-    ``l1_alphas``, ``l2_alphas`` and ``a2_scales`` carry optional per-expert
-    model scales. Shared weights and ``x_bf16`` must be provided together;
+    ``l1_alphas`` and ``l2_alphas`` carry optional per-expert model scales.
+    The caller must fold the FC1 input global scale into ``l1_alphas``;
+    ``a2_scales`` is separate because the FC2 input is produced and requantized
+    inside this kernel. Shared weights and ``x_bf16`` must be provided together;
     ``routed_scaling_factor`` is applied before adding their BF16 output.
+
+    CUDA Graph replay must reuse the captured ``x_bf16`` allocation and token
+    count because both are encoded in the captured shared-input tensor map.
     """
     assert (shared_l1_weights is None) == (shared_l2_weights is None) == (x_bf16 is None)
     _C.fp4_fp4_mega_moe(

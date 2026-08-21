@@ -151,6 +151,13 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     scores = torch.randn((num_tokens, num_experts), dtype=torch.float, device='cuda')
     topk_weights, topk_idx = torch.topk(scores, num_topk, dim=-1, largest=True, sorted=False)
     topk_weights = topk_weights.softmax(dim=-1)
+    if args.routing_hot_rank >= 0:
+        assert args.routing_hot_rank < num_ranks
+        assert num_experts_per_rank >= num_topk
+        first_expert = args.routing_hot_rank * num_experts_per_rank
+        topk_idx = (first_expert + torch.arange(
+            num_topk, dtype=torch.long, device='cuda'
+        )).expand(num_tokens, -1).contiguous()
     if args.masked_ratio > 0:
         rand_mask = torch.rand_like(topk_idx, dtype=torch.float)
         topk_idx.masked_fill_(rand_mask < args.masked_ratio, -1)
@@ -379,6 +386,8 @@ if __name__ == '__main__':
     parser.add_argument('--num-experts', type=int, default=256, help='Number of experts')
     parser.add_argument('--num-topk', type=int, default=8, help='Number of expert selections')
     parser.add_argument('--masked-ratio', type=float, default=0.0, help='Mask some expert selections')
+    parser.add_argument('--routing-hot-rank', type=int, default=-1,
+                        help='Route every token slot to one EP rank to stress ring reuse (-1 disables)')
     parser.add_argument('--fast-math', type=int, default=0, help='Enable fast math (0 or 1, default: 0 for exactness)')
     parser.add_argument('--per-expert-alphas', type=int, default=1,
                         help='Test per-local-expert L1/L2 scales (0 or 1)')

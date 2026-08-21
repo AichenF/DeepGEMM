@@ -351,7 +351,8 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
         kNumExpertsPerRank,
         kNumSMs, kNumRanks,
         kNumRingBlocks,
-        kNumSharedExperts>(
+        kNumSharedExperts,
+        BLOCK_K / 4>(
             workspace,
             shared_storage.task_info_full_barriers,
             shared_storage.task_info_empty_barriers,
@@ -652,11 +653,9 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                 const auto weight = *sym_buffer.map(
                     buffer.input_topk_weights_buffer.get_base_ptr<float>() + src_token_topk_idx,
                     current_rank_in_expert_idx);
-                *buffer.l1_topk_weights_buffer.get_data_buffer(pool_token_idx % kNumRingTokens).template get_base_ptr<float>() = weight;
-
                 // Write source metadata for combine write-back (logical pool token)
                 *workspace.get_token_src_metadata_ptr(pool_token_idx) =
-                    {current_rank_in_expert_idx, src_token_idx, src_topk_idx};
+                    {current_rank_in_expert_idx, src_token_idx, src_topk_idx, weight};
 
                 // Complete last chunk's store
                 issue_and_wait_pull_store(kNumChunks - 1);
@@ -1519,6 +1518,7 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                             break;
 
                         uint32_t dst_rank_idx, dst_token_idx, dst_topk_idx;
+                        float topk_weight = 1.0f;
                         if (task_info.is_shared()) {
                             // Shared output stays local: the extra combine slot beyond top-k
                             dst_rank_idx = sym_buffer.rank_idx;
@@ -1529,6 +1529,7 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                             dst_rank_idx = src_metadata.rank_idx;
                             dst_token_idx = src_metadata.token_idx;
                             dst_topk_idx = src_metadata.topk_idx;
+                            topk_weight = src_metadata.topk_weight;
                         }
 
                         // Read from shared memory
@@ -1541,9 +1542,6 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                         // Apply the per-token top-k routing weight here (post-L2), not before
                         // the intermediate quant. Shared-expert output carries no routing weight.
                         if (not task_info.is_shared()) {
-                            const float topk_weight = *buffer.l1_topk_weights_buffer
-                                .get_data_buffer(ring_m_idx + m_idx_in_block)
-                                .template get_base_ptr<float>();
                             const float2 w2 = {topk_weight, topk_weight};
                             auto* bf = reinterpret_cast<nv_bfloat162*>(&packed);
                             #pragma unroll

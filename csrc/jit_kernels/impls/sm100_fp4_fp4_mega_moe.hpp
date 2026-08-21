@@ -220,36 +220,38 @@ static void sm100_fp4_fp4_mega_moe(
                                                            sf_smem_outer_dim);
 
     // BF16 shared expert descriptors: same 128B tiles hold `block_k / 4` BF16 elements.
-    // With no shared experts they fall back to routed maps so the kernel params stay valid
+    // With no shared work they fall back to routed maps so an empty local-token tensor
+    // never passes a null base pointer to cuTensorMapEncodeTiled.
     const int shared_block_k = config.block_k / 4;
-    const auto tensor_map_shared_l1_acts = num_shared_experts > 0 ? make_tma_2d_desc(
+    const bool has_shared_work = num_shared_experts > 0 and num_tokens > 0;
+    const auto tensor_map_shared_l1_acts = has_shared_work ? make_tma_2d_desc(
         shared_l1_acts,
         // `shared_l1_acts` is the caller's current-token tensor, not a
         // capacity-sized symmetric buffer.  Describe its real row extent so
         // TMA zero-fills the partial M tile instead of reading past storage.
-        hidden, std::max(num_tokens, 1),
+        hidden, num_tokens,
         shared_block_k, config.load_block_m,
         static_cast<int>(shared_l1_acts.stride(-2)),
         config.swizzle_acts_mode) : tensor_map_l1_acts;
-    const auto tensor_map_shared_l1_weights = num_shared_experts > 0 ? make_tma_2d_desc(
+    const auto tensor_map_shared_l1_weights = has_shared_work ? make_tma_2d_desc(
         shared_l1_weights,
         hidden, shared_intermediate_hidden * 2,
         shared_block_k, config.load_block_n,
         static_cast<int>(shared_l1_weights.stride(-2)),
         config.swizzle_weights_mode) : tensor_map_l1_weights;
-    const auto tensor_map_shared_l1_output = num_shared_experts > 0 ? make_tma_2d_desc(
+    const auto tensor_map_shared_l1_output = has_shared_work ? make_tma_2d_desc(
         shared_l2_acts,
         shared_intermediate_hidden, num_max_tokens_per_rank,
         config.block_n / 2, config.store_block_m,
         static_cast<int>(shared_l2_acts.stride(-2)),
         config.swizzle_acts_mode) : tensor_map_l1_output;
-    const auto tensor_map_shared_l2_acts = num_shared_experts > 0 ? make_tma_2d_desc(
+    const auto tensor_map_shared_l2_acts = has_shared_work ? make_tma_2d_desc(
         shared_l2_acts,
         shared_intermediate_hidden, num_max_tokens_per_rank,
         shared_block_k, config.load_block_m,
         static_cast<int>(shared_l2_acts.stride(-2)),
         config.swizzle_acts_mode) : tensor_map_l2_acts;
-    const auto tensor_map_shared_l2_weights = num_shared_experts > 0 ? make_tma_2d_desc(
+    const auto tensor_map_shared_l2_weights = has_shared_work ? make_tma_2d_desc(
         shared_l2_weights,
         shared_intermediate_hidden, hidden,
         shared_block_k, config.load_block_n,
