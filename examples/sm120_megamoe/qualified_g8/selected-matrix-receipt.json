@@ -1,0 +1,58 @@
+{
+  "schema": "cake-sm120-canonical-fused-ready-chunk8-selected-matrix-v1",
+  "chunk8_generated_source_sha256": "dffd9acdc32716a523a05d8970035fef203b97084b1d5bc1b03db018e5ab0cae",
+  "status": "pass",
+  "case_count": 9,
+  "rank_record_count": 31,
+  "all_case_exit_zero": true,
+  "all_rank_status_pass": true,
+  "all_exact_bf16": true,
+  "all_fail_fields_zero": true,
+  "epoch_slots": [
+    0,
+    1,
+    0
+  ],
+  "cases": [
+    "world1-r1-distinct-balanced-c110",
+    "world2-r1-distinct-balanced-c110",
+    "world2-r1-zero-balanced-mask1-c110",
+    "world2-r17-analytic-balanced-mask7-c110",
+    "world2-r17-analytic-empty-mask0-c110",
+    "world2-r17-analytic-skewed-mask0-c110",
+    "world4-r128-distinct-balanced-mask0-c110",
+    "world8-r113-distinct-balanced-mask0-c110",
+    "world8-r2048-distinct-balanced-mask0-c110"
+  ],
+  "qualification": {
+    "runtime_replay_case_count": 7,
+    "runtime_replay_rank_record_count": 15,
+    "runtime_replay_cases": [
+      "world1-r1-distinct-balanced-c110",
+      "world2-r1-distinct-balanced-c110",
+      "world2-r1-zero-balanced-mask1-c110",
+      "world2-r17-analytic-balanced-mask7-c110",
+      "world2-r17-analytic-empty-mask0-c110",
+      "world2-r17-analytic-skewed-mask0-c110",
+      "world4-r128-distinct-balanced-mask0-c110"
+    ],
+    "full_sass_equivalence_case_count": 2,
+    "full_sass_equivalence_rank_record_count": 16,
+    "full_sass_equivalence_cases": [
+      "world8-r113-distinct-balanced-mask0-c110",
+      "world8-r2048-distinct-balanced-mask0-c110"
+    ],
+    "binary_sha256": "4d4d224471f9dd8d5f4bdcb95a0f67247e2726bbfedd4d1b76b8ddb29b2281d2",
+    "full_sass_sha256": "37fab3f1d45c830932e368f2cdf21476e28b8b51b5961281b9261a588176296b",
+    "cuda": "13.3",
+    "nccl": "2.30.7",
+    "gpu_arch": "sm_120a",
+    "registers": 128,
+    "stack_bytes": 8,
+    "spill_store_bytes": 0,
+    "spill_load_bytes": 0,
+    "local_bytes": 0,
+    "barriers": 1,
+    "dynamic_shared_memory_bytes": 94208
+  }
+}
