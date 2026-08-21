@@ -16,7 +16,7 @@ struct SM120ArchSpec {
     static constexpr int kMinBlockM = 64;   // kMWarps(4) * MMA_M(16), both FP8 and BF16 with kNWarps=2
 
     static std::vector<Layout> get_layout_candidates(const GemmDesc& desc) {
-        const int elem_size = get_element_size(desc.get_mma_kind());
+        const int elem_size = get_byte_addressable_element_size(desc.get_mma_kind());
         const int runtime_align = heuristics_runtime->get_mk_alignment_for_contiguous_layout();
         const int expected_m = desc.get_expected_m();
 
@@ -63,7 +63,7 @@ struct SM120ArchSpec {
         } else {
             int step = std::lcm(8, heuristics_runtime->get_block_n_multiple_of());
             for (int i = step; i <= 256; i += step) {
-                if ((i * get_element_size(desc.get_mma_kind())) % 64 != 0)
+                if ((i * elem_size) % 64 != 0)
                     continue;
                 block_n_candidates.push_back(i);
             }
@@ -242,7 +242,7 @@ struct SM120ArchSpec {
         const int64_t expected_k = desc.get_expected_k();
         const int k_blocks = ceil_div(static_cast<int>(expected_k), layout.block_k);
 
-        const int elem_size = get_element_size(desc.get_mma_kind());
+        const int elem_size = get_byte_addressable_element_size(desc.get_mma_kind());
         const int sf_bytes_a = (desc.kernel_type == KernelType::Kernel1D1D)
             ? align(layout.block_m * 4, 128) : 0;
         const int sf_bytes_b = (desc.kernel_type == KernelType::Kernel1D1D)

@@ -27,7 +27,7 @@ struct SM100ArchSpec {
 
     static std::vector<Layout> get_layout_candidates(const GemmDesc& desc) {
         // Block K is always in a fixed manner
-        const int block_k = 128 / get_element_size(desc.get_mma_kind());
+        const int block_k = 128 / get_byte_addressable_element_size(desc.get_mma_kind());
 
         // Always enable swap A/B (and multicasting if possible) for m-grouped GEMMs
         if (desc.gemm_type == GemmType::MGroupedContiguous or
