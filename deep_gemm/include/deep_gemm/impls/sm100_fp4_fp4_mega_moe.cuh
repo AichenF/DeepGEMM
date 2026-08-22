@@ -128,6 +128,11 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                             const __grid_constant__ cute::TmaDescriptor tensor_map_shared_l2_weights) {
 #if (defined(__CUDA_ARCH__) and (__CUDA_ARCH__ >= 1000)) or defined(__CLION_IDE__)
     using Barrier = cutlass::arch::ClusterTransactionBarrier;
+    // Routed contributions occupy [0, kNumTopk); keeping the shared output in
+    // the next slot makes it the highest set bit and therefore the last value
+    // consumed by the combine loop's __ffs traversal.
+    constexpr uint32_t kSharedCombineSlot = kNumTopk;
+    DG_STATIC_ASSERT(kSharedCombineSlot == kNumTopk, "Shared output must follow every routed combine slot");
     using Allocator = cute::TMEM::Allocator2Sm;
 
     // Template checks
@@ -1528,7 +1533,7 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
                             // Shared output stays local: the extra combine slot beyond top-k
                             dst_rank_idx = sym_buffer.rank_idx;
                             dst_token_idx = pool_m_idx + m_idx_in_block;
-                            dst_topk_idx = kNumTopk;
+                            dst_topk_idx = kSharedCombineSlot;
                         } else {
                             const auto pool_token_idx = pool_m_idx + m_idx_in_block;
                             const auto src_metadata = *workspace.get_token_src_metadata_ptr(pool_token_idx);
@@ -1633,7 +1638,7 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
             // Read top-k slot indices: each lane reads one slot, then broadcast via exchange
             const int stored_topk_slot_idx = lane_idx < kNumTopk ?
                 static_cast<int>(__ldg(buffer.input_topk_idx_buffer.get_base_ptr<int64_t>() + token_idx * kNumTopk + lane_idx)) :
-                (kNumSharedExperts > 0 and lane_idx == kNumTopk ? static_cast<int>(kNumTopk) : -1);
+                (kNumSharedExperts > 0 and lane_idx == kSharedCombineSlot ? static_cast<int>(kSharedCombineSlot) : -1);
             const uint32_t total_mask = __ballot_sync(0xffffffff, stored_topk_slot_idx >= 0);
 
             // Iterate all chunks

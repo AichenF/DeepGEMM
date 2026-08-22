@@ -130,6 +130,18 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
         mma_type='fp4xfp4'
     )
 
+    # The FP4 API must reject a buffer sliced with another MMA layout before
+    # entering C++; an FP8 buffer may be large enough to pass a byte-size check
+    # while still placing every FP4 input at the wrong offset.
+    buffer.mma_type = 'fp8xfp4'
+    try:
+        deep_gemm.fp4_fp4_mega_moe(None, None, None, buffer)
+        assert False, 'FP4 API accepted an FP8-layout symmetric buffer'
+    except AssertionError as exception:
+        assert 'requires an fp4xfp4 symmetric buffer' in str(exception)
+    finally:
+        buffer.mma_type = 'fp4xfp4'
+
     dist_print('Config:', once_in_node=True)
     dist_print(f' > MMA: fp4xfp4 (NVFP4 x NVFP4)', once_in_node=True)
     dist_print(f' > Tokens: {num_tokens}/{num_max_tokens_per_rank}', once_in_node=True)

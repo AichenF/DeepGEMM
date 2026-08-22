@@ -31,6 +31,9 @@ class SymmBuffer:
         self.num_topk = num_topk
         self.hidden = hidden
         self.intermediate_hidden = intermediate_hidden
+        self.num_shared_experts = num_shared_experts
+        self.mma_type = mma_type
+        self.activation = activation
 
         # Allocate a symmetric buffer
         num_bytes, slice_input_buffers = _C.get_symm_buffer_size_for_mega_moe(
@@ -211,7 +214,15 @@ def fp4_fp4_mega_moe(y: torch.Tensor,
     CUDA Graph replay must reuse the captured ``x_bf16`` allocation and token
     count because both are encoded in the captured shared-input tensor map.
     """
+    assert sym_buffer.mma_type == 'fp4xfp4', \
+        f'NVFP4 MegaMoE requires an fp4xfp4 symmetric buffer, got {sym_buffer.mma_type!r}'
+    assert sym_buffer.activation == activation, \
+        f'Activation mismatch: buffer={sym_buffer.activation!r}, call={activation!r}'
     assert (shared_l1_weights is None) == (shared_l2_weights is None) == (x_bf16 is None)
+    num_shared_experts = 0 if shared_l2_weights is None else \
+        shared_l2_weights.size(1) // sym_buffer.intermediate_hidden
+    assert sym_buffer.num_shared_experts == num_shared_experts, \
+        f'Shared-expert layout mismatch: buffer={sym_buffer.num_shared_experts}, call={num_shared_experts}'
     _C.fp4_fp4_mega_moe(
         y,
         l1_weights, l2_weights,

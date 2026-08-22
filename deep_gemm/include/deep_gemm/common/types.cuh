@@ -18,7 +18,8 @@ constexpr CUTLASS_HOST_DEVICE int get_element_size(const MmaKind& mma_kind) {
         // NVFP4 is sub-byte and has no integer byte size. Bit-aware MegaMoE
         // helpers handle it explicitly; generic descriptor paths must not.
         case MmaKind::NVFP4:    return 0;
-        default: return 0;
+        // Keep unknown kinds distinguishable from the valid sub-byte NVFP4 kind.
+        default: return -1;
     }
 }
 

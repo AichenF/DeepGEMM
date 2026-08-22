@@ -348,8 +348,10 @@ static void fp4_fp4_mega_moe(
     // Config checks
     const auto num_tokens = static_cast<int>(y.size(0));
     const auto [rm, rn, rk] = recipe;
-    DG_HOST_ASSERT(rm == 1 and rn == 1 and rk == 16);
-    DG_HOST_ASSERT(activation == "swiglu");
+    DG_HOST_ASSERT((rm == 1 and rn == 1 and rk == 16) and
+                   "NVFP4 MegaMoE currently supports only recipe (1, 1, 16)");
+    DG_HOST_ASSERT(activation == "swiglu" and
+                   "NVFP4 MegaMoE currently supports only SwiGLU");
     DG_HOST_ASSERT(std::isfinite(routed_scaling_factor));
     DG_HOST_ASSERT(shared_l1_weights_opt.has_value() == shared_l2_weights_opt.has_value());
     DG_HOST_ASSERT(shared_l1_weights_opt.has_value() == x_bf16_opt.has_value());
@@ -424,6 +426,9 @@ static void fp4_fp4_mega_moe(
         DG_HOST_ASSERT(get_major_type_ab(shared_l1_weights) == cute::UMMA::Major::K);
         DG_HOST_ASSERT(get_major_type_ab(shared_l2_weights) == cute::UMMA::Major::K);
         DG_HOST_ASSERT(x_bf16.scalar_type() == torch::kBFloat16 and x_bf16.is_contiguous());
+        // The leading dimension may be over-allocated for CUDA Graphs, but
+        // replay must preserve both this allocation and the captured token count
+        // because they are encoded in the shared-input TMA descriptor.
         DG_HOST_ASSERT(x_bf16.dim() == 2 and x_bf16.size(0) >= num_tokens and x_bf16.size(1) == hidden);
         DG_HOST_ASSERT(is_local_cuda_tensor(shared_l1_weights) and is_local_cuda_tensor(shared_l2_weights));
         DG_HOST_ASSERT(is_local_cuda_tensor(x_bf16));
@@ -477,6 +482,9 @@ static void fp4_fp4_mega_moe(
 
     // Dispatch into different architectures
     if (arch_major == 10) {
+        // With no shared expert, these descriptor placeholders alias routed
+        // tensors. Their dtype/layout is intentionally irrelevant because the
+        // kHasShared=false kernel specialization never dereferences them.
         sm100_fp4_fp4_mega_moe(y,
                                l1_acts, l1_acts_sf,
                                l2_acts, l2_acts_sf,

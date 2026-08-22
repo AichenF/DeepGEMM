@@ -109,7 +109,9 @@ static std::tuple<int, int, int, int, int> get_block_config_for_mega_moe(
             return {2, 192, 32, 128, 2};
         }
     }();
-    // `block_k` above is in bytes: convert to elements
+    // `block_k` above is in bytes: convert to elements. The same threshold
+    // table was revalidated by the NVFP4 EP8 token sweep; NVFP4 therefore
+    // keeps the byte footprint while doubling K elements relative to FP8.
     block_k = block_k * 8 / get_num_mma_elem_bits(mma_kind);
 
     // Check whether our `block_m` lies in `kCandidateBlockM`
