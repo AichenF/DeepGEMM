@@ -132,7 +132,6 @@ sm100_fp4_fp4_mega_moe_impl(void* y,
     // the next slot makes it the highest set bit and therefore the last value
     // consumed by the combine loop's __ffs traversal.
     constexpr uint32_t kSharedCombineSlot = kNumTopk;
-    DG_STATIC_ASSERT(kSharedCombineSlot == kNumTopk, "Shared output must follow every routed combine slot");
     using Allocator = cute::TMEM::Allocator2Sm;
 
     // Template checks
