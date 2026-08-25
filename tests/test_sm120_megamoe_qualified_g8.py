@@ -9,15 +9,15 @@ QUALIFIED = ROOT / "examples" / "sm120_megamoe" / "qualified_g8"
 MANIFEST = json.loads((QUALIFIED / "qualification-manifest.json").read_text())
 
 EXPECTED_CASES = [
-    "world1-r1-distinct-balanced-c110",
-    "world2-r1-distinct-balanced-c110",
-    "world2-r1-zero-balanced-mask1-c110",
-    "world2-r17-analytic-balanced-mask7-c110",
-    "world2-r17-analytic-empty-mask0-c110",
-    "world2-r17-analytic-skewed-mask0-c110",
-    "world4-r128-distinct-balanced-mask0-c110",
-    "world8-r113-distinct-balanced-mask0-c110",
-    "world8-r2048-distinct-balanced-mask0-c110",
+    "world1-r1-distinct-balanced-mask0",
+    "world2-r1-distinct-balanced-mask0",
+    "world2-r1-zero-balanced-mask1",
+    "world2-r17-analytic-balanced-mask7",
+    "world2-r17-analytic-empty-mask0",
+    "world2-r17-analytic-skewed-mask0",
+    "world4-r128-distinct-balanced-mask0",
+    "world8-r113-distinct-balanced-mask0",
+    "world8-r2048-distinct-balanced-mask0",
 ]
 
 
@@ -26,37 +26,86 @@ def sha256(path: Path) -> str:
 
 
 def test_qualified_artifacts_match_manifest() -> None:
-    assert MANIFEST["schema"] == "deepgemm-sm120-megamoe-qualified-g8-v1"
+    assert MANIFEST["schema"] == "deepgemm-sm120-megamoe-qualified-g8-v2"
     for name, expected in MANIFEST["artifacts"].items():
         assert sha256(QUALIFIED / name) == expected
 
     donor = MANIFEST["direct_math_donor"]
     assert sha256(ROOT / donor["path"]) == donor["sha256"]
+    lineage = MANIFEST["reference_lineage"]
+    assert lineage["flattened_deepgemm_reference"]["repository_commit"].startswith(
+        "a35b6975"
+    )
+    assert lineage["flattened_deepgemm_reference"]["sha256"].startswith("dffd9acd")
+    assert lineage["typed_two_stage"]["cake_commit"].startswith("177d3a72")
+    assert (
+        lineage["typed_two_stage"]["sha256"]
+        == MANIFEST["performance"]["typed_two_stage_source_sha256"]
+    )
+    assert (
+        lineage["selected_three_stage"]["cake_commit"]
+        == MANIFEST["cake_ir_generation"]["commit"]
+    )
+    assert (
+        lineage["selected_three_stage"]["sha256"]
+        == MANIFEST["artifacts"][
+            "cake_sm120_megamoe_production_canonical_fused_ready_chunk8.cu"
+        ]
+    )
 
 
 def test_selected_matrix_receipt_is_fail_closed() -> None:
     receipt_path = QUALIFIED / "selected-matrix-receipt.json"
     receipt = json.loads(receipt_path.read_text())
     assert sha256(receipt_path) == MANIFEST["correctness"]["receipt_sha256"]
+    assert receipt["schema"] == "cake-sm120-megamoe-stage3-correctness-matrix-v1"
+    assert (
+        receipt["source_sha256"]
+        == MANIFEST["artifacts"][
+            "cake_sm120_megamoe_production_canonical_fused_ready_chunk8.cu"
+        ]
+    )
+    assert receipt["binary_sha256"] == MANIFEST["build"]["correctness_binary_sha256"]
     assert receipt["status"] == "pass"
     assert receipt["case_count"] == 9
     assert receipt["rank_record_count"] == 31
-    assert receipt["cases"] == EXPECTED_CASES
-    assert receipt["epoch_slots"] == [0, 1, 0]
-    for field in (
-        "all_case_exit_zero",
-        "all_rank_status_pass",
-        "all_exact_bf16",
-        "all_fail_fields_zero",
-    ):
+    assert list(receipt["cases"]) == EXPECTED_CASES
+    for field in ("all_exact_bf16", "all_fail_fields_zero"):
         assert receipt[field] is True
+    assert sum(case["rank_count"] for case in receipt["cases"].values()) == 31
+    for case in receipt["cases"].values():
+        assert case["rank_count"] == len(case["routes"])
+        assert all(route >= 0 for route in case["routes"])
+        assert case["stderr_bytes"] == 0
 
-    qualification = receipt["qualification"]
-    assert qualification["runtime_replay_case_count"] == 7
-    assert qualification["runtime_replay_rank_record_count"] == 15
-    assert qualification["full_sass_equivalence_case_count"] == 2
-    assert qualification["full_sass_equivalence_rank_record_count"] == 16
-    assert len(qualification["full_sass_sha256"]) == 64
+
+def test_stage3_performance_receipt_is_fail_closed() -> None:
+    receipt_path = QUALIFIED / "stage3-performance-receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    assert sha256(receipt_path) == MANIFEST["performance"]["receipt_sha256"]
+    assert receipt["schema"] == "cake-sm120-megamoe-stage3-paired-performance-v1"
+    assert receipt["status"] == "pass"
+    assert receipt["world_size"] == 8
+    assert receipt["active_rows"] == 2048
+    assert receipt["run_count_per_variant"] == 4
+    assert receipt["repeat_per_run"] == 100
+    assert receipt["pooled_current"]["sample_count"] == 400
+    assert receipt["pooled_stage3"]["sample_count"] == 400
+    assert (
+        receipt["candidate"]["source_sha256"]
+        == MANIFEST["artifacts"][
+            "cake_sm120_megamoe_production_canonical_fused_ready_chunk8.cu"
+        ]
+    )
+    assert (
+        receipt["candidate"]["binary_sha256"]
+        == MANIFEST["build"]["performance_binary_sha256"]
+    )
+    assert (
+        receipt["full_correctness_matrix"]["receipt_sha256"]
+        == MANIFEST["correctness"]["receipt_sha256"]
+    )
+    assert receipt["stage3_vs_current_percent"] < -3.0
 
 
 def test_kernel_and_hosts_have_no_staging_scaffolding() -> None:
@@ -69,6 +118,11 @@ def test_kernel_and_hosts_have_no_staging_scaffolding() -> None:
     runner = (QUALIFIED / "run_sm120_canonical_fused_ready_chunk8_perf.py").read_text()
 
     assert kernel.count("__global__") == 1
+    stage_signature = "64, 128, 128, 128, 128, 0, 3, 128, 256, 109,"
+    old_stage_signature = "64, 128, 128, 128, 128, 0, 2, 128, 256, 109,"
+    assert kernel.count(stage_signature) == 2
+    assert old_stage_signature not in kernel
+    assert kernel.count("cake_sm120_g8_capture_epoch_baselines") == 2
     assert re.search(r"\bint\s+main\s*\(", support_host) is None
     assert "run_rank" not in support_host
     assert "importlib" not in runner
@@ -95,6 +149,7 @@ def test_qualified_directory_contains_only_reviewed_sources() -> None:
         "qualification-manifest.json",
         "run_sm120_canonical_fused_ready_chunk8_perf.py",
         "selected-matrix-receipt.json",
+        "stage3-performance-receipt.json",
     }
     assert {path.name for path in QUALIFIED.iterdir() if path.is_file()} == expected
 
@@ -108,10 +163,8 @@ def test_formal_qualification_limits_remain_explicit() -> None:
         "shared_expert_in_scope": False,
     }
     assert MANIFEST["performance"]["single_launch_full_chain"] is True
-    equivalence = MANIFEST["performance"]["baseline_equivalence"]
+    assert MANIFEST["performance"]["stage3_vs_current_percent"] < -3.0
     assert (
-        equivalence["clean_full_sass_sha256"]
-        == equivalence["reference_full_sass_sha256"]
+        MANIFEST["performance"]["candidate_mean_ms"]
+        < MANIFEST["performance"]["typed_two_stage_mean_ms"]
     )
-    assert abs(equivalence["mean_delta_percent"]) < 1.0
-    assert equivalence["all_pre_post_correctness_checks_passed"] is True

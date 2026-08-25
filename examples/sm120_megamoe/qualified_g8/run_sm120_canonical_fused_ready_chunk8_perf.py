@@ -17,18 +17,21 @@ from typing import Any
 _RANK_PREFIX = "READY_CHUNK8_PERF_RANK_JSON="
 _SUMMARY_PREFIX = "READY_CHUNK8_PERF_RESULT_JSON="
 _AGGREGATE_PREFIX = "READY_CHUNK8_PERF_AGGREGATE_JSON="
-_SOURCE_SHA256 = "dffd9acdc32716a523a05d8970035fef203b97084b1d5bc1b03db018e5ab0cae"
-_MATRIX_SCHEMA = "cake-sm120-canonical-fused-ready-chunk8-selected-matrix-v1"
+_SOURCE_SHA256 = "2d68fefb3c42ede5f0fcb722884dc26b3a80b035c450cce23eaf7c7840d4d198"
+_CORRECTNESS_BINARY_SHA256 = (
+    "c88d7b32fbfcf64380e65e06dfcb2f92831664913c7aa2e93e99da24026501f8"
+)
+_MATRIX_SCHEMA = "cake-sm120-megamoe-stage3-correctness-matrix-v1"
 _EXPECTED_CASES = (
-    "world1-r1-distinct-balanced-c110",
-    "world2-r1-distinct-balanced-c110",
-    "world2-r1-zero-balanced-mask1-c110",
-    "world2-r17-analytic-balanced-mask7-c110",
-    "world2-r17-analytic-empty-mask0-c110",
-    "world2-r17-analytic-skewed-mask0-c110",
-    "world4-r128-distinct-balanced-mask0-c110",
-    "world8-r113-distinct-balanced-mask0-c110",
-    "world8-r2048-distinct-balanced-mask0-c110",
+    "world1-r1-distinct-balanced-mask0",
+    "world2-r1-distinct-balanced-mask0",
+    "world2-r1-zero-balanced-mask1",
+    "world2-r17-analytic-balanced-mask7",
+    "world2-r17-analytic-empty-mask0",
+    "world2-r17-analytic-skewed-mask0",
+    "world4-r128-distinct-balanced-mask0",
+    "world8-r113-distinct-balanced-mask0",
+    "world8-r2048-distinct-balanced-mask0",
 )
 _ZERO_FIELDS = (
     "precheck_failures",
@@ -71,15 +74,13 @@ def validate_matrix_receipt(path: Path) -> tuple[dict[str, Any], str]:
         raise ValueError("matrix receipt must be a JSON object")
     required = {
         "schema": _MATRIX_SCHEMA,
-        "chunk8_generated_source_sha256": _SOURCE_SHA256,
+        "source_sha256": _SOURCE_SHA256,
+        "binary_sha256": _CORRECTNESS_BINARY_SHA256,
         "status": "pass",
         "case_count": len(_EXPECTED_CASES),
         "rank_record_count": 31,
-        "all_case_exit_zero": True,
-        "all_rank_status_pass": True,
         "all_exact_bf16": True,
         "all_fail_fields_zero": True,
-        "epoch_slots": [0, 1, 0],
     }
     for field, expected in required.items():
         if receipt.get(field) != expected:
@@ -87,8 +88,24 @@ def validate_matrix_receipt(path: Path) -> tuple[dict[str, Any], str]:
                 f"matrix receipt {field} mismatch: "
                 f"{receipt.get(field)!r} != {expected!r}"
             )
-    if tuple(receipt.get("cases", ())) != _EXPECTED_CASES:
+    cases = receipt.get("cases")
+    if not isinstance(cases, dict) or tuple(cases) != _EXPECTED_CASES:
         raise ValueError("matrix receipt case set/order mismatch")
+    if sum(int(case.get("rank_count", -1)) for case in cases.values()) != 31:
+        raise ValueError("matrix receipt rank count does not close")
+    for name, case in cases.items():
+        if not isinstance(case, dict):
+            raise ValueError(f"matrix receipt case {name} must be an object")
+        rank_count = int(case.get("rank_count", -1))
+        routes = case.get("routes")
+        if (
+            rank_count <= 0
+            or not isinstance(routes, list)
+            or len(routes) != rank_count
+            or any(int(route) < 0 for route in routes)
+            or int(case.get("stderr_bytes", -1)) != 0
+        ):
+            raise ValueError(f"matrix receipt case {name} is incomplete")
     return receipt, hashlib.sha256(raw).hexdigest()
 
 

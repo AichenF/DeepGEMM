@@ -20,6 +20,10 @@ G8 chunks: six W1 chunks and seven W2 chunks per M64 task, with eight physical
 N128 tiles in each chunk. The single global entry covers dispatch, task build,
 W1, SwiGLU/requantization, W2, remote return, and combine.
 
+Both W1 and W2 use a three-stage TMA ring. This is the selected CAKE-generated
+optimization: the math tile, task topology, dynamic shared-memory allocation,
+and G8 protocol remain unchanged from the typed two-stage comparison source.
+
 The transport protocol captures signal baselines before worker/service
 divergence, uses strong-signal puts, and proves two-slot reuse with a
 post-combine acknowledgement. It does not issue a flush in the steady-state
@@ -38,6 +42,8 @@ protocol.
 - `run_sm120_canonical_fused_ready_chunk8_perf.py`: distributed benchmark and
   result validator
 - `selected-matrix-receipt.json`: correctness qualification summary
+- `stage3-performance-receipt.json`: paired two-stage/three-stage performance
+  evidence
 - `qualification-manifest.json`: immutable source, build, and evidence hashes
 
 The SM120 math implementation is provided by
@@ -96,10 +102,9 @@ build/sm120_megamoe_g8_correctness
 
 Success requires process exit 0, `status=pass`, `exact_bf16_equal=true`, zero
 stage/protocol/signal/ack/output/guard mismatches, and one kernel launch per
-epoch. The selected matrix covers 9 cases and 31 rank records through world
-size 8 and 2048 active rows. Seven cases were rerun from the cleaned source;
-the two P8 cases are inherited from the original qualification because the
-complete CUDA SASS dumps are byte-identical. The exact boundary and hashes are
+epoch. The selected three-stage source was rerun across all 9 cases and 31 rank
+records through world size 8 and 2048 active rows; no case is inherited from an
+older binary. The exact source, binary, routes, and per-case stderr boundary are
 recorded in `selected-matrix-receipt.json`.
 
 ## Performance gate
@@ -120,13 +125,24 @@ python "$Q/run_sm120_canonical_fused_ready_chunk8_perf.py" \
   --output build/sm120_megamoe_g8_r100.json
 ```
 
-The qualified P8/R2048 run measured 23.393127 ms mean, 23.358768 ms P50,
-24.978671 ms P95, and 555.205 aggregate tensor TFLOP/s. The event contains one
-full-chain kernel per sample; communicator rendezvous and correctness audits
-are outside the event. A final same-node paired check on four otherwise idle
-GPUs measured 3.822493 ms for the reference and 3.814461 ms for this baseline,
-a `-0.210%` delta within normal run-to-run variation. Their complete CUDA SASS
-dumps are byte-identical.
+The selected P8/R2048 comparison used four 100-repeat runs per variant (400
+distributed samples each). The typed two-stage source measured 23.035075 ms
+mean and 563.835 aggregate tensor TFLOP/s; this three-stage source measured
+22.187767 ms and 585.367 aggregate tensor TFLOP/s, a `-3.678%` mean-latency
+change. Two independently ordered run groups measured `-3.746%` and `-3.610%`.
+The event contains one full-chain kernel per sample; communicator rendezvous and
+correctness audits are outside the event. The complete paired record is
+`stage3-performance-receipt.json`.
+
+The flattened source differs from the flattened DeepGEMM reference at
+`a35b6975` in two bounded ways: GIN service calls are emitted through the typed
+CAKE transport bridge, and the W1/W2 TMA stage parameters are three instead of
+two. The direct math donor is a separately pinned SM120 header. The QMMA count
+(64), deferred-barrier count (78), task shape, and dynamic shared-memory
+allocation remain unchanged. Static `UTMALDG` sites compact from 112 to 32 while
+dynamic K work is unchanged. One inherited layout comment still says
+"two-stage"; the generated-source hash and the two stage-3 instantiation gates
+are authoritative.
 
 ## Qualification limits
 
@@ -134,7 +150,7 @@ The selected matrix is exact-BF16 clean, but the executable intentionally keeps
 its formal `functional_qualified`, `resource_qualified`, and
 `performance_qualified` flags false. The register-repartition instruction was
 not retained by the compiler, so this is not a production resource or
-performance sign-off. The qualified resource record is 128 registers, 8 bytes
+performance sign-off. The qualified resource record is 127 registers, 8 bytes
 of stack, zero spills, zero local memory, one barrier, and 94,208 bytes of
 dynamic shared memory. Shared experts and public DeepGEMM API/JIT integration
 are deferred.

@@ -3857,7 +3857,7 @@ __device__ __noinline__ void cake_sm120_canonical_ready_chunk8_execute_w1()
     const int n = p->worker_n[worker];
     deep_gemm::cake_sm120_canonical_ready_chunk8_w1_gemm<
         0, 6144, 7168, 32, 32, 48,
-        64, 128, 128, 128, 128, 0, 2, 128, 256, 109,
+        64, 128, 128, 128, 128, 0, 3, 128, 256, 109,
         deep_gemm::GemmType::MGroupedContiguous, false,
         cutlass::bfloat16_t,
         deep_gemm::epilogue::transform::EpilogueIdentity,
@@ -3894,7 +3894,7 @@ __device__ __noinline__ void cake_sm120_canonical_ready_chunk8_execute_w2()
     const int n = p->worker_n[worker];
     deep_gemm::cake_sm120_canonical_ready_chunk8_w2_gemm<
         0, 7168, 3072, 32, 32, 48,
-        64, 128, 128, 128, 128, 0, 2, 128, 256, 109,
+        64, 128, 128, 128, 128, 0, 3, 128, 256, 109,
         deep_gemm::GemmType::MGroupedContiguous, false,
         cutlass::bfloat16_t,
         deep_gemm::epilogue::transform::EpilogueIdentity,
@@ -4084,50 +4084,70 @@ __device__ __noinline__ void cake_sm120_canonical_ready_worker()
     }
 }
 
-__device__ __noinline__ void cake_sm120_canonical_ready_service_precombine(
-    CakeSm120CanonicalFusedReadyParams const* __restrict__ p)
+__device__ __forceinline__ void cake_sm120_g8_capture_epoch_baselines(unsigned long long* __restrict__ result_signal_base_scratch, unsigned long long* __restrict__ combine_ack_signal_base_scratch, int world_size, ncclDevComm const* __restrict__ gin_dev_comm)
 {
-    if ((int)threadIdx.x != 0) return;
-    ncclGin gin{*(p->gin_dev_comm), 0};
-    unsigned int sent_mask = 0u;
-    // Result and ack baselines were captured before ready_pre's world barrier.
-    // Re-reading here would race with an already-arrived current-epoch signal.
-    while (sent_mask != ((1u << p->world_size) - 1u)) {
+    if (elect_sync()) {
         #pragma unroll
-        for (int source = 0; source < 8; ++source) {
-            if (source >= p->world_size || (sent_mask & (1u << source))) continue;
-            int routes = p->source_route_counts[source];
-            if (routes < 0 || routes > 12288) {
-                atomicMax(p->protocol_error, 1u);
-                routes = 0;
+        for (int peer = 0; peer < 8; peer++) {
+            if (peer < world_size) {
+                // gin_read_signal: acquire, 64-bit signal snapshot
+                uint64_t _gin_signal_0;
+                {
+                    ncclGin __gin{*(gin_dev_comm), (int)(0)};
+                    _gin_signal_0 = __gin.readSignal((ncclGinSignal_t)(peer + 8), 64, cuda::memory_order_acquire);
+                }
+                // gin_read_signal: acquire, 64-bit signal snapshot
+                uint64_t _gin_signal_1;
+                {
+                    ncclGin __gin{*(gin_dev_comm), (int)(0)};
+                    _gin_signal_1 = __gin.readSignal((ncclGinSignal_t)(peer + 16), 64, cuda::memory_order_acquire);
+                }
+                *(reinterpret_cast<unsigned long long*>(result_signal_base_scratch) + (peer)) = _gin_signal_0;
+                *(reinterpret_cast<unsigned long long*>(combine_ack_signal_base_scratch) + (peer)) = _gin_signal_1;
             }
-            const unsigned int target = (unsigned int)routes * 56u;
-            cuda::atomic_ref<unsigned int, cuda::thread_scope_device> done(
-                p->source_w2_done[source]);
-            if (done.load(cuda::memory_order_acquire) < target &&
-                atomicAdd(p->protocol_error, 0u) == 0u) continue;
-            const int send_routes = routes > 1 ? routes : 1;
-            const size_t bytes = (size_t)send_routes * 7168u * 2u;
-            const size_t local_byte = (size_t)(source * 2 + (p->epoch & 1u)) * 176160768ull;
-            const size_t remote_byte = (size_t)(p->rank * 2 + (p->epoch & 1u)) * 176160768ull;
-            __threadfence_system();
-            gin.put(ncclTeamWorld(*(p->gin_dev_comm)), source,
-                    p->result_inbox_window, remote_byte,
-                    p->result_out_window, local_byte, bytes,
-                    ncclGin_StrongSignalAdd{(ncclGinSignal_t)(8 + p->rank), 1ull},
-                    ncclGin_None{}, ncclCoopThread());
-            sent_mask |= 1u << source;
         }
     }
-    #pragma unroll
-    for (int owner = 0; owner < 8; ++owner) {
-        if (owner < p->world_size)
-            gin.waitSignal(ncclCoopThread(), (ncclGinSignal_t)(8 + owner),
-                           p->result_signal_base_scratch[owner] + 1ull, 64,
-                           cuda::memory_order_acquire);
+}
+
+__device__ __noinline__ void cake_sm120_canonical_ready_service_precombine(int* __restrict__ source_route_counts, unsigned int* __restrict__ source_w2_done, unsigned int* __restrict__ protocol_error, unsigned long long* __restrict__ result_signal_base_scratch, unsigned int* __restrict__ combine_ready, int world_size, int rank, unsigned int epoch, ncclDevComm const* __restrict__ gin_dev_comm, __nv_bfloat16* __restrict__ result_out, ncclWindow_t result_out_window, __nv_bfloat16* __restrict__ result_inbox, ncclWindow_t result_inbox_window)
+{
+    if (elect_sync()) {
+        unsigned int sent_mask = 0u;
+        while (sent_mask != ((1u << (world_size)) - 1u)) {
+            #pragma unroll
+            for (int source = 0; source < 8; ++source) {
+                if (source >= (world_size) || (sent_mask & (1u << source))) continue;
+                int routes = source_route_counts[source];
+                if (routes < 0 || routes > 12288) {
+                    atomicMax(protocol_error, 1u);
+                    routes = 0;
+                }
+                const unsigned int target = (unsigned int)routes * 56u;
+                cuda::atomic_ref<unsigned int, cuda::thread_scope_device> done(source_w2_done[source]);
+                if (done.load(cuda::memory_order_acquire) < target && atomicAdd(protocol_error, 0u) == 0u) continue;
+                const int send_routes = routes > 1 ? routes : 1;
+                const size_t bytes = (size_t)send_routes * 7168u * 2u;
+                const size_t local_byte = (size_t)(source * 2 + ((epoch) & 1u)) * 176160768ull;
+                const size_t remote_byte = (size_t)((rank) * 2 + ((epoch) & 1u)) * 176160768ull;
+                __threadfence_system();
+                {
+                    ncclGin __gin{*(gin_dev_comm), (int)(0)};
+                    __gin.put(ncclTeamWorld(*(gin_dev_comm)), source, result_inbox_window, remote_byte, result_out_window, local_byte, bytes,
+                        ncclGin_StrongSignalAdd{(ncclGinSignal_t)((rank) + 8), 1ull}, ncclGin_None{}, ncclCoopThread());
+                }
+                sent_mask |= 1u << source;
+            }
+        }
+        #pragma unroll
+        for (int owner = 0; owner < 8; ++owner) {
+            if (owner < (world_size)) {
+                ncclGin __gin{*(gin_dev_comm), (int)(0)};
+                __gin.waitSignal(ncclCoopThread(), (ncclGinSignal_t)(owner + 8), (uint64_t)(result_signal_base_scratch[owner] + 1ull), 64, cuda::memory_order_acquire);
+            }
+        }
+        cuda::atomic_ref<unsigned int, cuda::thread_scope_device> combine(*(combine_ready));
+        combine.store(1u, cuda::memory_order_release);
     }
-    cuda::atomic_ref<unsigned int, cuda::thread_scope_device> combine(*p->combine_ready);
-    combine.store(1u, cuda::memory_order_release);
 }
 
 __device__ __noinline__ void cake_sm120_canonical_ready_combine(
@@ -4174,65 +4194,59 @@ __device__ __noinline__ void cake_sm120_canonical_ready_combine(
     }
 }
 
-__device__ __noinline__ void cake_sm120_canonical_ready_service_postcombine(
-    CakeSm120CanonicalFusedReadyParams const* __restrict__ p)
+__device__ __noinline__ void cake_sm120_canonical_ready_service_postcombine(unsigned int* __restrict__ combine_ctas_done, int* __restrict__ total_m_tasks, int* __restrict__ total_valid_routes, unsigned int* __restrict__ w1_tiles_completed, unsigned int* __restrict__ epilogue_completed, unsigned int* __restrict__ w2_tiles_completed, unsigned int* __restrict__ source_w2_done, unsigned int* __restrict__ w1_warp_done, unsigned int* __restrict__ w1_task_ready, unsigned int* __restrict__ epilogue_claimed, unsigned int* __restrict__ w2_task_ready, unsigned int* __restrict__ w2_task_claimed, unsigned int* __restrict__ w1_next_tile, unsigned int* __restrict__ protocol_error, unsigned int* __restrict__ ready_audit_counts, unsigned long long* __restrict__ combine_ack_signal_base_scratch, unsigned int* __restrict__ epoch_done, int world_size, int rank, ncclDevComm const* __restrict__ gin_dev_comm, uint8_t* __restrict__ ack_out, ncclWindow_t ack_out_window, uint8_t* __restrict__ ack_inbox, ncclWindow_t ack_inbox_window)
 {
-    if ((int)threadIdx.x != 0) return;
-    cuda::atomic_ref<unsigned int, cuda::thread_scope_device> done(*p->combine_ctas_done);
-    while (done.load(cuda::memory_order_acquire) != 110u) { }
-    const int tasks = p->total_m_tasks[0];
-    const unsigned int w1_target = (unsigned int)tasks * 48u;
-    const unsigned int w2_target = (unsigned int)tasks * 56u;
-    const unsigned int route_tile_target =
-        (unsigned int)p->total_valid_routes[0] * 56u;
-    unsigned int source_tile_sum = 0u;
-    bool audit_ok = tasks >= 0 && tasks <= 1584 &&
-        atomicAdd(p->w1_tiles_completed, 0u) == w1_target &&
-        atomicAdd(p->epilogue_completed, 0u) == (unsigned int)tasks &&
-        atomicAdd(p->w2_tiles_completed, 0u) == w2_target;
-    for (int source = 0; source < p->world_size; ++source)
-        source_tile_sum += atomicAdd(p->source_w2_done + source, 0u);
-    audit_ok = audit_ok && source_tile_sum == route_tile_target;
-    for (int task = 0; task < tasks; ++task) {
-        audit_ok = audit_ok &&
-            atomicAdd(p->w1_warp_done + task, 0u) == 48u * 8u &&
-            atomicAdd(p->w1_task_ready + task, 0u) == 6u &&
-            atomicAdd(p->epilogue_claimed + task, 0u) == 1u &&
-            atomicAdd(p->w2_task_ready + task, 0u) == 1u &&
-            atomicAdd(p->w2_task_claimed + task, 0u) == 56u;
+    if (elect_sync()) {
+        cuda::atomic_ref<unsigned int, cuda::thread_scope_device> done(*(combine_ctas_done));
+        while (done.load(cuda::memory_order_acquire) != 110u) { }
+        const int tasks = total_m_tasks[0];
+        const unsigned int w1_target = (unsigned int)tasks * 48u;
+        const unsigned int w2_target = (unsigned int)tasks * 56u;
+        const unsigned int route_tile_target = (unsigned int)total_valid_routes[0] * 56u;
+        unsigned int source_tile_sum = 0u;
+        bool audit_ok = tasks >= 0 && tasks <= 1584 && atomicAdd(w1_tiles_completed, 0u) == w1_target && atomicAdd(epilogue_completed, 0u) == (unsigned int)tasks && atomicAdd(w2_tiles_completed, 0u) == w2_target;
+        for (int source = 0; source < (world_size); ++source)
+            source_tile_sum += atomicAdd(source_w2_done + source, 0u);
+        audit_ok = audit_ok && source_tile_sum == route_tile_target;
+        for (int task = 0; task < tasks; ++task) {
+            audit_ok = audit_ok && atomicAdd(w1_warp_done + task, 0u) == 48u * 8u &&
+                atomicAdd(w1_task_ready + task, 0u) == 6u &&
+                atomicAdd(epilogue_claimed + task, 0u) == 1u &&
+                atomicAdd(w2_task_ready + task, 0u) == 1u &&
+                atomicAdd(w2_task_claimed + task, 0u) == 56u;
+        }
+        if (!audit_ok) atomicMax(protocol_error, 1u);
+        ready_audit_counts[0] = (unsigned int)tasks;
+        ready_audit_counts[1] = w1_target;
+        ready_audit_counts[2] = atomicAdd(w1_tiles_completed, 0u);
+        ready_audit_counts[3] = atomicAdd(epilogue_completed, 0u);
+        ready_audit_counts[4] = w2_target;
+        ready_audit_counts[5] = atomicAdd(w2_tiles_completed, 0u);
+        ready_audit_counts[6] = route_tile_target;
+        ready_audit_counts[7] = source_tile_sum;
+        ready_audit_counts[8] = atomicAdd(w1_next_tile, 0u);
+        ready_audit_counts[9] = 109u;
+        ready_audit_counts[10] = atomicAdd(combine_ctas_done, 0u);
+        #pragma unroll
+        for (int owner = 0; owner < 8; ++owner) {
+            if (owner >= (world_size)) continue;
+            __threadfence_system();
+            {
+                ncclGin __gin{*(gin_dev_comm), (int)(0)};
+                __gin.put(ncclTeamWorld(*(gin_dev_comm)), owner, ack_inbox_window, (size_t)(rank), ack_out_window, (size_t)owner, (size_t)1,
+                    ncclGin_StrongSignalAdd{(ncclGinSignal_t)((rank) + 16), 1ull}, ncclGin_None{}, ncclCoopThread());
+            }
+        }
+        #pragma unroll
+        for (int source = 0; source < 8; ++source) {
+            if (source < (world_size)) {
+                ncclGin __gin{*(gin_dev_comm), (int)(0)};
+                __gin.waitSignal(ncclCoopThread(), (ncclGinSignal_t)(source + 16), (uint64_t)(combine_ack_signal_base_scratch[source] + 1ull), 64, cuda::memory_order_acquire);
+            }
+        }
+        cuda::atomic_ref<unsigned int, cuda::thread_scope_device> epoch_complete(*(epoch_done));
+        epoch_complete.store(1u, cuda::memory_order_release);
     }
-    if (!audit_ok) atomicMax(p->protocol_error, 1u);
-    p->ready_audit_counts[0] = (unsigned int)tasks;
-    p->ready_audit_counts[1] = w1_target;
-    p->ready_audit_counts[2] = atomicAdd(p->w1_tiles_completed, 0u);
-    p->ready_audit_counts[3] = atomicAdd(p->epilogue_completed, 0u);
-    p->ready_audit_counts[4] = w2_target;
-    p->ready_audit_counts[5] = atomicAdd(p->w2_tiles_completed, 0u);
-    p->ready_audit_counts[6] = route_tile_target;
-    p->ready_audit_counts[7] = source_tile_sum;
-    p->ready_audit_counts[8] = atomicAdd(p->w1_next_tile, 0u);
-    p->ready_audit_counts[9] = 109u;
-    p->ready_audit_counts[10] = atomicAdd(p->combine_ctas_done, 0u);
-    ncclGin gin{*(p->gin_dev_comm), 0};
-    #pragma unroll
-    for (int owner = 0; owner < 8; ++owner) {
-        if (owner >= p->world_size) continue;
-        __threadfence_system();
-        gin.put(ncclTeamWorld(*(p->gin_dev_comm)), owner,
-                p->ack_inbox_window, (size_t)p->rank,
-                p->ack_out_window, (size_t)owner, (size_t)1,
-                ncclGin_StrongSignalAdd{(ncclGinSignal_t)(16 + p->rank), 1ull},
-                ncclGin_None{}, ncclCoopThread());
-    }
-    #pragma unroll
-    for (int source = 0; source < 8; ++source) {
-        if (source < p->world_size)
-            gin.waitSignal(ncclCoopThread(), (ncclGinSignal_t)(16 + source),
-                           p->combine_ack_signal_base_scratch[source] + 1ull, 64,
-                           cuda::memory_order_acquire);
-    }
-    cuda::atomic_ref<unsigned int, cuda::thread_scope_device> epoch_done(*p->epoch_done);
-    epoch_done.store(1u, cuda::memory_order_release);
 }
 
 extern "C" {
@@ -4252,19 +4266,12 @@ kernel_cake_sm120_production_canonical_fused_ready_chunk8(
     // Capture before ready_pre's existing dispatch world barrier.  No rank
     // can pass that barrier and issue a result PUT until every rank has
     // reached it after completing this capture.
-    if ((int)blockIdx.x == 0 && (int)threadIdx.x == 0) {
-        ncclGin gin{*(p->gin_dev_comm), 0};
-        #pragma unroll
-        for (int peer = 0; peer < 8; ++peer) {
-            if (peer < p->world_size) {
-                p->result_signal_base_scratch[peer] = gin.readSignal(
-                    (ncclGinSignal_t)(8 + peer), 64,
-                    cuda::memory_order_acquire);
-                p->combine_ack_signal_base_scratch[peer] = gin.readSignal(
-                    (ncclGinSignal_t)(16 + peer), 64,
-                    cuda::memory_order_acquire);
-            }
-        }
+    if ((int)blockIdx.x == 0 && (int)threadIdx.x < 32) {
+        cake_sm120_g8_capture_epoch_baselines(
+            p->result_signal_base_scratch,
+            p->combine_ack_signal_base_scratch,
+            p->world_size,
+            p->gin_dev_comm);
     }
     cooperative_groups::this_grid().sync();
     cake_sm120_canonical_ready_pre(p);
@@ -4282,7 +4289,22 @@ kernel_cake_sm120_production_canonical_fused_ready_chunk8(
     const int physical = (int)blockIdx.x;
 
     if (physical == 0) {
-        cake_sm120_canonical_ready_service_precombine(p);
+        if ((int)threadIdx.x < 32) {
+            cake_sm120_canonical_ready_service_precombine(
+                p->source_route_counts,
+                p->source_w2_done,
+                p->protocol_error,
+                p->result_signal_base_scratch,
+                p->combine_ready,
+                p->world_size,
+                p->rank,
+                p->epoch,
+                p->gin_dev_comm,
+                p->result_out,
+                p->result_out_window,
+                p->result_inbox,
+                p->result_inbox_window);
+        }
     } else if (has_compute) {
         cake_sm120_canonical_ready_worker();
     }
@@ -4290,8 +4312,33 @@ kernel_cake_sm120_production_canonical_fused_ready_chunk8(
     // No W1/epilogue/W2/result grid rendezvous: all roles converge through
     // device-scope release/acquire counters and CTA0 preserves GIN progress.
     cake_sm120_canonical_ready_combine(p);
-    if (physical == 0)
-        cake_sm120_canonical_ready_service_postcombine(p);
+    if (physical == 0 && (int)threadIdx.x < 32) {
+        cake_sm120_canonical_ready_service_postcombine(
+            p->combine_ctas_done,
+            p->total_m_tasks,
+            p->total_valid_routes,
+            p->w1_tiles_completed,
+            p->epilogue_completed,
+            p->w2_tiles_completed,
+            p->source_w2_done,
+            p->w1_warp_done,
+            p->w1_task_ready,
+            p->epilogue_claimed,
+            p->w2_task_ready,
+            p->w2_task_claimed,
+            p->w1_next_tile,
+            p->protocol_error,
+            p->ready_audit_counts,
+            p->combine_ack_signal_base_scratch,
+            p->epoch_done,
+            p->world_size,
+            p->rank,
+            p->gin_dev_comm,
+            p->ack_out,
+            p->ack_out_window,
+            p->ack_inbox,
+            p->ack_inbox_window);
+    }
     cake_sm120_ready_wait_one(p->epoch_done);
 }
 

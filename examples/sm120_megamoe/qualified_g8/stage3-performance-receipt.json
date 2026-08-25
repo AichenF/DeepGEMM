@@ -1,0 +1,152 @@
+{
+  "active_rows": 2048,
+  "baseline": {
+    "barriers": 1,
+    "binary_sha256": "6c8622ddd4c64a879222f77b6e8e4a7ebd48b5d81edbad68c6cfdbf5fe13e38f",
+    "dynamic_smem_bytes": 94208,
+    "local_bytes": 0,
+    "name": "w1_stage2_w2_stage2",
+    "registers": 127,
+    "source_sha256": "3fc0b0b660fbb895b92dfa989b3011d87a59dea5425a8e7453145da9c2c44a44",
+    "spill_bytes": 0,
+    "stack_bytes": 8
+  },
+  "candidate": {
+    "barriers": 1,
+    "binary_sha256": "d99cbc5738be0aa82185124747f86ef1be9332d921f3248305d40b4e260b8d1a",
+    "dynamic_smem_bytes": 94208,
+    "local_bytes": 0,
+    "name": "w1_stage3_w2_stage3",
+    "registers": 127,
+    "source_sha256": "2d68fefb3c42ede5f0fcb722884dc26b3a80b035c450cce23eaf7c7840d4d198",
+    "spill_bytes": 0,
+    "stack_bytes": 8
+  },
+  "full_correctness_matrix": {
+    "all_exact_bf16": true,
+    "case_count": 9,
+    "rank_record_count": 31,
+    "receipt_sha256": "47b79950daf5278b29e3954fee0b7f1a0bdbfbc2572a0e303d98f71f7c697d0a"
+  },
+  "groups": {
+    "ablation_r100": {
+      "current_mean_ms": 22.8770837295,
+      "runs": {
+        "current": [
+          {
+            "aggregate_tensor_tflops": 574.1784835585408,
+            "label": "ablation-current-a-r100",
+            "max_ms": 25.7877445,
+            "mean_ms": 22.620111124,
+            "min_ms": 20.9196796,
+            "p50_ms": 22.495567299999998,
+            "p95_ms": 24.568978395
+          },
+          {
+            "aggregate_tensor_tflops": 561.4225588036721,
+            "label": "ablation-current-b-r100",
+            "max_ms": 26.2517433,
+            "mean_ms": 23.134056335,
+            "min_ms": 21.0660477,
+            "p50_ms": 23.166175850000002,
+            "p95_ms": 24.932833204999998
+          }
+        ],
+        "stage3": [
+          {
+            "aggregate_tensor_tflops": 593.6208602978892,
+            "label": "ablation-both-stage3-a-r100",
+            "max_ms": 22.8623352,
+            "mean_ms": 21.879253193,
+            "min_ms": 20.6245441,
+            "p50_ms": 21.849872599999998,
+            "p95_ms": 22.621732044999998
+          },
+          {
+            "aggregate_tensor_tflops": 584.4312295656398,
+            "label": "ablation-both-stage3-b-r100",
+            "max_ms": 26.2330875,
+            "mean_ms": 22.223283846,
+            "min_ms": 20.4190712,
+            "p50_ms": 22.09352015,
+            "p95_ms": 23.944707419999997
+          }
+        ]
+      },
+      "stage3_mean_ms": 22.0512685195,
+      "stage3_vs_current_percent": -3.6097923134106202
+    },
+    "direct_r100": {
+      "current_mean_ms": 23.193065585,
+      "runs": {
+        "current": [
+          {
+            "aggregate_tensor_tflops": 559.9499162572729,
+            "label": "direct-current-a-r100",
+            "max_ms": 26.930336,
+            "mean_ms": 23.19489784,
+            "min_ms": 21.3254089,
+            "p50_ms": 23.306559550000003,
+            "p95_ms": 24.644880819999997
+          },
+          {
+            "aggregate_tensor_tflops": 560.0383954700179,
+            "label": "direct-current-b-r100",
+            "max_ms": 27.9197121,
+            "mean_ms": 23.19123333,
+            "min_ms": 21.2335682,
+            "p50_ms": 23.28135965,
+            "p95_ms": 24.702616074999998
+          }
+        ],
+        "stage3": [
+          {
+            "aggregate_tensor_tflops": 574.5938106255196,
+            "label": "direct-stage3-a-r100",
+            "max_ms": 26.6427193,
+            "mean_ms": 22.603760888,
+            "min_ms": 20.4108791,
+            "p50_ms": 22.871007900000002,
+            "p95_ms": 24.54555127
+          },
+          {
+            "aggregate_tensor_tflops": 589.1638338324005,
+            "label": "direct-stage3-b-r100",
+            "max_ms": 24.7919998,
+            "mean_ms": 22.044769820000003,
+            "min_ms": 20.3969593,
+            "p50_ms": 22.16009615,
+            "p95_ms": 23.116973565
+          }
+        ]
+      },
+      "stage3_mean_ms": 22.324265353999998,
+      "stage3_vs_current_percent": -3.7459482353289886
+    }
+  },
+  "pooled_current": {
+    "aggregate_tensor_tflops": 563.8349906114237,
+    "max_ms": 27.9197121,
+    "mean_ms": 23.035074657250004,
+    "min_ms": 20.9196796,
+    "p50_ms": 22.989711749999998,
+    "p95_ms": 24.817381685,
+    "sample_count": 400
+  },
+  "pooled_stage3": {
+    "aggregate_tensor_tflops": 585.3667536768547,
+    "max_ms": 26.6427193,
+    "mean_ms": 22.18776693675,
+    "min_ms": 20.3969593,
+    "p50_ms": 22.10505585,
+    "p95_ms": 23.432346359999997,
+    "sample_count": 400
+  },
+  "repeat_per_run": 100,
+  "run_count_per_variant": 4,
+  "schema": "cake-sm120-megamoe-stage3-paired-performance-v1",
+  "stage3_vs_current_percent": -3.6783372014525972,
+  "status": "pass",
+  "warmup_per_run": 5,
+  "world_size": 8
+}
