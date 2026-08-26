@@ -136,8 +136,8 @@ def test(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     buffer.mma_type = 'fp8xfp4'
     try:
         deep_gemm.fp4_fp4_mega_moe(None, None, None, buffer)
-        assert False, 'FP4 API accepted an FP8-layout symmetric buffer'
-    except AssertionError as exception:
+        raise AssertionError('FP4 API accepted an FP8-layout symmetric buffer')
+    except ValueError as exception:
         assert 'requires an fp4xfp4 symmetric buffer' in str(exception)
     finally:
         buffer.mma_type = 'fp4xfp4'

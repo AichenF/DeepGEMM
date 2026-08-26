@@ -214,15 +214,19 @@ def fp4_fp4_mega_moe(y: torch.Tensor,
     CUDA Graph replay must reuse the captured ``x_bf16`` allocation and token
     count because both are encoded in the captured shared-input tensor map.
     """
-    assert sym_buffer.mma_type == 'fp4xfp4', \
-        f'NVFP4 MegaMoE requires an fp4xfp4 symmetric buffer, got {sym_buffer.mma_type!r}'
-    assert sym_buffer.activation == activation, \
-        f'Activation mismatch: buffer={sym_buffer.activation!r}, call={activation!r}'
-    assert (shared_l1_weights is None) == (shared_l2_weights is None) == (x_bf16 is None)
+    if sym_buffer.mma_type != 'fp4xfp4':
+        raise ValueError(
+            f'NVFP4 MegaMoE requires an fp4xfp4 symmetric buffer, got {sym_buffer.mma_type!r}')
+    if sym_buffer.activation != activation:
+        raise ValueError(
+            f'Activation mismatch: buffer={sym_buffer.activation!r}, call={activation!r}')
+    if not ((shared_l1_weights is None) == (shared_l2_weights is None) == (x_bf16 is None)):
+        raise ValueError('Shared L1 weights, shared L2 weights, and x_bf16 must be provided together')
     num_shared_experts = 0 if shared_l2_weights is None else \
         shared_l2_weights.size(1) // sym_buffer.intermediate_hidden
-    assert sym_buffer.num_shared_experts == num_shared_experts, \
-        f'Shared-expert layout mismatch: buffer={sym_buffer.num_shared_experts}, call={num_shared_experts}'
+    if sym_buffer.num_shared_experts != num_shared_experts:
+        raise ValueError(
+            f'Shared-expert layout mismatch: buffer={sym_buffer.num_shared_experts}, call={num_shared_experts}')
     _C.fp4_fp4_mega_moe(
         y,
         l1_weights, l2_weights,
