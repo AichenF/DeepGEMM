@@ -45,28 +45,16 @@ __device__ __forceinline__ float approx_rcp(float x) {
 #include <cuda/atomic>
 #include <deep_gemm/impls/sm120_fp8_fp4_gemm_1d1d.cuh>
 
-__device__ __forceinline__ void cake_sm120_ready_mirror_pair(
-    __nv_bfloat16 const* pair, unsigned int row, unsigned int column,
-    int const* meta_source_rank, int const* meta_result_index,
-    int const* source_route_counts, int world_size, int slot,
-    __nv_bfloat16* result_out, unsigned int* protocol_error)
+static constexpr uint32_t kCakeSm120InvalidResultRowBase = ~0u;
+
+__device__ __forceinline__ void cake_sm120_ready_mirror_pair_cached(
+    __nv_bfloat16 const* pair, unsigned int local_row, unsigned int column,
+    uint32_t const* result_row_base,
+    __nv_bfloat16* result_out)
 {
-    const int source = meta_source_rank[row];
-    if (source == -1) return;
-    if (source < 0 || source >= world_size) {
-        atomicMax(protocol_error, 1u);
-        return;
-    }
-    const int result_index = meta_result_index[row];
-    const int count = source_route_counts[source];
-    if (result_index < 0 || result_index >= count || count < 0 || count > 12288 ||
-        column + 1u >= 7168u) {
-        atomicMax(protocol_error, 1u);
-        return;
-    }
-    const unsigned long long out =
-        (unsigned long long)(source * 2 + slot) * 88080384ull +
-        (unsigned long long)result_index * 7168ull + column;
+    const uint32_t base = result_row_base[local_row];
+    if (base == kCakeSm120InvalidResultRowBase) return;
+    const uint32_t out = base + column;
     result_out[out] = pair[0];
     result_out[out + 1ull] = pair[1];
 }
@@ -1713,9 +1701,6 @@ cake_sm120_canonical_ready_chunk8_w2_gemm(cd_dtype_t* gmem_d, const cd_dtype_t* 
                              const cute::TmaDescriptor& tensor_map_cd,
                              uint32_t cake_assigned_m_block,
                              uint32_t cake_assigned_n_block,
-                             unsigned int* cake_w2_tile_warp_done,
-                             unsigned int* cake_source_w2_done,
-                             unsigned int* cake_w2_tiles_completed,
                              int const* cake_meta_source_rank,
                              int const* cake_meta_result_index,
                              int const* cake_source_route_counts,
@@ -1723,6 +1708,10 @@ cake_sm120_canonical_ready_chunk8_w2_gemm(cd_dtype_t* gmem_d, const cd_dtype_t* 
                              __nv_bfloat16* cake_result_out,
                              unsigned int* cake_protocol_error) {
 #if (defined(__CUDA_ARCH__) and (__CUDA_ARCH__ >= 1200)) or defined(__CLION_IDE__)
+    DG_STATIC_ASSERT(kSwizzleCDMode == 0,
+                     "W2 chunk publication requires the direct-store epilogue");
+    DG_STATIC_ASSERT(BLOCK_M == 64 && SHAPE_N == 7168,
+                     "W2 route-row-base cache requires the selected M64/N7168 shape");
     namespace sm120_mma = mma::sm120;
     using Barrier = cutlass::arch::ClusterTransactionBarrier;
 
@@ -1839,6 +1828,43 @@ cake_sm120_canonical_ready_chunk8_w2_gemm(cd_dtype_t* gmem_d, const cd_dtype_t* 
     auto smem_tm_b = smem_tm_a + 1;
     auto gmem_tm_a = tensor_map_buffer + blockIdx.x * 2;
     auto gmem_tm_b = gmem_tm_a + 1;
+
+    // The selected three-stage pipeline ends before byte 76,080.  Reserve
+    // both possible K-grouped descriptors, align the phase-local tail, and
+    // cache one prevalidated result-row base for each row of this M64 task.
+    // ready-pre's offset-92,160 scratch is dead before workers enter W2.
+    constexpr uint32_t RESULT_ROW_BASE_CACHE = math::constexpr_align(
+        TM_BASE + 2u * static_cast<uint32_t>(sizeof(cute::TmaDescriptor)), 128u);
+    static_assert(RESULT_ROW_BASE_CACHE == 76416u);
+    static_assert(RESULT_ROW_BASE_CACHE + BLOCK_M * sizeof(uint32_t) <= 94208u);
+    constexpr unsigned long long MAX_RESULT_ELEMENT =
+        15ull * 88080384ull + 12287ull * 7168ull + 7167ull;
+    static_assert(MAX_RESULT_ELEMENT < (unsigned long long)kCakeSm120InvalidResultRowBase);
+    auto result_row_base = reinterpret_cast<uint32_t*>(
+        smem_buffer + RESULT_ROW_BASE_CACHE);
+
+    if ((uint32_t)threadIdx.x < BLOCK_M) {
+        const uint32_t row = cake_assigned_m_block * BLOCK_M +
+            (uint32_t)threadIdx.x;
+        const int source = cake_meta_source_rank[row];
+        uint32_t base = kCakeSm120InvalidResultRowBase;
+        if (source != -1) {
+            if (source < 0 || source >= cake_world_size || source >= 8) {
+                atomicMax(cake_protocol_error, 1u);
+            } else {
+                const int result_index = cake_meta_result_index[row];
+                const int count = cake_source_route_counts[source];
+                if (result_index < 0 || result_index >= count ||
+                    count < 0 || count > 12288) {
+                    atomicMax(cake_protocol_error, 1u);
+                } else {
+                    base = (uint32_t)(source * 2 + cake_slot) * 88080384u +
+                           (uint32_t)result_index * 7168u;
+                }
+            }
+        }
+        result_row_base[threadIdx.x] = base;
+    }
 
     // Prefetch TMA descriptors
     if (warp_idx == 0 and cute::elect_one_sync()) {
@@ -2973,24 +2999,20 @@ cake_sm120_canonical_ready_chunk8_w2_gemm(cd_dtype_t* gmem_d, const cd_dtype_t* 
                                 float v0 = accum[ai + 0], v1 = accum[ai + 1];
                                 if constexpr (kWithAccumulation) { v0 += read_cd(gmem_c[idx]); v1 += read_cd(gmem_c[idx + 1]); }
                                 store_pair(&gmem_d[idx], v0, v1);
-                                cake_sm120_ready_mirror_pair(
+                                cake_sm120_ready_mirror_pair_cached(
                                     reinterpret_cast<__nv_bfloat16 const*>(&gmem_d[idx]),
-                                    row0, col, cake_meta_source_rank,
-                                    cake_meta_result_index, cake_source_route_counts,
-                                    cake_world_size, cake_slot, cake_result_out,
-                                    cake_protocol_error);
+                                    row0 - m_base, col, result_row_base,
+                                    cake_result_out);
                             }
                             if (row1 < total_shape_m and col + 1 < shape_n) {
                                 auto idx = cd_batch_offset + static_cast<int64_t>(row1) * cd_m_stride + col;
                                 float v2 = accum[ai + 2], v3 = accum[ai + 3];
                                 if constexpr (kWithAccumulation) { v2 += read_cd(gmem_c[idx]); v3 += read_cd(gmem_c[idx + 1]); }
                                 store_pair(&gmem_d[idx], v2, v3);
-                                cake_sm120_ready_mirror_pair(
+                                cake_sm120_ready_mirror_pair_cached(
                                     reinterpret_cast<__nv_bfloat16 const*>(&gmem_d[idx]),
-                                    row1, col, cake_meta_source_rank,
-                                    cake_meta_result_index, cake_source_route_counts,
-                                    cake_world_size, cake_slot, cake_result_out,
-                                    cake_protocol_error);
+                                    row1 - m_base, col, result_row_base,
+                                    cake_result_out);
                             }
                         } else {
                             // Strided store: per-element N bounds check (handles shape_n=1)
@@ -3014,34 +3036,13 @@ cake_sm120_canonical_ready_chunk8_w2_gemm(cd_dtype_t* gmem_d, const cd_dtype_t* 
             }
             } // end else (non-split-K epilogue)
 
-            // Publish one completion for each semantic route in this N128
-            // tile only after all eight warp stripes (including result mirror
-            // stores) are visible.  The source target is routes*56.
-            __threadfence_system();
-            __syncwarp();
-            if (lane_idx == 0) {
-                const unsigned int tile_index = m_block_idx * 56u + n_block_idx;
-                cuda::atomic_ref<unsigned int, cuda::thread_scope_device> tile_done(
-                    cake_w2_tile_warp_done[tile_index]);
-                const unsigned int previous = tile_done.fetch_add(
-                    1u, cuda::memory_order_acq_rel);
-                if (previous + 1u == 8u) {
-                    #pragma unroll 1
-                    for (unsigned int local_row = 0; local_row < 64u; ++local_row) {
-                        const unsigned int row = m_block_idx * 64u + local_row;
-                        const int source = cake_meta_source_rank[row];
-                        if (source >= 0 && source < cake_world_size) {
-                            cuda::atomic_ref<unsigned int, cuda::thread_scope_device> source_done(
-                                cake_source_w2_done[source]);
-                            source_done.fetch_add(1u, cuda::memory_order_release);
-                        } else if (source != -1) {
-                            atomicMax(cake_protocol_error, 1u);
-                        }
-                    }
-                    atomicAdd(cake_w2_tiles_completed, 1u);
-                }
-            }
         } // persistent loop
+
+        // The selected W2 specialization is direct-store only.  Every math
+        // thread has now completed all eight consecutive N128 tiles in this
+        // claim.  Its system fence precedes the caller's existing full-CTA
+        // barrier, which in turn precedes the thread-0 chunk publication.
+        __threadfence_system();
 
         // Final TMA store drain
         if constexpr (kUseTMAStoreEpilogue and kSplitKFactor == 1) {
@@ -3646,6 +3647,48 @@ cake_sm120_canonical_ready_reload_params()
     return cake_sm120_canonical_ready_global_params;
 }
 
+// Publish one completed eight-tile W2 claim without changing the selected
+// coarse result service.  w2_tile_warp_done is no longer consumed per tile;
+// its first total_m_tasks entries are reset every epoch and reused as task
+// counters.  The seven acq_rel +8 RMWs form one release sequence.  Its final
+// transition publishes +56 for each valid semantic route so the selected
+// service's source_route_counts[source] * 56 target remains byte-exact.
+__device__ __forceinline__ void cake_sm120_canonical_ready_publish_w2_chunk(
+    CakeSm120CanonicalFusedReadyParams const* __restrict__ p,
+    int task, int chunk_n)
+{
+    const int tasks = p->total_m_tasks[0];
+    if (task < 0 || task >= tasks || chunk_n < 0 || chunk_n > 48 ||
+        (chunk_n & 7) != 0) {
+        atomicMax(p->protocol_error, 1u);
+        return;
+    }
+
+    atomicAdd(p->w2_tiles_completed, 8u);
+    cuda::atomic_ref<unsigned int, cuda::thread_scope_device> task_done(
+        p->w2_tile_warp_done[task]);
+    const unsigned int task_previous = task_done.fetch_add(
+        8u, cuda::memory_order_acq_rel);
+    if (task_previous + 8u == 56u) {
+        #pragma unroll 1
+        for (unsigned int local_row = 0; local_row < 64u; ++local_row) {
+            const unsigned int row = (unsigned int)task * 64u + local_row;
+            const int source = p->meta_source_rank[row];
+            const int result_index = p->meta_result_index[row];
+            if (source >= 0 && source < p->world_size && result_index >= 0 &&
+                result_index < p->source_route_counts[source]) {
+                cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+                    source_done(p->source_w2_done[source]);
+                source_done.fetch_add(56u, cuda::memory_order_acq_rel);
+            } else if (source != -1) {
+                atomicMax(p->protocol_error, 1u);
+            }
+        }
+    } else if (task_previous >= 56u || (task_previous & 7u) != 0u) {
+        atomicMax(p->protocol_error, 1u);
+    }
+}
+
 static_assert(sizeof(cute::TmaDescriptor) == 128);
 __device__ __noinline__ void cake_sm120_canonical_ready_pre(
     CakeSm120CanonicalFusedReadyParams const* __restrict__ p) {
@@ -3906,9 +3949,7 @@ __device__ __noinline__ void cake_sm120_canonical_ready_chunk8_execute_w2()
             7168u, 0u, 0u, *p->w2_tensor_map_a, *p->w2_tensor_map_b,
             *p->w2_tensor_map_sfa, *p->w2_tensor_map_sfb,
             *p->w2_tensor_map_d, (uint32_t)task, (uint32_t)n,
-            p->w2_tile_warp_done, p->source_w2_done,
-            p->w2_tiles_completed, p->meta_source_rank,
-            p->meta_result_index, p->source_route_counts,
+            p->meta_source_rank, p->meta_result_index, p->source_route_counts,
             p->world_size, (int)(p->epoch & 1u), p->result_out,
             p->protocol_error);
 }
@@ -4073,6 +4114,8 @@ __device__ __noinline__ void cake_sm120_canonical_ready_worker()
             if ((int)threadIdx.x == 0) {
                 CakeSm120CanonicalFusedReadyParams const* p =
                     cake_sm120_canonical_ready_reload_params();
+                cake_sm120_canonical_ready_publish_w2_chunk(
+                    p, work_task, work_n);
                 const bool all_w1_now = atomicAdd(
                     p->w1_tiles_completed, 0u) >=
                     (unsigned int)p->total_m_tasks[0] * 48u;

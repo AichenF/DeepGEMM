@@ -20,9 +20,12 @@ G8 chunks: six W1 chunks and seven W2 chunks per M64 task, with eight physical
 N128 tiles in each chunk. The single global entry covers dispatch, task build,
 W1, SwiGLU/requantization, W2, remote return, and combine.
 
-Both W1 and W2 use a three-stage TMA ring. This is the selected CAKE-generated
-optimization: the math tile, task topology, dynamic shared-memory allocation,
-and G8 protocol remain unchanged from the typed two-stage comparison source.
+Both W1 and W2 use a three-stage TMA ring. W2 publishes completion once per
+eight-tile claim instead of once per N128 tile. Each M64 task also validates
+and caches its 64 result-row bases in phase-local shared memory, removing
+repeated metadata loads, bounds checks, and address construction from the BF16
+store path. The math tile, task topology, launch ABI, and G8 protocol remain
+unchanged.
 
 The transport protocol captures signal baselines before worker/service
 divergence, uses strong-signal puts, and proves two-slot reuse with a
@@ -42,7 +45,7 @@ protocol.
 - `run_sm120_canonical_fused_ready_chunk8_perf.py`: distributed benchmark and
   result validator
 - `selected-matrix-receipt.json`: correctness qualification summary
-- `stage3-performance-receipt.json`: paired two-stage/three-stage performance
+- `w2-scheduler-performance-receipt.json`: paired branch-baseline performance
   evidence
 - `qualification-manifest.json`: immutable source, build, and evidence hashes
 
@@ -102,10 +105,10 @@ build/sm120_megamoe_g8_correctness
 
 Success requires process exit 0, `status=pass`, `exact_bf16_equal=true`, zero
 stage/protocol/signal/ack/output/guard mismatches, and one kernel launch per
-epoch. The selected three-stage source was rerun across all 9 cases and 31 rank
-records through world size 8 and 2048 active rows; no case is inherited from an
-older binary. The exact source, binary, routes, and per-case stderr boundary are
-recorded in `selected-matrix-receipt.json`.
+epoch. The qualified W2 scheduler source was rerun across all 9 cases and 31
+rank records through world size 8 and 2048 active rows; no case is inherited
+from an older binary. The exact source, binary, routes, and per-case stderr
+boundary are recorded in `selected-matrix-receipt.json`.
 
 ## Performance gate
 
@@ -125,24 +128,26 @@ python "$Q/run_sm120_canonical_fused_ready_chunk8_perf.py" \
   --output build/sm120_megamoe_g8_r100.json
 ```
 
-The selected P8/R2048 comparison used four 100-repeat runs per variant (400
-distributed samples each). The typed two-stage source measured 23.035075 ms
-mean and 563.835 aggregate tensor TFLOP/s; this three-stage source measured
-22.187767 ms and 585.367 aggregate tensor TFLOP/s, a `-3.678%` mean-latency
-change. Two independently ordered run groups measured `-3.746%` and `-3.610%`.
-The event contains one full-chain kernel per sample; communicator rendezvous and
-correctness audits are outside the event. The complete paired record is
-`stage3-performance-receipt.json`.
+The selected P8/R2048 comparison used two 100-repeat runs per variant in
+baseline/candidate/candidate/baseline order. The checked-in branch baseline
+measured 22.324535 ms mean and 581.781 aggregate tensor TFLOP/s. The qualified
+W2 scheduler measured 21.211132 ms and 612.319 aggregate tensor TFLOP/s:
+mean latency decreased 4.987% and throughput increased 5.249%. The two
+interpolated candidate positions improved by 3.426% and 6.551%; baseline
+endpoint drift was 0.446%. Pooled P95 decreased from 24.365950 ms to
+22.564931 ms.
 
-The flattened source differs from the flattened DeepGEMM reference at
-`a35b6975` in two bounded ways: GIN service calls are emitted through the typed
-CAKE transport bridge, and the W1/W2 TMA stage parameters are three instead of
-two. The direct math donor is a separately pinned SM120 header. The QMMA count
-(64), deferred-barrier count (78), task shape, and dynamic shared-memory
-allocation remain unchanged. Static `UTMALDG` sites compact from 112 to 32 while
-dynamic K work is unchanged. One inherited layout comment still says
-"two-stage"; the generated-source hash and the two stage-3 instantiation gates
-are authoritative.
+Each sample times one full-chain kernel; communicator rendezvous and
+correctness audits are outside the event. All four arms passed their pre/post
+exactness audits. The source, binaries, four run summaries, and raw-evidence
+hashes are recorded in `w2-scheduler-performance-receipt.json`.
+
+The W2 optimization does not change the direct SM120 math donor. The qualified
+build retains 64 QMMA sites, 32 TMA-load sites, 78 deferred-barrier sites,
+127 registers, and the same 94,208-byte dynamic shared-memory allocation. The
+three obsolete internal donor parameters left behind by moving W2 publication
+out of the math loop were removed; CUDA 13.3 emitted the same complete SASS as
+the GPU-qualified source before that cleanup.
 
 ## Qualification limits
 

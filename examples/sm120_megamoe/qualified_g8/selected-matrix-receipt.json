@@ -1,57 +1,90 @@
 {
   "all_exact_bf16": true,
+  "all_exit_status_zero": true,
   "all_fail_fields_zero": true,
-  "binary_sha256": "c88d7b32fbfcf64380e65e06dfcb2f92831664913c7aa2e93e99da24026501f8",
+  "all_stderr_empty": true,
+  "binary_sha256": "0c01e01165272c4aab831304389c41582c879c388661208ad28b978c7868cc82",
+  "candidate_root": "/tmp/deepgemm-sm120-megamoe-w2-scheduler-clean",
   "case_count": 9,
   "cases": {
     "world1-r1-distinct-balanced-mask0": {
+      "exit_status": 0,
       "rank_count": 1,
       "routes": [
         6
       ],
-      "stderr_bytes": 0
+      "stderr_bytes": 0,
+      "w2_signed_zero_differences": [
+        0
+      ]
     },
     "world2-r1-distinct-balanced-mask0": {
+      "exit_status": 0,
       "rank_count": 2,
       "routes": [
         6,
         6
       ],
-      "stderr_bytes": 0
+      "stderr_bytes": 0,
+      "w2_signed_zero_differences": [
+        0,
+        0
+      ]
     },
     "world2-r1-zero-balanced-mask1": {
+      "exit_status": 0,
       "rank_count": 2,
       "routes": [
         0,
         0
       ],
-      "stderr_bytes": 0
+      "stderr_bytes": 0,
+      "w2_signed_zero_differences": [
+        0,
+        0
+      ]
     },
     "world2-r17-analytic-balanced-mask7": {
+      "exit_status": 0,
       "rank_count": 2,
       "routes": [
         86,
         88
       ],
-      "stderr_bytes": 0
+      "stderr_bytes": 0,
+      "w2_signed_zero_differences": [
+        17022,
+        20151
+      ]
     },
     "world2-r17-analytic-empty-mask0": {
+      "exit_status": 0,
       "rank_count": 2,
       "routes": [
         204,
         0
       ],
-      "stderr_bytes": 0
+      "stderr_bytes": 0,
+      "w2_signed_zero_differences": [
+        39420,
+        0
+      ]
     },
     "world2-r17-analytic-skewed-mask0": {
+      "exit_status": 0,
       "rank_count": 2,
       "routes": [
         204,
         0
       ],
-      "stderr_bytes": 0
+      "stderr_bytes": 0,
+      "w2_signed_zero_differences": [
+        39204,
+        0
+      ]
     },
     "world4-r128-distinct-balanced-mask0": {
+      "exit_status": 0,
       "rank_count": 4,
       "routes": [
         768,
@@ -59,9 +92,16 @@
         772,
         768
       ],
-      "stderr_bytes": 0
+      "stderr_bytes": 0,
+      "w2_signed_zero_differences": [
+        0,
+        0,
+        0,
+        0
+      ]
     },
     "world8-r113-distinct-balanced-mask0": {
+      "exit_status": 0,
       "rank_count": 8,
       "routes": [
         679,
@@ -73,9 +113,20 @@
         678,
         679
       ],
-      "stderr_bytes": 0
+      "stderr_bytes": 0,
+      "w2_signed_zero_differences": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
     },
     "world8-r2048-distinct-balanced-mask0": {
+      "exit_status": 0,
       "rank_count": 8,
       "routes": [
         12289,
@@ -87,11 +138,52 @@
         12290,
         12287
       ],
-      "stderr_bytes": 0
+      "stderr_bytes": 0,
+      "w2_signed_zero_differences": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
     }
   },
+  "evidence_root": "/tmp/deepgemm-sm120-megamoe-w2-scheduler-clean-validation",
+  "evidence_sha256": {
+    "runs/matrix/world1-r1-distinct-balanced-mask0/exit-status.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "runs/matrix/world1-r1-distinct-balanced-mask0/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "runs/matrix/world1-r1-distinct-balanced-mask0/raw.stdout": "97029fdc67adcb6e6e51b9a955b012ff725c167f619cbe2dfdb8faca9d375aec",
+    "runs/matrix/world2-r1-distinct-balanced-mask0/exit-status.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "runs/matrix/world2-r1-distinct-balanced-mask0/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "runs/matrix/world2-r1-distinct-balanced-mask0/raw.stdout": "4bd014ce59148d1fd0143c42e31af521a144a046305a8a14939420108ac4be39",
+    "runs/matrix/world2-r1-zero-balanced-mask1/exit-status.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "runs/matrix/world2-r1-zero-balanced-mask1/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "runs/matrix/world2-r1-zero-balanced-mask1/raw.stdout": "fcd54968345c959c1bbd45fe122e96fd38fe770d4e0c908320d67bb272017a6f",
+    "runs/matrix/world2-r17-analytic-balanced-mask7/exit-status.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "runs/matrix/world2-r17-analytic-balanced-mask7/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "runs/matrix/world2-r17-analytic-balanced-mask7/raw.stdout": "a1828e6760985b25b26f4e79e463b5fd3bcb3cf01320b3f3e3d9e3c7b0329751",
+    "runs/matrix/world2-r17-analytic-empty-mask0/exit-status.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "runs/matrix/world2-r17-analytic-empty-mask0/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "runs/matrix/world2-r17-analytic-empty-mask0/raw.stdout": "f36176bd931ac0564b557754c53c4b0422fc8f2f55dd63fe719f40e45419f928",
+    "runs/matrix/world2-r17-analytic-skewed-mask0/exit-status.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "runs/matrix/world2-r17-analytic-skewed-mask0/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "runs/matrix/world2-r17-analytic-skewed-mask0/raw.stdout": "c15f5bfb44016876d632bb6d93a65fd2a5e3115cd7645a1da045aebf072cfac3",
+    "runs/matrix/world4-r128-distinct-balanced-mask0/exit-status.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "runs/matrix/world4-r128-distinct-balanced-mask0/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "runs/matrix/world4-r128-distinct-balanced-mask0/raw.stdout": "2b1073875640bd4b4366446e5ba093ead0753ece48609a776a5a74a19d1379ca",
+    "runs/matrix/world8-r113-distinct-balanced-mask0/exit-status.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "runs/matrix/world8-r113-distinct-balanced-mask0/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "runs/matrix/world8-r113-distinct-balanced-mask0/raw.stdout": "c506eb889e3b9bc8dc8f3395d71a98e0ed6d1d875ddddedc175f5363649f5e83",
+    "runs/matrix/world8-r2048-distinct-balanced-mask0/exit-status.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "runs/matrix/world8-r2048-distinct-balanced-mask0/raw.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "runs/matrix/world8-r2048-distinct-balanced-mask0/raw.stdout": "a823fbfa751ea83b3c57675384d04843613bf972e4e0da48b205d3f2ae63180f"
+  },
+  "postprocessor_sha256": "1fe6ce176b50bb31d3267658d6c500866ff5f83c9c29bf1d81e6c6a44ebcf037",
   "rank_record_count": 31,
-  "schema": "cake-sm120-megamoe-stage3-correctness-matrix-v1",
-  "source_sha256": "2d68fefb3c42ede5f0fcb722884dc26b3a80b035c450cce23eaf7c7840d4d198",
+  "schema": "deepgemm-sm120-megamoe-w2-scheduler-correctness-v1",
+  "source_sha256": "f2fc37da0f7309ac17b9a556b06467f79b82e6e999066ed0b95940c6e3b0d40e",
   "status": "pass"
 }
