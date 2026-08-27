@@ -57,7 +57,7 @@ struct SM90ArchSpec {
             block_n_candidates.push_back(i);
 
         // Block K is always in a fixed manner
-        const int block_k = 128 / get_element_size(desc.get_mma_kind());
+        const int block_k = 128 / get_byte_addressable_element_size(desc.get_mma_kind());
 
         // Disable multicast for performance
         const bool disable_multicast =

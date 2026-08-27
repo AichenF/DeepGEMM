@@ -31,6 +31,9 @@ class SymmBuffer:
         self.num_topk = num_topk
         self.hidden = hidden
         self.intermediate_hidden = intermediate_hidden
+        self.num_shared_experts = num_shared_experts
+        self.mma_type = mma_type
+        self.activation = activation
 
         # Allocate a symmetric buffer
         num_bytes, slice_input_buffers = _C.get_symm_buffer_size_for_mega_moe(
@@ -139,7 +142,8 @@ def transform_weights_for_mega_moe(
     assert activation != 'situ' or (isinstance(l1_weights, tuple) and isinstance(l2_weights, tuple)), \
         '`situ` requires FP8xFP4 `(weight, sf)` tuples for both L1 and L2 weights'
     if isinstance(l1_weights, tuple):
-        # FP8: interleave gate/up for weight and SF, then transpose L1 SF for UTCCP
+        # Scaled FP8xFP4/NVFP4: both formats use the same MN-major SF layout.
+        # Interleave gate/up for weight and SF, then transpose L1 SF for UTCCP.
         l1_w = _interleave_weights(l1_weights[0])
         l1_sf = _transpose_sf_for_utccp(_interleave_weights(l1_weights[1]))
         l1_transformed = (l1_w, l1_sf)
@@ -179,6 +183,63 @@ def fp8_fp4_mega_moe(y: torch.Tensor,
         activation, activation_clamp,
         fast_math,
         situ_beta, situ_linear_beta
+    )
+
+def fp4_fp4_mega_moe(y: torch.Tensor,
+                     l1_weights: Tuple[torch.Tensor, torch.Tensor],
+                     l2_weights: Tuple[torch.Tensor, torch.Tensor],
+                     sym_buffer: SymmBuffer,
+                     shared_l1_weights: Optional[torch.Tensor] = None,
+                     shared_l2_weights: Optional[torch.Tensor] = None,
+                     x_bf16: Optional[torch.Tensor] = None,
+                     cumulative_local_expert_recv_stats: Optional[torch.Tensor] = None,
+                     recipe: Tuple[int, int, int] = (1, 1, 16),
+                     activation: str = 'swiglu',
+                     activation_clamp: Optional[float] = None,
+                     fast_math: bool = True,
+                     l1_alphas: Optional[torch.Tensor] = None,
+                     l2_alphas: Optional[torch.Tensor] = None,
+                     a2_scales: Optional[torch.Tensor] = None,
+                     routed_scaling_factor: float = 1.0):
+    """Run NVFP4 routed experts, optionally fused with BF16 shared experts.
+
+    NVFP4 operands use packed E2M1 values and per-16-element E4M3 scales.
+    ``l1_alphas`` and ``l2_alphas`` carry optional per-expert model scales.
+    The caller must fold the FC1 input global scale into ``l1_alphas``;
+    ``a2_scales`` is separate because the FC2 input is produced and requantized
+    inside this kernel; when provided, every entry must be finite and strictly
+    positive. Shared weights and ``x_bf16`` must be provided together;
+    ``routed_scaling_factor`` is applied before adding their BF16 output.
+
+    CUDA Graph replay must reuse the captured ``x_bf16`` allocation and token
+    count because both are encoded in the captured shared-input tensor map.
+    """
+    if sym_buffer.mma_type != 'fp4xfp4':
+        raise ValueError(
+            f'NVFP4 MegaMoE requires an fp4xfp4 symmetric buffer, got {sym_buffer.mma_type!r}')
+    if sym_buffer.activation != activation:
+        raise ValueError(
+            f'Activation mismatch: buffer={sym_buffer.activation!r}, call={activation!r}')
+    if not ((shared_l1_weights is None) == (shared_l2_weights is None) == (x_bf16 is None)):
+        raise ValueError('Shared L1 weights, shared L2 weights, and x_bf16 must be provided together')
+    num_shared_experts = 0 if shared_l2_weights is None else \
+        shared_l2_weights.size(1) // sym_buffer.intermediate_hidden
+    if sym_buffer.num_shared_experts != num_shared_experts:
+        raise ValueError(
+            f'Shared-expert layout mismatch: buffer={sym_buffer.num_shared_experts}, call={num_shared_experts}')
+    _C.fp4_fp4_mega_moe(
+        y,
+        l1_weights, l2_weights,
+        shared_l1_weights, shared_l2_weights, x_bf16,
+        cumulative_local_expert_recv_stats,
+        sym_buffer.buffer,
+        sym_buffer.handle.buffer_ptrs, sym_buffer.group.rank(),
+        sym_buffer.num_max_tokens_per_rank,
+        sym_buffer.num_experts, sym_buffer.num_topk,
+        recipe,
+        activation, activation_clamp,
+        fast_math,
+        l1_alphas, l2_alphas, a2_scales, routed_scaling_factor
     )
 
 def bf16_mega_moe(y: torch.Tensor,

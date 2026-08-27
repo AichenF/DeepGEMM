@@ -88,6 +88,7 @@ from .mega import (
     get_symm_buffer_for_mega_moe,
     transform_weights_for_mega_moe,
     fp8_fp4_mega_moe,
+    fp4_fp4_mega_moe,
     bf16_mega_moe,
 )
 

@@ -10,6 +10,13 @@
 
 namespace deep_gemm {
 
+inline int get_byte_addressable_element_size(const MmaKind& mma_kind) {
+    const int element_size = get_element_size(mma_kind);
+    DG_HOST_ASSERT(element_size != -1 and "Unknown MMA kind");
+    DG_HOST_ASSERT(element_size > 0);
+    return element_size;
+}
+
 template <typename ArchSpec>
 static GemmConfig get_best_config(const GemmDesc& desc) {
     desc.check_validity();

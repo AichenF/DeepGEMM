@@ -14,6 +14,7 @@
 #include "../jit/device_runtime.hpp"
 #include "../jit_kernels/impls/sm100_bf16_mega_moe.hpp"
 #include "../jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp"
+#include "../jit_kernels/impls/sm100_fp4_fp4_mega_moe.hpp"
 
 namespace deep_gemm::mega {
 
@@ -67,7 +68,9 @@ get_symm_buffer_size_for_mega_moe(
 
     // Parse MMA type
     const auto mma_kind = parse_mma_kind(mma_type);
+    const auto num_mma_elem_bits = get_num_mma_elem_bits(mma_kind);
     const auto with_sf = is_mma_with_sf(mma_kind);
+    const auto sf_gran_k = get_mma_sf_gran_k(mma_kind);
 
     // Compute num_sf_ring_tokens (max across all candidate block sizes)
     int num_sf_ring_tokens = 0;
@@ -80,30 +83,45 @@ get_symm_buffer_size_for_mega_moe(
     }
 
     // All buffers
+    // NOTES: NVFP4 shared experts run in BF16 (16-bit, SF-free)
+    const auto shared_num_mma_elem_bits = mma_kind == MmaKind::NVFP4 ? 16 : 0;
     const auto mega_buffer = layout::MegaMoEBuffer(
         nullptr, hidden, intermediate_hidden,
         num_ranks, num_experts, num_max_tokens_per_rank,
         num_topk, num_ring_tokens, num_sf_ring_tokens, with_sf,
-        num_shared_experts
+        num_shared_experts, num_mma_elem_bits, sf_gran_k,
+        shared_num_mma_elem_bits
     );
 
     // Check SF buffer requirements
     if (with_sf) {
-        DG_HOST_ASSERT(hidden % 128 == 0 and intermediate_hidden % 128 == 0);
+        // The smallest-token NVFP4 heuristic uses a 512-element K tile; enforce
+        // the strongest candidate constraint here instead of failing in NVRTC.
+        // Keep the existing MXFP8FP4 contract at 128 elements.
+        const int sf_alignment = mma_kind == MmaKind::NVFP4 ? 512 : 128;
+        DG_HOST_ASSERT(hidden % sf_alignment == 0 and intermediate_hidden % sf_alignment == 0);
         DG_HOST_ASSERT(shared_intermediate_hidden % 128 == 0);
         DG_HOST_ASSERT(num_sf_ring_tokens % 4 == 0);
     }
 
     // Slice function: creates tensor views from the raw buffer.
     // NOTES: `x_sf` is K-major, while `l1_acts_sf` and `l2_acts_sf` are M-major
+    // NOTES: for NVFP4, token views are packed E2M1 bytes (2 elements each) and SF
+    // views pack 4 E4M3 bytes per `int`
+    const auto is_fp4 = mma_kind == MmaKind::NVFP4;
+    const auto token_dtype = is_fp4 ? torch::kUInt8 : (with_sf ? torch::kFloat8_e4m3fn : torch::kBFloat16);
+    const auto hidden_cols = is_fp4 ? hidden / 2 : hidden;
+    const auto intermediate_cols = is_fp4 ? intermediate_hidden / 2 : intermediate_hidden;
+    const auto hidden_sf_cols = hidden / (sf_gran_k * 4);
+    const auto intermediate_sf_cols = intermediate_hidden / (sf_gran_k * 4);
     auto slice_input_buffers = [=](const torch::Tensor& buffer) {
         auto x = torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(mega_buffer.input_token_buffer.base)),
-            {num_max_tokens_per_rank, hidden},
-            torch::TensorOptions().dtype(with_sf ? torch::kFloat8_e4m3fn : torch::kBFloat16).device(buffer.device()));
+            {num_max_tokens_per_rank, hidden_cols},
+            torch::TensorOptions().dtype(token_dtype).device(buffer.device()));
         auto x_sf = with_sf ? torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(mega_buffer.input_sf_buffer.base)),
-            {num_max_tokens_per_rank, hidden / 128},
+            {num_max_tokens_per_rank, hidden_sf_cols},
             torch::TensorOptions().dtype(torch::kInt).device(buffer.device())) : torch::Tensor();
         auto topk_idx = torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(mega_buffer.input_topk_idx_buffer.base)),
@@ -114,8 +132,11 @@ get_symm_buffer_size_for_mega_moe(
             {num_max_tokens_per_rank, num_topk},
             torch::TensorOptions().dtype(torch::kFloat32).device(buffer.device()));
 
-        auto shared_l1_acts = x;
-        auto shared_l1_acts_sf = (with_sf and num_shared_experts > 0) ? torch::from_blob(
+        // NOTES: NVFP4 shared experts are BF16 and SF-free; their L1 activations come from
+        // a caller-provided BF16 tensor, so `shared_l1_acts`/SF views stay undefined
+        const bool shared_with_sf = with_sf and not is_fp4;
+        auto shared_l1_acts = is_fp4 ? torch::Tensor() : x;
+        auto shared_l1_acts_sf = (shared_with_sf and num_shared_experts > 0) ? torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(mega_buffer.shared_l1_sf_buffer.base)),
             {layout::get_num_max_shared_sf_tokens(num_max_tokens_per_rank), hidden / 128},
             {1, layout::get_num_max_shared_sf_tokens(num_max_tokens_per_rank)},
@@ -123,8 +144,8 @@ get_symm_buffer_size_for_mega_moe(
         auto shared_l2_acts = num_shared_experts > 0 ? torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(mega_buffer.shared_l2_token_buffer.base)),
             {num_max_tokens_per_rank, shared_intermediate_hidden},
-            torch::TensorOptions().dtype(with_sf ? torch::kFloat8_e4m3fn : torch::kBFloat16).device(buffer.device())) : torch::Tensor();
-        auto shared_l2_acts_sf = (with_sf and num_shared_experts > 0) ? torch::from_blob(
+            torch::TensorOptions().dtype(shared_with_sf ? torch::kFloat8_e4m3fn : torch::kBFloat16).device(buffer.device())) : torch::Tensor();
+        auto shared_l2_acts_sf = (shared_with_sf and num_shared_experts > 0) ? torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(mega_buffer.shared_l2_sf_buffer.base)),
             {layout::get_num_max_shared_sf_tokens(num_max_tokens_per_rank), shared_intermediate_hidden / 128},
             {1, layout::get_num_max_shared_sf_tokens(num_max_tokens_per_rank)},
@@ -132,20 +153,20 @@ get_symm_buffer_size_for_mega_moe(
 
         auto l1_acts = torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(mega_buffer.l1_token_buffer.base)),
-            {num_ring_tokens, hidden},
-            torch::TensorOptions().dtype(with_sf ? torch::kFloat8_e4m3fn : torch::kBFloat16).device(buffer.device()));
+            {num_ring_tokens, hidden_cols},
+            torch::TensorOptions().dtype(token_dtype).device(buffer.device()));
         auto l1_acts_sf = with_sf ? torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(mega_buffer.l1_sf_buffer.base)),
-            {num_sf_ring_tokens, hidden / 128},
+            {num_sf_ring_tokens, hidden_sf_cols},
             {1, num_sf_ring_tokens},
             torch::TensorOptions().dtype(torch::kInt).device(buffer.device())) : torch::Tensor();
         auto l2_acts = torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(mega_buffer.l2_token_buffer.base)),
-            {num_ring_tokens, intermediate_hidden},
-            torch::TensorOptions().dtype(with_sf ? torch::kFloat8_e4m3fn : torch::kBFloat16).device(buffer.device()));
+            {num_ring_tokens, intermediate_cols},
+            torch::TensorOptions().dtype(token_dtype).device(buffer.device()));
         auto l2_acts_sf = with_sf ? torch::from_blob(
             math::advance_ptr(buffer.data_ptr(), reinterpret_cast<int64_t>(mega_buffer.l2_sf_buffer.base)),
-            {num_sf_ring_tokens, intermediate_hidden / 128},
+            {num_sf_ring_tokens, intermediate_sf_cols},
             {1, num_sf_ring_tokens},
             torch::TensorOptions().dtype(torch::kInt).device(buffer.device())) : torch::Tensor();
         return std::make_tuple(x, x_sf, topk_idx, topk_weights,
@@ -298,6 +319,201 @@ static void fp8_fp4_mega_moe(
         sym_buffer.zero_();
 }
 
+static void fp4_fp4_mega_moe(
+    const torch::Tensor& y,
+    const std::tuple<torch::Tensor, torch::Tensor>& l1_weights_tuple,
+    const std::tuple<torch::Tensor, torch::Tensor>& l2_weights_tuple,
+    // BF16 shared expert (optional): plain BF16 weights (no SF) and the BF16 input
+    // activations of the local tokens (the routed `x` in the buffer is packed FP4)
+    const std::optional<torch::Tensor>& shared_l1_weights_opt,
+    const std::optional<torch::Tensor>& shared_l2_weights_opt,
+    const std::optional<torch::Tensor>& x_bf16_opt,
+    const std::optional<torch::Tensor>& cumulative_local_expert_recv_stats,
+    const torch::Tensor& sym_buffer,
+    const std::vector<int64_t>& sym_buffer_ptrs, const int& rank_idx,
+    const int& num_max_tokens_per_rank,
+    const int& num_experts, const int& num_topk,
+    const std::tuple<int, int, int>& recipe,
+    const std::string& activation,
+    const std::optional<float>& activation_clamp_opt,
+    const bool& fast_math,
+    const std::optional<torch::Tensor>& l1_alphas_opt,
+    const std::optional<torch::Tensor>& l2_alphas_opt,
+    const std::optional<torch::Tensor>& a2_scales_opt,
+    const float& routed_scaling_factor
+) {
+    const auto [l1_weights, l1_weights_sf] = l1_weights_tuple;
+    const auto [l2_weights, l2_weights_sf] = l2_weights_tuple;
+
+    // Config checks
+    const auto num_tokens = static_cast<int>(y.size(0));
+    const auto [rm, rn, rk] = recipe;
+    DG_HOST_ASSERT((rm == 1 and rn == 1 and rk == 16) and
+                   "NVFP4 MegaMoE currently supports only recipe (1, 1, 16)");
+    DG_HOST_ASSERT(activation == "swiglu" and
+                   "NVFP4 MegaMoE currently supports only SwiGLU");
+    DG_HOST_ASSERT(std::isfinite(routed_scaling_factor));
+    DG_HOST_ASSERT(shared_l1_weights_opt.has_value() == shared_l2_weights_opt.has_value());
+    DG_HOST_ASSERT(shared_l1_weights_opt.has_value() == x_bf16_opt.has_value());
+
+    // Activation checks
+    const auto activation_clamp =
+        activation_clamp_opt.value_or(std::numeric_limits<float>::infinity());
+    DG_HOST_ASSERT(activation_clamp >= 0);
+
+    // Tensor checks
+    DG_HOST_ASSERT(get_major_type_ab(l1_weights) == cute::UMMA::Major::K);
+    DG_HOST_ASSERT(get_major_type_ab(l2_weights) == cute::UMMA::Major::K);
+    const auto arch_major = device_runtime->get_arch_major();
+    DG_HOST_ASSERT(l1_weights.scalar_type() == kPackedFP4 and l2_weights.scalar_type() == kPackedFP4);
+    const auto [num_experts_per_rank, intermediate_hidden_2, hidden] =
+        check_grouped_ab_fp8_fp4(l1_weights, cute::UMMA::Major::K, arch_major);
+    const auto [num_experts_per_rank_, hidden_, intermediate_hidden] =
+        check_grouped_ab_fp8_fp4(l2_weights, cute::UMMA::Major::K, arch_major);
+    DG_HOST_ASSERT(num_tokens <= num_max_tokens_per_rank);
+    DG_HOST_ASSERT(num_experts_per_rank == num_experts_per_rank_);
+    DG_HOST_ASSERT(hidden == hidden_);
+    DG_HOST_ASSERT(intermediate_hidden_2 == 2 * intermediate_hidden);
+    DG_HOST_ASSERT(l1_weights.is_contiguous() and l2_weights.is_contiguous());
+    DG_HOST_ASSERT(y.is_cuda() and y.scalar_type() == torch::kBFloat16 and y.is_contiguous());
+    DG_HOST_ASSERT(y.dim() == 2 and y.size(1) == hidden);
+
+    const auto output_device = y.device();
+    const auto is_local_cuda_tensor = [&output_device](const torch::Tensor& tensor) {
+        return tensor.is_cuda() and tensor.device() == output_device;
+    };
+    DG_HOST_ASSERT(is_local_cuda_tensor(l1_weights) and is_local_cuda_tensor(l2_weights));
+    DG_HOST_ASSERT(is_local_cuda_tensor(l1_weights_sf) and is_local_cuda_tensor(l2_weights_sf));
+    DG_HOST_ASSERT(is_local_cuda_tensor(sym_buffer));
+
+    // Check weight SF layout for E4M3 packing, MN-major, and TMA alignment
+    constexpr int kGranMN = 1, kGranK = 16;
+    check_sf_layout(l1_weights_sf, intermediate_hidden * 2, hidden, kGranMN, kGranK,
+                    num_experts_per_rank, true, false, torch::kInt);
+    check_sf_layout(l2_weights_sf, hidden, intermediate_hidden, kGranMN, kGranK,
+                    num_experts_per_rank, true, false, torch::kInt);
+
+    // Check stats counter
+    if (cumulative_local_expert_recv_stats.has_value()) {
+        DG_HOST_ASSERT(cumulative_local_expert_recv_stats->scalar_type() == torch::kInt);
+        DG_HOST_ASSERT(cumulative_local_expert_recv_stats->numel() == num_experts_per_rank);
+        DG_HOST_ASSERT(cumulative_local_expert_recv_stats->is_contiguous());
+        DG_HOST_ASSERT(is_local_cuda_tensor(cumulative_local_expert_recv_stats.value()));
+    }
+
+    // Check the optional BF16 shared expert tensors
+    // NOTES: multiple shared experts are folded into the weights (L1 concatenated on N,
+    // L2 concatenated on K), so `num_shared_experts = shared_intermediate_hidden / intermediate_hidden`
+    int num_shared_experts = 0;
+    torch::Tensor shared_l1_weights, shared_l2_weights, x_bf16;
+    if (shared_l1_weights_opt.has_value()) {
+        DG_HOST_ASSERT(shared_l2_weights_opt.has_value() and x_bf16_opt.has_value());
+        shared_l1_weights = shared_l1_weights_opt.value();
+        shared_l2_weights = shared_l2_weights_opt.value();
+        x_bf16 = x_bf16_opt.value();
+
+        DG_HOST_ASSERT(shared_l1_weights.dim() == 2 and shared_l2_weights.dim() == 2);
+        const auto shared_intermediate_hidden = static_cast<int>(shared_l2_weights.size(1));
+        DG_HOST_ASSERT(shared_intermediate_hidden % intermediate_hidden == 0);
+        num_shared_experts = shared_intermediate_hidden / intermediate_hidden;
+        DG_HOST_ASSERT(num_shared_experts > 0);
+        DG_HOST_ASSERT(shared_l1_weights.size(0) == shared_intermediate_hidden * 2);
+        DG_HOST_ASSERT(shared_l1_weights.size(1) == hidden);
+        DG_HOST_ASSERT(shared_l2_weights.size(0) == hidden);
+        DG_HOST_ASSERT(shared_l1_weights.scalar_type() == torch::kBFloat16);
+        DG_HOST_ASSERT(shared_l2_weights.scalar_type() == torch::kBFloat16);
+        DG_HOST_ASSERT(shared_l1_weights.is_contiguous() and shared_l2_weights.is_contiguous());
+        DG_HOST_ASSERT(get_major_type_ab(shared_l1_weights) == cute::UMMA::Major::K);
+        DG_HOST_ASSERT(get_major_type_ab(shared_l2_weights) == cute::UMMA::Major::K);
+        DG_HOST_ASSERT(x_bf16.scalar_type() == torch::kBFloat16 and x_bf16.is_contiguous());
+        // The leading dimension may be over-allocated for CUDA Graphs, but
+        // replay must preserve both this allocation and the captured token count
+        // because they are encoded in the shared-input TMA descriptor.
+        DG_HOST_ASSERT(x_bf16.dim() == 2 and x_bf16.size(0) >= num_tokens and x_bf16.size(1) == hidden);
+        DG_HOST_ASSERT(is_local_cuda_tensor(shared_l1_weights) and is_local_cuda_tensor(shared_l2_weights));
+        DG_HOST_ASSERT(is_local_cuda_tensor(x_bf16));
+    }
+
+    // Check buffer bytes
+    const auto num_ranks = static_cast<int>(sym_buffer_ptrs.size());
+    const auto num_experts_ = num_experts_per_rank * num_ranks;
+    const auto [num_required_bytes, slice] = get_symm_buffer_size_for_mega_moe(
+        num_ranks, num_experts,
+        num_max_tokens_per_rank, num_topk,
+        hidden, intermediate_hidden,
+        "fp4xfp4", activation, num_shared_experts);
+    DG_HOST_ASSERT(sym_buffer.nbytes() >= static_cast<size_t>(num_required_bytes));
+    DG_HOST_ASSERT(num_experts == num_experts_);
+
+    // Check the optional per-local-expert scales (e.g. modelopt's `weight_scale_2`)
+    // NOTES: L1 has separate gate/up factors, so its scales come as `(E, 2)` pairs
+    const void* l1_alphas_ptr = nullptr;
+    const void* l2_alphas_ptr = nullptr;
+    if (l1_alphas_opt.has_value()) {
+        const auto& l1_alphas = l1_alphas_opt.value();
+        DG_HOST_ASSERT(l1_alphas.scalar_type() == torch::kFloat and l1_alphas.is_contiguous());
+        DG_HOST_ASSERT(l1_alphas.dim() == 2 and l1_alphas.size(0) == num_experts_per_rank and l1_alphas.size(1) == 2);
+        DG_HOST_ASSERT(is_local_cuda_tensor(l1_alphas));
+        l1_alphas_ptr = l1_alphas.data_ptr();
+    }
+    if (l2_alphas_opt.has_value()) {
+        const auto& l2_alphas = l2_alphas_opt.value();
+        DG_HOST_ASSERT(l2_alphas.scalar_type() == torch::kFloat and l2_alphas.is_contiguous());
+        DG_HOST_ASSERT(l2_alphas.dim() == 1 and l2_alphas.size(0) == num_experts_per_rank);
+        DG_HOST_ASSERT(is_local_cuda_tensor(l2_alphas));
+        l2_alphas_ptr = l2_alphas.data_ptr();
+    }
+
+    // Per-local-expert down-proj input scale (modelopt's `input_scale`): normalizes the
+    // in-kernel intermediate NVFP4 requant and is folded into the L2 alpha
+    const void* a2_scales_ptr = nullptr;
+    if (a2_scales_opt.has_value()) {
+        const auto& a2_scales = a2_scales_opt.value();
+        DG_HOST_ASSERT(a2_scales.scalar_type() == torch::kFloat and a2_scales.is_contiguous());
+        DG_HOST_ASSERT(a2_scales.dim() == 1 and a2_scales.size(0) == num_experts_per_rank);
+        DG_HOST_ASSERT(is_local_cuda_tensor(a2_scales));
+        a2_scales_ptr = a2_scales.data_ptr();
+    }
+
+    // Already registered tensors
+    const auto [x, x_sf, topk_idx, topk_weights,
+                shared_l1_acts, shared_l1_acts_sf, shared_l2_acts, shared_l2_acts_sf,
+                l1_acts, l1_acts_sf, l2_acts, l2_acts_sf] = slice(sym_buffer);
+
+    // Dispatch into different architectures
+    if (arch_major == 10) {
+        // With no shared expert, these descriptor placeholders alias routed
+        // tensors. Their dtype/layout is intentionally irrelevant because the
+        // kHasShared=false kernel specialization never dereferences them.
+        sm100_fp4_fp4_mega_moe(y,
+                               l1_acts, l1_acts_sf,
+                               l2_acts, l2_acts_sf,
+                               num_shared_experts > 0 ? x_bf16 : l1_acts,
+                               num_shared_experts > 0 ? shared_l2_acts : l2_acts,
+                               num_shared_experts > 0 ? shared_l1_weights : l1_weights,
+                               num_shared_experts > 0 ? shared_l2_weights : l2_weights,
+                               l1_weights, l2_weights,
+                               l1_weights_sf, l2_weights_sf,
+                               cumulative_local_expert_recv_stats,
+                               sym_buffer_ptrs,
+                               rank_idx, num_max_tokens_per_rank,
+                               num_experts_per_rank,
+                               num_shared_experts,
+                               num_tokens, num_topk,
+                               hidden, intermediate_hidden,
+                               activation_clamp, fast_math,
+                               l1_alphas_ptr, l2_alphas_ptr, a2_scales_ptr,
+                               routed_scaling_factor);
+    } else {
+        DG_HOST_UNREACHABLE("Unsupported architecture");
+    }
+
+    // Zero the entire symmetric buffer for debug mode
+    // NOTES: caller must re-copy inputs into the buffer before each kernel call
+    if (get_env<int>("DG_COMM_KERNEL_DEBUG"))
+        sym_buffer.zero_();
+}
+
 static void bf16_mega_moe(
     const torch::Tensor& y,
     const torch::Tensor& l1_weights,
@@ -412,6 +628,7 @@ static void register_apis(pybind11::module_& m) {
     m.def("get_block_m_for_mega_moe", &get_block_m_for_mega_moe);
     m.def("get_symm_buffer_size_for_mega_moe", &get_symm_buffer_size_for_mega_moe);
     m.def("fp8_fp4_mega_moe", &fp8_fp4_mega_moe);
+    m.def("fp4_fp4_mega_moe", &fp4_fp4_mega_moe);
     m.def("bf16_mega_moe", &bf16_mega_moe);
 #endif
 }
