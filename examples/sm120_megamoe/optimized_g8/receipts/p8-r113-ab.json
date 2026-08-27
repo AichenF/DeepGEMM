@@ -1,0 +1,632 @@
+{
+  "adapter_source_receipt": {
+    "audit_fixture": "qualified-distinct-k32",
+    "candidate_source_sha256": "7d78e19a8678c19d0c5eee5a85c319373629a77eae607b9eae17c9b9d4cc20d5",
+    "derived_host_sha256": "76d47305a07dd7d60240b7b060f4e60350dcba50c561c48340f0f40268949053",
+    "frozen_host_sha256": "5727853cd82bf3145166a1e4708424df7111cd9d06e6dce0da48def2c7ba4752",
+    "frozen_shared_sha256": "9df7d9ef528c6744a7849628b7ab03dffb55f233d6263966700247c0c1523272",
+    "functional_qualified": false,
+    "kernel_abi": "native-long-parameter; host-unpacked-from-qualified-params",
+    "qualified_manifest_sha256": "e269894144ee7841c2b0c8dcf7e54173c80c56be06c117e2e852cc5fc909a7d2",
+    "qualified_sources_modified": false,
+    "schema": "deepgemm-sm120-megamoe-native-candidate-adapter-source-v1",
+    "timed_fixture": "cake-p8-analytic-canary-v1",
+    "timing": "cuda-event-single-full-chain-kernel"
+  },
+  "base_commit": "a35b6975b37449cc2358bd13ac885a3646bd9f0b",
+  "baseline": {
+    "binary_sha256": "9cc39278cbb8fd3e22343d7e6d3c3d216aa2e9e70c1406b7875e6478be3facba",
+    "correctness": {
+      "exact_bf16": true,
+      "output_sha256_by_rank": [
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff",
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff",
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff",
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff",
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff",
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff",
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff",
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff"
+      ],
+      "protocol_signal_ack_guard_mismatch_sum": 0,
+      "rank_count": 8,
+      "stage_mismatch_sum": 0,
+      "status": "pass",
+      "timed_output_mismatch_sum": 0
+    },
+    "input_fixture": [
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 0,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      },
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 1,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      },
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 2,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      },
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 3,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      },
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 4,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      },
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 5,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      },
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 6,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      },
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 7,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      }
+    ],
+    "input_fixture_sha256": "064c3b9e8678af81e6fa36cac1f996d29714ae25b815c6c835076dee37e02ed5",
+    "label": "qualified_cuda_baseline",
+    "launch": {
+      "dynamic_smem_bytes": 94208,
+      "ready_ctas": 110,
+      "threads_per_cta": 384
+    },
+    "raw_log_sha256": "80cdab2bcbbdbec1ebecd2a00be72056d8b08beb6f5bb50dc51c040a3ea56216",
+    "timing": {
+      "backend": "cuda_event",
+      "distributed_max_ms": 85.8625259,
+      "distributed_min_ms": 3.94886398,
+      "distributed_p50_ms": 8.542223929999999,
+      "distributed_p95_ms": 83.851139825,
+      "distributed_samples_ms": [
+        25.2699833,
+        9.82588768,
+        85.8625259,
+        3.94886398,
+        5.79996777,
+        13.1476803,
+        3.97094393,
+        3.98665595,
+        3.98953605,
+        81.8529282,
+        83.7452774,
+        66.5525436,
+        3.97855997,
+        7.25856018,
+        81.0681305,
+        3.96643209,
+        79.6173096,
+        20.8634567,
+        3.97600007,
+        3.98979211
+      ],
+      "rank_rendezvous_outside_event": true,
+      "repeat": 20,
+      "scope": "chunk8_ready_kernel_only",
+      "warmup": 5
+    }
+  },
+  "baseline_source_sha256": "dffd9acdc32716a523a05d8970035fef203b97084b1d5bc1b03db018e5ab0cae",
+  "candidate": {
+    "binary_sha256": "1de68cf8584d688a27e331f6408c217bc385f2c1b31b9a86f12f30dc3ccc1be7",
+    "correctness": {
+      "exact_bf16": true,
+      "output_sha256_by_rank": [
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff",
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff",
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff",
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff",
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff",
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff",
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff",
+        "c791c58252c631c716ef807847d657c489461ec54a38823353cb0f709b316eff"
+      ],
+      "protocol_signal_ack_guard_mismatch_sum": 0,
+      "rank_count": 8,
+      "stage_mismatch_sum": 0,
+      "status": "pass",
+      "timed_output_mismatch_sum": 0
+    },
+    "input_fixture": [
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 0,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      },
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 1,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      },
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 2,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      },
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 3,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      },
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 4,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      },
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 5,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      },
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 6,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      },
+      {
+        "activation_codes": [
+          56,
+          64,
+          72,
+          80,
+          48,
+          40,
+          32,
+          24
+        ],
+        "activation_scale_word": 2139062143,
+        "active_rows": 113,
+        "fixture": "cake-p8-analytic-canary-v1",
+        "fp4_weight_byte": 34,
+        "rank": 7,
+        "route_experts": "balanced-token17-slot53-rank97",
+        "topk_weights": [
+          0.3125,
+          0.25,
+          0.1875,
+          0.125,
+          0.078125,
+          0.046875
+        ],
+        "weight_scale_word": 2139062143
+      }
+    ],
+    "input_fixture_sha256": "064c3b9e8678af81e6fa36cac1f996d29714ae25b815c6c835076dee37e02ed5",
+    "label": "native_m64n32_stage2_residency",
+    "launch": {
+      "dynamic_smem_bytes": 26624,
+      "ready_ctas": 330,
+      "threads_per_cta": 256
+    },
+    "raw_log_sha256": "c25f212e6e26e50f3aedd28092cfce0a97b804ad0b6a967e62b704f1e0375091",
+    "timing": {
+      "backend": "cuda_event",
+      "distributed_max_ms": 103.50499,
+      "distributed_min_ms": 3.87929606,
+      "distributed_p50_ms": 4.80219221,
+      "distributed_p95_ms": 84.31301390500002,
+      "distributed_samples_ms": [
+        82.7788162,
+        83.3029099,
+        67.3420792,
+        20.4076157,
+        3.8858881,
+        3.87929606,
+        25.2972164,
+        3.94102407,
+        5.8039999,
+        8.50217628,
+        3.94095993,
+        3.93273592,
+        4.27881622,
+        6.18697596,
+        3.92643189,
+        3.90671992,
+        5.3255682,
+        103.50499,
+        3.98681593,
+        3.9263041
+      ],
+      "rank_rendezvous_outside_event": true,
+      "repeat": 20,
+      "scope": "native_m64n32_stage2_residency_kernel_only",
+      "warmup": 5
+    }
+  },
+  "candidate_source_sha256": "7d78e19a8678c19d0c5eee5a85c319373629a77eae607b9eae17c9b9d4cc20d5",
+  "comparison": {
+    "baseline_ms": 8.542223929999999,
+    "candidate_ms": 4.80219221,
+    "metric": "distributed_aligned_max_cuda_event_p50_ms",
+    "speedup": 1.7788175808981204
+  },
+  "compiled_resources": {
+    "baseline": {
+      "dynamic_smem_bytes": 94208,
+      "registers": 125,
+      "spill_loads_bytes": 0,
+      "spill_stores_bytes": 0,
+      "stack_bytes": 8,
+      "static_smem_bytes": 2048
+    },
+    "candidate": {
+      "dynamic_smem_bytes": 26624,
+      "registers": 80,
+      "spill_loads_bytes": 272,
+      "spill_stores_bytes": 52,
+      "stack_bytes": 64,
+      "static_smem_bytes": 1024
+    }
+  },
+  "environment": {
+    "CAKE_ACTIVE_ROWS": "113",
+    "CAKE_EPOCH_BASE": "5000",
+    "CAKE_MASK_PERIOD": "0",
+    "CAKE_ORACLE": "distinct_k32",
+    "CAKE_REPEAT": "20",
+    "CAKE_ROUTE_MODE": "balanced",
+    "CAKE_WARMUP": "5",
+    "CUDA_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7",
+    "NCCL_GIN_TYPE": "3",
+    "NCCL_NET_PLUGIN": "spcx",
+    "NTHREADS": "8"
+  },
+  "fixture_sha256": "064c3b9e8678af81e6fa36cac1f996d29714ae25b815c6c835076dee37e02ed5",
+  "pairing": "same-machine-adjacent-processes-baseline-then-candidate",
+  "performance_claim": {
+    "reason": "P8/R113 is retained for correctness; short-shape samples show high launch-to-launch variance",
+    "status": "diagnostic_only"
+  },
+  "same_input": true,
+  "same_timing_method": true,
+  "schema": "deepgemm-sm120-megamoe-native-m64n32-ab-v1",
+  "shape": "P8/E384/topk6/H7168/I3072/O7168/R113",
+  "status": "pass",
+  "toolchain": {
+    "architecture": "sm_120a",
+    "cuda_compiler": "13.0.88",
+    "nccl": "2.30.7"
+  }
+}
