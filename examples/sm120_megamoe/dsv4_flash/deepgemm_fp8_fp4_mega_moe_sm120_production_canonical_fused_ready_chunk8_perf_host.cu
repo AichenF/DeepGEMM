@@ -53,6 +53,10 @@ struct CanonicalBuffers {
   int* worker_task = nullptr;
   int* worker_n = nullptr;
   unsigned long long* combine_ack_signal_base_scratch = nullptr;
+#if CAKE_MOE_PHASE_TRACE
+  unsigned long long* phase_ns = nullptr;
+  unsigned int* phase_count = nullptr;
+#endif
 };
 
 struct CanonicalMaps {

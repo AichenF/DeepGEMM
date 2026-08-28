@@ -45,6 +45,7 @@ __device__ __forceinline__ float approx_rcp(float x) {
 #include <cuda/atomic>
 #include <deep_gemm/impls/sm120_fp8_fp4_gemm_1d1d.cuh>
 #include "megamoe_shape_config.cuh"
+#include "megamoe_phase_trace.cuh"
 
 static constexpr uint32_t kCakeSm120InvalidResultRowBase = ~0u;
 
@@ -3652,6 +3653,10 @@ struct alignas(16) CakeSm120CanonicalFusedReadyParams {
     ncclWindow_t ack_out_window;
     uint8_t* ack_inbox;
     ncclWindow_t ack_inbox_window;
+#if CAKE_MOE_PHASE_TRACE
+    unsigned long long* phase_ns;
+    unsigned int* phase_count;
+#endif
 };
 
 __device__ CakeSm120CanonicalFusedReadyParams const* volatile
@@ -3767,8 +3772,9 @@ __device__ __noinline__ void cake_sm120_canonical_ready_pre(
         p->prefix_done[0] = 0;
         p->requant_groups_done[0] = 0;
     }
-    grid.sync();
+    CAKE_PHASE_GRID_SYNC(grid, p);
 
+    CAKE_PHASE_BEGIN(cake_dispatch_stamp);
     cake_sm120_streaming_phase_dispatch(
         p->topk_idx_i32, p->topk_weights, p->x_fp8_i32, p->x_sf_i32,
         p->owner_record_counts, p->owner_route_counts, p->route_result_index,
@@ -3778,8 +3784,10 @@ __device__ __noinline__ void cake_sm120_canonical_ready_pre(
         p->dispatch_payload_out_window, p->dispatch_header_inbox,
         p->dispatch_header_inbox_window, p->dispatch_payload_inbox,
         p->dispatch_payload_inbox_window);
-    grid.sync();
+    CAKE_PHASE_END(cake_dispatch_stamp, cake_moe::trace::kDispatch, p);
+    CAKE_PHASE_GRID_SYNC(grid, p);
 
+    CAKE_PHASE_BEGIN(cake_task_build_stamp);
     cake_sm120_streaming_phase_task_build(
         p->dispatch_header_inbox, reinterpret_cast<int*>(p->dispatch_payload_inbox),
         reinterpret_cast<float*>(p->dispatch_payload_inbox), p->pool_fp8_u32,
@@ -3790,8 +3798,10 @@ __device__ __noinline__ void cake_sm120_canonical_ready_pre(
         p->task_owner_rank, p->task_local_expert, p->task_pool_row, p->task_m_local,
         p->task_valid_m, p->total_valid_routes, p->total_padded_rows, p->total_m_tasks,
         p->protocol_error, p->histogram_done, p->prefix_done, p->rank, p->world_size, p->epoch);
-    grid.sync();
+    CAKE_PHASE_END(cake_task_build_stamp, cake_moe::trace::kTaskBuild, p);
+    CAKE_PHASE_GRID_SYNC(grid, p);
 
+    CAKE_PHASE_BEGIN(cake_layout_stamp);
     for (int expert = 0; expert < cake_moe::kLocalExperts; ++expert) {
         const int begin = p->expert_row_offsets[expert];
         const int padded =
@@ -3805,8 +3815,8 @@ __device__ __noinline__ void cake_sm120_canonical_ready_pre(
                 atomicMax(p->protocol_error, 1u);
         }
     }
-    grid.sync();
-
+    CAKE_PHASE_END(cake_layout_stamp, cake_moe::trace::kGroupedLayout, p);
+    CAKE_PHASE_GRID_SYNC(grid, p);
 
     // Fail closed before a donor can consume a malformed device task shape.
     if ((int)blockIdx.x == 0 && (int)threadIdx.x == 0) {
@@ -3824,7 +3834,7 @@ __device__ __noinline__ void cake_sm120_canonical_ready_pre(
             p->total_m_tasks[0] = 0;
         }
     }
-    cooperative_groups::this_grid().sync();
+    CAKE_PHASE_GRID_SYNC(cooperative_groups::this_grid(), p);
 }
 __device__ __noinline__ void cake_sm120_canonical_ready_epilogue_task(
     cutlass::bfloat16_t const* __restrict__ w1_bf16,
@@ -4070,10 +4080,15 @@ __device__ __noinline__ void cake_sm120_canonical_ready_worker()
     __shared__ int work_n;
     __shared__ int force_w1_opportunity;
     const int worker_id = (int)blockIdx.x - 1;
+#if CAKE_MOE_PHASE_TRACE
+    CakeSm120CanonicalFusedReadyParams const* trace_p =
+        cake_sm120_canonical_ready_reload_params();
+#endif
     int scan_start = worker_id;
     if ((int)threadIdx.x == 0) force_w1_opportunity = 0;
     __syncthreads();
     while (true) {
+        CAKE_PHASE_BEGIN(cake_claim_stamp);
         if ((int)threadIdx.x == 0) {
             CakeSm120CanonicalFusedReadyParams const* p =
                 cake_sm120_canonical_ready_reload_params();
@@ -4132,20 +4147,27 @@ __device__ __noinline__ void cake_sm120_canonical_ready_worker()
             }
         }
         __syncthreads();
+        CAKE_PHASE_END(cake_claim_stamp, cake_moe::trace::kWorkerScan, trace_p);
         if (work_kind < 0) break;
         if (work_kind == 0) {
+            CAKE_PHASE_BEGIN(cake_idle_stamp);
             __syncthreads();
+            CAKE_PHASE_END(cake_idle_stamp, cake_moe::trace::kWorkerIdle, trace_p);
             continue;
         }
         if (work_kind == 1) {
+            CAKE_PHASE_BEGIN(cake_w1_stamp);
             cake_sm120_canonical_ready_chunk8_execute_w1();
+            CAKE_PHASE_END(cake_w1_stamp, cake_moe::trace::kW1Chunk, trace_p);
         } else if (work_kind == 2) {
             CakeSm120CanonicalFusedReadyParams const* p =
                 cake_sm120_canonical_ready_reload_params();
+            CAKE_PHASE_BEGIN(cake_epilogue_stamp);
             cake_sm120_canonical_ready_epilogue_task(
                 p->w1_bf16, p->routing_weight_pool, p->meta_source_rank,
                 p->intermediate_fp8, p->intermediate_sfa_u8,
                 p->requant_groups_done, p->protocol_error, work_task);
+            CAKE_PHASE_END(cake_epilogue_stamp, cake_moe::trace::kEpilogue, trace_p);
             __syncthreads();
             if ((int)threadIdx.x == 0) {
                 cuda::atomic_ref<unsigned int, cuda::thread_scope_device> ready(
@@ -4155,7 +4177,9 @@ __device__ __noinline__ void cake_sm120_canonical_ready_worker()
             }
             __syncthreads();
         } else {
+            CAKE_PHASE_BEGIN(cake_w2_stamp);
             cake_sm120_canonical_ready_chunk8_execute_w2();
+            CAKE_PHASE_END(cake_w2_stamp, cake_moe::trace::kW2Chunk, trace_p);
             __syncthreads();
             if ((int)threadIdx.x == 0) {
                 CakeSm120CanonicalFusedReadyParams const* p =
@@ -4164,7 +4188,8 @@ __device__ __noinline__ void cake_sm120_canonical_ready_worker()
                     p, work_task, work_n);
                 const bool all_w1_now = atomicAdd(
                     p->w1_tiles_completed, 0u) >=
-                    (unsigned int)p->total_m_tasks[0] * (unsigned)cake_moe::kTaskM;
+                    (unsigned int)p->total_m_tasks[0] *
+                        (unsigned)cake_moe::kW1TilesPerTask;
                 if (!all_w1_now) force_w1_opportunity = 1;
             }
             __syncthreads();
@@ -4244,7 +4269,9 @@ __device__ __noinline__ void cake_sm120_canonical_ready_service_precombine(int* 
 __device__ __noinline__ void cake_sm120_canonical_ready_combine(
     CakeSm120CanonicalFusedReadyParams const* __restrict__ p)
 {
+    CAKE_PHASE_BEGIN(cake_combine_wait_stamp);
     cake_sm120_ready_wait_one(p->combine_ready);
+    CAKE_PHASE_END(cake_combine_wait_stamp, cake_moe::trace::kCombineWait, p);
     const int global_tid = (int)blockIdx.x * 384 + (int)threadIdx.x;
     const int global_threads = (int)gridDim.x * 384;
     const int slot = (int)(p->epoch & 1u);
@@ -4357,11 +4384,14 @@ kernel_cake_sm120_production_canonical_fused_ready_chunk8(
         return;
     }
 
+    CAKE_PHASE_BEGIN(cake_reset_stamp);
     cake_sm120_canonical_ready_reset(p);
-    cooperative_groups::this_grid().sync();
+    CAKE_PHASE_END(cake_reset_stamp, cake_moe::trace::kReset, p);
+    CAKE_PHASE_GRID_SYNC(cooperative_groups::this_grid(), p);
     // Capture before ready_pre's existing dispatch world barrier.  No rank
     // can pass that barrier and issue a result PUT until every rank has
     // reached it after completing this capture.
+    CAKE_PHASE_BEGIN(cake_baseline_stamp);
     if ((int)blockIdx.x == 0 && (int)threadIdx.x < 32) {
         cake_sm120_g8_capture_epoch_baselines(
             p->result_signal_base_scratch,
@@ -4369,21 +4399,23 @@ kernel_cake_sm120_production_canonical_fused_ready_chunk8(
             p->world_size,
             p->gin_dev_comm);
     }
-    cooperative_groups::this_grid().sync();
+    CAKE_PHASE_END(cake_baseline_stamp, cake_moe::trace::kEpochBaseline, p);
+    CAKE_PHASE_GRID_SYNC(cooperative_groups::this_grid(), p);
     cake_sm120_canonical_ready_pre(p);
-    cooperative_groups::this_grid().sync();
+    CAKE_PHASE_GRID_SYNC(cooperative_groups::this_grid(), p);
 
     if ((int)blockIdx.x == 0 && (int)threadIdx.x == 0) {
         cake_sm120_canonical_ready_global_params = p;
         __threadfence();
     }
-    cooperative_groups::this_grid().sync();
+    CAKE_PHASE_GRID_SYNC(cooperative_groups::this_grid(), p);
 
     const int tasks = p->total_m_tasks[0];
     const bool has_compute = tasks > 0 && tasks <= cake_moe::kMaxTasks &&
         p->total_padded_rows[0] == tasks * cake_moe::kTaskM;
     const int physical = (int)blockIdx.x;
 
+    CAKE_PHASE_BEGIN(cake_service_stamp);
     if (physical == 0) {
         if ((int)threadIdx.x < 32) {
             cake_sm120_canonical_ready_service_precombine(
@@ -4404,10 +4436,14 @@ kernel_cake_sm120_production_canonical_fused_ready_chunk8(
     } else if (has_compute) {
         cake_sm120_canonical_ready_worker();
     }
+    CAKE_PHASE_END(cake_service_stamp, cake_moe::trace::kServicePrecombine, p);
 
     // No W1/epilogue/W2/result grid rendezvous: all roles converge through
     // device-scope release/acquire counters and CTA0 preserves GIN progress.
+    CAKE_PHASE_BEGIN(cake_combine_stamp);
     cake_sm120_canonical_ready_combine(p);
+    CAKE_PHASE_END(cake_combine_stamp, cake_moe::trace::kCombine, p);
+    CAKE_PHASE_BEGIN(cake_ack_stamp);
     if (physical == 0 && (int)threadIdx.x < 32) {
         cake_sm120_canonical_ready_service_postcombine(
             p->combine_ctas_done,
@@ -4435,7 +4471,10 @@ kernel_cake_sm120_production_canonical_fused_ready_chunk8(
             p->ack_inbox,
             p->ack_inbox_window);
     }
+    CAKE_PHASE_END(cake_ack_stamp, cake_moe::trace::kServicePostcombine, p);
+    CAKE_PHASE_BEGIN(cake_epoch_wait_stamp);
     cake_sm120_ready_wait_one(p->epoch_done);
+    CAKE_PHASE_END(cake_epoch_wait_stamp, cake_moe::trace::kGridSync, p);
 }
 
 extern "C" __host__ void* cake_sm120_canonical_ready_chunk8_kernel_ptr() {

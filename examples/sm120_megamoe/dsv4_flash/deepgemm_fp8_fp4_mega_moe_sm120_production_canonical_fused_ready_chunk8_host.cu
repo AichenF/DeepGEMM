@@ -53,6 +53,10 @@ struct CanonicalBuffers {
   int* worker_task = nullptr;
   int* worker_n = nullptr;
   unsigned long long* combine_ack_signal_base_scratch = nullptr;
+#if CAKE_MOE_PHASE_TRACE
+  unsigned long long* phase_ns = nullptr;
+  unsigned int* phase_count = nullptr;
+#endif
 };
 
 struct CanonicalMaps {
@@ -273,6 +277,10 @@ CakeSm120CanonicalFusedReadyParams make_ready_params(
   p.ack_out_window = ack_out.window;
   p.ack_inbox = ack_inbox.pointer;
   p.ack_inbox_window = ack_inbox.window;
+#if CAKE_MOE_PHASE_TRACE
+  p.phase_ns = canonical.phase_ns;
+  p.phase_count = canonical.phase_count;
+#endif
   return p;
 }
 
@@ -371,9 +379,70 @@ void allocate_canonical_buffers(DeviceBuffers& b, CanonicalBuffers& c,
   device_alloc(&c.worker_task, kCanonicalReadyCtas - 1);
   device_alloc(&c.worker_n, kCanonicalReadyCtas - 1);
   device_alloc(&c.combine_ack_signal_base_scratch, kPhysicalRanks);
+#if CAKE_MOE_PHASE_TRACE
+  device_alloc(&c.phase_ns, kCanonicalReadyCtas * cake_moe::trace::kPhaseCount);
+  device_alloc(&c.phase_count, kCanonicalReadyCtas * cake_moe::trace::kPhaseCount);
+#endif
 }
 
+#if CAKE_MOE_PHASE_TRACE
+#include <mutex>
+
+// One JSON line per epoch: for each phase the busiest CTA, the mean over CTAs
+// that entered it, and the entry count. The busiest CTA is the one that matters
+// for the critical path; the mean exposes imbalance across the 110 CTAs.
+void report_phase_trace(const CanonicalBuffers& canonical, int rank,
+                        int epoch_index) {
+  constexpr int kSlots = kCanonicalReadyCtas * cake_moe::trace::kPhaseCount;
+  std::vector<unsigned long long> ns(kSlots);
+  std::vector<unsigned int> counts(kSlots);
+  CUDA_CHECK(cudaMemcpy(ns.data(), canonical.phase_ns,
+                        sizeof(unsigned long long) * kSlots,
+                        cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(counts.data(), canonical.phase_count,
+                        sizeof(unsigned int) * kSlots, cudaMemcpyDeviceToHost));
+
+  char line[256];
+  std::string out;
+  std::snprintf(line, sizeof(line),
+                "PHASE_TRACE_JSON={\"rank\":%d,\"epoch\":%d,\"ctas\":%d,"
+                "\"phases\":[", rank, epoch_index, kCanonicalReadyCtas);
+  out += line;
+  for (int phase = 0; phase < cake_moe::trace::kPhaseCount; ++phase) {
+    unsigned long long peak = 0;
+    unsigned long long total = 0;
+    unsigned long long entries = 0;
+    int active_ctas = 0;
+    for (int cta = 0; cta < kCanonicalReadyCtas; ++cta) {
+      const int slot = cta * cake_moe::trace::kPhaseCount + phase;
+      if (counts[slot] == 0) continue;
+      ++active_ctas;
+      peak = std::max(peak, ns[slot]);
+      total += ns[slot];
+      entries += counts[slot];
+    }
+    std::snprintf(line, sizeof(line),
+                  "%s{\"phase\":\"%s\",\"peak_cta_ms\":%.6f,"
+                  "\"mean_cta_ms\":%.6f,\"active_ctas\":%d,\"entries\":%llu}",
+                  phase == 0 ? "" : ",", cake_moe::trace::phase_name(phase),
+                  peak / 1e6, active_ctas ? total / 1e6 / active_ctas : 0.0,
+                  active_ctas, entries);
+    out += line;
+  }
+  out += "]}\n";
+  // Ranks are threads in one process, so the record is emitted as one write.
+  static std::mutex trace_mutex;
+  std::lock_guard<std::mutex> guard(trace_mutex);
+  std::fwrite(out.data(), 1, out.size(), stdout);
+  std::fflush(stdout);
+}
+#endif
+
 void free_canonical_buffers(DeviceBuffers& b, CanonicalBuffers& c) {
+#if CAKE_MOE_PHASE_TRACE
+  cudaFree(c.phase_count);
+  cudaFree(c.phase_ns);
+#endif
   cudaFree(c.combine_ack_signal_base_scratch);
   cudaFree(c.worker_n);
   cudaFree(c.worker_task);
@@ -770,6 +839,16 @@ void run_canonical_rank(int rank, int world_size, int local_device,
     CUDA_CHECK(cudaMemcpyAsync(canonical.ready_params, &host_params,
                                sizeof(host_params), cudaMemcpyHostToDevice,
                                stream));
+#if CAKE_MOE_PHASE_TRACE
+    CUDA_CHECK(cudaMemsetAsync(
+        canonical.phase_ns, 0,
+        sizeof(unsigned long long) * kCanonicalReadyCtas *
+            cake_moe::trace::kPhaseCount, stream));
+    CUDA_CHECK(cudaMemsetAsync(
+        canonical.phase_count, 0,
+        sizeof(unsigned int) * kCanonicalReadyCtas *
+            cake_moe::trace::kPhaseCount, stream));
+#endif
     void* ready_args[] = {&canonical.ready_params};
     static_assert(sizeof(ready_args) / sizeof(ready_args[0]) == 1);
     CUDA_CHECK(cudaLaunchCooperativeKernel(
@@ -780,6 +859,9 @@ void run_canonical_rank(int rank, int world_size, int local_device,
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
+#if CAKE_MOE_PHASE_TRACE
+    report_phase_trace(canonical, rank, epoch_index);
+#endif
     int total_routes = 0;
     int total_padded_rows = 0;
     int total_tasks = 0;
