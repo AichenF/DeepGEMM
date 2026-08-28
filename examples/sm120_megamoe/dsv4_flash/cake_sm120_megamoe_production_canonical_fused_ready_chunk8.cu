@@ -4077,6 +4077,132 @@ __device__ __forceinline__ bool cake_sm120_ready_chunk8_claim_epilogue(
     return false;
 }
 
+// Worker decision bits sampled once per claim round by lane 0.
+constexpr unsigned int kCakeWorkerAllW1 = 1u;
+constexpr unsigned int kCakeWorkerWarmedUp = 2u;
+constexpr unsigned int kCakeWorkerFailed = 4u;
+constexpr unsigned int kCakeWorkerDrained = 8u;
+__device__ __forceinline__ bool cake_sm120_ready_chunk8_claim_w2_warp(
+    unsigned int* ready, unsigned int* claimed, int tasks, int start,
+    unsigned int* protocol_error, int* selected_task, int* selected_n)
+{
+    const int lane = (int)threadIdx.x & 31;
+    int result = 0;
+    int task_out = -1;
+    int n_out = -1;
+    #pragma unroll 1
+    for (int base = 0; base < tasks; base += 32) {
+        const int index = base + lane;
+        const int task = index < tasks ? (start + index) % tasks : -1;
+        bool candidate = false;
+        if (task >= 0) {
+            cuda::atomic_ref<unsigned int, cuda::thread_scope_device> flag(ready[task]);
+            candidate = flag.load(cuda::memory_order_acquire) == 1u;
+        }
+        unsigned int mask = __ballot_sync(0xffffffffu, candidate);
+        while (mask != 0u) {
+            const int source = __ffs((int)mask) - 1;
+            const int chosen = __shfl_sync(0xffffffffu, task, source);
+            int taken = 0;
+            int cursor_out = -1;
+            if (lane == 0) {
+                while (true) {
+                    const unsigned int cursor = atomicAdd(claimed + chosen, 0u);
+                    if (cursor > (unsigned)cake_moe::kW2TilesPerTask ||
+                        (cursor % 8u) != 0u) {
+                        atomicMax(protocol_error, 1u);
+                        taken = -1;
+                        break;
+                    }
+                    if (cursor == (unsigned)cake_moe::kW2TilesPerTask) break;
+                    if (atomicCAS(claimed + chosen, cursor, cursor + 8u) == cursor) {
+                        taken = 1;
+                        cursor_out = (int)cursor;
+                        break;
+                    }
+                }
+            }
+            taken = __shfl_sync(0xffffffffu, taken, 0);
+            if (taken == 1) {
+                task_out = chosen;
+                n_out = __shfl_sync(0xffffffffu, cursor_out, 0);
+                result = 1;
+                break;
+            }
+            if (taken == -1) {
+                result = -1;
+                break;
+            }
+            mask &= mask - 1u;
+        }
+        if (result != 0) break;
+    }
+    if (result == 1) {
+        *selected_task = task_out;
+        *selected_n = n_out;
+        return true;
+    }
+    return false;
+}
+
+__device__ __forceinline__ bool cake_sm120_ready_chunk8_claim_epilogue_warp(
+    unsigned int* chunk_count, unsigned int* claimed, int tasks, int start,
+    int* selected_task)
+{
+    const int lane = (int)threadIdx.x & 31;
+    int task_out = -1;
+    #pragma unroll 1
+    for (int base = 0; base < tasks; base += 32) {
+        const int index = base + lane;
+        const int task = index < tasks ? (start + index) % tasks : -1;
+        bool candidate = false;
+        if (task >= 0) {
+            cuda::atomic_ref<unsigned int, cuda::thread_scope_device> count(
+                chunk_count[task]);
+            candidate = count.load(cuda::memory_order_acquire) == 8u;
+        }
+        unsigned int mask = __ballot_sync(0xffffffffu, candidate);
+        while (mask != 0u) {
+            const int source = __ffs((int)mask) - 1;
+            const int chosen = __shfl_sync(0xffffffffu, task, source);
+            int taken = 0;
+            if (lane == 0)
+                taken = atomicCAS(claimed + chosen, 0u, 1u) == 0u ? 1 : 0;
+            taken = __shfl_sync(0xffffffffu, taken, 0);
+            if (taken == 1) {
+                task_out = chosen;
+                break;
+            }
+            mask &= mask - 1u;
+        }
+        if (task_out >= 0) break;
+    }
+    if (task_out >= 0) {
+        *selected_task = task_out;
+        return true;
+    }
+    return false;
+}
+
+__device__ __forceinline__ bool cake_sm120_ready_chunk8_claim_w1_warp(
+    unsigned int* next_tile, unsigned int target_tiles,
+    unsigned int* protocol_error, int* selected_task, int* selected_n)
+{
+    const int lane = (int)threadIdx.x & 31;
+    int taken = 0;
+    int task_out = -1;
+    int n_out = -1;
+    if (lane == 0)
+        taken = cake_sm120_ready_chunk8_claim_w1(next_tile, target_tiles,
+                                                 protocol_error, &task_out,
+                                                 &n_out) ? 1 : 0;
+    taken = __shfl_sync(0xffffffffu, taken, 0);
+    if (taken == 0) return false;
+    *selected_task = __shfl_sync(0xffffffffu, task_out, 0);
+    *selected_n = __shfl_sync(0xffffffffu, n_out, 0);
+    return true;
+}
+
 __device__ __noinline__ void cake_sm120_canonical_ready_worker()
 {
     // Work kinds: 0 retry, 1 W1 eight-tile chunk, 2 official epilogue task,
@@ -4095,61 +4221,84 @@ __device__ __noinline__ void cake_sm120_canonical_ready_worker()
     __syncthreads();
     while (true) {
         CAKE_PHASE_BEGIN(cake_claim_stamp);
-        if ((int)threadIdx.x == 0) {
+        if ((int)threadIdx.x < 32) {
             CakeSm120CanonicalFusedReadyParams const* p =
                 cake_sm120_canonical_ready_reload_params();
-            work_kind = 0;
-            work_task = -1;
-            work_n = -1;
-            const int tasks = p->total_m_tasks[0];
+            int kind = 0;
+            int task = -1;
+            int tile = -1;
+            // Lane 0 samples every shared counter once and broadcasts the
+            // decision. Sampling per lane would let lanes disagree about a
+            // concurrently changing counter, and the collective probes below
+            // would then be entered divergently.
+            int tasks = 0;
+            unsigned int state = 0u;
+            if ((int)threadIdx.x == 0) {
+                tasks = p->total_m_tasks[0];
+                const unsigned int w1_target =
+                    (unsigned int)tasks * (unsigned)cake_moe::kW1TilesPerTask;
+                const unsigned int w2_target =
+                    (unsigned int)tasks * (unsigned)cake_moe::kW2TilesPerTask;
+                const unsigned int epilogues =
+                    atomicAdd(p->epilogue_completed, 0u);
+                const bool all_w1 =
+                    atomicAdd(p->w1_tiles_completed, 0u) >= w1_target;
+                const unsigned int warmup_target =
+                    (unsigned int)(tasks < 27 ? tasks : 27);
+                if (all_w1) state |= kCakeWorkerAllW1;
+                if (epilogues >= warmup_target) state |= kCakeWorkerWarmedUp;
+                if (atomicAdd(p->protocol_error, 0u) != 0u)
+                    state |= kCakeWorkerFailed;
+                if (all_w1 && epilogues >= (unsigned int)tasks &&
+                    atomicAdd(p->w2_tiles_completed, 0u) >= w2_target)
+                    state |= kCakeWorkerDrained;
+            }
+            tasks = __shfl_sync(0xffffffffu, tasks, 0);
+            state = __shfl_sync(0xffffffffu, state, 0);
             const unsigned int w1_target =
-            (unsigned int)tasks * (unsigned)cake_moe::kW1TilesPerTask;
-            const unsigned int w2_target =
-            (unsigned int)tasks * (unsigned)cake_moe::kW2TilesPerTask;
-            const bool all_w1_complete =
-                atomicAdd(p->w1_tiles_completed, 0u) >= w1_target;
-            const unsigned int warmup_target =
-                (unsigned int)(tasks < 27 ? tasks : 27);
-            const bool warmup_complete =
-                atomicAdd(p->epilogue_completed, 0u) >= warmup_target;
+                (unsigned int)tasks * (unsigned)cake_moe::kW1TilesPerTask;
+            const bool all_w1_complete = (state & kCakeWorkerAllW1) != 0u;
+            const bool warmup_complete = (state & kCakeWorkerWarmedUp) != 0u;
             const bool may_consume_w2 =
                 all_w1_complete || (warmup_complete && worker_id < 27);
-            if (atomicAdd(p->protocol_error, 0u) != 0u) {
-                work_kind = -1;
-            } else if (all_w1_complete &&
-                       atomicAdd(p->epilogue_completed, 0u) >= (unsigned int)tasks &&
-                       atomicAdd(p->w2_tiles_completed, 0u) >= w2_target) {
-                work_kind = -1;
+            if ((state & (kCakeWorkerFailed | kCakeWorkerDrained)) != 0u) {
+                kind = -1;
             } else {
                 // A worker that consumed an early W2 chunk gets exactly one
                 // W1 claim opportunity before another W2 claim.
-                if (force_w1_opportunity != 0 && !all_w1_complete) {
-                    force_w1_opportunity = 0;
-                    if (cake_sm120_ready_chunk8_claim_w1(
+                const bool force_w1 = force_w1_opportunity != 0;
+                if (force_w1 && !all_w1_complete) {
+                    if ((int)threadIdx.x == 0) force_w1_opportunity = 0;
+                    if (cake_sm120_ready_chunk8_claim_w1_warp(
                             p->w1_next_tile, w1_target, p->protocol_error,
-                            &work_task, &work_n))
-                        work_kind = 1;
+                            &task, &tile))
+                        kind = 1;
                 }
-                if (work_kind == 0 && may_consume_w2 &&
-                    cake_sm120_ready_chunk8_claim_w2(
+                if (kind == 0 && may_consume_w2 &&
+                    cake_sm120_ready_chunk8_claim_w2_warp(
                         p->w2_task_ready, p->w2_task_claimed, tasks,
-                        scan_start, p->protocol_error, &work_task, &work_n))
-                    work_kind = 3;
-                if (work_kind == 0 && cake_sm120_ready_chunk8_claim_epilogue(
+                        scan_start, p->protocol_error, &task, &tile))
+                    kind = 3;
+                if (kind == 0 && cake_sm120_ready_chunk8_claim_epilogue_warp(
                         p->w1_task_ready, p->epilogue_claimed,
-                        tasks, scan_start, &work_task))
-                    work_kind = 2;
-                if (work_kind == 0 && !all_w1_complete &&
-                    cake_sm120_ready_chunk8_claim_w1(
+                        tasks, scan_start, &task))
+                    kind = 2;
+                if (kind == 0 && !all_w1_complete &&
+                    cake_sm120_ready_chunk8_claim_w1_warp(
                         p->w1_next_tile, w1_target, p->protocol_error,
-                        &work_task, &work_n))
-                    work_kind = 1;
+                        &task, &tile))
+                    kind = 1;
             }
             scan_start = tasks > 0 ? (scan_start + 1) % tasks : 0;
-            if (work_kind > 0) {
-                p->worker_task[worker_id] = work_task;
-                p->worker_n[worker_id] = work_n;
-                __threadfence();
+            if ((int)threadIdx.x == 0) {
+                work_kind = kind;
+                work_task = task;
+                work_n = tile;
+                if (kind > 0) {
+                    p->worker_task[worker_id] = task;
+                    p->worker_n[worker_id] = tile;
+                    __threadfence();
+                }
             }
         }
         __syncthreads();
