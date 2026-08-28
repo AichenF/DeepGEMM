@@ -79,6 +79,33 @@ per epoch, bit-exact BF16 output, a stable per-epoch route total, the `[0, 1, 0]
 slot-reuse pattern and zero protocol, owner, counter, signal, acknowledgement,
 ready-scheduler, stage, output and guard mismatches.
 
+## Performance gate
+
+```bash
+docker run --rm -v $PWD:/src:ro -v $PWD/out:/out nvcr.io/nvidia/pytorch:26.07-py3 \
+  nvcc -O2 -std=c++17 -Xcompiler=-fPIC -shared /src/cupti_kernel_trace.cpp \
+  -I/usr/local/cuda-13.3/targets/x86_64-linux/include \
+  -L/usr/local/cuda-13.3/targets/x86_64-linux/lib -lcupti \
+  -o /out/libcake_cupti_trace.so
+
+python3 run_perf_abba.py \
+  --arm baseline=out/ep4 --arm candidate=out/ep4-candidate \
+  --injection out/libcake_cupti_trace.so \
+  --gpus 0,1,2,3 --world-size 4 --rows 2048 --repeat 20 \
+  --output evidence/ep4-abba.json
+```
+
+`cupti_kernel_trace.cpp` is a CUPTI injection library, so the timed executable
+carries no instrumentation. Latency is the CUPTI concurrent-kernel activity
+envelope of one iteration on each rank; a sample is reduced with a max across
+ranks before any statistic, and the two arms run in A/B/B/A order. Because the
+envelope is reconstructed from activity records rather than read from a CUDA
+event around one launch, a multi-kernel candidate is measured on the same basis
+as the fused kernel, with launch gaps and inter-kernel idle time included.
+
+A null A/A run of the EP4 build resolves a 0.18% median difference with 0.06%
+endpoint drift, which sets the floor for a believable improvement.
+
 ## Equivalence to the previous per-shape sources
 
 At the default configuration this source compiles to SASS that is identical to
