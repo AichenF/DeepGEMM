@@ -4275,11 +4275,25 @@ __device__ __noinline__ void cake_sm120_canonical_ready_combine(
     const int global_tid = (int)blockIdx.x * 384 + (int)threadIdx.x;
     const int global_threads = (int)gridDim.x * 384;
     const int slot = (int)(p->epoch & 1u);
-    const int total = p->active_rows * cake_moe::kOutput;
-    for (int e = global_tid; e < total; e += global_threads) {
-        const int token = e / cake_moe::kOutput;
-        const int column = e - token * cake_moe::kOutput;
-        float combined = 0.0f;
+    // One thread owns kCombineVector adjacent output columns of one token. The
+    // route metadata is identical for every column of a token, so resolving it
+    // once per vector instead of once per column removes
+    // kCombineVector * kTopK * 4 redundant scalar loads per vector, and the
+    // BF16 gather and store become 16-byte accesses. The per-column
+    // accumulation order and the single BF16 rounding are unchanged, so the
+    // output stays bit-exact.
+    constexpr int kCombineVector = 8;
+    static_assert(cake_moe::kOutput % kCombineVector == 0,
+                  "combine vector width must divide the output extent");
+    const int vectors_per_token = cake_moe::kOutput / kCombineVector;
+    const long long total_vectors =
+        (long long)p->active_rows * vectors_per_token;
+    for (long long v = global_tid; v < total_vectors; v += global_threads) {
+        const int token = (int)(v / vectors_per_token);
+        const int column = (int)(v - (long long)token * vectors_per_token) *
+                           kCombineVector;
+        unsigned long long base[cake_moe::kTopK];
+        bool present[cake_moe::kTopK];
         #pragma unroll
         for (int topk_slot = 0; topk_slot < cake_moe::kTopK; ++topk_slot) {
             const int pair = token * cake_moe::kTopK + topk_slot;
@@ -4288,6 +4302,8 @@ __device__ __noinline__ void cake_sm120_canonical_ready_combine(
             const bool masked = expert == -1 && expert_hi == -1;
             const bool valid = expert >= 0 && expert < p->world_size * cake_moe::kLocalExperts && expert_hi == 0;
             if (!valid && !masked) atomicMax(p->protocol_error, 1u);
+            present[topk_slot] = false;
+            base[topk_slot] = 0ull;
             if (valid) {
                 const int owner = expert / cake_moe::kLocalExperts;
                 const int result_index = p->route_result_index[pair];
@@ -4295,14 +4311,36 @@ __device__ __noinline__ void cake_sm120_canonical_ready_combine(
                 if (result_index < 0 || result_index >= count || count < 0 || count > cake_moe::kMaxRoutesPerPeer) {
                     atomicMax(p->protocol_error, 1u);
                 } else {
-                    const unsigned long long inbox =
+                    present[topk_slot] = true;
+                    base[topk_slot] =
                         (unsigned long long)(owner * 2 + slot) * cake_moe::kResultElementsPerPeer +
-                        (unsigned long long)result_index * cake_moe::kOutput + column;
-                    combined += __bfloat162float(p->result_inbox[inbox]);
+                        (unsigned long long)result_index * cake_moe::kOutput;
                 }
             }
         }
-        p->final_output[e] = __float2bfloat16_rn(combined);
+        float combined[kCombineVector];
+        #pragma unroll
+        for (int lane_column = 0; lane_column < kCombineVector; ++lane_column)
+            combined[lane_column] = 0.0f;
+        #pragma unroll
+        for (int topk_slot = 0; topk_slot < cake_moe::kTopK; ++topk_slot) {
+            if (!present[topk_slot]) continue;
+            const __nv_bfloat16* row =
+                p->result_inbox + base[topk_slot] + column;
+            uint4 packed = *reinterpret_cast<const uint4*>(row);
+            const __nv_bfloat16* values =
+                reinterpret_cast<const __nv_bfloat16*>(&packed);
+            #pragma unroll
+            for (int lane_column = 0; lane_column < kCombineVector; ++lane_column)
+                combined[lane_column] += __bfloat162float(values[lane_column]);
+        }
+        __nv_bfloat16 out[kCombineVector];
+        #pragma unroll
+        for (int lane_column = 0; lane_column < kCombineVector; ++lane_column)
+            out[lane_column] = __float2bfloat16_rn(combined[lane_column]);
+        *reinterpret_cast<uint4*>(p->final_output +
+                                  (long long)token * cake_moe::kOutput + column) =
+            *reinterpret_cast<const uint4*>(out);
     }
     __threadfence_system();
     __syncthreads();
