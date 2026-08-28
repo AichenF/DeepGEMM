@@ -3850,57 +3850,97 @@ __device__ __noinline__ void cake_sm120_canonical_ready_epilogue_task(
     if (tid < 256) {
         const int warp = tid / 32;
         const int lane = tid & 31;
-        // The completion counter has no device-side consumer; only the host
-        // validates its total. Counting locally and publishing once per warp
-        // turns one hot global atomic per scale group into one per warp.
+        // Four adjacent lanes own one K32 scale group, eight values each, so a
+        // warp retires eight groups per step. The gate and up halves of a group
+        // are contiguous in the fused W1 extent, which turns what used to be
+        // sixty-four scalar two-byte loads per group into two sixteen-byte
+        // loads per lane, and the E4M3 store into one eight-byte store.
+        constexpr int kValuesPerLane = 8;
+        constexpr int kLanesPerGroup =
+            cake_moe::kScaleGranularityK / kValuesPerLane;
+        constexpr int kGroupsPerWarpStep = 32 / kLanesPerGroup;
+        constexpr int kGroupsPerRow =
+            cake_moe::kIntermediate / cake_moe::kScaleGranularityK;
+        constexpr int kTotalGroups = cake_moe::kTaskM * kGroupsPerRow;
+        static_assert(kTotalGroups % (kGroupsPerWarpStep * 8) == 0,
+                      "the scale-group extent must divide evenly across warps");
+        static_assert(kGroupsPerRow % kGroupsPerWarpStep == 0,
+                      "a warp step must stay inside one row");
+        const int subgroup = lane / kLanesPerGroup;
+        const int slot_in_group = lane % kLanesPerGroup;
+        const unsigned int subgroup_mask =
+            0xfu << (subgroup * kLanesPerGroup);
         unsigned int completed_groups = 0u;
         #pragma unroll 1
-        for (int local_rg = warp; local_rg < cake_moe::kTaskM * 128;
-             local_rg += 8) {
-            const int row = task * cake_moe::kTaskM + local_rg / 128;
-            const int group = local_rg % 128;
-            const int logical_n = group * cake_moe::kScaleGranularityK + lane;
-            const int physical_gate = (logical_n / 8) * 16 + (logical_n & 7);
-            const int physical_up = physical_gate + 8;
-            float gate = __bfloat162float(*reinterpret_cast<__nv_bfloat16 const*>(
-                w1_bf16 + (unsigned long long)row * cake_moe::kW1PhysicalN +
-                    physical_gate));
-            float up = __bfloat162float(*reinterpret_cast<__nv_bfloat16 const*>(
-                w1_bf16 + (unsigned long long)row * cake_moe::kW1PhysicalN +
-                    physical_up));
-            gate = fminf(gate, 10.0f);
-            up = fminf(max_noftz(up, -10.0f), 10.0f);
-            const float neg_gate_exp = __expf(-gate);
-            const float sigmoid = approx_rcp(1.0f + neg_gate_exp);
-            const float silu = gate * sigmoid;
-            const float swiglu = silu * up;
-            const float routed = swiglu * routing_weight_pool[row];
-            float amax = max_noftz(routed, -routed);
+        for (int base = warp * kGroupsPerWarpStep; base < kTotalGroups;
+             base += kGroupsPerWarpStep * 8) {
+            const int local_rg = base + subgroup;
+            const int row = task * cake_moe::kTaskM + local_rg / kGroupsPerRow;
+            const int group = local_rg % kGroupsPerRow;
+            const int logical_n_base =
+                group * cake_moe::kScaleGranularityK +
+                slot_in_group * kValuesPerLane;
+            // Each eight-value slot reads its gate octet and the up octet that
+            // follows it in the same sixteen-element physical block.
+            const unsigned long long physical_gate =
+                (unsigned long long)row * cake_moe::kW1PhysicalN +
+                (unsigned long long)(logical_n_base / 8) * 16;
+            const uint4 gate_packed = *reinterpret_cast<uint4 const*>(
+                w1_bf16 + physical_gate);
+            const uint4 up_packed = *reinterpret_cast<uint4 const*>(
+                w1_bf16 + physical_gate + 8);
+            const __nv_bfloat16* gate_values =
+                reinterpret_cast<const __nv_bfloat16*>(&gate_packed);
+            const __nv_bfloat16* up_values =
+                reinterpret_cast<const __nv_bfloat16*>(&up_packed);
+            const float routing_weight = routing_weight_pool[row];
+            float routed[kValuesPerLane];
+            float amax = 0.0f;
             #pragma unroll
-            for (int delta = 16; delta > 0; delta >>= 1)
-                amax = max_noftz(amax, __shfl_xor_sync(0xffffffffu, amax, delta));
+            for (int value = 0; value < kValuesPerLane; ++value) {
+                float gate = __bfloat162float(gate_values[value]);
+                float up = __bfloat162float(up_values[value]);
+                gate = fminf(gate, 10.0f);
+                up = fminf(max_noftz(up, -10.0f), 10.0f);
+                const float neg_gate_exp = __expf(-gate);
+                const float sigmoid = approx_rcp(1.0f + neg_gate_exp);
+                const float silu = gate * sigmoid;
+                const float swiglu = silu * up;
+                routed[value] = swiglu * routing_weight;
+                amax = max_noftz(amax,
+                                 max_noftz(routed[value], -routed[value]));
+            }
+            #pragma unroll
+            for (int delta = kLanesPerGroup / 2; delta > 0; delta >>= 1)
+                amax = max_noftz(amax,
+                                 __shfl_xor_sync(subgroup_mask, amax, delta));
             const float sf = amax * (1.0f / 448.0f);
             const unsigned int sf_bits = __float_as_uint(sf);
             unsigned int sf_exp = ((sf_bits >> 23) & 255u) +
                 (((sf_bits & 0x7fffffu) + 0x7fffffu) >> 23);
             sf_exp = min(sf_exp, 254u);
             const float sf_inv = __uint_as_float((254u - sf_exp) << 23);
-            if (lane == 0) {
+            if (slot_in_group == 0) {
                 const unsigned long long byte_index =
                     ((unsigned long long)(group >> 2) * cake_moe::kMaxPaddedRows +
                      (unsigned long long)row) * 4ull + (unsigned long long)(group & 3);
                 intermediate_sfa_u8[byte_index] = (uint8_t)sf_exp;
                 ++completed_groups;
             }
-            const float routed_scaled = routed * sf_inv;
-            unsigned short fp8_pair;
-            asm("cvt.rn.satfinite.e4m3x2.f32 %0, 0f00000000, %1;"
-                : "=h"(fp8_pair) : "f"(routed_scaled));
-            intermediate_fp8[(unsigned long long)row * cake_moe::kIntermediate +
-                             logical_n] =
-                (uint8_t)(fp8_pair & 0xffu);
+            uint8_t packed_fp8[kValuesPerLane];
+            #pragma unroll
+            for (int value = 0; value < kValuesPerLane; ++value) {
+                unsigned short fp8_pair;
+                asm("cvt.rn.satfinite.e4m3x2.f32 %0, 0f00000000, %1;"
+                    : "=h"(fp8_pair) : "f"(routed[value] * sf_inv));
+                packed_fp8[value] = (uint8_t)(fp8_pair & 0xffu);
+            }
+            *reinterpret_cast<uint2*>(
+                intermediate_fp8 +
+                (unsigned long long)row * cake_moe::kIntermediate +
+                logical_n_base) = *reinterpret_cast<const uint2*>(packed_fp8);
         }
-        if (lane == 0 && completed_groups != 0u)
+        if (slot_in_group == 0 && completed_groups != 0u)
             atomicAdd(requant_groups_done, completed_groups);
         __threadfence();
     }
