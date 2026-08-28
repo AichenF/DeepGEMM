@@ -4249,7 +4249,7 @@ __device__ __noinline__ void cake_sm120_canonical_ready_service_precombine(int* 
                 {
                     ncclGin __gin{*(gin_dev_comm), (int)(0)};
                     __gin.put(ncclTeamWorld(*(gin_dev_comm)), source, result_inbox_window, remote_byte, result_out_window, local_byte, bytes,
-                        ncclGin_StrongSignalAdd{(ncclGinSignal_t)((rank) + 8), 1ull}, ncclGin_None{}, ncclCoopThread());
+                        ncclGin_StrongSignalAdd{(ncclGinSignal_t)((rank) + cake_moe::kPhysicalRanks), 1ull}, ncclGin_None{}, ncclCoopThread());
                 }
                 sent_mask |= 1u << source;
             }

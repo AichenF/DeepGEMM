@@ -36,7 +36,8 @@ PRODUCTION_KERNEL = "kernel_cake_sm120_production_canonical_fused_ready_chunk8"
 
 
 def docker_command(build: Path, trace_dir: Path, injection: Path, gpus: list[int],
-                   args: argparse.Namespace, trace_name: str) -> list[str]:
+                   args: argparse.Namespace, trace_name: str,
+                   overrides: dict[str, str]) -> list[str]:
     devices = ["--device=/dev/infiniband/rdma_cm"]
     for gpu in gpus:
         devices.append(f"--device=/dev/infiniband/uverbs{GPU_UVERBS[gpu]}")
@@ -71,8 +72,9 @@ def docker_command(build: Path, trace_dir: Path, injection: Path, gpus: list[int
         "-v", f"{build}:/artifact:ro",
         "-v", f"{trace_dir}:/trace",
         "-v", f"{injection.parent}:/inject:ro",
-        "-w", "/artifact", IMAGE, "bash", "-lc", inner,
-    ]
+        "-w", "/artifact",
+    ] + [item for key, value in sorted(overrides.items())
+         for item in ("-e", f"{key}={value}")] + [IMAGE, "bash", "-lc", inner]
 
 
 def iteration_envelopes(trace: Path, kernels: list[str], world_size: int,
@@ -148,13 +150,15 @@ def useful_tflops(args: argparse.Namespace, ms: float) -> float:
 
 
 def run_arm(name: str, build: Path, injection: Path, gpus: list[int],
-            args: argparse.Namespace, index: int) -> dict:
+            args: argparse.Namespace, index: int,
+            overrides: dict[str, str]) -> dict:
     with tempfile.TemporaryDirectory(prefix="cake-cupti-") as tmp:
         trace_dir = Path(tmp)
         trace_name = f"{name}-{index}.jsonl"
         started = time.time()
         completed = subprocess.run(
-            docker_command(build, trace_dir, injection, gpus, args, trace_name),
+            docker_command(build, trace_dir, injection, gpus, args, trace_name,
+                           overrides),
             capture_output=True, text=True)
         elapsed = time.time() - started
         trace = trace_dir / trace_name
@@ -163,6 +167,7 @@ def run_arm(name: str, build: Path, injection: Path, gpus: list[int],
             "arm": name,
             "position": index,
             "build": str(build),
+            "environment_overrides": dict(overrides),
             "exit_status": completed.returncode,
             "wall_seconds": round(elapsed, 3),
         }
@@ -198,6 +203,9 @@ def main() -> int:
     parser.add_argument("--arm", action="append", required=True,
                         metavar="NAME=BUILD_DIR",
                         help="measurement arm; pass exactly two for a paired run")
+    parser.add_argument("--arm-env", action="append", default=[],
+                        metavar="NAME:KEY=VALUE",
+                        help="environment override applied only to one arm")
     parser.add_argument("--injection", required=True, type=Path,
                         help="path to libcake_cupti_trace.so")
     parser.add_argument("--gpus", default="0,1,2,3")
@@ -224,13 +232,22 @@ def main() -> int:
     if len(arms) != 2:
         parser.error("a paired ABBA run needs exactly two distinct arms")
 
+    overrides: dict[str, dict[str, str]] = {name: {} for name in arms}
+    for entry in args.arm_env:
+        name, _, assignment = entry.partition(":")
+        key, _, value = assignment.partition("=")
+        if name not in overrides or not key:
+            parser.error(f"malformed arm environment override {entry!r}")
+        overrides[name][key] = value
+
     gpus = [int(g) for g in args.gpus.split(",")]
     first, second = list(arms)
     order = [first, second, second, first]
 
     runs = []
     for index, name in enumerate(order):
-        run = run_arm(name, arms[name], args.injection, gpus, args, index)
+        run = run_arm(name, arms[name], args.injection, gpus, args, index,
+                      overrides[name])
         runs.append(run)
         stats = run.get("statistics")
         if stats:
@@ -281,6 +298,7 @@ def main() -> int:
         },
         "arms": {name: {
             "build": str(path),
+            "environment_overrides": overrides[name],
             "perf_sha256": hashlib.sha256((path / "perf").read_bytes()).hexdigest(),
             "config_flags": (path / "config-flags.txt").read_text().split(),
         } for name, path in arms.items()},

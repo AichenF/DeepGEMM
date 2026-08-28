@@ -41,7 +41,7 @@ namespace {
 constexpr int kPhysicalRanks = cake_moe::kPhysicalRanks;
 constexpr int kRingSlots = cake_moe::kRingSlots;
 constexpr int kEpochs = 3;
-constexpr int kGinContexts = 1;
+constexpr int kGinContexts = cake_moe::kGinContexts;
 constexpr int kGinSignals = 2 * kPhysicalRanks;
 constexpr int kHeaderWords = cake_moe::kHeaderWords;
 constexpr int kTopK = cake_moe::kTopK;

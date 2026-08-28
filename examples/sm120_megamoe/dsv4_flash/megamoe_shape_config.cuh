@@ -50,6 +50,22 @@
 #define CAKE_MOE_COMBINE_CTAS 110
 #endif
 
+#ifndef CAKE_MOE_GIN_CONTEXTS
+#define CAKE_MOE_GIN_CONTEXTS 1
+#endif
+
+#ifndef CAKE_MOE_GIN_DISPATCH_CONTEXT
+#define CAKE_MOE_GIN_DISPATCH_CONTEXT 0
+#endif
+
+#ifndef CAKE_MOE_GIN_RESULT_CONTEXT
+#define CAKE_MOE_GIN_RESULT_CONTEXT 0
+#endif
+
+#ifndef CAKE_MOE_GIN_ACK_CONTEXT
+#define CAKE_MOE_GIN_ACK_CONTEXT 0
+#endif
+
 namespace cake_moe {
 
 // ---------------------------------------------------------------- knobs ---
@@ -63,6 +79,12 @@ constexpr int kPhysicalRanks = CAKE_MOE_PHYSICAL_RANKS;
 constexpr int kMaxRows = CAKE_MOE_MAX_ROWS;
 constexpr int kRingSlots = CAKE_MOE_RING_SLOTS;
 constexpr int kCombineCtas = CAKE_MOE_COMBINE_CTAS;
+
+// Transport plan: which provisioned GIN context each traffic class issues on.
+constexpr int kGinContexts = CAKE_MOE_GIN_CONTEXTS;
+constexpr int kGinDispatchContext = CAKE_MOE_GIN_DISPATCH_CONTEXT;
+constexpr int kGinResultContext = CAKE_MOE_GIN_RESULT_CONTEXT;
+constexpr int kGinAckContext = CAKE_MOE_GIN_ACK_CONTEXT;
 
 // ------------------------------------------------------- math tile shape ---
 

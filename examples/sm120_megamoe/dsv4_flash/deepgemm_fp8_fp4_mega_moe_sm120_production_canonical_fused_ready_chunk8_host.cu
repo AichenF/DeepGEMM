@@ -16,6 +16,8 @@
 #include "deepgemm_fp8_fp4_mega_moe_sm120_production_host.cu"
 #undef CAKE_GENERATED_SM120_PRODUCTION_SOURCE
 
+#include <algorithm>
+
 namespace {
 
 constexpr int kCanonicalTaskM = cake_moe::kTaskM;
@@ -438,6 +440,32 @@ void report_phase_trace(const CanonicalBuffers& canonical, int rank,
 }
 #endif
 
+// The requested GIN context count is a hint. Reading a context the
+// communicator did not grant is an illegal device access rather than an error,
+// so the transport plan is validated once, on the host, before any launch.
+void require_granted_gin_contexts(const ncclDevComm& device_comm) {
+  const int granted = static_cast<int>(device_comm.ginContextCount);
+  const int required = 1 + std::max({cake_moe::kGinDispatchContext,
+                                     cake_moe::kGinResultContext,
+                                     cake_moe::kGinAckContext});
+  if (granted < required) {
+    std::fprintf(stderr,
+                 "GIN transport plan needs %d contexts but the communicator "
+                 "granted %d (requested %d)\n",
+                 required, granted, cake_moe::kGinContexts);
+    std::exit(EXIT_FAILURE);
+  }
+  std::fprintf(stderr,
+               "gin_contexts granted=%d required=%d requested=%d "
+               "connections=%d signals=%d railed_contexts=%d "
+               "railed_connections=%d strong_legacy=%d\n",
+               granted, required, cake_moe::kGinContexts,
+               (int)device_comm.ginConnectionCount, device_comm.ginSignalCount,
+               (int)device_comm.ginContextsRailed,
+               (int)device_comm.ginConnectionsRailed,
+               (int)device_comm.ginStrongLegacySignals);
+}
+
 void free_canonical_buffers(DeviceBuffers& b, CanonicalBuffers& c) {
 #if CAKE_MOE_PHASE_TRACE
   cudaFree(c.phase_count);
@@ -738,12 +766,18 @@ void run_canonical_rank(int rank, int world_size, int local_device,
   ncclDevCommRequirements_t requirements =
       NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
   requirements.ginContextCount = kGinContexts;
+  // Contexts only get their own connection when they are exclusive; sharing
+  // one connection leaves every context above zero without a queue pair.
+  requirements.ginExclusiveContexts = kGinContexts > 1;
   requirements.ginSignalCount = 24;
   requirements.worldGinBarrierCount = 1;
   requirements.ginConnectionType = NCCL_GIN_CONNECTION_FULL;
   requirements.ginStrongSignalsRequired = true;
   ncclDevComm device_comm{};
   NCCL_CHECK(ncclDevCommCreate(comm, &requirements, &device_comm));
+  // ginContextCount in the requirements is a hint, so the transport plan is
+  // only legal once the communicator confirms it granted that many contexts.
+  require_granted_gin_contexts(device_comm);
   device_alloc(&b.device_comm, 1);
   CUDA_CHECK(cudaMemcpy(b.device_comm, &device_comm, sizeof(device_comm),
                         cudaMemcpyHostToDevice));
