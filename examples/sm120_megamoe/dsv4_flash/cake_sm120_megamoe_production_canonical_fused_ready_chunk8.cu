@@ -3850,6 +3850,10 @@ __device__ __noinline__ void cake_sm120_canonical_ready_epilogue_task(
     if (tid < 256) {
         const int warp = tid / 32;
         const int lane = tid & 31;
+        // The completion counter has no device-side consumer; only the host
+        // validates its total. Counting locally and publishing once per warp
+        // turns one hot global atomic per scale group into one per warp.
+        unsigned int completed_groups = 0u;
         #pragma unroll 1
         for (int local_rg = warp; local_rg < cake_moe::kTaskM * 128;
              local_rg += 8) {
@@ -3886,7 +3890,7 @@ __device__ __noinline__ void cake_sm120_canonical_ready_epilogue_task(
                     ((unsigned long long)(group >> 2) * cake_moe::kMaxPaddedRows +
                      (unsigned long long)row) * 4ull + (unsigned long long)(group & 3);
                 intermediate_sfa_u8[byte_index] = (uint8_t)sf_exp;
-                atomicAdd(requant_groups_done, 1u);
+                ++completed_groups;
             }
             const float routed_scaled = routed * sf_inv;
             unsigned short fp8_pair;
@@ -3896,6 +3900,8 @@ __device__ __noinline__ void cake_sm120_canonical_ready_epilogue_task(
                              logical_n] =
                 (uint8_t)(fp8_pair & 0xffu);
         }
+        if (lane == 0 && completed_groups != 0u)
+            atomicAdd(requant_groups_done, completed_groups);
         __threadfence();
     }
 }
