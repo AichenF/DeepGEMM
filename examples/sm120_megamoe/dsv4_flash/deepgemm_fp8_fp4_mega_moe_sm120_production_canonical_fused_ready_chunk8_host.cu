@@ -451,19 +451,14 @@ void require_granted_gin_contexts(const ncclDevComm& device_comm) {
   if (granted < required) {
     std::fprintf(stderr,
                  "GIN transport plan needs %d contexts but the communicator "
-                 "granted %d (requested %d)\n",
-                 required, granted, cake_moe::kGinContexts);
+                 "granted %d (requested %d, connections %d, signals %d, "
+                 "railed contexts %d)\n",
+                 required, granted, cake_moe::kGinContexts,
+                 (int)device_comm.ginConnectionCount,
+                 device_comm.ginSignalCount,
+                 (int)device_comm.ginContextsRailed);
     std::exit(EXIT_FAILURE);
   }
-  std::fprintf(stderr,
-               "gin_contexts granted=%d required=%d requested=%d "
-               "connections=%d signals=%d railed_contexts=%d "
-               "railed_connections=%d strong_legacy=%d\n",
-               granted, required, cake_moe::kGinContexts,
-               (int)device_comm.ginConnectionCount, device_comm.ginSignalCount,
-               (int)device_comm.ginContextsRailed,
-               (int)device_comm.ginConnectionsRailed,
-               (int)device_comm.ginStrongLegacySignals);
 }
 
 void free_canonical_buffers(DeviceBuffers& b, CanonicalBuffers& c) {

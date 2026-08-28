@@ -130,6 +130,9 @@ def main() -> int:
     parser.add_argument("--build", required=True, type=Path)
     parser.add_argument("--gpus", default="0,1,2,3")
     parser.add_argument("--world-size", type=int, required=True)
+    parser.add_argument("--crash-retries", type=int, default=1,
+                        help="retries for a run that crashed before emitting "
+                             "any rank record")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
 
@@ -144,17 +147,28 @@ def main() -> int:
     failed = 0
     for case in case_matrix(args.world_size):
         started = time.time()
-        completed = subprocess.run(docker_command(args.build, gpus, case),
-                                   capture_output=True, text=True)
-        ok, reasons, ranks = evaluate(completed.stdout, case)
-        ok = ok and completed.returncode == 0
-        if completed.returncode != 0:
-            reasons.append(f"exit status {completed.returncode}")
+        attempts = 0
+        while True:
+            attempts += 1
+            completed = subprocess.run(docker_command(args.build, gpus, case),
+                                       capture_output=True, text=True)
+            ok, reasons, ranks = evaluate(completed.stdout, case)
+            ok = ok and completed.returncode == 0
+            if completed.returncode != 0:
+                reasons.append(f"exit status {completed.returncode}")
+            # A crash before any rank record is an infrastructure fault, not a
+            # candidate verdict: it carries no result to judge. Those are retried
+            # once and the retry is recorded. A run that produced records and
+            # then failed is a real failure and is never retried.
+            infrastructure_fault = not ranks and completed.returncode != 0
+            if ok or attempts > args.crash_retries or not infrastructure_fault:
+                break
         if not ok:
             failed += 1
         records.append({
             **case,
             "passed": ok,
+            "attempts": attempts,
             "reasons": reasons,
             "seconds": round(time.time() - started, 3),
             "stderr_tail": completed.stderr.strip().splitlines()[-3:],
@@ -163,7 +177,8 @@ def main() -> int:
         status = "pass" if ok else "FAIL"
         print(f"[{status}] rows={case['rows']:>4} route={case['route']:<8} "
               f"oracle={case['oracle']:<12} mask={case['mask']} "
-              f"({records[-1]['seconds']}s)"
+              f"({records[-1]['seconds']}s"
+              + (f", {attempts} attempts)" if attempts > 1 else ")")
               + ("" if ok else f" -> {reasons[:3]}"), flush=True)
 
     receipt = {
@@ -175,6 +190,7 @@ def main() -> int:
         "world_size": args.world_size,
         "cases": len(records),
         "failures": failed,
+        "retried_cases": sum(1 for r in records if r["attempts"] > 1),
         "status": "pass" if failed == 0 else "fail",
         "records": records,
     }
