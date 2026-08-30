@@ -168,6 +168,9 @@ constexpr int kW2TilesPerTask = kW2ShapeN / kBlockN;
 // Work is claimed in groups of eight adjacent physical tiles.
 constexpr int kTilesPerChunk = 8;
 constexpr int kW1ChunksPerTask = (kW1TilesPerTask + kTilesPerChunk - 1) / kTilesPerChunk;
+
+// Warps that cooperate on one W1 task; the donor releases one per physical tile.
+constexpr int kW1WarpsPerTask = 8;
 constexpr int kW2ChunksPerTask = (kW2TilesPerTask + kTilesPerChunk - 1) / kTilesPerChunk;
 
 // --------------------------------------------------------- weight bounds ---

@@ -4017,7 +4017,8 @@ __device__ __noinline__ void cake_sm120_canonical_ready_chunk8_execute_w1()
             p->w1_task_ready[task]);
         const unsigned int previous = chunks.fetch_add(
             1u, cuda::memory_order_acq_rel);
-        if (previous >= 8u) atomicMax(p->protocol_error, 1u);
+        if (previous >= (unsigned)cake_moe::kW1ChunksPerTask)
+            atomicMax(p->protocol_error, 1u);
     }
     __syncthreads();
 }
@@ -4108,7 +4109,8 @@ __device__ __forceinline__ bool cake_sm120_ready_chunk8_claim_epilogue(
         const int task = (start + offset) % tasks;
         cuda::atomic_ref<unsigned int, cuda::thread_scope_device> count(
             chunk_count[task]);
-        if (count.load(cuda::memory_order_acquire) == 8u &&
+        if (count.load(cuda::memory_order_acquire) ==
+                (unsigned)cake_moe::kW1ChunksPerTask &&
             atomicCAS(claimed + task, 0u, 1u) == 0u) {
             *selected_task = task;
             return true;
@@ -4199,7 +4201,8 @@ __device__ __forceinline__ bool cake_sm120_ready_chunk8_claim_epilogue_warp(
         if (task >= 0) {
             cuda::atomic_ref<unsigned int, cuda::thread_scope_device> count(
                 chunk_count[task]);
-            candidate = count.load(cuda::memory_order_acquire) == 8u;
+            candidate = count.load(cuda::memory_order_acquire) ==
+                        (unsigned)cake_moe::kW1ChunksPerTask;
         }
         unsigned int mask = __ballot_sync(0xffffffffu, candidate);
         while (mask != 0u) {
@@ -4564,8 +4567,10 @@ __device__ __noinline__ void cake_sm120_canonical_ready_service_postcombine(unsi
         audit_ok = audit_ok && source_tile_sum == route_tile_target;
         for (int task = 0; task < tasks; ++task) {
             audit_ok = audit_ok && atomicAdd(w1_warp_done + task, 0u) ==
-                (unsigned)cake_moe::kW1TilesPerTask * 8u &&
-                atomicAdd(w1_task_ready + task, 0u) == 8u &&
+                (unsigned)cake_moe::kW1TilesPerTask *
+                    (unsigned)cake_moe::kW1WarpsPerTask &&
+                atomicAdd(w1_task_ready + task, 0u) ==
+                    (unsigned)cake_moe::kW1ChunksPerTask &&
                 atomicAdd(epilogue_claimed + task, 0u) == 1u &&
                 atomicAdd(w2_task_ready + task, 0u) == 1u &&
                 atomicAdd(w2_task_claimed + task, 0u) ==

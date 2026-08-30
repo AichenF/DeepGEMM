@@ -1120,7 +1120,7 @@ void run_canonical_rank(int rank, int world_size, int local_device,
       "\"service_cta\":0,\"worker_ctas\":109,"
       "\"one_pointer_params\":true,"
       "\"descriptor_storage\":\"global_aligned\","
-      "\"barrier_ordered\":false,\"ready_driven\":true,\"chunked_task_claim\":true,\"chunk_physical_n128_tiles\":8,\"w1_chunks_per_task\":8,\"w2_chunks_per_task\":4,\"task_major_chunk_issuance\":true,\"w1_warmup_tasks\":27,\"early_w2_worker_limit\":27,\"forced_w1_opportunity_after_each_early_w2_chunk\":true,"
+      "\"barrier_ordered\":false,\"ready_driven\":true,\"chunked_task_claim\":true,\"chunk_physical_n128_tiles\":%d,\"w1_chunks_per_task\":%d,\"w2_chunks_per_task\":%d,\"task_major_chunk_issuance\":true,\"w1_warmup_tasks\":27,\"early_w2_worker_limit\":27,\"forced_w1_opportunity_after_each_early_w2_chunk\":true,"
       "\"runtime_register_repartition_qualified\":false,"
       "\"resource_qualified\":false,"
       "\"production_compute_comparable\":false,"
@@ -1163,6 +1163,8 @@ void run_canonical_rank(int rank, int world_size, int local_device,
       ready_capacity, actual_production_launches, launch_mismatches,
       diagnostic_oracle_launches,
       zero_route_compute_skips,
+      cake_moe::kTilesPerChunk, cake_moe::kW1ChunksPerTask,
+      cake_moe::kW2ChunksPerTask,
       failures == 0 ? "pass" : "fail");
   std::fflush(stdout);
   if (failures != 0) g_failures.fetch_add(1);

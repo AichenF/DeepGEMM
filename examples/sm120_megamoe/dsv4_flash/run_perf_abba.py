@@ -24,6 +24,27 @@ import tempfile
 import time
 from pathlib import Path
 
+
+def gpu_telemetry(gpus: list[int]) -> list[dict]:
+    """Sample the clock and power state the measurement ran at."""
+
+    query = ("index,clocks.sm,clocks.max.sm,power.draw,temperature.gpu,"
+             "pstate,clocks_throttle_reasons.active")
+    completed = subprocess.run(
+        ["nvidia-smi", "-i", ",".join(str(g) for g in gpus),
+         f"--query-gpu={query}", "--format=csv,noheader,nounits"],
+        capture_output=True, text=True)
+    rows = []
+    for line in completed.stdout.strip().splitlines():
+        fields = [f.strip() for f in line.split(",")]
+        if len(fields) != 7:
+            continue
+        rows.append({"index": int(fields[0]), "sm_mhz": int(fields[1]),
+                     "max_sm_mhz": int(fields[2]), "power_w": float(fields[3]),
+                     "temperature_c": int(fields[4]), "pstate": fields[5],
+                     "throttle_reasons": fields[6]})
+    return rows
+
 IMAGE = "nvcr.io/nvidia/pytorch:26.07-py3"
 CUPTI_LIB_DIR = "/usr/local/cuda-13.3/targets/x86_64-linux/lib"
 
@@ -155,6 +176,7 @@ def run_arm(name: str, build: Path, injection: Path, gpus: list[int],
     with tempfile.TemporaryDirectory(prefix="cake-cupti-") as tmp:
         trace_dir = Path(tmp)
         trace_name = f"{name}-{index}.jsonl"
+        before_telemetry = gpu_telemetry(gpus)
         started = time.time()
         completed = subprocess.run(
             docker_command(build, trace_dir, injection, gpus, args, trace_name,
@@ -166,6 +188,8 @@ def run_arm(name: str, build: Path, injection: Path, gpus: list[int],
         record: dict = {
             "arm": name,
             "position": index,
+            "clocks_before": before_telemetry,
+            "clocks_after": gpu_telemetry(gpus),
             "build": str(build),
             "environment_overrides": dict(overrides),
             "exit_status": completed.returncode,
@@ -220,6 +244,11 @@ def main() -> int:
     parser.add_argument("--repeat", type=int, default=20, choices=(20, 100))
     parser.add_argument("--audit-epochs", type=int, default=3,
                         help="production launches the host runs before warmup")
+    parser.add_argument("--priming-arms", type=int, default=1,
+                        help="discarded arms run before the paired sequence to "
+                             "settle the GPU clocks")
+    parser.add_argument("--fault-retries", type=int, default=1,
+                        help="retries for an arm that produced no sample")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
 
@@ -244,10 +273,36 @@ def main() -> int:
     first, second = list(arms)
     order = [first, second, second, first]
 
+    # These GPUs idle at 180 MHz against a 3090 MHz ceiling and the harness
+    # clamps its own warmup to five launches, so the first arm after an idle
+    # period measures a clock ramp rather than the kernel. Run and discard one
+    # priming arm before the paired sequence.
+    priming = []
+    for _ in range(args.priming_arms):
+        priming.append({
+            "arm": first,
+            "discarded": True,
+            **{k: v for k, v in run_arm(first, arms[first], args.injection, gpus,
+                                        args, -1, overrides[first]).items()
+               if k in ("exit_status", "clocks_before", "clocks_after")},
+        })
+    if priming:
+        print(f"[priming] {len(priming)} discarded arm(s)", flush=True)
+
     runs = []
     for index, name in enumerate(order):
-        run = run_arm(name, arms[name], args.injection, gpus, args, index,
-                      overrides[name])
+        attempts = 0
+        while True:
+            attempts += 1
+            run = run_arm(name, arms[name], args.injection, gpus, args, index,
+                          overrides[name])
+            # A run that produced no sample carries no measurement, so a
+            # communicator or launch fault there is infrastructure, not a
+            # result. Retry it once and record the attempt. A run that produced
+            # samples is kept as measured, whatever it says.
+            if "max_rank_ms" in run or attempts > args.fault_retries:
+                break
+        run["attempts"] = attempts
         runs.append(run)
         stats = run.get("statistics")
         if stats:
@@ -302,7 +357,9 @@ def main() -> int:
             "perf_sha256": hashlib.sha256((path / "perf").read_bytes()).hexdigest(),
             "config_flags": (path / "config-flags.txt").read_text().split(),
         } for name, path in arms.items()},
+        "priming_arms": priming,
         "runs": runs,
+        "retried_arms": sum(1 for r in runs if r.get("attempts", 1) > 1),
         "pooled": pooled,
         "comparison": comparison,
         "all_correct": all(r["correctness_ok"] for r in runs),
