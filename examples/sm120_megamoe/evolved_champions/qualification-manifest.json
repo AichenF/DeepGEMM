@@ -1,0 +1,115 @@
+{
+ "schema": "megamoe-evolved-champions-manifest-v1",
+ "generated": "2026-08-31 (refreshed post-r43: C56 dynamic in-order tile claim on all three topologies + four-shape maxrows trunks)",
+ "toolchain": {
+  "arch": "sm_120a",
+  "compiler": "nvcc (CUDA 13.0), generated from typed Loom Weave IR via generate_kernel(arch='sm_120a', validate=True)",
+  "nccl": "2.30.7 (NCCL GIN, gin_type=3 GDAKI), pinned",
+  "driver": "580.95.05 open kernel module, 8x GB202 (CC 12.0, 110 SMs)"
+ },
+ "contract": {
+  "operator": "single-entry persistent MegaMoE dispatch->W1->SwiGLU+requant->W2->return->weighted combine->ACK",
+  "shape": "top-k 6, hidden 7168, intermediate 3072, output 7168, FP8 activations, FP4 weights, UE8M0 block scales, BF16 output",
+  "tolerances": "dense oracle rel-L2 <= 0.01, max reference fraction <= 0.02; bit-exact FP8/SF intermediates; exact-zero protocol/mirror gates",
+  "measurement": "CUPTI contract replays, strict same-session paired A/B, median of >= 3 with per-pair majority rule"
+ },
+ "champions": [
+  {
+   "file": "megamoe_p8_e384_c56.cu",
+   "topology": "P8/E384 (8 ranks, 48 local experts)",
+   "candidate": "C56 (dynamic in-order tile claim, on C52 shape-adaptive chunk floor / C47 chunk-ordered pack lineage)",
+   "seed_source_sha256": "6ed33afdec89174d9f83e85a77264be4ba826b6843191a9ba007da432a7e3ceb",
+   "generated_cuda_sha256": "0bc3975b2c720d1dabb4453639bbda45362c9b9866171407921306f06aec9ade",
+   "qualified_performance": {
+    "r2048_paired_median_ms": 10.835,
+    "vs_frozen_live": "2.385-2.412x (5/5 paired sweep vs C52, median 1.118x)",
+    "four_shape_ms": {
+     "R512": 5.035,
+     "R2048": 10.775,
+     "R4096": 19.621,
+     "R8192": 35.67
+    },
+    "suite_geomean_vs_frozen_baseline": "2.396x (R512 1.825 / R2048 2.423 / R4096 2.701 / R8192 2.760)"
+   },
+   "receipts": "replays/r39-c56-paired, bench/unpaired_evidence_r41_{c56,baseline}_*.json",
+   "notes": "Atomic stream-cursor tile claim + per-CTA mailbox; exact C26 stream order preserved; bit-identical outputs. 110 CTAs x 384 threads, 101376 B dynamic SMEM, REG 159."
+  },
+  {
+   "file": "megamoe_p4_e384_c56_maxrows.cu",
+   "topology": "P4/E384 (4 ranks, 96 local experts)",
+   "candidate": "C56 + maxrows-v2 (dynamic tile claim on both dense phases + MAX_ROWS 8192 buffers + runtime scatter-count protocol), on C31+C42b+C41 stack lineage",
+   "seed_source_sha256": "343ab4d86f35c479c43cb711fc42642c3619aa9429376b7fc0ca94f6f2906fef",
+   "generated_cuda_sha256": "a41f1519e7d1bb210bc0b1bf71f37a5b24c79000ddf74f73ad0734b79387e426",
+   "qualified_performance": {
+    "r2048_paired_ms": "11.69/10.93 (GPU 0-3 / 4-7, non-regression vs C56)",
+    "four_shape_ms": {
+     "R512": 6.13,
+     "R2048": 11.668,
+     "R4096": 21.869,
+     "R8192": 42.099
+    },
+    "suite_geomean_vs_frozen_baseline": "1.934x (R512 1.563 / R2048 2.071 / R4096 2.059 / R8192 2.100)"
+   },
+   "receipts": "replays/r40-p4-c56-paired, replays/r43v2-p4-maxrows-paired, bench/unpaired_evidence_r43_{p4,baseline_p4}_*.json",
+   "notes": "110 CTAs x 640 threads, 100992 B dynamic SMEM, REG 96."
+  },
+  {
+   "file": "megamoe_p4_e192_c56_maxrows.cu",
+   "topology": "P4/E192 (4 ranks, 48 local experts)",
+   "candidate": "C56 + maxrows-v2, byte-parallel to P4/E384",
+   "seed_source_sha256": "b028d80fb469b20727dc778c76ccb5f71687fa84c78dabde345d82ef3737b19c",
+   "generated_cuda_sha256": "be684d15172848ec30dbb4fc90def6a929f05440abc06a653cb2521f5b305754",
+   "qualified_performance": {
+    "r2048_paired_ms": "11.41/9.99 (GPU 0-3 / 4-7; first sub-10ms E192 at r40: 9.910)",
+    "four_shape_ms": {
+     "R512": 4.165,
+     "R2048": 11.277,
+     "R4096": 21.774,
+     "R8192": 42.436
+    },
+    "suite_geomean_vs_frozen_baseline": "1.643x (R512 1.542 / R2048 1.668 / R4096 1.677 / R8192 1.690)"
+   },
+   "receipts": "replays/r40-e192-c56-paired, replays/r43v2-e192-maxrows-paired, bench/unpaired_evidence_r43_{e192,baseline_e192}_*.json",
+   "notes": "110 CTAs x 640 threads, REG 96."
+  }
+ ],
+ "speed_of_light": {
+  "basis": "measured: 585 TFLOPS sustained FP8 mxf8f6f4, 1344 GB/s GDDR7, 46 GB/s per-GPU GIN put egress",
+  "ideal_overlapped_ms": {
+   "P8/E384": 4.7,
+   "P4/E384": 3.7,
+   "P4/E192": 3.7
+  },
+  "champion_pct_of_ideal": {
+   "P8/E384": 43.0,
+   "P4/E384": "34.2-34.5",
+   "P4/E192": "36.5-36.9"
+  },
+  "p8_operational_floor_ms": {
+   "in_kernel": 8.7,
+   "contract": 9.1,
+   "note": "front 1.7 + compute window 5.1 + remote-wait tail 1.3 + combine/ACK 0.6; all remaining families closed with measured or ISA evidence"
+  }
+ },
+ "suite_baselines": {
+  "definition": "campaign-start frozen peak-peer baseline blobs, buffers-only MAX_ROWS migration (measurement-only, faithful to ~0.5% vs same-session paired live legs at R2048)",
+  "p8_ms": {
+   "R512": 9.19,
+   "R2048": 26.104,
+   "R4096": 53.003,
+   "R8192": 98.431
+  },
+  "p4_e384_ms": {
+   "R512": 9.582,
+   "R2048": 24.166,
+   "R4096": 45.024,
+   "R8192": 88.404
+  },
+  "p4_e192_ms": {
+   "R512": 6.422,
+   "R2048": 18.808,
+   "R4096": 36.518,
+   "R8192": 71.735
+  }
+ }
+}
