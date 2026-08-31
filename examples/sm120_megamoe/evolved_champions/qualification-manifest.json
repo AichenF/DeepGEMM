@@ -1,6 +1,6 @@
 {
  "schema": "megamoe-evolved-champions-manifest-v1",
- "generated": "2026-08-31 (refreshed post-r43: C56 dynamic in-order tile claim on all three topologies + four-shape maxrows trunks)",
+ "generated": "2026-08-31 (refreshed post-r43: C56 dynamic in-order tile claim on all three topologies + four-shape maxrows trunks) + V4-Flash geometry variant (r45)",
  "toolchain": {
   "arch": "sm_120a",
   "compiler": "nvcc (CUDA 13.0), generated from typed Loom Weave IR via generate_kernel(arch='sm_120a', validate=True)",
@@ -71,6 +71,25 @@
    },
    "receipts": "replays/r40-e192-c56-paired, replays/r43v2-e192-maxrows-paired, bench/unpaired_evidence_r43_{e192,baseline_e192}_*.json",
    "notes": "110 CTAs x 640 threads, REG 96."
+  },
+  {
+   "file": "megamoe_p8_e256_v4flash_c56.cu",
+   "topology": "P8/E256 DeepSeek V4 Flash geometry (8 ranks, 32 local experts)",
+   "candidate": "C56 champion schedule, geometry-generalized to H4096/I4096/O4096, E256, top-k 6 (constants-only delta: 6 extents + record layout offsets; zero schedule changes)",
+   "seed_source_sha256": "d31eb01ce0e77b75942816bf461536dc67789ec757a1a6a1de826b22c5d0cb49",
+   "generated_cuda_sha256": "4cc9aab0729554b9139bfa0a9c4b01318ccf8164b96fe5e27d2f87710d5e928b",
+   "qualified_performance": {
+    "measurement_grade": "exploratory (no frozen-baseline contract for this geometry): steady-state in-kernel span medians, rank-0 phase timestamps, epochs 10-19 of 20, per-epoch exact correctness (bit-level transport mirrors + exact-zero protocol gates + task-build audits)",
+    "four_shape_in_kernel_ms": {
+     "R512": 2.64,
+     "R2048": 6.24,
+     "R4096": 12.42,
+     "R8192": 22.21
+    },
+    "notes": "svc-end to returns-arrived exposed tail is 0.05-0.06 ms at every shape (return wire fully streamed under compute at this geometry; FLOP per return byte is 1.33x the V4-Pro geometry)"
+   },
+   "receipts": "megamoe-evo bench/r45_v4f_{smoke,r512,r2048,r4096,r8192}.log; delta replays/v4flash-p8-delta.patch",
+   "notes": "110 CTAs x 384 threads, 101376 B dynamic SMEM, REG 160. 80/80 epochs exact across the four shapes plus a 5 s-watchdog smoke."
   }
  ],
  "speed_of_light": {

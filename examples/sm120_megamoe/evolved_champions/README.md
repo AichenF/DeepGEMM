@@ -24,6 +24,9 @@ qualified_g8 host and is documented per-kernel in the manifest.
   C56 + MAX_ROWS-8192 four-shape trunk. 110 CTAs x 640 threads, 100992 B SMEM.
 - `megamoe_p4_e192_c56_maxrows.cu` — 4-rank, 192 routed experts (48 local),
   byte-parallel payload to P4/E384. 110 CTAs x 640 threads.
+- `megamoe_p8_e256_v4flash_c56.cu` — 8-rank, 256 routed experts (32 local),
+  DeepSeek V4 Flash geometry (H4096/I4096/O4096), same C56 schedule and
+  precision recipe. 110 CTAs x 384 threads, 101376 B SMEM.
 - `qualification-manifest.json` — pinned hashes, measurements, and receipts.
 
 ## Qualified performance (R2048 tokens/rank, top-k 6, H7168/I3072/O7168)
@@ -126,3 +129,27 @@ errors and exact tile/requant counters; compute-sanitizer synccheck
 P4-class) under the median + per-pair majority promotion rule. PM-sampling
 (4 us tensor-pipe/issue/DRAM/L2 time series) gated scheduler-family
 candidates before paired replays.
+
+## DeepSeek V4 Flash geometry variant (exploratory)
+
+`megamoe_p8_e256_v4flash_c56.cu` generalizes the P8 champion to the V4 Flash
+geometry: hidden 4096, intermediate 4096, output 4096, 256 routed experts
+(8 x 32), top-k 6, identical precision recipe and schedule (constants-only
+delta: six extents plus the dispatch-record layout offsets).
+
+Steady-state in-kernel span medians (rank-0 phase timestamps, epochs 10-19 of
+20, every epoch exact under the bit-level transport mirrors, exact-zero
+protocol gates and task-build audits; no frozen-baseline contract exists for
+this geometry, so these are exploratory coordinates, not paired-CUPTI
+qualification rows):
+
+| Tokens/rank | 512 | 2048 | 4096 | 8192 |
+|---|---|---|---|---|
+| in-kernel span (ms) | 2.64 | 6.24 | 12.42 | 22.21 |
+
+The return wire is fully streamed under compute at this geometry (exposed
+service-to-arrival tail 0.05-0.06 ms at every shape): with I/H = 1 the
+FLOP-per-return-byte ratio is 1.33x the V4-Pro geometry, so the champion's
+incremental return machinery hides the entire wire. The largest exposed
+component is the R8192 dispatch front (~4.4 ms), pinned by the same
+transport-level delivery-ordering limitation documented for the V4-Pro rows.
