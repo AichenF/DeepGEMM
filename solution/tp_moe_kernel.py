@@ -34,24 +34,23 @@ __global__ void fused_tp_moe_kernel(
     const float rw = wt[p];
     const int tid = threadIdx.x, NT = blockDim.x;
 
+    const int warp = tid >> 5, lane = tid & 31, NW = NT >> 5;
     __shared__ __nv_bfloat16 xs[H];
     __shared__ float acts[Is];
     for (int k = tid; k < H; k += NT) xs[k] = x[(long)t * H + k];
     __syncthreads();
 
-    // ---- FC1 + SwiGLU: compute act[Is]. Each thread owns a set of intermediate i. ----
-    const int Hc = H >> 3;           // chunks per row (K=H)
+    // ---- FC1 + SwiGLU: one warp per intermediate; lanes split the K=H reduction. ----
+    const int Hc = H >> 3;           // chunks per row
     const long l1_row_p = (long)e * (2 * Is) * (H >> 1);
     const long l1_row_s = (long)e * (2 * Is) * (H >> 5);
-    for (int i = tid; i < Is; i += NT) {
-        // gate row = i, up row = Is + i
+    for (int i = warp; i < Is; i += NW) {
         const uint32_t* gp = reinterpret_cast<const uint32_t*>(l1p + l1_row_p + (long)i * (H >> 1));
         const uint8_t*  gs = l1s + l1_row_s + (long)i * (H >> 5);
         const uint32_t* up = reinterpret_cast<const uint32_t*>(l1p + l1_row_p + (long)(Is + i) * (H >> 1));
         const uint8_t*  us = l1s + l1_row_s + (long)(Is + i) * (H >> 5);
         float ga = 0.f, ua = 0.f;
-        #pragma unroll 4
-        for (int c = 0; c < Hc; ++c) {
+        for (int c = lane; c < Hc; c += 32) {          // coalesced uint32 loads across the warp
             const float sg = __int_as_float(((unsigned)gs[c >> 2]) << 23);
             const float su = __int_as_float(((unsigned)us[c >> 2]) << 23);
             const uint32_t wg = gp[c], wu = up[c];
@@ -67,20 +66,24 @@ __global__ void fused_tp_moe_kernel(
                 ua += dqv(nu) * su * xv;
             }
         }
-        acts[i] = (ga / (1.f + __expf(-ga))) * ua;   // SwiGLU
+        #pragma unroll
+        for (int o = 16; o > 0; o >>= 1) {
+            ga += __shfl_down_sync(0xffffffffu, ga, o);
+            ua += __shfl_down_sync(0xffffffffu, ua, o);
+        }
+        if (lane == 0) acts[i] = (ga / (1.f + __expf(-ga))) * ua;   // SwiGLU
     }
     __syncthreads();
 
-    // ---- FC2: y[t, h] += rw * sum_i dequant(W2[e,h,i]) * act[i] ----
+    // ---- FC2: one warp per output h; lanes split the K=Is reduction. ----
     const int Ic = Is >> 3;
     const long l2_row_p = (long)e * H * (Is >> 1);
     const long l2_row_s = (long)e * H * (Is >> 5);
-    for (int h = tid; h < H; h += NT) {
+    for (int h = warp; h < H; h += NW) {
         const uint32_t* wp = reinterpret_cast<const uint32_t*>(l2p + l2_row_p + (long)h * (Is >> 1));
         const uint8_t*  ws = l2s + l2_row_s + (long)h * (Is >> 5);
         float acc = 0.f;
-        #pragma unroll
-        for (int c = 0; c < Ic; ++c) {
+        for (int c = lane; c < Ic; c += 32) {          // Ic=32 -> one chunk per lane
             const float s = __int_as_float(((unsigned)ws[c >> 2]) << 23);
             const uint32_t w = wp[c];
             const int base = c << 3;
@@ -91,7 +94,9 @@ __global__ void fused_tp_moe_kernel(
                 acc += dqv(nb) * s * acts[base + j];
             }
         }
-        atomicAdd(&y[(long)t * H + h], rw * acc);
+        #pragma unroll
+        for (int o = 16; o > 0; o >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, o);
+        if (lane == 0) atomicAdd(&y[(long)t * H + h], rw * acc);
     }
 }
 
@@ -100,7 +105,7 @@ torch::Tensor fused_tp_moe(torch::Tensor x, torch::Tensor l1p, torch::Tensor l1s
                            torch::Tensor exp, torch::Tensor wt, int M, int H, int Is) {
     auto y = torch::zeros({M, H}, torch::device(x.device()).dtype(torch::kFloat32));
     const int P = tok.size(0);
-    const int threads = 256;
+    const int threads = 512;
     TORCH_CHECK(H == 6144 && Is == 256, "kernel specialized for H=6144, Is=256");
     fused_tp_moe_kernel<6144, 256><<<P, threads>>>(
         reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
@@ -113,7 +118,7 @@ torch::Tensor fused_tp_moe(torch::Tensor x, torch::Tensor l1p, torch::Tensor l1s
 """
 
 _ext = load_inline(
-    name='tp_mxfp4_fused_v1',
+    name='tp_mxfp4_fused_v2',
     cpp_sources="torch::Tensor fused_tp_moe(torch::Tensor x, torch::Tensor l1p, torch::Tensor l1s, torch::Tensor l2p, torch::Tensor l2s, torch::Tensor tok, torch::Tensor exp, torch::Tensor wt, int M, int H, int Is);",
     cuda_sources=_CUDA,
     functions=['fused_tp_moe'],
