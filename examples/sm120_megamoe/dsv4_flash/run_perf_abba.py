@@ -25,6 +25,23 @@ import time
 from pathlib import Path
 
 
+def host_identity(gpus: list[int]) -> dict:
+    """Bind the receipt to the machine and the exact devices it ran on."""
+
+    def run(command: list[str]) -> str:
+        return subprocess.run(command, capture_output=True, text=True).stdout.strip()
+
+    uuids = run(["nvidia-smi", "-i", ",".join(str(g) for g in gpus),
+                 "--query-gpu=index,uuid,name", "--format=csv,noheader"])
+    return {
+        "hostname": run(["hostname"]),
+        "addresses": run(["hostname", "-I"]).split(),
+        "driver": run(["nvidia-smi", "--query-gpu=driver_version",
+                       "--format=csv,noheader"]).splitlines()[:1],
+        "devices": [line.strip() for line in uuids.splitlines()],
+    }
+
+
 def gpu_telemetry(gpus: list[int]) -> list[dict]:
     """Sample the clock and power state the measurement ran at."""
 
@@ -341,6 +358,7 @@ def main() -> int:
 
     receipt = {
         "kind": "sm120_megamoe_perf_abba",
+        "host": host_identity(gpus),
         "timing_source": "cupti_concurrent_kernel_activity",
         "sample_reduction": "max_over_ranks_then_statistic",
         "order": order,

@@ -181,8 +181,17 @@ def main() -> int:
               + (f", {attempts} attempts)" if attempts > 1 else ")")
               + ("" if ok else f" -> {reasons[:3]}"), flush=True)
 
+    identity = subprocess.run(
+        ["nvidia-smi", "-i", ",".join(str(g) for g in gpus),
+         "--query-gpu=index,uuid,name", "--format=csv,noheader"],
+        capture_output=True, text=True).stdout.strip().splitlines()
     receipt = {
         "kind": "sm120_megamoe_correctness_matrix",
+        "host": {
+            "hostname": subprocess.run(["hostname"], capture_output=True,
+                                       text=True).stdout.strip(),
+            "devices": [line.strip() for line in identity],
+        },
         "build": str(args.build),
         "correctness_sha256": digest,
         "config_flags": (args.build / "config-flags.txt").read_text().split(),
