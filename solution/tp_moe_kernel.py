@@ -19,8 +19,10 @@ _CUDA = r"""
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
-__constant__ float kFP4V[8] = {0.f,0.5f,1.f,1.5f,2.f,3.f,4.f,6.f};
-__device__ __forceinline__ float dqv(unsigned nib){ float v=kFP4V[nib&7]; return (nib&8)?-v:v; }
+__device__ __forceinline__ float dqv(unsigned nib){
+    unsigned mag=nib&7u, e=mag>>1, m=mag&1u;
+    unsigned bits = mag>=2u ? (((e-1u+127u)<<23)|(m<<22)) : (mag==1u?0x3F000000u:0u);
+    float v=__int_as_float(bits); return (nib&8u)?-v:v; }
 
 // FC1 + SwiGLU. grid = P*nA. Block (p,ta) computes intermediates [ta*Is/nA, ...).
 template<int H, int Is>
@@ -122,7 +124,7 @@ torch::Tensor fused_tp_moe(torch::Tensor x, torch::Tensor l1p, torch::Tensor l1s
 """
 
 _ext = load_inline(
-    name='tp_mxfp4_2k_v2',
+    name='tp_mxfp4_arith_v1',
     cpp_sources="torch::Tensor fused_tp_moe(torch::Tensor x, torch::Tensor l1p, torch::Tensor l1s, torch::Tensor l2p, torch::Tensor l2s, torch::Tensor tok, torch::Tensor exp, torch::Tensor wt, int M, int H, int Is, int nA, int nB, int threads);",
     cuda_sources=_CUDA, functions=['fused_tp_moe'],
     extra_cuda_cflags=['-O3', '--use_fast_math'], verbose=False,
