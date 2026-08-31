@@ -100,33 +100,36 @@ __global__ void fc2_kernel(const uint8_t* __restrict__ l2p, const uint8_t* __res
     }
 }
 
+#define LAUNCH(IS) \
+    fc1_kernel<6144,IS><<<P*nA, threads>>>(xp, l1p.data_ptr<uint8_t>(), l1s.data_ptr<uint8_t>(), \
+        tok.data_ptr<int>(), exp.data_ptr<int>(), act.data_ptr<float>(), nA); \
+    fc2_kernel<6144,IS><<<P*nB, threads>>>(l2p.data_ptr<uint8_t>(), l2s.data_ptr<uint8_t>(), \
+        tok.data_ptr<int>(), exp.data_ptr<int>(), wt.data_ptr<float>(), \
+        act.data_ptr<float>(), y.data_ptr<float>(), nB);
+
 torch::Tensor fused_tp_moe(torch::Tensor x, torch::Tensor l1p, torch::Tensor l1s,
                            torch::Tensor l2p, torch::Tensor l2s, torch::Tensor tok,
                            torch::Tensor exp, torch::Tensor wt, int M, int H, int Is,
                            int nA, int nB, int threads) {
-    TORCH_CHECK(H == 6144 && Is == 256, "specialized H=6144 Is=256");
+    TORCH_CHECK(H == 6144 && (Is == 256 || Is == 512), "specialized H=6144, Is in {256(tp8),512(tp4)}");
     const int P = tok.size(0);
     auto y = torch::zeros({M, H}, torch::device(x.device()).dtype(torch::kFloat32));
     auto act = torch::empty({P, Is}, torch::device(x.device()).dtype(torch::kFloat32));
     const __nv_bfloat16* xp = reinterpret_cast<const __nv_bfloat16*>(x.data_ptr());
-    fc1_kernel<6144,256><<<P * nA, threads>>>(xp, l1p.data_ptr<uint8_t>(), l1s.data_ptr<uint8_t>(),
-        tok.data_ptr<int>(), exp.data_ptr<int>(), act.data_ptr<float>(), nA);
-    fc2_kernel<6144,256><<<P * nB, threads>>>(l2p.data_ptr<uint8_t>(), l2s.data_ptr<uint8_t>(),
-        tok.data_ptr<int>(), exp.data_ptr<int>(), wt.data_ptr<float>(),
-        act.data_ptr<float>(), y.data_ptr<float>(), nB);
+    if (Is == 256) { LAUNCH(256); } else { LAUNCH(512); }
     return y;
 }
 """
 
 _ext = load_inline(
-    name='tp_mxfp4_2k_v1',
+    name='tp_mxfp4_2k_v2',
     cpp_sources="torch::Tensor fused_tp_moe(torch::Tensor x, torch::Tensor l1p, torch::Tensor l1s, torch::Tensor l2p, torch::Tensor l2s, torch::Tensor tok, torch::Tensor exp, torch::Tensor wt, int M, int H, int Is, int nA, int nB, int threads);",
     cuda_sources=_CUDA, functions=['fused_tp_moe'],
     extra_cuda_cflags=['-O3', '--use_fast_math'], verbose=False,
 )
 
-_NA = int(os.environ.get('TP_NA', '8'))       # FC1 intermediate tiles per pair (divides Is=256)
-_NB = int(os.environ.get('TP_NB', '16'))      # FC2 output tiles per pair (divides H=6144)
+_NA = int(os.environ.get('TP_NA', '16'))      # FC1 intermediate tiles per pair (divides Is=256); ako4x-swept
+_NB = int(os.environ.get('TP_NB', '48'))      # FC2 output tiles per pair (divides H=6144); ako4x-swept
 _THREADS = int(os.environ.get('TP_THREADS', '256'))
 
 
