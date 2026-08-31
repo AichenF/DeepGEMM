@@ -21,4 +21,6 @@ deep_gemm/include/cutlass
 stubs/
 
 # Symlinks to compiled extensions
-deep_gemm/*.so
+deep_gemm/*.sotrajectory/
+_bench_output.txt
+__pycache__/
