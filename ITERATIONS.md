@@ -23,6 +23,13 @@ Real config E=384 (kernel cost independent of E: only <=M*topk touched experts c
 RUNTIME ~linear in M (1 block per token-expert pair). Overall baseline->iter5: 20.5->1.09ms = 18.8x on the compute; correctness perfect (fp32 accum).
 Next axis (untried): 2-kernel split (FC1-once + FC2 tiled) to raise block count above the 64-block floor for small M; payoff capped by GPU-0 contention (etgong), so measurement is noisy. Also: fold all-reduce into symm-buffer NVLink (currently dist.all_reduce) per the original spec.
 
+## Container single-GPU compute bench (in mlb_refactor_bench_20260809; the per-rank kernel we optimize)
+Prior single-fused kernel (iter5) was FLAT ~1.07ms for M=1..8 (raw kernel 1.06ms, python wrapper 0.03ms) = latency/occupancy starved (M=1 -> only 8 blocks on 78 SMs).
+| iter | M=1 | M=8 | notes |
+|------|-----|-----|-------|
+| iter5 (1 block/pair) | 1.07 ms | 1.09 ms | flat = occupancy floor |
+| 6 (2-kernel tiled nA=8/nB=16) | 0.154 ms | 0.95 ms | 7x at M=1; grid P*nA(FC1)+P*nB(FC2); cosine 1.0 |
+
 ## Log
 
 ### baseline — vectorized torch
