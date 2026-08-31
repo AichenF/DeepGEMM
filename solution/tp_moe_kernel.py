@@ -25,43 +25,60 @@ _CUDA = r"""
 
 __constant__ float kFP4V[8] = {0.f, 0.5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f};
 
-// packed [N, K/2] uint8 (Marlin: within an 8-elem chunk, out[0..3]=high of bytes
-// 0..3, out[4..7]=low of bytes 0..3); scale [N, K/32] uint8 E8M0 (2^(code-127)).
+__device__ __forceinline__ float nib2val(unsigned nib) {
+    float v = kFP4V[nib & 7];
+    return (nib & 8) ? -v : v;
+}
+
+// Vectorized: one thread per 8-nibble chunk. Coalesced uint32 read (4 packed
+// bytes = 8 nibbles) + uint4 write (8 bf16). Marlin order within a chunk:
+// out[0..3]=high(b0..b3), out[4..7]=low(b0..b3). One E8M0 scale per chunk
+// (8 elems within one 32-block); scale = 2^(code-127).
 __global__ void mxfp4_dequant_bf16_kernel(
-        const uint8_t* __restrict__ packed, const uint8_t* __restrict__ scale,
-        __nv_bfloat16* __restrict__ out, long N, long K) {
-    const long total = N * K;
-    const long Kh = K >> 1, Ks = K >> 5;
-    for (long idx = (long)blockIdx.x * blockDim.x + threadIdx.x; idx < total;
-         idx += (long)gridDim.x * blockDim.x) {
-        const long n = idx / K;
-        const long k = idx - n * K;
-        const int pos = (int)(k & 7);
-        const uint8_t byte = packed[n * Kh + (k >> 3) * 4 + (pos & 3)];
-        const uint8_t nib = (pos < 4) ? (byte >> 4) : (byte & 0xF);
-        float v = kFP4V[nib & 7];
-        if (nib & 8) v = -v;
-        const unsigned sbits = ((unsigned)scale[n * Ks + (k >> 5)]) << 23;  // 2^(code-127)
-        out[idx] = __float2bfloat16(v * __int_as_float(sbits));
+        const uint32_t* __restrict__ packed32, const uint8_t* __restrict__ scale,
+        __nv_bfloat16* __restrict__ out, long nchunks, int cpr) {  // cpr = chunks-per-row = K/8
+    const int spr = cpr >> 2;  // scale bytes per row = K/32
+    const long K = (long)cpr * 8;
+    for (long c = (long)blockIdx.x * blockDim.x + threadIdx.x; c < nchunks;
+         c += (long)gridDim.x * blockDim.x) {
+        const long n = c / cpr;
+        const int cir = (int)(c - n * cpr);
+        const uint32_t w = packed32[c];
+        const unsigned sbits = ((unsigned)scale[n * spr + (cir >> 2)]) << 23;
+        const float s = __int_as_float(sbits);
+        const unsigned b0 = w & 0xFF, b1 = (w >> 8) & 0xFF, b2 = (w >> 16) & 0xFF, b3 = (w >> 24) & 0xFF;
+        __nv_bfloat16 o[8];
+        o[0] = __float2bfloat16(nib2val(b0 >> 4) * s);
+        o[1] = __float2bfloat16(nib2val(b1 >> 4) * s);
+        o[2] = __float2bfloat16(nib2val(b2 >> 4) * s);
+        o[3] = __float2bfloat16(nib2val(b3 >> 4) * s);
+        o[4] = __float2bfloat16(nib2val(b0 & 0xF) * s);
+        o[5] = __float2bfloat16(nib2val(b1 & 0xF) * s);
+        o[6] = __float2bfloat16(nib2val(b2 & 0xF) * s);
+        o[7] = __float2bfloat16(nib2val(b3 & 0xF) * s);
+        *reinterpret_cast<uint4*>(out + n * K + (long)cir * 8) = *reinterpret_cast<uint4*>(o);
     }
 }
 
 torch::Tensor mxfp4_dequant_bf16(torch::Tensor packed, torch::Tensor scale) {
-    TORCH_CHECK(packed.is_cuda() && packed.dtype() == torch::kUInt8);
-    TORCH_CHECK(scale.is_cuda() && scale.dtype() == torch::kUInt8);
+    TORCH_CHECK(packed.is_cuda() && packed.dtype() == torch::kUInt8 && packed.is_contiguous());
+    TORCH_CHECK(scale.is_cuda() && scale.dtype() == torch::kUInt8 && scale.is_contiguous());
     const long N = packed.size(0), K = packed.size(1) * 2;
     auto out = torch::empty({N, K}, torch::device(packed.device()).dtype(torch::kBFloat16));
+    const int cpr = (int)(K >> 3);
+    const long nchunks = N * cpr;
     const int threads = 256;
-    const int blocks = (int)std::min<long>((N * K + threads - 1) / threads, 65535);
+    const int blocks = (int)std::min<long>((nchunks + threads - 1) / threads, 65535L);
     mxfp4_dequant_bf16_kernel<<<blocks, threads>>>(
-        packed.data_ptr<uint8_t>(), scale.data_ptr<uint8_t>(),
-        reinterpret_cast<__nv_bfloat16*>(out.data_ptr()), N, K);
+        reinterpret_cast<const uint32_t*>(packed.data_ptr<uint8_t>()),
+        scale.data_ptr<uint8_t>(),
+        reinterpret_cast<__nv_bfloat16*>(out.data_ptr()), nchunks, cpr);
     return out;
 }
 """
 
 _ext = load_inline(
-    name='tp_mxfp4_dequant',
+    name='tp_mxfp4_dequant_v2',
     cpp_sources="torch::Tensor mxfp4_dequant_bf16(torch::Tensor packed, torch::Tensor scale);",
     cuda_sources=_CUDA,
     functions=['mxfp4_dequant_bf16'],
