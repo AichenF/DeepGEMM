@@ -7,7 +7,7 @@ LABEL="${1:-run}"
 cd /home/xutingz/fac/DeepGEMM_tp
 
 export DG_JIT_CACHE_DIR=/tmp/dg_jit_h20          # home NFS quota is full
-export MASTER_PORT=$(( 8600 + (RANDOM % 350) ))  # unique-ish port (os._exit skips TCPStore cleanup)
+export MASTER_PORT=$(( 20000 + ($(date +%N) / 1000 % 40000) ))  # ns-unique port (os._exit skips TCPStore cleanup)
 M="${M:-8}"
 
 python bench/tp_bench.py --solution solution/tp_moe_kernel.py --m "$M" 2>&1 | tee _bench_output.txt

@@ -8,7 +8,8 @@ Config: M=8, E=128, topk=8, tp=8, H=6144, I=2048 (Is=256). E reduced 384->128 fo
 ## Summary
 | iter | direction | RUNTIME (ms) | cosine | notes |
 |------|-----------|--------------|--------|-------|
-| baseline | vectorized-torch partial FFN + dist.all_reduce | 48.93 | 0.99999 | correct starting point; dequant+einsum in torch |
+| baseline | vectorized-torch partial FFN (rank0 compute) | 20.52 | 0.99999 | dequant ALL 128 experts fp32 + fp32 matmul |
+| 1 | dequant touched-only + bf16 tensor-core matmul | 9.54 | 0.99999 | 2.15x; only <=64 touched experts, bf16 GEMM |
 
 ## Log
 

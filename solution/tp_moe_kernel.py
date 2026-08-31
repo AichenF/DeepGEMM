@@ -25,25 +25,25 @@ _dequant = _qm.dequantize_mxfp4_to_fp32
 
 
 def tp_moe_partial(x, l1_packed, l1_scale, l2_packed, l2_scale, topk_idx, topk_w, Is):
-    E = l1_packed.shape[0]
     M, H = x.shape
     topk = topk_idx.shape[1]
-    dt = x.dtype
-
-    W1 = _dequant(l1_packed, l1_scale, group_size=32).view(E, 2 * Is, H).to(dt)
-    W2 = _dequant(l2_packed, l2_scale, group_size=32).view(E, H, Is).to(dt)
-    gate_w = W1[:, :Is, :]           # [E, Is, H]
-    up_w = W1[:, Is:, :]             # [E, Is, H]
+    dt = torch.bfloat16
 
     flat_e = topk_idx.reshape(-1).long()               # [M*topk]
     flat_w = topk_w.reshape(-1).to(torch.float32)      # [M*topk]
-    xt = x.unsqueeze(1).expand(M, topk, H).reshape(-1, H)   # [M*topk, H]
+    # Only dequant the experts actually touched by this batch (<= M*topk).
+    uniq, inv = torch.unique(flat_e, return_inverse=True)
+    U = uniq.numel()
+    W1 = _dequant(l1_packed[uniq], l1_scale[uniq], group_size=32).view(U, 2 * Is, H).to(dt)
+    W2 = _dequant(l2_packed[uniq], l2_scale[uniq], group_size=32).view(U, H, Is).to(dt)
+    gate_w, up_w = W1[:, :Is, :], W1[:, Is:, :]        # [U, Is, H]
 
-    g = torch.einsum('nh,nih->ni', xt, gate_w[flat_e])     # [M*topk, Is]
-    u = torch.einsum('nh,nih->ni', xt, up_w[flat_e])
-    a = (g * torch.sigmoid(g)) * u                          # SwiGLU
-    yo = torch.einsum('ni,nhi->nh', a, W2[flat_e]).float() # [M*topk, H]
-    yo = yo * flat_w.unsqueeze(1)
+    xt = x.to(dt).unsqueeze(1).expand(M, topk, H).reshape(-1, H)   # [M*topk, H]
+    g = torch.einsum('nh,nih->ni', xt, gate_w[inv])    # bf16 tensor-core matmul
+    u = torch.einsum('nh,nih->ni', xt, up_w[inv])
+    gf = g.float()
+    a = ((gf * torch.sigmoid(gf)) * u.float()).to(dt)  # SwiGLU (fp32 for the nonlinearity)
+    yo = torch.einsum('ni,nhi->nh', a, W2[inv]).float() * flat_w.unsqueeze(1)
 
     y = torch.zeros(M, H, device=x.device, dtype=torch.float32)
     row = torch.arange(M, device=x.device).repeat_interleave(topk)
