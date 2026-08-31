@@ -19,10 +19,8 @@ _CUDA = r"""
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
-__device__ __forceinline__ float dqv(unsigned nib){
-    unsigned mag=nib&7u, e=mag>>1, m=mag&1u;
-    unsigned bits = mag>=2u ? (((e-1u+127u)<<23)|(m<<22)) : (mag==1u?0x3F000000u:0u);
-    float v=__int_as_float(bits); return (nib&8u)?-v:v; }
+__device__ __forceinline__ float dqv(unsigned nib, const float* L){
+    float v=L[nib&7u]; return (nib&8u)?-v:v; }
 
 // FC1 + SwiGLU. grid = P*nA. Block (p,ta) computes intermediates [ta*Is/nA, ...).
 template<int H, int Is>
@@ -34,6 +32,7 @@ __global__ void fc1_kernel(const __nv_bfloat16* __restrict__ x,
     const int t = tok[p], e = exp[p];
     const int tid = threadIdx.x, NT = blockDim.x, warp = tid >> 5, lane = tid & 31, NW = NT >> 5;
     const int IsA = Is / nA, i0 = ta * IsA;
+    __shared__ float kMag[8]; if(tid<8){const float V[8]={0.f,.5f,1.f,1.5f,2.f,3.f,4.f,6.f}; kMag[tid]=V[tid];}
     __shared__ __nv_bfloat16 xs[H];
     for (int k = tid; k < H; k += NT) xs[k] = x[(long)t * H + k];
     __syncthreads();
@@ -56,8 +55,8 @@ __global__ void fc1_kernel(const __nv_bfloat16* __restrict__ x,
                 const unsigned bg = (j < 4) ? (wg >> (8*j)) : (wg >> (8*(j-4)));
                 const unsigned bu = (j < 4) ? (wu >> (8*j)) : (wu >> (8*(j-4)));
                 const float xv = __bfloat162float(xs[base + j]);
-                ga += dqv((j<4)?((bg>>4)&0xF):(bg&0xF)) * sg * xv;
-                ua += dqv((j<4)?((bu>>4)&0xF):(bu&0xF)) * su * xv;
+                ga += dqv((j<4)?((bg>>4)&0xF):(bg&0xF), kMag) * sg * xv;
+                ua += dqv((j<4)?((bu>>4)&0xF):(bu&0xF), kMag) * su * xv;
             }
         }
         #pragma unroll
@@ -76,6 +75,7 @@ __global__ void fc2_kernel(const uint8_t* __restrict__ l2p, const uint8_t* __res
     const float rw = wt[p];
     const int tid = threadIdx.x, NT = blockDim.x, warp = tid >> 5, lane = tid & 31, NW = NT >> 5;
     const int Ht = H / nB, h0 = tb * Ht;
+    __shared__ float kMag[8]; if(tid<8){const float V[8]={0.f,.5f,1.f,1.5f,2.f,3.f,4.f,6.f}; kMag[tid]=V[tid];}
     __shared__ float as[Is];
     for (int i = tid; i < Is; i += NT) as[i] = act[(long)p * Is + i];
     __syncthreads();
@@ -93,7 +93,7 @@ __global__ void fc2_kernel(const uint8_t* __restrict__ l2p, const uint8_t* __res
             #pragma unroll
             for (int j = 0; j < 8; ++j) {
                 const unsigned bb = (j < 4) ? (w >> (8*j)) : (w >> (8*(j-4)));
-                acc += dqv((j<4)?((bb>>4)&0xF):(bb&0xF)) * s * as[base + j];
+                acc += dqv((j<4)?((bb>>4)&0xF):(bb&0xF), kMag) * s * as[base + j];
             }
         }
         #pragma unroll
@@ -124,7 +124,7 @@ torch::Tensor fused_tp_moe(torch::Tensor x, torch::Tensor l1p, torch::Tensor l1s
 """
 
 _ext = load_inline(
-    name='tp_mxfp4_arith_v1',
+    name='tp_mxfp4_lds_v2',
     cpp_sources="torch::Tensor fused_tp_moe(torch::Tensor x, torch::Tensor l1p, torch::Tensor l1s, torch::Tensor l2p, torch::Tensor l2s, torch::Tensor tok, torch::Tensor exp, torch::Tensor wt, int M, int H, int Is, int nA, int nB, int threads);",
     cuda_sources=_CUDA, functions=['fused_tp_moe'],
     extra_cuda_cflags=['-O3', '--use_fast_math'], verbose=False,
