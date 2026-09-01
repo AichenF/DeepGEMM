@@ -47,7 +47,8 @@ extern "C" __global__ void fc1(const uint8_t* xall,const float* sxall,const uint
   const int t=threadIdx.x&31,gid=t>>2,tid=t&3,warp=threadIdx.x>>5,NW=blockDim.x>>5;
   const int twoIs=2*Is, BN1=twoIs/NB1;
   extern __shared__ uint8_t sm[]; uint8_t* xs=sm;
-  __shared__ int tok[8]; __shared__ float lsx[8];
+  __shared__ int tok[8]; __shared__ float lsx[8]; __shared__ unsigned fLUT[512];
+  for(int i=threadIdx.x;i<256;i+=blockDim.x){ unsigned lo,hi; fold_tbl((unsigned)i,lo,hi); fLUT[i*2]=lo; fLUT[i*2+1]=hi; }
   if(threadIdx.x<8){ int r=threadIdx.x; int tk=(r<T)?ttok[bt*8+r]:-1; tok[r]=tk; lsx[r]=(tk>=0)?sxall[tk]:0.f; }
   __syncthreads();
   for(int i=threadIdx.x;i<8*H;i+=blockDim.x){ int r=i/H,k=i%H; xs[i]=(r<T)?xall[(long)tok[r]*H+k]:0; }
@@ -58,7 +59,7 @@ extern "C" __global__ void fc1(const uint8_t* xall,const float* sxall,const uint
     for(int k0=0;k0<H;k0+=32){
       const long tb=nb+(k0>>5); const uint8_t* wr=W1p + tb*128 + gid*16;
       unsigned h0=*(const unsigned short*)(wr+tid*2), h1=*(const unsigned short*)(wr+tid*2+8);
-      unsigned lo,hi; fold_tbl((unsigned)W1e[tb*8+gid],lo,hi);
+      unsigned e8=(unsigned)W1e[tb*8+gid], lo=fLUT[e8*2], hi=fLUT[e8*2+1];
       unsigned b0=fold4(h0,lo,hi), b1=fold4(h1,lo,hi);
       unsigned a0=*(const unsigned*)(xs+gid*H+k0+tid*4),a1=0u;
       unsigned a2=*(const unsigned*)(xs+gid*H+k0+tid*4+16),a3=0u;
@@ -81,7 +82,8 @@ extern "C" __global__ void fc2(const uint8_t* act,const float* asc,const uint8_t
   const int t=threadIdx.x&31,gid=t>>2,tid=t&3,warp=threadIdx.x>>5,NW=blockDim.x>>5;
   const int BN2=H/NB2;
   extern __shared__ uint8_t sm[]; uint8_t* af=sm;
-  __shared__ int tok[8]; __shared__ float rw[8], ascs[8];
+  __shared__ int tok[8]; __shared__ float rw[8], ascs[8]; __shared__ unsigned fLUT[512];
+  for(int i=threadIdx.x;i<256;i+=blockDim.x){ unsigned lo,hi; fold_tbl((unsigned)i,lo,hi); fLUT[i*2]=lo; fLUT[i*2+1]=hi; }
   if(threadIdx.x<8){ int r=threadIdx.x; tok[r]=(r<T)?ttok[bt*8+r]:-1; rw[r]=(r<T)?tw[bt*8+r]:0.f; ascs[r]=(r<T)?asc[bt*8+r]:0.f; }
   __syncthreads();
   for(int i=threadIdx.x;i<8*Is;i+=blockDim.x){ int r=i/Is; af[i]=(r<T)?act[(long)bt*8*Is+i]:0; }
@@ -92,7 +94,7 @@ extern "C" __global__ void fc2(const uint8_t* act,const float* asc,const uint8_t
     for(int k0=0;k0<Is;k0+=32){
       const long tb=nb+(k0>>5); const uint8_t* wr=W2p + tb*128 + gid*16;
       unsigned h0=*(const unsigned short*)(wr+tid*2), h1=*(const unsigned short*)(wr+tid*2+8);
-      unsigned lo,hi; fold_tbl((unsigned)W2e[tb*8+gid],lo,hi);
+      unsigned e8=(unsigned)W2e[tb*8+gid], lo=fLUT[e8*2], hi=fLUT[e8*2+1];
       unsigned b0=fold4(h0,lo,hi), b1=fold4(h1,lo,hi);
       unsigned a0=*(const unsigned*)(af+gid*Is+k0+tid*4),a1=0u;
       unsigned a2=*(const unsigned*)(af+gid*Is+k0+tid*4+16),a3=0u;
@@ -116,7 +118,7 @@ torch::Tensor run(torch::Tensor xall,torch::Tensor sxall,torch::Tensor W1p,torch
     te.data_ptr<int>(),tn.data_ptr<int>(),ttok.data_ptr<int>(),tw.data_ptr<float>(),y.data_ptr<float>(),H,Is,NB2);
   return y; }
 """
-e=load_inline(name='moe_fp8mma_split',cpp_sources="torch::Tensor run(torch::Tensor xall,torch::Tensor sxall,torch::Tensor W1p,torch::Tensor W1e,torch::Tensor W2p,torch::Tensor W2e,torch::Tensor te,torch::Tensor tn,torch::Tensor ttok,torch::Tensor tw,int M,int Is,int E,int NB1,int NB2);",cuda_sources=CUDA,functions=['run'],extra_cuda_cflags=['-O3'],verbose=False)
+e=load_inline(name='moe_fp8mma_split2',cpp_sources="torch::Tensor run(torch::Tensor xall,torch::Tensor sxall,torch::Tensor W1p,torch::Tensor W1e,torch::Tensor W2p,torch::Tensor W2e,torch::Tensor te,torch::Tensor tn,torch::Tensor ttok,torch::Tensor tw,int M,int Is,int E,int NB1,int NB2);",cuda_sources=CUDA,functions=['run'],extra_cuda_cflags=['-O3'],verbose=False)
 def build(M,H,Is,E,topk):
   torch.manual_seed(0)
   x=torch.randn(M,H,device='cuda'); W1=(torch.randn(E,2*Is,H,device='cuda')*0.05); W2=(torch.randn(E,H,Is,device='cuda')*0.05)
