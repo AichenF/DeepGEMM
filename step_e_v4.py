@@ -42,7 +42,7 @@ CUDA=r'''
 #include <deep_gemm/ptx/wgmma.cuh>
 #include <deep_gemm/quantization/mxfp4_dequant.cuh>
 using namespace deep_gemm;
-static constexpr int WOUT=64,TOK=8,K=7168,BK=128,NKT=K/BK,STG=3;
+static constexpr int WOUT=64,TOK=8,K=7168,BK=128,NKT=K/BK,STG=2;
 static constexpr int WPB=WOUT*(BK/2);   // packed weight bytes/tile = 64*64=4096
 static constexpr int XB=TOK*BK;          // act bytes/tile = 8*128=1024
 
