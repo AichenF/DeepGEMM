@@ -58,10 +58,9 @@ gemm(const __grid_constant__ CUtensorMap tma_w, const __grid_constant__ CUtensor
   uint8_t* swf = sx + STG*XB;             // dequant weight fp8 [64,128] swizzled (single)
   __shared__ __align__(8) uint64_t full[STG], empty[STG];
   __shared__ uint2 smem_lut[256];         // precompute E8M0 -> fp8-mag LUT ONCE (else exp2f+8cvt per elem)
-  __shared__ uint8_t sWe[WOUT*(K/32)];    // preload E8M0 scales [64,192] once (else 384 global reads/thread)
+  __shared__ uint8_t sWe[WOUT*4];          // E8M0 scales for CURRENT k-tile only [64,4] (was full [64,K/32]=14KB -> occupancy)
   const uint32_t tid=threadIdx.x;
   for(int i=tid;i<256;i+=blockDim.x) smem_lut[i]=mxfp4::load_e2m1_e8m0_lut(i);
-  for(int i=tid;i<WOUT*(K/32);i+=blockDim.x) sWe[i]=We[wrow*(K/32)+i];
   uint32_t fa[STG], ea[STG];
   #pragma unroll
   for(int s=0;s<STG;s++){ fa[s]=(uint32_t)__cvta_generic_to_shared(&full[s]); ea[s]=(uint32_t)__cvta_generic_to_shared(&empty[s]); }
@@ -88,10 +87,12 @@ gemm(const __grid_constant__ CUtensorMap tma_w, const __grid_constant__ CUtensor
   for(int kt=0;kt<NKT;kt++){
     int s=kt%STG; uint32_t ph=(kt/STG)&1u;   // buffer s holds tiles s,s+STG,...; phase flips each reuse
     mbar_wait(fa[s], ph);
+    for(int i=tid;i<WOUT*4;i+=blockDim.x){ int n=i>>2,b=i&3; sWe[i]=We[(wrow+n)*(K/32) + kt*4 + b]; }
+    asm volatile("bar.sync 0;");
     // dequant sw[s] (fp4 [64,64]) -> swf [64,128] swizzled fp8
     for(int u=tid;u<WOUT*BK/8;u+=blockDim.x){ int n=u/16,kg=u%16,kb=kg*8;
       unsigned uq=*reinterpret_cast<const unsigned*>(sw+s*WPB + n*(BK/2) + (kb>>1));
-      unsigned e8=(unsigned)sWe[n*(K/32) + ((kt*BK+kb)>>5)];
+      unsigned e8=(unsigned)sWe[n*4 + (kb>>5)];
       uint2 hl=mxfp4::dequant_mxfp4_to_fp8_pair_with_lut(uq, smem_lut[e8]);
       unsigned w0=__byte_perm(hl.y,hl.x,0x5140u), w1=__byte_perm(hl.y,hl.x,0x7362u);
       int cs=kb ^ ((n&7)<<4);
