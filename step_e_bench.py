@@ -106,8 +106,7 @@ gemm(const __grid_constant__ CUtensorMap tma_w, const __grid_constant__ CUtensor
     ptx::warpgroup_commit_batch();
     #pragma unroll
     for(int i=0;i<kAcc;i++) ptx::warpgroup_fence_operand(accum[i]);
-    ptx::warpgroup_wait<0>();
-    asm volatile("bar.sync 0;");
+    ptx::warpgroup_wait<0>();   // warpgroup_wait already syncs the 128-thread WG -> swf/sx free
     if(tid==0 && kt+STG<NKT) load_stage(kt+STG, s);   // reload tile kt+STG into just-freed buffer s
   }
   // epilogue: C'[64 wout, 8 tok]. m64 fragment.
