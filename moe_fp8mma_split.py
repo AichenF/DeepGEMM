@@ -47,11 +47,11 @@ extern "C" __global__ void fc1(const uint8_t* xall,const float* sxall,const uint
   const int t=threadIdx.x&31,gid=t>>2,tid=t&3,warp=threadIdx.x>>5,NW=blockDim.x>>5;
   const int twoIs=2*Is, BN1=twoIs/NB1;
   extern __shared__ uint8_t sm[]; uint8_t* xs=sm;
-  __shared__ int tok[8]; __shared__ float lsx[8]; __shared__ unsigned fLUT[512];
+  __shared__ int tok[4]; __shared__ float lsx[4]; __shared__ unsigned fLUT[512];
   for(int i=threadIdx.x;i<256;i+=blockDim.x){ unsigned lo,hi; fold_tbl((unsigned)i,lo,hi); fLUT[i*2]=lo; fLUT[i*2+1]=hi; }
-  if(threadIdx.x<8){ int r=threadIdx.x; int tk=(r<T)?ttok[bt*8+r]:-1; tok[r]=tk; lsx[r]=(tk>=0)?sxall[tk]:0.f; }
+  if(threadIdx.x<4){ int r=threadIdx.x; int tk=(r<T)?ttok[bt*4+r]:-1; tok[r]=tk; lsx[r]=(tk>=0)?sxall[tk]:0.f; }
   __syncthreads();
-  for(int i=threadIdx.x;i<8*H;i+=blockDim.x){ int r=i/H,k=i%H; xs[i]=(r<T)?xall[(long)tok[r]*H+k]:0; }
+  for(int i=threadIdx.x;i<4*H;i+=blockDim.x){ int r=i/H,k=i%H; xs[i]=(r<T)?xall[(long)tok[r]*H+k]:0; }
   __syncthreads();
   const int n1=nblk*BN1;
   for(int n0=n1+warp*8;n0<n1+BN1;n0+=NW*8){ float c0=0,c1=0,c2=0,c3=0;
@@ -61,20 +61,20 @@ extern "C" __global__ void fc1(const uint8_t* xall,const float* sxall,const uint
       unsigned h0=*(const unsigned short*)(wr+tid*2), h1=*(const unsigned short*)(wr+tid*2+8);
       unsigned e8=(unsigned)W1e[tb*8+gid], lo=fLUT[e8*2], hi=fLUT[e8*2+1];
       unsigned b0=fold4(h0,lo,hi), b1=fold4(h1,lo,hi);
-      unsigned a0=*(const unsigned*)(xs+gid*H+k0+tid*4),a1=0u;
-      unsigned a2=*(const unsigned*)(xs+gid*H+k0+tid*4+16),a3=0u;
+      unsigned a0=(gid<4)?*(const unsigned*)(xs+gid*H+k0+tid*4):0u,a1=0u;
+      unsigned a2=(gid<4)?*(const unsigned*)(xs+gid*H+k0+tid*4+16):0u,a3=0u;
       MMA(c0,c1,c2,c3,a0,a1,a2,a3,b0,b1); }
-    if(gid<T){ gu[((long)bt*8+gid)*twoIs+n0+tid*2]=c0*lsx[gid]; gu[((long)bt*8+gid)*twoIs+n0+tid*2+1]=c1*lsx[gid]; } }
+    if(gid<T){ gu[((long)bt*4+gid)*twoIs+n0+tid*2]=c0*lsx[gid]; gu[((long)bt*4+gid)*twoIs+n0+tid*2+1]=c1*lsx[gid]; } }
 }
 extern "C" __global__ void swig(const float* gu, uint8_t* act, float* asc, const int* tn, int Is){
   const int bt=blockIdx.x, T=tn[bt], twoIs=2*Is;
   const int warp=threadIdx.x>>5, NW=blockDim.x>>5, lane=threadIdx.x&31;
   for(int r=warp;r<T;r+=NW){ float amax=1e-30f;
-    for(int i=lane;i<Is;i+=32){ float g=gu[((long)bt*8+r)*twoIs+i],u=gu[((long)bt*8+r)*twoIs+Is+i]; float a=(g/(1.f+__expf(-g)))*u; amax=fmaxf(amax,fabsf(a)); }
+    for(int i=lane;i<Is;i+=32){ float g=gu[((long)bt*4+r)*twoIs+i],u=gu[((long)bt*4+r)*twoIs+Is+i]; float a=(g/(1.f+__expf(-g)))*u; amax=fmaxf(amax,fabsf(a)); }
     #pragma unroll
     for(int o=16;o>0;o>>=1) amax=fmaxf(amax,__shfl_down_sync(-1u,amax,o)); amax=__shfl_sync(-1u,amax,0);
-    float s=amax/448.f; if(lane==0) asc[bt*8+r]=s;
-    for(int i=lane;i<Is;i+=32){ float g=gu[((long)bt*8+r)*twoIs+i],u=gu[((long)bt*8+r)*twoIs+Is+i]; float a=(g/(1.f+__expf(-g)))*u; act[((long)bt*8+r)*Is+i]=(uint8_t)__nv_cvt_float_to_fp8(a/s,__NV_SATFINITE,__NV_E4M3); } }
+    float s=amax/448.f; if(lane==0) asc[bt*4+r]=s;
+    for(int i=lane;i<Is;i+=32){ float g=gu[((long)bt*4+r)*twoIs+i],u=gu[((long)bt*4+r)*twoIs+Is+i]; float a=(g/(1.f+__expf(-g)))*u; act[((long)bt*4+r)*Is+i]=(uint8_t)__nv_cvt_float_to_fp8(a/s,__NV_SATFINITE,__NV_E4M3); } }
 }
 extern "C" __global__ void fc2(const uint8_t* act,const float* asc,const uint8_t* W2p,const uint8_t* W2e,
     const int* te,const int* tn,const int* ttok,const float* tw, float* y,int H,int Is,int NB2){
@@ -82,11 +82,11 @@ extern "C" __global__ void fc2(const uint8_t* act,const float* asc,const uint8_t
   const int t=threadIdx.x&31,gid=t>>2,tid=t&3,warp=threadIdx.x>>5,NW=blockDim.x>>5;
   const int BN2=H/NB2;
   extern __shared__ uint8_t sm[]; uint8_t* af=sm;
-  __shared__ int tok[8]; __shared__ float rw[8], ascs[8]; __shared__ unsigned fLUT[512];
+  __shared__ int tok[4]; __shared__ float rw[4], ascs[4]; __shared__ unsigned fLUT[512];
   for(int i=threadIdx.x;i<256;i+=blockDim.x){ unsigned lo,hi; fold_tbl((unsigned)i,lo,hi); fLUT[i*2]=lo; fLUT[i*2+1]=hi; }
-  if(threadIdx.x<8){ int r=threadIdx.x; tok[r]=(r<T)?ttok[bt*8+r]:-1; rw[r]=(r<T)?tw[bt*8+r]:0.f; ascs[r]=(r<T)?asc[bt*8+r]:0.f; }
+  if(threadIdx.x<4){ int r=threadIdx.x; tok[r]=(r<T)?ttok[bt*4+r]:-1; rw[r]=(r<T)?tw[bt*4+r]:0.f; ascs[r]=(r<T)?asc[bt*4+r]:0.f; }
   __syncthreads();
-  for(int i=threadIdx.x;i<8*Is;i+=blockDim.x){ int r=i/Is; af[i]=(r<T)?act[(long)bt*8*Is+i]:0; }
+  for(int i=threadIdx.x;i<4*Is;i+=blockDim.x){ int r=i/Is; af[i]=(r<T)?act[(long)bt*4*Is+i]:0; }
   __syncthreads();
   const int n1=nblk*BN2;
   for(int n0=n1+warp*8;n0<n1+BN2;n0+=NW*8){ float c0=0,c1=0,c2=0,c3=0;
@@ -96,8 +96,8 @@ extern "C" __global__ void fc2(const uint8_t* act,const float* asc,const uint8_t
       unsigned h0=*(const unsigned short*)(wr+tid*2), h1=*(const unsigned short*)(wr+tid*2+8);
       unsigned e8=(unsigned)W2e[tb*8+gid], lo=fLUT[e8*2], hi=fLUT[e8*2+1];
       unsigned b0=fold4(h0,lo,hi), b1=fold4(h1,lo,hi);
-      unsigned a0=*(const unsigned*)(af+gid*Is+k0+tid*4),a1=0u;
-      unsigned a2=*(const unsigned*)(af+gid*Is+k0+tid*4+16),a3=0u;
+      unsigned a0=(gid<4)?*(const unsigned*)(af+gid*Is+k0+tid*4):0u,a1=0u;
+      unsigned a2=(gid<4)?*(const unsigned*)(af+gid*Is+k0+tid*4+16):0u,a3=0u;
       MMA(c0,c1,c2,c3,a0,a1,a2,a3,b0,b1); }
     if(gid<T){ int tk=tok[gid]; float w=rw[gid]*ascs[gid]; atomicAdd(&y[(long)tk*H+n0+tid*2],c0*w); atomicAdd(&y[(long)tk*H+n0+tid*2+1],c1*w); } }
 }
@@ -105,10 +105,10 @@ torch::Tensor run(torch::Tensor xall,torch::Tensor sxall,torch::Tensor W1p,torch
                   torch::Tensor te,torch::Tensor tn,torch::Tensor ttok,torch::Tensor tw,int M,int Is,int E,int NB1,int NB2){
   int H=xall.size(1),NT=te.size(0); int twoIs=2*Is;
   auto y=torch::zeros({M,H},torch::device(xall.device()).dtype(torch::kFloat32));
-  auto gu=torch::empty({(long)NT*8,twoIs},torch::device(xall.device()).dtype(torch::kFloat32));
-  auto act=torch::empty({(long)NT*8,Is},torch::device(xall.device()).dtype(torch::kUInt8));
-  auto asc=torch::empty({(long)NT*8},torch::device(xall.device()).dtype(torch::kFloat32));
-  int thr=256; long sh1=(long)8*H, sh2=(long)8*Is;
+  auto gu=torch::empty({(long)NT*4,twoIs},torch::device(xall.device()).dtype(torch::kFloat32));
+  auto act=torch::empty({(long)NT*4,Is},torch::device(xall.device()).dtype(torch::kUInt8));
+  auto asc=torch::empty({(long)NT*4},torch::device(xall.device()).dtype(torch::kFloat32));
+  int thr=256; long sh1=(long)4*H, sh2=(long)4*Is;
   cudaFuncSetAttribute(fc1,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)sh1);
   cudaFuncSetAttribute(fc2,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)sh2);
   fc1<<<NT*NB1,thr,sh1>>>(xall.data_ptr<uint8_t>(),sxall.data_ptr<float>(),W1p.data_ptr<uint8_t>(),W1e.data_ptr<uint8_t>(),
@@ -118,7 +118,7 @@ torch::Tensor run(torch::Tensor xall,torch::Tensor sxall,torch::Tensor W1p,torch
     te.data_ptr<int>(),tn.data_ptr<int>(),ttok.data_ptr<int>(),tw.data_ptr<float>(),y.data_ptr<float>(),H,Is,NB2);
   return y; }
 """
-e=load_inline(name='moe_fp8mma_split2',cpp_sources="torch::Tensor run(torch::Tensor xall,torch::Tensor sxall,torch::Tensor W1p,torch::Tensor W1e,torch::Tensor W2p,torch::Tensor W2e,torch::Tensor te,torch::Tensor tn,torch::Tensor ttok,torch::Tensor tw,int M,int Is,int E,int NB1,int NB2);",cuda_sources=CUDA,functions=['run'],extra_cuda_cflags=['-O3'],verbose=False)
+e=load_inline(name='moe_fp8mma_split4',cpp_sources="torch::Tensor run(torch::Tensor xall,torch::Tensor sxall,torch::Tensor W1p,torch::Tensor W1e,torch::Tensor W2p,torch::Tensor W2e,torch::Tensor te,torch::Tensor tn,torch::Tensor ttok,torch::Tensor tw,int M,int Is,int E,int NB1,int NB2);",cuda_sources=CUDA,functions=['run'],extra_cuda_cflags=['-O3'],verbose=False)
 def build(M,H,Is,E,topk):
   torch.manual_seed(0)
   x=torch.randn(M,H,device='cuda'); W1=(torch.randn(E,2*Is,H,device='cuda')*0.05); W2=(torch.randn(E,H,Is,device='cuda')*0.05)
@@ -133,9 +133,9 @@ def build(M,H,Is,E,topk):
   te=[];tn=[];tt=[];tww=[]; i=0;P=fe.numel()
   while i<P:
     j=i
-    while j<P and fe[j]==fe[i] and j-i<8: j+=1
+    while j<P and fe[j]==fe[i] and j-i<4: j+=1
     te.append(int(fe[i])); n=j-i; tn.append(n)
-    tt+=ft[i:j].tolist()+[0]*(8-n); tww+=fw[i:j].tolist()+[0.]*(8-n); i=j
+    tt+=ft[i:j].tolist()+[0]*(4-n); tww+=fw[i:j].tolist()+[0.]*(4-n); i=j
   te=torch.tensor(te,dtype=torch.int32,device='cuda');tn=torch.tensor(tn,dtype=torch.int32,device='cuda')
   tt=torch.tensor(tt,dtype=torch.int32,device='cuda');tww=torch.tensor(tww,dtype=torch.float32,device='cuda')
   return dict(x=x,ti=ti,tw=tw,W1p=W1p,W1e=W1e,W2p=W2p,W2e=W2e,W1pt=W1pt,W1et=W1et,W2pt=W2pt,W2et=W2et,sx=sx,xf=xf,te=te,tn=tn,tt=tt,tww=tww)
