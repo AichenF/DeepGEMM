@@ -137,8 +137,8 @@ def build(M,H,Is,E,topk):
   te=torch.tensor(te,dtype=torch.int32,device='cuda');tn=torch.tensor(tn,dtype=torch.int32,device='cuda')
   tt=torch.tensor(tt,dtype=torch.int32,device='cuda');tww=torch.tensor(tww,dtype=torch.float32,device='cuda')
   return dict(x=x,ti=ti,tw=tw,W1p=W1p,W1e=W1e,W2p=W2p,W2e=W2e,W1pt=W1pt,W1et=W1et,W2pt=W2pt,W2et=W2et,sx=sx,xf=xf,te=te,tn=tn,tt=tt,tww=tww)
-M,H,Is,E,topk=32,6144,512,384,8
-NB1,NB2=int(os.environ.get('NB1','2')),int(os.environ.get('NB2','8'))
+M,H,Is,E,topk=int(os.environ.get("MM","32")),6144,512,384,8
+NB1,NB2=int(os.environ.get('NB1','8')),int(os.environ.get('NB2','16'))
 d=build(M,H,Is,E,topk)
 R=lambda: e.run(d['xf'],d['sx'].float().contiguous(),d['W1pt'],d['W1et'],d['W2pt'],d['W2et'],d['te'],d['tn'],d['tt'],d['tww'],M,Is,E,NB1,NB2)
 y=R()
