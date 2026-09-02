@@ -62,6 +62,7 @@ DEQUANT_SYNTH_LUT = os.environ.get("V4_DEQUANT_SYNTH_LUT", "0") == "1"
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
+W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
     raise ValueError("V4_MIN_BLOCKS_PER_SM must be one of 0,8,10,12,14,16")
@@ -121,6 +122,7 @@ static constexpr bool kDequantDp4aHi = K_DEQUANT_DP4A_HI;
 static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
+static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -254,7 +256,8 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
 
     __shared__ __align__(8) uint64_t full_barriers[kStages];
     __shared__ __align__(8) uint64_t scale_barrier;
-    __shared__ uint2 lut_smem[kDequantSynthLut ? 1 : kLutRows];
+    __shared__ uint2 lut_smem[
+        (kDequantSynthLut || (!IsW13 && kW2GlobalLut)) ? 1 : kLutRows];
     __shared__ float activation_scale_smem[kTok];
     __shared__ int32_t route_ids[kTok];
     __shared__ int32_t activation_rows[kTok];
@@ -267,7 +270,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             ? (IsW13 ? route / kTopK : route)
             : -1;
     }
-    if constexpr (!kDequantSynthLut) {
+    if constexpr (!kDequantSynthLut && (IsW13 || !kW2GlobalLut)) {
         for (int i = tid; i < kLutRows; i += blockDim.x) {
             constexpr int kGlobalLutOffset =
                 kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
@@ -487,12 +490,24 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     weight_scale_smem[scale_stage * kScaleStageBytes
                                       + group_row1 * kScaleRowBytes
                                       + (global_kt & 3) * 4 + k_step];
-                const uint2 weight_lut0 = kDequantSynthLut
-                    ? synth_e2m1_e8m0_lut(exponent0)
-                    : lut_smem[scale_lut_index(exponent0)];
-                const uint2 weight_lut1 = kDequantSynthLut
-                    ? synth_e2m1_e8m0_lut(exponent1)
-                    : lut_smem[scale_lut_index(exponent1)];
+                uint2 weight_lut0;
+                uint2 weight_lut1;
+                if constexpr (kDequantSynthLut) {
+                    weight_lut0 = synth_e2m1_e8m0_lut(exponent0);
+                    weight_lut1 = synth_e2m1_e8m0_lut(exponent1);
+                } else if constexpr (!IsW13 && kW2GlobalLut) {
+                    constexpr int kGlobalLutOffset =
+                        kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
+                    weight_lut0 = __ldg(
+                        global_lut + kGlobalLutOffset
+                        + scale_lut_index(exponent0));
+                    weight_lut1 = __ldg(
+                        global_lut + kGlobalLutOffset
+                        + scale_lut_index(exponent1));
+                } else {
+                    weight_lut0 = lut_smem[scale_lut_index(exponent0)];
+                    weight_lut1 = lut_smem[scale_lut_index(exponent1)];
+                }
                 const uint2 fp8_0 =
                     dequant_weight_word<kMode2Braid>(packed0, weight_lut0);
                 const uint2 fp8_1 =
@@ -991,7 +1006,8 @@ _ext = load_inline(
           f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"m2{int(MODE2_BRAID)}_"
-          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v23"),
+          f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
+          f"mb{MIN_BLOCKS_PER_SM}_v24"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1012,6 +1028,7 @@ _ext = load_inline(
         f"-DK_DEQUANT_DP4A_LO={int(DEQUANT_DP4A_LO)}",
         f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
+        f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",

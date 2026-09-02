@@ -1577,3 +1577,25 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_w2_persistent_rollback_correctness_20260903.log`
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_w2_persistent_rollback_20260903.log`.
+
+### WGMMA iteration 25 — direct global W2 LUT (rejected)
+
+- Added an opt-in `V4_W2_GLOBAL_LUT=1` specialization that skips the per-CTA
+  shared LUT copy only for W2 and loads the same complete 256-row `uint2` LUT
+  through the read-only global path during dequantization.  W13 is unchanged,
+  arbitrary E8M0 codes remain supported, and the unset default stays 0.
+- Full-path correctness passes TP4 split-K=4, TP4 split-K=2, and TP8 local
+  shapes with errors identical to the shared-LUT path.
+- In the TP4 random-route cold 3x100 control-then-candidate pair, shared-LUT
+  medians are 0.092288 / 0.140832 / 0.217312 / 0.306256 / 0.385136 ms
+  (geomean 0.201616 ms), while direct-global gives 0.093888 / 0.143776 /
+  0.221024 / 0.312704 / 0.395376 ms (geomean 0.205767 ms).
+- The candidate loses all five M values and regresses geometric mean by 2.06%.
+  Saving LUT initialization cannot offset the global load dependency in every
+  dequantization step; retain shared LUT as default without a reverse run.
+- Every timing sample uses the standard 256 MiB cold-L2 clear outside events.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_global_lut_correctness_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_w2_global_lut0_control_20260903.log`,
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_w2_global_lut1_screen_20260903.log`.

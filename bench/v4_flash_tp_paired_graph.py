@@ -224,6 +224,7 @@ def main() -> None:
                     "l2_flush_bytes": l2_flush_buffer.nbytes,
                     "custom_mode2_braid": kernel.MODE2_BRAID,
                     "custom_fused_activation_quant": kernel.FUSED_ACT_QUANT,
+                    "custom_w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "timed_allreduce": "same SGLang CustomAllReduceV2 instance",
                 },
                 sort_keys=True,
