@@ -1401,3 +1401,21 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_m32_mode2_braid_random_detailed_coldl2_ncu.ncu-rep`,
   and
   `bench/results/tp4_wgmma_m32_mode2_braid_random_detailed_coldl2_ncu.log`.
+
+### WGMMA iteration 21 selection — Mode2 braid is now default
+
+- Changed the unset `V4_MODE2_BRAID` default from 0 to 1.  Explicit
+  `V4_MODE2_BRAID=0` remains the ordinary-layout control, and both the offline
+  weight conversion and JIT extension key continue to follow the switch.
+- Unset-default full-path correctness passes TP4 split-K=4, TP4 forced
+  split-K=2, and TP8 local shapes.  W13 cosine is at least 0.999999997,
+  activation cosine at least 0.999999691, and W2 cosine at least 0.999997241.
+- Unset-default TP4 random-route cold 3x100 medians for
+  M8/M16/M32/M64/M128 are 0.093120 / 0.142336 / 0.221552 / 0.313312 /
+  0.390416 ms (geomean 0.204676 ms).  Metadata reports `mode2_braid=true`,
+  all graph/all-reduce checks pass, and every sample uses the standard 256 MiB
+  pre-replay L2 clear outside the timing events.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_mode2_default_correctness_20260903.log`
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_mode2_default_20260903.log`.
