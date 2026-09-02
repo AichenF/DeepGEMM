@@ -1558,3 +1558,22 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_w2_persistent4_correctness_20260903.log`
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_w2_persistent{0,2,4,6,8}_screen_20260903.log`.
+
+### Iteration 24 rollback — restore one-task W2 CTAs
+
+- Removed the rejected grid-stride loop and runtime grid-cap plumbing instead
+  of merely leaving the cap at zero.  This restores the pre-experiment
+  one-logical-tile-per-CTA kernel and avoids a generic loop branch on the
+  accepted path; the only unrelated retained change is fused activation
+  quantization from iteration 23.
+- TP4 local full-path correctness passes with W13/activation/W2 cosine
+  0.999999998/0.999999759/0.999997256.
+- The required TP4 random-route cold 3x100 rollback screen gives
+  0.092384 / 0.141088 / 0.217472 / 0.315632 / 0.387536 ms for
+  M8/M16/M32/M64/M128 (geomean 0.203234 ms).  This recovers the persistent
+  experiment's 0-control geomean within 0.45% and is 2.15% faster than the
+  best persistent setting (8 blocks/SM).  All graph/all-reduce checks pass.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_persistent_rollback_correctness_20260903.log`
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_w2_persistent_rollback_20260903.log`.

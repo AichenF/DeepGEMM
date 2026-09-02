@@ -62,13 +62,6 @@ DEQUANT_SYNTH_LUT = os.environ.get("V4_DEQUANT_SYNTH_LUT", "0") == "1"
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
-W2_PERSISTENT_BLOCKS_PER_SM = int(
-    os.environ.get("V4_W2_PERSISTENT_BLOCKS_PER_SM", "0")
-)
-if W2_PERSISTENT_BLOCKS_PER_SM not in (0, 2, 4, 6, 8, 10, 12):
-    raise ValueError(
-        "V4_W2_PERSISTENT_BLOCKS_PER_SM must be one of 0,2,4,6,8,10,12"
-    )
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
     raise ValueError("V4_MIN_BLOCKS_PER_SM must be one of 0,8,10,12,14,16")
@@ -86,7 +79,6 @@ if DEEP_GEMM_INCLUDE is None:
 
 
 _CUDA = r"""
-#include <algorithm>
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
@@ -233,6 +225,17 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     constexpr int kNumNTiles = N / kWout;
 
     const int split_idx = blockIdx.x % SplitK;
+    const int task_idx = blockIdx.x / SplitK;
+    const int m_block_idx = task_idx / kNumNTiles;
+    const int n_block_idx = task_idx % kNumNTiles;
+    if (m_block_idx * kTok >= __ldg(num_tokens_padded))
+        return;
+
+    const int expert_idx = __ldg(expert_ids + m_block_idx);
+    if (expert_idx < 0)
+        return;
+    const int weight_row = expert_idx * N + n_block_idx * kWout;
+    const int kt_begin = split_idx * kKTilesPerSplit;
 
     extern __shared__ __align__(1024) uint8_t dynamic_smem[];
     uint8_t* weight_smem = dynamic_smem;
@@ -257,6 +260,13 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     __shared__ int32_t activation_rows[kTok];
 
     const int tid = threadIdx.x;
+    if (tid < kTok) {
+        const int route = __ldg(sorted_ids + m_block_idx * kTok + tid);
+        route_ids[tid] = route;
+        activation_rows[tid] = route < max_routes
+            ? (IsW13 ? route / kTopK : route)
+            : -1;
+    }
     if constexpr (!kDequantSynthLut) {
         for (int i = tid; i < kLutRows; i += blockDim.x) {
             constexpr int kGlobalLutOffset =
@@ -272,29 +282,6 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             __cvta_generic_to_shared(&full_barriers[stage]));
     const uint32_t scale_barrier_addr = static_cast<uint32_t>(
         __cvta_generic_to_shared(&scale_barrier));
-
-    const int first_task_idx = blockIdx.x / SplitK;
-    const int task_stride = gridDim.x / SplitK;
-    const int max_task_idx = max_routes * kNumNTiles;
-    for (int task_idx = first_task_idx; task_idx < max_task_idx;
-         task_idx += task_stride) {
-    const int m_block_idx = task_idx / kNumNTiles;
-    const int n_block_idx = task_idx % kNumNTiles;
-    if (m_block_idx * kTok >= __ldg(num_tokens_padded))
-        break;
-
-    const int expert_idx = __ldg(expert_ids + m_block_idx);
-    if (expert_idx < 0)
-        break;
-    const int weight_row = expert_idx * N + n_block_idx * kWout;
-    const int kt_begin = split_idx * kKTilesPerSplit;
-    if (tid < kTok) {
-        const int route = __ldg(sorted_ids + m_block_idx * kTok + tid);
-        route_ids[tid] = route;
-        activation_rows[tid] = route < max_routes
-            ? (IsW13 ? route / kTopK : route)
-            : -1;
-    }
     if (tid == 0) {
         #pragma unroll
         for (int stage = 0; stage < kStages; ++stage)
@@ -599,9 +586,6 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             }
         }
     }
-    if (task_idx + task_stride < max_task_idx)
-        __syncthreads();
-    }
 }
 
 template <int Intermediate, int SplitK>
@@ -769,8 +753,7 @@ void launch_route_gemm(
         torch::Tensor activation, torch::Tensor activation_scale,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
         torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
-        torch::Tensor output, torch::Tensor lut, int max_routes,
-        int persistent_blocks_per_sm = 0) {
+        torch::Tensor output, torch::Tensor lut, int max_routes) {
     static CUtensorMap weight_descriptor;
     static CUtensorMap scale_descriptor;
     static void* last_weight_pointer = nullptr;
@@ -787,17 +770,7 @@ void launch_route_gemm(
         last_scale_pointer = weight_scale.data_ptr();
     }
     const int max_m_blocks = expert_ids.numel();
-    const int logical_tasks = max_m_blocks * (N / kWout);
-    int grid_tasks = logical_tasks;
-    if constexpr (!IsW13) {
-        if (persistent_blocks_per_sm > 0) {
-            const int persistent_tasks =
-                at::cuda::getCurrentDeviceProperties()->multiProcessorCount
-                * persistent_blocks_per_sm;
-            grid_tasks = std::min(logical_tasks, persistent_tasks);
-        }
-    }
-    const int grid = grid_tasks * SplitK;
+    const int grid = max_m_blocks * (N / kWout) * SplitK;
     constexpr int effective_scale_buffers = K >= 512 ? kScaleBuffers : kStages;
     constexpr int dynamic_smem_bytes =
         kStages * kWout * (kBlockK / 2)
@@ -864,19 +837,18 @@ void run_w2(
         torch::Tensor activation, torch::Tensor activation_scale,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
         torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
-        torch::Tensor output, torch::Tensor lut, int intermediate,
-        int persistent_blocks_per_sm) {
+        torch::Tensor output, torch::Tensor lut, int intermediate) {
     const int routes = topk_weights.numel();
     if (intermediate == 512) {
         launch_route_gemm<512, 4096, 1, false>(
             weight, weight_scale, activation, activation_scale,
             sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-            output, lut, routes, persistent_blocks_per_sm);
+            output, lut, routes);
     } else if (intermediate == 256) {
         launch_route_gemm<256, 4096, 1, false>(
             weight, weight_scale, activation, activation_scale,
             sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-            output, lut, routes, persistent_blocks_per_sm);
+            output, lut, routes);
     } else {
         TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
     }
@@ -1000,8 +972,7 @@ void run_w2(torch::Tensor weight, torch::Tensor weight_scale,
             torch::Tensor activation, torch::Tensor activation_scale,
             torch::Tensor sorted_ids, torch::Tensor expert_ids,
             torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
-            torch::Tensor output, torch::Tensor lut, int intermediate,
-            int persistent_blocks_per_sm);
+            torch::Tensor output, torch::Tensor lut, int intermediate);
 void reduce_swiglu(torch::Tensor partials, torch::Tensor output,
                    int intermediate, int split_k);
 void reduce_swiglu_quant(torch::Tensor partials, torch::Tensor activation,
@@ -1020,7 +991,7 @@ _ext = load_inline(
           f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"m2{int(MODE2_BRAID)}_"
-          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v22"),
+          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v23"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1129,7 +1100,6 @@ def run_w2(
         output,
         lut,
         intermediate,
-        W2_PERSISTENT_BLOCKS_PER_SM,
     )
 
 
