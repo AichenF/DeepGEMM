@@ -612,3 +612,20 @@ maximum rank latency of a full CUDA-Graph replay.
   pass correctness.  Keep the launch-bounds override diagnostic-only.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_mb0_restore_screen_20260902.log`.
+
+### Accepted WOUT=128 cold profile
+
+- Reprofiled the current default at TP4 M32 after route-output acceptance.
+  The profiler range is explicitly `256 MiB L2 clear -> one local pipeline`,
+  and NCU also uses cache-control `all` on every replay.
+- W13 / W2 route-GEMM metrics: 3072 / 6144 CTAs, 3.94 / 7.88 waves per
+  SM, 45 registers/thread (48 allocated), 62.5% theoretical occupancy,
+  58.45% / 59.73% achieved occupancy, 31.57% / 32.31% DRAM throughput, and
+  289.632 / 140.320 us NCU duration.
+- Compared with the earlier WOUT=64 profile, grouping two output tiles halves
+  the grid and raises DRAM utilization by only about 2-3 points while reducing
+  occupancy.  L1TEX throughput remains high (83.0% / 72.7%), so the next
+  experiment moves the strided E8M0 scale loads/stores from all 128 threads to
+  an asynchronous TMA transaction per stage.
+- Evidence report:
+  `bench/results/tp4_wgmma_m32_wout128_route_coldl2_ncu.ncu-rep`.
