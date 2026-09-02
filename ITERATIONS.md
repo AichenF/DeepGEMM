@@ -1627,3 +1627,32 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_paired_graph_batch_coldl2_random_smoke_20260903.log`
   and
   `bench/results/tp4_paired_graph_batch_coldl2_random_fused_act_quant_formal_20260903.log`.
+
+### Route-distribution sensitivity audit
+
+- Ran the accepted implementation and Humming in the same batch-paired TP4
+  CUDA-Graph harness for deterministic balanced and maximal-skew routes.  The
+  screen uses four AB/BA-balanced outer batches of 100 replays, so each
+  implementation receives 400 samples per M; every replay has its own 256 MiB
+  L2 clear outside the measured interval.
+- Balanced routes activate 48/96/192/256/256 experts at
+  M8/M16/M32/M64/M128.  Humming medians are 0.096768 / 0.163712 / 0.301296 /
+  0.401408 / 0.420640 ms and custom medians are 0.099232 / 0.159808 /
+  0.287232 / 0.392368 / 0.425472 ms.  Custom loses M8/M128 by 2.55%/1.15%,
+  wins M16/M32/M64 by 2.44%/4.90%/2.30%, and is 1.17% faster in five-shape
+  geometric mean.
+- Maximal skew activates only six experts at every M.  Humming medians are
+  0.039328 / 0.049216 / 0.067968 / 0.101600 / 0.168928 ms and custom medians
+  are 0.042496 / 0.053344 / 0.072128 / 0.101536 / 0.168672 ms.  Custom loses
+  M8/M16/M32 by 8.06%/8.39%/6.12% and is within 0.2% at M64/M128; its
+  geometric mean is 4.40% slower.
+- The result disproves any route-independent speedup claim.  The custom
+  schedule is competitive when many experts expose enough independent tiles,
+  but its fixed overhead/parallelism is inferior to Humming for a few active
+  experts and small routed-row counts.  All graph and all-reduce checks pass;
+  Humming's skew-route cosine is lower (minimum about 0.99987) but remains
+  finite and within the harness's reference tolerance.
+- Evidence:
+  `bench/results/tp4_paired_graph_batch_coldl2_balanced_fused_act_quant_screen_20260903.log`
+  and
+  `bench/results/tp4_paired_graph_batch_coldl2_skew_fused_act_quant_screen_20260903.log`.
