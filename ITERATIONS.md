@@ -2218,3 +2218,16 @@ maximum rank latency of a full CUDA-Graph replay.
 - The candidate is eligible for a paired cold-L2 screen.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_persistent_stage4_p5_correctness_20260903.log`.
+
+### WGMMA iteration 30i — four-stage persistent W2 screen (rejected)
+
+- Screened stage4/grid390 using 4 x 100 paired, per-replay cold-L2 TP4 samples.
+  It loses at all target M values by 2.29-8.46%; geometric means are
+  0.220499 ms custom and 0.209563 ms Humming, a 5.22% loss.
+- Combined with the p0/p8/p12 two-stage and stage5/p4 results, simple
+  single-warpgroup task serialization is closed: neither amortized setup nor
+  deeper weight staging compensates for reduced independent-CTA concurrency.
+  Restore the exact accepted winner before pursuing instruction/data-path
+  changes that keep one logical task per CTA.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_single_wg_persistent_stage4_p5_screen_20260903.log`.

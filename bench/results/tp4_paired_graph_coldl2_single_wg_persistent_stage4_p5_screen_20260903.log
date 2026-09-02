@@ -1,0 +1,16 @@
+TP4 cold-L2 paired screen: single-WG persistent W2, four stages, 5 CTAs/SM
+Date: 2026-09-03
+Environment: V4_W2_PERSISTENT_BLOCKS_PER_SM=5 V4_W2_PERSISTENT_STAGES=4
+Harness: random routes, CUDA Graph, outer=4, replays=100, batch AB/BA;
+separate 256 MiB cache clear before every replay outside CUDA events.
+
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088800 / 0.090368 / 0.123808  0.096192 / 0.098016 / 0.147552  1.084632
+16   82     656     0.144000 / 0.145824 / 0.155968  0.153088 / 0.154848 / 0.229280  1.061883
+32   140    1120    0.223904 / 0.225600 / 0.234272  0.231424 / 0.233392 / 0.256576  1.034539
+64   203    1624    0.311680 / 0.318592 / 0.344256  0.321056 / 0.325888 / 0.434848  1.022901
+128  248    1992    0.378816 / 0.426736 / 0.443392  0.397632 / 0.451520 / 0.488256  1.058078
+
+All correctness and allreduce checks pass at every M.
+Geometric mean: Humming 0.209563378 ms, custom 0.220499080 ms.
+Custom/Humming=1.052183; custom is 5.218% slower.
