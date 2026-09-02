@@ -1448,3 +1448,39 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_mode2_split_threshold192_correctness_20260903.log`,
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_mode2_split_threshold192_default_20260903.log`.
+
+### WGMMA iteration 23 — fuse split reduction, SwiGLU, and FP8 quantization (candidate)
+
+- Added an opt-in `V4_FUSED_ACT_QUANT=1` path that replaces the separate
+  split-K reduction/SwiGLU CUDA kernel plus Humming group-128 quantization
+  kernel with one 128-thread CUDA block per route/group.  It preserves both
+  BF16 roundings used by the public path, computes the same max/448 FP32
+  scale, emits E4M3 with saturating round-to-nearest conversion, and skips
+  materializing the intermediate BF16 activation in the benchmark.
+- The original two-kernel path remains under `V4_FUSED_ACT_QUANT=0` and is
+  still the unset default for this candidate commit.  The extension exposes
+  both paths from the same binary, so A/B runs cannot accidentally compare
+  different route-GEMM builds.
+- Full-path correctness passes TP4 split-K=4, TP4 split-K=2, and TP8 local
+  shapes with errors identical to the original path: W13 cosine is at least
+  0.999999997, activation cosine at least 0.999999666, and W2 cosine at least
+  0.999997243.
+- In the control-then-candidate TP4 random-route cold 3x100 pair, control
+  medians are 0.093024 / 0.141984 / 0.218464 / 0.315744 / 0.390304 ms
+  (geomean 0.204263 ms), and fused medians are 0.092320 / 0.140992 /
+  0.217696 / 0.307072 / 0.386144 ms (geomean 0.201960 ms).  Fusion wins all
+  five points and improves geometric mean by 1.13%.
+- The reverse candidate-then-control pair gives fused 0.092224 / 0.140864 /
+  0.216768 / 0.309216 / 0.388432 ms (geomean 0.202229 ms), versus control
+  0.093024 / 0.142016 / 0.218704 / 0.313296 / 0.389264 ms (geomean
+  0.203891 ms).  Fusion again wins every M and improves geometric mean by
+  0.82%; keep it as an accepted candidate pending the unset-default check.
+- Every sample uses the standard 256 MiB stream-ordered cold-L2 clear outside
+  the event interval.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_fused_act_quant_correctness_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_fused_act_quant0_control_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_fused_act_quant1_screen_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_fused_act_quant1_reverse_20260903.log`,
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_fused_act_quant0_reverse_control_20260903.log`.

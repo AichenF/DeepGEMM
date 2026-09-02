@@ -177,10 +177,14 @@ class CapturedCase:
             dtype=torch.float32,
             device=device,
         )
-        self.activation = torch.empty(
-            (routes, self.intermediate_per_rank),
-            dtype=torch.bfloat16,
-            device=device,
+        self.activation = (
+            torch.empty(0, dtype=torch.bfloat16, device=device)
+            if kernel.FUSED_ACT_QUANT
+            else torch.empty(
+                (routes, self.intermediate_per_rank),
+                dtype=torch.bfloat16,
+                device=device,
+            )
         )
         self.qactivation = torch.empty(
             (routes, self.intermediate_per_rank),
@@ -204,7 +208,15 @@ class CapturedCase:
         self.expert_ids: torch.Tensor | None = None
         self.num_tokens_padded: torch.Tensor | None = None
         self.x_scale: torch.Tensor | None = None
-        self.activation_scale: torch.Tensor | None = None
+        self.activation_scale: torch.Tensor | None = (
+            torch.empty(
+                (routes, self.intermediate_per_rank // 128),
+                dtype=torch.float32,
+                device=device,
+            )
+            if kernel.FUSED_ACT_QUANT
+            else None
+        )
         self.graph_output: torch.Tensor | None = None
         # Routes are fixed benchmark inputs.  Inspect them once before graph
         # capture; this synchronization and policy selection are not timed.
@@ -249,20 +261,31 @@ class CapturedCase:
             self.intermediate_per_rank,
             self.w13_split_k,
         )
-        kernel.reduce_swiglu(
-            self.partials,
-            self.activation,
-            self.intermediate_per_rank,
-            self.w13_split_k,
-        )
-        self.qactivation, self.activation_scale = humming_ops.quant_input(
-            inputs=self.activation,
-            outputs=self.qactivation,
-            dtype="float8e4m3",
-            group_size=128,
-            m_major_scale=False,
-            scale_dtype="float32",
-        )
+        if kernel.FUSED_ACT_QUANT:
+            assert self.activation_scale is not None
+            kernel.reduce_swiglu_quant(
+                self.partials,
+                self.activation,
+                self.qactivation.view(torch.uint8),
+                self.activation_scale,
+                self.intermediate_per_rank,
+                self.w13_split_k,
+            )
+        else:
+            kernel.reduce_swiglu(
+                self.partials,
+                self.activation,
+                self.intermediate_per_rank,
+                self.w13_split_k,
+            )
+            self.qactivation, self.activation_scale = humming_ops.quant_input(
+                inputs=self.activation,
+                outputs=self.qactivation,
+                dtype="float8e4m3",
+                group_size=128,
+                m_major_scale=False,
+                scale_dtype="float32",
+            )
         if self.local_float is not None:
             self.local_float.zero_()
         w2_output = self.down if kernel.W2_ROUTE_OUTPUT else self.local_float
@@ -482,6 +505,7 @@ def main() -> None:
                     "dequant_dp4a_lo": kernel.DEQUANT_DP4A_LO,
                     "dequant_synth_lut": kernel.DEQUANT_SYNTH_LUT,
                     "mode2_braid": kernel.MODE2_BRAID,
+                    "fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "w2_epilogue": (
                         "BF16 route output + sglang moe_fused_mul_sum"
                         if kernel.W2_ROUTE_OUTPUT

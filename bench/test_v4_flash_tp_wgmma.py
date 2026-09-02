@@ -133,19 +133,30 @@ def main() -> None:
         lut,
         intermediate,
     )
-    kernel.reduce_swiglu(
-        partials, activation, intermediate
-    )
-
     qact = torch.empty_like(activation, dtype=torch.float8_e4m3fn)
-    qact, act_scale = ops.quant_input(
-        inputs=activation,
-        outputs=qact,
-        dtype="float8e4m3",
-        group_size=128,
-        m_major_scale=False,
-        scale_dtype="float32",
-    )
+    if kernel.FUSED_ACT_QUANT:
+        act_scale = torch.empty(
+            (routes, intermediate // 128), dtype=torch.float32, device=device
+        )
+        kernel.reduce_swiglu_quant(
+            partials,
+            activation,
+            qact.view(torch.uint8),
+            act_scale,
+            intermediate,
+        )
+    else:
+        kernel.reduce_swiglu(
+            partials, activation, intermediate
+        )
+        qact, act_scale = ops.quant_input(
+            inputs=activation,
+            outputs=qact,
+            dtype="float8e4m3",
+            group_size=128,
+            m_major_scale=False,
+            scale_dtype="float32",
+        )
     local = torch.zeros((args.m, H), dtype=torch.float32, device=device)
     down = (
         torch.empty((routes, H), dtype=torch.bfloat16, device=device)
@@ -218,7 +229,8 @@ def main() -> None:
         "V4_WGMMA_CHECK "
         f"M={args.m} pattern={args.pattern} Is={intermediate} "
         f"active={torch.unique(flat_ids).numel()} padded={num_tokens_padded.item()} "
-        f"split_k={selected_split_k} mode2={kernel.MODE2_BRAID}"
+        f"split_k={selected_split_k} mode2={kernel.MODE2_BRAID} "
+        f"fused_act_quant={kernel.FUSED_ACT_QUANT}"
     )
     print(
         "V4_WGMMA_W13 "

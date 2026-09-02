@@ -100,10 +100,13 @@ def main() -> None:
     torch.cuda.manual_seed(args.seed)
 
     if args.impl == "humming":
+        kernel_module = None
         case = make_humming_case(
             args.m, args.tp, args.route_pattern, args.seed, device
         )
     else:
+        import v4_flash_tp_wgmma as kernel_module
+
         case = make_custom_case(
             args.m, args.tp, args.route_pattern, args.seed, device
         )
@@ -176,7 +179,10 @@ def main() -> None:
                 == "1"
                 if args.impl == "custom"
                 else None,
-                "mode2_braid": os.environ.get("V4_MODE2_BRAID", "0") == "1"
+                "mode2_braid": kernel_module.MODE2_BRAID
+                if args.impl == "custom"
+                else None,
+                "fused_activation_quant": kernel_module.FUSED_ACT_QUANT
                 if args.impl == "custom"
                 else None,
                 "l2_cache_bytes": props.L2_cache_size,

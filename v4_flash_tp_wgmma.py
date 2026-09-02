@@ -60,6 +60,7 @@ DEQUANT_DP4A_HI = os.environ.get("V4_DEQUANT_DP4A_HI", "1") == "1"
 DEQUANT_DP4A_LO = os.environ.get("V4_DEQUANT_DP4A_LO", "1") == "1"
 DEQUANT_SYNTH_LUT = os.environ.get("V4_DEQUANT_SYNTH_LUT", "0") == "1"
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
+FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "0") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
@@ -83,6 +84,7 @@ _CUDA = r"""
 #include <c10/cuda/CUDAException.h>
 #include <cuda.h>
 #include <cuda_bf16.h>
+#include <cuda_fp8.h>
 
 #include <cutlass/arch/barrier.h>
 #include <cute/arch/mma_sm90_desc.hpp>
@@ -614,6 +616,69 @@ __global__ void reduce_swiglu_kernel(
     output[index] = __float2bfloat16(silu * up);
 }
 
+template <int Intermediate, int SplitK>
+__global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
+        const float* __restrict__ partials,
+        __nv_bfloat16* __restrict__ activation,
+        uint8_t* __restrict__ quantized,
+        float* __restrict__ scale,
+        int routes) {
+    static_assert(Intermediate % 128 == 0);
+    constexpr int kGroupsPerRoute = Intermediate / 128;
+    const int group = blockIdx.x;
+    const int route = group / kGroupsPerRoute;
+    const int group_in_route = group - route * kGroupsPerRoute;
+    const int column = group_in_route * 128 + threadIdx.x;
+    constexpr int N = 2 * Intermediate;
+
+    float gate = 0.0f;
+    float up = 0.0f;
+    #pragma unroll
+    for (int split = 0; split < SplitK; ++split) {
+        const int64_t base =
+            (static_cast<int64_t>(split) * routes + route) * N;
+        gate += partials[base + column];
+        up += partials[base + Intermediate + column];
+    }
+    // Preserve the exact public pipeline semantics: W13 and SwiGLU each emit
+    // BF16 before the group-128 FP8 quantizer observes the activation.
+    gate = __bfloat162float(__float2bfloat16(gate));
+    up = __bfloat162float(__float2bfloat16(up));
+    const float silu = gate / (1.0f + __expf(-gate));
+    const __nv_bfloat16 activation_bf16 = __float2bfloat16(silu * up);
+    const float value = __bfloat162float(activation_bf16);
+    const int index = route * Intermediate + column;
+    if (activation != nullptr)
+        activation[index] = activation_bf16;
+
+    float absmax = fabsf(value);
+    #pragma unroll
+    for (int delta = 16; delta > 0; delta >>= 1)
+        absmax = fmaxf(absmax, __shfl_down_sync(0xffffffffu, absmax, delta));
+
+    __shared__ float warp_max[4];
+    __shared__ float group_scale;
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    if (lane == 0)
+        warp_max[warp] = absmax;
+    __syncthreads();
+
+    if (warp == 0) {
+        absmax = lane < 4 ? warp_max[lane] : 0.0f;
+        #pragma unroll
+        for (int delta = 16; delta > 0; delta >>= 1)
+            absmax = fmaxf(absmax,
+                           __shfl_down_sync(0xffffffffu, absmax, delta));
+        if (lane == 0) {
+            group_scale = fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
+            scale[group] = group_scale;
+        }
+    }
+    __syncthreads();
+    quantized[index] = __nv_fp8_e4m3(value / group_scale).__x;
+}
+
 __global__ void cast_bf16_kernel(
         const float* __restrict__ input,
         __nv_bfloat16* __restrict__ output,
@@ -825,6 +890,51 @@ void reduce_swiglu(
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+template <int Intermediate, int SplitK>
+void launch_reduce_swiglu_quant(
+        torch::Tensor partials, torch::Tensor activation,
+        torch::Tensor quantized, torch::Tensor scale, int routes) {
+    constexpr int threads = 128;
+    constexpr int groups_per_route = Intermediate / 128;
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    auto* activation_ptr = activation.numel()
+        ? reinterpret_cast<__nv_bfloat16*>(activation.data_ptr())
+        : nullptr;
+    reduce_swiglu_quant_kernel<Intermediate, SplitK><<<
+        routes * groups_per_route, threads, 0, stream>>>(
+        partials.data_ptr<float>(), activation_ptr,
+        quantized.data_ptr<uint8_t>(), scale.data_ptr<float>(), routes);
+}
+
+void reduce_swiglu_quant(
+        torch::Tensor partials, torch::Tensor activation,
+        torch::Tensor quantized, torch::Tensor scale,
+        int intermediate, int split_k) {
+    const int routes = partials.size(1);
+    if (intermediate == 512) {
+        if (split_k == 4)
+            launch_reduce_swiglu_quant<512, 4>(
+                partials, activation, quantized, scale, routes);
+        else {
+            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+            launch_reduce_swiglu_quant<512, 2>(
+                partials, activation, quantized, scale, routes);
+        }
+    } else if (intermediate == 256) {
+        if (split_k == 4)
+            launch_reduce_swiglu_quant<256, 4>(
+                partials, activation, quantized, scale, routes);
+        else {
+            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+            launch_reduce_swiglu_quant<256, 2>(
+                partials, activation, quantized, scale, routes);
+        }
+    } else {
+        TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
+    }
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void cast_bf16(torch::Tensor input, torch::Tensor output) {
     const int numel = input.numel();
     const int threads = 256;
@@ -865,6 +975,9 @@ void run_w2(torch::Tensor weight, torch::Tensor weight_scale,
             torch::Tensor output, torch::Tensor lut, int intermediate);
 void reduce_swiglu(torch::Tensor partials, torch::Tensor output,
                    int intermediate, int split_k);
+void reduce_swiglu_quant(torch::Tensor partials, torch::Tensor activation,
+                         torch::Tensor quantized, torch::Tensor scale,
+                         int intermediate, int split_k);
 void cast_bf16(torch::Tensor input, torch::Tensor output);
 void braid_mode2(torch::Tensor weight);
 """
@@ -878,11 +991,12 @@ _ext = load_inline(
           f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"m2{int(MODE2_BRAID)}_"
-          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v20"),
+          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v21"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
-        "run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16",
+        "run_w13_impl", "run_w2", "reduce_swiglu", "reduce_swiglu_quant",
+        "cast_bf16",
         "braid_mode2",
     ],
     extra_cuda_cflags=[
@@ -1002,6 +1116,28 @@ def reduce_swiglu(
     _ext.reduce_swiglu(
         partials,
         output,
+        intermediate,
+        split_k,
+    )
+
+
+def reduce_swiglu_quant(
+    partials: torch.Tensor,
+    activation: torch.Tensor,
+    quantized: torch.Tensor,
+    scale: torch.Tensor,
+    intermediate: int,
+    split_k: int | None = None,
+) -> None:
+    if split_k is None:
+        split_k = select_w13_split_k(partials.size(1))
+    if split_k not in (2, 4):
+        raise ValueError("W13 split_k must be 2 or 4")
+    _ext.reduce_swiglu_quant(
+        partials,
+        activation,
+        quantized,
+        scale,
         intermediate,
         split_k,
     )
