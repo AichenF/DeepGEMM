@@ -417,17 +417,15 @@ void run_w13_impl(
         torch::Tensor num_tokens_padded, torch::Tensor partials,
         torch::Tensor lut, int intermediate) {
     const int routes = partials.size(1);
-    auto unused_weights = torch::empty(
-        {0}, torch::TensorOptions().dtype(torch::kFloat32).device(weight.device()));
     if (intermediate == 512) {
         launch_route_gemm<4096, 1024, W13_SPLIT_K, true>(
             weight, weight_scale, activation, activation_scale,
-            sorted_ids, expert_ids, num_tokens_padded, unused_weights,
+            sorted_ids, expert_ids, num_tokens_padded, partials,
             partials, lut, routes);
     } else if (intermediate == 256) {
         launch_route_gemm<4096, 512, W13_SPLIT_K, true>(
             weight, weight_scale, activation, activation_scale,
-            sorted_ids, expert_ids, num_tokens_padded, unused_weights,
+            sorted_ids, expert_ids, num_tokens_padded, partials,
             partials, lut, routes);
     } else {
         TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");

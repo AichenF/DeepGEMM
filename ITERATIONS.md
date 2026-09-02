@@ -155,3 +155,17 @@ maximum rank latency of a full CUDA-Graph replay.
 - All checks cover every output block and every split-K partial against a
   torch dequant/matmul reference; all outputs finite.  No performance claim
   yet.
+
+### Route-aware WGMMA full-graph smoke (split-K=4)
+
+- Added the end-to-end graph path with the same timed route alignment,
+  BF16-to-FP8 group-128 quantization, and SGLang `CustomAllReduceV2` as the
+  Humming baseline.  W13 split partial reduction + SwiGLU and W2 weighted local
+  scatter are custom kernels inherited from the reviewed WGMMA implementation.
+- TP4 M8 balanced, cold smoke protocol (1 outer sample x only 2 replays):
+  0.225584 ms, custom-AR vs independent local+NCCL cosine 0.9999956064,
+  rel-L2 0.0029644006, finite.
+- The accepted Humming M8 median is 0.092644 ms, so this preliminary point is
+  2.44x slower.  Do not treat that ratio as final: Humming's analogous 2-replay
+  smoke was 0.156736 ms (1.69x above its long-replay result).  Next run uses the
+  exact baseline 9x200 protocol for all five M values.
