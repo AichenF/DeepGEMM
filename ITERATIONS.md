@@ -2547,3 +2547,20 @@ maximum rank latency of a full CUDA-Graph replay.
   If correct, use graph-internal event nodes with an excluded 256 MiB cold-L2
   clear before every sample, and require both W13/W2 core evidence before a
   distributed end-to-end screen.
+
+### WGMMA iteration 38b — activation double-buffer screen (rejected)
+
+- TP4 split-K=4, forced split-K=2 maximal skew, and TP8-shape maximal-skew
+  checks reproduce the accepted numerical errors.  Candidate TP4 W13 uses 50
+  registers/thread and W2 uses 56, with no local-memory spill.
+- Graph-internal timing with 100 individually cold-L2 samples per point gives
+  candidate/control total ratios 1.01004/1.02793/1.01627 at M8/M32/M128.
+  Every measured W13 and W2 point loses; at M32 both regress about 3%.
+- Reject before distributed timing and restore the exact S2R winner.  The
+  current synchronous activation move already overlaps the packed-weight TMA
+  wait; an extra async group and CTA synchronization perturb the compute
+  schedule more than they hide activation latency.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_activation_double_buffer_correctness_20260903.log`
+  and
+  `bench/results/tp4_local_graph_activation_double_buffer_screen_20260903.log`.

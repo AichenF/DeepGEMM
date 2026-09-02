@@ -1,0 +1,28 @@
+Double-buffered indexed-activation local graph cold-L2 screen
+Date: 2026-09-03
+Protocol: single-GPU TP4 random route; graph-internal external CUDA event
+nodes; 100 samples per M/config; separate 256 MiB L2 clear before every graph
+replay, excluded from all events.  Local compute only, no all-reduce.
+
+Candidate V4_ACTIVATION_DOUBLE_BUFFER=1, min/median/max us:
+M=8   W13 49.600/50.848/52.768  W2 29.760/30.048/30.656  total 104.672/106.208/108.192
+M=32  W13 130.496/131.712/133.664 W2 70.656/71.504/72.480 total 229.408/230.816/232.736
+M=128 W13 220.096/221.264/222.528 W2 118.304/119.184/120.416 total 370.592/372.864/375.744
+
+Immediate same-source control V4_ACTIVATION_DOUBLE_BUFFER=0,
+min/median/max us:
+M=8   W13 49.856/50.688/51.936  W2 29.088/29.536/30.912  total 104.224/105.152/106.944
+M=32  W13 126.880/127.952/130.528 W2 68.448/69.392/70.304  total 222.976/224.544/226.848
+M=128 W13 214.560/216.768/218.912 W2 116.160/117.184/118.720 total 363.872/366.896/369.472
+
+Candidate/control median ratios:
+M       W13       W2        total
+8       1.003157   1.017335  1.010043
+32      1.029386   1.030436  1.027932
+128     1.020741   1.017067  1.016266
+
+Decision: reject before distributed timing.  The candidate loses every core
+and total point.  At M32 both GEMMs regress about 3%, so the result is not an
+isolated epilogue or route effect.  The extra cp.async group, wait, and
+schedule perturbation cost more than any activation latency hidden underneath
+the current two-stage packed-weight pipeline.

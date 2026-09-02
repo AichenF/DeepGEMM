@@ -65,9 +65,6 @@ W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
-ACTIVATION_DOUBLE_BUFFER = (
-    os.environ.get("V4_ACTIVATION_DOUBLE_BUFFER", "0") == "1"
-)
 if W2_S2R_PREFETCH and (DEQUANT_SYNTH_LUT or W2_GLOBAL_LUT):
     raise ValueError(
         "V4_W2_S2R_PREFETCH currently probes only the shared-LUT path"
@@ -138,7 +135,6 @@ static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
-static constexpr bool kActivationDoubleBuffer = K_ACTIVATION_DOUBLE_BUFFER;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -241,7 +237,6 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     constexpr int kEffectiveScaleBuffers =
         kUseTmaScale ? kScaleBuffers : kStages;
     constexpr int kNumNTiles = N / kWout;
-    constexpr int kActivationBuffers = kActivationDoubleBuffer ? 2 : 1;
     constexpr bool kS2RPrefetch =
         IsW13 ? kW13S2RPrefetch : kW2S2RPrefetch;
 
@@ -396,32 +391,6 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     const int column_base = (lane % 4) * 2;
     float accum[kWgmmaGroups][4] = {};
 
-    const auto load_activation_async = [&](int local_kt, int buffer) {
-        if constexpr (kActivationDoubleBuffer) {
-            if (tid < 64) {
-                const int token_slot = tid / 8;
-                const int k16 = (tid & 7) * 16;
-                const int activation_row = activation_rows[token_slot];
-                const auto* source = activation
-                    + static_cast<int64_t>(activation_row >= 0
-                                           ? activation_row : 0) * K
-                    + (kt_begin + local_kt) * kBlockK + k16;
-                const uint32_t destination = activation_smem_addr
-                    + buffer * kTok * kBlockK
-                    + token_slot * kBlockK
-                    + (k16 ^ ((token_slot & 7) << 4));
-                const int source_bytes = activation_row >= 0 ? 16 : 0;
-                asm volatile(
-                    "cp.async.cg.shared.global [%0],[%1],16,%2;"
-                    :: "r"(destination), "l"(source), "r"(source_bytes)
-                    : "memory");
-            }
-            asm volatile("cp.async.commit_group;" ::: "memory");
-        }
-    };
-
-    load_activation_async(0, 0);
-
     for (int local_kt = 0; local_kt < kKTilesPerSplit; ++local_kt) {
         const int stage = local_kt % kStages;
         const int global_kt = kt_begin + local_kt;
@@ -434,21 +403,19 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                ? ((global_kt >> 2) & 1)
                : stage));
 
-        if constexpr (!kActivationDoubleBuffer) {
-            // One uint2 per thread covers the complete 8x128 activation tile.
-            const int token_slot = tid / 16;
-            const int k8 = (tid % 16) * 8;
-            uint2 value = make_uint2(0, 0);
-            const int activation_row = activation_rows[token_slot];
-            if (activation_row >= 0) {
-                value = *reinterpret_cast<const uint2*>(
-                    activation + static_cast<int64_t>(activation_row) * K
-                    + global_kt * kBlockK + k8);
-            }
-            *reinterpret_cast<uint2*>(
-                activation_smem + token_slot * kBlockK
-                + (k8 ^ ((token_slot & 7) << 4))) = value;
+        // One uint2 per thread covers the complete 8x128 activation tile.
+        const int token_slot = tid / 16;
+        const int k8 = (tid % 16) * 8;
+        uint2 value = make_uint2(0, 0);
+        const int activation_row = activation_rows[token_slot];
+        if (activation_row >= 0) {
+            value = *reinterpret_cast<const uint2*>(
+                activation + static_cast<int64_t>(activation_row) * K
+                + global_kt * kBlockK + k8);
         }
+        *reinterpret_cast<uint2*>(
+            activation_smem + token_slot * kBlockK
+            + (k8 ^ ((token_slot & 7) << 4))) = value;
 
         if (tid < kTok) {
             const int row = activation_rows[tid];
@@ -475,15 +442,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             if ((local_kt & 3) == 0)
                 mbar_wait(scale_barrier_addr, (local_kt >> 2) & 1u);
         }
-        if constexpr (kActivationDoubleBuffer)
-            asm volatile("cp.async.wait_group 0;" ::: "memory");
         asm volatile("bar.sync 0;" ::: "memory");
-
-        // The current activation buffer is immutable until the WGMMA wait
-        // retires.  Fill the alternate buffer now so its indexed global
-        // reads overlap the four K32 WGMMA/dequant steps below.
-        if (local_kt + 1 < kKTilesPerSplit)
-            load_activation_async(local_kt + 1, (local_kt + 1) & 1);
 
         float tile[kWgmmaGroups][4] = {};
         uint32_t next_packed0[kWgmmaGroups];
@@ -500,10 +459,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                 stage_base + row0 * (kBlockK / 2)
                 + common_weight_chunk * 16 + packed_k_offset;
             const auto activation_desc = desc_128b(
-                activation_smem_addr
-                + (kActivationDoubleBuffer ? (local_kt & 1) * kTok * kBlockK
-                                           : 0)
-                + k_step * 32);
+                activation_smem_addr + k_step * 32);
             #pragma unroll
             for (int group = 0; group < kWgmmaGroups; ++group) {
                 #pragma unroll
@@ -944,7 +900,7 @@ void launch_route_gemm(
     constexpr int dynamic_smem_bytes =
         kStages * kWout * (kBlockK / 2)
         + effective_scale_buffers * kWout * 16
-        + (kActivationDoubleBuffer ? 2 : 1) * kTok * kBlockK;
+        + kTok * kBlockK;
     const auto stream = at::cuda::getCurrentCUDAStream();
     route_gemm<K, N, SplitK, IsW13><<<
         grid, 128, dynamic_smem_bytes, stream>>>(
@@ -1162,8 +1118,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"adb{int(ACTIVATION_DOUBLE_BUFFER)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v36"),
+          f"mb{MIN_BLOCKS_PER_SM}_v35"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1187,7 +1142,6 @@ _ext = load_inline(
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
-        f"-DK_ACTIVATION_DOUBLE_BUFFER={int(ACTIVATION_DOUBLE_BUFFER)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",
