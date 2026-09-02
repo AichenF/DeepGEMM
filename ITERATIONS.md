@@ -2231,3 +2231,19 @@ maximum rank latency of a full CUDA-Graph replay.
   changes that keep one logical task per CTA.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_single_wg_persistent_stage4_p5_screen_20260903.log`.
+
+### WGMMA iteration 30j — exact accepted-winner restore after persistent closure
+
+- Restored all four runtime/benchmark files byte-for-byte from accepted commit
+  `7cc55d5`; all SHA-256 hashes match that commit.
+- TP4 balanced/maximal-skew and TP8-shape maximal-skew correctness pass with
+  the accepted numerical errors; W2 cosine is at least 0.999997235.
+- A fresh 4 x 100 paired, per-replay cold-L2 TP4 regression gives geometric
+  means 0.209169 ms custom and 0.210933 ms Humming: custom is 0.843% faster in
+  this screen.  This is consistent with near parity and does not supersede the
+  prior 2,000-sample formal comparison.
+- The next optimization axis must retain one logical task per CTA and reduce
+  its W2 instruction/scoreboard cost; no persistent scheduler code remains in
+  the runtime files.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_exact_winner_restore_v2_20260903.log`.

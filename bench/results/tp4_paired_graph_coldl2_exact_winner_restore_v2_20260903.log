@@ -1,0 +1,33 @@
+Exact accepted-winner restore after closing persistent W2
+Date: 2026-09-03
+
+Runtime files restored byte-for-byte from commit 7cc55d5:
+v4_flash_tp_wgmma.py sha256=94ad1c87ba8593b26c8ea3a4e8e5be59d76f8349759936133cfd4415d15fe4de
+bench/test_v4_flash_tp_wgmma.py sha256=c4cf07ab3e7129dc54d50cb80bff94268d07e9869174d4f8c58d9d294b9bb31a
+bench/v4_flash_tp_paired_graph.py sha256=f0b1f6185d35a5a29090cf258d0a444fe29cc3d9e2a42df696d26e9d86432c54
+bench/v4_flash_tp_wgmma_graph.py sha256=b3d02a6f117340da4ceddd5db3628727ba93f30e5db8298555fcec8b01885241
+
+Correctness gates:
+TP4 M8 balanced: W13 cos=0.999999998, ACT cos=0.999999759,
+W2 cos=0.999997256, finite=true, OK.
+TP4 M8 maximal skew: W13 cos=0.999999997, ACT cos=0.999999649,
+W2 cos=0.999997235, finite=true, OK.
+TP8 shape M8 maximal skew: W13 cos=0.999999997, ACT cos=0.999999763,
+W2 cos=0.999997249, finite=true, OK.
+
+TP4 paired CUDA-Graph cold-L2 screen:
+random routes, outer=4, replays=100, pair-granularity=batch; separate 256 MiB
+cache clear before every individually timed replay and excluded from events.
+
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088960 / 0.090304 / 0.153216  0.091104 / 0.092656 / 1.455936  1.026045
+16   82     656     0.143872 / 0.145728 / 0.215968  0.141952 / 0.143680 / 0.185472  0.985946
+32   140    1120    0.224224 / 0.226208 / 0.240224  0.215840 / 0.217888 / 0.244096  0.963220
+64   203    1624    0.313472 / 0.326320 / 0.337344  0.299200 / 0.309104 / 0.317664  0.947242
+128  248    1992    0.381984 / 0.429856 / 0.475360  0.379360 / 0.446560 / 0.472896  1.038860
+
+All correctness/allreduce checks pass at every M.
+Geometric mean: Humming 0.210933194 ms, custom 0.209169098 ms.
+Custom/Humming=0.991637; custom is 0.843% faster in this screen.
+The isolated M8 1.456 ms custom maximum is an outlier; medians and the prior
+2,000-sample formal result remain the decision metrics.

@@ -261,13 +261,6 @@ def main() -> None:
                     "custom_mode2_braid": kernel.MODE2_BRAID,
                     "custom_fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "custom_w2_global_lut": kernel.W2_GLOBAL_LUT,
-                    "custom_w2_persistent_blocks_per_sm": (
-                        kernel.W2_PERSISTENT_BLOCKS_PER_SM
-                    ),
-                    "custom_w2_persistent_stages": kernel.W2_PERSISTENT_STAGES,
-                    "custom_w2_persistent_stages_tp8": (
-                        kernel.W2_PERSISTENT_STAGES_TP8
-                    ),
                     "timed_allreduce": "same SGLang CustomAllReduceV2 instance",
                 },
                 sort_keys=True,
