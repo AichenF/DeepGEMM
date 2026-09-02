@@ -1254,3 +1254,24 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_graph_coldl2_random_dequant01_reverse_20260903.log`,
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_dequant11_control_reverse_20260903.log`.
+
+### Post-iteration-18 detailed cold profile
+
+- Profiled one M32 random-route local pipeline after a 256 MiB L2 clear and
+  collected SpeedOfLight, memory, scheduler, warp-state, source-counter, and
+  instruction sections for both accepted route GEMMs.
+- W13/W2 durations are 155.04/83.81 us.  Compute throughput is 76.82%/74.36%,
+  DRAM throughput is 44.37%/39.68%, and schedulers have no eligible warp for
+  20.77%/22.53% of active cycles.
+- Of not-issued warp samples, W13 is 33.39% long-scoreboard, 25.04% barrier,
+  and 19.08% wait; W2 is 47.91% long-scoreboard, 15.70% barrier, and 14.07%
+  wait.  This motivates an isolated deeper-TMA-pipeline experiment while also
+  checking its shared-memory occupancy cost.
+- Source counters find no residual shared-memory conflicts.  The only notable
+  uncoalesced global load is the predicated eight-route FP32 activation-scale
+  gather (`__ldg`), with NCU estimating only a 2-3% kernel-level upper bound;
+  this cannot by itself close the remaining Humming gap.
+- Evidence:
+  `bench/results/tp4_wgmma_m32_common_address_random_detailed_coldl2_ncu.ncu-rep`
+  and
+  `bench/results/tp4_wgmma_m32_common_address_random_detailed_coldl2_ncu.log`.
