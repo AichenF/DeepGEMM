@@ -1484,3 +1484,19 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_graph_coldl2_random_fused_act_quant1_reverse_20260903.log`,
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_fused_act_quant0_reverse_control_20260903.log`.
+
+### WGMMA iteration 23 selection — fused activation quantization is now default
+
+- Changed the unset `V4_FUSED_ACT_QUANT` default from 0 to 1; explicit 0 keeps
+  the fully independent legacy reduction plus Humming quantizer control.
+- Unset-default correctness passes both TP4 and TP8 local shapes with the same
+  W13/activation/W2 errors as the candidate tests.
+- Unset-default TP4 random-route cold 3x100 medians for
+  M8/M16/M32/M64/M128 are 0.092304 / 0.141312 / 0.217728 / 0.306624 /
+  0.388368 ms (geomean 0.202224 ms).  Metadata reports the fused path, all
+  graph/all-reduce checks pass, and every sample uses a 256 MiB pre-replay L2
+  clear outside the event interval.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_fused_act_quant_default_correctness_20260903.log`
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_fused_act_quant_default_20260903.log`.
