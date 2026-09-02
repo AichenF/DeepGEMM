@@ -181,3 +181,19 @@ Correctness properties your scheduler must satisfy:
 - **Exactly-once coverage**: every output tile is produced exactly once (no duplicates, no missing tiles).
 - **Deterministic iteration**: if both producer and consumers call `schedule.next(...)`, they must see the **same tile sequence** (or you must centralize scheduling so they stay consistent).
 - **Termination**: all warpgroups must agree on when work is finished (avoid producer waiting forever on `empty[]` after consumers stop, or consumers waiting forever on `full[]` after producer stops).
+
+
+## W2 warp-specialized persistent direction
+
+1. Launch a fixed, occupancy-sized worker grid and let each CTA iterate a
+   deterministic strided task sequence. Runtime `num_tokens_padded` controls
+   termination so graph replays remain safe when route values change.
+2. Producer and consumer must derive the same task sequence and preserve
+   exactly-once coverage.
+3. Use a dedicated producer warpgroup for packed-weight TMA plus activation
+   gathering and one 128-thread consumer warpgroup for RS-WGMMA.
+4. Initialize transaction-full and consumer-empty barriers once and reuse them
+   across tasks. A full stage represents both completed TMA bytes and published
+   ordinary shared-memory writes.
+5. Retain WOUT=128 and judge only complete TP4 CUDA Graphs under per-replay
+   256 MiB cold-L2; require TP8 correctness and graph run-through as well.
