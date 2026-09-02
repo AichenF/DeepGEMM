@@ -1101,3 +1101,16 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_graph_coldl2_random_weight_swizzle0_formal_20260903.log`,
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_weight_swizzle64_formal_20260903.log`.
+
+### Iteration 16 selection — make 64-byte weight swizzle the default
+
+- Changed the unset `V4_WEIGHT_SWIZZLE` default from 0 to 64; setting it to 0
+  preserves the exact unswizzled control.  The extension key already includes
+  this specialization, so the two layouts cannot share a stale JIT binary.
+- Unset-default TP4 random-route cold 3x100 medians are 0.102448 / 0.159424 /
+  0.252656 / 0.356240 / 0.439504 ms (geomean 0.230175 ms), all reporting
+  `weight_swizzle_bytes=64` and passing graph correctness.  This agrees with
+  both explicit-swizzle screens; the M64/M128 batch drift remains visible and
+  is why formal per-point medians, not this short run, are retained above.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_swizzle64_default_restore_20260903.log`.

@@ -157,7 +157,7 @@ def main() -> None:
                 if args.impl == "custom"
                 else None,
                 "weight_swizzle_bytes": int(
-                    os.environ.get("V4_WEIGHT_SWIZZLE", "0")
+                    os.environ.get("V4_WEIGHT_SWIZZLE", "64")
                 )
                 if args.impl == "custom"
                 else None,
