@@ -22,3 +22,15 @@
 
 ## Iteration signal
 - Primary: `RUNTIME` (TP forward latency, lower better). `SPEEDUP` is vs a rough torch full-FFN ref (not apples-to-apples across sharding — track RUNTIME trend).
+
+## 2026-09-02 DeepSeek-V4-Flash target (supersedes stale shape/baseline text above)
+- Model shape is read from the local `DeepSeek-V4-Flash/config.json`: `H=4096`, routed `I=2048`, `E=256`, `topk=6`, SwiGLU.
+- Optimize **TP4** first: `Is=512`, FC1/W13 `[E, 1024, 4096]`, FC2/W2 `[E, 4096, 512]` per rank. The same implementation must run correctly at **TP8**: `Is=256`, FC1 `[E, 512, 4096]`, FC2 `[E, 4096, 256]`.
+- Required benchmark token counts are exactly `M in {8, 16, 32, 64, 128}`. Do not infer M or active experts from `G`; `G` is not a routing model.
+- Inputs retain precomputed `topk_idx [M,6]` and `topk_weights [M,6]`, matching the DeepGEMM MegaMoE contract. Router/top-k generation and shared-expert compute are outside this benchmark.
+- Pure TP has no EP token dispatch or EP return/combine communication. Every rank consumes the same X and routing metadata, owns every expert's I-shard, computes a local `[M,H]` weighted route sum, then performs exactly one TP all-reduce.
+- The source implementation is the already-reviewed WGMMA work in this `DeepGEMM_tp` worktree (`step_e_lutg.py`, `step_e_fc2.py`, existing TP and symmetric-memory code). Extend it; do not restart the compute kernel from scratch and do not modify the dirty `/home/xutingz/fac/DeepGEMM` checkout.
+- Apples-to-apples baseline is the SGLang Humming **MXFP4 indexed** path: route alignment, dynamic FP8-E4M3 group-128 input quantization, Humming MXFP4 W13, SwiGLU, dynamic FP8 group-128 requantization, Humming MXFP4 W2, local k=6 weighted sum, then SGLang `CustomAllReduceV2`.
+- Formal performance verdict uses CUDA Graph replay only. Eager timings are diagnostic. Weight preprocessing, workspace allocation, JIT, router/top-k generation and graph capture are untimed.
+- Primary score is TP4 max-rank latency for the full routed-expert pipeline plus `CustomAllReduceV2`, reported independently for all five M values and as their equal-weight geometric mean. TP8 is a required correctness/run-through target, not the primary tuning score.
+- For every formal point, report at least five outer runs as min/median/max. Keep stage timings and a pre-quantized-X core timing only as diagnostics; neither may replace the full BF16-entry result.
