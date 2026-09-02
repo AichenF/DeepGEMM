@@ -921,3 +921,22 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_graph_coldl2_random_scale_reuse1_control_20260902.log`,
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_scale_reuse4_screen_20260902.log`.
+
+### Iteration 14 formal confirmation and contemporary Humming gap
+
+- Repeated both implementations in the same machine window with the formal
+  9x200 individually cold protocol.  Humming medians for M8/M16/M32/M64/M128
+  are 0.090208 / 0.142880 / 0.225312 / 0.332864 / 0.409184 ms; geometric
+  mean 0.208659 ms.
+- Scale-reuse custom medians are 0.103808 / 0.162400 / 0.257408 / 0.376240 /
+  0.476144 ms; geometric mean 0.238852 ms.  Relative to the earlier pre-reuse
+  custom formal geomean (0.250300 ms), this is a 4.57% reduction, consistent
+  in direction with the controlled screen.  Every correctness check passes.
+- Custom/Humming latency ratios are 1.151x / 1.137x / 1.142x / 1.130x /
+  1.164x; geometric-mean ratio 1.145x.  The current implementation remains
+  13.0-16.4% slower pointwise and 14.47% slower geometrically; it has not met
+  the beat-Humming target.
+- Evidence logs:
+  `bench/results/tp4_humming_graph_coldl2_random_formal_scale_reuse_window_20260902.log`
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_scale_reuse4_formal_20260902.log`.
