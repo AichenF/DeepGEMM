@@ -1074,3 +1074,30 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_graph_coldl2_random_weight_swizzle0_control_20260903.log`,
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_weight_swizzle64_screen_20260903.log`.
+
+### Iteration 16c repeat, NCU proof, and formal confirmation
+
+- The reverse-order 3x100 repeat confirms the result.  Swizzled medians are
+  0.102528 / 0.159296 / 0.251936 / 0.354144 / 0.437216 ms (geomean
+  0.229532 ms), followed by unswizzled control medians 0.103552 / 0.162464 /
+  0.257840 / 0.355104 / 0.439632 ms (geomean 0.232350 ms).  Swizzle wins all
+  five points by 0.27-2.29% and improves geometric mean by 1.21%.
+- SourceCounters NCU proves the intended mechanism.  W13 shared wavefronts
+  fall from 15,182,720 (8,301,440 ideal plus 6,881,280 excessive) to exactly
+  8,301,440 ideal, with zero excessive wavefronts.  W2 falls from 7,678,720
+  (4,238,080 ideal plus 3,440,640 excessive) to exactly 4,238,080 ideal, also
+  with zero excessive wavefronts.
+- Formal TP4 random-route 9x200 unswizzled medians are 0.103360 / 0.162368 /
+  0.258304 / 0.379264 / 0.475216 ms (geomean 0.239091 ms).  The immediately
+  following swizzled medians are 0.102464 / 0.159136 / 0.254928 / 0.375200 /
+  0.472880 ms (geomean 0.236349 ms).  It wins every M by
+  0.49-1.99%, reduces geometric-mean latency by 1.15%, and passes every graph
+  correctness check.  Accept 64-byte swizzle as the next default.
+- Evidence:
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_swizzle64_repeat_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_swizzle0_control_repeat_20260903.log`,
+  `bench/results/tp4_wgmma_m32_weight_swizzle64_random_source_coldl2_ncu.ncu-rep`,
+  `bench/results/tp4_wgmma_m32_weight_swizzle64_random_source_coldl2_ncu.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_swizzle0_formal_20260903.log`,
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_swizzle64_formal_20260903.log`.
