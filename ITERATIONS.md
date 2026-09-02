@@ -2399,3 +2399,17 @@ maximum rank latency of a full CUDA-Graph replay.
   paired per-replay cold-L2 screen.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_activation_cp_async_correctness_20260903.log`.
+
+### WGMMA iteration 34b — async activation paired screen (rejected)
+
+- Ran candidate/control/candidate with 400 paired, individually cold-L2 TP4
+  samples per M on random routes.  Candidate A versus control is 0.166% faster
+  geometrically; candidate B is 0.165% slower.  The pointwise directions also
+  disagree: A changes M8..M128 by +0.03%/-0.09%/-0.06%/-0.74%/+0.02%, while
+  B changes them by -0.24%/-0.07%/+0.23%/-0.46%/+1.38%.
+- Reject the candidate.  Its positive and negative geometric deltas are
+  symmetric at noise scale, and it does not consistently improve the five
+  required M values.  Restore the exact W13/W2 S2R-prefetch winner rather than
+  retaining an unproven async path in the runtime source.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_activation_cp_async_screen_20260903.log`.

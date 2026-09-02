@@ -1,0 +1,46 @@
+Async indexed-activation G2S paired cold-L2 screen
+Date: 2026-09-03
+Protocol: TP4 random routes; CUDA Graph; outer=4, replays=100;
+pair-granularity=batch; separate 256 MiB L2 clear before every individually
+timed replay, excluded from CUDA events.  W13/W2 S2R prefetch defaults remain
+enabled.  All correctness and CustomAllReduceV2 checks pass.
+
+Candidate A, V4_ACTIVATION_CP_ASYNC=1:
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088192 / 0.090000 / 0.114112  0.090176 / 0.091712 / 0.104928  1.019022
+16   82     656     0.144384 / 0.145824 / 0.153568  0.140448 / 0.142048 / 0.157792  0.974106
+32   140    1120    0.224224 / 0.227584 / 0.252736  0.213760 / 0.216032 / 0.232992  0.949241
+64   203    1624    0.313984 / 0.326976 / 0.348448  0.294912 / 0.308208 / 0.322016  0.942601
+128  248    1992    0.381760 / 0.425328 / 0.484416  0.376384 / 0.444944 / 0.465984  1.046120
+Geomean Humming=0.210712656 ms, custom=0.207637469 ms;
+custom/Humming=0.985406 (custom 1.481% faster).
+
+Immediate reverse control, V4_ACTIVATION_CP_ASYNC=0, identical source:
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088544 / 0.090176 / 0.184544  0.090240 / 0.091680 / 0.119136  1.016678
+16   82     656     0.143808 / 0.145760 / 0.165152  0.140576 / 0.142176 / 0.202752  0.975412
+32   140    1120    0.224640 / 0.226768 / 0.249408  0.213696 / 0.216160 / 0.243680  0.953221
+64   203    1624    0.313184 / 0.329968 / 0.360512  0.295168 / 0.310496 / 0.320480  0.940988
+128  248    1992    0.379584 / 0.421744 / 0.479936  0.372672 / 0.444848 / 0.463456  1.054782
+Geomean Humming=0.210652380 ms, custom=0.207983449 ms;
+custom/Humming=0.987330 (custom 1.283% faster).
+
+Candidate B, V4_ACTIVATION_CP_ASYNC=1:
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088672 / 0.089952 / 0.179264  0.089600 / 0.091456 / 0.125568  1.016720
+16   82     656     0.143872 / 0.145696 / 0.171936  0.140448 / 0.142080 / 0.189472  0.975181
+32   140    1120    0.224416 / 0.228192 / 0.263936  0.213920 / 0.216656 / 0.240768  0.949446
+64   203    1624    0.312224 / 0.326464 / 0.362976  0.294016 / 0.309072 / 0.335648  0.946726
+128  248    1992    0.378912 / 0.432864 / 0.492032  0.371712 / 0.450976 / 0.479040  1.041842
+Geomean Humming=0.211440963 ms, custom=0.208327113 ms;
+custom/Humming=0.985273 (custom 1.495% faster).
+
+Self-control ratios (candidate/control; below 1 is better):
+M                    8         16        32        64        128       geomean
+Candidate A       1.000349  0.999100  0.999408  0.992631  1.000216  0.998336
+Candidate B       0.997557  0.999325  1.002295  0.995414  1.013776  1.001652
+
+Decision: reject.  Candidate A is 0.166% faster geometrically and candidate B
+is 0.165% slower than the same-source control.  The only repeatable direction
+is a small M16/M64 improvement, while M8/M32/M128 disagree or drift.  This is
+measurement noise at full-path scale, not a defensible causal speedup.
