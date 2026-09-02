@@ -119,11 +119,6 @@ def main() -> None:
                 "output_tile_channels": int(os.environ.get("V4_WOUT", "64"))
                 if args.impl == "custom"
                 else None,
-                "persistent_workers": int(
-                    os.environ.get("V4_PERSISTENT_WORKERS", "0")
-                )
-                if args.impl == "custom"
-                else None,
                 "l2_cache_bytes": props.L2_cache_size,
                 "l2_flush_bytes": l2_flush_buffer.nbytes,
                 "l2_policy": "cold; 256MiB clear immediately before pipeline",

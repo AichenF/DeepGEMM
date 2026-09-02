@@ -439,3 +439,26 @@ maximum rank latency of a full CUDA-Graph replay.
   outside `num_tokens_padded`; this generic loop must not remain on the winner.
 - Evidence logs:
   `bench/results/tp4_wgmma_graph_coldl2_s2_wo128_p{0,78,156,234,312}_screen_20260902.log`.
+
+### Iteration 5 rollback — restore the non-persistent winner
+
+- Removed the rejected grid-stride persistent loop and restored one logical
+  route/output/split tile per CTA.  Apart from the JIT extension suffix (`v6`),
+  the kernel and benchmark paths match the iteration-4 winner.
+- Full-route TP4-shape correctness at M32 balanced passes: W13 cosine
+  0.999999997, activation cosine 0.999999691, W2 cosine 0.999999992,
+  W2 rel-L2 0.000127067, and all outputs finite.
+- Required cold-L2 regression screen: TP4 balanced full CUDA Graph,
+  3x100 individually cold replays per M, max rank,
+  `V4_W13_SPLIT_K=2 V4_WOUT=128`.
+- Min / median / max latency (ms):
+  - M8: 0.142784 / 0.144544 / 0.288256
+  - M16: 0.238208 / 0.240000 / 0.318848
+  - M32: 0.425408 / 0.427744 / 0.464416
+  - M64: 0.552416 / 0.555296 / 0.648256
+  - M128: 0.566016 / 0.569888 / 0.593312
+- Five-point geometric mean is 0.342249 ms.  This reproduces the earlier
+  iteration-4 3x100 screen (0.342576 ms) within 0.10%, confirming the rollback
+  recovered the winner.  Continue from this code, not the persistent variant.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_wout128_s2_restore_20260902.log`.
