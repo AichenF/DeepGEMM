@@ -940,3 +940,29 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_humming_graph_coldl2_random_formal_scale_reuse_window_20260902.log`
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_scale_reuse4_formal_20260902.log`.
+
+### WGMMA iteration 15 — one scale buffer regresses
+
+- Change: retain quartet reuse but replace the two 2 KiB scale buffers with
+  one.  A dedicated mbarrier loads the next quartet only after the current
+  quartet's fourth tile has consumed the buffer.  This saves 2 KiB/CTA and
+  should permit ten rather than nine resident CTAs per SM, at the cost of one
+  exposed scale-TMA boundary every four K128 tiles.  TP8 W2's scalar-scale
+  fallback deliberately retains two physical stage buffers.
+- Full-block correctness passes TP4 split-K=2, TP4 split-K=4, and TP8 local
+  shapes; worst W2 cosine is 0.999997241 and all results are finite.
+- Contemporary random-route cold 3x100 double-buffer control medians are
+  0.103840 / 0.162656 / 0.258000 / 0.356224 / 0.442080 ms (geomean
+  0.232968 ms).  The one-buffer variant gives 0.104256 / 0.164320 / 0.260880 /
+  0.356720 / 0.447568 ms (geomean 0.234792 ms).
+- The one-buffer path loses at every M by 0.14-1.24% and regresses geometric
+  mean by 0.78%.  The exposed quartet-boundary wait outweighs the occupancy
+  benefit.  Reject and restore two scale buffers as default; retain the
+  single-buffer specialization for audit only.
+- Evidence logs:
+  `bench/results/v4_flash_tp_wgmma_scale_buffer1_correctness_tp4_20260902.log`,
+  `bench/results/v4_flash_tp_wgmma_scale_buffer1_correctness_tp4_split4_20260902.log`,
+  `bench/results/v4_flash_tp_wgmma_scale_buffer1_correctness_tp8shape_20260902.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_scale_buffer1_screen_20260902.log`,
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_scale_buffer2_control_20260902.log`.

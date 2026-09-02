@@ -471,6 +471,7 @@ def main() -> None:
                     "output_tile_channels": kernel.WOUT,
                     "mxfp4_lut_rows": kernel.LUT_ROWS,
                     "scale_quad_reuse": kernel.SCALE_QUAD_REUSE,
+                    "scale_buffers": kernel.SCALE_BUFFERS,
                     "w2_epilogue": (
                         "BF16 route output + sglang moe_fused_mul_sum"
                         if kernel.W2_ROUTE_OUTPUT
