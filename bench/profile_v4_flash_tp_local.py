@@ -185,6 +185,9 @@ def main() -> None:
                 "fused_activation_quant": kernel_module.FUSED_ACT_QUANT
                 if args.impl == "custom"
                 else None,
+                "activation_cp_async": kernel_module.ACTIVATION_CP_ASYNC
+                if args.impl == "custom"
+                else None,
                 "w2_global_lut": kernel_module.W2_GLOBAL_LUT
                 if args.impl == "custom"
                 else None,

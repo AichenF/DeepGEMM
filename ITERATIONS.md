@@ -2383,3 +2383,19 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_w13_s2r_prefetch_screen_20260903.log`
   and `bench/results/tp4_wgmma_m32_w13_s2r_prefetch_ncu_20260903.log`.
+
+### WGMMA iteration 34a — asynchronous indexed-activation G2S
+
+- Added opt-in `V4_ACTIVATION_CP_ASYNC=1`.  Each 8x128 FP8 activation tile is
+  now moved by 64 lanes issuing 16-byte `cp.async.cg` transactions, including
+  hardware zero fill for padded routes, instead of 128 synchronous uint2
+  LDG+STS pairs.  The async group is committed before the packed-weight TMA
+  wait and consumed before the CTA/WGMMA barrier, matching Humming's indexed
+  legacy-G2S structure.
+- TP4 split-K=4, TP4 split-K=2, and TP8-shape maximal-skew correctness exactly
+  reproduce accepted errors.  The skew case explicitly validates zero fill.
+- Registers, local memory, and shared memory are unchanged from the accepted
+  S2R-prefetch winner; SASS contains LDGSTS in both W13 and W2.  Proceed to a
+  paired per-replay cold-L2 screen.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_activation_cp_async_correctness_20260903.log`.

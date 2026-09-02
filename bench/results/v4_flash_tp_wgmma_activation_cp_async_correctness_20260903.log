@@ -1,0 +1,22 @@
+Indexed-activation cp.async G2S candidate correctness and binary audit
+Date: 2026-09-03
+Environment: accepted W13/W2 S2R prefetch plus V4_ACTIVATION_CP_ASYNC=1.
+
+TP4 M8 balanced, auto split-K=4:
+W13 cos=0.999999998 rel_l2=0.000076187
+ACT cos=0.999999759 rel_l2=0.000694956
+W2 cos=0.999997256 rel_l2=0.002342691 finite=True
+
+TP4 M8 balanced, forced split-K=2:
+W13 cos=0.999999998 rel_l2=0.000076187
+ACT cos=0.999999746 rel_l2=0.000712793
+W2 cos=0.999997256 rel_l2=0.002342691 finite=True
+
+TP8-shape M8 maximal skew (exercises invalid padded-route zero fill):
+W13 cos=0.999999997 rel_l2=0.000077480
+ACT cos=0.999999763 rel_l2=0.000689115
+W2 cos=0.999997249 rel_l2=0.002345847 finite=True
+
+All checks report V4_WGMMA_OK.  W13/W2 remain at 56 registers/thread with no
+local memory and unchanged shared memory.  cuobjdump shows LDGSTS in both
+specializations, confirming lowering of the 16-byte cp.async path.

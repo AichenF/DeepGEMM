@@ -61,6 +61,7 @@ DEQUANT_DP4A_LO = os.environ.get("V4_DEQUANT_DP4A_LO", "1") == "1"
 DEQUANT_SYNTH_LUT = os.environ.get("V4_DEQUANT_SYNTH_LUT", "0") == "1"
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
+ACTIVATION_CP_ASYNC = os.environ.get("V4_ACTIVATION_CP_ASYNC", "0") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
@@ -132,6 +133,7 @@ static constexpr bool kDequantDp4aHi = K_DEQUANT_DP4A_HI;
 static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
+static constexpr bool kActivationCpAsync = K_ACTIVATION_CP_ASYNC;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
@@ -403,19 +405,44 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                ? ((global_kt >> 2) & 1)
                : stage));
 
-        // One uint2 per thread covers the complete 8x128 activation tile.
-        const int token_slot = tid / 16;
-        const int k8 = (tid % 16) * 8;
-        uint2 value = make_uint2(0, 0);
-        const int activation_row = activation_rows[token_slot];
-        if (activation_row >= 0) {
-            value = *reinterpret_cast<const uint2*>(
-                activation + static_cast<int64_t>(activation_row) * K
-                + global_kt * kBlockK + k8);
+        if constexpr (kActivationCpAsync) {
+            // Indexed rows prevent a single TMA transaction.  Match
+            // Humming's legacy G2S path instead: 64 lanes each issue one
+            // 16-byte cp.async, halving the instruction count versus the
+            // 128-lane uint2 LDG+STS path and overlapping it with weight TMA.
+            if (tid < 64) {
+                const int token_slot = tid / 8;
+                const int k16 = (tid & 7) * 16;
+                const int activation_row = activation_rows[token_slot];
+                const auto* source = activation
+                    + static_cast<int64_t>(activation_row >= 0
+                                           ? activation_row : 0) * K
+                    + global_kt * kBlockK + k16;
+                const uint32_t destination = activation_smem_addr
+                    + token_slot * kBlockK
+                    + (k16 ^ ((token_slot & 7) << 4));
+                const int source_bytes = activation_row >= 0 ? 16 : 0;
+                asm volatile(
+                    "cp.async.cg.shared.global [%0],[%1],16,%2;"
+                    :: "r"(destination), "l"(source), "r"(source_bytes)
+                    : "memory");
+            }
+            asm volatile("cp.async.commit_group;" ::: "memory");
+        } else {
+            // One uint2 per thread covers the complete 8x128 activation tile.
+            const int token_slot = tid / 16;
+            const int k8 = (tid % 16) * 8;
+            uint2 value = make_uint2(0, 0);
+            const int activation_row = activation_rows[token_slot];
+            if (activation_row >= 0) {
+                value = *reinterpret_cast<const uint2*>(
+                    activation + static_cast<int64_t>(activation_row) * K
+                    + global_kt * kBlockK + k8);
+            }
+            *reinterpret_cast<uint2*>(
+                activation_smem + token_slot * kBlockK
+                + (k8 ^ ((token_slot & 7) << 4))) = value;
         }
-        *reinterpret_cast<uint2*>(
-            activation_smem + token_slot * kBlockK
-            + (k8 ^ ((token_slot & 7) << 4))) = value;
 
         if (tid < kTok) {
             const int row = activation_rows[tid];
@@ -442,6 +469,8 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             if ((local_kt & 3) == 0)
                 mbar_wait(scale_barrier_addr, (local_kt >> 2) & 1u);
         }
+        if constexpr (kActivationCpAsync)
+            asm volatile("cp.async.wait_group 0;" ::: "memory");
         asm volatile("bar.sync 0;" ::: "memory");
 
         float tile[kWgmmaGroups][4] = {};
@@ -1116,6 +1145,7 @@ _ext = load_inline(
           f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"m2{int(MODE2_BRAID)}_"
+          f"acp{int(ACTIVATION_CP_ASYNC)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
           f"mb{MIN_BLOCKS_PER_SM}_v35"),
@@ -1139,6 +1169,7 @@ _ext = load_inline(
         f"-DK_DEQUANT_DP4A_LO={int(DEQUANT_DP4A_LO)}",
         f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
+        f"-DK_ACTIVATION_CP_ASYNC={int(ACTIVATION_CP_ASYNC)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
