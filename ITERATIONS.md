@@ -2530,3 +2530,20 @@ maximum rank latency of a full CUDA-Graph replay.
 - Restore the exact accepted S2R winner.
 - Evidence:
   `bench/results/tp4_local_graph_early_stage_refill_screen_20260903.log`.
+
+### WGMMA iteration 38a — double-buffered indexed activation prefetch
+
+- Added opt-in `V4_ACTIVATION_DOUBLE_BUFFER=1`.  The candidate uses two
+  8x128 FP8 activation buffers.  Sixty-four lanes issue 16-byte `cp.async`
+  copies for tile `k+1` immediately after tile `k` becomes visible, then the
+  four K32 dequant/WGMMA steps execute while that copy is outstanding.  The
+  next iteration waits for the copy and synchronizes the CTA before forming
+  its WGMMA descriptor.
+- Padded route rows retain hardware zero fill.  Weight/scale staging and the
+  accepted cross-QGMMA S2R prefetch are unchanged; dynamic shared memory
+  grows by only 1 KiB.  This experiment tests actual compute overlap rather
+  than another launch/metadata micro-optimization.
+- Validate TP4 split-K=4, forced split-K=2, and TP8 shape before measuring.
+  If correct, use graph-internal event nodes with an excluded 256 MiB cold-L2
+  clear before every sample, and require both W13/W2 core evidence before a
+  distributed end-to-end screen.
