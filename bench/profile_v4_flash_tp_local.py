@@ -162,7 +162,7 @@ def main() -> None:
                 if args.impl == "custom"
                 else None,
                 "weight_common_address": os.environ.get(
-                    "V4_WEIGHT_COMMON_ADDRESS", "0"
+                    "V4_WEIGHT_COMMON_ADDRESS", "1"
                 )
                 == "1"
                 if args.impl == "custom"

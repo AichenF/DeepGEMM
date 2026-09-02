@@ -50,7 +50,7 @@ if SCALE_QUAD_REUSE == 1 and SCALE_BUFFERS != 2:
 WEIGHT_SWIZZLE = int(os.environ.get("V4_WEIGHT_SWIZZLE", "64"))
 if WEIGHT_SWIZZLE not in (0, 64):
     raise ValueError("V4_WEIGHT_SWIZZLE must be 0 or 64")
-WEIGHT_COMMON_ADDRESS = os.environ.get("V4_WEIGHT_COMMON_ADDRESS", "0") == "1"
+WEIGHT_COMMON_ADDRESS = os.environ.get("V4_WEIGHT_COMMON_ADDRESS", "1") == "1"
 if WEIGHT_COMMON_ADDRESS and WEIGHT_SWIZZLE != 64:
     raise ValueError("V4_WEIGHT_COMMON_ADDRESS=1 requires V4_WEIGHT_SWIZZLE=64")
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"

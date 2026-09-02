@@ -1192,3 +1192,14 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_m32_weight_common_address_random_basic_coldl2_ncu.ncu-rep`,
   and
   `bench/results/tp4_wgmma_m32_weight_common_address_random_basic_coldl2_ncu.log`.
+
+### Iteration 17 selection — common weight address is now default
+
+- Changed the unset `V4_WEIGHT_COMMON_ADDRESS` default from 0 to 1; explicit
+  0 retains the separate-address control.  The JIT extension name includes
+  the switch and cannot alias the two binaries.
+- Unset-default TP4 random-route cold 3x100 medians are 0.100192 / 0.155824 /
+  0.244160 / 0.338448 / 0.427904 ms (geomean 0.223047 ms), all reporting both
+  64-byte weight swizzle and common addressing and passing graph correctness.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_common_address_default_20260903.log`.
