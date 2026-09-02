@@ -699,3 +699,18 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_humming_graph_coldl2_formal_contemporary_20260902.log`
   and
   `bench/results/tp4_wgmma_graph_coldl2_tma_scales_formal_repeat_20260902.log`.
+
+### TMA-scale cold profile
+
+- Repeated the same cold NCU profile after iteration 10.  W13 falls from
+  289.632 to 217.70 us and DRAM throughput rises from 31.57% to 41.91%; W2
+  falls from 140.320 to 119.36 us and DRAM rises from 32.31% to 37.95%.
+  This independently confirms the graph-level speedup comes from both GEMM
+  cores, not a timing artifact in the epilogue or all-reduce.
+- TMA scale staging increases per-block dynamic shared memory to 21.50 KB.
+  Both kernels are now shared-memory limited to nine resident CTAs (56.25%
+  theoretical occupancy); achieved occupancy is 52.56% / 53.84%.  W13 has
+  4.38 waves and an NCU-estimated partial-wave tail of up to 20%, motivating
+  a fresh split-K screen under the new pipeline.
+- Evidence report:
+  `bench/results/tp4_wgmma_m32_tma_scales_coldl2_ncu.ncu-rep`.
