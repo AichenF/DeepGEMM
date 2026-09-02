@@ -2086,3 +2086,21 @@ maximum rank latency of a full CUDA-Graph replay.
   existing 2,000-sample formal estimate.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_exact_winner_restore_20260903.log`.
+
+### Post-iteration-29 profile — Humming W2 scheduler target
+
+- Collected a current 21-pass detailed NCU report for Humming's TP4 M32
+  random-route local path after the standard explicit 256 MiB cache clear.
+  The selected MXFP4 indexed W2 uses 128 threads, grid 312, five stages, four
+  CTAs/SM, 101 registers/thread, and 53.248 KiB shared memory per CTA.
+- Against the accepted custom detailed report, Humming W2 executes 21.36M
+  instructions versus custom's 24.80M and only 159k branch instructions versus
+  749k.  It reaches 68.58 us versus the historical custom 74.11 us despite
+  much lower achieved occupancy (21.1% versus 53.3%).  Warp cycles per issued
+  instruction are 5.63 versus 12.65.
+- This rejects occupancy as the primary goal.  The next candidate will retain
+  one 128-thread WGMMA warpgroup, amortize scheduler/LUT/mbarrier setup across
+  tasks, carry barrier phase continuously, and expose all four K128 weight
+  loads with a five-stage buffer.  W13 remains unchanged.
+- Evidence:
+  `bench/results/tp4_humming_m32_random_detailed_coldl2_current_ncu.{log,ncu-rep}`.

@@ -1,0 +1,41 @@
+Current Humming MXFP4 indexed-MoE detailed NCU audit
+Date: 2026-09-03
+Command uses bench/profile_v4_flash_tp_local.py --impl humming --m 32 --tp 4
+--route-pattern random, explicit 256 MiB L2 clear immediately before the local
+pipeline, profiler range around the pipeline, NCU cache-control=all and clock
+control=none.  Durations are metric-replay diagnostics, not headline latency.
+
+Selected Humming TP4 W2 tuning for this padded shape:
+block=(8,128,128), warp=(8,32,128), num_stages=5,
+num_ctas_per_sm=4, num_sms=78, grid=312, use_stream_k=false.
+
+M32 W2 structural comparison (accepted custom report vs current Humming):
+Metric                         Custom route_gemm   Humming indexed
+duration_us                    74.112              68.576
+grid_CTAs                      6144                312
+threads_per_CTA                128                 128
+registers_per_thread           48                  101
+shared_KiB_per_CTA             25.600              53.248
+executed_instructions          24,802,580          21,359,776
+branch_instructions            748,704             159,296
+SM_throughput_pct              65.391              59.279
+DRAM_throughput_pct            44.847              48.282
+achieved_occupancy_pct         53.261              21.106
+active_warps_per_SM            34.087              13.508
+one_or_more_eligible_pct       67.314              59.659
+warp_cycles_per_issued_inst    12.652              5.633
+
+Humming executes 13.88% fewer instructions (custom executes 16.12% more) and
+4.70x fewer branch instructions despite its scheduler loop.  High occupancy is
+not the differentiator.  The evidence favors a one-warpgroup persistent W2
+that initializes mbarriers/LUT once, advances barrier phase across tasks, and
+uses enough packed-weight stages to cover all four K128 tiles.  It disfavors
+the rejected second producer warpgroup.
+
+For context, the same current Humming capture measured W13 at 137.152 us,
+42,861,628 instructions, grid 234, 124 registers/thread and 53.248 KiB/CTA.
+The accepted custom historical detailed report measured W13 at 138.144 us,
+so W13 remains effectively tied and is outside the next candidate's scope.
+
+Binary report:
+bench/results/tp4_humming_m32_random_detailed_coldl2_current_ncu.ncu-rep
