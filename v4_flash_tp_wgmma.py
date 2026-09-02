@@ -701,7 +701,7 @@ __global__ __launch_bounds__(256) void route_gemm_w2_ws_persistent(
         (total_tasks - 1 - static_cast<int>(blockIdx.x)) /
             static_cast<int>(gridDim.x) + 1;
 
-    if (tid < 128) {
+    if (tid >= 128) {
         cutlass::arch::warpgroup_reg_dealloc<48>();
         if (role_tid == 0) {
             for (int task_seq = 0; task_seq < tasks_for_cta; ++task_seq) {
@@ -1485,7 +1485,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2wsp{int(W2_WS_PERSIST)}_dbg{int(W2_WS_SENTINEL)}_"
-          f"din{int(W2_WS_DEBUG_INPUTS)}_mb{MIN_BLOCKS_PER_SM}_v35"),
+          f"din{int(W2_WS_DEBUG_INPUTS)}_mb{MIN_BLOCKS_PER_SM}_v36"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[

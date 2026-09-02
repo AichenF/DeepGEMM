@@ -1952,3 +1952,17 @@ maximum rank latency of a full CUDA-Graph replay.
   further in persistence mechanics.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_ws_consumer_gather_correctness_20260903.log`.
+
+### WGMMA iteration 29h — physical warpgroup role swap (incorrect)
+
+- Swapped physical roles only: warpgroup 0 now runs the consumer-local gather,
+  RS-WGMMA, and epilogue; warpgroup 1 issues TMA.  The task sequence, shared
+  layout, barriers, register row mapping, and grid remain unchanged.
+- The forced rebuild remains exactly zero in W2 while W13, activation, and the
+  global qactivation probe are unchanged.  Therefore the inherited RS-WGMMA is
+  not failing merely because it ran in physical warpgroup 1.
+- No timing ran.  Next, preserve the just-loaded qactivation register through
+  the final K tile and compare it with the shared reload in the diagnostic
+  epilogue; this isolates address/layout from global load and route logic.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_ws_role_swap_correctness_20260903.log`.
