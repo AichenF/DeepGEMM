@@ -1656,3 +1656,24 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_paired_graph_batch_coldl2_balanced_fused_act_quant_screen_20260903.log`
   and
   `bench/results/tp4_paired_graph_batch_coldl2_skew_fused_act_quant_screen_20260903.log`.
+
+### WGMMA iteration 26 — global 64-channel tile for skew routes (rejected)
+
+- Tested the existing `V4_WOUT=64` specialization on maximal-skew TP4 routes
+  to determine whether doubling the number of independent CTAs fixes the
+  six-active-expert small-M deficit.  Both W13 and W2 use the smaller tile in
+  this diagnostic; the accepted default remains 128.
+- In a batch-paired cold-L2 4x100 screen, custom M8 improves from the preceding
+  0.042496 ms to 0.041632 ms (about 2.0%), but M16/M32/M64/M128 become
+  0.055328 / 0.073824 / 0.114976 / 0.193664 ms versus the 128-channel
+  control's 0.053344 / 0.072128 / 0.101536 / 0.168672 ms.  Against the paired
+  Humming samples, the 64-channel custom path is 5.77% / 12.13% / 8.41% /
+  13.17% / 14.88% slower and loses five-shape geometric mean by 10.82%.
+- The small M8 gain confirms a parallelism corner, but a global tile-size
+  change is decisively wrong because duplicated CTA setup and activation
+  traffic dominate as routed rows rise.  Reject the global variant; any
+  follow-up must isolate W13 from W2 and select only the narrow corner.
+- All graph and all-reduce correctness checks pass, and all 400 samples per
+  implementation and M use a 256 MiB pre-replay L2 clear outside timing.
+- Evidence:
+  `bench/results/tp4_paired_graph_batch_coldl2_skew_wout64_screen_20260903.log`.
