@@ -1698,6 +1698,17 @@ maximum rank latency of a full CUDA-Graph replay.
   and
   `bench/results/tp4_paired_graph_batch_coldl2_skew_m8_w2_global_lut_screen_20260903.log`.
 
+### Random-M8 64-channel layer audit
+
+- A cold local trace closes the possibility that only W2 wants the narrower
+  output tile on the primary random-route workload.  With 64 channels, W13
+  and W2 take 52.192/30.464 us, versus 48.895/27.040 us for the accepted
+  128-channel trace.  Both layers regress by about 3.3 us, so a W2-only
+  64-channel specialization would add complexity without a primary-workload
+  benefit.
+- Evidence:
+  `bench/results/tp4_wgmma_m8_random_wout64_coldl2_nsys.{log,nsys-rep}`.
+
 ### WGMMA iteration 27 — two concurrent W2 warp-groups per CTA (rejected)
 
 - Added an opt-in `V4_W2_DUAL_TASK_CTA=1` specialization.  A 256-thread CTA
