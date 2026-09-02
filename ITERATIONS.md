@@ -304,3 +304,26 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence reports:
   `bench/results/tp4_{wgmma_m32_s2,humming_m32}_coldl2.{nsys-rep,sqlite}`
   and `bench/results/tp4_{wgmma_m32_s2,humming_m32}_coldl2_ncu.ncu-rep`.
+
+### WGMMA iteration 2 — 128-channel output tile regresses
+
+- Change: added an isolated `V4_WOUT=128` variant.  One CTA loads a 128x128
+  packed-weight stage and reuses the same 8x128 activation tile for two
+  64x8 WGMMA output groups, halving the logical CTA grid.  The default remains
+  64 so the accepted path is unchanged.
+- Correctness passes before timing for TP4 balanced, TP4 maximal skew, and the
+  TP8 Is=256 shape.  Final W2 cosine is 0.999999999 and rel-L2 is about
+  5.7e-5 in all three tests; W13 split-K=2 full-output cosine rounds to 1.0.
+- Cold-L2 screen protocol: TP4 balanced full graph, 3x100 samples per M,
+  256 MiB clear before every replay.  `V4_W13_SPLIT_K=2 V4_WOUT=128`
+  medians for M8/M16/M32/M64/M128 are 0.154176 / 0.259296 / 0.464032 /
+  0.601872 / 0.616192 ms; geometric mean is 0.369416 ms.
+- Versus the identical split-K=2 64-channel screen, the variant regresses by
+  6.9% / 5.5% / 3.7% / 2.3% / 2.1%, or 4.1% geometric mean.  Reject it.
+- Interpretation: each 64-row WGMMA group currently has its own commit/wait;
+  serializing two groups lengthens each CTA enough to outweigh reduced setup
+  and activation loads.  A future wider-tile attempt would need asynchronous
+  grouping or deeper pipelining, not this serialized construction.
+- Evidence logs:
+  `bench/results/v4_flash_tp_wgmma_wo128_s2_correctness*_20260902.log` and
+  `bench/results/tp4_wgmma_graph_coldl2_s2_wo128_screen_20260902.log`.

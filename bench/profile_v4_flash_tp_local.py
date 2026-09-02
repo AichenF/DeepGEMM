@@ -116,6 +116,9 @@ def main() -> None:
                 "w13_split_k": int(os.environ.get("V4_W13_SPLIT_K", "4"))
                 if args.impl == "custom"
                 else None,
+                "output_tile_channels": int(os.environ.get("V4_WOUT", "64"))
+                if args.impl == "custom"
+                else None,
                 "l2_cache_bytes": props.L2_cache_size,
                 "l2_flush_bytes": l2_flush_buffer.nbytes,
                 "l2_policy": "cold; 256MiB clear immediately before pipeline",

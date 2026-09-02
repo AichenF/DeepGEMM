@@ -412,6 +412,7 @@ def main() -> None:
                     "l2_cache_bytes": props.L2_cache_size,
                     "l2_flush_bytes": l2_flush_buffer.nbytes,
                     "w13_split_k": kernel.W13_SPLIT_K,
+                    "output_tile_channels": kernel.WOUT,
                     "weight_dtype": "OCP MXFP4 E2M1",
                     "weight_scale": "E8M0 group32",
                     "activation_dtype": "FP8 E4M3 group128",

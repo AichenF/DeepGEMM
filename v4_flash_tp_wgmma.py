@@ -22,6 +22,9 @@ from torch.utils.cpp_extension import load_inline
 W13_SPLIT_K = int(os.environ.get("V4_W13_SPLIT_K", "4"))
 if W13_SPLIT_K not in (1, 2, 4, 8):
     raise ValueError("V4_W13_SPLIT_K must be one of 1,2,4,8")
+WOUT = int(os.environ.get("V4_WOUT", "64"))
+if WOUT not in (64, 128):
+    raise ValueError("V4_WOUT must be 64 or 128")
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
@@ -59,7 +62,9 @@ _CUDA = r"""
 
 using namespace deep_gemm;
 
-static constexpr int kWout = 64;
+static constexpr int kWout = K_WOUT;
+static_assert(kWout == 64 || kWout == 128);
+static constexpr int kWgmmaGroups = kWout / 64;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -187,10 +192,7 @@ __global__ __launch_bounds__(128) void route_gemm(
     const int row1 = row0 + 8;
     const int packed_k_offset = (lane % 4) * 4;
     const int column_base = (lane % 4) * 2;
-    float accum0 = 0.0f;
-    float accum1 = 0.0f;
-    float accum2 = 0.0f;
-    float accum3 = 0.0f;
+    float accum[kWgmmaGroups][4] = {};
 
     for (int local_kt = 0; local_kt < kKTilesPerSplit; ++local_kt) {
         const int stage = local_kt % kStages;
@@ -229,94 +231,106 @@ __global__ __launch_bounds__(128) void route_gemm(
         mbar_wait(barrier_addr[stage], (local_kt / kStages) & 1u);
         asm volatile("bar.sync 0;" ::: "memory");
 
-        float tile0 = 0.0f;
-        float tile1 = 0.0f;
-        float tile2 = 0.0f;
-        float tile3 = 0.0f;
         #pragma unroll
         for (int k_step = 0; k_step < kBlockK / 32; ++k_step) {
-            uint32_t packed0;
-            uint32_t packed1;
-            const uint32_t stage_base =
-                weight_smem_addr + stage * kWeightStageBytes;
-            asm volatile("ld.shared.b32 %0,[%1];"
-                : "=r"(packed0)
-                : "r"(stage_base + row0 * (kBlockK / 2)
-                      + k_step * 16 + packed_k_offset));
-            asm volatile("ld.shared.b32 %0,[%1];"
-                : "=r"(packed1)
-                : "r"(stage_base + row1 * (kBlockK / 2)
-                      + k_step * 16 + packed_k_offset));
-            const uint32_t exponent0 = scale_smem[row0 * 4 + k_step];
-            const uint32_t exponent1 = scale_smem[row1 * 4 + k_step];
-            const uint2 fp8_0 =
-                mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<true, true>(
-                    packed0, lut_smem[exponent0]);
-            const uint2 fp8_1 =
-                mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<true, true>(
-                    packed1, lut_smem[exponent1]);
             const auto activation_desc = desc_128b(
                 activation_smem_addr + k_step * 32);
-
-            ptx::warpgroup_fence_operand(tile0);
-            ptx::warpgroup_fence_operand(tile1);
-            ptx::warpgroup_fence_operand(tile2);
-            ptx::warpgroup_fence_operand(tile3);
-            ptx::warpgroup_arrive();
-            cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
-                fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
-                activation_desc, tile0, tile1, tile2, tile3,
-                cute::SM90::GMMA::ScaleOut::One);
-            ptx::warpgroup_commit_batch();
-            ptx::warpgroup_fence_operand(tile0);
-            ptx::warpgroup_fence_operand(tile1);
-            ptx::warpgroup_fence_operand(tile2);
-            ptx::warpgroup_fence_operand(tile3);
-            ptx::warpgroup_wait<0>();
+            #pragma unroll
+            for (int group = 0; group < kWgmmaGroups; ++group) {
+                const int group_row0 = group * 64 + row0;
+                const int group_row1 = group * 64 + row1;
+                uint32_t packed0;
+                uint32_t packed1;
+                const uint32_t stage_base =
+                    weight_smem_addr + stage * kWeightStageBytes;
+                asm volatile("ld.shared.b32 %0,[%1];"
+                    : "=r"(packed0)
+                    : "r"(stage_base + group_row0 * (kBlockK / 2)
+                          + k_step * 16 + packed_k_offset));
+                asm volatile("ld.shared.b32 %0,[%1];"
+                    : "=r"(packed1)
+                    : "r"(stage_base + group_row1 * (kBlockK / 2)
+                          + k_step * 16 + packed_k_offset));
+                const uint32_t exponent0 =
+                    scale_smem[group_row0 * 4 + k_step];
+                const uint32_t exponent1 =
+                    scale_smem[group_row1 * 4 + k_step];
+                const uint2 fp8_0 =
+                    mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<true, true>(
+                        packed0, lut_smem[exponent0]);
+                const uint2 fp8_1 =
+                    mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<true, true>(
+                        packed1, lut_smem[exponent1]);
+                float tile0 = 0.0f;
+                float tile1 = 0.0f;
+                float tile2 = 0.0f;
+                float tile3 = 0.0f;
+                ptx::warpgroup_fence_operand(tile0);
+                ptx::warpgroup_fence_operand(tile1);
+                ptx::warpgroup_fence_operand(tile2);
+                ptx::warpgroup_fence_operand(tile3);
+                ptx::warpgroup_arrive();
+                cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
+                    fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
+                    activation_desc, tile0, tile1, tile2, tile3,
+                    cute::SM90::GMMA::ScaleOut::One);
+                ptx::warpgroup_commit_batch();
+                ptx::warpgroup_fence_operand(tile0);
+                ptx::warpgroup_fence_operand(tile1);
+                ptx::warpgroup_fence_operand(tile2);
+                ptx::warpgroup_fence_operand(tile3);
+                ptx::warpgroup_wait<0>();
+                accum[group][0] +=
+                    tile0 * activation_scale_smem[column_base];
+                accum[group][1] +=
+                    tile1 * activation_scale_smem[column_base + 1];
+                accum[group][2] +=
+                    tile2 * activation_scale_smem[column_base];
+                accum[group][3] +=
+                    tile3 * activation_scale_smem[column_base + 1];
+            }
         }
-
-        accum0 += tile0 * activation_scale_smem[column_base];
-        accum1 += tile1 * activation_scale_smem[column_base + 1];
-        accum2 += tile2 * activation_scale_smem[column_base];
-        accum3 += tile3 * activation_scale_smem[column_base + 1];
 
         if (local_kt + kStages < kKTilesPerSplit)
             load_weight_stage(local_kt + kStages, stage);
     }
 
-    const int output_n0 = n_block_idx * kWout + row0;
-    const int output_n1 = n_block_idx * kWout + row1;
     const int route0 = route_ids[column_base];
     const int route1 = route_ids[column_base + 1];
-    if constexpr (IsW13) {
-        if (route0 < max_routes) {
-            output[(static_cast<int64_t>(split_idx) * max_routes + route0) * N
-                   + output_n0] = accum0;
-            output[(static_cast<int64_t>(split_idx) * max_routes + route0) * N
-                   + output_n1] = accum2;
-        }
-        if (route1 < max_routes) {
-            output[(static_cast<int64_t>(split_idx) * max_routes + route1) * N
-                   + output_n0] = accum1;
-            output[(static_cast<int64_t>(split_idx) * max_routes + route1) * N
-                   + output_n1] = accum3;
-        }
-    } else {
-        if (route0 < max_routes) {
-            const int token = route0 / kTopK;
-            const float route_weight = topk_weights[route0] * kRoutedScale;
-            atomicAdd(output + static_cast<int64_t>(token) * N + output_n0,
-                      route_weight * accum0);
-            atomicAdd(output + static_cast<int64_t>(token) * N + output_n1,
-                      route_weight * accum2);
-        }
-        if (route1 < max_routes) {
-            const int token = route1 / kTopK;
-            const float route_weight = topk_weights[route1] * kRoutedScale;
-            atomicAdd(output + static_cast<int64_t>(token) * N + output_n0,
-                      route_weight * accum1);
-            atomicAdd(output + static_cast<int64_t>(token) * N + output_n1,
-                      route_weight * accum3);
+    #pragma unroll
+    for (int group = 0; group < kWgmmaGroups; ++group) {
+        const int output_n0 = n_block_idx * kWout + group * 64 + row0;
+        const int output_n1 = n_block_idx * kWout + group * 64 + row1;
+        if constexpr (IsW13) {
+            if (route0 < max_routes) {
+                output[(static_cast<int64_t>(split_idx) * max_routes + route0) * N
+                       + output_n0] = accum[group][0];
+                output[(static_cast<int64_t>(split_idx) * max_routes + route0) * N
+                       + output_n1] = accum[group][2];
+            }
+            if (route1 < max_routes) {
+                output[(static_cast<int64_t>(split_idx) * max_routes + route1) * N
+                       + output_n0] = accum[group][1];
+                output[(static_cast<int64_t>(split_idx) * max_routes + route1) * N
+                       + output_n1] = accum[group][3];
+            }
+        } else {
+            if (route0 < max_routes) {
+                const int token = route0 / kTopK;
+                const float route_weight = topk_weights[route0] * kRoutedScale;
+                atomicAdd(output + static_cast<int64_t>(token) * N + output_n0,
+                          route_weight * accum[group][0]);
+                atomicAdd(output + static_cast<int64_t>(token) * N + output_n1,
+                          route_weight * accum[group][2]);
+            }
+            if (route1 < max_routes) {
+                const int token = route1 / kTopK;
+                const float route_weight = topk_weights[route1] * kRoutedScale;
+                atomicAdd(output + static_cast<int64_t>(token) * N + output_n0,
+                          route_weight * accum[group][1]);
+                atomicAdd(output + static_cast<int64_t>(token) * N + output_n1,
+                          route_weight * accum[group][3]);
+            }
         }
     }
 }
@@ -504,13 +518,14 @@ void cast_bf16(torch::Tensor input, torch::Tensor output);
 
 
 _ext = load_inline(
-    name=f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_v1",
+    name=f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_wo{WOUT}_v2",
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],
     extra_cuda_cflags=[
         "-O3",
         f"-DW13_SPLIT_K={W13_SPLIT_K}",
+        f"-DK_WOUT={WOUT}",
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
         "-gencode",
