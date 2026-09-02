@@ -2464,3 +2464,16 @@ maximum rank latency of a full CUDA-Graph replay.
   scheduling effect, not less math or fewer weight bytes.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_split_major_order_correctness_20260903.log`.
+
+### WGMMA iteration 36b — split-major task-order screen (rejected)
+
+- Candidate/control/candidate, each with 400 paired per-replay cold-L2 TP4
+  samples per M, gives candidate/control geometric ratios 0.994964 and
+  1.000845.  The first apparent gain is dominated by an M128 window that is
+  2.62% faster; the repeat instead loses M128 by 1.04% and loses four of five
+  M values overall.
+- Reject and restore the exact S2R winner.  Reordering CTAs for activation
+  cache locality does not produce a stable benefit; the activation footprint
+  is evidently already cached well enough relative to the cold weight stream.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_split_major_order_screen_20260903.log`.

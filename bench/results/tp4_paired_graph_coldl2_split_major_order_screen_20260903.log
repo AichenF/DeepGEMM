@@ -1,0 +1,46 @@
+Split-major W13 task-order paired cold-L2 screen
+Date: 2026-09-03
+Protocol: TP4 random routes; CUDA Graph; candidate/control/candidate;
+outer=4, replays=100, pair-granularity=batch; separate 256 MiB L2 clear before
+every individually timed replay, excluded from CUDA events.  All correctness
+and CustomAllReduceV2 checks pass.
+
+Candidate A, V4_SPLIT_MAJOR_TASK_ORDER=1:
+M    Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    0.088448 / 0.089984 / 0.130560  0.090016 / 0.091680 / 0.176512  1.018848
+16   0.144320 / 0.145760 / 0.235680  0.140896 / 0.142240 / 0.234784  0.975851
+32   0.224608 / 0.227360 / 0.256192  0.213920 / 0.216064 / 0.242496  0.950317
+64   0.312832 / 0.327904 / 0.337088  0.296288 / 0.310352 / 0.339488  0.946472
+128  0.379392 / 0.428224 / 0.478400  0.362496 / 0.439552 / 0.479648  1.026453
+Geomean Humming=0.211050840 ms, custom=0.207466852 ms;
+custom/Humming=0.983018 (custom 1.727% faster).
+
+Immediate same-source control, V4_SPLIT_MAJOR_TASK_ORDER=0:
+M    Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    0.088384 / 0.090016 / 0.119424  0.089920 / 0.091584 / 0.119936  1.017419
+16   0.144160 / 0.145760 / 0.168896  0.140448 / 0.142144 / 0.157824  0.975192
+32   0.224096 / 0.227104 / 0.248640  0.213888 / 0.216352 / 0.245472  0.952656
+64   0.313152 / 0.328864 / 0.338816  0.295680 / 0.310080 / 0.328736  0.942882
+128  0.378112 / 0.421616 / 0.488032  0.372256 / 0.451360 / 0.471232  1.070548
+Geomean Humming=0.210486018 ms, custom=0.208516855 ms;
+custom/Humming=0.990645 (custom 0.944% faster).
+
+Candidate B, V4_SPLIT_MAJOR_TASK_ORDER=1:
+M    Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    0.088736 / 0.090208 / 0.193184  0.090208 / 0.091744 / 0.114048  1.017027
+16   0.144480 / 0.145792 / 0.168992  0.140704 / 0.142256 / 0.154976  0.975746
+32   0.224576 / 0.226976 / 0.245056  0.213664 / 0.216768 / 0.237568  0.955026
+64   0.312512 / 0.323920 / 0.354752  0.295872 / 0.306832 / 0.326016  0.947246
+128  0.383904 / 0.431264 / 0.493440  0.368640 / 0.456032 / 0.481664  1.057431
+Geomean Humming=0.210876380 ms, custom=0.208692997 ms;
+custom/Humming=0.989646 (custom 1.046% faster).
+
+Self-control ratios (candidate/control; below 1 is better):
+M                    8         16        32        64        128       geomean
+Candidate A       1.001048  1.000675  0.998669  1.000877  0.973839  0.994964
+Candidate B       1.001747  1.000788  1.001923  0.989525  1.010351  1.000845
+
+Decision: reject.  Candidate A's apparent 0.504% geometric gain is dominated
+by its anomalously favorable M128 window and does not repeat: candidate B is
+0.085% slower geometrically, loses M8/M16/M32/M128, and reverses M128 to a
+1.04% loss.  Activation-cache scheduling has no stable full-path benefit.
