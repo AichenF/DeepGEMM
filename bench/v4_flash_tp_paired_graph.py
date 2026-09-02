@@ -207,7 +207,14 @@ def main() -> None:
 
     torch.manual_seed(args.seed + rank)
     torch.cuda.manual_seed(args.seed + rank)
-    custom_w13, custom_s13, custom_w2, custom_s2 = custom.make_weights(
+    (
+        custom_w13,
+        custom_s13,
+        custom_g13,
+        custom_w2,
+        custom_s2,
+        custom_g2,
+    ) = custom.make_weights(
         intermediate_per_rank, device
     )
     lut = kernel.make_e2m1_e8m0_lut(device)
@@ -263,6 +270,9 @@ def main() -> None:
                     "custom_w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "custom_w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "custom_w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
+                    "custom_normalized_weight_scale": (
+                        kernel.NORMALIZED_WEIGHT_SCALE
+                    ),
                     "timed_allreduce": "same SGLang CustomAllReduceV2 instance",
                 },
                 sort_keys=True,
@@ -299,8 +309,10 @@ def main() -> None:
             topk_weights=topk_weights,
             w13=custom_w13,
             s13=custom_s13,
+            g13=custom_g13,
             w2=custom_w2,
             s2=custom_s2,
+            g2=custom_g2,
             lut=lut,
             intermediate_per_rank=intermediate_per_rank,
         )

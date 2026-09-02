@@ -2633,3 +2633,24 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_synth_global_fallback_correctness_20260903.log`
   and
   `bench/results/tp4_local_graph_synth_global_fallback_screen_20260903.log`.
+
+### WGMMA iteration 41a — offline per-expert E8M0 normalization
+
+- Added opt-in `V4_NORMALIZED_WEIGHT_SCALE=1`.  At model-load time, each
+  expert's raw E8M0 groups are mapped to offsets 1..12.  If its original range
+  exceeds eleven exponents, only groups below the retained window have their
+  packed E2M1 values rescaled and requantized.  A single FP32 expert factor
+  restores the removed base exponent plus Humming's six-bit FP4-to-E4M3
+  offset.  This is the same numerical normalization principle as Humming, but
+  the timed route GEMMs remain our implementation.
+- The runtime inner loop is branch-free again and uses the successful affine
+  generator plus accepted cross-QGMMA S2R prefetch.  Instead of multiplying
+  every output accumulator, eight metadata lanes fold the expert factor into
+  each K128 activation scale once, minimizing the added runtime work.
+- Weight normalization, any packed-weight adjustment, Mode2 braiding, tensor
+  allocation, and scale-range reductions all occur before CUDA Graph capture
+  and are excluded for both implementations.  The graph/paired/stage harnesses
+  now carry separate W13/W2 expert-scale tensors for TP4 and TP8.
+- First gate normal-range equivalence, a wider-than-eleven range that exercises
+  packed FP4 adjustment, TP4 split-K=4/2, and TP8 shape.  Only then measure the
+  branch-free normalized core against the exact shared-LUT winner.

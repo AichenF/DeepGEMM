@@ -116,7 +116,14 @@ def make_routes(
 
 def make_weights(
     intermediate_per_rank: int, device: torch.device
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
     n13 = 2 * intermediate_per_rank
     w13 = torch.randint(
         0,
@@ -146,10 +153,15 @@ def make_weights(
         dtype=torch.uint8,
         device=device,
     )
+    g13 = torch.empty(0, dtype=torch.float32, device=device)
+    g2 = torch.empty(0, dtype=torch.float32, device=device)
+    if kernel.NORMALIZED_WEIGHT_SCALE:
+        s13, g13 = kernel.normalize_mxfp4_weight_scales_(w13, s13)
+        s2, g2 = kernel.normalize_mxfp4_weight_scales_(w2, s2)
     if kernel.MODE2_BRAID:
         kernel.braid_mode2_(w13)
         kernel.braid_mode2_(w2)
-    return w13, s13, w2, s2
+    return w13, s13, g13, w2, s2, g2
 
 
 @dataclass
@@ -160,8 +172,10 @@ class CapturedCase:
     topk_weights: torch.Tensor
     w13: torch.Tensor
     s13: torch.Tensor
+    g13: torch.Tensor
     w2: torch.Tensor
     s2: torch.Tensor
+    g2: torch.Tensor
     lut: torch.Tensor
     intermediate_per_rank: int
 
@@ -251,6 +265,7 @@ class CapturedCase:
         kernel.run_w13(
             self.w13,
             self.s13,
+            self.g13,
             self.qx.view(torch.uint8),
             self.x_scale,
             self.sorted_ids,
@@ -293,6 +308,7 @@ class CapturedCase:
         kernel.run_w2(
             self.w2,
             self.s2,
+            self.g2,
             self.qactivation.view(torch.uint8),
             self.activation_scale,
             self.sorted_ids,
@@ -330,8 +346,10 @@ class CapturedCase:
             topk_weights=self.topk_weights,
             w13=self.w13,
             s13=self.s13,
+            g13=self.g13,
             w2=self.w2,
             s2=self.s2,
+            g2=self.g2,
             lut=self.lut,
             intermediate_per_rank=self.intermediate_per_rank,
         )
@@ -456,7 +474,7 @@ def main() -> None:
     intermediate_per_rank = INTERMEDIATE // world_size
     torch.manual_seed(args.seed + rank)
     torch.cuda.manual_seed(args.seed + rank)
-    w13, s13, w2, s2 = make_weights(intermediate_per_rank, device)
+    w13, s13, g13, w2, s2, g2 = make_weights(intermediate_per_rank, device)
     lut = kernel.make_e2m1_e8m0_lut(device)
 
     comm = CustomAllReduceV2(cpu_group, device)
@@ -504,6 +522,7 @@ def main() -> None:
                     "dequant_dp4a_hi": kernel.DEQUANT_DP4A_HI,
                     "dequant_dp4a_lo": kernel.DEQUANT_DP4A_LO,
                     "dequant_synth_lut": kernel.DEQUANT_SYNTH_LUT,
+                    "normalized_weight_scale": kernel.NORMALIZED_WEIGHT_SCALE,
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
@@ -559,8 +578,10 @@ def main() -> None:
             topk_weights=topk_weights,
             w13=w13,
             s13=s13,
+            g13=g13,
             w2=w2,
             s2=s2,
+            g2=g2,
             lut=lut,
             intermediate_per_rank=intermediate_per_rank,
         )

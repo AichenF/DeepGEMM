@@ -59,6 +59,9 @@ if WEIGHT_COMMON_ADDRESS and WEIGHT_SWIZZLE != 64:
 DEQUANT_DP4A_HI = os.environ.get("V4_DEQUANT_DP4A_HI", "1") == "1"
 DEQUANT_DP4A_LO = os.environ.get("V4_DEQUANT_DP4A_LO", "1") == "1"
 DEQUANT_SYNTH_LUT = os.environ.get("V4_DEQUANT_SYNTH_LUT", "0") == "1"
+NORMALIZED_WEIGHT_SCALE = (
+    os.environ.get("V4_NORMALIZED_WEIGHT_SCALE", "0") == "1"
+)
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
@@ -131,6 +134,7 @@ static_assert(!kWeightCommonAddress || kWeightSwizzle == 64);
 static constexpr bool kDequantDp4aHi = K_DEQUANT_DP4A_HI;
 static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
+static constexpr bool kNormalizedWeightScale = K_NORMALIZED_WEIGHT_SCALE;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
@@ -188,6 +192,13 @@ __device__ __forceinline__ uint2 synth_e2m1_e8m0_lut(uint32_t exponent) {
         offset * 0x08080808u + 0x1c181410u);
 }
 
+__device__ __forceinline__ uint2 synth_normalized_e2m1_lut(
+        uint32_t exponent_offset) {
+    return make_uint2(
+        exponent_offset * 0x08080800u + 0x0c080000u,
+        exponent_offset * 0x08080808u + 0x1c181410u);
+}
+
 __device__ __forceinline__ uint2 dequant_mode2_braided_word(
         uint32_t packed, const uint2& lut) {
     const uint32_t selector0 = packed & 0x00007777u;
@@ -213,6 +224,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const __grid_constant__ CUtensorMap tma_weight,
         const __grid_constant__ CUtensorMap tma_weight_scale,
         const uint8_t* __restrict__ weight_scale,
+        const float* __restrict__ weight_global_scale,
         const uint8_t* __restrict__ activation,
         const float* __restrict__ activation_scale,
         const int32_t* __restrict__ sorted_ids,
@@ -271,8 +283,10 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     __shared__ __align__(8) uint64_t full_barriers[kStages];
     __shared__ __align__(8) uint64_t scale_barrier;
     __shared__ uint2 lut_smem[
-        (kDequantSynthLut || (!IsW13 && kW2GlobalLut)) ? 1 : kLutRows];
+        (kNormalizedWeightScale || kDequantSynthLut
+         || (!IsW13 && kW2GlobalLut)) ? 1 : kLutRows];
     __shared__ float activation_scale_smem[kTok];
+    __shared__ float expert_weight_scale;
     __shared__ int32_t route_ids[kTok];
     __shared__ int32_t activation_rows[kTok];
 
@@ -284,7 +298,13 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             ? (IsW13 ? route / kTopK : route)
             : -1;
     }
-    if constexpr (!kDequantSynthLut && (IsW13 || !kW2GlobalLut)) {
+    if (tid == 0) {
+        expert_weight_scale = kNormalizedWeightScale
+            ? __ldg(weight_global_scale + expert_idx)
+            : 1.0f;
+    }
+    if constexpr (!kNormalizedWeightScale && !kDequantSynthLut
+                  && (IsW13 || !kW2GlobalLut)) {
         for (int i = tid; i < kLutRows; i += blockDim.x) {
             constexpr int kGlobalLutOffset =
                 kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
@@ -421,7 +441,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             const int row = activation_rows[tid];
             activation_scale_smem[tid] = row >= 0
                 ? __ldg(activation_scale + static_cast<int64_t>(row) * kNumKTiles
-                        + global_kt)
+                        + global_kt) * expert_weight_scale
                 : 0.0f;
         }
         if constexpr (!kUseTmaScale) {
@@ -512,8 +532,13 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                             weight_scale_smem[scale_stage * kScaleStageBytes
                                               + group_row1 * kScaleRowBytes
                                               + (global_kt & 3) * 4];
-                        weight_lut0 = lut_smem[scale_lut_index(exponent0)];
-                        weight_lut1 = lut_smem[scale_lut_index(exponent1)];
+                        if constexpr (kNormalizedWeightScale) {
+                            weight_lut0 = synth_normalized_e2m1_lut(exponent0);
+                            weight_lut1 = synth_normalized_e2m1_lut(exponent1);
+                        } else {
+                            weight_lut0 = lut_smem[scale_lut_index(exponent0)];
+                            weight_lut1 = lut_smem[scale_lut_index(exponent1)];
+                        }
                     } else {
                         packed0 = next_packed0[group];
                         packed1 = next_packed1[group];
@@ -548,7 +573,10 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                         weight_scale_smem[scale_stage * kScaleStageBytes
                                           + group_row1 * kScaleRowBytes
                                           + (global_kt & 3) * 4 + k_step];
-                    if constexpr (kDequantSynthLut) {
+                    if constexpr (kNormalizedWeightScale) {
+                        weight_lut0 = synth_normalized_e2m1_lut(exponent0);
+                        weight_lut1 = synth_normalized_e2m1_lut(exponent1);
+                    } else if constexpr (kDequantSynthLut) {
                         weight_lut0 = synth_e2m1_e8m0_lut(exponent0);
                         weight_lut1 = synth_e2m1_e8m0_lut(exponent1);
                     } else if constexpr (!IsW13 && kW2GlobalLut) {
@@ -616,10 +644,17 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                               + group_row1 * kScaleRowBytes
                                               + (global_kt & 3) * 4
                                               + next_k_step];
-                        next_weight_lut0[group] =
-                            lut_smem[scale_lut_index(next_exponent0)];
-                        next_weight_lut1[group] =
-                            lut_smem[scale_lut_index(next_exponent1)];
+                        if constexpr (kNormalizedWeightScale) {
+                            next_weight_lut0[group] =
+                                synth_normalized_e2m1_lut(next_exponent0);
+                            next_weight_lut1[group] =
+                                synth_normalized_e2m1_lut(next_exponent1);
+                        } else {
+                            next_weight_lut0[group] =
+                                lut_smem[scale_lut_index(next_exponent0)];
+                            next_weight_lut1[group] =
+                                lut_smem[scale_lut_index(next_exponent1)];
+                        }
                     }
                 }
                 cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
@@ -875,6 +910,7 @@ CUtensorMap make_weight_scale_desc(void* pointer, int K, int rows) {
 template <int K, int N, int SplitK, bool IsW13>
 void launch_route_gemm(
         torch::Tensor weight, torch::Tensor weight_scale,
+        torch::Tensor weight_global_scale,
         torch::Tensor activation, torch::Tensor activation_scale,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
         torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
@@ -907,6 +943,9 @@ void launch_route_gemm(
         weight_descriptor,
         scale_descriptor,
         weight_scale.data_ptr<uint8_t>(),
+        weight_global_scale.numel()
+            ? weight_global_scale.data_ptr<float>()
+            : nullptr,
         activation.data_ptr<uint8_t>(),
         activation_scale.data_ptr<float>(),
         sorted_ids.data_ptr<int32_t>(),
@@ -921,6 +960,7 @@ void launch_route_gemm(
 
 void run_w13_impl(
         torch::Tensor weight, torch::Tensor weight_scale,
+        torch::Tensor weight_global_scale,
         torch::Tensor activation, torch::Tensor activation_scale,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
         torch::Tensor num_tokens_padded, torch::Tensor partials,
@@ -929,26 +969,30 @@ void run_w13_impl(
     if (intermediate == 512) {
         if (split_k == 4) {
             launch_route_gemm<4096, 1024, 4, true>(
-                weight, weight_scale, activation, activation_scale,
+                weight, weight_scale, weight_global_scale,
+                activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
                 partials, lut, routes);
         } else {
             TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
             launch_route_gemm<4096, 1024, 2, true>(
-                weight, weight_scale, activation, activation_scale,
+                weight, weight_scale, weight_global_scale,
+                activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
                 partials, lut, routes);
         }
     } else if (intermediate == 256) {
         if (split_k == 4) {
             launch_route_gemm<4096, 512, 4, true>(
-                weight, weight_scale, activation, activation_scale,
+                weight, weight_scale, weight_global_scale,
+                activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
                 partials, lut, routes);
         } else {
             TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
             launch_route_gemm<4096, 512, 2, true>(
-                weight, weight_scale, activation, activation_scale,
+                weight, weight_scale, weight_global_scale,
+                activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
                 partials, lut, routes);
         }
@@ -959,6 +1003,7 @@ void run_w13_impl(
 
 void run_w2(
         torch::Tensor weight, torch::Tensor weight_scale,
+        torch::Tensor weight_global_scale,
         torch::Tensor activation, torch::Tensor activation_scale,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
         torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
@@ -966,12 +1011,14 @@ void run_w2(
     const int routes = topk_weights.numel();
     if (intermediate == 512) {
         launch_route_gemm<512, 4096, 1, false>(
-            weight, weight_scale, activation, activation_scale,
+            weight, weight_scale, weight_global_scale,
+            activation, activation_scale,
             sorted_ids, expert_ids, num_tokens_padded, topk_weights,
             output, lut, routes);
     } else if (intermediate == 256) {
         launch_route_gemm<256, 4096, 1, false>(
-            weight, weight_scale, activation, activation_scale,
+            weight, weight_scale, weight_global_scale,
+            activation, activation_scale,
             sorted_ids, expert_ids, num_tokens_padded, topk_weights,
             output, lut, routes);
     } else {
@@ -1089,11 +1136,13 @@ void braid_mode2(torch::Tensor weight) {
 
 _CPP = r"""
 void run_w13_impl(torch::Tensor weight, torch::Tensor weight_scale,
+                  torch::Tensor weight_global_scale,
                   torch::Tensor activation, torch::Tensor activation_scale,
                   torch::Tensor sorted_ids, torch::Tensor expert_ids,
                   torch::Tensor num_tokens_padded, torch::Tensor partials,
                   torch::Tensor lut, int intermediate, int split_k);
 void run_w2(torch::Tensor weight, torch::Tensor weight_scale,
+            torch::Tensor weight_global_scale,
             torch::Tensor activation, torch::Tensor activation_scale,
             torch::Tensor sorted_ids, torch::Tensor expert_ids,
             torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
@@ -1115,10 +1164,11 @@ _ext = load_inline(
           f"ws{WEIGHT_SWIZZLE}_wca{int(WEIGHT_COMMON_ADDRESS)}_"
           f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
+          f"nws{int(NORMALIZED_WEIGHT_SCALE)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v35"),
+          f"mb{MIN_BLOCKS_PER_SM}_v39"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1138,6 +1188,7 @@ _ext = load_inline(
         f"-DK_DEQUANT_DP4A_HI={int(DEQUANT_DP4A_HI)}",
         f"-DK_DEQUANT_DP4A_LO={int(DEQUANT_DP4A_LO)}",
         f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
+        f"-DK_NORMALIZED_WEIGHT_SCALE={int(NORMALIZED_WEIGHT_SCALE)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
@@ -1173,9 +1224,50 @@ def make_e2m1_e8m0_lut(device: torch.device | str) -> torch.Tensor:
     )
 
 
+def normalize_mxfp4_weight_scales_(
+    weight: torch.Tensor, weight_scale: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Normalize one layer's E8M0 groups to offsets 1..12 at model load.
+
+    The packed-weight adjustment is the same loss-minimizing MXFP4 operation
+    used by Humming when an expert spans more than eleven exponents.  It is a
+    one-time checkpoint transform and is never part of graph replay timing.
+    The returned FP32 expert scale includes the E4M3/FP4 exponent offset.
+    """
+    if weight.dtype != torch.uint8 or weight_scale.dtype != torch.uint8:
+        raise TypeError("MXFP4 weight and E8M0 scale must be uint8")
+    if not weight.is_cuda or not weight_scale.is_cuda:
+        raise ValueError("MXFP4 normalization requires CUDA tensors")
+    if not weight.is_contiguous() or not weight_scale.is_contiguous():
+        raise ValueError("MXFP4 weight and scale must be contiguous")
+    if weight.shape[0] != weight_scale.shape[0]:
+        raise ValueError("weight and scale expert dimensions must match")
+
+    scale_i16 = weight_scale.to(torch.int16).view(weight_scale.shape[0], -1)
+    scale_max = scale_i16.amax(dim=1, keepdim=True)
+    scale_min = scale_i16.amin(dim=1, keepdim=True)
+    scale_base = torch.maximum(scale_min, scale_max - 11)
+    clamped = torch.maximum(scale_i16, scale_base)
+    delta = (clamped - scale_i16).to(torch.uint8).contiguous()
+
+    # Import lazily: the route GEMM itself has no runtime Humming dependency.
+    from humming import ops as humming_ops
+
+    humming_ops.process_mxfp4_w4a8_weight(
+        weight.view(torch.int32), delta, inplace=True
+    )
+    normalized = (clamped - scale_base + 1).to(torch.uint8)
+    normalized = normalized.view_as(weight_scale).contiguous()
+    expert_scale = torch.exp2(
+        scale_base.squeeze(1).to(torch.float32) - 122.0
+    ).contiguous()
+    return normalized, expert_scale
+
+
 def run_w13(
     weight: torch.Tensor,
     weight_scale: torch.Tensor,
+    weight_global_scale: torch.Tensor,
     activation: torch.Tensor,
     activation_scale: torch.Tensor,
     sorted_ids: torch.Tensor,
@@ -1193,6 +1285,7 @@ def run_w13(
     _ext.run_w13_impl(
         weight,
         weight_scale,
+        weight_global_scale,
         activation,
         activation_scale,
         sorted_ids,
@@ -1208,6 +1301,7 @@ def run_w13(
 def run_w2(
     weight: torch.Tensor,
     weight_scale: torch.Tensor,
+    weight_global_scale: torch.Tensor,
     activation: torch.Tensor,
     activation_scale: torch.Tensor,
     sorted_ids: torch.Tensor,
@@ -1221,6 +1315,7 @@ def run_w2(
     _ext.run_w2(
         weight,
         weight_scale,
+        weight_global_scale,
         activation,
         activation_scale,
         sorted_ids,

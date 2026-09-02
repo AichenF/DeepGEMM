@@ -70,7 +70,9 @@ def make_custom_case(
     import v4_flash_tp_wgmma as kernel
 
     intermediate_per_rank = bench.INTERMEDIATE // tp
-    w13, s13, w2, s2 = bench.make_weights(intermediate_per_rank, device)
+    w13, s13, g13, w2, s2, g2 = bench.make_weights(
+        intermediate_per_rank, device
+    )
     topk_ids, topk_weights = bench.make_routes(
         m, route_pattern, device, seed
     )
@@ -82,8 +84,10 @@ def make_custom_case(
         topk_weights=topk_weights,
         w13=w13,
         s13=s13,
+        g13=g13,
         w2=w2,
         s2=s2,
+        g2=g2,
         lut=kernel.make_e2m1_e8m0_lut(device),
         intermediate_per_rank=intermediate_per_rank,
     )

@@ -59,6 +59,7 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
         kernel.run_w13(
             case.w13,
             case.s13,
+            case.g13,
             case.qx.view(torch.uint8),
             case.x_scale,
             case.sorted_ids,
@@ -101,6 +102,7 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
         kernel.run_w2(
             case.w2,
             case.s2,
+            case.g2,
             case.qactivation.view(torch.uint8),
             case.activation_scale,
             case.sorted_ids,
