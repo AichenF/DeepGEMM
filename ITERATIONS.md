@@ -2413,3 +2413,20 @@ maximum rank latency of a full CUDA-Graph replay.
   retaining an unproven async path in the runtime source.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_activation_cp_async_screen_20260903.log`.
+
+### WGMMA iteration 35a — M-major FP8 activation scales
+
+- Added opt-in `V4_M_MAJOR_ACTIVATION_SCALE=1`.  Both input quantizers now
+  emit group-major scales, `[K/128, rows]`, and the route GEMMs gather the
+  eight scale values of one K tile from consecutive rows.  The fused
+  SwiGLU/quant kernel writes its W2 scales directly in the same layout.
+- This targets the only notable uncoalesced global read left by the detailed
+  source-counter profile.  It changes neither quantized FP8 values nor scale
+  math; only the scale tensor layout and addresses differ.
+- Full-block TP4 split-K=4, TP4 forced split-K=2, and TP8-shape maximal-skew
+  checks reproduce the accepted numerical errors.  W13 cosine is at least
+  0.999999997 and W2 cosine at least 0.999997235.  Candidate W13/W2 retain 56
+  registers/thread, no local memory, and unchanged shared-memory footprints.
+- Proceed to a candidate/control/candidate random-route TP4 cold-L2 screen.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_m_major_scale_correctness_20260903.log`.

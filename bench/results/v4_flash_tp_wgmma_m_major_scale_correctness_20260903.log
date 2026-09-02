@@ -1,0 +1,32 @@
+M-major activation-scale candidate correctness and resource audit
+Date: 2026-09-03
+Candidate: V4_M_MAJOR_ACTIVATION_SCALE=1
+
+TP4, M8 balanced, automatic split-K=4:
+V4_WGMMA_CHECK M=8 pattern=balanced Is=512 active=48 padded=384 split_k=4 mode2=True fused_act_quant=True m_major_scale=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999998 rel_l2=0.000076187
+V4_WGMMA_ACT cos=0.999999759 rel_l2=0.000694956
+V4_WGMMA_W2 cos=0.999997256 rel_l2=0.002342691 finite=True
+V4_WGMMA_OK
+
+TP4, M8 maximal skew, forced split-K=2:
+V4_WGMMA_CHECK M=8 pattern=skew Is=512 active=6 padded=48 split_k=2 mode2=True fused_act_quant=True m_major_scale=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077291
+V4_WGMMA_ACT cos=0.999999649 rel_l2=0.000838720
+V4_WGMMA_W2 cos=0.999997235 rel_l2=0.002351904 finite=True
+V4_WGMMA_OK
+
+TP8 local shape, M8 maximal skew, automatic split-K=4:
+V4_WGMMA_CHECK M=8 pattern=skew Is=256 active=6 padded=48 split_k=4 mode2=True fused_act_quant=True m_major_scale=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077480
+V4_WGMMA_ACT cos=0.999999763 rel_l2=0.000689115
+V4_WGMMA_W2 cos=0.999997249 rel_l2=0.002345847 finite=True
+V4_WGMMA_OK
+
+cuobjdump resource usage for the candidate TP4 specializations:
+W13 K4096/N1024 split2: REG=56 STACK=8 SHARED(static)=4096 LOCAL=0
+W13 K4096/N1024 split4: REG=56 STACK=8 SHARED(static)=4096 LOCAL=0
+W2  K512/N4096 split1: REG=56 STACK=8 SHARED(static)=4096 LOCAL=0
+
+The accepted winner has the same register, stack, static/dynamic shared, and
+local-memory counts.  The candidate is eligible for paired cold-L2 timing.
