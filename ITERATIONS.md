@@ -1223,3 +1223,34 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_humming_graph_coldl2_random_formal_post_common_address_window_20260903.log`
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_weight_common_address_formal_post_humming_window_20260903.log`.
+
+### WGMMA iteration 18 — dequant selector instruction sweep (rejected)
+
+- Added compile-time switches for the two selector-generation halves of
+  `dequant_mxfp4_to_fp8_pair_with_lut`: DP4A or shift/add/PRMT independently
+  for high and low nibbles.  The extension key and benchmark metadata include
+  both switches; the unset default remains the pre-existing DP4A/DP4A path.
+- All three alternative combinations pass full-path correctness for TP4 W13
+  split-K=4, TP4 forced split-K=2, and the TP8 local shape.  Their W13,
+  activation, and W2 errors are identical to the accepted default.
+- First TP4 random-route cold 3x100 sweep geometric means are 0.224909 ms for
+  DP4A/DP4A, 0.228719 ms for DP4A/PRMT, 0.227620 ms for PRMT/DP4A, and
+  0.236553 ms for PRMT/PRMT.  The existing path wins all five M points against
+  every alternative.
+- Reverse-order comparison of the nearest candidate gives 0.227508 ms for
+  PRMT/DP4A and 0.225157 ms for the immediately following DP4A/DP4A control:
+  the candidate remains 1.04% slower geometrically.  It is slower at four of
+  five points; the 0.05% M64 reversal is below observed batch drift.  Reject
+  all selector alternatives and retain DP4A/DP4A.
+- Every timed replay in every sweep is preceded by the standard 256 MiB L2
+  clear outside the CUDA-event interval.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_dequant10_correctness_20260903.log`,
+  `bench/results/v4_flash_tp_wgmma_dequant01_00_correctness_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_dequant11_screen_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_dequant10_screen_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_dequant01_screen_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_dequant00_screen_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_dequant01_reverse_20260903.log`,
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_dequant11_control_reverse_20260903.log`.

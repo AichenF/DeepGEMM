@@ -53,6 +53,8 @@ if WEIGHT_SWIZZLE not in (0, 64):
 WEIGHT_COMMON_ADDRESS = os.environ.get("V4_WEIGHT_COMMON_ADDRESS", "1") == "1"
 if WEIGHT_COMMON_ADDRESS and WEIGHT_SWIZZLE != 64:
     raise ValueError("V4_WEIGHT_COMMON_ADDRESS=1 requires V4_WEIGHT_SWIZZLE=64")
+DEQUANT_DP4A_HI = os.environ.get("V4_DEQUANT_DP4A_HI", "1") == "1"
+DEQUANT_DP4A_LO = os.environ.get("V4_DEQUANT_DP4A_LO", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
@@ -108,6 +110,8 @@ static constexpr int kWeightSwizzle = K_WEIGHT_SWIZZLE;
 static_assert(kWeightSwizzle == 0 || kWeightSwizzle == 64);
 static constexpr bool kWeightCommonAddress = K_WEIGHT_COMMON_ADDRESS;
 static_assert(!kWeightCommonAddress || kWeightSwizzle == 64);
+static constexpr bool kDequantDp4aHi = K_DEQUANT_DP4A_HI;
+static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -440,10 +444,12 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                       + group_row1 * kScaleRowBytes
                                       + (global_kt & 3) * 4 + k_step];
                 const uint2 fp8_0 =
-                    mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<true, true>(
+                    mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<
+                        kDequantDp4aHi, kDequantDp4aLo>(
                         packed0, lut_smem[scale_lut_index(exponent0)]);
                 const uint2 fp8_1 =
-                    mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<true, true>(
+                    mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<
+                        kDequantDp4aHi, kDequantDp4aLo>(
                         packed1, lut_smem[scale_lut_index(exponent1)]);
                 cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
                     fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
@@ -787,6 +793,7 @@ _ext = load_inline(
     name=(f"v4_flash_tp_wgmma_sdyn_wo{WOUT}_lr{LUT_ROWS}_"
           f"sr{SCALE_QUAD_REUSE}_sb{SCALE_BUFFERS}_"
           f"ws{WEIGHT_SWIZZLE}_wca{int(WEIGHT_COMMON_ADDRESS)}_"
+          f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v20"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
@@ -799,6 +806,8 @@ _ext = load_inline(
         f"-DK_SCALE_BUFFERS={SCALE_BUFFERS}",
         f"-DK_WEIGHT_SWIZZLE={WEIGHT_SWIZZLE}",
         f"-DK_WEIGHT_COMMON_ADDRESS={int(WEIGHT_COMMON_ADDRESS)}",
+        f"-DK_DEQUANT_DP4A_HI={int(DEQUANT_DP4A_HI)}",
+        f"-DK_DEQUANT_DP4A_LO={int(DEQUANT_DP4A_LO)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",
