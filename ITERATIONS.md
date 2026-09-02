@@ -2135,3 +2135,18 @@ maximum rank latency of a full CUDA-Graph replay.
   while p12 reduces serialized tasks per CTA at the cost of a second CTA wave.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_single_wg_persistent_p8_screen_20260903.log`.
+
+### WGMMA iteration 30c — refactored non-persistent p0 control
+
+- Disabled the runtime grid cap in the identical candidate binary and repeated
+  the 4 x 100 paired cold-L2 screen.  Geometric means are 0.209953 ms custom
+  and 0.210511 ms Humming, a noise-sized 0.265% custom lead consistent with
+  the exact-winner near-parity result.
+- Relative to the immediately preceding p8 run, p0 is 1.34% faster
+  geometrically and has lower custom medians at M8/M16/M32/M64.  The source
+  refactor itself did not create the p8 loss; serial task execution does.
+- One resource-bound p12 check remains useful because it trades a second CTA
+  wave for fewer tasks per persistent CTA.  If it cannot beat p0, reject this
+  two-stage persistent formulation before adding deeper stages.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_single_wg_persistent_p0_control_20260903.log`.

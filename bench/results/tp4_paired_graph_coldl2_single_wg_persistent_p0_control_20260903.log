@@ -1,0 +1,20 @@
+TP4 cold-L2 paired control: refactored W2 with persistence disabled
+Date: 2026-09-03
+Environment: V4_W2_PERSISTENT_BLOCKS_PER_SM=0
+Harness: random routes, CUDA Graph, outer=4, replays=100, batch AB/BA;
+separate 256 MiB cache clear before every replay outside CUDA events.
+
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088896 / 0.090368 / 0.123136  0.091232 / 0.092832 / 0.107776  1.027266
+16   82     656     0.144000 / 0.145792 / 0.176992  0.142496 / 0.144144 / 0.164192  0.988696
+32   140    1120    0.224288 / 0.226944 / 0.257568  0.216416 / 0.218912 / 0.269408  0.964608
+64   203    1624    0.313056 / 0.322080 / 0.337504  0.298176 / 0.310784 / 0.360256  0.964928
+128  248    1992    0.378528 / 0.429280 / 0.479104  0.374720 / 0.448112 / 0.493856  1.043869
+
+All correctness and allreduce checks pass at every M.
+Geometric mean: Humming 0.210510761 ms, custom 0.209952871 ms.
+Custom/Humming=0.997350; custom is 0.265% faster.
+
+Compared within the immediately adjacent p8 window, p0 is faster at every
+custom median except noise-dominated M128 and is 1.34% faster geometrically.
+The persistent scheduler, not the source refactor, causes the p8 regression.
