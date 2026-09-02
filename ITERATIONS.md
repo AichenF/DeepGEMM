@@ -574,3 +574,12 @@ maximum rank latency of a full CUDA-Graph replay.
   the remaining deficit.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_w2_route_output_formal_20260902.log`.
+
+### Iteration 8 selection — route output is now the default
+
+- Set `V4_W2_ROUTE_OUTPUT`'s unset default to the formally accepted route
+  output path.  With all tuning environment variables unset, a fresh required
+  cold-L2 3x100 TP4 screen gives 0.143552 / 0.238368 / 0.426208 / 0.551536 /
+  0.564592 ms and geometric mean 0.339968 ms.  Correctness passes all points.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_accepted_defaults_screen_20260902.log`.

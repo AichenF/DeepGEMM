@@ -119,7 +119,7 @@ def main() -> None:
                 "output_tile_channels": int(os.environ.get("V4_WOUT", "128"))
                 if args.impl == "custom"
                 else None,
-                "w2_route_output": os.environ.get("V4_W2_ROUTE_OUTPUT", "0") == "1"
+                "w2_route_output": os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
                 if args.impl == "custom"
                 else None,
                 "l2_cache_bytes": props.L2_cache_size,

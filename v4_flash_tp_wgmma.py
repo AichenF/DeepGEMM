@@ -25,7 +25,7 @@ if W13_SPLIT_K not in (1, 2, 4, 8):
 WOUT = int(os.environ.get("V4_WOUT", "128"))
 if WOUT not in (64, 128, 256):
     raise ValueError("V4_WOUT must be one of 64,128,256")
-W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "0") == "1"
+W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
