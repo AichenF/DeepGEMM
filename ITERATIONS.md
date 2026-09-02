@@ -2150,3 +2150,17 @@ maximum rank latency of a full CUDA-Graph replay.
   two-stage persistent formulation before adding deeper stages.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_single_wg_persistent_p0_control_20260903.log`.
+
+### WGMMA iteration 30d — single-WG persistent grid 12/SM screen
+
+- Raised the fixed grid to 936 CTAs, beyond the one-wave resource limit, and
+  repeated the 4 x 100 paired cold-L2 TP4 screen.
+- It wins only M32/M64 by 0.92%/1.06% and loses M8/M16/M128 by
+  2.83%/0.57%/4.97%.  Geometric means are 0.211969 ms custom and 0.209347 ms
+  Humming, so p12 is 1.25% slower and also loses to the adjacent p0 control.
+- Reject the two-stage persistent formulation at both p8 and p12.  The next
+  isolated test adopts the remaining scheduler distinction directly supported
+  by Humming's NCU/config evidence: five W2-only stages at grid 312, allowing
+  all four K128 weight transfers to be outstanding before computation.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_single_wg_persistent_p12_screen_20260903.log`.
