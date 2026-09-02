@@ -2206,3 +2206,15 @@ maximum rank latency of a full CUDA-Graph replay.
   and screen stage4/p5 before closing the single-WG persistent direction.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_single_wg_persistent_stage5_p4_screen_20260903.log`.
+
+### WGMMA iteration 30h — four-stage W2 at five CTAs/SM correctness
+
+- Added grid factor five and compiled a four-stage TP4 W2 specialization.  Its
+  roughly 40 KiB total shared footprint permits five resident CTAs per H20 SM,
+  so grid 390 uses the full resource-feasible first wave.  TP8 remains at two
+  stages because it has only two K128 tiles.
+- TP4 balanced/maximal-skew and TP8-shape maximal-skew all pass with numerical
+  errors identical to the accepted winner.  W2 cosine is at least 0.999997235.
+- The candidate is eligible for a paired cold-L2 screen.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_persistent_stage4_p5_correctness_20260903.log`.

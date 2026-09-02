@@ -66,9 +66,9 @@ W2_GLOBAL_LUT = False
 W2_PERSISTENT_BLOCKS_PER_SM = int(
     os.environ.get("V4_W2_PERSISTENT_BLOCKS_PER_SM", "0")
 )
-if W2_PERSISTENT_BLOCKS_PER_SM not in (0, 2, 4, 6, 8, 10, 12):
+if W2_PERSISTENT_BLOCKS_PER_SM not in (0, 2, 4, 5, 6, 8, 10, 12):
     raise ValueError(
-        "V4_W2_PERSISTENT_BLOCKS_PER_SM must be one of 0,2,4,6,8,10,12"
+        "V4_W2_PERSISTENT_BLOCKS_PER_SM must be one of 0,2,4,5,6,8,10,12"
     )
 W2_PERSISTENT_STAGES = int(os.environ.get("V4_W2_PERSISTENT_STAGES", "2"))
 if W2_PERSISTENT_STAGES not in (2, 4, 5):

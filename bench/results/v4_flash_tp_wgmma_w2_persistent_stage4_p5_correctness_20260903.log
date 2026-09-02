@@ -1,0 +1,20 @@
+Four-stage, five-CTA/SM persistent W2 correctness
+Date: 2026-09-03
+Environment: V4_W2_PERSISTENT_BLOCKS_PER_SM=5 V4_W2_PERSISTENT_STAGES=4
+
+TP4 M8 balanced:
+W13 cos=0.999999998 rel_l2=0.000076187
+ACT cos=0.999999759 rel_l2=0.000694956
+W2 cos=0.999997256 rel_l2=0.002342691 finite=True
+
+TP4 M8 maximal skew:
+W13 cos=0.999999997 rel_l2=0.000077292
+ACT cos=0.999999649 rel_l2=0.000838723
+W2 cos=0.999997235 rel_l2=0.002351904 finite=True
+
+TP8-shape M8 maximal skew (K=256 remains specialized to two stages):
+W13 cos=0.999999997 rel_l2=0.000077480
+ACT cos=0.999999763 rel_l2=0.000689115
+W2 cos=0.999997249 rel_l2=0.002345847 finite=True
+
+All three checks report V4_WGMMA_OK.  No performance timing in this gate.
