@@ -763,3 +763,38 @@ maximum rank latency of a full CUDA-Graph replay.
   policy check.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_tma_scales_dynamic_split_screen_20260902.log`.
+
+### WGMMA iteration 12 — active-expert-aware split dispatch
+
+- The maximal-skew route (all tokens select the same six experts) disproves
+  the assumption that routed rows alone determine the best W13 split.  With
+  M128 fixed, cold 3x100 split-K=2 and split-K=4 medians are 0.202848 and
+  0.199360 ms in the first paired screen, a 1.72% split-K=4 advantage.
+- Expanded forced-policy screens show split-K=4 versus split-K=2 medians for
+  skew M8/M16/M32/M64 of 0.045728/0.055904/0.085536/0.123232 ms versus
+  0.054032/0.059760/0.085472/0.131504 ms.  Split-K=4 wins clearly at M8,
+  M16, and M64, while M32 is tied.  A later M128 replay is 0.203872 ms, only
+  0.50% slower than the earlier split-K=2 result, so the M128 direction is
+  within short-screen drift rather than established.
+- Change: when route IDs are fixed benchmark inputs, count their unique
+  experts once before graph capture and select split-K=4 if routed rows <=96
+  or active experts <=96; otherwise select split-K=2.  The one-time route
+  inspection and host decision are explicitly outside the timed graph.  The
+  kernel wrapper also accepts an explicit split so W13 and its reduction
+  cannot choose inconsistent specializations.
+- The resulting automatic skew cold 3x100 medians for M8/M16/M32/M64/M128
+  are 0.045760 / 0.056000 / 0.085568 / 0.122960 / 0.203872 ms, all selecting
+  split-K=4 and all passing end-to-end correctness (worst cosine 0.99999553,
+  worst rel-L2 0.00299).  Versus the forced split-K=2 screens, geometric-mean
+  latency falls from 0.094059 to 0.088720 ms (5.68%, 1.060x speedup).
+- This is a static-route CUDA-Graph policy, not a claim that production can
+  obtain active-expert count for free when route IDs change every replay.
+  The cost/location of dynamic route statistics must be included before
+  integrating this dispatch into such a runtime.
+- Evidence logs:
+  `bench/results/tp4_wgmma_graph_coldl2_tma_scales_skew_m128_s2_screen_20260902.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_tma_scales_skew_m128_s4_screen_20260902.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_tma_scales_skew_s2_screen_20260902.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_tma_scales_skew_s4_screen_20260902.log`,
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_tma_scales_active_dispatch_skew_screen_20260902.log`.

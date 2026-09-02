@@ -186,6 +186,12 @@ class CapturedCase:
         self.x_scale: torch.Tensor | None = None
         self.activation_scale: torch.Tensor | None = None
         self.graph_output: torch.Tensor | None = None
+        # Routes are fixed benchmark inputs.  Inspect them once before graph
+        # capture; this synchronization and policy selection are not timed.
+        self.active_experts = int(torch.unique(self.topk_ids).numel())
+        self.w13_split_k = kernel.select_w13_split_k(
+            routes, self.active_experts
+        )
 
     @property
     def routes(self) -> int:
@@ -221,11 +227,13 @@ class CapturedCase:
             self.partials,
             self.lut,
             self.intermediate_per_rank,
+            self.w13_split_k,
         )
         kernel.reduce_swiglu(
             self.partials,
             self.activation,
             self.intermediate_per_rank,
+            self.w13_split_k,
         )
         self.qactivation, self.activation_scale = humming_ops.quant_input(
             inputs=self.activation,
@@ -437,7 +445,12 @@ def main() -> None:
                     "l2_policy": "cold; 256MiB Triton clear before every replay, clear excluded from events",
                     "l2_cache_bytes": props.L2_cache_size,
                     "l2_flush_bytes": l2_flush_buffer.nbytes,
-                    "w13_split_policy": kernel.W13_SPLIT_MODE,
+                    "w13_split_policy": (
+                        f"{kernel.W13_SPLIT_MODE}; routed_rows<=96 or "
+                        "active_experts<=96 -> 4, else 2; selected before capture"
+                        if kernel.W13_SPLIT_MODE == "auto"
+                        else kernel.W13_SPLIT_MODE
+                    ),
                     "output_tile_channels": kernel.WOUT,
                     "w2_epilogue": (
                         "BF16 route output + sglang moe_fused_mul_sum"
@@ -546,9 +559,9 @@ def main() -> None:
         record: dict[str, Any] = {
             "m": m,
             "route_pattern": args.route_pattern,
-            "active_experts": int(torch.unique(topk_ids).numel()),
+            "active_experts": case.active_experts,
             "routed_rows": m * TOP_K,
-            "w13_split_k": kernel.select_w13_split_k(m * TOP_K),
+            "w13_split_k": case.w13_split_k,
             "allreduce_bytes": nbytes,
             "allreduce_algo": None if ar_algo is None else ar_algo.name,
             "allreduce_mode": ar_mode.name,

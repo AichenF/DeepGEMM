@@ -25,10 +25,14 @@ if W13_SPLIT_MODE not in ("auto", "2", "4"):
 W13_MAX_SPLITS = 4
 
 
-def select_w13_split_k(routed_rows: int) -> int:
+def select_w13_split_k(
+    routed_rows: int, active_experts: int | None = None
+) -> int:
     if W13_SPLIT_MODE != "auto":
         return int(W13_SPLIT_MODE)
-    return 4 if routed_rows <= 96 else 2
+    if routed_rows <= 96:
+        return 4
+    return 4 if active_experts is not None and active_experts <= 96 else 2
 WOUT = int(os.environ.get("V4_WOUT", "128"))
 if WOUT not in (64, 128, 256):
     raise ValueError("V4_WOUT must be one of 64,128,256")
@@ -699,8 +703,12 @@ def run_w13(
     partials: torch.Tensor,
     lut: torch.Tensor,
     intermediate: int,
+    split_k: int | None = None,
 ) -> None:
-    split_k = select_w13_split_k(partials.size(1))
+    if split_k is None:
+        split_k = select_w13_split_k(partials.size(1))
+    if split_k not in (2, 4):
+        raise ValueError("W13 split_k must be 2 or 4")
     _ext.run_w13_impl(
         weight,
         weight_scale,
@@ -748,12 +756,17 @@ def reduce_swiglu(
     partials: torch.Tensor,
     output: torch.Tensor,
     intermediate: int,
+    split_k: int | None = None,
 ) -> None:
+    if split_k is None:
+        split_k = select_w13_split_k(partials.size(1))
+    if split_k not in (2, 4):
+        raise ValueError("W13 split_k must be 2 or 4")
     _ext.reduce_swiglu(
         partials,
         output,
         intermediate,
-        select_w13_split_k(partials.size(1)),
+        split_k,
     )
 
 
