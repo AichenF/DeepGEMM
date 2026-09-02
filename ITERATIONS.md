@@ -1048,3 +1048,29 @@ maximum rank latency of a full CUDA-Graph replay.
   `chunk ^ (((logical_row >> 1) + origin) & 3)`.
 - Evidence log:
   `bench/results/v4_flash_tp_wgmma_weight_swizzle64_offset_correctness_tp4_20260903.log`.
+
+### WGMMA iteration 16c — correct 128-byte-line coordinate removes the conflict
+
+- Corrected the 64-byte TMA swizzle address to
+  `chunk ^ (((logical_row >> 1) + origin) & 3)`.  Two 64-byte logical weight
+  rows share one 128-byte shared-memory bank line, while the low/high half of
+  that line remains unchanged by the two-bit XOR.
+- Full-block correctness passes TP4 split-K=4, TP4 forced split-K=2, and the
+  TP8 local shape (including its K=256 scalar-scale fallback).  Worst W2
+  cosine is 0.999997256/0.999997278 and every output is finite.
+- Contemporary TP4 random-route cold 3x100 control medians without swizzle
+  are 0.103456 / 0.162528 / 0.257952 / 0.357488 / 0.437616 ms; geometric mean
+  0.232442 ms.  The immediately following 64-byte-swizzle medians are
+  0.102736 / 0.160016 / 0.252224 / 0.353456 / 0.437920 ms; geometric mean
+  0.229869 ms.
+- Swizzling improves M8/M16/M32/M64 by 0.70%/1.55%/2.22%/1.13%, is 0.07%
+  slower at M128 (noise-sized), and improves geometric mean by 1.11%.  Keep
+  it experimental (`V4_WEIGHT_SWIZZLE=64`) until a repeat screen, source NCU,
+  and formal 9x200 run confirm the small gain.
+- Evidence logs:
+  `bench/results/v4_flash_tp_wgmma_weight_swizzle64_line_correctness_tp4_20260903.log`,
+  `bench/results/v4_flash_tp_wgmma_weight_swizzle64_line_correctness_tp4_split2_20260903.log`,
+  `bench/results/v4_flash_tp_wgmma_weight_swizzle64_line_correctness_tp8shape_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_swizzle0_control_20260903.log`,
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_swizzle64_screen_20260903.log`.

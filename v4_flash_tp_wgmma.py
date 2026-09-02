@@ -391,10 +391,12 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                 const int group_row0 = group * 64 + row0;
                 const int group_row1 = group * 64 + row1;
                 const int weight_chunk0 = kWeightSwizzle == 64
-                    ? (k_step ^ ((group_row0 + weight_swizzle_row_offset) & 3))
+                    ? (k_step ^ (((group_row0 >> 1)
+                                  + weight_swizzle_row_offset) & 3))
                     : k_step;
                 const int weight_chunk1 = kWeightSwizzle == 64
-                    ? (k_step ^ ((group_row1 + weight_swizzle_row_offset) & 3))
+                    ? (k_step ^ (((group_row1 >> 1)
+                                  + weight_swizzle_row_offset) & 3))
                     : k_step;
                 uint32_t packed0;
                 uint32_t packed1;
@@ -764,7 +766,7 @@ _ext = load_inline(
     name=(f"v4_flash_tp_wgmma_sdyn_wo{WOUT}_lr{LUT_ROWS}_"
           f"sr{SCALE_QUAD_REUSE}_sb{SCALE_BUFFERS}_"
           f"ws{WEIGHT_SWIZZLE}_ro{int(W2_ROUTE_OUTPUT)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v18"),
+          f"mb{MIN_BLOCKS_PER_SM}_v19"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],
