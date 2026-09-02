@@ -2516,3 +2516,17 @@ maximum rank latency of a full CUDA-Graph replay.
   reduction is eligible for the full paired benchmark.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_early_stage_refill_correctness_20260903.log`.
+
+### WGMMA iteration 37b — early-refill core screen (rejected)
+
+- Graph-internal event timing with 100 individually cold-L2 local TP4 samples
+  per point compares candidate and same-source control at M8/M32/M128.
+  Candidate/control total ratios are 0.99893/1.00806/1.00433.  At M32 and
+  M128, W13 regresses 0.58%/0.52% and W2 regresses 0.97%/0.74%.
+- Reject before consuming four GPUs for a full paired screen.  M8's 0.11%
+  total improvement is noise-sized and contains a 0.76% W2 loss.  Starting
+  the TMA a few FP32 instructions earlier does not offset W13's 56-to-59
+  register live-range increase and schedule perturbation.
+- Restore the exact accepted S2R winner.
+- Evidence:
+  `bench/results/tp4_local_graph_early_stage_refill_screen_20260903.log`.

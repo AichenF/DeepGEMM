@@ -1,0 +1,26 @@
+Early TMA stage-refill local graph cold-L2 screen
+Date: 2026-09-03
+Protocol: single-GPU TP4 random route; graph-internal external CUDA event
+nodes; 100 samples per M/config; separate 256 MiB L2 clear before every graph
+replay, excluded from all events.  Local compute only, no all-reduce.
+
+Candidate V4_EARLY_STAGE_REFILL=1, min/median/max us:
+M=8   W13 49.280/50.336/51.904  W2 29.280/29.696/31.392  total 103.680/104.992/106.816
+M=32  W13 126.880/128.672/130.592 W2 68.928/70.048/71.008  total 223.104/226.144/227.584
+M=128 W13 216.000/217.632/219.456 W2 116.928/117.888/119.104 total 365.344/367.712/369.888
+
+Immediate same-source control V4_EARLY_STAGE_REFILL=0, min/median/max us:
+M=8   W13 49.760/50.560/52.544  W2 28.928/29.472/30.912  total 103.584/105.104/106.816
+M=32  W13 126.592/127.936/129.952 W2 68.416/69.376/70.752  total 222.304/224.336/226.592
+M=128 W13 214.464/216.512/219.840 W2 115.744/117.024/118.240 total 362.816/366.128/369.568
+
+Candidate/control median ratios:
+M       W13       W2        total
+8       0.99557    1.00760   0.99893
+32      1.00575    1.00969   1.00806
+128     1.00517    1.00738   1.00433
+
+Decision: reject before distributed timing.  Both GEMMs regress together at
+M32/M128, while the noise-sized M8 total gain hides a W2 regression.  The
+three extra W13 registers and changed instruction schedule cost more than the
+few cycles of added TMA overlap.
