@@ -56,3 +56,28 @@ tp=4 (arith): M8 0.764 | M16 1.443 | M32 2.810 | M64 5.561 | M128 11.04 ms  (~2.
 - What: per-rank sharded FFN via mxfp4-dequant + einsum grouped matmul + SwiGLU + `dist.all_reduce`. MXFP4 dequant + compute in torch (to be CUDA-ized).
 - Result: RUNTIME=48.93 ms, cosine=0.99999, REF=20.25 ms, SPEEDUP=0.41x. finite=True.
 - Read: torch einsum gathers per-pair weights `gate_w[fe]` -> [M*topk, Is, H] materialization; re-dequants l1+l2 every call. Both are the obvious first targets. Real perf will come from a CUDA fused MXFP4 kernel; intermediate iters can cut torch waste first.
+
+## 2026-09-02 V4-Flash TP baseline reset
+
+The optimization target was reset to the real pure-TP serving path: H=4096,
+I=2048, E=256, top-k=6, TP4 primary (TP8 runnable), with precomputed real
+`topk_ids`/`topk_weights`, no EP dispatch/combine, and one SGLang
+`CustomAllReduceV2` after the local expert reduction.  Formal timing is the
+maximum rank latency of a full CUDA-Graph replay.
+
+### Baseline harness smoke — Humming OCP MXFP4 + CustomAllReduceV2
+
+- What: added `bench/v4_flash_tp_humming_graph.py`; graph contains SGLang route
+  alignment, BF16-to-FP8 group-128 quant, indexed Humming MXFP4 W13, SwiGLU,
+  second quant, indexed W2, local k6 weighted sum, and custom all-reduce v2.
+- Shape: TP4 W13 `[256,1024,4096]`, W2 `[256,4096,512]`; H20 reports 78 SM.
+  Humming transformed bytes/rank are 570,425,344 (W13) and 285,212,672 (W2).
+- First diagnostic run: M8 0.1830 ms, but generic random E8M0 bit patterns made
+  FP32 norms overflow (`cos=0`, `rel_l2=NaN`); rejected as a correctness result.
+- Fix: keep packed FP4 codes random, initialize E8M0 scales to 1, and compute
+  untimed diagnostics in FP64.  This changes data values only, not the kernel
+  path or timed graph.
+- Valid smoke (M8, balanced routes, only 2 replays): 0.156736 ms; custom-AR graph
+  output vs NCCL sum has min-rank cosine 0.9999957033, max-rank rel-L2
+  0.0029315142, and finite output on all ranks.  Marked smoke only; formal
+  5-point/7-outer-run baseline still pending.
