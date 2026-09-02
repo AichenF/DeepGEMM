@@ -61,6 +61,7 @@ DEQUANT_DP4A_LO = os.environ.get("V4_DEQUANT_DP4A_LO", "1") == "1"
 DEQUANT_SYNTH_LUT = os.environ.get("V4_DEQUANT_SYNTH_LUT", "0") == "1"
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
+EARLY_STAGE_REFILL = os.environ.get("V4_EARLY_STAGE_REFILL", "0") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
@@ -132,6 +133,7 @@ static constexpr bool kDequantDp4aHi = K_DEQUANT_DP4A_HI;
 static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
+static constexpr bool kEarlyStageRefill = K_EARLY_STAGE_REFILL;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
@@ -638,6 +640,16 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             }
             ptx::warpgroup_wait<0>();
         }
+        if constexpr (kEarlyStageRefill) {
+            // Once wait<0> retires the final K32 WGMMA, this stage's packed
+            // weights and scales are dead.  Refill immediately so its TMA can
+            // overlap the FP32 activation-scale accumulation below.
+            if ((local_kt & 3) == 3 && local_kt + 1 < kKTilesPerSplit)
+                load_single_scale(global_kt + 1);
+            if (local_kt + kStages < kKTilesPerSplit)
+                load_weight_stage(local_kt + kStages, stage);
+        }
+
         #pragma unroll
         for (int group = 0; group < kWgmmaGroups; ++group) {
             accum[group][0] +=
@@ -650,11 +662,12 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                 tile[group][3] * activation_scale_smem[column_base + 1];
         }
 
-        if ((local_kt & 3) == 3 && local_kt + 1 < kKTilesPerSplit)
-            load_single_scale(global_kt + 1);
-
-        if (local_kt + kStages < kKTilesPerSplit)
-            load_weight_stage(local_kt + kStages, stage);
+        if constexpr (!kEarlyStageRefill) {
+            if ((local_kt & 3) == 3 && local_kt + 1 < kKTilesPerSplit)
+                load_single_scale(global_kt + 1);
+            if (local_kt + kStages < kKTilesPerSplit)
+                load_weight_stage(local_kt + kStages, stage);
+        }
     }
 
     const int route0 = route_ids[column_base];
@@ -1116,6 +1129,7 @@ _ext = load_inline(
           f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"m2{int(MODE2_BRAID)}_"
+          f"er{int(EARLY_STAGE_REFILL)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
           f"mb{MIN_BLOCKS_PER_SM}_v35"),
@@ -1139,6 +1153,7 @@ _ext = load_inline(
         f"-DK_DEQUANT_DP4A_LO={int(DEQUANT_DP4A_LO)}",
         f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
+        f"-DK_EARLY_STAGE_REFILL={int(EARLY_STAGE_REFILL)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",

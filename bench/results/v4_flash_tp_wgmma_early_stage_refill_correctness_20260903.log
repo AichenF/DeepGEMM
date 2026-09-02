@@ -1,0 +1,22 @@
+Early packed-weight/scale TMA refill candidate correctness
+Date: 2026-09-03
+Candidate: V4_EARLY_STAGE_REFILL=1
+
+TP4 M8 balanced, split-K=4:
+W13 cos=0.999999998 rel_l2=0.000076187
+ACT cos=0.999999759 rel_l2=0.000694956
+W2  cos=0.999997256 rel_l2=0.002342691 finite=True
+
+TP4 M8 maximal skew, forced split-K=2:
+W13 cos=0.999999997 rel_l2=0.000077291
+ACT cos=0.999999649 rel_l2=0.000838720
+W2  cos=0.999997235 rel_l2=0.002351904 finite=True
+
+TP8 local shape M8 maximal skew, split-K=4:
+W13 cos=0.999999997 rel_l2=0.000077480
+ACT cos=0.999999763 rel_l2=0.000689115
+W2  cos=0.999997249 rel_l2=0.002345847 finite=True
+
+All three runs print V4_WGMMA_OK.  cuobjdump reports TP4 W13 REG=59 and
+TP4 W2 REG=55, STACK=8, static SHARED=4096, LOCAL=0; dynamic shared memory is
+unchanged.  The accepted winner uses 56 registers in both TP4 route GEMMs.

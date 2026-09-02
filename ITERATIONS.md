@@ -2500,3 +2500,19 @@ maximum rank latency of a full CUDA-Graph replay.
   while retaining the already faster fused middle path.
 - Evidence:
   `bench/results/tp4_local_graph_stage_budget_coldl2_20260903.log`.
+
+### WGMMA iteration 37a — early TMA stage refill
+
+- Added opt-in `V4_EARLY_STAGE_REFILL=1`.  After the final K32 WGMMA wait
+  retires, the consumed packed-weight stage is dead.  The candidate issues its
+  next weight TMA (and, at quartet boundaries, the next scale TMA) before the
+  FP32 activation-scale accumulation rather than after it.  This preserves two
+  buffers and one logical task per CTA while extending useful TMA overlap.
+- TP4 split-K=4, TP4 forced split-K=2, and TP8-shape checks reproduce accepted
+  errors exactly.  TP4 W13 rises from 56 to 59 registers/thread, while W2
+  falls to 55; neither spills and shared-memory footprints are unchanged.
+- Use the new graph-internal stage profiler for a core screen before paying
+  for a three-window distributed comparison.  Only a repeatable W13/W2
+  reduction is eligible for the full paired benchmark.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_early_stage_refill_correctness_20260903.log`.

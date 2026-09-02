@@ -506,6 +506,7 @@ def main() -> None:
                     "dequant_synth_lut": kernel.DEQUANT_SYNTH_LUT,
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
+                    "early_stage_refill": kernel.EARLY_STAGE_REFILL,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
