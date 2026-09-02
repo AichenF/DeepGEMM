@@ -1,0 +1,24 @@
+Split-major W13 task-order correctness and resource audit
+Date: 2026-09-03
+Candidate: V4_SPLIT_MAJOR_TASK_ORDER=1
+
+TP4, M8 balanced, automatic split-K=4:
+V4_WGMMA_W13 cos=0.999999998 rel_l2=0.000076187
+V4_WGMMA_ACT cos=0.999999759 rel_l2=0.000694956
+V4_WGMMA_W2 cos=0.999997256 rel_l2=0.002342691 finite=True
+V4_WGMMA_OK
+
+TP4, M8 maximal skew, forced split-K=2:
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077291
+V4_WGMMA_ACT cos=0.999999649 rel_l2=0.000838720
+V4_WGMMA_W2 cos=0.999997235 rel_l2=0.002351904 finite=True
+V4_WGMMA_OK
+
+TP8 local shape, M8 maximal skew, automatic split-K=4:
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077480
+V4_WGMMA_ACT cos=0.999999763 rel_l2=0.000689115
+V4_WGMMA_W2 cos=0.999997249 rel_l2=0.002345847 finite=True
+V4_WGMMA_OK
+
+Candidate TP4 W13/W2 specializations retain REG=56, STACK=8,
+SHARED(static)=4096, and LOCAL=0.  Dynamic shared memory is unchanged.

@@ -2448,3 +2448,19 @@ maximum rank latency of a full CUDA-Graph replay.
   not repay the changed quantizer/store layout and runtime indexing.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_m_major_scale_screen_20260903.log`.
+
+### WGMMA iteration 36a — split-major W13 task ordering
+
+- Added opt-in `V4_SPLIT_MAJOR_TASK_ORDER=1`.  The accepted physical grid and
+  one-task-per-CTA execution are unchanged.  Within each expert, W13 block IDs
+  now enumerate every N tile of one split before advancing to the next split,
+  instead of enumerating every split of one N tile first.  Adjacent CTAs can
+  therefore reuse the same 8xK-slice activation data in cache.  W2 has
+  `SplitK=1`, so its logical order is unchanged.
+- TP4 split-K=4, TP4 forced split-K=2, and TP8-shape checks exactly reproduce
+  accepted numerical errors.  TP4 W13 and W2 retain 56 registers/thread, no
+  local memory, and unchanged shared-memory footprints.
+- Proceed to the paired random-route cold-L2 screen; a win would be a cache
+  scheduling effect, not less math or fewer weight bytes.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_split_major_order_correctness_20260903.log`.
