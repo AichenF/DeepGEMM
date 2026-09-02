@@ -798,3 +798,31 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_graph_coldl2_tma_scales_skew_s4_screen_20260902.log`,
   and
   `bench/results/tp4_wgmma_graph_coldl2_tma_scales_active_dispatch_skew_screen_20260902.log`.
+
+### Benchmark correction — random-score routes and explicit padding
+
+- DeepGEMM's existing MegaMoE benchmark constructs routes by drawing random
+  expert scores and applying top-k.  Our former `balanced` sequence instead
+  maximizes the number of touched experts and therefore maximizes 8-row
+  per-expert padding; it is a useful spread stress test, but not a defensible
+  proxy for ordinary routing.
+- Both the Humming baseline and custom graph benchmark now support and default
+  to `random`: a private CPU generator with the same seed on every TP rank
+  generates random scores, then top-k IDs are copied to the GPU before graph
+  capture.  Router/top-k work remains excluded exactly as requested.  The
+  logs now expose both `padded_rows` and `padding_ratio`; `balanced` and
+  maximal `skew` remain explicit stress modes.
+- Seed 20260902 random routes touch 43/82/140/203/248 experts and align to
+  344/656/1120/1624/1992 rows for M8/M16/M32/M64/M128, versus 48/96/192/
+  384/768 actual routed rows.  Custom and Humming report identical metadata.
+- Contemporary cold-L2 3x100 Humming medians are 0.090240 / 0.143296 /
+  0.225408 / 0.313792 / 0.381536 ms (geomean 0.203496 ms).  Custom medians
+  are 0.106464 / 0.167040 / 0.264160 / 0.368688 / 0.461600 ms (geomean
+  0.240194 ms), with every correctness check passing.  Custom/Humming ratios
+  are 1.180x / 1.166x / 1.172x / 1.175x / 1.210x; geomean 1.180x.
+- These are screening results, not the final claim.  They show that route
+  distribution materially changes the measured gap and require a paired
+  9x200 cold confirmation.
+- Evidence logs:
+  `bench/results/tp4_humming_graph_coldl2_random_screen_20260902.log` and
+  `bench/results/tp4_wgmma_graph_coldl2_random_screen_20260902.log`.

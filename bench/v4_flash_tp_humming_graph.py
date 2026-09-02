@@ -66,9 +66,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--route-pattern",
-        choices=("balanced", "skew"),
-        default="balanced",
-        help="Precomputed route distribution; router computation is never timed.",
+        choices=("random", "balanced", "skew"),
+        default="random",
+        help=(
+            "Precomputed route distribution. random follows DeepGEMM MegaMoE's "
+            "random-scores/top-k construction; router computation is not timed."
+        ),
     )
     parser.add_argument("--outer", type=int, default=7)
     parser.add_argument("--replays", type=int, default=100)
@@ -148,9 +151,20 @@ def make_layer(shape_n: int, shape_k: int, device: torch.device) -> HummingLayer
 
 
 def make_routes(
-    m: int, route_pattern: str, device: torch.device
+    m: int, route_pattern: str, device: torch.device, seed: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    if route_pattern == "balanced":
+    if route_pattern == "random":
+        # DeepGEMM MegaMoE uses random scores followed by top-k.  Generate on
+        # CPU with an isolated seed so all TP ranks replay exactly one route.
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(seed)
+        scores = torch.randn(
+            (m, NUM_EXPERTS), dtype=torch.float32, generator=generator
+        )
+        ids = torch.topk(
+            scores, TOP_K, dim=-1, largest=True, sorted=False
+        ).indices.to(torch.int32)
+    elif route_pattern == "balanced":
         # Consecutive routes are unique within every token and cover experts as
         # evenly as possible.  This is deterministic and makes active-expert
         # count explicit rather than inferring it from an unrelated G knob.
@@ -505,7 +519,9 @@ def main() -> None:
     results: list[dict[str, Any]] = []
 
     for m in args.ms:
-        topk_ids, topk_weights = make_routes(m, args.route_pattern, device)
+        topk_ids, topk_weights = make_routes(
+            m, args.route_pattern, device, args.seed
+        )
         x = torch.randn((m, HIDDEN), dtype=torch.bfloat16, device=device) * 0.1
         selected_w13 = select_tuning_config(w13_tuning, m * TOP_K)
         selected_w2 = select_tuning_config(w2_tuning, m * TOP_K)
@@ -577,6 +593,8 @@ def main() -> None:
         )
 
         active_experts = int(torch.unique(topk_ids).numel())
+        assert case.num_tokens_padded is not None
+        padded_rows = int(case.num_tokens_padded.item())
         nbytes = m * HIDDEN * torch.tensor([], dtype=torch.bfloat16).element_size()
         ar_algo, ar_mode = comm._pick_algo(nbytes, can_use_graph=True)
         record: dict[str, Any] = {
@@ -584,6 +602,8 @@ def main() -> None:
             "route_pattern": args.route_pattern,
             "active_experts": active_experts,
             "routed_rows": m * TOP_K,
+            "padded_rows": padded_rows,
+            "padding_ratio": padded_rows / (m * TOP_K),
             "w13_block_shape": selected_w13["block_shape"],
             "w2_block_shape": selected_w2["block_shape"],
             "allreduce_bytes": nbytes,

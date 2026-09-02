@@ -40,7 +40,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ms", default=",".join(map(str, DEFAULT_MS)))
     parser.add_argument(
-        "--route-pattern", choices=("balanced", "skew"), default="balanced"
+        "--route-pattern",
+        choices=("random", "balanced", "skew"),
+        default="random",
+        help=(
+            "Precomputed route distribution. random follows DeepGEMM MegaMoE's "
+            "random-scores/top-k construction; router computation is not timed."
+        ),
     )
     parser.add_argument("--outer", type=int, default=7)
     parser.add_argument("--replays", type=int, default=100)
@@ -85,9 +91,20 @@ def init_distributed() -> tuple[int, int, torch.device, dist.ProcessGroup]:
 
 
 def make_routes(
-    m: int, pattern: str, device: torch.device
+    m: int, pattern: str, device: torch.device, seed: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    if pattern == "balanced":
+    if pattern == "random":
+        # Match DeepGEMM's MegaMoE benchmark route construction, but use an
+        # isolated CPU generator so every TP rank receives identical routes.
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(seed)
+        scores = torch.randn(
+            (m, NUM_EXPERTS), dtype=torch.float32, generator=generator
+        )
+        ids = torch.topk(
+            scores, TOP_K, dim=-1, largest=True, sorted=False
+        ).indices.to(torch.int32)
+    elif pattern == "balanced":
         ids = torch.arange(m * TOP_K, dtype=torch.int32).view(m, TOP_K)
         ids.remainder_(NUM_EXPERTS)
     else:
@@ -491,7 +508,9 @@ def main() -> None:
     graphs: list[torch.cuda.CUDAGraph] = []
     records: list[dict[str, Any]] = []
     for m in args.ms:
-        topk_ids, topk_weights = make_routes(m, args.route_pattern, device)
+        topk_ids, topk_weights = make_routes(
+            m, args.route_pattern, device, args.seed
+        )
         x = torch.randn((m, HIDDEN), dtype=torch.bfloat16, device=device) * 0.1
         case = CapturedCase(
             m=m,
@@ -556,11 +575,15 @@ def main() -> None:
         )
         nbytes = m * HIDDEN * torch.tensor([], dtype=torch.bfloat16).element_size()
         ar_algo, ar_mode = comm._pick_algo(nbytes, can_use_graph=True)
+        assert case.num_tokens_padded is not None
+        padded_rows = int(case.num_tokens_padded.item())
         record: dict[str, Any] = {
             "m": m,
             "route_pattern": args.route_pattern,
             "active_experts": case.active_experts,
             "routed_rows": m * TOP_K,
+            "padded_rows": padded_rows,
+            "padding_ratio": padded_rows / (m * TOP_K),
             "w13_split_k": case.w13_split_k,
             "allreduce_bytes": nbytes,
             "allreduce_algo": None if ar_algo is None else ar_algo.name,
