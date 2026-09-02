@@ -515,3 +515,17 @@ maximum rank latency of a full CUDA-Graph replay.
   sharply, outweighing reduced CTA setup.  Reject WOUT=256 and restore 128.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_wout256_s2_screen_20260902.log`.
+
+### Iteration 7 selection — make the measured winner the default
+
+- Changed the no-environment defaults from the historical
+  `W13_SPLIT_K=4, WOUT=64` to the accepted `W13_SPLIT_K=2, WOUT=128`.
+  Experimental alternatives remain explicit environment overrides.
+- The unset-environment full-route M32 check passes with W2 cosine
+  0.999999992 and rel-L2 0.000127067.
+- A fresh required cold-L2 3x100 TP4 screen with both tuning variables unset
+  gives medians 0.144448 / 0.240128 / 0.427520 / 0.556000 / 0.569520 ms for
+  M8 through M128 and geometric mean 0.342246 ms.  This exactly reproduces
+  the selected winner within measurement noise.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_default_s2_wout128_screen_20260902.log`.

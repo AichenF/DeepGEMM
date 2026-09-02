@@ -19,10 +19,10 @@ import torch
 from torch.utils.cpp_extension import load_inline
 
 
-W13_SPLIT_K = int(os.environ.get("V4_W13_SPLIT_K", "4"))
+W13_SPLIT_K = int(os.environ.get("V4_W13_SPLIT_K", "2"))
 if W13_SPLIT_K not in (1, 2, 4, 8):
     raise ValueError("V4_W13_SPLIT_K must be one of 1,2,4,8")
-WOUT = int(os.environ.get("V4_WOUT", "64"))
+WOUT = int(os.environ.get("V4_WOUT", "128"))
 if WOUT not in (64, 128, 256):
     raise ValueError("V4_WOUT must be one of 64,128,256")
 

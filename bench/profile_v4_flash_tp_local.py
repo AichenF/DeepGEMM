@@ -113,10 +113,10 @@ def main() -> None:
                 "impl": args.impl,
                 "m": args.m,
                 "tp": args.tp,
-                "w13_split_k": int(os.environ.get("V4_W13_SPLIT_K", "4"))
+                "w13_split_k": int(os.environ.get("V4_W13_SPLIT_K", "2"))
                 if args.impl == "custom"
                 else None,
-                "output_tile_channels": int(os.environ.get("V4_WOUT", "64"))
+                "output_tile_channels": int(os.environ.get("V4_WOUT", "128"))
                 if args.impl == "custom"
                 else None,
                 "l2_cache_bytes": props.L2_cache_size,
