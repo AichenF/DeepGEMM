@@ -1359,3 +1359,45 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_graph_coldl2_random_mode2_braid0_control_20260903.log`,
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_mode2_braid_screen_20260903.log`.
+
+### WGMMA iteration 21 formal confirmation and paired Humming comparison
+
+- Formal TP4 random-route 9x200 cold-L2 Mode2 medians for
+  M8/M16/M32/M64/M128 are 0.093600 / 0.141952 / 0.224912 / 0.338576 /
+  0.426752 ms (geomean 0.212350 ms).  All 9,000 max-rank graph samples use a
+  stream-ordered 256 MiB clear outside the event interval and all correctness
+  checks pass.  M32 and the two larger cases show visible batch drift, so the
+  isolated run is not used alone to claim a win.
+- In the immediately paired Humming-then-Mode2 window, Humming medians are
+  0.089888 / 0.142656 / 0.225152 / 0.330480 / 0.411296 ms (geomean
+  0.208331 ms), while Mode2 gives 0.093152 / 0.141600 / 0.224384 / 0.327568 /
+  0.420784 ms (geomean 0.209953 ms).  Mode2 is 0.78% slower geometrically:
+  it wins M16/M32/M64, but loses M8/M128.
+- Reversing launch order gives Mode2 0.093280 / 0.141792 / 0.223872 /
+  0.338928 / 0.424288 ms (geomean 0.211759 ms), followed by Humming at
+  0.089792 / 0.142688 / 0.225216 / 0.332512 / 0.412992 ms (geomean
+  0.208735 ms).  Mode2 is 1.45% slower geometrically.  M16/M32 still win,
+  M8 still loses by 3.9%, and M64/M128 move with the system drift.
+- A detailed one-replay cold NCU profile measures Mode2 W13/W2 at
+  138.144/74.112 us, down 10.9%/11.6% from the pre-Mode2
+  155.040/83.808 us.  Compute throughput is 65.39% for both kernels, DRAM is
+  49.70%/44.85%, and achieved occupancy is 50.73%/53.26%.  Against the most
+  recent comparable Humming route-GEMM profile (146.82/74.59 us), the custom
+  cores are already about 5.9%/0.6% faster; the residual graph gap is therefore
+  in split reduction/activation quantization, epilogue, communication, and
+  launch overhead rather than either route-GEMM core.
+- An attempted Nsight Systems capture deadlocked in the profiler control layer
+  (both host processes slept in futex, GPU utilization was zero, and no report
+  was emitted), so it was terminated without using its empty log as evidence.
+- The formal confirmation preserves the candidate decision: Mode2 is a large,
+  correctness-clean improvement over the ordinary layout, but the honest
+  end-to-end conclusion is near parity, not yet a Humming win.
+- Evidence:
+  `bench/results/tp4_wgmma_graph_coldl2_random_mode2_braid_formal_20260903.log`,
+  `bench/results/tp4_humming_graph_coldl2_random_formal_post_mode2_window_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_mode2_braid_formal_post_humming_window_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_mode2_braid_formal_reverse_window_20260903.log`,
+  `bench/results/tp4_humming_graph_coldl2_random_formal_post_mode2_reverse_window_20260903.log`,
+  `bench/results/tp4_wgmma_m32_mode2_braid_random_detailed_coldl2_ncu.ncu-rep`,
+  and
+  `bench/results/tp4_wgmma_m32_mode2_braid_random_detailed_coldl2_ncu.log`.
