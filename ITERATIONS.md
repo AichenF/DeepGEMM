@@ -327,3 +327,23 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence logs:
   `bench/results/v4_flash_tp_wgmma_wo128_s2_correctness*_20260902.log` and
   `bench/results/tp4_wgmma_graph_coldl2_s2_wo128_screen_20260902.log`.
+
+### WGMMA iteration 3 — grouped async issue recovers some, still rejected
+
+- Change: for the 128-channel variant, issue both independent 64x8 WGMMA
+  operations into one commit group and wait once, following the already
+  validated pattern in `step_e_rs2m.py`.  The 64-channel default compiles the
+  same single-operation path as before.
+- Correctness again passes TP4 balanced/skew and TP8-shape full-block tests;
+  final W2 cosine is 0.999999999 with rel-L2 about 5.7e-5.
+- Cold-L2 3x100 full-graph medians for M8/M16/M32/M64/M128 are
+  0.151936 / 0.254800 / 0.453472 / 0.588352 / 0.602016 ms; geometric mean
+  0.362019 ms.
+- This recovers roughly 2% geometric mean versus the serialized 128-channel
+  attempt, but remains 5.3% / 3.7% / 1.4% / 0.0% slower and only 0.2% faster
+  at M128 than the 64-channel split-K=2 screen.  Five-point geometric mean is
+  still 2.0% worse.  Reject the wider tile; keep `V4_WOUT=64` as default.
+- Evidence logs:
+  `bench/results/v4_flash_tp_wgmma_wo128_grouped_s2_correctness*_20260902.log`
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_s2_wo128_grouped_screen_20260902.log`.
