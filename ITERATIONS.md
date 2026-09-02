@@ -714,3 +714,21 @@ maximum rank latency of a full CUDA-Graph replay.
   a fresh split-K screen under the new pipeline.
 - Evidence report:
   `bench/results/tp4_wgmma_m32_tma_scales_coldl2_ncu.ncu-rep`.
+
+### TMA-scale split-K refresh
+
+- Re-screened W13 split-K=4 after the scale pipeline changed the core balance.
+  Cold 3x100 medians for M8/M16/M32/M64/M128 are 0.116176 / 0.187232 /
+  0.363952 / 0.461488 / 0.480784 ms; geometric mean 0.281145 ms.
+- Compared with the split-K=2 TMA-scale screen, split-K=4 wins clearly only
+  at M8/M16, is roughly tied at M64, and loses at M32/M128.  A dedicated
+  9x200 cold confirmation for M8/M16 is stable at 0.116320 / 0.187136 ms.
+  Against split-K=2's formal low-M values this is 6.41% / 3.11% lower
+  latency; against contemporary Humming it leaves 1.200x / 1.168x ratios.
+- Accept split-K=4 for M<=16 and keep split-K=2 for M>=32.  The current
+  compile-time setting must be replaced by a dual-specialization runtime
+  dispatch before this can be the actual default path.
+- Evidence logs:
+  `bench/results/tp4_wgmma_graph_coldl2_tma_scales_s4_screen_20260902.log`
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_tma_scales_s4_lowm_formal_20260902.log`.
