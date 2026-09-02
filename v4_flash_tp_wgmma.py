@@ -42,7 +42,7 @@ if LUT_ROWS not in (128, 256):
 SCALE_QUAD_REUSE = int(os.environ.get("V4_SCALE_QUAD_REUSE", "4"))
 if SCALE_QUAD_REUSE not in (1, 4):
     raise ValueError("V4_SCALE_QUAD_REUSE must be 1 or 4")
-SCALE_BUFFERS = int(os.environ.get("V4_SCALE_BUFFERS", "1"))
+SCALE_BUFFERS = int(os.environ.get("V4_SCALE_BUFFERS", "2"))
 if SCALE_BUFFERS not in (1, 2):
     raise ValueError("V4_SCALE_BUFFERS must be 1 or 2")
 if SCALE_QUAD_REUSE == 1 and SCALE_BUFFERS != 2:

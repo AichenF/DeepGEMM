@@ -966,3 +966,13 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_graph_coldl2_random_scale_buffer1_screen_20260902.log`,
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_scale_buffer2_control_20260902.log`.
+
+### Iteration 15 rollback — restore two scale buffers
+
+- Restored two prefetched scale buffers as the unset default.  A cold 3x100
+  regression check at M8/M32/M128 reports 0.103520 / 0.254784 / 0.441936 ms,
+  all with `scale_buffers=2`, expected split selection, and passing graph
+  correctness.  The first identical run also completed remotely before its
+  SSH client timed out; the clean repeat is the accepted evidence.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_random_scale_buffer2_default_restore_repeat_20260903.log`.
