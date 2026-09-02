@@ -1203,3 +1203,23 @@ maximum rank latency of a full CUDA-Graph replay.
   64-byte weight swizzle and common addressing and passing graph correctness.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_random_weight_common_address_default_20260903.log`.
+
+### Post-iteration-17 paired Humming gap
+
+- Re-ran Humming and the accepted common-address default back-to-back with
+  the formal TP4 random-route 9x200 cold-L2 protocol.  Every individually
+  timed CUDA Graph replay is preceded by a stream-ordered 256 MiB cache clear
+  excluded from the CUDA-event interval; all 1,800 samples per M are retained.
+- Humming medians for M8/M16/M32/M64/M128 are 0.090016 / 0.142848 /
+  0.225120 / 0.325520 / 0.407456 ms (geomean 0.207421 ms).  Custom medians are
+  0.100288 / 0.155648 / 0.246960 / 0.368560 / 0.433088 ms (geomean
+  0.227940 ms).
+- Custom/Humming latency ratios are 1.114x / 1.090x / 1.097x / 1.132x /
+  1.063x; geometric-mean ratio 1.099x.  The accepted implementation remains
+  6.3-13.2% slower pointwise and 9.89% slower geometrically.  Common addressing
+  closes roughly 3.5 percentage points of the previous paired geometric gap,
+  but the implementation still does not beat Humming.
+- Evidence logs:
+  `bench/results/tp4_humming_graph_coldl2_random_formal_post_common_address_window_20260903.log`
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_common_address_formal_post_humming_window_20260903.log`.
