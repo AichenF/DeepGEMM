@@ -191,6 +191,9 @@ def main() -> None:
                 "w2_s2r_prefetch": kernel_module.W2_S2R_PREFETCH
                 if args.impl == "custom"
                 else None,
+                "w13_s2r_prefetch": kernel_module.W13_S2R_PREFETCH
+                if args.impl == "custom"
+                else None,
                 "l2_cache_bytes": props.L2_cache_size,
                 "l2_flush_bytes": l2_flush_buffer.nbytes,
                 "l2_policy": "cold; 256MiB clear immediately before pipeline",

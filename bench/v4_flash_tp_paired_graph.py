@@ -262,6 +262,7 @@ def main() -> None:
                     "custom_fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "custom_w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "custom_w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
+                    "custom_w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
                     "timed_allreduce": "same SGLang CustomAllReduceV2 instance",
                 },
                 sort_keys=True,

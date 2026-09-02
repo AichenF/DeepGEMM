@@ -2348,3 +2348,19 @@ maximum rank latency of a full CUDA-Graph replay.
   performance decisions remain TP4.
 - Evidence:
   `bench/results/tp8_wgmma_graph_coldl2_s2r_prefetch_m8_smoke_20260903.log`.
+
+### WGMMA iteration 33a — extend cross-QGMMA S2R prefetch to W13
+
+- Added independent opt-in `V4_W13_S2R_PREFETCH=1`, reusing the validated
+  W2 next-K32 packed-weight/LUT prefetch while keeping the new W2 default on.
+- TP4 auto split-K=4, TP4 forced split-K=2, and TP8-shape split-K=4 all pass
+  with accepted numerical errors.  W13 cosine is at least 0.999999997 and W2
+  cosine at least 0.999997249.
+- All TP4/TP8 W13 specializations use 56 registers/thread with no local memory
+  and unchanged shared memory.  The register increase does not reduce
+  resource-feasible residency because shared memory already limits the kernel
+  to nine CTAs/SM.
+- Proceed to the paired random-route cold-L2 screen before changing the W13
+  default.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w13_s2r_prefetch_correctness_20260903.log`.

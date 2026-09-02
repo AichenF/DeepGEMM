@@ -64,9 +64,14 @@ FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
+W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "0") == "1"
 if W2_S2R_PREFETCH and (DEQUANT_SYNTH_LUT or W2_GLOBAL_LUT):
     raise ValueError(
         "V4_W2_S2R_PREFETCH currently probes only the shared-LUT path"
+    )
+if W13_S2R_PREFETCH and DEQUANT_SYNTH_LUT:
+    raise ValueError(
+        "V4_W13_S2R_PREFETCH currently probes only the shared-LUT path"
     )
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
@@ -129,6 +134,7 @@ static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
+static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -231,6 +237,8 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     constexpr int kEffectiveScaleBuffers =
         kUseTmaScale ? kScaleBuffers : kStages;
     constexpr int kNumNTiles = N / kWout;
+    constexpr bool kS2RPrefetch =
+        IsW13 ? kW13S2RPrefetch : kW2S2RPrefetch;
 
     const int split_idx = blockIdx.x % SplitK;
     const int task_idx = blockIdx.x / SplitK;
@@ -475,7 +483,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                 uint32_t packed1;
                 uint2 weight_lut0;
                 uint2 weight_lut1;
-                if constexpr (!IsW13 && kW2S2RPrefetch) {
+                if constexpr (kS2RPrefetch) {
                     if (k_step == 0) {
                         if constexpr (kWeightCommonAddress) {
                             asm volatile("ld.shared.b32 %0,[%1];"
@@ -561,7 +569,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     dequant_weight_word<kMode2Braid>(packed0, weight_lut0);
                 const uint2 fp8_1 =
                     dequant_weight_word<kMode2Braid>(packed1, weight_lut1);
-                if constexpr (!IsW13 && kW2S2RPrefetch) {
+                if constexpr (kS2RPrefetch) {
                     if (k_step + 1 < kBlockK / 32) {
                         const int next_k_step = k_step + 1;
                         const int next_common_weight_chunk = next_k_step ^
@@ -1109,7 +1117,8 @@ _ext = load_inline(
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
-          f"w2pf{int(W2_S2R_PREFETCH)}_mb{MIN_BLOCKS_PER_SM}_v34"),
+          f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
+          f"mb{MIN_BLOCKS_PER_SM}_v35"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1132,6 +1141,7 @@ _ext = load_inline(
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
+        f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",

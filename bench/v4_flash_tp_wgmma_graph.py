@@ -508,6 +508,7 @@ def main() -> None:
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
+                    "w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
                     "w2_epilogue": (
                         "BF16 route output + sglang moe_fused_mul_sum"
                         if kernel.W2_ROUTE_OUTPUT
