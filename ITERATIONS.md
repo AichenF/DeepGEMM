@@ -2122,3 +2122,16 @@ maximum rank latency of a full CUDA-Graph replay.
   eligible for cold-L2 grid screening.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_single_wg_persistent_correctness_20260903.log`.
+
+### WGMMA iteration 30b — single-WG persistent grid 8/SM screen
+
+- Screened the correct barrier-reuse scheduler at 624 CTAs (eight per H20 SM)
+  with 4 x 100 paired, individually cold TP4 samples at every target M.
+- It narrowly wins M32/M64 by 0.34%/0.45% but loses M8/M16/M128 by
+  3.44%/1.43%/3.85%.  Geometric means are 0.212772 ms custom and 0.209485 ms
+  Humming, so the candidate is 1.57% slower overall.
+- This does not establish an improvement.  Before rejection, run the refactored
+  uncapped p0 control and the p12 boundary: p0 measures loop/source overhead,
+  while p12 reduces serialized tasks per CTA at the cost of a second CTA wave.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_single_wg_persistent_p8_screen_20260903.log`.
