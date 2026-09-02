@@ -26,6 +26,9 @@ WOUT = int(os.environ.get("V4_WOUT", "128"))
 if WOUT not in (64, 128, 256):
     raise ValueError("V4_WOUT must be one of 64,128,256")
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
+MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
+if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
+    raise ValueError("V4_MIN_BLOCKS_PER_SM must be one of 0,8,10,12,14,16")
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
@@ -73,6 +76,12 @@ static constexpr int kStages = 2;
 static constexpr float kRoutedScale = 1.5f;
 static constexpr bool kW2RouteOutput = K_W2_ROUTE_OUTPUT;
 
+#if K_MIN_BLOCKS_PER_SM > 0
+#define ROUTE_LAUNCH_BOUNDS __launch_bounds__(128, K_MIN_BLOCKS_PER_SM)
+#else
+#define ROUTE_LAUNCH_BOUNDS __launch_bounds__(128)
+#endif
+
 __device__ __forceinline__ void mbar_init(uint32_t address) {
     asm volatile("mbarrier.init.shared.b64 [%0],1;" :: "r"(address));
 }
@@ -95,7 +104,7 @@ __device__ __forceinline__ cute::GmmaDescriptor desc_128b(uint32_t pointer) {
 }
 
 template <int K, int N, int SplitK, bool IsW13>
-__global__ __launch_bounds__(128) void route_gemm(
+__global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const __grid_constant__ CUtensorMap tma_weight,
         const uint8_t* __restrict__ weight_scale,
         const uint8_t* __restrict__ activation,
@@ -543,7 +552,7 @@ void cast_bf16(torch::Tensor input, torch::Tensor output);
 
 _ext = load_inline(
     name=(f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_wo{WOUT}_"
-          f"ro{int(W2_ROUTE_OUTPUT)}_v10"),
+          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v11"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],
@@ -552,6 +561,7 @@ _ext = load_inline(
         f"-DW13_SPLIT_K={W13_SPLIT_K}",
         f"-DK_WOUT={WOUT}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
+        f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
         "-gencode",

@@ -442,6 +442,7 @@ def main() -> None:
                         if kernel.W2_ROUTE_OUTPUT
                         else "FP32 weighted atomic scatter + BF16 cast"
                     ),
+                    "min_blocks_per_sm": kernel.MIN_BLOCKS_PER_SM,
                     "weight_dtype": "OCP MXFP4 E2M1",
                     "weight_scale": "E8M0 group32",
                     "activation_dtype": "FP8 E4M3 group128",

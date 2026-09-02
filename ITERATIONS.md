@@ -583,3 +583,22 @@ maximum rank latency of a full CUDA-Graph replay.
   0.564592 ms and geometric mean 0.339968 ms.  Correctness passes all points.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_accepted_defaults_screen_20260902.log`.
+
+### WGMMA iteration 9 — forced 12-CTA launch bound regresses
+
+- Change: add a configurable minimum-block launch bound and test
+  `__launch_bounds__(128, 12)` on the accepted WOUT=128 route-output kernel.
+  The intent was to relieve the register-limited occupancy found in cubin
+  inspection.
+- The compiler does honor it: all TP4 route-GEMM specializations fall from
+  45 to 40 registers/thread, with `LOCAL:0`.  Full-route M32 correctness is
+  unchanged (W2 cosine 0.999997241, rel-L2 0.002349063).
+- Required cold-L2 3x100 TP4 medians for M8/M16/M32/M64/M128 are 0.148064 /
+  0.248224 / 0.441760 / 0.571088 / 0.584384 ms; geometric mean is 0.352189
+  ms.  This is 3.6% slower than the immediately preceding accepted-default
+  screen (0.339968 ms), with every point regressing.
+- Conclusion: the additional nominal residency does not compensate for the
+  compiler's reduced scheduling freedom/ILP.  Reject `min_blocks=12` and keep
+  unconstrained launch bounds.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_mb12_screen_20260902.log`.

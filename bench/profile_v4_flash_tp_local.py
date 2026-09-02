@@ -122,6 +122,11 @@ def main() -> None:
                 "w2_route_output": os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
                 if args.impl == "custom"
                 else None,
+                "min_blocks_per_sm": int(
+                    os.environ.get("V4_MIN_BLOCKS_PER_SM", "0")
+                )
+                if args.impl == "custom"
+                else None,
                 "l2_cache_bytes": props.L2_cache_size,
                 "l2_flush_bytes": l2_flush_buffer.nbytes,
                 "l2_policy": "cold; 256MiB clear immediately before pipeline",
