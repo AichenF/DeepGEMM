@@ -1275,3 +1275,32 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_m32_common_address_random_detailed_coldl2_ncu.ncu-rep`
   and
   `bench/results/tp4_wgmma_m32_common_address_random_detailed_coldl2_ncu.log`.
+
+### WGMMA iteration 19 — deeper packed-weight TMA pipeline (rejected)
+
+- Added a compile-time `V4_WEIGHT_STAGES` specialization for two, three, or
+  four packed-weight TMA buffers.  Barrier arrays, prefetch distance, dynamic
+  shared-memory sizing, extension keys, profiler metadata, and benchmark
+  metadata all follow the selected depth.  The default remains two stages.
+- Three- and four-stage variants pass TP4 split-K=4, TP4 forced split-K=2,
+  and TP8-local-shape full-path correctness with the same errors as the
+  accepted two-stage path.
+- TP4 random-route cold 3x100 medians for M8/M16/M32/M64/M128 are:
+  - 2-stage control: 0.100256 / 0.156064 / 0.244416 / 0.351376 /
+    0.426976 ms; geomean 0.224773 ms.
+  - 3 stages: 0.108064 / 0.171664 / 0.268224 / 0.373376 / 0.465392 ms;
+    geomean 0.243986 ms.
+  - 4 stages: 0.111488 / 0.178144 / 0.279872 / 0.392736 / 0.487024 ms;
+    geomean 0.254286 ms.
+- Three and four stages lose at every M and regress geometric mean by 8.55%
+  and 13.13%.  The additional shared-memory residency cost dominates any
+  reduction in TMA wait time.  Reject both and retain two stages; the margins
+  are too large and uniform to justify a reverse-order expansion.
+- Every timed replay is preceded by the standard 256 MiB L2 clear outside the
+  CUDA-event interval.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_weight_stages3_4_correctness_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_stages2_control_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_stages3_screen_20260903.log`,
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_stages4_screen_20260903.log`.

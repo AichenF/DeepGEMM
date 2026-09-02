@@ -156,6 +156,9 @@ def main() -> None:
                 "scale_buffers": int(os.environ.get("V4_SCALE_BUFFERS", "2"))
                 if args.impl == "custom"
                 else None,
+                "weight_stages": int(os.environ.get("V4_WEIGHT_STAGES", "2"))
+                if args.impl == "custom"
+                else None,
                 "weight_swizzle_bytes": int(
                     os.environ.get("V4_WEIGHT_SWIZZLE", "64")
                 )

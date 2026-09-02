@@ -47,6 +47,9 @@ if SCALE_BUFFERS not in (1, 2):
     raise ValueError("V4_SCALE_BUFFERS must be 1 or 2")
 if SCALE_QUAD_REUSE == 1 and SCALE_BUFFERS != 2:
     raise ValueError("V4_SCALE_QUAD_REUSE=1 requires V4_SCALE_BUFFERS=2")
+WEIGHT_STAGES = int(os.environ.get("V4_WEIGHT_STAGES", "2"))
+if WEIGHT_STAGES not in (2, 3, 4):
+    raise ValueError("V4_WEIGHT_STAGES must be 2, 3, or 4")
 WEIGHT_SWIZZLE = int(os.environ.get("V4_WEIGHT_SWIZZLE", "64"))
 if WEIGHT_SWIZZLE not in (0, 64):
     raise ValueError("V4_WEIGHT_SWIZZLE must be 0 or 64")
@@ -115,7 +118,8 @@ static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
-static constexpr int kStages = 2;
+static constexpr int kStages = K_WEIGHT_STAGES;
+static_assert(kStages == 2 || kStages == 3 || kStages == 4);
 static constexpr float kRoutedScale = 1.5f;
 static constexpr bool kW2RouteOutput = K_W2_ROUTE_OUTPUT;
 
@@ -792,6 +796,7 @@ void cast_bf16(torch::Tensor input, torch::Tensor output);
 _ext = load_inline(
     name=(f"v4_flash_tp_wgmma_sdyn_wo{WOUT}_lr{LUT_ROWS}_"
           f"sr{SCALE_QUAD_REUSE}_sb{SCALE_BUFFERS}_"
+          f"st{WEIGHT_STAGES}_"
           f"ws{WEIGHT_SWIZZLE}_wca{int(WEIGHT_COMMON_ADDRESS)}_"
           f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v20"),
@@ -804,6 +809,7 @@ _ext = load_inline(
         f"-DK_LUT_ROWS={LUT_ROWS}",
         f"-DK_SCALE_QUAD_REUSE={SCALE_QUAD_REUSE}",
         f"-DK_SCALE_BUFFERS={SCALE_BUFFERS}",
+        f"-DK_WEIGHT_STAGES={WEIGHT_STAGES}",
         f"-DK_WEIGHT_SWIZZLE={WEIGHT_SWIZZLE}",
         f"-DK_WEIGHT_COMMON_ADDRESS={int(WEIGHT_COMMON_ADDRESS)}",
         f"-DK_DEQUANT_DP4A_HI={int(DEQUANT_DP4A_HI)}",
