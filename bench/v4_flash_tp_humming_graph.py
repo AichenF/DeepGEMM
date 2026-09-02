@@ -309,8 +309,27 @@ def correctness_metrics(
     torch.cuda.synchronize(device)
     assert case.graph_output is not None
     actual = case.graph_output.clone()
-    reference = case.local_output.clone()
+
+    # TWO_SHOT_PULL is allowed to reuse/overwrite the all-reduce input.  Build
+    # the NCCL reference from a separate untimed local pipeline so that we do
+    # not accidentally reduce an already-reduced buffer (which would produce
+    # an exact world-size factor error).  Separate intermediates also keep the
+    # pointers retained by the captured graph untouched.
+    reference_case = CapturedCase(
+        m=case.m,
+        x=case.x,
+        topk_ids=case.topk_ids,
+        topk_weights=case.topk_weights,
+        w13=case.w13,
+        w2=case.w2,
+        w13_tuning=case.w13_tuning,
+        w2_tuning=case.w2_tuning,
+        w13_block_m=case.w13_block_m,
+        intermediate_per_rank=case.intermediate_per_rank,
+    )
+    reference = reference_case.run_local().clone()
     dist.all_reduce(reference, group=nccl_group)
+    torch.cuda.synchronize(device)
 
     # FP64 diagnostics are outside the timed graph.  They remain stable even
     # when valid quantized values have a wide dynamic range.

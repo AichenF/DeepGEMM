@@ -81,3 +81,18 @@ maximum rank latency of a full CUDA-Graph replay.
   output vs NCCL sum has min-rank cosine 0.9999957033, max-rank rel-L2
   0.0029315142, and finite output on all ranks.  Marked smoke only; formal
   5-point/7-outer-run baseline still pending.
+
+### Baseline formal attempt 1 — rejected pull-path reference
+
+- TP4 balanced-route max-rank medians (7 outer samples x 100 graph replays):
+  M8 0.092633, M16 0.156537, M32 0.294000, M64 0.389452,
+  M128 0.418304 ms.
+- Push-path checks (M8/16/32) passed with cosine >=0.9999955 and rel-L2
+  <=0.00299.  Pull-path M64/128 showed cosine 1.0 and rel-L2 exactly 0.75.
+- Root cause: `TWO_SHOT_PULL` may overwrite/reuse the custom-AR input.  The
+  harness cloned that already-reduced buffer and then reduced it once more via
+  NCCL, making the reference exactly 4x the graph result.  This is a reference
+  bug, not evidence of a kernel error.
+- Decision: do not accept this attempt as the formal baseline.  Correctness now
+  recomputes the local pipeline into independent untimed buffers before NCCL;
+  rerun all five points.
