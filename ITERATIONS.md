@@ -1997,3 +1997,18 @@ maximum rank latency of a full CUDA-Graph replay.
   Test these independently before restoring persistence.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_ws_tp8_no_stage_reuse_probe_20260903.log`.
+
+### WGMMA iteration 29k — remove dynamic register reconfiguration (incorrect)
+
+- Removed both `warpgroup_reg_dealloc<48>` and
+  `warpgroup_reg_alloc<112>` from the candidate, leaving all scheduling,
+  synchronization, and math unchanged.
+- The forced-rebuild TP8 maximal-skew result is numerically identical to the
+  prior binary: cosine 0.008614961, rel-L2 1.054372772, absmax 49,920, and
+  4,096 nonzero output elements.  Dynamic register reconfiguration is not the
+  correctness cause.
+- No performance timing ran.  Further work must compare the duplicated
+  single-tile math/data indexing directly against the accepted generic kernel
+  rather than continue speculative barrier changes.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_ws_no_reg_reconfig_correctness_20260903.log`.
