@@ -70,6 +70,9 @@ if W2_PERSISTENT_BLOCKS_PER_SM not in (0, 2, 4, 6, 8, 10, 12):
     raise ValueError(
         "V4_W2_PERSISTENT_BLOCKS_PER_SM must be one of 0,2,4,6,8,10,12"
     )
+W2_PERSISTENT_STAGES = int(os.environ.get("V4_W2_PERSISTENT_STAGES", "2"))
+if W2_PERSISTENT_STAGES not in (2, 4, 5):
+    raise ValueError("V4_W2_PERSISTENT_STAGES must be one of 2,4,5")
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
     raise ValueError("V4_MIN_BLOCKS_PER_SM must be one of 0,8,10,12,14,16")
@@ -135,6 +138,9 @@ static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
 static constexpr int kStages = K_WEIGHT_STAGES;
 static_assert(kStages == 2 || kStages == 3 || kStages == 4);
+static constexpr int kW2PersistentStages = K_W2_PERSISTENT_STAGES;
+static_assert(kW2PersistentStages == 2 || kW2PersistentStages == 4
+              || kW2PersistentStages == 5);
 static constexpr float kRoutedScale = 1.5f;
 static constexpr bool kW2RouteOutput = K_W2_ROUTE_OUTPUT;
 
@@ -203,7 +209,7 @@ __device__ __forceinline__ uint2 dequant_weight_word(
         kDequantDp4aHi, kDequantDp4aLo>(packed, lut);
 }
 
-template <int K, int N, int SplitK, bool IsW13>
+template <int K, int N, int SplitK, bool IsW13, int Stages = kStages>
 __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const __grid_constant__ CUtensorMap tma_weight,
         const __grid_constant__ CUtensorMap tma_weight_scale,
@@ -220,6 +226,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     static_assert(K % kBlockK == 0);
     static_assert(N % kWout == 0);
     static_assert((K / kBlockK) % SplitK == 0);
+    static_assert(Stages >= 2 && Stages <= 5);
     constexpr int kNumKTiles = K / kBlockK;
     constexpr int kKTilesPerSplit = kNumKTiles / SplitK;
     constexpr int kWeightStageBytes = kWout * (kBlockK / 2);
@@ -230,7 +237,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     constexpr int kScaleStageBytes = kWout * kScaleRowBytes;
     constexpr bool kUseTmaScale = K >= 512;
     constexpr int kEffectiveScaleBuffers =
-        kUseTmaScale ? kScaleBuffers : kStages;
+        kUseTmaScale ? kScaleBuffers : Stages;
     constexpr int kNumNTiles = N / kWout;
 
     const int split_idx = blockIdx.x % SplitK;
@@ -238,7 +245,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     extern __shared__ __align__(1024) uint8_t dynamic_smem[];
     uint8_t* weight_smem = dynamic_smem;
     uint8_t* weight_scale_smem =
-        weight_smem + kStages * kWeightStageBytes;
+        weight_smem + Stages * kWeightStageBytes;
     uint8_t* activation_smem =
         weight_scale_smem + kEffectiveScaleBuffers * kScaleStageBytes;
     const uint32_t weight_smem_addr =
@@ -250,7 +257,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     const int weight_swizzle_row_offset =
         kWeightSwizzle == 64 ? ((weight_smem_addr >> 7) & 3) : 0;
 
-    __shared__ __align__(8) uint64_t full_barriers[kStages];
+    __shared__ __align__(8) uint64_t full_barriers[Stages];
     __shared__ __align__(8) uint64_t scale_barrier;
     __shared__ uint2 lut_smem[kDequantSynthLut ? 1 : kLutRows];
     __shared__ float activation_scale_smem[kTok];
@@ -268,9 +275,9 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         }
     }
 
-    uint32_t barrier_addr[kStages];
+    uint32_t barrier_addr[Stages];
     #pragma unroll
-    for (int stage = 0; stage < kStages; ++stage)
+    for (int stage = 0; stage < Stages; ++stage)
         barrier_addr[stage] = static_cast<uint32_t>(
             __cvta_generic_to_shared(&full_barriers[stage]));
     const uint32_t scale_barrier_addr = static_cast<uint32_t>(
@@ -284,7 +291,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         return;
     if (tid == 0) {
         #pragma unroll
-        for (int stage = 0; stage < kStages; ++stage)
+        for (int stage = 0; stage < Stages; ++stage)
             mbar_init(barrier_addr[stage]);
         if constexpr (kUseTmaScale && kScaleQuadReuse == 4
                       && kScaleBuffers == 1)
@@ -393,17 +400,17 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
 
     #pragma unroll
     for (int local_kt = 0;
-         local_kt < kStages && local_kt < kKTilesPerSplit; ++local_kt) {
+         local_kt < Stages && local_kt < kKTilesPerSplit; ++local_kt) {
         const int item_idx = task_seq * kKTilesPerSplit + local_kt;
-        load_weight_stage(local_kt, item_idx % kStages);
+        load_weight_stage(local_kt, item_idx % Stages);
     }
 
     float accum[kWgmmaGroups][4] = {};
 
     for (int local_kt = 0; local_kt < kKTilesPerSplit; ++local_kt) {
         const int item_idx = task_seq * kKTilesPerSplit + local_kt;
-        const int stage = item_idx % kStages;
-        const uint32_t stage_phase = (item_idx / kStages) & 1u;
+        const int stage = item_idx % Stages;
+        const uint32_t stage_phase = (item_idx / Stages) & 1u;
         const int global_kt = kt_begin + local_kt;
         const int scale_stage =
             !kUseTmaScale
@@ -557,8 +564,8 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         if ((local_kt & 3) == 3 && local_kt + 1 < kKTilesPerSplit)
             load_single_scale(global_kt + 1);
 
-        if (local_kt + kStages < kKTilesPerSplit)
-            load_weight_stage(local_kt + kStages, stage);
+        if (local_kt + Stages < kKTilesPerSplit)
+            load_weight_stage(local_kt + Stages, stage);
     }
 
     const int route0 = route_ids[metadata_slot][column_base];
@@ -777,7 +784,7 @@ CUtensorMap make_weight_scale_desc(void* pointer, int K, int rows) {
     return descriptor;
 }
 
-template <int K, int N, int SplitK, bool IsW13>
+template <int K, int N, int SplitK, bool IsW13, int Stages = kStages>
 void launch_route_gemm(
         torch::Tensor weight, torch::Tensor weight_scale,
         torch::Tensor activation, torch::Tensor activation_scale,
@@ -812,13 +819,13 @@ void launch_route_gemm(
         }
     }
     const int grid = grid_tasks * SplitK;
-    constexpr int effective_scale_buffers = K >= 512 ? kScaleBuffers : kStages;
+    constexpr int effective_scale_buffers = K >= 512 ? kScaleBuffers : Stages;
     constexpr int dynamic_smem_bytes =
-        kStages * kWout * (kBlockK / 2)
+        Stages * kWout * (kBlockK / 2)
         + effective_scale_buffers * kWout * 16
         + kTok * kBlockK;
     const auto stream = at::cuda::getCurrentCUDAStream();
-    route_gemm<K, N, SplitK, IsW13><<<
+    route_gemm<K, N, SplitK, IsW13, Stages><<<
         grid, 128, dynamic_smem_bytes, stream>>>(
         weight_descriptor,
         scale_descriptor,
@@ -882,12 +889,12 @@ void run_w2(
         int persistent_blocks_per_sm) {
     const int routes = topk_weights.numel();
     if (intermediate == 512) {
-        launch_route_gemm<512, 4096, 1, false>(
+        launch_route_gemm<512, 4096, 1, false, kW2PersistentStages>(
             weight, weight_scale, activation, activation_scale,
             sorted_ids, expert_ids, num_tokens_padded, topk_weights,
             output, lut, routes, persistent_blocks_per_sm);
     } else if (intermediate == 256) {
-        launch_route_gemm<256, 4096, 1, false>(
+        launch_route_gemm<256, 4096, 1, false, kW2PersistentStages>(
             weight, weight_scale, activation, activation_scale,
             sorted_ids, expert_ids, num_tokens_padded, topk_weights,
             output, lut, routes, persistent_blocks_per_sm);
@@ -1034,7 +1041,8 @@ _ext = load_inline(
           f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"m2{int(MODE2_BRAID)}_"
-          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v30"),
+          f"ro{int(W2_ROUTE_OUTPUT)}_pst{W2_PERSISTENT_STAGES}_"
+          f"mb{MIN_BLOCKS_PER_SM}_v31"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1049,6 +1057,7 @@ _ext = load_inline(
         f"-DK_SCALE_QUAD_REUSE={SCALE_QUAD_REUSE}",
         f"-DK_SCALE_BUFFERS={SCALE_BUFFERS}",
         f"-DK_WEIGHT_STAGES={WEIGHT_STAGES}",
+        f"-DK_W2_PERSISTENT_STAGES={W2_PERSISTENT_STAGES}",
         f"-DK_WEIGHT_SWIZZLE={WEIGHT_SWIZZLE}",
         f"-DK_WEIGHT_COMMON_ADDRESS={int(WEIGHT_COMMON_ADDRESS)}",
         f"-DK_DEQUANT_DP4A_HI={int(DEQUANT_DP4A_HI)}",

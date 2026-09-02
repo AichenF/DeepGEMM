@@ -2164,3 +2164,19 @@ maximum rank latency of a full CUDA-Graph replay.
   all four K128 weight transfers to be outstanding before computation.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_single_wg_persistent_p12_screen_20260903.log`.
+
+### WGMMA iteration 30e — five-stage W2 initial TP8 launch failure
+
+- Added a W2-only compile-time stage count and configured TP4 for five stages
+  at grid 312, matching the structural feature identified in Humming's NCU
+  report.  TP4 balanced and maximal-skew correctness both pass with exactly
+  the accepted errors.
+- Applying five stages unchanged to TP8 K=256 requests 52,224 bytes of dynamic
+  shared memory because scalar weight scales are stage-local, and the launch
+  fails with `cudaErrorInvalidValue` at the default 48 KiB limit.  No timing is
+  eligible while TP8 does not run.
+- Preserve the failure, then specialize TP8 to two stages: its two K128 tiles
+  are already fully exposed at that depth, so additional buffers have no
+  pipeline value.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_persistent_stage5_initial_correctness_20260903.log`.

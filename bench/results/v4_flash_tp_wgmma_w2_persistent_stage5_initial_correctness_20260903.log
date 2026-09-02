@@ -1,0 +1,19 @@
+W2-only five-stage persistent candidate initial correctness
+Date: 2026-09-03
+Environment: V4_W2_PERSISTENT_BLOCKS_PER_SM=4 V4_W2_PERSISTENT_STAGES=5
+
+TP4 K=512 M8 balanced and maximal-skew both pass with errors identical to the
+accepted implementation:
+- balanced: W13 cos=0.999999998, ACT cos=0.999999759,
+  W2 cos=0.999997256, finite=true.
+- skew: W13 cos=0.999999997, ACT cos=0.999999649,
+  W2 cos=0.999997235, finite=true.
+
+TP8-shape K=256 M8 maximal-skew fails at W2 launch with cudaErrorInvalidValue.
+For K=256, five packed-weight stages plus five scalar-scale stages and one
+activation tile request 52,224 bytes of dynamic shared memory, above the
+non-opt-in 48 KiB launch limit.  This is a launch-geometry failure, not a
+numeric failure.  TP8 has only two K128 tiles, so the repair is to specialize
+it back to two stages while retaining five stages only for TP4 K=512.
+
+No performance timing was collected before the TP8 run-through requirement.
