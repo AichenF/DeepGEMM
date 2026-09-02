@@ -1966,3 +1966,20 @@ maximum rank latency of a full CUDA-Graph replay.
   epilogue; this isolates address/layout from global load and route logic.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_ws_role_swap_correctness_20260903.log`.
+
+### WGMMA iteration 29i — controlled-input and single-task probes
+
+- Added a correctness-only `V4_TEST_QACT_ONE=1` harness switch which fills
+  qactivation and its scales with one after the normal W13/middle path.  Even
+  this controlled nonzero input leaves balanced M8 W2 exactly zero, ruling out
+  the activation distribution and FP8 quantizer as causes.
+- Ran normal maximal-skew M8 without changing the kernel.  It has 192 runtime
+  W2 tasks under grid=234, so each active CTA processes exactly one output
+  task.  W2 is still wrong, but now partially nonzero and numerically explosive
+  (cosine 0.0151, rel-L2 1.063, absmax 77,824, 10,179 nonzero outputs).
+- Cross-task task/scale-slot reuse is therefore not required to trigger the
+  fault.  TP4 still reuses each of its two stages within one task (K tiles
+  0/2 and 1/3); the next discriminator is the TP8 K=256 specialization, whose
+  two K tiles consume each stage exactly once.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_ws_qact_one_and_single_task_probes_20260903.log`.

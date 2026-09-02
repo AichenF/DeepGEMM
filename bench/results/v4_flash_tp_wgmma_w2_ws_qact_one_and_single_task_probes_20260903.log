@@ -1,0 +1,18 @@
+QACT-ONE TP4 M8 BALANCED
+V4_WGMMA_WRONG
+V4_WGMMA_QACT nonzero=24576 final_tile_nonzero=6144 final_tile_k0_nonzero=48
+V4_WGMMA_CHECK M=8 pattern=balanced Is=512 active=48 padded=384 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999998 rel_l2=0.000076187
+V4_WGMMA_ACT cos=0.999999759 rel_l2=0.000694956
+V4_WGMMA_W2 cos=0.000000000 rel_l2=1.000000000 finite=True absmax=0 nonzero=0
+
+NORMAL TP4 M8 MAXIMAL-SKEW
+V4_WGMMA_WRONG
+V4_WGMMA_QACT nonzero=20620 final_tile_nonzero=5134 final_tile_k0_nonzero=43
+V4_WGMMA_CHECK M=8 pattern=skew Is=512 active=6 padded=48 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077292
+V4_WGMMA_ACT cos=0.999999649 rel_l2=0.000838723
+V4_WGMMA_W2 cos=0.015118788 rel_l2=1.063061960 finite=True absmax=77824 nonzero=10179
+
+At skew M8 there are exactly 6 padded M-blocks * 32 N tiles = 192
+runtime W2 tasks, fewer than grid=234, so every active CTA handles one task.

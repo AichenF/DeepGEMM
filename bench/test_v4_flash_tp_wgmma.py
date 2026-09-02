@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 
 import torch
 
@@ -157,6 +158,9 @@ def main() -> None:
             m_major_scale=False,
             scale_dtype="float32",
         )
+    if os.environ.get("V4_TEST_QACT_ONE", "0") == "1":
+        qact.fill_(1.0)
+        act_scale.fill_(1.0)
     qact_u8 = qact.view(torch.uint8)
     print(
         "V4_WGMMA_QACT "
