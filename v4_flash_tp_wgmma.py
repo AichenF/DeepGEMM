@@ -198,6 +198,8 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         static_cast<uint32_t>(__cvta_generic_to_shared(weight_scale_smem));
     const uint32_t activation_smem_addr =
         static_cast<uint32_t>(__cvta_generic_to_shared(activation_smem));
+    const int weight_swizzle_row_offset =
+        kWeightSwizzle == 64 ? ((weight_smem_addr >> 7) & 3) : 0;
 
     __shared__ __align__(8) uint64_t full_barriers[kStages];
     __shared__ __align__(8) uint64_t scale_barrier;
@@ -389,10 +391,10 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                 const int group_row0 = group * 64 + row0;
                 const int group_row1 = group * 64 + row1;
                 const int weight_chunk0 = kWeightSwizzle == 64
-                    ? (k_step ^ (group_row0 & 3))
+                    ? (k_step ^ ((group_row0 + weight_swizzle_row_offset) & 3))
                     : k_step;
                 const int weight_chunk1 = kWeightSwizzle == 64
-                    ? (k_step ^ (group_row1 & 3))
+                    ? (k_step ^ ((group_row1 + weight_swizzle_row_offset) & 3))
                     : k_step;
                 uint32_t packed0;
                 uint32_t packed1;
@@ -762,7 +764,7 @@ _ext = load_inline(
     name=(f"v4_flash_tp_wgmma_sdyn_wo{WOUT}_lr{LUT_ROWS}_"
           f"sr{SCALE_QUAD_REUSE}_sb{SCALE_BUFFERS}_"
           f"ws{WEIGHT_SWIZZLE}_ro{int(W2_ROUTE_OUTPUT)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v17"),
+          f"mb{MIN_BLOCKS_PER_SM}_v18"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],

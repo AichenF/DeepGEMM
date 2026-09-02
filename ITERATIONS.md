@@ -1033,3 +1033,18 @@ maximum rank latency of a full CUDA-Graph replay.
   before testing the corrected address mapping.
 - Evidence log:
   `bench/results/v4_flash_tp_wgmma_weight_swizzle64_correctness_tp4_20260903.log`.
+
+### WGMMA iteration 16b — pointer offset alone does not repair the mapping
+
+- Added CUDA's documented runtime origin term,
+  `(weight_smem_address / 128) % 4`, to the 64-byte TMA swizzle index.
+- Reject before timing: TP4 correctness is byte-for-byte unchanged from 16a
+  (W13 cosine 0.246405566, W2 cosine 0.251794636).  The observed dynamic
+  shared-memory origin is already on the zero phase, so the missing term is
+  the swizzle row coordinate itself.
+- A 64-byte logical tensor row occupies half of a 128-byte shared-memory bank
+  line.  The TMA pattern's `y` coordinate is consequently `logical_row / 2`,
+  while the low/high 64-byte half is preserved.  The next specialization uses
+  `chunk ^ (((logical_row >> 1) + origin) & 3)`.
+- Evidence log:
+  `bench/results/v4_flash_tp_wgmma_weight_swizzle64_offset_correctness_tp4_20260903.log`.
