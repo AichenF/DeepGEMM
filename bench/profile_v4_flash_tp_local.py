@@ -185,11 +185,6 @@ def main() -> None:
                 "fused_activation_quant": kernel_module.FUSED_ACT_QUANT
                 if args.impl == "custom"
                 else None,
-                "split_major_task_order": (
-                    kernel_module.SPLIT_MAJOR_TASK_ORDER
-                    if args.impl == "custom"
-                    else None
-                ),
                 "w2_global_lut": kernel_module.W2_GLOBAL_LUT
                 if args.impl == "custom"
                 else None,

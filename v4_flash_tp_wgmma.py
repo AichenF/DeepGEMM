@@ -61,7 +61,6 @@ DEQUANT_DP4A_LO = os.environ.get("V4_DEQUANT_DP4A_LO", "1") == "1"
 DEQUANT_SYNTH_LUT = os.environ.get("V4_DEQUANT_SYNTH_LUT", "0") == "1"
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
-SPLIT_MAJOR_TASK_ORDER = os.environ.get("V4_SPLIT_MAJOR_TASK_ORDER", "0") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
@@ -133,7 +132,6 @@ static constexpr bool kDequantDp4aHi = K_DEQUANT_DP4A_HI;
 static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
-static constexpr bool kSplitMajorTaskOrder = K_SPLIT_MAJOR_TASK_ORDER;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
@@ -242,15 +240,10 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     constexpr bool kS2RPrefetch =
         IsW13 ? kW13S2RPrefetch : kW2S2RPrefetch;
 
-    const int expert_task_stride = kNumNTiles * SplitK;
-    const int m_block_idx = blockIdx.x / expert_task_stride;
-    const int task_in_expert = blockIdx.x % expert_task_stride;
-    const int split_idx = kSplitMajorTaskOrder
-        ? task_in_expert / kNumNTiles
-        : task_in_expert % SplitK;
-    const int n_block_idx = kSplitMajorTaskOrder
-        ? task_in_expert % kNumNTiles
-        : task_in_expert / SplitK;
+    const int split_idx = blockIdx.x % SplitK;
+    const int task_idx = blockIdx.x / SplitK;
+    const int m_block_idx = task_idx / kNumNTiles;
+    const int n_block_idx = task_idx % kNumNTiles;
     if (m_block_idx * kTok >= __ldg(num_tokens_padded))
         return;
 
@@ -1123,7 +1116,6 @@ _ext = load_inline(
           f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"m2{int(MODE2_BRAID)}_"
-          f"smo{int(SPLIT_MAJOR_TASK_ORDER)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
           f"mb{MIN_BLOCKS_PER_SM}_v35"),
@@ -1147,7 +1139,6 @@ _ext = load_inline(
         f"-DK_DEQUANT_DP4A_LO={int(DEQUANT_DP4A_LO)}",
         f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
-        f"-DK_SPLIT_MAJOR_TASK_ORDER={int(SPLIT_MAJOR_TASK_ORDER)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
