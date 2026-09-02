@@ -1114,3 +1114,23 @@ maximum rank latency of a full CUDA-Graph replay.
   is why formal per-point medians, not this short run, are retained above.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_random_weight_swizzle64_default_restore_20260903.log`.
+
+### Post-iteration-16 paired Humming gap
+
+- Re-ran Humming and the accepted default back-to-back with the formal TP4
+  random-route 9x200 cold-L2 protocol.  Both CUDA graphs contain local W13,
+  activation, local W2, route reduction, and SGLang `CustomAllReduceV2`; route
+  construction/alignment remains precomputed outside capture and timing.
+- Humming medians for M8/M16/M32/M64/M128 are 0.090048 / 0.142880 /
+  0.225120 / 0.332640 / 0.408576 ms (geomean 0.208459 ms).  Custom medians are
+  0.102496 / 0.159264 / 0.253376 / 0.376032 / 0.474192 ms (geomean
+  0.236349 ms).
+- Custom/Humming latency ratios are 1.138x / 1.115x / 1.126x / 1.130x /
+  1.161x; geometric-mean ratio 1.134x.  The accepted implementation therefore
+  remains 11.5-16.1% slower pointwise and 13.38% slower geometrically.  The
+  swizzle improvement is real but does not change the overall verdict: it has
+  not beaten Humming.
+- Evidence logs:
+  `bench/results/tp4_humming_graph_coldl2_random_formal_post_weight_swizzle_window_20260903.log`
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_swizzle64_formal_post_humming_window_20260903.log`.
