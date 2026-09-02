@@ -1,0 +1,5 @@
+V4_WGMMA_CHECK M=32 pattern=balanced Is=512 active=192 padded=1536 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False w2_dual_task_cta=True
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077594
+V4_WGMMA_ACT cos=0.999999691 rel_l2=0.000787278
+V4_WGMMA_W2 cos=0.999997241 rel_l2=0.002348885 finite=True
+V4_WGMMA_OK

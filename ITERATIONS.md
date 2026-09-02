@@ -1677,3 +1677,57 @@ maximum rank latency of a full CUDA-Graph replay.
   implementation and M use a 256 MiB pre-replay L2 clear outside timing.
 - Evidence:
   `bench/results/tp4_paired_graph_batch_coldl2_skew_wout64_screen_20260903.log`.
+
+### Skew-M8 layer diagnosis
+
+- Cold Nsight Systems replays show that the 128-channel custom path spends
+  16.448 us in W13 and 9.728 us in W2, versus Humming's 15.168 us and
+  6.336 us.  The custom fused activation/quant kernel takes 1.792 us versus
+  Humming's 1.376 us SwiGLU plus 2.592 us across its two quant kernels, so the
+  fused middle stage saves about 2.18 us; W2 is the dominant remaining gap.
+- The 64-channel diagnostic changes custom W13/W2 to 15.776/9.088 us, showing
+  that both layers contribute roughly half of its small M8-only gain.  Forcing
+  W13 split-K=2 instead makes W13 23.232 us, decisively validating split-K=4
+  for this low-parallelism shape.
+- A focused 400-sample test of the previously rejected direct-global W2 LUT
+  gives 0.042464 ms versus the shared-LUT audit's 0.042496 ms, indistinguishable
+  at this noise level and still 8.33% behind its paired Humming sample.  There
+  is no skew-only reversal to justify that path.
+- Evidence:
+  `bench/results/tp4_{wgmma_m8_skew_wout128,humming_m8_skew,wgmma_m8_skew_wout64,wgmma_m8_skew_split2}_coldl2_nsys.{log,nsys-rep}`
+  and
+  `bench/results/tp4_paired_graph_batch_coldl2_skew_m8_w2_global_lut_screen_20260903.log`.
+
+### WGMMA iteration 27 — two concurrent W2 warp-groups per CTA (rejected)
+
+- Added an opt-in `V4_W2_DUAL_TASK_CTA=1` specialization.  A 256-thread CTA
+  runs two independent 128-thread WGMMA groups concurrently, with separate
+  TMA stages/barriers/activation storage and one shared E8M0 LUT.  The grid is
+  halved without serially walking tasks, so the design remains independent of
+  the runtime expert distribution and directly tests whether block/LUT setup
+  can be amortized safely.
+- The first TP8-shape check correctly failed with non-finite W2 output: the
+  K=256 scalar scale-loader retained `blockDim.x` as its stride and each
+  warp-group therefore skipped half its scale entries.  Changing that loop to
+  the warp-group width of 128 and forcing a fresh extension fixed the bug.
+  Final TP4 skew, TP4 balanced, and TP8-shape checks all pass; worst final W2
+  cosine is 0.999997235 and all outputs are finite.
+- The batch-paired TP4 random-route cold 4x100 screen gives custom medians
+  0.097536 / 0.152448 / 0.232448 / 0.323680 / 0.446416 ms, versus Humming
+  0.089856 / 0.145872 / 0.225312 / 0.316608 / 0.421648 ms.  The candidate
+  loses every M by 2.23-8.55% and loses geometric mean by 4.84%.
+- It also fails its intended M8 maximal-skew corner: 0.042768 ms versus
+  Humming 0.039456 ms (8.39% slower), and is slightly slower than the
+  one-warp-group custom control's 0.042496 ms.  Doubling CTA width couples the
+  groups at block-wide barriers and halves CTA-level scheduling flexibility;
+  LUT amortization cannot recover those costs.  Reject the candidate and keep
+  `V4_W2_DUAL_TASK_CTA=0` pending an exact rollback of generic-kernel changes.
+- Every performance sample uses a separate 256 MiB pre-replay L2 clear outside
+  the event interval.  Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_dual_task_skew_m8_correctness_20260903.log`,
+  `bench/results/v4_flash_tp_wgmma_w2_dual_task_tp8shape_correctness_20260903.log`,
+  `bench/results/v4_flash_tp_wgmma_w2_dual_task_tp8shape_correctness_fixed_20260903.log`,
+  `bench/results/v4_flash_tp_wgmma_w2_dual_task_tp4_{skew,balanced}_correctness_fixed_20260903.log`,
+  `bench/results/tp4_paired_graph_batch_coldl2_random_w2_dual_task_screen_20260903.log`,
+  and
+  `bench/results/tp4_paired_graph_batch_coldl2_skew_m8_w2_dual_task_screen_20260903.log`.

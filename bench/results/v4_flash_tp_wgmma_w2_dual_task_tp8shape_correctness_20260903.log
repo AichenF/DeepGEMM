@@ -1,0 +1,5 @@
+V4_WGMMA_CHECK M=8 pattern=skew Is=256 active=6 padded=48 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False w2_dual_task_cta=True
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077480
+V4_WGMMA_ACT cos=0.999999763 rel_l2=0.000689115
+V4_WGMMA_W2 cos=nan rel_l2=nan finite=False
+V4_WGMMA_WRONG
