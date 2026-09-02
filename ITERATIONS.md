@@ -2614,3 +2614,22 @@ maximum rank latency of a full CUDA-Graph replay.
 - Extended the untracked correctness harness with an explicit scale range so
   the normal fast path, lower fallback, and upper fallback can be tested
   independently at TP4 split-K=4/2 and TP8 shape before cold-L2 timing.
+
+### WGMMA iteration 40b — per-word global fallback is correct but rejected
+
+- Correctness covers affine codes 125..128, low fallback codes 118..121,
+  upper fallback code 134 with finite test operands, and TP8 mixed 118..124.
+  All finite cases pass.  Random large-magnitude code-134 weights reproduce
+  the canonical LUT's E4M3 NaNs and are excluded as numerically ill-posed.
+- Despite all benchmark scales taking the affine branch, graph-internal cold
+  timing regresses local total by 11.03%/15.93%/18.24% at M8/M32/M128;
+  W13 alone loses as much as 21.37%.  The runtime branch destroys the inner
+  schedule, not just fallback performance.
+- Reject before distributed timing and restore the exact general-scale S2R
+  winner.  Humming source inspection identifies the viable production path:
+  normalize each expert's E8M0 range to offsets 1..12 once at model load,
+  adjust only clamped FP4 groups, and apply one expert scale in the epilogue.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_synth_global_fallback_correctness_20260903.log`
+  and
+  `bench/results/tp4_local_graph_synth_global_fallback_screen_20260903.log`.

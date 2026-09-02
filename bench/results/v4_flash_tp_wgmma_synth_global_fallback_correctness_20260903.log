@@ -1,0 +1,30 @@
+Full-domain synthesized-LUT fast path correctness
+Date: 2026-09-03
+Candidate: V4_DEQUANT_SYNTH_LUT=1 with affine 122..133 fast path and direct
+global 256-row LUT fallback outside that range.
+
+Fast range 125..128, TP4 M8 balanced split-K=4:
+W13 cos=0.999999998 rel_l2=0.000076187
+ACT cos=0.999999759 rel_l2=0.000694956
+W2  cos=0.999997256 rel_l2=0.002342691 finite=True
+
+Low fallback 118..121, TP4 M8 skew forced split-K=2:
+W13 cos=0.999957352 rel_l2=0.009236177
+ACT cos=0.999907034 rel_l2=0.013639286
+W2  cos=0.999954997 rel_l2=0.009488541 finite=True
+
+Upper fallback 134, TP4 M8 skew split-K=4, packed byte 0x11 and input scale
+1e-8 (avoids the full LUT's intentional E4M3 NaNs for large FP4 codes):
+W13 cos=0.999999998 rel_l2=0.000076863
+ACT cos=1.000000000 rel_l2=0.000000000
+W2  cos=0.999999841 rel_l2=0.000582503 finite=True
+
+Mixed low fallback/fast 118..124, TP8 local shape M8 skew split-K=4:
+W13 cos=0.999999322 rel_l2=0.001164421
+ACT cos=0.999994835 rel_l2=0.003215168
+W2  cos=0.999996546 rel_l2=0.002628611 finite=True
+
+All finite gates print V4_WGMMA_OK.  A random-packed upper-134 diagnostic
+produces NaN in both kernel and reference because the canonical LUT contains
+E4M3 byte 127 for magnitudes that overflow; it is not treated as a kernel
+failure or a valid finite correctness sample.

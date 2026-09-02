@@ -1,0 +1,27 @@
+Full-domain synth/global-fallback local graph cold-L2 screen
+Date: 2026-09-03
+Protocol: single-GPU TP4 random route; graph-internal external CUDA event
+nodes; 100 samples per M; separate 256 MiB clear before every graph replay,
+excluded from all events.  Benchmark scales are entirely in the affine fast
+range, so no dynamic fallback load executes.
+
+Candidate min/median/max us:
+M=8   W13 57.280/57.952/59.008  W2 32.800/33.264/34.784  total 115.200/116.640/118.816
+M=32  W13 151.424/152.304/154.720 W2 80.928/81.456/82.688 total 259.520/260.896/263.616
+M=128 W13 260.768/262.624/266.240 W2 136.672/137.840/139.168 total 430.688/432.672/436.096
+
+Contemporary exact-winner control medians from the immediately preceding
+same profiler window are:
+M=8   W13 50.432 W2 29.440 total 105.056
+M=32  W13 127.968 W2 69.280 total 225.056
+M=128 W13 216.384 W2 117.024 total 365.920
+
+Candidate/control median ratios:
+M=8   W13=1.14911 W2=1.12989 total=1.11026
+M=32  W13=1.19017 W2=1.17575 total=1.15925
+M=128 W13=1.21369 W2=1.17788 total=1.18242
+
+Decision: reject without distributed timing.  Merely retaining the runtime
+range branch changes the inner-loop schedule enough to lose 11-18% total,
+even when every scale takes the synthesized side.  Arbitrary-scale support
+must be resolved offline or at kernel granularity, not per dequantized word.
