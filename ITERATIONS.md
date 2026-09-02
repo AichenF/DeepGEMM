@@ -656,3 +656,28 @@ maximum rank latency of a full CUDA-Graph replay.
   9x200 confirmation and TP8/skew correctness before final acceptance.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_tma_scales_screen_20260902.log`.
+
+### Iteration 10 formal confirmation and routing checks
+
+- Full-route maximal-skew TP4 M128 and balanced TP8-local-shape M32 checks
+  both pass.  The TP8 W2 scalar-scale fallback is exercised; worst W2 cosine
+  is 0.999997240, worst rel-L2 is 0.002349543, and all outputs are finite.
+- Formal protocol: TP4 balanced full graph, 9x200 individually cold replays
+  per M, max rank, all accepted settings at their unset defaults.
+- Min / median / max latency (ms):
+  - M8: 0.121440 / 0.124288 / 0.264416
+  - M16: 0.190848 / 0.193152 / 0.244320
+  - M32: 0.334624 / 0.372864 / 0.471584
+  - M64: 0.456192 / 0.494304 / 0.542528
+  - M128: 0.472800 / 0.512704 / 0.545408
+- Geometric mean is 0.295902 ms, a 14.15% latency reduction (1.165x
+  speedup) against the pre-TMA-scale route-output formal result (0.344674
+  ms).  Accept the optimization.
+- Machine contention/clock drift is visible in the batch medians: M32 rises
+  from about 0.345 to 0.425 ms and M64/M128 also rise later in the run.  The
+  old Humming formal run was collected in a different time window, so its
+  nominal custom/Humming ratios (1.283x / 1.207x / 1.268x / 1.217x / 1.242x)
+  are diagnostic only.  Re-run Humming cold in the same current window before
+  reporting a new apples-to-apples gap.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_tma_scales_formal_20260902.log`.
