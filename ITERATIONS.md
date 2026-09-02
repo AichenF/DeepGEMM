@@ -96,3 +96,24 @@ maximum rank latency of a full CUDA-Graph replay.
 - Decision: do not accept this attempt as the formal baseline.  Correctness now
   recomputes the local pipeline into independent untimed buffers before NCCL;
   rerun all five points.
+
+### Accepted TP4 Humming baseline — balanced routes, full CUDA Graph
+
+- Protocol: 9 outer samples, 200 graph replays/sample, 50 warm-up replays;
+  reported latency is the maximum rank average for every outer sample.
+- Max-rank latency min / median / max (ms):
+  - M8: 0.092545 / 0.092644 / 0.093283
+  - M16: 0.156270 / 0.156437 / 0.156623
+  - M32: 0.289523 / 0.294363 / 0.351842
+  - M64: 0.397270 / 0.412274 / 0.435562
+  - M128: 0.411079 / 0.430198 / 0.459386
+- Geometric mean of the five medians: 0.237563 ms.
+- Correctness: every point finite; min-rank cosine >=0.9999886295 and
+  max-rank rel-L2 <=0.0047687842 against NCCL sum of an independently
+  recomputed local output.  Both one-shot-push (M<=32) and graph
+  two-shot-pull (M>=64) paths pass.
+- Noise note: M32's last three samples and the larger-M samples show transient
+  slowdown.  Keep min/median/max and require repeatability when judging an
+  optimization; do not compare a candidate's minimum with this median.
+- Evidence log:
+  `bench/results/tp4_humming_graph_balanced_formal_v2_20260902.log`.
