@@ -185,9 +185,6 @@ def main() -> None:
                 "fused_activation_quant": kernel_module.FUSED_ACT_QUANT
                 if args.impl == "custom"
                 else None,
-                "early_stage_refill": kernel_module.EARLY_STAGE_REFILL
-                if args.impl == "custom"
-                else None,
                 "w2_global_lut": kernel_module.W2_GLOBAL_LUT
                 if args.impl == "custom"
                 else None,
