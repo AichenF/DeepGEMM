@@ -248,3 +248,25 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence logs:
   `bench/results/tp4_humming_graph_coldl2_formal_20260902.log` and
   `bench/results/tp4_wgmma_graph_coldl2_s4_formal_20260902.log`.
+
+### TP4 cold-L2 W13 split-K screen
+
+- Screen protocol: balanced full graph, 3 outer batches x 100 individually
+  cold replays per M, with the same 256 MiB clear and max-rank timing as the
+  accepted baseline.  Correctness passes for every configuration and point.
+- Median latency (ms), M8 / M16 / M32 / M64 / M128:
+  - split-K=1: 0.143616 / 0.250672 / 0.454784 / 0.595040 / 0.610048;
+    geometric mean 0.358761 ms.
+  - split-K=2: 0.144224 / 0.245664 / 0.447424 / 0.588320 / 0.603328;
+    geometric mean 0.354857 ms.
+  - split-K=4 accepted formal reference: 0.142080 / 0.243136 / 0.450896 /
+    0.607264 / 0.627456; geometric mean 0.358661 ms.
+  - split-K=8: 0.146368 / 0.252864 / 0.467472 / 0.618048 / 0.638432;
+    geometric mean 0.368846 ms.
+- Finding: split-K=4 remains best at M8/M16, while split-K=2 wins at
+  M32/M64/M128 by about 0.8%/3.1%/3.8% versus the split-K=4 formal medians.
+  Split-K=8 is a regression everywhere.  A global split-K=2 default improves
+  the five-point geometric mean only 1.1%, so split selection cannot close the
+  roughly 50% Humming gap; profile stage costs before altering the core.
+- Evidence logs:
+  `bench/results/tp4_wgmma_graph_coldl2_s{1,2,8}_screen_20260902.log`.
