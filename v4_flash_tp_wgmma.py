@@ -65,13 +65,9 @@ W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
-if W2_S2R_PREFETCH and (DEQUANT_SYNTH_LUT or W2_GLOBAL_LUT):
+if W2_S2R_PREFETCH and W2_GLOBAL_LUT:
     raise ValueError(
         "V4_W2_S2R_PREFETCH currently probes only the shared-LUT path"
-    )
-if W13_S2R_PREFETCH and DEQUANT_SYNTH_LUT:
-    raise ValueError(
-        "V4_W13_S2R_PREFETCH currently probes only the shared-LUT path"
     )
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
@@ -512,8 +508,13 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                             weight_scale_smem[scale_stage * kScaleStageBytes
                                               + group_row1 * kScaleRowBytes
                                               + (global_kt & 3) * 4];
-                        weight_lut0 = lut_smem[scale_lut_index(exponent0)];
-                        weight_lut1 = lut_smem[scale_lut_index(exponent1)];
+                        if constexpr (kDequantSynthLut) {
+                            weight_lut0 = synth_e2m1_e8m0_lut(exponent0);
+                            weight_lut1 = synth_e2m1_e8m0_lut(exponent1);
+                        } else {
+                            weight_lut0 = lut_smem[scale_lut_index(exponent0)];
+                            weight_lut1 = lut_smem[scale_lut_index(exponent1)];
+                        }
                     } else {
                         packed0 = next_packed0[group];
                         packed1 = next_packed1[group];
@@ -616,10 +617,17 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                               + group_row1 * kScaleRowBytes
                                               + (global_kt & 3) * 4
                                               + next_k_step];
-                        next_weight_lut0[group] =
-                            lut_smem[scale_lut_index(next_exponent0)];
-                        next_weight_lut1[group] =
-                            lut_smem[scale_lut_index(next_exponent1)];
+                        if constexpr (kDequantSynthLut) {
+                            next_weight_lut0[group] =
+                                synth_e2m1_e8m0_lut(next_exponent0);
+                            next_weight_lut1[group] =
+                                synth_e2m1_e8m0_lut(next_exponent1);
+                        } else {
+                            next_weight_lut0[group] =
+                                lut_smem[scale_lut_index(next_exponent0)];
+                            next_weight_lut1[group] =
+                                lut_smem[scale_lut_index(next_exponent1)];
+                        }
                     }
                 }
                 cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
@@ -1118,7 +1126,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v35"),
+          f"mb{MIN_BLOCKS_PER_SM}_v37"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[

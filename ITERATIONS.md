@@ -2564,3 +2564,18 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_activation_double_buffer_correctness_20260903.log`
   and
   `bench/results/tp4_local_graph_activation_double_buffer_screen_20260903.log`.
+
+### WGMMA iteration 39a — synthesized scale LUT plus S2R prefetch
+
+- Added support for combining `V4_DEQUANT_SYNTH_LUT=1` with both accepted
+  W13/W2 cross-QGMMA S2R prefetch paths.  The first K32 step synthesizes its
+  two packed E4M3 magnitude words from E8M0 in registers; every later step
+  computes the following words before the current WGMMA, shortening the
+  dependency chain that made the isolated iteration-20 synth probe neutral.
+- This removes the per-CTA 2 KiB LUT initialization and all inner shared-LUT
+  reads, but is bit-exact only for the benchmark exponent range 125..128.
+  Treat it as a core diagnostic: it cannot become a production default unless
+  the real checkpoint transform proves or creates the required scale range.
+- Gate on TP4 split-K=4, forced split-K=2, and TP8-shape correctness, then
+  compare candidate/control W13 and W2 using graph-internal events with a
+  separate excluded 256 MiB cold-L2 clear before every sample.
