@@ -270,3 +270,37 @@ maximum rank latency of a full CUDA-Graph replay.
   roughly 50% Humming gap; profile stage costs before altering the core.
 - Evidence logs:
   `bench/results/tp4_wgmma_graph_coldl2_s{1,2,8}_screen_20260902.log`.
+
+### Cold-L2 M32 stage profile — core scheduling is the bottleneck
+
+- Added profiler-only entry points which expose exactly one 256 MiB cache
+  clear followed by one full graph or per-rank local pipeline.  Initialization,
+  JIT, and warm-up are outside the CUDA profiler range.  Nsight Compute also
+  uses `--cache-control all` for every metric replay.
+- Nsight Systems full TP4 graph node medians (microseconds):
+  - Custom split-K=2: W13 282.65, W2 142.00.
+  - Humming: W13 180.83, W2 92.50.
+  - Custom/Humming is 1.563x for W13 and 1.535x for W2.  Route alignment,
+    both quantizers, activation/reduction, and casts are each only a few
+    microseconds, so the roughly 50% end-to-end gap is in both GEMM cores.
+- Nsight Compute detailed replay confirms the mechanism:
+  - Custom W13/W2: 6,144 / 12,288 CTAs, 6.56 / 13.13 waves per SM,
+    34 registers/thread, achieved occupancy 71.6% / 72.3%, and DRAM
+    throughput 29.6% / 29.3%.
+  - Humming W13/W2: 234 / 312 persistent CTAs, 0.75 / 1.00 waves per SM,
+    124 / 101 registers/thread, achieved occupancy 16.6% / 20.8%, and DRAM
+    throughput 45.7% / 44.8%.
+  - NCU durations (which include metric-replay perturbation) are custom
+    306.34 / 154.24 us versus Humming 195.74 / 100.93 us, preserving the
+    same ratios as the low-overhead Systems trace.
+- Diagnosis: custom launches one 64-output-channel x 8-route CTA per tile and
+  repeats CTA setup, route/LUT loads, and activation-tile loads thousands of
+  times.  Humming uses 128 output channels and persistent CTAs that loop over
+  logical tiles.  High custom occupancy does not compensate for the fragmented
+  schedule and excess L1/shared traffic.
+- Next isolated change: increase the custom output-channel tile from 64 to 128
+  so two WGMMA output groups reuse one activation tile and halve CTA count.
+  Persistent scheduling remains the follow-on if the larger tile is not enough.
+- Evidence reports:
+  `bench/results/tp4_{wgmma_m32_s2,humming_m32}_coldl2.{nsys-rep,sqlite}`
+  and `bench/results/tp4_{wgmma_m32_s2,humming_m32}_coldl2_ncu.ncu-rep`.

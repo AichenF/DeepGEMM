@@ -73,6 +73,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outer", type=int, default=7)
     parser.add_argument("--replays", type=int, default=100)
     parser.add_argument("--warmup-replays", type=int, default=10)
+    parser.add_argument(
+        "--profile-once",
+        action="store_true",
+        help="Expose one explicitly cold graph replay to CUDA profiler APIs.",
+    )
     parser.add_argument("--seed", type=int, default=20260902)
     args = parser.parse_args()
     args.ms = tuple(int(value) for value in args.ms.split(",") if value)
@@ -80,6 +85,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--ms must contain positive integers")
     if args.outer < 1 or args.replays < 1 or args.warmup_replays < 1:
         parser.error("--outer, --replays, and --warmup-replays must be positive")
+    if args.profile_once and len(args.ms) != 1:
+        parser.error("--profile-once requires exactly one M value")
     return args
 
 
@@ -529,6 +536,30 @@ def main() -> None:
                 case.run_full(comm)
         torch.cuda.synchronize(device)
 
+        if args.profile_once:
+            dist.barrier(group=cpu_group)
+            torch.cuda.cudart().cudaProfilerStart()
+            triton_runtime.driver.active.clear_cache(l2_flush_buffer)
+            graph.replay()
+            torch.cuda.synchronize(device)
+            torch.cuda.cudart().cudaProfilerStop()
+            dist.barrier(group=cpu_group)
+            if rank == 0:
+                print(
+                    "BASELINE_PROFILE_REPLAY "
+                    + json.dumps(
+                        {
+                            "m": m,
+                            "l2_policy": "cold; 256MiB clear immediately before replay",
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+            cases.append(case)
+            graphs.append(graph)
+            continue
+
         for _ in range(args.warmup_replays):
             triton_runtime.driver.active.clear_cache(l2_flush_buffer)
             graph.replay()
@@ -574,7 +605,7 @@ def main() -> None:
         cases.append(case)
         graphs.append(graph)
 
-    if rank == 0:
+    if rank == 0 and not args.profile_once:
         medians = [float(result["latency_ms_median"]) for result in results]
         geometric_mean_ms = statistics.geometric_mean(medians)
         print(
