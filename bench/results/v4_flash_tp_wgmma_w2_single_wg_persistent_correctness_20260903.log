@@ -1,0 +1,34 @@
+Single-warpgroup persistent W2 correctness gate
+Date: 2026-09-03
+Environment: V4_W2_PERSISTENT_BLOCKS_PER_SM=8, two weight stages
+
+Design under test:
+- one 128-thread WGMMA warpgroup per CTA;
+- fixed grid with device-runtime num_tokens_padded task bound;
+- strided task scheduler safe for CUDA Graph route metadata changes;
+- LUT and mbarriers initialized once per CTA;
+- barrier parity advances from the global task/K-tile sequence;
+- double-buffered route metadata plus one CTA rendezvous per task.
+
+TP8 shape M8 maximal skew, K=256:
+V4_WGMMA_CHECK M=8 pattern=skew Is=256 active=6 padded=48 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077480
+V4_WGMMA_ACT cos=0.999999763 rel_l2=0.000689115
+V4_WGMMA_W2 cos=0.999997249 rel_l2=0.002345847 finite=True
+V4_WGMMA_OK
+
+TP4 shape M8 balanced, K=512:
+V4_WGMMA_CHECK M=8 pattern=balanced Is=512 active=48 padded=384 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999998 rel_l2=0.000076187
+V4_WGMMA_ACT cos=0.999999759 rel_l2=0.000694956
+V4_WGMMA_W2 cos=0.999997256 rel_l2=0.002342691 finite=True
+V4_WGMMA_OK
+
+TP4 shape M8 maximal skew, K=512:
+V4_WGMMA_CHECK M=8 pattern=skew Is=512 active=6 padded=48 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077292
+V4_WGMMA_ACT cos=0.999999649 rel_l2=0.000838723
+V4_WGMMA_W2 cos=0.999997235 rel_l2=0.002351904 finite=True
+V4_WGMMA_OK
+
+No performance timing was collected in this gate.

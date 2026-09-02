@@ -2104,3 +2104,21 @@ maximum rank latency of a full CUDA-Graph replay.
   loads with a five-stage buffer.  W13 remains unchanged.
 - Evidence:
   `bench/results/tp4_humming_m32_random_detailed_coldl2_current_ncu.{log,ncu-rep}`.
+
+### WGMMA iteration 30a — single-warpgroup persistent W2 correctness
+
+- Reworked the earlier runtime-grid experiment around one 128-thread WGMMA
+  warpgroup.  Unlike iteration 24, LUT and mbarriers are initialized only once
+  per CTA; barrier parity follows the continuous task/K-tile sequence.  The
+  fixed grid reads the actual task bound from device `num_tokens_padded` and
+  therefore remains valid when captured-graph route metadata changes.
+- Double-buffered route metadata allows the next task's eight writers to run
+  before the single CTA rendezvous without clobbering the preceding task.
+  Packed-weight stages remain at the accepted depth of two for this first
+  isolated scheduler test.
+- TP8 K=256 maximal skew and TP4 K=512 balanced/maximal-skew full-path checks
+  all reproduce the accepted errors exactly.  W2 cosine ranges from
+  0.999997235 to 0.999997256 and all outputs are finite.  The candidate is
+  eligible for cold-L2 grid screening.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_single_wg_persistent_correctness_20260903.log`.
