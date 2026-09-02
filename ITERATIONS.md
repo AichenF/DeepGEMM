@@ -1916,3 +1916,20 @@ maximum rank latency of a full CUDA-Graph replay.
   destination before making another synchronization change.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_ws_per_writer_mbarrier_correctness_20260903.log`.
+
+### WGMMA iteration 29f — global qactivation source audit
+
+- Added correctness-only qactivation statistics to distinguish a zero source
+  from a producer/shared-memory fault.  This does not alter the kernel or any
+  timed benchmark path.
+- TP4 M8 balanced has 20,716 nonzero qactivation bytes; the final K128 tile
+  has 5,175 nonzero bytes and 42/48 route-first bytes are nonzero.  The W2
+  result nevertheless remains exactly zero.  Combined with iteration 29d's
+  missing shared activation bit, this proves the global activation source is
+  valid but does not survive the producer-to-consumer shared path.
+- SASS resource metadata for the TP4 specialization is 64 registers/thread
+  and 4 KiB static shared plus 22 KiB dynamic shared.  Four 256-thread CTAs per
+  H20 SM are resource-feasible, so grid=312 remains a later tuning point once
+  correctness is restored.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_ws_global_qactivation_probe_20260903.log`.

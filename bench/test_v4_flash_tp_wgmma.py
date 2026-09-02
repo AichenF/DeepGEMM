@@ -157,6 +157,13 @@ def main() -> None:
             m_major_scale=False,
             scale_dtype="float32",
         )
+    qact_u8 = qact.view(torch.uint8)
+    print(
+        "V4_WGMMA_QACT "
+        f"nonzero={int(torch.count_nonzero(qact_u8).item())} "
+        f"final_tile_nonzero={int(torch.count_nonzero(qact_u8[:, -128:]).item())} "
+        f"final_tile_k0_nonzero={int(torch.count_nonzero(qact_u8[:, -128]).item())}"
+    )
     local = torch.zeros((args.m, H), dtype=torch.float32, device=device)
     down = (
         torch.empty((routes, H), dtype=torch.bfloat16, device=device)
