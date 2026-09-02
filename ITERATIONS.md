@@ -169,3 +169,26 @@ maximum rank latency of a full CUDA-Graph replay.
   2.44x slower.  Do not treat that ratio as final: Humming's analogous 2-replay
   smoke was 0.156736 ms (1.69x above its long-replay result).  Next run uses the
   exact baseline 9x200 protocol for all five M values.
+
+### Route-aware WGMMA iteration 1 — formal TP4 graph baseline
+
+- Protocol matches Humming exactly: balanced precomputed routes, 9 outer
+  samples x 200 graph replays, max rank, route align + both group-128 FP8
+  quantizations + local pipeline + default CustomAllReduceV2 all timed.
+- Max-rank latency min / median / max (ms):
+  - M8: 0.136533 / 0.136652 / 0.137908
+  - M16: 0.237250 / 0.237389 / 0.237955
+  - M32: 0.444652 / 0.464574 / 0.473932
+  - M64: 0.599627 / 0.611745 / 0.625516
+  - M128: 0.616757 / 0.629871 / 0.641963
+- Humming median comparison (custom / Humming): M8 1.475x, M16 1.517x,
+  M32 1.578x, M64 1.484x, M128 1.464x.  Five-point median geometric mean is
+  0.357101 vs 0.237563 ms = 1.503x slower.  The target is not met.
+- Correctness: all custom-AR checks pass; min cosine 0.99999555, max rel-L2
+  0.00298319, all finite.
+- Read: the real route-aware integration invalidates any claim based on the old
+  raw-G bandwidth alone.  Profile stage costs before changing the kernel;
+  likely candidates are W13 split-K partial traffic, W2 throughput, and excess
+  fixed-grid CTAs from graph-safe route alignment.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_balanced_s4_formal_v1_20260902.log`.
