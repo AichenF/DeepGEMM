@@ -826,3 +826,32 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence logs:
   `bench/results/tp4_humming_graph_coldl2_random_screen_20260902.log` and
   `bench/results/tp4_wgmma_graph_coldl2_random_screen_20260902.log`.
+
+### Random-route formal cold-L2 baseline
+
+- Formal protocol is 9 batches x 200 individually cold graph replays per M;
+  every replay is preceded by the 256 MiB flush outside its CUDA events, and
+  latency is the max rank for each replay.
+- Humming min / median / max latency (ms):
+  - M8: 0.088448 / 0.090016 / 0.247488
+  - M16: 0.141088 / 0.142976 / 0.847264
+  - M32: 0.222848 / 0.225088 / 0.275456
+  - M64: 0.312288 / 0.329184 / 0.402944
+  - M128: 0.380608 / 0.411104 / 0.467296
+- Custom min / median / max latency (ms):
+  - M8: 0.104576 / 0.106496 / 0.251904
+  - M16: 0.164896 / 0.166880 / 0.193536
+  - M32: 0.261568 / 0.281264 / 0.334240
+  - M64: 0.368832 / 0.396288 / 0.430656
+  - M128: 0.472224 / 0.495952 / 0.559200
+- Humming/custom geometric means are 0.208288/0.250300 ms.  Custom/Humming
+  latency ratios are 1.183x/1.167x/1.250x/1.204x/1.206x, geomean 1.202x;
+  the current implementation therefore remains 20.2% slower geometrically.
+  All end-to-end correctness checks pass.
+- M32+ batch medians visibly drift within each sequential process run, so a
+  future interleaved harness is desirable.  This formal pair is retained as
+  the conservative headline until such a harness is verified; the shorter
+  contemporary screen gave an 18.0% gap.
+- Evidence logs:
+  `bench/results/tp4_humming_graph_coldl2_random_formal_20260902.log` and
+  `bench/results/tp4_wgmma_graph_coldl2_random_formal_20260902.log`.
