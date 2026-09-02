@@ -2029,3 +2029,17 @@ maximum rank latency of a full CUDA-Graph replay.
   explanations are rejected.  The candidate may now enter the cold-L2 screen.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_ws_metadata_index_fix_correctness_20260903.log`.
+
+### WGMMA iteration 29m — persistent W2 grid 234 cold-L2 screen (rejected)
+
+- Screened the now-correct candidate in the paired TP4 CUDA-Graph harness with
+  random real route metadata, 4 x 100 samples per implementation and M, and a
+  separate 256 MiB cache flush before every replay outside the event interval.
+- The candidate loses at every M: custom/Humming is 1.07984, 1.09124, 1.09083,
+  1.11210, and 1.08439 for M=8,16,32,64,128.  Geometric-mean latency is
+  0.226701 ms versus Humming's 0.207673 ms, so custom is 9.16% slower.
+- Correctness remains valid at every point.  This configuration is rejected;
+  before removing the prototype, screen the runtime-only 156- and 312-CTA
+  choices to distinguish an occupancy/grid error from intrinsic pipeline cost.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_w2_ws_p234_screen_20260903.log`.

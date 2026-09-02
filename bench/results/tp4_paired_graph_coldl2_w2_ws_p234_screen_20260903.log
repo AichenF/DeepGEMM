@@ -1,0 +1,46 @@
+TP4 Humming MXFP4 versus warp-specialized persistent W2, cold-L2 screen
+Date: 2026-09-03
+Environment: CUDA_VISIBLE_DEVICES=1,2,3,4 V4_W2_WS_PERSIST=1 V4_W2_WS_CTAS=234
+Command: torchrun --standalone --nproc-per-node=4 bench/v4_flash_tp_paired_graph.py --ms 8,16,32,64,128 --route-pattern random --outer 4 --replays 100 --warmup-replays 10 --pair-granularity batch
+
+Protocol:
+- CUDA Graph captures the complete local W13 + fused SwiGLU/quant + W2 +
+  local k6 reduction + shared SGLang CustomAllReduceV2 path.
+- A separate 256 MiB Triton cache clear runs before every individually timed
+  graph replay and is outside the CUDA event interval.
+- 400 max-across-TP-ranks samples per implementation and M; paired batches use
+  balanced AB/BA order.
+- NVIDIA H20-3e, 78 SM, 60 MiB L2 per GPU, TP4.
+
+M=8 active=43 padded=344 samples=400
+Humming min/median/max ms: 0.088800 / 0.090176 / 0.130496
+Custom  min/median/max ms: 0.095744 / 0.097376 / 0.144416
+Humming/custom speedup: 0.926060 (custom is 7.984% slower)
+Custom cosine_min_rank=0.999995655 rel_l2_max_rank=0.002947967 allreduce_ok=true
+
+M=16 active=82 padded=656 samples=400
+Humming min/median/max ms: 0.143936 / 0.145728 / 0.186656
+Custom  min/median/max ms: 0.155872 / 0.159024 / 0.191264
+Humming/custom speedup: 0.916390 (custom is 9.124% slower)
+Custom cosine_min_rank=0.999995639 rel_l2_max_rank=0.002953453 allreduce_ok=true
+
+M=32 active=140 padded=1120 samples=400
+Humming min/median/max ms: 0.223776 / 0.225472 / 0.263072
+Custom  min/median/max ms: 0.240576 / 0.245952 / 0.277568
+Humming/custom speedup: 0.916732 (custom is 9.083% slower)
+Custom cosine_min_rank=0.999995575 rel_l2_max_rank=0.002974846 allreduce_ok=true
+
+M=64 active=203 padded=1624 samples=400
+Humming min/median/max ms: 0.311968 / 0.316576 / 0.351264
+Custom  min/median/max ms: 0.338272 / 0.352064 / 0.409376
+Humming/custom speedup: 0.899200 (custom is 11.210% slower)
+Custom cosine_min_rank=0.999995603 rel_l2_max_rank=0.002965374 allreduce_ok=true
+
+M=128 active=248 padded=1992 samples=400
+Humming min/median/max ms: 0.378176 / 0.411808 / 0.428704
+Custom  min/median/max ms: 0.421664 / 0.446560 / 0.486528
+Humming/custom speedup: 0.922178 (custom is 8.439% slower)
+Custom cosine_min_rank=0.999995584 rel_l2_max_rank=0.002972039 allreduce_ok=true
+
+Geometric mean: Humming 0.207672924 ms, custom 0.226700916 ms.
+Custom/Humming=1.091625; custom is 9.162% slower.
