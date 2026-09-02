@@ -1,0 +1,37 @@
+M-major FP8 activation-scale paired cold-L2 screen
+Date: 2026-09-03
+Protocol: TP4 random routes; CUDA Graph; outer=4, replays=100;
+pair-granularity=batch; separate 256 MiB L2 clear before every individually
+timed replay, excluded from CUDA events.  All correctness/all-reduce checks
+pass.
+
+Candidate, V4_M_MAJOR_ACTIVATION_SCALE=1:
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088352 / 0.089952 / 0.139296  0.091360 / 0.093568 / 0.174400  1.040199
+16   82     656     0.144096 / 0.145792 / 0.159424  0.142944 / 0.144896 / 0.182048  0.993854
+32   140    1120    0.224160 / 0.226432 / 0.240160  0.218432 / 0.220640 / 0.241888  0.974421
+64   203    1624    0.312480 / 0.319328 / 0.334976  0.302496 / 0.311520 / 0.386496  0.975549
+128  248    1992    0.378496 / 0.423376 / 0.496864  0.371104 / 0.452288 / 0.485440  1.068289
+Geomean Humming=0.209280669 ms, custom=0.211326422 ms;
+custom/Humming=1.009775 (custom 0.968% slower).
+
+Immediate same-source control, V4_M_MAJOR_ACTIVATION_SCALE=0:
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088576 / 0.089984 / 0.120576  0.090048 / 0.092128 / 0.140960  1.023826
+16   82     656     0.143616 / 0.145760 / 0.168000  0.141728 / 0.143392 / 0.187552  0.983754
+32   140    1120    0.224512 / 0.226432 / 0.257888  0.215200 / 0.217344 / 0.250496  0.959864
+64   203    1624    0.313600 / 0.321200 / 0.348384  0.298400 / 0.309136 / 0.354784  0.962441
+128  248    1992    0.379456 / 0.431744 / 0.482880  0.378144 / 0.443376 / 0.487616  1.026942
+Geomean Humming=0.210352974 ms, custom=0.208447744 ms;
+custom/Humming=0.990943 (custom 0.914% faster).
+
+Candidate/control custom-median ratios for M8..M128 are
+1.015630 / 1.010489 / 1.015165 / 1.007712 / 1.020100; geometric ratio
+1.013810.  The candidate is slower at all five M values by 0.77-2.01% even
+though its Humming window is 0.51% faster geometrically than the control
+window.  This is a decisive rejection; a second candidate run cannot rescue
+a uniform margin of this size.
+
+Diagnostic note: a requested Nsight Systems local replay reproduced the
+known profiler-control deadlock (zero progress for almost two minutes) and was
+terminated by exact PID.  No report was emitted and no profiler value is used.

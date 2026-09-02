@@ -2430,3 +2430,21 @@ maximum rank latency of a full CUDA-Graph replay.
 - Proceed to a candidate/control/candidate random-route TP4 cold-L2 screen.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_m_major_scale_correctness_20260903.log`.
+
+### WGMMA iteration 35b — M-major scale screen (rejected)
+
+- Candidate then same-source control, each with 400 paired per-replay cold-L2
+  TP4 samples per M, gives candidate/control custom-median ratios
+  1.0156/1.0105/1.0152/1.0077/1.0201 for M8..M128.  The candidate loses every
+  point and regresses geometric mean by 1.381%.
+- Humming is 0.51% faster in the candidate window, so system drift cannot
+  explain the custom regression.  Reject without a redundant third run; the
+  five consistent margins are all larger than the noise band seen in the
+  immediately preceding async-G2S experiment.
+- An attempted Systems stage breakdown repeated the known profiler-control
+  deadlock and was terminated by exact PID after no progress; it produced no
+  usable report and contributes no timing evidence.
+- Restore the exact S2R winner.  Coalescing eight tiny cached scale loads does
+  not repay the changed quantizer/store layout and runtime indexing.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_m_major_scale_screen_20260903.log`.
