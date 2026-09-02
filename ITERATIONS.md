@@ -484,3 +484,14 @@ maximum rank latency of a full CUDA-Graph replay.
   restore iteration 5 rollback (`v6`).
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_wout128_s2_dualchain_screen_20260902.log`.
+
+### Iteration 6 rollback — restore single K128-lived chain
+
+- Restored the exact iteration-5 rollback kernel (`v6`) after rejecting dual
+  chains.  A fresh required cold-L2 3x100 TP4 screen gives medians 0.144352 /
+  0.240032 / 0.427664 / 0.555872 / 0.569312 ms for M8 through M128 and a
+  five-point geometric mean of 0.342156 ms.
+- This is within 0.03% of the pre-experiment 0.342249 ms screen, confirming
+  that the accepted implementation is recovered.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_wout128_s2_postdual_restore_20260902.log`.

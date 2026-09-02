@@ -231,104 +231,70 @@ __global__ __launch_bounds__(128) void route_gemm(
         mbar_wait(barrier_addr[stage], (local_kt / kStages) & 1u);
         asm volatile("bar.sync 0;" ::: "memory");
 
-        // Two independent accumulator chains let a single async group carry
-        // both K32 halves of each K64 pair.  The four K32 steps share one
-        // activation scale, so the chains can be added before promotion.
-        float tile[2][kWgmmaGroups][4] = {};
+        float tile[kWgmmaGroups][4] = {};
         #pragma unroll
-        for (int pair = 0; pair < kBlockK / 64; ++pair) {
-            const int even_step = pair * 2;
-            const int odd_step = even_step + 1;
-            const auto even_activation_desc = desc_128b(
-                activation_smem_addr + even_step * 32);
-            const auto odd_activation_desc = desc_128b(
-                activation_smem_addr + odd_step * 32);
-            uint2 fp8_0[2][kWgmmaGroups];
-            uint2 fp8_1[2][kWgmmaGroups];
+        for (int k_step = 0; k_step < kBlockK / 32; ++k_step) {
+            const auto activation_desc = desc_128b(
+                activation_smem_addr + k_step * 32);
             #pragma unroll
-            for (int parity = 0; parity < 2; ++parity) {
-                const int k_step = even_step + parity;
+            for (int group = 0; group < kWgmmaGroups; ++group) {
                 #pragma unroll
-                for (int group = 0; group < kWgmmaGroups; ++group) {
-                    const int group_row0 = group * 64 + row0;
-                    const int group_row1 = group * 64 + row1;
-                    uint32_t packed0;
-                    uint32_t packed1;
-                    const uint32_t stage_base =
-                        weight_smem_addr + stage * kWeightStageBytes;
-                    asm volatile("ld.shared.b32 %0,[%1];"
-                        : "=r"(packed0)
-                        : "r"(stage_base + group_row0 * (kBlockK / 2)
-                              + k_step * 16 + packed_k_offset));
-                    asm volatile("ld.shared.b32 %0,[%1];"
-                        : "=r"(packed1)
-                        : "r"(stage_base + group_row1 * (kBlockK / 2)
-                              + k_step * 16 + packed_k_offset));
-                    const uint32_t exponent0 =
-                        scale_smem[group_row0 * 4 + k_step];
-                    const uint32_t exponent1 =
-                        scale_smem[group_row1 * 4 + k_step];
-                    fp8_0[parity][group] =
-                        mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<true, true>(
-                            packed0, lut_smem[exponent0]);
-                    fp8_1[parity][group] =
-                        mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<true, true>(
-                            packed1, lut_smem[exponent1]);
-                }
-            }
-            #pragma unroll
-            for (int chain = 0; chain < 2; ++chain) {
-                #pragma unroll
-                for (int group = 0; group < kWgmmaGroups; ++group) {
-                    #pragma unroll
-                    for (int value = 0; value < 4; ++value)
-                        ptx::warpgroup_fence_operand(tile[chain][group][value]);
-                }
+                for (int value = 0; value < 4; ++value)
+                    ptx::warpgroup_fence_operand(tile[group][value]);
             }
             ptx::warpgroup_arrive();
             #pragma unroll
             for (int group = 0; group < kWgmmaGroups; ++group) {
+                const int group_row0 = group * 64 + row0;
+                const int group_row1 = group * 64 + row1;
+                uint32_t packed0;
+                uint32_t packed1;
+                const uint32_t stage_base =
+                    weight_smem_addr + stage * kWeightStageBytes;
+                asm volatile("ld.shared.b32 %0,[%1];"
+                    : "=r"(packed0)
+                    : "r"(stage_base + group_row0 * (kBlockK / 2)
+                          + k_step * 16 + packed_k_offset));
+                asm volatile("ld.shared.b32 %0,[%1];"
+                    : "=r"(packed1)
+                    : "r"(stage_base + group_row1 * (kBlockK / 2)
+                          + k_step * 16 + packed_k_offset));
+                const uint32_t exponent0 =
+                    scale_smem[group_row0 * 4 + k_step];
+                const uint32_t exponent1 =
+                    scale_smem[group_row1 * 4 + k_step];
+                const uint2 fp8_0 =
+                    mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<true, true>(
+                        packed0, lut_smem[exponent0]);
+                const uint2 fp8_1 =
+                    mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<true, true>(
+                        packed1, lut_smem[exponent1]);
                 cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
-                    fp8_0[0][group].y, fp8_1[0][group].y,
-                    fp8_0[0][group].x, fp8_1[0][group].x,
-                    even_activation_desc,
-                    tile[0][group][0], tile[0][group][1],
-                    tile[0][group][2], tile[0][group][3],
-                    cute::SM90::GMMA::ScaleOut::One);
-                cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
-                    fp8_0[1][group].y, fp8_1[1][group].y,
-                    fp8_0[1][group].x, fp8_1[1][group].x,
-                    odd_activation_desc,
-                    tile[1][group][0], tile[1][group][1],
-                    tile[1][group][2], tile[1][group][3],
+                    fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
+                    activation_desc,
+                    tile[group][0], tile[group][1],
+                    tile[group][2], tile[group][3],
                     cute::SM90::GMMA::ScaleOut::One);
             }
             ptx::warpgroup_commit_batch();
             #pragma unroll
-            for (int chain = 0; chain < 2; ++chain) {
+            for (int group = 0; group < kWgmmaGroups; ++group) {
                 #pragma unroll
-                for (int group = 0; group < kWgmmaGroups; ++group) {
-                    #pragma unroll
-                    for (int value = 0; value < 4; ++value)
-                        ptx::warpgroup_fence_operand(tile[chain][group][value]);
-                }
+                for (int value = 0; value < 4; ++value)
+                    ptx::warpgroup_fence_operand(tile[group][value]);
             }
             ptx::warpgroup_wait<0>();
         }
         #pragma unroll
         for (int group = 0; group < kWgmmaGroups; ++group) {
             accum[group][0] +=
-                (tile[0][group][0] + tile[1][group][0])
-                * activation_scale_smem[column_base];
+                tile[group][0] * activation_scale_smem[column_base];
             accum[group][1] +=
-                (tile[0][group][1] + tile[1][group][1])
-                * activation_scale_smem[column_base + 1];
+                tile[group][1] * activation_scale_smem[column_base + 1];
             accum[group][2] +=
-                (tile[0][group][2] + tile[1][group][2])
-                * activation_scale_smem[column_base];
+                tile[group][2] * activation_scale_smem[column_base];
             accum[group][3] +=
-                (tile[0][group][3] + tile[1][group][3])
-                * activation_scale_smem[column_base + 1];
+                tile[group][3] * activation_scale_smem[column_base + 1];
         }
 
         if (local_kt + kStages < kKTilesPerSplit)
@@ -558,7 +524,7 @@ void cast_bf16(torch::Tensor input, torch::Tensor output);
 
 
 _ext = load_inline(
-    name=f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_wo{WOUT}_v7",
+    name=f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_wo{WOUT}_v6",
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],
