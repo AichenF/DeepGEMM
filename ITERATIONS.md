@@ -2266,3 +2266,22 @@ maximum rank latency of a full CUDA-Graph replay.
   compilation.  Proceed to paired cold-L2 timing.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_scale_regs_correctness_20260903.log`.
+
+### WGMMA iteration 31b — packed scale registers cold screen (rejected)
+
+- The 4 x 100 paired cold-L2 candidate screen gives geometric means
+  0.209728 ms custom and 0.210071 ms Humming, only a noise-sized 0.163% lead.
+  An immediate identical-source `V4_W2_SCALE_REGS=0` reverse control gives
+  0.209993 ms custom and 0.210464 ms Humming, likewise near parity.
+- Candidate/control custom median ratios for M8/M16/M32/M64/M128 are
+  1.00638 / 1.00868 / 1.00852 / 1.00694 / 0.96394.  Thus the apparent 0.126%
+  candidate geometric edge comes entirely from the known highly variable
+  M128 point; candidate consistently loses the more stable M8-M64 points by
+  0.64-0.87%.
+- Eliminating scalar scale LDS dependencies in SASS is not sufficient: byte
+  extraction/register live ranges cost slightly more than the broadcast
+  shared loads.  Reject this candidate and restore the exact accepted source.
+- Every sample uses the required separate 256 MiB cold-L2 clear outside the
+  event interval; all graph correctness and all-reduce checks pass.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_w2_scale_regs_screen_20260903.log`.

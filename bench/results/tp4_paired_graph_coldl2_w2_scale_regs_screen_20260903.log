@@ -1,0 +1,30 @@
+W2 packed-scale-register paired cold-L2 screen and reverse control
+Date: 2026-09-03
+Protocol: TP4 random routes; CUDA Graph; outer=4, replays=100;
+pair-granularity=batch; separate 256 MiB cache clear before every individually
+timed replay, excluded from CUDA events.  All correctness/all-reduce checks pass.
+
+Candidate V4_W2_SCALE_REGS=1:
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088768 / 0.090480 / 0.161888  0.091744 / 0.093328 / 0.134528  1.031477
+16   82     656     0.144064 / 0.145824 / 0.168256  0.143072 / 0.145056 / 0.151392  0.994733
+32   140    1120    0.223744 / 0.225760 / 0.234784  0.217888 / 0.219584 / 0.245696  0.972644
+64   203    1624    0.312512 / 0.325184 / 0.340768  0.301632 / 0.313248 / 0.333248  0.963295
+128  248    1992    0.379392 / 0.422352 / 0.458336  0.369728 / 0.435760 / 0.461600  1.031746
+Geomean Humming=0.210071176 ms, custom=0.209728188 ms;
+custom/Humming=0.998367 (custom 0.163% faster, noise-sized).
+
+Immediate reverse control V4_W2_SCALE_REGS=0, identical source:
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088992 / 0.090352 / 0.118144  0.091360 / 0.092736 / 0.176352  1.026386
+16   82     656     0.144352 / 0.145872 / 0.197920  0.141984 / 0.143808 / 0.164288  0.985851
+32   140    1120    0.224256 / 0.226368 / 0.241568  0.215808 / 0.217728 / 2.078304  0.961832
+64   203    1624    0.312224 / 0.327376 / 0.341120  0.298112 / 0.311088 / 0.358816  0.950247
+128  248    1992    0.388256 / 0.422784 / 0.481664  0.371808 / 0.452064 / 0.473088  1.069255
+Geomean Humming=0.210464100 ms, custom=0.209993463 ms;
+custom/Humming=0.997764 (custom 0.224% faster, noise-sized).
+
+Candidate/control custom median ratios by M are 1.00638, 1.00868, 1.00852,
+1.00694, and 0.96394.  The apparent 0.126% candidate geomean advantage is
+entirely due to highly variable M128; candidate loses the stable M8-M64 points
+by 0.64-0.87%.  Reject packed scale registers despite the intended SASS change.
