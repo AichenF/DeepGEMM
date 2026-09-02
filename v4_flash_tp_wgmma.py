@@ -63,12 +63,9 @@ MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
-W2_DUAL_TASK_CTA = os.environ.get("V4_W2_DUAL_TASK_CTA", "0") == "1"
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
     raise ValueError("V4_MIN_BLOCKS_PER_SM must be one of 0,8,10,12,14,16")
-if W2_DUAL_TASK_CTA and MIN_BLOCKS_PER_SM:
-    raise ValueError("V4_W2_DUAL_TASK_CTA requires V4_MIN_BLOCKS_PER_SM=0")
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
@@ -126,7 +123,6 @@ static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
-static constexpr bool kW2DualTaskCta = K_W2_DUAL_TASK_CTA;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -136,10 +132,9 @@ static constexpr float kRoutedScale = 1.5f;
 static constexpr bool kW2RouteOutput = K_W2_ROUTE_OUTPUT;
 
 #if K_MIN_BLOCKS_PER_SM > 0
-#define ROUTE_LAUNCH_BOUNDS(THREADS) \
-    __launch_bounds__(THREADS, K_MIN_BLOCKS_PER_SM)
+#define ROUTE_LAUNCH_BOUNDS __launch_bounds__(128, K_MIN_BLOCKS_PER_SM)
 #else
-#define ROUTE_LAUNCH_BOUNDS(THREADS) __launch_bounds__(THREADS)
+#define ROUTE_LAUNCH_BOUNDS __launch_bounds__(128)
 #endif
 
 __device__ __forceinline__ void mbar_init(uint32_t address) {
@@ -201,8 +196,8 @@ __device__ __forceinline__ uint2 dequant_weight_word(
         kDequantDp4aHi, kDequantDp4aLo>(packed, lut);
 }
 
-template <int K, int N, int SplitK, bool IsW13, int WarpGroups>
-__global__ ROUTE_LAUNCH_BOUNDS(128 * WarpGroups) void route_gemm(
+template <int K, int N, int SplitK, bool IsW13>
+__global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const __grid_constant__ CUtensorMap tma_weight,
         const __grid_constant__ CUtensorMap tma_weight_scale,
         const uint8_t* __restrict__ weight_scale,
@@ -218,8 +213,6 @@ __global__ ROUTE_LAUNCH_BOUNDS(128 * WarpGroups) void route_gemm(
     static_assert(K % kBlockK == 0);
     static_assert(N % kWout == 0);
     static_assert((K / kBlockK) % SplitK == 0);
-    static_assert(WarpGroups == 1 || WarpGroups == 2);
-    static_assert(IsW13 ? WarpGroups == 1 : true);
     constexpr int kNumKTiles = K / kBlockK;
     constexpr int kKTilesPerSplit = kNumKTiles / SplitK;
     constexpr int kWeightStageBytes = kWout * (kBlockK / 2);
@@ -232,18 +225,12 @@ __global__ ROUTE_LAUNCH_BOUNDS(128 * WarpGroups) void route_gemm(
     constexpr int kEffectiveScaleBuffers =
         kUseTmaScale ? kScaleBuffers : kStages;
     constexpr int kNumNTiles = N / kWout;
-    static_assert(kNumNTiles % WarpGroups == 0);
 
     const int split_idx = blockIdx.x % SplitK;
-    const int warpgroup_idx = threadIdx.x / 128;
-    const int tid = threadIdx.x % 128;
-    const int block_task_idx = blockIdx.x / SplitK;
-    const int task_idx = block_task_idx * WarpGroups + warpgroup_idx;
+    const int task_idx = blockIdx.x / SplitK;
     const int m_block_idx = task_idx / kNumNTiles;
     const int n_block_idx = task_idx % kNumNTiles;
-    const int first_m_block_idx =
-        (block_task_idx * WarpGroups) / kNumNTiles;
-    if (first_m_block_idx * kTok >= __ldg(num_tokens_padded))
+    if (m_block_idx * kTok >= __ldg(num_tokens_padded))
         return;
 
     const int expert_idx = __ldg(expert_ids + m_block_idx);
@@ -253,13 +240,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(128 * WarpGroups) void route_gemm(
     const int kt_begin = split_idx * kKTilesPerSplit;
 
     extern __shared__ __align__(1024) uint8_t dynamic_smem[];
-    constexpr int kWarpgroupSmemBytes =
-        kStages * kWeightStageBytes
-        + kEffectiveScaleBuffers * kScaleStageBytes
-        + kTok * kBlockK;
-    uint8_t* warpgroup_smem =
-        dynamic_smem + warpgroup_idx * kWarpgroupSmemBytes;
-    uint8_t* weight_smem = warpgroup_smem;
+    uint8_t* weight_smem = dynamic_smem;
     uint8_t* weight_scale_smem =
         weight_smem + kStages * kWeightStageBytes;
     uint8_t* activation_smem =
@@ -273,23 +254,24 @@ __global__ ROUTE_LAUNCH_BOUNDS(128 * WarpGroups) void route_gemm(
     const int weight_swizzle_row_offset =
         kWeightSwizzle == 64 ? ((weight_smem_addr >> 7) & 3) : 0;
 
-    __shared__ __align__(8) uint64_t full_barriers[WarpGroups][kStages];
-    __shared__ __align__(8) uint64_t scale_barriers[WarpGroups];
+    __shared__ __align__(8) uint64_t full_barriers[kStages];
+    __shared__ __align__(8) uint64_t scale_barrier;
     __shared__ uint2 lut_smem[
         (kDequantSynthLut || (!IsW13 && kW2GlobalLut)) ? 1 : kLutRows];
-    __shared__ float activation_scale_smem[WarpGroups][kTok];
-    __shared__ int32_t route_ids[WarpGroups][kTok];
-    __shared__ int32_t activation_rows[WarpGroups][kTok];
+    __shared__ float activation_scale_smem[kTok];
+    __shared__ int32_t route_ids[kTok];
+    __shared__ int32_t activation_rows[kTok];
 
+    const int tid = threadIdx.x;
     if (tid < kTok) {
         const int route = __ldg(sorted_ids + m_block_idx * kTok + tid);
-        route_ids[warpgroup_idx][tid] = route;
-        activation_rows[warpgroup_idx][tid] = route < max_routes
+        route_ids[tid] = route;
+        activation_rows[tid] = route < max_routes
             ? (IsW13 ? route / kTopK : route)
             : -1;
     }
     if constexpr (!kDequantSynthLut && (IsW13 || !kW2GlobalLut)) {
-        for (int i = threadIdx.x; i < kLutRows; i += blockDim.x) {
+        for (int i = tid; i < kLutRows; i += blockDim.x) {
             constexpr int kGlobalLutOffset =
                 kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
             lut_smem[i] = global_lut[kGlobalLutOffset + i];
@@ -300,9 +282,9 @@ __global__ ROUTE_LAUNCH_BOUNDS(128 * WarpGroups) void route_gemm(
     #pragma unroll
     for (int stage = 0; stage < kStages; ++stage)
         barrier_addr[stage] = static_cast<uint32_t>(
-            __cvta_generic_to_shared(&full_barriers[warpgroup_idx][stage]));
+            __cvta_generic_to_shared(&full_barriers[stage]));
     const uint32_t scale_barrier_addr = static_cast<uint32_t>(
-        __cvta_generic_to_shared(&scale_barriers[warpgroup_idx]));
+        __cvta_generic_to_shared(&scale_barrier));
     if (tid == 0) {
         #pragma unroll
         for (int stage = 0; stage < kStages; ++stage)
@@ -411,8 +393,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(128 * WarpGroups) void route_gemm(
         const int token_slot = tid / 16;
         const int k8 = (tid % 16) * 8;
         uint2 value = make_uint2(0, 0);
-        const int activation_row =
-            activation_rows[warpgroup_idx][token_slot];
+        const int activation_row = activation_rows[token_slot];
         if (activation_row >= 0) {
             value = *reinterpret_cast<const uint2*>(
                 activation + static_cast<int64_t>(activation_row) * K
@@ -423,14 +404,14 @@ __global__ ROUTE_LAUNCH_BOUNDS(128 * WarpGroups) void route_gemm(
             + (k8 ^ ((token_slot & 7) << 4))) = value;
 
         if (tid < kTok) {
-            const int row = activation_rows[warpgroup_idx][tid];
-            activation_scale_smem[warpgroup_idx][tid] = row >= 0
+            const int row = activation_rows[tid];
+            activation_scale_smem[tid] = row >= 0
                 ? __ldg(activation_scale + static_cast<int64_t>(row) * kNumKTiles
                         + global_kt)
                 : 0.0f;
         }
         if constexpr (!kUseTmaScale) {
-            for (int i = tid; i < kWout * 4; i += 128) {
+            for (int i = tid; i < kWout * 4; i += blockDim.x) {
                 const int local_n = i >> 2;
                 const int k_group = i & 3;
                 weight_scale_smem[stage * kScaleStageBytes
@@ -550,17 +531,13 @@ __global__ ROUTE_LAUNCH_BOUNDS(128 * WarpGroups) void route_gemm(
         #pragma unroll
         for (int group = 0; group < kWgmmaGroups; ++group) {
             accum[group][0] +=
-                tile[group][0]
-                * activation_scale_smem[warpgroup_idx][column_base];
+                tile[group][0] * activation_scale_smem[column_base];
             accum[group][1] +=
-                tile[group][1]
-                * activation_scale_smem[warpgroup_idx][column_base + 1];
+                tile[group][1] * activation_scale_smem[column_base + 1];
             accum[group][2] +=
-                tile[group][2]
-                * activation_scale_smem[warpgroup_idx][column_base];
+                tile[group][2] * activation_scale_smem[column_base];
             accum[group][3] +=
-                tile[group][3]
-                * activation_scale_smem[warpgroup_idx][column_base + 1];
+                tile[group][3] * activation_scale_smem[column_base + 1];
         }
 
         if ((local_kt & 3) == 3 && local_kt + 1 < kKTilesPerSplit)
@@ -570,8 +547,8 @@ __global__ ROUTE_LAUNCH_BOUNDS(128 * WarpGroups) void route_gemm(
             load_weight_stage(local_kt + kStages, stage);
     }
 
-    const int route0 = route_ids[warpgroup_idx][column_base];
-    const int route1 = route_ids[warpgroup_idx][column_base + 1];
+    const int route0 = route_ids[column_base];
+    const int route1 = route_ids[column_base + 1];
     #pragma unroll
     for (int group = 0; group < kWgmmaGroups; ++group) {
         const int output_n0 = n_block_idx * kWout + group * 64 + row0;
@@ -785,7 +762,7 @@ CUtensorMap make_weight_scale_desc(void* pointer, int K, int rows) {
     return descriptor;
 }
 
-template <int K, int N, int SplitK, bool IsW13, int WarpGroups = 1>
+template <int K, int N, int SplitK, bool IsW13>
 void launch_route_gemm(
         torch::Tensor weight, torch::Tensor weight_scale,
         torch::Tensor activation, torch::Tensor activation_scale,
@@ -808,19 +785,15 @@ void launch_route_gemm(
         last_scale_pointer = weight_scale.data_ptr();
     }
     const int max_m_blocks = expert_ids.numel();
-    constexpr int kNumNTiles = N / kWout;
-    static_assert(kNumNTiles % WarpGroups == 0);
-    const int logical_tasks = max_m_blocks * kNumNTiles;
-    const int grid = (logical_tasks / WarpGroups) * SplitK;
+    const int grid = max_m_blocks * (N / kWout) * SplitK;
     constexpr int effective_scale_buffers = K >= 512 ? kScaleBuffers : kStages;
-    constexpr int warpgroup_smem_bytes =
+    constexpr int dynamic_smem_bytes =
         kStages * kWout * (kBlockK / 2)
         + effective_scale_buffers * kWout * 16
         + kTok * kBlockK;
-    constexpr int dynamic_smem_bytes = WarpGroups * warpgroup_smem_bytes;
     const auto stream = at::cuda::getCurrentCUDAStream();
-    route_gemm<K, N, SplitK, IsW13, WarpGroups><<<
-        grid, 128 * WarpGroups, dynamic_smem_bytes, stream>>>(
+    route_gemm<K, N, SplitK, IsW13><<<
+        grid, 128, dynamic_smem_bytes, stream>>>(
         weight_descriptor,
         scale_descriptor,
         weight_scale.data_ptr<uint8_t>(),
@@ -882,14 +855,12 @@ void run_w2(
         torch::Tensor output, torch::Tensor lut, int intermediate) {
     const int routes = topk_weights.numel();
     if (intermediate == 512) {
-        launch_route_gemm<512, 4096, 1, false,
-                          kW2DualTaskCta ? 2 : 1>(
+        launch_route_gemm<512, 4096, 1, false>(
             weight, weight_scale, activation, activation_scale,
             sorted_ids, expert_ids, num_tokens_padded, topk_weights,
             output, lut, routes);
     } else if (intermediate == 256) {
-        launch_route_gemm<256, 4096, 1, false,
-                          kW2DualTaskCta ? 2 : 1>(
+        launch_route_gemm<256, 4096, 1, false>(
             weight, weight_scale, activation, activation_scale,
             sorted_ids, expert_ids, num_tokens_padded, topk_weights,
             output, lut, routes);
@@ -1036,8 +1007,7 @@ _ext = load_inline(
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
-          f"w2dual{int(W2_DUAL_TASK_CTA)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v26"),
+          f"mb{MIN_BLOCKS_PER_SM}_v27"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1059,7 +1029,6 @@ _ext = load_inline(
         f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
-        f"-DK_W2_DUAL_TASK_CTA={int(W2_DUAL_TASK_CTA)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",

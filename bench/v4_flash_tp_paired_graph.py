@@ -261,7 +261,6 @@ def main() -> None:
                     "custom_mode2_braid": kernel.MODE2_BRAID,
                     "custom_fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "custom_w2_global_lut": kernel.W2_GLOBAL_LUT,
-                    "custom_w2_dual_task_cta": kernel.W2_DUAL_TASK_CTA,
                     "timed_allreduce": "same SGLang CustomAllReduceV2 instance",
                 },
                 sort_keys=True,

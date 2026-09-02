@@ -1731,3 +1731,24 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_paired_graph_batch_coldl2_random_w2_dual_task_screen_20260903.log`,
   and
   `bench/results/tp4_paired_graph_batch_coldl2_skew_m8_w2_dual_task_screen_20260903.log`.
+
+### Iteration 27 rollback — restore the single-warp-group W2 winner
+
+- Removed the rejected dual-task specialization and all generic-kernel
+  indexing changes, rather than only disabling its environment switch.  A
+  direct diff against commit `4c1f891` confirms that the five source/harness
+  files are identical to the pre-experiment winner except for the JIT suffix
+  (`v27`), which forces a clean rebuild.
+- The rebuilt TP4 balanced full-path check passes with W13/activation/W2
+  cosine 0.999999997/0.999999691/0.999997241 and finite output.
+- A batch-paired random-route cold 4x100 rollback screen gives custom medians
+  0.092736 / 0.143488 / 0.217632 / 0.310976 / 0.446352 ms, versus Humming
+  0.090528 / 0.145760 / 0.226432 / 0.326160 / 0.416592 ms.  The batch-level
+  drift is again large at M128, so this short run is not a new headline; its
+  five-shape geomeans are 0.209333/0.209749 ms (custom 0.20% faster), which
+  confirms recovery from the dual-task candidate's 4.84% loss.
+- Every one of the 400 samples per implementation and M has its own 256 MiB
+  pre-replay L2 clear outside timing.  Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_dual_task_rollback_correctness_20260903.log`
+  and
+  `bench/results/tp4_paired_graph_batch_coldl2_random_w2_dual_task_rollback_screen_20260903.log`.

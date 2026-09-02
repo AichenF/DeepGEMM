@@ -506,7 +506,6 @@ def main() -> None:
                     "dequant_synth_lut": kernel.DEQUANT_SYNTH_LUT,
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
-                    "w2_dual_task_cta": kernel.W2_DUAL_TASK_CTA,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "w2_epilogue": (
                         "BF16 route output + sglang moe_fused_mul_sum"
