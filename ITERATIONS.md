@@ -1829,3 +1829,22 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_w2_stages3_rollback_correctness_20260903.log`
   and
   `bench/results/tp4_paired_graph_batch_coldl2_random_w2_stages3_rollback_screen_20260903.log`.
+
+### WGMMA iteration 29a — initial warp-specialized persistent W2 (incorrect)
+
+- Added an opt-in `V4_W2_WS_PERSIST=1` W2 specialization.  A fixed grid of
+  256-thread CTAs uses one 128-thread producer warpgroup and one 128-thread
+  RS-WGMMA consumer warpgroup.  Both roles derive the same strided task stream
+  from device `num_tokens_padded`; two full/empty stages are initialized once
+  and reused across K tiles and output tasks.  The design does not specialize
+  launch geometry to the observed route distribution.
+- The first TP4 M8 balanced full-path gate compiled and returned, with W13 and
+  fused activation cosines 0.999999998 and 0.999999759, but W2 was identically
+  zero: cosine 0, relative L2 1, finite output.  Because correctness failed,
+  the skew test and cold-L2 performance screen were intentionally skipped.
+- Preserve this state before repair.  Leading suspects are the producer/
+  consumer role-local epilogue state and mbarrier phase publication, rather
+  than route alignment or the inherited WGMMA math (the accepted path in the
+  same binary remains unchanged).
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_ws_persistent_initial_correctness_20260903.log`.
