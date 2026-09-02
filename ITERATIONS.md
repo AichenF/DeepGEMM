@@ -1752,3 +1752,32 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_w2_dual_task_rollback_correctness_20260903.log`
   and
   `bench/results/tp4_paired_graph_batch_coldl2_random_w2_dual_task_rollback_screen_20260903.log`.
+
+### WGMMA iteration 28 — W2-only three-stage TMA pipeline (rejected)
+
+- Added an isolated `V4_W2_WEIGHT_STAGES` specialization so W13 can retain
+  its accepted two-stage pipeline while only the short-K W2 tests a third
+  packed-weight buffer.  This separates the W2 question from iteration 19's
+  global three-stage regression and directly targets W2's 47.9% long-
+  scoreboard share in the detailed NCU sample.
+- W2 stage count defaults to `V4_WEIGHT_STAGES` for backward-compatible
+  diagnostics and is two when all tuning variables are unset.  Explicit
+  three-stage TP4 and TP8-shape full-path checks pass with errors identical to
+  the two-stage path; worst W2 cosine is 0.999997249 and outputs are finite.
+- The batch-paired TP4 random-route cold 4x100 screen gives three-stage custom
+  medians 0.097472 / 0.152224 / 0.231552 / 0.323264 / 0.455424 ms.  Against
+  the immediately preceding two-stage rollback screen's custom medians, these
+  are slower by about 5.11% / 6.09% / 6.40% / 3.95% / 2.03%; all five points
+  lose despite run-to-run drift at M128.
+- Its paired Humming medians are 0.090496 / 0.145728 / 0.225680 / 0.317632 /
+  0.422752 ms, so three-stage custom loses every M and five-shape geometric
+  mean by 4.82%.  The extra 8 KiB packed-weight buffer reduces resident CTA
+  capacity more than its additional prefetch distance hides scoreboards.
+  Reject the candidate and retain W2 stages=2 pending exact generic-path
+  rollback.
+- Every one of the 400 samples per implementation and M has a separate
+  256 MiB L2 clear outside timing.  Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_stages3_tp4_correctness_20260903.log`,
+  `bench/results/v4_flash_tp_wgmma_w2_stages3_tp8shape_correctness_20260903.log`,
+  and
+  `bench/results/tp4_paired_graph_batch_coldl2_random_w2_stages3_screen_20260903.log`.
