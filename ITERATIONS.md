@@ -495,3 +495,23 @@ maximum rank latency of a full CUDA-Graph replay.
   that the accepted implementation is recovered.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_wout128_s2_postdual_restore_20260902.log`.
+
+### WGMMA iteration 7 — 256-channel output tile regresses
+
+- Change: extend the generic grouped WGMMA tile from 128 to 256 output
+  channels, halving route/activation setup and CTA count again.  The dynamic
+  shared-memory footprint remains about 34 KiB and both TP4/TP8 shapes divide
+  evenly.
+- Full-route TP4-shape correctness at M32 balanced passes: W13 cosine
+  0.999999997, activation cosine 0.999999691, W2 cosine 0.999999992,
+  W2 rel-L2 0.000127067, and all outputs finite.
+- Required cold-L2 3x100 TP4 screen medians for M8/M16/M32/M64/M128 are
+  0.168336 / 0.296672 / 0.508864 / 0.642160 / 0.657344 ms; geometric mean
+  is 0.403737 ms.  This is 18.0% slower than the 128-channel winner's latest
+  0.342156 ms, with no winning M point.
+- Cubin resource usage explains the reversal: the TP4 route kernels rise from
+  45 registers/thread at WOUT=128 to 69 at WOUT=256 (no local-memory spill).
+  For 128-thread CTAs this cuts the register-limited resident CTA/warp budget
+  sharply, outweighing reduced CTA setup.  Reject WOUT=256 and restore 128.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_wout256_s2_screen_20260902.log`.

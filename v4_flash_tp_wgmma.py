@@ -23,8 +23,8 @@ W13_SPLIT_K = int(os.environ.get("V4_W13_SPLIT_K", "4"))
 if W13_SPLIT_K not in (1, 2, 4, 8):
     raise ValueError("V4_W13_SPLIT_K must be one of 1,2,4,8")
 WOUT = int(os.environ.get("V4_WOUT", "64"))
-if WOUT not in (64, 128):
-    raise ValueError("V4_WOUT must be 64 or 128")
+if WOUT not in (64, 128, 256):
+    raise ValueError("V4_WOUT must be one of 64,128,256")
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
@@ -63,7 +63,7 @@ _CUDA = r"""
 using namespace deep_gemm;
 
 static constexpr int kWout = K_WOUT;
-static_assert(kWout == 64 || kWout == 128);
+static_assert(kWout == 64 || kWout == 128 || kWout == 256);
 static constexpr int kWgmmaGroups = kWout / 64;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
@@ -524,7 +524,7 @@ void cast_bf16(torch::Tensor input, torch::Tensor output);
 
 
 _ext = load_inline(
-    name=f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_wo{WOUT}_v6",
+    name=f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_wo{WOUT}_v8",
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],
