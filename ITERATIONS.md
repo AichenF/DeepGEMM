@@ -1709,6 +1709,22 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/tp4_wgmma_m8_random_wout64_coldl2_nsys.{log,nsys-rep}`.
 
+### TP8 distributed CUDA-Graph run-through
+
+- With all eight H20s idle, ran the accepted kernel at the real TP8 shard
+  (`I/rank=256`, W13 `[256,512,4096]`, W2 `[256,4096,256]`) through the full
+  eight-rank graph including SGLang `CustomAllReduceV2`, rather than relying
+  only on a single-GPU TP8-shape unit test.
+- The deliberately small M8 random-route smoke uses two outer batches of ten
+  individually cold replays.  Median max-rank latency is 0.072816 ms; minimum
+  rank cosine is 0.999991970, relative L2 is 0.0040074, all values are finite,
+  and the custom all-reduce output matches an independent local recompute plus
+  NCCL reference.
+- This 20-sample result proves TP8 graph/run-time compatibility only and is
+  not promoted to a performance headline.  Each replay uses the standard
+  256 MiB L2 clear outside timing.  Evidence:
+  `bench/results/tp8_wgmma_graph_coldl2_random_m8_smoke_20260903.log`.
+
 ### WGMMA iteration 27 — two concurrent W2 warp-groups per CTA (rejected)
 
 - Added an opt-in `V4_W2_DUAL_TASK_CTA=1` specialization.  A 256-thread CTA
