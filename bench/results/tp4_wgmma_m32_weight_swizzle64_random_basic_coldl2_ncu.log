@@ -1,0 +1,10 @@
+==PROF== Connected to process 72084 (/usr/bin/python3.12)
+==PROF== Connected to process 72220 (/usr/bin/python3.12)
+==PROF== Connected to process 72218 (/usr/bin/python3.12)
+==PROF== Disconnected from process 72218
+==PROF== Disconnected from process 72220
+==PROF== Profiling "route_gemm": 0%....50%....100% - 10 passes
+==PROF== Profiling "route_gemm": 0%....50%....100% - 10 passes
+LOCAL_PROFILE_REPLAY {"impl": "custom", "l2_cache_bytes": 62914560, "l2_flush_bytes": 268435456, "l2_policy": "cold; 256MiB clear immediately before pipeline", "m": 32, "min_blocks_per_sm": 0, "mxfp4_lut_rows": 256, "output_tile_channels": 128, "route_pattern": "random", "scale_buffers": 2, "scale_quad_reuse": 4, "tp": 4, "w13_split_policy": "auto", "w2_route_output": true, "weight_swizzle_bytes": 64}
+==PROF== Disconnected from process 72084
+==PROF== Report: /lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/results/tp4_wgmma_m32_weight_swizzle64_random_basic_coldl2_ncu.ncu-rep

@@ -50,6 +50,9 @@ if SCALE_QUAD_REUSE == 1 and SCALE_BUFFERS != 2:
 WEIGHT_SWIZZLE = int(os.environ.get("V4_WEIGHT_SWIZZLE", "64"))
 if WEIGHT_SWIZZLE not in (0, 64):
     raise ValueError("V4_WEIGHT_SWIZZLE must be 0 or 64")
+WEIGHT_COMMON_ADDRESS = os.environ.get("V4_WEIGHT_COMMON_ADDRESS", "0") == "1"
+if WEIGHT_COMMON_ADDRESS and WEIGHT_SWIZZLE != 64:
+    raise ValueError("V4_WEIGHT_COMMON_ADDRESS=1 requires V4_WEIGHT_SWIZZLE=64")
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
@@ -103,6 +106,8 @@ static_assert(kScaleBuffers == 1 || kScaleBuffers == 2);
 static_assert(kScaleQuadReuse == 4 || kScaleBuffers == 2);
 static constexpr int kWeightSwizzle = K_WEIGHT_SWIZZLE;
 static_assert(kWeightSwizzle == 0 || kWeightSwizzle == 64);
+static constexpr bool kWeightCommonAddress = K_WEIGHT_COMMON_ADDRESS;
+static_assert(!kWeightCommonAddress || kWeightSwizzle == 64);
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -377,6 +382,13 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         float tile[kWgmmaGroups][4] = {};
         #pragma unroll
         for (int k_step = 0; k_step < kBlockK / 32; ++k_step) {
+            const uint32_t stage_base =
+                weight_smem_addr + stage * kWeightStageBytes;
+            const int common_weight_chunk = k_step ^
+                (((row0 >> 1) + weight_swizzle_row_offset) & 3);
+            const uint32_t common_weight_address =
+                stage_base + row0 * (kBlockK / 2)
+                + common_weight_chunk * 16 + packed_k_offset;
             const auto activation_desc = desc_128b(
                 activation_smem_addr + k_step * 32);
             #pragma unroll
@@ -400,16 +412,25 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     : k_step;
                 uint32_t packed0;
                 uint32_t packed1;
-                const uint32_t stage_base =
-                    weight_smem_addr + stage * kWeightStageBytes;
-                asm volatile("ld.shared.b32 %0,[%1];"
-                    : "=r"(packed0)
-                    : "r"(stage_base + group_row0 * (kBlockK / 2)
-                          + weight_chunk0 * 16 + packed_k_offset));
-                asm volatile("ld.shared.b32 %0,[%1];"
-                    : "=r"(packed1)
-                    : "r"(stage_base + group_row1 * (kBlockK / 2)
-                          + weight_chunk1 * 16 + packed_k_offset));
+                if constexpr (kWeightCommonAddress) {
+                    asm volatile("ld.shared.b32 %0,[%1];"
+                        : "=r"(packed0)
+                        : "r"(common_weight_address
+                              + group * 64 * (kBlockK / 2)));
+                    asm volatile("ld.shared.b32 %0,[%1];"
+                        : "=r"(packed1)
+                        : "r"(common_weight_address
+                              + (group * 64 + 8) * (kBlockK / 2)));
+                } else {
+                    asm volatile("ld.shared.b32 %0,[%1];"
+                        : "=r"(packed0)
+                        : "r"(stage_base + group_row0 * (kBlockK / 2)
+                              + weight_chunk0 * 16 + packed_k_offset));
+                    asm volatile("ld.shared.b32 %0,[%1];"
+                        : "=r"(packed1)
+                        : "r"(stage_base + group_row1 * (kBlockK / 2)
+                              + weight_chunk1 * 16 + packed_k_offset));
+                }
                 const uint32_t exponent0 =
                     weight_scale_smem[scale_stage * kScaleStageBytes
                                       + group_row0 * kScaleRowBytes
@@ -765,8 +786,8 @@ void cast_bf16(torch::Tensor input, torch::Tensor output);
 _ext = load_inline(
     name=(f"v4_flash_tp_wgmma_sdyn_wo{WOUT}_lr{LUT_ROWS}_"
           f"sr{SCALE_QUAD_REUSE}_sb{SCALE_BUFFERS}_"
-          f"ws{WEIGHT_SWIZZLE}_ro{int(W2_ROUTE_OUTPUT)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v19"),
+          f"ws{WEIGHT_SWIZZLE}_wca{int(WEIGHT_COMMON_ADDRESS)}_"
+          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v20"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],
@@ -777,6 +798,7 @@ _ext = load_inline(
         f"-DK_SCALE_QUAD_REUSE={SCALE_QUAD_REUSE}",
         f"-DK_SCALE_BUFFERS={SCALE_BUFFERS}",
         f"-DK_WEIGHT_SWIZZLE={WEIGHT_SWIZZLE}",
+        f"-DK_WEIGHT_COMMON_ADDRESS={int(WEIGHT_COMMON_ADDRESS)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",

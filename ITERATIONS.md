@@ -1134,3 +1134,34 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_humming_graph_coldl2_random_formal_post_weight_swizzle_window_20260903.log`
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_weight_swizzle64_formal_post_humming_window_20260903.log`.
+
+### WGMMA iteration 17 — share one swizzled weight address across row pairs
+
+- Post-swizzle basic NCU shows W13/W2 at 160.58/87.20 us, but the direct
+  swizzled address expressions raise register use from the old 45/45 to
+  62/59 and reduce theoretical occupancy from 56.25% to 50%.  The conflict
+  fix therefore exposed an address-generation cost.
+- Observation: for the RS fragment mapping, `row1=row0+8` and each additional
+  WGMMA group adds 64 rows.  Both shifts leave `(logical_row >> 1) & 3`
+  unchanged.  Compute one physical address for `row0`, then use compile-time
+  byte offsets for `row1` and every N64 group instead of materializing a
+  separate lane-dependent address for each packed load.
+- Full-block correctness passes TP4 split-K=4, TP4 forced split-K=2, and the
+  TP8 local shape.  Resource inspection drops W13 to 46 registers and TP4 W2
+  to 48 registers while retaining the 64-byte TMA swizzle.
+- Contemporary TP4 random-route cold 3x100 medians with the common address
+  are 0.100160 / 0.155856 / 0.244304 / 0.339920 / 0.425600 ms (geomean
+  0.223021 ms).  The immediately following same-source direct-address control
+  gives 0.102304 / 0.159296 / 0.251776 / 0.353408 / 0.434320 ms (geomean
+  0.229002 ms).  The rewrite wins all five points by 2.0-3.8% and improves
+  geometric mean by 2.61%.  Keep it experimental behind
+  `V4_WEIGHT_COMMON_ADDRESS=1` pending reverse-order and formal confirmation.
+- Evidence:
+  `bench/results/tp4_wgmma_m32_weight_swizzle64_random_basic_coldl2_ncu.ncu-rep`,
+  `bench/results/tp4_wgmma_m32_weight_swizzle64_random_basic_coldl2_ncu.log`,
+  `bench/results/v4_flash_tp_wgmma_weight_common_address_correctness_tp4_20260903.log`,
+  `bench/results/v4_flash_tp_wgmma_weight_common_address_correctness_tp4_split2_20260903.log`,
+  `bench/results/v4_flash_tp_wgmma_weight_common_address_correctness_tp8shape_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_common_address_screen_20260903.log`,
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_common_address0_control_20260903.log`.
