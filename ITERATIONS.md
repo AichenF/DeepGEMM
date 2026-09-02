@@ -135,3 +135,23 @@ maximum rank latency of a full CUDA-Graph replay.
 - Policy: balanced routes remain the primary optimization score, while this
   skew case is a mandatory counterexample check.
 - Evidence log: `bench/results/tp4_humming_graph_skew_formal_20260902.log`.
+
+### Route-aware RS-WGMMA bring-up — correctness first
+
+- Starting point: preserved the braided MXFP4-to-FP8 register dequant and
+  swap-AB `m64n8k32` RS-WGMMA core from `step_e_lutg.py`/`step_e_fc2.py`.
+- Changed: raw `G` and shared `X[8,K]` were replaced by SGLang
+  `sorted_ids`/`expert_ids`/`num_tokens_padded`; each tile gathers its real
+  token rows, applies per-token FP8 group-128 scales per K tile, writes W13
+  split-K partials, reduces into BF16 SwiGLU, and fuses W2 route weighting into
+  FP32 local-token scatter.  Shapes specialize both TP4 Is=512 and TP8 Is=256.
+- TP4 M8 balanced (48 active experts, all 48 routes, padded to 384 rows):
+  W13 cosine 0.999999998 / rel-L2 0.000076187; activation cosine
+  0.999999759; W2+local-reduce cosine 0.999999993 / rel-L2 0.000126339.
+- TP4 M8 maximal skew (6 active experts, 8 real tokens/expert): W13 cosine
+  0.999999997, activation 0.999999649, W2 0.999999992.
+- TP8-template M8 balanced (Is=256): W13 cosine 0.999999997, activation
+  0.999999745, W2 0.999999710 / rel-L2 0.000762151.
+- All checks cover every output block and every split-K partial against a
+  torch dequant/matmul reference; all outputs finite.  No performance claim
+  yet.
