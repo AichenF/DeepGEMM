@@ -2285,3 +2285,21 @@ maximum rank latency of a full CUDA-Graph replay.
   event interval; all graph correctness and all-reduce checks pass.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_w2_scale_regs_screen_20260903.log`.
+
+### WGMMA iteration 32a — prefetch next W2 K32 S2R operands across QGMMA
+
+- Added opt-in `V4_W2_S2R_PREFETCH=1` on the restored one-task-per-CTA path.
+  Each W2 group retains the next K32 packed-weight words and shared-LUT result
+  in registers: they are loaded before the current QGMMA and dequantized after
+  its dependency wait.  This mirrors Humming's `load_stage_iter(next)` before
+  `mma.run(current)` without changing CTA scheduling or accumulating two MMA
+  chains (the rejected iteration-6 experiment).
+- TP4 balanced/maximal-skew and TP8-shape maximal-skew correctness reproduce
+  accepted errors exactly; W2 cosine is at least 0.999997235.
+- TP4 W2 uses 56 registers/thread, no local memory, and unchanged shared
+  memory, remaining below the 64-register eight-CTA/SM boundary.  SASS audit
+  confirms next-iteration LDS operations precede current QGMMA and their data
+  remains live across `WARPGROUP.DEPBAR`.
+- Proceed to the paired per-replay cold-L2 screen.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_s2r_prefetch_correctness_20260903.log`.
