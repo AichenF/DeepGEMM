@@ -25,6 +25,9 @@ if W13_SPLIT_K not in (1, 2, 4, 8):
 WOUT = int(os.environ.get("V4_WOUT", "64"))
 if WOUT not in (64, 128):
     raise ValueError("V4_WOUT must be 64 or 128")
+PERSISTENT_WORKERS = int(os.environ.get("V4_PERSISTENT_WORKERS", "0"))
+if PERSISTENT_WORKERS < 0:
+    raise ValueError("V4_PERSISTENT_WORKERS must be non-negative")
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
@@ -113,19 +116,6 @@ __global__ __launch_bounds__(128) void route_gemm(
     constexpr int kWeightStageBytes = kWout * (kBlockK / 2);
     constexpr int kNumNTiles = N / kWout;
 
-    const int split_idx = blockIdx.x % SplitK;
-    const int task_idx = blockIdx.x / SplitK;
-    const int m_block_idx = task_idx / kNumNTiles;
-    const int n_block_idx = task_idx % kNumNTiles;
-    if (m_block_idx * kTok >= __ldg(num_tokens_padded))
-        return;
-
-    const int expert_idx = __ldg(expert_ids + m_block_idx);
-    if (expert_idx < 0)
-        return;
-    const int weight_row = expert_idx * N + n_block_idx * kWout;
-    const int kt_begin = split_idx * kKTilesPerSplit;
-
     extern __shared__ __align__(1024) uint8_t dynamic_smem[];
     uint8_t* weight_smem = dynamic_smem;
     uint8_t* activation_smem = weight_smem + kStages * kWeightStageBytes;
@@ -142,13 +132,6 @@ __global__ __launch_bounds__(128) void route_gemm(
     __shared__ int32_t activation_rows[kTok];
 
     const int tid = threadIdx.x;
-    if (tid < kTok) {
-        const int route = __ldg(sorted_ids + m_block_idx * kTok + tid);
-        route_ids[tid] = route;
-        activation_rows[tid] = route < max_routes
-            ? (IsW13 ? route / kTopK : route)
-            : -1;
-    }
     for (int i = tid; i < 256; i += blockDim.x)
         lut_smem[i] = global_lut[i];
 
@@ -157,13 +140,36 @@ __global__ __launch_bounds__(128) void route_gemm(
     for (int stage = 0; stage < kStages; ++stage)
         barrier_addr[stage] = static_cast<uint32_t>(
             __cvta_generic_to_shared(&full_barriers[stage]));
-    if (tid == 0) {
-        #pragma unroll
-        for (int stage = 0; stage < kStages; ++stage)
-            mbar_init(barrier_addr[stage]);
-        asm volatile("fence.proxy.async.shared::cta;");
-    }
     __syncthreads();
+
+    const int active_m_blocks = __ldg(num_tokens_padded) / kTok;
+    const int total_tasks = active_m_blocks * kNumNTiles * SplitK;
+    for (int linear_task = blockIdx.x; linear_task < total_tasks;
+         linear_task += gridDim.x) {
+        const int split_idx = linear_task % SplitK;
+        const int task_idx = linear_task / SplitK;
+        const int m_block_idx = task_idx / kNumNTiles;
+        const int n_block_idx = task_idx % kNumNTiles;
+        const int expert_idx = __ldg(expert_ids + m_block_idx);
+        if (expert_idx < 0)
+            continue;
+        const int weight_row = expert_idx * N + n_block_idx * kWout;
+        const int kt_begin = split_idx * kKTilesPerSplit;
+
+        if (tid < kTok) {
+            const int route = __ldg(sorted_ids + m_block_idx * kTok + tid);
+            route_ids[tid] = route;
+            activation_rows[tid] = route < max_routes
+                ? (IsW13 ? route / kTopK : route)
+                : -1;
+        }
+        if (tid == 0) {
+            #pragma unroll
+            for (int stage = 0; stage < kStages; ++stage)
+                mbar_init(barrier_addr[stage]);
+            asm volatile("fence.proxy.async.shared::cta;");
+        }
+        __syncthreads();
 
     const auto load_weight_stage = [&](int local_kt, int stage) {
         if (tid == 0) {
@@ -339,6 +345,8 @@ __global__ __launch_bounds__(128) void route_gemm(
             }
         }
     }
+        __syncthreads();
+    }
 }
 
 template <int Intermediate, int SplitK>
@@ -401,7 +409,8 @@ void launch_route_gemm(
         torch::Tensor activation, torch::Tensor activation_scale,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
         torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
-        torch::Tensor output, torch::Tensor lut, int max_routes) {
+        torch::Tensor output, torch::Tensor lut, int max_routes,
+        int persistent_workers) {
     static CUtensorMap descriptor;
     static void* last_pointer = nullptr;
     if (last_pointer != weight.data_ptr()) {
@@ -410,7 +419,9 @@ void launch_route_gemm(
         last_pointer = weight.data_ptr();
     }
     const int max_m_blocks = expert_ids.numel();
-    const int grid = max_m_blocks * (N / kWout) * SplitK;
+    const int full_grid = max_m_blocks * (N / kWout) * SplitK;
+    const int grid = persistent_workers > 0 && persistent_workers < full_grid
+        ? persistent_workers : full_grid;
     constexpr int dynamic_smem_bytes =
         kStages * kWout * (kBlockK / 2) + kTok * kBlockK;
     const auto stream = at::cuda::getCurrentCUDAStream();
@@ -435,18 +446,18 @@ void run_w13_impl(
         torch::Tensor activation, torch::Tensor activation_scale,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
         torch::Tensor num_tokens_padded, torch::Tensor partials,
-        torch::Tensor lut, int intermediate) {
+        torch::Tensor lut, int intermediate, int persistent_workers) {
     const int routes = partials.size(1);
     if (intermediate == 512) {
         launch_route_gemm<4096, 1024, W13_SPLIT_K, true>(
             weight, weight_scale, activation, activation_scale,
             sorted_ids, expert_ids, num_tokens_padded, partials,
-            partials, lut, routes);
+            partials, lut, routes, persistent_workers);
     } else if (intermediate == 256) {
         launch_route_gemm<4096, 512, W13_SPLIT_K, true>(
             weight, weight_scale, activation, activation_scale,
             sorted_ids, expert_ids, num_tokens_padded, partials,
-            partials, lut, routes);
+            partials, lut, routes, persistent_workers);
     } else {
         TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
     }
@@ -457,18 +468,19 @@ void run_w2(
         torch::Tensor activation, torch::Tensor activation_scale,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
         torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
-        torch::Tensor output, torch::Tensor lut, int intermediate) {
+        torch::Tensor output, torch::Tensor lut, int intermediate,
+        int persistent_workers) {
     const int routes = topk_weights.numel();
     if (intermediate == 512) {
         launch_route_gemm<512, 4096, 1, false>(
             weight, weight_scale, activation, activation_scale,
             sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-            output, lut, routes);
+            output, lut, routes, persistent_workers);
     } else if (intermediate == 256) {
         launch_route_gemm<256, 4096, 1, false>(
             weight, weight_scale, activation, activation_scale,
             sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-            output, lut, routes);
+            output, lut, routes, persistent_workers);
     } else {
         TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
     }
@@ -512,19 +524,20 @@ void run_w13_impl(torch::Tensor weight, torch::Tensor weight_scale,
                   torch::Tensor activation, torch::Tensor activation_scale,
                   torch::Tensor sorted_ids, torch::Tensor expert_ids,
                   torch::Tensor num_tokens_padded, torch::Tensor partials,
-                  torch::Tensor lut, int intermediate);
+                  torch::Tensor lut, int intermediate, int persistent_workers);
 void run_w2(torch::Tensor weight, torch::Tensor weight_scale,
             torch::Tensor activation, torch::Tensor activation_scale,
             torch::Tensor sorted_ids, torch::Tensor expert_ids,
             torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
-            torch::Tensor output, torch::Tensor lut, int intermediate);
+            torch::Tensor output, torch::Tensor lut, int intermediate,
+            int persistent_workers);
 void reduce_swiglu(torch::Tensor partials, torch::Tensor output, int intermediate);
 void cast_bf16(torch::Tensor input, torch::Tensor output);
 """
 
 
 _ext = load_inline(
-    name=f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_wo{WOUT}_v4",
+    name=f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_wo{WOUT}_v5",
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],
@@ -584,6 +597,7 @@ def run_w13(
         partials,
         lut,
         intermediate,
+        PERSISTENT_WORKERS,
     )
 
 
@@ -612,6 +626,7 @@ def run_w2(
         output,
         lut,
         intermediate,
+        PERSISTENT_WORKERS,
     )
 
 

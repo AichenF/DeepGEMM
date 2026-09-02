@@ -411,3 +411,31 @@ maximum rank latency of a full CUDA-Graph replay.
   batch medians remain the stability diagnostic.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_s2_wo128_formal_20260902.log`.
+
+### WGMMA iteration 5 — naive persistent grid is a large regression
+
+- Change: following DeepGEMM MegaMoE's device-side schedule at a structural
+  level, cap the physical grid and let each CTA traverse valid route/output
+  tasks with a grid-stride loop.  LUT is loaded once per physical CTA and
+  inactive `expert_ids` capacity does not enter the logical task count.
+- TP4 balanced full-block correctness passes with 312 workers before timing.
+- Cold-L2 3x100 five-point geometric means by physical worker count:
+  - 0 (full grid control): 0.350811 ms.
+  - 78: 1.337024 ms.
+  - 156: 0.861095 ms.
+  - 234: 0.648026 ms.
+  - 312: 0.526386 ms.
+- Point medians for 312 workers are 0.211456 / 0.351792 / 0.665984 /
+  0.891248 / 0.915280 ms for M8 through M128, all much slower than the
+  iteration-4 winner.  Smaller persistent grids regress even more severely.
+- Diagnosis: this one-warpgroup CTA has no dedicated producer and no
+  cross-task producer/consumer overlap.  It relies on many independent CTAs
+  to hide TMA, dequantization, and WGMMA waits; serial tile traversal removes
+  that latency hiding.  DeepGEMM MegaMoE's persistent schedule works together
+  with producer/consumer warp specialization and a mailbox pipeline, so the
+  scheduler cannot be transplanted alone.  Reject and restore iteration 4.
+- The full-grid control is also slower than iteration 4 because every
+  preallocated idle CTA now loads the LUT before discovering that its task is
+  outside `num_tokens_padded`; this generic loop must not remain on the winner.
+- Evidence logs:
+  `bench/results/tp4_wgmma_graph_coldl2_s2_wo128_p{0,78,156,234,312}_screen_20260902.log`.
