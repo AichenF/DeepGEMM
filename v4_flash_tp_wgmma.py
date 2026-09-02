@@ -63,6 +63,7 @@ MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
+W2_SCALE_REGS = os.environ.get("V4_W2_SCALE_REGS", "0") == "1"
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
     raise ValueError("V4_MIN_BLOCKS_PER_SM must be one of 0,8,10,12,14,16")
@@ -123,6 +124,7 @@ static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
+static constexpr bool kW2ScaleRegs = K_W2_SCALE_REGS;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -430,6 +432,34 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         }
         asm volatile("bar.sync 0;" ::: "memory");
 
+        // Humming's fused-E8M0 path loads a four-scale word into registers
+        // before its unrolled dequant loop.  Probe the same S2R shape only
+        // for W2: four LDS.32 loads replace sixteen dependency-heavy LDS.U8
+        // loads per thread and K128 tile, with byte extraction in registers.
+        uint32_t scale_words0[kWgmmaGroups];
+        uint32_t scale_words1[kWgmmaGroups];
+        if constexpr (!IsW13 && kW2ScaleRegs) {
+            #pragma unroll
+            for (int group = 0; group < kWgmmaGroups; ++group) {
+                const int group_row0 = group * 64 + row0;
+                const int group_row1 = group * 64 + row1;
+                const uint32_t scale_address0 =
+                    weight_scale_smem_addr
+                    + scale_stage * kScaleStageBytes
+                    + group_row0 * kScaleRowBytes
+                    + (global_kt & 3) * 4;
+                const uint32_t scale_address1 =
+                    weight_scale_smem_addr
+                    + scale_stage * kScaleStageBytes
+                    + group_row1 * kScaleRowBytes
+                    + (global_kt & 3) * 4;
+                asm volatile("ld.shared.b32 %0,[%1];"
+                    : "=r"(scale_words0[group]) : "r"(scale_address0));
+                asm volatile("ld.shared.b32 %0,[%1];"
+                    : "=r"(scale_words1[group]) : "r"(scale_address1));
+            }
+        }
+
         float tile[kWgmmaGroups][4] = {};
         #pragma unroll
         for (int k_step = 0; k_step < kBlockK / 32; ++k_step) {
@@ -482,14 +512,23 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                         : "r"(stage_base + group_row1 * (kBlockK / 2)
                               + weight_chunk1 * 16 + packed_k_offset));
                 }
-                const uint32_t exponent0 =
-                    weight_scale_smem[scale_stage * kScaleStageBytes
-                                      + group_row0 * kScaleRowBytes
-                                      + (global_kt & 3) * 4 + k_step];
-                const uint32_t exponent1 =
-                    weight_scale_smem[scale_stage * kScaleStageBytes
-                                      + group_row1 * kScaleRowBytes
-                                      + (global_kt & 3) * 4 + k_step];
+                uint32_t exponent0;
+                uint32_t exponent1;
+                if constexpr (!IsW13 && kW2ScaleRegs) {
+                    exponent0 =
+                        (scale_words0[group] >> (k_step * 8)) & 0xffu;
+                    exponent1 =
+                        (scale_words1[group] >> (k_step * 8)) & 0xffu;
+                } else {
+                    exponent0 =
+                        weight_scale_smem[scale_stage * kScaleStageBytes
+                                          + group_row0 * kScaleRowBytes
+                                          + (global_kt & 3) * 4 + k_step];
+                    exponent1 =
+                        weight_scale_smem[scale_stage * kScaleStageBytes
+                                          + group_row1 * kScaleRowBytes
+                                          + (global_kt & 3) * 4 + k_step];
+                }
                 uint2 weight_lut0;
                 uint2 weight_lut1;
                 if constexpr (kDequantSynthLut) {
@@ -1007,7 +1046,7 @@ _ext = load_inline(
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v29"),
+          f"w2sr{int(W2_SCALE_REGS)}_mb{MIN_BLOCKS_PER_SM}_v33"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1029,6 +1068,7 @@ _ext = load_inline(
         f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
+        f"-DK_W2_SCALE_REGS={int(W2_SCALE_REGS)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",

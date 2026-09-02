@@ -1,0 +1,26 @@
+W2 packed-scale-register candidate correctness and binary resource audit
+Date: 2026-09-03
+Environment: V4_W2_SCALE_REGS=1
+
+TP4 M8 balanced:
+W13 cos=0.999999998 rel_l2=0.000076187
+ACT cos=0.999999759 rel_l2=0.000694956
+W2 cos=0.999997256 rel_l2=0.002342691 finite=True
+
+TP4 M8 maximal skew:
+W13 cos=0.999999997 rel_l2=0.000077292
+ACT cos=0.999999649 rel_l2=0.000838723
+W2 cos=0.999997235 rel_l2=0.002351904 finite=True
+
+TP8-shape M8 maximal skew:
+W13 cos=0.999999997 rel_l2=0.000077480
+ACT cos=0.999999763 rel_l2=0.000689115
+W2 cos=0.999997249 rel_l2=0.002345847 finite=True
+
+All checks report V4_WGMMA_OK and reproduce accepted errors exactly.
+
+cuobjdump resource/SASS audit for TP4 W2 specialization:
+registers/thread=47 (accepted=48), static shared=4096 B,
+dynamic shared unchanged=21.504 KiB, local memory=0.
+Static SASS LDS.U8 instruction occurrences fall from the accepted unrolled
+scale path to zero.  Candidate remains eligible for eight resident CTAs/SM.

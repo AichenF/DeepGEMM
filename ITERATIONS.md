@@ -2247,3 +2247,22 @@ maximum rank latency of a full CUDA-Graph replay.
   the runtime files.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_exact_winner_restore_v2_20260903.log`.
+
+### WGMMA iteration 31a — pack W2 E8M0 scale quads into registers
+
+- Source comparison with Humming identified a narrower S2R difference: the
+  accepted W2 consumes sixteen scalar `LDS.U8` scale loads per thread/K128,
+  while Humming loads each four-scale group as a register word before its
+  unrolled fused dequant loop.
+- Added opt-in `V4_W2_SCALE_REGS=1`.  Only W2 loads two packed scale words per
+  64-channel group after the TMA barrier, then extracts the four bytes in
+  registers.  W13, grid scheduling, weight bytes, math, epilogue, route
+  metadata, and graph/all-reduce path are unchanged.
+- TP4 balanced/maximal-skew and TP8-shape maximal-skew correctness reproduce
+  the accepted errors exactly; W2 cosine is at least 0.999997235.
+- The TP4 W2 binary uses 47 registers/thread (accepted 48), no local memory,
+  and retains eight-CTA/SM resource eligibility.  Its static unrolled SASS has
+  zero `LDS.U8` occurrences, so the intended dependency removal survived
+  compilation.  Proceed to paired cold-L2 timing.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_scale_regs_correctness_20260903.log`.

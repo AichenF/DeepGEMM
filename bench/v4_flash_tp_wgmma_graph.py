@@ -507,6 +507,7 @@ def main() -> None:
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
+                    "w2_scale_regs": kernel.W2_SCALE_REGS,
                     "w2_epilogue": (
                         "BF16 route output + sglang moe_fused_mul_sum"
                         if kernel.W2_ROUTE_OUTPUT
