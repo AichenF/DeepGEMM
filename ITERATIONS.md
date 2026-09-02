@@ -2055,3 +2055,19 @@ maximum rank latency of a full CUDA-Graph replay.
   the 256-thread candidate to two resident CTA waves is clearly insufficient.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_w2_ws_p156_screen_20260903.log`.
+
+### WGMMA iteration 29o — persistent W2 grid 312 cold-L2 screen (rejected)
+
+- Increased the runtime grid to four CTAs per H20 SM, the resource-feasible
+  maximum measured for this 256-thread kernel, and repeated the 4 x 100 paired
+  cold-L2 TP4 screen.
+- This is substantially better than grids 156 and 234 but still loses at every
+  M: custom/Humming is 1.04343, 1.03507, 1.02906, 1.03749, and 1.01779.
+  Geometric means are 0.215961 ms custom and 0.209156 ms Humming, a 3.25% loss.
+- The accepted one-warpgroup path had previously reached roughly parity under
+  the stricter 2,000-sample protocol.  Consequently the extra warpgroup and
+  full/empty synchronization cost more than TMA overlap can recover.  Reject
+  the entire warp-specialized persistent branch and restore the exact accepted
+  source before the next optimization direction.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_w2_ws_p312_screen_20260903.log`.

@@ -1,0 +1,18 @@
+TP4 cold-L2 screen of persistent W2 with 312 CTAs
+Date: 2026-09-03
+Environment: CUDA_VISIBLE_DEVICES=1,2,3,4 V4_W2_WS_PERSIST=1 V4_W2_WS_CTAS=312
+Harness: paired CUDA Graph, random routes, outer=4, replays=100,
+pair-granularity=batch, separate 256 MiB cache clear before every replay and
+outside CUDA events, max latency across TP ranks.
+
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088960 / 0.090256 / 0.177056  0.092064 / 0.094176 / 0.162272  1.043432
+16   82     656     0.144160 / 0.145984 / 0.190368  0.147872 / 0.151104 / 0.181600  1.035072
+32   140    1120    0.224192 / 0.225728 / 0.242304  0.227104 / 0.232288 / 0.267872  1.029062
+64   203    1624    0.311808 / 0.315776 / 0.350144  0.321056 / 0.327616 / 0.368032  1.037495
+128  248    1992    0.379040 / 0.426192 / 0.449440  0.398272 / 0.433776 / 0.478528  1.017795
+
+All custom correctness checks pass; cosine_min_rank >= 0.999995575 and
+allreduce_ok=true at every M.
+Geometric mean: Humming 0.209155957 ms, custom 0.215960700 ms.
+Custom/Humming=1.032534; custom is 3.253% slower.
