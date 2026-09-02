@@ -549,3 +549,28 @@ maximum rank latency of a full CUDA-Graph replay.
   9x200 confirmation plus skew and TP8 numerical checks.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_w2_route_output_screen_20260902.log`.
+
+### Iteration 8 formal cold-L2 confirmation
+
+- Additional full-route checks pass for maximal-skew TP4 at M128 and the TP8
+  local shape (`intermediate_per_rank=256`) at M32.  Worst reported W2 cosine
+  is 0.999997240 and rel-L2 is 0.002349543; all outputs are finite.
+- Formal protocol: TP4 balanced full graph, 9x200 individually cold replays
+  per M, max rank, default split-K/output tile with
+  `V4_W2_ROUTE_OUTPUT=1`.
+- Min / median / max latency (ms):
+  - M8: 0.141344 / 0.143712 / 0.291584
+  - M16: 0.236512 / 0.238848 / 0.358208
+  - M32: 0.422688 / 0.426400 / 0.492320
+  - M64: 0.553120 / 0.569984 / 0.627200
+  - M128: 0.563200 / 0.583104 / 0.787424
+- Geometric mean is 0.344674 ms.  Against the prior 9x200 atomic formal run,
+  route output is 0.27% / 0.36% / 0.41% / 0.63% / 1.12% faster and improves
+  geometric mean by 0.56%.  Accept it despite the small margin because all
+  five points agree and the larger sample confirms the effect.
+- Against formal cold Humming, custom/Humming latency ratios remain 1.484x /
+  1.492x / 1.450x / 1.403x / 1.413x; geometric-mean ratio is 1.448x.  This
+  optimization does not alter the conclusion that the GEMM core dominates
+  the remaining deficit.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_w2_route_output_formal_20260902.log`.
