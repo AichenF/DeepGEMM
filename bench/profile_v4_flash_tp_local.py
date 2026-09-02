@@ -113,7 +113,7 @@ def main() -> None:
                 "impl": args.impl,
                 "m": args.m,
                 "tp": args.tp,
-                "w13_split_k": int(os.environ.get("V4_W13_SPLIT_K", "2"))
+                "w13_split_policy": os.environ.get("V4_W13_SPLIT_K", "auto")
                 if args.impl == "custom"
                 else None,
                 "output_tile_channels": int(os.environ.get("V4_WOUT", "128"))

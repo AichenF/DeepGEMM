@@ -153,7 +153,7 @@ class CapturedCase:
             (self.m, HIDDEN), dtype=torch.float8_e4m3fn, device=device
         )
         self.partials = torch.empty(
-            (kernel.W13_SPLIT_K, routes, n13),
+            (kernel.W13_MAX_SPLITS, routes, n13),
             dtype=torch.float32,
             device=device,
         )
@@ -223,7 +223,9 @@ class CapturedCase:
             self.intermediate_per_rank,
         )
         kernel.reduce_swiglu(
-            self.partials, self.activation, self.intermediate_per_rank
+            self.partials,
+            self.activation,
+            self.intermediate_per_rank,
         )
         self.qactivation, self.activation_scale = humming_ops.quant_input(
             inputs=self.activation,
@@ -435,7 +437,7 @@ def main() -> None:
                     "l2_policy": "cold; 256MiB Triton clear before every replay, clear excluded from events",
                     "l2_cache_bytes": props.L2_cache_size,
                     "l2_flush_bytes": l2_flush_buffer.nbytes,
-                    "w13_split_k": kernel.W13_SPLIT_K,
+                    "w13_split_policy": kernel.W13_SPLIT_MODE,
                     "output_tile_channels": kernel.WOUT,
                     "w2_epilogue": (
                         "BF16 route output + sglang moe_fused_mul_sum"
@@ -546,6 +548,7 @@ def main() -> None:
             "route_pattern": args.route_pattern,
             "active_experts": int(torch.unique(topk_ids).numel()),
             "routed_rows": m * TOP_K,
+            "w13_split_k": kernel.select_w13_split_k(m * TOP_K),
             "allreduce_bytes": nbytes,
             "allreduce_algo": None if ar_algo is None else ar_algo.name,
             "allreduce_mode": ar_mode.name,

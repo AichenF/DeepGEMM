@@ -19,9 +19,16 @@ import torch
 from torch.utils.cpp_extension import load_inline
 
 
-W13_SPLIT_K = int(os.environ.get("V4_W13_SPLIT_K", "2"))
-if W13_SPLIT_K not in (1, 2, 4, 8):
-    raise ValueError("V4_W13_SPLIT_K must be one of 1,2,4,8")
+W13_SPLIT_MODE = os.environ.get("V4_W13_SPLIT_K", "auto")
+if W13_SPLIT_MODE not in ("auto", "2", "4"):
+    raise ValueError("V4_W13_SPLIT_K must be auto, 2, or 4")
+W13_MAX_SPLITS = 4
+
+
+def select_w13_split_k(routed_rows: int) -> int:
+    if W13_SPLIT_MODE != "auto":
+        return int(W13_SPLIT_MODE)
+    return 4 if routed_rows <= 96 else 2
 WOUT = int(os.environ.get("V4_WOUT", "128"))
 if WOUT not in (64, 128, 256):
     raise ValueError("V4_WOUT must be one of 64,128,256")
@@ -521,18 +528,34 @@ void run_w13_impl(
         torch::Tensor activation, torch::Tensor activation_scale,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
         torch::Tensor num_tokens_padded, torch::Tensor partials,
-        torch::Tensor lut, int intermediate) {
+        torch::Tensor lut, int intermediate, int split_k) {
     const int routes = partials.size(1);
     if (intermediate == 512) {
-        launch_route_gemm<4096, 1024, W13_SPLIT_K, true>(
-            weight, weight_scale, activation, activation_scale,
-            sorted_ids, expert_ids, num_tokens_padded, partials,
-            partials, lut, routes);
+        if (split_k == 4) {
+            launch_route_gemm<4096, 1024, 4, true>(
+                weight, weight_scale, activation, activation_scale,
+                sorted_ids, expert_ids, num_tokens_padded, partials,
+                partials, lut, routes);
+        } else {
+            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+            launch_route_gemm<4096, 1024, 2, true>(
+                weight, weight_scale, activation, activation_scale,
+                sorted_ids, expert_ids, num_tokens_padded, partials,
+                partials, lut, routes);
+        }
     } else if (intermediate == 256) {
-        launch_route_gemm<4096, 512, W13_SPLIT_K, true>(
-            weight, weight_scale, activation, activation_scale,
-            sorted_ids, expert_ids, num_tokens_padded, partials,
-            partials, lut, routes);
+        if (split_k == 4) {
+            launch_route_gemm<4096, 512, 4, true>(
+                weight, weight_scale, activation, activation_scale,
+                sorted_ids, expert_ids, num_tokens_padded, partials,
+                partials, lut, routes);
+        } else {
+            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+            launch_route_gemm<4096, 512, 2, true>(
+                weight, weight_scale, activation, activation_scale,
+                sorted_ids, expert_ids, num_tokens_padded, partials,
+                partials, lut, routes);
+        }
     } else {
         TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
     }
@@ -560,21 +583,36 @@ void run_w2(
     }
 }
 
-void reduce_swiglu(torch::Tensor partials, torch::Tensor output, int intermediate) {
-    const int routes = partials.size(1);
-    const int numel = routes * intermediate;
+template <int Intermediate, int SplitK>
+void launch_reduce_swiglu(
+        torch::Tensor partials, torch::Tensor output, int routes) {
+    const int numel = routes * Intermediate;
     const int threads = 256;
     const auto stream = at::cuda::getCurrentCUDAStream();
+    reduce_swiglu_kernel<Intermediate, SplitK><<<
+        (numel + threads - 1) / threads, threads, 0, stream>>>(
+        partials.data_ptr<float>(),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), routes);
+}
+
+void reduce_swiglu(
+        torch::Tensor partials, torch::Tensor output,
+        int intermediate, int split_k) {
+    const int routes = partials.size(1);
     if (intermediate == 512) {
-        reduce_swiglu_kernel<512, W13_SPLIT_K><<<
-            (numel + threads - 1) / threads, threads, 0, stream>>>(
-            partials.data_ptr<float>(),
-            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), routes);
+        if (split_k == 4)
+            launch_reduce_swiglu<512, 4>(partials, output, routes);
+        else {
+            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+            launch_reduce_swiglu<512, 2>(partials, output, routes);
+        }
     } else if (intermediate == 256) {
-        reduce_swiglu_kernel<256, W13_SPLIT_K><<<
-            (numel + threads - 1) / threads, threads, 0, stream>>>(
-            partials.data_ptr<float>(),
-            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), routes);
+        if (split_k == 4)
+            launch_reduce_swiglu<256, 4>(partials, output, routes);
+        else {
+            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+            launch_reduce_swiglu<256, 2>(partials, output, routes);
+        }
     } else {
         TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
     }
@@ -598,26 +636,26 @@ void run_w13_impl(torch::Tensor weight, torch::Tensor weight_scale,
                   torch::Tensor activation, torch::Tensor activation_scale,
                   torch::Tensor sorted_ids, torch::Tensor expert_ids,
                   torch::Tensor num_tokens_padded, torch::Tensor partials,
-                  torch::Tensor lut, int intermediate);
+                  torch::Tensor lut, int intermediate, int split_k);
 void run_w2(torch::Tensor weight, torch::Tensor weight_scale,
             torch::Tensor activation, torch::Tensor activation_scale,
             torch::Tensor sorted_ids, torch::Tensor expert_ids,
             torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
             torch::Tensor output, torch::Tensor lut, int intermediate);
-void reduce_swiglu(torch::Tensor partials, torch::Tensor output, int intermediate);
+void reduce_swiglu(torch::Tensor partials, torch::Tensor output,
+                   int intermediate, int split_k);
 void cast_bf16(torch::Tensor input, torch::Tensor output);
 """
 
 
 _ext = load_inline(
-    name=(f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_wo{WOUT}_"
-          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v12"),
+    name=(f"v4_flash_tp_wgmma_sdyn_wo{WOUT}_"
+          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v13"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],
     extra_cuda_cflags=[
         "-O3",
-        f"-DW13_SPLIT_K={W13_SPLIT_K}",
         f"-DK_WOUT={WOUT}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
@@ -662,6 +700,7 @@ def run_w13(
     lut: torch.Tensor,
     intermediate: int,
 ) -> None:
+    split_k = select_w13_split_k(partials.size(1))
     _ext.run_w13_impl(
         weight,
         weight_scale,
@@ -673,6 +712,7 @@ def run_w13(
         partials,
         lut,
         intermediate,
+        split_k,
     )
 
 
@@ -705,9 +745,16 @@ def run_w2(
 
 
 def reduce_swiglu(
-    partials: torch.Tensor, output: torch.Tensor, intermediate: int
+    partials: torch.Tensor,
+    output: torch.Tensor,
+    intermediate: int,
 ) -> None:
-    _ext.reduce_swiglu(partials, output, intermediate)
+    _ext.reduce_swiglu(
+        partials,
+        output,
+        intermediate,
+        select_w13_split_k(partials.size(1)),
+    )
 
 
 def cast_bf16(input: torch.Tensor, output: torch.Tensor) -> None:

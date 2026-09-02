@@ -732,3 +732,34 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_graph_coldl2_tma_scales_s4_screen_20260902.log`
   and
   `bench/results/tp4_wgmma_graph_coldl2_tma_scales_s4_lowm_formal_20260902.log`.
+
+### WGMMA iteration 11 — runtime W13 split-K dispatch
+
+- Change: compile both W13 split-K=2 and split-K=4 specializations into the
+  same extension and select one before CUDA Graph capture.  The default
+  routed-row policy uses split-K=4 for at most 96 routed rows (M<=16 for
+  top-k=6) and split-K=2 otherwise; `V4_W13_SPLIT_K=2|4` remains available
+  for controlled experiments.  Partial and reduction buffers reserve four
+  planes so both graph-specialized paths share one stable allocation.
+- This selector intentionally uses the real routed-row count, not
+  `expert_ids.numel()`: the latter is padded routing-buffer capacity and was
+  proven not to represent active experts or route imbalance.  Consequently
+  the accepted default is M/routed-row based, not falsely distribution-aware;
+  skewed-route split-K=2/4 measurements remain a separate required check.
+- Balanced TP4 correctness passes at both dispatch branches: M8 selects 4,
+  M32 selects 2, and worst final cosine is 0.99999562 with rel-L2 0.00298.
+  Maximal-skew TP4 M128 selects 2 and passes, and TP8-local-shape M32 selects
+  2 and exercises the K=256 scalar-scale fallback; worst W2 cosine across
+  those checks is 0.999997240 and all outputs are finite.
+- Required cold-L2 3x100 TP4 min / median / max latency (ms):
+  - M8, split 4: 0.114816 / 0.116512 / 0.255424
+  - M16, split 4: 0.185600 / 0.187504 / 0.220032
+  - M32, split 2: 0.334432 / 0.347344 / 0.425376
+  - M64, split 2: 0.448224 / 0.457440 / 0.495936
+  - M128, split 2: 0.456960 / 0.472736 / 0.532448
+- Geometric-mean median is 0.277344 ms, 1.87% lower than the fixed split-K=2
+  TMA-scale screening result (0.282618 ms).  Accept the dual specialization
+  and routed-row dispatch; run a formal 9x200 confirmation after the skew
+  policy check.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_tma_scales_dynamic_split_screen_20260902.log`.

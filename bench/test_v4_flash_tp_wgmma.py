@@ -106,7 +106,7 @@ def main() -> None:
     )
 
     partials = torch.empty(
-        (kernel.W13_SPLIT_K, routes, n13), dtype=torch.float32, device=device
+        (kernel.W13_MAX_SPLITS, routes, n13), dtype=torch.float32, device=device
     )
     activation = torch.empty(
         (routes, intermediate), dtype=torch.bfloat16, device=device
@@ -124,7 +124,9 @@ def main() -> None:
         lut,
         intermediate,
     )
-    kernel.reduce_swiglu(partials, activation, intermediate)
+    kernel.reduce_swiglu(
+        partials, activation, intermediate
+    )
 
     qact = torch.empty_like(activation, dtype=torch.float8_e4m3fn)
     qact, act_scale = ops.quant_input(
@@ -201,11 +203,13 @@ def main() -> None:
         * topk_weights[:, :, None]
     ).sum(dim=1) * 1.5
 
-    w13_actual = partials.sum(dim=0)
+    selected_split_k = kernel.select_w13_split_k(routes)
+    w13_actual = partials[:selected_split_k].sum(dim=0)
     print(
         "V4_WGMMA_CHECK "
         f"M={args.m} pattern={args.pattern} Is={intermediate} "
-        f"active={torch.unique(flat_ids).numel()} padded={num_tokens_padded.item()}"
+        f"active={torch.unique(flat_ids).numel()} padded={num_tokens_padded.item()} "
+        f"split_k={selected_split_k}"
     )
     print(
         "V4_WGMMA_W13 "
