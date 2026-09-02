@@ -2579,3 +2579,24 @@ maximum rank latency of a full CUDA-Graph replay.
 - Gate on TP4 split-K=4, forced split-K=2, and TP8-shape correctness, then
   compare candidate/control W13 and W2 using graph-internal events with a
   separate excluded 256 MiB cold-L2 clear before every sample.
+
+### WGMMA iteration 39b — synth plus S2R wins, but remains diagnostic
+
+- TP4 split-K=4, forced split-K=2 skew, and TP8-shape skew reproduce accepted
+  errors for codes 125..128.  TP4 W13/W2 fall from 56 to 54 registers/thread,
+  static shared memory falls from 4 to 2 KiB, and neither kernel spills.
+- Two graph-internal candidate runs around a same-source control improve W13
+  by 1.86-3.00%, W2 by 1.52-2.79%, and local total by 1.01-2.40% at every
+  measured M8/M32/M128 point.
+- TP4 candidate/control/candidate distributed screens use 400 individually
+  cold-L2 graph samples per implementation and M.  Candidate A beats control
+  custom latency at every M by 1.25-2.80% (1.94% geomean); paired-Humming
+  normalization gives a 1.38-2.91% pointwise gain (2.55% geomean).  Candidate
+  B confirms M8-M64; its system-shifted M128 result is not used causally.
+- Keep this as positive mechanism evidence, not a production selection.  The
+  affine generator exactly matches the full LUT only for E8M0 codes 122..133.
+  Next add a global-LUT fallback outside that range, validate fallback codes,
+  and remeasure before changing the default.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_synth_s2r_correctness_20260903.log` and
+  `bench/results/tp4_synth_s2r_coldl2_screen_20260903.log`.

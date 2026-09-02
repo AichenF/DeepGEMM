@@ -1,0 +1,67 @@
+Synthesized scale-LUT plus S2R cold-L2 screen
+Date: 2026-09-03
+
+Local core protocol: graph-internal external CUDA event nodes; TP4 random
+routes; 100 samples per M/config; separate 256 MiB L2 clear before every graph
+replay, excluded from all events.  Candidate/control/candidate medians (us):
+
+M=8
+ candidate A W13=48.928 W2=28.960 total=103.280
+ control     W13=50.432 W2=29.440 total=105.056
+ candidate B W13=49.040 W2=28.992 total=104.000
+ candidate/control ratios A=0.970178/0.983696/0.983095,
+ B=0.972398/0.984783/0.989948 for W13/W2/total.
+M=32
+ candidate A W13=125.120 W2=67.840 total=220.640
+ control     W13=127.968 W2=69.280 total=225.056
+ candidate B W13=124.880 W2=67.680 total=219.648
+ ratios A=0.977744/0.979215/0.980378,
+ B=0.975869/0.976905/0.975970.
+M=128
+ candidate A W13=211.872 W2=113.760 total=357.760
+ control     W13=216.384 W2=117.024 total=365.920
+ candidate B W13=212.368 W2=113.792 total=358.912
+ ratios A=0.979148/0.972108/0.977700,
+ B=0.981440/0.972382/0.980848.
+
+Distributed protocol: TP4 GPUs 1-4; Humming and custom each captured with the
+same SGLang CustomAllReduceV2 instance; random real route metadata; outer=4,
+replays=100, pair-granularity=batch; every individually timed graph replay has
+its own excluded 256 MiB cold-L2 clear.  All correctness/all-reduce checks
+pass.  Median latency (ms), Humming/custom/custom-over-Humming:
+
+Candidate A:
+ M8   0.089952 / 0.088832 / 0.987549
+ M16  0.145776 / 0.138672 / 0.951268
+ M32  0.230192 / 0.212176 / 0.921735
+ M64  0.326704 / 0.303040 / 0.927567
+ M128 0.423552 / 0.435872 / 1.029087
+ geomean 0.210945 / 0.203059 / 0.962616
+
+Same-source control:
+ M8   0.089856 / 0.091392 / 1.017094
+ M16  0.145808 / 0.142176 / 0.975091
+ M32  0.227488 / 0.215744 / 0.948375
+ M64  0.326560 / 0.307136 / 0.940519
+ M128 0.416416 / 0.441376 / 1.059940
+ geomean 0.209679 / 0.206996 / 0.987204
+
+Candidate B:
+ M8   0.089920 / 0.088752 / 0.987011
+ M16  0.145568 / 0.138672 / 0.952627
+ M32  0.228848 / 0.211360 / 0.923582
+ M64  0.326784 / 0.304576 / 0.932041
+ M128 0.394928 / 0.378128 / 0.957461
+ geomean 0.207706 / 0.197381 / 0.950288
+
+Candidate A/control direct custom ratios are
+0.971989/0.975354/0.983462/0.986664/0.987530 (geomean 0.980980).
+After normalizing each custom result by its paired Humming window, they are
+0.970951/0.975569/0.971909/0.986229/0.970892 (geomean 0.975093).
+Candidate B repeats the gain at M8-M64.  Its M128 window moved sharply for
+both implementations and is excluded as an outsized causal estimate.
+
+Decision: the combined mechanism is a genuine 1-3% core/end-to-end win for
+the tested scale range.  Do not select the unrestricted synth path as the
+runtime default: it is not yet correct for arbitrary E8M0 codes.  Next test a
+fully correct synthesized fast range with global-LUT fallback.
