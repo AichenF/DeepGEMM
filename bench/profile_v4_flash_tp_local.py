@@ -176,6 +176,9 @@ def main() -> None:
                 == "1"
                 if args.impl == "custom"
                 else None,
+                "mode2_braid": os.environ.get("V4_MODE2_BRAID", "0") == "1"
+                if args.impl == "custom"
+                else None,
                 "l2_cache_bytes": props.L2_cache_size,
                 "l2_flush_bytes": l2_flush_buffer.nbytes,
                 "l2_policy": "cold; 256MiB clear immediately before pipeline",

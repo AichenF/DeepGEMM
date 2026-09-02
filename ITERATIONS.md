@@ -1330,3 +1330,32 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_graph_coldl2_random_dequant_synth_lut0_control_20260903.log`,
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_dequant_synth_lut_probe_screen_20260903.log`.
+
+### WGMMA iteration 21 — offline Mode2 braid removes selector DP4A (candidate)
+
+- Adapted DeepGEMM MegaMoE's Mode2 sign/magnitude braid to this TP kernel's
+  unchanged row-major packed-weight tensor.  A new extension kernel rewrites
+  every 32-bit packed word in place once at weight initialization; this is
+  outside graph capture and inference timing and does not depend on Humming.
+- The equivalent runtime decoder selects the two four-value magnitude groups
+  directly with two PRMT instructions.  It removes the accepted decoder's
+  four selector-building DP4A instructions per pair while preserving the same
+  LUT, TMA tensor shape, bytes read, 64-byte swizzle, and WGMMA operand order.
+- Independent torch-reference correctness uses an untouched copy of the
+  ordinary braided weights.  TP4 split-K=4, TP4 forced split-K=2, and TP8
+  local-shape tests all pass with exactly the prior W13/activation/W2 errors.
+- TP4 random-route cold 3x100 ordinary-layout control medians are 0.100672 /
+  0.156704 / 0.245376 / 0.348624 / 0.427552 ms (geomean 0.225026 ms).
+  Mode2 medians are 0.093280 / 0.142464 / 0.221920 / 0.310720 /
+  0.389152 ms (geomean 0.204379 ms).
+- Mode2 wins every M by 7.3-10.9%, reducing geometric-mean latency by 9.18%
+  (1.101x speedup).  Keep it as a candidate pending formal 9x200 confirmation,
+  an immediate paired Humming run, and core/resource profiling; do not change
+  the unset default yet.
+- Every timed replay is preceded by the standard 256 MiB L2 clear outside the
+  CUDA-event interval.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_mode2_braid_correctness_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_mode2_braid0_control_20260903.log`,
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_mode2_braid_screen_20260903.log`.

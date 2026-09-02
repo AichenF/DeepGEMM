@@ -146,6 +146,9 @@ def make_weights(
         dtype=torch.uint8,
         device=device,
     )
+    if kernel.MODE2_BRAID:
+        kernel.braid_mode2_(w13)
+        kernel.braid_mode2_(w2)
     return w13, s13, w2, s2
 
 
@@ -478,6 +481,7 @@ def main() -> None:
                     "dequant_dp4a_hi": kernel.DEQUANT_DP4A_HI,
                     "dequant_dp4a_lo": kernel.DEQUANT_DP4A_LO,
                     "dequant_synth_lut": kernel.DEQUANT_SYNTH_LUT,
+                    "mode2_braid": kernel.MODE2_BRAID,
                     "w2_epilogue": (
                         "BF16 route output + sglang moe_fused_mul_sum"
                         if kernel.W2_ROUTE_OUTPUT

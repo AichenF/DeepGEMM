@@ -88,6 +88,15 @@ def main() -> None:
     s2 = torch.randint(
         125, 129, (E, H, intermediate // 32), dtype=torch.uint8, device=device
     )
+    w13_reference = w13
+    w2_reference = w2
+    if kernel.MODE2_BRAID:
+        # Preserve the ordinary braided values for the independent torch
+        # reference, then convert only the kernel operands offline.
+        w13_reference = w13.clone()
+        w2_reference = w2.clone()
+        kernel.braid_mode2_(w13)
+        kernel.braid_mode2_(w2)
 
     topk_ids, topk_weights = make_routes(args.m, args.pattern, device)
     sorted_ids, expert_ids, num_tokens_padded = moe_align_block_size(
@@ -181,7 +190,7 @@ def main() -> None:
     for expert in torch.unique(flat_ids).tolist():
         route_index = torch.nonzero(flat_ids == expert, as_tuple=False).flatten()
         token_index = torch.div(route_index, TOP_K, rounding_mode="floor")
-        weight = dequant_braided(w13[expert], s13[expert])
+        weight = dequant_braided(w13_reference[expert], s13[expert])
         gate_up_ref[route_index] = x_dequant[token_index] @ weight.t()
         del weight
 
@@ -195,7 +204,7 @@ def main() -> None:
     down_ref = torch.empty((routes, H), dtype=torch.float32, device=device)
     for expert in torch.unique(flat_ids).tolist():
         route_index = torch.nonzero(flat_ids == expert, as_tuple=False).flatten()
-        weight = dequant_braided(w2[expert], s2[expert])
+        weight = dequant_braided(w2_reference[expert], s2[expert])
         down_ref[route_index] = act_dequant[route_index] @ weight.t()
         del weight
     local_ref = (
@@ -209,7 +218,7 @@ def main() -> None:
         "V4_WGMMA_CHECK "
         f"M={args.m} pattern={args.pattern} Is={intermediate} "
         f"active={torch.unique(flat_ids).numel()} padded={num_tokens_padded.item()} "
-        f"split_k={selected_split_k}"
+        f"split_k={selected_split_k} mode2={kernel.MODE2_BRAID}"
     )
     print(
         "V4_WGMMA_W13 "

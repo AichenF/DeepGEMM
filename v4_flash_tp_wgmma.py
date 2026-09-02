@@ -59,6 +59,7 @@ if WEIGHT_COMMON_ADDRESS and WEIGHT_SWIZZLE != 64:
 DEQUANT_DP4A_HI = os.environ.get("V4_DEQUANT_DP4A_HI", "1") == "1"
 DEQUANT_DP4A_LO = os.environ.get("V4_DEQUANT_DP4A_LO", "1") == "1"
 DEQUANT_SYNTH_LUT = os.environ.get("V4_DEQUANT_SYNTH_LUT", "0") == "1"
+MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "0") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
@@ -117,6 +118,7 @@ static_assert(!kWeightCommonAddress || kWeightSwizzle == 64);
 static constexpr bool kDequantDp4aHi = K_DEQUANT_DP4A_HI;
 static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
+static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -168,6 +170,26 @@ __device__ __forceinline__ uint2 synth_e2m1_e8m0_lut(uint32_t exponent) {
     return make_uint2(
         offset * 0x08080800u + 0x0c080000u,
         offset * 0x08080808u + 0x1c181410u);
+}
+
+__device__ __forceinline__ uint2 dequant_mode2_braided_word(
+        uint32_t packed, const uint2& lut) {
+    const uint32_t selector0 = packed & 0x00007777u;
+    const uint32_t selector1 = (packed >> 16) & 0x00007777u;
+    uint32_t out0 = mxfp4::byte_perm_unchecked(lut.x, lut.y, selector0);
+    uint32_t out1 = mxfp4::byte_perm_unchecked(lut.x, lut.y, selector1);
+    out0 |= packed & 0x80808080u;
+    out1 |= (packed << 4) & 0x80808080u;
+    return make_uint2(out0, out1);
+}
+
+template <bool kUseMode2>
+__device__ __forceinline__ uint2 dequant_weight_word(
+        uint32_t packed, const uint2& lut) {
+    if constexpr (kUseMode2)
+        return dequant_mode2_braided_word(packed, lut);
+    return mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<
+        kDequantDp4aHi, kDequantDp4aLo>(packed, lut);
 }
 
 template <int K, int N, int SplitK, bool IsW13>
@@ -470,13 +492,9 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     ? synth_e2m1_e8m0_lut(exponent1)
                     : lut_smem[scale_lut_index(exponent1)];
                 const uint2 fp8_0 =
-                    mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<
-                        kDequantDp4aHi, kDequantDp4aLo>(
-                        packed0, weight_lut0);
+                    dequant_weight_word<kMode2Braid>(packed0, weight_lut0);
                 const uint2 fp8_1 =
-                    mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<
-                        kDequantDp4aHi, kDequantDp4aLo>(
-                        packed1, weight_lut1);
+                    dequant_weight_word<kMode2Braid>(packed1, weight_lut1);
                 cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
                     fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
                     activation_desc,
@@ -603,6 +621,27 @@ __global__ void cast_bf16_kernel(
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index < numel)
         output[index] = __float2bfloat16(input[index]);
+}
+
+__global__ void braid_mode2_kernel(uint32_t* weight, int64_t words) {
+    const int64_t index = static_cast<int64_t>(blockIdx.x) * blockDim.x
+        + threadIdx.x;
+    if (index >= words)
+        return;
+    const uint32_t packed = weight[index];
+    uint32_t nibble[8];
+    #pragma unroll
+    for (int i = 0; i < 8; ++i)
+        nibble[i] = (packed >> (i * 4)) & 0xfu;
+    constexpr int magnitude_source[8] = {1, 3, 5, 7, 0, 2, 4, 6};
+    uint32_t braided = 0;
+    #pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        const uint32_t code = (nibble[magnitude_source[i]] & 7u)
+            | (nibble[i] & 8u);
+        braided |= code << (i * 4);
+    }
+    weight[index] = braided;
 }
 
 CUtensorMap make_weight_desc(void* pointer, int K, int rows) {
@@ -795,6 +834,21 @@ void cast_bf16(torch::Tensor input, torch::Tensor output) {
         reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), numel);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
+
+void braid_mode2(torch::Tensor weight) {
+    TORCH_CHECK(weight.scalar_type() == torch::kUInt8,
+                "mode2 weight must be uint8");
+    TORCH_CHECK(weight.is_cuda() && weight.is_contiguous(),
+                "mode2 weight must be contiguous CUDA");
+    TORCH_CHECK(weight.numel() % sizeof(uint32_t) == 0,
+                "mode2 weight byte count must be divisible by four");
+    const int64_t words = weight.numel() / sizeof(uint32_t);
+    const int threads = 256;
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    braid_mode2_kernel<<<(words + threads - 1) / threads, threads, 0, stream>>>(
+        reinterpret_cast<uint32_t*>(weight.data_ptr<uint8_t>()), words);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
 """
 
 
@@ -812,6 +866,7 @@ void run_w2(torch::Tensor weight, torch::Tensor weight_scale,
 void reduce_swiglu(torch::Tensor partials, torch::Tensor output,
                    int intermediate, int split_k);
 void cast_bf16(torch::Tensor input, torch::Tensor output);
+void braid_mode2(torch::Tensor weight);
 """
 
 
@@ -822,10 +877,14 @@ _ext = load_inline(
           f"ws{WEIGHT_SWIZZLE}_wca{int(WEIGHT_COMMON_ADDRESS)}_"
           f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
+          f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v20"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
-    functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],
+    functions=[
+        "run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16",
+        "braid_mode2",
+    ],
     extra_cuda_cflags=[
         "-O3",
         f"-DK_WOUT={WOUT}",
@@ -838,6 +897,7 @@ _ext = load_inline(
         f"-DK_DEQUANT_DP4A_HI={int(DEQUANT_DP4A_HI)}",
         f"-DK_DEQUANT_DP4A_LO={int(DEQUANT_DP4A_LO)}",
         f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
+        f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",
@@ -949,3 +1009,9 @@ def reduce_swiglu(
 
 def cast_bf16(input: torch.Tensor, output: torch.Tensor) -> None:
     _ext.cast_bf16(input, output)
+
+
+def braid_mode2_(weight: torch.Tensor) -> torch.Tensor:
+    """Offline in-place Mode2 sign/magnitude braid; excluded from inference."""
+    _ext.braid_mode2(weight)
+    return weight
