@@ -39,6 +39,9 @@ if WOUT not in (64, 128, 256):
 LUT_ROWS = int(os.environ.get("V4_LUT_ROWS", "256"))
 if LUT_ROWS not in (128, 256):
     raise ValueError("V4_LUT_ROWS must be 128 or 256")
+SCALE_QUAD_REUSE = int(os.environ.get("V4_SCALE_QUAD_REUSE", "4"))
+if SCALE_QUAD_REUSE not in (1, 4):
+    raise ValueError("V4_SCALE_QUAD_REUSE must be 1 or 4")
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
@@ -85,6 +88,8 @@ static_assert(kWout == 64 || kWout == 128 || kWout == 256);
 static constexpr int kWgmmaGroups = kWout / 64;
 static constexpr int kLutRows = K_LUT_ROWS;
 static_assert(kLutRows == 128 || kLutRows == 256);
+static constexpr int kScaleQuadReuse = K_SCALE_QUAD_REUSE;
+static_assert(kScaleQuadReuse == 1 || kScaleQuadReuse == 4);
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -217,25 +222,44 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             const int global_kt = kt_begin + local_kt;
             const uint32_t weight_dst =
                 weight_smem_addr + stage * kWeightStageBytes;
+            bool load_scale = kUseTmaScale;
+            int scale_kt = global_kt;
+            int scale_stage = stage;
+            if constexpr (kUseTmaScale && kScaleQuadReuse == 4) {
+                // One 16-byte scale row covers four K128 tiles.  Load the
+                // first quartet with tile 0; prefetch each following quartet
+                // alongside the preceding quartet's final weight tile.
+                const bool first_quartet = local_kt == 0;
+                const bool prefetch_next =
+                    (local_kt & 3) == 3 && local_kt + 1 < kKTilesPerSplit;
+                load_scale = first_quartet || prefetch_next;
+                scale_kt = first_quartet ? global_kt : global_kt + 1;
+                scale_stage = (scale_kt >> 2) & 1;
+            }
             const uint32_t scale_dst =
-                weight_scale_smem_addr + stage * kScaleStageBytes;
-            asm volatile(
-                "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
-                :: "r"(barrier_addr[stage]),
-                   "n"(kWeightStageBytes
-                       + (kUseTmaScale ? kScaleStageBytes : 0)));
+                weight_scale_smem_addr + scale_stage * kScaleStageBytes;
+            if (load_scale) {
+                asm volatile(
+                    "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
+                    :: "r"(barrier_addr[stage]),
+                       "n"(kWeightStageBytes + kScaleStageBytes));
+            } else {
+                asm volatile(
+                    "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
+                    :: "r"(barrier_addr[stage]), "n"(kWeightStageBytes));
+            }
             asm volatile(
                 "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
                 "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
                 :: "r"(weight_dst), "l"(&tma_weight),
                    "r"(global_kt * (kBlockK / 2)), "r"(weight_row),
                    "r"(barrier_addr[stage]) : "memory");
-            if constexpr (kUseTmaScale) {
+            if (load_scale) {
                 asm volatile(
                     "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
                     "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
                     :: "r"(scale_dst), "l"(&tma_weight_scale),
-                       "r"((global_kt & ~3) * (kBlockK / 32)),
+                       "r"((scale_kt & ~3) * (kBlockK / 32)),
                        "r"(weight_row),
                        "r"(barrier_addr[stage]) : "memory");
             }
@@ -257,6 +281,10 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     for (int local_kt = 0; local_kt < kKTilesPerSplit; ++local_kt) {
         const int stage = local_kt % kStages;
         const int global_kt = kt_begin + local_kt;
+        const int scale_stage =
+            kUseTmaScale && kScaleQuadReuse == 4
+            ? ((global_kt >> 2) & 1)
+            : stage;
 
         // One uint2 per thread covers the complete 8x128 activation tile.
         const int token_slot = tid / 16;
@@ -323,11 +351,11 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     : "r"(stage_base + group_row1 * (kBlockK / 2)
                           + k_step * 16 + packed_k_offset));
                 const uint32_t exponent0 =
-                    weight_scale_smem[stage * kScaleStageBytes
+                    weight_scale_smem[scale_stage * kScaleStageBytes
                                       + group_row0 * kScaleRowBytes
                                       + (global_kt & 3) * 4 + k_step];
                 const uint32_t exponent1 =
-                    weight_scale_smem[stage * kScaleStageBytes
+                    weight_scale_smem[scale_stage * kScaleStageBytes
                                       + group_row1 * kScaleRowBytes
                                       + (global_kt & 3) * 4 + k_step];
                 const uint2 fp8_0 =
@@ -668,7 +696,8 @@ void cast_bf16(torch::Tensor input, torch::Tensor output);
 
 _ext = load_inline(
     name=(f"v4_flash_tp_wgmma_sdyn_wo{WOUT}_lr{LUT_ROWS}_"
-          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v14"),
+          f"sr{SCALE_QUAD_REUSE}_ro{int(W2_ROUTE_OUTPUT)}_"
+          f"mb{MIN_BLOCKS_PER_SM}_v15"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],
@@ -676,6 +705,7 @@ _ext = load_inline(
         "-O3",
         f"-DK_WOUT={WOUT}",
         f"-DK_LUT_ROWS={LUT_ROWS}",
+        f"-DK_SCALE_QUAD_REUSE={SCALE_QUAD_REUSE}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",

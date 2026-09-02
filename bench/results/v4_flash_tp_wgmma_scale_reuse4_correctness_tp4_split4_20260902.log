@@ -1,0 +1,5 @@
+V4_WGMMA_CHECK M=8 pattern=balanced Is=512 active=48 padded=384 split_k=4
+V4_WGMMA_W13 cos=0.999999998 rel_l2=0.000076187
+V4_WGMMA_ACT cos=0.999999759 rel_l2=0.000694956
+V4_WGMMA_W2 cos=0.999997256 rel_l2=0.002342691 finite=True
+V4_WGMMA_OK

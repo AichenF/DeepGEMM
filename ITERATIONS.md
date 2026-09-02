@@ -894,3 +894,30 @@ maximum rank latency of a full CUDA-Graph replay.
   correctness checks pass.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_random_lut256_default_restore_20260902.log`.
+
+### WGMMA iteration 14 — reuse one scale quartet across four K128 tiles
+
+- Observation: the 16 E8M0 bytes fetched per output row cover four adjacent
+  K128 tiles, but iteration 10 redundantly issued the same scale TMA for every
+  tile.  Change the double-buffer schedule so the first quartet arrives with
+  tile 0 and each following quartet is prefetched alongside the preceding
+  quartet's final weight tile.  Four compute tiles then reuse that shared
+  scale block.  Weight TMA, WGMMA math, and shared allocation are unchanged;
+  `V4_SCALE_QUAD_REUSE=1` preserves an exact control specialization.
+- Full-block correctness passes W13 split-K=2 and split-K=4 at TP4, plus the
+  TP8 local shape whose W2 K=256 path still uses scalar scale loads.  Worst W2
+  cosine is 0.999997241 and all outputs are finite.
+- Contemporary random-route cold 3x100 control medians (reuse=1) are
+  0.106528 / 0.167456 / 0.263872 / 0.368800 / 0.460144 ms; geometric mean
+  0.240153 ms.  Reuse=4 gives 0.103712 / 0.162656 / 0.258208 / 0.354560 /
+  0.440512 ms; geometric mean 0.232564 ms.
+- Reuse=4 wins every M by 2.15-4.27% and reduces geometric-mean latency by
+  3.16% (1.033x speedup).  Accept it as the default, subject to formal 9x200
+  confirmation.
+- Evidence logs:
+  `bench/results/v4_flash_tp_wgmma_scale_reuse4_correctness_tp4_20260902.log`,
+  `bench/results/v4_flash_tp_wgmma_scale_reuse4_correctness_tp4_split4_20260902.log`,
+  `bench/results/v4_flash_tp_wgmma_scale_reuse4_correctness_tp8shape_20260902.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_scale_reuse1_control_20260902.log`,
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_scale_reuse4_screen_20260902.log`.
