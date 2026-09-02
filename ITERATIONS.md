@@ -117,3 +117,21 @@ maximum rank latency of a full CUDA-Graph replay.
   optimization; do not compare a candidate's minimum with this median.
 - Evidence log:
   `bench/results/tp4_humming_graph_balanced_formal_v2_20260902.log`.
+
+### Accepted TP4 Humming route-skew control
+
+- Route: every token selects the same six distinct experts (legal maximal
+  skew); router remains precomputed and untimed.
+- Max-rank latency min / median / max (ms), same 9x200 protocol:
+  - M8: 0.031925 / 0.031967 / 0.032896
+  - M16: 0.039892 / 0.039931 / 0.039978
+  - M32: 0.059635 / 0.059686 / 0.060581
+  - M64: 0.094630 / 0.094663 / 0.094918
+  - M128: 0.163625 / 0.164054 / 0.164349
+- All five NCCL checks pass; min cosine 0.9999352, max rel-L2 0.0113814.
+- Finding: route distribution is first-order.  At M32, changing only active
+  experts from 192 to 6 reduces the same graph from 0.294363 to 0.059686 ms
+  (4.93x).  Raw `G` cannot stand in for a real routed-MoE benchmark.
+- Policy: balanced routes remain the primary optimization score, while this
+  skew case is a mandatory counterexample check.
+- Evidence log: `bench/results/tp4_humming_graph_skew_formal_20260902.log`.
