@@ -1,0 +1,22 @@
+Five-stage TP4 / two-stage TP8 persistent W2 correctness repair
+Date: 2026-09-03
+Environment: V4_W2_PERSISTENT_BLOCKS_PER_SM=4 V4_W2_PERSISTENT_STAGES=5
+
+The K=256 TP8 specialization now uses exactly two stages, while the K=512 TP4
+specialization retains five stages.  Benchmark metadata reports both values.
+
+TP8-shape M8 maximal skew:
+V4_WGMMA_CHECK M=8 pattern=skew Is=256 active=6 padded=48 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077480
+V4_WGMMA_ACT cos=0.999999763 rel_l2=0.000689115
+V4_WGMMA_W2 cos=0.999997249 rel_l2=0.002345847 finite=True
+V4_WGMMA_OK
+
+TP4 M8 balanced rebuild:
+V4_WGMMA_CHECK M=8 pattern=balanced Is=512 active=48 padded=384 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999998 rel_l2=0.000076187
+V4_WGMMA_ACT cos=0.999999759 rel_l2=0.000694956
+V4_WGMMA_W2 cos=0.999997256 rel_l2=0.002342691 finite=True
+V4_WGMMA_OK
+
+No performance timing was collected in this repair gate.

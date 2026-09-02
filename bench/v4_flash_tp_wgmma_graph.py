@@ -511,6 +511,9 @@ def main() -> None:
                         kernel.W2_PERSISTENT_BLOCKS_PER_SM
                     ),
                     "w2_persistent_stages": kernel.W2_PERSISTENT_STAGES,
+                    "w2_persistent_stages_tp8": (
+                        kernel.W2_PERSISTENT_STAGES_TP8
+                    ),
                     "w2_epilogue": (
                         "BF16 route output + sglang moe_fused_mul_sum"
                         if kernel.W2_ROUTE_OUTPUT

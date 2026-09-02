@@ -2180,3 +2180,15 @@ maximum rank latency of a full CUDA-Graph replay.
   pipeline value.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_persistent_stage5_initial_correctness_20260903.log`.
+
+### WGMMA iteration 30f — specialize TP8 back to two stages
+
+- Specialized only K=256 W2 to two stages.  TP8 has exactly two K128 tiles,
+  so this exposes every transfer while reducing dynamic shared memory below
+  the launch limit; K=512 TP4 retains the five-stage candidate.
+- Forced-rebuild TP8 maximal-skew and TP4 balanced checks both pass with the
+  exact accepted numerical errors (W2 cosine 0.999997249/0.999997256).  Added
+  explicit benchmark metadata for TP4 and TP8 W2 stage counts.
+- The five-stage TP4 candidate is now eligible for cold-L2 performance timing.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_persistent_stage5_tp8_fix_correctness_20260903.log`.

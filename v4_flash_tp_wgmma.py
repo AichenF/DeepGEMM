@@ -73,6 +73,7 @@ if W2_PERSISTENT_BLOCKS_PER_SM not in (0, 2, 4, 6, 8, 10, 12):
 W2_PERSISTENT_STAGES = int(os.environ.get("V4_W2_PERSISTENT_STAGES", "2"))
 if W2_PERSISTENT_STAGES not in (2, 4, 5):
     raise ValueError("V4_W2_PERSISTENT_STAGES must be one of 2,4,5")
+W2_PERSISTENT_STAGES_TP8 = 2
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
     raise ValueError("V4_MIN_BLOCKS_PER_SM must be one of 0,8,10,12,14,16")
@@ -894,7 +895,9 @@ void run_w2(
             sorted_ids, expert_ids, num_tokens_padded, topk_weights,
             output, lut, routes, persistent_blocks_per_sm);
     } else if (intermediate == 256) {
-        launch_route_gemm<256, 4096, 1, false, kW2PersistentStages>(
+        // TP8 has exactly two K128 tiles.  Two stages expose both transfers
+        // and avoid allocating five redundant scalar-scale stage buffers.
+        launch_route_gemm<256, 4096, 1, false, 2>(
             weight, weight_scale, activation, activation_scale,
             sorted_ids, expert_ids, num_tokens_padded, topk_weights,
             output, lut, routes, persistent_blocks_per_sm);
@@ -1042,7 +1045,7 @@ _ext = load_inline(
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_pst{W2_PERSISTENT_STAGES}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v31"),
+          f"mb{MIN_BLOCKS_PER_SM}_v32"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[

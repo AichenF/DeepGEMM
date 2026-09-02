@@ -265,6 +265,9 @@ def main() -> None:
                         kernel.W2_PERSISTENT_BLOCKS_PER_SM
                     ),
                     "custom_w2_persistent_stages": kernel.W2_PERSISTENT_STAGES,
+                    "custom_w2_persistent_stages_tp8": (
+                        kernel.W2_PERSISTENT_STAGES_TP8
+                    ),
                     "timed_allreduce": "same SGLang CustomAllReduceV2 instance",
                 },
                 sort_keys=True,
