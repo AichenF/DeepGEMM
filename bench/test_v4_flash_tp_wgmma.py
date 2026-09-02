@@ -247,7 +247,9 @@ def main() -> None:
         "V4_WGMMA_W2 "
         f"cos={cosine(local, local_ref):.9f} "
         f"rel_l2={rel_l2(local, local_ref):.9f} "
-        f"finite={bool(torch.isfinite(output).all())}"
+        f"finite={bool(torch.isfinite(output).all())} "
+        f"absmax={float(output.float().abs().max().item()):.9g} "
+        f"nonzero={int(torch.count_nonzero(output).item())}"
     )
     if cosine(local, local_ref) < 0.99 or not torch.isfinite(output).all():
         raise SystemExit("V4_WGMMA_WRONG")

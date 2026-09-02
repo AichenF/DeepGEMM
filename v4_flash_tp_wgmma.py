@@ -64,6 +64,7 @@ FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_WS_PERSIST = os.environ.get("V4_W2_WS_PERSIST", "0") == "1"
+W2_WS_SENTINEL = os.environ.get("V4_W2_WS_SENTINEL", "0") == "1"
 W2_WS_CTAS = int(os.environ.get("V4_W2_WS_CTAS", "234"))
 if W2_WS_CTAS not in (78, 156, 234, 312):
     raise ValueError("V4_W2_WS_CTAS must be one of 78,156,234,312")
@@ -137,6 +138,7 @@ static_assert(kStages == 2 || kStages == 3 || kStages == 4);
 static constexpr float kRoutedScale = 1.5f;
 static constexpr bool kW2RouteOutput = K_W2_ROUTE_OUTPUT;
 static constexpr bool kW2WsPersist = K_W2_WS_PERSIST;
+static constexpr bool kW2WsSentinel = K_W2_WS_SENTINEL;
 
 #if K_MIN_BLOCKS_PER_SM > 0
 #define ROUTE_LAUNCH_BOUNDS __launch_bounds__(128, K_MIN_BLOCKS_PER_SM)
@@ -952,18 +954,22 @@ __global__ __launch_bounds__(256) void route_gemm_w2_ws_persistent(
                         if (route0 < max_routes) {
                             route_output[static_cast<int64_t>(route0) * N +
                                          output_n0] =
-                                __float2bfloat16(accum[group][0]);
+                                __float2bfloat16(kW2WsSentinel
+                                    ? 123.0f : accum[group][0]);
                             route_output[static_cast<int64_t>(route0) * N +
                                          output_n1] =
-                                __float2bfloat16(accum[group][2]);
+                                __float2bfloat16(kW2WsSentinel
+                                    ? 123.0f : accum[group][2]);
                         }
                         if (route1 < max_routes) {
                             route_output[static_cast<int64_t>(route1) * N +
                                          output_n0] =
-                                __float2bfloat16(accum[group][1]);
+                                __float2bfloat16(kW2WsSentinel
+                                    ? 123.0f : accum[group][1]);
                             route_output[static_cast<int64_t>(route1) * N +
                                          output_n1] =
-                                __float2bfloat16(accum[group][3]);
+                                __float2bfloat16(kW2WsSentinel
+                                    ? 123.0f : accum[group][3]);
                         }
                         #pragma unroll
                         for (int value = 0; value < 4; ++value)
@@ -1447,8 +1453,8 @@ _ext = load_inline(
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
-          f"w2wsp{int(W2_WS_PERSIST)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v31"),
+          f"w2wsp{int(W2_WS_PERSIST)}_dbg{int(W2_WS_SENTINEL)}_"
+          f"mb{MIN_BLOCKS_PER_SM}_v32"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1472,6 +1478,7 @@ _ext = load_inline(
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_W2_WS_PERSIST={int(W2_WS_PERSIST)}",
+        f"-DK_W2_WS_SENTINEL={int(W2_WS_SENTINEL)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",

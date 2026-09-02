@@ -1865,3 +1865,20 @@ maximum rank latency of a full CUDA-Graph replay.
   zero WGMMA operands.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_ws_writer_proxy_fence_correctness_20260903.log`.
+
+### WGMMA iteration 29c — consumer epilogue sentinel diagnosis
+
+- Added a compile-time diagnostic sentinel and output statistics to the
+  correctness harness.  In sentinel mode every valid W2 route/channel store
+  writes BF16 123 instead of the accumulator, without changing scheduling or
+  route predicates.
+- The reduced output has absmax 185 (`123 * 1.5`, BF16-rounded) and all
+  32,768 M8 output elements are nonzero.  Thus the consumer warpgroup reaches
+  the final-K epilogue, covers all routes/channels, and returns normally.  The
+  original all-zero result is upstream in the accumulator inputs/WGMMA path,
+  not task termination or route-output coverage.
+- Sentinel mode is diagnostic only and is never eligible for timing.  The
+  next minimal check will expose ordinary shared activation and packed-weight
+  values from the consumer before altering the pipeline topology.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_ws_epilogue_sentinel_correctness_20260903.log`.
