@@ -36,7 +36,7 @@ def select_w13_split_k(
 WOUT = int(os.environ.get("V4_WOUT", "128"))
 if WOUT not in (64, 128, 256):
     raise ValueError("V4_WOUT must be one of 64,128,256")
-LUT_ROWS = int(os.environ.get("V4_LUT_ROWS", "128"))
+LUT_ROWS = int(os.environ.get("V4_LUT_ROWS", "256"))
 if LUT_ROWS not in (128, 256):
     raise ValueError("V4_LUT_ROWS must be 128 or 256")
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"

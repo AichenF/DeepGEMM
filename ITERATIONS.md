@@ -881,3 +881,16 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_graph_coldl2_random_lut256_control_screen_20260902.log`,
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_lut128_repeat_screen_20260902.log`.
+
+### Iteration 13 rollback — restore 256-row LUT default
+
+- Restored the branch-free 256-row shared LUT as the unset default while
+  retaining `V4_LUT_ROWS=128` for reproducibility.  The extension remains
+  keyed by LUT size, so changing the experiment switch cannot reuse the wrong
+  binary.
+- Unset-default random-route cold 3x100 medians are 0.106208 / 0.167168 /
+  0.264288 / 0.368080 / 0.461104 ms (geomean 0.240008 ms), matching the
+  explicit 256-row control's 0.239757 ms geomean within 0.11%.  All graph
+  correctness checks pass.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_random_lut256_default_restore_20260902.log`.
