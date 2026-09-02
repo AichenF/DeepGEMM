@@ -1983,3 +1983,17 @@ maximum rank latency of a full CUDA-Graph replay.
   two K tiles consume each stage exactly once.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_ws_qact_one_and_single_task_probes_20260903.log`.
+
+### WGMMA iteration 29j — TP8 no-stage-reuse discriminator
+
+- Ran the TP8-shape K=256 specialization at maximal-skew M8.  There are two
+  K128 tiles, so each of the two pipeline stages is consumed exactly once;
+  grid=192 also gives one output task per active CTA.
+- W2 remains badly wrong (cosine 0.00861, rel-L2 1.054, absmax 49,920), with
+  only 4,096 final output elements nonzero.  Thus neither cross-task nor
+  within-task stage reuse is required for the failure.
+- This reduces the problem to the single-use tile path: role register
+  reconfiguration, full-barrier/TMA handoff, and duplicated WGMMA codegen.
+  Test these independently before restoring persistence.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_ws_tp8_no_stage_reuse_probe_20260903.log`.
