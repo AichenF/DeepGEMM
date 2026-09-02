@@ -1,0 +1,183 @@
+##### WGMMA Operation
+- **Instruction**: `wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16`
+- **Tile Size**: Computes a 64x64 output tile using 64x16 (A) and 16x64 (B) input tiles
+- **Data Flow**: D[64x64] = A[64x16] x B[16x64] + D[64x64]
+- **K-dimension**: Must iterate K/16 times to accumulate full result
+
+1. **Maximize TMA Utilization**: Use 128B swizzling for optimal memory bandwidth
+2. **Pipeline TMA and Compute**: Use double buffering with multiple barriers
+3. **Minimize Register Pressure**: Reuse accumulator registers when possible
+4. **Align Shared Memory**: Use `alignas(128)` for TMA requirements
+5. **Warp Group Size**: Use 128 threads (4 warps) for optimal WGMMA performance
+
+
+## 1. L2 Cache Locality via Tile Grouping
+
+Group adjacent tiles to maximize L2 cache reuse. Tiles that share input data should be scheduled close together.
+
+```cpp
+// L2 group size: number of tiles processed before moving to next region
+// Larger values = better L2 reuse, but may reduce parallelism
+constexpr int L2_GROUP_SIZE = 8;
+
+// When scheduling tiles, group them in 2D blocks
+// E.g., process an 8x1 or 4x2 group of tiles before moving on
+struct TileGroupScheduler {
+    int group_size_m;
+    int group_size_n;
+
+    // Convert linear tile index to grouped (m, n) coordinates
+    __device__ int2 get_tile_coord(int linear_idx, int tiles_m, int tiles_n) {
+        // Number of complete groups
+        int tiles_per_group = group_size_m * group_size_n;
+        int groups_per_row = (tiles_n + group_size_n - 1) / group_size_n;
+
+        int group_idx = linear_idx / tiles_per_group;
+        int within_group = linear_idx % tiles_per_group;
+
+        int group_m = group_idx / groups_per_row;
+        int group_n = group_idx % groups_per_row;
+
+        int local_m = within_group / group_size_n;
+        int local_n = within_group % group_size_n;
+
+        return make_int2(
+            group_m * group_size_m + local_m,
+            group_n * group_size_n + local_n
+        );
+    }
+};
+```
+
+## 10. L2 Cache Policy Tuning
+
+Use cache eviction hints to control L2 residency based on data size and reuse patterns.
+
+```cpp
+// A data: small footprint, high reuse across N-tiles → always keep in L2
+uint64_t cA = EVICT_LAST;
+
+// B data: size-dependent policy
+// Large B thrashes L2, hurting A reuse; evict large B early
+uint64_t total_B_bytes = sum_of_all_groups_B_size;
+uint64_t global_cb = (total_B_bytes > 72LL*1024*1024) ? EVICT_FIRST : EVICT_LAST;
+
+// Per-group override for very large individual groups
+uint64_t B_bytes_this_group = N * K * sizeof(element);
+uint64_t cB = (B_bytes_this_group > 8*1024*1024) ? EVICT_FIRST : global_cb;
+
+// High-K groups always evict B first (many K-iterations = many B loads)
+if (K > 4096) cB = EVICT_FIRST;
+
+// Scale factor (SF) data: always small → keep in L2
+uint64_t cSF = EVICT_LAST;
+```
+
+**Applied via inline PTX load hints**:
+```cpp
+// EVICT_LAST: hint to keep in L2 as long as possible
+asm volatile("ld.global.L2::evict_last.b32 %0, [%1];" : "=r"(val) : "l"(ptr));
+// EVICT_FIRST: hint to evict from L2 quickly
+asm volatile("ld.global.L2::evict_first.b32 %0, [%1];" : "=r"(val) : "l"(ptr));
+```
+
+## 12. Persistent vs Simple Kernel Split
+
+Use two kernel variants based on workload size for optimal performance:
+
+- **Persistent kernel**: For large workloads (total_tiles > NUM_SMS). All SMs stay active, tiles distributed via lookup table. Uses full `KernelParams` (~3.5KB).
+- **Simple kernel**: For small workloads (total_tiles ≤ NUM_SMS). One tile per block, no persistence loop. Uses compact `SimpleKernelParams` (~984B).
+
+```cpp
+if (total_tiles <= NUM_SMS) {
+    // Simple kernel: 1 tile per block, compact params
+    SimpleKernelParams skp;
+    // ... pack skp ...
+    launch_simple_kernel<<<total_tiles, THREADS, SMEM>>>(skp);
+} else {
+    // Persistent kernel: all SMs active, loop over tiles
+    KernelParams kp;
+    // ... pack kp with full tile table ...
+    launch_persistent_kernel<<<NUM_SMS, THREADS, SMEM>>>(kp);
+}
+```
+
+The simple kernel benefits from:
+- 72% smaller argument copy (984B vs 3.5KB)
+- Single-group TMA patching (only patch the group this block needs)
+- No persistence loop overhead
+
+### Common Anti-Patterns (Empirically Confirmed Regressions)
+
+| Anti-Pattern | Regression | Why |
+|-------------|-----------|-----|
+| `cudaLaunchKernel` replacing `cuLaunchKernelEx` | -15 to -30% | Loses programmatic serialization |
+| Device global + `cudaMemcpyAsync` per call | -10 to -60% | H2D memcpy overhead exceeds benefit |
+| pybind11 / torch extension for launch | -8 to -540% | Python/C++ bridging overhead |
+| BLOCK_N=64 (doubling tile count) | -10 to -21% | Per-tile overhead increase |
+| Reducing NUM_STAGES below 6 | -2 to -7% | Less TMA/MMA overlap |
+| Dual-path epilogue (full-tile + partial) | -2 to -4% | Register pressure from code duplication |
+
+
+#### 2. Concept: one worker per SM + a software scheduler
+
+Instead of launching one block per output tile, a persistent GEMM kernel:
+
+- Launches **~one worker CTA per SM** (or per “worker slot”).
+- Each CTA computes **multiple** output tiles \((m,n)\) selected by a **software scheduler**.
+
+This is most natural if you already have a warp-specialized (producer/consumer) kernel for a single tile.
+
+---
+
+#### 3. Persistent grid shape (how many workers?)
+
+Instead of launching one block per output tile:
+
+```text
+grid.x = (M/BM) * (N/BN)
+```
+
+you launch a small grid:
+
+```text
+grid.x = NUM_WORKERS   // typically ~SM count (or a grouping-friendly value like 128)
+```
+
+and each worker iterates over multiple tiles.
+
+Rule of thumb for `NUM_WORKERS`:
+
+- `NUM_WORKERS = min(total_tiles, sm_count)` is a good default.
+- Some schedules prefer a grouping-friendly value (e.g. 128 on a 132-SM GPU).
+
+---
+
+#### 4. Scheduler interface (what you need for correctness)
+
+You need a function that maps a worker index to a sequence of tiles:
+
+```cpp
+struct Schedule {
+  __device__ Schedule(int M, int N, int worker_idx, int num_workers);
+  // returns false when no work remains
+  __device__ bool next(int& block_m, int& block_n);
+};
+```
+
+Minimal contiguous scheduler (simple, always correct with divisibility assumptions):
+
+```cpp
+// tile_id in [0, total_tiles)
+int tile_id = it * num_workers + worker_idx;
+block_m = tile_id / tiles_n;
+block_n = tile_id % tiles_n;
+```
+
+If you later want L2-locality grouping, keep the same interface and swap the policy.
+
+Correctness properties your scheduler must satisfy:
+
+- **Exactly-once coverage**: every output tile is produced exactly once (no duplicates, no missing tiles).
+- **Deterministic iteration**: if both producer and consumers call `schedule.next(...)`, they must see the **same tile sequence** (or you must centralize scheduling so they stay consistent).
+- **Termination**: all warpgroups must agree on when work is finished (avoid producer waiting forever on `empty[]` after consumers stop, or consumers waiting forever on `full[]` after producer stops).
