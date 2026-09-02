@@ -47,6 +47,9 @@ if SCALE_BUFFERS not in (1, 2):
     raise ValueError("V4_SCALE_BUFFERS must be 1 or 2")
 if SCALE_QUAD_REUSE == 1 and SCALE_BUFFERS != 2:
     raise ValueError("V4_SCALE_QUAD_REUSE=1 requires V4_SCALE_BUFFERS=2")
+WEIGHT_SWIZZLE = int(os.environ.get("V4_WEIGHT_SWIZZLE", "0"))
+if WEIGHT_SWIZZLE not in (0, 64):
+    raise ValueError("V4_WEIGHT_SWIZZLE must be 0 or 64")
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
@@ -98,6 +101,8 @@ static_assert(kScaleQuadReuse == 1 || kScaleQuadReuse == 4);
 static constexpr int kScaleBuffers = K_SCALE_BUFFERS;
 static_assert(kScaleBuffers == 1 || kScaleBuffers == 2);
 static_assert(kScaleQuadReuse == 4 || kScaleBuffers == 2);
+static constexpr int kWeightSwizzle = K_WEIGHT_SWIZZLE;
+static_assert(kWeightSwizzle == 0 || kWeightSwizzle == 64);
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -383,6 +388,12 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             for (int group = 0; group < kWgmmaGroups; ++group) {
                 const int group_row0 = group * 64 + row0;
                 const int group_row1 = group * 64 + row1;
+                const int weight_chunk0 = kWeightSwizzle == 64
+                    ? (k_step ^ (group_row0 & 3))
+                    : k_step;
+                const int weight_chunk1 = kWeightSwizzle == 64
+                    ? (k_step ^ (group_row1 & 3))
+                    : k_step;
                 uint32_t packed0;
                 uint32_t packed1;
                 const uint32_t stage_base =
@@ -390,11 +401,11 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                 asm volatile("ld.shared.b32 %0,[%1];"
                     : "=r"(packed0)
                     : "r"(stage_base + group_row0 * (kBlockK / 2)
-                          + k_step * 16 + packed_k_offset));
+                          + weight_chunk0 * 16 + packed_k_offset));
                 asm volatile("ld.shared.b32 %0,[%1];"
                     : "=r"(packed1)
                     : "r"(stage_base + group_row1 * (kBlockK / 2)
-                          + k_step * 16 + packed_k_offset));
+                          + weight_chunk1 * 16 + packed_k_offset));
                 const uint32_t exponent0 =
                     weight_scale_smem[scale_stage * kScaleStageBytes
                                       + group_row0 * kScaleRowBytes
@@ -547,7 +558,10 @@ CUtensorMap make_weight_desc(void* pointer, int K, int rows) {
     const CUresult result = cuTensorMapEncodeTiled(
         &descriptor, CU_TENSOR_MAP_DATA_TYPE_UINT8, 2, pointer,
         global_dims, global_strides, box_dims, element_strides,
-        CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,
+        CU_TENSOR_MAP_INTERLEAVE_NONE,
+        kWeightSwizzle == 64
+            ? CU_TENSOR_MAP_SWIZZLE_64B
+            : CU_TENSOR_MAP_SWIZZLE_NONE,
         CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
         CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
     TORCH_CHECK(result == CUDA_SUCCESS, "cuTensorMapEncodeTiled failed: ", result);
@@ -747,7 +761,8 @@ void cast_bf16(torch::Tensor input, torch::Tensor output);
 _ext = load_inline(
     name=(f"v4_flash_tp_wgmma_sdyn_wo{WOUT}_lr{LUT_ROWS}_"
           f"sr{SCALE_QUAD_REUSE}_sb{SCALE_BUFFERS}_"
-          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v16"),
+          f"ws{WEIGHT_SWIZZLE}_ro{int(W2_ROUTE_OUTPUT)}_"
+          f"mb{MIN_BLOCKS_PER_SM}_v17"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],
@@ -757,6 +772,7 @@ _ext = load_inline(
         f"-DK_LUT_ROWS={LUT_ROWS}",
         f"-DK_SCALE_QUAD_REUSE={SCALE_QUAD_REUSE}",
         f"-DK_SCALE_BUFFERS={SCALE_BUFFERS}",
+        f"-DK_WEIGHT_SWIZZLE={WEIGHT_SWIZZLE}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",

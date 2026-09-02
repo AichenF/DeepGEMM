@@ -1014,3 +1014,22 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_m32_scale_reuse4_random_stalls_coldl2_ncu.ncu-rep`,
   and
   `bench/results/tp4_wgmma_m32_scale_reuse4_random_stalls_coldl2_ncu.log`.
+
+### WGMMA iteration 16a — fixed-origin 64-byte weight swizzle is invalid
+
+- Source-level NCU attribution resolves the aggregate shared-memory warning:
+  every excessive wavefront belongs to the sixteen unrolled `LDS` packed
+  weight loads in W13 (and the corresponding loads in W2).  Each reports four
+  wavefronts for one ideal wavefront; no WGMMA descriptor access contributes
+  to this counter.  The current packed-weight access is therefore a real
+  four-way bank conflict.
+- First attempt: enable `CU_TENSOR_MAP_SWIZZLE_64B` and read logical 16-byte
+  chunk `x` at physical chunk `x ^ (row & 3)`, initially assuming that the
+  dynamic shared-memory base is aligned to the swizzle-pattern origin.
+- Reject before timing: TP4 full-block correctness fails badly (W13 cosine
+  0.246405566, W2 cosine 0.251794636).  CUDA's TMA mapping also includes
+  `(smem_pointer / 128) % 4`; an aligned dynamic declaration does not justify
+  compiling that runtime origin term away.  Retain this failed state in git
+  before testing the corrected address mapping.
+- Evidence log:
+  `bench/results/v4_flash_tp_wgmma_weight_swizzle64_correctness_tp4_20260903.log`.

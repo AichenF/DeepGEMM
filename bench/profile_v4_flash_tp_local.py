@@ -156,6 +156,11 @@ def main() -> None:
                 "scale_buffers": int(os.environ.get("V4_SCALE_BUFFERS", "2"))
                 if args.impl == "custom"
                 else None,
+                "weight_swizzle_bytes": int(
+                    os.environ.get("V4_WEIGHT_SWIZZLE", "0")
+                )
+                if args.impl == "custom"
+                else None,
                 "l2_cache_bytes": props.L2_cache_size,
                 "l2_flush_bytes": l2_flush_buffer.nbytes,
                 "l2_policy": "cold; 256MiB clear immediately before pipeline",
