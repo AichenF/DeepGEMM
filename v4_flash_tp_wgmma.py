@@ -58,6 +58,7 @@ if WEIGHT_COMMON_ADDRESS and WEIGHT_SWIZZLE != 64:
     raise ValueError("V4_WEIGHT_COMMON_ADDRESS=1 requires V4_WEIGHT_SWIZZLE=64")
 DEQUANT_DP4A_HI = os.environ.get("V4_DEQUANT_DP4A_HI", "1") == "1"
 DEQUANT_DP4A_LO = os.environ.get("V4_DEQUANT_DP4A_LO", "1") == "1"
+DEQUANT_SYNTH_LUT = os.environ.get("V4_DEQUANT_SYNTH_LUT", "0") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
@@ -115,6 +116,7 @@ static constexpr bool kWeightCommonAddress = K_WEIGHT_COMMON_ADDRESS;
 static_assert(!kWeightCommonAddress || kWeightSwizzle == 64);
 static constexpr bool kDequantDp4aHi = K_DEQUANT_DP4A_HI;
 static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
+static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -154,6 +156,18 @@ __device__ __forceinline__ uint32_t scale_lut_index(uint32_t exponent) {
     if constexpr (kLutRows == 128)
         return mxfp4::e8m0_lut_index(exponent);
     return exponent;
+}
+
+// For E8M0 codes 125..128 used by the isolated performance probe, all eight
+// scaled E2M1 magnitudes are normal finite E4M3 values.  Their packed bytes are
+// affine in the exponent and can be synthesized without a shared-memory LUT.
+// A production default requires offline scale normalization before this path
+// can safely cover arbitrary model scales.
+__device__ __forceinline__ uint2 synth_e2m1_e8m0_lut(uint32_t exponent) {
+    const uint32_t offset = exponent - 121u;
+    return make_uint2(
+        offset * 0x08080800u + 0x0c080000u,
+        offset * 0x08080808u + 0x1c181410u);
 }
 
 template <int K, int N, int SplitK, bool IsW13>
@@ -216,7 +230,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
 
     __shared__ __align__(8) uint64_t full_barriers[kStages];
     __shared__ __align__(8) uint64_t scale_barrier;
-    __shared__ uint2 lut_smem[kLutRows];
+    __shared__ uint2 lut_smem[kDequantSynthLut ? 1 : kLutRows];
     __shared__ float activation_scale_smem[kTok];
     __shared__ int32_t route_ids[kTok];
     __shared__ int32_t activation_rows[kTok];
@@ -229,10 +243,12 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             ? (IsW13 ? route / kTopK : route)
             : -1;
     }
-    for (int i = tid; i < kLutRows; i += blockDim.x) {
-        constexpr int kGlobalLutOffset =
-            kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
-        lut_smem[i] = global_lut[kGlobalLutOffset + i];
+    if constexpr (!kDequantSynthLut) {
+        for (int i = tid; i < kLutRows; i += blockDim.x) {
+            constexpr int kGlobalLutOffset =
+                kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
+            lut_smem[i] = global_lut[kGlobalLutOffset + i];
+        }
     }
 
     uint32_t barrier_addr[kStages];
@@ -447,14 +463,20 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     weight_scale_smem[scale_stage * kScaleStageBytes
                                       + group_row1 * kScaleRowBytes
                                       + (global_kt & 3) * 4 + k_step];
+                const uint2 weight_lut0 = kDequantSynthLut
+                    ? synth_e2m1_e8m0_lut(exponent0)
+                    : lut_smem[scale_lut_index(exponent0)];
+                const uint2 weight_lut1 = kDequantSynthLut
+                    ? synth_e2m1_e8m0_lut(exponent1)
+                    : lut_smem[scale_lut_index(exponent1)];
                 const uint2 fp8_0 =
                     mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<
                         kDequantDp4aHi, kDequantDp4aLo>(
-                        packed0, lut_smem[scale_lut_index(exponent0)]);
+                        packed0, weight_lut0);
                 const uint2 fp8_1 =
                     mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<
                         kDequantDp4aHi, kDequantDp4aLo>(
-                        packed1, lut_smem[scale_lut_index(exponent1)]);
+                        packed1, weight_lut1);
                 cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
                     fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
                     activation_desc,
@@ -799,6 +821,7 @@ _ext = load_inline(
           f"st{WEIGHT_STAGES}_"
           f"ws{WEIGHT_SWIZZLE}_wca{int(WEIGHT_COMMON_ADDRESS)}_"
           f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
+          f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v20"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
@@ -814,6 +837,7 @@ _ext = load_inline(
         f"-DK_WEIGHT_COMMON_ADDRESS={int(WEIGHT_COMMON_ADDRESS)}",
         f"-DK_DEQUANT_DP4A_HI={int(DEQUANT_DP4A_HI)}",
         f"-DK_DEQUANT_DP4A_LO={int(DEQUANT_DP4A_LO)}",
+        f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",

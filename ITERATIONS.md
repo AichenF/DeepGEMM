@@ -1304,3 +1304,29 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_graph_coldl2_random_weight_stages3_screen_20260903.log`,
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_weight_stages4_screen_20260903.log`.
+
+### WGMMA iteration 20 — register-synthesized E2M1/E8M0 LUT probe (rejected)
+
+- Added an explicit experimental specialization that synthesizes the two
+  packed positive E4M3 lookup words from the E8M0 exponent in registers and
+  removes the per-CTA 2 KiB shared LUT.  This affine expression is bit-exact
+  for the benchmark/test exponent range 125..128; arbitrary production E8M0
+  would require Humming-style offline scale normalization, so the default
+  remains the full 256-row LUT regardless of timing.
+- The probe passes TP4 W13 split-K=4, TP4 forced split-K=2, and TP8 local-shape
+  full-path correctness with errors identical to the accepted LUT path.
+- TP4 random-route cold 3x100 medians for the shared-LUT control are 0.100896 /
+  0.156816 / 0.245360 / 0.347568 / 0.433248 ms (geomean 0.225615 ms).
+  Register synthesis gives 0.099968 / 0.156416 / 0.247488 / 0.349008 /
+  0.432016 ms (geomean 0.225531 ms).
+- The 0.04% geometric difference is noise-sized and pointwise mixed: the
+  probe wins M8/M16/M128 but loses M32/M64.  Extra integer synthesis offsets
+  the LUT initialization/shared-residency saving.  Reject it without a larger
+  reverse-order run and retain the general 256-row LUT default.
+- Every timed replay is preceded by the standard 256 MiB L2 clear outside the
+  CUDA-event interval.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_dequant_synth_lut_probe_correctness_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_dequant_synth_lut0_control_20260903.log`,
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_dequant_synth_lut_probe_screen_20260903.log`.

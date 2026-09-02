@@ -477,6 +477,7 @@ def main() -> None:
                     "weight_common_address": kernel.WEIGHT_COMMON_ADDRESS,
                     "dequant_dp4a_hi": kernel.DEQUANT_DP4A_HI,
                     "dequant_dp4a_lo": kernel.DEQUANT_DP4A_LO,
+                    "dequant_synth_lut": kernel.DEQUANT_SYNTH_LUT,
                     "w2_epilogue": (
                         "BF16 route output + sglang moe_fused_mul_sum"
                         if kernel.W2_ROUTE_OUTPUT
