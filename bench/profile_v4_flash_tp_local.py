@@ -16,6 +16,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--impl", choices=("humming", "custom"), required=True)
     parser.add_argument("--m", type=int, default=32)
     parser.add_argument("--tp", type=int, choices=(4, 8), default=4)
+    parser.add_argument(
+        "--route-pattern",
+        choices=("random", "balanced", "skew"),
+        default="random",
+    )
     parser.add_argument("--seed", type=int, default=20260902)
     args = parser.parse_args()
     if args.m <= 0:
@@ -23,7 +28,9 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def make_humming_case(m: int, tp: int, device: torch.device):
+def make_humming_case(
+    m: int, tp: int, route_pattern: str, seed: int, device: torch.device
+):
     import v4_flash_tp_humming_graph as bench
     from humming.config import GemmType
     from humming.layer import HummingMethod
@@ -37,7 +44,9 @@ def make_humming_case(m: int, tp: int, device: torch.device):
     w2_tuning = HummingMethod.get_default_tuning_configs(
         layer=w2, use_f16_accum=False, gemm_type=GemmType.INDEXED
     )
-    topk_ids, topk_weights = bench.make_routes(m, "balanced", device)
+    topk_ids, topk_weights = bench.make_routes(
+        m, route_pattern, device, seed
+    )
     x = torch.randn((m, bench.HIDDEN), dtype=torch.bfloat16, device=device) * 0.1
     selected_w13 = bench.select_tuning_config(w13_tuning, m * bench.TOP_K)
     return bench.CapturedCase(
@@ -54,13 +63,17 @@ def make_humming_case(m: int, tp: int, device: torch.device):
     )
 
 
-def make_custom_case(m: int, tp: int, device: torch.device):
+def make_custom_case(
+    m: int, tp: int, route_pattern: str, seed: int, device: torch.device
+):
     import v4_flash_tp_wgmma_graph as bench
     import v4_flash_tp_wgmma as kernel
 
     intermediate_per_rank = bench.INTERMEDIATE // tp
     w13, s13, w2, s2 = bench.make_weights(intermediate_per_rank, device)
-    topk_ids, topk_weights = bench.make_routes(m, "balanced", device)
+    topk_ids, topk_weights = bench.make_routes(
+        m, route_pattern, device, seed
+    )
     x = torch.randn((m, bench.HIDDEN), dtype=torch.bfloat16, device=device) * 0.1
     return bench.CapturedCase(
         m=m,
@@ -87,9 +100,13 @@ def main() -> None:
     torch.cuda.manual_seed(args.seed)
 
     if args.impl == "humming":
-        case = make_humming_case(args.m, args.tp, device)
+        case = make_humming_case(
+            args.m, args.tp, args.route_pattern, args.seed, device
+        )
     else:
-        case = make_custom_case(args.m, args.tp, device)
+        case = make_custom_case(
+            args.m, args.tp, args.route_pattern, args.seed, device
+        )
 
     for _ in range(2):
         case.run_local()
@@ -113,6 +130,7 @@ def main() -> None:
                 "impl": args.impl,
                 "m": args.m,
                 "tp": args.tp,
+                "route_pattern": args.route_pattern,
                 "w13_split_policy": os.environ.get("V4_W13_SPLIT_K", "auto")
                 if args.impl == "custom"
                 else None,
@@ -125,6 +143,17 @@ def main() -> None:
                 "min_blocks_per_sm": int(
                     os.environ.get("V4_MIN_BLOCKS_PER_SM", "0")
                 )
+                if args.impl == "custom"
+                else None,
+                "mxfp4_lut_rows": int(os.environ.get("V4_LUT_ROWS", "256"))
+                if args.impl == "custom"
+                else None,
+                "scale_quad_reuse": int(
+                    os.environ.get("V4_SCALE_QUAD_REUSE", "4")
+                )
+                if args.impl == "custom"
+                else None,
+                "scale_buffers": int(os.environ.get("V4_SCALE_BUFFERS", "2"))
                 if args.impl == "custom"
                 else None,
                 "l2_cache_bytes": props.L2_cache_size,

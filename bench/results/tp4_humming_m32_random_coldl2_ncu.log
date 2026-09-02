@@ -1,0 +1,10 @@
+==PROF== Connected to process 66163 (/usr/bin/python3.12)
+==PROF== Connected to process 66297 (/usr/bin/python3.12)
+==PROF== Connected to process 66299 (/usr/bin/python3.12)
+==PROF== Disconnected from process 66297
+==PROF== Disconnected from process 66299
+==PROF== Profiling "humming": 0%....50%....100% - 10 passes
+==PROF== Profiling "humming": 0%....50%....100% - 10 passes
+LOCAL_PROFILE_REPLAY {"impl": "humming", "l2_cache_bytes": 62914560, "l2_flush_bytes": 268435456, "l2_policy": "cold; 256MiB clear immediately before pipeline", "m": 32, "min_blocks_per_sm": null, "mxfp4_lut_rows": null, "output_tile_channels": null, "route_pattern": "random", "scale_buffers": null, "scale_quad_reuse": null, "tp": 4, "w13_split_policy": null, "w2_route_output": null}
+==PROF== Disconnected from process 66163
+==PROF== Report: /lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/results/tp4_humming_m32_random_coldl2_ncu.ncu-rep

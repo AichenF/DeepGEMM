@@ -976,3 +976,41 @@ maximum rank latency of a full CUDA-Graph replay.
   SSH client timed out; the clean repeat is the accepted evidence.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_random_scale_buffer2_default_restore_repeat_20260903.log`.
+
+### Post-iteration-15 profile — random-route cold-L2 core gap
+
+- Repaired the local profiler to use the benchmark's current route API and
+  made `random` (DeepGEMM MegaMoE-style random scores followed by top-k) its
+  default.  The route tensor is generated before capture and is identical for
+  both implementations.  The profiler also records the LUT, scale-reuse, and
+  scale-buffer specialization in every log.
+- Profiled M32, TP4 local W13+W2 pipelines on GPU 1.  Each NCU launch has a
+  stream-ordered 256 MiB cache flush immediately before the profiled pipeline;
+  the flush itself is outside the target NVTX range.  These NCU durations are
+  diagnostic metric-replay measurements, not benchmark headline latency.
+- Custom W13 (`K=4096,N=1024,split-K=2`) takes 167.04 us versus Humming's
+  146.82 us, a 13.77% core gap.  Custom W2 (`K=512,N=4096`) takes 88.03 us
+  versus Humming's 74.59 us, an 18.02% core gap.
+- Custom W13/W2 DRAM-throughput utilization is 41.16%/37.76%, L2 utilization
+  56.70%/50.76%, and compute utilization 70.56%/70.60%.  Humming reports
+  44.58%/44.42%, 54.85%/52.68%, and 62.01%/59.19%, respectively.  Humming is
+  faster despite lower compute utilization, consistent with its persistent
+  producer/consumer schedule doing less per-tile control and movement work.
+- Custom W13/W2 achieve 51.20%/53.54% occupancy with 45 registers and 24.57 KiB
+  total shared memory per CTA.  Scheduler issue is healthy but not saturated:
+  eligible cycles are 73.76%/72.18%, with 8.18/8.53 active and 1.96/2.01
+  eligible warps per scheduler.
+- NCU flags 45% excessive shared-memory wavefronts for both layers
+  (6,881,280 of 15,182,720 W13 wavefronts and 3,440,640 of 7,678,720 W2
+  wavefronts).  Source attribution includes WGMMA shared-operand activity, so
+  this aggregate alone does not prove that the explicit packed-weight loads
+  are bank-conflicted.  The next experiment must isolate those source lines
+  before changing the TMA/shared layout.
+- Evidence:
+  `bench/results/tp4_wgmma_m32_scale_reuse4_random_coldl2_ncu.ncu-rep`,
+  `bench/results/tp4_wgmma_m32_scale_reuse4_random_coldl2_ncu.log`,
+  `bench/results/tp4_humming_m32_random_coldl2_ncu.ncu-rep`,
+  `bench/results/tp4_humming_m32_random_coldl2_ncu.log`,
+  `bench/results/tp4_wgmma_m32_scale_reuse4_random_stalls_coldl2_ncu.ncu-rep`,
+  and
+  `bench/results/tp4_wgmma_m32_scale_reuse4_random_stalls_coldl2_ncu.log`.
