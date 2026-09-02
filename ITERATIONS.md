@@ -681,3 +681,21 @@ maximum rank latency of a full CUDA-Graph replay.
   reporting a new apples-to-apples gap.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_tma_scales_formal_20260902.log`.
+
+### Contemporary cold-L2 baseline and repeat
+
+- Re-ran Humming and then custom in the same GPU window with the identical
+  9x200 per-point cold protocol.  Humming medians are 0.096960 / 0.160192 /
+  0.293440 / 0.402896 / 0.412240 ms; geometric mean 0.237585 ms.
+- The immediate custom repeat gives 0.124512 / 0.193312 / 0.373488 /
+  0.497968 / 0.510480 ms; geometric mean 0.296337 ms.  Its geometric mean is
+  within 0.15% of the preceding custom formal run, so the result is
+  reproducible despite visible within-run batch drift at M32 and above.
+- On the contemporary pair, custom/Humming latency ratios are 1.284x / 1.207x
+  / 1.273x / 1.236x / 1.238x for M8/M16/M32/M64/M128; geometric-mean ratio
+  1.247x.  The TMA scale optimization closes most of the former ~45% gap but
+  does not yet beat Humming.
+- Evidence logs:
+  `bench/results/tp4_humming_graph_coldl2_formal_contemporary_20260902.log`
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_tma_scales_formal_repeat_20260902.log`.
