@@ -499,7 +499,6 @@ def main() -> None:
                     "scale_quad_reuse": kernel.SCALE_QUAD_REUSE,
                     "scale_buffers": kernel.SCALE_BUFFERS,
                     "weight_stages": kernel.WEIGHT_STAGES,
-                    "w2_weight_stages": kernel.W2_WEIGHT_STAGES,
                     "weight_swizzle_bytes": kernel.WEIGHT_SWIZZLE,
                     "weight_common_address": kernel.WEIGHT_COMMON_ADDRESS,
                     "dequant_dp4a_hi": kernel.DEQUANT_DP4A_HI,

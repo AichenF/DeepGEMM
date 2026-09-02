@@ -1781,3 +1781,24 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_w2_stages3_tp8shape_correctness_20260903.log`,
   and
   `bench/results/tp4_paired_graph_batch_coldl2_random_w2_stages3_screen_20260903.log`.
+
+### Iteration 28 rollback — restore two TMA weight stages
+
+- Removed the W2-only stage plumbing and restored the generic route GEMM to
+  the exact pre-iteration-28 source; a direct diff against commit `e22169a`
+  shows only the JIT suffix changed from `v27` to `v29` to force a clean
+  rebuild.
+- Rebuilt TP4 correctness passes with W13/activation/W2 cosine
+  0.999999997/0.999999691/0.999997241 and finite output.
+- The batch-paired random-route cold 4x100 rollback screen gives custom
+  0.092656 / 0.143552 / 0.217920 / 0.311616 / 0.398720 ms versus Humming
+  0.090336 / 0.145824 / 0.226384 / 0.327856 / 0.403600 ms.  Custom loses M8
+  by 2.57% and wins M16/M32/M64/M128 by 1.56%/3.88%/5.21%/1.22%; five-shape
+  geometric mean is 1.81% faster.  This short run confirms full recovery but
+  does not replace the 2,000-sample formal headline because large-M batch
+  drift remains visible.
+- Every one of the 400 samples per implementation and M has a separate
+  256 MiB L2 clear outside timing.  Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_stages3_rollback_correctness_20260903.log`
+  and
+  `bench/results/tp4_paired_graph_batch_coldl2_random_w2_stages3_rollback_screen_20260903.log`.

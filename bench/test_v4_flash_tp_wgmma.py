@@ -231,8 +231,7 @@ def main() -> None:
         f"active={torch.unique(flat_ids).numel()} padded={num_tokens_padded.item()} "
         f"split_k={selected_split_k} mode2={kernel.MODE2_BRAID} "
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
-        f"w2_global_lut={kernel.W2_GLOBAL_LUT} "
-        f"w2_weight_stages={kernel.W2_WEIGHT_STAGES}"
+        f"w2_global_lut={kernel.W2_GLOBAL_LUT}"
     )
     print(
         "V4_WGMMA_W13 "

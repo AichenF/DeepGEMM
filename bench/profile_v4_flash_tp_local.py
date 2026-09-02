@@ -162,9 +162,6 @@ def main() -> None:
                 "weight_stages": int(os.environ.get("V4_WEIGHT_STAGES", "2"))
                 if args.impl == "custom"
                 else None,
-                "w2_weight_stages": kernel_module.W2_WEIGHT_STAGES
-                if args.impl == "custom"
-                else None,
                 "weight_swizzle_bytes": int(
                     os.environ.get("V4_WEIGHT_SWIZZLE", "64")
                 )
