@@ -25,6 +25,7 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
+from triton import runtime as triton_runtime
 
 import sglang.srt.distributed.parallel_state as ps
 from humming.config import GemmType
@@ -377,20 +378,34 @@ def time_graph(
     cpu_group: dist.ProcessGroup,
     nccl_group: dist.ProcessGroup,
     device: torch.device,
-) -> list[float]:
+    l2_flush_buffer: torch.Tensor,
+) -> tuple[list[float], list[float]]:
     samples: list[float] = []
+    batch_medians: list[float] = []
+    driver = triton_runtime.driver.active
     for _ in range(outer):
         dist.barrier(group=cpu_group)
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        for _ in range(replays):
+        starts = [torch.cuda.Event(enable_timing=True) for _ in range(replays)]
+        ends = [torch.cuda.Event(enable_timing=True) for _ in range(replays)]
+        for replay_idx in range(replays):
+            # Same 256-MiB cold-L2 protocol as triton.testing.do_bench.  The
+            # clear is ordered before the start event on the same stream, so it
+            # evicts cache contents but is excluded from the measured interval.
+            driver.clear_cache(l2_flush_buffer)
+            starts[replay_idx].record()
             graph.replay()
-        end.record()
-        end.synchronize()
-        rank_average_ms = start.elapsed_time(end) / replays
-        samples.append(max_across_ranks(rank_average_ms, device, nccl_group))
-    return samples
+            ends[replay_idx].record()
+        ends[-1].synchronize()
+        local_times = torch.tensor(
+            [start.elapsed_time(end) for start, end in zip(starts, ends)],
+            dtype=torch.float64,
+            device=device,
+        )
+        dist.all_reduce(local_times, op=dist.ReduceOp.MAX, group=nccl_group)
+        batch = [float(value) for value in local_times.cpu().tolist()]
+        samples.extend(batch)
+        batch_medians.append(statistics.median(batch))
+    return samples, batch_medians
 
 
 @torch.inference_mode()
@@ -423,6 +438,12 @@ def main() -> None:
     if comm.disabled:
         raise RuntimeError("SGLang CustomAllReduceV2 is disabled on this topology")
     register_comm_cleanup(comm)
+    l2_flush_buffer = triton_runtime.driver.active.get_empty_cache_for_benchmark()
+    if l2_flush_buffer.nbytes < 2 * props.L2_cache_size:
+        raise RuntimeError(
+            f"L2 flush buffer ({l2_flush_buffer.nbytes}) is smaller than 2x "
+            f"L2 ({props.L2_cache_size})"
+        )
 
     if rank == 0:
         print(
@@ -439,6 +460,9 @@ def main() -> None:
                     "outer": args.outer,
                     "replays_per_outer": args.replays,
                     "warmup_replays": args.warmup_replays,
+                    "l2_policy": "cold; 256MiB Triton clear before every replay, clear excluded from events",
+                    "l2_cache_bytes": props.L2_cache_size,
+                    "l2_flush_bytes": l2_flush_buffer.nbytes,
                     "humming_gemm_type": GemmType.INDEXED.value,
                     "weight_dtype": "OCP MXFP4 E2M1",
                     "weight_scale": "E8M0 group32",
@@ -506,17 +530,19 @@ def main() -> None:
         torch.cuda.synchronize(device)
 
         for _ in range(args.warmup_replays):
+            triton_runtime.driver.active.clear_cache(l2_flush_buffer)
             graph.replay()
         torch.cuda.synchronize(device)
 
         check = correctness_metrics(case, graph, nccl_group, device)
-        samples = time_graph(
+        samples, batch_medians = time_graph(
             graph,
             outer=args.outer,
             replays=args.replays,
             cpu_group=cpu_group,
             nccl_group=nccl_group,
             device=device,
+            l2_flush_buffer=l2_flush_buffer,
         )
 
         active_experts = int(torch.unique(topk_ids).numel())
@@ -535,7 +561,8 @@ def main() -> None:
             "latency_ms_min": min(samples),
             "latency_ms_median": statistics.median(samples),
             "latency_ms_max": max(samples),
-            "samples_ms_max_rank": samples,
+            "cold_samples": len(samples),
+            "batch_medians_ms_max_rank": batch_medians,
             **check,
         }
         results.append(record)

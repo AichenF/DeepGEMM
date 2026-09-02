@@ -192,3 +192,27 @@ maximum rank latency of a full CUDA-Graph replay.
   fixed-grid CTAs from graph-safe route alignment.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_balanced_s4_formal_v1_20260902.log`.
+
+### Benchmark protocol correction — explicit cold L2 is mandatory
+
+- User directive (2026-09-02): every subsequent performance benchmark must
+  use cold L2.  The earlier continuous-replay results above are retained only
+  as warm/steady-state diagnostics and must not be used as the optimization
+  score or final comparison.
+- Measured H20 L2 size is 62,914,560 bytes (60 MiB).  Both the Humming and
+  custom graph harnesses now allocate Triton's standard 256 MiB benchmark
+  cache buffer and clear it on the benchmark stream before every individually
+  timed graph replay.  The start event is recorded after the clear and the end
+  event after the replay, so cache eviction is ordered but excluded from the
+  reported latency.
+- TP4 M8 balanced smoke, 1 outer x 10 cold replays:
+  - Humming min / median / max: 0.095904 / 0.096752 / 0.248672 ms.
+  - Custom split-K=4 min / median / max: 0.141408 / 0.142560 / 0.296864 ms.
+  - Median custom / Humming: 1.473x (custom is 47.3% slower).
+- Both graph outputs pass CustomAllReduceV2 versus an independent local
+  recompute plus NCCL sum: minimum cosine is 0.999995606 and all values are
+  finite.  Ten samples only validate the cold-L2 mechanism; they are not the
+  formal performance result.
+- Evidence logs:
+  `bench/results/tp4_humming_graph_coldl2_smoke_m8.log` and
+  `bench/results/tp4_wgmma_graph_coldl2_smoke_m8_s4.log`.
