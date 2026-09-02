@@ -106,6 +106,7 @@ __device__ __forceinline__ cute::GmmaDescriptor desc_128b(uint32_t pointer) {
 template <int K, int N, int SplitK, bool IsW13>
 __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const __grid_constant__ CUtensorMap tma_weight,
+        const __grid_constant__ CUtensorMap tma_weight_scale,
         const uint8_t* __restrict__ weight_scale,
         const uint8_t* __restrict__ activation,
         const float* __restrict__ activation_scale,
@@ -122,6 +123,12 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     constexpr int kNumKTiles = K / kBlockK;
     constexpr int kKTilesPerSplit = kNumKTiles / SplitK;
     constexpr int kWeightStageBytes = kWout * (kBlockK / 2);
+    // TMA requires the contiguous box dimension to span at least 16 bytes.
+    // Fetch four adjacent K128 scale quads per row and consume the first quad.
+    // The extra bytes are no worse than the sector overfetch of scalar loads.
+    constexpr int kScaleRowBytes = 16;
+    constexpr int kScaleStageBytes = kWout * kScaleRowBytes;
+    constexpr bool kUseTmaScale = K >= 512;
     constexpr int kNumNTiles = N / kWout;
 
     const int split_idx = blockIdx.x % SplitK;
@@ -139,15 +146,19 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
 
     extern __shared__ __align__(1024) uint8_t dynamic_smem[];
     uint8_t* weight_smem = dynamic_smem;
-    uint8_t* activation_smem = weight_smem + kStages * kWeightStageBytes;
+    uint8_t* weight_scale_smem =
+        weight_smem + kStages * kWeightStageBytes;
+    uint8_t* activation_smem =
+        weight_scale_smem + kStages * kScaleStageBytes;
     const uint32_t weight_smem_addr =
         static_cast<uint32_t>(__cvta_generic_to_shared(weight_smem));
+    const uint32_t weight_scale_smem_addr =
+        static_cast<uint32_t>(__cvta_generic_to_shared(weight_scale_smem));
     const uint32_t activation_smem_addr =
         static_cast<uint32_t>(__cvta_generic_to_shared(activation_smem));
 
     __shared__ __align__(8) uint64_t full_barriers[kStages];
     __shared__ uint2 lut_smem[256];
-    __shared__ uint8_t scale_smem[kWout * (kBlockK / 32)];
     __shared__ float activation_scale_smem[kTok];
     __shared__ int32_t route_ids[kTok];
     __shared__ int32_t activation_rows[kTok];
@@ -179,17 +190,30 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     const auto load_weight_stage = [&](int local_kt, int stage) {
         if (tid == 0) {
             const int global_kt = kt_begin + local_kt;
-            const uint32_t dst =
+            const uint32_t weight_dst =
                 weight_smem_addr + stage * kWeightStageBytes;
+            const uint32_t scale_dst =
+                weight_scale_smem_addr + stage * kScaleStageBytes;
             asm volatile(
                 "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
-                :: "r"(barrier_addr[stage]), "n"(kWeightStageBytes));
+                :: "r"(barrier_addr[stage]),
+                   "n"(kWeightStageBytes
+                       + (kUseTmaScale ? kScaleStageBytes : 0)));
             asm volatile(
                 "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
                 "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
-                :: "r"(dst), "l"(&tma_weight),
+                :: "r"(weight_dst), "l"(&tma_weight),
                    "r"(global_kt * (kBlockK / 2)), "r"(weight_row),
                    "r"(barrier_addr[stage]) : "memory");
+            if constexpr (kUseTmaScale) {
+                asm volatile(
+                    "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
+                    "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
+                    :: "r"(scale_dst), "l"(&tma_weight_scale),
+                       "r"((global_kt & ~3) * (kBlockK / 32)),
+                       "r"(weight_row),
+                       "r"(barrier_addr[stage]) : "memory");
+            }
         }
     };
 
@@ -230,15 +254,18 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                         + global_kt)
                 : 0.0f;
         }
-        for (int i = tid; i < kWout * (kBlockK / 32); i += blockDim.x) {
-            const int local_n = i >> 2;
-            const int k_group = i & 3;
-            scale_smem[i] = __ldg(
-                weight_scale
-                + static_cast<int64_t>(weight_row + local_n) * (K / 32)
-                + global_kt * 4 + k_group);
+        if constexpr (!kUseTmaScale) {
+            for (int i = tid; i < kWout * 4; i += blockDim.x) {
+                const int local_n = i >> 2;
+                const int k_group = i & 3;
+                weight_scale_smem[stage * kScaleStageBytes
+                                  + local_n * kScaleRowBytes
+                                  + (global_kt & 3) * 4 + k_group] = __ldg(
+                    weight_scale
+                    + static_cast<int64_t>(weight_row + local_n) * (K / 32)
+                    + global_kt * 4 + k_group);
+            }
         }
-
         mbar_wait(barrier_addr[stage], (local_kt / kStages) & 1u);
         asm volatile("bar.sync 0;" ::: "memory");
 
@@ -271,9 +298,13 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     : "r"(stage_base + group_row1 * (kBlockK / 2)
                           + k_step * 16 + packed_k_offset));
                 const uint32_t exponent0 =
-                    scale_smem[group_row0 * 4 + k_step];
+                    weight_scale_smem[stage * kScaleStageBytes
+                                      + group_row0 * kScaleRowBytes
+                                      + (global_kt & 3) * 4 + k_step];
                 const uint32_t exponent1 =
-                    scale_smem[group_row1 * 4 + k_step];
+                    weight_scale_smem[stage * kScaleStageBytes
+                                      + group_row1 * kScaleRowBytes
+                                      + (global_kt & 3) * 4 + k_step];
                 const uint2 fp8_0 =
                     mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<true, true>(
                         packed0, lut_smem[exponent0]);
@@ -422,6 +453,24 @@ CUtensorMap make_weight_desc(void* pointer, int K, int rows) {
     return descriptor;
 }
 
+CUtensorMap make_weight_scale_desc(void* pointer, int K, int rows) {
+    CUtensorMap descriptor;
+    cuuint64_t global_dims[2] = {
+        static_cast<cuuint64_t>(K / 32), static_cast<cuuint64_t>(rows)};
+    cuuint64_t global_strides[1] = {static_cast<cuuint64_t>(K / 32)};
+    cuuint32_t box_dims[2] = {16, kWout};
+    cuuint32_t element_strides[2] = {1, 1};
+    const CUresult result = cuTensorMapEncodeTiled(
+        &descriptor, CU_TENSOR_MAP_DATA_TYPE_UINT8, 2, pointer,
+        global_dims, global_strides, box_dims, element_strides,
+        CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,
+        CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
+        CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+    TORCH_CHECK(result == CUDA_SUCCESS,
+                "cuTensorMapEncodeTiled(scale) failed: ", result);
+    return descriptor;
+}
+
 template <int K, int N, int SplitK, bool IsW13>
 void launch_route_gemm(
         torch::Tensor weight, torch::Tensor weight_scale,
@@ -429,21 +478,31 @@ void launch_route_gemm(
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
         torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
         torch::Tensor output, torch::Tensor lut, int max_routes) {
-    static CUtensorMap descriptor;
-    static void* last_pointer = nullptr;
-    if (last_pointer != weight.data_ptr()) {
-        descriptor = make_weight_desc(
+    static CUtensorMap weight_descriptor;
+    static CUtensorMap scale_descriptor;
+    static void* last_weight_pointer = nullptr;
+    static void* last_scale_pointer = nullptr;
+    if (last_weight_pointer != weight.data_ptr()
+            || last_scale_pointer != weight_scale.data_ptr()) {
+        weight_descriptor = make_weight_desc(
             weight.data_ptr(), K, weight.size(0) * weight.size(1));
-        last_pointer = weight.data_ptr();
+        if constexpr (K >= 512) {
+            scale_descriptor = make_weight_scale_desc(
+                weight_scale.data_ptr(), K, weight.size(0) * weight.size(1));
+        }
+        last_weight_pointer = weight.data_ptr();
+        last_scale_pointer = weight_scale.data_ptr();
     }
     const int max_m_blocks = expert_ids.numel();
     const int grid = max_m_blocks * (N / kWout) * SplitK;
     constexpr int dynamic_smem_bytes =
-        kStages * kWout * (kBlockK / 2) + kTok * kBlockK;
+        kStages * kWout * (kBlockK / 2 + 16)
+        + kTok * kBlockK;
     const auto stream = at::cuda::getCurrentCUDAStream();
     route_gemm<K, N, SplitK, IsW13><<<
         grid, 128, dynamic_smem_bytes, stream>>>(
-        descriptor,
+        weight_descriptor,
+        scale_descriptor,
         weight_scale.data_ptr<uint8_t>(),
         activation.data_ptr<uint8_t>(),
         activation_scale.data_ptr<float>(),
@@ -552,7 +611,7 @@ void cast_bf16(torch::Tensor input, torch::Tensor output);
 
 _ext = load_inline(
     name=(f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_wo{WOUT}_"
-          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v11"),
+          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v12"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],

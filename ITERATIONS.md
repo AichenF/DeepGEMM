@@ -629,3 +629,30 @@ maximum rank latency of a full CUDA-Graph replay.
   an asynchronous TMA transaction per stage.
 - Evidence report:
   `bench/results/tp4_wgmma_m32_wout128_route_coldl2_ncu.ncu-rep`.
+
+### WGMMA iteration 10 — TMA E8M0 scale stages are a large win
+
+- Change: encode the strided E8M0 weight-scale tensor as a second TMA map and
+  attach its transfer to the packed-weight stage's existing mbarrier.  The
+  inner contiguous TMA box must be 16 bytes, so each row fetches the aligned
+  group of four K128 scale quads and consumes the quad selected by
+  `global_kt % 4`.  This replaces hundreds of per-CTA scalar global byte loads
+  and shared stores with one asynchronous TMA transaction per K128 stage.
+- Two implementation hazards were caught before timing: a 4-byte box is
+  rejected by `cuTensorMapEncodeTiled`, and an unaligned 4-byte coordinate
+  causes an illegal instruction.  The accepted descriptor uses a 16-byte box
+  and aligned coordinates.  TP8 W2 (`K/32=8` byte row stride) retains a
+  compile-time scalar-load fallback because its global stride cannot satisfy
+  TMA's 16-byte requirement.
+- Full-route TP4 M32 balanced correctness passes unchanged: W13 cosine
+  0.999999997, activation cosine 0.999999691, W2 cosine 0.999997241,
+  W2 rel-L2 0.002349063, all finite.
+- Required cold-L2 3x100 TP4 medians for M8/M16/M32/M64/M128 are 0.124688 /
+  0.193952 / 0.343264 / 0.461008 / 0.471136 ms; geometric mean is 0.282618
+  ms.  Versus the immediately preceding accepted control, latency falls by
+  17.0% geometrically (1.205x speedup), with every M winning.
+- Against formal cold Humming at this screening stage, custom/Humming ratios
+  are about 1.287x / 1.212x / 1.168x / 1.135x / 1.141x.  Require formal
+  9x200 confirmation and TP8/skew correctness before final acceptance.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_tma_scales_screen_20260902.log`.
