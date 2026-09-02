@@ -1933,3 +1933,22 @@ maximum rank latency of a full CUDA-Graph replay.
   correctness is restored.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_ws_global_qactivation_probe_20260903.log`.
+
+### WGMMA iteration 29g — consumer-warpgroup activation gather (incorrect)
+
+- Reworked the pipeline so the producer warpgroup only issues packed-weight
+  and E8M0 TMA, while the 128-thread WGMMA consumer gathers qactivation and
+  activation scales itself.  Full barriers now have one TMA arrival; empty
+  barriers have one arrival from each of the four consumer warps after a
+  consumer-only synchronization.  This removes all cross-warpgroup ordinary
+  shared-store publication from the activation path.
+- TP4 M8 balanced is still identically zero in W2 (`absmax=0`, no nonzero
+  outputs) while qactivation is demonstrably nonzero.  The fault therefore is
+  not producer-to-consumer visibility.  This design does not advance to a
+  cold-L2 timing gate.
+- The remaining high-probability issue is reuse of the inherited RS-WGMMA
+  register/layout sequence from physical warpgroup 1 rather than warpgroup 0.
+  A minimal single-task CTA-synchronized probe is required before investing
+  further in persistence mechanics.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_ws_consumer_gather_correctness_20260903.log`.

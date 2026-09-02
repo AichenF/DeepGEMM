@@ -687,12 +687,10 @@ __global__ __launch_bounds__(256) void route_gemm_w2_ws_persistent(
     if (tid == 0) {
         #pragma unroll
         for (int stage = 0; stage < kPipelineStages; ++stage) {
-            // One arrival accounts for TMA transactions.  Every producer
-            // thread arrives separately after publishing its ordinary shared
-            // stores, and every consumer arrives separately after its final
-            // shared read before the stage may be reused.
-            full_barriers[stage].init(129);
-            empty_barriers[stage].init(128);
+            // The elected producer thread owns the TMA full arrival.  Four
+            // consumer warps independently release the stage after WGMMA.
+            full_barriers[stage].init(1);
+            empty_barriers[stage].init(4);
         }
         cutlass::arch::fence_barrier_init();
     }
@@ -705,23 +703,23 @@ __global__ __launch_bounds__(256) void route_gemm_w2_ws_persistent(
 
     if (tid < 128) {
         cutlass::arch::warpgroup_reg_dealloc<48>();
-        for (int task_seq = 0; task_seq < tasks_for_cta; ++task_seq) {
-            const int task_idx = static_cast<int>(blockIdx.x) +
-                task_seq * static_cast<int>(gridDim.x);
-            const int m_block_idx = task_idx / kNumNTiles;
-            const int n_block_idx = task_idx - m_block_idx * kNumNTiles;
-            const int expert_idx = __ldg(expert_ids + m_block_idx);
-            const int weight_row = expert_idx * N + n_block_idx * kWout;
-            const int scale_slot = task_seq & (kScaleTaskSlots - 1);
+        if (role_tid == 0) {
+            for (int task_seq = 0; task_seq < tasks_for_cta; ++task_seq) {
+                const int task_idx = static_cast<int>(blockIdx.x) +
+                    task_seq * static_cast<int>(gridDim.x);
+                const int m_block_idx = task_idx / kNumNTiles;
+                const int n_block_idx = task_idx - m_block_idx * kNumNTiles;
+                const int expert_idx = __ldg(expert_ids + m_block_idx);
+                const int weight_row = expert_idx * N + n_block_idx * kWout;
+                const int scale_slot = task_seq & (kScaleTaskSlots - 1);
 
-            #pragma unroll
-            for (int local_kt = 0; local_kt < kNumKTiles; ++local_kt) {
-                const int item_idx = task_seq * kNumKTiles + local_kt;
-                const int stage = item_idx & (kPipelineStages - 1);
-                const int phase = (item_idx / kPipelineStages) & 1;
-                empty_barriers[stage].wait(phase ^ 1);
+                #pragma unroll
+                for (int local_kt = 0; local_kt < kNumKTiles; ++local_kt) {
+                    const int item_idx = task_seq * kNumKTiles + local_kt;
+                    const int stage = item_idx & (kPipelineStages - 1);
+                    const int phase = (item_idx / kPipelineStages) & 1;
+                    empty_barriers[stage].wait(phase ^ 1);
 
-                if (role_tid == 0) {
                     const int transaction_bytes = kWeightStageBytes +
                         (kUseTmaScale && local_kt == 0
                              ? kScaleTaskBytes : 0);
@@ -752,52 +750,6 @@ __global__ __launch_bounds__(256) void route_gemm_w2_ws_persistent(
                         }
                     }
                 }
-
-                const int token_slot = role_tid / 16;
-                const int k8 = (role_tid % 16) * 8;
-                const int route = __ldg(
-                    sorted_ids + m_block_idx * kTok + token_slot);
-                const int activation_row = route < max_routes ? route : -1;
-                uint2 activation_value = make_uint2(0, 0);
-                if (activation_row >= 0) {
-                    activation_value = *reinterpret_cast<const uint2*>(
-                        activation + static_cast<int64_t>(activation_row) * K
-                        + local_kt * kBlockK + k8);
-                }
-                *reinterpret_cast<uint2*>(
-                    activation_smem + stage * kActivationStageBytes
-                    + token_slot * kBlockK
-                    + (k8 ^ ((token_slot & 7) << 4))) = activation_value;
-
-                if (role_tid < kTok) {
-                    route_ids[stage][role_tid] = route;
-                    activation_scale_smem[stage][role_tid] =
-                        activation_row >= 0
-                        ? __ldg(activation_scale +
-                                static_cast<int64_t>(activation_row) *
-                                    kNumKTiles + local_kt)
-                        : 0.0f;
-                }
-                if constexpr (!kUseTmaScale) {
-                    if (local_kt == 0) {
-                        constexpr int kScaleColumns = K / 32;
-                        for (int i = role_tid;
-                             i < kWout * kScaleColumns; i += 128) {
-                            const int local_n = i / kScaleColumns;
-                            const int scale_k = i - local_n * kScaleColumns;
-                            scale_smem[scale_slot * kScaleTaskBytes +
-                                       local_n * kScaleRowBytes + scale_k] =
-                                __ldg(weight_scale +
-                                    static_cast<int64_t>(weight_row + local_n) *
-                                        kScaleColumns + scale_k);
-                        }
-                    }
-                }
-
-                // Each writer participates directly in the full mbarrier's
-                // release sequence; the consumer wait is the matching acquire.
-                cutlass::arch::fence_view_async_shared();
-                full_barriers[stage].arrive();
             }
         }
     } else {
@@ -816,6 +768,8 @@ __global__ __launch_bounds__(256) void route_gemm_w2_ws_persistent(
                 task_seq * static_cast<int>(gridDim.x);
             const int m_block_idx = task_idx / kNumNTiles;
             const int n_block_idx = task_idx - m_block_idx * kNumNTiles;
+            const int expert_idx = __ldg(expert_ids + m_block_idx);
+            const int weight_row = expert_idx * N + n_block_idx * kWout;
             const int scale_slot = task_seq & (kScaleTaskSlots - 1);
 
             #pragma unroll
@@ -823,6 +777,51 @@ __global__ __launch_bounds__(256) void route_gemm_w2_ws_persistent(
                 const int item_idx = task_seq * kNumKTiles + local_kt;
                 const int stage = item_idx & (kPipelineStages - 1);
                 const int phase = (item_idx / kPipelineStages) & 1;
+
+                // Keep the irregular gather in the same physical warpgroup
+                // that consumes it with WGMMA.  The producer remains free to
+                // run ahead on the packed-weight TMA stages.
+                const int token_slot = consumer_tid / 16;
+                const int k8 = (consumer_tid % 16) * 8;
+                const int route = __ldg(
+                    sorted_ids + m_block_idx * kTok + token_slot);
+                const int activation_row = route < max_routes ? route : -1;
+                uint2 activation_value = make_uint2(0, 0);
+                if (activation_row >= 0) {
+                    activation_value = *reinterpret_cast<const uint2*>(
+                        activation + static_cast<int64_t>(activation_row) * K
+                        + local_kt * kBlockK + k8);
+                }
+                *reinterpret_cast<uint2*>(
+                    activation_smem + stage * kActivationStageBytes
+                    + token_slot * kBlockK
+                    + (k8 ^ ((token_slot & 7) << 4))) = activation_value;
+                if (consumer_tid < kTok) {
+                    route_ids[stage][consumer_tid] = route;
+                    activation_scale_smem[stage][consumer_tid] =
+                        activation_row >= 0
+                        ? __ldg(activation_scale +
+                                static_cast<int64_t>(activation_row) *
+                                    kNumKTiles + local_kt)
+                        : 0.0f;
+                }
+                if constexpr (!kUseTmaScale) {
+                    if (local_kt == 0) {
+                        constexpr int kScaleColumns = K / 32;
+                        for (int i = consumer_tid;
+                             i < kWout * kScaleColumns; i += 128) {
+                            const int local_n = i / kScaleColumns;
+                            const int scale_k = i - local_n * kScaleColumns;
+                            scale_smem[scale_slot * kScaleTaskBytes +
+                                       local_n * kScaleRowBytes + scale_k] =
+                                __ldg(weight_scale +
+                                    static_cast<int64_t>(weight_row + local_n) *
+                                        kScaleColumns + scale_k);
+                        }
+                    }
+                }
+                cutlass::arch::fence_view_async_shared();
+                asm volatile("bar.sync 1, 128;" ::: "memory");
                 full_barriers[stage].wait(phase);
                 cutlass::arch::fence_view_async_shared();
 
@@ -1009,7 +1008,9 @@ __global__ __launch_bounds__(256) void route_gemm_w2_ws_persistent(
                     }
                 }
 
-                empty_barriers[stage].arrive();
+                asm volatile("bar.sync 2, 128;" ::: "memory");
+                if (lane == 0)
+                    empty_barriers[stage].arrive();
             }
         }
     }
@@ -1484,7 +1485,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2wsp{int(W2_WS_PERSIST)}_dbg{int(W2_WS_SENTINEL)}_"
-          f"din{int(W2_WS_DEBUG_INPUTS)}_mb{MIN_BLOCKS_PER_SM}_v34"),
+          f"din{int(W2_WS_DEBUG_INPUTS)}_mb{MIN_BLOCKS_PER_SM}_v35"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
