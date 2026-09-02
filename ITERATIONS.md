@@ -1900,3 +1900,19 @@ maximum rank latency of a full CUDA-Graph replay.
   release/acquire relation.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_ws_input_visibility_correctness_20260903.log`.
+
+### WGMMA iteration 29e — per-writer full/empty mbarrier arrivals (incorrect)
+
+- Changed each full stage from two arrivals to 129: one TMA transaction
+  arrival plus one direct arrival from every producer thread after its
+  activation store and async-proxy fence.  Likewise, each empty stage now
+  requires all 128 consumers to arrive after their final shared read.
+- The forced-rebuild TP4 M8 balanced check remains exactly zero in W2
+  (`absmax=0`, `nonzero=0`, cosine 0, relative L2 1); W13 and fused activation
+  retain their correct cosines.  Therefore transitive lane-0 publication was
+  not the root cause, and this more expensive barrier topology is rejected.
+- No cold-L2 timing ran because correctness failed.  The next diagnostic will
+  inspect the producer's global qactivation source separately from its shared
+  destination before making another synchronization change.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_ws_per_writer_mbarrier_correctness_20260903.log`.

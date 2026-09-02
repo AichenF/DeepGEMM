@@ -687,10 +687,12 @@ __global__ __launch_bounds__(256) void route_gemm_w2_ws_persistent(
     if (tid == 0) {
         #pragma unroll
         for (int stage = 0; stage < kPipelineStages; ++stage) {
-            // One arrival accounts for the TMA transactions and one publishes
-            // the producer warpgroup's ordinary shared-memory stores.
-            full_barriers[stage].init(2);
-            empty_barriers[stage].init(1);
+            // One arrival accounts for TMA transactions.  Every producer
+            // thread arrives separately after publishing its ordinary shared
+            // stores, and every consumer arrives separately after its final
+            // shared read before the stage may be reused.
+            full_barriers[stage].init(129);
+            empty_barriers[stage].init(128);
         }
         cutlass::arch::fence_barrier_init();
     }
@@ -792,14 +794,10 @@ __global__ __launch_bounds__(256) void route_gemm_w2_ws_persistent(
                     }
                 }
 
-                // Every producer thread publishes its ordinary activation
-                // store to the WGMMA async proxy.  The producer-only barrier
-                // then guarantees that all 128 proxy fences precede the
-                // software arrival which completes this full stage.
+                // Each writer participates directly in the full mbarrier's
+                // release sequence; the consumer wait is the matching acquire.
                 cutlass::arch::fence_view_async_shared();
-                asm volatile("bar.sync 1, 128;" ::: "memory");
-                if (role_tid == 0)
-                    full_barriers[stage].arrive();
+                full_barriers[stage].arrive();
             }
         }
     } else {
@@ -1011,9 +1009,7 @@ __global__ __launch_bounds__(256) void route_gemm_w2_ws_persistent(
                     }
                 }
 
-                asm volatile("bar.sync 2, 128;" ::: "memory");
-                if (consumer_tid == 0)
-                    empty_barriers[stage].arrive();
+                empty_barriers[stage].arrive();
             }
         }
     }
@@ -1488,7 +1484,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2wsp{int(W2_WS_PERSIST)}_dbg{int(W2_WS_SENTINEL)}_"
-          f"din{int(W2_WS_DEBUG_INPUTS)}_mb{MIN_BLOCKS_PER_SM}_v33"),
+          f"din{int(W2_WS_DEBUG_INPUTS)}_mb{MIN_BLOCKS_PER_SM}_v34"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
