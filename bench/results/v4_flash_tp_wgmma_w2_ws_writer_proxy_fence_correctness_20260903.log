@@ -1,0 +1,11 @@
+V4_WGMMA_CHECK M=8 pattern=balanced Is=512 active=48 padded=384 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999998 rel_l2=0.000076187
+V4_WGMMA_ACT cos=0.999999759 rel_l2=0.000694956
+V4_WGMMA_W2 cos=0.000000000 rel_l2=1.000000000 finite=True
+V4_WGMMA_WRONG
+
+Command environment:
+V4_W2_WS_PERSIST=1 V4_W2_WS_CTAS=234 CUDA_VISIBLE_DEVICES=1
+python bench/test_v4_flash_tp_wgmma.py --m 8 --pattern balanced --intermediate 512
+
+The skew check and cold-L2 screen were skipped by the correctness gate.

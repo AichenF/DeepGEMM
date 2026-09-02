@@ -1848,3 +1848,20 @@ maximum rank latency of a full CUDA-Graph replay.
   same binary remains unchanged).
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_ws_persistent_initial_correctness_20260903.log`.
+
+### WGMMA iteration 29b — producer-side async-proxy fence (still incorrect)
+
+- Moved `fence.proxy.async.shared::cta` semantics to every producer thread
+  after its ordinary activation store and before the producer-only publication
+  barrier.  This tests whether the all-zero W2 result came from publishing the
+  gathered activation through the generic shared proxy while WGMMA consumed it
+  through the async proxy.
+- A forced-rebuild TP4 M8 balanced full-path check is unchanged: W13 cosine
+  0.999999998, fused activation cosine 0.999999759, but W2 cosine 0 and
+  relative L2 1 with finite output.  Therefore reader/writer proxy placement
+  alone is not the cause.  Correctness again prevents any performance timing.
+- Next diagnosis will write a controlled consumer-epilogue sentinel before
+  changing scheduling or math, separating missing epilogue execution from
+  zero WGMMA operands.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_ws_writer_proxy_fence_correctness_20260903.log`.

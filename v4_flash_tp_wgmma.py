@@ -788,6 +788,11 @@ __global__ __launch_bounds__(256) void route_gemm_w2_ws_persistent(
                     }
                 }
 
+                // Every producer thread publishes its ordinary activation
+                // store to the WGMMA async proxy.  The producer-only barrier
+                // then guarantees that all 128 proxy fences precede the
+                // software arrival which completes this full stage.
+                cutlass::arch::fence_view_async_shared();
                 asm volatile("bar.sync 1, 128;" ::: "memory");
                 if (role_tid == 0)
                     full_barriers[stage].arrive();
@@ -1443,7 +1448,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2wsp{int(W2_WS_PERSIST)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v30"),
+          f"mb{MIN_BLOCKS_PER_SM}_v31"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
