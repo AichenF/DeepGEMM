@@ -2192,3 +2192,17 @@ maximum rank latency of a full CUDA-Graph replay.
 - The five-stage TP4 candidate is now eligible for cold-L2 performance timing.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_persistent_stage5_tp8_fix_correctness_20260903.log`.
+
+### WGMMA iteration 30g — five-stage persistent W2 screen (rejected)
+
+- Screened the TP4 five-stage, 312-CTA candidate with 4 x 100 paired,
+  individually cold samples.  It loses at every M by 2.77-8.83%.
+  Geometric means are 0.222104 ms custom and 0.209687 ms Humming, a 5.92% loss.
+- Simply issuing all four K128 weight transfers before computation sacrifices
+  too much residency and does not reproduce Humming's tightly interleaved
+  s2r/dequant pipeline.  Reject five stages.
+- One resource-exact intermediate remains: four stages consume about 40 KiB
+  total shared memory and permit five resident CTAs/SM.  Add grid factor five
+  and screen stage4/p5 before closing the single-WG persistent direction.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_single_wg_persistent_stage5_p4_screen_20260903.log`.
