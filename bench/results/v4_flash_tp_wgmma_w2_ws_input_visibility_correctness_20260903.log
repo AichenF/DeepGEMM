@@ -1,0 +1,14 @@
+V4_WGMMA_WRONG
+V4_WGMMA_CHECK M=8 pattern=balanced Is=512 active=48 padded=384 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999998 rel_l2=0.000076187
+V4_WGMMA_ACT cos=0.999999759 rel_l2=0.000694956
+V4_WGMMA_W2 cos=0.009801728 rel_l2=0.999988427 finite=True absmax=21 nonzero=32768
+
+Command environment:
+V4_W2_WS_PERSIST=1 V4_W2_WS_DEBUG_INPUTS=1 V4_W2_WS_CTAS=234 CUDA_VISIBLE_DEVICES=1
+python bench/test_v4_flash_tp_wgmma.py --m 8 --pattern balanced --intermediate 512
+
+The diagnostic epilogue encodes activation-byte, packed-weight-byte,
+activation-scale, and E8M0-scale visibility as bits 1,2,4,8.  The maximum
+pre-reduction code is 14 and the observed weighted-reduction absmax is 21,
+so the consumer sees bits 2|4|8 but never bit 1 at the probed positions.

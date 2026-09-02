@@ -1882,3 +1882,21 @@ maximum rank latency of a full CUDA-Graph replay.
   values from the consumer before altering the pipeline topology.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_ws_epilogue_sentinel_correctness_20260903.log`.
+
+### WGMMA iteration 29d — consumer input-visibility diagnosis
+
+- Added a diagnostic epilogue that encodes four consumer-visible inputs as
+  bits: ordinary shared activation byte (1), TMA packed-weight byte (2),
+  ordinary shared activation scale (4), and TMA E8M0 scale (8).
+- TP4 M8 balanced reports a post-reduction absmax of 21, corresponding to a
+  maximum per-route code of 14.  The consumer sees packed weights and both
+  scales (`2|4|8`) but not the probed activation byte (`1`).  This matches the
+  non-debug accumulator being identically zero and localizes the fault to
+  publication of the 128 producer threads' ordinary activation stores.
+- The existing full barrier has arrival count two: lane 0 accounts for TMA and
+  later publishes after a producer-only named barrier.  The next repair will
+  instead make all 128 writers arrive on the full mbarrier themselves, plus
+  one separate TMA arrival, so every writer directly participates in the
+  release/acquire relation.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_ws_input_visibility_correctness_20260903.log`.

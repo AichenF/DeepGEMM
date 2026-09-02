@@ -65,6 +65,7 @@ W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_WS_PERSIST = os.environ.get("V4_W2_WS_PERSIST", "0") == "1"
 W2_WS_SENTINEL = os.environ.get("V4_W2_WS_SENTINEL", "0") == "1"
+W2_WS_DEBUG_INPUTS = os.environ.get("V4_W2_WS_DEBUG_INPUTS", "0") == "1"
 W2_WS_CTAS = int(os.environ.get("V4_W2_WS_CTAS", "234"))
 if W2_WS_CTAS not in (78, 156, 234, 312):
     raise ValueError("V4_W2_WS_CTAS must be one of 78,156,234,312")
@@ -139,6 +140,7 @@ static constexpr float kRoutedScale = 1.5f;
 static constexpr bool kW2RouteOutput = K_W2_ROUTE_OUTPUT;
 static constexpr bool kW2WsPersist = K_W2_WS_PERSIST;
 static constexpr bool kW2WsSentinel = K_W2_WS_SENTINEL;
+static constexpr bool kW2WsDebugInputs = K_W2_WS_DEBUG_INPUTS;
 
 #if K_MIN_BLOCKS_PER_SM > 0
 #define ROUTE_LAUNCH_BOUNDS __launch_bounds__(128, K_MIN_BLOCKS_PER_SM)
@@ -951,25 +953,57 @@ __global__ __launch_bounds__(256) void route_gemm_w2_ws_persistent(
                             group * 64 + row0;
                         const int output_n1 = n_block_idx * kWout +
                             group * 64 + row1;
+                        const auto debug_input_code = [&](int token_slot,
+                                                          int weight_row_local) {
+                            const int activation_offset =
+                                stage * kActivationStageBytes +
+                                token_slot * kBlockK +
+                                ((token_slot & 7) << 4);
+                            const int weight_offset =
+                                stage * kWeightStageBytes +
+                                weight_row_local * (kBlockK / 2);
+                            const int scale_offset =
+                                scale_slot * kScaleTaskBytes +
+                                weight_row_local * kScaleRowBytes +
+                                local_kt * 4;
+                            return float(
+                                (activation_smem[activation_offset] != 0 ? 1 : 0) |
+                                (weight_smem[weight_offset] != 0 ? 2 : 0) |
+                                (activation_scale_smem[stage][token_slot] != 0.0f
+                                     ? 4 : 0) |
+                                (scale_smem[scale_offset] != 0 ? 8 : 0));
+                        };
+                        const float debug00 = debug_input_code(
+                            column_base, group * 64 + row0);
+                        const float debug01 = debug_input_code(
+                            column_base, group * 64 + row1);
+                        const float debug10 = debug_input_code(
+                            column_base + 1, group * 64 + row0);
+                        const float debug11 = debug_input_code(
+                            column_base + 1, group * 64 + row1);
                         if (route0 < max_routes) {
                             route_output[static_cast<int64_t>(route0) * N +
                                          output_n0] =
                                 __float2bfloat16(kW2WsSentinel
-                                    ? 123.0f : accum[group][0]);
+                                    ? 123.0f : (kW2WsDebugInputs
+                                        ? debug00 : accum[group][0]));
                             route_output[static_cast<int64_t>(route0) * N +
                                          output_n1] =
                                 __float2bfloat16(kW2WsSentinel
-                                    ? 123.0f : accum[group][2]);
+                                    ? 123.0f : (kW2WsDebugInputs
+                                        ? debug01 : accum[group][2]));
                         }
                         if (route1 < max_routes) {
                             route_output[static_cast<int64_t>(route1) * N +
                                          output_n0] =
                                 __float2bfloat16(kW2WsSentinel
-                                    ? 123.0f : accum[group][1]);
+                                    ? 123.0f : (kW2WsDebugInputs
+                                        ? debug10 : accum[group][1]));
                             route_output[static_cast<int64_t>(route1) * N +
                                          output_n1] =
                                 __float2bfloat16(kW2WsSentinel
-                                    ? 123.0f : accum[group][3]);
+                                    ? 123.0f : (kW2WsDebugInputs
+                                        ? debug11 : accum[group][3]));
                         }
                         #pragma unroll
                         for (int value = 0; value < 4; ++value)
@@ -1454,7 +1488,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2wsp{int(W2_WS_PERSIST)}_dbg{int(W2_WS_SENTINEL)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v32"),
+          f"din{int(W2_WS_DEBUG_INPUTS)}_mb{MIN_BLOCKS_PER_SM}_v33"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1479,6 +1513,7 @@ _ext = load_inline(
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_W2_WS_PERSIST={int(W2_WS_PERSIST)}",
         f"-DK_W2_WS_SENTINEL={int(W2_WS_SENTINEL)}",
+        f"-DK_W2_WS_DEBUG_INPUTS={int(W2_WS_DEBUG_INPUTS)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
