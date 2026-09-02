@@ -1,0 +1,75 @@
+TP4 local CUDA-Graph stage budget, random routes, cold L2
+Date: 2026-09-03
+Protocol: one GPU; 50 samples per implementation and M; each graph replay is
+preceded by a separate 256 MiB L2 clear excluded from timing.  External CUDA
+event nodes bracket every stage inside one captured graph, avoiding eager host
+launch gaps and the Nsight Systems control deadlock.  Medians below are us.
+CustomAllReduceV2 is deliberately excluded; this is a local compute diagnosis,
+not the end-to-end headline benchmark.
+
+M=8
+Stage                  Humming      Custom
+route align              8.128        8.000
+input quant              5.504        5.600
+W13                     52.144       50.880
+activation(+quant)      10.544        5.952
+W2                      26.400       29.632
+local k6 reduce          5.824        5.760
+total                  108.736      106.240
+
+M=16
+Stage                  Humming      Custom
+route align              8.240        8.192
+input quant              5.760        5.760
+W13                     85.808       82.000
+activation(+quant)      10.912        6.208
+W2                      44.672       45.728
+local k6 reduce          6.432        6.400
+total                  162.096      154.592
+
+M=32
+Stage                  Humming      Custom
+route align              8.352        8.176
+input quant              5.856        5.792
+W13                    137.904      128.048
+activation(+quant)      11.360        6.592
+W2                      71.248       69.168
+local k6 reduce          6.560        6.496
+total                  241.632      224.496
+
+M=64
+Stage                  Humming      Custom
+route align              8.640        8.384
+input quant              6.592        6.528
+W13                    195.008      179.472
+activation(+quant)      12.032        7.392
+W2                     101.296       96.128
+local k6 reduce          7.040        6.816
+total                  330.752      304.800
+
+M=128
+Stage                  Humming      Custom
+route align              8.544        8.544
+input quant              7.648        7.552
+W13                    234.016      216.560
+activation(+quant)      13.088        8.704
+W2                     121.968      117.136
+local k6 reduce          7.424        7.328
+total                  392.912      365.984
+
+Custom/Humming total ratios for M8..M128:
+0.9770 / 0.9537 / 0.9291 / 0.9215 / 0.9315.
+
+Custom W13/W2 sums versus all other custom stages (us):
+M8    core 80.512, other 25.728
+M16   core 127.728, other 26.864
+M32   core 197.216, other 27.280
+M64   core 275.600, other 29.200
+M128  core 333.696, other 32.288
+
+To reach 0.8x the corresponding Humming local total, custom must fall by
+19.251 / 24.915 / 31.190 / 40.198 / 51.654 us, or
+18.12% / 16.12% / 13.89% / 13.19% / 14.11% of its present total.
+At M32/M64/M128, even deleting every non-GEMM stage leaves the current GEMM
+sum 3.91/11.00/19.37 us above the 20%-faster target.  Therefore a valid 20%
+result necessarily requires additional W13/W2 core improvement.

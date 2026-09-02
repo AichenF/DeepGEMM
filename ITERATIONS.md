@@ -2477,3 +2477,26 @@ maximum rank latency of a full CUDA-Graph replay.
   is evidently already cached well enough relative to the cold weight stream.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_split_major_order_screen_20260903.log`.
+
+### Post-iteration-36 cold CUDA-Graph stage budget
+
+- Added `bench/profile_v4_flash_tp_stages.py`, which places external CUDA
+  timing-event nodes around each local stage inside one captured graph.  This
+  avoids both eager Python launch gaps and the repeatable Nsight Systems
+  profiler-control deadlock.  Each of 50 samples per implementation/M has a
+  separate 256 MiB pre-replay L2 clear outside the graph and timing events.
+- Custom local totals for M8/16/32/64/128 are
+  106.240/154.592/224.496/304.800/365.984 us, versus Humming
+  108.736/162.096/241.632/330.752/392.912 us.  Custom is 2.30-7.85% lower in
+  latency, but this intentionally excludes the common all-reduce and is not a
+  replacement for the paired end-to-end score.
+- Custom W13/W2 sums are 80.512/127.728/197.216/275.600/333.696 us.  At
+  M32/M64/M128 those sums alone exceed 0.8x Humming's entire local pipeline by
+  3.91/11.00/19.37 us.  Consequently, deleting only route/quant/activation/
+  reduction overhead cannot meet the 20% goal; another core GEMM speedup is
+  mathematically required.
+- The remaining total reduction needed is 18.12%/16.12%/13.89%/13.19%/14.11%
+  at M8..M128.  Prioritize earlier weight-TMA refill and other core overlap,
+  while retaining the already faster fused middle path.
+- Evidence:
+  `bench/results/tp4_local_graph_stage_budget_coldl2_20260903.log`.
