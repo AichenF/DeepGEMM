@@ -2364,3 +2364,22 @@ maximum rank latency of a full CUDA-Graph replay.
   default.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w13_s2r_prefetch_correctness_20260903.log`.
+
+### WGMMA iteration 33b — W13 S2R prefetch confirmation (accepted)
+
+- Ran candidate/control/candidate with 400 paired, per-replay cold-L2 samples
+  per M.  The second candidate versus the intervening control changes custom
+  medians by -0.94%/-0.40%/+0.04%/-0.84%/-0.38% for M8..M128, a 0.509%
+  geometric improvement.  The first candidate's anomalously low M128 result
+  is explicitly excluded from the causal claim.
+- Independent matching NCU captures show W13 falling 127.97 -> 125.82 us
+  (1.68%) while instruction count rises 1.44%, occupancy stays unchanged,
+  eligible cycles rise 70.19% -> 72.11%, and warp cycles per issued
+  instruction fall 12.20 -> 11.89.  This reproduces the W2 latency-hiding
+  mechanism at smaller end-to-end magnitude.
+- Set `V4_W13_S2R_PREFETCH=1` as the new default.  Against Humming, candidate
+  B is 1.23% faster geometrically but still loses M8 and M128; this remains an
+  incremental winner, not a 20% result.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_w13_s2r_prefetch_screen_20260903.log`
+  and `bench/results/tp4_wgmma_m32_w13_s2r_prefetch_ncu_20260903.log`.

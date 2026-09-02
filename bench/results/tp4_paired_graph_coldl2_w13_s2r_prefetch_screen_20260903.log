@@ -1,0 +1,42 @@
+W13 cross-QGMMA S2R prefetch paired cold-L2 confirmation
+Date: 2026-09-03
+Protocol: TP4 random routes; CUDA Graph; outer=4, replays=100;
+pair-granularity=batch; separate 256 MiB cache clear before every individually
+timed replay, excluded from CUDA events.  W2 S2R prefetch remains enabled.
+All correctness/all-reduce checks pass.
+
+Candidate A, V4_W13_S2R_PREFETCH=1:
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088320 / 0.089584 / 0.137376  0.089984 / 0.091584 / 0.119200  1.022325
+16   82     656     0.144032 / 0.145792 / 0.174816  0.140288 / 0.142176 / 0.176672  0.975198
+32   140    1120    0.224512 / 0.226560 / 0.594784  0.214176 / 0.216608 / 0.356288  0.956073
+64   203    1624    0.312768 / 0.325376 / 0.354816  0.294720 / 0.308768 / 0.346176  0.948958
+128  248    1992    0.379808 / 0.399488 / 0.534048  0.361088 / 0.402224 / 0.577536  1.006849
+Geomean Humming=0.207494853 ms, custom=0.203649868 ms;
+custom/Humming=0.981469 (custom 1.853% faster).
+
+Immediate reverse control, V4_W13_S2R_PREFETCH=0, identical source:
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088640 / 0.090080 / 0.150624  0.090720 / 0.092320 / 0.129024  1.024867
+16   82     656     0.144576 / 0.145952 / 0.179808  0.141472 / 0.142944 / 0.179840  0.979390
+32   140    1120    0.223968 / 0.226336 / 0.245856  0.214624 / 0.216448 / 0.230144  0.956313
+64   203    1624    0.312256 / 0.324896 / 0.336032  0.297120 / 0.309296 / 0.331936  0.951985
+128  248    1992    0.378848 / 0.421504 / 0.473792  0.380224 / 0.444896 / 0.475456  1.055496
+Geomean Humming=0.209907341 ms, custom=0.208396114 ms;
+custom/Humming=0.992801 (custom 0.720% faster).
+
+Candidate B, V4_W13_S2R_PREFETCH=1:
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088576 / 0.089984 / 0.124704  0.089952 / 0.091456 / 0.121600  1.016359
+16   82     656     0.144320 / 0.145952 / 0.187072  0.140928 / 0.142368 / 0.203872  0.975444
+32   140    1120    0.224416 / 0.226848 / 0.249664  0.213792 / 0.216528 / 0.235328  0.954507
+64   203    1624    0.313248 / 0.324032 / 0.343680  0.295424 / 0.306688 / 0.342816  0.946474
+128  248    1992    0.379488 / 0.421984 / 0.496096  0.365920 / 0.443184 / 0.472832  1.050239
+Geomean Humming=0.209893429 ms, custom=0.207340390 ms;
+custom/Humming=0.987836 (custom 1.231% faster).
+
+Candidate B versus the intervening control changes custom medians by
+-0.94%, -0.40%, +0.04%, -0.84%, and -0.38%; geometric mean improves 0.509%.
+Candidate A's much lower M128 window is treated as drift rather than credited.
+The stable points plus independent W13 NCU evidence justify an incremental
+default, not a large headline gain.

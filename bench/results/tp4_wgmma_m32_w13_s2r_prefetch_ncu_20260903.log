@@ -1,0 +1,27 @@
+M32 random-route TP4 W13 NCU control/candidate comparison
+Date: 2026-09-03
+Both captures use profile_v4_flash_tp_local.py, one 256 MiB L2 clear before
+the local pipeline, NCU cache-control=all, clock-control=none, and select only
+the first route_gemm launch (W13 split-K=4).  Metric-replay timings are
+diagnostic and are not headline CUDA-Graph latencies.
+
+Metric                              Control prefetch=0   Candidate prefetch=1
+Duration (us)                       127.97               125.82
+Executed instructions              47,157,147           47,838,059
+Registers/thread                   48                   56
+Dynamic shared KiB                 21.50                21.50
+Achieved occupancy (%)             53.31                53.35
+One or more eligible (%)           70.19                72.11
+No eligible (%)                    29.81                27.89
+Warp cycles / issued instruction   12.20                11.89
+DRAM throughput (%)                52.35                53.23
+Compute throughput (%)             67.60                70.03
+
+Candidate W13 duration is 1.68% lower (1.017x speedup), despite executing
+1.44% more instructions.  Occupancy is unchanged.  Eligible cycles rise by
+1.92 points and warp cycles per issued instruction fall 2.54%, independently
+supporting the intended latency-hiding mechanism.
+
+Binary reports:
+bench/results/tp4_wgmma_m32_w13_s2r_prefetch_control_coldl2_ncu.ncu-rep
+bench/results/tp4_wgmma_m32_w13_s2r_prefetch_coldl2_ncu.ncu-rep
