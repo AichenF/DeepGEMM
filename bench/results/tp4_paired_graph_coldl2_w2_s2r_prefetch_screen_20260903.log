@@ -1,0 +1,42 @@
+W2 cross-QGMMA S2R prefetch paired cold-L2 screen
+Date: 2026-09-03
+Protocol: TP4 random routes; CUDA Graph; outer=4, replays=100;
+pair-granularity=batch; separate 256 MiB cache clear before every individually
+timed replay, excluded from CUDA events.  All correctness/all-reduce checks pass.
+
+Candidate A, V4_W2_S2R_PREFETCH=1:
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088992 / 0.090384 / 0.157664  0.090720 / 0.092160 / 0.108320  1.019649
+16   82     656     0.144224 / 0.145696 / 0.160448  0.141152 / 0.142736 / 0.230784  0.979684
+32   140    1120    0.223808 / 0.226496 / 0.240000  0.214304 / 0.217232 / 0.231424  0.959099
+64   203    1624    0.312640 / 0.329120 / 0.390432  0.296768 / 0.310240 / 0.372768  0.942635
+128  248    1992    0.381952 / 0.435776 / 0.491552  0.390656 / 0.438816 / 0.464352  1.006976
+Geomean Humming=0.211954899 ms, custom=0.207967757 ms;
+custom/Humming=0.981189 (custom 1.917% faster).
+
+Immediate reverse control, V4_W2_S2R_PREFETCH=0, identical source:
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.088896 / 0.090208 / 0.160192  0.090784 / 0.092576 / 2.942848  1.026250
+16   82     656     0.144192 / 0.145824 / 0.181696  0.141376 / 0.143712 / 0.210752  0.985517
+32   140    1120    0.223872 / 0.226544 / 0.267584  0.215904 / 0.217856 / 0.239840  0.961650
+64   203    1624    0.311840 / 0.320624 / 0.344064  0.299616 / 0.313792 / 0.345504  0.978692
+128  248    1992    0.379232 / 0.429168 / 0.490912  0.380544 / 0.451632 / 0.479712  1.052343
+Geomean Humming=0.210169648 ms, custom=0.210241045 ms;
+custom/Humming=1.000340 (custom 0.034% slower).
+
+Candidate B, V4_W2_S2R_PREFETCH=1:
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    43     344     0.089024 / 0.090448 / 0.123520  0.090400 / 0.092224 / 0.104384  1.019636
+16   82     656     0.144064 / 0.145856 / 0.170688  0.141376 / 0.143008 / 0.204704  0.980474
+32   140    1120    0.224448 / 0.226720 / 0.265856  0.214496 / 0.216640 / 0.259040  0.955540
+64   203    1624    0.312992 / 0.320032 / 0.355584  0.297824 / 0.309536 / 0.342688  0.967203
+128  248    1992    0.383776 / 0.423200 / 0.479456  0.373344 / 0.447392 / 0.509248  1.057164
+Geomean Humming=0.209657515 ms, custom=0.208674058 ms;
+custom/Humming=0.995309 (custom 0.471% faster).
+
+Against the intervening same-source control, candidate A is faster at every M
+by 0.29-2.84%, candidate B is faster at every M by 0.38-1.36%.  Candidate
+geomeans are 1.093% and 0.751% faster than control; their geometric average
+improvement is 0.922%.  Promote the prefetch path as the new incremental
+winner, while retaining the higher-confidence conclusion that full-path
+performance versus Humming remains near parity rather than near the 20% goal.

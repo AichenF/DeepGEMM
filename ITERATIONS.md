@@ -2303,3 +2303,48 @@ maximum rank latency of a full CUDA-Graph replay.
 - Proceed to the paired per-replay cold-L2 screen.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_s2r_prefetch_correctness_20260903.log`.
+
+### WGMMA iteration 32b — S2R prefetch paired confirmation (accepted)
+
+- Ran candidate/control/candidate, each with 4 x 100 paired, individually
+  cold-L2 TP4 graph samples at all five random-route M values.  Relative to
+  the intervening identical-source control, both candidate runs win every M:
+  0.29-2.84% and 0.38-1.36%, respectively.  Their geometric-mean speedups are
+  1.093% and 0.751%; the geometric average is 0.922%.
+- Against Humming the two candidate windows range from a 0.47% to 1.92%
+  geometric lead, so the defensible full-path status remains near parity, not
+  the 20% target.  Set `V4_W2_S2R_PREFETCH=1` as the new default because its
+  self-control direction is consistent across all ten pointwise comparisons.
+- A matching cold NCU control/candidate pair isolates W2 at M32: duration
+  falls 69.47 -> 67.36 us (3.04%) while instructions rise 0.86%, occupancy is
+  unchanged, eligible cycles rise 66.70% -> 68.66%, and warp cycles per issued
+  instruction fall 12.80 -> 12.44.  This validates latency hiding rather than
+  instruction deletion as the mechanism.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_w2_s2r_prefetch_screen_20260903.log`
+  and `bench/results/tp4_wgmma_m32_w2_s2r_prefetch_ncu_20260903.log`.
+
+### WGMMA iteration 32c — S2R prefetch route sensitivity
+
+- Balanced routes give geometric means 0.236129 ms custom versus 0.240270 ms
+  Humming, a 1.75% custom lead.  Maximal skew gives 0.077064 versus 0.074530
+  ms, a 3.40% custom loss.  Every point uses 400 per-replay cold-L2 samples.
+- The new path narrows the previously measured roughly 4.40% skew deficit but
+  does not remove route-distribution sensitivity.  It is accepted as an
+  incremental default, not as evidence of a universal Humming win.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_w2_s2r_prefetch_routes_20260903.log`.
+
+### WGMMA iteration 32d — new default TP8 distributed run-through
+
+- With all eight H20s idle, ran the new default at the true TP8 shard
+  (`I/rank=256`) through an eight-rank CUDA Graph including SGLang
+  `CustomAllReduceV2`.  M8 random routes pass independent local-recompute plus
+  NCCL-reference validation: minimum-rank cosine 0.999991970, relative L2
+  0.004007414, all values finite, and `allreduce_ok=true`.
+- Twenty individually cold samples give median max-rank latency 0.072976 ms,
+  essentially matching the previous default's 0.072816 ms smoke.  This proves
+  TP8 graph/runtime compatibility only; the primary optimization target and
+  performance decisions remain TP4.
+- Evidence:
+  `bench/results/tp8_wgmma_graph_coldl2_s2r_prefetch_m8_smoke_20260903.log`.

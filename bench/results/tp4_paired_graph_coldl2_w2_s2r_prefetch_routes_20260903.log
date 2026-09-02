@@ -1,0 +1,29 @@
+W2 S2R prefetch route-sensitivity cold-L2 screen
+Date: 2026-09-03
+Protocol: TP4 CUDA Graph, outer=4, replays=100, pair-granularity=batch;
+separate 256 MiB cache clear before every timed replay, excluded from events.
+Environment: V4_W2_S2R_PREFETCH=1.  All correctness/all-reduce checks pass.
+
+Balanced routes:
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    48     384     0.095616 / 0.096736 / 0.147840  0.097088 / 0.098720 / 0.180096  1.020509
+16   96     768     0.162048 / 0.163776 / 0.312704  0.157440 / 0.159200 / 0.182592  0.972059
+32   192    1536    0.292416 / 0.299152 / 0.320384  0.275232 / 0.285936 / 0.301408  0.955822
+64   256    2048    0.379392 / 0.402688 / 0.475648  0.359488 / 0.389280 / 0.461376  0.966704
+128  256    2048    0.398400 / 0.419568 / 0.480288  0.382496 / 0.419632 / 0.503296  1.000153
+Geomean Humming=0.240270397 ms, custom=0.236129117 ms;
+custom/Humming=0.982764 (custom 1.754% faster).
+
+Maximal-skew routes (six active experts):
+M    active padded  Humming min/median/max ms       Custom min/median/max ms        custom/Humming
+8    6      48      0.037952 / 0.039552 / 0.061344  0.040704 / 0.042176 / 0.087104  1.066343
+16   6      96      0.048256 / 0.049472 / 0.100896  0.051936 / 0.053440 / 0.062912  1.080207
+32   6      192     0.067008 / 0.068256 / 0.090208  0.069632 / 0.071520 / 0.087072  1.047820
+64   6      384     0.100384 / 0.101840 / 0.117248  0.098944 / 0.100752 / 0.112352  0.989317
+128  6      768     0.167200 / 0.169072 / 0.185120  0.165472 / 0.167360 / 0.177536  0.989874
+Geomean Humming=0.074530111 ms, custom=0.077064247 ms;
+custom/Humming=1.034002 (custom 3.400% slower).
+
+The candidate improves the prior accepted skew gap (about 4.40%) but does not
+reverse it.  Performance remains route-distribution dependent: balanced is a
+1.75% custom win, maximal skew a 3.40% loss.

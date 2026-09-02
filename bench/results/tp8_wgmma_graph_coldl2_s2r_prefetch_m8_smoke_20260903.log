@@ -1,0 +1,16 @@
+TP8 distributed CUDA-Graph run-through with W2 S2R prefetch default
+Date: 2026-09-03
+Command shape: H=4096, I=2048, I/rank=256, E=256, top-k=6, M=8.
+Runtime: eight H20 ranks, SGLang CustomAllReduceV2 ONE_SHOT_PUSH/EAGER.
+Protocol: random routes; outer=2, replays=10, warmup=5; separate 256 MiB
+L2 clear before every replay, excluded from CUDA-event timing.
+
+W13 per rank: [256,512,2048] packed uint8 storage, 285,212,672 bytes with scale.
+W2 per rank:  [256,4096,128] packed uint8 storage, 142,606,336 bytes with scale.
+active_experts=43, padded_rows=344, routed_rows=48, W13 split-K=4.
+latency min/median/max = 0.071648 / 0.072976 / 0.427392 ms (20 samples).
+batch medians = 0.072720 / 0.073008 ms.
+cosine_min_rank=0.999991970, rel_l2_max_rank=0.004007414,
+max_abs_over_ref=0.006802721, finite_all_ranks=true, allreduce_ok=true.
+
+This is a compatibility/correctness smoke, not a TP8 performance headline.
