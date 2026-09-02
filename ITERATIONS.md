@@ -216,3 +216,35 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence logs:
   `bench/results/tp4_humming_graph_coldl2_smoke_m8.log` and
   `bench/results/tp4_wgmma_graph_coldl2_smoke_m8_s4.log`.
+
+### Accepted TP4 cold-L2 baseline — Humming versus route-aware WGMMA
+
+- Protocol: balanced precomputed routes, full CUDA Graph, 9 outer batches x
+  200 individually timed replays per M, and a 256 MiB same-stream clear before
+  every replay.  Latency is the maximum rank event time; medians below pool all
+  1,800 cold samples per point.
+- Humming min / median / max (ms):
+  - M8: 0.095040 / 0.096864 / 0.296320
+  - M16: 0.158400 / 0.160064 / 1.614496
+  - M32: 0.290560 / 0.293984 / 0.349056
+  - M64: 0.386656 / 0.406176 / 0.458016
+  - M128: 0.392128 / 0.412752 / 0.493440
+- Custom split-K=4 min / median / max (ms):
+  - M8: 0.140352 / 0.142080 / 0.286400
+  - M16: 0.241152 / 0.243136 / 0.289536
+  - M32: 0.448192 / 0.450896 / 0.839104
+  - M64: 0.596192 / 0.607264 / 0.635904
+  - M128: 0.612864 / 0.627456 / 0.685664
+- Median custom / Humming ratios: 1.467x, 1.519x, 1.534x, 1.495x,
+  and 1.520x for M8 through M128.  Five-point geometric means are 0.358661
+  versus 0.238033 ms, so custom is 1.507x slower.  The target is not met.
+- Correctness: all ten graph outputs are finite and pass custom all-reduce
+  against independent local recompute plus NCCL.  Minimum cosine is
+  0.999987363 for Humming and 0.999995477 for custom; maximum rel-L2 is
+  0.00502738 and 0.00300767 respectively.
+- Rare global maxima show scheduler/system tails (notably Humming M16), while
+  the nine per-batch medians are stable.  Optimization decisions use pooled
+  medians plus the batch-median distribution, never minima.
+- Evidence logs:
+  `bench/results/tp4_humming_graph_coldl2_formal_20260902.log` and
+  `bench/results/tp4_wgmma_graph_coldl2_s4_formal_20260902.log`.
