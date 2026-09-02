@@ -1,0 +1,35 @@
+Warp-specialized persistent W2 metadata-index correctness repair
+Date: 2026-09-03
+
+Root cause:
+The first eight consumer threads initialized route_ids[0..7] and activation
+scales with route indexed by token_slot=consumer_tid/16.  For consumer_tid
+0..7, token_slot is always zero, so every metadata row was route 0.  The
+activation tile gather itself correctly used token_slot in groups of sixteen.
+The repair independently indexes metadata with consumer_tid.
+
+TP8 shape, M8, maximal skew, K=256, one task per active CTA and no stage reuse:
+V4_WGMMA_QACT nonzero=10372 final_tile_nonzero=5192 final_tile_k0_nonzero=44
+V4_WGMMA_CHECK M=8 pattern=skew Is=256 active=6 padded=48 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077480
+V4_WGMMA_ACT cos=0.999999763 rel_l2=0.000689115
+V4_WGMMA_W2 cos=0.999997249 rel_l2=0.002345847 finite=True absmax=54016 nonzero=32768
+V4_WGMMA_OK
+
+TP4 shape, M8, balanced, K=512:
+V4_WGMMA_QACT nonzero=20716 final_tile_nonzero=5175 final_tile_k0_nonzero=42
+V4_WGMMA_CHECK M=8 pattern=balanced Is=512 active=48 padded=384 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999998 rel_l2=0.000076187
+V4_WGMMA_ACT cos=0.999999759 rel_l2=0.000694956
+V4_WGMMA_W2 cos=0.999997256 rel_l2=0.002342691 finite=True absmax=73728 nonzero=32768
+V4_WGMMA_OK
+
+TP4 shape, M8, maximal skew, K=512:
+V4_WGMMA_QACT nonzero=20620 final_tile_nonzero=5134 final_tile_k0_nonzero=43
+V4_WGMMA_CHECK M=8 pattern=skew Is=512 active=6 padded=48 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077292
+V4_WGMMA_ACT cos=0.999999649 rel_l2=0.000838723
+V4_WGMMA_W2 cos=0.999997235 rel_l2=0.002351904 finite=True absmax=75264 nonzero=32768
+V4_WGMMA_OK
+
+No performance timing was collected in this correctness gate.

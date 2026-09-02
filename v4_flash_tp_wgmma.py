@@ -795,11 +795,15 @@ __global__ __launch_bounds__(256) void route_gemm_w2_ws_persistent(
                     + token_slot * kBlockK
                     + (k8 ^ ((token_slot & 7) << 4))) = activation_value;
                 if (consumer_tid < kTok) {
-                    route_ids[stage][consumer_tid] = route;
+                    const int metadata_route = __ldg(
+                        sorted_ids + m_block_idx * kTok + consumer_tid);
+                    const int metadata_row =
+                        metadata_route < max_routes ? metadata_route : -1;
+                    route_ids[stage][consumer_tid] = metadata_route;
                     activation_scale_smem[stage][consumer_tid] =
-                        activation_row >= 0
+                        metadata_row >= 0
                         ? __ldg(activation_scale +
-                                static_cast<int64_t>(activation_row) *
+                                static_cast<int64_t>(metadata_row) *
                                     kNumKTiles + local_kt)
                         : 0.0f;
                 }
@@ -1483,7 +1487,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2wsp{int(W2_WS_PERSIST)}_dbg{int(W2_WS_SENTINEL)}_"
-          f"din{int(W2_WS_DEBUG_INPUTS)}_mb{MIN_BLOCKS_PER_SM}_v37"),
+          f"din{int(W2_WS_DEBUG_INPUTS)}_mb{MIN_BLOCKS_PER_SM}_v38"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[

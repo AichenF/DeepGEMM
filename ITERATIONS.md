@@ -2012,3 +2012,20 @@ maximum rank latency of a full CUDA-Graph replay.
   rather than continue speculative barrier changes.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_w2_ws_no_reg_reconfig_correctness_20260903.log`.
+
+### WGMMA iteration 29l — repair route/scale metadata indexing (correct)
+
+- Found a deterministic indexing error in the duplicated persistent consumer:
+  the first eight threads populated `route_ids[0..7]` and activation scales
+  from `token_slot = consumer_tid / 16`, which is zero for all eight metadata
+  writers.  Thus every metadata entry referred to route 0 even though the
+  activation tile itself was correctly gathered with sixteen threads per row.
+- Changed only metadata loading to index `sorted_ids` by `consumer_tid` and to
+  load the matching activation scale.  TP8 K=256 maximal skew now passes W2
+  with cosine 0.999997249, as do TP4 K=512 balanced (0.999997256) and maximal
+  skew (0.999997235).  W13 and fused activation remain correct in all gates.
+- The prior zero/sparse outputs and diagnostic symptoms are fully explained by
+  output-route aliasing and scale mismatch; speculative barrier and WGMMA-role
+  explanations are rejected.  The candidate may now enter the cold-L2 screen.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_ws_metadata_index_fix_correctness_20260903.log`.
