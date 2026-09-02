@@ -2071,3 +2071,18 @@ maximum rank latency of a full CUDA-Graph replay.
   source before the next optimization direction.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_w2_ws_p312_screen_20260903.log`.
+
+### WGMMA iteration 29p — exact accepted-winner restore
+
+- Restored `v4_flash_tp_wgmma.py` and its correctness test byte-for-byte from
+  accepted commit `7cc55d5` after rejecting the warp-specialized branch.  The
+  SHA-256 digests match the git objects exactly; experimental commits and logs
+  remain in history.
+- TP4 balanced/skew and TP8-shape skew correctness gates all pass, with W2
+  cosine between 0.999997235 and 0.999997256.  A fresh 4 x 100 paired cold-L2
+  random-route regression gives geometric means 0.210477 ms custom and
+  0.209839 ms Humming, only 0.304% slower.  This restores the prior near-parity
+  state; M128 has high batch variability and is not used to supersede the
+  existing 2,000-sample formal estimate.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_exact_winner_restore_20260903.log`.

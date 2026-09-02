@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 
 import torch
 
@@ -158,16 +157,6 @@ def main() -> None:
             m_major_scale=False,
             scale_dtype="float32",
         )
-    if os.environ.get("V4_TEST_QACT_ONE", "0") == "1":
-        qact.fill_(1.0)
-        act_scale.fill_(1.0)
-    qact_u8 = qact.view(torch.uint8)
-    print(
-        "V4_WGMMA_QACT "
-        f"nonzero={int(torch.count_nonzero(qact_u8).item())} "
-        f"final_tile_nonzero={int(torch.count_nonzero(qact_u8[:, -128:]).item())} "
-        f"final_tile_k0_nonzero={int(torch.count_nonzero(qact_u8[:, -128]).item())}"
-    )
     local = torch.zeros((args.m, H), dtype=torch.float32, device=device)
     down = (
         torch.empty((routes, H), dtype=torch.bfloat16, device=device)
@@ -258,9 +247,7 @@ def main() -> None:
         "V4_WGMMA_W2 "
         f"cos={cosine(local, local_ref):.9f} "
         f"rel_l2={rel_l2(local, local_ref):.9f} "
-        f"finite={bool(torch.isfinite(output).all())} "
-        f"absmax={float(output.float().abs().max().item()):.9g} "
-        f"nonzero={int(torch.count_nonzero(output).item())}"
+        f"finite={bool(torch.isfinite(output).all())}"
     )
     if cosine(local, local_ref) < 0.99 or not torch.isfinite(output).all():
         raise SystemExit("V4_WGMMA_WRONG")
