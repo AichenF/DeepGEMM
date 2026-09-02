@@ -1599,3 +1599,31 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_graph_coldl2_random_w2_global_lut0_control_20260903.log`,
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_w2_global_lut1_screen_20260903.log`.
+
+### Batch-granularity paired cold-L2 source of truth
+
+- Extended `bench/v4_flash_tp_paired_graph.py` with
+  `--pair-granularity {batch,replay}`.  Batch mode alternates complete timed
+  outer batches in AB/BA order while retaining a separate 256 MiB
+  stream-ordered L2 clear before every graph replay.  This avoids the extra
+  TLB churn caused by switching between two disjoint approximately 0.86 GB
+  weight sets on every replay, while still balancing clock drift between the
+  two implementations.
+- The formal random-route run uses ten outer batches of 200 cold replays per
+  implementation and M (2,000 samples each), with five Humming-first and five
+  custom-first batches.  All local and all-reduce graph correctness checks
+  pass.
+- Humming medians for M8/M16/M32/M64/M128 are 0.089920 / 0.145472 /
+  0.232800 / 0.334576 / 0.410272 ms (geomean 0.210978 ms).  Custom medians are
+  0.092416 / 0.143488 / 0.229232 / 0.337440 / 0.418880 ms (geomean
+  0.212141 ms).
+- Custom is 2.78% slower at M8, 1.38% faster at M16, 1.56% faster at M32,
+  0.86% slower at M64, and 2.10% slower at M128.  Its five-shape geometric
+  mean is 0.55% slower than Humming.  Therefore the current honest headline
+  is statistical near parity with a slight Humming advantage, not a custom
+  win; the earlier replay-granularity 3.11% result remains a TLB-stress
+  sensitivity result rather than the primary comparison.
+- Evidence:
+  `bench/results/tp4_paired_graph_batch_coldl2_random_smoke_20260903.log`
+  and
+  `bench/results/tp4_paired_graph_batch_coldl2_random_fused_act_quant_formal_20260903.log`.

@@ -31,9 +31,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--route-pattern", choices=("random", "balanced", "skew"), default="random"
     )
-    parser.add_argument("--outer", type=int, default=9)
+    parser.add_argument("--outer", type=int, default=10)
     parser.add_argument("--replays", type=int, default=200)
     parser.add_argument("--warmup-replays", type=int, default=10)
+    parser.add_argument(
+        "--pair-granularity",
+        choices=("batch", "replay"),
+        default="batch",
+        help=(
+            "batch preserves each implementation's repeated-execution TLB "
+            "state; replay is a cross-weight-set TLB stress test"
+        ),
+    )
     parser.add_argument("--seed", type=int, default=20260902)
     args = parser.parse_args()
     args.ms = tuple(int(value) for value in args.ms.split(",") if value)
@@ -41,6 +50,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--ms must contain positive integers")
     if args.outer < 1 or args.replays < 1 or args.warmup_replays < 1:
         parser.error("timing loop counts must be positive")
+    if args.pair_granularity == "batch" and args.outer % 2:
+        parser.error("batch pairing requires an even --outer for balanced AB/BA")
     return args
 
 
@@ -72,6 +83,7 @@ def time_graph_pair(
     nccl_group: dist.ProcessGroup,
     device: torch.device,
     l2_flush_buffer: torch.Tensor,
+    pair_granularity: str,
 ) -> tuple[list[float], list[float], list[float], list[float]]:
     humming_samples: list[float] = []
     custom_samples: list[float] = []
@@ -104,31 +116,50 @@ def time_graph_pair(
             graph.replay()
             end.record()
 
-        for replay_idx in range(replays):
-            # AB/BA alternation cancels slow monotonic clock/temperature drift
-            # while preserving a separately cold cache for every graph replay.
-            if (outer_idx + replay_idx) & 1:
-                replay_one(
-                    custom_graph,
-                    custom_starts[replay_idx],
-                    custom_ends[replay_idx],
+        if pair_granularity == "replay":
+            for replay_idx in range(replays):
+                # Fine-grained AB/BA is useful as a TLB-stress diagnostic.
+                if (outer_idx + replay_idx) & 1:
+                    replay_one(
+                        custom_graph,
+                        custom_starts[replay_idx],
+                        custom_ends[replay_idx],
+                    )
+                    replay_one(
+                        humming_graph,
+                        humming_starts[replay_idx],
+                        humming_ends[replay_idx],
+                    )
+                else:
+                    replay_one(
+                        humming_graph,
+                        humming_starts[replay_idx],
+                        humming_ends[replay_idx],
+                    )
+                    replay_one(
+                        custom_graph,
+                        custom_starts[replay_idx],
+                        custom_ends[replay_idx],
+                    )
+        else:
+            # Alternate complete batches to cancel long clock/temperature
+            # drift without evicting one implementation's weight-page TLB
+            # entries before every replay.  Use an even outer count for an
+            # exactly balanced number of AB and BA batches.
+            order = (
+                (
+                    (humming_graph, humming_starts, humming_ends),
+                    (custom_graph, custom_starts, custom_ends),
                 )
-                replay_one(
-                    humming_graph,
-                    humming_starts[replay_idx],
-                    humming_ends[replay_idx],
+                if outer_idx % 2 == 0
+                else (
+                    (custom_graph, custom_starts, custom_ends),
+                    (humming_graph, humming_starts, humming_ends),
                 )
-            else:
-                replay_one(
-                    humming_graph,
-                    humming_starts[replay_idx],
-                    humming_ends[replay_idx],
-                )
-                replay_one(
-                    custom_graph,
-                    custom_starts[replay_idx],
-                    custom_ends[replay_idx],
-                )
+            )
+            for graph, starts, ends in order:
+                for replay_idx in range(replays):
+                    replay_one(graph, starts[replay_idx], ends[replay_idx])
         torch.cuda.synchronize(device)
 
         humming_times = torch.tensor(
@@ -215,7 +246,12 @@ def main() -> None:
                     "outer": args.outer,
                     "replays_per_outer_per_impl": args.replays,
                     "warmup_replays": args.warmup_replays,
-                    "pair_order": "AB/BA alternated every replay and outer batch",
+                    "pair_order": (
+                        "AB/BA alternated every replay and outer batch"
+                        if args.pair_granularity == "replay"
+                        else "AB/BA alternated by complete outer batch"
+                    ),
+                    "pair_granularity": args.pair_granularity,
                     "l2_policy": (
                         "cold; separate 256MiB Triton clear before every impl "
                         "replay, clear excluded from events"
@@ -300,6 +336,7 @@ def main() -> None:
             nccl_group,
             device,
             l2_flush_buffer,
+            args.pair_granularity,
         )
 
         humming_median = statistics.median(humming_samples)
