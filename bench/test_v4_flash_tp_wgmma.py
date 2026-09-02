@@ -230,7 +230,8 @@ def main() -> None:
         f"M={args.m} pattern={args.pattern} Is={intermediate} "
         f"active={torch.unique(flat_ids).numel()} padded={num_tokens_padded.item()} "
         f"split_k={selected_split_k} mode2={kernel.MODE2_BRAID} "
-        f"fused_act_quant={kernel.FUSED_ACT_QUANT}"
+        f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
+        f"w2_persistent_bpsm={kernel.W2_PERSISTENT_BLOCKS_PER_SM}"
     )
     print(
         "V4_WGMMA_W13 "

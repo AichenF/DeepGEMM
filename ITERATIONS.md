@@ -1500,3 +1500,61 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_fused_act_quant_default_correctness_20260903.log`
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_fused_act_quant_default_20260903.log`.
+
+### Post-iteration-23 formal comparison and interleaved-pair audit
+
+- Two conventional whole-run 9x200 cold pairs disagree because the H20 clocks
+  drift during the longer M32/M64/M128 batches.  Humming-then-custom gives
+  geomeans 0.208331/0.211112 ms (custom 1.34% slower); reversing the order
+  gives custom/Humming 0.206800/0.208643 ms (custom 0.88% faster).  The batch
+  sequences, including M32 moving from roughly 0.217 to 0.258 ms, are retained
+  rather than hiding the instability with minimum latency.
+- Added a paired CUDA-Graph harness that captures both implementations in one
+  process, uses the same static routes, token input, and
+  `CustomAllReduceV2` instance, gives each replay its own 256 MiB L2 clear,
+  and alternates AB/BA order at replay granularity.  Both graph outputs pass
+  their independent local-recompute plus NCCL correctness checks.
+- Its formal 9x200-per-implementation result is Humming 0.090368 / 0.146016 /
+  0.237824 / 0.351104 / 0.426816 ms (geomean 0.216008 ms), versus custom
+  0.092800 / 0.143808 / 0.226640 / 0.329200 / 0.405232 ms (geomean
+  0.209491 ms).  Custom loses M8 by 2.69%, wins M16/M32/M64/M128 by
+  1.54%/4.93%/6.65%/5.33%, and wins geometric mean by 3.11%.
+- This replay-granularity result is a useful drift-controlled stress test but
+  is not declared the sole source of truth: alternating two disjoint 0.86 GB
+  weight sets can perturb TLB residency beyond an isolated serving replay.
+  A batch-granularity paired run is required for the final headline.
+- Cold M8 Nsight Systems timelines isolate the residual small-M loss.  Custom
+  versus Humming kernel durations are W13 48.895/48.831 us, activation path
+  2.048/(1.248+1.216) us, W2 27.040/22.144 us, and epilogue
+  1.632/2.624 us.  Thus W13 is tied and fusion is working; the approximately
+  4.9 us W2 deficit is the only material M8 core difference.
+- Evidence:
+  `bench/results/tp4_humming_graph_coldl2_random_formal_post_fused_act_quant_window_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_fused_act_quant_formal_post_humming_window_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_fused_act_quant_formal_reverse_window_20260903.log`,
+  `bench/results/tp4_humming_graph_coldl2_random_formal_post_fused_act_quant_reverse_window_20260903.log`,
+  `bench/results/tp4_paired_graph_coldl2_random_fused_act_quant_formal_20260903.log`,
+  `bench/results/tp4_wgmma_m8_fused_act_quant_random_coldl2_nsys.nsys-rep`,
+  and
+  `bench/results/tp4_humming_m8_random_refresh_coldl2_nsys.nsys-rep`.
+
+### WGMMA iteration 24 — naive persistent W2 grid (rejected)
+
+- Added an opt-in runtime W2 grid cap and a grid-stride tile loop so each CTA
+  can reuse its 2 KiB MXFP4 LUT across tasks.  W13 is unchanged.  The unset
+  `V4_W2_PERSISTENT_BLOCKS_PER_SM=0` path retains one CTA per logical tile.
+- The 4-blocks/SM candidate passes TP4 split-K=4, TP4 split-K=2, and TP8 local
+  full-path correctness with errors identical to the default.
+- TP4 random-route cold 3x100 geomeans for 0/2/4/6/8 blocks per SM are
+  0.204139 / 0.273953 / 0.221692 / 0.209585 / 0.207606 ms.  Every persistent
+  setting loses to the 0 control, by 34.20% / 8.60% / 2.67% / 1.70%; each is
+  slower at all five M values.
+- Merely copying Humming's 312-CTA grid is insufficient.  The custom loop
+  serializes too many independently pipelined K512 tiles and reinitializes TMA
+  barriers per task; Humming's persistent CTA has a different internal
+  scheduler/pipeline.  Reject all caps and retain 0.
+- Every timing sample uses the standard 256 MiB cold-L2 clear outside events.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_w2_persistent4_correctness_20260903.log`
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_w2_persistent{0,2,4,6,8}_screen_20260903.log`.

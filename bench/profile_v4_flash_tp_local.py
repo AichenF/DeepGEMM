@@ -185,6 +185,11 @@ def main() -> None:
                 "fused_activation_quant": kernel_module.FUSED_ACT_QUANT
                 if args.impl == "custom"
                 else None,
+                "w2_persistent_blocks_per_sm": (
+                    kernel_module.W2_PERSISTENT_BLOCKS_PER_SM
+                    if args.impl == "custom"
+                    else None
+                ),
                 "l2_cache_bytes": props.L2_cache_size,
                 "l2_flush_bytes": l2_flush_buffer.nbytes,
                 "l2_policy": "cold; 256MiB clear immediately before pipeline",
