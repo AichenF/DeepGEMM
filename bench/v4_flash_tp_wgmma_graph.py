@@ -210,11 +210,7 @@ class CapturedCase:
         self.x_scale: torch.Tensor | None = None
         self.activation_scale: torch.Tensor | None = (
             torch.empty(
-                (
-                    (self.intermediate_per_rank // 128, routes)
-                    if kernel.M_MAJOR_ACTIVATION_SCALE
-                    else (routes, self.intermediate_per_rank // 128)
-                ),
+                (routes, self.intermediate_per_rank // 128),
                 dtype=torch.float32,
                 device=device,
             )
@@ -249,7 +245,7 @@ class CapturedCase:
             outputs=self.qx,
             dtype="float8e4m3",
             group_size=128,
-            m_major_scale=kernel.M_MAJOR_ACTIVATION_SCALE,
+            m_major_scale=False,
             scale_dtype="float32",
         )
         kernel.run_w13(
@@ -287,7 +283,7 @@ class CapturedCase:
                 outputs=self.qactivation,
                 dtype="float8e4m3",
                 group_size=128,
-                m_major_scale=kernel.M_MAJOR_ACTIVATION_SCALE,
+                m_major_scale=False,
                 scale_dtype="float32",
             )
         if self.local_float is not None:
@@ -510,7 +506,6 @@ def main() -> None:
                     "dequant_synth_lut": kernel.DEQUANT_SYNTH_LUT,
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
-                    "m_major_activation_scale": kernel.M_MAJOR_ACTIVATION_SCALE,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,

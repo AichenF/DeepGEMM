@@ -61,9 +61,6 @@ DEQUANT_DP4A_LO = os.environ.get("V4_DEQUANT_DP4A_LO", "1") == "1"
 DEQUANT_SYNTH_LUT = os.environ.get("V4_DEQUANT_SYNTH_LUT", "0") == "1"
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
-M_MAJOR_ACTIVATION_SCALE = (
-    os.environ.get("V4_M_MAJOR_ACTIVATION_SCALE", "0") == "1"
-)
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
@@ -135,7 +132,6 @@ static constexpr bool kDequantDp4aHi = K_DEQUANT_DP4A_HI;
 static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
-static constexpr bool kMMajorActivationScale = K_M_MAJOR_ACTIVATION_SCALE;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
@@ -423,21 +419,10 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
 
         if (tid < kTok) {
             const int row = activation_rows[tid];
-            if (row >= 0) {
-                if constexpr (kMMajorActivationScale) {
-                    const int scale_stride = IsW13
-                        ? max_routes / kTopK : max_routes;
-                    activation_scale_smem[tid] = __ldg(
-                        activation_scale
-                        + static_cast<int64_t>(global_kt) * scale_stride + row);
-                } else {
-                    activation_scale_smem[tid] = __ldg(
-                        activation_scale
-                        + static_cast<int64_t>(row) * kNumKTiles + global_kt);
-                }
-            } else {
-                activation_scale_smem[tid] = 0.0f;
-            }
+            activation_scale_smem[tid] = row >= 0
+                ? __ldg(activation_scale + static_cast<int64_t>(row) * kNumKTiles
+                        + global_kt)
+                : 0.0f;
         }
         if constexpr (!kUseTmaScale) {
             for (int i = tid; i < kWout * 4; i += blockDim.x) {
@@ -812,11 +797,7 @@ __global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
                            __shfl_down_sync(0xffffffffu, absmax, delta));
         if (lane == 0) {
             group_scale = fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
-            if constexpr (kMMajorActivationScale)
-                scale[static_cast<int64_t>(group_in_route) * routes + route] =
-                    group_scale;
-            else
-                scale[group] = group_scale;
+            scale[group] = group_scale;
         }
     }
     __syncthreads();
@@ -1135,7 +1116,6 @@ _ext = load_inline(
           f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"m2{int(MODE2_BRAID)}_"
-          f"mas{int(M_MAJOR_ACTIVATION_SCALE)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
           f"mb{MIN_BLOCKS_PER_SM}_v35"),
@@ -1159,7 +1139,6 @@ _ext = load_inline(
         f"-DK_DEQUANT_DP4A_LO={int(DEQUANT_DP4A_LO)}",
         f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
-        f"-DK_M_MAJOR_ACTIVATION_SCALE={int(M_MAJOR_ACTIVATION_SCALE)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
