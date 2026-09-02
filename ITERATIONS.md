@@ -389,3 +389,25 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_wo{64,128}_accum_s2_correctness*_20260902.log`
   and
   `bench/results/tp4_wgmma_graph_coldl2_s2_wo{64,128}_accum_screen_20260902.log`.
+
+### Iteration 4 formal cold-L2 confirmation
+
+- Formal protocol: TP4 balanced full graph, 9x200 individually cold replays
+  per M, max rank, `V4_W13_SPLIT_K=2 V4_WOUT=128`.
+- Min / median / max latency (ms):
+  - M8: 0.142112 / 0.144096 / 0.285920
+  - M16: 0.237600 / 0.239712 / 0.634560
+  - M32: 0.424352 / 0.428160 / 0.514944
+  - M64: 0.558368 / 0.573552 / 1.396896
+  - M128: 0.570272 / 0.589632 / 0.650912
+- Geometric mean is 0.346593 ms, 3.4% faster than the accepted split-K=4,
+  64-channel formal baseline (0.358661 ms).  Pointwise it is 1.4% slower at
+  M8, then 1.4% / 5.0% / 5.6% / 6.0% faster from M16 through M128.
+- Against the formal cold Humming medians, custom/Humming is 1.488x / 1.498x /
+  1.456x / 1.412x / 1.429x.  Geometric-mean ratio improves from 1.507x to
+  1.456x, but the target is still missed by a wide margin.
+- Correctness passes all five points; minimum cosine 0.99999555, maximum
+  rel-L2 0.00298332, all finite.  Large global maxima are tails; the nine
+  batch medians remain the stability diagnostic.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_s2_wo128_formal_20260902.log`.
