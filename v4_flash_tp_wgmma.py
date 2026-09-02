@@ -30,7 +30,7 @@ def select_w13_split_k(
 ) -> int:
     if W13_SPLIT_MODE != "auto":
         return int(W13_SPLIT_MODE)
-    if routed_rows <= 96:
+    if routed_rows <= 192:
         return 4
     return 4 if active_experts is not None and active_experts <= 96 else 2
 WOUT = int(os.environ.get("V4_WOUT", "128"))

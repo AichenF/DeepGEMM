@@ -1419,3 +1419,32 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_mode2_default_correctness_20260903.log`
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_mode2_default_20260903.log`.
+
+### WGMMA iteration 22 — retune Mode2 W13 split threshold (accepted)
+
+- Re-swept the existing split-K=2 and split-K=4 implementations after making
+  Mode2 the default.  Forced split-2 medians for M8/M16/M32/M64/M128 are
+  0.095424 / 0.145632 / 0.221792 / 0.308976 / 0.387744 ms (geomean
+  0.205810 ms); forced split-4 gives 0.093024 / 0.141824 / 0.218128 /
+  0.312688 / 0.391456 ms (geomean 0.203878 ms).  Thus split-4 remains best at
+  M8/M16, split-2 remains best at M64/M128, and M32 has moved to split-4.
+- A reverse-order M32 5x200 cold pair confirms split-4 at 0.216896 ms versus
+  the immediately following split-2 control at 0.218784 ms, a 0.86% latency
+  reduction across 1,000 samples per variant.  Both pass graph correctness.
+- Moved the route-count branch from `routed_rows <= 96` to
+  `routed_rows <= 192`; the active-expert fallback remains 96 for larger route
+  counts.  The new unset-default screen selects 4/4/4/2/2 and gives
+  0.093264 / 0.142496 / 0.218816 / 0.307152 / 0.389216 ms (geomean
+  0.203342 ms), with every graph/all-reduce check passing.  Independent M32
+  full-path correctness gives W13/activation/W2 cosine
+  0.999999997/0.999999691/0.999997241.
+- Every timing sample uses the standard 256 MiB stream-ordered cold-L2 clear
+  outside the event interval.
+- Evidence:
+  `bench/results/tp4_wgmma_graph_coldl2_random_mode2_forced_s2_screen_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_mode2_forced_s4_screen_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_mode2_m32_s4_confirm_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_mode2_m32_s2_reverse_control_20260903.log`,
+  `bench/results/v4_flash_tp_wgmma_mode2_split_threshold192_correctness_20260903.log`,
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_mode2_split_threshold192_default_20260903.log`.

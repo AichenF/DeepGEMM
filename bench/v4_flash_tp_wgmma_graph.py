@@ -466,7 +466,7 @@ def main() -> None:
                     "l2_cache_bytes": props.L2_cache_size,
                     "l2_flush_bytes": l2_flush_buffer.nbytes,
                     "w13_split_policy": (
-                        f"{kernel.W13_SPLIT_MODE}; routed_rows<=96 or "
+                        f"{kernel.W13_SPLIT_MODE}; routed_rows<=192 or "
                         "active_experts<=96 -> 4, else 2; selected before capture"
                         if kernel.W13_SPLIT_MODE == "auto"
                         else kernel.W13_SPLIT_MODE
