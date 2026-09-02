@@ -602,3 +602,13 @@ maximum rank latency of a full CUDA-Graph replay.
   unconstrained launch bounds.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_mb12_screen_20260902.log`.
+
+### Iteration 9 rollback — unconstrained launch bounds remain default
+
+- Recompiled the same source with the unset/default `min_blocks=0` path and
+  reran the required cold-L2 3x100 TP4 screen.  Medians are 0.143824 /
+  0.239376 / 0.426336 / 0.552048 / 0.564608 ms; geometric mean is 0.340469
+  ms, within 0.15% of the pre-experiment accepted-default screen.  All points
+  pass correctness.  Keep the launch-bounds override diagnostic-only.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_mb0_restore_screen_20260902.log`.
