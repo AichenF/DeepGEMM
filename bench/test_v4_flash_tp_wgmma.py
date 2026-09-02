@@ -8,6 +8,7 @@ import argparse
 import torch
 
 from humming import ops
+from sglang.kernels.ops.moe.moe_fused_mul_sum import moe_fused_mul_sum
 from sglang.srt.layers.moe.fused_moe_triton import moe_align_block_size
 
 import v4_flash_tp_wgmma as kernel
@@ -135,6 +136,12 @@ def main() -> None:
         scale_dtype="float32",
     )
     local = torch.zeros((args.m, H), dtype=torch.float32, device=device)
+    down = (
+        torch.empty((routes, H), dtype=torch.bfloat16, device=device)
+        if kernel.W2_ROUTE_OUTPUT
+        else None
+    )
+    w2_output = down if down is not None else local
     kernel.run_w2(
         w2,
         s2,
@@ -144,12 +151,24 @@ def main() -> None:
         expert_ids,
         num_tokens_padded,
         topk_weights,
-        local,
+        w2_output,
         lut,
         intermediate,
     )
     output = torch.empty((args.m, H), dtype=torch.bfloat16, device=device)
-    kernel.cast_bf16(local, output)
+    if kernel.W2_ROUTE_OUTPUT:
+        assert down is not None
+        moe_fused_mul_sum(
+            inputs=down.view(args.m, TOP_K, H),
+            topk_weights=topk_weights,
+            topk_ids=topk_ids,
+            is_ep=False,
+            routed_scaling_factor=1.5,
+            outputs=output,
+        )
+        local = output.float()
+    else:
+        kernel.cast_bf16(local, output)
     torch.cuda.synchronize()
 
     # Full all-route reference.  Only active experts are dequantized, one at a

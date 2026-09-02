@@ -25,6 +25,7 @@ if W13_SPLIT_K not in (1, 2, 4, 8):
 WOUT = int(os.environ.get("V4_WOUT", "128"))
 if WOUT not in (64, 128, 256):
     raise ValueError("V4_WOUT must be one of 64,128,256")
+W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "0") == "1"
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
@@ -70,6 +71,7 @@ static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
 static constexpr int kStages = 2;
 static constexpr float kRoutedScale = 1.5f;
+static constexpr bool kW2RouteOutput = K_W2_ROUTE_OUTPUT;
 
 __device__ __forceinline__ void mbar_init(uint32_t address) {
     asm volatile("mbarrier.init.shared.b64 [%0],1;" :: "r"(address));
@@ -321,21 +323,37 @@ __global__ __launch_bounds__(128) void route_gemm(
                        + output_n1] = accum[group][3];
             }
         } else {
-            if (route0 < max_routes) {
-                const int token = route0 / kTopK;
-                const float route_weight = topk_weights[route0] * kRoutedScale;
-                atomicAdd(output + static_cast<int64_t>(token) * N + output_n0,
-                          route_weight * accum[group][0]);
-                atomicAdd(output + static_cast<int64_t>(token) * N + output_n1,
-                          route_weight * accum[group][2]);
-            }
-            if (route1 < max_routes) {
-                const int token = route1 / kTopK;
-                const float route_weight = topk_weights[route1] * kRoutedScale;
-                atomicAdd(output + static_cast<int64_t>(token) * N + output_n0,
-                          route_weight * accum[group][1]);
-                atomicAdd(output + static_cast<int64_t>(token) * N + output_n1,
-                          route_weight * accum[group][3]);
+            if constexpr (kW2RouteOutput) {
+                auto* route_output = reinterpret_cast<__nv_bfloat16*>(output);
+                if (route0 < max_routes) {
+                    route_output[static_cast<int64_t>(route0) * N + output_n0] =
+                        __float2bfloat16(accum[group][0]);
+                    route_output[static_cast<int64_t>(route0) * N + output_n1] =
+                        __float2bfloat16(accum[group][2]);
+                }
+                if (route1 < max_routes) {
+                    route_output[static_cast<int64_t>(route1) * N + output_n0] =
+                        __float2bfloat16(accum[group][1]);
+                    route_output[static_cast<int64_t>(route1) * N + output_n1] =
+                        __float2bfloat16(accum[group][3]);
+                }
+            } else {
+                if (route0 < max_routes) {
+                    const int token = route0 / kTopK;
+                    const float route_weight = topk_weights[route0] * kRoutedScale;
+                    atomicAdd(output + static_cast<int64_t>(token) * N + output_n0,
+                              route_weight * accum[group][0]);
+                    atomicAdd(output + static_cast<int64_t>(token) * N + output_n1,
+                              route_weight * accum[group][2]);
+                }
+                if (route1 < max_routes) {
+                    const int token = route1 / kTopK;
+                    const float route_weight = topk_weights[route1] * kRoutedScale;
+                    atomicAdd(output + static_cast<int64_t>(token) * N + output_n0,
+                              route_weight * accum[group][1]);
+                    atomicAdd(output + static_cast<int64_t>(token) * N + output_n1,
+                              route_weight * accum[group][3]);
+                }
             }
         }
     }
@@ -424,7 +442,7 @@ void launch_route_gemm(
         expert_ids.data_ptr<int32_t>(),
         num_tokens_padded.data_ptr<int32_t>(),
         topk_weights.numel() ? topk_weights.data_ptr<float>() : nullptr,
-        output.data_ptr<float>(),
+        static_cast<float*>(output.data_ptr()),
         reinterpret_cast<const uint2*>(lut.data_ptr<uint8_t>()),
         max_routes);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -524,7 +542,8 @@ void cast_bf16(torch::Tensor input, torch::Tensor output);
 
 
 _ext = load_inline(
-    name=f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_wo{WOUT}_v8",
+    name=(f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_wo{WOUT}_"
+          f"ro{int(W2_ROUTE_OUTPUT)}_v10"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],
@@ -532,6 +551,7 @@ _ext = load_inline(
         "-O3",
         f"-DW13_SPLIT_K={W13_SPLIT_K}",
         f"-DK_WOUT={WOUT}",
+        f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
         "-gencode",

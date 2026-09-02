@@ -19,6 +19,7 @@ from triton import runtime as triton_runtime
 import sglang.srt.distributed.parallel_state as ps
 from humming import ops as humming_ops
 from sglang.kernels.ops.communication.mp import register_comm_cleanup
+from sglang.kernels.ops.moe.moe_fused_mul_sum import moe_fused_mul_sum
 from sglang.srt.distributed.device_communicators.custom_all_reduce_v2 import (
     CustomAllReduceV2,
 )
@@ -31,6 +32,7 @@ HIDDEN = 4096
 INTERMEDIATE = 2048
 NUM_EXPERTS = 256
 TOP_K = 6
+ROUTED_SCALING_FACTOR = 1.5
 DEFAULT_MS = (8, 16, 32, 64, 128)
 
 
@@ -165,8 +167,15 @@ class CapturedCase:
             dtype=torch.float8_e4m3fn,
             device=device,
         )
-        self.local_float = torch.empty(
-            (self.m, HIDDEN), dtype=torch.float32, device=device
+        self.local_float = (
+            None
+            if kernel.W2_ROUTE_OUTPUT
+            else torch.empty((self.m, HIDDEN), dtype=torch.float32, device=device)
+        )
+        self.down = (
+            torch.empty((routes, HIDDEN), dtype=torch.bfloat16, device=device)
+            if kernel.W2_ROUTE_OUTPUT
+            else None
         )
         self.local_bf16 = torch.empty(
             (self.m, HIDDEN), dtype=torch.bfloat16, device=device
@@ -224,7 +233,10 @@ class CapturedCase:
             m_major_scale=False,
             scale_dtype="float32",
         )
-        self.local_float.zero_()
+        if self.local_float is not None:
+            self.local_float.zero_()
+        w2_output = self.down if kernel.W2_ROUTE_OUTPUT else self.local_float
+        assert w2_output is not None
         kernel.run_w2(
             self.w2,
             self.s2,
@@ -234,11 +246,23 @@ class CapturedCase:
             self.expert_ids,
             self.num_tokens_padded,
             self.topk_weights,
-            self.local_float,
+            w2_output,
             self.lut,
             self.intermediate_per_rank,
         )
-        kernel.cast_bf16(self.local_float, self.local_bf16)
+        if kernel.W2_ROUTE_OUTPUT:
+            assert self.down is not None
+            moe_fused_mul_sum(
+                inputs=self.down.view(self.m, TOP_K, HIDDEN),
+                topk_weights=self.topk_weights,
+                topk_ids=self.topk_ids,
+                is_ep=False,
+                routed_scaling_factor=ROUTED_SCALING_FACTOR,
+                outputs=self.local_bf16,
+            )
+        else:
+            assert self.local_float is not None
+            kernel.cast_bf16(self.local_float, self.local_bf16)
         return self.local_bf16
 
     def run_full(self, comm: CustomAllReduceV2) -> torch.Tensor:
@@ -413,6 +437,11 @@ def main() -> None:
                     "l2_flush_bytes": l2_flush_buffer.nbytes,
                     "w13_split_k": kernel.W13_SPLIT_K,
                     "output_tile_channels": kernel.WOUT,
+                    "w2_epilogue": (
+                        "BF16 route output + sglang moe_fused_mul_sum"
+                        if kernel.W2_ROUTE_OUTPUT
+                        else "FP32 weighted atomic scatter + BF16 cast"
+                    ),
                     "weight_dtype": "OCP MXFP4 E2M1",
                     "weight_scale": "E8M0 group32",
                     "activation_dtype": "FP8 E4M3 group128",

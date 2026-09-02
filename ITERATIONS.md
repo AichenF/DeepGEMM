@@ -529,3 +529,23 @@ maximum rank latency of a full CUDA-Graph replay.
   the selected winner within measurement noise.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_default_s2_wout128_screen_20260902.log`.
+
+### W2 iteration 8 — route output plus SGLang reduction wins narrowly
+
+- Change: replace the W2 kernel's FP32 weighted atomic scatter and following
+  BF16 cast with direct per-route BF16 stores, then invoke the exact SGLang
+  `moe_fused_mul_sum` used by the Humming baseline.  This preserves precomputed
+  routes and the 1.5 routed scaling factor; it does not add dispatch/combine.
+- Full-route TP4-shape M32 balanced correctness against the dequantized torch
+  reference passes: W2 cosine 0.999997241, rel-L2 0.002349063, all finite.
+  The modest error increase is expected from matching Humming's BF16 route
+  output before top-k reduction.
+- Required cold-L2 3x100 TP4 screen medians for M8/M16/M32/M64/M128 are
+  0.143744 / 0.238848 / 0.425952 / 0.552144 / 0.563376 ms; geometric mean
+  is 0.340083 ms.
+- Every point improves versus the immediately preceding default-control run,
+  and the five-point geometric mean improves by 0.63%.  Atomic scatter was a
+  secondary cost, not the core GEMM gap.  Keep provisionally and require a
+  9x200 confirmation plus skew and TP8 numerical checks.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_w2_route_output_screen_20260902.log`.
