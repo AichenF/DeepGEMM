@@ -462,3 +462,25 @@ maximum rank latency of a full CUDA-Graph replay.
   recovered the winner.  Continue from this code, not the persistent variant.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_wout128_s2_restore_20260902.log`.
+
+### WGMMA iteration 6 — dual K32 accumulator chains regress
+
+- Change: within each K128 tile, dequantize adjacent K32 slices into two
+  independent accumulator chains and issue both chains in one WGMMA async
+  group.  This halves commit/wait pairs from four to two per K128 and follows
+  the previously explored `step_e_rs2c.py` scheduling idea while preserving
+  the required per-K128 activation-scale promotion.
+- Full-route TP4-shape correctness at M32 balanced passes: W13 cosine
+  0.999999999, activation cosine 0.999999809, W2 cosine 0.999999997,
+  W2 rel-L2 0.000086157, and all outputs finite.
+- Required cold-L2 screen: TP4 balanced full CUDA Graph, 3x100 individually
+  cold replays per M, max rank, `V4_W13_SPLIT_K=2 V4_WOUT=128`.
+- Medians for M8/M16/M32/M64/M128 are 0.167600 / 0.258432 / 0.453344 /
+  0.592800 / 0.606208 ms; geometric mean is 0.371292 ms.
+- This is 8.5% slower in geometric mean than the restored winner (0.342249
+  ms), and is slower at every M.  The likely cause is the longer live range
+  and extra register footprint for two accumulator chains plus predecoded
+  operands; fewer WGMMA commit/wait pairs do not offset that cost.  Reject and
+  restore iteration 5 rollback (`v6`).
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_wout128_s2_dualchain_screen_20260902.log`.
