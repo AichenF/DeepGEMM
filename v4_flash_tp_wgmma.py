@@ -184,6 +184,16 @@ __device__ __forceinline__ uint2 synth_e2m1_e8m0_lut(uint32_t exponent) {
         offset * 0x08080808u + 0x1c181410u);
 }
 
+__device__ __forceinline__ uint2 load_synth_or_global_lut(
+        uint32_t exponent, const uint2* __restrict__ global_lut) {
+    // Codes 122..133 are the complete normal, finite affine segment for all
+    // positive E2M1 magnitudes in E4M3.  Unsigned subtraction folds both
+    // lower and upper out-of-range codes into the fallback predicate.
+    if (exponent - 122u <= 11u)
+        return synth_e2m1_e8m0_lut(exponent);
+    return __ldg(global_lut + exponent);
+}
+
 __device__ __forceinline__ uint2 dequant_mode2_braided_word(
         uint32_t packed, const uint2& lut) {
     const uint32_t selector0 = packed & 0x00007777u;
@@ -509,8 +519,10 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                               + group_row1 * kScaleRowBytes
                                               + (global_kt & 3) * 4];
                         if constexpr (kDequantSynthLut) {
-                            weight_lut0 = synth_e2m1_e8m0_lut(exponent0);
-                            weight_lut1 = synth_e2m1_e8m0_lut(exponent1);
+                            weight_lut0 = load_synth_or_global_lut(
+                                exponent0, global_lut);
+                            weight_lut1 = load_synth_or_global_lut(
+                                exponent1, global_lut);
                         } else {
                             weight_lut0 = lut_smem[scale_lut_index(exponent0)];
                             weight_lut1 = lut_smem[scale_lut_index(exponent1)];
@@ -550,8 +562,10 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                           + group_row1 * kScaleRowBytes
                                           + (global_kt & 3) * 4 + k_step];
                     if constexpr (kDequantSynthLut) {
-                        weight_lut0 = synth_e2m1_e8m0_lut(exponent0);
-                        weight_lut1 = synth_e2m1_e8m0_lut(exponent1);
+                        weight_lut0 = load_synth_or_global_lut(
+                            exponent0, global_lut);
+                        weight_lut1 = load_synth_or_global_lut(
+                            exponent1, global_lut);
                     } else if constexpr (!IsW13 && kW2GlobalLut) {
                         constexpr int kGlobalLutOffset =
                             kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
@@ -619,9 +633,11 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                               + next_k_step];
                         if constexpr (kDequantSynthLut) {
                             next_weight_lut0[group] =
-                                synth_e2m1_e8m0_lut(next_exponent0);
+                                load_synth_or_global_lut(
+                                    next_exponent0, global_lut);
                             next_weight_lut1[group] =
-                                synth_e2m1_e8m0_lut(next_exponent1);
+                                load_synth_or_global_lut(
+                                    next_exponent1, global_lut);
                         } else {
                             next_weight_lut0[group] =
                                 lut_smem[scale_lut_index(next_exponent0)];
@@ -1126,7 +1142,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v37"),
+          f"mb{MIN_BLOCKS_PER_SM}_v38"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[

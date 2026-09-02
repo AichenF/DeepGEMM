@@ -2600,3 +2600,17 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_synth_s2r_correctness_20260903.log` and
   `bench/results/tp4_synth_s2r_coldl2_screen_20260903.log`.
+
+### WGMMA iteration 40a — full-domain synthesized-LUT fast path
+
+- Extended the positive iteration-39 mechanism to arbitrary E8M0 codes.
+  Codes 122..133 use the bit-exact affine register generator; all lower and
+  upper codes load the corresponding entry directly from the immutable global
+  256-row LUT.  The unsigned range test covers both sides without clamping.
+- The specialization still omits the per-CTA 2 KiB shared LUT and its setup.
+  It therefore remains fast for checkpoint groups in the common affine range,
+  while fallback groups trade latency rather than correctness.  No offline
+  normalization assumption is needed.
+- Extended the untracked correctness harness with an explicit scale range so
+  the normal fast path, lower fallback, and upper fallback can be tested
+  independently at TP4 split-K=4/2 and TP8 shape before cold-L2 timing.
