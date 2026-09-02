@@ -364,3 +364,28 @@ maximum rank latency of a full CUDA-Graph replay.
   accumulator lifetime before evaluating grouped issue again.
 - Evidence log:
   `bench/results/tp4_wgmma_graph_coldl2_s2_wo64_v3_screen_20260902.log`.
+
+### WGMMA iteration 4 — K128-lived accumulators make 128-channel tile win
+
+- Change: keep each output group's WGMMA accumulators live across all four
+  k32 instructions in a K128 activation-scale group, issue the two independent
+  64-row groups in one async commit, then apply activation scale once.  This
+  restores the original 64-channel instruction structure and removes the
+  scalar work introduced by iteration 3.
+- Correctness passes TP4 balanced, TP4 maximal skew, and TP8 Is=256 full-block
+  tests.  The worst listed final W2 result is cosine 0.999999992 and rel-L2
+  0.000129309; all outputs are finite.
+- Cold-L2 3x100 medians (M8/M16/M32/M64/M128):
+  - 64-channel control: 0.144368 / 0.245344 / 0.447456 / 0.589088 /
+    0.604144 ms; geometric mean 0.355029 ms.  This matches the pre-refactor
+    0.354857 ms result within 0.05%.
+  - 128-channel grouped issue: 0.144640 / 0.240624 / 0.428464 / 0.555296 /
+    0.569792 ms; geometric mean 0.342576 ms.
+- The 128-channel tile is 1.9% / 4.2% / 5.7% / 5.7% faster for M16 through
+  M128, costs only 0.2% at M8, and improves five-point geometric mean by 3.5%.
+  It is the first accepted core optimization, subject to the formal 9x200
+  confirmation.  The default remains 64 until that confirmation completes.
+- Evidence logs:
+  `bench/results/v4_flash_tp_wgmma_wo{64,128}_accum_s2_correctness*_20260902.log`
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_s2_wo{64,128}_accum_screen_20260902.log`.

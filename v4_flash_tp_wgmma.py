@@ -231,11 +231,11 @@ __global__ __launch_bounds__(128) void route_gemm(
         mbar_wait(barrier_addr[stage], (local_kt / kStages) & 1u);
         asm volatile("bar.sync 0;" ::: "memory");
 
+        float tile[kWgmmaGroups][4] = {};
         #pragma unroll
         for (int k_step = 0; k_step < kBlockK / 32; ++k_step) {
             const auto activation_desc = desc_128b(
                 activation_smem_addr + k_step * 32);
-            float tile[kWgmmaGroups][4] = {};
             #pragma unroll
             for (int group = 0; group < kWgmmaGroups; ++group) {
                 #pragma unroll
@@ -284,17 +284,17 @@ __global__ __launch_bounds__(128) void route_gemm(
                     ptx::warpgroup_fence_operand(tile[group][value]);
             }
             ptx::warpgroup_wait<0>();
-            #pragma unroll
-            for (int group = 0; group < kWgmmaGroups; ++group) {
-                accum[group][0] +=
-                    tile[group][0] * activation_scale_smem[column_base];
-                accum[group][1] +=
-                    tile[group][1] * activation_scale_smem[column_base + 1];
-                accum[group][2] +=
-                    tile[group][2] * activation_scale_smem[column_base];
-                accum[group][3] +=
-                    tile[group][3] * activation_scale_smem[column_base + 1];
-            }
+        }
+        #pragma unroll
+        for (int group = 0; group < kWgmmaGroups; ++group) {
+            accum[group][0] +=
+                tile[group][0] * activation_scale_smem[column_base];
+            accum[group][1] +=
+                tile[group][1] * activation_scale_smem[column_base + 1];
+            accum[group][2] +=
+                tile[group][2] * activation_scale_smem[column_base];
+            accum[group][3] +=
+                tile[group][3] * activation_scale_smem[column_base + 1];
         }
 
         if (local_kt + kStages < kKTilesPerSplit)
@@ -524,7 +524,7 @@ void cast_bf16(torch::Tensor input, torch::Tensor output);
 
 
 _ext = load_inline(
-    name=f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_wo{WOUT}_v3",
+    name=f"v4_flash_tp_wgmma_s{W13_SPLIT_K}_wo{WOUT}_v4",
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],
