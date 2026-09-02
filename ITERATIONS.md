@@ -347,3 +347,20 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_wo128_grouped_s2_correctness*_20260902.log`
   and
   `bench/results/tp4_wgmma_graph_coldl2_s2_wo128_grouped_screen_20260902.log`.
+
+### Iteration 3 default-path regression audit
+
+- Because the generic grouped code also compiles the default 64-channel path,
+  it was re-screened under the same 3x100 cold-L2 protocol rather than assumed
+  unchanged.  Medians are 0.148672 / 0.254720 / 0.464960 / 0.611488 /
+  0.627200 ms; geometric mean 0.368045 ms.
+- This is 3.7% slower in geometric mean than the pre-refactor split-K=2
+  64-channel screen (0.354857 ms), so the generic refactor itself regresses the
+  accepted default despite identical math and tile size.
+- Root cause in source: the original keeps each WGMMA accumulator live across
+  all four k32 operations in a K128 activation-scale group and applies the
+  scale once.  The generic version creates a temporary accumulator per k32 and
+  performs four scalar scaled accumulations.  Restore the original K128
+  accumulator lifetime before evaluating grouped issue again.
+- Evidence log:
+  `bench/results/tp4_wgmma_graph_coldl2_s2_wo64_v3_screen_20260902.log`.
