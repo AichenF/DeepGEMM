@@ -1165,3 +1165,30 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_wgmma_graph_coldl2_random_weight_common_address_screen_20260903.log`,
   and
   `bench/results/tp4_wgmma_graph_coldl2_random_weight_common_address0_control_20260903.log`.
+
+### Iteration 17 repeat, profile, and formal confirmation
+
+- Reverse-order 3x100 screens retain a 1.65% geometric-mean win despite a
+  visibly drifting M64 batch.  The common-address version wins M8/M16/M32/M128
+  by 2.3-2.8%; its M64 whole-run median is 1.9% worse because the three batch
+  medians rise from 0.336 to 0.361 ms.  No individual batch was selected or
+  discarded.
+- Basic NCU confirms that the resource reduction becomes core time: versus
+  the direct swizzled-address profile, W13 drops from 160.58 to 155.10 us
+  (-3.41%) and W2 from 87.20 to 83.39 us (-4.37%).  W13/W2 register counts are
+  46/48, theoretical occupancy returns to 56.25%, and achieved occupancy is
+  50.95%/53.27%.
+- Formal TP4 random-route 9x200 direct-address control medians are 0.102336 /
+  0.159136 / 0.255840 / 0.375136 / 0.478656 ms (geomean 0.237026 ms).  The
+  immediately following common-address medians are 0.100224 / 0.155616 /
+  0.250688 / 0.366160 / 0.462768 ms (geomean 0.231334 ms).  It wins every M
+  by 2.0-3.3%, reduces geometric-mean latency by 2.40%, and passes all graph
+  correctness checks.  Accept the common-address path as the next default.
+- Evidence:
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_common_address0_control_repeat_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_common_address_repeat_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_common_address0_formal_20260903.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_weight_common_address_formal_20260903.log`,
+  `bench/results/tp4_wgmma_m32_weight_common_address_random_basic_coldl2_ncu.ncu-rep`,
+  and
+  `bench/results/tp4_wgmma_m32_weight_common_address_random_basic_coldl2_ncu.log`.
