@@ -36,6 +36,9 @@ def select_w13_split_k(
 WOUT = int(os.environ.get("V4_WOUT", "128"))
 if WOUT not in (64, 128, 256):
     raise ValueError("V4_WOUT must be one of 64,128,256")
+LUT_ROWS = int(os.environ.get("V4_LUT_ROWS", "128"))
+if LUT_ROWS not in (128, 256):
+    raise ValueError("V4_LUT_ROWS must be 128 or 256")
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
@@ -80,6 +83,8 @@ using namespace deep_gemm;
 static constexpr int kWout = K_WOUT;
 static_assert(kWout == 64 || kWout == 128 || kWout == 256);
 static constexpr int kWgmmaGroups = kWout / 64;
+static constexpr int kLutRows = K_LUT_ROWS;
+static_assert(kLutRows == 128 || kLutRows == 256);
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -112,6 +117,12 @@ __device__ __forceinline__ cute::GmmaDescriptor desc_128b(uint32_t pointer) {
     descriptor.bitfield.stride_byte_offset_ = 64;
     descriptor.bitfield.base_offset_ = 0;
     return descriptor;
+}
+
+__device__ __forceinline__ uint32_t scale_lut_index(uint32_t exponent) {
+    if constexpr (kLutRows == 128)
+        return mxfp4::e8m0_lut_index(exponent);
+    return exponent;
 }
 
 template <int K, int N, int SplitK, bool IsW13>
@@ -169,7 +180,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         static_cast<uint32_t>(__cvta_generic_to_shared(activation_smem));
 
     __shared__ __align__(8) uint64_t full_barriers[kStages];
-    __shared__ uint2 lut_smem[256];
+    __shared__ uint2 lut_smem[kLutRows];
     __shared__ float activation_scale_smem[kTok];
     __shared__ int32_t route_ids[kTok];
     __shared__ int32_t activation_rows[kTok];
@@ -182,8 +193,11 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             ? (IsW13 ? route / kTopK : route)
             : -1;
     }
-    for (int i = tid; i < 256; i += blockDim.x)
-        lut_smem[i] = global_lut[i];
+    for (int i = tid; i < kLutRows; i += blockDim.x) {
+        constexpr int kGlobalLutOffset =
+            kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
+        lut_smem[i] = global_lut[kGlobalLutOffset + i];
+    }
 
     uint32_t barrier_addr[kStages];
     #pragma unroll
@@ -318,10 +332,10 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                       + (global_kt & 3) * 4 + k_step];
                 const uint2 fp8_0 =
                     mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<true, true>(
-                        packed0, lut_smem[exponent0]);
+                        packed0, lut_smem[scale_lut_index(exponent0)]);
                 const uint2 fp8_1 =
                     mxfp4::dequant_mxfp4_to_fp8_pair_with_lut<true, true>(
-                        packed1, lut_smem[exponent1]);
+                        packed1, lut_smem[scale_lut_index(exponent1)]);
                 cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
                     fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
                     activation_desc,
@@ -653,14 +667,15 @@ void cast_bf16(torch::Tensor input, torch::Tensor output);
 
 
 _ext = load_inline(
-    name=(f"v4_flash_tp_wgmma_sdyn_wo{WOUT}_"
-          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v13"),
+    name=(f"v4_flash_tp_wgmma_sdyn_wo{WOUT}_lr{LUT_ROWS}_"
+          f"ro{int(W2_ROUTE_OUTPUT)}_mb{MIN_BLOCKS_PER_SM}_v14"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_w13_impl", "run_w2", "reduce_swiglu", "cast_bf16"],
     extra_cuda_cflags=[
         "-O3",
         f"-DK_WOUT={WOUT}",
+        f"-DK_LUT_ROWS={LUT_ROWS}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",

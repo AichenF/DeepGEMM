@@ -855,3 +855,29 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence logs:
   `bench/results/tp4_humming_graph_coldl2_random_formal_20260902.log` and
   `bench/results/tp4_wgmma_graph_coldl2_random_formal_20260902.log`.
+
+### WGMMA iteration 13 — 128-row windowed LUT regresses
+
+- Change: use DeepGEMM's bit-exact 128-row E8M0 LUT window and clamp scale
+  codes through `e8m0_lut_index`, instead of copying all 256 rows into shared
+  memory.  This saves 1 KiB static shared memory per CTA and was intended to
+  raise the shared-memory residency limit from nine to ten CTAs per SM.
+- Full-block correctness passes for both TP4 (I/rank=512) and the TP8 local
+  shape (I/rank=256): worst W2 cosine is 0.999997241/0.999997267 and all
+  outputs are finite.
+- Contemporary random-route cold 3x100 medians for the 256-row control are
+  0.106304 / 0.167104 / 0.264192 / 0.367776 / 0.459008 ms (geomean
+  0.239757 ms).  The immediately repeated 128-row variant gives 0.108832 /
+  0.171520 / 0.270048 / 0.380064 / 0.473488 ms (geomean 0.246340 ms).
+- The windowed variant is slower at every M by 2.2-3.3%, and regresses
+  geometric-mean latency by 2.75%.  Any occupancy opportunity is outweighed
+  by the hot-loop clamp/index instructions.  Reject it and restore the
+  branch-free 256-row lookup as default; retain `V4_LUT_ROWS=128` only as an
+  auditable experiment switch.
+- Evidence logs:
+  `bench/results/v4_flash_tp_wgmma_lut128_correctness_tp4_20260902.log`,
+  `bench/results/v4_flash_tp_wgmma_lut128_correctness_tp8shape_20260902.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_lut128_screen_20260902.log`,
+  `bench/results/tp4_wgmma_graph_coldl2_random_lut256_control_screen_20260902.log`,
+  and
+  `bench/results/tp4_wgmma_graph_coldl2_random_lut128_repeat_screen_20260902.log`.

@@ -469,6 +469,7 @@ def main() -> None:
                         else kernel.W13_SPLIT_MODE
                     ),
                     "output_tile_channels": kernel.WOUT,
+                    "mxfp4_lut_rows": kernel.LUT_ROWS,
                     "w2_epilogue": (
                         "BF16 route output + sglang moe_fused_mul_sum"
                         if kernel.W2_ROUTE_OUTPUT
