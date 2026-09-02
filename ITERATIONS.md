@@ -2043,3 +2043,15 @@ maximum rank latency of a full CUDA-Graph replay.
   choices to distinguish an occupancy/grid error from intrinsic pipeline cost.
 - Evidence:
   `bench/results/tp4_paired_graph_coldl2_w2_ws_p234_screen_20260903.log`.
+
+### WGMMA iteration 29n — persistent W2 grid 156 cold-L2 screen (rejected)
+
+- Reduced the runtime persistent grid from three to two CTAs per H20 SM and
+  repeated the same 4 x 100 paired, per-replay cold-L2 TP4 screen.
+- Performance degrades monotonically with M: custom/Humming is 1.15717,
+  1.19820, 1.22328, 1.24727, and 1.27552.  Geometric-mean custom latency is
+  0.249109 ms versus 0.204254 ms for Humming, a 21.96% loss.
+- All correctness checks pass.  Grid 156 is rejected and shows that limiting
+  the 256-thread candidate to two resident CTA waves is clearly insufficient.
+- Evidence:
+  `bench/results/tp4_paired_graph_coldl2_w2_ws_p156_screen_20260903.log`.
