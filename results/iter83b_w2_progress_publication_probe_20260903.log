@@ -1,0 +1,2 @@
+W2_PROGRESS_PROBE {"chunk_max": 8, "chunk_min": 8, "finite": true, "m": 8, "queue_is_permutation": true, "queue_tail": 32, "route_pattern": "random", "tile_max": 6, "tile_min": 6, "valid_sum": 32, "w2_bitwise_equal": true, "worker_claim": 0}
+W2_PROGRESS_PROBE_OK

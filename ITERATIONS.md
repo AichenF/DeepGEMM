@@ -4073,3 +4073,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - The extension compiles and the four-rank harness initializes on H20 GPUs 1–4, but the first M8 random-route warmup does not return after more than two minutes and emits no correctness record. The targeted process was interrupted; no latency sample exists.
 - Evidence: `results/iter83_w2_progress_tp4_m8_compile_correctness_smoke_coldl2_20260903.log`.
 - Classification: synchronization failure. Keep the path opt-in. Before another end-to-end attempt, run a no-communication publication probe that exposes tile counts, chunk counts, queue tail/valid entries, and worker claim completion; do not tune performance while any count is missing.
+
+### Iteration 83b — W2 progress publication is complete
+
+- Added a single-rank diagnostic that runs the exact progress-enabled W2 specialization, copies its state after synchronization, and compares the route output bitwise against the selected W2 kernel.
+- TP4-shape M8 random routing passes: all 256 `(token,N128)` counters equal 6, all 32 `(token,N1024)` counters equal 8, queue tail and valid sum both equal 32, and the queue is an exact permutation of all 32 tasks. The progress W2 output is finite and bitwise equal to control.
+- Evidence: `results/iter83b_w2_progress_publication_probe_20260903.log`.
+- Finding: iteration 83a is not caused by missing W2 publications. Isolate local worker completion without communication next, then inspect multicast phase/slot layout only if every worker claim terminates.
