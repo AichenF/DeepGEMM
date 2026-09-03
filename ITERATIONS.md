@@ -4544,3 +4544,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - M128 custom/Humming total 334.704/390.992 us (1.16817x). Custom W13/W2 are 201.216/108.560 us versus Humming 233.040/121.376 us.
 - W13+W2 consume 90.06%, 92.15%, and 92.55% of custom local time at M32/M64/M128. Route/input quantization, activation quantization and local k6 reduction jointly leave only about 20–25 us, so the residual 1.20x end-to-end gap cannot be closed by tail-only work. Prioritize core GEMM issue/dataflow at M32–M128.
 - Artifact: `bench/results/iter98_current_stage_budget_m32_m64_m128_coldl2_20260903.log`.
+
+## Iteration 99 — W13 merged-WGMMA-group first correctness launch blocked
+
+- Added an opt-in `V4_W13_MERGED_WGMMA_GROUP=1` candidate. Within each K128 activation-scale group it keeps the four K32 RS-WGMMA operations in one commit group and performs one final wait, while retaining the per-step operand fence/arrival. Default remains disabled.
+- The three requested correctness processes executed route preparation and the kernel path but the harness then raised `AttributeError` while printing the new flag. Investigation found an accidentally uploaded stale `bench/v4_flash_tp_wgmma.py` shadowing the repository-root module because Python places the script directory first on `sys.path`.
+- This is a test-launch/import failure, not eligible correctness or performance evidence. Preserve the candidate and failure log; remove only the newly introduced stale shadow module, then rerun all three gates with an unambiguous root-module import.
+- Artifact: `results/iter99_w13_merged_wgmma_group_correctness_20260903.log`.

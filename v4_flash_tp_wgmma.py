@@ -176,6 +176,9 @@ LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
 W13_DISTRIBUTED_PREP = (
     os.environ.get("V4_W13_DISTRIBUTED_PREP", "1") == "1"
 )
+W13_MERGED_WGMMA_GROUP = (
+    os.environ.get("V4_W13_MERGED_WGMMA_GROUP", "0") == "1"
+)
 if W2_S2R_PREFETCH and (DEQUANT_SYNTH_LUT or W2_GLOBAL_LUT):
     raise ValueError(
         "V4_W2_S2R_PREFETCH currently probes only the shared-LUT path"
@@ -253,6 +256,7 @@ static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
 static constexpr bool kLeaderMbarWait = K_LEADER_MBAR_WAIT;
 static constexpr bool kW13DistributedPrep = K_W13_DISTRIBUTED_PREP;
+static constexpr bool kW13MergedWgmmaGroup = K_W13_MERGED_WGMMA_GROUP;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -411,6 +415,8 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     static_assert(kNumNTiles % kLaunchNTiles == 0);
     constexpr bool kS2RPrefetch =
         IsW13 ? kW13S2RPrefetch : kW2S2RPrefetch;
+    constexpr bool kMergedWgmmaGroup =
+        IsW13 && kW13MergedWgmmaGroup;
     constexpr int kTmaIssuerTid =
         IsW13 && kW13DistributedPrep ? 32 : 0;
 
@@ -988,6 +994,18 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     tile[group][2], tile[group][3],
                     cute::SM90::GMMA::ScaleOut::One);
             }
+            if constexpr (!kMergedWgmmaGroup) {
+                ptx::warpgroup_commit_batch();
+                #pragma unroll
+                for (int group = 0; group < kWgmmaGroups; ++group) {
+                    #pragma unroll
+                    for (int value = 0; value < 4; ++value)
+                        ptx::warpgroup_fence_operand(tile[group][value]);
+                }
+                ptx::warpgroup_wait<0>();
+            }
+        }
+        if constexpr (kMergedWgmmaGroup) {
             ptx::warpgroup_commit_batch();
             #pragma unroll
             for (int group = 0; group < kWgmmaGroups; ++group) {
@@ -3843,7 +3861,8 @@ _ext = load_inline(
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
           f"lmw{int(LEADER_MBAR_WAIT)}_"
           f"dp{int(W13_DISTRIBUTED_PREP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v91distprep"),
+          f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
+          f"mb{MIN_BLOCKS_PER_SM}_v99wgmerge"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -3884,6 +3903,7 @@ _ext = load_inline(
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
         f"-DK_LEADER_MBAR_WAIT={int(LEADER_MBAR_WAIT)}",
         f"-DK_W13_DISTRIBUTED_PREP={int(W13_DISTRIBUTED_PREP)}",
+        f"-DK_W13_MERGED_WGMMA_GROUP={int(W13_MERGED_WGMMA_GROUP)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_W2_SORTED_ACT={int(W2_SORTED_ACT)}",
         f"-DK_W2_MBLOCK_SCALE={int(W2_MBLOCK_SCALE)}",

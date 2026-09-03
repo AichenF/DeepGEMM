@@ -1,0 +1,33 @@
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_wgmma.py", line 454, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_wgmma.py", line 430, in main
+    f" w13_merged_wgmma_group={kernel.W13_MERGED_WGMMA_GROUP}"
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: module 'v4_flash_tp_wgmma' has no attribute 'W13_MERGED_WGMMA_GROUP'
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_wgmma.py", line 454, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_wgmma.py", line 430, in main
+    f" w13_merged_wgmma_group={kernel.W13_MERGED_WGMMA_GROUP}"
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: module 'v4_flash_tp_wgmma' has no attribute 'W13_MERGED_WGMMA_GROUP'
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_wgmma.py", line 454, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_wgmma.py", line 430, in main
+    f" w13_merged_wgmma_group={kernel.W13_MERGED_WGMMA_GROUP}"
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: module 'v4_flash_tp_wgmma' has no attribute 'W13_MERGED_WGMMA_GROUP'
