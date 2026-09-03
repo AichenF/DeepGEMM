@@ -4344,3 +4344,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Verification:** TP4 balanced M8, TP4 skew M8, and TP8-shape balanced M8 all passed the full all-route reference. W2 cosine was 0.999997256, 0.999997235, and 0.999997278 respectively; all outputs finite.
 - **Decision:** Correctness and TP8-runnable gate passed. Candidate remains opt-in until cold-L2 TP4 A/B.
 - **Artifact:** `results/iter86_w2_coalesced_store_correctness_20260903.log`.
+
+## Iteration 86b — TP4 M128 cold-L2 A/B/A/B screen of coalesced W2 epilogue
+
+- **Method:** Four independent CUDA-Graph runs in control/candidate/control/candidate order, random routes, TP4 on GPUs 1–4. Each run used 3×100 samples; every replay had a separate 256 MiB L2 clear excluded from CUDA events; rank-max latency reported.
+- **Control medians:** 0.354288 and 0.346304 ms; paired geometric mean 0.350273 ms.
+- **Candidate medians:** 0.343968 and 0.350880 ms; paired geometric mean 0.347407 ms.
+- **Result:** control/candidate = 1.008251x (0.825% preliminary gain). The first pair favored the candidate by 3.00% but the second disfavored it by 1.30%, so run-to-run drift is larger than the net result.
+- **Decision:** Do not select yet. Retain opt-in and run a longer single-process-window comparison before testing other M values.
+- **Artifact:** `results/iter86b_w2_coalesced_store_tp4_m128_cold_abba_20260903.log`.
