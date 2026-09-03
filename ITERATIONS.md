@@ -4658,3 +4658,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The candidate compiles and passes TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256. Route/input preparation is exact; W13 cosine is at least 0.999999997, W2 cosine is at least 0.999997240, and all outputs are finite.
 - The 64-bit policy may increase register pressure, so the next gate must inspect cubin resources as well as same-process paired cold-L2 M128 timing. Reject if occupancy cost outweighs reuse.
 - Artifact: `results/iter104b_activation_cache_policy_correctness_20260903.log`.
+
+## Iteration 104c — activation cache-policy paired rejection
+
+- Cubin resource inspection initially looked favorable: TP4 W2 fell from 55 to 54 registers/thread and W13 split2 from 55 to 48, with no local spill. The inline PTX shortened compiler-managed load/address live ranges despite retaining a 64-bit policy.
+- Same-process TP4 M128 random-route timing used 8×100 samples per variant, per-sample ABBA ordering, exact graph-output equality, and a separate excluded 256 MiB L2 clear before every replay.
+- Control median: **0.353680 ms**; cache-policy candidate: **0.358192 ms**; control/candidate: **0.987403x**. The candidate is 4.512 us (1.276%) slower, and all eight candidate batch medians lose.
+- Conclusion: the `createpolicy`/cache-hint execution and/or forced eviction priority costs more than any activation reuse benefit. Reject `V4_ACTIVATION_EVICT_LAST=1`, retain default off, and do not extend it to the other M values.
+- Artifact: `results/iter104c_activation_cache_policy_tp4_m128_paired_cold800_20260903.log`.
