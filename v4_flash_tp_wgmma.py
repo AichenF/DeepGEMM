@@ -611,7 +611,9 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     + global_kt * 4 + k_group);
             }
         }
-        if constexpr (kLeaderMbarWait) {
+        // The long-K W13 path benefits from one polling lane.  Short-K W2
+        // retains all-warp waits, which wake the consumer faster in practice.
+        if constexpr (kLeaderMbarWait && IsW13) {
             if (tid == 0)
                 mbar_wait(barrier_addr[stage], (local_kt / kStages) & 1u);
         } else {
@@ -620,7 +622,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         if constexpr (kUseTmaScale && kScaleQuadReuse == 4
                       && kScaleBuffers == 1) {
             if ((local_kt & 3) == 0) {
-                if constexpr (kLeaderMbarWait) {
+                if constexpr (kLeaderMbarWait && IsW13) {
                     if (tid == 0)
                         mbar_wait(scale_barrier_addr, (local_kt >> 2) & 1u);
                 } else {
@@ -1479,7 +1481,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v48"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v49"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
