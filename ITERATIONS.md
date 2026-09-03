@@ -4201,3 +4201,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Cold latency:** control median `0.079376 ms` (min `0.077888`, max `0.102880`); TMA-progress median `0.081152 ms` (min `0.079744`, max `0.126304`). Control/candidate is `0.978115x`.
 - **Finding:** TMA preserves about `0.272 us` of the isolated improvement end to end, narrowing the old 32-worker deficit from `2.048 us` to `1.776 us`, but remains `2.24%` slower.
 - **Decision:** still reject as a selected path. Replace the multi-level atomic ready queue with per-route tile release markers and static chunk ownership.
+
+## Iteration 83i — direct route/tile marker producer gate
+
+- **Change:** replaced the progress path's tile counts, chunk counts, ready queue, valid flags, and queue-tail atomics with one release marker per unique `(route,N128)` producer. Static token/N1024 workers wait in parallel on their 6x8 markers. Progress state is now `M*6*32+2` int32 values.
+- **Correctness:** TP4-local M8 random produces exactly 1,536 markers, all equal to one; eager and captured progress W2 outputs are bitwise equal to ordinary W2.
+- **Method:** four order-balanced outer batches × 200 graph replays per implementation, identical captured state reset on both sides, separately cold L2 before every replay.
+- **Cold W2 latency:** control median `29.728 us` (min `28.960`, max `31.840`); direct-marker progress median `32.416 us` (min `31.424`, max `34.816`), control/candidate `0.917078x`.
+- **Finding:** removing the multi-level queue recovers another `0.384 us` versus iteration 83h1 and about `0.64 us` versus the original progress producer, but `2.688 us` remains. Shared staging and per-CTA TMA completion dominate more than the removed atomics.
+- **Decision:** protocol remains opt-in. Validate the static worker/multicast state on TP4 before an end-to-end timing screen.

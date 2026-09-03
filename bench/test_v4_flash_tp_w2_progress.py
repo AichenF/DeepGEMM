@@ -72,43 +72,27 @@ def main() -> None:
     torch.cuda.synchronize(device)
 
     state = case.w2_progress_state.cpu()
-    tile_end = args.m * 32
-    chunk_end = tile_end + args.m * 4
-    queue_end = chunk_end + args.m * 4
-    valid_end = queue_end + args.m * 4
-    tile = state[:tile_end]
-    chunk = state[tile_end:chunk_end]
-    queue = state[chunk_end:queue_end]
-    valid = state[queue_end:valid_end]
-    tail = int(state[valid_end].item())
-    claim = int(state[valid_end + 1].item())
-    worker_done = int(state[valid_end + 2].item())
-    expected_tasks = args.m * 4
-    queue_values = sorted(int(value) for value in queue[:tail].tolist())
+    marker_end = args.m * 6 * 32
+    markers = state[:marker_end]
+    task_done = int(state[marker_end].item())
+    worker_done = int(state[marker_end + 1].item())
     result = {
         "m": args.m,
         "route_pattern": args.route_pattern,
-        "tile_min": int(tile.min().item()),
-        "tile_max": int(tile.max().item()),
-        "chunk_min": int(chunk.min().item()),
-        "chunk_max": int(chunk.max().item()),
-        "queue_tail": tail,
-        "valid_sum": int(valid.sum().item()),
-        "worker_claim": claim,
+        "marker_min": int(markers.min().item()),
+        "marker_max": int(markers.max().item()),
+        "marker_sum": int(markers.sum().item()),
+        "task_done": task_done,
         "worker_done": worker_done,
-        "queue_is_permutation": queue_values == list(range(expected_tasks)),
         "w2_bitwise_equal": bool(torch.equal(progress_output, case.down)),
         "finite": bool(torch.isfinite(progress_output.float()).all().item()),
     }
     print("W2_PROGRESS_PROBE " + json.dumps(result, sort_keys=True), flush=True)
     if not (
-        result["tile_min"] == result["tile_max"] == 6
-        and result["chunk_min"] == result["chunk_max"] == 8
-        and tail == expected_tasks
-        and result["valid_sum"] == expected_tasks
-        and claim == 0
+        result["marker_min"] == result["marker_max"] == 1
+        and result["marker_sum"] == marker_end
+        and task_done == 0
         and worker_done == 0
-        and result["queue_is_permutation"]
         and result["w2_bitwise_equal"]
         and result["finite"]
     ):

@@ -125,24 +125,16 @@ def main() -> None:
         print("W2_PROGRESS_STAGE worker_complete", flush=True)
 
     state = case.w2_progress_state.cpu()
-    tile_end = args.m * 32
-    chunk_end = tile_end + args.m * 4
-    queue_end = chunk_end + args.m * 4
-    valid_end = queue_end + args.m * 4
+    marker_end = args.m * 6 * 32
     total_tasks = args.m * 4
     local_state = {
         "rank": rank,
         "launch_mode": args.launch_mode,
-        "tile_min": int(state[:tile_end].min().item()),
-        "tile_max": int(state[:tile_end].max().item()),
-        "chunk_min": int(state[tile_end:chunk_end].min().item()),
-        "chunk_max": int(state[tile_end:chunk_end].max().item()),
-        "queue_tail": int(state[valid_end].item()),
-        "worker_claim": int(state[valid_end + 1].item()),
-        "worker_done": int(state[valid_end + 2].item()),
-        "queue_is_permutation": sorted(
-            int(value) for value in state[chunk_end:queue_end].tolist()
-        ) == list(range(total_tasks)),
+        "marker_min": int(state[:marker_end].min().item()),
+        "marker_max": int(state[:marker_end].max().item()),
+        "marker_sum": int(state[:marker_end].sum().item()),
+        "task_done": int(state[marker_end].item()),
+        "worker_done": int(state[marker_end + 1].item()),
     }
 
     nbytes = args.m * 4096 * torch.bfloat16.itemsize
@@ -157,12 +149,10 @@ def main() -> None:
     local_state["source_nonzero_words"] = source_nonzero_words
     local_state["expected_words_per_source"] = nbytes // 4
     local_state["pass"] = bool(
-        local_state["tile_min"] == local_state["tile_max"] == 6
-        and local_state["chunk_min"] == local_state["chunk_max"] == 8
-        and local_state["queue_tail"] == total_tasks
-        and local_state["worker_claim"] == total_tasks + args.workers
+        local_state["marker_min"] == local_state["marker_max"] == 1
+        and local_state["marker_sum"] == marker_end
+        and local_state["task_done"] == total_tasks
         and local_state["worker_done"] == args.workers
-        and local_state["queue_is_permutation"]
         and all(count == nbytes // 4 for count in source_nonzero_words)
     )
     gathered = [None for _ in range(world_size)] if rank == 0 else None

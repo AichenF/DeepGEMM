@@ -1037,18 +1037,6 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                       && N == 4096 && kWout == 128,
                       "W2 progress publication requires full N4096/WOUT128");
         constexpr int kNumW2Tiles = N / kWout;
-        constexpr int kTilesPerChunk = 8;
-        constexpr int kNumChunks = kNumW2Tiles / kTilesPerChunk;
-        const int tokens = max_routes / kTopK;
-        int32_t* tile_counts = progress_state;
-        int32_t* chunk_counts =
-            tile_counts + tokens * kNumW2Tiles;
-        int32_t* ready_queue =
-            chunk_counts + tokens * kNumChunks;
-        int32_t* ready_valid =
-            ready_queue + tokens * kNumChunks;
-        int32_t* queue_tail =
-            ready_valid + tokens * kNumChunks;
 
         auto* route_output = reinterpret_cast<__nv_bfloat16*>(output);
         auto* route_smem = reinterpret_cast<__nv_bfloat16*>(weight_smem);
@@ -1069,27 +1057,17 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             cute::tma_store_arrive();
             ptx::tma_store_wait<0>();
 
+            // Each route/N128 tile has exactly one producer CTA.  Publish a
+            // direct release marker after its TMA store completes; fixed
+            // consumers can wait on the 6x8 markers for their token/N1024
+            // chunk without producer-side counters or a ready queue.
             #pragma unroll
             for (int route_slot = 0; route_slot < kTok; ++route_slot) {
                 const int route = route_ids[route_slot];
-                if (route < max_routes) {
-                    const int token = route / kTopK;
-                    const int tile_offset =
-                        token * kNumW2Tiles + n_block_idx;
-                    const int tile_done =
-                        atomicAdd(tile_counts + tile_offset, 1) + 1;
-                    if (tile_done == kTopK) {
-                        const int chunk = n_block_idx / kTilesPerChunk;
-                        const int task = token * kNumChunks + chunk;
-                        const int chunk_done =
-                            atomicAdd(chunk_counts + task, 1) + 1;
-                        if (chunk_done == kTilesPerChunk) {
-                            const int slot = atomicAdd(queue_tail, 1);
-                            ready_queue[slot] = task;
-                            progress_store_release(ready_valid + slot, 1);
-                        }
-                    }
-                }
+                if (route < max_routes)
+                    progress_store_release(
+                        progress_state + route * kNumW2Tiles + n_block_idx,
+                        1);
             }
         }
     }
@@ -2005,10 +1983,10 @@ __device__ __forceinline__ uint32_t clear_positive_bf16_zero(uint32_t word) {
 }
 
 // Low-footprint consumers overlap local k6 reduction and multicast stores
-// with the unfragmented W2 grid.  W2 publishes N1024 chunks through a dynamic
-// ready queue; consumers never wait for remote ranks, avoiding cross-rank
-// task-order cycles.  A separate finish kernel polls/reduces after every
-// local chunk has been multicast.
+// with the unfragmented W2 grid.  Each static token/N1024 task waits on its
+// 6x8 direct route/tile markers; consumers never wait for remote ranks,
+// avoiding cross-rank task-order cycles.  A separate finish kernel
+// polls/reduces after every local chunk has been multicast.
 template <int Threads>
 __global__ __launch_bounds__(Threads) void progress_k6_mc_push_tp4_kernel(
         const __nv_bfloat16* __restrict__ input,
@@ -2027,35 +2005,29 @@ __global__ __launch_bounds__(Threads) void progress_k6_mc_push_tp4_kernel(
     static_assert(Threads == kVecsPerChunk);
 
     const int total_tasks = tokens * kNumChunks;
-    int32_t* chunk_counts =
-        progress_state + tokens * kNumW2Tiles;
-    int32_t* ready_queue =
-        chunk_counts + total_tasks;
-    int32_t* ready_valid =
-        ready_queue + total_tasks;
-    int32_t* worker_claim =
-        ready_valid + total_tasks + 1;
-    int32_t* worker_done = worker_claim + 1;
+    int32_t* task_done =
+        progress_state + tokens * kTopK * kNumW2Tiles;
+    int32_t* worker_done = task_done + 1;
     const int phase = push_counter[0] & 1u;
     const int64_t phase_offset =
         static_cast<int64_t>(phase) * push_stride * kWorld;
-    __shared__ int task_slot;
-    __shared__ int task_info;
 
-    while (true) {
-        if (threadIdx.x == 0)
-            task_slot = atomicAdd(worker_claim, 1);
-        __syncthreads();
-        if (task_slot >= total_tasks)
-            break;
-        if (threadIdx.x == 0) {
-            while (progress_load_acquire(ready_valid + task_slot) == 0) {}
-            task_info = progress_load_acquire(ready_queue + task_slot);
+    for (int task = blockIdx.x; task < total_tasks; task += gridDim.x) {
+        if (threadIdx.x < kTopK * (kNumW2Tiles / kNumChunks)) {
+            constexpr int kTilesPerChunk = kNumW2Tiles / kNumChunks;
+            const int route_slot = threadIdx.x / kTilesPerChunk;
+            const int tile_in_chunk = threadIdx.x % kTilesPerChunk;
+            const int token = task / kNumChunks;
+            const int chunk = task - token * kNumChunks;
+            const int route = token * kTopK + route_slot;
+            const int tile = chunk * kTilesPerChunk + tile_in_chunk;
+            while (progress_load_acquire(
+                       progress_state + route * kNumW2Tiles + tile) == 0) {}
         }
         __syncthreads();
 
-        const int token = task_info / kNumChunks;
-        const int chunk = task_info - token * kNumChunks;
+        const int token = task / kNumChunks;
+        const int chunk = task - token * kNumChunks;
         const int pair0 = chunk * (kPairsPerToken / kNumChunks)
             + threadIdx.x * kPairsPerVec;
         float2 accum[kPairsPerVec];
@@ -2099,6 +2071,8 @@ __global__ __launch_bounds__(Threads) void progress_k6_mc_push_tp4_kernel(
             + static_cast<int64_t>(vec) * 16;
         store_multimem_16b(push_mc + source_offset, local_vec);
         __syncthreads();
+        if (threadIdx.x == 0)
+            atomicAdd(task_done, 1);
     }
     if (threadIdx.x == 0)
         atomicAdd(worker_done, 1);
@@ -2889,7 +2863,7 @@ void run_w2_progress(
                     && progress_state.is_contiguous(),
                 "W2 progress state must be contiguous CUDA int32");
     const int tokens = topk_weights.numel() / kTopK;
-    TORCH_CHECK(progress_state.numel() >= tokens * 44 + 3,
+    TORCH_CHECK(progress_state.numel() >= tokens * 192 + 2,
                 "W2 progress state is too small");
     launch_route_gemm<512, 4096, 1, false, 0, true>(
         weight, weight_scale, weight_global_scale,
@@ -3268,8 +3242,8 @@ void progress_k6_mc_push_tp4(
     TORCH_CHECK(progress_state.scalar_type() == torch::kInt32
                     && progress_state.is_cuda()
                     && progress_state.is_contiguous()
-                    && progress_state.numel() >= tokens * 44 + 3,
-                "progress state must contain at least M*44+3 int32 values");
+                    && progress_state.numel() >= tokens * 192 + 2,
+                "progress state must contain at least M*192+2 int32 values");
     TORCH_CHECK(push_counter.is_cuda() && push_counter.element_size() == 4
                     && push_counter.numel() == 78,
                 "TP4 H20 push counter must contain 78 CUDA uint32 values");
@@ -3622,7 +3596,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v83h1tma"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v83imarker"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
