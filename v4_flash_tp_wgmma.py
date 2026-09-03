@@ -82,6 +82,9 @@ if TMA_CTA_SCOPE and not BULK_WEIGHT_COPY:
 WEIGHT_EVICT_FIRST = os.environ.get("V4_WEIGHT_EVICT_FIRST", "1") == "1"
 if WEIGHT_EVICT_FIRST and not BULK_WEIGHT_COPY:
     raise ValueError("V4_WEIGHT_EVICT_FIRST requires bulk weight copy")
+WEIGHT_POLICY_HOIST = os.environ.get("V4_WEIGHT_POLICY_HOIST", "0") == "1"
+if WEIGHT_POLICY_HOIST and not WEIGHT_EVICT_FIRST:
+    raise ValueError("V4_WEIGHT_POLICY_HOIST requires weight evict-first")
 INTERLEAVED_BULK_COPY = (
     os.environ.get("V4_INTERLEAVED_BULK_COPY", "1") == "1"
 )
@@ -272,6 +275,7 @@ static constexpr bool kTiledWeightLayout = K_TILED_WEIGHT_LAYOUT;
 static constexpr bool kBulkWeightCopy = K_BULK_WEIGHT_COPY;
 static constexpr bool kTmaCtaScope = K_TMA_CTA_SCOPE;
 static constexpr bool kWeightEvictFirst = K_WEIGHT_EVICT_FIRST;
+static constexpr bool kWeightPolicyHoist = K_WEIGHT_POLICY_HOIST;
 static constexpr bool kInterleavedBulkCopy = K_INTERLEAVED_BULK_COPY;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
@@ -322,16 +326,27 @@ __device__ __forceinline__ void mbar_arrive(uint32_t address) {
 }
 
 __device__ __forceinline__ void bulk_gmem_to_smem(
-        uint32_t dst, const void* src, int bytes, uint32_t mbar) {
+        uint32_t dst, const void* src, int bytes, uint32_t mbar,
+        uint64_t cache_policy) {
     if constexpr (kTmaCtaScope) {
         if constexpr (kWeightEvictFirst) {
-            asm volatile(
-                "{.reg .b64 policy;"
-                " createpolicy.fractional.L2::evict_first.b64 policy,1.0;"
-                " cp.async.bulk.shared::cta.global.mbarrier::"
-                "complete_tx::bytes.L2::cache_hint "
-                "[%0],[%1],%2,[%3],policy;}"
-                :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar) : "memory");
+            if constexpr (kWeightPolicyHoist) {
+                asm volatile(
+                    "cp.async.bulk.shared::cta.global.mbarrier::"
+                    "complete_tx::bytes.L2::cache_hint "
+                    "[%0],[%1],%2,[%3],%4;"
+                    :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar),
+                       "l"(cache_policy) : "memory");
+            } else {
+                asm volatile(
+                    "{.reg .b64 policy;"
+                    " createpolicy.fractional.L2::evict_first.b64 policy,1.0;"
+                    " cp.async.bulk.shared::cta.global.mbarrier::"
+                    "complete_tx::bytes.L2::cache_hint "
+                    "[%0],[%1],%2,[%3],policy;}"
+                    :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar)
+                    : "memory");
+            }
         } else {
             asm volatile(
                 "cp.async.bulk.shared::cta.global.mbarrier::"
@@ -340,13 +355,23 @@ __device__ __forceinline__ void bulk_gmem_to_smem(
         }
     } else {
         if constexpr (kWeightEvictFirst) {
-            asm volatile(
-                "{.reg .b64 policy;"
-                " createpolicy.fractional.L2::evict_first.b64 policy,1.0;"
-                " cp.async.bulk.shared::cluster.global.mbarrier::"
-                "complete_tx::bytes.L2::cache_hint "
-                "[%0],[%1],%2,[%3],policy;}"
-                :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar) : "memory");
+            if constexpr (kWeightPolicyHoist) {
+                asm volatile(
+                    "cp.async.bulk.shared::cluster.global.mbarrier::"
+                    "complete_tx::bytes.L2::cache_hint "
+                    "[%0],[%1],%2,[%3],%4;"
+                    :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar),
+                       "l"(cache_policy) : "memory");
+            } else {
+                asm volatile(
+                    "{.reg .b64 policy;"
+                    " createpolicy.fractional.L2::evict_first.b64 policy,1.0;"
+                    " cp.async.bulk.shared::cluster.global.mbarrier::"
+                    "complete_tx::bytes.L2::cache_hint "
+                    "[%0],[%1],%2,[%3],policy;}"
+                    :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar)
+                    : "memory");
+            }
         } else {
             asm volatile(
                 "cp.async.bulk.shared::cluster.global.mbarrier::"
@@ -557,6 +582,12 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     __shared__ int32_t activation_rows[kTok];
 
     const int tid = threadIdx.x;
+    uint64_t weight_cache_policy = 0;
+    if constexpr (kWeightEvictFirst && kWeightPolicyHoist) {
+        asm volatile(
+            "createpolicy.fractional.L2::evict_first.b64 %0,1.0;"
+            : "=l"(weight_cache_policy));
+    }
     uint64_t reused_cache_policy = 0;
     if constexpr (kActivationEvictLast) {
         asm volatile(
@@ -674,7 +705,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     : kWeightStageBytes;
                 bulk_gmem_to_smem(
                     weight_dst, weight_src, copy_bytes,
-                    barrier_addr[stage]);
+                    barrier_addr[stage], weight_cache_policy);
             } else if constexpr (kBulkWeightCopy) {
                 const int64_t tile =
                     (static_cast<int64_t>(expert_idx) * kNumNTiles
@@ -683,7 +714,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     weight + tile * kWeightStageBytes;
                 bulk_gmem_to_smem(
                     weight_dst, weight_src, kWeightStageBytes,
-                    barrier_addr[stage]);
+                    barrier_addr[stage], weight_cache_policy);
             } else if constexpr (kTiledWeightLayout) {
                 const int tiled_row =
                     ((expert_idx * kNumNTiles + n_block_idx) * kNumKTiles
@@ -715,7 +746,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                         weight_scale + scale_tile * kScaleStageBytes;
                     bulk_gmem_to_smem(
                         scale_dst, scale_src, kScaleStageBytes,
-                        barrier_addr[stage]);
+                        barrier_addr[stage], weight_cache_policy);
                 } else if constexpr (kTiledWeightLayout) {
                     constexpr int kScaleTiles = kNumKTiles / 4;
                     const int tiled_scale_row =
@@ -756,7 +787,8 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                         weight_scale + scale_tile * kScaleStageBytes;
                     bulk_gmem_to_smem(
                         weight_scale_smem_addr, scale_src,
-                        kScaleStageBytes, scale_barrier_addr);
+                        kScaleStageBytes, scale_barrier_addr,
+                        weight_cache_policy);
                 } else if constexpr (kTiledWeightLayout) {
                     constexpr int kScaleTiles = kNumKTiles / 4;
                     const int tiled_scale_row =
@@ -3963,6 +3995,7 @@ _ext = load_inline(
           f"twl{int(TILED_WEIGHT_LAYOUT)}_"
           f"bwc{int(BULK_WEIGHT_COPY)}_tcs{int(TMA_CTA_SCOPE)}_"
           f"wef{int(WEIGHT_EVICT_FIRST)}_"
+          f"wph{int(WEIGHT_POLICY_HOIST)}_"
           f"ibc{int(INTERLEAVED_BULK_COPY)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_sa{int(W2_SORTED_ACT)}_"
@@ -3974,7 +4007,7 @@ _ext = load_inline(
           f"lmw{int(LEADER_MBAR_WAIT)}_"
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v105wef"),
+          f"mb{MIN_BLOCKS_PER_SM}_v107wph"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -4012,6 +4045,7 @@ _ext = load_inline(
         f"-DK_BULK_WEIGHT_COPY={int(BULK_WEIGHT_COPY)}",
         f"-DK_TMA_CTA_SCOPE={int(TMA_CTA_SCOPE)}",
         f"-DK_WEIGHT_EVICT_FIRST={int(WEIGHT_EVICT_FIRST)}",
+        f"-DK_WEIGHT_POLICY_HOIST={int(WEIGHT_POLICY_HOIST)}",
         f"-DK_INTERLEAVED_BULK_COPY={int(INTERLEAVED_BULK_COPY)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",

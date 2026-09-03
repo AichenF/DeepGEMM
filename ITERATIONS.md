@@ -4706,3 +4706,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Re-ran the selected default without the flag: TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256 all pass. Route/input preparation is exact; W13 cosine is at least 0.999999997, W2 cosine is at least 0.999997240, and all outputs are finite.
 - Current formal TP4 cold-L2 score is Humming/custom `0.210711799/0.184569426 ms = 1.141640x`; the remaining 1.20x gap is approximately 8.98 us geometric mean, or 4.86% of custom.
 - Artifact: `results/iter106_weight_evict_first_default_correctness_20260903.log`.
+
+## Iteration 107 — hoisted streaming-weight policy correctness gate
+
+- SASS for the selected evict-first path showed roughly six uniform policy-construction instructions immediately before each bulk TMA. Added opt-in `V4_WEIGHT_POLICY_HOIST=1`, default off, to construct the same eviction policy once per CTA and reuse it for every weight/scale transfer.
+- Cache semantics, transfer bytes, layout, synchronization, math, and grid are unchanged. The current per-issue construction remains the control.
+- Correctness passes TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256. Route/input preparation is exact; W13 cosine is at least 0.999999997, W2 cosine is at least 0.999997240, and all outputs are finite.
+- Next inspect SASS/resource usage to verify the intended hoist and ensure no occupancy loss, then run a long paired TP4 M128 cold-L2 gate.
+- Artifact: `results/iter107_weight_policy_hoist_correctness_20260903.log`.

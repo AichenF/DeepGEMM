@@ -999,6 +999,7 @@ def main() -> None:
                     "bulk_weight_copy": kernel.BULK_WEIGHT_COPY,
                     "tma_cta_scope": kernel.TMA_CTA_SCOPE,
                     "weight_evict_first": kernel.WEIGHT_EVICT_FIRST,
+                    "weight_policy_hoist": kernel.WEIGHT_POLICY_HOIST,
                     "interleaved_bulk_copy": kernel.INTERLEAVED_BULK_COPY,
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,

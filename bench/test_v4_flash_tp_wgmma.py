@@ -420,6 +420,7 @@ def main() -> None:
         f"interleaved_bulk={kernel.INTERLEAVED_BULK_COPY} "
         f"tma_cta_scope={kernel.TMA_CTA_SCOPE} "
         f"weight_evict_first={kernel.WEIGHT_EVICT_FIRST} "
+        f"weight_policy_hoist={kernel.WEIGHT_POLICY_HOIST} "
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
         f"w13_tail_fused_act={w13_tail_fused_act} "
         f"w2_sorted_act={kernel.W2_SORTED_ACT} "
