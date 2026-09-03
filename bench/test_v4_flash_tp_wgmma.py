@@ -64,6 +64,10 @@ def main() -> None:
     parser.add_argument("--m", type=int, default=8)
     parser.add_argument("--pattern", choices=("balanced", "skew"), default="balanced")
     parser.add_argument("--intermediate", type=int, choices=(256, 512), default=512)
+    parser.add_argument("--scale-min", type=int, default=125)
+    parser.add_argument("--scale-max", type=int, default=129)
+    parser.add_argument("--input-scale", type=float, default=0.1)
+    parser.add_argument("--weight-byte", type=int, default=-1)
     args = parser.parse_args()
 
     torch.cuda.set_device(0)
@@ -81,29 +85,61 @@ def main() -> None:
     # by the inherited RS-WGMMA core.  Narrow scale exponents keep references
     # finite while exercising multiple E8M0 values.
     w13 = torch.randint(0, 256, (E, n13, H // 2), dtype=torch.uint8, device=device)
-    s13 = torch.randint(125, 129, (E, n13, H // 32), dtype=torch.uint8, device=device)
+    if not (0 <= args.scale_min < args.scale_max <= 256):
+        parser.error("scale range must satisfy 0 <= min < max <= 256")
+    s13 = torch.randint(
+        args.scale_min,
+        args.scale_max,
+        (E, n13, H // 32),
+        dtype=torch.uint8,
+        device=device,
+    )
     w2 = torch.randint(
         0, 256, (E, H, intermediate // 2), dtype=torch.uint8, device=device
     )
+    if args.weight_byte >= 0:
+        if args.weight_byte > 255:
+            parser.error("--weight-byte must be -1 or an unsigned byte")
+        w13.fill_(args.weight_byte)
+        w2.fill_(args.weight_byte)
     s2 = torch.randint(
-        125, 129, (E, H, intermediate // 32), dtype=torch.uint8, device=device
+        args.scale_min,
+        args.scale_max,
+        (E, H, intermediate // 32),
+        dtype=torch.uint8,
+        device=device,
     )
-    w13_reference = w13
-    w2_reference = w2
+    needs_weight_copy = (
+        kernel.MODE2_BRAID
+        or kernel.NORMALIZED_WEIGHT_SCALE
+        or kernel.TILED_WEIGHT_LAYOUT
+    )
+    w13_reference = w13.clone() if needs_weight_copy else w13
+    w2_reference = w2.clone() if needs_weight_copy else w2
+    s13_reference = s13
+    s2_reference = s2
+    g13 = torch.empty(0, dtype=torch.float32, device=device)
+    g2 = torch.empty(0, dtype=torch.float32, device=device)
+    if kernel.NORMALIZED_WEIGHT_SCALE:
+        s13, g13 = kernel.normalize_mxfp4_weight_scales_(w13, s13)
+        s2, g2 = kernel.normalize_mxfp4_weight_scales_(w2, s2)
     if kernel.MODE2_BRAID:
-        # Preserve the ordinary braided values for the independent torch
-        # reference, then convert only the kernel operands offline.
-        w13_reference = w13.clone()
-        w2_reference = w2.clone()
+        # Convert only the kernel operands to the Mode2 physical layout.
         kernel.braid_mode2_(w13)
         kernel.braid_mode2_(w2)
+    if kernel.TILED_WEIGHT_LAYOUT:
+        w13, s13 = kernel.tile_mxfp4_weight_layout(w13, s13)
+        w2, s2 = kernel.tile_mxfp4_weight_layout(w2, s2)
 
     topk_ids, topk_weights = make_routes(args.m, args.pattern, device)
     sorted_ids, expert_ids, num_tokens_padded = moe_align_block_size(
         topk_ids, block_size=8, num_experts=E, ignore_invalid_expert=True
     )
     routes = args.m * TOP_K
-    x = torch.randn((args.m, H), dtype=torch.bfloat16, device=device) * 0.1
+    x = (
+        torch.randn((args.m, H), dtype=torch.bfloat16, device=device)
+        * args.input_scale
+    )
     qx = torch.empty_like(x, dtype=torch.float8_e4m3fn)
     qx, x_scale = ops.quant_input(
         inputs=x,
@@ -124,6 +160,7 @@ def main() -> None:
     kernel.run_w13(
         w13,
         s13,
+        g13,
         qx.view(torch.uint8),
         x_scale,
         sorted_ids,
@@ -167,6 +204,7 @@ def main() -> None:
     kernel.run_w2(
         w2,
         s2,
+        g2,
         qact.view(torch.uint8),
         act_scale,
         sorted_ids,
@@ -201,7 +239,9 @@ def main() -> None:
     for expert in torch.unique(flat_ids).tolist():
         route_index = torch.nonzero(flat_ids == expert, as_tuple=False).flatten()
         token_index = torch.div(route_index, TOP_K, rounding_mode="floor")
-        weight = dequant_braided(w13_reference[expert], s13[expert])
+        weight = dequant_braided(
+            w13_reference[expert], s13_reference[expert]
+        )
         gate_up_ref[route_index] = x_dequant[token_index] @ weight.t()
         del weight
 
@@ -215,7 +255,9 @@ def main() -> None:
     down_ref = torch.empty((routes, H), dtype=torch.float32, device=device)
     for expert in torch.unique(flat_ids).tolist():
         route_index = torch.nonzero(flat_ids == expert, as_tuple=False).flatten()
-        weight = dequant_braided(w2_reference[expert], s2[expert])
+        weight = dequant_braided(
+            w2_reference[expert], s2_reference[expert]
+        )
         down_ref[route_index] = act_dequant[route_index] @ weight.t()
         del weight
     local_ref = (
