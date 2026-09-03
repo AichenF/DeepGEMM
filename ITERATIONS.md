@@ -5396,3 +5396,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - The barrier protocol constraints rule out speculative early refill or relaxed publication: a full stage requires both arrival and transaction counts to reach zero, parity must follow slot reuse, and the consumer must finish all shared-memory reads before release.
 - The scheduling references identify L2-local tile grouping/raster order as the remaining independent lever, while the current profile and prior iterations already reject deeper staging, wider global unrolling, and unsafe barrier changes.
 - Result: no production source or benchmark result changed. Use source-correlated SASS/profile evidence to decide whether the next candidate targets necessary barrier wait, address/control instructions, or route-tile locality.
+
+## Iteration 136 — source-correlated NCU hotspot audit
+
+- Added `analyze_ncu_hotspots.py` and applied it to the selected four-way TP4 M128 cold-L2 NCU report. The parser reports per-kernel not-issued stall totals and the hottest SASS PCs without collecting a new profile.
+- W13 has 4,046 not-issued samples: barrier 1,272 (31.44%), wait 674 (16.66%), math 588 (14.53%), long-scoreboard 566 (13.99%), and short-scoreboard 342 (8.45%). W2 has 2,040: barrier 542 (26.57%), long-scoreboard 464 (22.75%), math 344 (16.86%), wait 302 (14.80%), and short-scoreboard 144 (7.06%).
+- The dominant W13 barrier samples land on four repeated `BSSY` reconvergence sites (162, 87, 79, and 62 samples), while the hottest explicit `WARPGROUP.DEPBAR.LE` sites have only 11 samples. Therefore the aggregate `stall_barrier` label does not justify weakening `mbarrier` publication or adding stages; most sampled pressure is compiler control/reconvergence around expanded K bodies.
+- The hottest W13 long-scoreboard sites are shared-memory metadata/activation publication stores and their dependent scale multiply, not the `mbarrier.try_wait` loop. Any next control-path experiment must preserve 52-register occupancy and target repeated divergent setup in the unrolled body rather than synchronization correctness.
+- Result: prefer a narrow source/SASS mapping of the repeated `BSSY` regions, then either hoist/eliminate their invariant branch or abandon this direction in favor of route-tile locality. Do not repeat direct-barrier-address or deeper-stage experiments.
+- Evidence: `results/iter136_selected_unroll4_tp4_m128_ncu_sass_hotspots_20260904.log`.
