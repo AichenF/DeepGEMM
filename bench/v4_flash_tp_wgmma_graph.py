@@ -1005,6 +1005,9 @@ def main() -> None:
                         kernel.W2_NO_WEIGHT_EVICT_FIRST
                     ),
                     "interleaved_bulk_copy": kernel.INTERLEAVED_BULK_COPY,
+                    "compact_interleaved_scale": (
+                        kernel.COMPACT_INTERLEAVED_SCALE
+                    ),
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "fused_route_quant": kernel.FUSED_ROUTE_QUANT,

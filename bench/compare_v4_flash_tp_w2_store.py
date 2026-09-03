@@ -36,9 +36,11 @@ if COMPARE_FLAG not in {
     "V4_WEIGHT_POLICY_HOIST",
     "V4_WEIGHT_POLICY_CONSTANT",
     "V4_W2_NO_WEIGHT_EVICT_FIRST",
+    "V4_COMPACT_INTERLEAVED_SCALE",
     "V4_EXACT_ROUTE_CAPACITY",
 }:
     raise ValueError(f"unsupported V4_COMPARE_FLAG={COMPARE_FLAG}")
+LAYOUT_CHANGING_FLAGS = {"V4_COMPACT_INTERLEAVED_SCALE"}
 if COMPARE_FLAG != "V4_EXACT_ROUTE_CAPACITY":
     os.environ[COMPARE_FLAG] = "0"
 import v4_flash_tp_wgmma as control_kernel  # noqa: E402
@@ -155,7 +157,17 @@ def main() -> None:
     torch.manual_seed(args.seed + rank)
     torch.cuda.manual_seed(args.seed + rank)
     bench.kernel = control_kernel
-    weights = bench.make_weights(intermediate_per_rank, device)
+    control_weights = bench.make_weights(intermediate_per_rank, device)
+    if COMPARE_FLAG in LAYOUT_CHANGING_FLAGS:
+        # Recreate the same logical random tensors and let each module apply
+        # its own physical checkpoint layout.  Re-seeding also leaves the RNG
+        # state identical to the ordinary single-weight-set benchmark.
+        torch.manual_seed(args.seed + rank)
+        torch.cuda.manual_seed(args.seed + rank)
+        bench.kernel = candidate_kernel
+        candidate_weights = bench.make_weights(intermediate_per_rank, device)
+    else:
+        candidate_weights = control_weights
     lut = control_kernel.make_e2m1_e8m0_lut(device)
     topk_ids, topk_weights = bench.make_routes(
         args.m, args.route_pattern, device, args.seed
@@ -180,7 +192,7 @@ def main() -> None:
         x,
         topk_ids,
         topk_weights,
-        weights,
+        control_weights,
         lut,
         intermediate_per_rank,
         device,
@@ -194,7 +206,7 @@ def main() -> None:
         x,
         topk_ids,
         topk_weights,
-        weights,
+        candidate_weights,
         lut,
         intermediate_per_rank,
         device,

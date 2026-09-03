@@ -4872,3 +4872,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Both registers and shared memory limit residency to nine 128-thread CTAs/SM (36 warps, 56.25% theoretical occupancy); achieved occupancy is 52.95% / 33.89 warps.  Branch efficiency is 70.88%, consistent with route-bound predicates and max-grid tail work.
 - Direction: seek a single-warpgoup W13 change that reduces per-K128 issue/dequant/synchronization work or resource footprint without the dual-WG candidate's occupancy loss.  Weight bandwidth/cache-policy and CAR geometry are already separately gated; do not infer a bandwidth-only solution from this profile.
 - Artifact: `results/iter116c_selected_tp4_m128_w13_ncu_details_20260903.log`.
+
+## Iteration 117 — compact per-K128 interleaved scale layout correctness
+
+- Hypothesis: append each pre-swizzled 8192-byte MXFP4 K128 weight tile with exactly its 512-byte (N128 x 4) E8M0 scales.  This preserves one bulk TMA and identical total bytes per tile quartet while reducing two-stage dynamic scale storage from 4096 to 1024 bytes.
+- Implementation: added opt-in `V4_COMPACT_INTERLEAVED_SCALE=1`, compact model-load packing, per-stage scale addressing, K=256 support, benchmark metadata, and layout-aware paired comparison weights.  Kept launch bounds unchanged to isolate layout/dataflow.
+- Verification on H20 GPU1:
+  - TP4 shape I/rank=512, M8 balanced, auto split4: route/quant exact; W13 cosine 0.999999998, activation cosine 0.999999759, W2 cosine 0.999997256.
+  - TP4 shape I/rank=512, M8 skew, forced split2: route/quant exact; W13 cosine 0.999999997, activation cosine 0.999999649, W2 cosine 0.999997235.
+  - TP8 shape I/rank=256, M8 balanced, auto split4: route/quant exact; W13 cosine 0.999999997, activation cosine 0.999999745, W2 cosine 0.999997278.
+- Result: all three paths passed and stayed finite.  Candidate is correctness-qualified for cold-L2 paired performance testing; it is not selected yet.
+- Evidence: `results/iter117_compact_interleaved_scale_correctness_20260903.log`.

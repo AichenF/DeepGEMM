@@ -114,10 +114,21 @@ if INTERLEAVED_BULK_COPY and (
         "V4_INTERLEAVED_BULK_COPY requires two weight/scale stages "
         "and scale-quad reuse"
     )
+COMPACT_INTERLEAVED_SCALE = (
+    os.environ.get("V4_COMPACT_INTERLEAVED_SCALE", "0") == "1"
+)
+if COMPACT_INTERLEAVED_SCALE and not INTERLEAVED_BULK_COPY:
+    raise ValueError(
+        "V4_COMPACT_INTERLEAVED_SCALE requires interleaved bulk copy"
+    )
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
 W13_PAIRED_WG = os.environ.get("V4_W13_PAIRED_WG", "0") == "1"
+if COMPACT_INTERLEAVED_SCALE and W13_PAIRED_WG:
+    raise ValueError(
+        "compact interleaved scales are not implemented for paired W13"
+    )
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_SORTED_ACT = os.environ.get("V4_W2_SORTED_ACT", "0") == "1"
 W2_MBLOCK_SCALE = os.environ.get("V4_W2_MBLOCK_SCALE", "0") == "1"
@@ -313,6 +324,8 @@ static constexpr bool kWeightPolicyHoist = K_WEIGHT_POLICY_HOIST;
 static constexpr bool kWeightPolicyConstant = K_WEIGHT_POLICY_CONSTANT;
 static constexpr bool kW2NoWeightEvictFirst = K_W2_NO_WEIGHT_EVICT_FIRST;
 static constexpr bool kInterleavedBulkCopy = K_INTERLEAVED_BULK_COPY;
+static constexpr bool kCompactInterleavedScale =
+    K_COMPACT_INTERLEAVED_SCALE;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
@@ -331,6 +344,7 @@ static_assert(!kInterleavedBulkCopy
               || (kBulkWeightCopy && kTiledWeightLayout
                   && kStages == 2 && kScaleQuadReuse == 4
                   && kScaleBuffers == 2));
+static_assert(!kCompactInterleavedScale || kInterleavedBulkCopy);
 static constexpr float kRoutedScale = 1.5f;
 static constexpr bool kW2RouteOutput = K_W2_ROUTE_OUTPUT;
 static constexpr bool kW2SortedAct = K_W2_SORTED_ACT;
@@ -563,12 +577,13 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
     constexpr int kNumKTiles = K / kBlockK;
     constexpr int kKTilesPerSplit = kNumKTiles / SplitK;
     constexpr int kWeightStageBytes = kWout * (kBlockK / 2);
-    // TMA requires the contiguous box dimension to span at least 16 bytes.
-    // Fetch four adjacent K128 scale quads per row and consume the first quad.
-    // The extra bytes are no worse than the sector overfetch of scalar loads.
-    constexpr int kScaleRowBytes = 16;
+    // The legacy layout fetches four adjacent K128 scale quads per row to
+    // satisfy a 16-byte tensor-map box.  The compact linear layout appends
+    // exactly the four scale bytes consumed by each K128 weight tile.
+    constexpr int kScaleRowBytes =
+        kCompactInterleavedScale ? 4 : 16;
     constexpr int kScaleStageBytes = kWout * kScaleRowBytes;
-    constexpr bool kUseTmaScale = K >= 512;
+    constexpr bool kUseTmaScale = K >= 512 || kCompactInterleavedScale;
     constexpr bool kInterleavedScale =
         kInterleavedBulkCopy && kUseTmaScale;
     constexpr int kCombinedStageBytes =
@@ -732,13 +747,18 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
             int scale_kt = global_kt;
             int scale_stage = stage;
             if constexpr (kInterleavedScale) {
-                const int record = global_kt & 7;
-                const bool even_quartet = record == 0;
-                const bool odd_quartet =
-                    record == 3 && local_kt + 1 < kKTilesPerSplit;
-                load_scale = even_quartet || odd_quartet;
-                scale_kt = even_quartet ? global_kt : global_kt + 1;
-                scale_stage = (scale_kt >> 2) & 1;
+                if constexpr (kCompactInterleavedScale) {
+                    load_scale = true;
+                    scale_stage = stage;
+                } else {
+                    const int record = global_kt & 7;
+                    const bool even_quartet = record == 0;
+                    const bool odd_quartet =
+                        record == 3 && local_kt + 1 < kKTilesPerSplit;
+                    load_scale = even_quartet || odd_quartet;
+                    scale_kt = even_quartet ? global_kt : global_kt + 1;
+                    scale_stage = (scale_kt >> 2) & 1;
+                }
             } else if constexpr (kUseTmaScale && kScaleQuadReuse == 4
                           && kScaleBuffers == 2) {
                 // One 16-byte scale row covers four K128 tiles.  Load the
@@ -764,18 +784,22 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
                     :: "r"(barrier_addr[stage]), "n"(kWeightStageBytes));
             }
             if constexpr (kInterleavedScale) {
-                constexpr int kScaleTiles = kNumKTiles / 4;
-                constexpr int kBytesPerNTile =
-                    kNumKTiles * kWeightStageBytes
-                    + kScaleTiles * kScaleStageBytes;
-                const int record = global_kt & 7;
-                const int scales_before =
-                    (global_kt >> 3) * 2
-                    + (record >= 1 ? 1 : 0)
-                    + (record >= 4 ? 1 : 0);
-                const int offset =
-                    global_kt * kWeightStageBytes
-                    + scales_before * kScaleStageBytes;
+                constexpr int kBytesPerNTile = kCompactInterleavedScale
+                    ? kNumKTiles * kCombinedStageBytes
+                    : kNumKTiles * kWeightStageBytes
+                        + (kNumKTiles / 4) * kScaleStageBytes;
+                int offset;
+                if constexpr (kCompactInterleavedScale) {
+                    offset = global_kt * kCombinedStageBytes;
+                } else {
+                    const int record = global_kt & 7;
+                    const int scales_before =
+                        (global_kt >> 3) * 2
+                        + (record >= 1 ? 1 : 0)
+                        + (record >= 4 ? 1 : 0);
+                    offset = global_kt * kWeightStageBytes
+                        + scales_before * kScaleStageBytes;
+                }
                 const int64_t ntile =
                     static_cast<int64_t>(expert_idx) * kNumNTiles
                     + n_block_idx;
@@ -911,13 +935,17 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
         const int stage = local_kt % kStages;
         const int global_kt = kt_begin + local_kt;
         const int scale_stage =
-            !kUseTmaScale
+            kCompactInterleavedScale
+            ? stage
+            : !kUseTmaScale
             ? stage
             : (kScaleBuffers == 1
             ? 0
             : (kScaleQuadReuse == 4
                ? ((global_kt >> 2) & 1)
                : stage));
+        const int scale_k_base =
+            kCompactInterleavedScale ? 0 : (global_kt & 3) * 4;
 
         if constexpr (DualWgW13) {
             if (local_kt > 0 && math_wg == 0) {
@@ -986,7 +1014,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
                 const int k_group = i & 3;
                 weight_scale_smem[stage * kScaleStageBytes
                                   + local_n * kScaleRowBytes
-                                  + (global_kt & 3) * 4 + k_group] = __ldg(
+                                  + scale_k_base + k_group] = __ldg(
                     weight_scale
                     + static_cast<int64_t>(weight_row + local_n) * (K / 32)
                     + global_kt * 4 + k_group);
@@ -1076,11 +1104,11 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
                         const uint32_t exponent0 =
                             weight_scale_smem[scale_stage * kScaleStageStride
                                               + group_row0 * kScaleRowBytes
-                                              + (global_kt & 3) * 4];
+                                              + scale_k_base];
                         const uint32_t exponent1 =
                             weight_scale_smem[scale_stage * kScaleStageStride
                                               + group_row1 * kScaleRowBytes
-                                              + (global_kt & 3) * 4];
+                                              + scale_k_base];
                         if constexpr (kNormalizedWeightScale) {
                             if constexpr (kNormalizedSharedLut) {
                                 weight_lut0 = lut_smem[exponent0];
@@ -1124,11 +1152,11 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
                     const uint32_t exponent0 =
                         weight_scale_smem[scale_stage * kScaleStageStride
                                           + group_row0 * kScaleRowBytes
-                                          + (global_kt & 3) * 4 + k_step];
+                                          + scale_k_base + k_step];
                     const uint32_t exponent1 =
                         weight_scale_smem[scale_stage * kScaleStageStride
                                           + group_row1 * kScaleRowBytes
-                                          + (global_kt & 3) * 4 + k_step];
+                                          + scale_k_base + k_step];
                     if constexpr (kNormalizedWeightScale) {
                         if constexpr (kNormalizedSharedLut) {
                             weight_lut0 = lut_smem[exponent0];
@@ -1200,12 +1228,12 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
                         const uint32_t next_exponent0 =
                             weight_scale_smem[scale_stage * kScaleStageStride
                                               + group_row0 * kScaleRowBytes
-                                              + (global_kt & 3) * 4
+                                              + scale_k_base
                                               + next_k_step];
                         const uint32_t next_exponent1 =
                             weight_scale_smem[scale_stage * kScaleStageStride
                                               + group_row1 * kScaleRowBytes
-                                              + (global_kt & 3) * 4
+                                              + scale_k_base
                                               + next_k_step];
                         if constexpr (kNormalizedWeightScale) {
                             if constexpr (kNormalizedSharedLut) {
@@ -3069,7 +3097,7 @@ void launch_route_gemm(
             || last_scale_pointer != weight_scale.data_ptr()) {
         weight_descriptor = make_weight_desc(
             weight.data_ptr(), K, weight.numel());
-        if constexpr (K >= 512) {
+        if constexpr (K >= 512 || kCompactInterleavedScale) {
             if constexpr (kInterleavedBulkCopy) {
                 // Neither tensor map is consumed by the linear interleaved
                 // path, but keep a valid by-value descriptor argument.
@@ -3091,13 +3119,18 @@ void launch_route_gemm(
                     && n_tile_begin + launch_n_tiles <= N / kWout,
                 "invalid output-N tile range");
     const int grid = max_m_blocks * (launch_n_tiles / math_wgs) * SplitK;
-    constexpr int effective_scale_buffers = K >= 512 ? kScaleBuffers : kStages;
-    constexpr bool interleaved_scale = kInterleavedBulkCopy && K >= 512;
+    constexpr bool use_tma_scale = K >= 512 || kCompactInterleavedScale;
+    constexpr int effective_scale_buffers =
+        use_tma_scale ? kScaleBuffers : kStages;
+    constexpr bool interleaved_scale =
+        kInterleavedBulkCopy && use_tma_scale;
+    constexpr int scale_row_bytes =
+        kCompactInterleavedScale ? 4 : 16;
     constexpr int dynamic_smem_bytes =
         math_wgs * (interleaved_scale
-            ? kStages * kWout * ((kBlockK / 2) + 16)
+            ? kStages * kWout * ((kBlockK / 2) + scale_row_bytes)
             : kStages * kWout * (kBlockK / 2)
-                + effective_scale_buffers * kWout * 16)
+                + effective_scale_buffers * kWout * scale_row_bytes)
         + kTok * kBlockK
         + ((!IsW13 && kW2RouteOutput && kW2CoalescedStore)
             ? kTok * kWout * static_cast<int>(sizeof(__nv_bfloat16))
@@ -4140,6 +4173,7 @@ _EXTENSION_CONFIG = (
           f"wpc{int(WEIGHT_POLICY_CONSTANT)}_"
           f"w2ne{int(W2_NO_WEIGHT_EVICT_FIRST)}_"
           f"ibc{int(INTERLEAVED_BULK_COPY)}_"
+          f"cis{int(COMPACT_INTERLEAVED_SCALE)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_sa{int(W2_SORTED_ACT)}_"
           f"ms{int(W2_MBLOCK_SCALE)}_"
@@ -4151,9 +4185,9 @@ _EXTENSION_CONFIG = (
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v112w2ne")
+          f"mb{MIN_BLOCKS_PER_SM}_v117cis")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v112w2ne"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v117cis"
 )
 
 _ext = load_inline(
@@ -4199,6 +4233,7 @@ _ext = load_inline(
         f"-DK_WEIGHT_POLICY_CONSTANT={int(WEIGHT_POLICY_CONSTANT)}",
         f"-DK_W2_NO_WEIGHT_EVICT_FIRST={int(W2_NO_WEIGHT_EVICT_FIRST)}",
         f"-DK_INTERLEAVED_BULK_COPY={int(INTERLEAVED_BULK_COPY)}",
+        f"-DK_COMPACT_INTERLEAVED_SCALE={int(COMPACT_INTERLEAVED_SCALE)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
@@ -4343,7 +4378,15 @@ def tile_mxfp4_weight_layout(
             experts, ntiles, ktiles, WOUT, 4, 16
         )
         tiled_weight = torch.gather(chunks, 4, gather_index).contiguous()
-    if weight_scale.shape[-1] >= 16:
+    if COMPACT_INTERLEAVED_SCALE:
+        if weight_scale.shape[-1] != ktiles * 4:
+            raise ValueError("E8M0 scale shape does not match group size 32")
+        tiled_scale = (
+            weight_scale.view(experts, ntiles, WOUT, ktiles, 4)
+            .permute(0, 1, 3, 2, 4)
+            .contiguous()
+        )
+    elif weight_scale.shape[-1] >= 16:
         if weight_scale.shape[-1] != ktiles * 4:
             raise ValueError("E8M0 scale shape does not match group size 32")
         scale_tiles = weight_scale.shape[-1] // 16
@@ -4356,7 +4399,21 @@ def tile_mxfp4_weight_layout(
         # TP8 W2 has eight scale bytes per logical row, below TMA's 16-byte
         # minimum contiguous box; keep its existing scalar-load fallback.
         tiled_scale = weight_scale
-    if INTERLEAVED_BULK_COPY and weight_scale.shape[-1] >= 16:
+    if INTERLEAVED_BULK_COPY and COMPACT_INTERLEAVED_SCALE:
+        weight_tiles = tiled_weight.view(experts, ntiles, ktiles, -1)
+        scale_tiles = tiled_scale.view(experts, ntiles, ktiles, -1)
+        records: list[torch.Tensor] = []
+        for kt in range(ktiles):
+            records.append(weight_tiles[:, :, kt])
+            records.append(scale_tiles[:, :, kt])
+        tiled_weight = torch.cat(records, dim=-1).contiguous()
+        expected_bytes = ktiles * WOUT * ((128 // 2) + 4)
+        if tiled_weight.shape[-1] != expected_bytes:
+            raise RuntimeError(
+                "compact interleaved MXFP4 tile packing is incomplete"
+            )
+        tiled_scale = torch.empty(0, dtype=torch.uint8, device=weight.device)
+    elif INTERLEAVED_BULK_COPY and weight_scale.shape[-1] >= 16:
         weight_tiles = tiled_weight.view(experts, ntiles, ktiles, -1)
         scale_tiles = tiled_scale.view(
             experts, ntiles, weight_scale.shape[-1] // 16, -1
