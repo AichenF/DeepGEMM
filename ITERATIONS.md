@@ -5381,3 +5381,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP4 balanced auto split4, TP4 skew forced split2, and TP8-shape balanced auto split4 exactly reproduce selected numerical metrics. Route and input-quantization checks are exact and all outputs are finite.
 - Result: full unrolling is numerically safe. Inspect W13 split2 register count and resident-block limit before timing; if it crosses the nine-to-eight-CTA threshold, use one M128 paired gate and reject early on a loss.
 - Evidence: `results/iter135_w13_split2_route_k_unroll16_correctness_20260903.log`.
+
+## Iteration 135b — W13 split2 full unroll collapses occupancy and is rejected
+
+- Cubin inspection finds that full factor-16 unrolling raises W13 split2 from 52 selected registers/thread (54 for factor eight) to 72, while W2 remains 61 and W13 split4 remains 52. Stack/local allocation stays zero, but 72 registers lowers the register-limited resident-CTA ceiling from nine to roughly seven.
+- Same-process TP4 M128 random-route timing used eight x 100 rank-max cold-L2 samples per arm with per-replay AB/BA. Four-way control min/median/max is 0.301472/0.336544/0.457728 ms; factor-16 candidate is 0.317536/0.359024/0.402784 ms.
+- Control/candidate is only 0.937386x: the candidate is 22.480 us or 6.68% slower and loses all eight batch medians. Outputs remain bitwise identical on all ranks.
+- Result: reject W13 factor-16 unrolling immediately; do not spend GPU time on other M values or a formal Humming run. The residency cliff dominates any instruction saving, confirming factor eight is the practical ceiling and factor four remains the robust production default.
+- Evidence: `results/iter135b_w13_split2_route_k_unroll16_tp4_m128_paired_cold800_20260903.log`.
