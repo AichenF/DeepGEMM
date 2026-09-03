@@ -5354,3 +5354,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Extracted every cubin text section from control and candidate. All sections are byte-identical except W13 K=4096 split1/split2 for the TP4 N=1024 and TP8 N=512 instantiations. In particular, W2 has identical SHA-256 `4ae7459b...b9f94` and W13 split4 has identical `722d3ef5...d8490`. Since M8/M16/M32 use split4, their entire executed custom pipeline has identical extension kernel text; the tiny paired delta is a two-module placement/measurement artifact, not changed instructions.
 - Result: qualify the W13-only specialization for a formal exact-Humming-plus-CARv2 run. Selection still requires aggregate improvement and no material per-shape loss in that production comparison.
 - Evidence: `results/iter134c_w13_split2_route_k_unroll8_tp4_allm_paired_cold10000_20260903.log` and `results/iter134d_w13_split2_route_k_unroll8_cubin_text_diff_20260903.log`.
+
+## Iteration 134e — W13-only candidate misses the first formal aggregate gate
+
+- Ran exact Humming MXFP4 plus the same CARv2 instance against the W13-only candidate for ten x 200 rank-max cold-L2 samples per implementation and M, using the standard batch-level AB/BA order and random routes.
+- Humming/custom medians and speedups: M8 0.090144/0.071200 ms (1.266067x), M16 0.145888/0.113568 ms (1.284587x), M32 0.231872/0.200384 ms (1.157138x), M64 0.335920/0.285392 ms (1.177048x), and M128 0.405568/0.373952 ms (1.084546x).
+- Candidate min/median/max is 0.069952/0.071200/0.201280, 0.112256/0.113568/0.157920, 0.176320/0.200384/0.240128, 0.246560/0.285392/0.360032, and 0.310176/0.373952/0.410240 ms. Humming is 0.088288/0.090144/0.151072, 0.144288/0.145888/0.190368, 0.223488/0.231872/0.292992, 0.313536/0.335920/0.393472, and 0.378752/0.405568/2.651200 ms.
+- Five-shape geometric-mean latency is 0.210717622 ms for Humming and 0.176836266 ms for custom, giving only 1.191597x. Correctness and all-reduce checks pass for every M with the same maximum custom rel-L2 0.002974846 and all outputs finite.
+- This conflicts with the long same-process 1.00172x candidate gain because both sides drifted relative to the selected-default repeat (Humming improves from 0.211990 to 0.210718 ms while custom worsens from 0.175042 to 0.176836 ms), a combined swing far larger than the candidate's expected 0.17% aggregate effect.
+- Result: the formal gate is not passed; do not select this candidate. Check contemporaneous GPU interference and permit one controlled repeat, but do not cherry-pick the faster of noisy runs. The production default remains four-way and its two independently passing results remain the headline.
+- Evidence: `results/iter134e_w13_split2_unroll8_exact_humming_tp4_allm_cold2000_20260903.log`.
