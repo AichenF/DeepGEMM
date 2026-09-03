@@ -95,6 +95,7 @@ def select_tiled_k6_reduce_mode(tokens: int) -> int:
     return int(TILED_K6_REDUCE_POLICY)
 
 
+FUSED_K6_PUSH_AR = os.environ.get("V4_FUSED_K6_PUSH_AR", "0") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
@@ -1175,6 +1176,170 @@ __global__ __launch_bounds__(Threads) void tiled_k6_reduce_kernel(
     }
 }
 
+__device__ __forceinline__ uint4 load_relaxed_sys_16b(const void* pointer) {
+    uint4 value;
+    asm volatile(
+        "ld.relaxed.sys.global.v4.b32 {%0, %1, %2, %3}, [%4];"
+        : "=r"(value.x), "=r"(value.y), "=r"(value.z), "=r"(value.w)
+        : "l"(pointer)
+        : "memory");
+    return value;
+}
+
+__device__ __forceinline__ void store_relaxed_sys_16b(
+        void* pointer, const uint4& value) {
+    asm volatile(
+        "st.relaxed.sys.global.v4.b32 [%4], {%0, %1, %2, %3};"
+        :
+        : "r"(value.x), "r"(value.y), "r"(value.z), "r"(value.w),
+          "l"(pointer)
+        : "memory");
+}
+
+__device__ __forceinline__ bool word_has_positive_bf16_zero(uint32_t word) {
+    return (word & 0xffffu) == 0u || (word & 0xffff0000u) == 0u;
+}
+
+__device__ __forceinline__ uint32_t clear_positive_bf16_zero(uint32_t word) {
+    if ((word & 0xffffu) == 0u)
+        word |= 0x00008000u;
+    if ((word & 0xffff0000u) == 0u)
+        word |= 0x80000000u;
+    return word;
+}
+
+// Fuse the local fixed-k6 route sum with SGLang's TP4 1shot-push protocol.
+// The symmetric slots and per-CTA phase counters are owned by the unchanged
+// CustomAllReduceV2 communicator, so stock Humming and this kernel can safely
+// alternate on the same communicator and inside separately captured graphs.
+template <int Threads>
+__global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
+        const __nv_bfloat16* __restrict__ input,
+        const float* __restrict__ topk_weights,
+        __nv_bfloat16* __restrict__ output,
+        uint32_t* __restrict__ push_counter,
+        uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
+        int tokens, int rank, int64_t push_stride) {
+    constexpr int kWorld = 4;
+    constexpr int kHidden = 4096;
+    constexpr int kPairsPerToken = kHidden / 2;
+    constexpr int kPairsPerVec = 8 / 2;
+    constexpr int kVecsPerToken = kHidden / 8;
+    const int num_vecs = tokens * kVecsPerToken;
+    const int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int global_threads = gridDim.x * blockDim.x;
+    const int phase = push_counter[blockIdx.x] & 1u;
+    uint8_t* peer_base[kWorld] = {push0, push1, push2, push3};
+    const int64_t phase_offset =
+        static_cast<int64_t>(phase) * push_stride * kWorld;
+
+    for (int vec = global_tid; vec < num_vecs; vec += global_threads) {
+        const int token = vec / kVecsPerToken;
+        const int vec_in_token = vec - token * kVecsPerToken;
+        const int pair0 = vec_in_token * kPairsPerVec;
+        float2 accum[kPairsPerVec];
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair)
+            accum[pair] = make_float2(0.0f, 0.0f);
+
+        const auto* input2 = reinterpret_cast<const __nv_bfloat162*>(input);
+        #pragma unroll
+        for (int route = 0; route < kTopK; ++route) {
+            const float route_weight =
+                __ldg(topk_weights + token * kTopK + route) * kRoutedScale;
+            const int64_t route_base =
+                (static_cast<int64_t>(token) * kTopK + route)
+                * kPairsPerToken;
+            #pragma unroll
+            for (int pair = 0; pair < kPairsPerVec; ++pair) {
+                const float2 value = __bfloat1622float2(
+                    input2[route_base + pair0 + pair]);
+                accum[pair].x =
+                    fmaf(value.x, route_weight, accum[pair].x);
+                accum[pair].y =
+                    fmaf(value.y, route_weight, accum[pair].y);
+            }
+        }
+
+        uint4 local_vec;
+        uint32_t* local_words = reinterpret_cast<uint32_t*>(&local_vec);
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair) {
+            const __nv_bfloat162 value =
+                __floats2bfloat162_rn(accum[pair].x, accum[pair].y);
+            uint32_t word = *reinterpret_cast<const uint32_t*>(&value);
+            local_words[pair] = clear_positive_bf16_zero(word);
+        }
+
+        const int64_t source_offset =
+            static_cast<int64_t>(rank) * push_stride + phase_offset
+            + static_cast<int64_t>(vec) * 16;
+        #pragma unroll
+        for (int peer = 0; peer < kWorld; ++peer)
+            store_relaxed_sys_16b(peer_base[peer] + source_offset, local_vec);
+
+        uint4 rank_vec[kWorld];
+        const int64_t poll_phase_offset = phase_offset
+            + static_cast<int64_t>(vec) * 16;
+        do {
+            #pragma unroll
+            for (int source = 0; source < kWorld; ++source) {
+                rank_vec[source] = load_relaxed_sys_16b(
+                    peer_base[rank] + source * push_stride
+                    + poll_phase_offset);
+            }
+            bool has_zero = false;
+            #pragma unroll
+            for (int source = 0; source < kWorld; ++source) {
+                const uint32_t* words =
+                    reinterpret_cast<const uint32_t*>(&rank_vec[source]);
+                #pragma unroll
+                for (int pair = 0; pair < kPairsPerVec; ++pair)
+                    has_zero |= word_has_positive_bf16_zero(words[pair]);
+            }
+            if (!has_zero)
+                break;
+        } while (true);
+
+        uint4 result;
+        uint32_t* result_words = reinterpret_cast<uint32_t*>(&result);
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair) {
+            float2 sum = make_float2(0.0f, 0.0f);
+            #pragma unroll
+            for (int source = 0; source < kWorld; ++source) {
+                const uint32_t word =
+                    reinterpret_cast<const uint32_t*>(&rank_vec[source])[pair];
+                const __nv_bfloat162 value =
+                    *reinterpret_cast<const __nv_bfloat162*>(&word);
+                const float2 value_f32 = __bfloat1622float2(value);
+                if (source == 0) {
+                    sum = value_f32;
+                } else {
+                    sum.x += value_f32.x;
+                    sum.y += value_f32.y;
+                }
+            }
+            const __nv_bfloat162 value =
+                __floats2bfloat162_rn(sum.x, sum.y);
+            result_words[pair] = *reinterpret_cast<const uint32_t*>(&value);
+        }
+        reinterpret_cast<uint4*>(output)[vec] = result;
+
+        const uint4 empty = make_uint4(0u, 0u, 0u, 0u);
+        #pragma unroll
+        for (int source = 0; source < kWorld; ++source) {
+            reinterpret_cast<uint4*>(
+                peer_base[rank] + source * push_stride + phase_offset)[vec]
+                = empty;
+        }
+    }
+
+    __syncthreads();
+    if (threadIdx.x == 0)
+        atomicAdd(push_counter + blockIdx.x, 1u);
+}
+
 __global__ void braid_mode2_kernel(uint32_t* weight, int64_t words) {
     const int64_t index = static_cast<int64_t>(blockIdx.x) * blockDim.x
         + threadIdx.x;
@@ -1509,6 +1674,68 @@ void tiled_k6_reduce(
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+void fused_k6_push_ar_tp4(
+        torch::Tensor input, torch::Tensor topk_weights,
+        torch::Tensor output, torch::Tensor push_counter,
+        torch::Tensor push0, torch::Tensor push1,
+        torch::Tensor push2, torch::Tensor push3,
+        int rank, int64_t push_stride) {
+    TORCH_CHECK(input.scalar_type() == torch::kBFloat16,
+                "route input must be bfloat16");
+    TORCH_CHECK(topk_weights.scalar_type() == torch::kFloat32,
+                "topk_weights must be float32");
+    TORCH_CHECK(output.scalar_type() == torch::kBFloat16,
+                "all-reduce output must be bfloat16");
+    TORCH_CHECK(input.is_cuda() && input.is_contiguous(),
+                "route input must be contiguous CUDA");
+    TORCH_CHECK(output.is_cuda() && output.is_contiguous(),
+                "all-reduce output must be contiguous CUDA");
+    TORCH_CHECK(input.dim() == 2 && input.size(1) == 4096,
+                "route input must have shape [M*6,4096]");
+    TORCH_CHECK(output.dim() == 2 && output.size(1) == 4096,
+                "all-reduce output must have shape [M,4096]");
+    TORCH_CHECK(input.size(0) == output.size(0) * 6,
+                "route input row count must equal M*6");
+    TORCH_CHECK(topk_weights.numel() == output.size(0) * 6,
+                "topk_weights must have shape [M,6]");
+    TORCH_CHECK(push_counter.is_cuda() && push_counter.element_size() == 4,
+                "push counter must be a CUDA uint32 tensor");
+    TORCH_CHECK(push_counter.numel() == 78,
+                "TP4 H20 push counter must contain 78 CTA counters");
+    TORCH_CHECK(rank >= 0 && rank < 4, "TP4 rank must be in [0,4)");
+    TORCH_CHECK(push_stride >= output.numel() * output.element_size(),
+                "push workspace stride is too small");
+    for (const auto& workspace : {push0, push1, push2, push3}) {
+        TORCH_CHECK(workspace.is_cuda() && workspace.is_contiguous(),
+                    "push workspaces must be contiguous CUDA tensors");
+        TORCH_CHECK(workspace.scalar_type() == torch::kUInt8,
+                    "push workspaces must be uint8");
+    }
+    const int tokens = output.size(0);
+    TORCH_CHECK(tokens == 8 || tokens == 16 || tokens == 32,
+                "initial fused push prototype supports M=8,16,32");
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    auto* counter = reinterpret_cast<uint32_t*>(push_counter.data_ptr());
+    if (tokens <= 16) {
+        fused_k6_push_ar_tp4_kernel<128><<<78, 128, 0, stream>>>(
+            reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
+            topk_weights.data_ptr<float>(),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), counter,
+            push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
+            push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
+            tokens, rank, push_stride);
+    } else {
+        fused_k6_push_ar_tp4_kernel<256><<<78, 256, 0, stream>>>(
+            reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
+            topk_weights.data_ptr<float>(),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), counter,
+            push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
+            push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
+            tokens, rank, push_stride);
+    }
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void fused_route_quant(
         torch::Tensor topk_ids, torch::Tensor input,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
@@ -1576,6 +1803,12 @@ void reduce_swiglu_quant(torch::Tensor partials, torch::Tensor activation,
 void cast_bf16(torch::Tensor input, torch::Tensor output);
 void tiled_k6_reduce(torch::Tensor input, torch::Tensor topk_weights,
                      torch::Tensor output, int mode);
+void fused_k6_push_ar_tp4(
+    torch::Tensor input, torch::Tensor topk_weights,
+    torch::Tensor output, torch::Tensor push_counter,
+    torch::Tensor push0, torch::Tensor push1,
+    torch::Tensor push2, torch::Tensor push3,
+    int rank, int64_t push_stride);
 void fused_route_quant(torch::Tensor topk_ids, torch::Tensor input,
                        torch::Tensor sorted_ids, torch::Tensor expert_ids,
                        torch::Tensor num_tokens_padded,
@@ -1598,13 +1831,14 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v50tk6"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v51fkar"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
         "run_w13_impl", "run_w2", "reduce_swiglu", "reduce_swiglu_quant",
         "cast_bf16",
         "tiled_k6_reduce",
+        "fused_k6_push_ar_tp4",
         "fused_route_quant",
         "braid_mode2",
     ],
@@ -1885,6 +2119,29 @@ def tiled_k6_reduce(
     if mode not in (1, 2, 3, 4):
         raise ValueError("tiled k6 reduce mode must be one of 1,2,3,4")
     _ext.tiled_k6_reduce(input, topk_weights, output, mode)
+
+
+def fused_k6_push_ar_tp4(
+    input: torch.Tensor,
+    topk_weights: torch.Tensor,
+    output: torch.Tensor,
+    push_counter: torch.Tensor,
+    push_workspaces: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+    rank: int,
+    push_stride: int,
+) -> None:
+    _ext.fused_k6_push_ar_tp4(
+        input,
+        topk_weights,
+        output,
+        push_counter,
+        push_workspaces[0],
+        push_workspaces[1],
+        push_workspaces[2],
+        push_workspaces[3],
+        rank,
+        push_stride,
+    )
 
 
 def fused_route_quant(

@@ -221,6 +221,13 @@ class CapturedCase:
         self.local_bf16 = torch.empty(
             (self.m, HIDDEN), dtype=torch.bfloat16, device=device
         )
+        self.fused_graph_output = torch.empty_like(self.local_bf16)
+        self.fused_push_symm = None
+        self.fused_push_workspaces = None
+        self.fused_push_counter = None
+        self.fused_push_rank = -1
+        self.fused_push_stride = 0
+        self.fused_k6_push_active = False
         max_padded = (
             routes * 8
             if routes < NUM_EXPERTS + 1
@@ -260,7 +267,7 @@ class CapturedCase:
     def routes(self) -> int:
         return self.m * TOP_K
 
-    def run_local(self) -> torch.Tensor:
+    def run_before_local_reduce(self) -> None:
         if kernel.FUSED_ROUTE_QUANT:
             kernel.fused_route_quant(
                 self.topk_ids,
@@ -347,6 +354,7 @@ class CapturedCase:
             self.lut,
             self.intermediate_per_rank,
         )
+    def reduce_local(self) -> torch.Tensor:
         if kernel.W2_ROUTE_OUTPUT:
             assert self.down is not None
             if self.tiled_k6_reduce_mode:
@@ -370,7 +378,49 @@ class CapturedCase:
             kernel.cast_bf16(self.local_float, self.local_bf16)
         return self.local_bf16
 
+    def run_local(self) -> torch.Tensor:
+        self.run_before_local_reduce()
+        return self.reduce_local()
+
+    def prepare_fused_push(self, comm: CustomAllReduceV2) -> None:
+        if self.fused_push_workspaces is not None:
+            return
+        from torch._C._distributed_c10d import _SymmetricMemory
+
+        symm = _SymmetricMemory.rendezvous(comm._symm_tensor)
+        total_bytes = comm._symm_tensor.numel()
+        workspaces = tuple(
+            symm.get_buffer(peer, [total_bytes], torch.uint8)
+            for peer in range(comm.world_size)
+        )
+        if len(workspaces) != 4:
+            raise RuntimeError("fused k6 push all-reduce requires TP4")
+        self.fused_push_symm = symm
+        self.fused_push_workspaces = workspaces
+        self.fused_push_counter = comm._push_counter
+        self.fused_push_rank = comm.rank
+        self.fused_push_stride = comm.max_push_size
+
     def run_full(self, comm: CustomAllReduceV2) -> torch.Tensor:
+        if kernel.FUSED_K6_PUSH_AR and comm.world_size == 4 and self.m <= 32:
+            self.prepare_fused_push(comm)
+            assert self.down is not None
+            assert self.fused_push_workspaces is not None
+            assert self.fused_push_counter is not None
+            self.run_before_local_reduce()
+            kernel.fused_k6_push_ar_tp4(
+                self.down,
+                self.topk_weights,
+                self.fused_graph_output,
+                self.fused_push_counter,
+                self.fused_push_workspaces,
+                self.fused_push_rank,
+                self.fused_push_stride,
+            )
+            self.fused_k6_push_active = True
+            self.graph_output = self.fused_graph_output
+            return self.graph_output
+        self.fused_k6_push_active = False
         self.graph_output = comm.custom_all_reduce(self.run_local())
         return self.graph_output
 
@@ -570,6 +620,7 @@ def main() -> None:
                     "w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
                     "leader_mbar_wait": kernel.LEADER_MBAR_WAIT,
                     "tiled_k6_reduce_policy": kernel.TILED_K6_REDUCE_POLICY,
+                    "fused_k6_push_ar": kernel.FUSED_K6_PUSH_AR,
                     "w2_epilogue": (
                         "BF16 route output + fixed tiled CUDA k6 mode 4 at "
                         "M<=16, SGLang moe_fused_mul_sum otherwise"
@@ -697,6 +748,7 @@ def main() -> None:
             "padding_ratio": padded_rows / (m * TOP_K),
             "w13_split_k": case.w13_split_k,
             "tiled_k6_reduce_mode": case.tiled_k6_reduce_mode,
+            "fused_k6_push_ar": case.fused_k6_push_active,
             "allreduce_bytes": nbytes,
             "allreduce_algo": None if ar_algo is None else ar_algo.name,
             "allreduce_mode": ar_mode.name,

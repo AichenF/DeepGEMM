@@ -3726,3 +3726,26 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/iter59b_current_tp4_m8_m128_cold_graph_node_nsys.log`,
   `bench/results/iter59b_current_tp4_m8_m128_cold_graph_kernel_stats.log`,
   and `bench/results/iter59b_current_tp4_m{8,128}_cold_graph_rank*.nsys-rep`.
+
+### WGMMA iteration 60 — fused k6 plus TP4 one-shot push compiles and replays
+
+- Added an opt-in TP4 kernel that directly forms each 16-byte output vector
+  from the six BF16 route rows in ordered FP32, replaces positive-zero
+  sentinels, pushes the vector into all four ranks' existing SGLang symmetric
+  workspaces, polls and reduces the four sources, restores empty sentinels,
+  and advances the communicator's existing 78 phase counters.  The stock
+  Humming baseline and default custom path remain unchanged; TP8 and M>32
+  continue to fall back to `CustomAllReduceV2`.
+- The first TP4 M8 run JIT-compiles successfully, completes graph capture and
+  20 consecutive cold-L2 replays without a phase deadlock.  Numerical gates
+  pass with minimum-rank cosine 0.999995565, relative-L2 0.002978479, finite
+  output, and an independent NCCL all-reduce check.  This proves the reused
+  symmetric-memory layout/counter protocol is functional across replay.
+- The single 20-sample window has a 0.076784 ms median (0.075648 ms minimum;
+  one 0.234816 ms outlier).  It is only an initial signal, not a speedup
+  verdict: the selected iteration-58 formal M8 custom median was 0.076928 ms
+  and was measured in a different window.  Next run interleaved
+  fused/control/fused full graphs at M8, then test M16/M32 only if the paired
+  result survives drift.
+- Evidence:
+  `bench/results/iter60_fused_k6_push_tp4_m8_compile_correctness_smoke_coldl2_20260903.log`.
