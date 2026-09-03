@@ -15,6 +15,8 @@ from .. import _C
 
 _SM90_NVFP4_H200_FUSED_LAYOUT_ATTR = "_deep_gemm_nvfp4_h200_fused_layout"
 _SM90_NVFP4_H200_FUSED_LAYOUT = "mode2_braided"
+_SM90_MXFP4_H20_FUSED_LAYOUT_ATTR = "_deep_gemm_mxfp4_h20_fused_layout"
+_SM90_MXFP4_H20_FUSED_LAYOUT = "mode2_braided_mxfp4"
 
 
 class SymmBuffer:
@@ -223,6 +225,53 @@ def transform_nvfp4_weights_for_mega_moe_sm90(
         l2_scale_tm,
     )
 
+
+def transform_mxfp4_weights_for_mega_moe_sm90(
+    l1_weights: Tuple[torch.Tensor, torch.Tensor],
+    l2_weights: Tuple[torch.Tensor, torch.Tensor],
+) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]:
+    """OCP MXFP4 counterpart of ``transform_nvfp4_weights_for_mega_moe_sm90``.
+
+    Only ``group_size`` differs (32 vs 16), so a BK128 fused row carries 4 E8M0
+    scale bytes instead of 8 UE4M3 bytes and leaves 12 padding bytes instead of
+    8. The 80-byte row stride is kept identical so the same K-major TMA
+    descriptor path is reused, and the sign braid is shared verbatim because it
+    only permutes the packed FP4 nibbles, which are group-size independent.
+    """
+    block_n, block_k, group_size = 256, 128, 32
+    from ..quantization_mxfp4 import (
+        mxfp4_fuse_packed_with_scale_tile_major,
+        mxfp4_scale_to_tile_major,
+    )
+    l1_packed, l1_scale = l1_weights
+    l2_packed, l2_scale = l2_weights
+    assert l1_packed.dtype == torch.uint8 and l2_packed.dtype == torch.uint8
+    assert l1_scale.dtype == torch.uint8 and l2_scale.dtype == torch.uint8
+    assert l1_packed.dim() == 3 and l2_packed.dim() == 3
+    assert l1_scale.dim() == 3 and l2_scale.dim() == 3
+
+    l1_packed_il, l1_scale_il = _interleave_l1_weights((l1_packed, l1_scale))
+    l1_scale_tm = mxfp4_scale_to_tile_major(l1_scale_il, block_n=block_n, block_k=block_k, group_size=group_size)
+    l2_scale_tm = mxfp4_scale_to_tile_major(l2_scale, block_n=block_n, block_k=block_k, group_size=group_size)
+    l1_packed_out = _braid_nvfp4_mode2_signs(mxfp4_fuse_packed_with_scale_tile_major(
+        l1_packed_il.contiguous(), l1_scale_tm, block_k=block_k)
+    )
+    l2_packed_out = _braid_nvfp4_mode2_signs(mxfp4_fuse_packed_with_scale_tile_major(
+        l2_packed.contiguous(), l2_scale_tm, block_k=block_k)
+    )
+    setattr(l1_packed_out, _SM90_MXFP4_H20_FUSED_LAYOUT_ATTR,
+            _SM90_MXFP4_H20_FUSED_LAYOUT)
+    setattr(l2_packed_out, _SM90_MXFP4_H20_FUSED_LAYOUT_ATTR,
+            _SM90_MXFP4_H20_FUSED_LAYOUT)
+    return (
+        l1_packed_out,
+        l1_scale_tm,
+    ), (
+        l2_packed_out,
+        l2_scale_tm,
+    )
+
+
 def fp8_fp4_mega_moe(y: torch.Tensor,
                      l1_weights: Tuple[torch.Tensor, torch.Tensor],
                      l2_weights: Tuple[torch.Tensor, torch.Tensor],
@@ -292,6 +341,34 @@ def nvfp4_mega_moe(y: torch.Tensor,
             "transform_nvfp4_weights_for_mega_moe_sm90"
         )
     _C.nvfp4_mega_moe(
+        y, l1_weights, l2_weights,
+        cumulative_local_expert_recv_stats,
+        l1_global_scales, l2_global_scales,
+        sym_buffer.buffer,
+        sym_buffer.handle.buffer_ptrs, sym_buffer.group.rank(),
+        sym_buffer.num_max_tokens_per_rank,
+        sym_buffer.num_experts, sym_buffer.num_topk,
+        activation_clamp, fast_math,
+    )
+
+
+def mxfp4_mega_moe(y: torch.Tensor,
+                  l1_weights: Tuple[torch.Tensor, torch.Tensor],
+                  l2_weights: Tuple[torch.Tensor, torch.Tensor],
+                  sym_buffer: SymmBuffer,
+                  cumulative_local_expert_recv_stats: Optional[torch.Tensor] = None,
+                  l1_global_scales: Optional[torch.Tensor] = None,
+                  l2_global_scales: Optional[torch.Tensor] = None,
+                  activation_clamp: Optional[float] = None,
+                  fast_math: bool = True):
+    l1_layout = getattr(l1_weights[0], _SM90_MXFP4_H20_FUSED_LAYOUT_ATTR, None)
+    l2_layout = getattr(l2_weights[0], _SM90_MXFP4_H20_FUSED_LAYOUT_ATTR, None)
+    if l1_layout != _SM90_MXFP4_H20_FUSED_LAYOUT or l2_layout != l1_layout:
+        raise ValueError(
+            "MXFP4 weights must use the Mode2 Braided layout produced by "
+            "transform_mxfp4_weights_for_mega_moe_sm90"
+        )
+    _C.mxfp4_mega_moe(
         y, l1_weights, l2_weights,
         cumulative_local_expert_recv_stats,
         l1_global_scales, l2_global_scales,

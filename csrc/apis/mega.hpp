@@ -9,6 +9,7 @@
 #include "../jit/device_runtime.hpp"
 #include "../jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe_h200_fused.hpp"
+#include "../jit_kernels/impls/sm90_mxfp4_mega_moe_h200_fused.hpp"
 
 namespace deep_gemm::mega {
 
@@ -379,12 +380,144 @@ static void nvfp4_mega_moe(
         sym_buffer.zero_();
 }
 
+static void validate_sm90_mxfp4_mega_moe_stats(
+        const std::optional<torch::Tensor>& stats,
+        const int num_experts_per_rank,
+        const torch::Device& device) {
+    if (!stats.has_value())
+        return;
+
+    DG_HOST_ASSERT(stats->scalar_type() == torch::kInt);
+    DG_HOST_ASSERT(stats->is_contiguous());
+    DG_HOST_ASSERT(stats->device() == device);
+
+    DG_HOST_ASSERT(stats->numel() == num_experts_per_rank);
+}
+
+static void validate_sm90_mxfp4_mega_moe_global_scale(
+        const std::optional<torch::Tensor>& scale,
+        const int num_experts_per_rank,
+        const torch::Device& device) {
+    if (!scale.has_value())
+        return;
+
+    DG_HOST_ASSERT(scale->scalar_type() == torch::kFloat32);
+    DG_HOST_ASSERT(scale->numel() == num_experts_per_rank);
+    DG_HOST_ASSERT(scale->is_contiguous());
+    DG_HOST_ASSERT(scale->device() == device);
+}
+
+static void mxfp4_mega_moe(
+    const torch::Tensor& y,
+    const std::tuple<torch::Tensor, torch::Tensor>& l1_weights_tuple,
+    const std::tuple<torch::Tensor, torch::Tensor>& l2_weights_tuple,
+    const std::optional<torch::Tensor>& cumulative_local_expert_recv_stats,
+    const std::optional<torch::Tensor>& l1_global_scales,
+    const std::optional<torch::Tensor>& l2_global_scales,
+    const torch::Tensor& sym_buffer,
+    const std::vector<int64_t>& sym_buffer_ptrs, const int& rank_idx,
+    const int& num_max_tokens_per_rank,
+    const int& num_experts, const int& num_topk,
+    const std::optional<float>& activation_clamp_opt,
+    const bool& fast_math
+) {
+    const auto [l1_weights, l1_weights_sf] = l1_weights_tuple;
+    const auto [l2_weights, l2_weights_sf] = l2_weights_tuple;
+    DG_HOST_ASSERT(device_runtime->get_arch_major() == 9);
+    const auto num_tokens = static_cast<int>(y.size(0));
+    const auto activation_clamp = activation_clamp_opt.value_or(std::numeric_limits<float>::infinity());
+    DG_HOST_ASSERT(activation_clamp >= 0);
+    DG_HOST_ASSERT(get_major_type_ab(l1_weights) == cute::UMMA::Major::K);
+    DG_HOST_ASSERT(get_major_type_ab(l2_weights) == cute::UMMA::Major::K);
+    // MXFP4: weights are uint8 packed E2M1 FP4. With the fused B+scale layout,
+    // each BK128 row stores 64B FP4 + 8B UE4M3 scale + 8B padding, so recover
+    // logical K from the tile-major scale tensor instead of the storage width.
+    DG_HOST_ASSERT(l1_weights.scalar_type() == torch::kUInt8);
+    DG_HOST_ASSERT(l2_weights.scalar_type() == torch::kUInt8);
+    DG_HOST_ASSERT(l1_weights_sf.scalar_type() == torch::kUInt8);
+    DG_HOST_ASSERT(l2_weights_sf.scalar_type() == torch::kUInt8);
+    DG_HOST_ASSERT(l1_weights_sf.dim() == 5);
+    DG_HOST_ASSERT(l2_weights_sf.dim() == 5);
+    constexpr int mxfp4_block_n = 256;
+    // 128 / group_size, with MXFP4 group_size = 32.
+    constexpr int kMxfp4ScalesPerKTile = 4;
+    const auto [num_experts_per_rank, intermediate_hidden_2, hidden_storage] = get_shape<3>(l1_weights);
+    const auto [l2_num_experts_per_rank, l2_hidden, intermediate_hidden_storage] = get_shape<3>(l2_weights);
+    const int hidden = static_cast<int>(l1_weights_sf.size(2)) * 128;
+    const int intermediate_hidden = static_cast<int>(l2_weights_sf.size(2)) * 128;
+    DG_HOST_ASSERT(
+        hidden_storage == (hidden / 128) * 80 &&
+        intermediate_hidden_storage == (intermediate_hidden / 128) * 80);
+    DG_HOST_ASSERT(num_tokens <= num_max_tokens_per_rank);
+    DG_HOST_ASSERT(num_experts_per_rank == l2_num_experts_per_rank);
+    DG_HOST_ASSERT(hidden == l2_hidden);
+    DG_HOST_ASSERT(intermediate_hidden_2 == 2 * intermediate_hidden);
+    DG_HOST_ASSERT(l1_weights.is_contiguous() and l2_weights.is_contiguous());
+    DG_HOST_ASSERT(y.scalar_type() == torch::kBFloat16);
+    DG_HOST_ASSERT(y.dim() == 2 && y.size(1) == hidden);
+    DG_HOST_ASSERT(y.is_contiguous());
+    // MXFP4 E8M0 SF: tile-major shape
+    //   (E, N/block_n, K/128, block_n, 4)
+    // for contiguous per-WGMMA scale loads. The last dim is 128/group_size:
+    // MXFP4 groups 32 elements, so a BK128 tile carries 4 scale bytes, where
+    // NVFP4's group of 16 carries 8.
+    DG_HOST_ASSERT(l1_weights_sf.size(0) == num_experts_per_rank);
+    DG_HOST_ASSERT(l1_weights_sf.size(1) == intermediate_hidden * 2 / mxfp4_block_n);
+    DG_HOST_ASSERT(l1_weights_sf.size(2) == hidden / 128);
+    DG_HOST_ASSERT(l1_weights_sf.size(3) == mxfp4_block_n);
+    DG_HOST_ASSERT(l1_weights_sf.size(4) == kMxfp4ScalesPerKTile);
+    DG_HOST_ASSERT(l1_weights_sf.is_contiguous());
+    DG_HOST_ASSERT(l2_weights_sf.size(0) == num_experts_per_rank);
+    DG_HOST_ASSERT(l2_weights_sf.size(1) == hidden / mxfp4_block_n);
+    DG_HOST_ASSERT(l2_weights_sf.size(2) == intermediate_hidden / 128);
+    DG_HOST_ASSERT(l2_weights_sf.size(3) == mxfp4_block_n);
+    DG_HOST_ASSERT(l2_weights_sf.size(4) == kMxfp4ScalesPerKTile);
+    DG_HOST_ASSERT(l2_weights_sf.is_contiguous());
+    validate_sm90_mxfp4_mega_moe_stats(
+        cumulative_local_expert_recv_stats, num_experts_per_rank, y.device());
+    validate_sm90_mxfp4_mega_moe_global_scale(
+        l1_global_scales, num_experts_per_rank, y.device());
+    validate_sm90_mxfp4_mega_moe_global_scale(
+        l2_global_scales, num_experts_per_rank, y.device());
+    const auto num_ranks = static_cast<int>(sym_buffer_ptrs.size());
+    const SM90MXFP4H200FusedShape shape = {
+        device_runtime->get_num_sms(), num_ranks, num_experts, num_topk,
+        hidden, intermediate_hidden};
+    DG_HOST_ASSERT(shape.is_supported_h200_shape());
+    DG_HOST_ASSERT(SM90MXFP4H200FusedShape::is_supported_batch(num_tokens));
+    DG_HOST_ASSERT(rank_idx >= 0 && rank_idx < num_ranks);
+    const auto [num_required_bytes, slice] = get_symm_buffer_size_for_mega_moe(
+        num_ranks, num_experts,
+        num_max_tokens_per_rank, num_topk,
+        hidden, intermediate_hidden,
+        true, "swiglu");
+    DG_HOST_ASSERT(sym_buffer.nbytes() >= static_cast<size_t>(num_required_bytes));
+    DG_HOST_ASSERT(num_experts == num_experts_per_rank * num_ranks);
+    const auto [x, x_sf, topk_idx, topk_weights, l1_acts, l1_acts_sf, l2_acts, l2_acts_sf] = slice(sym_buffer);
+    sm90_mxfp4_h200_fused_mega_moe(
+        y,
+        l1_acts, l1_acts_sf,
+        l2_acts, l2_acts_sf,
+        l1_weights, l2_weights,
+        cumulative_local_expert_recv_stats,
+        l1_global_scales, l2_global_scales,
+        sym_buffer_ptrs,
+        rank_idx, num_max_tokens_per_rank,
+        num_experts_per_rank,
+        num_tokens, num_topk,
+        hidden, intermediate_hidden,
+        activation_clamp, fast_math);
+    if (get_env<int>("DG_COMM_KERNEL_DEBUG"))
+        sym_buffer.zero_();
+}
+
 static void register_apis(pybind11::module_& m) {
 #if DG_TENSORMAP_COMPATIBLE
     m.def("get_token_alignment_for_mega_moe", &get_token_alignment_for_mega_moe);
     m.def("get_symm_buffer_size_for_mega_moe", &get_symm_buffer_size_for_mega_moe);
     m.def("fp8_fp4_mega_moe", &fp8_fp4_mega_moe);
     m.def("nvfp4_mega_moe", &nvfp4_mega_moe);
+    m.def("mxfp4_mega_moe", &mxfp4_mega_moe);
 #endif
 }
 
