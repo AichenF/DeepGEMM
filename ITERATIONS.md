@@ -4967,3 +4967,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Correctness again passes TP4 split4, TP4 split2 maximal skew, and TP8-shape; W13 cosine >=0.999999997 and W2 cosine >=0.999997235.
 - Result: corrected candidate is qualified for paired cold-L2 timing; default remains off.
 - Evidence: `results/iter118a_w13_launch_bound10_w2_neutral_correctness_resources_20260903.log`.
+
+## Iteration 118b — W13 launch-bound M128 paired screen blocked by bitwise gate
+
+- Intended method: TP4 M128 random routes, same-process control/candidate CUDA Graphs, 6 x 100 rank-max samples, AB/BA replay alternation, separate excluded 256MiB cold-L2 clear per replay.
+- The run stopped before timing because control and candidate graph outputs were not bitwise equal on all ranks.
+- This does not contradict iteration 118a's independent reference correctness: changing W13 residency changes the inter-CTA order of split2 atomic additions, so floating-point last bits need not be bit-identical even when both satisfy the numerical reference bounds.
+- Result: no latency sample and no performance conclusion.  Extend the paired harness to report and gate finite/cosine/relative-L2 for codegen variants that can reorder split-K accumulation, while retaining exact equality reporting.
+- Evidence: `results/iter118b_w13_launch_bound10_m128_screen_cold600_20260903.log`.
