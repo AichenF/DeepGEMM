@@ -2714,6 +2714,18 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/tp4_paired_normalized_scale_default_coldl2_formal_20260903.log`.
 
+### Post-normalization local stage budget
+
+- Graph-internal event nodes over 100 separately cold-L2 samples show custom
+  local totals of 102.528/148.320/216.544/292.704/353.088 us at
+  M8/16/32/64/128, versus Humming 109.936/162.816/240.480/328.464/390.032
+  us.  The normalized custom path is 6.74-10.89% faster locally.
+- Custom W13+W2 account for 75.1% of M8 and 90.6% of M128 local latency.
+  Non-GEMM launch stages are too small to reach the 20% objective alone, so
+  further work remains focused on both route-GEMM cores.
+- Evidence:
+  `bench/results/tp4_normalized_scale_default_stage_budget_coldl2_20260903.log`.
+
 ### WGMMA iteration 42a — contiguous offline TMA-tile layout
 
 - Added opt-in `V4_TILED_WEIGHT_LAYOUT=1`.  Model-load preprocessing permutes
