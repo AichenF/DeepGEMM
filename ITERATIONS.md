@@ -2825,3 +2825,19 @@ maximum rank latency of a full CUDA-Graph replay.
   tiled-layout coordinates at TP4 split-K=4/2 and TP8, then run graph-internal
   WOUT64/128/64 cold-L2 stage screens at M8/M32/M128.  Only a repeatable core
   win merits an M-dependent dispatch or distributed benchmark.
+
+### WGMMA iteration 44b — WOUT64 remains rejected
+
+- TP4 split-K=4 and forced split-K=2 reproduce the WOUT128 errors.  TP8 runs
+  but W2 cosine drops from 0.999997249 to 0.999928707 (relative L2 rises from
+  0.00235 to 0.01194), another reason not to use this specialization there.
+  WOUT64 lowers TP4 route-GEMM registers from 54 to 45 without spill.
+- Graph-internal WOUT64/128/64 100-sample cold-L2 local medians (us) are
+  M8 106.864/98.464/106.720, M32 250.800/211.216/249.632, and M128
+  414.848/348.288/413.744.  Both W13 and W2 regress at every point; the
+  additional CTAs and duplicated setup dominate the lower register footprint.
+- Reject without distributed timing.  Keep the exact WOUT128 tiled-layout
+  winner and no M-dependent tile dispatch.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_wout64_tiled_correctness_20260903.log` and
+  `bench/results/tp4_wout64_tiled_local_coldl2_screen_20260903.log`.
