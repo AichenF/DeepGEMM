@@ -36,6 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outer", type=int, default=6)
     parser.add_argument("--replays", type=int, default=200)
     parser.add_argument("--warmup-replays", type=int, default=10)
+    parser.add_argument("--pull-blocks", type=int, default=0)
+    parser.add_argument("--pull-unroll", type=int, choices=(0, 2, 4, 8, 16), default=0)
     parser.add_argument("--seed", type=int, default=20260902)
     args = parser.parse_args()
     args.ms = tuple(int(value) for value in args.ms.split(",") if value)
@@ -51,6 +53,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--outer must be positive and even for balanced AB/BA")
     if args.replays < 1 or args.warmup_replays < 1:
         parser.error("replay counts must be positive")
+    if args.pull_blocks < 0:
+        parser.error("--pull-blocks must be nonnegative")
     return args
 
 
@@ -115,6 +119,8 @@ def main() -> None:
                     "world_size": world_size,
                     "m_values": args.ms,
                     "candidate": args.candidate,
+                    "pull_blocks": args.pull_blocks or "default",
+                    "pull_unroll": args.pull_unroll or "default",
                     "route_pattern": args.route_pattern,
                     "outer": args.outer,
                     "replays_per_outer_per_impl": args.replays,
@@ -144,6 +150,8 @@ def main() -> None:
             m, x, topk_ids, topk_weights, weights, lut, intermediate_per_rank
         )
 
+        kernel.MC_PULL_BLOCKS = args.pull_blocks
+        kernel.MC_PULL_UNROLL = args.pull_unroll
         kernel.FUSED_K6_PUSH_AR = args.candidate == "unicast"
         kernel.FUSED_K6_MC_PUSH_AR = args.candidate == "multicast"
         kernel.FUSED_K6_MC_PULL_AR = args.candidate == "multicast_pull"

@@ -3901,3 +3901,12 @@ maximum rank latency of a full CUDA-Graph replay.
   formal estimate.
 - Evidence:
   `bench/results/iter66_multicast_pull_tp4_allm_ab_coldl2_20260903.log`.
+
+### Iteration 67 — M128 NVLS-pull launch-geometry sweep (cold L2)
+
+- Change: made the production K3 NVLS-pull reducer geometry tunable with `V4_MC_PULL_BLOCKS` and `V4_MC_PULL_UNROLL`, and threaded both controls through the graph and same-process A/B harness.
+- Protocol: TP4 on GPUs 1–4, M=128, random real route metadata, identical communicator/weights/inputs, paired fused/control then control/fused batches, 4 outer batches × 100 graph replays per implementation. A separate 256 MiB L2 clear ran immediately before every replay and outside CUDA-event timing.
+- Correctness: every configuration was finite and passed the all-reduce/reference checks (`cosine_min_rank≈0.99999561`, `rel_l2_max_rank≈0.002964`). Fused versus stock output differed by at most 128 BF16 units because the reduction order differs; both independently matched the FP32 reference.
+- Median speedup (`stock CARv2 / NVLS pull`) by `(blocks, unroll)`: `(1,4)=0.9909`, `(1,8)=1.0068`, `(1,16)=1.0171`; `(2,4)=1.0089`, `(2,8)=0.9799`, `(2,16)=0.9946`; `(4,4)=0.9913`, `(4,8)=1.0066`, `(4,16)=1.0374`; `(8,4)=1.0213`, `(8,8)=1.0182`, `(8,16)=0.9589`; `(16,4)=1.0335`, `(16,8)=1.0057`, `(16,16)=1.0075`.
+- Result: the best one-window point was `(4,16)` at 0.344784 ms versus 0.357664 ms (1.03736×), closely followed by `(16,4)` at 1.03346×. The non-monotonic/bimodal batches show this is only a tuning lead, not yet a stable accepted policy; it needs a longer focused A/B/A confirmation.
+- Evidence: `bench/results/iter67_multicast_pull_tp4_m128_blocks_unroll_sweep_coldl2_20260903.log`.

@@ -464,6 +464,8 @@ class CapturedCase:
                 comm.world_size,
                 self.fused_pull_output,
                 input_mc_ptr=self.fused_pull_mc_ptr,
+                num_blocks=kernel.MC_PULL_BLOCKS or None,
+                unroll=kernel.MC_PULL_UNROLL or None,
             )
             self.fused_k6_push_active = True
             self.fused_k6_ar_mode = "multicast_pull"
@@ -705,6 +707,8 @@ def main() -> None:
                     "fused_k6_push_ar": kernel.FUSED_K6_PUSH_AR,
                     "fused_k6_mc_push_ar": kernel.FUSED_K6_MC_PUSH_AR,
                     "fused_k6_mc_pull_ar": kernel.FUSED_K6_MC_PULL_AR,
+                    "mc_pull_blocks": kernel.MC_PULL_BLOCKS or "default",
+                    "mc_pull_unroll": kernel.MC_PULL_UNROLL or "default",
                     "w2_epilogue": (
                         "BF16 route output + fixed tiled CUDA k6 mode 4 at "
                         "M<=16, SGLang moe_fused_mul_sum otherwise"
