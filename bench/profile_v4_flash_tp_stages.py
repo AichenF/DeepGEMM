@@ -344,6 +344,11 @@ def main() -> None:
                     if args.impl == "custom"
                     else None
                 ),
+                "custom_leader_mbar_wait": (
+                    os.environ.get("V4_LEADER_MBAR_WAIT", "0") == "1"
+                    if args.impl == "custom"
+                    else None
+                ),
                 "m": args.m,
                 "tp": args.tp,
                 "route_pattern": args.route_pattern,
