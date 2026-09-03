@@ -5483,3 +5483,23 @@ maximum rank latency of a full CUDA-Graph replay.
 - No GPU kernel executed and this is not a correctness or performance result.
 - Evidence: `results/iter138b_current_head_default_tp4_tp8_correctness_20260904.log`.
 - Decision: retain source unchanged and rerun with both Humming and SGLang source roots in `PYTHONPATH`.
+
+## Iteration 138c — current-default TP4/TP8 full-reference correctness closure
+
+- Date: 2026-09-04
+- Commit under test: `4377c3b`; source is unchanged from the iter138 performance winner. All experimental candidate flags were unset except the intentional `V4_W13_SPLIT_K=2` override for the skew case.
+- TP4 balanced, `M=8`, `Is=512`, 48 active experts, 384 padded rows, split-K 4:
+  - W13 cosine 0.999999998, relative L2 0.000076187.
+  - activation cosine 0.999999759, relative L2 0.000694956.
+  - W2 cosine 0.999997256, relative L2 0.002342691; finite true.
+- TP4 maximally skewed, `M=8`, `Is=512`, 6 active experts, 48 padded rows, forced split-K 2:
+  - W13 cosine 0.999999997, relative L2 0.000077291.
+  - activation cosine 0.999999649, relative L2 0.000838720.
+  - W2 cosine 0.999997235, relative L2 0.002351904; finite true.
+- TP8 shape, `M=8`, `Is=256`, 48 active experts, 384 padded rows, split-K 4:
+  - W13 cosine 0.999999997, relative L2 0.000076998.
+  - activation cosine 0.999999745, relative L2 0.000714756.
+  - W2 cosine 0.999997278, relative L2 0.002333323; finite true.
+- Fused K6 reduction matched the SGLang reference bitwise in all three cases (`max_abs=0`); every test emitted `V4_WGMMA_OK`.
+- Evidence: `results/iter138c_current_head_default_tp4_tp8_correctness_20260904.log`.
+- Decision: correctness closure passes for the primary TP4 shape, highly imbalanced routing/split-K atomic accumulation, and required TP8 shape.
