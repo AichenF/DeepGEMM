@@ -4589,3 +4589,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Correctness passes TP4 balanced/auto split4, TP4 maximal-skew/forced split2, and the TP8 local intermediate=256 shape. Route alignment and FP8 input quantization are exact; W13 cosine is at least 0.999999997, W2 cosine is at least 0.999997240, and all outputs are finite.
 - Next gate is an in-process paired TP4 M128 cold-L2 graph comparison. Select only if the sector/coalescing mechanism produces a repeatable end-to-end win.
 - Artifact: `results/iter101_w2_distributed_prep_correctness_20260903.log`.
+
+## Iteration 101b — W2 distributed-preparation M128 paired screen
+
+- TP4 M128 random routing, identical weights/input/communicator, one-process control/candidate graphs, ABBA per-sample ordering, and 6×100 samples per variant. A separate 256 MiB clear immediately preceded every replay and was excluded from events.
+- Control median: **0.357984 ms**; candidate median: **0.357424 ms**; control/candidate: **1.001567x** (0.560 us, 0.157%). Complete graph outputs are bitwise identical on all ranks.
+- All six candidate batch medians beat their paired controls by 0.192–1.024 us. This is a small but directionally consistent signal, not enough to select from one shape alone.
+- Keep the flag opt-in while screening M8/M16/M32/M64 under the same paired cold-L2 protocol. A broad win would justify a five-shape long-window acceptance audit; a shape-specific reversal would bound dispatch instead.
+- Artifact: `results/iter101b_w2_distributed_prep_tp4_m128_paired_cold600_20260903.log`.
