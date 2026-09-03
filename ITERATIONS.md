@@ -3983,3 +3983,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The gate still fails, now precisely with 38 invalid W2 mblock payloads and no other violation type. The consumer waits on an atomic valid flag but reads the subsequently produced `ready_queue` payload through `__ldg`, whose read-only/cache semantics are inappropriate for a same-kernel producer-consumer location and can retain the reset `-1` value.
 - Decision: reject iteration 76 but keep its isolation evidence. Replace `__ldg(ready_queue)` with an acquire/volatile global load paired with a release publication, then rerun the full eager and graph-route-mutation matrix before any GEMM integration.
 - Evidence: `bench/results/iter76_interleaved_scheduler_publication_fix_20260903.log`.
+### Iteration 77 — acquire/release scheduler protocol passes dynamic-route graph gate
+
+- Replaced the dynamic ready-queue `__ldg` with GPU-scope `ld.acquire` helpers and published each slot with `st.release` on its valid word after writing the payload. The bounded CAS task claims and split violation counters from iteration 76 remain.
+- All nine eager combinations pass at TP4 for M=8/32/128 × balanced/skew/random. Active device M-block counts match the CPU oracle exactly: M8 `48/6/45`, M32 `192/24/146`, and M128 `256/96/247`. Corresponding W13 and W2 task cursors equal their exact bounds, every owner is in `[0,78)`, each W2 `(mblock,n-tile)` appears once, and all four violation categories stay zero.
+- Every case observes a W2 issue before the final W13 task, proving the scheduler is actually interleaving rather than merely producing a correct sequential trace.
+- A single captured M32 CUDA Graph then replays after in-place route mutations balanced→skew→random→balanced. Device bounds change `192→24→146→192` without host specialization; all task/readiness invariants remain valid and no stale state survives replay.
+- Decision: accept the scheduler publication/claim protocol as the control-flow foundation. It is correctness-only and makes no latency claim. Next integrate one real full-K W13 paired gate/up task and validate its BF16/SwiGLU/FP8 intermediate before enabling W2.
+- Evidence: `bench/results/iter77_interleaved_scheduler_acquire_release_20260903.log`.

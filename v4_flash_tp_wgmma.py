@@ -1154,6 +1154,22 @@ __global__ __launch_bounds__(256) void fused_route_quant_kernel(
         __nv_fp8_e4m3(value / group_scale[quant_subgroup]).__x;
 }
 
+__device__ __forceinline__ int32_t load_acquire_gpu_i32(
+        const int32_t* pointer) {
+    uint32_t value;
+    asm volatile(
+        "ld.acquire.gpu.global.u32 %0,[%1];"
+        : "=r"(value) : "l"(pointer) : "memory");
+    return static_cast<int32_t>(value);
+}
+
+__device__ __forceinline__ void store_release_gpu_i32(
+        int32_t* pointer, int32_t value) {
+    asm volatile(
+        "st.release.gpu.global.u32 [%0],%1;"
+        : : "l"(pointer), "r"(static_cast<uint32_t>(value)) : "memory");
+}
+
 // Scheduler-only correctness probe for the TP-local interleaved design.
 // One lane per persistent CTA claims dynamically bounded W13 tasks.  The last
 // W13 tile for an M block publishes that block into a ready queue; W2 tasks
@@ -1190,13 +1206,14 @@ __global__ void interleaved_scheduler_probe_kernel(
             const int published = atomicAdd(counters + 2, 0);
             const int queue_slot = next_w2 / w2_tiles;
             if (queue_slot >= published
-                    || atomicAdd(ready_valid + queue_slot, 0) == 0)
+                    || load_acquire_gpu_i32(ready_valid + queue_slot) == 0)
                 break;
             if (atomicCAS(counters + 1, next_w2, next_w2 + 1) != next_w2)
                 continue;
 
             const int n_tile = next_w2 - queue_slot * w2_tiles;
-            const int mblock = __ldg(ready_queue + queue_slot);
+            const int mblock =
+                load_acquire_gpu_i32(ready_queue + queue_slot);
             if (static_cast<unsigned>(mblock) >=
                     static_cast<unsigned>(num_mblocks)) {
                 atomicAdd(counters + 6, 1);
@@ -1243,8 +1260,7 @@ __global__ void interleaved_scheduler_probe_kernel(
             if (done == w13_tiles) {
                 const int queue_slot = atomicAdd(counters + 2, 1);
                 ready_queue[queue_slot] = mblock;
-                __threadfence();
-                atomicExch(ready_valid + queue_slot, 1);
+                store_release_gpu_i32(ready_valid + queue_slot, 1);
             } else if (done > w13_tiles) {
                 atomicAdd(counters + 6, 1);
                 atomicAdd(counters + 11, 1);
@@ -2556,7 +2572,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v76sched"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v77sched"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
