@@ -4291,3 +4291,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: PASS on all four ranks without deadlock. Every rank reported marker_sum=1536 with marker_min=marker_max=1, task_done=64, worker_done=64, counter_min=counter_max=1, all four source slots fully cleared (zero nonzero words), and finite output.
 - Scope: establishes local publication, local resident-grid gate, remote polling/reduction completion, slot cleanup, and CARv2 phase advancement. Numerical equivalence is intentionally deferred to the same-process end-to-end graph A/B gate.
 - Artifact: results/iter83q1_inline_finish_chunks8_workers64_tp4_m8_probe_20260903.log
+
+### Iteration 83q2 — inline finish wins first cold-L2 M=8 end-to-end gate (2026-09-03)
+
+- Method: same-process CUDA-Graph A/B against stock W2 + local k6 reduction + SGLang CARv2, TP4 GPUs 1-4, random routes, 8 chunks / 64 workers. Separate 256 MiB cache clear immediately preceded every replay outside timing. Four balanced AB/BA batches of 50 supplied 200 cold samples per arm.
+- Correctness: candidate and control both passed the distributed reference; candidate versus control graph output was bitwise identical (max_abs=0).
+- Control median: 78.928 us. Inline-finish candidate median: 78.208 us.
+- Result: control/candidate = 1.009206; candidate wins by 0.720 us (0.912% of control latency).
+- Decision: first successful end-to-end result for the release-marker overlap branch. Keep opt-in pending a longer confirmation window and M=16/M=32 generalization; do not yet alter the accepted default dispatch.
+- Artifact: results/iter83q2_inline_finish_chunks8_workers64_tp4_m8_cold_ab_20260903.log
