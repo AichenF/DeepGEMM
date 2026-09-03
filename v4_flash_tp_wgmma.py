@@ -12,6 +12,7 @@ benchmark owns route alignment, activation quantization, and SGLang
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -4081,8 +4082,8 @@ void braid_mode2(torch::Tensor weight);
 """
 
 
-_ext = load_inline(
-    name=(f"v4_flash_tp_wgmma_sdyn_wo{WOUT}_lr{LUT_ROWS}_"
+_EXTENSION_CONFIG = (
+          f"wo{WOUT}_lr{LUT_ROWS}_"
           f"sr{SCALE_QUAD_REUSE}_sb{SCALE_BUFFERS}_"
           f"st{WEIGHT_STAGES}_"
           f"ws{WEIGHT_SWIZZLE}_wca{int(WEIGHT_COMMON_ADDRESS)}_"
@@ -4108,7 +4109,13 @@ _ext = load_inline(
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v111dwg"),
+          f"mb{MIN_BLOCKS_PER_SM}_v111b")
+_EXTENSION_NAME = (
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v111b"
+)
+
+_ext = load_inline(
+    name=_EXTENSION_NAME,
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[

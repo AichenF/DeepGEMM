@@ -4780,3 +4780,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - A cache-hit standalone import reproduces the same missing-`PyInit_*` error, ruling out an incomplete first-build race.
 - `nm -D` shows that the `.so` does contain a globally exported `PyInit_v4_flash_tp_wgmma_..._v111dwg` symbol with the configured flag suffix.  The failure is therefore in resolving the oversized module short name rather than CUDA compilation or kernel launch.
 - Repair by shortening only the Python extension name; keep every compile-time field in the CUDA flags and retain the `dwg` discriminator plus iteration suffix so control/candidate caches remain distinct.
+
+### Iteration 111b — compact extension key runs and exposes activation reuse race
+
+- Replaced the oversized readable extension name with a 20-hex SHA1 of the complete configuration plus a readable iteration suffix.  Compile flags and runtime metadata still retain every individual switch, and control/candidate modules remain distinct.
+- The compact module imports and runs.  TP4 balanced split4 and TP8-local balanced split4 exactly reproduce the selected W13/activation/W2 errors.  TP4 maximal-skew forced split2 passes the old broad threshold but does **not** reproduce the control: W13 cosine drops from about `0.999999997` to `0.999999330`, and rel-L2 rises from about `7.76e-5` to `1.158e-3`.
+- This is consistent with WG0 overwriting the single shared activation tile for the next K128 iteration before WG1 has completed its prior WGMMA read.  Do not time or accept this version.  Add a one-lane consumer-complete mbarrier plus a WG0-only named-barrier gate before buffer reuse, avoiding a second full-CTA barrier.
+- Artifact: `results/iter111b_w13_dual_wg_split_correctness_20260903.log`.
