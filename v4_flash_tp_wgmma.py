@@ -104,6 +104,7 @@ _CUDA = r"""
 #include <cuda.h>
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
+#include <cub/block/block_scan.cuh>
 
 #include <cutlass/arch/barrier.h>
 #include <cute/arch/mma_sm90_desc.hpp>
@@ -925,9 +926,9 @@ __global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
 
 // Fixed DeepSeek-V4-Flash TP preparation.  Route alignment and input
 // quantization are independent, so place them in one launch: CTA 0 performs
-// the E=256/top-k=6/block-M=8 alignment before quantizing its own group, while
-// all other CTAs quantize one H=4096 group-128 slice immediately.
-__global__ __launch_bounds__(128) void fused_route_quant_kernel(
+// the E=256/top-k=6/block-M=8 alignment, while every 256-thread CTA quantizes
+// two H=4096 group-128 slices.
+__global__ __launch_bounds__(256) void fused_route_quant_kernel(
         const int32_t* __restrict__ topk_ids,
         const __nv_bfloat16* __restrict__ input,
         int32_t* __restrict__ sorted_ids,
@@ -939,18 +940,17 @@ __global__ __launch_bounds__(128) void fused_route_quant_kernel(
     constexpr int kExperts = 256;
     constexpr int kHidden = 4096;
     constexpr int kGroup = 128;
-    constexpr int kGroupsPerToken = kHidden / kGroup;
+    using ExpertScan = cub::BlockScan<int, 256>;
     __shared__ int counts[kExperts];
-    __shared__ int offsets[kExperts];
     __shared__ int cursors[kExperts];
     __shared__ int total_padded;
-    __shared__ float warp_max[4];
-    __shared__ float group_scale;
+    __shared__ typename ExpertScan::TempStorage scan_storage;
+    __shared__ float warp_max[8];
+    __shared__ float group_scale[2];
 
     const int tid = threadIdx.x;
     if (blockIdx.x == 0) {
         counts[tid] = 0;
-        counts[tid + 128] = 0;
         __syncthreads();
 
         for (int route = tid; route < routes; route += blockDim.x) {
@@ -960,24 +960,19 @@ __global__ __launch_bounds__(128) void fused_route_quant_kernel(
         }
         __syncthreads();
 
-        if (tid == 0) {
-            int total = 0;
-            #pragma unroll 1
-            for (int expert = 0; expert < kExperts; ++expert) {
-                offsets[expert] = total;
-                cursors[expert] = total;
-                total += (counts[expert] + 7) & ~7;
-            }
-            total_padded = total;
-            *num_tokens_padded = total;
+        const int padded_count = (counts[tid] + 7) & ~7;
+        int offset;
+        ExpertScan(scan_storage).ExclusiveSum(padded_count, offset);
+        cursors[tid] = offset;
+        if (tid == kExperts - 1) {
+            total_padded = offset + padded_count;
+            *num_tokens_padded = offset + padded_count;
         }
         __syncthreads();
 
-        for (int expert = tid; expert < kExperts; expert += blockDim.x) {
-            const int end = offsets[expert] + ((counts[expert] + 7) & ~7);
-            for (int position = offsets[expert]; position < end; position += 8)
-                expert_ids[position >> 3] = expert;
-        }
+        const int end = offset + padded_count;
+        for (int position = offset; position < end; position += 8)
+            expert_ids[position >> 3] = tid;
         for (int position = tid; position < total_padded;
              position += blockDim.x)
             sorted_ids[position] = routes;
@@ -993,9 +988,11 @@ __global__ __launch_bounds__(128) void fused_route_quant_kernel(
         __syncthreads();
     }
 
-    const int quant_group = blockIdx.x;
-    const int index = quant_group * kGroup + tid;
-    const float value = __bfloat162float(input[index]);
+    const int quant_subgroup = tid >> 7;
+    const int quant_group = blockIdx.x * 2 + quant_subgroup;
+    const int group_lane = tid & 127;
+    const float value = __bfloat162float(
+        input[quant_group * kGroup + group_lane]);
     float absmax = fabsf(value);
     #pragma unroll
     for (int delta = 16; delta > 0; delta >>= 1)
@@ -1006,19 +1003,21 @@ __global__ __launch_bounds__(128) void fused_route_quant_kernel(
     if (lane == 0)
         warp_max[warp] = absmax;
     __syncthreads();
-    if (warp == 0) {
-        absmax = lane < 4 ? warp_max[lane] : 0.0f;
+    if ((warp & 3) == 0) {
+        absmax = lane < 4 ? warp_max[(warp & ~3) + lane] : 0.0f;
         #pragma unroll
         for (int delta = 16; delta > 0; delta >>= 1)
             absmax = fmaxf(absmax,
                            __shfl_down_sync(0xffffffffu, absmax, delta));
         if (lane == 0) {
-            group_scale = fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
-            scale[quant_group] = group_scale;
+            group_scale[quant_subgroup] =
+                fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
+            scale[quant_group] = group_scale[quant_subgroup];
         }
     }
     __syncthreads();
-    quantized[index] = __nv_fp8_e4m3(value / group_scale).__x;
+    quantized[quant_group * kGroup + group_lane] =
+        __nv_fp8_e4m3(value / group_scale[quant_subgroup]).__x;
 }
 
 __global__ void cast_bf16_kernel(
@@ -1322,9 +1321,9 @@ void fused_route_quant(
     TORCH_CHECK(scale.numel() == input.size(0) * 32,
                 "scale output must have shape [M,32]");
     const int routes = topk_ids.numel();
-    const int blocks = input.size(0) * 32;
+    const int blocks = input.size(0) * 16;
     const auto stream = at::cuda::getCurrentCUDAStream();
-    fused_route_quant_kernel<<<blocks, 128, 0, stream>>>(
+    fused_route_quant_kernel<<<blocks, 256, 0, stream>>>(
         topk_ids.data_ptr<int32_t>(),
         reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
         sorted_ids.data_ptr<int32_t>(), expert_ids.data_ptr<int32_t>(),
@@ -1390,7 +1389,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v40"),
+          f"mb{MIN_BLOCKS_PER_SM}_v41"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
