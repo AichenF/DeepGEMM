@@ -201,9 +201,6 @@ def main() -> None:
                 "w13_leader_mbar_wait": kernel_module.LEADER_MBAR_WAIT
                 if args.impl == "custom"
                 else None,
-                "single_imad_lut": kernel_module.SINGLE_IMAD_LUT
-                if args.impl == "custom"
-                else None,
                 "l2_cache_bytes": props.L2_cache_size,
                 "l2_flush_bytes": l2_flush_buffer.nbytes,
                 "l2_policy": "cold; 256MiB clear immediately before pipeline",
