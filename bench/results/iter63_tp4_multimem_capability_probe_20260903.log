@@ -1,0 +1,11 @@
+/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/tp_multimem_test.py:26: FutureWarning: `enable_symm_mem_for_group` is deprecated. There is no need to call this function anymore.
+  try: symm_mem.enable_symm_mem_for_group(gname)
+/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/tp_multimem_test.py:26: FutureWarning: `enable_symm_mem_for_group` is deprecated. There is no need to call this function anymore.
+  try: symm_mem.enable_symm_mem_for_group(gname)
+/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/tp_multimem_test.py:26: FutureWarning: `enable_symm_mem_for_group` is deprecated. There is no need to call this function anymore.
+  try: symm_mem.enable_symm_mem_for_group(gname)
+/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/tp_multimem_test.py:26: FutureWarning: `enable_symm_mem_for_group` is deprecated. There is no need to call this function anymore.
+  try: symm_mem.enable_symm_mem_for_group(gname)
+has_multicast_support=<built-in method has_multicast_support of pybind11_builtins.pybind11_detail_function_record_v1_system_libstdcpp_gxx_abi_1xxx_use_cxx11_abi_1 object at 0x7ffe9ef6f050> multicast_ptr=140720899883008
+MULTIMEM buf[0]=10.0 expect=10 maxerr=0.0e+00  MM_OK
+PROBE_EXIT_STATUS=0

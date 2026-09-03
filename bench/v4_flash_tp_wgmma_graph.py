@@ -227,7 +227,9 @@ class CapturedCase:
         self.fused_push_counter = None
         self.fused_push_rank = -1
         self.fused_push_stride = 0
+        self.fused_push_mc_ptr = 0
         self.fused_k6_push_active = False
+        self.fused_k6_ar_mode = "stock"
         max_padded = (
             routes * 8
             if routes < NUM_EXPERTS + 1
@@ -400,9 +402,20 @@ class CapturedCase:
         self.fused_push_counter = comm._push_counter
         self.fused_push_rank = comm.rank
         self.fused_push_stride = comm.max_push_size
+        self.fused_push_mc_ptr = int(symm.multicast_ptr)
 
     def run_full(self, comm: CustomAllReduceV2) -> torch.Tensor:
-        if kernel.FUSED_K6_PUSH_AR and comm.world_size == 4 and self.m <= 32:
+        use_mc_push = (
+            kernel.FUSED_K6_MC_PUSH_AR
+            and comm.world_size == 4
+            and self.m <= 64
+        )
+        use_unicast_push = (
+            kernel.FUSED_K6_PUSH_AR
+            and comm.world_size == 4
+            and self.m <= 32
+        )
+        if use_mc_push or use_unicast_push:
             self.prepare_fused_push(comm)
             assert self.down is not None
             assert self.fused_push_workspaces is not None
@@ -416,11 +429,16 @@ class CapturedCase:
                 self.fused_push_workspaces,
                 self.fused_push_rank,
                 self.fused_push_stride,
+                self.fused_push_mc_ptr if use_mc_push else 0,
             )
             self.fused_k6_push_active = True
+            self.fused_k6_ar_mode = (
+                "multicast_push" if use_mc_push else "unicast_push"
+            )
             self.graph_output = self.fused_graph_output
             return self.graph_output
         self.fused_k6_push_active = False
+        self.fused_k6_ar_mode = "stock"
         self.graph_output = comm.custom_all_reduce(self.run_local())
         return self.graph_output
 
@@ -621,6 +639,7 @@ def main() -> None:
                     "leader_mbar_wait": kernel.LEADER_MBAR_WAIT,
                     "tiled_k6_reduce_policy": kernel.TILED_K6_REDUCE_POLICY,
                     "fused_k6_push_ar": kernel.FUSED_K6_PUSH_AR,
+                    "fused_k6_mc_push_ar": kernel.FUSED_K6_MC_PUSH_AR,
                     "w2_epilogue": (
                         "BF16 route output + fixed tiled CUDA k6 mode 4 at "
                         "M<=16, SGLang moe_fused_mul_sum otherwise"
@@ -749,6 +768,7 @@ def main() -> None:
             "w13_split_k": case.w13_split_k,
             "tiled_k6_reduce_mode": case.tiled_k6_reduce_mode,
             "fused_k6_push_ar": case.fused_k6_push_active,
+            "fused_k6_ar_mode": case.fused_k6_ar_mode,
             "allreduce_bytes": nbytes,
             "allreduce_algo": None if ar_algo is None else ar_algo.name,
             "allreduce_mode": ar_mode.name,

@@ -96,6 +96,7 @@ def select_tiled_k6_reduce_mode(tokens: int) -> int:
 
 
 FUSED_K6_PUSH_AR = os.environ.get("V4_FUSED_K6_PUSH_AR", "0") == "1"
+FUSED_K6_MC_PUSH_AR = os.environ.get("V4_FUSED_K6_MC_PUSH_AR", "0") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
@@ -1196,6 +1197,17 @@ __device__ __forceinline__ void store_relaxed_sys_16b(
         : "memory");
 }
 
+__device__ __forceinline__ void store_multimem_16b(
+        void* pointer, const uint4& value) {
+    const float4 bits = *reinterpret_cast<const float4*>(&value);
+    asm volatile(
+        "multimem.st.weak.v4.f32 [%4], {%0, %1, %2, %3};"
+        :
+        : "f"(bits.x), "f"(bits.y), "f"(bits.z), "f"(bits.w),
+          "l"(pointer)
+        : "memory");
+}
+
 __device__ __forceinline__ bool word_has_positive_bf16_zero(uint32_t word) {
     return (word & 0xffffu) == 0u || (word & 0xffff0000u) == 0u;
 }
@@ -1212,13 +1224,14 @@ __device__ __forceinline__ uint32_t clear_positive_bf16_zero(uint32_t word) {
 // The symmetric slots and per-CTA phase counters are owned by the unchanged
 // CustomAllReduceV2 communicator, so stock Humming and this kernel can safely
 // alternate on the same communicator and inside separately captured graphs.
-template <int Threads>
+template <int Threads, bool UseMulticast>
 __global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
         const __nv_bfloat16* __restrict__ input,
         const float* __restrict__ topk_weights,
         __nv_bfloat16* __restrict__ output,
         uint32_t* __restrict__ push_counter,
         uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
+        uint8_t* push_mc,
         int tokens, int rank, int64_t push_stride) {
     constexpr int kWorld = 4;
     constexpr int kHidden = 4096;
@@ -1268,15 +1281,27 @@ __global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
             const __nv_bfloat162 value =
                 __floats2bfloat162_rn(accum[pair].x, accum[pair].y);
             uint32_t word = *reinterpret_cast<const uint32_t*>(&value);
-            local_words[pair] = clear_positive_bf16_zero(word);
+            if constexpr (UseMulticast) {
+                // K3's push protocol only needs to distinguish an untouched
+                // 4-byte atom from a written one.  If both BF16 lanes are
+                // +0, turn one into -0; mixed pairs are already nonzero.
+                local_words[pair] = word == 0u ? 0x00008000u : word;
+            } else {
+                local_words[pair] = clear_positive_bf16_zero(word);
+            }
         }
 
         const int64_t source_offset =
             static_cast<int64_t>(rank) * push_stride + phase_offset
             + static_cast<int64_t>(vec) * 16;
-        #pragma unroll
-        for (int peer = 0; peer < kWorld; ++peer)
-            store_relaxed_sys_16b(peer_base[peer] + source_offset, local_vec);
+        if constexpr (UseMulticast) {
+            store_multimem_16b(push_mc + source_offset, local_vec);
+        } else {
+            #pragma unroll
+            for (int peer = 0; peer < kWorld; ++peer)
+                store_relaxed_sys_16b(
+                    peer_base[peer] + source_offset, local_vec);
+        }
 
         uint4 rank_vec[kWorld];
         const int64_t poll_phase_offset = phase_offset
@@ -1294,8 +1319,12 @@ __global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
                 const uint32_t* words =
                     reinterpret_cast<const uint32_t*>(&rank_vec[source]);
                 #pragma unroll
-                for (int pair = 0; pair < kPairsPerVec; ++pair)
-                    has_zero |= word_has_positive_bf16_zero(words[pair]);
+                for (int pair = 0; pair < kPairsPerVec; ++pair) {
+                    if constexpr (UseMulticast)
+                        has_zero |= words[pair] == 0u;
+                    else
+                        has_zero |= word_has_positive_bf16_zero(words[pair]);
+                }
             }
             if (!has_zero)
                 break;
@@ -1679,7 +1708,7 @@ void fused_k6_push_ar_tp4(
         torch::Tensor output, torch::Tensor push_counter,
         torch::Tensor push0, torch::Tensor push1,
         torch::Tensor push2, torch::Tensor push3,
-        int rank, int64_t push_stride) {
+        int rank, int64_t push_stride, int64_t push_mc_ptr) {
     TORCH_CHECK(input.scalar_type() == torch::kBFloat16,
                 "route input must be bfloat16");
     TORCH_CHECK(topk_weights.scalar_type() == torch::kFloat32,
@@ -1712,26 +1741,54 @@ void fused_k6_push_ar_tp4(
                     "push workspaces must be uint8");
     }
     const int tokens = output.size(0);
-    TORCH_CHECK(tokens == 8 || tokens == 16 || tokens == 32,
-                "initial fused push prototype supports M=8,16,32");
+    const bool use_multicast = push_mc_ptr != 0;
+    TORCH_CHECK(
+        tokens == 8 || tokens == 16 || tokens == 32
+            || (use_multicast && tokens == 64),
+        "fused push supports M=8,16,32 and multicast M=64");
     const auto stream = at::cuda::getCurrentCUDAStream();
     auto* counter = reinterpret_cast<uint32_t*>(push_counter.data_ptr());
-    if (tokens <= 16) {
-        fused_k6_push_ar_tp4_kernel<128><<<78, 128, 0, stream>>>(
+    auto* push_mc = reinterpret_cast<uint8_t*>(push_mc_ptr);
+    if (use_multicast && tokens == 64) {
+        fused_k6_push_ar_tp4_kernel<512, true><<<78, 512, 0, stream>>>(
             reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
             topk_weights.data_ptr<float>(),
             reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), counter,
             push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
             push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
-            tokens, rank, push_stride);
+            push_mc, tokens, rank, push_stride);
+    } else if (use_multicast && tokens <= 16) {
+        fused_k6_push_ar_tp4_kernel<128, true><<<78, 128, 0, stream>>>(
+            reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
+            topk_weights.data_ptr<float>(),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), counter,
+            push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
+            push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
+            push_mc, tokens, rank, push_stride);
+    } else if (use_multicast) {
+        fused_k6_push_ar_tp4_kernel<256, true><<<78, 256, 0, stream>>>(
+            reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
+            topk_weights.data_ptr<float>(),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), counter,
+            push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
+            push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
+            push_mc, tokens, rank, push_stride);
+    } else if (tokens <= 16) {
+        fused_k6_push_ar_tp4_kernel<128, false><<<78, 128, 0, stream>>>(
+            reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
+            topk_weights.data_ptr<float>(),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), counter,
+            push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
+            push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
+            nullptr, tokens, rank, push_stride);
     } else {
-        fused_k6_push_ar_tp4_kernel<256><<<78, 256, 0, stream>>>(
+        fused_k6_push_ar_tp4_kernel<256, false><<<78, 256, 0, stream>>>(
             reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
             topk_weights.data_ptr<float>(),
             reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), counter,
             push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
             push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
-            tokens, rank, push_stride);
+            nullptr, tokens, rank, push_stride);
     }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -1808,7 +1865,7 @@ void fused_k6_push_ar_tp4(
     torch::Tensor output, torch::Tensor push_counter,
     torch::Tensor push0, torch::Tensor push1,
     torch::Tensor push2, torch::Tensor push3,
-    int rank, int64_t push_stride);
+    int rank, int64_t push_stride, int64_t push_mc_ptr);
 void fused_route_quant(torch::Tensor topk_ids, torch::Tensor input,
                        torch::Tensor sorted_ids, torch::Tensor expert_ids,
                        torch::Tensor num_tokens_padded,
@@ -1831,7 +1888,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v51fkar"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v52mcps"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -2129,6 +2186,7 @@ def fused_k6_push_ar_tp4(
     push_workspaces: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
     rank: int,
     push_stride: int,
+    push_mc_ptr: int = 0,
 ) -> None:
     _ext.fused_k6_push_ar_tp4(
         input,
@@ -2141,6 +2199,7 @@ def fused_k6_push_ar_tp4(
         push_workspaces[3],
         rank,
         push_stride,
+        push_mc_ptr,
     )
 
 

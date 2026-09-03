@@ -3803,3 +3803,29 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/iter62_fused_k6_push_tp4_m8_m32_cold_graph_node_nsys.log`
   and `bench/results/iter62_fused_tp4_m{8,32}_cold_graph_rank*.nsys-rep`.
+
+### WGMMA iteration 63 — multicast push prototype compiles and replays
+
+- The existing read-only Hopper capability probe confirms this H20 NVLink
+  clique exposes a nonzero symmetric-memory multicast VA.  Four ranks issue
+  `multimem.red.add.f32` with values 1--4 and every local replica reads the
+  exact sum 10 (`maxerr=0`).  This makes SGLang K3's multicast-push technique
+  applicable on the actual benchmark machine rather than merely supported by
+  the architecture in principle.
+- Added an opt-in TP4 multicast-push specialization of iteration 60's fused
+  k6 tail.  It retains the exact SGLang two-phase push workspace and 78
+  counters, but replaces four peer system stores per 16-byte vector with one
+  `multimem.st` that fans out to every rank.  It also adopts K3's safe
+  4-byte-empty-marker test: an all-positive-zero BF16 pair is changed to
+  `{-0,+0}`, while mixed pairs need no remapping.  The original unicast
+  candidate, stock baseline, TP8 fallback, and M128 fallback remain intact.
+- TP4 M8 JIT-compiles, captures, and completes 20 consecutive cold-L2 graph
+  replays without a phase deadlock.  Correctness is unchanged: minimum-rank
+  cosine 0.999995565, relative-L2 0.002978479, finite output, and independent
+  NCCL all-reduce check pass.  The initial median is 0.076144 ms, versus
+  0.076416 ms for unicast in iteration 61, but this cross-window 0.272 us
+  difference is not selection evidence.  Next use the same-process AB/BA
+  harness for M8--M64.
+- Evidence:
+  `bench/results/iter63_tp4_multimem_capability_probe_20260903.log` and
+  `bench/results/iter63_multicast_push_tp4_m8_compile_correctness_smoke_coldl2_20260903.log`.

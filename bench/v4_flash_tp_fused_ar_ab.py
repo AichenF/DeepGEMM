@@ -26,6 +26,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ms", default="8,16,32")
     parser.add_argument(
+        "--candidate", choices=("unicast", "multicast"), default="multicast"
+    )
+    parser.add_argument(
         "--route-pattern", choices=("random", "balanced", "skew"), default="random"
     )
     parser.add_argument("--outer", type=int, default=6)
@@ -34,8 +37,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=20260902)
     args = parser.parse_args()
     args.ms = tuple(int(value) for value in args.ms.split(",") if value)
-    if not args.ms or any(value not in (8, 16, 32) for value in args.ms):
-        parser.error("--ms must be a nonempty subset of 8,16,32")
+    supported = (
+        (8, 16, 32, 64) if args.candidate == "multicast" else (8, 16, 32)
+    )
+    if not args.ms or any(value not in supported for value in args.ms):
+        parser.error(f"--ms must be a nonempty subset of {supported}")
     if args.outer < 2 or args.outer % 2:
         parser.error("--outer must be positive and even for balanced AB/BA")
     if args.replays < 1 or args.warmup_replays < 1:
@@ -103,6 +109,7 @@ def main() -> None:
                     "sm_count": props.multi_processor_count,
                     "world_size": world_size,
                     "m_values": args.ms,
+                    "candidate": args.candidate,
                     "route_pattern": args.route_pattern,
                     "outer": args.outer,
                     "replays_per_outer_per_impl": args.replays,
@@ -132,11 +139,13 @@ def main() -> None:
             m, x, topk_ids, topk_weights, weights, lut, intermediate_per_rank
         )
 
-        kernel.FUSED_K6_PUSH_AR = True
+        kernel.FUSED_K6_PUSH_AR = args.candidate == "unicast"
+        kernel.FUSED_K6_MC_PUSH_AR = args.candidate == "multicast"
         fused_graph = paired.capture_graph(fused_case, comm, cpu_group, device)
         if not fused_case.fused_k6_push_active:
             raise RuntimeError(f"fused graph did not select fused AR at M={m}")
         kernel.FUSED_K6_PUSH_AR = False
+        kernel.FUSED_K6_MC_PUSH_AR = False
         control_graph = paired.capture_graph(control_case, comm, cpu_group, device)
         if control_case.fused_k6_push_active:
             raise RuntimeError(f"control graph selected fused AR at M={m}")
