@@ -4597,3 +4597,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - All six candidate batch medians beat their paired controls by 0.192–1.024 us. This is a small but directionally consistent signal, not enough to select from one shape alone.
 - Keep the flag opt-in while screening M8/M16/M32/M64 under the same paired cold-L2 protocol. A broad win would justify a five-shape long-window acceptance audit; a shape-specific reversal would bound dispatch instead.
 - Artifact: `results/iter101b_w2_distributed_prep_tp4_m128_paired_cold600_20260903.log`.
+
+## Iteration 101c — W2 distributed-preparation four-shape paired screen
+
+- Extended the same-process TP4 random-route cold-L2 comparison to M8/M16/M32/M64, with 4×100 samples per variant and per-sample ABBA ordering. Every replay used the excluded 256 MiB cache clear.
+- Control/candidate medians (ms) and speedups were: M8 `0.076864/0.076416 = 1.005863x`; M16 `0.121664/0.121088 = 1.004757x`; M32 `0.191616/0.190688 = 1.004867x`; M64 `0.280128/0.279136 = 1.003554x`. Outputs were bitwise identical on all ranks at every shape.
+- Combined with iteration 101b M128 (`1.001567x`), the five-shape geometric-mean improvement is approximately **1.00412x**. All 22 paired batch medians across the five shapes favor the candidate.
+- The effect is small but broad and unusually consistent, matching the expected benefit from distributing W2's route-scale gathers. Keep opt-in until a longer five-shape exact-Humming/custom audit confirms the selected-score impact; then consider making W2 distributed preparation the default.
+- Artifact: `results/iter101c_w2_distributed_prep_tp4_m8_m16_m32_m64_paired_cold400_20260903.log`.
