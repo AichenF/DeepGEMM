@@ -4809,3 +4809,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Correctness passes TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256 with error metrics identical to the selected control.  Route/input quantization is exact, W13 cosine is at least `0.999999997`, W2 cosine is at least `0.999997240`, and all outputs are finite.
 - Keep opt-in and run a long same-process TP4 M128 cold-L2 paired gate before screening other shapes.
 - Artifact: `results/iter112_w2_no_evict_first_correctness_20260903.log`.
+
+### Iteration 112b — W2 no-evict candidate is a paired regression
+
+- Same-process TP4 M128 random-route timing used 8x100 samples per variant, exact graph-output equality, per-sample ABBA ordering, and a separate excluded 256 MiB L2 clear before every replay.
+- Selected W2-evict-first control median: **0.357984 ms**; W2-no-evict candidate: **0.359136 ms**; control/candidate: **0.996792x**.  Removing the hint costs 1.152 us (0.322%), and all eight candidate batch medians lose.
+- Decision: reject `V4_W2_NO_WEIGHT_EVICT_FIRST=1` and retain W2 evict-first.  Even across only four K128 tiles, the protection of reused activation/metadata cache lines is worth more than per-TMA policy creation.  The all-batch loss is sufficient to stop before other M values.
+- Artifact: `results/iter112b_w2_no_evict_first_tp4_m128_paired_cold800_20260903.log`.
