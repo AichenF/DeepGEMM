@@ -4629,3 +4629,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Correctness passes TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256. Route/quant preparation is exact; W13 cosine is at least 0.999999997, W2 cosine is at least 0.999997240, and all outputs are finite.
 - Next compare the two scope forms in one process under per-replay cold L2 and inspect cubin/SASS. Keep disabled unless timing shows a repeatable benefit.
 - Artifact: `results/iter103_tma_cta_scope_correctness_20260903.log`.
+
+## Iteration 103b — CTA-scope bulk-TMA paired rejection
+
+- Same-process TP4 M128 random-route comparison, 6×100 samples per scope form, exact graph-output check, per-sample ABBA ordering, and an excluded 256 MiB L2 clear immediately before each replay.
+- Cluster-scope control median: **0.355024 ms**; CTA-scope candidate: **0.355456 ms**; control/candidate: **0.998785x**. The candidate is 0.432 us (0.122%) slower.
+- Batch direction is mixed (three candidate wins and three losses) and all differences are sub-microsecond. Narrowing the PTX shared-memory scope supplies no measurable end-to-end benefit on H20.
+- Reject `V4_TMA_CTA_SCOPE=1` and keep the default off. A cubin/SASS comparison may explain whether ptxas maps both forms to the same instruction, but no broader timing sweep is justified.
+- Artifact: `results/iter103b_tma_cta_scope_tp4_m128_paired_cold600_20260903.log`.
