@@ -5303,3 +5303,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Control/candidate is 1.007563x, a 2.608 us median reduction, and the candidate wins all eight batch medians. Outputs are bitwise identical on all ranks.
 - Result: eight-way unrolling passes the M128 gate, but the gain is too small to offset an unmeasured split4 regression. Screen M8/M16/M32 and M64 before any formal benchmark or default change.
 - Evidence: `results/iter132b_route_k_unroll8_tp4_m128_paired_cold800_20260903.log`.
+
+## Iteration 132c — global eight-way unroll loses on split4 and is rejected
+
+- Same-process TP4 random-route screening used five x 100 rank-max cold-L2 samples per arm, with per-replay A/B then B/A alternation. Four-way-control/eight-way-candidate medians and control/candidate speedups: M8 0.071488/0.071968 ms (0.993330x), M16 0.112480/0.113072 ms (0.994764x), M32 0.181856/0.183120 ms (0.993097x), and M64 0.264480/0.262736 ms (1.006638x).
+- Candidate min/median/max is 0.070624/0.071968/0.074080, 0.111840/0.113072/0.115264, 0.174944/0.183120/0.192640, and 0.243520/0.262736/0.272704 ms for M8 through M64. Control min/median/max is 0.070240/0.071488/0.207232, 0.111200/0.112480/0.251648, 0.173824/0.181856/0.522272, and 0.244096/0.264480/0.454432 ms.
+- Outputs are bitwise identical on all ranks. Together with M128's 1.007563x gain, the five-shape geometric mean is only about 0.9991x: M8/M16/M32 all regress while the split2 M64/M128 points improve.
+- Result: reject global eight-way unrolling and keep the production default at four-way. Refine the candidate to use pragma-eight only for `SplitK <= 2` while retaining pragma-four for split4; this follows the measured split-policy boundary and should preserve small-M code generation.
+- Evidence: `results/iter132c_route_k_unroll8_tp4_m8_m64_paired_cold2000_20260903.log`.
