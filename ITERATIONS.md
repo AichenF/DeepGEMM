@@ -4501,3 +4501,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Five-shape geometric mean:** Humming 0.210386984 ms versus custom 0.186641453 ms = 1.127225x (12.72% faster). A 1.20x result at this Humming level requires custom <=0.175322486 ms, leaving 0.011318967 ms (11.32 us), or 6.06% of current custom latency.
 - **Noise audit:** M32–M128 batch medians are visibly dispersed, including custom M128 0.344096–0.466880 ms and Humming M128 0.382144–0.477280 ms. Preserve this run as formal evidence but repeat the identical protocol before attributing the difference from the previous 13.68% headline to code.
 - Artifact: `bench/results/iter94_tp4_humming_custom_w13dist_default_coldl2_formal_20260903.log`.
+
+## Iteration 95 — Random-route multicast fused-k6/one-shot-push acceptance audit
+
+- Re-audited the TP4 multicast fused-k6/one-shot-push candidate against stock SGLang CARv2 with the now-default distributed-W13 preparation. Each M used identical weights, inputs, random routes and communicator in one process, 10 order-balanced batches x 200 replays, maximum-rank latency, and a separate excluded 256 MiB L2 clear immediately before every graph replay.
+- Candidate/control medians: M8 0.076544/0.077344 ms (control/candidate 1.010451x), M16 0.123712/0.124896 ms (1.009571x), M32 0.196288/0.200224 ms (1.020052x). Three-shape geometric means are 0.122952941/0.124593990 ms, a stable 1.013347x gain.
+- Correctness matches stock exactly at every shape (`fused_vs_control_max_abs=0`), with all-reduce/reference checks passing, minimum cosine 0.999995564, maximum relative L2 0.002978603, and finite outputs on every rank.
+- Decision: accept as the TP4 M8/M16/M32 default communication tail. Keep M64/M128 and every TP8 shape on stock `CustomAllReduceV2`; do not enable the already-supported M64 multicast specialization.
+- Artifact: `bench/results/iter95_multicast_push_current_random_tp4_coldl2_2000_20260903.log`.
