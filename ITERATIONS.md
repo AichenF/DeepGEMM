@@ -4383,3 +4383,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Verification:** TP4 balanced M8, TP4 skew M8, and TP8-shape balanced M8 all passed the full all-route reference with W2 cosine 0.999997256, 0.999997235, and 0.999997278; all outputs finite.
 - **Decision:** Correctness and TP8-runnable gate passed; performance remains opt-in pending paired cold-L2 measurement.
 - **Artifact:** `results/iter87_w2_warp_store_correctness_20260903.log`.
+
+## Iteration 87b — Paired TP4 M128 cold-L2 warp-private W2 epilogue
+
+- **Method:** Same-process dual graph, identical random routes/weights, alternating A/B then B/A, 6×100 samples per variant, separate untimed 256 MiB L2 clear before each replay, four-rank maximum latency.
+- **Correctness:** Control and candidate outputs were bitwise equal on all ranks.
+- **Result:** control median 0.360528 ms; warp-private candidate 0.363232 ms; control/candidate 0.992556x. Candidate was slower in every batch by 2.16–3.62 microseconds.
+- **Decision:** Reject the warp-private shared epilogue too. Removing the CTA barrier did not recover the shared store/load and address-remap cost; direct scalar stores remain selected.
+- **Artifact:** `results/iter87b_w2_warp_store_paired_tp4_m128_cold_600_20260903.log`.
