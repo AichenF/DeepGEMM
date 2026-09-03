@@ -42,6 +42,7 @@ if COMPARE_FLAG not in {
 }:
     raise ValueError(f"unsupported V4_COMPARE_FLAG={COMPARE_FLAG}")
 LAYOUT_CHANGING_FLAGS = {"V4_COMPACT_INTERLEAVED_SCALE"}
+SPLITK_REORDERING_FLAGS = {"V4_W13_LAUNCH_BOUND_10"}
 if COMPARE_FLAG != "V4_EXACT_ROUTE_CAPACITY":
     os.environ[COMPARE_FLAG] = "0"
 import v4_flash_tp_wgmma as control_kernel  # noqa: E402
@@ -240,8 +241,45 @@ def main() -> None:
     exact_tensor = torch.tensor(int(exact_local), dtype=torch.int32, device=device)
     dist.all_reduce(exact_tensor, op=dist.ReduceOp.MIN, group=nccl_group)
     exact_all_ranks = bool(exact_tensor.item())
-    if not exact_all_ranks:
-        raise RuntimeError("control/candidate graph outputs differ")
+    control_float = control_case.graph_output.float().flatten()
+    candidate_float = candidate_case.graph_output.float().flatten()
+    difference = candidate_float - control_float
+    denominator = torch.linalg.vector_norm(control_float)
+    comparison_cosine = torch.dot(control_float, candidate_float) / (
+        denominator * torch.linalg.vector_norm(candidate_float)
+    )
+    comparison_rel_l2 = torch.linalg.vector_norm(difference) / denominator
+    comparison_max_abs = torch.max(torch.abs(difference))
+    comparison_finite = torch.tensor(
+        int(
+            torch.isfinite(control_float).all().item()
+            and torch.isfinite(candidate_float).all().item()
+        ),
+        dtype=torch.int32,
+        device=device,
+    )
+    dist.all_reduce(comparison_cosine, op=dist.ReduceOp.MIN, group=nccl_group)
+    dist.all_reduce(comparison_rel_l2, op=dist.ReduceOp.MAX, group=nccl_group)
+    dist.all_reduce(comparison_max_abs, op=dist.ReduceOp.MAX, group=nccl_group)
+    dist.all_reduce(comparison_finite, op=dist.ReduceOp.MIN, group=nccl_group)
+    comparison = {
+        "cosine_min_rank": float(comparison_cosine.item()),
+        "rel_l2_max_rank": float(comparison_rel_l2.item()),
+        "max_abs_max_rank": float(comparison_max_abs.item()),
+        "finite_all_ranks": bool(comparison_finite.item()),
+    }
+    tolerance_ok = (
+        comparison["finite_all_ranks"]
+        and comparison["cosine_min_rank"] >= 0.99999
+        and comparison["rel_l2_max_rank"] <= 0.005
+    )
+    if not exact_all_ranks and (
+        COMPARE_FLAG not in SPLITK_REORDERING_FLAGS or not tolerance_ok
+    ):
+        raise RuntimeError(
+            "control/candidate graph outputs fail comparison: "
+            + json.dumps(comparison, sort_keys=True)
+        )
 
     control_samples: list[float] = []
     candidate_samples: list[float] = []
@@ -304,6 +342,7 @@ def main() -> None:
         },
         "control_over_candidate": control_median / candidate_median,
         "exact_all_ranks": exact_all_ranks,
+        "cross_implementation": comparison,
     }
     if rank == 0:
         print("PAIRED_W2_STORE_RESULT " + json.dumps(record, sort_keys=True), flush=True)

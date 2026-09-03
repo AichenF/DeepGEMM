@@ -4975,3 +4975,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - This does not contradict iteration 118a's independent reference correctness: changing W13 residency changes the inter-CTA order of split2 atomic additions, so floating-point last bits need not be bit-identical even when both satisfy the numerical reference bounds.
 - Result: no latency sample and no performance conclusion.  Extend the paired harness to report and gate finite/cosine/relative-L2 for codegen variants that can reorder split-K accumulation, while retaining exact equality reporting.
 - Evidence: `results/iter118b_w13_launch_bound10_m128_screen_cold600_20260903.log`.
+
+## Iteration 118c — W13 10-CTA launch bound is a large M128 regression
+
+- Extended the paired harness for explicitly identified split-K reordering flags: exact equality is still reported, while acceptance requires all-rank finite output, cosine >=0.99999, and relative L2 <=0.005.  All other flags still require bitwise equality.
+- TP4 M128 random-route method: same-process control/candidate CUDA Graphs, 6 x 100 rank-max samples, per-replay AB/BA alternation, separate excluded 256MiB cold-L2 clear before every replay.
+- Numerical comparison passes: cosine 0.999999225, relative L2 0.001221262, finite on all ranks; bitwise equality is false as expected from changed split2 atomic arrival order.
+- Control min/median/max: 0.316704/0.343600/0.703712 ms.  Candidate: 0.337376/0.367152/0.415776 ms.
+- Result: control/candidate = 0.935852x; the launch-bound candidate is 6.85% slower and loses all 6 batch medians.  Reject it immediately; higher nominal occupancy does not repay the 55 -> 48 register constraint.  Default remains off and no smaller-M sweep is justified.
+- Evidence: `results/iter118c_w13_launch_bound10_m128_screen_cold600_20260903.log`.
