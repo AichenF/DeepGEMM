@@ -3596,3 +3596,25 @@ maximum rank latency of a full CUDA-Graph replay.
   full-graph result because the maximum possible local gain is under 1 us.
 - Evidence:
   `bench/results/iter58c_tiled_k6_initial_correctness_stage_coldl2_20260903.log`.
+
+### WGMMA iteration 58d — interleaved tiled-k6 finalist audit
+
+- Interleaved mode2/control/mode4/control/mode2/mode4 with 200 separately
+  cold-L2 graph samples per window confirms the isolated reducer advantage,
+  but not a broad complete-pipeline win.  At M8, control local-reduce windows
+  average 5.616 us, mode 2 averages 5.280 us, and mode 4 averages 5.200 us.
+  Their complete-local averages are 87.992/88.304/87.864 us, so only mode 4
+  has a tiny 0.15% total signal.
+- At M32, control/mode2/mode4 reducer averages are
+  6.432/5.952/5.784 us, but complete-local averages are
+  197.896/198.656/198.264 us: both candidates lose 0.19%--0.38% once normal
+  W13/W2 window variation is included.  At M128 the same figures are
+  7.424/7.328/7.296 us and 327.800/328.128/328.440 us, again a
+  0.10%--0.20% total regression.
+- Do not enable either mode generally.  Give mode 4 one bounded TP4 M8
+  full-distributed candidate/control/candidate screen because its two local
+  windows straddle both controls and average 0.128 us faster.  Select it only
+  if the production graph, including the same CustomAllReduceV2, repeats a
+  reduction beyond noise; otherwise reject the tiled reducer wholesale.
+- Evidence:
+  `bench/results/iter58d_tiled_k6_modes2_4_interleaved_stage_coldl2_20260903.log`.
