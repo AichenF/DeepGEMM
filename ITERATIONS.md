@@ -4226,3 +4226,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Cold latency:** control median `0.079200 ms` (min `0.077728`, max `0.105120`); candidate median `0.080560 ms` (min `0.078688`, max `0.110144`). Control/candidate is `0.983118x`.
 - **Finding:** direct markers recover another `0.416 us` end to end versus TMA plus the dynamic queue and reduce the original 32-worker deficit from `2.048 us` to `1.360 us`. All four candidate batch medians remain above control, so the `1.72%` regression is stable.
 - **Decision:** reject as default. Before testing a cheaper CTA-leader fence publication, establish that its cross-thread/device-scope happens-before chain is valid under the CUDA memory model.
+
+## Iteration 83l — direct global stores plus release markers
+
+- **Change:** removed progress-only shared staging, TMA stores, and explicit device fences. All W2 lanes use the ordinary direct BF16 global-store epilogue, then `__syncthreads()` establishes strong-happens-before into each route lane's `st.release.gpu` marker; workers retain matching `ld.acquire.gpu` loads.
+- **Memory-model basis:** CUDA documents that block synchronization strongly-happens-before participating threads resume, while scoped release/acquire atomics publish prior memory actions at device scope. The chain is therefore defined rather than an empirical visibility shortcut.
+- **Correctness:** TP4-local M8 random emits all 1,536 markers exactly once, and eager/captured progress W2 outputs are bitwise equal to ordinary W2.
+- **Method:** four order-balanced outer batches × 200 graph replays per implementation, identical state-reset graph node, separate excluded 256 MiB cold-L2 clear before every replay.
+- **Cold W2 latency:** control median `29.536 us` (min `28.704`, max `31.360`); release-marker progress median `30.880 us` (min `29.952`, max `33.024`), control/candidate `0.956477x`.
+- **Finding:** producer tax falls to `1.344 us`, half iteration 83i's `2.688 us` and `1.984 us` below the original queue implementation. This reaches the range previously hidden by communication overlap.
+- **Decision:** advance to the TP4 concurrent worker gate and an end-to-end cold-L2 A/B; remain opt-in until both pass.

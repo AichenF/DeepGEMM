@@ -1,0 +1,3 @@
+W2_PROGRESS_PROBE {"finite": true, "m": 8, "marker_max": 1, "marker_min": 1, "marker_sum": 1536, "route_pattern": "random", "task_done": 0, "w2_bitwise_equal": true, "worker_done": 0}
+W2_PROGRESS_PROBE_OK
+W2_PROGRESS_AB {"control_over_progress": 0.956476654747266, "control_us_max": 31.360000371932983, "control_us_median": 29.53599952161312, "control_us_min": 28.704000636935234, "graph_bitwise_equal": true, "l2_policy": "cold; separate 256MiB clear before every graph replay, clear excluded from CUDA events", "m": 8, "progress_us_max": 33.02399814128876, "progress_us_median": 30.880000442266464, "progress_us_min": 29.952000826597214, "route_pattern": "random", "same_state_reset": true, "samples_per_impl": 800}
