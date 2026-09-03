@@ -3200,3 +3200,18 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_bulk_l2_prefetch2_repair_correctness_20260903.log`,
   and
   `bench/results/tp4_bulk_l2_prefetch2_stage_coldl2_screen_20260903.log`.
+
+### WGMMA iteration 52a — direct BF16 atomic W2 accumulation
+
+- Revisit the accepted route-output epilogue with a new opt-in path, not the
+  previously rejected FP32 atomic path.  Emit each W2 route result as BF16,
+  apply its FP32 top-k weight and routed factor, then use native Hopper BF16
+  global atomics directly into the zeroed `[M,H]` local output.
+- This removes the `[M,6,H]` BF16 route buffer and SGLang local reduction from
+  the custom graph, but preserves the baseline unchanged.  It intentionally
+  trades six contended BF16 atomic contributions per output for less global
+  traffic and one fewer kernel.  A captured BF16 output memset remains timed.
+- Keep `V4_W2_BF16_ATOMIC=0` by default.  Require TP4/TP8 numerical gates and
+  compare the combined zero+W2 atomic stage against control W2+local-reduce
+  totals under per-replay cold L2; stop if BF16 summation error or contention
+  outweighs the eliminated route tensor.
