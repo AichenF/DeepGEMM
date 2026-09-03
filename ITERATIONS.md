@@ -4509,3 +4509,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Correctness matches stock exactly at every shape (`fused_vs_control_max_abs=0`), with all-reduce/reference checks passing, minimum cosine 0.999995564, maximum relative L2 0.002978603, and finite outputs on every rank.
 - Decision: accept as the TP4 M8/M16/M32 default communication tail. Keep M64/M128 and every TP8 shape on stock `CustomAllReduceV2`; do not enable the already-supported M64 multicast specialization.
 - Artifact: `bench/results/iter95_multicast_push_current_random_tp4_coldl2_2000_20260903.log`.
+
+## Iteration 96 — Encode accepted TP4 small-M multicast dispatch
+
+- **Change:** Enabled `V4_FUSED_K6_MC_PUSH_AR` by default and narrowed its graph dispatch from M<=64 to the accepted M<=32 boundary. The guard still requires `comm.world_size == 4`; therefore M64/M128 and all TP8 executions fall through to stock SGLang `CustomAllReduceV2`. Environment value `0` remains the explicit rollback.
+- Added the distributed-W13 and multicast-tail selections to the exact Humming/custom paired benchmark metadata, and repaired the adjacent metadata indentation.
+- **Dispatch/correctness smoke:** TP4 random-route M8 selected `multicast_push`, while M64 selected `stock`/CARv2. Both passed independent NCCL-sum checks; cosine was 0.999995565 and 0.999995583 respectively, relative L2 below 0.002979, and every output finite.
+- The 40-sample smoke is not used as performance evidence. Selection relies on iteration 95's 2,000-sample/M cold-L2 audit; this smoke verifies only default wiring and the M32 boundary.
+- Artifact: `bench/results/iter96_multicast_default_dispatch_tp4_smoke_20260903.log`.

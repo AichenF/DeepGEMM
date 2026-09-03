@@ -266,12 +266,18 @@ def main() -> None:
                     "l2_cache_bytes": props.L2_cache_size,
                     "l2_flush_bytes": l2_flush_buffer.nbytes,
                     "custom_mode2_braid": kernel.MODE2_BRAID,
-                "custom_fused_activation_quant": kernel.FUSED_ACT_QUANT,
-                "custom_fused_route_quant": kernel.FUSED_ROUTE_QUANT,
+                    "custom_fused_activation_quant": kernel.FUSED_ACT_QUANT,
+                    "custom_fused_route_quant": kernel.FUSED_ROUTE_QUANT,
+                    "custom_fused_k6_mc_push_ar": (
+                        kernel.FUSED_K6_MC_PUSH_AR
+                    ),
                     "custom_w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "custom_w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "custom_w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
                     "custom_leader_mbar_wait": kernel.LEADER_MBAR_WAIT,
+                    "custom_w13_distributed_prep": (
+                        kernel.W13_DISTRIBUTED_PREP
+                    ),
                     "custom_normalized_weight_scale": (
                         kernel.NORMALIZED_WEIGHT_SCALE
                     ),

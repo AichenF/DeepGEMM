@@ -774,7 +774,7 @@ class CapturedCase:
         use_mc_push = (
             kernel.FUSED_K6_MC_PUSH_AR
             and comm.world_size == 4
-            and self.m <= 64
+            and self.m <= 32
         )
         use_unicast_push = (
             kernel.FUSED_K6_PUSH_AR
