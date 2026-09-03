@@ -277,6 +277,7 @@ def main() -> None:
                     "custom_leader_mbar_wait": kernel.LEADER_MBAR_WAIT,
                     "custom_direct_barrier_addr": kernel.DIRECT_BARRIER_ADDR,
                     "custom_route_k_unroll2": kernel.ROUTE_K_UNROLL2,
+                    "custom_route_k_unroll4": kernel.ROUTE_K_UNROLL4,
                     "custom_w13_distributed_prep": (
                         kernel.W13_DISTRIBUTED_PREP
                     ),

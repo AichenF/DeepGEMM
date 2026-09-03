@@ -1,0 +1,21 @@
+CASE=tp4_balanced_auto
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+V4_WGMMA_CHECK M=8 pattern=balanced Is=512 active=48 padded=384 split_k=4 mode2=True interleaved_bulk=True compact_scale=True tma_cta_scope=False weight_evict_first=True weight_policy_hoist=False weight_policy_constant=False w2_no_weight_evict_first=False fused_act_quant=True w13_tail_fused_act=False w2_sorted_act=False w2_mblock_scale=False w2_fold_global_scale=False w2_coalesced_store=False w2_global_lut=False leader_mbar_wait=True direct_barrier_addr=False route_k_unroll2=True route_k_unroll4=True w13_distributed_prep=True w13_dual_wg_split=False w13_launch_bound_10=False w13_max_smem=False w2_distributed_prep=True w13_merged_wgmma_group=False normalized_shared_lut=False activation_evict_last=False
+V4_WGMMA_W13 cos=0.999999998 rel_l2=0.000076187
+V4_WGMMA_ACT cos=0.999999759 rel_l2=0.000694956
+V4_WGMMA_W2 cos=0.999997256 rel_l2=0.002342691 finite=True
+V4_WGMMA_OK
+CASE=tp4_skew_split2
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+V4_WGMMA_CHECK M=8 pattern=skew Is=512 active=6 padded=48 split_k=2 mode2=True interleaved_bulk=True compact_scale=True tma_cta_scope=False weight_evict_first=True weight_policy_hoist=False weight_policy_constant=False w2_no_weight_evict_first=False fused_act_quant=True w13_tail_fused_act=False w2_sorted_act=False w2_mblock_scale=False w2_fold_global_scale=False w2_coalesced_store=False w2_global_lut=False leader_mbar_wait=True direct_barrier_addr=False route_k_unroll2=True route_k_unroll4=True w13_distributed_prep=True w13_dual_wg_split=False w13_launch_bound_10=False w13_max_smem=False w2_distributed_prep=True w13_merged_wgmma_group=False normalized_shared_lut=False activation_evict_last=False
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077291
+V4_WGMMA_ACT cos=0.999999649 rel_l2=0.000838720
+V4_WGMMA_W2 cos=0.999997235 rel_l2=0.002351904 finite=True
+V4_WGMMA_OK
+CASE=tp8_balanced_auto
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+V4_WGMMA_CHECK M=8 pattern=balanced Is=256 active=48 padded=384 split_k=4 mode2=True interleaved_bulk=True compact_scale=True tma_cta_scope=False weight_evict_first=True weight_policy_hoist=False weight_policy_constant=False w2_no_weight_evict_first=False fused_act_quant=True w13_tail_fused_act=False w2_sorted_act=False w2_mblock_scale=False w2_fold_global_scale=False w2_coalesced_store=False w2_global_lut=False leader_mbar_wait=True direct_barrier_addr=False route_k_unroll2=True route_k_unroll4=True w13_distributed_prep=True w13_dual_wg_split=False w13_launch_bound_10=False w13_max_smem=False w2_distributed_prep=True w13_merged_wgmma_group=False normalized_shared_lut=False activation_evict_last=False
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000076998
+V4_WGMMA_ACT cos=0.999999745 rel_l2=0.000714756
+V4_WGMMA_W2 cos=0.999997278 rel_l2=0.002333323 finite=True
+V4_WGMMA_OK
