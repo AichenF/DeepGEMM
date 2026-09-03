@@ -128,19 +128,14 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
 
     def local_reduce() -> None:
         if kernel.W2_ROUTE_OUTPUT:
-            if kernel.CUSTOM_ROUTE_REDUCE:
-                kernel.fixed_k6_reduce(
-                    case.down, case.topk_weights, case.local_bf16
-                )
-            else:
-                bench.moe_fused_mul_sum(
-                    inputs=case.down.view(case.m, bench.TOP_K, bench.HIDDEN),
-                    topk_weights=case.topk_weights,
-                    topk_ids=case.topk_ids,
-                    is_ep=False,
-                    routed_scaling_factor=bench.ROUTED_SCALING_FACTOR,
-                    outputs=case.local_bf16,
-                )
+            bench.moe_fused_mul_sum(
+                inputs=case.down.view(case.m, bench.TOP_K, bench.HIDDEN),
+                topk_weights=case.topk_weights,
+                topk_ids=case.topk_ids,
+                is_ep=False,
+                routed_scaling_factor=bench.ROUTED_SCALING_FACTOR,
+                outputs=case.local_bf16,
+            )
         else:
             kernel.cast_bf16(case.local_float, case.local_bf16)
 
@@ -341,11 +336,6 @@ def main() -> None:
                 ),
                 "custom_fused_route_quant": (
                     os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
-                    if args.impl == "custom"
-                    else None
-                ),
-                "custom_route_reduce": (
-                    os.environ.get("V4_CUSTOM_ROUTE_REDUCE", "0") == "1"
                     if args.impl == "custom"
                     else None
                 ),

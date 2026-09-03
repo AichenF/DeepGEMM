@@ -70,9 +70,6 @@ MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
-CUSTOM_ROUTE_REDUCE = os.environ.get("V4_CUSTOM_ROUTE_REDUCE", "0") == "1"
-if CUSTOM_ROUTE_REDUCE and not W2_ROUTE_OUTPUT:
-    raise ValueError("V4_CUSTOM_ROUTE_REDUCE requires W2 route output")
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
@@ -1031,37 +1028,6 @@ __global__ void cast_bf16_kernel(
         output[index] = __float2bfloat16(input[index]);
 }
 
-__global__ __launch_bounds__(256) void fixed_k6_reduce_kernel(
-        const __nv_bfloat16* __restrict__ input,
-        const float* __restrict__ topk_weights,
-        __nv_bfloat16* __restrict__ output,
-        int tokens) {
-    constexpr int kHidden = 4096;
-    constexpr int kPairs = kHidden / 2;
-    const int token = blockIdx.x;
-    if (token >= tokens)
-        return;
-    const auto* input2 = reinterpret_cast<const __nv_bfloat162*>(input);
-    auto* output2 = reinterpret_cast<__nv_bfloat162*>(output);
-    #pragma unroll 1
-    for (int pair = threadIdx.x; pair < kPairs; pair += blockDim.x) {
-        float accum0 = 0.0f;
-        float accum1 = 0.0f;
-        #pragma unroll
-        for (int route = 0; route < kTopK; ++route) {
-            const float route_weight =
-                __ldg(topk_weights + token * kTopK + route) * kRoutedScale;
-            const int64_t input_pair =
-                (static_cast<int64_t>(token) * kTopK + route) * kPairs + pair;
-            const float2 value = __bfloat1622float2(input2[input_pair]);
-            accum0 = fmaf(value.x, route_weight, accum0);
-            accum1 = fmaf(value.y, route_weight, accum1);
-        }
-        output2[static_cast<int64_t>(token) * kPairs + pair] =
-            __floats2bfloat162_rn(accum0, accum1);
-    }
-}
-
 __global__ void braid_mode2_kernel(uint32_t* weight, int64_t words) {
     const int64_t index = static_cast<int64_t>(blockIdx.x) * blockDim.x
         + threadIdx.x;
@@ -1365,32 +1331,6 @@ void fused_route_quant(
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-void fixed_k6_reduce(
-        torch::Tensor input, torch::Tensor topk_weights,
-        torch::Tensor output) {
-    TORCH_CHECK(input.scalar_type() == torch::kBFloat16,
-                "route input must be bfloat16");
-    TORCH_CHECK(topk_weights.scalar_type() == torch::kFloat32,
-                "topk_weights must be float32");
-    TORCH_CHECK(output.scalar_type() == torch::kBFloat16,
-                "reduction output must be bfloat16");
-    TORCH_CHECK(input.dim() == 2 && input.size(1) == 4096,
-                "route input must have shape [M*6,4096]");
-    TORCH_CHECK(output.dim() == 2 && output.size(1) == 4096,
-                "reduction output must have shape [M,4096]");
-    TORCH_CHECK(input.size(0) == output.size(0) * 6,
-                "route input row count must equal M*6");
-    TORCH_CHECK(topk_weights.numel() == output.size(0) * 6,
-                "topk_weights must have shape [M,6]");
-    const auto stream = at::cuda::getCurrentCUDAStream();
-    fixed_k6_reduce_kernel<<<output.size(0), 256, 0, stream>>>(
-        reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
-        topk_weights.data_ptr<float>(),
-        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
-        output.size(0));
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
-}
-
 void braid_mode2(torch::Tensor weight) {
     TORCH_CHECK(weight.scalar_type() == torch::kUInt8,
                 "mode2 weight must be uint8");
@@ -1431,8 +1371,6 @@ void fused_route_quant(torch::Tensor topk_ids, torch::Tensor input,
                        torch::Tensor sorted_ids, torch::Tensor expert_ids,
                        torch::Tensor num_tokens_padded,
                        torch::Tensor quantized, torch::Tensor scale);
-void fixed_k6_reduce(torch::Tensor input, torch::Tensor topk_weights,
-                     torch::Tensor output);
 void braid_mode2(torch::Tensor weight);
 """
 
@@ -1450,14 +1388,13 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v42"),
+          f"mb{MIN_BLOCKS_PER_SM}_v41"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
         "run_w13_impl", "run_w2", "reduce_swiglu", "reduce_swiglu_quant",
         "cast_bf16",
         "fused_route_quant",
-        "fixed_k6_reduce",
         "braid_mode2",
     ],
     extra_cuda_cflags=[
@@ -1724,14 +1661,6 @@ def fused_route_quant(
         quantized,
         scale,
     )
-
-
-def fixed_k6_reduce(
-    input: torch.Tensor,
-    topk_weights: torch.Tensor,
-    output: torch.Tensor,
-) -> None:
-    _ext.fixed_k6_reduce(input, topk_weights, output)
 
 
 def braid_mode2_(weight: torch.Tensor) -> torch.Tensor:

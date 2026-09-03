@@ -296,35 +296,14 @@ def main() -> None:
     output = torch.empty((args.m, H), dtype=torch.bfloat16, device=device)
     if kernel.W2_ROUTE_OUTPUT:
         assert down is not None
-        if kernel.CUSTOM_ROUTE_REDUCE:
-            reference_reduced = torch.empty_like(output)
-            moe_fused_mul_sum(
-                inputs=down.view(args.m, TOP_K, H),
-                topk_weights=topk_weights,
-                topk_ids=topk_ids,
-                is_ep=False,
-                routed_scaling_factor=1.5,
-                outputs=reference_reduced,
-            )
-            kernel.fixed_k6_reduce(down, topk_weights, output)
-            torch.cuda.synchronize()
-            reduce_exact = torch.equal(output, reference_reduced)
-            reduce_max_abs = float(
-                (output.float() - reference_reduced.float()).abs().max()
-            )
-            print(
-                "V4_WGMMA_ROUTE_REDUCE "
-                f"exact={reduce_exact} max_abs={reduce_max_abs:.9g}"
-            )
-        else:
-            moe_fused_mul_sum(
-                inputs=down.view(args.m, TOP_K, H),
-                topk_weights=topk_weights,
-                topk_ids=topk_ids,
-                is_ep=False,
-                routed_scaling_factor=1.5,
-                outputs=output,
-            )
+        moe_fused_mul_sum(
+            inputs=down.view(args.m, TOP_K, H),
+            topk_weights=topk_weights,
+            topk_ids=topk_ids,
+            is_ep=False,
+            routed_scaling_factor=1.5,
+            outputs=output,
+        )
         local = output.float()
     else:
         kernel.cast_bf16(local, output)
