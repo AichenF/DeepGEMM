@@ -4066,3 +4066,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - The repair materially improves the first 384-thread prototype (which was roughly 38% slower in total at M8), confirming that producer warps/barriers were real overhead, but full-K N256 still loses the concurrency supplied by split-K N128 tasks.
 - Evidence: `results/v4_flash_tp_wgmma_pair2wg_tp4_m8_coldl2_abc_20260903.log`.
 - Decision: reject the full-K paired W13 family and keep it opt-in only. Do not spend another iteration on this same fusion topology; pivot back to the accepted split-K path or W2/collective overlap.
+
+### Iteration 83a — W2-progress multicast prototype deadlocks
+
+- Added an opt-in producer-progress path without fragmenting the W2 grid. Each completed W2 N128 tile publishes route completion; N1024 chunks enter a device ready queue. Eight low-footprint CTAs on a second stream reduce local k6 chunks and multicast them without remote waits, followed by a separate 78-CTA rank-reduction/cleanup kernel.
+- The extension compiles and the four-rank harness initializes on H20 GPUs 1–4, but the first M8 random-route warmup does not return after more than two minutes and emits no correctness record. The targeted process was interrupted; no latency sample exists.
+- Evidence: `results/iter83_w2_progress_tp4_m8_compile_correctness_smoke_coldl2_20260903.log`.
+- Classification: synchronization failure. Keep the path opt-in. Before another end-to-end attempt, run a no-communication publication probe that exposes tile counts, chunk counts, queue tail/valid entries, and worker claim completion; do not tune performance while any count is missing.

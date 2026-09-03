@@ -102,6 +102,14 @@ FUSED_K6_MC_PULL_AR = os.environ.get("V4_FUSED_K6_MC_PULL_AR", "0") == "1"
 PIPELINED_W2_MC_PUSH_AR = (
     os.environ.get("V4_PIPELINED_W2_MC_PUSH_AR", "0") == "1"
 )
+W2_PROGRESS_MC_PUSH_AR = (
+    os.environ.get("V4_W2_PROGRESS_MC_PUSH_AR", "0") == "1"
+)
+W2_PROGRESS_WORKERS = int(
+    os.environ.get("V4_W2_PROGRESS_WORKERS", "8")
+)
+if W2_PROGRESS_WORKERS not in (1, 2, 4, 8, 16, 32):
+    raise ValueError("V4_W2_PROGRESS_WORKERS must be 1,2,4,8,16,32")
 PIPELINE_CHUNKS = int(os.environ.get("V4_PIPELINE_CHUNKS", "4"))
 PIPELINE_AR_BLOCKS = int(os.environ.get("V4_PIPELINE_AR_BLOCKS", "8"))
 if PIPELINE_CHUNKS not in (2, 4, 8):
@@ -254,6 +262,22 @@ __device__ __forceinline__ cute::GmmaDescriptor desc_128b(uint32_t pointer) {
     return descriptor;
 }
 
+__device__ __forceinline__ int32_t progress_load_acquire(
+        const int32_t* pointer) {
+    uint32_t value;
+    asm volatile(
+        "ld.acquire.gpu.global.u32 %0,[%1];"
+        : "=r"(value) : "l"(pointer) : "memory");
+    return static_cast<int32_t>(value);
+}
+
+__device__ __forceinline__ void progress_store_release(
+        int32_t* pointer, int32_t value) {
+    asm volatile(
+        "st.release.gpu.global.u32 [%0],%1;"
+        : : "l"(pointer), "r"(static_cast<uint32_t>(value)) : "memory");
+}
+
 __device__ __forceinline__ uint32_t scale_lut_index(uint32_t exponent) {
     if constexpr (kLutRows == 128)
         return mxfp4::e8m0_lut_index(exponent);
@@ -299,7 +323,8 @@ __device__ __forceinline__ uint2 dequant_weight_word(
         kDequantDp4aHi, kDequantDp4aLo>(packed, lut);
 }
 
-template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0>
+template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
+          bool PublishW2Progress = false>
 __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const __grid_constant__ CUtensorMap tma_weight,
         const __grid_constant__ CUtensorMap tma_weight_scale,
@@ -314,6 +339,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const float* __restrict__ topk_weights,
         float* __restrict__ output,
         const uint2* __restrict__ global_lut,
+        int32_t* __restrict__ progress_state,
         int max_routes,
         int n_tile_begin) {
     static_assert(K % kBlockK == 0);
@@ -970,6 +996,50 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                               route_weight * accum[group][1]);
                     atomicAdd(output + static_cast<int64_t>(token) * N + output_n1,
                               route_weight * accum[group][3]);
+                }
+            }
+        }
+    }
+
+    if constexpr (PublishW2Progress) {
+        static_assert(!IsW13 && SplitK == 1 && LaunchNTiles == 0
+                      && N == 4096 && kWout == 128,
+                      "W2 progress publication requires full N4096/WOUT128");
+        constexpr int kNumW2Tiles = N / kWout;
+        constexpr int kTilesPerChunk = 8;
+        constexpr int kNumChunks = kNumW2Tiles / kTilesPerChunk;
+        const int tokens = max_routes / kTopK;
+        int32_t* tile_counts = progress_state;
+        int32_t* chunk_counts =
+            tile_counts + tokens * kNumW2Tiles;
+        int32_t* ready_queue =
+            chunk_counts + tokens * kNumChunks;
+        int32_t* ready_valid =
+            ready_queue + tokens * kNumChunks;
+        int32_t* queue_tail =
+            ready_valid + tokens * kNumChunks;
+
+        // Every output writer makes its BF16 stores globally visible before
+        // any route lane publishes completion for this N128 tile.
+        __threadfence();
+        __syncthreads();
+        if (tid < kTok) {
+            const int route = route_ids[tid];
+            if (route < max_routes) {
+                const int token = route / kTopK;
+                const int tile_offset = token * kNumW2Tiles + n_block_idx;
+                const int tile_done =
+                    atomicAdd(tile_counts + tile_offset, 1) + 1;
+                if (tile_done == kTopK) {
+                    const int chunk = n_block_idx / kTilesPerChunk;
+                    const int task = token * kNumChunks + chunk;
+                    const int chunk_done =
+                        atomicAdd(chunk_counts + task, 1) + 1;
+                    if (chunk_done == kTilesPerChunk) {
+                        const int slot = atomicAdd(queue_tail, 1);
+                        ready_queue[slot] = task;
+                        progress_store_release(ready_valid + slot, 1);
+                    }
                 }
             }
         }
@@ -1885,6 +1955,182 @@ __device__ __forceinline__ uint32_t clear_positive_bf16_zero(uint32_t word) {
     return word;
 }
 
+// Low-footprint consumers overlap local k6 reduction and multicast stores
+// with the unfragmented W2 grid.  W2 publishes N1024 chunks through a dynamic
+// ready queue; consumers never wait for remote ranks, avoiding cross-rank
+// task-order cycles.  A separate finish kernel polls/reduces after every
+// local chunk has been multicast.
+template <int Threads>
+__global__ __launch_bounds__(Threads) void progress_k6_mc_push_tp4_kernel(
+        const __nv_bfloat16* __restrict__ input,
+        const float* __restrict__ topk_weights,
+        int32_t* __restrict__ progress_state,
+        const uint32_t* __restrict__ push_counter,
+        uint8_t* __restrict__ push_mc,
+        int tokens, int rank, int64_t push_stride) {
+    constexpr int kWorld = 4;
+    constexpr int kHidden = 4096;
+    constexpr int kPairsPerToken = kHidden / 2;
+    constexpr int kNumW2Tiles = 32;
+    constexpr int kNumChunks = 4;
+    constexpr int kVecsPerChunk = (kHidden / kNumChunks) / 8;
+    constexpr int kPairsPerVec = 4;
+    static_assert(Threads == kVecsPerChunk);
+
+    const int total_tasks = tokens * kNumChunks;
+    int32_t* chunk_counts =
+        progress_state + tokens * kNumW2Tiles;
+    int32_t* ready_queue =
+        chunk_counts + total_tasks;
+    int32_t* ready_valid =
+        ready_queue + total_tasks;
+    int32_t* worker_claim =
+        ready_valid + total_tasks + 1;
+    const int phase = push_counter[0] & 1u;
+    const int64_t phase_offset =
+        static_cast<int64_t>(phase) * push_stride * kWorld;
+    __shared__ int task_slot;
+    __shared__ int task_info;
+
+    while (true) {
+        if (threadIdx.x == 0)
+            task_slot = atomicAdd(worker_claim, 1);
+        __syncthreads();
+        if (task_slot >= total_tasks)
+            break;
+        if (threadIdx.x == 0) {
+            while (progress_load_acquire(ready_valid + task_slot) == 0) {}
+            task_info = progress_load_acquire(ready_queue + task_slot);
+        }
+        __syncthreads();
+
+        const int token = task_info / kNumChunks;
+        const int chunk = task_info - token * kNumChunks;
+        const int pair0 = chunk * (kPairsPerToken / kNumChunks)
+            + threadIdx.x * kPairsPerVec;
+        float2 accum[kPairsPerVec];
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair)
+            accum[pair] = make_float2(0.0f, 0.0f);
+        const auto* input2 =
+            reinterpret_cast<const __nv_bfloat162*>(input);
+        #pragma unroll
+        for (int route = 0; route < kTopK; ++route) {
+            const float route_weight =
+                __ldg(topk_weights + token * kTopK + route) * kRoutedScale;
+            const int64_t route_base =
+                (static_cast<int64_t>(token) * kTopK + route)
+                * kPairsPerToken;
+            #pragma unroll
+            for (int pair = 0; pair < kPairsPerVec; ++pair) {
+                const float2 value = __bfloat1622float2(
+                    input2[route_base + pair0 + pair]);
+                accum[pair].x =
+                    fmaf(value.x, route_weight, accum[pair].x);
+                accum[pair].y =
+                    fmaf(value.y, route_weight, accum[pair].y);
+            }
+        }
+
+        uint4 local_vec;
+        uint32_t* local_words = reinterpret_cast<uint32_t*>(&local_vec);
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair) {
+            const __nv_bfloat162 value =
+                __floats2bfloat162_rn(accum[pair].x, accum[pair].y);
+            const uint32_t word =
+                *reinterpret_cast<const uint32_t*>(&value);
+            local_words[pair] = word == 0u ? 0x00008000u : word;
+        }
+        const int vec = token * (kHidden / 8)
+            + chunk * kVecsPerChunk + threadIdx.x;
+        const int64_t source_offset =
+            static_cast<int64_t>(rank) * push_stride + phase_offset
+            + static_cast<int64_t>(vec) * 16;
+        store_multimem_16b(push_mc + source_offset, local_vec);
+        __syncthreads();
+    }
+}
+
+template <int Threads>
+__global__ __launch_bounds__(Threads) void progress_mc_push_finish_tp4_kernel(
+        __nv_bfloat16* __restrict__ output,
+        uint32_t* __restrict__ push_counter,
+        uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
+        int tokens, int rank, int64_t push_stride) {
+    constexpr int kWorld = 4;
+    constexpr int kHidden = 4096;
+    constexpr int kVecsPerToken = kHidden / 8;
+    constexpr int kPairsPerVec = 4;
+    const int num_vecs = tokens * kVecsPerToken;
+    const int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int global_threads = gridDim.x * blockDim.x;
+    const int phase = push_counter[blockIdx.x] & 1u;
+    uint8_t* peer_base[kWorld] = {push0, push1, push2, push3};
+    const int64_t phase_offset =
+        static_cast<int64_t>(phase) * push_stride * kWorld;
+
+    for (int vec = global_tid; vec < num_vecs; vec += global_threads) {
+        uint4 rank_vec[kWorld];
+        const int64_t poll_offset =
+            phase_offset + static_cast<int64_t>(vec) * 16;
+        while (true) {
+            #pragma unroll
+            for (int source = 0; source < kWorld; ++source) {
+                rank_vec[source] = load_relaxed_sys_16b(
+                    peer_base[rank] + source * push_stride + poll_offset);
+            }
+            bool has_zero = false;
+            #pragma unroll
+            for (int source = 0; source < kWorld; ++source) {
+                const uint32_t* words =
+                    reinterpret_cast<const uint32_t*>(&rank_vec[source]);
+                #pragma unroll
+                for (int pair = 0; pair < kPairsPerVec; ++pair)
+                    has_zero |= words[pair] == 0u;
+            }
+            if (!has_zero)
+                break;
+        }
+
+        uint4 result;
+        uint32_t* result_words = reinterpret_cast<uint32_t*>(&result);
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair) {
+            float2 sum = make_float2(0.0f, 0.0f);
+            #pragma unroll
+            for (int source = 0; source < kWorld; ++source) {
+                const uint32_t word =
+                    reinterpret_cast<const uint32_t*>(&rank_vec[source])[pair];
+                const __nv_bfloat162 value =
+                    *reinterpret_cast<const __nv_bfloat162*>(&word);
+                const float2 value_f32 = __bfloat1622float2(value);
+                if (source == 0)
+                    sum = value_f32;
+                else {
+                    sum.x += value_f32.x;
+                    sum.y += value_f32.y;
+                }
+            }
+            const __nv_bfloat162 value =
+                __floats2bfloat162_rn(sum.x, sum.y);
+            result_words[pair] =
+                *reinterpret_cast<const uint32_t*>(&value);
+        }
+        reinterpret_cast<uint4*>(output)[vec] = result;
+
+        const uint4 empty = make_uint4(0u, 0u, 0u, 0u);
+        #pragma unroll
+        for (int source = 0; source < kWorld; ++source) {
+            *reinterpret_cast<uint4*>(
+                peer_base[rank] + source * push_stride + poll_offset) = empty;
+        }
+    }
+    __syncthreads();
+    if (threadIdx.x == 0)
+        atomicAdd(push_counter + blockIdx.x, 1u);
+}
+
 // Fuse the local fixed-k6 route sum with SGLang's TP4 1shot-push protocol.
 // The symmetric slots and per-CTA phase counters are owned by the unchanged
 // CustomAllReduceV2 communicator, so stock Humming and this kernel can safely
@@ -2341,7 +2587,8 @@ CUtensorMap make_weight_scale_desc(void* pointer, int K, int64_t elements) {
     return descriptor;
 }
 
-template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0>
+template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
+          bool PublishW2Progress = false>
 void launch_route_gemm(
         torch::Tensor weight, torch::Tensor weight_scale,
         torch::Tensor weight_global_scale,
@@ -2349,7 +2596,7 @@ void launch_route_gemm(
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
         torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
         torch::Tensor output, torch::Tensor lut, int max_routes,
-        int n_tile_begin = 0) {
+        int n_tile_begin = 0, int32_t* progress_state = nullptr) {
     static CUtensorMap weight_descriptor;
     static CUtensorMap scale_descriptor;
     static void* last_weight_pointer = nullptr;
@@ -2387,7 +2634,8 @@ void launch_route_gemm(
                 + effective_scale_buffers * kWout * 16)
         + kTok * kBlockK;
     const auto stream = at::cuda::getCurrentCUDAStream();
-    route_gemm<K, N, SplitK, IsW13, LaunchNTiles><<<
+    route_gemm<K, N, SplitK, IsW13, LaunchNTiles,
+               PublishW2Progress><<<
         grid, 128, dynamic_smem_bytes, stream>>>(
         weight_descriptor,
         scale_descriptor,
@@ -2404,6 +2652,7 @@ void launch_route_gemm(
         topk_weights.numel() ? topk_weights.data_ptr<float>() : nullptr,
         static_cast<float*>(output.data_ptr()),
         reinterpret_cast<const uint2*>(lut.data_ptr<uint8_t>()),
+        progress_state,
         max_routes,
         n_tile_begin);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -2569,6 +2818,33 @@ void run_w2(
     } else {
         TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
     }
+}
+
+void run_w2_progress(
+        torch::Tensor weight, torch::Tensor weight_scale,
+        torch::Tensor weight_global_scale,
+        torch::Tensor activation, torch::Tensor activation_scale,
+        torch::Tensor sorted_ids, torch::Tensor expert_ids,
+        torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
+        torch::Tensor output, torch::Tensor lut,
+        torch::Tensor progress_state, int intermediate) {
+    TORCH_CHECK(intermediate == 512,
+                "W2 progress prototype currently supports TP4 Is=512");
+    TORCH_CHECK(kWout == 128 && kW2RouteOutput,
+                "W2 progress requires WOUT128 route output");
+    TORCH_CHECK(progress_state.scalar_type() == torch::kInt32
+                    && progress_state.is_cuda()
+                    && progress_state.is_contiguous(),
+                "W2 progress state must be contiguous CUDA int32");
+    const int tokens = topk_weights.numel() / kTopK;
+    TORCH_CHECK(progress_state.numel() >= tokens * 44 + 2,
+                "W2 progress state is too small");
+    launch_route_gemm<512, 4096, 1, false, 0, true>(
+        weight, weight_scale, weight_global_scale,
+        activation, activation_scale,
+        sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+        output, lut, topk_weights.numel(), 0,
+        progress_state.data_ptr<int32_t>());
 }
 
 void run_w2_chunk(
@@ -2920,6 +3196,91 @@ void fused_k6_push_ar_tp4_chunk(
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+void progress_k6_mc_push_tp4(
+        torch::Tensor input, torch::Tensor topk_weights,
+        torch::Tensor progress_state, torch::Tensor push_counter,
+        int64_t push_mc_ptr, int rank, int64_t push_stride,
+        int active_blocks) {
+    TORCH_CHECK(input.scalar_type() == torch::kBFloat16
+                    && input.is_cuda() && input.is_contiguous(),
+                "progress route input must be contiguous CUDA bfloat16");
+    TORCH_CHECK(input.dim() == 2 && input.size(1) == 4096,
+                "progress route input must have shape [M*6,4096]");
+    TORCH_CHECK(topk_weights.scalar_type() == torch::kFloat32
+                    && topk_weights.is_cuda()
+                    && topk_weights.is_contiguous(),
+                "progress topk weights must be contiguous CUDA float32");
+    const int tokens = topk_weights.numel() / kTopK;
+    TORCH_CHECK(input.size(0) == tokens * kTopK,
+                "progress route rows must equal M*6");
+    TORCH_CHECK(progress_state.scalar_type() == torch::kInt32
+                    && progress_state.is_cuda()
+                    && progress_state.is_contiguous()
+                    && progress_state.numel() >= tokens * 44 + 2,
+                "progress state must contain at least M*44+2 int32 values");
+    TORCH_CHECK(push_counter.is_cuda() && push_counter.element_size() == 4
+                    && push_counter.numel() == 78,
+                "TP4 H20 push counter must contain 78 CUDA uint32 values");
+    TORCH_CHECK(push_mc_ptr != 0 && rank >= 0 && rank < 4,
+                "progress multicast push requires TP4 multicast memory");
+    TORCH_CHECK(push_stride >= input.numel() / kTopK
+                    * input.element_size(),
+                "progress push workspace stride is too small");
+    TORCH_CHECK(active_blocks > 0 && active_blocks <= 32,
+                "progress worker count must be in [1,32]");
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    progress_k6_mc_push_tp4_kernel<128><<<
+        active_blocks, 128, 0, stream>>>(
+        reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
+        topk_weights.data_ptr<float>(),
+        progress_state.data_ptr<int32_t>(),
+        reinterpret_cast<const uint32_t*>(push_counter.data_ptr()),
+        reinterpret_cast<uint8_t*>(push_mc_ptr),
+        tokens, rank, push_stride);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void progress_mc_push_finish_tp4(
+        torch::Tensor output, torch::Tensor push_counter,
+        torch::Tensor push0, torch::Tensor push1,
+        torch::Tensor push2, torch::Tensor push3,
+        int rank, int64_t push_stride) {
+    TORCH_CHECK(output.scalar_type() == torch::kBFloat16
+                    && output.is_cuda() && output.is_contiguous(),
+                "progress all-reduce output must be contiguous CUDA bfloat16");
+    TORCH_CHECK(output.dim() == 2 && output.size(1) == 4096,
+                "progress all-reduce output must have shape [M,4096]");
+    TORCH_CHECK(push_counter.is_cuda() && push_counter.element_size() == 4
+                    && push_counter.numel() == 78,
+                "TP4 H20 push counter must contain 78 CUDA uint32 values");
+    TORCH_CHECK(rank >= 0 && rank < 4,
+                "progress all-reduce rank must be in [0,4)");
+    TORCH_CHECK(push_stride >= output.numel() * output.element_size(),
+                "progress push workspace stride is too small");
+    for (const auto& workspace : {push0, push1, push2, push3}) {
+        TORCH_CHECK(workspace.is_cuda() && workspace.is_contiguous()
+                        && workspace.scalar_type() == torch::kUInt8,
+                    "push workspaces must be contiguous CUDA uint8 tensors");
+    }
+    const int tokens = output.size(0);
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    auto* counter = reinterpret_cast<uint32_t*>(push_counter.data_ptr());
+#define LAUNCH_PROGRESS_FINISH(THREADS)                                    \
+    progress_mc_push_finish_tp4_kernel<THREADS><<<78, THREADS, 0, stream>>>(\
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), counter,      \
+        push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),              \
+        push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),              \
+        tokens, rank, push_stride)
+    if (tokens <= 16)
+        LAUNCH_PROGRESS_FINISH(128);
+    else if (tokens <= 32)
+        LAUNCH_PROGRESS_FINISH(256);
+    else
+        LAUNCH_PROGRESS_FINISH(512);
+#undef LAUNCH_PROGRESS_FINISH
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void fused_rank_route_mc_pull_tp4(
         torch::Tensor route_input, torch::Tensor topk_weights,
         torch::Tensor output, torch::Tensor sem_local,
@@ -3124,6 +3485,14 @@ void run_w2(torch::Tensor weight, torch::Tensor weight_scale,
             torch::Tensor sorted_ids, torch::Tensor expert_ids,
             torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
             torch::Tensor output, torch::Tensor lut, int intermediate);
+void run_w2_progress(
+    torch::Tensor weight, torch::Tensor weight_scale,
+    torch::Tensor weight_global_scale,
+    torch::Tensor activation, torch::Tensor activation_scale,
+    torch::Tensor sorted_ids, torch::Tensor expert_ids,
+    torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
+    torch::Tensor output, torch::Tensor lut,
+    torch::Tensor progress_state, int intermediate);
 void run_w2_chunk(torch::Tensor weight, torch::Tensor weight_scale,
                   torch::Tensor weight_global_scale,
                   torch::Tensor activation, torch::Tensor activation_scale,
@@ -3153,6 +3522,16 @@ void fused_k6_push_ar_tp4_chunk(
     torch::Tensor push2, torch::Tensor push3,
     int rank, int64_t push_stride, int64_t push_mc_ptr,
     int chunks, int chunk_idx, int active_blocks);
+void progress_k6_mc_push_tp4(
+    torch::Tensor input, torch::Tensor topk_weights,
+    torch::Tensor progress_state, torch::Tensor push_counter,
+    int64_t push_mc_ptr, int rank, int64_t push_stride,
+    int active_blocks);
+void progress_mc_push_finish_tp4(
+    torch::Tensor output, torch::Tensor push_counter,
+    torch::Tensor push0, torch::Tensor push1,
+    torch::Tensor push2, torch::Tensor push3,
+    int rank, int64_t push_stride);
 void fused_rank_route_mc_pull_tp4(
     torch::Tensor route_input, torch::Tensor topk_weights,
     torch::Tensor output, torch::Tensor sem_local,
@@ -3191,16 +3570,19 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v82pair2wg"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v83progress"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
-        "run_w13_impl", "run_w13_paired_impl", "run_w2", "run_w2_chunk",
+        "run_w13_impl", "run_w13_paired_impl", "run_w2", "run_w2_progress",
+        "run_w2_chunk",
         "reduce_swiglu", "reduce_swiglu_quant",
         "cast_bf16",
         "tiled_k6_reduce",
         "fused_k6_push_ar_tp4",
         "fused_k6_push_ar_tp4_chunk",
+        "progress_k6_mc_push_tp4",
+        "progress_mc_push_finish_tp4",
         "fused_rank_route_mc_pull_tp4",
         "fused_k6_nvls_pull_tp4",
         "fused_route_quant",
@@ -3491,6 +3873,38 @@ def run_w2(
     )
 
 
+def run_w2_progress(
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    weight_global_scale: torch.Tensor,
+    activation: torch.Tensor,
+    activation_scale: torch.Tensor,
+    sorted_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_padded: torch.Tensor,
+    topk_weights: torch.Tensor,
+    output: torch.Tensor,
+    lut: torch.Tensor,
+    progress_state: torch.Tensor,
+    intermediate: int,
+) -> None:
+    _ext.run_w2_progress(
+        weight,
+        weight_scale,
+        weight_global_scale,
+        activation,
+        activation_scale,
+        sorted_ids,
+        expert_ids,
+        num_tokens_padded,
+        topk_weights,
+        output,
+        lut,
+        progress_state,
+        intermediate,
+    )
+
+
 def run_w2_chunk(
     weight: torch.Tensor,
     weight_scale: torch.Tensor,
@@ -3671,6 +4085,47 @@ def fused_k6_push_ar_tp4_chunk(
         chunks,
         chunk_idx,
         active_blocks,
+    )
+
+
+def progress_k6_mc_push_tp4(
+    input: torch.Tensor,
+    topk_weights: torch.Tensor,
+    progress_state: torch.Tensor,
+    push_counter: torch.Tensor,
+    push_mc_ptr: int,
+    rank: int,
+    push_stride: int,
+    active_blocks: int,
+) -> None:
+    _ext.progress_k6_mc_push_tp4(
+        input,
+        topk_weights,
+        progress_state,
+        push_counter,
+        push_mc_ptr,
+        rank,
+        push_stride,
+        active_blocks,
+    )
+
+
+def progress_mc_push_finish_tp4(
+    output: torch.Tensor,
+    push_counter: torch.Tensor,
+    push_workspaces: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+    rank: int,
+    push_stride: int,
+) -> None:
+    _ext.progress_mc_push_finish_tp4(
+        output,
+        push_counter,
+        push_workspaces[0],
+        push_workspaces[1],
+        push_workspaces[2],
+        push_workspaces[3],
+        rank,
+        push_stride,
     )
 
 

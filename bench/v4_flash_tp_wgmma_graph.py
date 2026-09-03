@@ -245,6 +245,11 @@ class CapturedCase:
             torch.cuda.Event() for _ in range(8)
         )
         self.pipeline_done_event = torch.cuda.Event()
+        # One allocation is reset by a single captured memset.  Layout is
+        # M*32 tile counters, three M*4 chunk arrays, then tail/claim scalars.
+        self.w2_progress_state = torch.empty(
+            (self.m * 44 + 2,), dtype=torch.int32, device=device
+        )
         max_padded = (
             routes * 8
             if routes < NUM_EXPERTS + 1
@@ -503,6 +508,62 @@ class CapturedCase:
         self.graph_output = self.fused_graph_output
         return self.graph_output
 
+    def run_progress_w2_mc_push(self, comm: CustomAllReduceV2) -> torch.Tensor:
+        self.prepare_fused_push(comm)
+        assert self.down is not None
+        assert self.activation_scale is not None
+        assert self.fused_push_workspaces is not None
+        assert self.fused_push_counter is not None
+        if not self.fused_push_mc_ptr:
+            raise RuntimeError("W2 progress path requires multicast memory")
+
+        self.run_before_w2()
+        self.w2_progress_state.zero_()
+        main_stream = torch.cuda.current_stream(self.x.device)
+        self.pipeline_start_event.record(main_stream)
+        with torch.cuda.stream(self.pipeline_stream):
+            self.pipeline_stream.wait_event(self.pipeline_start_event)
+            kernel.progress_k6_mc_push_tp4(
+                self.down,
+                self.topk_weights,
+                self.w2_progress_state,
+                self.fused_push_counter,
+                self.fused_push_mc_ptr,
+                self.fused_push_rank,
+                self.fused_push_stride,
+                kernel.W2_PROGRESS_WORKERS,
+            )
+
+        kernel.run_w2_progress(
+            self.w2,
+            self.s2,
+            self.g2,
+            self.qactivation.view(torch.uint8),
+            self.activation_scale,
+            self.sorted_ids,
+            self.expert_ids,
+            self.num_tokens_padded,
+            self.topk_weights,
+            self.down,
+            self.lut,
+            self.w2_progress_state,
+            self.intermediate_per_rank,
+        )
+        with torch.cuda.stream(self.pipeline_stream):
+            self.pipeline_done_event.record(self.pipeline_stream)
+        main_stream.wait_event(self.pipeline_done_event)
+        kernel.progress_mc_push_finish_tp4(
+            self.fused_graph_output,
+            self.fused_push_counter,
+            self.fused_push_workspaces,
+            self.fused_push_rank,
+            self.fused_push_stride,
+        )
+        self.fused_k6_push_active = True
+        self.fused_k6_ar_mode = "w2_progress_multicast_push"
+        self.graph_output = self.fused_graph_output
+        return self.graph_output
+
     def prepare_fused_pull(self, comm: CustomAllReduceV2) -> None:
         if self.fused_pull_output is not None:
             return
@@ -628,6 +689,14 @@ class CapturedCase:
         return output
 
     def run_full(self, comm: CustomAllReduceV2) -> torch.Tensor:
+        use_w2_progress = (
+            kernel.W2_PROGRESS_MC_PUSH_AR
+            and comm.world_size == 4
+            and self.m <= 128
+            and kernel.W2_ROUTE_OUTPUT
+        )
+        if use_w2_progress:
+            return self.run_progress_w2_mc_push(comm)
         use_fused_k6_nvls_pull = (
             kernel.FUSED_K6_NVLS_PULL_AR
             and comm.world_size == 4

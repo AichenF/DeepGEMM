@@ -32,6 +32,7 @@ def parse_args() -> argparse.Namespace:
             "multicast",
             "multicast_pull",
             "pipeline",
+            "progress",
             "rank_route_pull",
             "k6_nvls_pull",
         ),
@@ -53,6 +54,12 @@ def parse_args() -> argparse.Namespace:
         default=8,
     )
     parser.add_argument(
+        "--progress-workers",
+        type=int,
+        choices=(1, 2, 4, 8, 16, 32),
+        default=8,
+    )
+    parser.add_argument(
         "--rank-route-pull-blocks",
         type=int,
         choices=(1, 2, 4, 8, 16, 32, 64),
@@ -69,6 +76,8 @@ def parse_args() -> argparse.Namespace:
     args.ms = tuple(int(value) for value in args.ms.split(",") if value)
     if args.candidate in ("pipeline", "rank_route_pull"):
         supported = (128,)
+    elif args.candidate == "progress":
+        supported = (8, 16, 32, 64, 128)
     elif args.candidate == "k6_nvls_pull":
         supported = (8, 16, 32, 64, 128)
     elif args.candidate == "multicast_pull":
@@ -153,6 +162,7 @@ def main() -> None:
                     "pull_unroll": args.pull_unroll or "default",
                     "pipeline_chunks": args.pipeline_chunks,
                     "pipeline_ar_blocks": args.pipeline_ar_blocks,
+                    "progress_workers": args.progress_workers,
                     "rank_route_pull_blocks": args.rank_route_pull_blocks,
                     "k6_nvls_pull_blocks": args.k6_nvls_pull_blocks,
                     "route_pattern": args.route_pattern,
@@ -188,12 +198,14 @@ def main() -> None:
         kernel.MC_PULL_UNROLL = args.pull_unroll
         kernel.PIPELINE_CHUNKS = args.pipeline_chunks
         kernel.PIPELINE_AR_BLOCKS = args.pipeline_ar_blocks
+        kernel.W2_PROGRESS_WORKERS = args.progress_workers
         kernel.RANK_ROUTE_PULL_BLOCKS = args.rank_route_pull_blocks
         kernel.K6_NVLS_PULL_BLOCKS = args.k6_nvls_pull_blocks
         kernel.FUSED_K6_PUSH_AR = args.candidate == "unicast"
         kernel.FUSED_K6_MC_PUSH_AR = args.candidate == "multicast"
         kernel.FUSED_K6_MC_PULL_AR = args.candidate == "multicast_pull"
         kernel.PIPELINED_W2_MC_PUSH_AR = args.candidate == "pipeline"
+        kernel.W2_PROGRESS_MC_PUSH_AR = args.candidate == "progress"
         kernel.FUSED_RANK_ROUTE_MC_PULL_AR = (
             args.candidate == "rank_route_pull"
         )
@@ -205,6 +217,7 @@ def main() -> None:
         kernel.FUSED_K6_MC_PUSH_AR = False
         kernel.FUSED_K6_MC_PULL_AR = False
         kernel.PIPELINED_W2_MC_PUSH_AR = False
+        kernel.W2_PROGRESS_MC_PUSH_AR = False
         kernel.FUSED_RANK_ROUTE_MC_PULL_AR = False
         kernel.FUSED_K6_NVLS_PULL_AR = False
         control_graph = paired.capture_graph(control_case, comm, cpu_group, device)
