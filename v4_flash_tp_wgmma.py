@@ -184,6 +184,7 @@ _CUDA = r"""
 #include <deep_gemm/common/cute_tie.cuh>
 #include <deep_gemm/common/math.cuh>
 #include <deep_gemm/common/utils.cuh>
+#include <deep_gemm/ptx/tma.cuh>
 #include <deep_gemm/ptx/utils.cuh>
 #include <deep_gemm/ptx/wgmma.cuh>
 #include <deep_gemm/quantization/mxfp4_dequant.cuh>
@@ -968,17 +969,47 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         } else {
             if constexpr (kW2RouteOutput) {
                 auto* route_output = reinterpret_cast<__nv_bfloat16*>(output);
-                if (route0 < max_routes) {
-                    route_output[static_cast<int64_t>(route0) * N + output_n0] =
-                        __float2bfloat16(accum[group][0]);
-                    route_output[static_cast<int64_t>(route0) * N + output_n1] =
-                        __float2bfloat16(accum[group][2]);
-                }
-                if (route1 < max_routes) {
-                    route_output[static_cast<int64_t>(route1) * N + output_n0] =
-                        __float2bfloat16(accum[group][1]);
-                    route_output[static_cast<int64_t>(route1) * N + output_n1] =
-                        __float2bfloat16(accum[group][3]);
+                if constexpr (PublishW2Progress) {
+                    // Reuse the now-dead weight stage as a contiguous BF16
+                    // epilogue tile.  A single elected lane will move each
+                    // valid route row with TMA and wait for global completion
+                    // before publishing readiness, matching MegaMoE's
+                    // shared->TMA-store->notify ordering.
+                    auto* route_smem =
+                        reinterpret_cast<__nv_bfloat16*>(weight_smem);
+                    if (route0 < max_routes) {
+                        route_smem[column_base * kWout
+                                   + group * 64 + row0] =
+                            __float2bfloat16(accum[group][0]);
+                        route_smem[column_base * kWout
+                                   + group * 64 + row1] =
+                            __float2bfloat16(accum[group][2]);
+                    }
+                    if (route1 < max_routes) {
+                        route_smem[(column_base + 1) * kWout
+                                   + group * 64 + row0] =
+                            __float2bfloat16(accum[group][1]);
+                        route_smem[(column_base + 1) * kWout
+                                   + group * 64 + row1] =
+                            __float2bfloat16(accum[group][3]);
+                    }
+                } else {
+                    if (route0 < max_routes) {
+                        route_output[static_cast<int64_t>(route0) * N
+                                     + output_n0] =
+                            __float2bfloat16(accum[group][0]);
+                        route_output[static_cast<int64_t>(route0) * N
+                                     + output_n1] =
+                            __float2bfloat16(accum[group][2]);
+                    }
+                    if (route1 < max_routes) {
+                        route_output[static_cast<int64_t>(route1) * N
+                                     + output_n0] =
+                            __float2bfloat16(accum[group][1]);
+                        route_output[static_cast<int64_t>(route1) * N
+                                     + output_n1] =
+                            __float2bfloat16(accum[group][3]);
+                    }
                 }
             } else {
                 if (route0 < max_routes) {
@@ -1019,26 +1050,44 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         int32_t* queue_tail =
             ready_valid + tokens * kNumChunks;
 
-        // Every output writer makes its BF16 stores globally visible before
-        // any route lane publishes completion for this N128 tile.
-        __threadfence();
+        auto* route_output = reinterpret_cast<__nv_bfloat16*>(output);
+        auto* route_smem = reinterpret_cast<__nv_bfloat16*>(weight_smem);
         __syncthreads();
-        if (tid < kTok) {
-            const int route = route_ids[tid];
-            if (route < max_routes) {
-                const int token = route / kTopK;
-                const int tile_offset = token * kNumW2Tiles + n_block_idx;
-                const int tile_done =
-                    atomicAdd(tile_counts + tile_offset, 1) + 1;
-                if (tile_done == kTopK) {
-                    const int chunk = n_block_idx / kTilesPerChunk;
-                    const int task = token * kNumChunks + chunk;
-                    const int chunk_done =
-                        atomicAdd(chunk_counts + task, 1) + 1;
-                    if (chunk_done == kTilesPerChunk) {
-                        const int slot = atomicAdd(queue_tail, 1);
-                        ready_queue[slot] = task;
-                        progress_store_release(ready_valid + slot, 1);
+        if (tid == 0) {
+            cute::tma_store_fence();
+            #pragma unroll
+            for (int route_slot = 0; route_slot < kTok; ++route_slot) {
+                const int route = route_ids[route_slot];
+                if (route < max_routes) {
+                    tma_store_1d(
+                        route_output + static_cast<int64_t>(route) * N
+                            + n_block_idx * kWout,
+                        route_smem + route_slot * kWout,
+                        kWout * sizeof(__nv_bfloat16));
+                }
+            }
+            cute::tma_store_arrive();
+            ptx::tma_store_wait<0>();
+
+            #pragma unroll
+            for (int route_slot = 0; route_slot < kTok; ++route_slot) {
+                const int route = route_ids[route_slot];
+                if (route < max_routes) {
+                    const int token = route / kTopK;
+                    const int tile_offset =
+                        token * kNumW2Tiles + n_block_idx;
+                    const int tile_done =
+                        atomicAdd(tile_counts + tile_offset, 1) + 1;
+                    if (tile_done == kTopK) {
+                        const int chunk = n_block_idx / kTilesPerChunk;
+                        const int task = token * kNumChunks + chunk;
+                        const int chunk_done =
+                            atomicAdd(chunk_counts + task, 1) + 1;
+                        if (chunk_done == kTilesPerChunk) {
+                            const int slot = atomicAdd(queue_tail, 1);
+                            ready_queue[slot] = task;
+                            progress_store_release(ready_valid + slot, 1);
+                        }
                     }
                 }
             }
@@ -3573,7 +3622,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v83cworker"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v83htma"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[

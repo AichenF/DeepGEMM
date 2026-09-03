@@ -4176,3 +4176,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Cold W2 latency:** control median `29.792 us` (min `28.992`, max `32.000`); progress median `33.120 us` (min `31.872`, max `35.008`). Control/progress is `0.899517x`.
 - **Finding:** per-tile thread fences/counters/queue publication add `3.328 us`, or `11.17%` of the ordinary W2 stage. The full 32-worker experiment regressed by only `2.048 us`, so overlap hides about `1.28 us` but cannot repay producer publication.
 - **Decision:** stop consumer-count tuning. Any viable overlap successor must reduce publication frequency or synchronization scope before another end-to-end screen.
+
+## Iteration 83h0 — first TMA-store progress epilogue does not compile
+
+- **Change:** staged each progress W2 `[8,128]` BF16 tile in dead weight shared memory, then attempted elected-lane 1D TMA stores followed by `tma_store_wait<0>` before ready publication. The ordinary W2 path is unchanged.
+- **Rationale:** this follows DeepGEMM MegaMoE's shared-to-TMA-store-to-notify epilogue ordering and is intended to replace 128 per-thread device fences with an explicit asynchronous-copy completion boundary.
+- **Failure:** NVCC stopped before GPU execution because the unqualified helper name `tma_store_1d` is undefined at the call site. No correctness or performance result exists.
+- **Decision:** retain this failed compile as evidence, resolve the helper's actual namespace from the read-only DeepGEMM header, and make only that qualification repair before retrying.

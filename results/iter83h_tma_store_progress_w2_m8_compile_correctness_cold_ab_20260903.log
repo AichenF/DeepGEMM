@@ -1,0 +1,35 @@
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2774, in _run_ninja_build
+    subprocess.run(
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['ninja', '-v']' returned non-zero exit status 2.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_w2_progress.py", line 14, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 3611, in <module>
+    _ext = load_inline(
+           ^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2174, in load_inline
+    return _jit_compile(
+           ^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2268, in _jit_compile
+    _write_ninja_file_and_build_library(
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2429, in _write_ninja_file_and_build_library
+    _run_ninja_build(
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2791, in _run_ninja_build
+    raise RuntimeError(message) from e
+RuntimeError: Error building extension 'v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_twl1_bwc1_ibc1_m21_ro1_w2gl0_w2pf1_w13pf1_lmw1_mb0_v83htma': [1/3] /usr/local/cuda/bin/nvcc -MD -MF cuda.cuda.o.d -DTORCH_EXTENSION_NAME=v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_twl1_bwc1_ibc1_m21_ro1_w2gl0_w2pf1_w13pf1_lmw1_mb0_v83htma -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.12/dist-packages/torch/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.12 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options '-fPIC' -O3 -DK_WOUT=128 -DK_LUT_ROWS=256 -DK_SCALE_QUAD_REUSE=4 -DK_SCALE_BUFFERS=2 -DK_WEIGHT_STAGES=2 -DK_WEIGHT_SWIZZLE=64 -DK_WEIGHT_COMMON_ADDRESS=1 -DK_DEQUANT_DP4A_HI=1 -DK_DEQUANT_DP4A_LO=1 -DK_DEQUANT_SYNTH_LUT=0 -DK_NORMALIZED_WEIGHT_SCALE=1 -DK_TILED_WEIGHT_LAYOUT=1 -DK_BULK_WEIGHT_COPY=1 -DK_INTERLEAVED_BULK_COPY=1 -DK_MODE2_BRAID=1 -DK_W2_GLOBAL_LUT=0 -DK_W2_S2R_PREFETCH=1 -DK_W13_S2R_PREFETCH=1 -DK_LEADER_MBAR_WAIT=1 -DK_W2_ROUTE_OUTPUT=1 -DK_MIN_BLOCKS_PER_SM=0 --expt-relaxed-constexpr --expt-extended-lambda -gencode arch=compute_90a,code=sm_90a -std=c++17 -lineinfo -I/lustre/raplab/client/xutingz/fac/DeepGEMM/deep_gemm/include -c /tmp/torch_ext_v4_tp/v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_twl1_bwc1_ibc1_m21_ro1_w2gl0_w2pf1_w13pf1_lmw1_mb0_v83htma/cuda.cu -o cuda.cuda.o 
+FAILED: [code=2] cuda.cuda.o 
+/usr/local/cuda/bin/nvcc -MD -MF cuda.cuda.o.d -DTORCH_EXTENSION_NAME=v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_twl1_bwc1_ibc1_m21_ro1_w2gl0_w2pf1_w13pf1_lmw1_mb0_v83htma -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.12/dist-packages/torch/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.12 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options '-fPIC' -O3 -DK_WOUT=128 -DK_LUT_ROWS=256 -DK_SCALE_QUAD_REUSE=4 -DK_SCALE_BUFFERS=2 -DK_WEIGHT_STAGES=2 -DK_WEIGHT_SWIZZLE=64 -DK_WEIGHT_COMMON_ADDRESS=1 -DK_DEQUANT_DP4A_HI=1 -DK_DEQUANT_DP4A_LO=1 -DK_DEQUANT_SYNTH_LUT=0 -DK_NORMALIZED_WEIGHT_SCALE=1 -DK_TILED_WEIGHT_LAYOUT=1 -DK_BULK_WEIGHT_COPY=1 -DK_INTERLEAVED_BULK_COPY=1 -DK_MODE2_BRAID=1 -DK_W2_GLOBAL_LUT=0 -DK_W2_S2R_PREFETCH=1 -DK_W13_S2R_PREFETCH=1 -DK_LEADER_MBAR_WAIT=1 -DK_W2_ROUTE_OUTPUT=1 -DK_MIN_BLOCKS_PER_SM=0 --expt-relaxed-constexpr --expt-extended-lambda -gencode arch=compute_90a,code=sm_90a -std=c++17 -lineinfo -I/lustre/raplab/client/xutingz/fac/DeepGEMM/deep_gemm/include -c /tmp/torch_ext_v4_tp/v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_twl1_bwc1_ibc1_m21_ro1_w2gl0_w2pf1_w13pf1_lmw1_mb0_v83htma/cuda.cu -o cuda.cuda.o 
+/tmp/torch_ext_v4_tp/v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_twl1_bwc1_ibc1_m21_ro1_w2gl0_w2pf1_w13pf1_lmw1_mb0_v83htma/cuda.cu(899): error: identifier "tma_store_1d" is undefined
+                      tma_store_1d(
+                      ^
+
+1 error detected in the compilation of "/tmp/torch_ext_v4_tp/v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_twl1_bwc1_ibc1_m21_ro1_w2gl0_w2pf1_w13pf1_lmw1_mb0_v83htma/cuda.cu".
+[2/3] c++ -MMD -MF main.o.d -DTORCH_EXTENSION_NAME=v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_twl1_bwc1_ibc1_m21_ro1_w2gl0_w2pf1_w13pf1_lmw1_mb0_v83htma -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.12/dist-packages/torch/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.12 -fPIC -std=c++17 -c /tmp/torch_ext_v4_tp/v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_twl1_bwc1_ibc1_m21_ro1_w2gl0_w2pf1_w13pf1_lmw1_mb0_v83htma/main.cpp -o main.o 
+ninja: build stopped: subcommand failed.
+
