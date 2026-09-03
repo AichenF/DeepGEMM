@@ -4012,3 +4012,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The first TP4 M8 balanced execution faults asynchronously with `CUDA error: an illegal memory access` before the W2 allocation. No performance timing ran and the candidate is not selectable.
 - The likely fault classes are bounded and device-local: producer/consumer mbarrier phase protocol, the two-record shared-memory addresses, or the paired epilogue indexing. Diagnose with synchronous launch plus compute-sanitizer or a staged debug output before making any performance claim.
 - Evidence: `bench/results/iter79_paired_w13_first_compile_correctness_20260903.log`.
+
+## Iteration 79b — repair paired-W13 shared-scale addressing (2026-09-03)
+
+- Root cause of iteration 79a: the consumer formed a 32-bit shared-memory address for each scale stage and then cast that integer to a generic C++ pointer. The generated generic load treated the shared offset as a global address, causing the illegal access. Weight data was unaffected because it already used explicit `ld.shared` PTX.
+- Repair: retain 32-bit addresses only for descriptors/PTX instructions and use a pointer derived from the actual `weight_smem` generic pointer for scale-byte loads. No math, task geometry, or synchronization changed.
+- Synchronous TP4 M8 balanced correctness now passes. Preparation remains exact; W13 cosine/relative-L2 are `0.999999998/0.000076187`, activation `0.999999746/0.000712793`, W2 `0.999997256/0.002342693`, and output is finite.
+- Decision: accept the address repair. The new task is now eligible for TP4 skew, TP8-shape, graph replay, and cold-L2 performance screening; no speed claim yet.
+- Evidence: `bench/results/iter79b_paired_w13_shared_scale_fix_correctness_20260903.log`.

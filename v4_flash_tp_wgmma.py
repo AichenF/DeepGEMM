@@ -1184,7 +1184,7 @@ __global__ __launch_bounds__(384, 1) void paired_w13_fused_kernel(
             const uint32_t stage_base = weight_smem_addr
                 + math_wg * kWeightWGBytes
                 + stage * kCombinedStageBytes;
-            const uint32_t scale_base = weight_smem_addr
+            const uint8_t* scale_ptr = weight_smem
                 + math_wg * kWeightWGBytes
                 + ((kt >> 2) & 1) * kCombinedStageBytes
                 + kWeightStageBytes;
@@ -1223,14 +1223,10 @@ __global__ __launch_bounds__(384, 1) void paired_w13_fused_kernel(
                             : "=r"(packed1)
                             : "r"(common_address
                                   + (group * 64 + 8) * (kBlockK / 2)));
-                        const uint32_t exponent0 =
-                            *reinterpret_cast<const uint8_t*>(
-                                scale_base + group_row0 * 16
-                                + (kt & 3) * 4);
-                        const uint32_t exponent1 =
-                            *reinterpret_cast<const uint8_t*>(
-                                scale_base + group_row1 * 16
-                                + (kt & 3) * 4);
+                        const uint32_t exponent0 = scale_ptr[
+                            group_row0 * 16 + (kt & 3) * 4];
+                        const uint32_t exponent1 = scale_ptr[
+                            group_row1 * 16 + (kt & 3) * 4];
                         lut0 = synth_normalized_e2m1_lut(exponent0);
                         lut1 = synth_normalized_e2m1_lut(exponent1);
                     } else {
@@ -1258,14 +1254,10 @@ __global__ __launch_bounds__(384, 1) void paired_w13_fused_kernel(
                             : "=r"(next_packed1[group])
                             : "r"(next_common_address
                                   + (group * 64 + 8) * (kBlockK / 2)));
-                        const uint32_t next_exponent0 =
-                            *reinterpret_cast<const uint8_t*>(
-                                scale_base + group_row0 * 16
-                                + (kt & 3) * 4 + next_step);
-                        const uint32_t next_exponent1 =
-                            *reinterpret_cast<const uint8_t*>(
-                                scale_base + group_row1 * 16
-                                + (kt & 3) * 4 + next_step);
+                        const uint32_t next_exponent0 = scale_ptr[
+                            group_row0 * 16 + (kt & 3) * 4 + next_step];
+                        const uint32_t next_exponent1 = scale_ptr[
+                            group_row1 * 16 + (kt & 3) * 4 + next_step];
                         next_lut0[group] =
                             synth_normalized_e2m1_lut(next_exponent0);
                         next_lut1[group] =
@@ -3141,7 +3133,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v79pairwg"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v79bpairwg"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
