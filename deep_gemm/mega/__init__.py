@@ -110,20 +110,30 @@ def choose_nvfp4_block_n_for_mega_moe_sm90(
     num_topk: int,
     num_experts_per_rank: int,
     intermediate_hidden: int,
+    family_threshold: int = 192,
 ) -> int:
-    """Select the deployment-time SM90 NVFP4 MegaMoE weight layout.
+    """Select the SM90 NVFP4 MegaMoE kernel family for one forward.
 
-    The runtime binds BN256 to the fused phase and BN128 to split L1/L2.
-    The framework calls this while prepacking one weight copy for the target
-    serving workload; the result is not changed per request.
+    BN256 is the fused small-M family and BN128 is the split L1/L2 family.
+    The decision is based only on routed work per local expert, so it can be
+    made for every forward without model-name or hidden-size special cases.
 
-    Use routed work per local expert rather than raw M so the rule scales with
-    EP and top-k. H20 eight-rank multi-seed ABBA sweeps place the Flash/middle
-    crossover at expected 192 and the Pro crossover between 190 and 192.
+    ``intermediate_hidden`` remains in the public signature for compatibility
+    with the original deployment-time selector; it no longer changes policy.
     """
-    cutoff = 190 if intermediate_hidden >= 3072 else 192
+    del intermediate_hidden
+    if num_tokens < 0:
+        raise ValueError("num_tokens must be non-negative")
+    if num_topk <= 0 or num_experts_per_rank <= 0:
+        raise ValueError("num_topk and num_experts_per_rank must be positive")
+    if family_threshold <= 0:
+        raise ValueError("family_threshold must be positive")
     routed_tokens = num_tokens * num_topk
-    return 256 if routed_tokens <= cutoff * num_experts_per_rank else 128
+    return (
+        256
+        if routed_tokens <= family_threshold * num_experts_per_rank
+        else 128
+    )
 
 
 def _braid_nvfp4_mode2_signs(fused_weight: torch.Tensor) -> torch.Tensor:
@@ -171,8 +181,9 @@ def transform_nvfp4_weights_for_mega_moe_sm90(
     Input scale tensors are row-major ``(E, N, K/16)`` UE4M3. Returned scale
     tensors are tile-major ``(E, N/block_n, K/128, block_n, 8)`` and should be
     cached at weight-load time rather than rebuilt per forward pass. BN128 and
-    BN256 both use the common Mode2 braided sign layout; ``block_n`` only
-    selects the split or fused runtime schedule.
+    BN256 both produce the same row-major fused packed-B bytes and use the
+    common Mode2 braided sign layout. ``block_n`` controls only the retained
+    scale-metadata view; the runtime selects fused or split independently.
     """
     from ..quantization_nvfp4 import (
         nvfp4_fuse_packed_with_scale_tile_major,
@@ -238,16 +249,31 @@ def nvfp4_mega_moe(y: torch.Tensor,
                   recipe: Tuple[int, int, int] = (128, 128, 128),
                   activation: str = 'swiglu',
                   activation_clamp: Optional[float] = None,
-                  fast_math: bool = True):
+                  fast_math: bool = True,
+                  kernel_family: str = 'auto',
+                  family_threshold: int = 192):
     """SM90 (Hopper) NVFP4 MegaMoE entry.
 
     Weight tensors are packed E2M1 FP4. Use
     ``transform_nvfp4_weights_for_mega_moe_sm90`` at weight-load time to apply
     the L1 gate/up interleave and prepack UE4M3 scales into
     ``(E, N/block_n, K/128, block_n, 8)``. Both layouts use Mode2 braided
-    signs; ``block_n=256`` selects the fused kernel and ``block_n=128`` selects
-    split L1/L2.
+    signs. The packed weights are shared by both kernel families. With
+    ``kernel_family='auto'``, every forward uses routed work per local expert
+    to select BN256 fused for small M or BN128 split for large M. The split
+    family is compiled as the fixed mode4+remap L1 followed by L2 scatter.
     """
+    family_to_block_n = {
+        'auto': 0,
+        'split': 128,
+        'fused': 256,
+    }
+    if kernel_family not in family_to_block_n:
+        raise ValueError(
+            "kernel_family must be one of 'auto', 'fused', or 'split'"
+        )
+    if family_threshold <= 0:
+        raise ValueError("family_threshold must be positive")
     _C.nvfp4_mega_moe(
         y, l1_weights, l2_weights,
         cumulative_local_expert_recv_stats,
@@ -257,4 +283,5 @@ def nvfp4_mega_moe(y: torch.Tensor,
         sym_buffer.num_max_tokens_per_rank,
         sym_buffer.num_experts, sym_buffer.num_topk,
         recipe, activation, activation_clamp, fast_math,
+        family_to_block_n[kernel_family], family_threshold,
     )

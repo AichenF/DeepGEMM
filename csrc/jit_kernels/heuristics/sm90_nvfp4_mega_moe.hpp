@@ -182,8 +182,16 @@ get_sm90_nvfp4_mega_moe_pipeline_config(
 
     const int smem_cd_l1 =
         kNumEpilogueWarpgroups * kWGBlockM * kWGL1OutBlockN;
-    const int smem_cd = is_l2 ? 0 : align(
-        smem_cd_l1,
+    // L2 stages its remote scatter through one warp-private 8-row half tile so
+    // that each destination row leaves as a single contiguous 16-byte-wide
+    // burst. Must match `kL2StageRows` / `kL2StageRowStride` in the kernel.
+    constexpr int kWGBlockN = 128;
+    constexpr int kL2StageRows = 8;
+    constexpr int kL2StageRowPad = 8;
+    const int smem_cd_l2 = kNumEpilogueWarps * kL2StageRows *
+        (kWGBlockN + kL2StageRowPad) * static_cast<int>(sizeof(uint16_t));
+    const int smem_cd = align(
+        is_l2 ? smem_cd_l2 : smem_cd_l1,
         kSmemAlignment);
 
     const int num_sfa_groups_per_bk =
@@ -200,9 +208,11 @@ get_sm90_nvfp4_mega_moe_pipeline_config(
         smem_sfa_per_stage;
     const int smem_barriers_fixed =
         (num_dispatch_warps + 2 * kNumEpilogueWarps) * 8;
-    // The BN128 split family always dequantizes B in the loader warpgroup, so
-    // every stage owns full, empty, and dequant barriers.
-    const int smem_barriers_per_stage = 3 * 8;
+    // Both phases own full, empty, and dequant barriers. Production L1 is
+    // always half-stream mode4 and therefore owns one additional K[64:128]
+    // publication mbarrier per stage. Account for it while selecting stages,
+    // rather than appending bytes after a max-stage decision.
+    const int smem_barriers_per_stage = (is_l2 ? 3 : 4) * 8;
     const int smem_fixed =
         smem_dispatch_size +
         smem_nvfp4_lut +
@@ -305,7 +315,10 @@ static SM90NVFP4MegaMoEPlan select_sm90_nvfp4_split_mega_moe(
             input, load, SM90NVFP4MegaMoEPhase::L1),
         materialize_sm90_nvfp4_mega_moe_phase(
             input, load, SM90NVFP4MegaMoEPhase::L2),
-        load.greater_equal(256),
+        // Every production BN128 split uses the accepted L1 mode4+remap
+        // implementation. That implementation requires the independent odd-K
+        // dispatch dequant team, including in the former rho<256 interval.
+        true,
         load.expected_tokens_per_local_expert <= 32.0f ||
             load.expected_tokens_per_local_expert >= 128.0f,
     };
