@@ -5236,3 +5236,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Four-way unrolling wins every one of the 20 batch medians and is bitwise identical on all ranks. Combined with the M128 gate, its five-shape geometric-mean self-control speedup is about 1.0380x with no required-shape regression.
 - Result: promote four-way unrolling to the formal exact-Humming-plus-CARv2 benchmark gate. Do not change the production default until that 10 x 200 comparison and fresh no-environment TP4/TP8 correctness both pass.
 - Evidence: `results/iter129e_route_k_unroll4_tp4_m8_m64_paired_cold2000_20260903.log`
+
+## Iteration 129f — exact Humming plus CARv2 geometric mean reaches 1.2027x
+
+- Formal TP4 random-route comparison uses exact Humming MXFP4 W13/W2 and the same SGLang `CustomAllReduceV2` instance for both paths, CUDA Graph replay, ten outer batches x 200 samples per implementation and M, rank-max timing, and a separate 256 MiB Triton clear immediately before every timed replay (clear excluded from events).
+- Humming/custom median latency and Humming-over-custom speedup: M8 0.090368/0.071328 ms (1.266936x), M16 0.146208/0.113856 ms (1.284148x), M32 0.233904/0.201536 ms (1.160607x), M64 0.340064/0.285200 ms (1.192370x), and M128 0.409504/0.366336 ms (1.117837x).
+- Custom min/median/max is 0.069824/0.071328/0.283744, 0.112224/0.113856/0.397088, 0.176480/0.201536/0.279552, 0.247296/0.285200/0.414048, and 0.308064/0.366336/1.196768 ms for M8 through M128. Humming min/median/max is 0.088512/0.090368/0.353120, 0.144256/0.146208/0.200000, 0.224800/0.233904/0.312352, 0.313792/0.340064/0.467200, and 0.379744/0.409504/0.724768 ms.
+- Five-shape geometric-mean latency is 0.212211275 ms for Humming and 0.176441013 ms for custom, giving 1.202732x. This improves custom geometric mean by about 3.09% versus the selected unroll2 formal result (0.181891459 ms).
+- Both paths pass the full route reference and all-reduce checks for every M. Custom minimum cosine is 0.999995575 and maximum rel-L2 is 0.002974846; all outputs are finite.
+- Result: the opt-in four-way path clears the 1.2x aggregate goal in this run, but only by 0.23 percentage points. Select it provisionally, then require fresh no-environment TP4/TP8 correctness and an independent full formal repeat before treating the threshold as robust.
+- Evidence: `results/iter129f_route_k_unroll4_exact_humming_tp4_allm_cold2000_20260903.log`
