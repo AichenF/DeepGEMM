@@ -5429,3 +5429,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - W13 and activation remain at their exact prior metrics and K6 remains bitwise equal to SGLang, so the remaining drift is isolated to applying the branchless transformation in W2 or to its changed W2 code generation.
 - Result: keep performance timing blocked. Restrict the experiment to `IsW13` so W2 compiles onto the selected path byte-for-byte, then require TP4/TP8 control equivalence before timing.
 - Evidence: `results/iter137c_coherent_predicated_tp8shape_correctness_20260904.log`.
+
+## Iteration 137d — W13-only predicated loads restore TP8 correctness
+
+- Restricted `V4_PREDICATED_PADDED_ACTIVATION=1` to `IsW13`; W2 now compiles through the original activation/scale load branches. The coherent predicated PTX remains only in the long-K W13 path targeted by the NCU hotspots.
+- TP4 balanced auto-split4 again produces W13/activation/W2 rel-L2 0.000076187/0.000694956/0.002342691; TP4 skew forced-split2 produces 0.000077291/0.000838720/0.002351904. Both K6 reductions are bitwise equal to SGLang and outputs are finite.
+- TP8-shape Is=256 restores the selected W2 cosine/rel-L2 exactly to 0.999997278/0.002333323, with W13/activation at 0.000076998/0.000714756. This proves the all-kernel regression was isolated to W2 and that the W13-only refinement preserves the established coarse reference metrics.
+- Result: the W13-only candidate passes the first TP4/TP8 correctness gate. Next require control/candidate output equivalence, cubin register/stack inspection, and SASS confirmation before any timing decision.
+- Evidence: `results/iter137d_w13_predicated_activation_tp4_tp8shape_correctness_20260904.log`.

@@ -1091,7 +1091,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
             const int k8 = (mtid % 16) * 8;
             uint2 value = make_uint2(0, 0);
             const int activation_row = activation_rows[token_slot];
-            if constexpr (kPredicatedPaddedActivation) {
+            if constexpr (kPredicatedPaddedActivation && IsW13) {
                 const int safe_row = activation_row < 0 ? 0 : activation_row;
                 value = load_reused_u64_predicated(
                     reinterpret_cast<const uint2*>(
@@ -1118,7 +1118,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                 scale_slot = mtid;
             }
         }
-        if constexpr (kPredicatedPaddedActivation) {
+        if constexpr (kPredicatedPaddedActivation && IsW13) {
             const int safe_slot = scale_slot < 0 ? 0 : scale_slot;
             const int row = activation_rows[safe_slot];
             const int safe_row = row < 0 ? 0 : row;
