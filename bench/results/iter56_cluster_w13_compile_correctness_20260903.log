@@ -1,0 +1,30 @@
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+V4_WGMMA_CHECK M=8 pattern=balanced Is=512 active=48 padded=384 split_k=4 mode2=True interleaved_bulk=True fused_act_quant=True cluster_fused_w13=True w2_global_lut=False leader_mbar_wait=True
+V4_WGMMA_W13 fused_into_activation=True
+V4_WGMMA_ACT cos=0.999999759 rel_l2=0.000694956
+V4_WGMMA_W2 cos=0.999997256 rel_l2=0.002342691 finite=True
+V4_WGMMA_OK
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+V4_WGMMA_CHECK M=128 pattern=balanced Is=512 active=256 padded=2048 split_k=2 mode2=True interleaved_bulk=True fused_act_quant=True cluster_fused_w13=True w2_global_lut=False leader_mbar_wait=True
+V4_WGMMA_W13 fused_into_activation=True
+V4_WGMMA_ACT cos=0.999999642 rel_l2=0.000848504
+V4_WGMMA_W2 cos=0.999997233 rel_l2=0.002352536 finite=True
+V4_WGMMA_OK
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+V4_WGMMA_CHECK M=128 pattern=skew Is=512 active=6 padded=768 split_k=4 mode2=True interleaved_bulk=True fused_act_quant=True cluster_fused_w13=True w2_global_lut=False leader_mbar_wait=True
+V4_WGMMA_W13 fused_into_activation=True
+V4_WGMMA_ACT cos=0.999999683 rel_l2=0.000797797
+V4_WGMMA_W2 cos=0.999997240 rel_l2=0.002349567 finite=True
+V4_WGMMA_OK
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+V4_WGMMA_CHECK M=128 pattern=skew Is=256 active=6 padded=768 split_k=2 mode2=True interleaved_bulk=True fused_act_quant=True cluster_fused_w13=True w2_global_lut=False leader_mbar_wait=True
+V4_WGMMA_W13 fused_into_activation=True
+V4_WGMMA_ACT cos=0.999999651 rel_l2=0.000837204
+V4_WGMMA_W2 cos=0.999997237 rel_l2=0.002350856 finite=True
+V4_WGMMA_OK
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+V4_WGMMA_CHECK M=8 pattern=balanced Is=512 active=48 padded=384 split_k=4 mode2=True interleaved_bulk=True fused_act_quant=True cluster_fused_w13=True w2_global_lut=False leader_mbar_wait=True
+V4_WGMMA_W13 fused_into_activation=True
+V4_WGMMA_ACT cos=0.999999271 rel_l2=0.001207464
+V4_WGMMA_W2 cos=0.999997216 rel_l2=0.002359923 finite=True
+V4_WGMMA_OK

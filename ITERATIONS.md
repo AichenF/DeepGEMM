@@ -3440,3 +3440,26 @@ maximum rank latency of a full CUDA-Graph replay.
   local/full graphs against the exact iteration-53 control.  Reject if DSM
   synchronization or cluster residency consumes the removed launch/traffic;
   do not select from a single favorable cold-L2 window.
+
+### WGMMA iteration 56b — clustered W13 reduction/activation rejected
+
+- The extended launch and DSM protocol are functionally sound.  TP4 M8
+  split-4, TP4 M128 balanced split-2 and skew split-4, TP8-shape M128 skew
+  split-2, and the elevated-scale M8 split-4 test all complete without a
+  hang or non-finite value.  Activation cosine is
+  0.99999927--0.99999976 and final W2 cosine is
+  0.99999722--0.99999726 with relative-L2 0.00234--0.00236.
+- Performance rejects both cluster sizes by a wide margin.  At M32/split-4,
+  candidate/control cold-L2 local medians are 242.144/198.224 us (+22.2%);
+  fused W13+activation is 165.200 us versus 115.136+6.592=121.728 us
+  (+35.7%).  At M128/split-2, totals are 388.160/328.256 us (+18.2%) and
+  W13+activation is 264.320 versus 196.224+8.768=204.992 us (+28.9%).
+- The 4-CTA result rules out a small-M-only cluster-size problem.  Requiring
+  all split and gate/up CTAs to be co-resident, then holding their shared
+  allocations through two cluster barriers, costs 59--60 us at the complete
+  local-pipeline level--an order of magnitude more than the removed 6--9 us
+  activation launch.  Reject before distributed timing and restore the exact
+  iteration-53 non-cluster source.
+- Evidence:
+  `bench/results/iter56_cluster_w13_compile_correctness_20260903.log` and
+  `bench/results/iter56_cluster_w13_stage_initial_20260903.log`.
