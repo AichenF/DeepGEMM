@@ -5295,3 +5295,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Route preparation and activation quantization are exact, all outputs are finite, and every numerical metric exactly matches the selected four-way path.
 - Result: eight-way unrolling is numerically safe. Inspect cubin registers/stack and then require same-process M128 cold-L2 A/B before any wider timing sweep.
 - Evidence: `results/iter132_route_k_unroll8_correctness_20260903.log`.
+
+## Iteration 132b — eight-way unroll gives a small stable M128 gain
+
+- Cubin inspection shows W2 remains unchanged at 61 registers and zero stack/local allocation. W13 split2, used by M128, rises modestly from 52 to 54 registers; W13 split4 rises more sharply from 52 to 60, so the small-M gate remains essential.
+- Same-process TP4 M128 random-route timing used eight x 100 rank-max cold-L2 samples per arm and per-replay alternating A/B then B/A. Selected four-way control min/median/max is 0.300384/0.347424/0.474688 ms; eight-way candidate is 0.300352/0.344816/0.383840 ms.
+- Control/candidate is 1.007563x, a 2.608 us median reduction, and the candidate wins all eight batch medians. Outputs are bitwise identical on all ranks.
+- Result: eight-way unrolling passes the M128 gate, but the gain is too small to offset an unmeasured split4 regression. Screen M8/M16/M32 and M64 before any formal benchmark or default change.
+- Evidence: `results/iter132b_route_k_unroll8_tp4_m128_paired_cold800_20260903.log`.
