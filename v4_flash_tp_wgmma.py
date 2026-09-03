@@ -73,6 +73,9 @@ TILED_WEIGHT_LAYOUT = os.environ.get("V4_TILED_WEIGHT_LAYOUT", "1") == "1"
 BULK_WEIGHT_COPY = os.environ.get("V4_BULK_WEIGHT_COPY", "1") == "1"
 if BULK_WEIGHT_COPY and not TILED_WEIGHT_LAYOUT:
     raise ValueError("V4_BULK_WEIGHT_COPY requires tiled weight layout")
+TMA_CTA_SCOPE = os.environ.get("V4_TMA_CTA_SCOPE", "0") == "1"
+if TMA_CTA_SCOPE and not BULK_WEIGHT_COPY:
+    raise ValueError("V4_TMA_CTA_SCOPE requires bulk weight copy")
 INTERLEAVED_BULK_COPY = (
     os.environ.get("V4_INTERLEAVED_BULK_COPY", "1") == "1"
 )
@@ -260,6 +263,7 @@ static constexpr bool kNormalizedWeightScale = K_NORMALIZED_WEIGHT_SCALE;
 static constexpr bool kNormalizedSharedLut = K_NORMALIZED_SHARED_LUT;
 static constexpr bool kTiledWeightLayout = K_TILED_WEIGHT_LAYOUT;
 static constexpr bool kBulkWeightCopy = K_BULK_WEIGHT_COPY;
+static constexpr bool kTmaCtaScope = K_TMA_CTA_SCOPE;
 static constexpr bool kInterleavedBulkCopy = K_INTERLEAVED_BULK_COPY;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
@@ -307,6 +311,21 @@ __device__ __forceinline__ void mbar_arrive(uint32_t address) {
     asm volatile(
         "mbarrier.arrive.shared.b64 %0,[%1];"
         : "=l"(state) : "r"(address) : "memory");
+}
+
+__device__ __forceinline__ void bulk_gmem_to_smem(
+        uint32_t dst, const void* src, int bytes, uint32_t mbar) {
+    if constexpr (kTmaCtaScope) {
+        asm volatile(
+            "cp.async.bulk.shared::cta.global.mbarrier::"
+            "complete_tx::bytes [%0],[%1],%2,[%3];"
+            :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar) : "memory");
+    } else {
+        asm volatile(
+            "cp.async.bulk.shared::cluster.global.mbarrier::"
+            "complete_tx::bytes [%0],[%1],%2,[%3];"
+            :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar) : "memory");
+    }
 }
 
 __device__ __forceinline__ cute::GmmaDescriptor desc_128b(uint32_t pointer) {
@@ -592,24 +611,18 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                 const int copy_bytes = load_scale
                     ? kCombinedStageBytes
                     : kWeightStageBytes;
-                asm volatile(
-                    "cp.async.bulk.shared::cluster.global.mbarrier::"
-                    "complete_tx::bytes [%0],[%1],%2,[%3];"
-                    :: "r"(weight_dst), "l"(weight_src),
-                       "r"(copy_bytes), "r"(barrier_addr[stage])
-                    : "memory");
+                bulk_gmem_to_smem(
+                    weight_dst, weight_src, copy_bytes,
+                    barrier_addr[stage]);
             } else if constexpr (kBulkWeightCopy) {
                 const int64_t tile =
                     (static_cast<int64_t>(expert_idx) * kNumNTiles
                      + n_block_idx) * kNumKTiles + global_kt;
                 const uint8_t* weight_src =
                     weight + tile * kWeightStageBytes;
-                asm volatile(
-                    "cp.async.bulk.shared::cluster.global.mbarrier::"
-                    "complete_tx::bytes [%0],[%1],%2,[%3];"
-                    :: "r"(weight_dst), "l"(weight_src),
-                       "r"(kWeightStageBytes), "r"(barrier_addr[stage])
-                    : "memory");
+                bulk_gmem_to_smem(
+                    weight_dst, weight_src, kWeightStageBytes,
+                    barrier_addr[stage]);
             } else if constexpr (kTiledWeightLayout) {
                 const int tiled_row =
                     ((expert_idx * kNumNTiles + n_block_idx) * kNumKTiles
@@ -639,12 +652,9 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                          + n_block_idx) * kScaleTiles + (scale_kt >> 2);
                     const uint8_t* scale_src =
                         weight_scale + scale_tile * kScaleStageBytes;
-                    asm volatile(
-                        "cp.async.bulk.shared::cluster.global.mbarrier::"
-                        "complete_tx::bytes [%0],[%1],%2,[%3];"
-                        :: "r"(scale_dst), "l"(scale_src),
-                           "r"(kScaleStageBytes), "r"(barrier_addr[stage])
-                        : "memory");
+                    bulk_gmem_to_smem(
+                        scale_dst, scale_src, kScaleStageBytes,
+                        barrier_addr[stage]);
                 } else if constexpr (kTiledWeightLayout) {
                     constexpr int kScaleTiles = kNumKTiles / 4;
                     const int tiled_scale_row =
@@ -683,12 +693,9 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                          + n_block_idx) * kScaleTiles + (global_kt >> 2);
                     const uint8_t* scale_src =
                         weight_scale + scale_tile * kScaleStageBytes;
-                    asm volatile(
-                        "cp.async.bulk.shared::cluster.global.mbarrier::"
-                        "complete_tx::bytes [%0],[%1],%2,[%3];"
-                        :: "r"(weight_scale_smem_addr), "l"(scale_src),
-                           "r"(kScaleStageBytes), "r"(scale_barrier_addr)
-                        : "memory");
+                    bulk_gmem_to_smem(
+                        weight_scale_smem_addr, scale_src,
+                        kScaleStageBytes, scale_barrier_addr);
                 } else if constexpr (kTiledWeightLayout) {
                     constexpr int kScaleTiles = kNumKTiles / 4;
                     const int tiled_scale_row =
@@ -3890,7 +3897,7 @@ _ext = load_inline(
           f"nws{int(NORMALIZED_WEIGHT_SCALE)}_"
           f"nsl{int(NORMALIZED_SHARED_LUT)}_"
           f"twl{int(TILED_WEIGHT_LAYOUT)}_"
-          f"bwc{int(BULK_WEIGHT_COPY)}_"
+          f"bwc{int(BULK_WEIGHT_COPY)}_tcs{int(TMA_CTA_SCOPE)}_"
           f"ibc{int(INTERLEAVED_BULK_COPY)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_sa{int(W2_SORTED_ACT)}_"
@@ -3902,7 +3909,7 @@ _ext = load_inline(
           f"lmw{int(LEADER_MBAR_WAIT)}_"
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v101w2dp"),
+          f"mb{MIN_BLOCKS_PER_SM}_v103ctatma"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -3937,6 +3944,7 @@ _ext = load_inline(
         f"-DK_NORMALIZED_SHARED_LUT={int(NORMALIZED_SHARED_LUT)}",
         f"-DK_TILED_WEIGHT_LAYOUT={int(TILED_WEIGHT_LAYOUT)}",
         f"-DK_BULK_WEIGHT_COPY={int(BULK_WEIGHT_COPY)}",
+        f"-DK_TMA_CTA_SCOPE={int(TMA_CTA_SCOPE)}",
         f"-DK_INTERLEAVED_BULK_COPY={int(INTERLEAVED_BULK_COPY)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",

@@ -996,6 +996,7 @@ def main() -> None:
                     "normalized_shared_lut": kernel.NORMALIZED_SHARED_LUT,
                     "tiled_weight_layout": kernel.TILED_WEIGHT_LAYOUT,
                     "bulk_weight_copy": kernel.BULK_WEIGHT_COPY,
+                    "tma_cta_scope": kernel.TMA_CTA_SCOPE,
                     "interleaved_bulk_copy": kernel.INTERLEAVED_BULK_COPY,
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,

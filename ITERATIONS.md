@@ -4621,3 +4621,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Re-ran the default path without the flag: TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256 all pass. Route/input preparation is exact; W13 cosine is at least 0.999999997, W2 cosine is at least 0.999997240, and every output is finite.
 - TP8 remains source- and shape-valid while the available non-shared GPUs constrain distributed performance work to TP4. Resume optimization from this selected default; the remaining 1.20x gap is about 10.47 us geometric mean (5.61% of custom).
 - Artifact: `results/iter102_w2_distributed_prep_default_correctness_20260903.log`.
+
+## Iteration 103 — CTA-scope bulk-TMA correctness gate
+
+- Hypothesis: selected kernels copy only into their own CTA shared memory but encode linear bulk loads with the remote-capable `shared::cluster` destination. PTX defines `shared::cta` as the strictly non-remote global-to-shared form; test whether narrower scope lowers address/synchronization overhead without changing the transfer.
+- Added opt-in `V4_TMA_CTA_SCOPE=1`, default off, and routed selected linear bulk weight/scale copies through one helper. Tensor-map fallback and the already-rejected paired-W13 prototype remain unchanged. Packed layout, bytes, barriers, math, grid, and output are identical.
+- Correctness passes TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256. Route/quant preparation is exact; W13 cosine is at least 0.999999997, W2 cosine is at least 0.999997240, and all outputs are finite.
+- Next compare the two scope forms in one process under per-replay cold L2 and inspect cubin/SASS. Keep disabled unless timing shows a repeatable benefit.
+- Artifact: `results/iter103_tma_cta_scope_correctness_20260903.log`.

@@ -286,6 +286,7 @@ def main() -> None:
                     ),
                     "custom_tiled_weight_layout": kernel.TILED_WEIGHT_LAYOUT,
                     "custom_bulk_weight_copy": kernel.BULK_WEIGHT_COPY,
+                    "custom_tma_cta_scope": kernel.TMA_CTA_SCOPE,
                     "custom_interleaved_bulk_copy": (
                         kernel.INTERLEAVED_BULK_COPY
                     ),

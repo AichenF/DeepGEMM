@@ -418,6 +418,7 @@ def main() -> None:
         f"active={torch.unique(flat_ids).numel()} padded={num_tokens_padded.item()} "
         f"split_k={selected_split_k} mode2={kernel.MODE2_BRAID} "
         f"interleaved_bulk={kernel.INTERLEAVED_BULK_COPY} "
+        f"tma_cta_scope={kernel.TMA_CTA_SCOPE} "
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
         f"w13_tail_fused_act={w13_tail_fused_act} "
         f"w2_sorted_act={kernel.W2_SORTED_ACT} "
