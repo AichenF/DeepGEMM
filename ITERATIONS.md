@@ -3332,3 +3332,20 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/tp8_wgmma_w13_leader_default_smoke_20260903.log` and
   `bench/results/tp4_paired_w13_leader_default_coldl2_formal_20260903.log`.
+
+### WGMMA iteration 54a — one-multiply normalized LUT synthesis
+
+- Offline normalization guarantees every timed-kernel E8M0 offset is in
+  1..12.  The selected affine LUT generator nevertheless computes
+  `e*0x08080800` and `e*0x08080808` independently for every output row and
+  K32 step.
+- For this bounded domain, every byte of `e*0x08080808` is exactly `8e` with
+  no cross-byte carry.  Clearing its low byte is therefore bit-identical to
+  `e*0x08080800`.  Test a generator with one multiply, one mask, and the same
+  two adds, removing one dependent IMAD per synthesized `uint2` without
+  changing packed weights, scales, WGMMA operands, grid, or memory traffic.
+- Keep an opt-in `V4_SINGLE_IMAD_LUT=0` first.  Require exact LUT-word
+  equivalence for all normalized codes plus TP4 split-K=4/2 and TP8 numerical
+  gates.  Then use candidate/control/candidate cold-L2 W13/W2 stage timing;
+  reject if compiler code generation, register live ranges, or integer-pipe
+  scheduling erase the source-level instruction reduction.
