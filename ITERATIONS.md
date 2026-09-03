@@ -5473,3 +5473,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Correctness embedded in the paired audit passed for every M and all ranks: both paths finite and all-reduce checks true; custom minimum cosine 0.999995575 and maximum relative L2 0.002974846.
 - Evidence: `results/iter138_current_head_default_exact_humming_tp4_allm_cold2000_20260904.log`.
 - Decision: retain current default implementation. This is a positive final performance audit; run a fresh default TP4-balanced/TP4-skew/TP8-shape correctness sweep before goal closure.
+
+## Iteration 138b — default correctness sweep launch failure
+
+- Date: 2026-09-04
+- Intended scope: current default TP4 balanced, forced-split2 TP4 skew, and TP8-shape (`intermediate=256`) full-reference correctness checks.
+- Result: all three Python processes exited before importing the kernel with `ModuleNotFoundError: No module named 'humming'`.
+- Root cause: the launch exported only the SGLang checkout in `PYTHONPATH`; this test also imports `humming.ops`.
+- No GPU kernel executed and this is not a correctness or performance result.
+- Evidence: `results/iter138b_current_head_default_tp4_tp8_correctness_20260904.log`.
+- Decision: retain source unchanged and rerun with both Humming and SGLang source roots in `PYTHONPATH`.
