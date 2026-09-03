@@ -1,0 +1,66 @@
+Offline per-expert E8M0 normalization cold-L2 screen
+Date: 2026-09-03
+
+Local core protocol: graph-internal external CUDA event nodes; TP4 random
+routes; 100 samples per M/config; separate 256 MiB L2 clear before every graph
+replay, excluded from all events.  Candidate/control/candidate medians (us):
+
+M=8
+ candidate A W13=48.944 W2=28.560 total=103.472
+ control     W13=50.720 W2=29.488 total=105.232
+ candidate B W13=48.896 W2=28.448 total=103.152
+M=32
+ candidate A W13=122.592 W2=66.080 total=215.552
+ control     W13=127.936 W2=69.360 total=224.400
+ candidate B W13=122.624 W2=66.160 total=215.712
+M=128
+ candidate A W13=208.480 W2=112.064 total=353.792
+ control     W13=216.448 W2=117.088 total=365.696
+ candidate B W13=207.712 W2=111.472 total=351.584
+
+Both core GEMMs improve in both candidate windows.  Candidate-A/control local
+total ratios are 0.983275/0.960570/0.967451 at M8/M32/M128; candidate-B/
+control ratios are 0.980234/0.961283/0.961411.
+
+Distributed protocol: TP4 GPUs 1-4; Humming and custom each captured with the
+same SGLang CustomAllReduceV2 instance; random real route metadata; outer=4,
+replays=100, pair-granularity=batch; every individually timed graph replay has
+its own excluded 256 MiB L2 clear.  All correctness/all-reduce checks pass.
+Median latency (ms), Humming/custom/custom-over-Humming:
+
+Candidate A:
+ M8   0.090256 / 0.088000 / 0.975004
+ M16  0.145680 / 0.136160 / 0.934651
+ M32  0.229184 / 0.207904 / 0.907149
+ M64  0.328112 / 0.296784 / 0.904520
+ M128 0.424912 / 0.430864 / 1.014008
+ geomean 0.211191 / 0.199818 / 0.946148
+
+Same-source control:
+ M8   0.090016 / 0.091680 / 1.018486
+ M16  0.145696 / 0.142096 / 0.975291
+ M32  0.227168 / 0.215264 / 0.947598
+ M64  0.325552 / 0.309728 / 0.951393
+ M128 0.429056 / 0.440288 / 1.026178
+ geomean 0.210790 / 0.207257 / 0.983239
+
+Candidate B:
+ M8   0.089952 / 0.087744 / 0.975454
+ M16  0.145568 / 0.136048 / 0.934601
+ M32  0.232064 / 0.207680 / 0.894926
+ M64  0.330704 / 0.295920 / 0.894818
+ M128 0.430480 / 0.417280 / 0.969337
+ geomean 0.212430 / 0.198235 / 0.933181
+
+Candidate A/control direct custom ratios are
+0.959860/0.958225/0.965809/0.958208/0.978596 (geomean 0.964109, 3.72%
+speedup).  Normalizing each custom result by its paired Humming window gives
+0.957308/0.958331/0.957314/0.950732/0.988140 (geomean 0.962276, 3.92%
+speedup).  Candidate B repeats and strengthens every point: direct geomean
+0.956472 (4.55% speedup), paired-normalized geomean 0.949088 (5.36%).
+
+Decision: accept offline normalization as the new winner.  It converts the
+earlier scale-synthesis diagnostic into a full-checkpoint-capable, branch-free
+runtime path and gives repeatable W13, W2 and end-to-end gains.  Candidate A
+versus the immediately adjacent control is the conservative causal estimate;
+Candidate B is confirmation, not the headline delta.

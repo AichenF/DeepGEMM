@@ -2654,3 +2654,31 @@ maximum rank latency of a full CUDA-Graph replay.
 - First gate normal-range equivalence, a wider-than-eleven range that exercises
   packed FP4 adjustment, TP4 split-K=4/2, and TP8 shape.  Only then measure the
   branch-free normalized core against the exact shared-LUT winner.
+
+### WGMMA iteration 41b — offline normalization selected
+
+- Correctness passes TP4 split-K=4, forced split-K=2 skew and TP8 shape for
+  normal raw codes 125..128.  A TP4 case with raw codes 118..130 also passes,
+  explicitly exercising the packed-E2M1 adjustment needed when an expert's
+  exponent span exceeds eleven.  W13/W2 use 54 registers/thread and 2 KiB
+  static shared memory, versus 56 registers and 4 KiB for the shared-LUT
+  control, with no spill.
+- Two graph-internal candidate windows around a same-source control improve
+  both W13 and W2 at M8/M32/M128.  Local total improves 1.67-3.94% in the
+  conservative first window and 1.98-3.86% in the confirmation window.
+- TP4 candidate/control/candidate distributed screens each use 400 separately
+  cold-L2 CUDA-Graph samples per implementation and M, including the same
+  SGLang CustomAllReduceV2 in both graphs.  Candidate A/control custom latency
+  improves at every M by 2.14-4.18% (3.72% geomean); paired-Humming
+  normalization gives 3.92%.  Candidate B confirms every point with a 4.55%
+  direct geomean improvement.
+- Select normalized scales as the new default.  Normalization, optional packed
+  weight adjustment, braiding and allocations remain model-load work outside
+  the captured/timed graph.  Runtime kernels are branch-free and retain the
+  accepted S2R schedule.  Use Candidate A versus its adjacent control as the
+  conservative causal result; do not headline Candidate B's favorable system
+  window.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_normalized_scale_correctness_20260903.log`
+  and
+  `bench/results/tp4_normalized_scale_coldl2_screen_20260903.log`.

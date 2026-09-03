@@ -1,0 +1,30 @@
+Offline per-expert E8M0 normalization correctness
+Date: 2026-09-03
+Candidate: V4_NORMALIZED_WEIGHT_SCALE=1
+
+TP4 M8 balanced, split-K=4, raw scale codes 125..128:
+W13 cos=0.999999998 rel_l2=0.000076187
+ACT cos=0.999999759 rel_l2=0.000694956
+W2  cos=0.999997256 rel_l2=0.002342691 finite=True
+
+TP4 M8 maximal skew, forced split-K=2, raw scale codes 125..128:
+W13 cos=0.999999997 rel_l2=0.000077291
+ACT cos=0.999999649 rel_l2=0.000838720
+W2  cos=0.999997235 rel_l2=0.002351904 finite=True
+
+TP8 local shape M8 maximal skew, split-K=4, raw scale codes 125..128:
+W13 cos=0.999999997 rel_l2=0.000077480
+ACT cos=0.999999763 rel_l2=0.000689115
+W2  cos=0.999997249 rel_l2=0.002345847 finite=True
+
+TP4 M8 balanced, split-K=4, raw scale codes 118..130:
+W13 cos=0.999999982 rel_l2=0.000193494
+ACT cos=0.999999289 rel_l2=0.001192182
+W2  cos=0.999997272 rel_l2=0.002336153 finite=True
+
+The wide-range case spans more than eleven exponents and therefore exercises
+packed E2M1 adjustment, not only scale-code rebasing.  All runs print
+V4_WGMMA_OK.  cuobjdump reports TP4 W13/W2 REG=54, static SHARED=2048 and no
+local-memory spill; the prior shared-LUT winner uses REG=56 and static
+SHARED=4096.  Normalization and packed-weight transformation happen before
+CUDA Graph capture and are excluded from timing.
