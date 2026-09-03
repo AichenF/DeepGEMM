@@ -4751,3 +4751,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Per-issue-create control median: **0.357456 ms**; short-lived-constant candidate: **0.357248 ms**; control/candidate: **1.000582x**.  The candidate saves 0.208 us, and seven of eight candidate batch medians beat their paired controls.
 - The direction is encouraging but far below one percent.  Keep opt-in and screen M8/M16/M32/M64 under the same paired cold-L2 protocol before selecting or rejecting it.
 - Artifact: `results/iter109c_weight_policy_constant_tp4_m128_paired_cold800_20260903.log`.
+
+## Iteration 109d — constant weight policy rejected across TP4 shapes
+
+- Extended the same-process random-route cold-L2 comparison to M8/M16/M32/M64 with 4x100 samples per variant, exact output checks, per-sample ABBA ordering, and a separate excluded 256 MiB clear before every replay.
+- Control/candidate medians (ms) and speedups: M8 `0.075072/0.075424 = 0.995333x`; M16 `0.119264/0.119488 = 0.998125x`; M32 `0.192256/0.192192 = 1.000333x`; M64 `0.279616/0.279664 = 0.999828x`.
+- Including iteration 109c M128 (`1.000582x`), the five-shape geometric mean is approximately **0.99884x**, a 0.116% regression.  Only 12 of the 24 paired batch medians across all five shapes favor the candidate; M8 and M16 lose every batch.
+- Decision: reject `V4_WEIGHT_POLICY_CONSTANT=1` and retain the selected short-lived per-issue `createpolicy` path.  Static instruction reduction alone does not produce a repeatable end-to-end win, and the opaque target-specific encoding is not justified by these results.
+- Artifact: `results/iter109d_weight_policy_constant_tp4_m8_m16_m32_m64_paired_cold400_20260903.log`.
