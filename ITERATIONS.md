@@ -3688,3 +3688,41 @@ maximum rank latency of a full CUDA-Graph replay.
   local-reducer tuning cannot close the objective.
 - Evidence:
   `bench/results/iter58g_tiled_k6_auto_correctness_tp4_formal_tp8_smoke_coldl2_20260903.log`.
+
+### WGMMA iteration 59a — communication-boundary reassessment
+
+- Audit the exact SGLang `CustomAllReduceV2` used by both graphs.  It owns a
+  PyTorch symmetric-memory slab containing two phases of per-source push
+  buffers, a pull buffer, and pull semaphores.  TP4 graph messages are
+  64/128/256/512/1024 KiB at M8/16/32/64/128.  The SM90 table selects
+  1shot-push through 384 KiB, hence M8--M32, and graph-mode 2shot-pull for
+  M64/M128.  The former pushes each local BF16 vector into all four peers'
+  slots, polls four local slots, reduces ranks in FP32, restores the positive-
+  zero empty sentinel, and advances one phase counter per one of 78 CTAs.
+- Re-profile selected M8/M128 graphs with Nsight Systems graph-node tracing.
+  `cudaProfilerStart()` itself is not rank-synchronized: early ranks wait in
+  the collective for ranks still entering the profiler, producing false
+  1--188 ms AR durations.  Do not use those waiting ranks as latency data.
+  The last-arriving rank reports an approximate intrinsic lower-bound of
+  4.032 us for M8 1shot-push and 10.623 us for M128 2shot-pull.  Adjacent
+  route reduction is 1.63--1.70 us at M8 and 3.42--3.71 us at M128.  These
+  traces are diagnostic only; formal CUDA-event results remain authoritative.
+- Upstream source review confirms that modern PyTorch/SGLang symmetric-memory
+  paths are graph-capturable and that production serving increasingly fuses
+  neighboring epilogues into all-reduce rather than treating communication
+  as untouchable.  The local checked-out V2 code is the source of truth for
+  its sentinel/counter protocol; do not substitute the original MegaMoE EP
+  barrier or a generic NCCL call.
+- Next prototype an opt-in TP4 fused k6+1shot-push kernel for M8--M32.  Reuse
+  the *same* SGLang symmetric push slots and 78-element phase counter so it
+  can interleave safely with the unmodified Humming baseline.  Each 16-byte
+  vector must compute the six BF16 route rows in ordered FP32, convert to
+  BF16, replace positive zero with negative zero, system-scope push to all
+  peers, poll/reduce four rank slots, write the final BF16 output, clear the
+  slots, and increment exactly the same per-block counter.  Baseline remains
+  stock SGLang; TP8 and nonselected sizes initially fall back.  Gate repeated
+  graph replay for deadlock/phase correctness before any timing claim.
+- Evidence:
+  `bench/results/iter59b_current_tp4_m8_m128_cold_graph_node_nsys.log`,
+  `bench/results/iter59b_current_tp4_m8_m128_cold_graph_kernel_stats.log`,
+  and `bench/results/iter59b_current_tp4_m{8,128}_cold_graph_rank*.nsys-rep`.

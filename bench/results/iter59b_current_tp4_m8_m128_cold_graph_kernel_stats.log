@@ -1,0 +1,88 @@
+Generating SQLite file bench/results/iter59b_current_tp4_m8_cold_graph_rank0.sqlite from bench/results/iter59b_current_tp4_m8_cold_graph_rank0.nsys-rep
+Processing [bench/results/iter59b_current_tp4_m8_cold_graph_rank0.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+90.4,1271836,1,1271836.0,1271836.0,1271836,1271836,0.0,"void sglang::all_reduce_kernel<sglang::AllReducePushImpl<__nv_bfloat16, (unsigned int)4, (bool)1>, (unsigned int)4, (int)1>(sglang::AllReduceParams<T2>)"
+4.6,64032,1,64032.0,64032.0,64032,64032,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+3.0,41727,1,41727.0,41727.0,41727,41727,0.0,"void route_gemm<(int)4096, (int)1024, (int)4, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+1.6,22368,1,22368.0,22368.0,22368,22368,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.2,2912,1,2912.0,2912.0,2912,2912,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+0.2,2496,1,2496.0,2496.0,2496,2496,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)4>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+0.1,1632,1,1632.0,1632.0,1632,1632,0.0,"void tiled_k6_reduce_kernel<(int)256, (int)2>(const __nv_bfloat16 *, const float *, __nv_bfloat16 *, int)"
+
+Generating SQLite file bench/results/iter59b_current_tp4_m8_cold_graph_rank1.sqlite from bench/results/iter59b_current_tp4_m8_cold_graph_rank1.nsys-rep
+Processing [bench/results/iter59b_current_tp4_m8_cold_graph_rank1.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+99.9,187820866,1,187820866.0,187820866.0,187820866,187820866,0.0,"void sglang::all_reduce_kernel<sglang::AllReducePushImpl<__nv_bfloat16, (unsigned int)4, (bool)1>, (unsigned int)4, (int)1>(sglang::AllReduceParams<T2>)"
+0.0,62913,1,62913.0,62913.0,62913,62913,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+0.0,41151,1,41151.0,41151.0,41151,41151,0.0,"void route_gemm<(int)4096, (int)1024, (int)4, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.0,22848,1,22848.0,22848.0,22848,22848,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.0,3040,1,3040.0,3040.0,3040,3040,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+0.0,2176,1,2176.0,2176.0,2176,2176,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)4>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+0.0,1632,1,1632.0,1632.0,1632,1632,0.0,"void tiled_k6_reduce_kernel<(int)256, (int)2>(const __nv_bfloat16 *, const float *, __nv_bfloat16 *, int)"
+
+Generating SQLite file bench/results/iter59b_current_tp4_m8_cold_graph_rank2.sqlite from bench/results/iter59b_current_tp4_m8_cold_graph_rank2.nsys-rep
+Processing [bench/results/iter59b_current_tp4_m8_cold_graph_rank2.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+99.3,18464458,1,18464458.0,18464458.0,18464458,18464458,0.0,"void sglang::all_reduce_kernel<sglang::AllReducePushImpl<__nv_bfloat16, (unsigned int)4, (bool)1>, (unsigned int)4, (int)1>(sglang::AllReduceParams<T2>)"
+0.3,63488,1,63488.0,63488.0,63488,63488,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+0.2,41375,1,41375.0,41375.0,41375,41375,0.0,"void route_gemm<(int)4096, (int)1024, (int)4, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.1,22112,1,22112.0,22112.0,22112,22112,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.0,2880,1,2880.0,2880.0,2880,2880,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+0.0,2368,1,2368.0,2368.0,2368,2368,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)4>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+0.0,1632,1,1632.0,1632.0,1632,1632,0.0,"void tiled_k6_reduce_kernel<(int)256, (int)2>(const __nv_bfloat16 *, const float *, __nv_bfloat16 *, int)"
+
+Generating SQLite file bench/results/iter59b_current_tp4_m8_cold_graph_rank3.sqlite from bench/results/iter59b_current_tp4_m8_cold_graph_rank3.nsys-rep
+Processing [bench/results/iter59b_current_tp4_m8_cold_graph_rank3.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+45.5,63008,1,63008.0,63008.0,63008,63008,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+29.5,40799,1,40799.0,40799.0,40799,40799,0.0,"void route_gemm<(int)4096, (int)1024, (int)4, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+16.9,23328,1,23328.0,23328.0,23328,23328,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+2.9,4032,1,4032.0,4032.0,4032,4032,0.0,"void sglang::all_reduce_kernel<sglang::AllReducePushImpl<__nv_bfloat16, (unsigned int)4, (bool)1>, (unsigned int)4, (int)1>(sglang::AllReduceParams<T2>)"
+2.3,3200,1,3200.0,3200.0,3200,3200,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+1.7,2368,1,2368.0,2368.0,2368,2368,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)4>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+1.2,1696,1,1696.0,1696.0,1696,1696,0.0,"void tiled_k6_reduce_kernel<(int)256, (int)2>(const __nv_bfloat16 *, const float *, __nv_bfloat16 *, int)"
+
+Generating SQLite file bench/results/iter59b_current_tp4_m128_cold_graph_rank0.sqlite from bench/results/iter59b_current_tp4_m128_cold_graph_rank0.nsys-rep
+Processing [bench/results/iter59b_current_tp4_m128_cold_graph_rank0.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+99.2,47349838,1,47349838.0,47349838.0,47349838,47349838,0.0,"void sglang::all_reduce_kernel<sglang::AllReducePullImpl<__nv_bfloat16, (unsigned int)4, (sglang::PullMode)0, (bool)1>, (unsigned int)4, (int)2>(sglang::AllReduceParams<T2>)"
+0.4,195167,1,195167.0,195167.0,195167,195167,0.0,"void route_gemm<(int)4096, (int)1024, (int)2, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.2,104767,1,104767.0,104767.0,104767,104767,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.1,63104,1,63104.0,63104.0,63104,63104,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+0.0,5696,1,5696.0,5696.0,5696,5696,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+0.0,5375,1,5375.0,5375.0,5375,5375,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)2>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+0.0,3552,1,3552.0,3552.0,3552,3552,0.0,moe_fused_mul_sum_kernel
+
+Generating SQLite file bench/results/iter59b_current_tp4_m128_cold_graph_rank1.sqlite from bench/results/iter59b_current_tp4_m128_cold_graph_rank1.nsys-rep
+Processing [bench/results/iter59b_current_tp4_m128_cold_graph_rank1.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+94.0,5927442,1,5927442.0,5927442.0,5927442,5927442,0.0,"void sglang::all_reduce_kernel<sglang::AllReducePullImpl<__nv_bfloat16, (unsigned int)4, (sglang::PullMode)0, (bool)1>, (unsigned int)4, (int)2>(sglang::AllReduceParams<T2>)"
+3.1,196447,1,196447.0,196447.0,196447,196447,0.0,"void route_gemm<(int)4096, (int)1024, (int)2, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+1.6,103712,1,103712.0,103712.0,103712,103712,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+1.0,63233,1,63233.0,63233.0,63233,63233,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+0.1,5568,1,5568.0,5568.0,5568,5568,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+0.1,5247,1,5247.0,5247.0,5247,5247,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)2>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+0.1,3712,1,3712.0,3712.0,3712,3712,0.0,moe_fused_mul_sum_kernel
+
+Generating SQLite file bench/results/iter59b_current_tp4_m128_cold_graph_rank2.sqlite from bench/results/iter59b_current_tp4_m128_cold_graph_rank2.nsys-rep
+Processing [bench/results/iter59b_current_tp4_m128_cold_graph_rank2.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+50.4,195679,1,195679.0,195679.0,195679,195679,0.0,"void route_gemm<(int)4096, (int)1024, (int)2, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+26.8,104031,1,104031.0,104031.0,104031,104031,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+16.3,63360,1,63360.0,63360.0,63360,63360,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+2.7,10623,1,10623.0,10623.0,10623,10623,0.0,"void sglang::all_reduce_kernel<sglang::AllReducePullImpl<__nv_bfloat16, (unsigned int)4, (sglang::PullMode)0, (bool)1>, (unsigned int)4, (int)2>(sglang::AllReduceParams<T2>)"
+1.5,5696,1,5696.0,5696.0,5696,5696,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+1.4,5311,1,5311.0,5311.0,5311,5311,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)2>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+0.9,3616,1,3616.0,3616.0,3616,3616,0.0,moe_fused_mul_sum_kernel
+
+Generating SQLite file bench/results/iter59b_current_tp4_m128_cold_graph_rank3.sqlite from bench/results/iter59b_current_tp4_m128_cold_graph_rank3.nsys-rep
+Processing [bench/results/iter59b_current_tp4_m128_cold_graph_rank3.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+99.8,154937442,1,154937442.0,154937442.0,154937442,154937442,0.0,"void sglang::all_reduce_kernel<sglang::AllReducePullImpl<__nv_bfloat16, (unsigned int)4, (sglang::PullMode)0, (bool)1>, (unsigned int)4, (int)2>(sglang::AllReduceParams<T2>)"
+0.1,197598,1,197598.0,197598.0,197598,197598,0.0,"void route_gemm<(int)4096, (int)1024, (int)2, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.1,104606,1,104606.0,104606.0,104606,104606,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.0,63168,1,63168.0,63168.0,63168,63168,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+0.0,5760,1,5760.0,5760.0,5760,5760,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+0.0,5440,1,5440.0,5440.0,5440,5440,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)2>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+0.0,3424,1,3424.0,3424.0,3424,3424,0.0,moe_fused_mul_sum_kernel
+
