@@ -3572,3 +3572,27 @@ maximum rank latency of a full CUDA-Graph replay.
   rerun the same suite with escaped remote variables.
 - Evidence:
   `bench/results/iter58_tiled_k6_initial_correctness_stage_coldl2_20260903.log`.
+
+### WGMMA iteration 58c — tiled-k6 mappings pass and show a small signal
+
+- Re-ran the batch with a literal remote stdin script.  All four mappings
+  complete the full TP4-shape M8 numerical test and their complete BF16
+  `[8,4096]` output is bitwise equal to SGLang `moe_fused_mul_sum`
+  (`max_abs=0`).  The full custom result remains finite with cosine
+  0.999997256 and relative-L2 0.002342691 versus the MXFP4 reference.
+- Cold-L2 local-reduce medians (us) for control/mode1/mode2/mode3/mode4 are
+  5.536/5.312/5.184/5.120/5.184 at M8,
+  6.624/5.728/5.792/5.728/5.872 at M32, and
+  7.360/7.584/7.168/7.584/7.168 at M128.  The hidden-tiled mapping therefore
+  recovers 0.19--0.90 us where the old one-CTA/token implementation lost
+  2--3 us.  Modes 2 (128 threads x two pairs) and 4 (256 threads x two
+  pairs) are the only finalists that improve the isolated stage at all three
+  M values.
+- One-window complete-local medians are too confounded by W13/W2 drift to
+  select from: control is 87.984/199.136/328.144 us, mode 2 is
+  87.504/197.888/328.800 us, and mode 4 is
+  87.664/197.904/327.808 us at M8/M32/M128.  Next use an interleaved
+  candidate/control sequence for modes 2 and 4, then require a distributed
+  full-graph result because the maximum possible local gain is under 1 us.
+- Evidence:
+  `bench/results/iter58c_tiled_k6_initial_correctness_stage_coldl2_20260903.log`.
