@@ -110,7 +110,14 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
             )
 
     def w2() -> None:
-        w2_output = case.down if kernel.W2_ROUTE_OUTPUT else case.local_float
+        if kernel.W2_BF16_ATOMIC:
+            case.local_bf16.zero_()
+            w2_output = case.local_bf16
+        elif kernel.W2_ROUTE_OUTPUT:
+            w2_output = case.down
+        else:
+            w2_output = case.local_float
+        assert w2_output is not None
         kernel.run_w2(
             case.w2,
             case.s2,
@@ -127,6 +134,8 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
         )
 
     def local_reduce() -> None:
+        if kernel.W2_BF16_ATOMIC:
+            return
         if kernel.W2_ROUTE_OUTPUT:
             bench.moe_fused_mul_sum(
                 inputs=case.down.view(case.m, bench.TOP_K, bench.HIDDEN),
@@ -140,13 +149,16 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
             kernel.cast_bf16(case.local_float, case.local_bf16)
 
     if kernel.FUSED_ROUTE_QUANT:
-        return (
-            ("route_quant", "w13", "activation_quant", "w2", "local_reduce"),
-            (route_quant, w13, activation, w2, local_reduce),
-        )
+        prefix_names = ("route_quant", "w13", "activation_quant")
+        prefix_functions = (route_quant, w13, activation)
+    else:
+        prefix_names = ("align", "quant_x", "w13", "activation_quant")
+        prefix_functions = (align, quant_x, w13, activation)
+    if kernel.W2_BF16_ATOMIC:
+        return prefix_names + ("w2_atomic",), prefix_functions + (w2,)
     return (
-        ("align", "quant_x", "w13", "activation_quant", "w2", "local_reduce"),
-        (align, quant_x, w13, activation, w2, local_reduce),
+        prefix_names + ("w2", "local_reduce"),
+        prefix_functions + (w2, local_reduce),
     )
 
 
@@ -341,6 +353,11 @@ def main() -> None:
                 ),
                 "custom_fused_route_quant": (
                     os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
+                    if args.impl == "custom"
+                    else None
+                ),
+                "custom_w2_bf16_atomic": (
+                    os.environ.get("V4_W2_BF16_ATOMIC", "0") == "1"
                     if args.impl == "custom"
                     else None
                 ),

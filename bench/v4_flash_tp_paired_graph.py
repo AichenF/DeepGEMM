@@ -271,6 +271,7 @@ def main() -> None:
                     "custom_w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "custom_w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "custom_w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
+                    "custom_w2_bf16_atomic": kernel.W2_BF16_ATOMIC,
                     "custom_normalized_weight_scale": (
                         kernel.NORMALIZED_WEIGHT_SCALE
                     ),
