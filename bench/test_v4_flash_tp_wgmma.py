@@ -426,6 +426,7 @@ def main() -> None:
         f"w2_coalesced_store={kernel.W2_COALESCED_STORE} "
         f"w2_global_lut={kernel.W2_GLOBAL_LUT} "
         f"leader_mbar_wait={kernel.LEADER_MBAR_WAIT}"
+        f" w13_distributed_prep={kernel.W13_DISTRIBUTED_PREP}"
     )
     print(
         "V4_WGMMA_W13 "

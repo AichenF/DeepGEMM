@@ -173,6 +173,9 @@ W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
 LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
+W13_DISTRIBUTED_PREP = (
+    os.environ.get("V4_W13_DISTRIBUTED_PREP", "0") == "1"
+)
 if W2_S2R_PREFETCH and (DEQUANT_SYNTH_LUT or W2_GLOBAL_LUT):
     raise ValueError(
         "V4_W2_S2R_PREFETCH currently probes only the shared-LUT path"
@@ -249,6 +252,7 @@ static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
 static constexpr bool kLeaderMbarWait = K_LEADER_MBAR_WAIT;
+static constexpr bool kW13DistributedPrep = K_W13_DISTRIBUTED_PREP;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -407,6 +411,8 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     static_assert(kNumNTiles % kLaunchNTiles == 0);
     constexpr bool kS2RPrefetch =
         IsW13 ? kW13S2RPrefetch : kW2S2RPrefetch;
+    constexpr int kTmaIssuerTid =
+        IsW13 && kW13DistributedPrep ? 32 : 0;
 
     const int split_idx = blockIdx.x % SplitK;
     const int task_idx = blockIdx.x / SplitK;
@@ -502,7 +508,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     __syncthreads();
 
     const auto load_weight_stage = [&](int local_kt, int stage) {
-        if (tid == 0) {
+        if (tid == kTmaIssuerTid) {
             const int global_kt = kt_begin + local_kt;
             const uint32_t weight_dst =
                 weight_smem_addr + stage * kWeightStageStride;
@@ -642,7 +648,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     const auto load_single_scale = [&](int global_kt) {
         if constexpr (kUseTmaScale && kScaleQuadReuse == 4
                       && kScaleBuffers == 1) {
-            if (tid == 0) {
+            if (tid == kTmaIssuerTid) {
                 asm volatile(
                     "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
                     :: "r"(scale_barrier_addr), "n"(kScaleStageBytes));
@@ -722,23 +728,31 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             activation_smem + token_slot * kBlockK
             + (k8 ^ ((token_slot & 7) << 4))) = value;
 
-        if (tid < kTok) {
-            const int row = activation_rows[tid];
+        int scale_slot = -1;
+        if constexpr (IsW13 && kW13DistributedPrep) {
+            const int warp_lane = tid & 31;
+            if (warp_lane < 2)
+                scale_slot = (tid >> 5) * 2 + warp_lane;
+        } else if (tid < kTok) {
+            scale_slot = tid;
+        }
+        if (scale_slot >= 0) {
+            const int row = activation_rows[scale_slot];
             if (row >= 0) {
                 int64_t scale_index;
                 if constexpr (!IsW13 && kW2MblockScale) {
                     scale_index =
                         (static_cast<int64_t>(m_block_idx) * kNumKTiles
-                         + global_kt) * kTok + tid;
+                         + global_kt) * kTok + scale_slot;
                 } else {
                     scale_index =
                         static_cast<int64_t>(row) * kNumKTiles + global_kt;
                 }
-                activation_scale_smem[tid] =
+                activation_scale_smem[scale_slot] =
                     __ldg(activation_scale + scale_index)
                     * expert_weight_scale;
             } else {
-                activation_scale_smem[tid] = 0.0f;
+                activation_scale_smem[scale_slot] = 0.0f;
             }
         }
         if constexpr (!kUseTmaScale) {
@@ -3827,7 +3841,9 @@ _ext = load_inline(
           f"cs{int(W2_COALESCED_STORE)}_"
           f"w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v90foldw2scale"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_"
+          f"dp{int(W13_DISTRIBUTED_PREP)}_"
+          f"mb{MIN_BLOCKS_PER_SM}_v91distprep"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -3867,6 +3883,7 @@ _ext = load_inline(
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
         f"-DK_LEADER_MBAR_WAIT={int(LEADER_MBAR_WAIT)}",
+        f"-DK_W13_DISTRIBUTED_PREP={int(W13_DISTRIBUTED_PREP)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_W2_SORTED_ACT={int(W2_SORTED_ACT)}",
         f"-DK_W2_MBLOCK_SCALE={int(W2_MBLOCK_SCALE)}",

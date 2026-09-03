@@ -4437,3 +4437,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** control median 0.358560 ms; folded-scale candidate 0.358544 ms; control/candidate 1.000045x, only 0.016 microseconds. Batch direction was mixed.
 - **Decision:** Treat as neutral and reject for selection. Removing repeated W2 expert-scale loads/multiplies merely moves equivalent work into the quantizer and does not shorten the graph critical path.
 - **Artifact:** `results/iter90b_w2_fold_global_scale_paired_tp4_m128_cold_600_20260903.log`.
+
+## Iteration 91 — Distributed W13 preparation correctness gate
+
+- **Hypothesis:** Selected M128 W13 spends 32.9% of average issue distance stalled at CTA barriers. Warp 0 currently performs TMA issue, all eight activation-scale gathers, and leader-only mbarrier polling while sibling warps arrive early.
+- **Change:** Added opt-in `V4_W13_DISTRIBUTED_PREP=1`: warp 1 lane 0 issues W13 bulk TMA, warp 0 retains the mbarrier wait, and two activation scales are loaded by each warp. W2 and all math/data bytes are unchanged.
+- **Verification:** TP4 balanced/skew M8 and TP8-shape balanced M8 passed the full all-route reference with the same W13/activation/W2 cosines as control; all outputs finite.
+- **Decision:** Correctness and TP8-runnable gate passed; candidate remains opt-in pending paired cold-L2 timing.
+- **Artifact:** `results/iter91_w13_distributed_prep_correctness_20260903.log`.
