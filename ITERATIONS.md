@@ -3876,3 +3876,28 @@ maximum rank latency of a full CUDA-Graph replay.
   audited in the same process against stock CARv2 at all five M values.
 - Evidence:
   `bench/results/iter65_multicast_pull_tp4_m128_compile_correctness_smoke_coldl2_20260903.log`.
+
+### WGMMA iteration 66 — low-SM NVLS pull five-point audit
+
+- Same-process stock/NVLS-pull AB/BA over 1200 cold-L2 samples per path and
+  point disproves iteration 65's apparent 55 us cross-window gain.  Pull versus
+  stock medians are 0.078080/0.076736 ms at M8, 0.124896/0.123392 ms at M16,
+  0.194368/0.194720 ms at M32, 0.289968/0.287040 ms at M64, and
+  0.369872/0.377648 ms at M128.  Point speedups are 0.98279x, 0.98796x,
+  1.00181x, 0.98990x, and 1.02102x; the five-point geometric mean is a
+  0.34% regression.
+- Every candidate/control graph remains bitwise identical and passes the
+  independent NCCL sum check.  Therefore the result is a performance
+  rejection, not a numerical or semaphore failure.  The tuned K3 low-SM
+  setup cost is inappropriate for 64--128 KiB, multicast push remains the
+  selected small-message family, and the current default pull geometry does
+  not win at M64.
+- Keep NVLS pull opt-in only.  M128 is the sole possible selection, saving
+  7.776 us in the pooled median, but its six paired batch medians are mixed
+  and the platform again enters two latency modes.  Before selecting it,
+  sweep K3's exposed `(num_blocks, unroll)` on focused M128 same-process
+  windows and require candidate/control/candidate consistency.  The
+  iteration-65 single-window 0.323728 ms result is explicitly rejected as a
+  formal estimate.
+- Evidence:
+  `bench/results/iter66_multicast_pull_tp4_allm_ab_coldl2_20260903.log`.
