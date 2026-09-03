@@ -4674,3 +4674,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Correctness passes TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256. Route/input preparation is exact; W13 cosine is at least 0.999999997, W2 cosine is at least 0.999997240, and all outputs are finite.
 - Next run a long in-process paired TP4 M128 cold-L2 gate. Keep disabled unless the cache hint beats the extra policy instruction repeatably.
 - Artifact: `results/iter105_weight_evict_first_correctness_20260903.log`.
+
+## Iteration 105b — streaming-weight evict-first M128 paired win
+
+- Same-process TP4 M128 random-route comparison, identical data/communicator, exact graph-output equality, per-sample ABBA ordering, and 8×100 samples per variant. Every replay used a separate excluded 256 MiB L2 clear.
+- Control median: **0.359440 ms**; evict-first candidate: **0.356224 ms**; control/candidate: **1.009028x**. The candidate saves 3.216 us (0.894%).
+- All eight candidate batch medians beat their paired controls, by approximately 2.75–5.28 us. The consistent multi-microsecond separation is materially stronger than the rejected scope/cache-policy noise.
+- Keep opt-in while screening M8/M16/M32/M64. If every shape remains non-regressive, proceed to a long five-shape exact-Humming audit and select it as the default.
+- Artifact: `results/iter105b_weight_evict_first_tp4_m128_paired_cold800_20260903.log`.
