@@ -4360,3 +4360,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Change:** Added `bench/compare_v4_flash_tp_w2_store.py`. It loads control and candidate compile-time variants into one TP process set, captures two CUDA Graphs over shared weights/routes, alternates A/B then B/A per sample, performs an independent 256 MiB L2 clear immediately before every replay, and rank-max reduces both event arrays.
 - **Verification:** Remote Python bytecode compilation passed. GPU protocol and numerical equality are intentionally gated by the first paired run.
 - **Decision:** Benchmark infrastructure only; no performance selection.
+
+## Iteration 86d0 — Paired harness invocation failure
+
+- **Attempt:** Launch the TP4 M128 600-sample paired cold-L2 comparison.
+- **Failure:** `torchrun` consumed the benchmark's `--m` as an ambiguous launcher option because the training-script argument separator was omitted. No GPU benchmark samples were collected.
+- **Resolution:** Rerun with `torchrun ... -- bench/compare_v4_flash_tp_w2_store.py ...`.
+- **Artifact:** `results/iter86d_w2_store_paired_tp4_m128_cold_600_20260903.log`.
