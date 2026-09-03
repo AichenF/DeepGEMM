@@ -4137,3 +4137,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** control/candidate `0.947188x`; the progress path is `5.58%` slower than control at M=8.
 - **Decision:** reject this eight-worker progress implementation as a default. The concurrency protocol is valid, but W2 publication/fence/counter cost plus worker/finish overhead exceeds the overlap benefit.
 - **Next:** isolate producer-only W2 tax from worker/finish cost before deciding whether a cheaper publication granularity is viable.
+
+## Iteration 83e — M8 progress-worker concurrency cold-L2 sweep
+
+- **Change under test:** no source change; swept producer-progress consumer blocks `1,2,4,16` at TP4 M8. Iteration 83d supplies the directly comparable 8-block point.
+- **Method:** each point used a fresh four-rank process, random routes, same-process order-balanced control/candidate CUDA Graph A/B, two outer batches and five timed replays per implementation per batch. Every replay had a separate 256 MiB L2 clear outside the CUDA event.
+- **Correctness:** every point passed all-rank numerical checks and was bitwise identical to its control (`fused_vs_control_max_abs=0`).
+- **Cold medians:** workers 1: control/candidate `79.648/124.704 us` (`0.63870x`); 2: `79.968/100.896 us` (`0.79258x`); 4: `79.504/89.296 us` (`0.89034x`); 16: `79.312/81.664 us` (`0.97120x`). The prior eight-worker point was `79.488/83.920 us` (`0.94719x`).
+- **Interpretation:** candidate latency improves monotonically through 16 workers. Queue-drain/finish tail dominates more than W2 resource interference in this range; 16 workers narrows the deficit to `2.352 us` (`2.97%` slower).
+- **Decision:** retain only as an opt-in experiment. Continue to 24/32 workers to test whether the curve crosses control.
