@@ -4535,3 +4535,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - At the aggregate Humming level, 1.20x requires custom <=0.176440612 ms. The residual is 0.010595908 ms (5.67% of current custom latency).
 - Decision: use the two-run aggregate as the current selected-default headline. The 20% target remains unproven; focus further work on the M32–M128 local W13/W2 path rather than the already-selected small-M communication tail.
 - Artifact: `bench/results/iter97b_tp4_humming_custom_selected_coldl2_formal_b_20260903.log`.
+
+## Iteration 98 — Current large-M cold-L2 local-stage budget
+
+- Profiled current selected custom and exact MXFP4 Humming local pipelines at TP4 M32/M64/M128, random routes, CUDA Graph, 200 samples each. A separate 256 MiB clear immediately precedes every pipeline replay and is excluded from stage events. All values below are medians; event instrumentation means use only same-harness comparisons.
+- M32 custom/Humming total 200.832/240.032 us (Humming/custom 1.19519x). Custom W13/W2 are 117.024/63.840 us versus Humming 137.184/70.784 us.
+- M64 custom/Humming total 275.808/326.720 us (1.18459x). Custom W13/W2 are 164.928/89.232 us versus Humming 192.992/100.224 us.
+- M128 custom/Humming total 334.704/390.992 us (1.16817x). Custom W13/W2 are 201.216/108.560 us versus Humming 233.040/121.376 us.
+- W13+W2 consume 90.06%, 92.15%, and 92.55% of custom local time at M32/M64/M128. Route/input quantization, activation quantization and local k6 reduction jointly leave only about 20–25 us, so the residual 1.20x end-to-end gap cannot be closed by tail-only work. Prioritize core GEMM issue/dataflow at M32–M128.
+- Artifact: `bench/results/iter98_current_stage_budget_m32_m64_m128_coldl2_20260903.log`.
