@@ -4794,3 +4794,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256 now exactly reproduce the selected error metrics.  In particular the split2 W13 cosine/rel-L2 recover from `0.999999330/1.158e-3` to `0.999999997/7.76e-5`; route/input quantization is exact, W2 cosine is at least `0.999997240`, and all outputs are finite.
 - Correctness and TP8 runnability gates pass.  Keep opt-in, inspect cubin occupancy/resources, then run a same-process TP4 M128 cold-L2 paired performance gate.
 - Artifact: `results/iter111c_w13_dual_wg_split_handshake_correctness_20260903.log`.
+
+### Iteration 111d — dual-WG split-K W13 is a large M128 regression
+
+- Cubin resources show 56 registers/thread and no local spill for dual-WG split2/split4.  With about 41 KiB dynamic shared memory, the 256-thread CTA is register-limited to four resident CTAs/SM, or 32 warps.  The selected 55-register 128-thread kernel reaches nine CTAs/SM, or 36 warps.
+- Same-process TP4 M128 random-route timing used 8x100 samples per variant, exact graph-output equality, per-sample ABBA ordering, and a separate excluded 256 MiB L2 clear before every replay.
+- Selected control median: **0.344176 ms**; dual-WG candidate: **0.383552 ms**; control/candidate: **0.897339x**.  The candidate is 39.376 us (11.44%) slower, and all eight candidate batch medians lose.
+- Decision: reject `V4_W13_DUAL_WG_SPLIT=1` and retain default off.  Halving repeated activation staging and CTA setup does not compensate for lower resident-warp concurrency plus the cross-WG reuse handshake.  The loss is decisive enough not to spend more samples on smaller M.
+- Artifact: `results/iter111d_w13_dual_wg_split_tp4_m128_paired_cold800_20260903.log`.
