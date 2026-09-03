@@ -4405,3 +4405,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Coverage:** FP8 activation stayed route-major; only activation-scale production/consumption used the inverse route-to-sorted map. Both heavy padding and six-expert skew were exercised.
 - **Decision:** Correctness and TP8-runnable gate passed. Candidate remains opt-in pending paired cold-L2 performance.
 - **Artifact:** `results/iter88b_w2_mblock_scale_correctness_20260903.log`.
+
+## Iteration 88c — Paired TP4 M128 cold-L2 mblock-major W2 scales
+
+- **Method:** Same-process control/candidate CUDA Graphs over identical random routes and weights; alternating order; 6×100 samples per variant; independent untimed 256 MiB L2 clear before each replay; four-rank maximum latency.
+- **Correctness:** Outputs were bitwise equal on all ranks.
+- **Result:** control median 0.358016 ms; scale-layout candidate 0.359520 ms; control/candidate 0.995817x. Candidate was slower in every batch by 0.91–2.59 microseconds.
+- **Decision:** Reject `V4_W2_MBLOCK_SCALE=1`. The inverse-map/scale-transpose overhead exceeds the benefit of coalescing the standalone scale gather; keep route-major scales selected.
+- **Artifact:** `results/iter88c_w2_mblock_scale_paired_tp4_m128_cold_600_20260903.log`.
