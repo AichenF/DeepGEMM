@@ -1,0 +1,128 @@
+[312984] python3.12@127.0.0.1
+  void route_gemm<4096, 1024, 2, 1, 0, 0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int *, int, int) (5136, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Warning: Data collection happened without fixed GPU frequencies. Profiling results may be inconsistent.
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- ------------
+    Metric Name             Metric Unit Metric Value
+    ----------------------- ----------- ------------
+    DRAM Frequency                  Ghz         3.20
+    SM Frequency                    Ghz         1.75
+    Elapsed Cycles                cycle      343,779
+    Memory Throughput                 %        60.09
+    DRAM Throughput                   %        60.09
+    Duration                         us       195.90
+    L1/TEX Cache Throughput           %        50.20
+    L2 Cache Throughput               %        72.70
+    SM Active Cycles              cycle   334,281.78
+    Compute (SM) Throughput           %        75.22
+    ----------------------- ----------- ------------
+
+    OPT   Compute is more heavily utilized than Memory: Look at the Compute Workload Analysis section to see what the   
+          compute pipelines are spending their time doing. Also, consider whether any computation is redundant and      
+          could be reduced or moved to look-up tables.                                                                  
+
+    Section: Memory Workload Analysis
+    -------------------------------------- ----------- ------------
+    Metric Name                            Metric Unit Metric Value
+    -------------------------------------- ----------- ------------
+    Local Memory Spilling Requests                                0
+    Local Memory Spilling Request Overhead           %      no data
+    Memory Throughput                          Tbyte/s         2.89
+    Mem Busy                                         %        49.09
+    Max Bandwidth                                    %        60.09
+    L1/TEX Hit Rate                                  %        31.53
+    L2 Persisting Size                           Mbyte        11.80
+    L2 Compression Success Rate                      %            0
+    L2 Compression Ratio                             %            0
+    L2 Compression Input Sectors                sector      326,210
+    L2 Hit Rate                                      %         5.12
+    Mem Pipes Busy                                   %        36.87
+    -------------------------------------- ----------- ------------
+
+    Section: Scheduler Statistics
+    ---------------------------- ----------- ------------
+    Metric Name                  Metric Unit Metric Value
+    ---------------------------- ----------- ------------
+    One or More Eligible                   %        77.26
+    Issued Warp Per Scheduler                        0.77
+    No Eligible                            %        22.74
+    Active Warps Per Scheduler          warp         8.47
+    Eligible Warps Per Scheduler        warp         2.38
+    ---------------------------- ----------- ------------
+
+    Section: Warp State Statistics
+    ---------------------------------------- ----------- ------------
+    Metric Name                              Metric Unit Metric Value
+    ---------------------------------------- ----------- ------------
+    Warp Cycles Per Issued Instruction             cycle        10.96
+    Warp Cycles Per Executed Instruction           cycle        10.97
+    Avg. Active Threads Per Warp                                30.48
+    Avg. Not Predicated Off Threads Per Warp                    30.26
+    ---------------------------------------- ----------- ------------
+
+    OPT   Est. Local Speedup: 32.88%                                                                                    
+          On average, each warp of this workload spends 3.6 cycles being stalled waiting for sibling warps at a CTA     
+          barrier. A high number of warps waiting at a barrier is commonly caused by diverging code paths before a      
+          barrier. This causes some warps to wait a long time until other warps reach the synchronization point.        
+          Whenever possible, try to divide up the work into blocks of uniform workloads. If the block size is 512       
+          threads or greater, consider splitting it into smaller groups. This can increase eligible warps without       
+          affecting occupancy, unless shared memory becomes a new occupancy limiter. Also, try to identify which        
+          barrier instruction causes the most stalls, and optimize the code executed before that synchronization point  
+          first. This stall type represents about 32.9% of the total average of 11.0 cycles between issuing two         
+          instructions.                                                                                                 
+    ----- --------------------------------------------------------------------------------------------------------------
+    INF   Check the Warp Stall Sampling (All Samples) table for the top stall locations in your source based on         
+          sampling data. The Profiling Guide                                                                            
+          (https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html#metrics-reference) provides more details    
+          on each stall reason.                                                                                         
+
+    Section: Instruction Statistics
+    ---------------------------------------- ----------- ------------
+    Metric Name                              Metric Unit Metric Value
+    ---------------------------------------- ----------- ------------
+    Avg. Executed Instructions Per Scheduler        inst   257,110.49
+    Executed Instructions                           inst   80,218,472
+    Avg. Issued Instructions Per Scheduler          inst   257,139.29
+    Issued Instructions                             inst   80,227,458
+    ---------------------------------------- ----------- ------------
+
+    Section: Launch Statistics
+    -------------------------------- --------------- ---------------
+    Metric Name                          Metric Unit    Metric Value
+    -------------------------------- --------------- ---------------
+    Block Size                                                   128
+    Cluster Scheduling Policy                           PolicySpread
+    Cluster Size                                                   0
+    Function Cache Configuration                     CachePreferNone
+    Grid Size                                                  5,136
+    Registers Per Thread             register/thread              54
+    Shared Memory Configuration Size           Kbyte          233.47
+    Driver Shared Memory Per Block       Kbyte/block            1.02
+    Dynamic Shared Memory Per Block      Kbyte/block           21.50
+    Static Shared Memory Per Block       Kbyte/block            1.02
+    # SMs                                         SM              78
+    Stack Size                                                 1,024
+    Threads                                   thread         657,408
+    # TPCs                                                        39
+    Enabled TPC IDs                                              all
+    Uses Green Context                                             0
+    Waves Per SM                                                7.32
+    -------------------------------- --------------- ---------------
+
+    Section: Source Counters
+    ------------------------- ----------- ------------
+    Metric Name               Metric Unit Metric Value
+    ------------------------- ----------- ------------
+    Branch Instructions Ratio           %         0.03
+    Branch Instructions              inst    2,524,623
+    Branch Efficiency                   %        83.67
+    Avg. Divergent Branches      branches       625.69
+    ------------------------- ----------- ------------
+
+    OPT   Est. Speedup: 10.56%                                                                                          
+          This kernel has uncoalesced global accesses resulting in a total of 132864 excessive sectors (11% of the      
+          total 1224096 sectors). Check the L2 Theoretical Sectors Global Excessive table for the primary source        
+          locations. The CUDA Programming Guide                                                                         
+          (https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-memory-accesses) has additional      
+          information on reducing uncoalesced device memory accesses.                                                   
+

@@ -4310,3 +4310,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Three-shape geometric mean: control 123.694 us, candidate 125.168 us, control/candidate 0.988220.
 - Decision: reject inline finish for M>=16 and as a general progress dispatch. M=8 remains a narrowly positive opt-in point, confirmed over 600 cold samples, but its sub-percent margin warrants one independent repeat before default selection.
 - Artifact: results/iter83q3_inline_finish_chunks8_workers64_tp4_m8_m16_m32_cold_long_ab_20260903.log
+
+## Iteration 84 — current selected M=128 W13/W2 detailed NCU baseline (2026-09-03)
+
+- Profiled the exact selected TP4 custom local path at M=128/random routes after the required 256 MiB L2 clear. Nsight Compute cache control was enabled; W13 and W2 route_gemm launches were captured separately with the same detailed section set.
+- W13 (K4096,N1024,split2): 195.90 us, 2.89 TB/s, 60.09% DRAM-throughput utilization, 75.22% compute utilization, 77.26% cycles with an eligible warp, 54 registers/thread, no spills, 7.32 waves/SM. L2 hit rate is 5.12%.
+- W2 (K512,N4096,split1): 107.01 us, 2.66 TB/s, 55.19% DRAM-throughput utilization, 74.54% compute utilization, 77.18% cycles with an eligible warp, 54 registers/thread, no spills, 14.63 waves/SM. L2 hit rate is 9.38%.
+- NCU flags uncoalesced global access: W13 has 132,864 excessive sectors (11% of 1,224,096; estimated 10.56% bound), while W2 has 189,824 excessive sectors (19% of 973,632; estimated 18.83% bound).
+- Finding: neither core is at the H20 HBM ceiling, and simply deepening shared stages was already rejected. The highest-value bounded follow-up is to resolve NCU source attribution for the excessive sectors and distinguish useful TMA scale overfetch from avoidable activation/metadata access before attempting interleaving.
+- Artifacts: bench/results/iter84_current_w13_m128_coldl2_detailed_ncu.{log,ncu-rep}, bench/results/iter84_current_w2_m128_coldl2_detailed_ncu.{log,ncu-rep}, and the corresponding iter84_current_*_m128_ncu_details.log files.
