@@ -4118,3 +4118,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - With one worker CTA, all four ranks complete. Counts and queue are exact, worker claim/done are 33/1, and every rank-local workspace contains all 16,384 nonzero words for all four source slots.
 - Evidence: `results/iter83c5_w2_first_worker1_concurrent_probe_20260903.log`.
 - Decision: accept producer-first ordering as the synchronization repair. Verify eight workers under the same probe before re-enabling the finish kernel and repeated CUDA Graph replay.
+
+## Iteration 83c6 — producer-first progress path at full worker concurrency
+
+- **Change under test:** no source change; raised the TP4 concurrent progress consumer launch from one block to eight blocks.
+- **Command:** `torchrun --standalone --nproc-per-node=4 -- bench/test_v4_flash_tp_w2_progress_worker.py --m 8 --workers 8 --launch-mode concurrent --route-pattern random` on GPUs 1–4.
+- **Result:** PASS on all four ranks. Every rank reported tile counters `6`, chunk counters `8`, queue tail `32`, a full task permutation, `worker_claim=40`, and `worker_done=8`.
+- **Communication evidence:** every local symmetric workspace contained all `16384/16384` nonzero words for each of the four source-rank slots.
+- **Decision:** accept the producer-first concurrent protocol at the intended eight-worker occupancy. This is a correctness/progress probe only, not a performance result.
+- **Next:** exercise the finish kernel and repeated CUDA Graph replay end to end, then cold-L2 A/B against the accepted path.
