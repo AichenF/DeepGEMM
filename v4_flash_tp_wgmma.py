@@ -86,7 +86,6 @@ W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
 LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
-W13_FP16_PARTIAL = os.environ.get("V4_W13_FP16_PARTIAL", "0") == "1"
 if W2_S2R_PREFETCH and (DEQUANT_SYNTH_LUT or W2_GLOBAL_LUT):
     raise ValueError(
         "V4_W2_S2R_PREFETCH currently probes only the shared-LUT path"
@@ -116,7 +115,6 @@ _CUDA = r"""
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
 #include <cuda.h>
-#include <cuda_fp16.h>
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 #include <cub/block/block_scan.cuh>
@@ -164,7 +162,6 @@ static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
 static constexpr bool kLeaderMbarWait = K_LEADER_MBAR_WAIT;
-static constexpr bool kW13Fp16Partial = K_W13_FP16_PARTIAL;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -870,37 +867,17 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const int output_n0 = n_block_idx * kWout + group * 64 + row0;
         const int output_n1 = n_block_idx * kWout + group * 64 + row1;
         if constexpr (IsW13) {
-            if constexpr (kW13Fp16Partial) {
-                auto* partial_output = reinterpret_cast<__half*>(output);
-                if (route0 < max_routes) {
-                    partial_output[(static_cast<int64_t>(split_idx) * max_routes
-                                    + route0) * N + output_n0] =
-                        __float2half_rn(accum[group][0]);
-                    partial_output[(static_cast<int64_t>(split_idx) * max_routes
-                                    + route0) * N + output_n1] =
-                        __float2half_rn(accum[group][2]);
-                }
-                if (route1 < max_routes) {
-                    partial_output[(static_cast<int64_t>(split_idx) * max_routes
-                                    + route1) * N + output_n0] =
-                        __float2half_rn(accum[group][1]);
-                    partial_output[(static_cast<int64_t>(split_idx) * max_routes
-                                    + route1) * N + output_n1] =
-                        __float2half_rn(accum[group][3]);
-                }
-            } else {
-                if (route0 < max_routes) {
-                    output[(static_cast<int64_t>(split_idx) * max_routes
-                            + route0) * N + output_n0] = accum[group][0];
-                    output[(static_cast<int64_t>(split_idx) * max_routes
-                            + route0) * N + output_n1] = accum[group][2];
-                }
-                if (route1 < max_routes) {
-                    output[(static_cast<int64_t>(split_idx) * max_routes
-                            + route1) * N + output_n0] = accum[group][1];
-                    output[(static_cast<int64_t>(split_idx) * max_routes
-                            + route1) * N + output_n1] = accum[group][3];
-                }
+            if (route0 < max_routes) {
+                output[(static_cast<int64_t>(split_idx) * max_routes + route0) * N
+                       + output_n0] = accum[group][0];
+                output[(static_cast<int64_t>(split_idx) * max_routes + route0) * N
+                       + output_n1] = accum[group][2];
+            }
+            if (route1 < max_routes) {
+                output[(static_cast<int64_t>(split_idx) * max_routes + route1) * N
+                       + output_n0] = accum[group][1];
+                output[(static_cast<int64_t>(split_idx) * max_routes + route1) * N
+                       + output_n1] = accum[group][3];
             }
         } else {
             if constexpr (kW2RouteOutput) {
@@ -957,15 +934,8 @@ __global__ void reduce_swiglu_kernel(
     for (int split = 0; split < SplitK; ++split) {
         const int64_t base =
             (static_cast<int64_t>(split) * routes + route) * N;
-        if constexpr (kW13Fp16Partial) {
-            const auto* partials_fp16 =
-                reinterpret_cast<const __half*>(partials);
-            gate += __half2float(partials_fp16[base + column]);
-            up += __half2float(partials_fp16[base + Intermediate + column]);
-        } else {
-            gate += partials[base + column];
-            up += partials[base + Intermediate + column];
-        }
+        gate += partials[base + column];
+        up += partials[base + Intermediate + column];
     }
     // Humming emits BF16 after W13, then SGLang applies SwiGLU in BF16.
     gate = __bfloat162float(__float2bfloat16(gate));
@@ -995,15 +965,8 @@ __global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
     for (int split = 0; split < SplitK; ++split) {
         const int64_t base =
             (static_cast<int64_t>(split) * routes + route) * N;
-        if constexpr (kW13Fp16Partial) {
-            const auto* partials_fp16 =
-                reinterpret_cast<const __half*>(partials);
-            gate += __half2float(partials_fp16[base + column]);
-            up += __half2float(partials_fp16[base + Intermediate + column]);
-        } else {
-            gate += partials[base + column];
-            up += partials[base + Intermediate + column];
-        }
+        gate += partials[base + column];
+        up += partials[base + Intermediate + column];
     }
     // Preserve the exact public pipeline semantics: W13 and SwiGLU each emit
     // BF16 before the group-128 FP8 quantizer observes the activation.
@@ -1251,9 +1214,6 @@ void launch_route_gemm(
                 + effective_scale_buffers * kWout * 16)
         + kTok * kBlockK;
     const auto stream = at::cuda::getCurrentCUDAStream();
-    const float* topk_weights_ptr = nullptr;
-    if constexpr (!IsW13)
-        topk_weights_ptr = topk_weights.data_ptr<float>();
     route_gemm<K, N, SplitK, IsW13><<<
         grid, 128, dynamic_smem_bytes, stream>>>(
         weight_descriptor,
@@ -1268,7 +1228,7 @@ void launch_route_gemm(
         sorted_ids.data_ptr<int32_t>(),
         expert_ids.data_ptr<int32_t>(),
         num_tokens_padded.data_ptr<int32_t>(),
-        topk_weights_ptr,
+        topk_weights.numel() ? topk_weights.data_ptr<float>() : nullptr,
         static_cast<float*>(output.data_ptr()),
         reinterpret_cast<const uint2*>(lut.data_ptr<uint8_t>()),
         max_routes);
@@ -1351,7 +1311,7 @@ void launch_reduce_swiglu(
     const auto stream = at::cuda::getCurrentCUDAStream();
     reduce_swiglu_kernel<Intermediate, SplitK><<<
         (numel + threads - 1) / threads, threads, 0, stream>>>(
-        static_cast<const float*>(partials.data_ptr()),
+        partials.data_ptr<float>(),
         reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), routes);
 }
 
@@ -1391,7 +1351,7 @@ void launch_reduce_swiglu_quant(
         : nullptr;
     reduce_swiglu_quant_kernel<Intermediate, SplitK><<<
         routes * groups_per_route, threads, 0, stream>>>(
-        static_cast<const float*>(partials.data_ptr()), activation_ptr,
+        partials.data_ptr<float>(), activation_ptr,
         quantized.data_ptr<uint8_t>(), scale.data_ptr<float>(), routes);
 }
 
@@ -1521,8 +1481,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_hp{int(W13_FP16_PARTIAL)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v51"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v49"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1552,7 +1511,6 @@ _ext = load_inline(
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
         f"-DK_LEADER_MBAR_WAIT={int(LEADER_MBAR_WAIT)}",
-        f"-DK_W13_FP16_PARTIAL={int(W13_FP16_PARTIAL)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",
