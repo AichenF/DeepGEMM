@@ -1,0 +1,36 @@
+[367021] python3.12@127.0.0.1
+  void route_gemm<4096, 1024, 2, 1, 0, 0, 0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int *, int, int) (5136, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Scheduler Statistics
+    ---------------------------- ----------- ------------
+    Metric Name                  Metric Unit Metric Value
+    ---------------------------- ----------- ------------
+    One or More Eligible                   %        78.07
+    Issued Warp Per Scheduler                        0.78
+    No Eligible                            %        21.93
+    Active Warps Per Scheduler          warp         8.48
+    Eligible Warps Per Scheduler        warp         2.75
+    ---------------------------- ----------- ------------
+
+    Section: Warp State Statistics
+    ---------------------------------------- ----------- ------------
+    Metric Name                              Metric Unit Metric Value
+    ---------------------------------------- ----------- ------------
+    Warp Cycles Per Issued Instruction             cycle        10.86
+    Warp Cycles Per Executed Instruction           cycle        10.87
+    Avg. Active Threads Per Warp                                30.33
+    Avg. Not Predicated Off Threads Per Warp                    30.12
+    ---------------------------------------- ----------- ------------
+
+    WRN   The optional metric smsp__pcsamp_sample_count could not be found. Collecting it as an additional metric could 
+          enable the rule to provide more guidance.                                                                     
+
+    Section: Instruction Statistics
+    ---------------------------------------- ----------- ------------
+    Metric Name                              Metric Unit Metric Value
+    ---------------------------------------- ----------- ------------
+    Avg. Executed Instructions Per Scheduler        inst   255,427.68
+    Executed Instructions                           inst   79,693,436
+    Avg. Issued Instructions Per Scheduler          inst   255,572.86
+    Issued Instructions                             inst   79,738,732
+    ---------------------------------------- ----------- ------------
+

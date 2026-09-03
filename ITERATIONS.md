@@ -5039,3 +5039,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The helper confirms compact selected defaults, launch-bound/carveout probes off, auto split2, and the standard excluded 256MiB cold-L2 clear.
 - Collection completed successfully and produced a valid report.  Parse and rank the issue stalls next before choosing another kernel change.
 - Evidence: `results/iter121_compact_selected_m128_w13_sched_ncu.{log,ncu-rep}`.
+
+## Iteration 121a — selected compact W13 scheduler interpretation
+
+- Scheduler is eligible on 78.07% of cycles and has no eligible warp on 21.93%; it issues 0.78 warp/scheduler/cycle from 8.48 active and 2.75 eligible warps/scheduler.
+- Warp cycles per issued instruction are 10.86.  Average active/not-predicated threads are 30.33/30.12, so ordinary lane underfill is small despite the low branch-efficiency counter.
+- The kernel executes 79,693,436 instructions (79,738,732 issued) in this launch.
+- This NCU section set did not include the optional PC-sampling counter, so it cannot attribute the 21.93% no-eligible interval to barrier, scoreboard, wait, or dispatch stalls.  Collect explicit `smsp__warp_issue_stalled_*` metrics before changing code.
+- Evidence: `results/iter121a_compact_selected_m128_w13_sched_details_20260903.log`.
