@@ -24,9 +24,11 @@ if COMPARE_FLAG not in {
     "V4_W2_COALESCED_STORE",
     "V4_W2_MBLOCK_SCALE",
     "V4_W2_SORTED_ACT",
+    "V4_EXACT_ROUTE_CAPACITY",
 }:
     raise ValueError(f"unsupported V4_COMPARE_FLAG={COMPARE_FLAG}")
-os.environ[COMPARE_FLAG] = "0"
+if COMPARE_FLAG != "V4_EXACT_ROUTE_CAPACITY":
+    os.environ[COMPARE_FLAG] = "0"
 import v4_flash_tp_wgmma as control_kernel  # noqa: E402
 import v4_flash_tp_wgmma_graph as bench  # noqa: E402
 from sglang.kernels.ops.communication.mp import (  # noqa: E402
@@ -52,6 +54,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_candidate() -> ModuleType:
+    if COMPARE_FLAG == "V4_EXACT_ROUTE_CAPACITY":
+        return control_kernel
     os.environ[COMPARE_FLAG] = "1"
     source = Path(control_kernel.__file__).resolve()
     name = "v4_flash_tp_wgmma_candidate_" + COMPARE_FLAG.lower()
@@ -77,6 +81,7 @@ def capture_case(
     intermediate_per_rank: int,
     device: torch.device,
     cpu_group: dist.ProcessGroup,
+    exact_route_capacity: bool = False,
 ) -> tuple[bench.CapturedCase, torch.cuda.CUDAGraph]:
     bench.kernel = kernel
     w13, s13, g13, w2, s2, g2 = weights
@@ -94,6 +99,17 @@ def capture_case(
         lut=lut,
         intermediate_per_rank=intermediate_per_rank,
     )
+    if exact_route_capacity:
+        counts = torch.bincount(
+            topk_ids.flatten().to(torch.int64), minlength=bench.NUM_EXPERTS
+        )
+        exact_padded = int((((counts + 7) // 8) * 8).sum().item())
+        case.sorted_ids = torch.empty(
+            exact_padded, dtype=torch.int32, device=device
+        )
+        case.expert_ids = torch.empty(
+            exact_padded // 8, dtype=torch.int32, device=device
+        )
     for _ in range(2):
         case.run_full(comm)
     torch.cuda.synchronize(device)
@@ -157,6 +173,7 @@ def main() -> None:
         intermediate_per_rank,
         device,
         cpu_group,
+        False,
     )
     candidate_case, candidate_graph = capture_case(
         candidate_kernel,
@@ -170,6 +187,7 @@ def main() -> None:
         intermediate_per_rank,
         device,
         cpu_group,
+        COMPARE_FLAG == "V4_EXACT_ROUTE_CAPACITY",
     )
 
     driver = triton_runtime.driver.active

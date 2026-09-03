@@ -4413,3 +4413,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** control median 0.358016 ms; scale-layout candidate 0.359520 ms; control/candidate 0.995817x. Candidate was slower in every batch by 0.91–2.59 microseconds.
 - **Decision:** Reject `V4_W2_MBLOCK_SCALE=1`. The inverse-map/scale-transpose overhead exceeds the benefit of coalescing the standalone scale gather; keep route-major scales selected.
 - **Artifact:** `results/iter88c_w2_mblock_scale_paired_tp4_m128_cold_600_20260903.log`.
+
+## Iteration 89 — Exact route-capacity upper-bound diagnostic
+
+- **Method:** Same-process paired TP4 M128 graphs with identical kernels/data. Control retained the dynamic-safe 321-mblock capacity; candidate resized metadata to the known static route distribution's exact 249 mblocks. Alternating order, 6×100 samples, independent untimed 256 MiB L2 clear, rank-max latency.
+- **Correctness:** Outputs were bitwise equal on all ranks.
+- **Result:** dynamic-capacity control median 0.359296 ms; exact-capacity candidate 0.358640 ms; control/candidate 1.001829x (+0.183%). Batch differences were sub-microsecond and one batch reversed.
+- **Decision:** This is an upper-bound diagnostic, not a selectable dynamic-route result. Empty over-capacity CTAs are not a material source of the remaining ~10 microseconds; do not prioritize a large persistent-scheduler refactor merely to eliminate them.
+- **Artifact:** `results/iter89_exact_route_capacity_paired_tp4_m128_cold_600_20260903.log`.
