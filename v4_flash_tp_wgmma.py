@@ -1251,6 +1251,9 @@ void launch_route_gemm(
                 + effective_scale_buffers * kWout * 16)
         + kTok * kBlockK;
     const auto stream = at::cuda::getCurrentCUDAStream();
+    const float* topk_weights_ptr = nullptr;
+    if constexpr (!IsW13)
+        topk_weights_ptr = topk_weights.data_ptr<float>();
     route_gemm<K, N, SplitK, IsW13><<<
         grid, 128, dynamic_smem_bytes, stream>>>(
         weight_descriptor,
@@ -1265,7 +1268,7 @@ void launch_route_gemm(
         sorted_ids.data_ptr<int32_t>(),
         expert_ids.data_ptr<int32_t>(),
         num_tokens_padded.data_ptr<int32_t>(),
-        topk_weights.numel() ? topk_weights.data_ptr<float>() : nullptr,
+        topk_weights_ptr,
         static_cast<float*>(output.data_ptr()),
         reinterpret_cast<const uint2*>(lut.data_ptr<uint8_t>()),
         max_routes);
