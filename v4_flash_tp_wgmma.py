@@ -544,7 +544,7 @@ __device__ __forceinline__ uint2 load_reused_u64_predicated(
     } else {
         asm volatile(
             "{.reg .pred p; setp.ge.s32 p,%3,0;"
-            " @p ld.global.nc.v2.u32 {%0,%1},[%2];}"
+            " @p ld.global.v2.u32 {%0,%1},[%2];}"
             : "+r"(value.x), "+r"(value.y)
             : "l"(pointer), "r"(valid_row) : "memory");
     }
@@ -563,7 +563,7 @@ __device__ __forceinline__ float load_reused_f32_predicated(
     } else {
         asm volatile(
             "{.reg .pred p; setp.ge.s32 p,%2,0;"
-            " @p ld.global.nc.f32 %0,[%1];}"
+            " @p ld.global.f32 %0,[%1];}"
             : "+f"(value)
             : "l"(pointer), "r"(valid_row) : "memory");
     }

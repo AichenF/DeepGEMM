@@ -5421,3 +5421,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The candidate's W2 cosine/rel-L2 0.999930755/0.011769490 is therefore a real TP8-shape regression, not an outdated reference value or run-to-run noise. The coarse `cos > 0.99` test was insufficient to qualify this transformation.
 - Result: block all performance timing. Diagnose the predicated activation/scale load semantics with direct control/candidate tensors or narrow the experiment to W13 only; do not select the current all-route-GEMM flag.
 - Evidence: `results/iter137b_control_tp8shape_correctness_20260904.log`.
+
+## Iteration 137c — coherent predicated loads reduce but do not eliminate TP8 drift
+
+- PTX documentation confirms `ld.global.nc` uses the non-coherent read-only cache, which is inappropriate for W2 consuming qactivation freshly produced by the preceding graph kernel. Replaced only the default predicated-load forms with ordinary coherent `ld.global`; cache-hinted variants were already ordinary global loads.
+- The M8 balanced Is=256 candidate improves from W2 cosine/rel-L2 0.999930755/0.011769490 to 0.999994742/0.003243021, confirming that the non-coherent load was a real bug. It still does not reproduce the control's 0.999997278/0.002333323.
+- W13 and activation remain at their exact prior metrics and K6 remains bitwise equal to SGLang, so the remaining drift is isolated to applying the branchless transformation in W2 or to its changed W2 code generation.
+- Result: keep performance timing blocked. Restrict the experiment to `IsW13` so W2 compiles onto the selected path byte-for-byte, then require TP4/TP8 control equivalence before timing.
+- Evidence: `results/iter137c_coherent_predicated_tp8shape_correctness_20260904.log`.
