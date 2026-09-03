@@ -161,6 +161,9 @@ def make_weights(
     if kernel.MODE2_BRAID:
         kernel.braid_mode2_(w13)
         kernel.braid_mode2_(w2)
+    if kernel.TILED_WEIGHT_LAYOUT:
+        w13, s13 = kernel.tile_mxfp4_weight_layout(w13, s13)
+        w2, s2 = kernel.tile_mxfp4_weight_layout(w2, s2)
     return w13, s13, g13, w2, s2, g2
 
 
@@ -523,6 +526,7 @@ def main() -> None:
                     "dequant_dp4a_lo": kernel.DEQUANT_DP4A_LO,
                     "dequant_synth_lut": kernel.DEQUANT_SYNTH_LUT,
                     "normalized_weight_scale": kernel.NORMALIZED_WEIGHT_SCALE,
+                    "tiled_weight_layout": kernel.TILED_WEIGHT_LAYOUT,
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,

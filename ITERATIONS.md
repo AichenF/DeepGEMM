@@ -2713,3 +2713,19 @@ maximum rank latency of a full CUDA-Graph replay.
   not the favorable 4x100 screening window, for claims.
 - Evidence:
   `bench/results/tp4_paired_normalized_scale_default_coldl2_formal_20260903.log`.
+
+### WGMMA iteration 42a — contiguous offline TMA-tile layout
+
+- Added opt-in `V4_TILED_WEIGHT_LAYOUT=1`.  Model-load preprocessing permutes
+  packed MXFP4 bytes from logical `[expert,N,K/2]` rows into contiguous
+  `[expert,N128,K128,N-in-tile,packed-K-in-tile]` storage.  Each 8 KiB weight
+  TMA transfer then reads one contiguous global tile instead of gathering 64
+  bytes from each of 128 rows whose stride is K/2.
+- E8M0 scales are likewise tiled by the existing 16-byte/four-K128 quartet,
+  with no padding or byte-count change for both TP4 kernels and TP8 W13.  TP8
+  W2 keeps its original eight-byte scale rows and scalar scale fallback while
+  still using tiled packed weights.
+- This is a physical-layout-only transform after numerical normalization and
+  Mode2 braiding.  It is outside graph capture/timing and leaves MXFP4 data,
+  scale semantics, route metadata, and output math unchanged.  Gate TP4
+  split-K=4/2 and TP8 correctness before graph-internal cold-L2 core timing.

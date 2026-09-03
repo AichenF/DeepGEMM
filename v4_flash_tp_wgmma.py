@@ -62,6 +62,7 @@ DEQUANT_SYNTH_LUT = os.environ.get("V4_DEQUANT_SYNTH_LUT", "0") == "1"
 NORMALIZED_WEIGHT_SCALE = (
     os.environ.get("V4_NORMALIZED_WEIGHT_SCALE", "1") == "1"
 )
+TILED_WEIGHT_LAYOUT = os.environ.get("V4_TILED_WEIGHT_LAYOUT", "0") == "1"
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
@@ -135,6 +136,7 @@ static constexpr bool kDequantDp4aHi = K_DEQUANT_DP4A_HI;
 static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kNormalizedWeightScale = K_NORMALIZED_WEIGHT_SCALE;
+static constexpr bool kTiledWeightLayout = K_TILED_WEIGHT_LAYOUT;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
@@ -362,20 +364,45 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
                     :: "r"(barrier_addr[stage]), "n"(kWeightStageBytes));
             }
-            asm volatile(
-                "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
-                "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
-                :: "r"(weight_dst), "l"(&tma_weight),
-                   "r"(global_kt * (kBlockK / 2)), "r"(weight_row),
-                   "r"(barrier_addr[stage]) : "memory");
-            if (load_scale) {
+            if constexpr (kTiledWeightLayout) {
+                const int tiled_row =
+                    ((expert_idx * kNumNTiles + n_block_idx) * kNumKTiles
+                     + global_kt) * kWout;
                 asm volatile(
                     "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
                     "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
-                    :: "r"(scale_dst), "l"(&tma_weight_scale),
-                       "r"((scale_kt & ~3) * (kBlockK / 32)),
-                       "r"(weight_row),
+                    :: "r"(weight_dst), "l"(&tma_weight),
+                       "r"(0), "r"(tiled_row),
                        "r"(barrier_addr[stage]) : "memory");
+            } else {
+                asm volatile(
+                    "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
+                    "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
+                    :: "r"(weight_dst), "l"(&tma_weight),
+                       "r"(global_kt * (kBlockK / 2)), "r"(weight_row),
+                       "r"(barrier_addr[stage]) : "memory");
+            }
+            if (load_scale) {
+                if constexpr (kTiledWeightLayout) {
+                    constexpr int kScaleTiles = kNumKTiles / 4;
+                    const int tiled_scale_row =
+                        ((expert_idx * kNumNTiles + n_block_idx) * kScaleTiles
+                         + (scale_kt >> 2)) * kWout;
+                    asm volatile(
+                        "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
+                        "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
+                        :: "r"(scale_dst), "l"(&tma_weight_scale),
+                           "r"(0), "r"(tiled_scale_row),
+                           "r"(barrier_addr[stage]) : "memory");
+                } else {
+                    asm volatile(
+                        "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
+                        "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
+                        :: "r"(scale_dst), "l"(&tma_weight_scale),
+                           "r"((scale_kt & ~3) * (kBlockK / 32)),
+                           "r"(weight_row),
+                           "r"(barrier_addr[stage]) : "memory");
+                }
             }
         }
     };
@@ -387,12 +414,25 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                 asm volatile(
                     "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
                     :: "r"(scale_barrier_addr), "n"(kScaleStageBytes));
-                asm volatile(
-                    "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
-                    "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
-                    :: "r"(weight_scale_smem_addr), "l"(&tma_weight_scale),
-                       "r"((global_kt & ~3) * (kBlockK / 32)),
-                       "r"(weight_row), "r"(scale_barrier_addr) : "memory");
+                if constexpr (kTiledWeightLayout) {
+                    constexpr int kScaleTiles = kNumKTiles / 4;
+                    const int tiled_scale_row =
+                        ((expert_idx * kNumNTiles + n_block_idx) * kScaleTiles
+                         + (global_kt >> 2)) * kWout;
+                    asm volatile(
+                        "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
+                        "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
+                        :: "r"(weight_scale_smem_addr), "l"(&tma_weight_scale),
+                           "r"(0), "r"(tiled_scale_row),
+                           "r"(scale_barrier_addr) : "memory");
+                } else {
+                    asm volatile(
+                        "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
+                        "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
+                        :: "r"(weight_scale_smem_addr), "l"(&tma_weight_scale),
+                           "r"((global_kt & ~3) * (kBlockK / 32)),
+                           "r"(weight_row), "r"(scale_barrier_addr) : "memory");
+                }
             }
         }
     };
@@ -869,11 +909,13 @@ __global__ void braid_mode2_kernel(uint32_t* weight, int64_t words) {
     weight[index] = braided;
 }
 
-CUtensorMap make_weight_desc(void* pointer, int K, int rows) {
+CUtensorMap make_weight_desc(void* pointer, int K, int64_t elements) {
     CUtensorMap descriptor;
+    const int row_bytes = kTiledWeightLayout ? kBlockK / 2 : K / 2;
     cuuint64_t global_dims[2] = {
-        static_cast<cuuint64_t>(K / 2), static_cast<cuuint64_t>(rows)};
-    cuuint64_t global_strides[1] = {static_cast<cuuint64_t>(K / 2)};
+        static_cast<cuuint64_t>(row_bytes),
+        static_cast<cuuint64_t>(elements / row_bytes)};
+    cuuint64_t global_strides[1] = {static_cast<cuuint64_t>(row_bytes)};
     cuuint32_t box_dims[2] = {static_cast<cuuint32_t>(kBlockK / 2), kWout};
     cuuint32_t element_strides[2] = {1, 1};
     const CUresult result = cuTensorMapEncodeTiled(
@@ -889,11 +931,13 @@ CUtensorMap make_weight_desc(void* pointer, int K, int rows) {
     return descriptor;
 }
 
-CUtensorMap make_weight_scale_desc(void* pointer, int K, int rows) {
+CUtensorMap make_weight_scale_desc(void* pointer, int K, int64_t elements) {
     CUtensorMap descriptor;
+    const int row_bytes = kTiledWeightLayout ? 16 : K / 32;
     cuuint64_t global_dims[2] = {
-        static_cast<cuuint64_t>(K / 32), static_cast<cuuint64_t>(rows)};
-    cuuint64_t global_strides[1] = {static_cast<cuuint64_t>(K / 32)};
+        static_cast<cuuint64_t>(row_bytes),
+        static_cast<cuuint64_t>(elements / row_bytes)};
+    cuuint64_t global_strides[1] = {static_cast<cuuint64_t>(row_bytes)};
     cuuint32_t box_dims[2] = {16, kWout};
     cuuint32_t element_strides[2] = {1, 1};
     const CUresult result = cuTensorMapEncodeTiled(
@@ -922,10 +966,10 @@ void launch_route_gemm(
     if (last_weight_pointer != weight.data_ptr()
             || last_scale_pointer != weight_scale.data_ptr()) {
         weight_descriptor = make_weight_desc(
-            weight.data_ptr(), K, weight.size(0) * weight.size(1));
+            weight.data_ptr(), K, weight.numel());
         if constexpr (K >= 512) {
             scale_descriptor = make_weight_scale_desc(
-                weight_scale.data_ptr(), K, weight.size(0) * weight.size(1));
+                weight_scale.data_ptr(), K, weight_scale.numel());
         }
         last_weight_pointer = weight.data_ptr();
         last_scale_pointer = weight_scale.data_ptr();
@@ -1165,6 +1209,7 @@ _ext = load_inline(
           f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"nws{int(NORMALIZED_WEIGHT_SCALE)}_"
+          f"twl{int(TILED_WEIGHT_LAYOUT)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
@@ -1189,6 +1234,7 @@ _ext = load_inline(
         f"-DK_DEQUANT_DP4A_LO={int(DEQUANT_DP4A_LO)}",
         f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
         f"-DK_NORMALIZED_WEIGHT_SCALE={int(NORMALIZED_WEIGHT_SCALE)}",
+        f"-DK_TILED_WEIGHT_LAYOUT={int(TILED_WEIGHT_LAYOUT)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
@@ -1262,6 +1308,40 @@ def normalize_mxfp4_weight_scales_(
         scale_base.squeeze(1).to(torch.float32) - 122.0
     ).contiguous()
     return normalized, expert_scale
+
+
+def tile_mxfp4_weight_layout(
+    weight: torch.Tensor, weight_scale: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pack each N128 x K128 MXFP4 tile contiguously at model load."""
+    if weight.ndim != 3 or weight_scale.ndim != 3:
+        raise ValueError("tiled layout expects [experts, N, packed-K] tensors")
+    experts, channels, packed_k = weight.shape
+    if channels % WOUT or packed_k % (128 // 2):
+        raise ValueError("weight shape is not divisible by N/WOUT and K128")
+    if weight_scale.shape[:2] != (experts, channels):
+        raise ValueError("weight and scale leading dimensions must match")
+    ntiles = channels // WOUT
+    ktiles = packed_k // (128 // 2)
+    tiled_weight = (
+        weight.view(experts, ntiles, WOUT, ktiles, 128 // 2)
+        .permute(0, 1, 3, 2, 4)
+        .contiguous()
+    )
+    if weight_scale.shape[-1] >= 16:
+        if weight_scale.shape[-1] != ktiles * 4:
+            raise ValueError("E8M0 scale shape does not match group size 32")
+        scale_tiles = weight_scale.shape[-1] // 16
+        tiled_scale = (
+            weight_scale.view(experts, ntiles, WOUT, scale_tiles, 16)
+            .permute(0, 1, 3, 2, 4)
+            .contiguous()
+        )
+    else:
+        # TP8 W2 has eight scale bytes per logical row, below TMA's 16-byte
+        # minimum contiguous box; keep its existing scalar-load fallback.
+        tiled_scale = weight_scale
+    return tiled_weight, tiled_scale
 
 
 def run_w13(
