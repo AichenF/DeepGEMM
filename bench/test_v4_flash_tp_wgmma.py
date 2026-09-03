@@ -428,6 +428,7 @@ def main() -> None:
         f"leader_mbar_wait={kernel.LEADER_MBAR_WAIT}"
         f" w13_distributed_prep={kernel.W13_DISTRIBUTED_PREP}"
         f" w13_merged_wgmma_group={kernel.W13_MERGED_WGMMA_GROUP}"
+        f" normalized_shared_lut={kernel.NORMALIZED_SHARED_LUT}"
     )
     print(
         "V4_WGMMA_W13 "

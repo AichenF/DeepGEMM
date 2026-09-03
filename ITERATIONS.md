@@ -4566,3 +4566,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Control/candidate medians are 0.357791990/0.357743993 ms, control/candidate 1.000134x: only 0.048 us or 0.013%. Batch medians are effectively paired ties and direction is mixed. Candidate output is bitwise identical on all ranks.
 - Decision: reject as noise-sized and keep the default disabled. Do not extend the same change to W2: the expected wait-overlap benefit is absent even at the M128 W13-dominated point, indicating the dependency/issue chain already hides or serializes this wait structure.
 - Artifact: `bench/results/iter99c_w13_merged_wgmma_group_tp4_m128_paired_cold600_20260903.log`.
+
+## Iteration 100 — Normalized 13-entry shared-LUT correctness gate
+
+- Added opt-in `V4_NORMALIZED_SHARED_LUT=1`, valid only with normalized weight scales. It initializes a 13-entry (104-byte) per-CTA shared LUT for normalized exponent offsets 0..12 and replaces the two independent affine LUT-synthesis IMAD chains per weight word with shared `uint2` loads. Default remains disabled.
+- TP4 balanced auto-split4, TP4 max-skew forced split2, and TP8-local-shape auto-split4 all pass. Route/input quantization is exact; W13 cosine is at least 0.999999997, W2 cosine at least 0.999997235, and all outputs are finite.
+- Numerical values match the current default to printed precision. Proceed to resource inspection and same-process cold-L2 timing; reject if shared-load latency or bank pressure outweighs reduced ALU work.
+- Artifact: `results/iter100_normalized_shared_lut_correctness_20260903.log`.

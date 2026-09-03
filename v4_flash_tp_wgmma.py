@@ -62,6 +62,13 @@ DEQUANT_SYNTH_LUT = os.environ.get("V4_DEQUANT_SYNTH_LUT", "0") == "1"
 NORMALIZED_WEIGHT_SCALE = (
     os.environ.get("V4_NORMALIZED_WEIGHT_SCALE", "1") == "1"
 )
+NORMALIZED_SHARED_LUT = (
+    os.environ.get("V4_NORMALIZED_SHARED_LUT", "0") == "1"
+)
+if NORMALIZED_SHARED_LUT and not NORMALIZED_WEIGHT_SCALE:
+    raise ValueError(
+        "V4_NORMALIZED_SHARED_LUT=1 requires normalized weight scales"
+    )
 TILED_WEIGHT_LAYOUT = os.environ.get("V4_TILED_WEIGHT_LAYOUT", "1") == "1"
 BULK_WEIGHT_COPY = os.environ.get("V4_BULK_WEIGHT_COPY", "1") == "1"
 if BULK_WEIGHT_COPY and not TILED_WEIGHT_LAYOUT:
@@ -247,6 +254,7 @@ static constexpr bool kDequantDp4aHi = K_DEQUANT_DP4A_HI;
 static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kNormalizedWeightScale = K_NORMALIZED_WEIGHT_SCALE;
+static constexpr bool kNormalizedSharedLut = K_NORMALIZED_SHARED_LUT;
 static constexpr bool kTiledWeightLayout = K_TILED_WEIGHT_LAYOUT;
 static constexpr bool kBulkWeightCopy = K_BULK_WEIGHT_COPY;
 static constexpr bool kInterleavedBulkCopy = K_INTERLEAVED_BULK_COPY;
@@ -461,6 +469,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     __shared__ __align__(8) uint64_t full_barriers[kStages];
     __shared__ __align__(8) uint64_t scale_barrier;
     __shared__ uint2 lut_smem[
+        (kNormalizedWeightScale && kNormalizedSharedLut) ? 13 :
         (kNormalizedWeightScale || kDequantSynthLut
          || (!IsW13 && kW2GlobalLut)) ? 1 : kLutRows];
     __shared__ float activation_scale_smem[kTok];
@@ -486,8 +495,11 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             expert_weight_scale = 1.0f;
         }
     }
-    if constexpr (!kNormalizedWeightScale && !kDequantSynthLut
-                  && (IsW13 || !kW2GlobalLut)) {
+    if constexpr (kNormalizedWeightScale && kNormalizedSharedLut) {
+        for (int i = tid; i < 13; i += blockDim.x)
+            lut_smem[i] = synth_normalized_e2m1_lut(i);
+    } else if constexpr (!kNormalizedWeightScale && !kDequantSynthLut
+                         && (IsW13 || !kW2GlobalLut)) {
         for (int i = tid; i < kLutRows; i += blockDim.x) {
             constexpr int kGlobalLutOffset =
                 kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
@@ -863,8 +875,15 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                               + group_row1 * kScaleRowBytes
                                               + (global_kt & 3) * 4];
                         if constexpr (kNormalizedWeightScale) {
-                            weight_lut0 = synth_normalized_e2m1_lut(exponent0);
-                            weight_lut1 = synth_normalized_e2m1_lut(exponent1);
+                            if constexpr (kNormalizedSharedLut) {
+                                weight_lut0 = lut_smem[exponent0];
+                                weight_lut1 = lut_smem[exponent1];
+                            } else {
+                                weight_lut0 =
+                                    synth_normalized_e2m1_lut(exponent0);
+                                weight_lut1 =
+                                    synth_normalized_e2m1_lut(exponent1);
+                            }
                         } else {
                             weight_lut0 = lut_smem[scale_lut_index(exponent0)];
                             weight_lut1 = lut_smem[scale_lut_index(exponent1)];
@@ -904,8 +923,15 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                           + group_row1 * kScaleRowBytes
                                           + (global_kt & 3) * 4 + k_step];
                     if constexpr (kNormalizedWeightScale) {
-                        weight_lut0 = synth_normalized_e2m1_lut(exponent0);
-                        weight_lut1 = synth_normalized_e2m1_lut(exponent1);
+                        if constexpr (kNormalizedSharedLut) {
+                            weight_lut0 = lut_smem[exponent0];
+                            weight_lut1 = lut_smem[exponent1];
+                        } else {
+                            weight_lut0 =
+                                synth_normalized_e2m1_lut(exponent0);
+                            weight_lut1 =
+                                synth_normalized_e2m1_lut(exponent1);
+                        }
                     } else if constexpr (kDequantSynthLut) {
                         weight_lut0 = synth_e2m1_e8m0_lut(exponent0);
                         weight_lut1 = synth_e2m1_e8m0_lut(exponent1);
@@ -975,10 +1001,17 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                               + (global_kt & 3) * 4
                                               + next_k_step];
                         if constexpr (kNormalizedWeightScale) {
-                            next_weight_lut0[group] =
-                                synth_normalized_e2m1_lut(next_exponent0);
-                            next_weight_lut1[group] =
-                                synth_normalized_e2m1_lut(next_exponent1);
+                            if constexpr (kNormalizedSharedLut) {
+                                next_weight_lut0[group] =
+                                    lut_smem[next_exponent0];
+                                next_weight_lut1[group] =
+                                    lut_smem[next_exponent1];
+                            } else {
+                                next_weight_lut0[group] =
+                                    synth_normalized_e2m1_lut(next_exponent0);
+                                next_weight_lut1[group] =
+                                    synth_normalized_e2m1_lut(next_exponent1);
+                            }
                         } else {
                             next_weight_lut0[group] =
                                 lut_smem[scale_lut_index(next_exponent0)];
@@ -3849,6 +3882,7 @@ _ext = load_inline(
           f"dh{int(DEQUANT_DP4A_HI)}_dl{int(DEQUANT_DP4A_LO)}_"
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"nws{int(NORMALIZED_WEIGHT_SCALE)}_"
+          f"nsl{int(NORMALIZED_SHARED_LUT)}_"
           f"twl{int(TILED_WEIGHT_LAYOUT)}_"
           f"bwc{int(BULK_WEIGHT_COPY)}_"
           f"ibc{int(INTERLEAVED_BULK_COPY)}_"
@@ -3862,7 +3896,7 @@ _ext = load_inline(
           f"lmw{int(LEADER_MBAR_WAIT)}_"
           f"dp{int(W13_DISTRIBUTED_PREP)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v99wgmerge"),
+          f"mb{MIN_BLOCKS_PER_SM}_v100nslut"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -3894,6 +3928,7 @@ _ext = load_inline(
         f"-DK_DEQUANT_DP4A_LO={int(DEQUANT_DP4A_LO)}",
         f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
         f"-DK_NORMALIZED_WEIGHT_SCALE={int(NORMALIZED_WEIGHT_SCALE)}",
+        f"-DK_NORMALIZED_SHARED_LUT={int(NORMALIZED_SHARED_LUT)}",
         f"-DK_TILED_WEIGHT_LAYOUT={int(TILED_WEIGHT_LAYOUT)}",
         f"-DK_BULK_WEIGHT_COPY={int(BULK_WEIGHT_COPY)}",
         f"-DK_INTERLEAVED_BULK_COPY={int(INTERLEAVED_BULK_COPY)}",
