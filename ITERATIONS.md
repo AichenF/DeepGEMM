@@ -5168,3 +5168,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Control min/median/max is 0.072064/0.073536/0.227104 ms; unroll2 is 0.072352/0.073504/0.075712 ms, for control/candidate 1.000435x.  The 0.032 us pooled difference is neutral at this shape; batch directions are mixed.
 - This repeat happened to be bitwise identical on all ranks, so iteration 126c's small non-bitwise difference is not a deterministic corruption signature.  Combined screens now show neutral M8 and consistent 1.02--1.92% wins for M16--M128.  Advance to resource/SASS confirmation and a long five-shape exact-Humming audit before selection.
 - Evidence: `results/iter126d_route_k_unroll2_tp4_m8_paired_cold800_20260903.log`.
+
+### Iteration 126e — exact-Humming five-shape formal audit reaches 1.1620x
+
+- Ran exact MXFP4 Humming versus unroll2 custom TP4 graphs at M={8,16,32,64,128}, random routes, ten balanced batch-order windows x 200 samples per implementation/M.  Each replay had a separate excluded 256 MiB L2 clear; both paths used the same SGLang `CustomAllReduceV2` instance.
+- Humming/custom medians (ms) and speedups: M8 0.089920/0.073664 = 1.220678x; M16 0.146048/0.117568 = 1.242243x; M32 0.233120/0.204016 = 1.142655x; M64 0.336448/0.296256 = 1.135666x; M128 0.409520/0.380352 = 1.076687x.
+- Geometric means are Humming 0.211361020 ms and custom 0.181891459 ms, for 1.162017x (16.20%).  Relative to iteration 117g's selected formal window (1.155587x), the headline improves by about 0.56 percentage points; cross-window drift means causal selection still rests on iterations 126b--d's direct control/candidate results.
+- Both implementations pass independent full-pipeline references and all-reduce checks at every M.  Custom minimum cosine is 0.999995575 and maximum rel-L2 is 0.002974846, all finite.
+- At this Humming geometric mean, 1.20x requires custom <=0.176134183 ms; the remaining reduction is 0.005757276 ms, or 3.17% of the candidate.  Retain opt-in until a long same-process five-shape control/candidate audit confirms the broad screen before changing the default.
+- Evidence: `results/iter126e_route_k_unroll2_exact_humming_tp4_formal_cold2000_20260903.log`.
