@@ -513,7 +513,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                            "r"(barrier_addr[stage]) : "memory");
                 }
             }
-            if constexpr (kBulkL2Prefetch > 0) {
+            if constexpr (kBulkL2Prefetch > 0 && kInterleavedScale) {
                 const int prefetch_local = local_kt + kBulkL2Prefetch;
                 if (prefetch_local < kKTilesPerSplit) {
                     constexpr int kScaleTiles = kNumKTiles / 4;
@@ -1510,7 +1510,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v45"),
+          f"mb{MIN_BLOCKS_PER_SM}_v46"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
