@@ -435,6 +435,7 @@ def main() -> None:
         f" w13_distributed_prep={kernel.W13_DISTRIBUTED_PREP}"
         f" w13_dual_wg_split={kernel.W13_DUAL_WG_SPLIT}"
         f" w13_launch_bound_10={kernel.W13_LAUNCH_BOUND_10}"
+        f" w13_max_smem={kernel.W13_MAX_SMEM_CARVEOUT}"
         f" w2_distributed_prep={kernel.W2_DISTRIBUTED_PREP}"
         f" w13_merged_wgmma_group={kernel.W13_MERGED_WGMMA_GROUP}"
         f" normalized_shared_lut={kernel.NORMALIZED_SHARED_LUT}"

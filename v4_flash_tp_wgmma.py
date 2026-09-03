@@ -257,9 +257,13 @@ if W13_S2R_PREFETCH and DEQUANT_SYNTH_LUT:
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
     raise ValueError("V4_MIN_BLOCKS_PER_SM must be one of 0,8,10,12,14,16")
-W13_LAUNCH_BOUND_10 = (
+W13_LB10_MAX_SMEM = (
+    os.environ.get("V4_W13_LB10_MAX_SMEM", "0") == "1"
+)
+W13_LAUNCH_BOUND_10 = W13_LB10_MAX_SMEM or (
     os.environ.get("V4_W13_LAUNCH_BOUND_10", "0") == "1"
 )
+W13_MAX_SMEM_CARVEOUT = W13_LB10_MAX_SMEM
 if W13_LAUNCH_BOUND_10 and MIN_BLOCKS_PER_SM:
     raise ValueError(
         "V4_W13_LAUNCH_BOUND_10 and V4_MIN_BLOCKS_PER_SM are exclusive"
@@ -346,6 +350,7 @@ static constexpr bool kW13DistributedPrep = K_W13_DISTRIBUTED_PREP;
 static constexpr bool kW13DualWgSplit = K_W13_DUAL_WG_SPLIT;
 static constexpr bool kW2DistributedPrep = K_W2_DISTRIBUTED_PREP;
 static constexpr bool kW13MergedWgmmaGroup = K_W13_MERGED_WGMMA_GROUP;
+static constexpr bool kW13MaxSmemCarveout = K_W13_MAX_SMEM_CARVEOUT;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -3153,6 +3158,17 @@ void launch_route_gemm(
         + ((!IsW13 && kW2RouteOutput && kW2CoalescedStore)
             ? kTok * kWout * static_cast<int>(sizeof(__nv_bfloat16))
             : 0);
+    if constexpr (IsW13 && kW13MaxSmemCarveout) {
+        const cudaError_t carveout_result = cudaFuncSetAttribute(
+            route_gemm<K, N, SplitK, IsW13, LaunchNTiles,
+                       PublishW2Progress, DualWgW13>,
+            cudaFuncAttributePreferredSharedMemoryCarveout,
+            cudaSharedmemCarveoutMaxShared);
+        TORCH_CHECK(
+            carveout_result == cudaSuccess,
+            "failed to set maximum W13 shared-memory carveout: ",
+            cudaGetErrorString(carveout_result));
+    }
     const auto stream = at::cuda::getCurrentCUDAStream();
     route_gemm<K, N, SplitK, IsW13, LaunchNTiles,
                PublishW2Progress, DualWgW13><<<
@@ -4203,9 +4219,10 @@ _EXTENSION_CONFIG = (
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_v118alb")
+          f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v120lbsm")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v118alb"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v120lbsm"
 )
 
 _ext = load_inline(
@@ -4268,6 +4285,7 @@ _ext = load_inline(
         f"-DK_W2_COALESCED_STORE={int(W2_COALESCED_STORE)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         f"-DK_W13_LAUNCH_BOUND_10={int(W13_LAUNCH_BOUND_10)}",
+        f"-DK_W13_MAX_SMEM_CARVEOUT={int(W13_MAX_SMEM_CARVEOUT)}",
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
         "-gencode",

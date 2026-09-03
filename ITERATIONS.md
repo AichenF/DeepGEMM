@@ -5000,3 +5000,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Branch efficiency remains 70.88%; uncoalesced-access warning remains 80,384 excessive sectors (7% of 1,224,096), so compact's gain comes from simpler scale staging/addressing rather than fewer sectors.
 - Finding: iteration 118c's 48-register launch bound could not create a tenth CTA under the automatic 200.70 kB carveout.  A bounded next test should combine that register cap with maximum shared-memory carveout; only this combination can test actual 10-CTA residency.
 - Evidence: `results/iter119a_compact_selected_tp4_m128_w13_ncu_details_20260903.log` and iteration 119 report.
+
+## Iteration 120 — W13 10-CTA plus maximum shared carveout correctness
+
+- Added opt-in `V4_W13_LB10_MAX_SMEM=1`: it enables the previously validated 10-CTA W13 register bound and sets `cudaFuncAttributePreferredSharedMemoryCarveout` to `cudaSharedmemCarveoutMaxShared` for W13 instantiations only.  Default remains off.
+- Rationale: H20 reports 233,472 shared bytes/SM and 232,448 bytes/block opt-in, while selected compact W13 uses 18,432 dynamic bytes plus static/driver overhead.  Maximum carveout can accommodate ten CTAs; automatic 200.70 kB configuration could not.
+- TP4 I/rank=512 M8 balanced split4 and maximal-skew forced split2 pass; W13 cosine >=0.999999997 and W2 cosine >=0.999997235.
+- TP8-shape I/rank=256 M8 balanced passes; W13 cosine 0.999999997 and W2 cosine 0.999997278.
+- Result: combination is correctness-qualified.  Profile actual shared configuration/occupancy before timing.
+- Evidence: `results/iter120_w13_lb10_max_smem_correctness_20260903.log`.

@@ -209,6 +209,11 @@ def main() -> None:
                 "w13_launch_bound_10": kernel_module.W13_LAUNCH_BOUND_10
                 if args.impl == "custom"
                 else None,
+                "w13_max_smem_carveout": (
+                    kernel_module.W13_MAX_SMEM_CARVEOUT
+                )
+                if args.impl == "custom"
+                else None,
                 "l2_cache_bytes": props.L2_cache_size,
                 "l2_flush_bytes": l2_flush_buffer.nbytes,
                 "l2_policy": "cold; 256MiB clear immediately before pipeline",

@@ -1027,6 +1027,9 @@ def main() -> None:
                     ),
                     "w13_dual_wg_split": kernel.W13_DUAL_WG_SPLIT,
                     "w13_launch_bound_10": kernel.W13_LAUNCH_BOUND_10,
+                    "w13_max_smem_carveout": (
+                        kernel.W13_MAX_SMEM_CARVEOUT
+                    ),
                     "tiled_k6_reduce_policy": kernel.TILED_K6_REDUCE_POLICY,
                     "fused_k6_push_ar": kernel.FUSED_K6_PUSH_AR,
                     "fused_k6_mc_push_ar": kernel.FUSED_K6_MC_PUSH_AR,

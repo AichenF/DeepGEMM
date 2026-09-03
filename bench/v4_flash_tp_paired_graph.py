@@ -282,6 +282,9 @@ def main() -> None:
                     "custom_w13_launch_bound_10": (
                         kernel.W13_LAUNCH_BOUND_10
                     ),
+                    "custom_w13_max_smem_carveout": (
+                        kernel.W13_MAX_SMEM_CARVEOUT
+                    ),
                     "custom_w2_distributed_prep": (
                         kernel.W2_DISTRIBUTED_PREP
                     ),
