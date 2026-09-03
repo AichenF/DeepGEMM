@@ -4492,3 +4492,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Correctness:** default-enabled TP4 balanced, TP4 max-skew, and TP8-local-shape tests all passed. Route alignment and input quantization were exact; W13 cosine was at least 0.999999997 and W2 cosine at least 0.999997235; all outputs were finite.
 - **Cold-L2 status:** this iteration is a correctness/default-selection gate; its timing evidence is the already-recorded iteration-91 paired benchmark, where every replay had an excluded 256 MiB clear.
 - Artifact: `results/iter93_w13_distributed_prep_default_correctness_20260903.log`.
+
+## Iteration 94 — Formal default TP4 Humming/custom cold-L2 audit
+
+- **Protocol:** exact MXFP4 Humming and default custom pipelines, both CUDA-Graph captured and both ending in the same SGLang `CustomAllReduceV2`; TP4 GPUs 1–4, random precomputed top-k6 routes, M={8,16,32,64,128}, 10 AB/BA-alternated outer batches x 200 replays = 2,000 cold samples per implementation per M. Every replay has a separate 256 MiB L2 clear excluded from CUDA events; latency is the maximum rank.
+- **Correctness:** both implementations passed all-reduce checks at every M. Custom minimum-rank cosine was at least 0.999995575, maximum relative L2 was 0.002974846, and every rank/output was finite.
+- **Median latency and speedup (Humming/custom ms, Humming÷custom):** M8 0.090112/0.077920, 1.15647x; M16 0.145792/0.124352, 1.17241x; M32 0.232400/0.210400, 1.10456x; M64 0.344352/0.299440, 1.14999x; M128 0.392048/0.371008, 1.05671x.
+- **Five-shape geometric mean:** Humming 0.210386984 ms versus custom 0.186641453 ms = 1.127225x (12.72% faster). A 1.20x result at this Humming level requires custom <=0.175322486 ms, leaving 0.011318967 ms (11.32 us), or 6.06% of current custom latency.
+- **Noise audit:** M32–M128 batch medians are visibly dispersed, including custom M128 0.344096–0.466880 ms and Humming M128 0.382144–0.477280 ms. Preserve this run as formal evidence but repeat the identical protocol before attributing the difference from the previous 13.68% headline to code.
+- Artifact: `bench/results/iter94_tp4_humming_custom_w13dist_default_coldl2_formal_20260903.log`.
