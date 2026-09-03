@@ -2883,3 +2883,29 @@ maximum rank latency of a full CUDA-Graph replay.
   and coordinate overhead; all pre-swizzling occurs before graph capture.
 - Gate TP4 split-K=4/2 and TP8 correctness, including TP8 W2's scalar scale
   fallback, before candidate/control/candidate graph-internal cold-L2 timing.
+
+### WGMMA iteration 46b — accept pre-swizzled bulk copies
+
+- Correctness passes for TP4 split-K=4, forced TP4 split-K=2 and TP8.  The
+  compiled kernels retain the selected register footprint (54 registers for
+  TP4 W13/W2 and 48 for TP8 W2, with no spills).
+- Graph-internal candidate/control/candidate cold-L2 local totals (us) are
+  M8 96.736/97.792/96.592, M32 208.912/211.680/208.576, and
+  M128 339.904/348.272/339.696.  The repeatable gain is concentrated in W13
+  (2.8–3.2%); W2 is neutral at small M and improves 1.7% at M128.
+- The TP4 distributed screen uses random real k6 routes, the same SGLang
+  CustomAllReduceV2, alternating Humming/custom batches, four batches of 100
+  graph replays, and a separate excluded 256 MiB L2 clear before every replay.
+  Candidate A/control/candidate B custom geometric means are
+  0.186910/0.192937/0.187155 ms.  Their direct reductions are 3.12% and
+  3.00%; normalizing each run by its paired Humming result still gives 1.79%
+  and 2.24%.  Every M point is positive in both candidate windows.
+- Accept `V4_BULK_WEIGHT_COPY=1` as the default.  This moves the screened
+  Humming/custom ratio from 1.10696 in the same-source control to 1.12708 and
+  1.13235 in the two candidate windows.  Run a default-path correctness gate,
+  TP8 graph smoke, and the formal TP4 10x200 cold-L2 benchmark before updating
+  the headline score.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_bulk_copy_correctness_20260903.log`,
+  `bench/results/tp4_bulk_weight_copy_local_coldl2_screen_20260903.log`, and
+  `bench/results/tp4_bulk_copy_{candidate_a,control,candidate_b}_coldl2_screen_20260903.log`.

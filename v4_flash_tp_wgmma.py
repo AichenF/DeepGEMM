@@ -63,7 +63,7 @@ NORMALIZED_WEIGHT_SCALE = (
     os.environ.get("V4_NORMALIZED_WEIGHT_SCALE", "1") == "1"
 )
 TILED_WEIGHT_LAYOUT = os.environ.get("V4_TILED_WEIGHT_LAYOUT", "1") == "1"
-BULK_WEIGHT_COPY = os.environ.get("V4_BULK_WEIGHT_COPY", "0") == "1"
+BULK_WEIGHT_COPY = os.environ.get("V4_BULK_WEIGHT_COPY", "1") == "1"
 if BULK_WEIGHT_COPY and not TILED_WEIGHT_LAYOUT:
     raise ValueError("V4_BULK_WEIGHT_COPY requires tiled weight layout")
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
