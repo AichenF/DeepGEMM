@@ -194,7 +194,7 @@ def main() -> None:
             (max_mblocks,), dtype=torch.int32, device=device
         )
         route_to_sorted = torch.empty(
-            (routes if kernel.W2_SORTED_ACT else 0,),
+            (routes if kernel.W2_NEEDS_ROUTE_MAP else 0,),
             dtype=torch.int32,
             device=device,
         )
@@ -250,7 +250,7 @@ def main() -> None:
     act_scale = torch.empty(
         (
             (max_mblocks, intermediate // 128, 8)
-            if kernel.W2_SORTED_ACT
+            if kernel.W2_SORTED_ACT or kernel.W2_MBLOCK_SCALE
             else (routes, intermediate // 128)
         ),
         dtype=torch.float32,
@@ -376,12 +376,18 @@ def main() -> None:
     if kernel.W2_SORTED_ACT:
         positions = route_to_sorted.long()
         qact_route = qact[positions]
+    else:
+        positions = None
+        qact_route = qact
+    if kernel.W2_SORTED_ACT or kernel.W2_MBLOCK_SCALE:
+        assert positions is not None or kernel.W2_MBLOCK_SCALE
+        if positions is None:
+            positions = route_to_sorted.long()
         scale_by_slot = act_scale.permute(0, 2, 1)
         act_scale_route = scale_by_slot[
             positions >> 3, positions & 7
         ]
     else:
-        qact_route = qact
         act_scale_route = act_scale
     act_dequant = qact_route.float() * act_scale_route.repeat_interleave(
         128, dim=1
@@ -410,6 +416,7 @@ def main() -> None:
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
         f"w13_tail_fused_act={w13_tail_fused_act} "
         f"w2_sorted_act={kernel.W2_SORTED_ACT} "
+        f"w2_mblock_scale={kernel.W2_MBLOCK_SCALE} "
         f"w2_coalesced_store={kernel.W2_COALESCED_STORE} "
         f"w2_global_lut={kernel.W2_GLOBAL_LUT} "
         f"leader_mbar_wait={kernel.LEADER_MBAR_WAIT}"

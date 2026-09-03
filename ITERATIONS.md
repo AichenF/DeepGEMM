@@ -4391,3 +4391,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** control median 0.360528 ms; warp-private candidate 0.363232 ms; control/candidate 0.992556x. Candidate was slower in every batch by 2.16–3.62 microseconds.
 - **Decision:** Reject the warp-private shared epilogue too. Removing the CTA barrier did not recover the shared store/load and address-remap cost; direct scalar stores remain selected.
 - **Artifact:** `results/iter87b_w2_warp_store_paired_tp4_m128_cold_600_20260903.log`.
+
+## Iteration 88a — Isolated mblock-major W2 scale-layout implementation
+
+- **Hypothesis:** Iteration 85 coupled scale coalescing to a padded sorted FP8 activation layout and regressed. Keeping activation route-major while storing only the small scale tensor as `[mblock,K128,slot]` isolates the 66,432 excessive scale-gather sectors identified by NCU.
+- **Change:** Added opt-in `V4_W2_MBLOCK_SCALE=1`, reusing the dynamic `route_to_sorted` inverse map but changing only scale output/read addressing. Extended the paired harness to select a compile-time flag through `V4_COMPARE_FLAG`.
+- **Verification:** Local Python syntax compilation passed for the kernel wrapper, graph benchmark, numerical test, and paired harness. CUDA correctness/performance are pending.
+- **Decision:** Implementation checkpoint only; default remains disabled.

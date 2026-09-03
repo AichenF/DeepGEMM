@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paired cold-L2 TP comparison of scalar and coalesced W2 stores."""
+"""Paired cold-L2 TP comparison of one compile-time kernel flag."""
 
 from __future__ import annotations
 
@@ -16,8 +16,17 @@ import torch
 import torch.distributed as dist
 from triton import runtime as triton_runtime
 
-# Import the reusable graph harness with the control compile-time setting.
-os.environ["V4_W2_COALESCED_STORE"] = "0"
+# Import the reusable graph harness with the requested control setting.
+COMPARE_FLAG = os.environ.get(
+    "V4_COMPARE_FLAG", "V4_W2_COALESCED_STORE"
+)
+if COMPARE_FLAG not in {
+    "V4_W2_COALESCED_STORE",
+    "V4_W2_MBLOCK_SCALE",
+    "V4_W2_SORTED_ACT",
+}:
+    raise ValueError(f"unsupported V4_COMPARE_FLAG={COMPARE_FLAG}")
+os.environ[COMPARE_FLAG] = "0"
 import v4_flash_tp_wgmma as control_kernel  # noqa: E402
 import v4_flash_tp_wgmma_graph as bench  # noqa: E402
 from sglang.kernels.ops.communication.mp import (  # noqa: E402
@@ -43,16 +52,16 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_candidate() -> ModuleType:
-    os.environ["V4_W2_COALESCED_STORE"] = "1"
+    os.environ[COMPARE_FLAG] = "1"
     source = Path(control_kernel.__file__).resolve()
-    name = "v4_flash_tp_wgmma_coalesced_store_candidate"
+    name = "v4_flash_tp_wgmma_candidate_" + COMPARE_FLAG.lower()
     spec = importlib.util.spec_from_file_location(name, source)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load candidate module from {source}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
-    os.environ["V4_W2_COALESCED_STORE"] = "0"
+    os.environ[COMPARE_FLAG] = "0"
     return module
 
 
@@ -229,6 +238,7 @@ def main() -> None:
     control_median = statistics.median(control_samples)
     candidate_median = statistics.median(candidate_samples)
     record = {
+        "compare_flag": COMPARE_FLAG,
         "m": args.m,
         "world_size": world_size,
         "route_pattern": args.route_pattern,
@@ -236,14 +246,14 @@ def main() -> None:
         "l2_policy": "cold; separate 256MiB clear immediately before every graph replay; clear excluded from events",
         "order_policy": "per-sample alternating A/B then B/A",
         "control": {
-            "w2_coalesced_store": False,
+            "flag_value": 0,
             "min_ms": min(control_samples),
             "median_ms": control_median,
             "max_ms": max(control_samples),
             "batch_medians_ms": control_batches,
         },
         "candidate": {
-            "w2_coalesced_store": True,
+            "flag_value": 1,
             "min_ms": min(candidate_samples),
             "median_ms": candidate_median,
             "max_ms": max(candidate_samples),

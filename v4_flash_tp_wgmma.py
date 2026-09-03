@@ -84,6 +84,8 @@ FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
 W13_PAIRED_WG = os.environ.get("V4_W13_PAIRED_WG", "0") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_SORTED_ACT = os.environ.get("V4_W2_SORTED_ACT", "0") == "1"
+W2_MBLOCK_SCALE = os.environ.get("V4_W2_MBLOCK_SCALE", "0") == "1"
+W2_NEEDS_ROUTE_MAP = W2_SORTED_ACT or W2_MBLOCK_SCALE
 W2_COALESCED_STORE = (
     os.environ.get("V4_W2_COALESCED_STORE", "0") == "1"
 )
@@ -91,12 +93,12 @@ if W2_COALESCED_STORE and (not W2_ROUTE_OUTPUT or WOUT != 128):
     raise ValueError(
         "V4_W2_COALESCED_STORE=1 requires route output and V4_WOUT=128"
     )
-if W2_SORTED_ACT and (
+if W2_NEEDS_ROUTE_MAP and (
     not FUSED_ROUTE_QUANT or not FUSED_ACT_QUANT or W13_PAIRED_WG
 ):
     raise ValueError(
-        "V4_W2_SORTED_ACT=1 requires fused route/activation quantization "
-        "and the split-K W13 path"
+        "sorted W2 activation/scale layouts require fused route/activation "
+        "quantization and the split-K W13 path"
     )
 TILED_K6_REDUCE_POLICY = os.environ.get("V4_TILED_K6_REDUCE_MODE", "auto")
 if TILED_K6_REDUCE_POLICY not in ("auto", "0", "1", "2", "3", "4"):
@@ -249,6 +251,7 @@ static_assert(!kInterleavedBulkCopy
 static constexpr float kRoutedScale = 1.5f;
 static constexpr bool kW2RouteOutput = K_W2_ROUTE_OUTPUT;
 static constexpr bool kW2SortedAct = K_W2_SORTED_ACT;
+static constexpr bool kW2MblockScale = K_W2_MBLOCK_SCALE || kW2SortedAct;
 static constexpr bool kW2CoalescedStore = K_W2_COALESCED_STORE;
 
 #if K_MIN_BLOCKS_PER_SM > 0
@@ -709,7 +712,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             const int row = activation_rows[tid];
             if (row >= 0) {
                 int64_t scale_index;
-                if constexpr (!IsW13 && kW2SortedAct) {
+                if constexpr (!IsW13 && kW2MblockScale) {
                     scale_index =
                         (static_cast<int64_t>(m_block_idx) * kNumKTiles
                          + global_kt) * kTok + tid;
@@ -1675,10 +1678,11 @@ __global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
     const int index = route * Intermediate + column;
     if (activation != nullptr)
         activation[index] = activation_bf16;
-    const int sorted_position = kW2SortedAct
+    const int sorted_position = (kW2SortedAct || kW2MblockScale)
         ? __ldg(route_to_sorted + route)
         : route;
-    const int quantized_index = sorted_position * Intermediate + column;
+    const int quantized_row = kW2SortedAct ? sorted_position : route;
+    const int quantized_index = quantized_row * Intermediate + column;
 
     float absmax = fabsf(value);
     #pragma unroll
@@ -1701,7 +1705,7 @@ __global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
                            __shfl_down_sync(0xffffffffu, absmax, delta));
         if (lane == 0) {
             group_scale = fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
-            if constexpr (kW2SortedAct) {
+            if constexpr (kW2MblockScale) {
                 const int mblock = sorted_position >> 3;
                 const int slot = sorted_position & 7;
                 scale[(mblock * kGroupsPerRoute + group_in_route) * 8
@@ -1775,7 +1779,7 @@ __global__ __launch_bounds__(256) void fused_route_quant_kernel(
             if (static_cast<unsigned>(expert) < kExperts) {
                 const int position = atomicAdd(cursors + expert, 1);
                 sorted_ids[position] = route;
-                if constexpr (kW2SortedAct)
+                if constexpr (kW2SortedAct || kW2MblockScale)
                     route_to_sorted[route] = position;
             }
         }
@@ -3119,8 +3123,9 @@ void reduce_swiglu_quant(
         torch::Tensor quantized, torch::Tensor scale,
         int intermediate, int split_k, torch::Tensor route_to_sorted) {
     const int routes = partials.size(1);
-    TORCH_CHECK(!kW2SortedAct || route_to_sorted.numel() == routes,
-                "sorted W2 activation requires one position per route");
+    TORCH_CHECK(!(kW2SortedAct || kW2MblockScale)
+                    || route_to_sorted.numel() == routes,
+                "sorted W2 activation/scale requires one position per route");
     if (intermediate == 512) {
         if (split_k == 4)
             launch_reduce_swiglu_quant<512, 4>(
@@ -3590,8 +3595,9 @@ void fused_route_quant(
     TORCH_CHECK(scale.numel() == input.size(0) * 32,
                 "scale output must have shape [M,32]");
     const int routes = topk_ids.numel();
-    TORCH_CHECK(!kW2SortedAct || route_to_sorted.numel() == routes,
-                "sorted W2 activation requires one position per route");
+    TORCH_CHECK(!(kW2SortedAct || kW2MblockScale)
+                    || route_to_sorted.numel() == routes,
+                "sorted W2 activation/scale requires one position per route");
     const int blocks = input.size(0) * 16;
     const auto stream = at::cuda::getCurrentCUDAStream();
     fused_route_quant_kernel<<<blocks, 256, 0, stream>>>(
@@ -3779,10 +3785,11 @@ _ext = load_inline(
           f"ibc{int(INTERLEAVED_BULK_COPY)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_sa{int(W2_SORTED_ACT)}_"
+          f"ms{int(W2_MBLOCK_SCALE)}_"
           f"cs{int(W2_COALESCED_STORE)}_"
           f"w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v87warpstore"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v88mblockscale"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -3824,6 +3831,7 @@ _ext = load_inline(
         f"-DK_LEADER_MBAR_WAIT={int(LEADER_MBAR_WAIT)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_W2_SORTED_ACT={int(W2_SORTED_ACT)}",
+        f"-DK_W2_MBLOCK_SCALE={int(W2_MBLOCK_SCALE)}",
         f"-DK_W2_COALESCED_STORE={int(W2_COALESCED_STORE)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",
@@ -4189,8 +4197,10 @@ def reduce_swiglu_quant(
     if split_k not in (1, 2, 4):
         raise ValueError("W13 split_k must be 1, 2, or 4")
     if route_to_sorted is None:
-        if W2_SORTED_ACT:
-            raise ValueError("sorted W2 activation requires route_to_sorted")
+        if W2_NEEDS_ROUTE_MAP:
+            raise ValueError(
+                "sorted W2 activation/scale requires route_to_sorted"
+            )
         route_to_sorted = torch.empty(
             0, dtype=torch.int32, device=partials.device
         )
@@ -4413,8 +4423,10 @@ def fused_route_quant(
     route_to_sorted: torch.Tensor | None = None,
 ) -> None:
     if route_to_sorted is None:
-        if W2_SORTED_ACT:
-            raise ValueError("sorted W2 activation requires route_to_sorted")
+        if W2_NEEDS_ROUTE_MAP:
+            raise ValueError(
+                "sorted W2 activation/scale requires route_to_sorted"
+            )
         route_to_sorted = torch.empty(
             0, dtype=torch.int32, device=input.device
         )

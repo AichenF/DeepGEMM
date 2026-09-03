@@ -265,7 +265,7 @@ class CapturedCase:
             (max_mblocks,), dtype=torch.int32, device=device
         )
         self.route_to_sorted = torch.empty(
-            (routes if kernel.W2_SORTED_ACT else 0,),
+            (routes if kernel.W2_NEEDS_ROUTE_MAP else 0,),
             dtype=torch.int32,
             device=device,
         )
@@ -279,7 +279,7 @@ class CapturedCase:
             torch.empty(
                 (
                     (max_mblocks, self.intermediate_per_rank // 128, 8)
-                    if kernel.W2_SORTED_ACT
+                    if kernel.W2_SORTED_ACT or kernel.W2_MBLOCK_SCALE
                     else (routes, self.intermediate_per_rank // 128)
                 ),
                 dtype=torch.float32,
@@ -998,6 +998,7 @@ def main() -> None:
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "fused_route_quant": kernel.FUSED_ROUTE_QUANT,
                     "w2_sorted_activation": kernel.W2_SORTED_ACT,
+                    "w2_mblock_scale": kernel.W2_MBLOCK_SCALE,
                     "w2_coalesced_store": kernel.W2_COALESCED_STORE,
                     "w13_paired_wg": kernel.W13_PAIRED_WG,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
