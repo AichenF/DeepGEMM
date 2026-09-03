@@ -307,6 +307,9 @@ def main() -> None:
                     "custom_activation_evict_last": (
                         kernel.ACTIVATION_EVICT_LAST
                     ),
+                    "custom_predicated_padded_activation": (
+                        kernel.PREDICATED_PADDED_ACTIVATION
+                    ),
                     "custom_tiled_weight_layout": kernel.TILED_WEIGHT_LAYOUT,
                     "custom_bulk_weight_copy": kernel.BULK_WEIGHT_COPY,
                     "custom_tma_cta_scope": kernel.TMA_CTA_SCOPE,

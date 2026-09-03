@@ -5405,3 +5405,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - The hottest W13 long-scoreboard sites are shared-memory metadata/activation publication stores and their dependent scale multiply, not the `mbarrier.try_wait` loop. Any next control-path experiment must preserve 52-register occupancy and target repeated divergent setup in the unrolled body rather than synchronization correctness.
 - Result: prefer a narrow source/SASS mapping of the repeated `BSSY` regions, then either hoist/eliminate their invariant branch or abandon this direction in favor of route-tile locality. Do not repeat direct-barrier-address or deeper-stage experiments.
 - Evidence: `results/iter136_selected_unroll4_tp4_m128_ncu_sass_hotspots_20260904.log`.
+
+## Iteration 137 — predicated padded-activation loads compile and pass first correctness gate
+
+- Added opt-in `V4_PREDICATED_PADDED_ACTIVATION=1`. Padded activation and activation-scale reads now use inline-PTX predicated global loads with zero-initialized destinations; scale publication uses a predicated shared store. Clamped row/slot addresses remain in bounds even when the load/store predicate is false. The production default remains unchanged.
+- This preserves the old no-transaction zero-fill semantics while removing the two nested divergent C++ branches from each expanded K128 iteration. The flag is included in JIT identity, graph metadata, and the same-process comparison harness.
+- TP4 balanced auto-split4 exactly reproduces the selected W13/activation/W2 rel-L2 values 0.000076187/0.000694956/0.002342691. TP4 skew forced-split2 likewise reproduces 0.000077291/0.000838720/0.002351904. Both K6 reductions are bitwise equal to SGLang and all outputs are finite.
+- TP8-shape (Is=256) runs through and passes the existing cosine gate: W13/activation/W2 cosine is 0.999999997/0.999999745/0.999930755 and rel-L2 is 0.000076998/0.000714756/0.011769490. The W2 error is higher than the previously recorded selected-path value, so this candidate is not yet correctness-qualified despite passing the coarse harness threshold.
+- Result: compile and basic TP4/TP8 execution pass. Before timing, require a same-input control/candidate output comparison (including TP8) and inspect cubin resources/SASS to confirm that the intended branches disappeared without register or semantic drift.
+- Evidence: `results/iter137_predicated_padded_activation_tp4_tp8shape_correctness_20260904.log`.

@@ -73,6 +73,9 @@ if NORMALIZED_SHARED_LUT and not NORMALIZED_WEIGHT_SCALE:
 ACTIVATION_EVICT_LAST = (
     os.environ.get("V4_ACTIVATION_EVICT_LAST", "0") == "1"
 )
+PREDICATED_PADDED_ACTIVATION = (
+    os.environ.get("V4_PREDICATED_PADDED_ACTIVATION", "0") == "1"
+)
 TILED_WEIGHT_LAYOUT = os.environ.get("V4_TILED_WEIGHT_LAYOUT", "1") == "1"
 BULK_WEIGHT_COPY = os.environ.get("V4_BULK_WEIGHT_COPY", "1") == "1"
 if BULK_WEIGHT_COPY and not TILED_WEIGHT_LAYOUT:
@@ -344,6 +347,8 @@ static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kNormalizedWeightScale = K_NORMALIZED_WEIGHT_SCALE;
 static constexpr bool kNormalizedSharedLut = K_NORMALIZED_SHARED_LUT;
 static constexpr bool kActivationEvictLast = K_ACTIVATION_EVICT_LAST;
+static constexpr bool kPredicatedPaddedActivation =
+    K_PREDICATED_PADDED_ACTIVATION;
 static constexpr bool kTiledWeightLayout = K_TILED_WEIGHT_LAYOUT;
 static constexpr bool kBulkWeightCopy = K_BULK_WEIGHT_COPY;
 static constexpr bool kTmaCtaScope = K_TMA_CTA_SCOPE;
@@ -522,6 +527,56 @@ __device__ __forceinline__ float load_reused_f32(
         return value;
     }
     return __ldg(pointer);
+}
+
+// Preserve the existing zero-fill semantics for padded route lanes without
+// creating a divergent C++ load branch.  The pointer is always formed from a
+// clamped row; the PTX predicate prevents any transaction for an invalid row.
+__device__ __forceinline__ uint2 load_reused_u64_predicated(
+        const uint2* pointer, int valid_row, uint64_t cache_policy) {
+    uint2 value = make_uint2(0, 0);
+    if constexpr (kActivationEvictLast) {
+        asm volatile(
+            "{.reg .pred p; setp.ge.s32 p,%3,0;"
+            " @p ld.global.L2::cache_hint.v2.u32 {%0,%1},[%2],%4;}"
+            : "+r"(value.x), "+r"(value.y)
+            : "l"(pointer), "r"(valid_row), "l"(cache_policy) : "memory");
+    } else {
+        asm volatile(
+            "{.reg .pred p; setp.ge.s32 p,%3,0;"
+            " @p ld.global.nc.v2.u32 {%0,%1},[%2];}"
+            : "+r"(value.x), "+r"(value.y)
+            : "l"(pointer), "r"(valid_row) : "memory");
+    }
+    return value;
+}
+
+__device__ __forceinline__ float load_reused_f32_predicated(
+        const float* pointer, int valid_row, uint64_t cache_policy) {
+    float value = 0.0f;
+    if constexpr (kActivationEvictLast) {
+        asm volatile(
+            "{.reg .pred p; setp.ge.s32 p,%2,0;"
+            " @p ld.global.L2::cache_hint.f32 %0,[%1],%3;}"
+            : "+f"(value)
+            : "l"(pointer), "r"(valid_row), "l"(cache_policy) : "memory");
+    } else {
+        asm volatile(
+            "{.reg .pred p; setp.ge.s32 p,%2,0;"
+            " @p ld.global.nc.f32 %0,[%1];}"
+            : "+f"(value)
+            : "l"(pointer), "r"(valid_row) : "memory");
+    }
+    return value;
+}
+
+__device__ __forceinline__ void store_shared_f32_predicated(
+        float* pointer, float value, int valid_slot) {
+    const uint32_t address = static_cast<uint32_t>(
+        __cvta_generic_to_shared(pointer));
+    asm volatile(
+        "{.reg .pred p; setp.ge.s32 p,%2,0; @p st.shared.f32 [%0],%1;}"
+        :: "r"(address), "f"(value), "r"(valid_slot) : "memory");
 }
 
 __device__ __forceinline__ cute::GmmaDescriptor desc_128b(uint32_t pointer) {
@@ -1036,7 +1091,14 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
             const int k8 = (mtid % 16) * 8;
             uint2 value = make_uint2(0, 0);
             const int activation_row = activation_rows[token_slot];
-            if (activation_row >= 0) {
+            if constexpr (kPredicatedPaddedActivation) {
+                const int safe_row = activation_row < 0 ? 0 : activation_row;
+                value = load_reused_u64_predicated(
+                    reinterpret_cast<const uint2*>(
+                        activation + static_cast<int64_t>(safe_row) * K
+                        + global_kt * kBlockK + k8),
+                    activation_row, reused_cache_policy);
+            } else if (activation_row >= 0) {
                 value = load_reused_u64(reinterpret_cast<const uint2*>(
                     activation + static_cast<int64_t>(activation_row) * K
                     + global_kt * kBlockK + k8), reused_cache_policy);
@@ -1056,7 +1118,27 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                 scale_slot = mtid;
             }
         }
-        if (scale_slot >= 0) {
+        if constexpr (kPredicatedPaddedActivation) {
+            const int safe_slot = scale_slot < 0 ? 0 : scale_slot;
+            const int row = activation_rows[safe_slot];
+            const int safe_row = row < 0 ? 0 : row;
+            int64_t scale_index;
+            if constexpr (!IsW13 && kW2MblockScale) {
+                scale_index =
+                    (static_cast<int64_t>(safe_row >> 3) * kNumKTiles
+                     + global_kt) * kTok + (safe_row & 7);
+            } else {
+                scale_index =
+                    static_cast<int64_t>(safe_row) * kNumKTiles + global_kt;
+            }
+            const int valid_load = scale_slot < row ? scale_slot : row;
+            const float loaded_scale = load_reused_f32_predicated(
+                activation_scale + scale_index,
+                valid_load, reused_cache_policy);
+            store_shared_f32_predicated(
+                activation_scale_smem + safe_slot,
+                loaded_scale * expert_weight_scale, scale_slot);
+        } else if (scale_slot >= 0) {
             const int row = activation_rows[scale_slot];
             if (row >= 0) {
                 int64_t scale_index;
@@ -4248,6 +4330,7 @@ _EXTENSION_CONFIG = (
           f"nws{int(NORMALIZED_WEIGHT_SCALE)}_"
           f"nsl{int(NORMALIZED_SHARED_LUT)}_"
           f"ael{int(ACTIVATION_EVICT_LAST)}_"
+          f"ppa{int(PREDICATED_PADDED_ACTIVATION)}_"
           f"twl{int(TILED_WEIGHT_LAYOUT)}_"
           f"bwc{int(BULK_WEIGHT_COPY)}_tcs{int(TMA_CTA_SCOPE)}_"
           f"wef{int(WEIGHT_EVICT_FIRST)}_"
@@ -4273,9 +4356,9 @@ _EXTENSION_CONFIG = (
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v135w13ku16s2")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v137ppa")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v135w13ku16s2"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v137ppa"
 )
 
 _ext = load_inline(
@@ -4313,6 +4396,7 @@ _ext = load_inline(
         f"-DK_NORMALIZED_WEIGHT_SCALE={int(NORMALIZED_WEIGHT_SCALE)}",
         f"-DK_NORMALIZED_SHARED_LUT={int(NORMALIZED_SHARED_LUT)}",
         f"-DK_ACTIVATION_EVICT_LAST={int(ACTIVATION_EVICT_LAST)}",
+        f"-DK_PREDICATED_PADDED_ACTIVATION={int(PREDICATED_PADDED_ACTIVATION)}",
         f"-DK_TILED_WEIGHT_LAYOUT={int(TILED_WEIGHT_LAYOUT)}",
         f"-DK_BULK_WEIGHT_COPY={int(BULK_WEIGHT_COPY)}",
         f"-DK_TMA_CTA_SCOPE={int(TMA_CTA_SCOPE)}",
