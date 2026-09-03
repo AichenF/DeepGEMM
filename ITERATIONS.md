@@ -3412,3 +3412,31 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/iter55_fp16_w13_partial_correctness_20260903.log` and
   `bench/results/iter55_fp16_w13_partial_stage_aba_coldl2_20260903.log`.
+
+### WGMMA iteration 56a — clustered W13 reduction/activation plan
+
+- The remaining actionable W13 boundary is structural: split-K CTAs write an
+  FP32 global workspace, then a separate 128-thread kernel rereads all gate/up
+  splits, applies the BF16/SwiGLU/BF16 contract, and emits group-128 FP8.
+  Local timing assigns 6--9 us to that second launch, while iteration 55 shows
+  that merely narrowing the workspace cannot remove it.
+- Prototype an opt-in Hopper thread-block-cluster W13 path at `WOUT=128`.
+  One cluster contains both the gate and up tile and every K split: cluster
+  size is `2*SplitK` (8 for the small-M split-4 policy, 4 for split-2).  Each
+  CTA computes the unchanged RS-WGMMA tile, places its FP32 8x128 accumulator
+  in its now-dead dynamic shared-memory stages, and synchronizes the cluster.
+  DSM consumers then sum the original FP32 splits, preserve the exact
+  BF16/SwiGLU/BF16 sequence, reduce the group-128 scale, and emit the W2 FP8
+  activation directly.  Assign one routed row per CTA for cluster-8 and two
+  per CTA for cluster-4 so no single leader serializes all eight rows.
+- A second cluster barrier must keep every remote shared allocation alive
+  until DSM reads finish.  Reorder only the W13 grid into adjacent
+  `(gate/up, split)` groups; weights, route metadata, active-expert policy,
+  MXFP4 dequantization, WGMMA math, W2, reduction, all-reduce, and cold-L2
+  protocol remain unchanged.  Launch through `cudaLaunchKernelEx` so CUDA
+  Graph records the cluster dimension.
+- Gate TP4 balanced/skew split-4/split-2, TP8-shape split-2, and elevated
+  scales before timing.  Then compare fused `W13+activation` and complete
+  local/full graphs against the exact iteration-53 control.  Reject if DSM
+  synchronization or cluster residency consumes the removed launch/traffic;
+  do not select from a single favorable cold-L2 window.
