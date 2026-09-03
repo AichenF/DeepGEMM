@@ -257,6 +257,17 @@ if W13_S2R_PREFETCH and DEQUANT_SYNTH_LUT:
 MIN_BLOCKS_PER_SM = int(os.environ.get("V4_MIN_BLOCKS_PER_SM", "0"))
 if MIN_BLOCKS_PER_SM not in (0, 8, 10, 12, 14, 16):
     raise ValueError("V4_MIN_BLOCKS_PER_SM must be one of 0,8,10,12,14,16")
+W13_LAUNCH_BOUND_10 = (
+    os.environ.get("V4_W13_LAUNCH_BOUND_10", "0") == "1"
+)
+if W13_LAUNCH_BOUND_10 and MIN_BLOCKS_PER_SM:
+    raise ValueError(
+        "V4_W13_LAUNCH_BOUND_10 and V4_MIN_BLOCKS_PER_SM are exclusive"
+    )
+if W13_LAUNCH_BOUND_10 and (W13_DUAL_WG_SPLIT or W13_PAIRED_WG):
+    raise ValueError(
+        "V4_W13_LAUNCH_BOUND_10 probes only the 128-thread split-K W13 path"
+    )
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
@@ -353,10 +364,14 @@ static constexpr bool kW2CoalescedStore = K_W2_COALESCED_STORE;
 static constexpr bool kW2FoldGlobalScale = K_W2_FOLD_GLOBAL_SCALE;
 
 #if K_MIN_BLOCKS_PER_SM > 0
-#define ROUTE_LAUNCH_BOUNDS(DUAL) \
+#define ROUTE_LAUNCH_BOUNDS(IS_W13, DUAL) \
     __launch_bounds__((DUAL) ? 256 : 128, K_MIN_BLOCKS_PER_SM)
+#elif K_W13_LAUNCH_BOUND_10
+#define ROUTE_LAUNCH_BOUNDS(IS_W13, DUAL) \
+    __launch_bounds__((DUAL) ? 256 : 128, (IS_W13) ? 10 : 1)
 #else
-#define ROUTE_LAUNCH_BOUNDS(DUAL) __launch_bounds__((DUAL) ? 256 : 128)
+#define ROUTE_LAUNCH_BOUNDS(IS_W13, DUAL) \
+    __launch_bounds__((DUAL) ? 256 : 128)
 #endif
 
 __device__ __forceinline__ void mbar_init(uint32_t address) {
@@ -554,7 +569,7 @@ __device__ __forceinline__ uint2 dequant_weight_word(
 
 template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool PublishW2Progress = false, bool DualWgW13 = false>
-__global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
+__global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
         const __grid_constant__ CUtensorMap tma_weight,
         const __grid_constant__ CUtensorMap tma_weight_scale,
         const uint8_t* __restrict__ weight,
@@ -4185,9 +4200,9 @@ _EXTENSION_CONFIG = (
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v117cis")
+          f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_v118lb")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v117cis"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v118lb"
 )
 
 _ext = load_inline(
@@ -4249,6 +4264,7 @@ _ext = load_inline(
         f"-DK_W2_FOLD_GLOBAL_SCALE={int(W2_FOLD_GLOBAL_SCALE)}",
         f"-DK_W2_COALESCED_STORE={int(W2_COALESCED_STORE)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
+        f"-DK_W13_LAUNCH_BOUND_10={int(W13_LAUNCH_BOUND_10)}",
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
         "-gencode",

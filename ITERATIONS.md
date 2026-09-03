@@ -4949,3 +4949,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Remaining 1.20x target: custom must reach <=0.175751763 ms; residual 0.006754762 ms (3.70% of current custom geomean).
 - Result: compact layout is accepted and improves the exact-Humming headline, but the 1.20x five-shape target remains unproven.  Continue on the M32-M128 W13 issue/occupancy bottleneck.
 - Evidence: `results/iter117g_compact_default_exact_humming_tp4_formal_cold2000_20260903.log`.
+
+## Iteration 118 — W13-only 10-CTA launch-bound correctness
+
+- Hypothesis: compact scale storage removes the shared-memory barrier to 10 resident 128-thread W13 CTAs; an opt-in W13-only minimum-block launch bound may reduce the current 55 registers/thread to at most 51 and raise occupancy.  W2 receives only a min-block value of one in this probe and must be checked at cubin level for unchanged allocation.
+- Implementation: added opt-in `V4_W13_LAUNCH_BOUND_10=1`, guarded it against global launch bounds and 256-thread W13 variants, and exposed it in comparison/correctness/profile metadata.  Default remains off.
+- TP4 I/rank=512 M8 balanced split4 and maximal-skew forced split2 both pass; W13 cosine >=0.999999997 and W2 cosine >=0.999997235.
+- TP8-shape I/rank=256 M8 balanced also passes; W13 cosine 0.999999997 and W2 cosine 0.999997278.
+- Result: correctness-qualified only.  Inspect cubin resources before any cold-L2 performance screen.
+- Evidence: `results/iter118_w13_launch_bound10_correctness_20260903.log`.
