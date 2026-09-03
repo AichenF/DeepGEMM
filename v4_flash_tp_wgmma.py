@@ -1986,6 +1986,7 @@ __global__ __launch_bounds__(Threads) void progress_k6_mc_push_tp4_kernel(
         ready_queue + total_tasks;
     int32_t* worker_claim =
         ready_valid + total_tasks + 1;
+    int32_t* worker_done = worker_claim + 1;
     const int phase = push_counter[0] & 1u;
     const int64_t phase_offset =
         static_cast<int64_t>(phase) * push_stride * kWorld;
@@ -2050,6 +2051,8 @@ __global__ __launch_bounds__(Threads) void progress_k6_mc_push_tp4_kernel(
         store_multimem_16b(push_mc + source_offset, local_vec);
         __syncthreads();
     }
+    if (threadIdx.x == 0)
+        atomicAdd(worker_done, 1);
 }
 
 template <int Threads>
@@ -2837,7 +2840,7 @@ void run_w2_progress(
                     && progress_state.is_contiguous(),
                 "W2 progress state must be contiguous CUDA int32");
     const int tokens = topk_weights.numel() / kTopK;
-    TORCH_CHECK(progress_state.numel() >= tokens * 44 + 2,
+    TORCH_CHECK(progress_state.numel() >= tokens * 44 + 3,
                 "W2 progress state is too small");
     launch_route_gemm<512, 4096, 1, false, 0, true>(
         weight, weight_scale, weight_global_scale,
@@ -3216,8 +3219,8 @@ void progress_k6_mc_push_tp4(
     TORCH_CHECK(progress_state.scalar_type() == torch::kInt32
                     && progress_state.is_cuda()
                     && progress_state.is_contiguous()
-                    && progress_state.numel() >= tokens * 44 + 2,
-                "progress state must contain at least M*44+2 int32 values");
+                    && progress_state.numel() >= tokens * 44 + 3,
+                "progress state must contain at least M*44+3 int32 values");
     TORCH_CHECK(push_counter.is_cuda() && push_counter.element_size() == 4
                     && push_counter.numel() == 78,
                 "TP4 H20 push counter must contain 78 CUDA uint32 values");
@@ -3570,7 +3573,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v83progress"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v83cworker"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[

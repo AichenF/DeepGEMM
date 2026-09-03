@@ -246,9 +246,10 @@ class CapturedCase:
         )
         self.pipeline_done_event = torch.cuda.Event()
         # One allocation is reset by a single captured memset.  Layout is
-        # M*32 tile counters, three M*4 chunk arrays, then tail/claim scalars.
+        # M*32 tile counters, three M*4 chunk arrays, then
+        # tail/claim/worker-done scalars.
         self.w2_progress_state = torch.empty(
-            (self.m * 44 + 2,), dtype=torch.int32, device=device
+            (self.m * 44 + 3,), dtype=torch.int32, device=device
         )
         max_padded = (
             routes * 8

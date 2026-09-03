@@ -74,6 +74,7 @@ def main() -> None:
     valid = state[queue_end:valid_end]
     tail = int(state[valid_end].item())
     claim = int(state[valid_end + 1].item())
+    worker_done = int(state[valid_end + 2].item())
     expected_tasks = args.m * 4
     queue_values = sorted(int(value) for value in queue[:tail].tolist())
     result = {
@@ -86,6 +87,7 @@ def main() -> None:
         "queue_tail": tail,
         "valid_sum": int(valid.sum().item()),
         "worker_claim": claim,
+        "worker_done": worker_done,
         "queue_is_permutation": queue_values == list(range(expected_tasks)),
         "w2_bitwise_equal": bool(torch.equal(progress_output, case.down)),
         "finite": bool(torch.isfinite(progress_output.float()).all().item()),
@@ -97,6 +99,7 @@ def main() -> None:
         and tail == expected_tasks
         and result["valid_sum"] == expected_tasks
         and claim == 0
+        and worker_done == 0
         and result["queue_is_permutation"]
         and result["w2_bitwise_equal"]
         and result["finite"]

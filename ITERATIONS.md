@@ -4080,3 +4080,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP4-shape M8 random routing passes: all 256 `(token,N128)` counters equal 6, all 32 `(token,N1024)` counters equal 8, queue tail and valid sum both equal 32, and the queue is an exact permutation of all 32 tasks. The progress W2 output is finite and bitwise equal to control.
 - Evidence: `results/iter83b_w2_progress_publication_probe_20260903.log`.
 - Finding: iteration 83a is not caused by missing W2 publications. Isolate local worker completion without communication next, then inspect multicast phase/slot layout only if every worker claim terminates.
+
+### Iteration 83c0 — worker probe launcher rejected `--m`
+
+- Added worker-exit accounting and a TP4 diagnostic for all four multicast source-slot ranges. The diagnostic command did not execute: this torchrun parser treated the script's `--m` as an ambiguous launcher abbreviation for `--master-*`.
+- Evidence: `results/iter83c0_w2_progress_worker_launcher_error_20260903.log`.
+- Classification: launcher error, not a kernel result. Retry with an explicit `--` separator before the training script.
