@@ -4605,3 +4605,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Combined with iteration 101b M128 (`1.001567x`), the five-shape geometric-mean improvement is approximately **1.00412x**. All 22 paired batch medians across the five shapes favor the candidate.
 - The effect is small but broad and unusually consistent, matching the expected benefit from distributing W2's route-scale gathers. Keep opt-in until a longer five-shape exact-Humming/custom audit confirms the selected-score impact; then consider making W2 distributed preparation the default.
 - Artifact: `results/iter101c_w2_distributed_prep_tp4_m8_m16_m32_m64_paired_cold400_20260903.log`.
+
+## Iteration 101d — exact-Humming five-shape formal audit with W2 distributed preparation
+
+- Ran the exact MXFP4 Humming/custom TP4 CUDA graphs with `V4_W2_DISTRIBUTED_PREP=1`, random routes, M={8,16,32,64,128}, 10 balanced batch-order windows × 200 samples per implementation/M. Every graph replay was preceded by a separate excluded 256 MiB L2 clear; both graphs used the same SGLang `CustomAllReduceV2` instance.
+- Humming/custom medians (ms) and speedups: M8 `0.090048/0.076480 = 1.177406x`; M16 `0.145824/0.122144 = 1.193870x`; M32 `0.232320/0.209808 = 1.107298x`; M64 `0.339008/0.301328 = 1.125046x`; M128 `0.407936/0.383168 = 1.064640x`.
+- Geometric means are Humming **0.211367559 ms** and custom **0.186609677 ms**, for **1.132672x (13.27%)**. Both implementations pass their independent reference and all-reduce checks at every shape.
+- Against this exact window, a 1.20x result requires custom <= `0.176139633 ms`; the remaining geometric-mean reduction is `0.010470044 ms`, or **5.61%** of current custom latency.
+- Cross-window headline drift masks most of the candidate's approximately 0.41% same-process control win, so selection rests on iterations 101b/c's 22/22 paired-batch direction, while this run establishes end-to-end correctness and the new absolute score. Make W2 distributed preparation the default, re-gate the no-environment TP4/TP8 paths, then resume structural GEMM work.
+- Artifact: `results/iter101d_w2_distributed_prep_exact_humming_tp4_formal_cold2000_20260903.log`.

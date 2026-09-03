@@ -278,6 +278,9 @@ def main() -> None:
                     "custom_w13_distributed_prep": (
                         kernel.W13_DISTRIBUTED_PREP
                     ),
+                    "custom_w2_distributed_prep": (
+                        kernel.W2_DISTRIBUTED_PREP
+                    ),
                     "custom_normalized_weight_scale": (
                         kernel.NORMALIZED_WEIGHT_SCALE
                     ),
