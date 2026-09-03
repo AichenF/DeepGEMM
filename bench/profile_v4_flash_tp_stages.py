@@ -308,6 +308,11 @@ def main() -> None:
                     if args.impl == "custom"
                     else None
                 ),
+                "custom_w13_split_mode": (
+                    os.environ.get("V4_W13_SPLIT_K", "auto")
+                    if args.impl == "custom"
+                    else None
+                ),
                 "m": args.m,
                 "tp": args.tp,
                 "route_pattern": args.route_pattern,
