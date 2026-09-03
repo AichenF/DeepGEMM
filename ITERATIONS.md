@@ -4883,3 +4883,10 @@ maximum rank latency of a full CUDA-Graph replay.
   - TP8 shape I/rank=256, M8 balanced, auto split4: route/quant exact; W13 cosine 0.999999997, activation cosine 0.999999745, W2 cosine 0.999997278.
 - Result: all three paths passed and stayed finite.  Candidate is correctness-qualified for cold-L2 paired performance testing; it is not selected yet.
 - Evidence: `results/iter117_compact_interleaved_scale_correctness_20260903.log`.
+
+## Iteration 117b — compact-layout M128 TP4 screen launch failure
+
+- Intended test: same-process control/candidate TP4 M128 random-route screen, 6 outer x 100 replays, cold L2 before every graph replay.
+- Failure: this torchrun build parsed the training-script argument `--m=128` as an ambiguous torchrun option (`--max-restarts`, `--monitor-interval`, `--module`, or `--master-*`) and exited before workers, CUDA Graph capture, or GPU timing.
+- Result: no performance sample was produced and no kernel conclusion is drawn.  Retry must insert torchrun's `--` separator before the benchmark script arguments.
+- Evidence: `results/iter117b_compact_interleaved_scale_m128_screen_20260903.log`.
