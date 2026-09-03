@@ -5193,3 +5193,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Fresh selected-extension TP4 balanced auto split4 passes with W13/activation/W2 rel-L2 0.000076187/0.000694956/0.002342691; TP4 skew forced split2 passes with 0.000077291/0.000838720/0.002351904; TP8-shape balanced auto split4 passes with 0.000076998/0.000714756/0.002333323.  All outputs are finite, and route/quant checks are exact.
 - Result: the production default now uses compact per-K128 scales plus two-way outer K unrolling for both W13 and W2.  Continue optimization from this selected baseline; all future benchmarks remain per-replay cold L2.
 - Evidence: `results/iter127_select_route_k_unroll2_default_correctness_20260903.log`.
+
+## Iteration 128 — unroll2 does not rescue ten-CTA W13 occupancy
+
+- Re-tested the existing `V4_W13_LB10_MAX_SMEM=1` compound on the newly selected unroll2 path.  This is a materially different resource point from iteration 120: unroll2 already gives W13 48 registers/thread and zero stack without launch bounds, so the candidate primarily exposes the tenth resident CTA through maximum shared-memory carveout.
+- TP4 balanced auto split4, TP4 skew forced split2, and TP8-shape balanced auto split4 all pass the strengthened full-route reference with errors identical to selected.  Cubin resource inspection confirms both arms keep W13 at 48 registers and W2 at 56, with zero stack/local allocation.
+- Same-process TP4 M128, eight x 100 rank-max cold-L2 samples per arm: selected control min/median/max 0.311232/0.344288/0.528000 ms; ten-CTA candidate 0.321664/0.358800/0.426272 ms.  Control/candidate is 0.959554x, so the candidate is 14.512 us or 4.22% slower and loses all eight batch medians.
+- Outputs are bitwise identical on all ranks.  Result: reject ten-CTA carveout again.  The regression survives removal of the old register-compression confound, showing the additional residency itself causes harmful issue/shared/TMA contention; retain automatic shared configuration and nine CTAs.
+- Evidence: `results/iter128_unroll2_lb10_max_smem_correctness_20260903.log` and `results/iter128b_unroll2_lb10_max_smem_tp4_m128_paired_cold800_20260903.log`.
