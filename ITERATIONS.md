@@ -5214,3 +5214,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - The first M128 paired-timing invocation used malformed concatenated CLI options (`--m128`, `--outer8`, `--replays100`, and `--warmup-replays20`). `argparse` rejected them on all four ranks before graph construction or kernel execution.
 - This run contains no performance evidence and does not change the four-way-unroll decision. The corrected invocation will use `--m 128 --outer 8 --replays 100 --warmup-replays 20`.
 - Evidence: `results/iter129b_route_k_unroll4_tp4_m128_paired_cold800_20260903.log`
+
+## Iteration 129c — torchrun consumed the corrected script option
+
+- The spaced script arguments were syntactically valid for the benchmark, but this container's `torchrun` parser consumed the trailing `--m` as an abbreviated launcher option and rejected it as ambiguous before workers or kernels started.
+- This run again contains no performance evidence. The next invocation will place an explicit `--` between launcher options and the training script so all benchmark options reach the script unchanged.
+- Evidence: `results/iter129c_route_k_unroll4_tp4_m128_paired_cold800_20260903.log`
