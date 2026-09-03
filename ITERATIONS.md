@@ -3288,3 +3288,25 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/iter53_w13_leader_wait_correctness_20260903.log` and
   `bench/results/iter53_w13_leader_wait_stage_aba_coldl2_20260903.log`.
+
+### WGMMA iteration 53d — select W13-only leader wait
+
+- TP4 candidate A/control/candidate B full-graph geometric means are
+  0.182771/0.183345/0.183502 ms over 400 separately cold-L2 samples per M.
+  Candidate A improves 0.31%; candidate B is 0.09% slower overall because
+  its M128 window enters a system-level high-latency mode.  Both candidates
+  improve M8-M32, and M64 is within 0.15% in all three windows.
+- Because four-batch M128 medians vary by tens of microseconds in both
+  implementations, run a dedicated replay-interleaved 10x200 audit instead
+  of selecting a favorable short window.  Candidate/control M128 medians are
+  0.342352/0.343840 ms, a 0.43% candidate reduction.  Their paired
+  Humming/custom ratios are 1.16937/1.16054, a 0.76% normalized improvement.
+- This confirms the 0.49% local M128 gain and the mechanism is isolated to
+  W13; W2 and communication are unchanged.  Select
+  `V4_LEADER_MBAR_WAIT=1` as the default, applying only to W13.  Require a
+  TP8 full-graph smoke and TP4 10x200 five-point formal run before updating
+  the headline; expect only a sub-percent improvement.
+- Evidence:
+  `bench/results/tp4_iter53_w13_leader_{candidate_a,control,candidate_b}_coldl2_screen_20260903.log`
+  and
+  `bench/results/tp4_iter53_w13_leader_m128_{candidate,control}_coldl2_audit_20260903.log`.
