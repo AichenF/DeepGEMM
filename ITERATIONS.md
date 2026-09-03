@@ -2752,3 +2752,20 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_tiled_layout_correctness_20260903.log`,
   `bench/results/tp4_tiled_weight_layout_local_coldl2_screen_20260903.log`,
   and `bench/results/tp4_tiled_layout_{candidate_a,control,candidate_b}_coldl2_screen_20260903.log`.
+
+### Post-iteration-42 TP4 formal cold-L2 score
+
+- Formal paired protocol is unchanged: random real k6 routes, TP4 GPUs 1-4,
+  same CustomAllReduceV2, alternating AB/BA complete batches, 10x200 replays,
+  and a separate excluded 256 MiB L2 clear before every implementation replay.
+- Humming/custom medians (ms) at M8/16/32/64/128 are
+  0.090016/0.082400, 0.145664/0.130944, 0.232576/0.218464,
+  0.337200/0.311648, and 0.408784/0.396704.  Custom wins every point by
+  3.05-11.24%; geometric means are 0.211214/0.196293 ms, so
+  custom/Humming=0.929354 and Humming/custom=1.076017 (7.60% speedup).
+- Versus the immediately preceding normalized-scale formal custom geomean
+  0.203518 ms, tiled storage improves 3.68%, matching its conservative
+  screen estimate.  All finite, cosine and independent-NCCL all-reduce checks
+  pass.  The accepted result is still well short of the 20% objective.
+- Evidence:
+  `bench/results/tp4_paired_tiled_layout_default_coldl2_formal_20260903.log`.
