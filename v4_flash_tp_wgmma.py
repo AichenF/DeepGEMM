@@ -86,6 +86,9 @@ W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_SORTED_ACT = os.environ.get("V4_W2_SORTED_ACT", "0") == "1"
 W2_MBLOCK_SCALE = os.environ.get("V4_W2_MBLOCK_SCALE", "0") == "1"
 W2_NEEDS_ROUTE_MAP = W2_SORTED_ACT or W2_MBLOCK_SCALE
+W2_FOLD_GLOBAL_SCALE = (
+    os.environ.get("V4_W2_FOLD_GLOBAL_SCALE", "0") == "1"
+)
 W2_COALESCED_STORE = (
     os.environ.get("V4_W2_COALESCED_STORE", "0") == "1"
 )
@@ -99,6 +102,13 @@ if W2_NEEDS_ROUTE_MAP and (
     raise ValueError(
         "sorted W2 activation/scale layouts require fused route/activation "
         "quantization and the split-K W13 path"
+    )
+if W2_FOLD_GLOBAL_SCALE and (
+    not NORMALIZED_WEIGHT_SCALE or not FUSED_ACT_QUANT or W13_PAIRED_WG
+):
+    raise ValueError(
+        "V4_W2_FOLD_GLOBAL_SCALE=1 requires normalized weights, fused "
+        "activation quantization, and the split-K W13 path"
     )
 TILED_K6_REDUCE_POLICY = os.environ.get("V4_TILED_K6_REDUCE_MODE", "auto")
 if TILED_K6_REDUCE_POLICY not in ("auto", "0", "1", "2", "3", "4"):
@@ -253,6 +263,7 @@ static constexpr bool kW2RouteOutput = K_W2_ROUTE_OUTPUT;
 static constexpr bool kW2SortedAct = K_W2_SORTED_ACT;
 static constexpr bool kW2MblockScale = K_W2_MBLOCK_SCALE || kW2SortedAct;
 static constexpr bool kW2CoalescedStore = K_W2_COALESCED_STORE;
+static constexpr bool kW2FoldGlobalScale = K_W2_FOLD_GLOBAL_SCALE;
 
 #if K_MIN_BLOCKS_PER_SM > 0
 #define ROUTE_LAUNCH_BOUNDS __launch_bounds__(128, K_MIN_BLOCKS_PER_SM)
@@ -456,9 +467,12 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             : -1;
     }
     if (tid == 0) {
-        expert_weight_scale = kNormalizedWeightScale
-            ? __ldg(weight_global_scale + expert_idx)
-            : 1.0f;
+        if constexpr (kNormalizedWeightScale
+                      && (IsW13 || !kW2FoldGlobalScale)) {
+            expert_weight_scale = __ldg(weight_global_scale + expert_idx);
+        } else {
+            expert_weight_scale = 1.0f;
+        }
     }
     if constexpr (!kNormalizedWeightScale && !kDequantSynthLut
                   && (IsW13 || !kW2GlobalLut)) {
@@ -1650,6 +1664,8 @@ __global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
         uint8_t* __restrict__ quantized,
         float* __restrict__ scale,
         const int32_t* __restrict__ route_to_sorted,
+        const int32_t* __restrict__ topk_ids,
+        const float* __restrict__ w2_global_scale,
         int routes) {
     static_assert(Intermediate % 128 == 0);
     constexpr int kGroupsPerRoute = Intermediate / 128;
@@ -1705,13 +1721,18 @@ __global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
                            __shfl_down_sync(0xffffffffu, absmax, delta));
         if (lane == 0) {
             group_scale = fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
+            float output_scale = group_scale;
+            if constexpr (kW2FoldGlobalScale) {
+                const int expert = __ldg(topk_ids + route);
+                output_scale *= __ldg(w2_global_scale + expert);
+            }
             if constexpr (kW2MblockScale) {
                 const int mblock = sorted_position >> 3;
                 const int slot = sorted_position & 7;
                 scale[(mblock * kGroupsPerRoute + group_in_route) * 8
-                      + slot] = group_scale;
+                      + slot] = output_scale;
             } else {
-                scale[group] = group_scale;
+                scale[group] = output_scale;
             }
         }
     }
@@ -3104,7 +3125,8 @@ template <int Intermediate, int SplitK>
 void launch_reduce_swiglu_quant(
         torch::Tensor partials, torch::Tensor activation,
         torch::Tensor quantized, torch::Tensor scale,
-        torch::Tensor route_to_sorted, int routes) {
+        torch::Tensor route_to_sorted, torch::Tensor topk_ids,
+        torch::Tensor w2_global_scale, int routes) {
     constexpr int threads = 128;
     constexpr int groups_per_route = Intermediate / 128;
     const auto stream = at::cuda::getCurrentCUDAStream();
@@ -3115,40 +3137,53 @@ void launch_reduce_swiglu_quant(
         routes * groups_per_route, threads, 0, stream>>>(
         partials.data_ptr<float>(), activation_ptr,
         quantized.data_ptr<uint8_t>(), scale.data_ptr<float>(),
-        route_to_sorted.data_ptr<int32_t>(), routes);
+        route_to_sorted.data_ptr<int32_t>(),
+        topk_ids.data_ptr<int32_t>(), w2_global_scale.data_ptr<float>(),
+        routes);
 }
 
 void reduce_swiglu_quant(
         torch::Tensor partials, torch::Tensor activation,
         torch::Tensor quantized, torch::Tensor scale,
-        int intermediate, int split_k, torch::Tensor route_to_sorted) {
+        int intermediate, int split_k, torch::Tensor route_to_sorted,
+        torch::Tensor topk_ids, torch::Tensor w2_global_scale) {
     const int routes = partials.size(1);
     TORCH_CHECK(!(kW2SortedAct || kW2MblockScale)
                     || route_to_sorted.numel() == routes,
                 "sorted W2 activation/scale requires one position per route");
+    TORCH_CHECK(!kW2FoldGlobalScale
+                    || (topk_ids.numel() == routes
+                        && w2_global_scale.numel() == 256),
+                "folded W2 scale requires route experts and 256 globals");
     if (intermediate == 512) {
         if (split_k == 4)
             launch_reduce_swiglu_quant<512, 4>(
-                partials, activation, quantized, scale, route_to_sorted, routes);
+                partials, activation, quantized, scale, route_to_sorted,
+                topk_ids, w2_global_scale, routes);
         else if (split_k == 2)
             launch_reduce_swiglu_quant<512, 2>(
-                partials, activation, quantized, scale, route_to_sorted, routes);
+                partials, activation, quantized, scale, route_to_sorted,
+                topk_ids, w2_global_scale, routes);
         else {
             TORCH_CHECK(split_k == 1, "split_k must be 1, 2, or 4");
             launch_reduce_swiglu_quant<512, 1>(
-                partials, activation, quantized, scale, route_to_sorted, routes);
+                partials, activation, quantized, scale, route_to_sorted,
+                topk_ids, w2_global_scale, routes);
         }
     } else if (intermediate == 256) {
         if (split_k == 4)
             launch_reduce_swiglu_quant<256, 4>(
-                partials, activation, quantized, scale, route_to_sorted, routes);
+                partials, activation, quantized, scale, route_to_sorted,
+                topk_ids, w2_global_scale, routes);
         else if (split_k == 2)
             launch_reduce_swiglu_quant<256, 2>(
-                partials, activation, quantized, scale, route_to_sorted, routes);
+                partials, activation, quantized, scale, route_to_sorted,
+                topk_ids, w2_global_scale, routes);
         else {
             TORCH_CHECK(split_k == 1, "split_k must be 1, 2, or 4");
             launch_reduce_swiglu_quant<256, 1>(
-                partials, activation, quantized, scale, route_to_sorted, routes);
+                partials, activation, quantized, scale, route_to_sorted,
+                topk_ids, w2_global_scale, routes);
         }
     } else {
         TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
@@ -3718,7 +3753,9 @@ void reduce_swiglu(torch::Tensor partials, torch::Tensor output,
 void reduce_swiglu_quant(torch::Tensor partials, torch::Tensor activation,
                          torch::Tensor quantized, torch::Tensor scale,
                          int intermediate, int split_k,
-                         torch::Tensor route_to_sorted);
+                         torch::Tensor route_to_sorted,
+                         torch::Tensor topk_ids,
+                         torch::Tensor w2_global_scale);
 void cast_bf16(torch::Tensor input, torch::Tensor output);
 void tiled_k6_reduce(torch::Tensor input, torch::Tensor topk_weights,
                      torch::Tensor output, int mode);
@@ -3786,10 +3823,11 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_sa{int(W2_SORTED_ACT)}_"
           f"ms{int(W2_MBLOCK_SCALE)}_"
+          f"fg{int(W2_FOLD_GLOBAL_SCALE)}_"
           f"cs{int(W2_COALESCED_STORE)}_"
           f"w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v88mblockscale"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v90foldw2scale"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -3832,6 +3870,7 @@ _ext = load_inline(
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_W2_SORTED_ACT={int(W2_SORTED_ACT)}",
         f"-DK_W2_MBLOCK_SCALE={int(W2_MBLOCK_SCALE)}",
+        f"-DK_W2_FOLD_GLOBAL_SCALE={int(W2_FOLD_GLOBAL_SCALE)}",
         f"-DK_W2_COALESCED_STORE={int(W2_COALESCED_STORE)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",
@@ -4191,6 +4230,8 @@ def reduce_swiglu_quant(
     intermediate: int,
     split_k: int | None = None,
     route_to_sorted: torch.Tensor | None = None,
+    topk_ids: torch.Tensor | None = None,
+    w2_global_scale: torch.Tensor | None = None,
 ) -> None:
     if split_k is None:
         split_k = select_w13_split_k(partials.size(1))
@@ -4204,6 +4245,16 @@ def reduce_swiglu_quant(
         route_to_sorted = torch.empty(
             0, dtype=torch.int32, device=partials.device
         )
+    if topk_ids is None:
+        if W2_FOLD_GLOBAL_SCALE:
+            raise ValueError("folded W2 scale requires topk_ids")
+        topk_ids = torch.empty(0, dtype=torch.int32, device=partials.device)
+    if w2_global_scale is None:
+        if W2_FOLD_GLOBAL_SCALE:
+            raise ValueError("folded W2 scale requires w2_global_scale")
+        w2_global_scale = torch.empty(
+            0, dtype=torch.float32, device=partials.device
+        )
     _ext.reduce_swiglu_quant(
         partials,
         activation,
@@ -4212,6 +4263,8 @@ def reduce_swiglu_quant(
         intermediate,
         split_k,
         route_to_sorted,
+        topk_ids,
+        w2_global_scale,
     )
 
 

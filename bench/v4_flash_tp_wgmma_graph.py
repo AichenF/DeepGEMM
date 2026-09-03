@@ -375,6 +375,8 @@ class CapturedCase:
                     self.intermediate_per_rank,
                     self.w13_split_k,
                     self.route_to_sorted,
+                    self.topk_ids,
+                    self.g2,
                 )
             else:
                 kernel.reduce_swiglu(
@@ -999,6 +1001,7 @@ def main() -> None:
                     "fused_route_quant": kernel.FUSED_ROUTE_QUANT,
                     "w2_sorted_activation": kernel.W2_SORTED_ACT,
                     "w2_mblock_scale": kernel.W2_MBLOCK_SCALE,
+                    "w2_fold_global_scale": kernel.W2_FOLD_GLOBAL_SCALE,
                     "w2_coalesced_store": kernel.W2_COALESCED_STORE,
                     "w13_paired_wg": kernel.W13_PAIRED_WG,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,

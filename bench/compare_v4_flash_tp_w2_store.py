@@ -24,6 +24,7 @@ if COMPARE_FLAG not in {
     "V4_W2_COALESCED_STORE",
     "V4_W2_MBLOCK_SCALE",
     "V4_W2_SORTED_ACT",
+    "V4_W2_FOLD_GLOBAL_SCALE",
     "V4_EXACT_ROUTE_CAPACITY",
 }:
     raise ValueError(f"unsupported V4_COMPARE_FLAG={COMPARE_FLAG}")

@@ -4421,3 +4421,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** dynamic-capacity control median 0.359296 ms; exact-capacity candidate 0.358640 ms; control/candidate 1.001829x (+0.183%). Batch differences were sub-microsecond and one batch reversed.
 - **Decision:** This is an upper-bound diagnostic, not a selectable dynamic-route result. Empty over-capacity CTAs are not a material source of the remaining ~10 microseconds; do not prioritize a large persistent-scheduler refactor merely to eliminate them.
 - **Artifact:** `results/iter89_exact_route_capacity_paired_tp4_m128_cold_600_20260903.log`.
+
+## Iteration 90 — Fold W2 expert-global scale into activation scales
+
+- **Hypothesis:** Normalized MXFP4 W2 repeatedly loads one expert-global scale per N128 CTA and multiplies it into eight activation scales for every K128 tile. W2 linearity permits doing the same FP32 product once per route/group in the existing fused SwiGLU/FP8 quantizer.
+- **Change:** Added opt-in `V4_W2_FOLD_GLOBAL_SCALE=1`. The quantizer stores `group_scale * w2_global_scale[expert]` while retaining the unfused group scale for FP8 conversion; W2 compiles out its expert-global load/multiply. W13 is unchanged because SwiGLU prevents this reassociation.
+- **Verification:** TP4 balanced/skew M8 and TP8-shape balanced M8 all passed the full all-route reference. W2 cosine was 0.999997256, 0.999997235, and 0.999997278; outputs finite.
+- **Decision:** Correctness and TP8-runnable gate passed; remain opt-in pending paired cold-L2 timing.
+- **Artifact:** `results/iter90_w2_fold_global_scale_correctness_20260903.log`.

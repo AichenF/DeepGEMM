@@ -303,6 +303,8 @@ def main() -> None:
                 act_scale,
                 intermediate,
                 route_to_sorted=route_to_sorted,
+                topk_ids=topk_ids,
+                w2_global_scale=g2,
             )
         else:
             kernel.reduce_swiglu(
@@ -389,6 +391,9 @@ def main() -> None:
         ]
     else:
         act_scale_route = act_scale
+    if kernel.W2_FOLD_GLOBAL_SCALE:
+        route_global_scale = g2[topk_ids.flatten().long()]
+        act_scale_route = act_scale_route / route_global_scale[:, None]
     act_dequant = qact_route.float() * act_scale_route.repeat_interleave(
         128, dim=1
     )
@@ -417,6 +422,7 @@ def main() -> None:
         f"w13_tail_fused_act={w13_tail_fused_act} "
         f"w2_sorted_act={kernel.W2_SORTED_ACT} "
         f"w2_mblock_scale={kernel.W2_MBLOCK_SCALE} "
+        f"w2_fold_global_scale={kernel.W2_FOLD_GLOBAL_SCALE} "
         f"w2_coalesced_store={kernel.W2_COALESCED_STORE} "
         f"w2_global_lut={kernel.W2_GLOBAL_LUT} "
         f"leader_mbar_wait={kernel.LEADER_MBAR_WAIT}"
