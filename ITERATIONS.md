@@ -4900,3 +4900,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Paired result: control/candidate = 1.021672x (2.12% latency reduction); candidate won all 6 outer batch medians despite common temporal drift.
 - Result: promising screen.  Keep candidate provisional and test smaller M plus a formal 10 x 200 run before selection.
 - Evidence: `results/iter117c_compact_interleaved_scale_m128_screen_20260903.log`.
+
+## Iteration 117d — compact interleaved scale M32 TP4 screen
+
+- Method: exact same-process control/candidate CUDA Graphs, TP4 random routes, rank-max latency, 6 outer x 100 samples per variant, per-sample AB/BA alternation, separate 256MiB cold-L2 clear outside timing.
+- Correctness: graph outputs were bit-exact on all four ranks.
+- Control: min/median/max 0.186464/0.192832/0.337664 ms.
+- Compact candidate: min/median/max 0.183424/0.189472/0.195808 ms.
+- Paired result: control/candidate = 1.017733x (1.74% latency reduction); candidate won all 6 outer batch medians.
+- Result: benefit extends to the split4 M32 path.  Proceed to formal all-M 10 x 200 validation before selecting the default.
+- Evidence: `results/iter117d_compact_interleaved_scale_m32_screen_20260903.log`.
