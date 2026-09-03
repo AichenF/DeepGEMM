@@ -4832,3 +4832,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Stock median: **0.284864 ms**; multicast-fused median: **0.283328 ms**; stock/fused: **1.005421x**.  Despite the pooled 1.536 us lead, only five of ten candidate batch medians beat their paired controls, and both paths show a broad bimodal distribution.
 - Decision: the earlier M64 lead still does not survive a direction-consistent long audit.  Keep the production bound at M<=32 and stock CARv2 at M64; retain the explicit bound only as a reproducibility knob.  Correctness is bit-exact versus stock (`max_abs=0`).
 - Artifact: `results/iter114_m64_multicast_push_long_ab_cold2000_20260903.log`.
+
+## Iteration 115 — H20 CARv2 graph-policy screen
+
+- Added `bench/v4_flash_tp_car_policy_ab.py`, a same-process full-pipeline A/B harness that leaves the exact baseline dispatch untouched and captures candidate CARv2 algorithms/block counts into separate CUDA graphs using the same communicator, weights, inputs, and routes.  Every measured replay receives a separate excluded 256 MiB L2 clear, timings are reduced to the TP4 max rank, and candidates are checked independently against the distributed reference.
+- Swept M64/M128 across graph `1shot_pull` and `2shot_pull` with 24/32/40/48/56/64 pull blocks (stock control is graph `2shot_pull`, 64 blocks), using four balanced candidate/control batches x 100 cold samples per implementation.  All candidates pass the all-reduce gate and are bit-exact versus the stock graph output (`max_abs=0`).
+- Most `1shot_pull` points lose or are directionally mixed.  Its apparent M64/48-block `1.01796x` and M64/64-block `1.00854x` wins have only two and one winning batches respectively; M128/64 loses by 2.88%.  Do not advance the one-shot direction.
+- For M64, `2shot_pull/32` is the only candidate that wins all four paired batches: control/candidate medians `0.294608/0.288992 ms = 1.01943x`.  The numerically larger `2shot_pull/24` pooled result (`1.06161x`) wins only two of four batches because that window crosses a strong absolute-latency mode shift, so it is not credible yet.
+- For M128, `2shot_pull/40` is the best directionally supported point: control/candidate medians `0.378928/0.372416 ms = 1.01749x`, with three of four batches winning.  Other block counts are neutral/mixed.
+- Conclusion: H200's fixed 64-block geometry is plausibly suboptimal for the 78-SM H20, but this broad screen is noisy.  Advance only M64/32 and M128/40 to independent long 10x200 AB/BA audits before changing runtime policy; retain stock 64 blocks meanwhile.
+- Artifact: `results/iter115_car_policy_screen_tp4_m64_m128_cold400_20260903.log`.
