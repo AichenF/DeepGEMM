@@ -1,0 +1,19 @@
+==PROF== Connected to process 357752 (/usr/bin/python3.12)
+==PROF== Connected to process 357891 (/usr/bin/python3.12)
+==PROF== Connected to process 357889 (/usr/bin/python3.12)
+==PROF== Disconnected from process 357891
+==PROF== Disconnected from process 357889
+==PROF== Profiling "route_gemm": 0%....50%....100% - 20 passes
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/profile_v4_flash_tp_local.py", line 218, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/profile_v4_flash_tp_local.py", line 204, in main
+    "w13_fp16_partial": kernel_module.W13_FP16_PARTIAL
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: module 'v4_flash_tp_wgmma' has no attribute 'W13_FP16_PARTIAL'
+==PROF== Disconnected from process 357752
+==ERROR== The application returned an error code (1).
+==PROF== Report: /lustre/raplab/client/xutingz/fac/DeepGEMM_tp/results/iter116b_selected_tp4_m128_w13_cold_ncu.ncu-rep

@@ -4857,3 +4857,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - The application exited before any target kernel launch because the untracked remote root copy of `profile_v4_flash_tp_local.py` still expected the old four-tensor `make_weights` return, while the current benchmark returns six tensors including normalized global scales (`ValueError: too many values to unpack`).  This is profiler-driver skew, not a kernel correctness or performance failure.
 - No NCU metrics or timing result were produced.  Replace only the stale profiler helper with the already-current local staging copy and repeat the identical capture; do not alter the selected kernel.
 - Artifact: `results/iter116_selected_tp4_m128_w13_cold_ncu.log`.
+
+### Iteration 116b — current W13 NCU report captured; metadata print is stale
+
+- Replaced the remote profiler helper with the current six-tensor weight API and repeated the same detailed/cache-controlled NCU run.  NCU successfully profiled the selected M128 W13 `route_gemm` for all 20 replay passes and wrote a valid `.ncu-rep`.
+- The Python process then exited only while printing metadata because the helper still referenced the subsequently removed `W13_FP16_PARTIAL` module flag.  This post-profile `AttributeError` does not invalidate the already-written report, but the shell's `&&` correctly prevented automatic report import.
+- Preserve the report and failure log.  Next import the existing report read-only for bottleneck analysis, then remove the stale metadata field before future captures; no selected-kernel source changed in this iteration.
+- Artifacts: `profile_v4_flash_tp_local.py`, `results/iter116b_selected_tp4_m128_w13_cold_ncu.log`, and `results/iter116b_selected_tp4_m128_w13_cold_ncu.ncu-rep`.
