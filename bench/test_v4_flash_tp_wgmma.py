@@ -351,7 +351,6 @@ def main() -> None:
         f"active={torch.unique(flat_ids).numel()} padded={num_tokens_padded.item()} "
         f"split_k={selected_split_k} mode2={kernel.MODE2_BRAID} "
         f"interleaved_bulk={kernel.INTERLEAVED_BULK_COPY} "
-        f"bulk_l2_prefetch={kernel.BULK_L2_PREFETCH} "
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
         f"w2_global_lut={kernel.W2_GLOBAL_LUT}"
     )

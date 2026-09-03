@@ -78,11 +78,6 @@ if INTERLEAVED_BULK_COPY and (
         "V4_INTERLEAVED_BULK_COPY requires two weight/scale stages "
         "and scale-quad reuse"
     )
-BULK_L2_PREFETCH = int(os.environ.get("V4_BULK_L2_PREFETCH", "0"))
-if BULK_L2_PREFETCH not in (0, 2, 3, 4):
-    raise ValueError("V4_BULK_L2_PREFETCH must be one of 0,2,3,4")
-if BULK_L2_PREFETCH and not INTERLEAVED_BULK_COPY:
-    raise ValueError("V4_BULK_L2_PREFETCH requires interleaved bulk copy")
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
@@ -161,9 +156,6 @@ static constexpr bool kNormalizedWeightScale = K_NORMALIZED_WEIGHT_SCALE;
 static constexpr bool kTiledWeightLayout = K_TILED_WEIGHT_LAYOUT;
 static constexpr bool kBulkWeightCopy = K_BULK_WEIGHT_COPY;
 static constexpr bool kInterleavedBulkCopy = K_INTERLEAVED_BULK_COPY;
-static constexpr int kBulkL2Prefetch = K_BULK_L2_PREFETCH;
-static_assert(kBulkL2Prefetch == 0 || kBulkL2Prefetch == 2
-              || kBulkL2Prefetch == 3 || kBulkL2Prefetch == 4);
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
@@ -177,7 +169,6 @@ static_assert(!kInterleavedBulkCopy
               || (kBulkWeightCopy && kTiledWeightLayout
                   && kStages == 2 && kScaleQuadReuse == 4
                   && kScaleBuffers == 2));
-static_assert(kBulkL2Prefetch == 0 || kInterleavedBulkCopy);
 static constexpr float kRoutedScale = 1.5f;
 static constexpr bool kW2RouteOutput = K_W2_ROUTE_OUTPUT;
 
@@ -511,40 +502,6 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                            "r"((scale_kt & ~3) * (kBlockK / 32)),
                            "r"(weight_row),
                            "r"(barrier_addr[stage]) : "memory");
-                }
-            }
-            if constexpr (kBulkL2Prefetch > 0 && kInterleavedScale) {
-                const int prefetch_local = local_kt + kBulkL2Prefetch;
-                if (prefetch_local < kKTilesPerSplit) {
-                    constexpr int kScaleTiles = kNumKTiles / 4;
-                    constexpr int kBytesPerNTile =
-                        kNumKTiles * kWeightStageBytes
-                        + kScaleTiles * kScaleStageBytes;
-                    const int prefetch_global = kt_begin + prefetch_local;
-                    const int record = prefetch_global & 7;
-                    const int scales_before =
-                        (prefetch_global >> 3) * 2
-                        + (record >= 1 ? 1 : 0)
-                        + (record >= 4 ? 1 : 0);
-                    const int offset =
-                        prefetch_global * kWeightStageBytes
-                        + scales_before * kScaleStageBytes;
-                    const int64_t ntile =
-                        static_cast<int64_t>(expert_idx) * kNumNTiles
-                        + n_block_idx;
-                    const uint8_t* prefetch_src =
-                        weight + ntile * kBytesPerNTile + offset;
-                    const bool carries_scale =
-                        record == 0
-                        || (record == 3
-                            && prefetch_local + 1 < kKTilesPerSplit);
-                    const int prefetch_bytes = carries_scale
-                        ? kCombinedStageBytes
-                        : kWeightStageBytes;
-                    asm volatile(
-                        "cp.async.bulk.prefetch.L2.global [%0],%1;"
-                        :: "l"(prefetch_src), "r"(prefetch_bytes)
-                        : "memory");
                 }
             }
         }
@@ -1506,11 +1463,10 @@ _ext = load_inline(
           f"twl{int(TILED_WEIGHT_LAYOUT)}_"
           f"bwc{int(BULK_WEIGHT_COPY)}_"
           f"ibc{int(INTERLEAVED_BULK_COPY)}_"
-          f"l2p{BULK_L2_PREFETCH}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v46"),
+          f"mb{MIN_BLOCKS_PER_SM}_v44"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1535,7 +1491,6 @@ _ext = load_inline(
         f"-DK_TILED_WEIGHT_LAYOUT={int(TILED_WEIGHT_LAYOUT)}",
         f"-DK_BULK_WEIGHT_COPY={int(BULK_WEIGHT_COPY)}",
         f"-DK_INTERLEAVED_BULK_COPY={int(INTERLEAVED_BULK_COPY)}",
-        f"-DK_BULK_L2_PREFETCH={BULK_L2_PREFETCH}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",

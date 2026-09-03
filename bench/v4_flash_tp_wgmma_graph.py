@@ -553,7 +553,6 @@ def main() -> None:
                     "tiled_weight_layout": kernel.TILED_WEIGHT_LAYOUT,
                     "bulk_weight_copy": kernel.BULK_WEIGHT_COPY,
                     "interleaved_bulk_copy": kernel.INTERLEAVED_BULK_COPY,
-                    "bulk_l2_prefetch_distance": kernel.BULK_L2_PREFETCH,
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "fused_route_quant": kernel.FUSED_ROUTE_QUANT,

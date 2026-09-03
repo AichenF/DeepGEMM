@@ -339,11 +339,6 @@ def main() -> None:
                     if args.impl == "custom"
                     else None
                 ),
-                "custom_bulk_l2_prefetch_distance": (
-                    int(os.environ.get("V4_BULK_L2_PREFETCH", "0"))
-                    if args.impl == "custom"
-                    else None
-                ),
                 "custom_fused_route_quant": (
                     os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
                     if args.impl == "custom"
