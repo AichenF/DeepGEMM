@@ -5455,3 +5455,21 @@ maximum rank latency of a full CUDA-Graph replay.
 - Interpretation: replacing compiler-managed predicated read-only loads with inline coherent global loads and extra clamp/predicate arithmetic costs more than removing 24 static instructions/one reconvergence region. The NCU `BSSY` samples were not an actionable end-to-end bottleneck in this form.
 - Result: reject `V4_PREDICATED_PADDED_ACTIVATION`; keep it opt-in only for reproducibility and retain the flag-off four-way production default. Do not run an exact-Humming formal benchmark for this loser; move to route-tile locality or another independently evidenced direction.
 - Evidence: `results/iter137f_w13_predicated_activation_tp4_allm_paired_cold2500_20260904.log`.
+
+## Iteration 138 — current-HEAD exact Humming final cold-L2 audit
+
+- Date: 2026-09-04
+- Commit under test: `4e6bb50` (all experimental candidate flags explicitly unset; default four-way K128 outer unroll).
+- Scope: TP4 on GPUs 1–4, DeepSeek-V4-Flash shapes, random precomputed routes, `M={8,16,32,64,128}`, exact Humming MXFP4 indexed W13/W2 baseline and the same SGLang `CustomAllReduceV2` instance for both paths.
+- Protocol: CUDA Graph; complete-batch AB/BA alternation; 10 outer batches × 200 timed replays per implementation and M; 20 warmup replays; separate 256 MiB Triton L2 clear immediately before every replay on the same stream; clear excluded from CUDA-event timing; rank-max latency.
+- Environment audit: NVIDIA H20-3e, 78 SM, 60 MiB L2, world size 4. Candidate flags printed false; default `ROUTE_K_UNROLL2=true`, `ROUTE_K_UNROLL4=true`.
+- Results (Humming / custom median ms, Humming÷custom):
+  - M8: 0.090048000 / 0.071103998 = 1.266426690×.
+  - M16: 0.145983994 / 0.113536000 = 1.285794758×.
+  - M32: 0.233648002 / 0.198144004 = 1.179182805×.
+  - M64: 0.340527996 / 0.286704004 = 1.187733662×.
+  - M128: 0.408464000 / 0.370463997 = 1.102574077×.
+- Aggregate: Humming geometric mean 0.211899337 ms; custom geometric mean 0.176212885 ms; Humming÷custom **1.202518973×** (20.2519% throughput-style speedup), independently clearing the 20% target on current HEAD.
+- Correctness embedded in the paired audit passed for every M and all ranks: both paths finite and all-reduce checks true; custom minimum cosine 0.999995575 and maximum relative L2 0.002974846.
+- Evidence: `results/iter138_current_head_default_exact_humming_tp4_allm_cold2000_20260904.log`.
+- Decision: retain current default implementation. This is a positive final performance audit; run a fresh default TP4-balanced/TP4-skew/TP8-shape correctness sweep before goal closure.
