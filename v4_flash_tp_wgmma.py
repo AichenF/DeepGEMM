@@ -227,7 +227,7 @@ W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
 LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
 DIRECT_BARRIER_ADDR = os.environ.get("V4_DIRECT_BARRIER_ADDR", "0") == "1"
 ROUTE_K_UNROLL2 = os.environ.get("V4_ROUTE_K_UNROLL2", "1") == "1"
-ROUTE_K_UNROLL4 = os.environ.get("V4_ROUTE_K_UNROLL4", "0") == "1"
+ROUTE_K_UNROLL4 = os.environ.get("V4_ROUTE_K_UNROLL4", "1") == "1"
 W13_DISTRIBUTED_PREP = (
     os.environ.get("V4_W13_DISTRIBUTED_PREP", "1") == "1"
 )
@@ -4247,9 +4247,9 @@ _EXTENSION_CONFIG = (
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v129ku4")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v130sel")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v129ku4"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v130sel"
 )
 
 _ext = load_inline(

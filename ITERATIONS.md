@@ -5246,3 +5246,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Both paths pass the full route reference and all-reduce checks for every M. Custom minimum cosine is 0.999995575 and maximum rel-L2 is 0.002974846; all outputs are finite.
 - Result: the opt-in four-way path clears the 1.2x aggregate goal in this run, but only by 0.23 percentage points. Select it provisionally, then require fresh no-environment TP4/TP8 correctness and an independent full formal repeat before treating the threshold as robust.
 - Evidence: `results/iter129f_route_k_unroll4_exact_humming_tp4_allm_cold2000_20260903.log`
+
+## Iteration 130 — provisional four-way default; first correctness launch lacked Humming path
+
+- Changed the no-environment default of `V4_ROUTE_K_UNROLL4` from 0 to 1 and bumped the extension suffix to `v130sel`, while preserving `V4_ROUTE_K_UNROLL4=0` as the selected two-way control/rollback.
+- The first fresh-default correctness invocation supplied only the repository on `PYTHONPATH`; `bench/test_v4_flash_tp_wgmma.py` exited at `from humming import ops` with `ModuleNotFoundError` before extension compilation or GPU execution.
+- This run contains no numerical evidence. Repeat the same TP4 balanced auto-split4, TP4 skew forced-split2, and TP8-shape balanced auto-split4 gates with the exact Humming and SGLang source paths restored.
+- Evidence: `results/iter130_select_route_k_unroll4_default_correctness_20260903.log`
