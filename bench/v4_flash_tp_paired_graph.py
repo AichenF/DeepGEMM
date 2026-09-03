@@ -275,6 +275,7 @@ def main() -> None:
                     "custom_w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "custom_w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
                     "custom_leader_mbar_wait": kernel.LEADER_MBAR_WAIT,
+                    "custom_direct_barrier_addr": kernel.DIRECT_BARRIER_ADDR,
                     "custom_w13_distributed_prep": (
                         kernel.W13_DISTRIBUTED_PREP
                     ),

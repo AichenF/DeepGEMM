@@ -201,6 +201,9 @@ def main() -> None:
                 "w13_leader_mbar_wait": kernel_module.LEADER_MBAR_WAIT
                 if args.impl == "custom"
                 else None,
+                "direct_barrier_addr": kernel_module.DIRECT_BARRIER_ADDR
+                if args.impl == "custom"
+                else None,
                 "compact_interleaved_scale": (
                     kernel_module.COMPACT_INTERLEAVED_SCALE
                 )

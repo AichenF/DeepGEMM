@@ -5120,3 +5120,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Source/SASS correlation identifies explicit local memory caused by `uint32_t barrier_addr[kStages]`: 31,872 `STL.64`-classified stores and 127,488 `LDL` loads, with zero register spilling.  For 7,968 active M-block/N-tile CTAs, these counts are exactly four warp stores per CTA and four K128 loads per warp.  This is address-array traffic, not an unavoidable accumulator spill.
 - Direction: replace the dynamically indexed local array with a shared-address base plus `stage * 8`, behind a reversible compile-time flag; require full TP4/TP8 numerical gates and same-process cold-L2 A/B before selection.
 - Evidence: `results/iter124_compact_selected_tp4_m128_w2_cold_ncu.{log,ncu-rep}` and `results/iter124a_compact_selected_tp4_m128_w2_ncu_details_20260903.log`.
+
+## Iteration 125 — direct weight-barrier addressing passes TP4/TP8 correctness
+
+- Added opt-in `V4_DIRECT_BARRIER_ADDR=1`.  Instead of materializing the two `full_barriers` shared addresses in a dynamically indexed local array, the candidate keeps the first shared address and computes `base + stage * 8`; all mbarrier init, TMA arrival, copy completion, and consumer-wait sites use the same helper.  Default remains off for an unbiased paired comparison.
+- TP4 balanced auto split4 exactly matches the selected numerical metrics: W13 cosine/rel-L2 0.999999998/0.000076187, activation 0.999999759/0.000694956, W2 0.999997256/0.002342691 finite.
+- TP4 skew forced split2 passes with W13/activation/W2 rel-L2 0.000077291/0.000838720/0.002351904.  TP8-shape balanced auto split4 passes with 0.000076998/0.000714756/0.002333323.  Route alignment and input quantization remain exact.
+- Result: the address substitution is semantics-preserving across split4, split2, TP4, and TP8 shapes.  Proceed to same-process TP4 M128 cold-L2 A/B, then verify SASS local traffic only if latency is favorable.
+- Evidence: `results/iter125_direct_barrier_addr_correctness_20260903.log`.

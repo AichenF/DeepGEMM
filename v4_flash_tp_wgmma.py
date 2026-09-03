@@ -225,6 +225,7 @@ W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
 LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
+DIRECT_BARRIER_ADDR = os.environ.get("V4_DIRECT_BARRIER_ADDR", "0") == "1"
 W13_DISTRIBUTED_PREP = (
     os.environ.get("V4_W13_DISTRIBUTED_PREP", "1") == "1"
 )
@@ -346,6 +347,7 @@ static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
 static constexpr bool kLeaderMbarWait = K_LEADER_MBAR_WAIT;
+static constexpr bool kDirectBarrierAddr = K_DIRECT_BARRIER_ADDR;
 static constexpr bool kW13DistributedPrep = K_W13_DISTRIBUTED_PREP;
 static constexpr bool kW13DualWgSplit = K_W13_DUAL_WG_SPLIT;
 static constexpr bool kW2DistributedPrep = K_W2_DISTRIBUTED_PREP;
@@ -737,11 +739,21 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
         }
     }
 
-    uint32_t barrier_addr[kStages];
-    #pragma unroll
-    for (int stage = 0; stage < kStages; ++stage)
-        barrier_addr[stage] = static_cast<uint32_t>(
-            __cvta_generic_to_shared(&full_barriers[math_wg][stage]));
+    const uint32_t barrier_base_addr = static_cast<uint32_t>(
+        __cvta_generic_to_shared(&full_barriers[math_wg][0]));
+    uint32_t barrier_addr[kDirectBarrierAddr ? 1 : kStages];
+    if constexpr (!kDirectBarrierAddr) {
+        #pragma unroll
+        for (int stage = 0; stage < kStages; ++stage)
+            barrier_addr[stage] = static_cast<uint32_t>(
+                __cvta_generic_to_shared(&full_barriers[math_wg][stage]));
+    }
+    const auto weight_barrier_addr = [&](int stage) {
+        if constexpr (kDirectBarrierAddr)
+            return barrier_base_addr + static_cast<uint32_t>(stage) * 8u;
+        else
+            return barrier_addr[stage];
+    };
     const uint32_t scale_barrier_addr = static_cast<uint32_t>(
         __cvta_generic_to_shared(&scale_barriers[math_wg]));
     const uint32_t activation_empty_barrier_addr = static_cast<uint32_t>(
@@ -753,7 +765,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
     if (mtid == 0) {
         #pragma unroll
         for (int stage = 0; stage < kStages; ++stage)
-            mbar_init(barrier_addr[stage]);
+            mbar_init(weight_barrier_addr(stage));
         if constexpr (kUseTmaScale && kScaleQuadReuse == 4
                       && kScaleBuffers == 1)
             mbar_init(scale_barrier_addr);
@@ -763,6 +775,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
 
     const auto load_weight_stage = [&](int local_kt, int stage) {
         if (mtid == kTmaIssuerTid) {
+            const uint32_t stage_barrier_addr = weight_barrier_addr(stage);
             const int global_kt = kt_begin + local_kt;
             const uint32_t weight_dst =
                 weight_smem_addr + stage * kWeightStageStride;
@@ -799,12 +812,12 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
             if (load_scale) {
                 asm volatile(
                     "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
-                    :: "r"(barrier_addr[stage]),
+                    :: "r"(stage_barrier_addr),
                        "n"(kWeightStageBytes + kScaleStageBytes));
             } else {
                 asm volatile(
                     "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
-                    :: "r"(barrier_addr[stage]), "n"(kWeightStageBytes));
+                    :: "r"(stage_barrier_addr), "n"(kWeightStageBytes));
             }
             if constexpr (kInterleavedScale) {
                 constexpr int kBytesPerNTile = kCompactInterleavedScale
@@ -833,7 +846,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                     : kWeightStageBytes;
                 bulk_gmem_to_smem<kUseWeightEvictFirst>(
                     weight_dst, weight_src, copy_bytes,
-                    barrier_addr[stage], weight_cache_policy);
+                    stage_barrier_addr, weight_cache_policy);
             } else if constexpr (kBulkWeightCopy) {
                 const int64_t tile =
                     (static_cast<int64_t>(expert_idx) * kNumNTiles
@@ -842,7 +855,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                     weight + tile * kWeightStageBytes;
                 bulk_gmem_to_smem<kUseWeightEvictFirst>(
                     weight_dst, weight_src, kWeightStageBytes,
-                    barrier_addr[stage], weight_cache_policy);
+                    stage_barrier_addr, weight_cache_policy);
             } else if constexpr (kTiledWeightLayout) {
                 const int tiled_row =
                     ((expert_idx * kNumNTiles + n_block_idx) * kNumKTiles
@@ -852,14 +865,14 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                     "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
                     :: "r"(weight_dst), "l"(&tma_weight),
                        "r"(0), "r"(tiled_row),
-                       "r"(barrier_addr[stage]) : "memory");
+                       "r"(stage_barrier_addr) : "memory");
             } else {
                 asm volatile(
                     "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
                     "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
                     :: "r"(weight_dst), "l"(&tma_weight),
                        "r"(global_kt * (kBlockK / 2)), "r"(weight_row),
-                       "r"(barrier_addr[stage]) : "memory");
+                       "r"(stage_barrier_addr) : "memory");
             }
             if (load_scale) {
                 if constexpr (kInterleavedScale) {
@@ -874,7 +887,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                         weight_scale + scale_tile * kScaleStageBytes;
                     bulk_gmem_to_smem<kUseWeightEvictFirst>(
                         scale_dst, scale_src, kScaleStageBytes,
-                        barrier_addr[stage], weight_cache_policy);
+                        stage_barrier_addr, weight_cache_policy);
                 } else if constexpr (kTiledWeightLayout) {
                     constexpr int kScaleTiles = kNumKTiles / 4;
                     const int tiled_scale_row =
@@ -885,7 +898,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                         "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
                         :: "r"(scale_dst), "l"(&tma_weight_scale),
                            "r"(0), "r"(tiled_scale_row),
-                           "r"(barrier_addr[stage]) : "memory");
+                           "r"(stage_barrier_addr) : "memory");
                 } else {
                     asm volatile(
                         "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
@@ -893,7 +906,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                         :: "r"(scale_dst), "l"(&tma_weight_scale),
                            "r"((scale_kt & ~3) * (kBlockK / 32)),
                            "r"(weight_row),
-                           "r"(barrier_addr[stage]) : "memory");
+                           "r"(stage_barrier_addr) : "memory");
                 }
             }
         }
@@ -1047,9 +1060,11 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
         // retains all-warp waits, which wake the consumer faster in practice.
         if constexpr (kLeaderMbarWait && IsW13) {
             if (mtid == 0)
-                mbar_wait(barrier_addr[stage], (local_kt / kStages) & 1u);
+                mbar_wait(weight_barrier_addr(stage),
+                          (local_kt / kStages) & 1u);
         } else {
-            mbar_wait(barrier_addr[stage], (local_kt / kStages) & 1u);
+            mbar_wait(weight_barrier_addr(stage),
+                      (local_kt / kStages) & 1u);
         }
         if constexpr (kUseTmaScale && kScaleQuadReuse == 4
                       && kScaleBuffers == 1) {
@@ -4215,14 +4230,14 @@ _EXTENSION_CONFIG = (
           f"cs{int(W2_COALESCED_STORE)}_"
           f"w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_"
+          f"lmw{int(LEADER_MBAR_WAIT)}_dba{int(DIRECT_BARRIER_ADDR)}_"
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v123clean")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v125dba")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v123clean"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v125dba"
 )
 
 _ext = load_inline(
@@ -4274,6 +4289,7 @@ _ext = load_inline(
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
         f"-DK_LEADER_MBAR_WAIT={int(LEADER_MBAR_WAIT)}",
+        f"-DK_DIRECT_BARRIER_ADDR={int(DIRECT_BARRIER_ADDR)}",
         f"-DK_W13_DISTRIBUTED_PREP={int(W13_DISTRIBUTED_PREP)}",
         f"-DK_W13_DUAL_WG_SPLIT={int(W13_DUAL_WG_SPLIT)}",
         f"-DK_W2_DISTRIBUTED_PREP={int(W2_DISTRIBUTED_PREP)}",
