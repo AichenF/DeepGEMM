@@ -5345,3 +5345,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - All outputs are bitwise identical. The five-shape geometric-mean speedup is about 1.00170x; M64/M128 improve, M32 is neutral, while M8/M16 differ by only -0.18%/-0.26% even though their executed W13 split4 and W2 paths should compile with factor four.
 - Result: neither select nor reject yet. Compare per-function SASS between control and candidate, then run a longer 10 x 200 self-control. Treat the tiny small-M shift as a real regression only if machine code or the long run corroborates it.
 - Evidence: `results/iter134b_w13_split2_route_k_unroll8_tp4_allm_paired_cold2500_20260903.log`.
+
+## Iteration 134c — long self-control and byte-identical small-M kernels qualify formal testing
+
+- Repeated all five shapes with ten x 200 rank-max cold-L2 samples per arm and per-replay AB/BA. Four-way-control/candidate medians and speedups: M8 0.070960/0.071072 ms (0.998424x), M16 0.112000/0.112224 ms (0.998004x), M32 0.185312/0.185504 ms (0.998965x), M64 0.270208/0.268576 ms (1.006077x), and M128 0.351872/0.349360 ms (1.007190x).
+- Candidate min/median/max is 0.069536/0.071072/0.073312, 0.110784/0.112224/0.115104, 0.173728/0.185504/0.285312, 0.243360/0.268576/0.405632, and 0.299744/0.349360/0.498912 ms. Control is 0.069472/0.070960/0.213984, 0.110496/0.112000/0.273472, 0.173760/0.185312/0.325440, 0.243584/0.270208/0.408768, and 0.300608/0.351872/0.503840 ms.
+- The five-shape geometric-mean speedup is about 1.00172x and all outputs are bitwise identical. M64/M128 gains reproduce; the apparent 0.10-0.20% M8/M16/M32 losses also reproduce.
+- Extracted every cubin text section from control and candidate. All sections are byte-identical except W13 K=4096 split1/split2 for the TP4 N=1024 and TP8 N=512 instantiations. In particular, W2 has identical SHA-256 `4ae7459b...b9f94` and W13 split4 has identical `722d3ef5...d8490`. Since M8/M16/M32 use split4, their entire executed custom pipeline has identical extension kernel text; the tiny paired delta is a two-module placement/measurement artifact, not changed instructions.
+- Result: qualify the W13-only specialization for a formal exact-Humming-plus-CARv2 run. Selection still requires aggregate improvement and no material per-shape loss in that production comparison.
+- Evidence: `results/iter134c_w13_split2_route_k_unroll8_tp4_allm_paired_cold10000_20260903.log` and `results/iter134d_w13_split2_route_k_unroll8_cubin_text_diff_20260903.log`.
