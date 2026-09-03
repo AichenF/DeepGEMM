@@ -3463,3 +3463,25 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/iter56_cluster_w13_compile_correctness_20260903.log` and
   `bench/results/iter56_cluster_w13_stage_initial_20260903.log`.
+
+### WGMMA iteration 57a — last-arriving W13 CTA activation plan
+
+- Retain the selected independent W13 CTA scheduling and FP32 global partial
+  layout.  Add one completion counter per `(padded M8 block, gate/up N128
+  pair)`.  After its coalesced partial stores, every contributing CTA makes
+  its own stores globally visible and increments the counter; only the last
+  of `2*SplitK` arrivals rereads the original FP32 splits and emits the exact
+  BF16/SwiGLU/BF16/group-128-FP8 activation for its up-to-eight routed rows.
+- This avoids cluster co-residency and DSM lifetime barriers.  It removes the
+  separate activation kernel launch but deliberately does not claim the
+  workspace-traffic saving that iteration 56 attempted.  A captured counter
+  reset is part of the candidate local/full graph and therefore part of every
+  cold-L2 timing sample; first prototype it as an explicit zero and fuse that
+  reset into route preparation only if the complete candidate wins.
+- The uniform last-arrival CTA processes one valid routed row at a time with
+  all 128 threads; padded rows skip the reduction.  Require balanced/skew
+  split-4/split-2, TP8-shape, elevated-scale, and repeated graph correctness
+  to catch ordering/reset races.  Screen candidate/control/candidate on
+  fused `W13+activation` and total local latency.  Reject if global fences,
+  atomics, reduced activation parallelism, or the reset cost exceed the
+  removed 6--9 us launch.
