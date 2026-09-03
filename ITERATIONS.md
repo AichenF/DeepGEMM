@@ -4283,3 +4283,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Failure: the host-side probe then called min/max on the uint32 CARv2 counter tensor; this PyTorch build reports NotImplementedError: min_all not implemented for UInt32 on every rank. Therefore no counter/slot correctness verdict is claimed from this run.
 - Decision: implementation remains unaccepted. Repair only the probe by viewing counters as int32, then repeat the identical gate before benchmarking.
 - Artifact: results/iter83q_inline_finish_chunks8_workers64_tp4_m8_compile_probe_20260903.log
+
+### Iteration 83q1 — inline-finish TP4 protocol gate passes (2026-09-03)
+
+- Probe repair: view the host copy of the uint32 CARv2 phase counters as int32 before min/max; no CUDA implementation change from 83q0.
+- Configuration: TP4 GPUs 1-4, M=8, random routes, 8 chunks, 64 workers, producer and inline-finish worker launched concurrently.
+- Result: PASS on all four ranks without deadlock. Every rank reported marker_sum=1536 with marker_min=marker_max=1, task_done=64, worker_done=64, counter_min=counter_max=1, all four source slots fully cleared (zero nonzero words), and finite output.
+- Scope: establishes local publication, local resident-grid gate, remote polling/reduction completion, slot cleanup, and CARv2 phase advancement. Numerical equivalence is intentionally deferred to the same-process end-to-end graph A/B gate.
+- Artifact: results/iter83q1_inline_finish_chunks8_workers64_tp4_m8_probe_20260903.log

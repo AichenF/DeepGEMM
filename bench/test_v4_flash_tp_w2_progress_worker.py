@@ -160,7 +160,7 @@ def main() -> None:
     local_state["source_nonzero_words"] = source_nonzero_words
     local_state["expected_words_per_source"] = nbytes // 4
     expected_nonzero = 0 if args.inline_finish else nbytes // 4
-    counters = case.fused_push_counter.cpu()
+    counters = case.fused_push_counter.cpu().view(torch.int32)
     local_state["counter_min"] = int(counters.min().item())
     local_state["counter_max"] = int(counters.max().item())
     local_state["output_finite"] = bool(
