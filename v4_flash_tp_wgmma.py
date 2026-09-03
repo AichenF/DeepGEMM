@@ -161,6 +161,11 @@ def select_tiled_k6_reduce_mode(tokens: int) -> int:
 
 FUSED_K6_PUSH_AR = os.environ.get("V4_FUSED_K6_PUSH_AR", "0") == "1"
 FUSED_K6_MC_PUSH_AR = os.environ.get("V4_FUSED_K6_MC_PUSH_AR", "1") == "1"
+FUSED_K6_MC_PUSH_MAX_M = int(
+    os.environ.get("V4_FUSED_K6_MC_PUSH_MAX_M", "32")
+)
+if FUSED_K6_MC_PUSH_MAX_M not in (32, 64):
+    raise ValueError("V4_FUSED_K6_MC_PUSH_MAX_M must be 32 or 64")
 FUSED_K6_MC_PULL_AR = os.environ.get("V4_FUSED_K6_MC_PULL_AR", "0") == "1"
 PIPELINED_W2_MC_PUSH_AR = (
     os.environ.get("V4_PIPELINED_W2_MC_PUSH_AR", "0") == "1"

@@ -4824,3 +4824,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Against iteration 110's selected custom path, local-total Humming/custom ratios are `1.2578x`, `1.2331x`, `1.2165x`, `1.2038x`, and `1.1890x`.  Custom W13 wins every point by 17.3-20.4%; custom W2 wins every point by 4.8-14.1%.
 - Finding: neither MXFP4 Humming GEMM is currently ahead.  The exact end-to-end score is much lower because the common communication/graph tail dilutes local-kernel gains; at M128, however, the local ratio itself is still just below 1.20x.  Future work must both reduce the TP communication tail and retain a structural W13 path, rather than optimizing against a false premise that Humming's individual GEMMs are faster.
 - Artifact: `results/iter113_exact_humming_tp4_stage_budget_cold1000_20260903.log`.
+
+## Iteration 114 — long M64 multicast-push boundary remains unstable
+
+- Added a runtime `V4_FUSED_K6_MC_PUSH_MAX_M` dispatch bound, defaulting to the selected 32 and accepting explicit 64 only for controlled reproduction.  The already-validated M64 fused k6 + multicast one-shot kernel, symmetric workspace, and CARv2 counter protocol are unchanged.
+- Same-process TP4 M64 random-route timing used 10 balanced AB/BA batches x 200 samples per path, identical data/communicator, exact graph-output equality, independent reference/all-reduce checks, and a separate excluded 256 MiB L2 clear before every replay.
+- Stock median: **0.284864 ms**; multicast-fused median: **0.283328 ms**; stock/fused: **1.005421x**.  Despite the pooled 1.536 us lead, only five of ten candidate batch medians beat their paired controls, and both paths show a broad bimodal distribution.
+- Decision: the earlier M64 lead still does not survive a direction-consistent long audit.  Keep the production bound at M<=32 and stock CARv2 at M64; retain the explicit bound only as a reproducibility knob.  Correctness is bit-exact versus stock (`max_abs=0`).
+- Artifact: `results/iter114_m64_multicast_push_long_ab_cold2000_20260903.log`.

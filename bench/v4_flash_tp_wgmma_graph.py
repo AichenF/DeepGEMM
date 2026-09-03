@@ -774,7 +774,7 @@ class CapturedCase:
         use_mc_push = (
             kernel.FUSED_K6_MC_PUSH_AR
             and comm.world_size == 4
-            and self.m <= 32
+            and self.m <= kernel.FUSED_K6_MC_PUSH_MAX_M
         )
         use_unicast_push = (
             kernel.FUSED_K6_PUSH_AR
@@ -1026,6 +1026,7 @@ def main() -> None:
                     "tiled_k6_reduce_policy": kernel.TILED_K6_REDUCE_POLICY,
                     "fused_k6_push_ar": kernel.FUSED_K6_PUSH_AR,
                     "fused_k6_mc_push_ar": kernel.FUSED_K6_MC_PUSH_AR,
+                    "fused_k6_mc_push_max_m": kernel.FUSED_K6_MC_PUSH_MAX_M,
                     "fused_k6_mc_pull_ar": kernel.FUSED_K6_MC_PULL_AR,
                     "pipelined_w2_mc_push_ar": kernel.PIPELINED_W2_MC_PUSH_AR,
                     "pipeline_chunks": kernel.PIPELINE_CHUNKS,

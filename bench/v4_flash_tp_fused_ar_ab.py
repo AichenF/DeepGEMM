@@ -44,6 +44,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outer", type=int, default=6)
     parser.add_argument("--replays", type=int, default=200)
     parser.add_argument("--warmup-replays", type=int, default=10)
+    parser.add_argument(
+        "--multicast-max-m", type=int, choices=(32, 64), default=32
+    )
     parser.add_argument("--pull-blocks", type=int, default=0)
     parser.add_argument("--pull-unroll", type=int, choices=(0, 2, 4, 8, 16), default=0)
     parser.add_argument("--pipeline-chunks", type=int, choices=(2, 4, 8), default=4)
@@ -211,6 +214,7 @@ def main() -> None:
         kernel.K6_NVLS_PULL_BLOCKS = args.k6_nvls_pull_blocks
         kernel.FUSED_K6_PUSH_AR = args.candidate == "unicast"
         kernel.FUSED_K6_MC_PUSH_AR = args.candidate == "multicast"
+        kernel.FUSED_K6_MC_PUSH_MAX_M = args.multicast_max_m
         kernel.FUSED_K6_MC_PULL_AR = args.candidate == "multicast_pull"
         kernel.PIPELINED_W2_MC_PUSH_AR = args.candidate == "pipeline"
         kernel.W2_PROGRESS_MC_PUSH_AR = args.candidate == "progress"
@@ -280,6 +284,7 @@ def main() -> None:
         control_median = statistics.median(control_samples)
         record = {
             "m": m,
+            "multicast_max_m": args.multicast_max_m,
             "cold_samples_per_impl": len(fused_samples),
             "fused_latency_ms_min": min(fused_samples),
             "fused_latency_ms_median": fused_median,
