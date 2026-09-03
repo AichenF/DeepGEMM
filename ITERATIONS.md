@@ -5032,3 +5032,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Control min/median/max: 0.316736/0.342576/0.542688 ms.  Candidate: 0.337120/0.365120/0.398720 ms.
 - Result: control/candidate = 0.938256x; despite NCU-confirmed 10-CTA residency, the candidate is 6.58% slower and loses all 6 batch medians.  The 48-register constraint itself dominates any occupancy benefit.  Reject the compound flag and keep both launch-bound/carveout defaults off.
 - Evidence: `results/iter120c_w13_lb10_max_smem_m128_screen_cold600_20260903.log`.
+
+## Iteration 121 — selected compact W13 focused stall capture
+
+- Captured TP4 M128 random-route selected W13 with Nsight Compute SchedulerStats, WarpStateStats, and InstructionStats over ten passes.
+- The helper confirms compact selected defaults, launch-bound/carveout probes off, auto split2, and the standard excluded 256MiB cold-L2 clear.
+- Collection completed successfully and produced a valid report.  Parse and rank the issue stalls next before choosing another kernel change.
+- Evidence: `results/iter121_compact_selected_m128_w13_sched_ncu.{log,ncu-rep}`.
