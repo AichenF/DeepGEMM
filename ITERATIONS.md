@@ -3920,3 +3920,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Performance: pipeline median is 0.411248 ms versus 0.326768 ms control, `control/pipeline=0.79458x`; both candidate batch medians (0.410832/0.411824 ms) lose decisively to both control batches (0.326704/0.327056 ms).
 - Result: reject four-chunk/eight-CTA overlap as configured. Splitting the route-GEMM destroys more scheduling/weight-pipeline efficiency and/or creates more compute/communication contention than it hides. Preserve the opt-in prototype for stage profiling or a bounded two-chunk/low-CTA test; do not select it.
 - Evidence: `bench/results/iter68_pipeline_w2_mc_push_tp4_m128_smoke_coldl2_20260903.log`.
+
+### Iteration 69 — bounded chunk/CTA geometry audit rejects W2 overlap (cold L2)
+
+- Experiment: without changing the iteration-68 source, sweep TP4 M128 pipeline geometry over `chunks={2,4}` and multicast-push `blocks={16,32,78}`. Every configuration uses a same-process candidate/control pair, identical data and communicator, two balanced AB/BA batches × 30 separately cold-L2 replays per implementation.
+- Correctness: every candidate/control pair passes the independent reference and all-reduce gates (`cosine_min_rank=0.999995609`, `rel_l2_max_rank=0.002963504`, finite) and remains bitwise identical (`max_abs=0`).
+- Results (`control/pipeline`): 2 chunks gives 0.87716x at 16 blocks (0.372912 vs 0.327104 ms), 0.94623x at 32 blocks (0.347568 vs 0.328880 ms), and 0.96121x at 78 blocks (0.339504 vs 0.326336 ms). Four chunks gives 0.90581x at 16 blocks, 0.92906x at 32 blocks, and 0.91911x at 78 blocks.
+- Finding: raising communication parallelism recovers most of the eight-CTA serialization, but the best geometry still loses 13.168 us or 4.04% at M128, and both of its candidate batch medians lose. Four chunks are worse than two once launch/scheduling and concurrent resource contention are included.
+- Decision: reject chunk-level W2/AR overlap as a selectable path. A producer-progress scheme would need finer readiness without fragmenting the W2 grid; the current chunk launch topology cannot close the 20% objective and should not receive broader M or formal testing.
+- Evidence: `bench/results/iter69_pipeline_w2_mc_push_tp4_m128_geometry_sweep_coldl2_20260903.log`.
