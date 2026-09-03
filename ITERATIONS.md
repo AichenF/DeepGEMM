@@ -5446,3 +5446,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - The candidate therefore removes 24 static instructions and one reconvergence region without paying an occupancy cost. The modest scope is consistent with the four dynamic NCU hotspots being repeated visits through an unroll-four body, not four independently removable static regions.
 - Result: resource/SASS gate passes. Proceed to a same-process TP4 all-M control/candidate test with per-replay 256 MiB cold-L2; selection still requires exact/tolerance output equivalence and a reproducible aggregate gain.
 - Evidence: `results/iter137e_w13_predicated_activation_cubin_sass_20260904.log`.
+
+## Iteration 137f — W13 predication is bitwise correct but slightly slower and rejected
+
+- Same-process TP4 random-route screening used five x 100 rank-max cold-L2 samples per arm and M, with a separate 256 MiB clear immediately before every graph replay and per-replay AB/BA alternation.
+- Control/candidate min/median/max latencies and control/candidate speedups are: M8 0.069984/0.071184/0.227296 vs 0.070048/0.071072/0.073632 ms (1.001576x); M16 0.111296/0.112448/0.266752 vs 0.111136/0.112480/0.163872 (0.999716x); M32 0.174176/0.181456/0.316640 vs 0.174560/0.181952/0.189280 (0.997274x); M64 0.245024/0.265360/0.377632 vs 0.246016/0.266080/0.270656 (0.997294x); M128 0.301632/0.338240/0.620672 vs 0.302432/0.338816/0.387072 (0.998300x).
+- All control/candidate outputs are bitwise identical on all four ranks. The five-shape geometric-mean speedup is approximately 0.99883x: the candidate is about 0.12% slower overall and loses every M except a noise-sized M8 result.
+- Interpretation: replacing compiler-managed predicated read-only loads with inline coherent global loads and extra clamp/predicate arithmetic costs more than removing 24 static instructions/one reconvergence region. The NCU `BSSY` samples were not an actionable end-to-end bottleneck in this form.
+- Result: reject `V4_PREDICATED_PADDED_ACTIVATION`; keep it opt-in only for reproducibility and retain the flag-off four-way production default. Do not run an exact-Humming formal benchmark for this loser; move to route-tile locality or another independently evidenced direction.
+- Evidence: `results/iter137f_w13_predicated_activation_tp4_allm_paired_cold2500_20260904.log`.
