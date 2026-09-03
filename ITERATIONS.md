@@ -5095,3 +5095,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The reduced but persistent corruption means the issuer warp can return from its wait and overwrite shared stage data before another warpgroup member has completed the corresponding lifetime.
 - Result: reject without timing.  The only remaining safe placement is a full four-warp barrier after `warpgroup_wait<0>`; test that once, then close early refill regardless of performance if it fails.
 - Evidence: `results/iter122c_w13_post_wait_stage_refill_correctness_20260903.log`.
+
+## Iteration 122d — post-wait full barrier still cannot validate early refill
+
+- Added a full four-warp named barrier after the final `warpgroup_wait<0>` and before refill, the strongest candidate stage-release placement short of retaining the original end-of-iteration order.
+- The strengthened gate still fails TP4 split4 (W13 cosine/rel-L2 0.999988170/0.004864239; activation rel-L2 0.005961795) and TP8-shape split4 (W13 cosine/rel-L2 0.999995290/0.003069672; activation rel-L2 0.002781517).  Forced split2 again passes.
+- Since even post-wait full synchronization does not preserve split4, moving the refill call across the tile-accumulation scope is not semantically safe in this implementation (whether due to async proxy/barrier lifecycle or compiler operand lifetime).
+- Result: permanently reject the early-stage-refill direction without performance timing.  Retain the selected end-of-iteration refill and remove/disable this numerically unsafe opt-in path.
+- Evidence: `results/iter122d_w13_post_wait_full_barrier_refill_correctness_20260903.log`.
