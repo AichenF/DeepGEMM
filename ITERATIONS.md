@@ -4991,3 +4991,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - The profile helper explicitly records compact_interleaved_scale=true, W13 launch-bound probe=false, auto split policy, H20 60MiB L2, and a separate 256MiB cold-L2 clear immediately before the local pipeline.
 - Collection completed successfully and produced a valid report.  Metric extraction and comparison with iteration 116c are deferred to the next audit so the raw artifact remains independently reproducible.
 - Evidence: `results/iter119_compact_selected_tp4_m128_w13_cold_ncu.{log,ncu-rep}`.
+
+## Iteration 119a — compact selected W13 NCU interpretation
+
+- Against iteration 116c's pre-compact selected W13 profile, compact layout reduces dynamic shared memory from 21.50 to 18.43 kB/block and the separately collected NCU duration from 213.47 to 206.30 us (1.0348x).  Registers remain 55/thread with no spills.
+- DRAM throughput rises 54.34% -> 56.22% (2.61 -> 2.71 TB/s), L2 throughput 67.33% -> 69.47%, while SM issue utilization changes 77.53% -> 76.07%.  The kernel remains ALU/issue-heavy rather than at the HBM roof.
+- Achieved occupancy remains 52.92% (33.87 warps/SM): both register and shared-memory limits still report nine CTAs/SM.  The runtime selected only 200.70 kB shared configuration for the compact kernel even though H20 exposes 233,472 bytes/SM and 232,448 bytes/block opt-in.
+- Branch efficiency remains 70.88%; uncoalesced-access warning remains 80,384 excessive sectors (7% of 1,224,096), so compact's gain comes from simpler scale staging/addressing rather than fewer sectors.
+- Finding: iteration 118c's 48-register launch bound could not create a tenth CTA under the automatic 200.70 kB carveout.  A bounded next test should combine that register cap with maximum shared-memory carveout; only this combination can test actual 10-CTA residency.
+- Evidence: `results/iter119a_compact_selected_tp4_m128_w13_ncu_details_20260903.log` and iteration 119 report.
