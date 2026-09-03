@@ -1,0 +1,321 @@
+[367503] python3.12@127.0.0.1
+  void route_gemm<4096, 1024, 2, 1, 0, 0, 0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int *, int, int) (5136, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+  Metric Name                                                              Metric Unit         Metric Value
+  -------------------------------------------------------------------- --------------- --------------------
+  c2clink__enabled_mask                                                                                   0
+  c2clink__present                                                                                        0
+  device__attribute_architecture                                                                        384
+  device__attribute_async_engine_count                                                                    3
+  device__attribute_can_flush_remote_writes                                                               0
+  device__attribute_can_map_host_memory                                                                   1
+  device__attribute_can_tex2d_gather                                                                      1
+  device__attribute_can_use_64_bit_stream_mem_ops                                                         1
+  device__attribute_can_use_64_bit_stream_mem_ops_v1                                                      1
+  device__attribute_can_use_host_pointer_for_registered_mem                                               1
+  device__attribute_can_use_stream_mem_ops_v1                                                             1
+  device__attribute_can_use_stream_wait_value_nor                                                         1
+  device__attribute_can_use_stream_wait_value_nor_v1                                                      1
+  device__attribute_chip                                                                                384
+  device__attribute_clock_rate                                                                    1,980,000
+  device__attribute_cluster_launch                                                                        1
+  device__attribute_compute_capability_major                                                              9
+  device__attribute_compute_capability_minor                                                              0
+  device__attribute_compute_mode                                                                          0
+  device__attribute_compute_preemption_supported                                                          1
+  device__attribute_concurrent_kernels                                                                    1
+  device__attribute_concurrent_managed_access                                                             1
+  device__attribute_confidential_computing_mode                                                       No-CC
+  device__attribute_cooperative_launch                                                                    1
+  device__attribute_cooperative_multi_device_launch                                                       1
+  device__attribute_deferred_mapping_cuda_array_supported                                                 1
+  device__attribute_device_index                                                                          0
+  device__attribute_direct_managed_mem_access_from_host                                                   0
+  device__attribute_display_name                                                              NVIDIA H20-3e
+  device__attribute_dma_buf_supported                                                                     1
+  device__attribute_ecc_enabled                                                                           1
+  device__attribute_fb_bus_width                                                                      6,016
+  device__attribute_fbp_count                                                                            12
+  device__attribute_generic_compression_supported                                                         1
+  device__attribute_global_l1_cache_supported                                                             1
+  device__attribute_global_memory_bus_width                                                           6,016
+  device__attribute_gpu_direct_rdma_flush_writes_options                                                  1
+  device__attribute_gpu_direct_rdma_supported                                                             1
+  device__attribute_gpu_direct_rdma_with_cuda_vmm_supported                                               1
+  device__attribute_gpu_direct_rdma_writes_ordering                                                     100
+  device__attribute_gpu_overlap                                                                           1
+  device__attribute_gpu_pci_device_id                                                           590,090,462
+  device__attribute_gpu_pci_ext_device_id                                                             9,004
+  device__attribute_gpu_pci_ext_downstream_link_rate                                                 32,000
+  device__attribute_gpu_pci_ext_downstream_link_width                                                    16
+  device__attribute_gpu_pci_ext_gen                                                                       4
+  device__attribute_gpu_pci_ext_gpu_gen                                                                   4
+  device__attribute_gpu_pci_ext_gpu_link_rate                                                        32,000
+  device__attribute_gpu_pci_ext_gpu_link_width                                                           16
+  device__attribute_gpu_pci_revision_id                                                                 161
+  device__attribute_gpu_pci_sub_system_id                                                       543,363,294
+  device__attribute_handle_type_fabric_supported                                                          1
+  device__attribute_handle_type_posix_file_descriptor_supported                                           1
+  device__attribute_handle_type_win32_handle_supported                                                    0
+  device__attribute_handle_type_win32_kmt_handle_supported                                                0
+  device__attribute_host_native_atomic_supported                                                          0
+  device__attribute_host_numa_id                                                                          0
+  device__attribute_host_register_supported                                                               1
+  device__attribute_implementation                                                                      384
+  device__attribute_integrated                                                                            0
+  device__attribute_ipc_event_supported                                                                   1
+  device__attribute_kernel_exec_timeout                                                                   0
+  device__attribute_l2_cache_size                                                                62,914,560
+  device__attribute_l2s_count                                                                            96
+  device__attribute_limits_max_cta_per_sm                                                                32
+  device__attribute_limits_num_tpcs                                                                      39
+  device__attribute_local_l1_cache_supported                                                              1
+  device__attribute_managed_memory                                                                        1
+  device__attribute_max_access_policy_window_size                                               134,217,728
+  device__attribute_max_block_dim_x                                                                   1,024
+  device__attribute_max_block_dim_y                                                                   1,024
+  device__attribute_max_block_dim_z                                                                      64
+  device__attribute_max_blocks_per_multiprocessor                                                        32
+  device__attribute_max_gpu_frequency_khz                                                         1,980,000
+  device__attribute_max_grid_dim_x                                                            2,147,483,647
+  device__attribute_max_grid_dim_y                                                                   65,535
+  device__attribute_max_grid_dim_z                                                                   65,535
+  device__attribute_max_ipc_per_multiprocessor                                                            4
+  device__attribute_max_ipc_per_scheduler                                                                 1
+  device__attribute_max_mem_frequency_khz                                                         3,201,000
+  device__attribute_max_persisting_l2_cache_size                                                 39,321,600
+  device__attribute_max_pitch                                                                 2,147,483,647
+  device__attribute_max_registers_per_block                                                          65,536
+  device__attribute_max_registers_per_multiprocessor                                                 65,536
+  device__attribute_max_registers_per_thread                                                            255
+  device__attribute_max_shared_memory_per_block                                                      49,152
+  device__attribute_max_shared_memory_per_block_optin                                               232,448
+  device__attribute_max_shared_memory_per_multiprocessor                                            233,472
+  device__attribute_max_threads_per_block                                                             1,024
+  device__attribute_max_threads_per_multiprocessor                                                    2,048
+  device__attribute_max_warps_per_multiprocessor                                                         64
+  device__attribute_max_warps_per_scheduler                                                              16
+  device__attribute_maximum_surface1d_layered_layers                                                  2,048
+  device__attribute_maximum_surface1d_layered_width                                                  32,768
+  device__attribute_maximum_surface1d_width                                                          32,768
+  device__attribute_maximum_surface2d_height                                                         65,536
+  device__attribute_maximum_surface2d_layered_height                                                 32,768
+  device__attribute_maximum_surface2d_layered_layers                                                  2,048
+  device__attribute_maximum_surface2d_layered_width                                                  32,768
+  device__attribute_maximum_surface2d_width                                                         131,072
+  device__attribute_maximum_surface3d_depth                                                          16,384
+  device__attribute_maximum_surface3d_height                                                         16,384
+  device__attribute_maximum_surface3d_width                                                          16,384
+  device__attribute_maximum_surfacecubemap_layered_layers                                             2,046
+  device__attribute_maximum_surfacecubemap_layered_width                                             32,768
+  device__attribute_maximum_surfacecubemap_width                                                     32,768
+  device__attribute_maximum_texture1d_layered_layers                                                  2,048
+  device__attribute_maximum_texture1d_layered_width                                                  32,768
+  device__attribute_maximum_texture1d_linear_width                                              268,435,456
+  device__attribute_maximum_texture1d_mipmapped_width                                                32,768
+  device__attribute_maximum_texture1d_width                                                         131,072
+  device__attribute_maximum_texture2d_gather_height                                                  32,768
+  device__attribute_maximum_texture2d_gather_width                                                   32,768
+  device__attribute_maximum_texture2d_height                                                         65,536
+  device__attribute_maximum_texture2d_layered_height                                                 32,768
+  device__attribute_maximum_texture2d_layered_layers                                                  2,048
+  device__attribute_maximum_texture2d_layered_width                                                  32,768
+  device__attribute_maximum_texture2d_linear_height                                                  65,000
+  device__attribute_maximum_texture2d_linear_pitch                                                2,097,120
+  device__attribute_maximum_texture2d_linear_width                                                  131,072
+  device__attribute_maximum_texture2d_mipmapped_height                                               32,768
+  device__attribute_maximum_texture2d_mipmapped_width                                                32,768
+  device__attribute_maximum_texture2d_width                                                         131,072
+  device__attribute_maximum_texture3d_depth                                                          16,384
+  device__attribute_maximum_texture3d_depth_alternate                                                32,768
+  device__attribute_maximum_texture3d_height                                                         16,384
+  device__attribute_maximum_texture3d_height_alternate                                                8,192
+  device__attribute_maximum_texture3d_width                                                          16,384
+  device__attribute_maximum_texture3d_width_alternate                                                 8,192
+  device__attribute_maximum_texturecubemap_layered_layers                                             2,046
+  device__attribute_maximum_texturecubemap_layered_width                                             32,768
+  device__attribute_maximum_texturecubemap_width                                                     32,768
+  device__attribute_mem_sync_domain_count                                                                 4
+  device__attribute_memory_clock_rate                                                             3,201,000
+  device__attribute_memory_pools_supported                                                                1
+  device__attribute_mempool_supported_handle_types                                                        9
+  device__attribute_mps_enabled                                                                           0
+  device__attribute_multi_gpu_board                                                                       0
+  device__attribute_multi_gpu_board_group_id                                                              0
+  device__attribute_multicast_supported                                                                   1
+  device__attribute_multiprocessor_count                                                                 78
+  device__attribute_num_l2s_per_fbp                                                                       8
+  device__attribute_num_schedulers_per_multiprocessor                                                     4
+  device__attribute_num_tex_per_multiprocessor                                                            1
+  device__attribute_numa_config                                                                           0
+  device__attribute_pageable_memory_access                                                                0
+  device__attribute_pageable_memory_access_uses_host_page_tables                                          0
+  device__attribute_pci_bus_id                                                                           56
+  device__attribute_pci_device_id                                                                         0
+  device__attribute_pci_domain_id                                                                         0
+  device__attribute_ram_location                                                                          1
+  device__attribute_ram_type                                                                              0
+  device__attribute_reserved_shared_memory_per_block                                                  1,024
+  device__attribute_sass_level                                                                            9
+  device__attribute_single_to_double_precision_perf_ratio                                                64
+  device__attribute_sparse_cuda_array_supported                                                           1
+  device__attribute_stream_priorities_supported                                                           1
+  device__attribute_surface_alignment                                                                   512
+  device__attribute_tcc_driver                                                                            0
+  device__attribute_tensor_map_access_supported                                                           1
+  device__attribute_texture_alignment                                                                   512
+  device__attribute_texture_pitch_alignment                                                              32
+  device__attribute_total_constant_memory                                                            65,536
+  device__attribute_total_memory                                                            150,111,715,328
+  device__attribute_unified_addressing                                                                    1
+  device__attribute_unified_function_pointers                                                             1
+  device__attribute_virtual_address_management_supported                                                  1
+  device__attribute_warp_size                                                                            32
+  gpu__time_duration.sum                                                            us               207.97
+  launch__barrier_count                                                                                   1
+  launch__block_dim_x                                                            block                  128
+  launch__block_dim_y                                                            block                    1
+  launch__block_dim_z                                                            block                    1
+  launch__block_size                                                                                    128
+  launch__cluster_dim_x                                                                                   0
+  launch__cluster_dim_y                                                                                   0
+  launch__cluster_dim_z                                                                                   0
+  launch__cluster_max_active                                                   cluster                    0
+  launch__cluster_max_potential_size                                             block                    8
+  launch__cluster_scheduling_policy                                                            PolicySpread
+  launch__cluster_size                                                                                    0
+  launch__context_id                                                                                      1
+  launch__device_id                                                                                       0
+  launch__func_cache_config                                                                 CachePreferNone
+  launch__function_pcs                                                                                    1
+  launch__grid_dim_x                                                                                  5,136
+  launch__grid_dim_y                                                                                      1
+  launch__grid_dim_z                                                                                      1
+  launch__grid_size                                                                                   5,136
+  launch__kernel_name                                                                                      
+  launch__occupancy_cluster_gpu_pct                                                  %                    0
+  launch__occupancy_cluster_pct                                                      %                    0
+  launch__occupancy_limit_barriers                                               block                   32
+  launch__occupancy_limit_blocks                                                 block                   32
+  launch__occupancy_limit_registers                                              block                    9
+  launch__occupancy_limit_shared_mem                                             block                    9
+  launch__occupancy_limit_warps                                                  block                   16
+  launch__occupancy_per_barrier_count                                                                   752
+  launch__occupancy_per_block_size                                                                    1,821
+  launch__occupancy_per_cluster_size                                                                      0
+  launch__occupancy_per_register_count                                                                4,740
+  launch__occupancy_per_shared_mem_size                                                               4,712
+  launch__persisting_l2_cache_size                                               Mbyte                11.80
+  launch__registers_per_thread                                         register/thread                   55
+  launch__registers_per_thread_allocated                               register/thread                   56
+  launch__shared_mem_config_size                                                 Kbyte               200.70
+  launch__shared_mem_per_block                                             Kbyte/block                20.48
+  launch__shared_mem_per_block_allocated                                   Kbyte/block                20.48
+  launch__shared_mem_per_block_driver                                      Kbyte/block                 1.02
+  launch__shared_mem_per_block_dynamic                                     Kbyte/block                18.43
+  launch__shared_mem_per_block_static                                      Kbyte/block                 1.02
+  launch__sm_count                                                                  SM                   78
+  launch__stack_size                                                                                  1,024
+  launch__stream_id                                                                                      13
+  launch__thread_count                                                          thread              657,408
+  launch__tpc_count                                                                                      39
+  launch__tpc_enabled                                                                                   all
+  launch__uses_cdp                                                                                        0
+  launch__uses_green_context                                                                              0
+  launch__uses_mps                                                                                        0
+  launch__uses_nvlink_centric_scheduling                                                                  0
+  launch__uses_vgpu                                                                                       0
+  launch__waves_per_multiprocessor                                                                     7.32
+  numa__cpu_affinity                                                                                      8
+  numa__dev_display_name_all                                                                              8
+  numa__id_cpu                                                                                            8
+  numa__id_memory                                                                                         8
+  nvlink__bandwidth                                                                                       0
+  nvlink__count_logical                                                                                   0
+  nvlink__count_physical                                                                                  0
+  nvlink__destination_ports                                                                               0
+  nvlink__dev0Id                                                                                          0
+  nvlink__dev0type                                                                                        0
+  nvlink__dev1Id                                                                                          0
+  nvlink__dev1type                                                                                        0
+  nvlink__dev_display_name_all                                                                            1
+  nvlink__enabled_mask                                                                            2,097,144
+  nvlink__is_direct_link                                                                                  0
+  nvlink__is_nvswitch_connected                                                                           0
+  nvlink__max_count                                                                                     144
+  nvlink__peer_access                                                                                     0
+  nvlink__peer_atomic                                                                                     0
+  nvlink__source_ports                                                                                    0
+  nvlink__system_access                                                                                   0
+  nvlink__system_atomic                                                                                   0
+  profiler__perfworks_session_reuse                                                                       0
+  profiler__replayer_bytes_mem_accessible.avg                                    Gbyte                 2.82
+  profiler__replayer_bytes_mem_accessible.max                                    Gbyte                 2.82
+  profiler__replayer_bytes_mem_accessible.min                                    Gbyte                 2.82
+  profiler__replayer_bytes_mem_accessible.sum                                    Gbyte                19.72
+  profiler__replayer_bytes_mem_backed_up.avg                                     Gbyte                 2.82
+  profiler__replayer_bytes_mem_backed_up.max                                     Gbyte                 2.82
+  profiler__replayer_bytes_mem_backed_up.min                                     Gbyte                 2.82
+  profiler__replayer_bytes_mem_backed_up.sum                                     Gbyte                19.72
+  profiler__replayer_passes                                                       pass                    7
+  profiler__replayer_passes_type_warmup                                           pass                    0
+  sm__maximum_warps_avg_per_active_cycle                                          warp                   36
+  sm__maximum_warps_per_active_cycle_pct                                             %                56.25
+  smsp__maximum_warps_avg_per_active_cycle                                        warp                    9
+  smsp__warp_issue_stalled_barrier_per_warp_active.max_rate                                               1
+  smsp__warp_issue_stalled_barrier_per_warp_active.pct                               %                20.15
+  smsp__warp_issue_stalled_barrier_per_warp_active.ratio                                               0.20
+  smsp__warp_issue_stalled_branch_resolving_per_warp_active.max_rate                                      1
+  smsp__warp_issue_stalled_branch_resolving_per_warp_active.pct                      %                 1.95
+  smsp__warp_issue_stalled_branch_resolving_per_warp_active.ratio                                      0.02
+  smsp__warp_issue_stalled_dispatch_stall_per_warp_active.max_rate                                        1
+  smsp__warp_issue_stalled_dispatch_stall_per_warp_active.pct                        %                 3.61
+  smsp__warp_issue_stalled_dispatch_stall_per_warp_active.ratio                                        0.04
+  smsp__warp_issue_stalled_drain_per_warp_active.max_rate                                                 1
+  smsp__warp_issue_stalled_drain_per_warp_active.pct                                 %                 0.10
+  smsp__warp_issue_stalled_drain_per_warp_active.ratio                                                 0.00
+  smsp__warp_issue_stalled_gmma_per_warp_active.max_rate                                                  1
+  smsp__warp_issue_stalled_gmma_per_warp_active.pct                                  %                 9.15
+  smsp__warp_issue_stalled_gmma_per_warp_active.ratio                                                  0.09
+  smsp__warp_issue_stalled_imc_miss_per_warp_active.max_rate                                              1
+  smsp__warp_issue_stalled_imc_miss_per_warp_active.pct                              %                 0.05
+  smsp__warp_issue_stalled_imc_miss_per_warp_active.ratio                                              0.00
+  smsp__warp_issue_stalled_lg_throttle_per_warp_active.max_rate                                           1
+  smsp__warp_issue_stalled_lg_throttle_per_warp_active.pct                           %                    0
+  smsp__warp_issue_stalled_lg_throttle_per_warp_active.ratio                                              0
+  smsp__warp_issue_stalled_long_scoreboard_per_warp_active.max_rate                                       1
+  smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct                       %                 6.92
+  smsp__warp_issue_stalled_long_scoreboard_per_warp_active.ratio                                       0.07
+  smsp__warp_issue_stalled_math_pipe_throttle_per_warp_active.max_rate                                    1
+  smsp__warp_issue_stalled_math_pipe_throttle_per_warp_active.pct                    %                11.83
+  smsp__warp_issue_stalled_math_pipe_throttle_per_warp_active.ratio                                    0.12
+  smsp__warp_issue_stalled_membar_per_warp_active.max_rate                                                1
+  smsp__warp_issue_stalled_membar_per_warp_active.pct                                %                    0
+  smsp__warp_issue_stalled_membar_per_warp_active.ratio                                                   0
+  smsp__warp_issue_stalled_mio_throttle_per_warp_active.max_rate                                          1
+  smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct                          %                 0.05
+  smsp__warp_issue_stalled_mio_throttle_per_warp_active.ratio                                          0.00
+  smsp__warp_issue_stalled_misc_per_warp_active.max_rate                                                  1
+  smsp__warp_issue_stalled_misc_per_warp_active.pct                                  %                 0.01
+  smsp__warp_issue_stalled_misc_per_warp_active.ratio                                                  0.00
+  smsp__warp_issue_stalled_no_instruction_per_warp_active.max_rate                                        1
+  smsp__warp_issue_stalled_no_instruction_per_warp_active.pct                        %                 0.57
+  smsp__warp_issue_stalled_no_instruction_per_warp_active.ratio                                        0.01
+  smsp__warp_issue_stalled_not_selected_per_warp_active.max_rate                                          1
+  smsp__warp_issue_stalled_not_selected_per_warp_active.pct                          %                23.37
+  smsp__warp_issue_stalled_not_selected_per_warp_active.ratio                                          0.23
+  smsp__warp_issue_stalled_selected_per_warp_active.max_rate                                              1
+  smsp__warp_issue_stalled_selected_per_warp_active.pct                              %                 9.23
+  smsp__warp_issue_stalled_selected_per_warp_active.ratio                                              0.09
+  smsp__warp_issue_stalled_short_scoreboard_per_warp_active.max_rate                                      1
+  smsp__warp_issue_stalled_short_scoreboard_per_warp_active.pct                      %                 3.92
+  smsp__warp_issue_stalled_short_scoreboard_per_warp_active.ratio                                      0.04
+  smsp__warp_issue_stalled_sleeping_per_warp_active.max_rate                                              1
+  smsp__warp_issue_stalled_sleeping_per_warp_active.pct                              %                    0
+  smsp__warp_issue_stalled_sleeping_per_warp_active.ratio                                                 0
+  smsp__warp_issue_stalled_tex_throttle_per_warp_active.max_rate                                          1
+  smsp__warp_issue_stalled_tex_throttle_per_warp_active.pct                          %                    0
+  smsp__warp_issue_stalled_tex_throttle_per_warp_active.ratio                                             0
+  smsp__warp_issue_stalled_wait_per_warp_active.max_rate                                                  1
+  smsp__warp_issue_stalled_wait_per_warp_active.pct                                  %                 9.20
+  smsp__warp_issue_stalled_wait_per_warp_active.ratio                                                  0.09
+

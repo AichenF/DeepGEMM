@@ -5054,3 +5054,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The profile uses the same random-route cold-L2 local replay and leaves both rejected launch-bound/carveout probes off.
 - Collection completed successfully with a valid report.  Parse and rank stall ratios next.
 - Evidence: `results/iter121b_compact_selected_m128_w13_stall_metrics_ncu.{log,ncu-rep}`.
+
+## Iteration 121c — selected compact W13 explicit stall ranking
+
+- Active-warp stall distribution: not-selected 23.37%, barrier 20.15%, math-pipe throttle 11.83%, selected 9.23%, fixed-latency wait 9.20%, GMMA 9.15%, long scoreboard 6.92%, short scoreboard 3.92%, dispatch stall 3.61%, branch resolving 1.95%, no-instruction 0.57%; all other classes <=0.10%.
+- The largest actionable class is CTA barrier waiting, not global-memory throttle (LG/TEX throttle are zero and long scoreboard is only 6.92%).  Math-pipe and GMMA pressure are secondary and consistent with NCU's ALU-heavy diagnosis.
+- The report also confirms selected resources: 55 registers/thread allocated as 56, 20.48 kB total shared/block, nine CTAs and 36 theoretical warps/SM.
+- Direction: inspect the per-K128 barrier topology and test a semantics-preserving reduction of CTA-wide barriers before changing dequant math.  Preserve the existing leader-only mbarrier polling and split-K arithmetic.
+- Evidence: `results/iter121c_compact_selected_m128_w13_stall_metrics_20260903.log`.
