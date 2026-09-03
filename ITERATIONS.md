@@ -4040,3 +4040,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Finding: the first body dedicates one third of resident warps to producers while only four math warpgroups/SM remain; its two-stage empty/full barrier topology then leaves both compute and DRAM underfilled. This is an implementation/occupancy failure, not evidence against gate/up interleaving itself.
 - Next bounded repair: use a 256-thread CTA containing only two aligned math warpgroups. Each warpgoup independently performs the selected two-stage load/dequant/WGMMA loop for one N128 half, then the CTA shares only the group128 epilogue. This removes four producer warps and empty-stage barriers while retaining paired semantics. Reject if it cannot approach the selected `W13 + activation` latency.
 - Evidence: `bench/results/iter81_{paired,control}_w13_m8_ncu.{log,ncu-rep}` and `bench/results/iter81_paired_vs_control_w13_m8_ncu_summary.log`.
+
+
+### Iteration 82a — invalid launcher path (not a kernel result)
+
+- Intent: compile and validate the 256-thread dual-math-warpgroup W13 repair on TP4-shape M8.
+- Source change staged locally: replace the 384-thread producer/consumer CTA with two independent 128-thread math warpgroups, each owning two weight and activation stages.
+- Launcher failed before Python or CUDA started because container `dpskv4_h20_weekly_gap_20260727` does not expose `/home/xutingz/fac/DeepGEMM_tp`; its repository mount is under `/lustre/raplab/client/xutingz/fac/DeepGEMM_tp`.
+- Evidence: `results/v4_flash_tp_wgmma_pair2wg_tp4_m8_invalid_path_20260903.log`.
+- Classification: infrastructure invocation error; no correctness or performance conclusion. Retry only with the resolved container path.

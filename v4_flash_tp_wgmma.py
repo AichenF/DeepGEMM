@@ -976,14 +976,15 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     }
 }
 
-// Native MegaMoE-style TP-local W13 task.  Two math warpgroups consume one
-// N256 block whose physical rows alternate gate/up in eight-row chunks.  A
-// 128-thread producer group streams two packed N128 records and one indexed
-// M8 activation tile through a two-stage pipeline.  Full K stays inside the
-// CTA, so its epilogue can preserve the public BF16 -> SwiGLU -> BF16 ->
-// group-128 FP8 boundary without a split-K workspace or completion atomics.
+// Native MegaMoE-style TP-local W13 task.  Two aligned math warpgroups consume
+// one N256 block whose physical rows alternate gate/up in eight-row chunks.
+// Each warpgroup owns its two weight/activation stages and issues its own bulk
+// copies, avoiding the four dedicated producer warps of the first prototype.
+// Full K stays inside the CTA, so its epilogue can preserve the public BF16 ->
+// SwiGLU -> BF16 -> group-128 FP8 boundary without a split-K workspace or
+// completion atomics.
 template <int Intermediate>
-__global__ __launch_bounds__(384, 1) void paired_w13_fused_kernel(
+__global__ __launch_bounds__(256, 1) void paired_w13_fused_kernel(
         const uint8_t* __restrict__ weight,
         const float* __restrict__ weight_global_scale,
         const uint8_t* __restrict__ activation,
@@ -1006,6 +1007,8 @@ __global__ __launch_bounds__(384, 1) void paired_w13_fused_kernel(
         kWeightStageBytes + kScaleStageBytes;
     constexpr int kWeightWGBytes = kPairStages * kCombinedStageBytes;
     constexpr int kActivationStageBytes = kTok * kBlockK;
+    constexpr int kActivationWGBytes =
+        kPairStages * kActivationStageBytes;
     constexpr int kOutputGroups = Intermediate / 128;
     constexpr int kRawN = 2 * Intermediate;
     constexpr int kRawNTiles = kRawN / kWout;
@@ -1038,16 +1041,19 @@ __global__ __launch_bounds__(384, 1) void paired_w13_fused_kernel(
     const int weight_swizzle_row_offset =
         (weight_smem_addr >> 7) & 3;
 
-    __shared__ __align__(8) uint64_t full_barriers[kPairStages];
-    __shared__ __align__(8) uint64_t empty_barriers[kPairStages];
+    __shared__ __align__(8)
+        uint64_t full_barriers[kMathWGs][kPairStages];
     __shared__ int32_t route_ids[kTok];
     __shared__ int32_t activation_rows[kTok];
-    __shared__ float activation_scale_smem[kPairStages][kTok];
+    __shared__ float
+        activation_scale_smem[kMathWGs][kPairStages][kTok];
     __shared__ float expert_scale;
     __shared__ float epilogue_amax[kMathWGs][kTok][32];
     __shared__ float epilogue_scale_inv[kTok];
 
     const int tid = threadIdx.x;
+    const int math_wg = tid >> 7;
+    const int mtid = tid & 127;
     if (tid < kTok) {
         const int route = __ldg(sorted_ids + m_block_idx * kTok + tid);
         route_ids[tid] = route;
@@ -1057,21 +1063,15 @@ __global__ __launch_bounds__(384, 1) void paired_w13_fused_kernel(
         expert_scale = __ldg(weight_global_scale + expert_idx);
 
     uint32_t full_barrier_addr[kPairStages];
-    uint32_t empty_barrier_addr[kPairStages];
     #pragma unroll
     for (int stage = 0; stage < kPairStages; ++stage) {
         full_barrier_addr[stage] = static_cast<uint32_t>(
-            __cvta_generic_to_shared(&full_barriers[stage]));
-        empty_barrier_addr[stage] = static_cast<uint32_t>(
-            __cvta_generic_to_shared(&empty_barriers[stage]));
+            __cvta_generic_to_shared(&full_barriers[math_wg][stage]));
     }
-    if (tid == 0) {
+    if (mtid == 0) {
         #pragma unroll
-        for (int stage = 0; stage < kPairStages; ++stage) {
+        for (int stage = 0; stage < kPairStages; ++stage)
             mbar_init(full_barrier_addr[stage]);
-            asm volatile("mbarrier.init.shared.b64 [%0],2;"
-                         :: "r"(empty_barrier_addr[stage]));
-        }
         asm volatile("fence.proxy.async.shared::cta;");
     }
     __syncthreads();
@@ -1079,6 +1079,7 @@ __global__ __launch_bounds__(384, 1) void paired_w13_fused_kernel(
     float epilogue_value0[kWgmmaGroups] = {};
     float epilogue_value1[kWgmmaGroups] = {};
 
+#if 0
     if (tid < 128) {
         // Producer group.  Named barrier 1 contains exactly these four warps.
         for (int kt = 0; kt < kNumKTiles; ++kt) {
@@ -1155,10 +1156,9 @@ __global__ __launch_bounds__(384, 1) void paired_w13_fused_kernel(
                 }
             }
         }
-    } else {
-        const int math_thread = tid - 128;
-        const int math_wg = math_thread >> 7;
-        const int mtid = math_thread & 127;
+    }
+#endif
+    {
         const int warp = mtid >> 5;
         const int lane = mtid & 31;
         const int row0 = warp * 16 + lane / 4;
@@ -1172,8 +1172,68 @@ __global__ __launch_bounds__(384, 1) void paired_w13_fused_kernel(
         uint2 next_lut0[kWgmmaGroups];
         uint2 next_lut1[kWgmmaGroups];
 
+        const auto load_weight_stage = [&](int kt, int stage) {
+            if (mtid == 0) {
+                const int record = kt & 7;
+                const bool load_scale =
+                    record == 0 || (record == 3 && kt + 1 < kNumKTiles);
+                const int copy_bytes = load_scale
+                    ? kCombinedStageBytes : kWeightStageBytes;
+                asm volatile(
+                    "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
+                    :: "r"(full_barrier_addr[stage]), "r"(copy_bytes));
+                const int scales_before =
+                    (kt >> 3) * 2
+                    + (record >= 1 ? 1 : 0)
+                    + (record >= 4 ? 1 : 0);
+                const int record_offset =
+                    kt * kWeightStageBytes
+                    + scales_before * kScaleStageBytes;
+                const int raw_n_tile = output_group * 2 + math_wg;
+                const int64_t ntile =
+                    static_cast<int64_t>(expert_idx) * kRawNTiles
+                    + raw_n_tile;
+                const uint8_t* src =
+                    weight + ntile * kBytesPerNTile + record_offset;
+                const uint32_t dst = weight_smem_addr
+                    + math_wg * kWeightWGBytes
+                    + stage * kCombinedStageBytes;
+                asm volatile(
+                    "cp.async.bulk.shared::cluster.global.mbarrier::"
+                    "complete_tx::bytes [%0],[%1],%2,[%3];"
+                    :: "r"(dst), "l"(src), "r"(copy_bytes),
+                       "r"(full_barrier_addr[stage]) : "memory");
+            }
+        };
+
+        #pragma unroll
+        for (int stage = 0; stage < kPairStages; ++stage)
+            load_weight_stage(stage, stage);
+
         for (int kt = 0; kt < kNumKTiles; ++kt) {
             const int stage = kt & 1;
+            const int token_slot = mtid >> 4;
+            const int k8 = (mtid & 15) * 8;
+            uint2 value = make_uint2(0u, 0u);
+            const int activation_row = activation_rows[token_slot];
+            if (activation_row >= 0) {
+                value = *reinterpret_cast<const uint2*>(
+                    activation + static_cast<int64_t>(activation_row) * K
+                    + kt * kBlockK + k8);
+            }
+            *reinterpret_cast<uint2*>(
+                activation_smem + math_wg * kActivationWGBytes
+                + stage * kActivationStageBytes
+                + token_slot * kBlockK
+                + (k8 ^ ((token_slot & 7) << 4))) = value;
+            if (mtid < kTok) {
+                const int row = activation_rows[mtid];
+                activation_scale_smem[math_wg][stage][mtid] = row >= 0
+                    ? __ldg(activation_scale
+                            + static_cast<int64_t>(row) * kNumKTiles + kt)
+                        * expert_scale
+                    : 0.0f;
+            }
             if (mtid == 0)
                 mbar_wait(full_barrier_addr[stage], (kt >> 1) & 1u);
             if (math_wg == 0)
@@ -1197,7 +1257,8 @@ __global__ __launch_bounds__(384, 1) void paired_w13_fused_kernel(
                     + row0 * (kBlockK / 2)
                     + common_chunk * 16 + packed_k_offset;
                 const auto activation_desc = desc_128b(
-                    activation_smem_addr + stage * kActivationStageBytes
+                    activation_smem_addr + math_wg * kActivationWGBytes
+                    + stage * kActivationStageBytes
                     + k_step * 32);
                 #pragma unroll
                 for (int group = 0; group < kWgmmaGroups; ++group) {
@@ -1282,21 +1343,21 @@ __global__ __launch_bounds__(384, 1) void paired_w13_fused_kernel(
             #pragma unroll
             for (int group = 0; group < kWgmmaGroups; ++group) {
                 accum[group][0] += tile[group][0]
-                    * activation_scale_smem[stage][route_slot0];
+                    * activation_scale_smem[math_wg][stage][route_slot0];
                 accum[group][1] += tile[group][1]
-                    * activation_scale_smem[stage][route_slot1];
+                    * activation_scale_smem[math_wg][stage][route_slot1];
                 accum[group][2] += tile[group][2]
-                    * activation_scale_smem[stage][route_slot0];
+                    * activation_scale_smem[math_wg][stage][route_slot0];
                 accum[group][3] += tile[group][3]
-                    * activation_scale_smem[stage][route_slot1];
+                    * activation_scale_smem[math_wg][stage][route_slot1];
             }
 
             if (math_wg == 0)
                 asm volatile("bar.sync 2,128;" ::: "memory");
             else
                 asm volatile("bar.sync 3,128;" ::: "memory");
-            if (mtid == 0)
-                mbar_arrive(empty_barrier_addr[stage]);
+            if (kt + kPairStages < kNumKTiles)
+                load_weight_stage(kt + kPairStages, stage);
         }
 
         const int route0 = route_ids[route_slot0];
@@ -1385,10 +1446,7 @@ __global__ __launch_bounds__(384, 1) void paired_w13_fused_kernel(
     }
     __syncthreads();
 
-    if (tid >= 128) {
-        const int math_thread = tid - 128;
-        const int math_wg = math_thread >> 7;
-        const int mtid = math_thread & 127;
+    {
         const int warp = mtid >> 5;
         const int lane = mtid & 31;
         const int route_slot0 = (lane & 3) * 2;
@@ -2448,13 +2506,13 @@ void run_w13_paired_impl(
     const int grid = expert_ids.numel() * output_groups;
     constexpr int dynamic_smem_bytes =
         2 * 2 * (kWout * (kBlockK / 2) + kWout * 16)
-        + 2 * kTok * kBlockK;
+        + 2 * 2 * kTok * kBlockK;
     const auto stream = at::cuda::getCurrentCUDAStream();
     if (intermediate == 512) {
         cudaFuncSetAttribute(paired_w13_fused_kernel<512>,
             cudaFuncAttributeMaxDynamicSharedMemorySize, dynamic_smem_bytes);
         paired_w13_fused_kernel<512><<<
-            grid, 384, dynamic_smem_bytes, stream>>>(
+            grid, 256, dynamic_smem_bytes, stream>>>(
             weight.data_ptr<uint8_t>(),
             weight_global_scale.data_ptr<float>(),
             activation.data_ptr<uint8_t>(),
@@ -2471,7 +2529,7 @@ void run_w13_paired_impl(
         cudaFuncSetAttribute(paired_w13_fused_kernel<256>,
             cudaFuncAttributeMaxDynamicSharedMemorySize, dynamic_smem_bytes);
         paired_w13_fused_kernel<256><<<
-            grid, 384, dynamic_smem_bytes, stream>>>(
+            grid, 256, dynamic_smem_bytes, stream>>>(
             weight.data_ptr<uint8_t>(),
             weight_global_scale.data_ptr<float>(),
             activation.data_ptr<uint8_t>(),
@@ -3133,7 +3191,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v79bpairwg"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v82pair2wg"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[

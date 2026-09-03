@@ -1,0 +1,4 @@
+bash: line 1: cd: /home/xutingz/fac/DeepGEMM_tp: No such file or directory
+mv: cannot stat 'v4_flash_tp_wgmma.py.upload': No such file or directory
+tee: results/v4_flash_tp_wgmma_pair2wg_tp4_m8_correctness_20260903.log: No such file or directory
+python: can't open file '/workspace/bench/test_v4_flash_tp_wgmma.py': [Errno 2] No such file or directory
