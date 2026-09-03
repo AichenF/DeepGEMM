@@ -3955,3 +3955,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - `(blocks=16, unroll=4)`: stock median `0.360528 ms`, NVLS pull `0.360400 ms`, stock/candidate `1.000355x`, only `0.128 us` or `0.036%` and far below noise. Both configurations retain finite output, independent all-reduce/reference success, cosine `0.999995609`, and rel-L2 about `0.00296351`; reduction-order max difference versus stock is 128 output units.
 - Decision: reject the iteration-67 short-window 3.74% lead. Neither finalist supplies a repeatable M128 improvement across 2,000 samples, so stock CARv2 remains the selected large-message path. Close launch-geometry tuning and return to the local compute/data path.
 - Evidence: `bench/results/iter72_m128_nvls_pull_long_ab_coldl2_20260903.log`.
+### Iteration 73 — long-window multicast one-shot push confirmation
+
+- Re-audited the already implemented TP4 multicast fused-k6/one-shot-push path against stock CARv2 at M=8/16/32. The same process, communicator, inputs, weights and routes were used for 10 balanced AB/BA batches × 200 samples per implementation/M. Every replay had an immediately preceding excluded 256 MiB L2 clear; reported latency is the maximum rank.
+- Candidate/control medians are `0.076192/0.076704 ms` at M8, `0.122400/0.123664 ms` at M16, and `0.194336/0.196032 ms` at M32. Stock/candidate speedups are `1.006720x`, `1.010327x`, and `1.008727x`; the three-point geometric mean is `1.008590x`.
+- Correctness is exact relative to the stock graph at all sizes (`fused_vs_control_max_abs=0`), with finite outputs, independent NCCL-reference/all-reduce success, minimum cosine `>=0.99999556`, and rel-L2 `<=0.00297861`.
+- Decision: the long window confirms the iteration-64 signal. Accept multicast fused k6 + one-shot push for TP4 M8/M16/M32; retain stock CARv2 for M64/M128 and all TP8 shapes. This is a real but bounded ~0.86% three-point tail gain and cannot alone satisfy the 1.20x full-score target. Encoding the dispatch policy awaits the pending numerical-boundary design approval so changes can be batched coherently.
+- Evidence: `bench/results/iter73_multicast_push_tp4_m8_m16_m32_long_ab_coldl2_20260903.log`.
