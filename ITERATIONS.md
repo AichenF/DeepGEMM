@@ -3485,3 +3485,36 @@ maximum rank latency of a full CUDA-Graph replay.
   fused `W13+activation` and total local latency.  Reject if global fences,
   atomics, reduced activation parallelism, or the reset cost exceed the
   removed 6--9 us launch.
+
+### WGMMA iteration 57b — last-arriving W13 CTA activation rejected
+
+- The last-arrival memory protocol passes TP4 balanced/skew split-4/split-2,
+  TP8-shape split-2, and elevated scales.  Raw W13 cosine is at least
+  0.99999998 in the covered tests, activation cosine is at least 0.99999927,
+  and final W2 cosine is at least 0.99999721 with finite output.
+- With an explicit captured reset, candidate/control cold-L2 local medians
+  are 91.328/87.728 us at M8, 137.680/131.936 us at M16, and
+  206.240/198.432 us at M32.  M8 alone initially appeared salvageable from
+  the combined-stage intervals, so a second version fused counter clearing
+  into route/input quantization and instantiated separate tail/non-tail W13
+  kernels; only M8 (48 routes) selected the tail path.
+- Equal-event-node candidate/control/candidate M8 stage totals for that
+  second version are 90.048/87.744/89.968 us: candidate average 90.008 us is
+  2.58% slower.  The tail makes the W13 launch about 4.41 us longer, while
+  deleting the standalone activation work recovers only about 2.94 us; W2
+  also starts roughly 0.82 us later in these windows.
+- The decisive TP4 production graph screen includes fused route preparation,
+  W13, activation, W2, local k6 reduction, and the same CustomAllReduceV2,
+  with a separate 256 MiB L2 clear before every replay.  Over 5x100 samples,
+  candidate/control M8 medians are 0.079456/0.077248 ms: the candidate is
+  2.86% slower.  Candidate graph correctness still passes with cosine
+  0.999995565, relative-L2 0.00297848, finite output, and all-reduce OK.
+- Reject and restore iteration 53.  Avoiding one launch cannot repay
+  per-producer-thread device fences, completion atomics, and the loss of the
+  route-parallel activation grid, even when counter reset is free inside an
+  existing kernel.
+- Evidence:
+  `bench/results/iter57_tail_w13_compile_correctness_20260903.log`,
+  `bench/results/iter57_tail_w13_stage_initial_20260903.log`,
+  `bench/results/iter57b_fused_reset_m8_stage_aba_20260903.log`, and
+  `bench/results/iter57b_tp4_m8_tail_{candidate,control}_coldl2_screen_20260903.log`.
