@@ -2909,3 +2909,18 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_bulk_copy_correctness_20260903.log`,
   `bench/results/tp4_bulk_weight_copy_local_coldl2_screen_20260903.log`, and
   `bench/results/tp4_bulk_copy_{candidate_a,control,candidate_b}_coldl2_screen_20260903.log`.
+
+### Post-iteration-46 TP8 end-to-end smoke
+
+- The default bulk-copy path runs the full TP8 CUDA Graph at M8 on all eight
+  H20s.  It includes random real k6 route metadata, local route reduction and
+  SGLang CustomAllReduceV2, with a separate excluded 256 MiB L2 flush before
+  each of 20 timed replays.
+- Median max-rank latency is 0.066320 ms.  Independent local recomputation plus
+  NCCL-reference validation gives minimum-rank cosine 0.999991970, relative L2
+  0.004007414, finite output on every rank and `allreduce_ok=true`.
+- This is a bounded TP8 runnability gate, not a formal score; compared with the
+  previous 0.069408 ms TP8 smoke it is 4.45% lower, but the sample is too small
+  for selection.  TP4 remains the primary optimization target.
+- Evidence:
+  `bench/results/tp8_wgmma_bulk_copy_default_smoke_20260903.log`.
