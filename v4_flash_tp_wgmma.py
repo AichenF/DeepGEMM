@@ -20,8 +20,8 @@ from torch.utils.cpp_extension import load_inline
 
 
 W13_SPLIT_MODE = os.environ.get("V4_W13_SPLIT_K", "auto")
-if W13_SPLIT_MODE not in ("auto", "2", "4"):
-    raise ValueError("V4_W13_SPLIT_K must be auto, 2, or 4")
+if W13_SPLIT_MODE not in ("auto", "1", "2", "4"):
+    raise ValueError("V4_W13_SPLIT_K must be auto, 1, 2, or 4")
 W13_MAX_SPLITS = 4
 
 
@@ -1916,9 +1916,15 @@ void run_w13_impl(
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
                 partials, lut, routes);
-        } else {
-            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+        } else if (split_k == 2) {
             launch_route_gemm<4096, 1024, 2, true>(
+                weight, weight_scale, weight_global_scale,
+                activation, activation_scale,
+                sorted_ids, expert_ids, num_tokens_padded, partials,
+                partials, lut, routes);
+        } else {
+            TORCH_CHECK(split_k == 1, "split_k must be 1, 2, or 4");
+            launch_route_gemm<4096, 1024, 1, true>(
                 weight, weight_scale, weight_global_scale,
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
@@ -1931,9 +1937,15 @@ void run_w13_impl(
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
                 partials, lut, routes);
-        } else {
-            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+        } else if (split_k == 2) {
             launch_route_gemm<4096, 512, 2, true>(
+                weight, weight_scale, weight_global_scale,
+                activation, activation_scale,
+                sorted_ids, expert_ids, num_tokens_padded, partials,
+                partials, lut, routes);
+        } else {
+            TORCH_CHECK(split_k == 1, "split_k must be 1, 2, or 4");
+            launch_route_gemm<4096, 512, 1, true>(
                 weight, weight_scale, weight_global_scale,
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
@@ -2031,16 +2043,20 @@ void reduce_swiglu(
     if (intermediate == 512) {
         if (split_k == 4)
             launch_reduce_swiglu<512, 4>(partials, output, routes);
-        else {
-            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+        else if (split_k == 2)
             launch_reduce_swiglu<512, 2>(partials, output, routes);
+        else {
+            TORCH_CHECK(split_k == 1, "split_k must be 1, 2, or 4");
+            launch_reduce_swiglu<512, 1>(partials, output, routes);
         }
     } else if (intermediate == 256) {
         if (split_k == 4)
             launch_reduce_swiglu<256, 4>(partials, output, routes);
-        else {
-            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+        else if (split_k == 2)
             launch_reduce_swiglu<256, 2>(partials, output, routes);
+        else {
+            TORCH_CHECK(split_k == 1, "split_k must be 1, 2, or 4");
+            launch_reduce_swiglu<256, 1>(partials, output, routes);
         }
     } else {
         TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
@@ -2073,18 +2089,24 @@ void reduce_swiglu_quant(
         if (split_k == 4)
             launch_reduce_swiglu_quant<512, 4>(
                 partials, activation, quantized, scale, routes);
-        else {
-            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+        else if (split_k == 2)
             launch_reduce_swiglu_quant<512, 2>(
+                partials, activation, quantized, scale, routes);
+        else {
+            TORCH_CHECK(split_k == 1, "split_k must be 1, 2, or 4");
+            launch_reduce_swiglu_quant<512, 1>(
                 partials, activation, quantized, scale, routes);
         }
     } else if (intermediate == 256) {
         if (split_k == 4)
             launch_reduce_swiglu_quant<256, 4>(
                 partials, activation, quantized, scale, routes);
-        else {
-            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+        else if (split_k == 2)
             launch_reduce_swiglu_quant<256, 2>(
+                partials, activation, quantized, scale, routes);
+        else {
+            TORCH_CHECK(split_k == 1, "split_k must be 1, 2, or 4");
+            launch_reduce_swiglu_quant<256, 1>(
                 partials, activation, quantized, scale, routes);
         }
     } else {
@@ -2572,7 +2594,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v77sched"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v78split1"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -2764,8 +2786,8 @@ def run_w13(
 ) -> None:
     if split_k is None:
         split_k = select_w13_split_k(partials.size(1))
-    if split_k not in (2, 4):
-        raise ValueError("W13 split_k must be 2 or 4")
+    if split_k not in (1, 2, 4):
+        raise ValueError("W13 split_k must be 1, 2, or 4")
     _ext.run_w13_impl(
         weight,
         weight_scale,
@@ -2858,8 +2880,8 @@ def reduce_swiglu(
 ) -> None:
     if split_k is None:
         split_k = select_w13_split_k(partials.size(1))
-    if split_k not in (2, 4):
-        raise ValueError("W13 split_k must be 2 or 4")
+    if split_k not in (1, 2, 4):
+        raise ValueError("W13 split_k must be 1, 2, or 4")
     _ext.reduce_swiglu(
         partials,
         output,
@@ -2878,8 +2900,8 @@ def reduce_swiglu_quant(
 ) -> None:
     if split_k is None:
         split_k = select_w13_split_k(partials.size(1))
-    if split_k not in (2, 4):
-        raise ValueError("W13 split_k must be 2 or 4")
+    if split_k not in (1, 2, 4):
+        raise ValueError("W13 split_k must be 1, 2, or 4")
     _ext.reduce_swiglu_quant(
         partials,
         activation,

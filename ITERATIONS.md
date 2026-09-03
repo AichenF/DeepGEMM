@@ -3991,3 +3991,16 @@ maximum rank latency of a full CUDA-Graph replay.
 - A single captured M32 CUDA Graph then replays after in-place route mutations balanced→skew→random→balanced. Device bounds change `192→24→146→192` without host specialization; all task/readiness invariants remain valid and no stale state survives replay.
 - Decision: accept the scheduler publication/claim protocol as the control-flow foundation. It is correctness-only and makes no latency claim. Next integrate one real full-K W13 paired gate/up task and validate its BF16/SwiGLU/FP8 intermediate before enabling W2.
 - Evidence: `bench/results/iter77_interleaved_scheduler_acquire_release_20260903.log`.
+
+## Iteration 78 — full-K W13 task feasibility (2026-09-03)
+
+- Hypothesis: the native MegaMoE-style full-K W13 task (`split_k=1`) may be a better granularity for an eventual paired gate/up task than the current split-K policy.
+- Change: instantiated legal TP4 (`K=4096,N=1024`) and TP8 (`K=4096,N=512`) split-K=1 route GEMMs and matching SwiGLU / fused SwiGLU+dynamic-FP8 reductions. Extension suffix: `v78split1`.
+- Correctness: PASS for TP4 M8 balanced and skew, and TP8-shape M8 balanced. W13 cosine was 0.999999997–0.999999998, activation cosine 0.999999652–0.999999746, and W2 cosine 0.999997235–0.999997278; all outputs finite.
+- Method: TP4 GPU1, random routes, CUDA Graph, 200 samples per point, separate 256 MiB L2 clear immediately before every replay and excluded from event timing. Paired order was split1 -> auto -> split1.
+- Median cold-L2 results (first/second split1 averaged against auto):
+  - M8: W13 53.848 us vs 43.888 us (split1 22.70% slower); local total 97.664 us vs 87.472 us (11.65% slower).
+  - M32: W13 125.704 us vs 115.088 us (9.22% slower); local total 208.248 us vs 198.368 us (4.98% slower).
+  - M128: W13 205.320 us vs 195.904 us (4.81% slower); local total 337.456 us vs 327.392 us (3.07% slower).
+- Decision: REJECT full-K as the standalone W13 execution granularity. It is correct but loses consistently, most severely at small M. Preserve split4 for M8/M32 and split2 for M128; the paired/interleaved implementation must retain parallel K work (or use the native 384-thread producer/math pipeline) rather than serializing all 32 K tiles in one 128-thread CTA.
+- Evidence: `bench/results/iter78_fullk_w13_feasibility_correctness_stage_coldl2_20260903.log`.
