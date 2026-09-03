@@ -4353,3 +4353,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** control/candidate = 1.008251x (0.825% preliminary gain). The first pair favored the candidate by 3.00% but the second disfavored it by 1.30%, so run-to-run drift is larger than the net result.
 - **Decision:** Do not select yet. Retain opt-in and run a longer single-process-window comparison before testing other M values.
 - **Artifact:** `results/iter86b_w2_coalesced_store_tp4_m128_cold_abba_20260903.log`.
+
+## Iteration 86c — In-process paired cold-L2 graph comparison harness
+
+- **Problem:** Independent torchrun invocations showed run-to-run drift larger than the sub-percent W2 epilogue signal.
+- **Change:** Added `bench/compare_v4_flash_tp_w2_store.py`. It loads control and candidate compile-time variants into one TP process set, captures two CUDA Graphs over shared weights/routes, alternates A/B then B/A per sample, performs an independent 256 MiB L2 clear immediately before every replay, and rank-max reduces both event arrays.
+- **Verification:** Remote Python bytecode compilation passed. GPU protocol and numerical equality are intentionally gated by the first paired run.
+- **Decision:** Benchmark infrastructure only; no performance selection.
