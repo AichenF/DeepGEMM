@@ -3069,3 +3069,27 @@ maximum rank latency of a full CUDA-Graph replay.
   JIT module for same-binary A/B timing.  Gate TP4/TP8 output numerics, then
   compare activation-stage and total cold-L2 medians.  Do not distribute-test
   a noise-sized or mixed-sign local result.
+
+### WGMMA iteration 49b — paired activation quant rejected
+
+- The candidate passes the full M8 numerical gate: preparation remains
+  bitwise exact, W13/activation/W2 cosines are
+  0.999999982/0.999999289/0.999997272, and all outputs are finite.
+- In the graph-internal candidate/control/candidate screen, activation-quant
+  medians are 5.984/6.112/5.984 us at M8, 6.656/6.976/6.656 us at M32, and
+  8.960/8.896/8.960 us at M128.  Halving the CTA count helps the isolated
+  stage only for the small shapes and slightly hurts M128; local-pipeline
+  medians differ by at most about 0.35% and are dominated by noise elsewhere.
+- The true four-rank CUDA-Graph candidate A/control/candidate B custom
+  geometric means are 0.184652/0.183510/0.184148 ms over 400 independently
+  cold-L2 samples per M.  The candidate is therefore 0.62% and 0.35% slower
+  than the central control.  Candidate A regresses every M, while candidate B
+  still regresses M64/M128 by 0.21%/1.76%.
+- Reject the specialization and restore the exact iteration-47 winner.  The
+  result also confirms that reducing launch/CTA overhead in this already
+  fused stage cannot materially close the remaining gap; future work should
+  target W13/W2 data movement or cross-stage fusion.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_act_quant_pair_correctness_20260903.log`,
+  `bench/results/tp4_act_quant_pair_stage_coldl2_screen_v2_20260903.log`, and
+  `bench/results/tp4_act_quant_pair_{candidate_a,control,candidate_b}_coldl2_screen_20260903.log`.

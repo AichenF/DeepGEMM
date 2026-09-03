@@ -1,0 +1,63 @@
+PHASE=candidate_a M=8
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: unrecognized arguments: --pattern random
+PHASE=candidate_a M=32
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: unrecognized arguments: --pattern random
+PHASE=candidate_a M=128
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: unrecognized arguments: --pattern random
+PHASE=control M=8
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: unrecognized arguments: --pattern random
+PHASE=control M=32
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: unrecognized arguments: --pattern random
+PHASE=control M=128
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: unrecognized arguments: --pattern random
+PHASE=candidate_b M=8
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: unrecognized arguments: --pattern random
+PHASE=candidate_b M=32
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: unrecognized arguments: --pattern random
+PHASE=candidate_b M=128
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: unrecognized arguments: --pattern random
