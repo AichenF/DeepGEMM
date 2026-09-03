@@ -3234,3 +3234,19 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/iter52_bf16_atomic_correctness_20260903.log` and
   `bench/results/iter52_bf16_atomic_stage_aba_coldl2_20260903.log`.
+
+### WGMMA iteration 53a — leader-only TMA mbarrier polling
+
+- The selected route GEMM currently has all 128 lanes execute the same
+  `mbarrier.try_wait.parity` polling loop for each packed weight stage, then
+  immediately performs a CTA-wide barrier.  During cold-HBM waits this can
+  consume scheduler issue slots with redundant polling from four warps.
+- Add opt-in `V4_LEADER_MBAR_WAIT=1`: only lane 0 performs the acquire wait;
+  every lane then rendezvous at the unchanged CTA barrier before reading the
+  TMA-filled shared stage.  Grid, two-stage layout, copied bytes, dequant,
+  WGMMA, registers holding math state, and output semantics remain unchanged.
+- Keep the default off.  First require TP4 split-K=4/2 and TP8 correctness,
+  because this experiment relies on the leader wait followed by `bar.sync`
+  publishing the async-proxy writes to the CTA.  If correct, use cold-L2
+  candidate/control/candidate stage timing at M8/M32/M128; only a repeatable
+  W13/W2 reduction proceeds to distributed timing.
