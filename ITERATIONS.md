@@ -5111,3 +5111,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP4 skew forced split2 passes: W13 rel-L2 0.000077291, activation 0.000838720, W2 0.002351904 finite.  TP8-shape balanced auto split4 also passes: W13 rel-L2 0.000076998, activation 0.000714756, W2 0.002333323 finite.
 - Result: retain the compact selected default and close early refill permanently.  The next performance experiment must preserve this full-route numerical gate.
 - Evidence: `results/iter123_remove_unsafe_early_refill_default_correctness_20260903.log`.
+
+## Iteration 124 — compact selected W2 exposes avoidable local barrier-address traffic
+
+- Profiled the selected TP4 M128 random-route W2 `route_gemm<512,4096,split1>` after the standard excluded 256 MiB cold-L2 clear, selecting the second route-GEMM launch explicitly.  Full NCU replay completed in 38 passes.
+- W2 duration is 114.88 us under replay, with compute/DRAM/L2 throughput 77.47%/50.70%/64.19%, 2.44 TB/s DRAM, 55 registers/thread, 18.43 KiB dynamic shared memory, nine resident CTAs, and 54.27% achieved occupancy.  Scheduler eligible/no-eligible fractions are 78.60%/21.40%.
+- Per-issued-instruction warp-state costs are led by not-selected 2.74 cycles, barrier 1.90, math-pipe throttle 1.37, long scoreboard 1.14, fixed wait 1.13, selected 1.00, GMMA 0.55, short scoreboard 0.47, and dispatch 0.39.  W2 remains issue/ALU/barrier bound rather than HBM-roof bound.
+- Source/SASS correlation identifies explicit local memory caused by `uint32_t barrier_addr[kStages]`: 31,872 `STL.64`-classified stores and 127,488 `LDL` loads, with zero register spilling.  For 7,968 active M-block/N-tile CTAs, these counts are exactly four warp stores per CTA and four K128 loads per warp.  This is address-array traffic, not an unavoidable accumulator spill.
+- Direction: replace the dynamically indexed local array with a shared-address base plus `stage * 8`, behind a reversible compile-time flag; require full TP4/TP8 numerical gates and same-process cold-L2 A/B before selection.
+- Evidence: `results/iter124_compact_selected_tp4_m128_w2_cold_ncu.{log,ncu-rep}` and `results/iter124a_compact_selected_tp4_m128_w2_ncu_details_20260903.log`.
