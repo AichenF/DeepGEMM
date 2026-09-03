@@ -5319,3 +5319,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP4 balanced auto split4, TP4 skew forced split2, and TP8-shape balanced auto split4 all exactly reproduce the selected W13/activation/W2 numerical metrics. Route preparation and quantization are exact and all outputs are finite.
 - Result: split-aware unrolling is numerically safe and NVCC accepts the template-dependent pragma. Verify that cubin resources match selected for split4 and global-eight for split2, then run M128 and all-M cold-L2 paired gates.
 - Evidence: `results/iter133_splitaware_route_k_unroll8_correctness_20260903.log`.
+
+## Iteration 133b — split-aware eight-way still perturbs W2 and is rejected
+
+- Cubin resources validate the intended W13 split specialization: split4 is restored to the selected 52 registers, while split2 remains at the global-eight 54 registers; W2 remains at 61 registers. All kernels are spill-free.
+- Same-process TP4 all-M timing used five x 100 rank-max cold-L2 samples per arm with per-replay AB/BA. Four-way-control/candidate medians and speedups: M8 0.071104/0.071264 ms (0.997755x), M16 0.112000/0.112256 ms (0.997720x), M32 0.182304/0.182240 ms (1.000351x), M64 0.265328/0.263712 ms (1.006128x), M128 0.338864/0.336240 ms (1.007804x).
+- Candidate min/median/max is 0.070016/0.071264/0.073120, 0.110976/0.112256/0.114272, 0.174144/0.182240/0.186368, 0.243488/0.263712/0.276352, and 0.300256/0.336240/0.387104 ms. Control is 0.069888/0.071104/0.488000, 0.110816/0.112000/0.238272, 0.174336/0.182304/0.337504, 0.243968/0.265328/0.450976, and 0.299968/0.338864/0.495936 ms.
+- All outputs are bitwise identical. Five-shape geometric-mean speedup is only about 1.00194x, and M8/M16 consistently regress by about 0.23%. Because W2 has `SplitK=1`, the split-aware expression also applies pragma-eight to W2 even though its loop has only four iterations; unchanged register count does not imply identical scheduling/code layout.
+- Result: reject this general split-aware candidate. Refine once more to pragma-eight only when `K == 4096 && SplitK <= 2`, keeping both W2 and W13 split4 on the exact selected pragma-four path.
+- Evidence: `results/iter133b_splitaware_route_k_unroll8_tp4_allm_paired_cold2500_20260903.log`.
