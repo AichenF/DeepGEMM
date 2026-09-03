@@ -3310,3 +3310,25 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_iter53_w13_leader_{candidate_a,control,candidate_b}_coldl2_screen_20260903.log`
   and
   `bench/results/tp4_iter53_w13_leader_m128_{candidate,control}_coldl2_audit_20260903.log`.
+
+### Post-iteration-53 TP8 smoke and TP4 formal score
+
+- The selected default runs the true TP8 M8 CUDA Graph in 0.062288 ms median
+  over 20 individually cold-L2 samples.  Minimum-rank cosine is 0.999991970,
+  relative L2 is 0.004007414, every output is finite, and the independent
+  NCCL all-reduce check passes.
+- Formal TP4 10x200 Humming/custom medians (ms) at M8/16/32/64/128 are
+  0.090144/0.077184, 0.145824/0.123456, 0.235952/0.204800,
+  0.343424/0.302096, and 0.408320/0.380144.  Humming/custom speedups are
+  1.16791/1.18118/1.15211/1.13680/1.07412; every point remains a win.
+- Geometric means are 0.212659/0.186248 ms, giving custom/Humming=0.875807
+  and Humming/custom=1.141804: 14.18% speedup (12.42% latency reduction).
+  The headline ratio rises 0.29% relative to iteration 50's 1.138534.
+- Do not attribute the whole headline shift to the candidate: custom geomean
+  is 0.12% higher than the previous formal window while Humming is 0.41%
+  higher.  The controlled core/distributed audits support only the expected
+  0.3-0.5% causal gain.  At this window's baseline, reaching 1.20x requires
+  custom geomean about 0.177216 ms, another 9.03 us or 4.85% reduction.
+- Evidence:
+  `bench/results/tp8_wgmma_w13_leader_default_smoke_20260903.log` and
+  `bench/results/tp4_paired_w13_leader_default_coldl2_formal_20260903.log`.
