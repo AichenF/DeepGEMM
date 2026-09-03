@@ -262,6 +262,10 @@ class CapturedCase:
         self.w13_split_k = kernel.select_w13_split_k(
             routes, self.active_experts
         )
+        self.w13_tail_fused = (
+            kernel.W13_TAIL_FUSED_ACT
+            and routes <= kernel.W13_TAIL_MAX_ROUTES
+        )
 
     @property
     def routes(self) -> int:
@@ -269,15 +273,27 @@ class CapturedCase:
 
     def run_local(self) -> torch.Tensor:
         if kernel.FUSED_ROUTE_QUANT:
-            kernel.fused_route_quant(
-                self.topk_ids,
-                self.x,
-                self.sorted_ids,
-                self.expert_ids,
-                self.num_tokens_padded,
-                self.qx.view(torch.uint8),
-                self.x_scale,
-            )
+            if self.w13_tail_fused:
+                kernel.fused_route_quant_tail(
+                    self.topk_ids,
+                    self.x,
+                    self.sorted_ids,
+                    self.expert_ids,
+                    self.num_tokens_padded,
+                    self.qx.view(torch.uint8),
+                    self.x_scale,
+                    self.w13_completion,
+                )
+            else:
+                kernel.fused_route_quant(
+                    self.topk_ids,
+                    self.x,
+                    self.sorted_ids,
+                    self.expert_ids,
+                    self.num_tokens_padded,
+                    self.qx.view(torch.uint8),
+                    self.x_scale,
+                )
         else:
             (
                 self.sorted_ids,
@@ -297,9 +313,8 @@ class CapturedCase:
                 m_major_scale=False,
                 scale_dtype="float32",
             )
-        if kernel.W13_TAIL_FUSED_ACT:
+        if self.w13_tail_fused:
             assert self.activation_scale is not None
-            self.w13_completion.zero_()
             kernel.run_w13_tail(
                 self.w13,
                 self.s13,
@@ -586,6 +601,7 @@ def main() -> None:
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "w13_tail_fused_activation": kernel.W13_TAIL_FUSED_ACT,
+                    "w13_tail_max_routes": kernel.W13_TAIL_MAX_ROUTES,
                     "fused_route_quant": kernel.FUSED_ROUTE_QUANT,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,

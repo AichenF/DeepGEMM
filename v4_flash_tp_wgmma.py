@@ -82,6 +82,9 @@ MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
 W13_TAIL_FUSED_ACT = os.environ.get("V4_W13_TAIL_FUSED_ACT", "0") == "1"
+W13_TAIL_MAX_ROUTES = int(os.environ.get("V4_W13_TAIL_MAX_ROUTES", "48"))
+if W13_TAIL_MAX_ROUTES < 0:
+    raise ValueError("V4_W13_TAIL_MAX_ROUTES must be non-negative")
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
@@ -248,7 +251,7 @@ __device__ __forceinline__ uint2 dequant_weight_word(
         kDequantDp4aHi, kDequantDp4aLo>(packed, lut);
 }
 
-template <int K, int N, int SplitK, bool IsW13>
+template <int K, int N, int SplitK, bool IsW13, bool TailFuseAct>
 __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const __grid_constant__ CUtensorMap tma_weight,
         const __grid_constant__ CUtensorMap tma_weight_scale,
@@ -922,7 +925,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         }
     }
 
-    if constexpr (IsW13 && kW13TailFusedAct) {
+    if constexpr (IsW13 && TailFuseAct) {
         static_assert(kWout == 128);
         constexpr int Intermediate = N / 2;
         constexpr int kGroupsPerRoute = Intermediate / kWout;
@@ -1102,6 +1105,7 @@ __global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
 // quantization are independent, so place them in one launch: CTA 0 performs
 // the E=256/top-k=6/block-M=8 alignment, while every 256-thread CTA quantizes
 // two H=4096 group-128 slices.
+template <bool ResetCompletion>
 __global__ __launch_bounds__(256) void fused_route_quant_kernel(
         const int32_t* __restrict__ topk_ids,
         const __nv_bfloat16* __restrict__ input,
@@ -1110,6 +1114,8 @@ __global__ __launch_bounds__(256) void fused_route_quant_kernel(
         int32_t* __restrict__ num_tokens_padded,
         uint8_t* __restrict__ quantized,
         float* __restrict__ scale,
+        int32_t* __restrict__ activation_completion,
+        int completion_count,
         int routes) {
     constexpr int kExperts = 256;
     constexpr int kGroup = 128;
@@ -1123,6 +1129,11 @@ __global__ __launch_bounds__(256) void fused_route_quant_kernel(
 
     const int tid = threadIdx.x;
     if (blockIdx.x == 0) {
+        if constexpr (ResetCompletion) {
+            for (int index = tid; index < completion_count;
+                 index += blockDim.x)
+                activation_completion[index] = 0;
+        }
         counts[tid] = 0;
         __syncthreads();
 
@@ -1265,7 +1276,7 @@ CUtensorMap make_weight_scale_desc(void* pointer, int K, int64_t elements) {
     return descriptor;
 }
 
-template <int K, int N, int SplitK, bool IsW13>
+template <int K, int N, int SplitK, bool IsW13, bool TailFuseAct = false>
 void launch_route_gemm(
         torch::Tensor weight, torch::Tensor weight_scale,
         torch::Tensor weight_global_scale,
@@ -1309,7 +1320,7 @@ void launch_route_gemm(
                 + effective_scale_buffers * kWout * 16)
         + kTok * kBlockK;
     const auto stream = at::cuda::getCurrentCUDAStream();
-    route_gemm<K, N, SplitK, IsW13><<<
+    route_gemm<K, N, SplitK, IsW13, TailFuseAct><<<
         grid, 128, dynamic_smem_bytes, stream>>>(
         weight_descriptor,
         scale_descriptor,
@@ -1397,7 +1408,7 @@ void run_w13_tail_impl(
     auto* quantized_scale_ptr = quantized_scale.data_ptr<float>();
     if (intermediate == 512) {
         if (split_k == 4) {
-            launch_route_gemm<4096, 1024, 4, true>(
+            launch_route_gemm<4096, 1024, 4, true, true>(
                 weight, weight_scale, weight_global_scale,
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
@@ -1405,7 +1416,7 @@ void run_w13_tail_impl(
                 activation_bf16_ptr, quantized_ptr, quantized_scale_ptr);
         } else {
             TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
-            launch_route_gemm<4096, 1024, 2, true>(
+            launch_route_gemm<4096, 1024, 2, true, true>(
                 weight, weight_scale, weight_global_scale,
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
@@ -1414,7 +1425,7 @@ void run_w13_tail_impl(
         }
     } else if (intermediate == 256) {
         if (split_k == 4) {
-            launch_route_gemm<4096, 512, 4, true>(
+            launch_route_gemm<4096, 512, 4, true, true>(
                 weight, weight_scale, weight_global_scale,
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
@@ -1422,7 +1433,7 @@ void run_w13_tail_impl(
                 activation_bf16_ptr, quantized_ptr, quantized_scale_ptr);
         } else {
             TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
-            launch_route_gemm<4096, 512, 2, true>(
+            launch_route_gemm<4096, 512, 2, true, true>(
                 weight, weight_scale, weight_global_scale,
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
@@ -1570,12 +1581,48 @@ void fused_route_quant(
     const int routes = topk_ids.numel();
     const int blocks = input.size(0) * 16;
     const auto stream = at::cuda::getCurrentCUDAStream();
-    fused_route_quant_kernel<<<blocks, 256, 0, stream>>>(
+    fused_route_quant_kernel<false><<<blocks, 256, 0, stream>>>(
         topk_ids.data_ptr<int32_t>(),
         reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
         sorted_ids.data_ptr<int32_t>(), expert_ids.data_ptr<int32_t>(),
         num_tokens_padded.data_ptr<int32_t>(),
-        quantized.data_ptr<uint8_t>(), scale.data_ptr<float>(), routes);
+        quantized.data_ptr<uint8_t>(), scale.data_ptr<float>(),
+        nullptr, 0, routes);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void fused_route_quant_tail(
+        torch::Tensor topk_ids, torch::Tensor input,
+        torch::Tensor sorted_ids, torch::Tensor expert_ids,
+        torch::Tensor num_tokens_padded, torch::Tensor quantized,
+        torch::Tensor scale, torch::Tensor activation_completion) {
+    TORCH_CHECK(kW13TailFusedAct,
+                "rebuild with V4_W13_TAIL_FUSED_ACT=1");
+    TORCH_CHECK(topk_ids.scalar_type() == torch::kInt32,
+                "topk_ids must be int32");
+    TORCH_CHECK(input.scalar_type() == torch::kBFloat16,
+                "input must be bfloat16");
+    TORCH_CHECK(input.dim() == 2 && input.size(1) == 4096,
+                "input must have shape [M,4096]");
+    TORCH_CHECK(topk_ids.numel() == input.size(0) * 6,
+                "topk_ids must have shape [M,6]");
+    TORCH_CHECK(quantized.numel() == input.numel(),
+                "quantized output shape mismatch");
+    TORCH_CHECK(scale.numel() == input.size(0) * 32,
+                "scale output must have shape [M,32]");
+    TORCH_CHECK(activation_completion.scalar_type() == torch::kInt32,
+                "activation completion counters must be int32");
+    const int routes = topk_ids.numel();
+    const int blocks = input.size(0) * 16;
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    fused_route_quant_kernel<true><<<blocks, 256, 0, stream>>>(
+        topk_ids.data_ptr<int32_t>(),
+        reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
+        sorted_ids.data_ptr<int32_t>(), expert_ids.data_ptr<int32_t>(),
+        num_tokens_padded.data_ptr<int32_t>(),
+        quantized.data_ptr<uint8_t>(), scale.data_ptr<float>(),
+        activation_completion.data_ptr<int32_t>(),
+        activation_completion.numel(), routes);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -1628,6 +1675,11 @@ void fused_route_quant(torch::Tensor topk_ids, torch::Tensor input,
                        torch::Tensor sorted_ids, torch::Tensor expert_ids,
                        torch::Tensor num_tokens_padded,
                        torch::Tensor quantized, torch::Tensor scale);
+void fused_route_quant_tail(torch::Tensor topk_ids, torch::Tensor input,
+                       torch::Tensor sorted_ids, torch::Tensor expert_ids,
+                       torch::Tensor num_tokens_padded,
+                       torch::Tensor quantized, torch::Tensor scale,
+                       torch::Tensor activation_completion);
 void braid_mode2(torch::Tensor weight);
 """
 
@@ -1647,7 +1699,7 @@ _ext = load_inline(
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
           f"lmw{int(LEADER_MBAR_WAIT)}_"
-          f"w13tfa{int(W13_TAIL_FUSED_ACT)}_mb{MIN_BLOCKS_PER_SM}_v57"),
+          f"w13tfa{int(W13_TAIL_FUSED_ACT)}_mb{MIN_BLOCKS_PER_SM}_v57b"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1655,6 +1707,7 @@ _ext = load_inline(
         "reduce_swiglu", "reduce_swiglu_quant",
         "cast_bf16",
         "fused_route_quant",
+        "fused_route_quant_tail",
         "braid_mode2",
     ],
     extra_cuda_cflags=[
@@ -1987,6 +2040,30 @@ def fused_route_quant(
         num_tokens_padded,
         quantized,
         scale,
+    )
+
+
+def fused_route_quant_tail(
+    topk_ids: torch.Tensor,
+    input: torch.Tensor,
+    sorted_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_padded: torch.Tensor,
+    quantized: torch.Tensor,
+    scale: torch.Tensor,
+    activation_completion: torch.Tensor,
+) -> None:
+    if not W13_TAIL_FUSED_ACT:
+        raise RuntimeError("rebuild with V4_W13_TAIL_FUSED_ACT=1")
+    _ext.fused_route_quant_tail(
+        topk_ids,
+        input,
+        sorted_ids,
+        expert_ids,
+        num_tokens_padded,
+        quantized,
+        scale,
+        activation_completion,
     )
 
 
