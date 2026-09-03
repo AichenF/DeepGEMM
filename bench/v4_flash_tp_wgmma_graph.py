@@ -230,6 +230,9 @@ class CapturedCase:
         self.fused_push_mc_ptr = 0
         self.fused_pull_output = None
         self.fused_pull_mc_ptr = 0
+        self.symm_route_input = None
+        self.symm_route_mc_ptr = 0
+        self.symm_route_sem_local = None
         self.fused_k6_push_active = False
         self.fused_k6_ar_mode = "stock"
         self.pipeline_stream = torch.cuda.Stream(device=device)
@@ -496,6 +499,62 @@ class CapturedCase:
 
         register_comm(comm.obj, pull_sem_mc_ptr=comm.pull_sem_mc_ptr)
 
+    def prepare_symm_route_pull(self, comm: CustomAllReduceV2) -> None:
+        if self.symm_route_input is not None:
+            return
+        self.prepare_fused_push(comm)
+        assert self.fused_push_workspaces is not None
+        pull_offset = 2 * comm.world_size * comm.max_push_size
+        route_nbytes = self.routes * HIDDEN * torch.bfloat16.itemsize
+        if route_nbytes > comm.max_pull_size:
+            raise RuntimeError("symmetric route tensor exceeds pull workspace")
+        local_slab = self.fused_push_workspaces[comm.rank]
+        self.symm_route_input = local_slab[
+            pull_offset : pull_offset + route_nbytes
+        ].view(torch.bfloat16).view(self.routes, HIDDEN)
+        self.symm_route_mc_ptr = self.fused_push_mc_ptr + pull_offset
+        sem_offset = pull_offset + comm.max_pull_size
+        sem_nbytes = comm.config.num_pull_blocks * 128
+        self.symm_route_sem_local = local_slab[
+            sem_offset : sem_offset + sem_nbytes
+        ]
+
+    def run_rank_route_mc_pull(self, comm: CustomAllReduceV2) -> torch.Tensor:
+        self.prepare_symm_route_pull(comm)
+        assert self.symm_route_input is not None
+        assert self.symm_route_sem_local is not None
+        if not self.symm_route_mc_ptr or not comm.pull_sem_mc_ptr:
+            raise RuntimeError("rank-route pull requires multicast symmetric memory")
+
+        self.run_before_w2()
+        kernel.run_w2(
+            self.w2,
+            self.s2,
+            self.g2,
+            self.qactivation.view(torch.uint8),
+            self.activation_scale,
+            self.sorted_ids,
+            self.expert_ids,
+            self.num_tokens_padded,
+            self.topk_weights,
+            self.symm_route_input,
+            self.lut,
+            self.intermediate_per_rank,
+        )
+        kernel.fused_rank_route_mc_pull_tp4(
+            self.symm_route_input,
+            self.topk_weights,
+            self.fused_graph_output,
+            self.symm_route_sem_local,
+            self.symm_route_mc_ptr,
+            comm.pull_sem_mc_ptr,
+            kernel.RANK_ROUTE_PULL_BLOCKS,
+        )
+        self.fused_k6_push_active = True
+        self.fused_k6_ar_mode = "rank_route_multicast_pull"
+        self.graph_output = self.fused_graph_output
+        return self.graph_output
+
     def reduce_local_to(self, output: torch.Tensor) -> torch.Tensor:
         assert self.down is not None
         if self.tiled_k6_reduce_mode:
@@ -517,6 +576,14 @@ class CapturedCase:
         return output
 
     def run_full(self, comm: CustomAllReduceV2) -> torch.Tensor:
+        use_rank_route_pull = (
+            kernel.FUSED_RANK_ROUTE_MC_PULL_AR
+            and comm.world_size == 4
+            and self.m == 128
+            and kernel.W2_ROUTE_OUTPUT
+        )
+        if use_rank_route_pull:
+            return self.run_rank_route_mc_pull(comm)
         use_pipeline = (
             kernel.PIPELINED_W2_MC_PUSH_AR
             and comm.world_size == 4
@@ -789,6 +856,10 @@ def main() -> None:
                     "pipelined_w2_mc_push_ar": kernel.PIPELINED_W2_MC_PUSH_AR,
                     "pipeline_chunks": kernel.PIPELINE_CHUNKS,
                     "pipeline_ar_blocks": kernel.PIPELINE_AR_BLOCKS,
+                    "fused_rank_route_mc_pull_ar": (
+                        kernel.FUSED_RANK_ROUTE_MC_PULL_AR
+                    ),
+                    "rank_route_pull_blocks": kernel.RANK_ROUTE_PULL_BLOCKS,
                     "mc_pull_blocks": kernel.MC_PULL_BLOCKS or "default",
                     "mc_pull_unroll": kernel.MC_PULL_UNROLL or "default",
                     "w2_epilogue": (

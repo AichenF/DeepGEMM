@@ -107,6 +107,14 @@ if PIPELINE_CHUNKS not in (2, 4, 8):
     raise ValueError("V4_PIPELINE_CHUNKS must be 2,4,8")
 if PIPELINE_AR_BLOCKS not in (1, 2, 4, 8, 16, 32, 78):
     raise ValueError("V4_PIPELINE_AR_BLOCKS must be 1,2,4,8,16,32,78")
+FUSED_RANK_ROUTE_MC_PULL_AR = (
+    os.environ.get("V4_FUSED_RANK_ROUTE_MC_PULL_AR", "0") == "1"
+)
+RANK_ROUTE_PULL_BLOCKS = int(
+    os.environ.get("V4_RANK_ROUTE_PULL_BLOCKS", "16")
+)
+if RANK_ROUTE_PULL_BLOCKS not in (1, 2, 4, 8, 16, 32, 64):
+    raise ValueError("V4_RANK_ROUTE_PULL_BLOCKS must be 1,2,4,8,16,32,64")
 MC_PULL_BLOCKS = int(os.environ.get("V4_MC_PULL_BLOCKS", "0"))
 MC_PULL_UNROLL = int(os.environ.get("V4_MC_PULL_UNROLL", "0"))
 if MC_PULL_BLOCKS < 0:
@@ -1399,6 +1407,144 @@ __global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
         atomicAdd(push_counter + blockIdx.x, 1u);
 }
 
+__device__ __forceinline__ uint4 load_multimem_reduce_bf16_16b(
+        const void* pointer) {
+    uint4 value;
+    asm volatile(
+        "multimem.ld_reduce.weak.add.acc::f32.v4.bf16x2 "
+        "{%0, %1, %2, %3}, [%4];"
+        : "=r"(value.x), "=r"(value.y), "=r"(value.z), "=r"(value.w)
+        : "l"(pointer)
+        : "memory");
+    return value;
+}
+
+__device__ __forceinline__ uint32_t load_relaxed_sys_u32(
+        const uint32_t* pointer) {
+    uint32_t value;
+    asm volatile(
+        "ld.relaxed.sys.global.u32 %0, [%1];"
+        : "=r"(value) : "l"(pointer) : "memory");
+    return value;
+}
+
+__device__ __forceinline__ uint32_t load_acquire_sys_u32(
+        const uint32_t* pointer) {
+    uint32_t value;
+    asm volatile(
+        "ld.acquire.sys.global.u32 %0, [%1];"
+        : "=r"(value) : "l"(pointer) : "memory");
+    return value;
+}
+
+__device__ __forceinline__ void multimem_red_add_relaxed_u32(
+        uint32_t* pointer) {
+    asm volatile(
+        "multimem.red.relaxed.sys.global.add.u32 [%0], 1;"
+        : : "l"(pointer) : "memory");
+}
+
+__device__ __forceinline__ void multimem_red_add_release_u32(
+        uint32_t* pointer) {
+    asm volatile(
+        "multimem.red.release.sys.global.add.u32 [%0], 1;"
+        : : "l"(pointer) : "memory");
+}
+
+// The per-rank W2 route tensor is allocated in multicast-bound symmetric
+// memory.  Use NVLS to reduce each route across TP4 first, then exploit
+// linearity to apply the shared route weights and fixed k=6 locally.  This
+// replaces both the local k6 materialization and a separate output AR.
+template <int Threads>
+__global__ __launch_bounds__(Threads) void fused_rank_route_mc_pull_tp4_kernel(
+        const uint8_t* __restrict__ route_mc,
+        const float* __restrict__ topk_weights,
+        __nv_bfloat16* __restrict__ output,
+        uint8_t* __restrict__ sem_local,
+        uint8_t* __restrict__ sem_mc,
+        int tokens) {
+    constexpr int kWorld = 4;
+    constexpr int kHidden = 4096;
+    constexpr int kVecBytes = 16;
+    constexpr int kPairsPerVec = kVecBytes / sizeof(__nv_bfloat162);
+    constexpr int kVecsPerToken = kHidden * sizeof(__nv_bfloat16) / kVecBytes;
+    constexpr int kSemaphoreBytes = 128;
+
+    uint32_t barrier_current = 0;
+    if (threadIdx.x == 0) {
+        uint8_t* sem = sem_local + blockIdx.x * kSemaphoreBytes;
+        auto* flag = reinterpret_cast<uint32_t*>(sem);
+        auto* counter = reinterpret_cast<uint32_t*>(sem + sizeof(uint32_t));
+        const uint32_t reserved = atomicAdd(counter, 2 * kWorld);
+        barrier_current = reserved + kWorld;
+        multimem_red_add_relaxed_u32(reinterpret_cast<uint32_t*>(
+            sem_mc + blockIdx.x * kSemaphoreBytes));
+        while (load_relaxed_sys_u32(flag) - reserved < kWorld) {
+        }
+    }
+    __syncthreads();
+
+    const int global_tid = blockIdx.x * Threads + threadIdx.x;
+    const int global_threads = gridDim.x * Threads;
+    const int num_vecs = tokens * kVecsPerToken;
+    for (int vec = global_tid; vec < num_vecs; vec += global_threads) {
+        const int token = vec / kVecsPerToken;
+        const int vec_in_token = vec - token * kVecsPerToken;
+        uint4 route_sum[kTopK];
+        #pragma unroll
+        for (int route = 0; route < kTopK; ++route) {
+            const int64_t route_vec =
+                (static_cast<int64_t>(token) * kTopK + route)
+                    * kVecsPerToken
+                + vec_in_token;
+            route_sum[route] = load_multimem_reduce_bf16_16b(
+                route_mc + route_vec * kVecBytes);
+        }
+
+        float2 accum[kPairsPerVec];
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair)
+            accum[pair] = make_float2(0.0f, 0.0f);
+        #pragma unroll
+        for (int route = 0; route < kTopK; ++route) {
+            const float route_weight =
+                __ldg(topk_weights + token * kTopK + route) * kRoutedScale;
+            const uint32_t* words =
+                reinterpret_cast<const uint32_t*>(&route_sum[route]);
+            #pragma unroll
+            for (int pair = 0; pair < kPairsPerVec; ++pair) {
+                const __nv_bfloat162 value =
+                    *reinterpret_cast<const __nv_bfloat162*>(words + pair);
+                const float2 value_f32 = __bfloat1622float2(value);
+                accum[pair].x =
+                    fmaf(value_f32.x, route_weight, accum[pair].x);
+                accum[pair].y =
+                    fmaf(value_f32.y, route_weight, accum[pair].y);
+            }
+        }
+
+        uint4 result;
+        auto* result_words = reinterpret_cast<uint32_t*>(&result);
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair) {
+            const __nv_bfloat162 value =
+                __floats2bfloat162_rn(accum[pair].x, accum[pair].y);
+            result_words[pair] = *reinterpret_cast<const uint32_t*>(&value);
+        }
+        reinterpret_cast<uint4*>(output)[vec] = result;
+    }
+
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        auto* flag = reinterpret_cast<uint32_t*>(
+            sem_local + blockIdx.x * kSemaphoreBytes);
+        multimem_red_add_release_u32(reinterpret_cast<uint32_t*>(
+            sem_mc + blockIdx.x * kSemaphoreBytes));
+        while (load_acquire_sys_u32(flag) - barrier_current < kWorld) {
+        }
+    }
+}
+
 __global__ void braid_mode2_kernel(uint32_t* weight, int64_t words) {
     const int64_t index = static_cast<int64_t>(blockIdx.x) * blockDim.x
         + threadIdx.x;
@@ -1937,6 +2083,47 @@ void fused_k6_push_ar_tp4_chunk(
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+void fused_rank_route_mc_pull_tp4(
+        torch::Tensor route_input, torch::Tensor topk_weights,
+        torch::Tensor output, torch::Tensor sem_local,
+        int64_t route_mc_ptr, int64_t sem_mc_ptr, int active_blocks) {
+    TORCH_CHECK(route_input.scalar_type() == torch::kBFloat16
+                    && route_input.is_cuda() && route_input.is_contiguous(),
+                "symmetric route input must be contiguous CUDA bfloat16");
+    TORCH_CHECK(route_input.dim() == 2 && route_input.size(1) == 4096,
+                "symmetric route input must have shape [M*6,4096]");
+    TORCH_CHECK(topk_weights.scalar_type() == torch::kFloat32
+                    && topk_weights.is_cuda()
+                    && topk_weights.is_contiguous(),
+                "topk_weights must be contiguous CUDA float32");
+    TORCH_CHECK(output.scalar_type() == torch::kBFloat16
+                    && output.is_cuda() && output.is_contiguous(),
+                "output must be contiguous CUDA bfloat16");
+    TORCH_CHECK(output.dim() == 2 && output.size(1) == 4096,
+                "output must have shape [M,4096]");
+    TORCH_CHECK(route_input.size(0) == output.size(0) * 6
+                    && topk_weights.numel() == output.size(0) * 6,
+                "route/topk shapes do not match output M");
+    TORCH_CHECK(sem_local.scalar_type() == torch::kUInt8
+                    && sem_local.is_cuda() && sem_local.is_contiguous(),
+                "local semaphore slab must be contiguous CUDA uint8");
+    TORCH_CHECK(route_mc_ptr != 0 && sem_mc_ptr != 0,
+                "rank-route pull requires multicast route and semaphore VAs");
+    TORCH_CHECK(active_blocks > 0 && active_blocks <= 64
+                    && sem_local.numel() >= active_blocks * 128,
+                "rank-route pull block count exceeds semaphore capacity");
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    fused_rank_route_mc_pull_tp4_kernel<256><<<
+        active_blocks, 256, 0, stream>>>(
+        reinterpret_cast<const uint8_t*>(route_mc_ptr),
+        topk_weights.data_ptr<float>(),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        sem_local.data_ptr<uint8_t>(),
+        reinterpret_cast<uint8_t*>(sem_mc_ptr),
+        output.size(0));
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void fused_route_quant(
         torch::Tensor topk_ids, torch::Tensor input,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
@@ -2025,6 +2212,10 @@ void fused_k6_push_ar_tp4_chunk(
     torch::Tensor push2, torch::Tensor push3,
     int rank, int64_t push_stride, int64_t push_mc_ptr,
     int chunks, int chunk_idx, int active_blocks);
+void fused_rank_route_mc_pull_tp4(
+    torch::Tensor route_input, torch::Tensor topk_weights,
+    torch::Tensor output, torch::Tensor sem_local,
+    int64_t route_mc_ptr, int64_t sem_mc_ptr, int active_blocks);
 void fused_route_quant(torch::Tensor topk_ids, torch::Tensor input,
                        torch::Tensor sorted_ids, torch::Tensor expert_ids,
                        torch::Tensor num_tokens_padded,
@@ -2057,6 +2248,7 @@ _ext = load_inline(
         "tiled_k6_reduce",
         "fused_k6_push_ar_tp4",
         "fused_k6_push_ar_tp4_chunk",
+        "fused_rank_route_mc_pull_tp4",
         "fused_route_quant",
         "braid_mode2",
     ],
@@ -2429,6 +2621,26 @@ def fused_k6_push_ar_tp4_chunk(
         push_mc_ptr,
         chunks,
         chunk_idx,
+        active_blocks,
+    )
+
+
+def fused_rank_route_mc_pull_tp4(
+    route_input: torch.Tensor,
+    topk_weights: torch.Tensor,
+    output: torch.Tensor,
+    sem_local: torch.Tensor,
+    route_mc_ptr: int,
+    sem_mc_ptr: int,
+    active_blocks: int,
+) -> None:
+    _ext.fused_rank_route_mc_pull_tp4(
+        route_input,
+        topk_weights,
+        output,
+        sem_local,
+        route_mc_ptr,
+        sem_mc_ptr,
         active_blocks,
     )
 

@@ -3929,3 +3929,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Finding: raising communication parallelism recovers most of the eight-CTA serialization, but the best geometry still loses 13.168 us or 4.04% at M128, and both of its candidate batch medians lose. Four chunks are worse than two once launch/scheduling and concurrent resource contention are included.
 - Decision: reject chunk-level W2/AR overlap as a selectable path. A producer-progress scheme would need finer readiness without fragmenting the W2 grid; the current chunk launch topology cannot close the 20% objective and should not receive broader M or formal testing.
 - Evidence: `bench/results/iter69_pipeline_w2_mc_push_tp4_m128_geometry_sweep_coldl2_20260903.log`.
+
+### Iteration 70 — fused rank×route NVLS reduction is correct but too expensive (cold L2)
+
+- Change: added an opt-in TP4 M128 path that leaves W2 as one full route-GEMM launch but places its `[M*6,4096]` BF16 output in CARv2's multicast-bound symmetric pull slab. A 16-CTA kernel then issues six `multimem.ld_reduce...bf16x2` operations per output vector, applies the shared route weights in FP32, and writes final `[M,4096]`. It reuses CARv2's 128-byte pull semaphores and exact 2×world reservation/entry/exit windows.
+- Rationale: by linearity, summing each route across four TP ranks before the fixed k6 weighted sum replaces separate local k6 materialization plus output all-reduce without splitting or fencing the W2 producer grid.
+- Protocol: same-process TP4 M128 candidate/control, shared inputs/weights/routes/communicator, two balanced AB/BA batches × 20 separately cold-L2 graph replays per implementation.
+- Correctness: graph capture and repeated semaphore reuse do not hang. The changed reduction order remains within the MXFP4 gate (`cosine_min_rank=0.999992262`, `rel_l2_max_rank=0.003933958`, finite, all-reduce OK); control is 0.999995609/0.002963504. Candidate/control BF16 max absolute difference is 1024 in the benchmark's output units.
+- Performance: candidate median is 0.391136 ms versus 0.324320 ms control, `control/candidate=0.82917x`; candidate batches 0.390896/0.391296 ms both lose to 0.323984/0.324512 ms control.
+- Result: reject. Although the kernel eliminates a local pass and one output collective, six rank-reducing NVLS loads per output vector expand cross-rank data movement enough to add 66.816 us. Linearity is algebraically useful but the communication placement is wrong for k=6.
+- Evidence: `bench/results/iter70_rank_route_nvls_pull_tp4_m128_smoke_coldl2_20260903.log`.
