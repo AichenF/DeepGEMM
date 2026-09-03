@@ -56,7 +56,7 @@ class ProbeCase:
         self.x_scale = torch.empty(
             (m, HIDDEN // 128), dtype=torch.float32, device=device
         )
-        self.counters = torch.empty(8, dtype=torch.int32, device=device)
+        self.counters = torch.empty(12, dtype=torch.int32, device=device)
         self.readiness = torch.empty(
             self.max_mblocks, dtype=torch.int32, device=device
         )
@@ -174,6 +174,10 @@ def validate(case: ProbeCase, pattern: str, num_sms: int) -> dict[str, object]:
         "w2_claim_cursor": counters[1],
         "interleaved_observed": overlap,
         "violations": counters[6],
+        "invalid_w13": counters[8],
+        "invalid_w2_mblock": counters[9],
+        "premature_readiness": counters[10],
+        "duplicate_w13_arrival": counters[11],
         "valid": valid,
     }
     print("SCHED_PROBE " + json.dumps(result, sort_keys=True), flush=True)

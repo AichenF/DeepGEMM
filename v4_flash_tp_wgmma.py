@@ -1188,20 +1188,23 @@ __global__ void interleaved_scheduler_probe_kernel(
         while (true) {
             const int next_w2 = atomicAdd(counters + 1, 0);
             const int published = atomicAdd(counters + 2, 0);
-            const int available_w2 = published * w2_tiles;
-            if (next_w2 >= available_w2)
+            const int queue_slot = next_w2 / w2_tiles;
+            if (queue_slot >= published
+                    || atomicAdd(ready_valid + queue_slot, 0) == 0)
                 break;
             if (atomicCAS(counters + 1, next_w2, next_w2 + 1) != next_w2)
                 continue;
 
-            const int queue_slot = next_w2 / w2_tiles;
             const int n_tile = next_w2 - queue_slot * w2_tiles;
-            while (atomicAdd(ready_valid + queue_slot, 0) == 0) {}
             const int mblock = __ldg(ready_queue + queue_slot);
             if (static_cast<unsigned>(mblock) >=
-                    static_cast<unsigned>(num_mblocks)
-                    || atomicAdd(readiness + mblock, 0) != w13_tiles)
+                    static_cast<unsigned>(num_mblocks)) {
                 atomicAdd(counters + 6, 1);
+                atomicAdd(counters + 9, 1);
+            } else if (atomicAdd(readiness + mblock, 0) != w13_tiles) {
+                atomicAdd(counters + 6, 1);
+                atomicAdd(counters + 10, 1);
+            }
             w2_owner[next_w2] = blockIdx.x;
             w2_mblock[next_w2] = mblock;
             w2_order[next_w2] = atomicAdd(counters + 3, 1);
@@ -1213,13 +1216,25 @@ __global__ void interleaved_scheduler_probe_kernel(
         if (claimed_w2)
             continue;
 
-        const int w13_task = atomicAdd(counters + 0, 1);
-        if (w13_task < total_w13) {
+        int w13_task = -1;
+        while (true) {
+            const int next_w13 = atomicAdd(counters + 0, 0);
+            if (next_w13 >= total_w13)
+                break;
+            if (atomicCAS(counters + 0, next_w13, next_w13 + 1)
+                    == next_w13) {
+                w13_task = next_w13;
+                break;
+            }
+        }
+        if (w13_task >= 0) {
             const int mblock = w13_task / w13_tiles;
             if (static_cast<unsigned>(mblock) >=
                     static_cast<unsigned>(max_mblocks)
-                    || __ldg(expert_ids + mblock) < 0)
+                    || __ldg(expert_ids + mblock) < 0) {
                 atomicAdd(counters + 6, 1);
+                atomicAdd(counters + 8, 1);
+            }
             w13_owner[w13_task] = blockIdx.x;
             w13_order[w13_task] = atomicAdd(counters + 3, 1);
             __threadfence();
@@ -1232,6 +1247,7 @@ __global__ void interleaved_scheduler_probe_kernel(
                 atomicExch(ready_valid + queue_slot, 1);
             } else if (done > w13_tiles) {
                 atomicAdd(counters + 6, 1);
+                atomicAdd(counters + 11, 1);
             }
             continue;
         }
@@ -2406,8 +2422,8 @@ void interleaved_scheduler_probe(
     TORCH_CHECK(num_tokens_padded.scalar_type() == torch::kInt32,
                 "num_tokens_padded must be int32");
     TORCH_CHECK(counters.scalar_type() == torch::kInt32
-                    && counters.numel() >= 8,
-                "counters must contain at least eight int32 values");
+                    && counters.numel() >= 12,
+                "counters must contain at least twelve int32 values");
     TORCH_CHECK(readiness.scalar_type() == torch::kInt32
                     && ready_queue.scalar_type() == torch::kInt32
                     && ready_valid.scalar_type() == torch::kInt32,
@@ -2540,7 +2556,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v75sched"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v76sched"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
