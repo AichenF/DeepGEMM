@@ -4146,3 +4146,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Cold medians:** workers 1: control/candidate `79.648/124.704 us` (`0.63870x`); 2: `79.968/100.896 us` (`0.79258x`); 4: `79.504/89.296 us` (`0.89034x`); 16: `79.312/81.664 us` (`0.97120x`). The prior eight-worker point was `79.488/83.920 us` (`0.94719x`).
 - **Interpretation:** candidate latency improves monotonically through 16 workers. Queue-drain/finish tail dominates more than W2 resource interference in this range; 16 workers narrows the deficit to `2.352 us` (`2.97%` slower).
 - **Decision:** retain only as an opt-in experiment. Continue to 24/32 workers to test whether the curve crosses control.
+
+## Iteration 83f0 — invalid 24-worker screen invocation
+
+- **Attempt:** requested progress-worker counts `24,32` in the existing cold-L2 A/B harness.
+- **Failure:** argparse rejected `24`; the supported set is `{1,2,4,8,16,32}`. `set -e` stopped the loop before the 32-worker case, so no GPU performance result was produced.
+- **Decision:** this is a benchmark-invocation error, not a kernel result. Keep the harness restriction and rerun the valid 32-worker endpoint.
