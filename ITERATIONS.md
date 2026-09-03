@@ -5336,3 +5336,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP4 balanced auto split4, TP4 skew forced split2, and TP8-shape balanced auto split4 exactly reproduce selected W13/activation/W2 errors; route preparation and input quantization are exact and all outputs are finite.
 - Result: the W13-only specialization is numerically safe. Verify cubin identity for W2/split4 and then use an all-M cold-L2 paired screen to test whether it retains M64/M128 gains without M8/M16 regressions.
 - Evidence: `results/iter134_w13_split2_route_k_unroll8_correctness_20260903.log`.
+
+## Iteration 134b — W13-only candidate gains at split2; small-M difference needs disambiguation
+
+- Cubin resources match the intended specialization: W2 stays at 61 registers, W13 split4 stays at 52, W13 split2 moves to 54, and all remain stack/local-spill free.
+- Same-process TP4 all-M screening used five x 100 rank-max cold-L2 samples per arm with per-replay AB/BA. Four-way-control/candidate medians and speedups: M8 0.071232/0.071360 ms (0.998206x), M16 0.112128/0.112416 ms (0.997438x), M32 0.181872/0.181760 ms (1.000616x), M64 0.265584/0.263824 ms (1.006671x), and M128 0.335664/0.333792 ms (1.005608x).
+- Candidate min/median/max is 0.070112/0.071360/0.074048, 0.111168/0.112416/0.114624, 0.173888/0.181760/0.188032, 0.243264/0.263824/0.271168, and 0.299168/0.333792/1.034176 ms. Control is 0.069760/0.071232/0.399008, 0.110880/0.112128/0.264576, 0.173568/0.181872/0.358496, 0.243904/0.265584/0.392128, and 0.300256/0.335664/0.497568 ms.
+- All outputs are bitwise identical. The five-shape geometric-mean speedup is about 1.00170x; M64/M128 improve, M32 is neutral, while M8/M16 differ by only -0.18%/-0.26% even though their executed W13 split4 and W2 paths should compile with factor four.
+- Result: neither select nor reject yet. Compare per-function SASS between control and candidate, then run a longer 10 x 200 self-control. Treat the tiny small-M shift as a real regression only if machine code or the long run corroborates it.
+- Evidence: `results/iter134b_w13_split2_route_k_unroll8_tp4_allm_paired_cold2500_20260903.log`.
