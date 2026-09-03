@@ -5328,3 +5328,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - All outputs are bitwise identical. Five-shape geometric-mean speedup is only about 1.00194x, and M8/M16 consistently regress by about 0.23%. Because W2 has `SplitK=1`, the split-aware expression also applies pragma-eight to W2 even though its loop has only four iterations; unchanged register count does not imply identical scheduling/code layout.
 - Result: reject this general split-aware candidate. Refine once more to pragma-eight only when `K == 4096 && SplitK <= 2`, keeping both W2 and W13 split4 on the exact selected pragma-four path.
 - Evidence: `results/iter133b_splitaware_route_k_unroll8_tp4_allm_paired_cold2500_20260903.log`.
+
+## Iteration 134 — W13-only split1/split2 eight-way unroll passes correctness
+
+- Added opt-in `V4_W13_K_UNROLL8_SPLIT2=1` with pragma factor `K == 4096 && SplitK <= 2 ? 8 : 4`. This excludes W2 (`K=512`) as well as W13 split4 from the eight-way path while preserving the previous global and general-split flags for reproducibility.
+- Propagated the flag through extension configuration, compile flags, all benchmark/correctness metadata, comparison validation, and local profiling. The production default remains four-way.
+- TP4 balanced auto split4, TP4 skew forced split2, and TP8-shape balanced auto split4 exactly reproduce selected W13/activation/W2 errors; route preparation and input quantization are exact and all outputs are finite.
+- Result: the W13-only specialization is numerically safe. Verify cubin identity for W2/split4 and then use an all-M cold-L2 paired screen to test whether it retains M64/M128 gains without M8/M16 regressions.
+- Evidence: `results/iter134_w13_split2_route_k_unroll8_correctness_20260903.log`.

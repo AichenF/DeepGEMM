@@ -437,6 +437,7 @@ def main() -> None:
         f" route_k_unroll4={kernel.ROUTE_K_UNROLL4}"
         f" route_k_unroll8={kernel.ROUTE_K_UNROLL8}"
         f" route_k_unroll8_split2={kernel.ROUTE_K_UNROLL8_SPLIT2}"
+        f" w13_k_unroll8_split2={kernel.W13_K_UNROLL8_SPLIT2}"
         f" w13_distributed_prep={kernel.W13_DISTRIBUTED_PREP}"
         f" w13_dual_wg_split={kernel.W13_DUAL_WG_SPLIT}"
         f" w13_launch_bound_10={kernel.W13_LAUNCH_BOUND_10}"

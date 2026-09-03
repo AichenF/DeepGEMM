@@ -216,6 +216,9 @@ def main() -> None:
                 "route_k_unroll8_split2": kernel_module.ROUTE_K_UNROLL8_SPLIT2
                 if args.impl == "custom"
                 else None,
+                "w13_k_unroll8_split2": kernel_module.W13_K_UNROLL8_SPLIT2
+                if args.impl == "custom"
+                else None,
                 "compact_interleaved_scale": (
                     kernel_module.COMPACT_INTERLEAVED_SCALE
                 )
