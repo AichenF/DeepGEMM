@@ -3109,3 +3109,22 @@ maximum rank latency of a full CUDA-Graph replay.
 - Keep `V4_INTERLEAVED_BULK_COPY=0` by default and require the existing TP4
   split-K=4/2 and TP8 numerical gates.  Then compare W13/W2 and total local
   cold-L2 medians candidate/control/candidate before any distributed run.
+
+### WGMMA iteration 50b — interleaved-copy core screen passes
+
+- TP4 split-K=4, forced split-K=2, and TP8-shape tests reproduce the selected
+  W13/activation/W2 numerical errors.  TP8 W2 continues to use the unchanged
+  scalar-scale path; only K>=512 specializations consume interleaved records.
+- Graph-internal candidate A/control/candidate B local totals (us) are
+  M8 88.272/88.608/88.336, M32 199.360/200.336/199.104, and
+  M128 330.512/331.248/330.256.  Both candidate windows improve every total
+  by 0.22-0.61% despite the small effect size.
+- The mechanism is concentrated in the core at useful occupancy: both M32
+  W13 and W2 improve in each candidate window (0.34-0.49% and 0.78-0.98%),
+  while M128 W2 improves 1.07-1.08%.  M8 and M128 W13 contain mixed/noise-size
+  stage effects, so require a distributed A/control/A result before selection.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_interleaved_bulk_correctness_20260903.log`,
+  `bench/results/v4_flash_tp_wgmma_interleaved_bulk_additional_correctness_20260903.log`,
+  and
+  `bench/results/tp4_interleaved_bulk_stage_coldl2_screen_20260903.log`.
