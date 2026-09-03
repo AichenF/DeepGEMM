@@ -2682,3 +2682,15 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_normalized_scale_correctness_20260903.log`
   and
   `bench/results/tp4_normalized_scale_coldl2_screen_20260903.log`.
+
+### Post-selection TP8 end-to-end smoke
+
+- The normalized-scale default runs the full TP8 CUDA Graph at M8 across all
+  eight H20s, including random k6 route metadata, local route reduction and
+  SGLang CustomAllReduceV2.  Twenty individually cold-L2 samples give median
+  0.069408 ms; cosine is 0.999991970, relative L2 is 0.004007414, every rank
+  is finite, and the all-reduce check passes.
+- This is a bounded runnability/correctness gate because GPUs 5-7 are shared;
+  TP4 remains the optimization and formal-comparison target.
+- Evidence:
+  `bench/results/tp8_wgmma_normalized_scale_default_smoke_20260903.log`.
