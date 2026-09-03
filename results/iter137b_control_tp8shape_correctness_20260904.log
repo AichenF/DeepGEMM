@@ -1,0 +1,6 @@
+V4_WGMMA_CHECK M=8 pattern=balanced Is=256 active=48 padded=384 split_k=4 mode2=True fused_act_quant=True w2_global_lut=False tiled_k6_reduce_mode=4
+V4_WGMMA_K6 exact=True max_abs=0
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000076998
+V4_WGMMA_ACT cos=0.999999745 rel_l2=0.000714756
+V4_WGMMA_W2 cos=0.999997278 rel_l2=0.002333323 finite=True
+V4_WGMMA_OK

@@ -5414,3 +5414,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP8-shape (Is=256) runs through and passes the existing cosine gate: W13/activation/W2 cosine is 0.999999997/0.999999745/0.999930755 and rel-L2 is 0.000076998/0.000714756/0.011769490. The W2 error is higher than the previously recorded selected-path value, so this candidate is not yet correctness-qualified despite passing the coarse harness threshold.
 - Result: compile and basic TP4/TP8 execution pass. Before timing, require a same-input control/candidate output comparison (including TP8) and inspect cubin resources/SASS to confirm that the intended branches disappeared without register or semantic drift.
 - Evidence: `results/iter137_predicated_padded_activation_tp4_tp8shape_correctness_20260904.log`.
+
+## Iteration 137b — control confirms a TP8-shape correctness regression
+
+- Re-ran the same M8 balanced Is=256 test at `V4_PREDICATED_PADDED_ACTIVATION=0`, on the same HEAD, seed, and GPU. The control reproduces the previously selected W2 cosine/rel-L2 0.999997278/0.002333323; W13 and activation are identical to the candidate run.
+- The candidate's W2 cosine/rel-L2 0.999930755/0.011769490 is therefore a real TP8-shape regression, not an outdated reference value or run-to-run noise. The coarse `cos > 0.99` test was insufficient to qualify this transformation.
+- Result: block all performance timing. Diagnose the predicated activation/scale load semantics with direct control/candidate tensors or narrow the experiment to W13 only; do not select the current all-route-GEMM flag.
+- Evidence: `results/iter137b_control_tp8shape_correctness_20260904.log`.
