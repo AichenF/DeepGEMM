@@ -2694,3 +2694,22 @@ maximum rank latency of a full CUDA-Graph replay.
   TP4 remains the optimization and formal-comparison target.
 - Evidence:
   `bench/results/tp8_wgmma_normalized_scale_default_smoke_20260903.log`.
+
+### Post-selection TP4 formal cold-L2 score
+
+- Formal paired run uses TP4 GPUs 1-4, random real k6 route metadata,
+  alternating AB/BA complete batches, 10 outer batches x 200 replays, and
+  2,000 samples per implementation/M.  Both implementations include the same
+  SGLang CustomAllReduceV2 in their captured graphs.  A separate 256 MiB L2
+  clear precedes every individual graph replay and is excluded from timing.
+- Humming/custom medians (ms) at M8/16/32/64/128 are
+  0.090048/0.087840, 0.145760/0.136128, 0.232064/0.225824,
+  0.332224/0.317712, and 0.411488/0.406976.  Custom wins every point by
+  1.11-7.08%; geometric means are 0.210815/0.203518 ms, or 3.59% speedup
+  (custom/Humming=0.965386).
+- All finite, cosine and independent-NCCL all-reduce checks pass.  This is the
+  new accepted headline result, but remains far short of the 20% goal.  The
+  noisy M32 batch spread also reinforces using the full 2,000-sample result,
+  not the favorable 4x100 screening window, for claims.
+- Evidence:
+  `bench/results/tp4_paired_normalized_scale_default_coldl2_formal_20260903.log`.
