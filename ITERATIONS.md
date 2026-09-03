@@ -4367,3 +4367,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Failure:** `torchrun` consumed the benchmark's `--m` as an ambiguous launcher option because the training-script argument separator was omitted. No GPU benchmark samples were collected.
 - **Resolution:** Rerun with `torchrun ... -- bench/compare_v4_flash_tp_w2_store.py ...`.
 - **Artifact:** `results/iter86d_w2_store_paired_tp4_m128_cold_600_20260903.log`.
+
+## Iteration 86d1 — In-process paired TP4 M128 cold-L2 W2-store result
+
+- **Method:** Control and coalesced-store candidate were loaded together, captured as two graphs over identical random routes/weights, and replayed in alternating A/B then B/A order. Six batches × 100 samples per variant; each individual replay had its own 256 MiB L2 clear excluded from events; four-rank maximum latency.
+- **Correctness:** Outputs were bitwise equal on all four ranks after alternating the graphs.
+- **Result:** control median 0.356272 ms; candidate median 0.358176 ms; control/candidate 0.994684x. Every batch median was 1.36–2.37 microseconds slower for the candidate.
+- **Decision:** Reject `V4_W2_COALESCED_STORE=1` and retain scalar direct stores as default. The extra shared-memory traffic plus CTA barrier costs more than the global-sector reduction.
+- **Artifact:** `results/iter86d1_w2_store_paired_tp4_m128_cold_600_20260903.log`.
