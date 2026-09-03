@@ -143,7 +143,6 @@ def main() -> None:
         kernel.MODE2_BRAID
         or kernel.NORMALIZED_WEIGHT_SCALE
         or kernel.TILED_WEIGHT_LAYOUT
-        or kernel.W13_PAIRED_WG
     )
     w13_reference = w13.clone() if needs_weight_copy else w13
     w2_reference = w2.clone() if needs_weight_copy else w2
@@ -154,8 +153,6 @@ def main() -> None:
     if kernel.NORMALIZED_WEIGHT_SCALE:
         s13, g13 = kernel.normalize_mxfp4_weight_scales_(w13, s13)
         s2, g2 = kernel.normalize_mxfp4_weight_scales_(w2, s2)
-    if kernel.W13_PAIRED_WG:
-        w13, s13 = kernel.pair_gate_up_weight_layout(w13, s13)
     if kernel.MODE2_BRAID:
         # Convert only the kernel operands to the Mode2 physical layout.
         kernel.braid_mode2_(w13)
@@ -189,11 +186,17 @@ def main() -> None:
     )
     if kernel.FUSED_ROUTE_QUANT:
         max_padded = routes * 8 if routes < E + 1 else routes + (E + 1) * 7
+        max_mblocks = (max_padded + 7) // 8
         sorted_ids = torch.empty(
             (max_padded,), dtype=torch.int32, device=device
         )
         expert_ids = torch.empty(
-            ((max_padded + 7) // 8,), dtype=torch.int32, device=device
+            (max_mblocks,), dtype=torch.int32, device=device
+        )
+        route_to_sorted = torch.empty(
+            (routes if kernel.W2_SORTED_ACT else 0,),
+            dtype=torch.int32,
+            device=device,
         )
         num_tokens_padded = torch.empty((1,), dtype=torch.int32, device=device)
         qx = torch.empty_like(x, dtype=torch.float8_e4m3fn)
@@ -208,6 +211,7 @@ def main() -> None:
             num_tokens_padded,
             qx.view(torch.uint8),
             x_scale,
+            route_to_sorted,
         )
         torch.cuda.synchronize()
         routes_ok = route_contract_matches(
@@ -230,6 +234,8 @@ def main() -> None:
         num_tokens_padded = reference_num_tokens_padded
         qx = reference_qx
         x_scale = reference_x_scale
+        route_to_sorted = torch.empty(0, dtype=torch.int32, device=device)
+        max_mblocks = expert_ids.numel()
 
     partials = torch.empty(
         (kernel.W13_MAX_SPLITS, routes, n13), dtype=torch.float32, device=device
@@ -237,14 +243,30 @@ def main() -> None:
     activation = torch.empty(
         (routes, intermediate), dtype=torch.bfloat16, device=device
     )
-    qact = torch.empty_like(activation, dtype=torch.float8_e4m3fn)
+    qact_rows = max_mblocks * 8 if kernel.W2_SORTED_ACT else routes
+    qact = torch.empty(
+        (qact_rows, intermediate), dtype=torch.float8_e4m3fn, device=device
+    )
     act_scale = torch.empty(
-        (routes, intermediate // 128), dtype=torch.float32, device=device
+        (
+            (max_mblocks, intermediate // 128, 8)
+            if kernel.W2_SORTED_ACT
+            else (routes, intermediate // 128)
+        ),
+        dtype=torch.float32,
+        device=device,
     )
     lut = kernel.make_e2m1_e8m0_lut(device)
-    if kernel.W13_PAIRED_WG:
-        kernel.run_w13_paired(
+    w13_tail_fused_act = getattr(kernel, "W13_TAIL_FUSED_ACT", False)
+    if w13_tail_fused_act:
+        completion = torch.zeros(
+            (expert_ids.numel(), intermediate // 128),
+            dtype=torch.int32,
+            device=device,
+        )
+        kernel.run_w13_tail(
             w13,
+            s13,
             g13,
             qx.view(torch.uint8),
             x_scale,
@@ -252,9 +274,11 @@ def main() -> None:
             expert_ids,
             num_tokens_padded,
             partials,
+            completion,
             activation,
             qact.view(torch.uint8),
             act_scale,
+            lut,
             intermediate,
         )
     else:
@@ -278,6 +302,7 @@ def main() -> None:
                 qact.view(torch.uint8),
                 act_scale,
                 intermediate,
+                route_to_sorted=route_to_sorted,
             )
         else:
             kernel.reduce_swiglu(
@@ -348,7 +373,19 @@ def main() -> None:
         (torch.nn.functional.silu(gate_bf) * up_bf).bfloat16()
     )
 
-    act_dequant = qact.float() * act_scale.repeat_interleave(128, dim=1)
+    if kernel.W2_SORTED_ACT:
+        positions = route_to_sorted.long()
+        qact_route = qact[positions]
+        scale_by_slot = act_scale.permute(0, 2, 1)
+        act_scale_route = scale_by_slot[
+            positions >> 3, positions & 7
+        ]
+    else:
+        qact_route = qact
+        act_scale_route = act_scale
+    act_dequant = qact_route.float() * act_scale_route.repeat_interleave(
+        128, dim=1
+    )
     down_ref = torch.empty((routes, H), dtype=torch.float32, device=device)
     for expert in torch.unique(flat_ids).tolist():
         route_index = torch.nonzero(flat_ids == expert, as_tuple=False).flatten()
@@ -362,9 +399,7 @@ def main() -> None:
         * topk_weights[:, :, None]
     ).sum(dim=1) * 1.5
 
-    selected_split_k = (
-        1 if kernel.W13_PAIRED_WG else kernel.select_w13_split_k(routes)
-    )
+    selected_split_k = kernel.select_w13_split_k(routes)
     w13_actual = partials[:selected_split_k].sum(dim=0)
     print(
         "V4_WGMMA_CHECK "
@@ -373,7 +408,8 @@ def main() -> None:
         f"split_k={selected_split_k} mode2={kernel.MODE2_BRAID} "
         f"interleaved_bulk={kernel.INTERLEAVED_BULK_COPY} "
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
-        f"w13_paired_wg={kernel.W13_PAIRED_WG} "
+        f"w13_tail_fused_act={w13_tail_fused_act} "
+        f"w2_sorted_act={kernel.W2_SORTED_ACT} "
         f"w2_global_lut={kernel.W2_GLOBAL_LUT} "
         f"leader_mbar_wait={kernel.LEADER_MBAR_WAIT}"
     )

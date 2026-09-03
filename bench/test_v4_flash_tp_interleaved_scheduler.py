@@ -52,6 +52,11 @@ class ProbeCase:
             self.max_mblocks, dtype=torch.int32, device=device
         )
         self.num_tokens_padded = torch.empty(1, dtype=torch.int32, device=device)
+        self.route_to_sorted = torch.empty(
+            (self.routes if kernel.W2_SORTED_ACT else 0),
+            dtype=torch.int32,
+            device=device,
+        )
         self.qx = torch.empty_like(self.x, dtype=torch.float8_e4m3fn)
         self.x_scale = torch.empty(
             (m, HIDDEN // 128), dtype=torch.float32, device=device
@@ -92,6 +97,7 @@ class ProbeCase:
             self.num_tokens_padded,
             self.qx.view(torch.uint8),
             self.x_scale,
+            self.route_to_sorted,
         )
         kernel.interleaved_scheduler_probe(
             self.expert_ids,

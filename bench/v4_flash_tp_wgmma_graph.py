@@ -188,6 +188,13 @@ class CapturedCase:
         device = self.x.device
         routes = self.m * TOP_K
         n13 = 2 * self.intermediate_per_rank
+        max_padded = (
+            routes * 8
+            if routes < NUM_EXPERTS + 1
+            else routes + (NUM_EXPERTS + 1) * 7
+        )
+        max_mblocks = (max_padded + 7) // 8
+        w2_activation_rows = max_mblocks * 8 if kernel.W2_SORTED_ACT else routes
         self.qx = torch.empty(
             (self.m, HIDDEN), dtype=torch.float8_e4m3fn, device=device
         )
@@ -207,7 +214,7 @@ class CapturedCase:
             )
         )
         self.qactivation = torch.empty(
-            (routes, self.intermediate_per_rank),
+            (w2_activation_rows, self.intermediate_per_rank),
             dtype=torch.float8_e4m3fn,
             device=device,
         )
@@ -251,16 +258,16 @@ class CapturedCase:
         self.w2_progress_state = torch.empty(
             (self.m * TOP_K * 32 + 2,), dtype=torch.int32, device=device
         )
-        max_padded = (
-            routes * 8
-            if routes < NUM_EXPERTS + 1
-            else routes + (NUM_EXPERTS + 1) * 7
-        )
         self.sorted_ids = torch.empty(
             (max_padded,), dtype=torch.int32, device=device
         )
         self.expert_ids = torch.empty(
-            ((max_padded + 7) // 8,), dtype=torch.int32, device=device
+            (max_mblocks,), dtype=torch.int32, device=device
+        )
+        self.route_to_sorted = torch.empty(
+            (routes if kernel.W2_SORTED_ACT else 0,),
+            dtype=torch.int32,
+            device=device,
         )
         self.num_tokens_padded = torch.empty(
             (1,), dtype=torch.int32, device=device
@@ -270,7 +277,11 @@ class CapturedCase:
         )
         self.activation_scale: torch.Tensor | None = (
             torch.empty(
-                (routes, self.intermediate_per_rank // 128),
+                (
+                    (max_mblocks, self.intermediate_per_rank // 128, 8)
+                    if kernel.W2_SORTED_ACT
+                    else (routes, self.intermediate_per_rank // 128)
+                ),
                 dtype=torch.float32,
                 device=device,
             )
@@ -302,6 +313,7 @@ class CapturedCase:
                 self.num_tokens_padded,
                 self.qx.view(torch.uint8),
                 self.x_scale,
+                self.route_to_sorted,
             )
         else:
             (
@@ -362,6 +374,7 @@ class CapturedCase:
                     self.activation_scale,
                     self.intermediate_per_rank,
                     self.w13_split_k,
+                    self.route_to_sorted,
                 )
             else:
                 kernel.reduce_swiglu(
@@ -984,6 +997,7 @@ def main() -> None:
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "fused_route_quant": kernel.FUSED_ROUTE_QUANT,
+                    "w2_sorted_activation": kernel.W2_SORTED_ACT,
                     "w13_paired_wg": kernel.W13_PAIRED_WG,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,

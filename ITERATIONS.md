@@ -4319,3 +4319,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - NCU flags uncoalesced global access: W13 has 132,864 excessive sectors (11% of 1,224,096; estimated 10.56% bound), while W2 has 189,824 excessive sectors (19% of 973,632; estimated 18.83% bound).
 - Finding: neither core is at the H20 HBM ceiling, and simply deepening shared stages was already rejected. The highest-value bounded follow-up is to resolve NCU source attribution for the excessive sectors and distinguish useful TMA scale overfetch from avoidable activation/metadata access before attempting interleaving.
 - Artifacts: bench/results/iter84_current_w13_m128_coldl2_detailed_ncu.{log,ncu-rep}, bench/results/iter84_current_w2_m128_coldl2_detailed_ncu.{log,ncu-rep}, and the corresponding iter84_current_*_m128_ncu_details.log files.
+
+## Iteration 85 — Sorted-position W2 activation and scale layout correctness gate
+
+- **Hypothesis:** NCU attributed 66,432 excessive W2 sectors to the eight-lane route-scale gather. Writing the post-SwiGLU FP8 activation in aligned expert-mblock order and storing scales as `[mblock, K128, slot]` should turn each eight-scale load into one contiguous 32-byte access without changing route semantics.
+- **Change:** Added opt-in `V4_W2_SORTED_ACT=1`. Fused route alignment emits `route_to_sorted`; fused SwiGLU/quant writes FP8 rows by sorted position and scales by mblock/K-tile/slot; W2 reads those positions while retaining original route IDs for output and k6 reduction. Default remains disabled.
+- **Verification:** TP4 balanced M8, TP4 skew M8, and TP8-shape balanced M8 all passed the full all-route reference. W2 cosine was 0.999997256, 0.999997235, and 0.999997278 respectively; all outputs finite. Fused route/quant remained bit-exact to its reference.
+- **Decision:** Correctness and TP8-runnable gate passed. Performance is not yet measured, so this remains an opt-in candidate and is not selected.
+- **Artifact:** `results/iter85_w2_sorted_act_correctness_20260903.log`.
