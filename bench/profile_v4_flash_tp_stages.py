@@ -345,7 +345,7 @@ def main() -> None:
                     else None
                 ),
                 "custom_leader_mbar_wait": (
-                    os.environ.get("V4_LEADER_MBAR_WAIT", "0") == "1"
+                    os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
                     if args.impl == "custom"
                     else None
                 ),
