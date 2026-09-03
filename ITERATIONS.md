@@ -3372,3 +3372,21 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/iter54_single_imad_lut_correctness_20260903.log`,
   `bench/results/iter54_single_imad_lut_stage_aba_coldl2_20260903.log`, and
   `bench/results/iter54_single_imad_lut_resource_control_candidate_20260903.log`.
+
+### WGMMA iteration 55a — FP16 W13 split-K workspace
+
+- W13 currently writes every split accumulator to an FP32
+  `[split,routes,2I/TP]` workspace, then the fused activation kernel rereads
+  all splits in FP32 before the required BF16 gate/up boundary.  This traffic
+  is internal and carries more mantissa than the public pipeline exposes.
+- Test opt-in `V4_W13_FP16_PARTIAL=1`: convert each completed split partial to
+  FP16 on store, load/convert it back to FP32 for split reduction, then retain
+  the exact selected BF16/SwiGLU/BF16/FP8 sequence.  The workspace write/read
+  bytes are halved; W13 weights, MXFP4 math, output dtype, routes, grid, and
+  split policy remain unchanged.
+- FP16 range is the primary risk, and per-split rounding differs from
+  Humming's single post-sum BF16 boundary.  Keep FP32 default; gate balanced
+  and maximally skewed TP4 split-K=4/2 plus TP8 under the wide scale test,
+  require finite outputs and no material cosine/relative-L2 regression, then
+  use candidate/control/candidate cold-L2 stage timing.  Reject on either
+  numerical risk or a non-repeatable sub-microsecond result.
