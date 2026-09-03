@@ -5220,3 +5220,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The spaced script arguments were syntactically valid for the benchmark, but this container's `torchrun` parser consumed the trailing `--m` as an abbreviated launcher option and rejected it as ambiguous before workers or kernels started.
 - This run again contains no performance evidence. The next invocation will place an explicit `--` between launcher options and the training script so all benchmark options reach the script unchanged.
 - Evidence: `results/iter129c_route_k_unroll4_tp4_m128_paired_cold800_20260903.log`
+
+## Iteration 129d — four-way K128 unroll wins the M128 gate
+
+- Cubin inspection shows the candidate remains spill-free but raises route-GEMM resources: W2 moves from 56 to 61 registers/thread and W13 from 48 to 52; stack/local allocation stays zero.
+- Same-process TP4 M128, eight x 100 rank-max cold-L2 samples per arm with per-replay alternating A/B then B/A: selected two-way control min/median/max 0.310752/0.351776/0.464736 ms; four-way candidate 0.300768/0.337200/0.367904 ms.
+- Control/candidate is 1.043227x: four-way unrolling removes 14.576 us (4.14% of control) and wins all eight batch medians despite the register increase. Outputs are bitwise identical on all ranks.
+- Result: four-way unrolling passes the M128 performance gate. Continue with M16/M32/M64 and a separate M8 neutrality check before changing the default.
+- Evidence: `results/iter129d_route_k_unroll4_tp4_m128_paired_cold800_20260903.log`
