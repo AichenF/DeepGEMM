@@ -4890,3 +4890,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Failure: this torchrun build parsed the training-script argument `--m=128` as an ambiguous torchrun option (`--max-restarts`, `--monitor-interval`, `--module`, or `--master-*`) and exited before workers, CUDA Graph capture, or GPU timing.
 - Result: no performance sample was produced and no kernel conclusion is drawn.  Retry must insert torchrun's `--` separator before the benchmark script arguments.
 - Evidence: `results/iter117b_compact_interleaved_scale_m128_screen_20260903.log`.
+
+## Iteration 117c — compact interleaved scale M128 TP4 screen
+
+- Method: exact same-process control/candidate CUDA Graphs, TP4 random routes, rank-max latency, 6 outer x 100 samples per variant, per-sample AB/BA alternation, and a separate 256MiB L2 clear immediately before every replay outside CUDA timing.
+- Correctness: graph outputs were bit-exact on all four ranks.
+- Control: min/median/max 0.324000/0.354512/0.763392 ms.
+- Compact candidate: min/median/max 0.317696/0.346992/0.400576 ms.
+- Paired result: control/candidate = 1.021672x (2.12% latency reduction); candidate won all 6 outer batch medians despite common temporal drift.
+- Result: promising screen.  Keep candidate provisional and test smaller M plus a formal 10 x 200 run before selection.
+- Evidence: `results/iter117c_compact_interleaved_scale_m128_screen_20260903.log`.
