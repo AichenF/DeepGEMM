@@ -994,6 +994,7 @@ def main() -> None:
                     "dequant_synth_lut": kernel.DEQUANT_SYNTH_LUT,
                     "normalized_weight_scale": kernel.NORMALIZED_WEIGHT_SCALE,
                     "normalized_shared_lut": kernel.NORMALIZED_SHARED_LUT,
+                    "activation_evict_last": kernel.ACTIVATION_EVICT_LAST,
                     "tiled_weight_layout": kernel.TILED_WEIGHT_LAYOUT,
                     "bulk_weight_copy": kernel.BULK_WEIGHT_COPY,
                     "tma_cta_scope": kernel.TMA_CTA_SCOPE,

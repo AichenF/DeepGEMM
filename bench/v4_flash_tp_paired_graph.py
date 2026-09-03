@@ -284,6 +284,9 @@ def main() -> None:
                     "custom_normalized_weight_scale": (
                         kernel.NORMALIZED_WEIGHT_SCALE
                     ),
+                    "custom_activation_evict_last": (
+                        kernel.ACTIVATION_EVICT_LAST
+                    ),
                     "custom_tiled_weight_layout": kernel.TILED_WEIGHT_LAYOUT,
                     "custom_bulk_weight_copy": kernel.BULK_WEIGHT_COPY,
                     "custom_tma_cta_scope": kernel.TMA_CTA_SCOPE,

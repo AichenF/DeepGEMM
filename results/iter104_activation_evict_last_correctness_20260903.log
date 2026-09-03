@@ -1,0 +1,167 @@
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2774, in _run_ninja_build
+    subprocess.run(
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['ninja', '-v']' returned non-zero exit status 255.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_wgmma.py", line 14, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 3917, in <module>
+    _ext = load_inline(
+           ^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2174, in load_inline
+    return _jit_compile(
+           ^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2268, in _jit_compile
+    _write_ninja_file_and_build_library(
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2429, in _write_ninja_file_and_build_library
+    _run_ninja_build(
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2791, in _run_ninja_build
+    raise RuntimeError(message) from e
+RuntimeError: Error building extension 'v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael1_twl1_bwc1_tcs0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_w13mg0_mb0_v104ael': [1/3] c++ -MMD -MF main.o.d -DTORCH_EXTENSION_NAME=v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael1_twl1_bwc1_tcs0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_w13mg0_mb0_v104ael -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.12/dist-packages/torch/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.12 -fPIC -std=c++17 -c /tmp/torch_ext_v4_tp/v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael1_twl1_bwc1_tcs0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_w13mg0_mb0_v104ael/main.cpp -o main.o 
+[2/3] /usr/local/cuda/bin/nvcc -MD -MF cuda.cuda.o.d -DTORCH_EXTENSION_NAME=v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael1_twl1_bwc1_tcs0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_w13mg0_mb0_v104ael -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.12/dist-packages/torch/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.12 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options '-fPIC' -O3 -DK_WOUT=128 -DK_LUT_ROWS=256 -DK_SCALE_QUAD_REUSE=4 -DK_SCALE_BUFFERS=2 -DK_WEIGHT_STAGES=2 -DK_WEIGHT_SWIZZLE=64 -DK_WEIGHT_COMMON_ADDRESS=1 -DK_DEQUANT_DP4A_HI=1 -DK_DEQUANT_DP4A_LO=1 -DK_DEQUANT_SYNTH_LUT=0 -DK_NORMALIZED_WEIGHT_SCALE=1 -DK_NORMALIZED_SHARED_LUT=0 -DK_ACTIVATION_EVICT_LAST=1 -DK_TILED_WEIGHT_LAYOUT=1 -DK_BULK_WEIGHT_COPY=1 -DK_TMA_CTA_SCOPE=0 -DK_INTERLEAVED_BULK_COPY=1 -DK_MODE2_BRAID=1 -DK_W2_GLOBAL_LUT=0 -DK_W2_S2R_PREFETCH=1 -DK_W13_S2R_PREFETCH=1 -DK_LEADER_MBAR_WAIT=1 -DK_W13_DISTRIBUTED_PREP=1 -DK_W2_DISTRIBUTED_PREP=1 -DK_W13_MERGED_WGMMA_GROUP=0 -DK_W2_ROUTE_OUTPUT=1 -DK_W2_SORTED_ACT=0 -DK_W2_MBLOCK_SCALE=0 -DK_W2_FOLD_GLOBAL_SCALE=0 -DK_W2_COALESCED_STORE=0 -DK_MIN_BLOCKS_PER_SM=0 --expt-relaxed-constexpr --expt-extended-lambda -gencode arch=compute_90a,code=sm_90a -std=c++17 -lineinfo -I/lustre/raplab/client/xutingz/fac/DeepGEMM/deep_gemm/include -c /tmp/torch_ext_v4_tp/v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael1_twl1_bwc1_tcs0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_w13mg0_mb0_v104ael/cuda.cu -o cuda.cuda.o 
+FAILED: [code=255] cuda.cuda.o 
+/usr/local/cuda/bin/nvcc -MD -MF cuda.cuda.o.d -DTORCH_EXTENSION_NAME=v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael1_twl1_bwc1_tcs0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_w13mg0_mb0_v104ael -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.12/dist-packages/torch/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.12 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options '-fPIC' -O3 -DK_WOUT=128 -DK_LUT_ROWS=256 -DK_SCALE_QUAD_REUSE=4 -DK_SCALE_BUFFERS=2 -DK_WEIGHT_STAGES=2 -DK_WEIGHT_SWIZZLE=64 -DK_WEIGHT_COMMON_ADDRESS=1 -DK_DEQUANT_DP4A_HI=1 -DK_DEQUANT_DP4A_LO=1 -DK_DEQUANT_SYNTH_LUT=0 -DK_NORMALIZED_WEIGHT_SCALE=1 -DK_NORMALIZED_SHARED_LUT=0 -DK_ACTIVATION_EVICT_LAST=1 -DK_TILED_WEIGHT_LAYOUT=1 -DK_BULK_WEIGHT_COPY=1 -DK_TMA_CTA_SCOPE=0 -DK_INTERLEAVED_BULK_COPY=1 -DK_MODE2_BRAID=1 -DK_W2_GLOBAL_LUT=0 -DK_W2_S2R_PREFETCH=1 -DK_W13_S2R_PREFETCH=1 -DK_LEADER_MBAR_WAIT=1 -DK_W13_DISTRIBUTED_PREP=1 -DK_W2_DISTRIBUTED_PREP=1 -DK_W13_MERGED_WGMMA_GROUP=0 -DK_W2_ROUTE_OUTPUT=1 -DK_W2_SORTED_ACT=0 -DK_W2_MBLOCK_SCALE=0 -DK_W2_FOLD_GLOBAL_SCALE=0 -DK_W2_COALESCED_STORE=0 -DK_MIN_BLOCKS_PER_SM=0 --expt-relaxed-constexpr --expt-extended-lambda -gencode arch=compute_90a,code=sm_90a -std=c++17 -lineinfo -I/lustre/raplab/client/xutingz/fac/DeepGEMM/deep_gemm/include -c /tmp/torch_ext_v4_tp/v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael1_twl1_bwc1_tcs0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_w13mg0_mb0_v104ael/cuda.cu -o cuda.cuda.o 
+/tmp/torch_ext_v4_tp/v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael1_twl1_bwc1_tcs0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_w13mg0_mb0_v104ael/cuda.cu(96): warning #550-D: variable "state" was set but never used
+      uint64_t state;
+               ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 21085; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 21267; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 21292; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 22475; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 22657; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 22682; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 23866; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 24021; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 24046; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 25215; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 25397; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 25422; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 26605; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 26787; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 26812; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 27992; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 28147; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 28172; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 29338; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 29495; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 29520; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 30686; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 30830; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 30877; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 32049; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 32204; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 32229; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 33432; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 33589; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 33614; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 34779; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 34936; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 34961; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 36128; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 36285; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 36310; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 37481; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 37625; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 37672; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 38858; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 39002; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 39049; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 40237; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 40381; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052e11_00000000-6_cuda.ptx, line 40428; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas fatal   : Ptx assembly aborted due to errors
+ninja: build stopped: subcommand failed.
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2774, in _run_ninja_build
+    subprocess.run(
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['ninja', '-v']' returned non-zero exit status 255.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_wgmma.py", line 14, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 3917, in <module>
+    _ext = load_inline(
+           ^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2174, in load_inline
+    return _jit_compile(
+           ^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2268, in _jit_compile
+    _write_ninja_file_and_build_library(
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2429, in _write_ninja_file_and_build_library
+    _run_ninja_build(
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2791, in _run_ninja_build
+    raise RuntimeError(message) from e
+RuntimeError: Error building extension 'v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael1_twl1_bwc1_tcs0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_w13mg0_mb0_v104ael': [1/2] /usr/local/cuda/bin/nvcc -MD -MF cuda.cuda.o.d -DTORCH_EXTENSION_NAME=v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael1_twl1_bwc1_tcs0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_w13mg0_mb0_v104ael -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.12/dist-packages/torch/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.12 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options '-fPIC' -O3 -DK_WOUT=128 -DK_LUT_ROWS=256 -DK_SCALE_QUAD_REUSE=4 -DK_SCALE_BUFFERS=2 -DK_WEIGHT_STAGES=2 -DK_WEIGHT_SWIZZLE=64 -DK_WEIGHT_COMMON_ADDRESS=1 -DK_DEQUANT_DP4A_HI=1 -DK_DEQUANT_DP4A_LO=1 -DK_DEQUANT_SYNTH_LUT=0 -DK_NORMALIZED_WEIGHT_SCALE=1 -DK_NORMALIZED_SHARED_LUT=0 -DK_ACTIVATION_EVICT_LAST=1 -DK_TILED_WEIGHT_LAYOUT=1 -DK_BULK_WEIGHT_COPY=1 -DK_TMA_CTA_SCOPE=0 -DK_INTERLEAVED_BULK_COPY=1 -DK_MODE2_BRAID=1 -DK_W2_GLOBAL_LUT=0 -DK_W2_S2R_PREFETCH=1 -DK_W13_S2R_PREFETCH=1 -DK_LEADER_MBAR_WAIT=1 -DK_W13_DISTRIBUTED_PREP=1 -DK_W2_DISTRIBUTED_PREP=1 -DK_W13_MERGED_WGMMA_GROUP=0 -DK_W2_ROUTE_OUTPUT=1 -DK_W2_SORTED_ACT=0 -DK_W2_MBLOCK_SCALE=0 -DK_W2_FOLD_GLOBAL_SCALE=0 -DK_W2_COALESCED_STORE=0 -DK_MIN_BLOCKS_PER_SM=0 --expt-relaxed-constexpr --expt-extended-lambda -gencode arch=compute_90a,code=sm_90a -std=c++17 -lineinfo -I/lustre/raplab/client/xutingz/fac/DeepGEMM/deep_gemm/include -c /tmp/torch_ext_v4_tp/v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael1_twl1_bwc1_tcs0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_w13mg0_mb0_v104ael/cuda.cu -o cuda.cuda.o 
+FAILED: [code=255] cuda.cuda.o 
+/usr/local/cuda/bin/nvcc -MD -MF cuda.cuda.o.d -DTORCH_EXTENSION_NAME=v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael1_twl1_bwc1_tcs0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_w13mg0_mb0_v104ael -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.12/dist-packages/torch/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.12 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options '-fPIC' -O3 -DK_WOUT=128 -DK_LUT_ROWS=256 -DK_SCALE_QUAD_REUSE=4 -DK_SCALE_BUFFERS=2 -DK_WEIGHT_STAGES=2 -DK_WEIGHT_SWIZZLE=64 -DK_WEIGHT_COMMON_ADDRESS=1 -DK_DEQUANT_DP4A_HI=1 -DK_DEQUANT_DP4A_LO=1 -DK_DEQUANT_SYNTH_LUT=0 -DK_NORMALIZED_WEIGHT_SCALE=1 -DK_NORMALIZED_SHARED_LUT=0 -DK_ACTIVATION_EVICT_LAST=1 -DK_TILED_WEIGHT_LAYOUT=1 -DK_BULK_WEIGHT_COPY=1 -DK_TMA_CTA_SCOPE=0 -DK_INTERLEAVED_BULK_COPY=1 -DK_MODE2_BRAID=1 -DK_W2_GLOBAL_LUT=0 -DK_W2_S2R_PREFETCH=1 -DK_W13_S2R_PREFETCH=1 -DK_LEADER_MBAR_WAIT=1 -DK_W13_DISTRIBUTED_PREP=1 -DK_W2_DISTRIBUTED_PREP=1 -DK_W13_MERGED_WGMMA_GROUP=0 -DK_W2_ROUTE_OUTPUT=1 -DK_W2_SORTED_ACT=0 -DK_W2_MBLOCK_SCALE=0 -DK_W2_FOLD_GLOBAL_SCALE=0 -DK_W2_COALESCED_STORE=0 -DK_MIN_BLOCKS_PER_SM=0 --expt-relaxed-constexpr --expt-extended-lambda -gencode arch=compute_90a,code=sm_90a -std=c++17 -lineinfo -I/lustre/raplab/client/xutingz/fac/DeepGEMM/deep_gemm/include -c /tmp/torch_ext_v4_tp/v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael1_twl1_bwc1_tcs0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_w13mg0_mb0_v104ael/cuda.cu -o cuda.cuda.o 
+/tmp/torch_ext_v4_tp/v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael1_twl1_bwc1_tcs0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_w13mg0_mb0_v104ael/cuda.cu(96): warning #550-D: variable "state" was set but never used
+      uint64_t state;
+               ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 21085; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 21267; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 21292; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 22475; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 22657; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 22682; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 23866; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 24021; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 24046; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 25215; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 25397; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 25422; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 26605; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 26787; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 26812; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 27992; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 28147; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 28172; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 29338; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 29495; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 29520; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 30686; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 30830; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 30877; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 32049; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 32204; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 32229; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 33432; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 33589; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 33614; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 34779; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 34936; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 34961; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 36128; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 36285; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 36310; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 37481; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 37625; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 37672; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 38858; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 39002; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 39049; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 40237; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 40381; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas /tmp/tmpxft_00052f34_00000000-6_cuda.ptx, line 40428; error   : Instruction 'ld' requires '.v8.b32/.v4.b64' type with '.L2::evict_last' modifier.
+ptxas fatal   : Ptx assembly aborted due to errors
+ninja: build stopped: subcommand failed.
+

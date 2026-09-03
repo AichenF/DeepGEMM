@@ -69,6 +69,9 @@ if NORMALIZED_SHARED_LUT and not NORMALIZED_WEIGHT_SCALE:
     raise ValueError(
         "V4_NORMALIZED_SHARED_LUT=1 requires normalized weight scales"
     )
+ACTIVATION_EVICT_LAST = (
+    os.environ.get("V4_ACTIVATION_EVICT_LAST", "0") == "1"
+)
 TILED_WEIGHT_LAYOUT = os.environ.get("V4_TILED_WEIGHT_LAYOUT", "1") == "1"
 BULK_WEIGHT_COPY = os.environ.get("V4_BULK_WEIGHT_COPY", "1") == "1"
 if BULK_WEIGHT_COPY and not TILED_WEIGHT_LAYOUT:
@@ -261,6 +264,7 @@ static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kNormalizedWeightScale = K_NORMALIZED_WEIGHT_SCALE;
 static constexpr bool kNormalizedSharedLut = K_NORMALIZED_SHARED_LUT;
+static constexpr bool kActivationEvictLast = K_ACTIVATION_EVICT_LAST;
 static constexpr bool kTiledWeightLayout = K_TILED_WEIGHT_LAYOUT;
 static constexpr bool kBulkWeightCopy = K_BULK_WEIGHT_COPY;
 static constexpr bool kTmaCtaScope = K_TMA_CTA_SCOPE;
@@ -326,6 +330,28 @@ __device__ __forceinline__ void bulk_gmem_to_smem(
             "complete_tx::bytes [%0],[%1],%2,[%3];"
             :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar) : "memory");
     }
+}
+
+__device__ __forceinline__ uint2 load_reused_u64(const uint2* pointer) {
+    if constexpr (kActivationEvictLast) {
+        uint2 value;
+        asm volatile(
+            "ld.global.L2::evict_last.v2.u32 {%0,%1},[%2];"
+            : "=r"(value.x), "=r"(value.y) : "l"(pointer) : "memory");
+        return value;
+    }
+    return __ldg(pointer);
+}
+
+__device__ __forceinline__ float load_reused_f32(const float* pointer) {
+    if constexpr (kActivationEvictLast) {
+        float value;
+        asm volatile(
+            "ld.global.L2::evict_last.f32 %0,[%1];"
+            : "=f"(value) : "l"(pointer) : "memory");
+        return value;
+    }
+    return __ldg(pointer);
 }
 
 __device__ __forceinline__ cute::GmmaDescriptor desc_128b(uint32_t pointer) {
@@ -515,7 +541,8 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     if (tid == 0) {
         if constexpr (kNormalizedWeightScale
                       && (IsW13 || !kW2FoldGlobalScale)) {
-            expert_weight_scale = __ldg(weight_global_scale + expert_idx);
+            expert_weight_scale = load_reused_f32(
+                weight_global_scale + expert_idx);
         } else {
             expert_weight_scale = 1.0f;
         }
@@ -751,9 +778,9 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         uint2 value = make_uint2(0, 0);
         const int activation_row = activation_rows[token_slot];
         if (activation_row >= 0) {
-            value = *reinterpret_cast<const uint2*>(
+            value = load_reused_u64(reinterpret_cast<const uint2*>(
                 activation + static_cast<int64_t>(activation_row) * K
-                + global_kt * kBlockK + k8);
+                + global_kt * kBlockK + k8));
         }
         *reinterpret_cast<uint2*>(
             activation_smem + token_slot * kBlockK
@@ -780,7 +807,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                         static_cast<int64_t>(row) * kNumKTiles + global_kt;
                 }
                 activation_scale_smem[scale_slot] =
-                    __ldg(activation_scale + scale_index)
+                    load_reused_f32(activation_scale + scale_index)
                     * expert_weight_scale;
             } else {
                 activation_scale_smem[scale_slot] = 0.0f;
@@ -3896,6 +3923,7 @@ _ext = load_inline(
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"nws{int(NORMALIZED_WEIGHT_SCALE)}_"
           f"nsl{int(NORMALIZED_SHARED_LUT)}_"
+          f"ael{int(ACTIVATION_EVICT_LAST)}_"
           f"twl{int(TILED_WEIGHT_LAYOUT)}_"
           f"bwc{int(BULK_WEIGHT_COPY)}_tcs{int(TMA_CTA_SCOPE)}_"
           f"ibc{int(INTERLEAVED_BULK_COPY)}_"
@@ -3909,7 +3937,7 @@ _ext = load_inline(
           f"lmw{int(LEADER_MBAR_WAIT)}_"
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v103ctatma"),
+          f"mb{MIN_BLOCKS_PER_SM}_v104ael"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -3942,6 +3970,7 @@ _ext = load_inline(
         f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
         f"-DK_NORMALIZED_WEIGHT_SCALE={int(NORMALIZED_WEIGHT_SCALE)}",
         f"-DK_NORMALIZED_SHARED_LUT={int(NORMALIZED_SHARED_LUT)}",
+        f"-DK_ACTIVATION_EVICT_LAST={int(ACTIVATION_EVICT_LAST)}",
         f"-DK_TILED_WEIGHT_LAYOUT={int(TILED_WEIGHT_LAYOUT)}",
         f"-DK_BULK_WEIGHT_COPY={int(BULK_WEIGHT_COPY)}",
         f"-DK_TMA_CTA_SCOPE={int(TMA_CTA_SCOPE)}",

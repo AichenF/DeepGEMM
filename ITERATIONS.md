@@ -4644,3 +4644,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - After removing only the source-path identifier, the complete function dumps have an empty byte-level diff. Both PTX scope spellings lower to the same `UBLKCP.S.G` instructions and identical surrounding SASS on sm_90a.
 - This explains iteration 103b's mixed noise-scale timing and closes the scope experiment conclusively. Keep `V4_TMA_CTA_SCOPE=0`; no further shape sweep is warranted.
 - Artifact: `results/iter103c_tma_scope_sass_diff_20260903.log`.
+
+## Iteration 104 — direct activation `evict_last` does not assemble on sm90a
+
+- Added opt-in `V4_ACTIVATION_EVICT_LAST=1` to mark the repeatedly reused FP8 activation rows, activation scales, and expert-global scales as L2 eviction-last while leaving cold packed-weight TMA unchanged.
+- The JIT reaches ptxas but fails before any kernel runs: sm90a reports that an `ld` carrying the direct `.L2::evict_last` modifier requires `.v8.b32` or `.v4.b64`. The route kernel's natural per-thread accesses are 8-byte activation vectors and 4-byte scales, so the direct priority qualifier is illegal at this width.
+- This is a compile failure, not a correctness or performance result. Preserve the failure log, then repair with the general `.L2::cache_hint` operand backed by `createpolicy.fractional.L2::evict_last`, which PTX permits independently of the direct wide-load modifier.
+- Artifact: `results/iter104_activation_evict_last_correctness_20260903.log`.

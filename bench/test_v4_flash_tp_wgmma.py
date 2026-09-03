@@ -431,6 +431,7 @@ def main() -> None:
         f" w2_distributed_prep={kernel.W2_DISTRIBUTED_PREP}"
         f" w13_merged_wgmma_group={kernel.W13_MERGED_WGMMA_GROUP}"
         f" normalized_shared_lut={kernel.NORMALIZED_SHARED_LUT}"
+        f" activation_evict_last={kernel.ACTIVATION_EVICT_LAST}"
     )
     print(
         "V4_WGMMA_W13 "
