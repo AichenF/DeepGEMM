@@ -2852,3 +2852,19 @@ maximum rank latency of a full CUDA-Graph replay.
   graph-internal events with a separate excluded 256 MiB L2 clear for every
   sample.  Measure all M values and repeat boundary points before changing
   the pre-capture dispatch policy.
+
+### WGMMA iteration 45b — retain current W13 split policy
+
+- Graph-internal split2/split4/split2 runs use 100 separately cold-L2 samples
+  per M/config.  Split4 has the lower W13 median at M8/16/32 in the central
+  comparison (45.408/74.576/119.232 us versus split2
+  46.416/76.384/120.512 us).  Split2 is lower at M128
+  (205.472 then 204.064 us versus split4 207.168 us).
+- M64 is noise-sized: the first split2 window is 167.472 us, split4 is
+  168.128 us, and the second split2 window is 168.160 us.  There is no robust
+  evidence to move the boundary.
+- Retain auto split4 through routed_rows=192 (M32 here), then split2 when
+  active experts exceed 96.  No distributed timing or source change is
+  warranted.
+- Evidence:
+  `bench/results/tp4_w13_split_post_tiled_local_coldl2_screen_20260903.log`.
