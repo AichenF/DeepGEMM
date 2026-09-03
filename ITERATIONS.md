@@ -5016,3 +5016,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The helper confirms compact scales, launch_bound_10=true, max_smem_carveout=true, and the standard excluded 256MiB cold-L2 clear.
 - Collection completed and produced a valid report.  Parse the raw report next to determine configured shared memory and actual theoretical/achieved residency before performance timing.
 - Evidence: `results/iter120a_w13_lb10_max_smem_m128_ncu.{log,ncu-rep}`.
+
+## Iteration 120b — maximum carveout creates the intended tenth W13 CTA
+
+- NCU confirms the compound candidate uses 48 registers/thread, 233.47 kB shared configuration, 18.43 kB dynamic + 1.02 kB static + 1.02 kB driver shared/block.
+- Residency limits are now registers=10 CTAs and shared memory=11 CTAs, versus selected control's 9/9.  Theoretical occupancy rises 56.25% -> 62.50%; achieved occupancy rises 52.92% -> 58.37% (33.87 -> 37.36 active warps/SM).
+- Grid remains 5,136 CTAs x 128 threads.  This verifies the intended mechanism that iteration 118c lacked.
+- Result: proceed to the same-process M128 cold-L2 paired latency gate.  Occupancy is mechanism evidence only, not a performance win.
+- Evidence: `results/iter120b_w13_lb10_max_smem_m128_ncu_details_20260903.log`.
