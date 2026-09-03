@@ -1007,15 +1007,24 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         } else {
             if constexpr (kW2RouteOutput) {
                 if constexpr (kW2CoalescedStore) {
-                    const int local_n0 = group * 64 + row0;
-                    const int local_n1 = group * 64 + row1;
-                    w2_output_smem[column_base * kWout + local_n0] =
+                    // Each warp owns 16 columns in each N64 accumulator
+                    // group.  Keep its eight-route, 32-column slice private
+                    // so the later exchange needs only a warp barrier.
+                    const int warp_buffer = warp * kTok * 32;
+                    const int warp_row = row0 - warp * 16;
+                    const int local_n0 = group * 16 + warp_row;
+                    const int local_n1 = local_n0 + 8;
+                    w2_output_smem[
+                        warp_buffer + column_base * 32 + local_n0] =
                         __float2bfloat16(accum[group][0]);
-                    w2_output_smem[column_base * kWout + local_n1] =
+                    w2_output_smem[
+                        warp_buffer + column_base * 32 + local_n1] =
                         __float2bfloat16(accum[group][2]);
-                    w2_output_smem[(column_base + 1) * kWout + local_n0] =
+                    w2_output_smem[
+                        warp_buffer + (column_base + 1) * 32 + local_n0] =
                         __float2bfloat16(accum[group][1]);
-                    w2_output_smem[(column_base + 1) * kWout + local_n1] =
+                    w2_output_smem[
+                        warp_buffer + (column_base + 1) * 32 + local_n1] =
                         __float2bfloat16(accum[group][3]);
                 } else {
                     auto* route_output =
@@ -1058,22 +1067,28 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         }
     }
     if constexpr (!IsW13 && kW2RouteOutput && kW2CoalescedStore) {
-        __syncthreads();
-        // One half warp emits one route's complete 128-column tile as
-        // aligned 16-byte vectors.  This preserves route-major output for
-        // the stock SGLang k6 reducer while avoiding eight scattered scalar
-        // store streams from the WGMMA accumulator ownership layout.
-        const int output_slot = tid >> 4;
-        const int vector_index = tid & 15;
+        __syncwarp();
+        // Each group of four lanes emits one route's 32 columns owned by
+        // this warp.  The four 16-byte vectors cover two contiguous N16
+        // spans without a CTA-wide synchronization point.
+        const int output_slot = lane >> 2;
+        const int vector_index = lane & 3;
         const int output_route = route_ids[output_slot];
         if (output_route < max_routes) {
             auto* route_output = reinterpret_cast<__nv_bfloat16*>(output);
             const int local_column = vector_index * 8;
+            const int warp_buffer = warp * kTok * 32;
             const uint4 packed = *reinterpret_cast<const uint4*>(
-                w2_output_smem + output_slot * kWout + local_column);
+                w2_output_smem + warp_buffer
+                + output_slot * 32 + local_column);
+            const int output_group = vector_index >> 1;
+            const int output_half = vector_index & 1;
+            const int output_column =
+                n_block_idx * kWout + output_group * 64
+                + warp * 16 + output_half * 8;
             *reinterpret_cast<uint4*>(
                 route_output + static_cast<int64_t>(output_route) * N
-                + n_block_idx * kWout + local_column) = packed;
+                + output_column) = packed;
         }
     }
 
@@ -3767,7 +3782,7 @@ _ext = load_inline(
           f"cs{int(W2_COALESCED_STORE)}_"
           f"w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v83qinline"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v87warpstore"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[

@@ -4375,3 +4375,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** control median 0.356272 ms; candidate median 0.358176 ms; control/candidate 0.994684x. Every batch median was 1.36–2.37 microseconds slower for the candidate.
 - **Decision:** Reject `V4_W2_COALESCED_STORE=1` and retain scalar direct stores as default. The extra shared-memory traffic plus CTA barrier costs more than the global-sector reduction.
 - **Artifact:** `results/iter86d1_w2_store_paired_tp4_m128_cold_600_20260903.log`.
+
+## Iteration 87 — Warp-private coalesced W2 epilogue correctness gate
+
+- **Hypothesis:** Iteration 86's sector reduction was outweighed by a CTA-wide barrier. Each warp already owns disjoint 16-column spans in both N64 groups, so a warp-private eight-route × 32-column shared slice can reorder stores using only `syncwarp`.
+- **Change:** Reworked the opt-in coalesced epilogue into four independent 512-byte warp buffers. Each group of four lanes writes one route's two N16 spans with aligned `uint4` stores; the CTA-wide barrier was removed.
+- **Verification:** TP4 balanced M8, TP4 skew M8, and TP8-shape balanced M8 all passed the full all-route reference with W2 cosine 0.999997256, 0.999997235, and 0.999997278; all outputs finite.
+- **Decision:** Correctness and TP8-runnable gate passed; performance remains opt-in pending paired cold-L2 measurement.
+- **Artifact:** `results/iter87_w2_warp_store_correctness_20260903.log`.
