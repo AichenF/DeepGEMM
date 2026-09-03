@@ -5261,3 +5261,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Route preparation and activation quantization checks are exact in all three cases, all outputs are finite, and the errors exactly match the pre-selection four-way candidate gates.
 - Result: correctness no longer blocks the four-way production default. Require one independent 10 x 200 exact-Humming-plus-CARv2 cold-L2 repeat to quantify threshold robustness.
 - Evidence: `results/iter130b_select_route_k_unroll4_default_correctness_20260903.log`
+
+## Iteration 130c — independent selected-default repeat confirms more than 1.2x
+
+- Repeated the full exact-Humming-plus-CARv2 TP4 random-route benchmark with both route-unroll environment variables absent, fresh graph objects, ten x 200 rank-max cold-L2 samples per path and M, and identical batch-level AB/BA pairing.
+- Humming/custom medians and speedups are: M8 0.090112/0.071200 ms (1.265618x), M16 0.146080/0.113760 ms (1.284107x), M32 0.233504/0.197392 ms (1.182946x), M64 0.340096/0.282784 ms (1.202671x), and M128 0.409552/0.363456 ms (1.126827x).
+- Custom min/median/max is 0.069856/0.071200/0.213984, 0.112224/0.113760/0.154944, 0.176160/0.197392/0.265792, 0.246368/0.282784/0.350272, and 0.308192/0.363456/0.430912 ms for M8 through M128. Humming min/median/max is 0.088384/0.090112/0.431520, 0.143872/0.146080/0.193376, 0.224256/0.233504/0.294016, 0.314048/0.340096/0.423616, and 0.381952/0.409552/0.486528 ms.
+- Five-shape geometric-mean latency is 0.211990140 ms for Humming and 0.175041553 ms for custom, giving 1.211085x. The two independent formal runs therefore both clear 1.2x (1.202732x and 1.211085x), while custom geometric mean differs by only 0.80% between them.
+- Every M again passes the full route reference and same-CARv2 correctness checks; custom minimum cosine is 0.999995575, maximum rel-L2 is 0.002974846, and all outputs are finite.
+- Result: select four-way outer K128 unrolling as the new optimization baseline. The aggregate target is now independently reproduced; continue from this baseline with fresh profiling rather than treating the first threshold crossing as sufficient.
+- Evidence: `results/iter130c_selected_unroll4_exact_humming_tp4_allm_repeat_cold2000_20260903.log`
