@@ -4192,3 +4192,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Cold W2 latency:** control median `29.872 us` (min `29.056`, max `32.096`); TMA-progress median `32.800 us` (min `31.776`, max `34.816`), control/progress `0.910732x`.
 - **Finding:** TMA lowers the publication tax from iteration 83g's `3.328 us` to `2.928 us`, recovering only about `0.40 us`. Per-thread fences were a cost, but per-CTA completion and multi-level publication remain dominant.
 - **Decision:** keep the TMA ordering for one end-to-end TP4 screen; it is still opt-in and not a selected path.
+
+## Iteration 83h2 — end-to-end TP4 TMA-progress screen
+
+- **Change under test:** iteration 83h1's shared/TMA W2 epilogue with 32 concurrent progress workers versus the accepted stock-CARv2 graph.
+- **Method:** TP4 M8 random routes, same process/data/communicator, four order-balanced outer batches × 20 graph replays per implementation; separate excluded 256 MiB cold-L2 clear before every replay.
+- **Correctness:** both paths pass all-rank reference and all-reduce checks and are bitwise identical (`fused_vs_control_max_abs=0`).
+- **Cold latency:** control median `0.079376 ms` (min `0.077888`, max `0.102880`); TMA-progress median `0.081152 ms` (min `0.079744`, max `0.126304`). Control/candidate is `0.978115x`.
+- **Finding:** TMA preserves about `0.272 us` of the isolated improvement end to end, narrowing the old 32-worker deficit from `2.048 us` to `1.776 us`, but remains `2.24%` slower.
+- **Decision:** still reject as a selected path. Replace the multi-level atomic ready queue with per-route tile release markers and static chunk ownership.
