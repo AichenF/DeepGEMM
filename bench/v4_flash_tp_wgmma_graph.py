@@ -232,14 +232,6 @@ class CapturedCase:
         self.expert_ids = torch.empty(
             ((max_padded + 7) // 8,), dtype=torch.int32, device=device
         )
-        self.w13_completion = torch.empty(
-            (
-                self.expert_ids.numel(),
-                self.intermediate_per_rank // 128,
-            ),
-            dtype=torch.int32,
-            device=device,
-        )
         self.num_tokens_padded = torch.empty(
             (1,), dtype=torch.int32, device=device
         )
@@ -262,10 +254,6 @@ class CapturedCase:
         self.w13_split_k = kernel.select_w13_split_k(
             routes, self.active_experts
         )
-        self.w13_tail_fused = (
-            kernel.W13_TAIL_FUSED_ACT
-            and routes <= kernel.W13_TAIL_MAX_ROUTES
-        )
 
     @property
     def routes(self) -> int:
@@ -273,27 +261,15 @@ class CapturedCase:
 
     def run_local(self) -> torch.Tensor:
         if kernel.FUSED_ROUTE_QUANT:
-            if self.w13_tail_fused:
-                kernel.fused_route_quant_tail(
-                    self.topk_ids,
-                    self.x,
-                    self.sorted_ids,
-                    self.expert_ids,
-                    self.num_tokens_padded,
-                    self.qx.view(torch.uint8),
-                    self.x_scale,
-                    self.w13_completion,
-                )
-            else:
-                kernel.fused_route_quant(
-                    self.topk_ids,
-                    self.x,
-                    self.sorted_ids,
-                    self.expert_ids,
-                    self.num_tokens_padded,
-                    self.qx.view(torch.uint8),
-                    self.x_scale,
-                )
+            kernel.fused_route_quant(
+                self.topk_ids,
+                self.x,
+                self.sorted_ids,
+                self.expert_ids,
+                self.num_tokens_padded,
+                self.qx.view(torch.uint8),
+                self.x_scale,
+            )
         else:
             (
                 self.sorted_ids,
@@ -313,66 +289,45 @@ class CapturedCase:
                 m_major_scale=False,
                 scale_dtype="float32",
             )
-        if self.w13_tail_fused:
+        kernel.run_w13(
+            self.w13,
+            self.s13,
+            self.g13,
+            self.qx.view(torch.uint8),
+            self.x_scale,
+            self.sorted_ids,
+            self.expert_ids,
+            self.num_tokens_padded,
+            self.partials,
+            self.lut,
+            self.intermediate_per_rank,
+            self.w13_split_k,
+        )
+        if kernel.FUSED_ACT_QUANT:
             assert self.activation_scale is not None
-            kernel.run_w13_tail(
-                self.w13,
-                self.s13,
-                self.g13,
-                self.qx.view(torch.uint8),
-                self.x_scale,
-                self.sorted_ids,
-                self.expert_ids,
-                self.num_tokens_padded,
+            kernel.reduce_swiglu_quant(
                 self.partials,
-                self.w13_completion,
                 self.activation,
                 self.qactivation.view(torch.uint8),
                 self.activation_scale,
-                self.lut,
                 self.intermediate_per_rank,
                 self.w13_split_k,
             )
         else:
-            kernel.run_w13(
-                self.w13,
-                self.s13,
-                self.g13,
-                self.qx.view(torch.uint8),
-                self.x_scale,
-                self.sorted_ids,
-                self.expert_ids,
-                self.num_tokens_padded,
+            kernel.reduce_swiglu(
                 self.partials,
-                self.lut,
+                self.activation,
                 self.intermediate_per_rank,
                 self.w13_split_k,
             )
-            if kernel.FUSED_ACT_QUANT:
-                assert self.activation_scale is not None
-                kernel.reduce_swiglu_quant(
-                    self.partials,
-                    self.activation,
-                    self.qactivation.view(torch.uint8),
-                    self.activation_scale,
-                    self.intermediate_per_rank,
-                    self.w13_split_k,
-                )
-            else:
-                kernel.reduce_swiglu(
-                    self.partials,
-                    self.activation,
-                    self.intermediate_per_rank,
-                    self.w13_split_k,
-                )
-                self.qactivation, self.activation_scale = humming_ops.quant_input(
-                    inputs=self.activation,
-                    outputs=self.qactivation,
-                    dtype="float8e4m3",
-                    group_size=128,
-                    m_major_scale=False,
-                    scale_dtype="float32",
-                )
+            self.qactivation, self.activation_scale = humming_ops.quant_input(
+                inputs=self.activation,
+                outputs=self.qactivation,
+                dtype="float8e4m3",
+                group_size=128,
+                m_major_scale=False,
+                scale_dtype="float32",
+            )
         if self.local_float is not None:
             self.local_float.zero_()
         w2_output = self.down if kernel.W2_ROUTE_OUTPUT else self.local_float
@@ -600,8 +555,6 @@ def main() -> None:
                     "interleaved_bulk_copy": kernel.INTERLEAVED_BULK_COPY,
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
-                    "w13_tail_fused_activation": kernel.W13_TAIL_FUSED_ACT,
-                    "w13_tail_max_routes": kernel.W13_TAIL_MAX_ROUTES,
                     "fused_route_quant": kernel.FUSED_ROUTE_QUANT,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,

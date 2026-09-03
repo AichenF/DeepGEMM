@@ -57,67 +57,31 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
         )
 
     def route_quant() -> None:
-        if case.w13_tail_fused:
-            kernel.fused_route_quant_tail(
-                case.topk_ids,
-                case.x,
-                case.sorted_ids,
-                case.expert_ids,
-                case.num_tokens_padded,
-                case.qx.view(torch.uint8),
-                case.x_scale,
-                case.w13_completion,
-            )
-        else:
-            kernel.fused_route_quant(
-                case.topk_ids,
-                case.x,
-                case.sorted_ids,
-                case.expert_ids,
-                case.num_tokens_padded,
-                case.qx.view(torch.uint8),
-                case.x_scale,
-            )
+        kernel.fused_route_quant(
+            case.topk_ids,
+            case.x,
+            case.sorted_ids,
+            case.expert_ids,
+            case.num_tokens_padded,
+            case.qx.view(torch.uint8),
+            case.x_scale,
+        )
 
     def w13() -> None:
-        if case.w13_tail_fused:
-            kernel.run_w13_tail(
-                case.w13,
-                case.s13,
-                case.g13,
-                case.qx.view(torch.uint8),
-                case.x_scale,
-                case.sorted_ids,
-                case.expert_ids,
-                case.num_tokens_padded,
-                case.partials,
-                case.w13_completion,
-                case.activation,
-                case.qactivation.view(torch.uint8),
-                case.activation_scale,
-                case.lut,
-                case.intermediate_per_rank,
-                case.w13_split_k,
-            )
-        else:
-            kernel.run_w13(
-                case.w13,
-                case.s13,
-                case.g13,
-                case.qx.view(torch.uint8),
-                case.x_scale,
-                case.sorted_ids,
-                case.expert_ids,
-                case.num_tokens_padded,
-                case.partials,
-                case.lut,
-                case.intermediate_per_rank,
-                case.w13_split_k,
-            )
-
-    def activation_boundary() -> None:
-        # Preserve the same number of event nodes as the unfused breakdown.
-        pass
+        kernel.run_w13(
+            case.w13,
+            case.s13,
+            case.g13,
+            case.qx.view(torch.uint8),
+            case.x_scale,
+            case.sorted_ids,
+            case.expert_ids,
+            case.num_tokens_padded,
+            case.partials,
+            case.lut,
+            case.intermediate_per_rank,
+            case.w13_split_k,
+        )
 
     def activation() -> None:
         if kernel.FUSED_ACT_QUANT:
@@ -175,17 +139,6 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
         else:
             kernel.cast_bf16(case.local_float, case.local_bf16)
 
-    if kernel.FUSED_ROUTE_QUANT and case.w13_tail_fused:
-        return (
-            (
-                "route_quant",
-                "w13_activation",
-                "activation_boundary",
-                "w2",
-                "local_reduce",
-            ),
-            (route_quant, w13, activation_boundary, w2, local_reduce),
-        )
     if kernel.FUSED_ROUTE_QUANT:
         return (
             ("route_quant", "w13", "activation_quant", "w2", "local_reduce"),
@@ -393,16 +346,6 @@ def main() -> None:
                 ),
                 "custom_leader_mbar_wait": (
                     os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
-                    if args.impl == "custom"
-                    else None
-                ),
-                "custom_w13_tail_fused_activation": (
-                    os.environ.get("V4_W13_TAIL_FUSED_ACT", "0") == "1"
-                    if args.impl == "custom"
-                    else None
-                ),
-                "custom_w13_tail_max_routes": (
-                    int(os.environ.get("V4_W13_TAIL_MAX_ROUTES", "48"))
                     if args.impl == "custom"
                     else None
                 ),
