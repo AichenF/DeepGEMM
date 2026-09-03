@@ -3215,3 +3215,22 @@ maximum rank latency of a full CUDA-Graph replay.
   compare the combined zero+W2 atomic stage against control W2+local-reduce
   totals under per-replay cold L2; stop if BF16 summation error or contention
   outweighs the eliminated route tensor.
+
+### WGMMA iteration 52b — direct BF16 atomic W2 rejected
+
+- TP4 M8/M128 balanced and M128 fully skewed routes plus TP8-shape M8
+  balanced/M128 skewed numerical gates all pass.  W2 cosine remains
+  0.9999929-0.9999939 with relative L2 0.00349-0.00378 and finite output, so
+  native BF16 atomics are numerically usable for this benchmark.
+- Cold-L2 candidate A/control/candidate B local total medians average to
+  91.936/88.080 us at M8, 214.728/198.688 us at M32, and
+  378.152/330.768 us at M128.  The BF16-atomic path therefore regresses by
+  4.38%/8.07%/14.33%, consistently in both candidate windows.
+- The combined zero+W2-atomic medians are 35.176/84.904/162.432 us versus
+  control W2+SGLang-reduce totals 31.248/69.328/114.592 us.  Contention cost
+  grows from 12.57% to 41.75% as M increases and overwhelms the removed route
+  tensor and reduction launch.  Reject without distributed timing, retain
+  `V4_W2_BF16_ATOMIC=0`, and restore the iteration-50 runtime exactly.
+- Evidence:
+  `bench/results/iter52_bf16_atomic_correctness_20260903.log` and
+  `bench/results/iter52_bf16_atomic_stage_aba_coldl2_20260903.log`.
