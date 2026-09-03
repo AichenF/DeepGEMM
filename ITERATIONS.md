@@ -3128,3 +3128,19 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_interleaved_bulk_additional_correctness_20260903.log`,
   and
   `bench/results/tp4_interleaved_bulk_stage_coldl2_screen_20260903.log`.
+
+### WGMMA iteration 50c — select interleaved bulk layout
+
+- Four-rank candidate A/control/candidate B custom geometric means are
+  0.181630/0.184928/0.183210 ms across M8/16/32/64/128, 400 separately
+  cold-L2 graph samples per implementation/M, and the same captured SGLang
+  `CustomAllReduceV2`.  Direct custom latency reductions are 1.78% and 0.93%.
+- Normalizing every window by its paired Humming graph retains gains of 1.07%
+  and 0.50%; candidate Humming/custom ratios are 1.15438 and 1.14785 versus
+  control 1.14214.  Both independent windows therefore confirm the smaller
+  core-screen effect despite large-system noise at M128.
+- Select `V4_INTERLEAVED_BULK_COPY=1` as the default.  Treat the second
+  window's 0.50% normalized gain as the conservative causal result, and gate
+  the new headline on a TP8 full-graph smoke plus TP4 10x200 formal run.
+- Evidence:
+  `bench/results/tp4_interleaved_bulk_{candidate_a,control,candidate_b}_coldl2_screen_20260903.log`.
