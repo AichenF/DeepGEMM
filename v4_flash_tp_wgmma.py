@@ -108,8 +108,11 @@ W2_PROGRESS_MC_PUSH_AR = (
 W2_PROGRESS_WORKERS = int(
     os.environ.get("V4_W2_PROGRESS_WORKERS", "8")
 )
-if W2_PROGRESS_WORKERS not in (1, 2, 4, 8, 16, 32):
-    raise ValueError("V4_W2_PROGRESS_WORKERS must be 1,2,4,8,16,32")
+if W2_PROGRESS_WORKERS not in (1, 2, 4, 8, 16, 32, 64):
+    raise ValueError("V4_W2_PROGRESS_WORKERS must be 1,2,4,8,16,32,64")
+W2_PROGRESS_CHUNKS = int(os.environ.get("V4_W2_PROGRESS_CHUNKS", "4"))
+if W2_PROGRESS_CHUNKS not in (2, 4, 8):
+    raise ValueError("V4_W2_PROGRESS_CHUNKS must be 2,4,8")
 PIPELINE_CHUNKS = int(os.environ.get("V4_PIPELINE_CHUNKS", "4"))
 PIPELINE_AR_BLOCKS = int(os.environ.get("V4_PIPELINE_AR_BLOCKS", "8"))
 if PIPELINE_CHUNKS not in (2, 4, 8):
@@ -1935,11 +1938,11 @@ __device__ __forceinline__ uint32_t clear_positive_bf16_zero(uint32_t word) {
 }
 
 // Low-footprint consumers overlap local k6 reduction and multicast stores
-// with the unfragmented W2 grid.  Each static token/N1024 task waits on its
-// 6x8 direct route/tile markers; consumers never wait for remote ranks,
+// with the unfragmented W2 grid.  Each static token/N-chunk task waits on its
+// direct route/tile markers; consumers never wait for remote ranks,
 // avoiding cross-rank task-order cycles.  A separate finish kernel
 // polls/reduces after every local chunk has been multicast.
-template <int Threads>
+template <int Threads, int NumChunks>
 __global__ __launch_bounds__(Threads) void progress_k6_mc_push_tp4_kernel(
         const __nv_bfloat16* __restrict__ input,
         const float* __restrict__ topk_weights,
@@ -1951,9 +1954,10 @@ __global__ __launch_bounds__(Threads) void progress_k6_mc_push_tp4_kernel(
     constexpr int kHidden = 4096;
     constexpr int kPairsPerToken = kHidden / 2;
     constexpr int kNumW2Tiles = 32;
-    constexpr int kNumChunks = 4;
+    constexpr int kNumChunks = NumChunks;
     constexpr int kVecsPerChunk = (kHidden / kNumChunks) / 8;
     constexpr int kPairsPerVec = 4;
+    static_assert(kNumChunks == 2 || kNumChunks == 4 || kNumChunks == 8);
     static_assert(Threads == kVecsPerChunk);
 
     const int total_tasks = tokens * kNumChunks;
@@ -3178,7 +3182,7 @@ void progress_k6_mc_push_tp4(
         torch::Tensor input, torch::Tensor topk_weights,
         torch::Tensor progress_state, torch::Tensor push_counter,
         int64_t push_mc_ptr, int rank, int64_t push_stride,
-        int active_blocks) {
+        int chunks, int active_blocks) {
     TORCH_CHECK(input.scalar_type() == torch::kBFloat16
                     && input.is_cuda() && input.is_contiguous(),
                 "progress route input must be contiguous CUDA bfloat16");
@@ -3204,17 +3208,27 @@ void progress_k6_mc_push_tp4(
     TORCH_CHECK(push_stride >= input.numel() / kTopK
                     * input.element_size(),
                 "progress push workspace stride is too small");
-    TORCH_CHECK(active_blocks > 0 && active_blocks <= 32,
-                "progress worker count must be in [1,32]");
+    TORCH_CHECK(chunks == 2 || chunks == 4 || chunks == 8,
+                "progress chunks must be 2,4,8");
+    TORCH_CHECK(active_blocks > 0 && active_blocks <= 64,
+                "progress worker count must be in [1,64]");
     const auto stream = at::cuda::getCurrentCUDAStream();
-    progress_k6_mc_push_tp4_kernel<128><<<
-        active_blocks, 128, 0, stream>>>(
-        reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
-        topk_weights.data_ptr<float>(),
-        progress_state.data_ptr<int32_t>(),
-        reinterpret_cast<const uint32_t*>(push_counter.data_ptr()),
-        reinterpret_cast<uint8_t*>(push_mc_ptr),
-        tokens, rank, push_stride);
+#define LAUNCH_PROGRESS_WORKER(THREADS, CHUNKS)                            \
+    progress_k6_mc_push_tp4_kernel<THREADS, CHUNKS><<<                    \
+        active_blocks, THREADS, 0, stream>>>(                             \
+        reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),         \
+        topk_weights.data_ptr<float>(),                                   \
+        progress_state.data_ptr<int32_t>(),                               \
+        reinterpret_cast<const uint32_t*>(push_counter.data_ptr()),       \
+        reinterpret_cast<uint8_t*>(push_mc_ptr),                          \
+        tokens, rank, push_stride)
+    if (chunks == 2)
+        LAUNCH_PROGRESS_WORKER(256, 2);
+    else if (chunks == 4)
+        LAUNCH_PROGRESS_WORKER(128, 4);
+    else
+        LAUNCH_PROGRESS_WORKER(64, 8);
+#undef LAUNCH_PROGRESS_WORKER
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -3504,7 +3518,7 @@ void progress_k6_mc_push_tp4(
     torch::Tensor input, torch::Tensor topk_weights,
     torch::Tensor progress_state, torch::Tensor push_counter,
     int64_t push_mc_ptr, int rank, int64_t push_stride,
-    int active_blocks);
+    int chunks, int active_blocks);
 void progress_mc_push_finish_tp4(
     torch::Tensor output, torch::Tensor push_counter,
     torch::Tensor push0, torch::Tensor push1,
@@ -3548,7 +3562,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v83lrelease"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v83ochunks"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -4084,6 +4098,7 @@ def progress_k6_mc_push_tp4(
         push_mc_ptr,
         rank,
         push_stride,
+        W2_PROGRESS_CHUNKS,
         active_blocks,
     )
 

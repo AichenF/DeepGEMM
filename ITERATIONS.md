@@ -4252,3 +4252,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Cold latency:** control median `0.079040 ms` (min `0.077664`, max `0.095744`); candidate median `0.079424 ms` (min `0.078144`, max `0.088800`). Control/candidate is `0.995165x`.
 - **Finding:** the end-to-end deficit is now only `0.384 us` or `0.49%`, down from iteration 83f2's `2.048 us`. All four candidate batch medians still lose narrowly, so this is near parity rather than a selected win.
 - **Decision:** keep opt-in. Sweep N2048/N1024/N512 worker chunk granularity; finer N512 readiness needs to hide only another 0.4 us to cross control.
+
+### Iteration 83o — parameterized W2 progress chunks; TP4 chunks=8/64-worker protocol validation (2026-09-03)
+
+- Change: parameterized the release-marker progress worker at 2/4/8 N-chunks. The dispatch maps chunks 2/4/8 to 256/128/64 threads per task, respectively, and permits up to 64 persistent worker blocks.
+- Motivation: the accepted 4-chunk/32-worker overlap prototype remained 0.384 us slower than control at M=8. Eight N=512 chunks expose 64 tasks and allow work to start after four N=128 release markers, testing whether finer readiness granularity can hide the remaining launch/progress cost.
+- Validation command: TP4, GPUs 1-4, M=8, 64 workers, 8 chunks, concurrent producer/worker launch, random routing.
+- Result: PASS on all four ranks. Every rank observed marker_sum=1536 with marker_min=marker_max=1, task_done=64, worker_done=64, and all four symmetric source slots contained the expected 16384 nonzero words.
+- Correctness scope: validates the device-scope release/acquire publication protocol and chunk/task completion under concurrent TP4 execution. End-to-end numerical and cold-L2 performance selection follows separately.
+- Artifact: results/iter83o_chunks8_worker64_tp4_m8_compile_concurrent_probe_20260903.log

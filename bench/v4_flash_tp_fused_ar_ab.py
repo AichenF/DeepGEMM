@@ -56,8 +56,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--progress-workers",
         type=int,
-        choices=(1, 2, 4, 8, 16, 32),
+        choices=(1, 2, 4, 8, 16, 32, 64),
         default=8,
+    )
+    parser.add_argument(
+        "--progress-chunks", type=int, choices=(2, 4, 8), default=4
     )
     parser.add_argument(
         "--rank-route-pull-blocks",
@@ -163,6 +166,7 @@ def main() -> None:
                     "pipeline_chunks": args.pipeline_chunks,
                     "pipeline_ar_blocks": args.pipeline_ar_blocks,
                     "progress_workers": args.progress_workers,
+                    "progress_chunks": args.progress_chunks,
                     "rank_route_pull_blocks": args.rank_route_pull_blocks,
                     "k6_nvls_pull_blocks": args.k6_nvls_pull_blocks,
                     "route_pattern": args.route_pattern,
@@ -199,6 +203,7 @@ def main() -> None:
         kernel.PIPELINE_CHUNKS = args.pipeline_chunks
         kernel.PIPELINE_AR_BLOCKS = args.pipeline_ar_blocks
         kernel.W2_PROGRESS_WORKERS = args.progress_workers
+        kernel.W2_PROGRESS_CHUNKS = args.progress_chunks
         kernel.RANK_ROUTE_PULL_BLOCKS = args.rank_route_pull_blocks
         kernel.K6_NVLS_PULL_BLOCKS = args.k6_nvls_pull_blocks
         kernel.FUSED_K6_PUSH_AR = args.candidate == "unicast"

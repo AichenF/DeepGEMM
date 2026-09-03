@@ -25,6 +25,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--m", type=int, default=8)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--chunks", type=int, choices=(2, 4, 8), default=4)
     parser.add_argument(
         "--launch-mode", choices=("sequential", "concurrent"),
         default="sequential"
@@ -34,6 +35,7 @@ def main() -> None:
         default="random"
     )
     args = parser.parse_args()
+    kernel.W2_PROGRESS_CHUNKS = args.chunks
 
     rank, world_size, device, cpu_group = custom.init_distributed()
     if world_size != 4:
@@ -126,10 +128,11 @@ def main() -> None:
 
     state = case.w2_progress_state.cpu()
     marker_end = args.m * 6 * 32
-    total_tasks = args.m * 4
+    total_tasks = args.m * args.chunks
     local_state = {
         "rank": rank,
         "launch_mode": args.launch_mode,
+        "chunks": args.chunks,
         "marker_min": int(state[:marker_end].min().item()),
         "marker_max": int(state[:marker_end].max().item()),
         "marker_sum": int(state[:marker_end].sum().item()),
