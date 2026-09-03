@@ -81,6 +81,7 @@ if INTERLEAVED_BULK_COPY and (
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
+W13_TAIL_FUSED_ACT = os.environ.get("V4_W13_TAIL_FUSED_ACT", "0") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
@@ -162,6 +163,7 @@ static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
 static constexpr bool kLeaderMbarWait = K_LEADER_MBAR_WAIT;
+static constexpr bool kW13TailFusedAct = K_W13_TAIL_FUSED_ACT;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -260,6 +262,10 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const int32_t* __restrict__ num_tokens_padded,
         const float* __restrict__ topk_weights,
         float* __restrict__ output,
+        int32_t* __restrict__ activation_completion,
+        __nv_bfloat16* __restrict__ fused_activation_bf16,
+        uint8_t* __restrict__ fused_activation,
+        float* __restrict__ fused_activation_scale,
         const uint2* __restrict__ global_lut,
         int max_routes) {
     static_assert(K % kBlockK == 0);
@@ -330,6 +336,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     __shared__ float expert_weight_scale;
     __shared__ int32_t route_ids[kTok];
     __shared__ int32_t activation_rows[kTok];
+    __shared__ int32_t activation_tail_is_last;
 
     const int tid = threadIdx.x;
     if (tid < kTok) {
@@ -914,6 +921,90 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             }
         }
     }
+
+    if constexpr (IsW13 && kW13TailFusedAct) {
+        static_assert(kWout == 128);
+        constexpr int Intermediate = N / 2;
+        constexpr int kGroupsPerRoute = Intermediate / kWout;
+        constexpr int kExpectedArrivals = 2 * SplitK;
+        const int n_pair_idx = n_block_idx % kGroupsPerRoute;
+        const int completion_idx =
+            m_block_idx * kGroupsPerRoute + n_pair_idx;
+
+        // Match CUDA's canonical last-block reduction protocol.  Every
+        // producer thread orders its own partial stores before thread 0
+        // publishes this CTA's completion with a device-scoped atomic.
+        __threadfence();
+        __syncthreads();
+        if (tid == 0) {
+            const int previous = atomicAdd(
+                activation_completion + completion_idx, 1);
+            activation_tail_is_last = previous == kExpectedArrivals - 1;
+        }
+        __syncthreads();
+        if (!activation_tail_is_last)
+            return;
+
+        const int lane_idx = tid & 31;
+        const int warp_idx = tid >> 5;
+        const int column = n_pair_idx * kWout + tid;
+        #pragma unroll
+        for (int token_slot = 0; token_slot < kTok; ++token_slot) {
+            const int route = route_ids[token_slot];
+            if (route >= max_routes)
+                continue;
+            float gate = 0.0f;
+            float up = 0.0f;
+            #pragma unroll
+            for (int split = 0; split < SplitK; ++split) {
+                const int64_t base =
+                    (static_cast<int64_t>(split) * max_routes + route) * N;
+                gate += output[base + column];
+                up += output[base + Intermediate + column];
+            }
+            gate = __bfloat162float(__float2bfloat16(gate));
+            up = __bfloat162float(__float2bfloat16(up));
+            const float silu = gate / (1.0f + __expf(-gate));
+            const __nv_bfloat16 activation_bf16 =
+                __float2bfloat16(silu * up);
+            const float value = __bfloat162float(activation_bf16);
+
+            float absmax = fabsf(value);
+            #pragma unroll
+            for (int delta = 16; delta > 0; delta >>= 1)
+                absmax = fmaxf(
+                    absmax,
+                    __shfl_down_sync(0xffffffffu, absmax, delta));
+            if (lane_idx == 0)
+                activation_scale_smem[warp_idx] = absmax;
+            __syncthreads();
+            if (warp_idx == 0) {
+                absmax = lane_idx < 4
+                    ? activation_scale_smem[lane_idx]
+                    : 0.0f;
+                #pragma unroll
+                for (int delta = 16; delta > 0; delta >>= 1)
+                    absmax = fmaxf(
+                        absmax,
+                        __shfl_down_sync(0xffffffffu, absmax, delta));
+                if (lane_idx == 0)
+                    activation_scale_smem[4] =
+                        fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
+            }
+            __syncthreads();
+
+            const int index = route * Intermediate + column;
+            const float group_scale = activation_scale_smem[4];
+            if (fused_activation_bf16 != nullptr)
+                fused_activation_bf16[index] = activation_bf16;
+            fused_activation[index] =
+                __nv_fp8_e4m3(value / group_scale).__x;
+            if (tid == 0)
+                fused_activation_scale[
+                    route * kGroupsPerRoute + n_pair_idx] = group_scale;
+            __syncthreads();
+        }
+    }
 }
 
 template <int Intermediate, int SplitK>
@@ -1181,7 +1272,11 @@ void launch_route_gemm(
         torch::Tensor activation, torch::Tensor activation_scale,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
         torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
-        torch::Tensor output, torch::Tensor lut, int max_routes) {
+        torch::Tensor output, torch::Tensor lut, int max_routes,
+        int32_t* activation_completion = nullptr,
+        __nv_bfloat16* fused_activation_bf16 = nullptr,
+        uint8_t* fused_activation = nullptr,
+        float* fused_activation_scale = nullptr) {
     static CUtensorMap weight_descriptor;
     static CUtensorMap scale_descriptor;
     static void* last_weight_pointer = nullptr;
@@ -1230,6 +1325,10 @@ void launch_route_gemm(
         num_tokens_padded.data_ptr<int32_t>(),
         topk_weights.numel() ? topk_weights.data_ptr<float>() : nullptr,
         static_cast<float*>(output.data_ptr()),
+        activation_completion,
+        fused_activation_bf16,
+        fused_activation,
+        fused_activation_scale,
         reinterpret_cast<const uint2*>(lut.data_ptr<uint8_t>()),
         max_routes);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -1272,6 +1371,63 @@ void run_w13_impl(
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
                 partials, lut, routes);
+        }
+    } else {
+        TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
+    }
+}
+
+void run_w13_tail_impl(
+        torch::Tensor weight, torch::Tensor weight_scale,
+        torch::Tensor weight_global_scale,
+        torch::Tensor activation, torch::Tensor activation_scale,
+        torch::Tensor sorted_ids, torch::Tensor expert_ids,
+        torch::Tensor num_tokens_padded, torch::Tensor partials,
+        torch::Tensor completion, torch::Tensor activation_bf16,
+        torch::Tensor quantized, torch::Tensor quantized_scale,
+        torch::Tensor lut, int intermediate, int split_k) {
+    TORCH_CHECK(kW13TailFusedAct,
+                "rebuild with V4_W13_TAIL_FUSED_ACT=1");
+    const int routes = partials.size(1);
+    auto* completion_ptr = completion.data_ptr<int32_t>();
+    auto* activation_bf16_ptr = activation_bf16.numel()
+        ? reinterpret_cast<__nv_bfloat16*>(activation_bf16.data_ptr())
+        : nullptr;
+    auto* quantized_ptr = quantized.data_ptr<uint8_t>();
+    auto* quantized_scale_ptr = quantized_scale.data_ptr<float>();
+    if (intermediate == 512) {
+        if (split_k == 4) {
+            launch_route_gemm<4096, 1024, 4, true>(
+                weight, weight_scale, weight_global_scale,
+                activation, activation_scale,
+                sorted_ids, expert_ids, num_tokens_padded, partials,
+                partials, lut, routes, completion_ptr,
+                activation_bf16_ptr, quantized_ptr, quantized_scale_ptr);
+        } else {
+            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+            launch_route_gemm<4096, 1024, 2, true>(
+                weight, weight_scale, weight_global_scale,
+                activation, activation_scale,
+                sorted_ids, expert_ids, num_tokens_padded, partials,
+                partials, lut, routes, completion_ptr,
+                activation_bf16_ptr, quantized_ptr, quantized_scale_ptr);
+        }
+    } else if (intermediate == 256) {
+        if (split_k == 4) {
+            launch_route_gemm<4096, 512, 4, true>(
+                weight, weight_scale, weight_global_scale,
+                activation, activation_scale,
+                sorted_ids, expert_ids, num_tokens_padded, partials,
+                partials, lut, routes, completion_ptr,
+                activation_bf16_ptr, quantized_ptr, quantized_scale_ptr);
+        } else {
+            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+            launch_route_gemm<4096, 512, 2, true>(
+                weight, weight_scale, weight_global_scale,
+                activation, activation_scale,
+                sorted_ids, expert_ids, num_tokens_padded, partials,
+                partials, lut, routes, completion_ptr,
+                activation_bf16_ptr, quantized_ptr, quantized_scale_ptr);
         }
     } else {
         TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
@@ -1447,6 +1603,15 @@ void run_w13_impl(torch::Tensor weight, torch::Tensor weight_scale,
                   torch::Tensor sorted_ids, torch::Tensor expert_ids,
                   torch::Tensor num_tokens_padded, torch::Tensor partials,
                   torch::Tensor lut, int intermediate, int split_k);
+void run_w13_tail_impl(
+                  torch::Tensor weight, torch::Tensor weight_scale,
+                  torch::Tensor weight_global_scale,
+                  torch::Tensor activation, torch::Tensor activation_scale,
+                  torch::Tensor sorted_ids, torch::Tensor expert_ids,
+                  torch::Tensor num_tokens_padded, torch::Tensor partials,
+                  torch::Tensor completion, torch::Tensor activation_bf16,
+                  torch::Tensor quantized, torch::Tensor quantized_scale,
+                  torch::Tensor lut, int intermediate, int split_k);
 void run_w2(torch::Tensor weight, torch::Tensor weight_scale,
             torch::Tensor weight_global_scale,
             torch::Tensor activation, torch::Tensor activation_scale,
@@ -1481,11 +1646,13 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v49"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_"
+          f"w13tfa{int(W13_TAIL_FUSED_ACT)}_mb{MIN_BLOCKS_PER_SM}_v57"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
-        "run_w13_impl", "run_w2", "reduce_swiglu", "reduce_swiglu_quant",
+        "run_w13_impl", "run_w13_tail_impl", "run_w2",
+        "reduce_swiglu", "reduce_swiglu_quant",
         "cast_bf16",
         "fused_route_quant",
         "braid_mode2",
@@ -1511,6 +1678,7 @@ _ext = load_inline(
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
         f"-DK_LEADER_MBAR_WAIT={int(LEADER_MBAR_WAIT)}",
+        f"-DK_W13_TAIL_FUSED_ACT={int(W13_TAIL_FUSED_ACT)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",
@@ -1678,6 +1846,50 @@ def run_w13(
         expert_ids,
         num_tokens_padded,
         partials,
+        lut,
+        intermediate,
+        split_k,
+    )
+
+
+def run_w13_tail(
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    weight_global_scale: torch.Tensor,
+    activation: torch.Tensor,
+    activation_scale: torch.Tensor,
+    sorted_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_padded: torch.Tensor,
+    partials: torch.Tensor,
+    completion: torch.Tensor,
+    activation_bf16: torch.Tensor,
+    quantized: torch.Tensor,
+    quantized_scale: torch.Tensor,
+    lut: torch.Tensor,
+    intermediate: int,
+    split_k: int | None = None,
+) -> None:
+    if not W13_TAIL_FUSED_ACT:
+        raise RuntimeError("rebuild with V4_W13_TAIL_FUSED_ACT=1")
+    if split_k is None:
+        split_k = select_w13_split_k(partials.size(1))
+    if split_k not in (2, 4):
+        raise ValueError("W13 split_k must be 2 or 4")
+    _ext.run_w13_tail_impl(
+        weight,
+        weight_scale,
+        weight_global_scale,
+        activation,
+        activation_scale,
+        sorted_ids,
+        expert_ids,
+        num_tokens_padded,
+        partials,
+        completion,
+        activation_bf16,
+        quantized,
+        quantized_scale,
         lut,
         intermediate,
         split_k,

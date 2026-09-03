@@ -234,44 +234,68 @@ def main() -> None:
     activation = torch.empty(
         (routes, intermediate), dtype=torch.bfloat16, device=device
     )
-    lut = kernel.make_e2m1_e8m0_lut(device)
-    kernel.run_w13(
-        w13,
-        s13,
-        g13,
-        qx.view(torch.uint8),
-        x_scale,
-        sorted_ids,
-        expert_ids,
-        num_tokens_padded,
-        partials,
-        lut,
-        intermediate,
-    )
     qact = torch.empty_like(activation, dtype=torch.float8_e4m3fn)
-    if kernel.FUSED_ACT_QUANT:
-        act_scale = torch.empty(
-            (routes, intermediate // 128), dtype=torch.float32, device=device
+    act_scale = torch.empty(
+        (routes, intermediate // 128), dtype=torch.float32, device=device
+    )
+    lut = kernel.make_e2m1_e8m0_lut(device)
+    if kernel.W13_TAIL_FUSED_ACT:
+        completion = torch.zeros(
+            (expert_ids.numel(), intermediate // 128),
+            dtype=torch.int32,
+            device=device,
         )
-        kernel.reduce_swiglu_quant(
+        kernel.run_w13_tail(
+            w13,
+            s13,
+            g13,
+            qx.view(torch.uint8),
+            x_scale,
+            sorted_ids,
+            expert_ids,
+            num_tokens_padded,
             partials,
+            completion,
             activation,
             qact.view(torch.uint8),
             act_scale,
+            lut,
             intermediate,
         )
     else:
-        kernel.reduce_swiglu(
-            partials, activation, intermediate
+        kernel.run_w13(
+            w13,
+            s13,
+            g13,
+            qx.view(torch.uint8),
+            x_scale,
+            sorted_ids,
+            expert_ids,
+            num_tokens_padded,
+            partials,
+            lut,
+            intermediate,
         )
-        qact, act_scale = ops.quant_input(
-            inputs=activation,
-            outputs=qact,
-            dtype="float8e4m3",
-            group_size=128,
-            m_major_scale=False,
-            scale_dtype="float32",
-        )
+        if kernel.FUSED_ACT_QUANT:
+            kernel.reduce_swiglu_quant(
+                partials,
+                activation,
+                qact.view(torch.uint8),
+                act_scale,
+                intermediate,
+            )
+        else:
+            kernel.reduce_swiglu(
+                partials, activation, intermediate
+            )
+            qact, act_scale = ops.quant_input(
+                inputs=activation,
+                outputs=qact,
+                dtype="float8e4m3",
+                group_size=128,
+                m_major_scale=False,
+                scale_dtype="float32",
+            )
     local = torch.zeros((args.m, H), dtype=torch.float32, device=device)
     down = (
         torch.empty((routes, H), dtype=torch.bfloat16, device=device)
@@ -352,6 +376,7 @@ def main() -> None:
         f"split_k={selected_split_k} mode2={kernel.MODE2_BRAID} "
         f"interleaved_bulk={kernel.INTERLEAVED_BULK_COPY} "
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
+        f"w13_tail_fused_act={kernel.W13_TAIL_FUSED_ACT} "
         f"w2_global_lut={kernel.W2_GLOBAL_LUT} "
         f"leader_mbar_wait={kernel.LEADER_MBAR_WAIT}"
     )

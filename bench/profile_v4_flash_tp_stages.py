@@ -68,20 +68,43 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
         )
 
     def w13() -> None:
-        kernel.run_w13(
-            case.w13,
-            case.s13,
-            case.g13,
-            case.qx.view(torch.uint8),
-            case.x_scale,
-            case.sorted_ids,
-            case.expert_ids,
-            case.num_tokens_padded,
-            case.partials,
-            case.lut,
-            case.intermediate_per_rank,
-            case.w13_split_k,
-        )
+        if kernel.W13_TAIL_FUSED_ACT:
+            kernel.run_w13_tail(
+                case.w13,
+                case.s13,
+                case.g13,
+                case.qx.view(torch.uint8),
+                case.x_scale,
+                case.sorted_ids,
+                case.expert_ids,
+                case.num_tokens_padded,
+                case.partials,
+                case.w13_completion,
+                case.activation,
+                case.qactivation.view(torch.uint8),
+                case.activation_scale,
+                case.lut,
+                case.intermediate_per_rank,
+                case.w13_split_k,
+            )
+        else:
+            kernel.run_w13(
+                case.w13,
+                case.s13,
+                case.g13,
+                case.qx.view(torch.uint8),
+                case.x_scale,
+                case.sorted_ids,
+                case.expert_ids,
+                case.num_tokens_padded,
+                case.partials,
+                case.lut,
+                case.intermediate_per_rank,
+                case.w13_split_k,
+            )
+
+    def completion_reset() -> None:
+        case.w13_completion.zero_()
 
     def activation() -> None:
         if kernel.FUSED_ACT_QUANT:
@@ -139,6 +162,17 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
         else:
             kernel.cast_bf16(case.local_float, case.local_bf16)
 
+    if kernel.FUSED_ROUTE_QUANT and kernel.W13_TAIL_FUSED_ACT:
+        return (
+            (
+                "route_quant",
+                "completion_reset",
+                "w13_activation",
+                "w2",
+                "local_reduce",
+            ),
+            (route_quant, completion_reset, w13, w2, local_reduce),
+        )
     if kernel.FUSED_ROUTE_QUANT:
         return (
             ("route_quant", "w13", "activation_quant", "w2", "local_reduce"),
@@ -346,6 +380,11 @@ def main() -> None:
                 ),
                 "custom_leader_mbar_wait": (
                     os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
+                    if args.impl == "custom"
+                    else None
+                ),
+                "custom_w13_tail_fused_activation": (
+                    os.environ.get("V4_W13_TAIL_FUSED_ACT", "0") == "1"
                     if args.impl == "custom"
                     else None
                 ),
