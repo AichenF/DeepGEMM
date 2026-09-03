@@ -1,0 +1,115 @@
+CASE=M8
+W0903 17:49:15.314000 376745 torch/distributed/run.py:851]
+W0903 17:49:15.314000 376745 torch/distributed/run.py:851] *****************************************
+W0903 17:49:15.314000 376745 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed.
+W0903 17:49:15.314000 376745 torch/distributed/run.py:851] *****************************************
+[rank2]: Traceback (most recent call last):
+[rank2]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/compare_v4_flash_tp_w2_store.py", line 359, in <module>
+[rank2]:     main()
+[rank2]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank2]:     return func(*args, **kwargs)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/compare_v4_flash_tp_w2_store.py", line 285, in main
+[rank2]:     raise RuntimeError(
+[rank2]: RuntimeError: control/candidate graph outputs fail comparison: {"cosine_min_rank": 0.9999997615814209, "finite_all_ranks": true, "max_abs_max_rank": 1536.0, "rel_l2_max_rank": 0.0007213405333459377}
+[rank3]: Traceback (most recent call last):
+[rank3]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/compare_v4_flash_tp_w2_store.py", line 359, in <module>
+[rank3]:     main()
+[rank3]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank3]:     return func(*args, **kwargs)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/compare_v4_flash_tp_w2_store.py", line 285, in main
+[rank3]:     raise RuntimeError(
+[rank3]: RuntimeError: control/candidate graph outputs fail comparison: {"cosine_min_rank": 0.9999997615814209, "finite_all_ranks": true, "max_abs_max_rank": 1536.0, "rel_l2_max_rank": 0.0007213405333459377}
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/compare_v4_flash_tp_w2_store.py", line 359, in <module>
+[rank1]:     main()
+[rank1]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank1]:     return func(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/compare_v4_flash_tp_w2_store.py", line 285, in main
+[rank1]:     raise RuntimeError(
+[rank1]: RuntimeError: control/candidate graph outputs fail comparison: {"cosine_min_rank": 0.9999997615814209, "finite_all_ranks": true, "max_abs_max_rank": 1536.0, "rel_l2_max_rank": 0.0007213405333459377}
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/compare_v4_flash_tp_w2_store.py", line 359, in <module>
+[rank0]:     main()
+[rank0]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/compare_v4_flash_tp_w2_store.py", line 285, in main
+[rank0]:     raise RuntimeError(
+[rank0]: RuntimeError: control/candidate graph outputs fail comparison: {"cosine_min_rank": 0.9999997615814209, "finite_all_ranks": true, "max_abs_max_rank": 1536.0, "rel_l2_max_rank": 0.0007213405333459377}
+W0903 17:49:30.365000 376745 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 376813 closing signal SIGTERM
+W0903 17:49:30.366000 376745 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 376814 closing signal SIGTERM
+W0903 17:49:30.368000 376745 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 376815 closing signal SIGTERM
+E0903 17:49:30.796000 376745 torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 3 (pid: 376816) of binary: /usr/bin/python3
+Traceback (most recent call last):
+  File "/usr/local/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError:
+============================================================
+bench/compare_v4_flash_tp_w2_store.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-09-03_17:49:30
+  host      : H20-GPU-06.cm.cluster
+  rank      : 0 (local_rank: 0)
+  exitcode  : -15 (pid: 376813)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 376813
+[2]:
+  time      : 2026-09-03_17:49:30
+  host      : H20-GPU-06.cm.cluster
+  rank      : 1 (local_rank: 1)
+  exitcode  : -15 (pid: 376814)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 376814
+[3]:
+  time      : 2026-09-03_17:49:30
+  host      : H20-GPU-06.cm.cluster
+  rank      : 2 (local_rank: 2)
+  exitcode  : -15 (pid: 376815)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 376815
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-09-03_17:49:30
+  host      : H20-GPU-06.cm.cluster
+  rank      : 3 (local_rank: 3)
+  exitcode  : 1 (pid: 376816)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
+CASE=M16
+W0903 17:49:32.308000 377004 torch/distributed/run.py:851]
+W0903 17:49:32.308000 377004 torch/distributed/run.py:851] *****************************************
+W0903 17:49:32.308000 377004 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed.
+W0903 17:49:32.308000 377004 torch/distributed/run.py:851] *****************************************
+PAIRED_W2_STORE_RESULT {"candidate": {"batch_medians_ms": [0.11612799763679504, 0.11603199690580368, 0.11606399714946747, 0.11577600240707397, 0.11593600362539291], "flag_value": 1, "max_ms": 0.11763200163841248, "median_ms": 0.11599999666213989, "min_ms": 0.11468800157308578}, "compare_flag": "V4_ROUTE_K_UNROLL2", "control": {"batch_medians_ms": [0.1173119992017746, 0.1170559972524643, 0.1170399971306324, 0.11721599847078323, 0.11719999834895134], "flag_value": 0, "max_ms": 0.2763200104236603, "median_ms": 0.11718399822711945, "min_ms": 0.11603199690580368}, "control_over_candidate": 1.0102069103366276, "cross_implementation": {"cosine_min_rank": 0.9999998807907104, "finite_all_ranks": true, "max_abs_max_rank": 0.0, "rel_l2_max_rank": 0.0}, "exact_all_ranks": true, "l2_policy": "cold; separate 256MiB clear immediately before every graph replay; clear excluded from events", "m": 16, "order_policy": "per-sample alternating A/B then B/A", "route_pattern": "random", "samples_per_variant": 500, "world_size": 4}
+CASE=M32
+W0903 17:49:49.751000 377263 torch/distributed/run.py:851]
+W0903 17:49:49.751000 377263 torch/distributed/run.py:851] *****************************************
+W0903 17:49:49.751000 377263 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed.
+W0903 17:49:49.751000 377263 torch/distributed/run.py:851] *****************************************
+PAIRED_W2_STORE_RESULT {"candidate": {"batch_medians_ms": [0.18140800297260284, 0.1855200007557869, 0.18664000183343887, 0.18807999789714813, 0.18799999356269836], "flag_value": 1, "max_ms": 0.1955520063638687, "median_ms": 0.18644800037145615, "min_ms": 0.18025599420070648}, "compare_flag": "V4_ROUTE_K_UNROLL2", "control": {"batch_medians_ms": [0.1841920018196106, 0.18860799819231033, 0.18980800360441208, 0.1910720020532608, 0.19115199893712997], "flag_value": 0, "max_ms": 0.3420479893684387, "median_ms": 0.18956799805164337, "min_ms": 0.18294399976730347}, "control_over_candidate": 1.0167338757936333, "cross_implementation": {"cosine_min_rank": 1.0000001192092896, "finite_all_ranks": true, "max_abs_max_rank": 0.0, "rel_l2_max_rank": 0.0}, "exact_all_ranks": true, "l2_policy": "cold; separate 256MiB clear immediately before every graph replay; clear excluded from events", "m": 32, "order_policy": "per-sample alternating A/B then B/A", "route_pattern": "random", "samples_per_variant": 500, "world_size": 4}
+CASE=M64
+W0903 17:50:06.860000 377522 torch/distributed/run.py:851]
+W0903 17:50:06.860000 377522 torch/distributed/run.py:851] *****************************************
+W0903 17:50:06.860000 377522 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed.
+W0903 17:50:06.860000 377522 torch/distributed/run.py:851] *****************************************
+PAIRED_W2_STORE_RESULT {"candidate": {"batch_medians_ms": [0.2561440020799637, 0.27166399359703064, 0.271263986825943, 0.2734239995479584, 0.2717280089855194], "flag_value": 1, "max_ms": 0.2781760096549988, "median_ms": 0.2712799906730652, "min_ms": 0.2536959946155548}, "compare_flag": "V4_ROUTE_K_UNROLL2", "control": {"batch_medians_ms": [0.25964799523353577, 0.2762719988822937, 0.2758079916238785, 0.2783840000629425, 0.27643200755119324], "flag_value": 0, "max_ms": 0.42659199237823486, "median_ms": 0.2759360074996948, "min_ms": 0.2573759853839874}, "control_over_candidate": 1.0171631413547226, "cross_implementation": {"cosine_min_rank": 1.0, "finite_all_ranks": true, "max_abs_max_rank": 0.0, "rel_l2_max_rank": 0.0}, "exact_all_ranks": true, "l2_policy": "cold; separate 256MiB clear immediately before every graph replay; clear excluded from events", "m": 64, "order_policy": "per-sample alternating A/B then B/A", "route_pattern": "random", "samples_per_variant": 500, "world_size": 4}

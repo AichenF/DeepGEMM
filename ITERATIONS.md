@@ -5152,3 +5152,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Candidate wins all eight paired batch medians by 5.696--7.184 us.  Complete graph outputs are bitwise equal on all ranks (cosine 1.0, rel-L2/max-abs 0).
 - Result: this is a directionally strong candidate rather than a drift-sized screen.  Keep opt-in and test M8/M16/M32/M64 under the same cold-L2 paired protocol before selecting; inspect resources/SASS to confirm whether stage-index constant folding removed local traffic.
 - Evidence: `results/iter126b_route_k_unroll2_tp4_m128_paired_cold800_20260903.log`.
+
+### Iteration 126c — unroll2 wins M16/M32/M64; M8 is blocked by an over-strict bitwise gate
+
+- Screened M8/M16/M32/M64 sequentially with same-process TP4 control/candidate graphs, five batches x 100 cold-L2 rank-max samples per arm, per-replay alternating order, and the standard separate excluded 256 MiB clear.
+- M16 control/candidate medians are 0.117184/0.116000 ms = 1.010207x; M32 0.189568/0.186448 = 1.016734x; M64 0.275936/0.271280 = 1.017163x.  Candidate wins all five paired batch medians at each of these three shapes, and outputs are bitwise identical on all ranks.
+- M8 stopped before timing because the generic comparison harness required bitwise identity for this newly added flag.  Unrolling permits compiler reassociation/scheduling across adjacent K128 accumulation bodies: candidate/control remains finite with cosine 0.999999762 and rel-L2 0.000721341, well inside the strengthened production thresholds, but is not bitwise equal (max-abs 1536 at the large synthetic output scale).
+- This is a harness-classification failure, not evidence of reference incorrectness: iteration 126 independently passed TP4 split4, split2, and TP8 full-route references.  Add `V4_ROUTE_K_UNROLL2` to the existing tolerance-qualified reordering set and rerun M8; selection still requires an independent exact-Humming/reference audit.
+- Evidence: `results/iter126c_route_k_unroll2_tp4_m8_m16_m32_m64_paired_cold500_20260903.log`.
