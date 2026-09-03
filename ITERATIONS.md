@@ -4933,3 +4933,19 @@ maximum rank latency of a full CUDA-Graph replay.
 - Default TP8-shape I/rank=256, M8 balanced: compact_scale=True, routes/quant exact; W13 cosine 0.999999997, activation cosine 0.999999745, W2 cosine 0.999997278.
 - Result: selected default passes both TP4 and TP8-shape paths without an environment override.
 - Evidence: `results/iter117f_select_compact_scale_default_correctness_20260903.log`.
+
+## Iteration 117g — selected compact default versus exact MXFP4 Humming
+
+- Benchmark contract: DeepSeek-V4-Flash TP4 (H=4096, I/rank=512, E=256, precomputed top-k6 routes), no router/dispatch/combine; exact Humming MXFP4 indexed W13+W2 and custom full local MoE path each feed the same SGLang `CustomAllReduceV2`.  Both are CUDA Graphs.  Ten balanced batch-order AB/BA windows x 200 samples/M use rank-max timing and a separate excluded 256MiB L2 clear before every replay.
+- Environment confirms H20 with 78 SM, compact_interleaved_scale=true, fused small-M multicast=true, and streaming weight evict-first=true.
+- Humming/custom medians and Humming/custom speedup:
+  - M8: 0.090176/0.073568 ms = 1.225750x.
+  - M16: 0.146048/0.118848 ms = 1.228864x.
+  - M32: 0.232816/0.204336 ms = 1.139378x.
+  - M64: 0.331872/0.299424 ms = 1.108368x.
+  - M128: 0.410048/0.378512 ms = 1.083316x.
+- Five-shape geometric means: Humming 0.210902116 ms, custom 0.182506525 ms, Humming/custom 1.155587x (15.56% speedup ratio over custom).
+- Correctness: both implementations passed independent local/reference and all-reduce checks at every M; custom minimum cosine 0.999995575, maximum relative L2 0.002974846, finite on every rank.
+- Remaining 1.20x target: custom must reach <=0.175751763 ms; residual 0.006754762 ms (3.70% of current custom geomean).
+- Result: compact layout is accepted and improves the exact-Humming headline, but the 1.20x five-shape target remains unproven.  Continue on the M32-M128 W13 issue/occupancy bottleneck.
+- Evidence: `results/iter117g_compact_default_exact_humming_tp4_formal_cold2000_20260903.log`.
