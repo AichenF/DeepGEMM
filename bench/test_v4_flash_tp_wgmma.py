@@ -421,6 +421,7 @@ def main() -> None:
         f"tma_cta_scope={kernel.TMA_CTA_SCOPE} "
         f"weight_evict_first={kernel.WEIGHT_EVICT_FIRST} "
         f"weight_policy_hoist={kernel.WEIGHT_POLICY_HOIST} "
+        f"weight_policy_constant={kernel.WEIGHT_POLICY_CONSTANT} "
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
         f"w13_tail_fused_act={w13_tail_fused_act} "
         f"w2_sorted_act={kernel.W2_SORTED_ACT} "

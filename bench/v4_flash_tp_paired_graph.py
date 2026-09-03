@@ -292,6 +292,9 @@ def main() -> None:
                     "custom_tma_cta_scope": kernel.TMA_CTA_SCOPE,
                     "custom_weight_evict_first": kernel.WEIGHT_EVICT_FIRST,
                     "custom_weight_policy_hoist": kernel.WEIGHT_POLICY_HOIST,
+                    "custom_weight_policy_constant": (
+                        kernel.WEIGHT_POLICY_CONSTANT
+                    ),
                     "custom_interleaved_bulk_copy": (
                         kernel.INTERLEAVED_BULK_COPY
                     ),

@@ -1000,6 +1000,7 @@ def main() -> None:
                     "tma_cta_scope": kernel.TMA_CTA_SCOPE,
                     "weight_evict_first": kernel.WEIGHT_EVICT_FIRST,
                     "weight_policy_hoist": kernel.WEIGHT_POLICY_HOIST,
+                    "weight_policy_constant": kernel.WEIGHT_POLICY_CONSTANT,
                     "interleaved_bulk_copy": kernel.INTERLEAVED_BULK_COPY,
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,

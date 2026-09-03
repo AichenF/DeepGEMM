@@ -4729,3 +4729,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - On the benchmark H20/CUDA toolchain the exact value is **`0x12f0000000000000`**.
 - This enables a bounded candidate that materializes the same constant immediately beside each TMA use, preserving the selected short dependency lifetime while replacing the multi-instruction policy synthesis. The value is architecture/toolchain-specific, so the candidate must remain guarded for sm90a and be proven bit-identical by SASS/runtime gates before selection.
 - Artifact: `bench/probe_l2_policy.cu` and `results/iter108_l2_policy_encoding_probe_20260903.log`.
+
+## Iteration 109 — short-lived constant weight-policy correctness gate
+
+- Added opt-in `V4_WEIGHT_POLICY_CONSTANT=1`, mutually exclusive with the rejected hoisted-policy path.  At each selected bulk-TMA issue site it materializes the probed H20/sm90a value `0x12f0000000000000` immediately before `cp.async.bulk ... .L2::cache_hint`; transfer bytes, packed layout, barriers, math, scheduling, and communication are unchanged.
+- The value is deliberately guarded by an opt-in flag and is only a target-specific experiment for this fixed H20/sm90a toolchain.  The selected per-issue `createpolicy` path remains the default/control.
+- Correctness passes TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256.  Route/input preparation is exact; W13 cosine is at least `0.999999997`, W2 cosine is at least `0.999997240`, and all outputs are finite.
+- Next inspect cubin/SASS to confirm the intended materialization, then run a long same-process TP4 M128 cold-L2 paired gate before considering other shapes.
+- Artifact: `results/iter109_weight_policy_constant_correctness_20260903.log`.
