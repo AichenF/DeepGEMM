@@ -81,6 +81,9 @@ if INTERLEAVED_BULK_COPY and (
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
+CLUSTER_FUSED_W13 = os.environ.get("V4_CLUSTER_FUSED_W13", "0") == "1"
+if CLUSTER_FUSED_W13 and WOUT != 128:
+    raise ValueError("V4_CLUSTER_FUSED_W13=1 requires V4_WOUT=128")
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
@@ -162,6 +165,7 @@ static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
 static constexpr bool kLeaderMbarWait = K_LEADER_MBAR_WAIT;
+static constexpr bool kClusterFusedW13 = K_CLUSTER_FUSED_W13;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -246,7 +250,7 @@ __device__ __forceinline__ uint2 dequant_weight_word(
         kDequantDp4aHi, kDequantDp4aLo>(packed, lut);
 }
 
-template <int K, int N, int SplitK, bool IsW13>
+template <int K, int N, int SplitK, bool IsW13, bool ClusterFuseW13>
 __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const __grid_constant__ CUtensorMap tma_weight,
         const __grid_constant__ CUtensorMap tma_weight_scale,
@@ -260,6 +264,9 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const int32_t* __restrict__ num_tokens_padded,
         const float* __restrict__ topk_weights,
         float* __restrict__ output,
+        __nv_bfloat16* __restrict__ fused_activation_bf16,
+        uint8_t* __restrict__ fused_activation,
+        float* __restrict__ fused_activation_scale,
         const uint2* __restrict__ global_lut,
         int max_routes) {
     static_assert(K % kBlockK == 0);
@@ -287,11 +294,30 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     constexpr int kNumNTiles = N / kWout;
     constexpr bool kS2RPrefetch =
         IsW13 ? kW13S2RPrefetch : kW2S2RPrefetch;
+    static_assert(!ClusterFuseW13 || IsW13);
+    static_assert(!ClusterFuseW13 || kWout == 128);
+    static_assert(!ClusterFuseW13 || kNumNTiles % 2 == 0);
 
-    const int split_idx = blockIdx.x % SplitK;
-    const int task_idx = blockIdx.x / SplitK;
-    const int m_block_idx = task_idx / kNumNTiles;
-    const int n_block_idx = task_idx % kNumNTiles;
+    int split_idx;
+    int m_block_idx;
+    int n_block_idx;
+    int n_pair_idx = 0;
+    int cluster_rank = 0;
+    if constexpr (ClusterFuseW13) {
+        constexpr int kClusterSize = 2 * SplitK;
+        cluster_rank = cute::block_rank_in_cluster();
+        split_idx = cluster_rank % SplitK;
+        const int cluster_task_idx = blockIdx.x / kClusterSize;
+        m_block_idx = cluster_task_idx / (kNumNTiles / 2);
+        n_pair_idx = cluster_task_idx % (kNumNTiles / 2);
+        n_block_idx = n_pair_idx
+            + (cluster_rank / SplitK) * (kNumNTiles / 2);
+    } else {
+        split_idx = blockIdx.x % SplitK;
+        const int task_idx = blockIdx.x / SplitK;
+        m_block_idx = task_idx / kNumNTiles;
+        n_block_idx = task_idx % kNumNTiles;
+    }
     if (m_block_idx * kTok >= __ldg(num_tokens_padded))
         return;
 
@@ -860,6 +886,94 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             load_weight_stage(local_kt + kStages, stage);
     }
 
+    if constexpr (ClusterFuseW13) {
+        // All TMA stages are dead after the final WGMMA wait.  Reuse the
+        // beginning of dynamic shared memory for this CTA's 8x128 FP32 tile.
+        float* partial_smem = reinterpret_cast<float*>(dynamic_smem);
+        #pragma unroll
+        for (int group = 0; group < kWgmmaGroups; ++group) {
+            const int local_n0 = group * 64 + row0;
+            const int local_n1 = group * 64 + row1;
+            partial_smem[column_base * kWout + local_n0] = accum[group][0];
+            partial_smem[(column_base + 1) * kWout + local_n0] = accum[group][1];
+            partial_smem[column_base * kWout + local_n1] = accum[group][2];
+            partial_smem[(column_base + 1) * kWout + local_n1] = accum[group][3];
+        }
+        cute::cluster_sync();
+
+        constexpr int kClusterSize = 2 * SplitK;
+        constexpr int Intermediate = N / 2;
+        constexpr int kGroupsPerRoute = Intermediate / kWout;
+        const int lane = tid & 31;
+        const int warp = tid >> 5;
+        for (int token_slot = cluster_rank;
+             token_slot < kTok;
+             token_slot += kClusterSize) {
+            float gate = 0.0f;
+            float up = 0.0f;
+            const int smem_index = token_slot * kWout + tid;
+            #pragma unroll
+            for (int split = 0; split < SplitK; ++split) {
+                const auto* gate_partial = reinterpret_cast<const float*>(
+                    __cluster_map_shared_rank(partial_smem, split));
+                const auto* up_partial = reinterpret_cast<const float*>(
+                    __cluster_map_shared_rank(partial_smem, SplitK + split));
+                gate += gate_partial[smem_index];
+                up += up_partial[smem_index];
+            }
+
+            // Match the public Humming -> SGLang boundary exactly: W13 emits
+            // BF16, SwiGLU emits BF16, then group-128 FP8 quantization.
+            gate = __bfloat162float(__float2bfloat16(gate));
+            up = __bfloat162float(__float2bfloat16(up));
+            const float silu = gate / (1.0f + __expf(-gate));
+            const __nv_bfloat16 activation_bf16 =
+                __float2bfloat16(silu * up);
+            const float value = __bfloat162float(activation_bf16);
+
+            float absmax = fabsf(value);
+            #pragma unroll
+            for (int delta = 16; delta > 0; delta >>= 1)
+                absmax = fmaxf(
+                    absmax,
+                    __shfl_down_sync(0xffffffffu, absmax, delta));
+            if (lane == 0)
+                activation_scale_smem[warp] = absmax;
+            __syncthreads();
+            if (warp == 0) {
+                absmax = lane < 4 ? activation_scale_smem[lane] : 0.0f;
+                #pragma unroll
+                for (int delta = 16; delta > 0; delta >>= 1)
+                    absmax = fmaxf(
+                        absmax,
+                        __shfl_down_sync(0xffffffffu, absmax, delta));
+                if (lane == 0)
+                    activation_scale_smem[4] =
+                        fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
+            }
+            __syncthreads();
+
+            const int route = route_ids[token_slot];
+            if (route < max_routes) {
+                const int column = n_pair_idx * kWout + tid;
+                const int index = route * Intermediate + column;
+                const float group_scale = activation_scale_smem[4];
+                if (fused_activation_bf16 != nullptr)
+                    fused_activation_bf16[index] = activation_bf16;
+                fused_activation[index] =
+                    __nv_fp8_e4m3(value / group_scale).__x;
+                if (tid == 0)
+                    fused_activation_scale[
+                        route * kGroupsPerRoute + n_pair_idx] = group_scale;
+            }
+            __syncthreads();
+        }
+        // A remote CTA must not retire its shared allocation while a peer can
+        // still issue DSM reads from it.
+        cute::cluster_sync();
+        return;
+    }
+
     const int route0 = route_ids[column_base];
     const int route1 = route_ids[column_base + 1];
     #pragma unroll
@@ -1174,14 +1288,17 @@ CUtensorMap make_weight_scale_desc(void* pointer, int K, int64_t elements) {
     return descriptor;
 }
 
-template <int K, int N, int SplitK, bool IsW13>
+template <int K, int N, int SplitK, bool IsW13, bool ClusterFuseW13 = false>
 void launch_route_gemm(
         torch::Tensor weight, torch::Tensor weight_scale,
         torch::Tensor weight_global_scale,
         torch::Tensor activation, torch::Tensor activation_scale,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
         torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
-        torch::Tensor output, torch::Tensor lut, int max_routes) {
+        torch::Tensor output, torch::Tensor lut, int max_routes,
+        __nv_bfloat16* fused_activation_bf16 = nullptr,
+        uint8_t* fused_activation = nullptr,
+        float* fused_activation_scale = nullptr) {
     static CUtensorMap weight_descriptor;
     static CUtensorMap scale_descriptor;
     static void* last_weight_pointer = nullptr;
@@ -1214,24 +1331,62 @@ void launch_route_gemm(
                 + effective_scale_buffers * kWout * 16)
         + kTok * kBlockK;
     const auto stream = at::cuda::getCurrentCUDAStream();
-    route_gemm<K, N, SplitK, IsW13><<<
-        grid, 128, dynamic_smem_bytes, stream>>>(
-        weight_descriptor,
-        scale_descriptor,
-        weight.data_ptr<uint8_t>(),
-        weight_scale.data_ptr<uint8_t>(),
-        weight_global_scale.numel()
-            ? weight_global_scale.data_ptr<float>()
-            : nullptr,
-        activation.data_ptr<uint8_t>(),
-        activation_scale.data_ptr<float>(),
-        sorted_ids.data_ptr<int32_t>(),
-        expert_ids.data_ptr<int32_t>(),
-        num_tokens_padded.data_ptr<int32_t>(),
-        topk_weights.numel() ? topk_weights.data_ptr<float>() : nullptr,
-        static_cast<float*>(output.data_ptr()),
-        reinterpret_cast<const uint2*>(lut.data_ptr<uint8_t>()),
-        max_routes);
+    auto* weight_global_scale_ptr = weight_global_scale.numel()
+        ? weight_global_scale.data_ptr<float>()
+        : nullptr;
+    auto* topk_weights_ptr = topk_weights.numel()
+        ? topk_weights.data_ptr<float>()
+        : nullptr;
+    auto* output_ptr = static_cast<float*>(output.data_ptr());
+    auto* lut_ptr = reinterpret_cast<const uint2*>(lut.data_ptr<uint8_t>());
+    if constexpr (ClusterFuseW13) {
+        constexpr int kClusterSize = 2 * SplitK;
+        cudaLaunchAttribute attribute{};
+        attribute.id = cudaLaunchAttributeClusterDimension;
+        attribute.val.clusterDim = {kClusterSize, 1, 1};
+        cudaLaunchConfig_t config{};
+        config.gridDim = dim3(grid, 1, 1);
+        config.blockDim = dim3(128, 1, 1);
+        config.dynamicSmemBytes = dynamic_smem_bytes;
+        config.stream = stream;
+        config.attrs = &attribute;
+        config.numAttrs = 1;
+        const cudaError_t result = cudaLaunchKernelEx(
+            &config, &route_gemm<K, N, SplitK, IsW13, true>,
+            weight_descriptor, scale_descriptor,
+            weight.data_ptr<uint8_t>(),
+            weight_scale.data_ptr<uint8_t>(),
+            weight_global_scale_ptr,
+            activation.data_ptr<uint8_t>(),
+            activation_scale.data_ptr<float>(),
+            sorted_ids.data_ptr<int32_t>(),
+            expert_ids.data_ptr<int32_t>(),
+            num_tokens_padded.data_ptr<int32_t>(),
+            topk_weights_ptr, output_ptr,
+            fused_activation_bf16, fused_activation,
+            fused_activation_scale, lut_ptr, max_routes);
+        TORCH_CHECK(result == cudaSuccess,
+                    "clustered W13 launch failed: ",
+                    cudaGetErrorString(result));
+    } else {
+        route_gemm<K, N, SplitK, IsW13, false><<<
+            grid, 128, dynamic_smem_bytes, stream>>>(
+            weight_descriptor,
+            scale_descriptor,
+            weight.data_ptr<uint8_t>(),
+            weight_scale.data_ptr<uint8_t>(),
+            weight_global_scale_ptr,
+            activation.data_ptr<uint8_t>(),
+            activation_scale.data_ptr<float>(),
+            sorted_ids.data_ptr<int32_t>(),
+            expert_ids.data_ptr<int32_t>(),
+            num_tokens_padded.data_ptr<int32_t>(),
+            topk_weights_ptr,
+            output_ptr,
+            nullptr, nullptr, nullptr,
+            lut_ptr,
+            max_routes);
+    }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -1275,6 +1430,69 @@ void run_w13_impl(
         }
     } else {
         TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
+    }
+}
+
+void run_w13_cluster_impl(
+        torch::Tensor weight, torch::Tensor weight_scale,
+        torch::Tensor weight_global_scale,
+        torch::Tensor activation, torch::Tensor activation_scale,
+        torch::Tensor sorted_ids, torch::Tensor expert_ids,
+        torch::Tensor num_tokens_padded, torch::Tensor partials,
+        torch::Tensor activation_bf16, torch::Tensor quantized,
+        torch::Tensor quantized_scale, torch::Tensor lut,
+        int intermediate, int split_k) {
+    TORCH_CHECK(kClusterFusedW13,
+                "rebuild with V4_CLUSTER_FUSED_W13=1");
+    if constexpr (kClusterFusedW13) {
+        const int routes = quantized.size(0);
+        auto* activation_bf16_ptr = activation_bf16.numel()
+            ? reinterpret_cast<__nv_bfloat16*>(activation_bf16.data_ptr())
+            : nullptr;
+        auto* quantized_ptr = quantized.data_ptr<uint8_t>();
+        auto* quantized_scale_ptr = quantized_scale.data_ptr<float>();
+        if (intermediate == 512) {
+            if (split_k == 4) {
+                launch_route_gemm<4096, 1024, 4, true, true>(
+                    weight, weight_scale, weight_global_scale,
+                    activation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, partials,
+                    partials, lut, routes,
+                    activation_bf16_ptr, quantized_ptr,
+                    quantized_scale_ptr);
+            } else {
+                TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+                launch_route_gemm<4096, 1024, 2, true, true>(
+                    weight, weight_scale, weight_global_scale,
+                    activation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, partials,
+                    partials, lut, routes,
+                    activation_bf16_ptr, quantized_ptr,
+                    quantized_scale_ptr);
+            }
+        } else if (intermediate == 256) {
+            if (split_k == 4) {
+                launch_route_gemm<4096, 512, 4, true, true>(
+                    weight, weight_scale, weight_global_scale,
+                    activation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, partials,
+                    partials, lut, routes,
+                    activation_bf16_ptr, quantized_ptr,
+                    quantized_scale_ptr);
+            } else {
+                TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+                launch_route_gemm<4096, 512, 2, true, true>(
+                    weight, weight_scale, weight_global_scale,
+                    activation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, partials,
+                    partials, lut, routes,
+                    activation_bf16_ptr, quantized_ptr,
+                    quantized_scale_ptr);
+            }
+        } else {
+            TORCH_CHECK(false,
+                        "intermediate must be 512 (TP4) or 256 (TP8)");
+        }
     }
 }
 
@@ -1447,6 +1665,15 @@ void run_w13_impl(torch::Tensor weight, torch::Tensor weight_scale,
                   torch::Tensor sorted_ids, torch::Tensor expert_ids,
                   torch::Tensor num_tokens_padded, torch::Tensor partials,
                   torch::Tensor lut, int intermediate, int split_k);
+void run_w13_cluster_impl(
+                  torch::Tensor weight, torch::Tensor weight_scale,
+                  torch::Tensor weight_global_scale,
+                  torch::Tensor activation, torch::Tensor activation_scale,
+                  torch::Tensor sorted_ids, torch::Tensor expert_ids,
+                  torch::Tensor num_tokens_padded, torch::Tensor partials,
+                  torch::Tensor activation_bf16, torch::Tensor quantized,
+                  torch::Tensor quantized_scale, torch::Tensor lut,
+                  int intermediate, int split_k);
 void run_w2(torch::Tensor weight, torch::Tensor weight_scale,
             torch::Tensor weight_global_scale,
             torch::Tensor activation, torch::Tensor activation_scale,
@@ -1481,11 +1708,13 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v49"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_"
+          f"cfw13{int(CLUSTER_FUSED_W13)}_mb{MIN_BLOCKS_PER_SM}_v56"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
-        "run_w13_impl", "run_w2", "reduce_swiglu", "reduce_swiglu_quant",
+        "run_w13_impl", "run_w13_cluster_impl", "run_w2",
+        "reduce_swiglu", "reduce_swiglu_quant",
         "cast_bf16",
         "fused_route_quant",
         "braid_mode2",
@@ -1511,6 +1740,7 @@ _ext = load_inline(
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
         f"-DK_LEADER_MBAR_WAIT={int(LEADER_MBAR_WAIT)}",
+        f"-DK_CLUSTER_FUSED_W13={int(CLUSTER_FUSED_W13)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",
@@ -1678,6 +1908,48 @@ def run_w13(
         expert_ids,
         num_tokens_padded,
         partials,
+        lut,
+        intermediate,
+        split_k,
+    )
+
+
+def run_w13_cluster(
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    weight_global_scale: torch.Tensor,
+    activation: torch.Tensor,
+    activation_scale: torch.Tensor,
+    sorted_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_padded: torch.Tensor,
+    partials: torch.Tensor,
+    activation_bf16: torch.Tensor,
+    quantized: torch.Tensor,
+    quantized_scale: torch.Tensor,
+    lut: torch.Tensor,
+    intermediate: int,
+    split_k: int | None = None,
+) -> None:
+    if not CLUSTER_FUSED_W13:
+        raise RuntimeError("rebuild with V4_CLUSTER_FUSED_W13=1")
+    if split_k is None:
+        split_k = select_w13_split_k(quantized.size(0))
+    if split_k not in (2, 4):
+        raise ValueError("W13 split_k must be 2 or 4")
+    _ext.run_w13_cluster_impl(
+        weight,
+        weight_scale,
+        weight_global_scale,
+        activation,
+        activation_scale,
+        sorted_ids,
+        expert_ids,
+        num_tokens_padded,
+        partials,
+        activation_bf16,
+        quantized,
+        quantized_scale,
         lut,
         intermediate,
         split_k,

@@ -68,20 +68,39 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
         )
 
     def w13() -> None:
-        kernel.run_w13(
-            case.w13,
-            case.s13,
-            case.g13,
-            case.qx.view(torch.uint8),
-            case.x_scale,
-            case.sorted_ids,
-            case.expert_ids,
-            case.num_tokens_padded,
-            case.partials,
-            case.lut,
-            case.intermediate_per_rank,
-            case.w13_split_k,
-        )
+        if kernel.CLUSTER_FUSED_W13:
+            kernel.run_w13_cluster(
+                case.w13,
+                case.s13,
+                case.g13,
+                case.qx.view(torch.uint8),
+                case.x_scale,
+                case.sorted_ids,
+                case.expert_ids,
+                case.num_tokens_padded,
+                case.partials,
+                case.activation,
+                case.qactivation.view(torch.uint8),
+                case.activation_scale,
+                case.lut,
+                case.intermediate_per_rank,
+                case.w13_split_k,
+            )
+        else:
+            kernel.run_w13(
+                case.w13,
+                case.s13,
+                case.g13,
+                case.qx.view(torch.uint8),
+                case.x_scale,
+                case.sorted_ids,
+                case.expert_ids,
+                case.num_tokens_padded,
+                case.partials,
+                case.lut,
+                case.intermediate_per_rank,
+                case.w13_split_k,
+            )
 
     def activation() -> None:
         if kernel.FUSED_ACT_QUANT:
@@ -139,6 +158,11 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
         else:
             kernel.cast_bf16(case.local_float, case.local_bf16)
 
+    if kernel.FUSED_ROUTE_QUANT and kernel.CLUSTER_FUSED_W13:
+        return (
+            ("route_quant", "w13_activation", "w2", "local_reduce"),
+            (route_quant, w13, w2, local_reduce),
+        )
     if kernel.FUSED_ROUTE_QUANT:
         return (
             ("route_quant", "w13", "activation_quant", "w2", "local_reduce"),
@@ -346,6 +370,11 @@ def main() -> None:
                 ),
                 "custom_leader_mbar_wait": (
                     os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
+                    if args.impl == "custom"
+                    else None
+                ),
+                "custom_cluster_fused_w13": (
+                    os.environ.get("V4_CLUSTER_FUSED_W13", "0") == "1"
                     if args.impl == "custom"
                     else None
                 ),
