@@ -410,6 +410,7 @@ def main() -> None:
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
         f"w13_tail_fused_act={w13_tail_fused_act} "
         f"w2_sorted_act={kernel.W2_SORTED_ACT} "
+        f"w2_coalesced_store={kernel.W2_COALESCED_STORE} "
         f"w2_global_lut={kernel.W2_GLOBAL_LUT} "
         f"leader_mbar_wait={kernel.LEADER_MBAR_WAIT}"
     )

@@ -84,6 +84,13 @@ FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
 W13_PAIRED_WG = os.environ.get("V4_W13_PAIRED_WG", "0") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_SORTED_ACT = os.environ.get("V4_W2_SORTED_ACT", "0") == "1"
+W2_COALESCED_STORE = (
+    os.environ.get("V4_W2_COALESCED_STORE", "0") == "1"
+)
+if W2_COALESCED_STORE and (not W2_ROUTE_OUTPUT or WOUT != 128):
+    raise ValueError(
+        "V4_W2_COALESCED_STORE=1 requires route output and V4_WOUT=128"
+    )
 if W2_SORTED_ACT and (
     not FUSED_ROUTE_QUANT or not FUSED_ACT_QUANT or W13_PAIRED_WG
 ):
@@ -242,6 +249,7 @@ static_assert(!kInterleavedBulkCopy
 static constexpr float kRoutedScale = 1.5f;
 static constexpr bool kW2RouteOutput = K_W2_ROUTE_OUTPUT;
 static constexpr bool kW2SortedAct = K_W2_SORTED_ACT;
+static constexpr bool kW2CoalescedStore = K_W2_COALESCED_STORE;
 
 #if K_MIN_BLOCKS_PER_SM > 0
 #define ROUTE_LAUNCH_BOUNDS __launch_bounds__(128, K_MIN_BLOCKS_PER_SM)
@@ -413,6 +421,8 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         ? weight_smem + kStages * kCombinedStageBytes
         : weight_scale_smem
             + kEffectiveScaleBuffers * kScaleStageBytes;
+    __nv_bfloat16* w2_output_smem = reinterpret_cast<__nv_bfloat16*>(
+        activation_smem + kTok * kBlockK);
     const uint32_t weight_smem_addr =
         static_cast<uint32_t>(__cvta_generic_to_shared(weight_smem));
     const uint32_t weight_scale_smem_addr =
@@ -996,22 +1006,36 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             }
         } else {
             if constexpr (kW2RouteOutput) {
-                auto* route_output = reinterpret_cast<__nv_bfloat16*>(output);
-                if (route0 < max_routes) {
-                    route_output[static_cast<int64_t>(route0) * N
-                                 + output_n0] =
+                if constexpr (kW2CoalescedStore) {
+                    const int local_n0 = group * 64 + row0;
+                    const int local_n1 = group * 64 + row1;
+                    w2_output_smem[column_base * kWout + local_n0] =
                         __float2bfloat16(accum[group][0]);
-                    route_output[static_cast<int64_t>(route0) * N
-                                 + output_n1] =
+                    w2_output_smem[column_base * kWout + local_n1] =
                         __float2bfloat16(accum[group][2]);
-                }
-                if (route1 < max_routes) {
-                    route_output[static_cast<int64_t>(route1) * N
-                                 + output_n0] =
+                    w2_output_smem[(column_base + 1) * kWout + local_n0] =
                         __float2bfloat16(accum[group][1]);
-                    route_output[static_cast<int64_t>(route1) * N
-                                 + output_n1] =
+                    w2_output_smem[(column_base + 1) * kWout + local_n1] =
                         __float2bfloat16(accum[group][3]);
+                } else {
+                    auto* route_output =
+                        reinterpret_cast<__nv_bfloat16*>(output);
+                    if (route0 < max_routes) {
+                        route_output[static_cast<int64_t>(route0) * N
+                                     + output_n0] =
+                            __float2bfloat16(accum[group][0]);
+                        route_output[static_cast<int64_t>(route0) * N
+                                     + output_n1] =
+                            __float2bfloat16(accum[group][2]);
+                    }
+                    if (route1 < max_routes) {
+                        route_output[static_cast<int64_t>(route1) * N
+                                     + output_n0] =
+                            __float2bfloat16(accum[group][1]);
+                        route_output[static_cast<int64_t>(route1) * N
+                                     + output_n1] =
+                            __float2bfloat16(accum[group][3]);
+                    }
                 }
             } else {
                 if (route0 < max_routes) {
@@ -1031,6 +1055,25 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                               route_weight * accum[group][3]);
                 }
             }
+        }
+    }
+    if constexpr (!IsW13 && kW2RouteOutput && kW2CoalescedStore) {
+        __syncthreads();
+        // One half warp emits one route's complete 128-column tile as
+        // aligned 16-byte vectors.  This preserves route-major output for
+        // the stock SGLang k6 reducer while avoiding eight scattered scalar
+        // store streams from the WGMMA accumulator ownership layout.
+        const int output_slot = tid >> 4;
+        const int vector_index = tid & 15;
+        const int output_route = route_ids[output_slot];
+        if (output_route < max_routes) {
+            auto* route_output = reinterpret_cast<__nv_bfloat16*>(output);
+            const int local_column = vector_index * 8;
+            const uint4 packed = *reinterpret_cast<const uint4*>(
+                w2_output_smem + output_slot * kWout + local_column);
+            *reinterpret_cast<uint4*>(
+                route_output + static_cast<int64_t>(output_route) * N
+                + n_block_idx * kWout + local_column) = packed;
         }
     }
 
@@ -2737,7 +2780,10 @@ void launch_route_gemm(
             ? kStages * kWout * ((kBlockK / 2) + 16)
             : kStages * kWout * (kBlockK / 2)
                 + effective_scale_buffers * kWout * 16)
-        + kTok * kBlockK;
+        + kTok * kBlockK
+        + ((!IsW13 && kW2RouteOutput && kW2CoalescedStore)
+            ? kTok * kWout * static_cast<int>(sizeof(__nv_bfloat16))
+            : 0);
     const auto stream = at::cuda::getCurrentCUDAStream();
     route_gemm<K, N, SplitK, IsW13, LaunchNTiles,
                PublishW2Progress><<<
@@ -3718,6 +3764,7 @@ _ext = load_inline(
           f"ibc{int(INTERLEAVED_BULK_COPY)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_sa{int(W2_SORTED_ACT)}_"
+          f"cs{int(W2_COALESCED_STORE)}_"
           f"w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
           f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v83qinline"),
@@ -3762,6 +3809,7 @@ _ext = load_inline(
         f"-DK_LEADER_MBAR_WAIT={int(LEADER_MBAR_WAIT)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_W2_SORTED_ACT={int(W2_SORTED_ACT)}",
+        f"-DK_W2_COALESCED_STORE={int(W2_COALESCED_STORE)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",

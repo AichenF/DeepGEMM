@@ -4336,3 +4336,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** control/candidate = 0.994041x; the candidate is 0.599% slower overall. Individual pair direction changed, so the apparent scale-sector saving did not produce stable end-to-end latency improvement.
 - **Decision:** Reject `V4_W2_SORTED_ACT=1`; keep it opt-in and keep the formal default disabled. Next isolate scale-only coalescing or attack the larger scalar W2 output-store sector waste.
 - **Artifact:** `results/iter85b_w2_sorted_act_tp4_m128_cold_abba_20260903.log`.
+
+## Iteration 86 — Shared-memory coalesced W2 epilogue correctness gate
+
+- **Hypothesis:** NCU attributed 123,392 excessive W2 sectors to the four scalar BF16 route-output assignments. Staging each 8×128 CTA tile through 2 KiB shared memory lets one half warp per route emit aligned 16-byte stores while preserving the route-major tensor required by SGLang's k6 reducer.
+- **Change:** Added opt-in `V4_W2_COALESCED_STORE=1`; the WGMMA accumulator owners write the 8×128 BF16 tile to shared memory, synchronize once, then 128 threads issue contiguous `uint4` global stores. Default remains disabled.
+- **Verification:** TP4 balanced M8, TP4 skew M8, and TP8-shape balanced M8 all passed the full all-route reference. W2 cosine was 0.999997256, 0.999997235, and 0.999997278 respectively; all outputs finite.
+- **Decision:** Correctness and TP8-runnable gate passed. Candidate remains opt-in until cold-L2 TP4 A/B.
+- **Artifact:** `results/iter86_w2_coalesced_store_correctness_20260903.log`.

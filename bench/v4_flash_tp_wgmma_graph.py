@@ -998,6 +998,7 @@ def main() -> None:
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "fused_route_quant": kernel.FUSED_ROUTE_QUANT,
                     "w2_sorted_activation": kernel.W2_SORTED_ACT,
+                    "w2_coalesced_store": kernel.W2_COALESCED_STORE,
                     "w13_paired_wg": kernel.W13_PAIRED_WG,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
