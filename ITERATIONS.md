@@ -4210,3 +4210,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Cold W2 latency:** control median `29.728 us` (min `28.960`, max `31.840`); direct-marker progress median `32.416 us` (min `31.424`, max `34.816`), control/candidate `0.917078x`.
 - **Finding:** removing the multi-level queue recovers another `0.384 us` versus iteration 83h1 and about `0.64 us` versus the original progress producer, but `2.688 us` remains. Shared staging and per-CTA TMA completion dominate more than the removed atomics.
 - **Decision:** protocol remains opt-in. Validate the static worker/multicast state on TP4 before an end-to-end timing screen.
+
+## Iteration 83j — direct-marker TP4 concurrent worker gate
+
+- **Change under test:** no source change; ran the static 32-worker direct-marker consumer concurrently with producer-first W2 on four ranks.
+- **Result:** PASS on every rank. Each reports all 1,536 route/N128 markers equal to one, `task_done=32`, and `worker_done=32`.
+- **Communication evidence:** every rank-local symmetric workspace contains `16384/16384` nonzero words for each of the four source slots; no task or multicast region is missing.
+- **Decision:** accept the direct-marker protocol's TP4 concurrency correctness. Proceed to a complete finish-kernel/CUDA-Graph cold-L2 A/B; no performance claim from this probe.
