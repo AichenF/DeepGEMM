@@ -2868,3 +2868,18 @@ maximum rank latency of a full CUDA-Graph replay.
   warranted.
 - Evidence:
   `bench/results/tp4_w13_split_post_tiled_local_coldl2_screen_20260903.log`.
+
+### WGMMA iteration 46a — pre-swizzled one-dimensional bulk weight copies
+
+- Added opt-in `V4_BULK_WEIGHT_COPY=1`, requiring tiled storage.  Model-load
+  preprocessing additionally materializes the exact 64-byte TMA shared-memory
+  swizzle inside each contiguous packed-weight tile.  Runtime can therefore
+  replace each tensor-map 2D weight transfer with one linear 8 KiB
+  `cp.async.bulk` transaction while preserving the LDS addresses used by the
+  dequantizer.
+- The contiguous 2 KiB scale quartet uses the same linear bulk instruction.
+  Two weight stages, scale reuse, barriers, S2R/dequant, WGMMA, data bytes and
+  output math are unchanged.  The experiment isolates tensor-map descriptor
+  and coordinate overhead; all pre-swizzling occurs before graph capture.
+- Gate TP4 split-K=4/2 and TP8 correctness, including TP8 W2's scalar scale
+  fallback, before candidate/control/candidate graph-internal cold-L2 timing.

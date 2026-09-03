@@ -274,6 +274,7 @@ def main() -> None:
                         kernel.NORMALIZED_WEIGHT_SCALE
                     ),
                     "custom_tiled_weight_layout": kernel.TILED_WEIGHT_LAYOUT,
+                    "custom_bulk_weight_copy": kernel.BULK_WEIGHT_COPY,
                     "timed_allreduce": "same SGLang CustomAllReduceV2 instance",
                 },
                 sort_keys=True,

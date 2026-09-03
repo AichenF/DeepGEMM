@@ -313,6 +313,11 @@ def main() -> None:
                     if args.impl == "custom"
                     else None
                 ),
+                "custom_bulk_weight_copy": (
+                    os.environ.get("V4_BULK_WEIGHT_COPY", "0") == "1"
+                    if args.impl == "custom"
+                    else None
+                ),
                 "m": args.m,
                 "tp": args.tp,
                 "route_pattern": args.route_pattern,

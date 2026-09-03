@@ -63,6 +63,9 @@ NORMALIZED_WEIGHT_SCALE = (
     os.environ.get("V4_NORMALIZED_WEIGHT_SCALE", "1") == "1"
 )
 TILED_WEIGHT_LAYOUT = os.environ.get("V4_TILED_WEIGHT_LAYOUT", "1") == "1"
+BULK_WEIGHT_COPY = os.environ.get("V4_BULK_WEIGHT_COPY", "0") == "1"
+if BULK_WEIGHT_COPY and not TILED_WEIGHT_LAYOUT:
+    raise ValueError("V4_BULK_WEIGHT_COPY requires tiled weight layout")
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
@@ -137,6 +140,7 @@ static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kNormalizedWeightScale = K_NORMALIZED_WEIGHT_SCALE;
 static constexpr bool kTiledWeightLayout = K_TILED_WEIGHT_LAYOUT;
+static constexpr bool kBulkWeightCopy = K_BULK_WEIGHT_COPY;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
@@ -225,6 +229,7 @@ template <int K, int N, int SplitK, bool IsW13>
 __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const __grid_constant__ CUtensorMap tma_weight,
         const __grid_constant__ CUtensorMap tma_weight_scale,
+        const uint8_t* __restrict__ weight,
         const uint8_t* __restrict__ weight_scale,
         const float* __restrict__ weight_global_scale,
         const uint8_t* __restrict__ activation,
@@ -364,7 +369,19 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
                     :: "r"(barrier_addr[stage]), "n"(kWeightStageBytes));
             }
-            if constexpr (kTiledWeightLayout) {
+            if constexpr (kBulkWeightCopy) {
+                const int64_t tile =
+                    (static_cast<int64_t>(expert_idx) * kNumNTiles
+                     + n_block_idx) * kNumKTiles + global_kt;
+                const uint8_t* weight_src =
+                    weight + tile * kWeightStageBytes;
+                asm volatile(
+                    "cp.async.bulk.shared::cluster.global.mbarrier::"
+                    "complete_tx::bytes [%0],[%1],%2,[%3];"
+                    :: "r"(weight_dst), "l"(weight_src),
+                       "r"(kWeightStageBytes), "r"(barrier_addr[stage])
+                    : "memory");
+            } else if constexpr (kTiledWeightLayout) {
                 const int tiled_row =
                     ((expert_idx * kNumNTiles + n_block_idx) * kNumKTiles
                      + global_kt) * kWout;
@@ -383,7 +400,20 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                        "r"(barrier_addr[stage]) : "memory");
             }
             if (load_scale) {
-                if constexpr (kTiledWeightLayout) {
+                if constexpr (kBulkWeightCopy) {
+                    constexpr int kScaleTiles = kNumKTiles / 4;
+                    const int64_t scale_tile =
+                        (static_cast<int64_t>(expert_idx) * kNumNTiles
+                         + n_block_idx) * kScaleTiles + (scale_kt >> 2);
+                    const uint8_t* scale_src =
+                        weight_scale + scale_tile * kScaleStageBytes;
+                    asm volatile(
+                        "cp.async.bulk.shared::cluster.global.mbarrier::"
+                        "complete_tx::bytes [%0],[%1],%2,[%3];"
+                        :: "r"(scale_dst), "l"(scale_src),
+                           "r"(kScaleStageBytes), "r"(barrier_addr[stage])
+                        : "memory");
+                } else if constexpr (kTiledWeightLayout) {
                     constexpr int kScaleTiles = kNumKTiles / 4;
                     const int tiled_scale_row =
                         ((expert_idx * kNumNTiles + n_block_idx) * kScaleTiles
@@ -414,7 +444,20 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                 asm volatile(
                     "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
                     :: "r"(scale_barrier_addr), "n"(kScaleStageBytes));
-                if constexpr (kTiledWeightLayout) {
+                if constexpr (kBulkWeightCopy) {
+                    constexpr int kScaleTiles = kNumKTiles / 4;
+                    const int64_t scale_tile =
+                        (static_cast<int64_t>(expert_idx) * kNumNTiles
+                         + n_block_idx) * kScaleTiles + (global_kt >> 2);
+                    const uint8_t* scale_src =
+                        weight_scale + scale_tile * kScaleStageBytes;
+                    asm volatile(
+                        "cp.async.bulk.shared::cluster.global.mbarrier::"
+                        "complete_tx::bytes [%0],[%1],%2,[%3];"
+                        :: "r"(weight_scale_smem_addr), "l"(scale_src),
+                           "r"(kScaleStageBytes), "r"(scale_barrier_addr)
+                        : "memory");
+                } else if constexpr (kTiledWeightLayout) {
                     constexpr int kScaleTiles = kNumKTiles / 4;
                     const int tiled_scale_row =
                         ((expert_idx * kNumNTiles + n_block_idx) * kScaleTiles
@@ -986,6 +1029,7 @@ void launch_route_gemm(
         grid, 128, dynamic_smem_bytes, stream>>>(
         weight_descriptor,
         scale_descriptor,
+        weight.data_ptr<uint8_t>(),
         weight_scale.data_ptr<uint8_t>(),
         weight_global_scale.numel()
             ? weight_global_scale.data_ptr<float>()
@@ -1210,6 +1254,7 @@ _ext = load_inline(
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"nws{int(NORMALIZED_WEIGHT_SCALE)}_"
           f"twl{int(TILED_WEIGHT_LAYOUT)}_"
+          f"bwc{int(BULK_WEIGHT_COPY)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
@@ -1235,6 +1280,7 @@ _ext = load_inline(
         f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
         f"-DK_NORMALIZED_WEIGHT_SCALE={int(NORMALIZED_WEIGHT_SCALE)}",
         f"-DK_TILED_WEIGHT_LAYOUT={int(TILED_WEIGHT_LAYOUT)}",
+        f"-DK_BULK_WEIGHT_COPY={int(BULK_WEIGHT_COPY)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
@@ -1328,6 +1374,20 @@ def tile_mxfp4_weight_layout(
         .permute(0, 1, 3, 2, 4)
         .contiguous()
     )
+    if BULK_WEIGHT_COPY:
+        # TMA's 64-byte swizzle normally happens during the tensor copy.  A
+        # linear bulk copy cannot transform bytes, so materialize the same
+        # physical shared-memory order in the checkpoint layout once.
+        chunks = tiled_weight.view(
+            experts, ntiles, ktiles, WOUT, 4, 16
+        )
+        physical_chunk = torch.arange(4, device=weight.device)
+        row_xor = (torch.arange(WOUT, device=weight.device) >> 1) & 3
+        logical_chunk = physical_chunk[None, :] ^ row_xor[:, None]
+        gather_index = logical_chunk.view(1, 1, 1, WOUT, 4, 1).expand(
+            experts, ntiles, ktiles, WOUT, 4, 16
+        )
+        tiled_weight = torch.gather(chunks, 4, gather_index).contiguous()
     if weight_scale.shape[-1] >= 16:
         if weight_scale.shape[-1] != ktiles * 4:
             raise ValueError("E8M0 scale shape does not match group size 32")

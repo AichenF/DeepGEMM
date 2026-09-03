@@ -527,6 +527,7 @@ def main() -> None:
                     "dequant_synth_lut": kernel.DEQUANT_SYNTH_LUT,
                     "normalized_weight_scale": kernel.NORMALIZED_WEIGHT_SCALE,
                     "tiled_weight_layout": kernel.TILED_WEIGHT_LAYOUT,
+                    "bulk_weight_copy": kernel.BULK_WEIGHT_COPY,
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
