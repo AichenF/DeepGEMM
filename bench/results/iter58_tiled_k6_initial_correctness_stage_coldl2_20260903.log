@@ -1,0 +1,118 @@
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/test_v4_flash_tp_wgmma.py", line 14, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 85, in <module>
+    TILED_K6_REDUCE_MODE = int(os.environ.get("V4_TILED_K6_REDUCE_MODE", "0"))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: invalid literal for int() with base 10: ''
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/test_v4_flash_tp_wgmma.py", line 14, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 85, in <module>
+    TILED_K6_REDUCE_MODE = int(os.environ.get("V4_TILED_K6_REDUCE_MODE", "0"))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: invalid literal for int() with base 10: ''
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/test_v4_flash_tp_wgmma.py", line 14, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 85, in <module>
+    TILED_K6_REDUCE_MODE = int(os.environ.get("V4_TILED_K6_REDUCE_MODE", "0"))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: invalid literal for int() with base 10: ''
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/test_v4_flash_tp_wgmma.py", line 14, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 85, in <module>
+    TILED_K6_REDUCE_MODE = int(os.environ.get("V4_TILED_K6_REDUCE_MODE", "0"))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: invalid literal for int() with base 10: ''
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument
+usage: profile_v4_flash_tp_stages.py [-h] --impl {humming,custom} [--m M]
+                                     [--tp {4,8}]
+                                     [--route-pattern {random,balanced,skew}]
+                                     [--samples SAMPLES] [--warmup WARMUP]
+                                     [--mode {graph,eager}] [--seed SEED]
+profile_v4_flash_tp_stages.py: error: argument --m: expected one argument

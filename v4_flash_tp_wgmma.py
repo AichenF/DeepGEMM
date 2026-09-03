@@ -82,6 +82,9 @@ MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
+TILED_K6_REDUCE_MODE = int(os.environ.get("V4_TILED_K6_REDUCE_MODE", "0"))
+if TILED_K6_REDUCE_MODE not in (0, 1, 2, 3, 4):
+    raise ValueError("V4_TILED_K6_REDUCE_MODE must be one of 0,1,2,3,4")
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
@@ -1111,6 +1114,57 @@ __global__ void cast_bf16_kernel(
         output[index] = __float2bfloat16(input[index]);
 }
 
+// DeepSeek-V4-Flash has a fixed k=6 and H=4096 local route reduction.
+// Unlike the rejected one-CTA-per-token prototype, split each token across
+// multiple independent hidden tiles so M=8 still exposes at least 64 CTAs.
+// Each BF16 pair has a unique writer and accumulates routes in the same order
+// and precision as SGLang's moe_fused_mul_sum Triton kernel.
+template <int Threads, int VecPairs>
+__global__ __launch_bounds__(Threads) void tiled_k6_reduce_kernel(
+        const __nv_bfloat16* __restrict__ input,
+        const float* __restrict__ topk_weights,
+        __nv_bfloat16* __restrict__ output,
+        int tokens) {
+    constexpr int kHidden = 4096;
+    constexpr int kPairs = kHidden / 2;
+    constexpr int kTilePairs = Threads * VecPairs;
+    static_assert(kPairs % kTilePairs == 0);
+    const int token = blockIdx.y;
+    if (token >= tokens)
+        return;
+
+    const int pair0 = blockIdx.x * kTilePairs + threadIdx.x;
+    float2 accum[VecPairs];
+    #pragma unroll
+    for (int vec = 0; vec < VecPairs; ++vec)
+        accum[vec] = make_float2(0.0f, 0.0f);
+
+    const auto* input2 = reinterpret_cast<const __nv_bfloat162*>(input);
+    #pragma unroll
+    for (int route = 0; route < kTopK; ++route) {
+        const float route_weight =
+            __ldg(topk_weights + token * kTopK + route) * kRoutedScale;
+        const int64_t route_base =
+            (static_cast<int64_t>(token) * kTopK + route) * kPairs;
+        #pragma unroll
+        for (int vec = 0; vec < VecPairs; ++vec) {
+            const int pair = pair0 + vec * Threads;
+            const float2 value = __bfloat1622float2(input2[route_base + pair]);
+            accum[vec].x = fmaf(value.x, route_weight, accum[vec].x);
+            accum[vec].y = fmaf(value.y, route_weight, accum[vec].y);
+        }
+    }
+
+    auto* output2 = reinterpret_cast<__nv_bfloat162*>(output);
+    const int64_t output_base = static_cast<int64_t>(token) * kPairs;
+    #pragma unroll
+    for (int vec = 0; vec < VecPairs; ++vec) {
+        const int pair = pair0 + vec * Threads;
+        output2[output_base + pair] =
+            __floats2bfloat162_rn(accum[vec].x, accum[vec].y);
+    }
+}
+
 __global__ void braid_mode2_kernel(uint32_t* weight, int64_t words) {
     const int64_t index = static_cast<int64_t>(blockIdx.x) * blockDim.x
         + threadIdx.x;
@@ -1394,6 +1448,57 @@ void cast_bf16(torch::Tensor input, torch::Tensor output) {
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+void tiled_k6_reduce(
+        torch::Tensor input, torch::Tensor topk_weights,
+        torch::Tensor output, int mode) {
+    TORCH_CHECK(input.scalar_type() == torch::kBFloat16,
+                "route input must be bfloat16");
+    TORCH_CHECK(topk_weights.scalar_type() == torch::kFloat32,
+                "topk_weights must be float32");
+    TORCH_CHECK(output.scalar_type() == torch::kBFloat16,
+                "reduction output must be bfloat16");
+    TORCH_CHECK(input.is_cuda() && input.is_contiguous(),
+                "route input must be contiguous CUDA");
+    TORCH_CHECK(topk_weights.is_cuda() && topk_weights.is_contiguous(),
+                "topk_weights must be contiguous CUDA");
+    TORCH_CHECK(output.is_cuda() && output.is_contiguous(),
+                "reduction output must be contiguous CUDA");
+    TORCH_CHECK(input.dim() == 2 && input.size(1) == 4096,
+                "route input must have shape [M*6,4096]");
+    TORCH_CHECK(output.dim() == 2 && output.size(1) == 4096,
+                "reduction output must have shape [M,4096]");
+    TORCH_CHECK(input.size(0) == output.size(0) * 6,
+                "route input row count must equal M*6");
+    TORCH_CHECK(topk_weights.numel() == output.size(0) * 6,
+                "topk_weights must have shape [M,6]");
+    const int tokens = output.size(0);
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    if (mode == 1) {
+        tiled_k6_reduce_kernel<128, 1><<<dim3(16, tokens), 128, 0, stream>>>(
+            reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
+            topk_weights.data_ptr<float>(),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), tokens);
+    } else if (mode == 2) {
+        tiled_k6_reduce_kernel<128, 2><<<dim3(8, tokens), 128, 0, stream>>>(
+            reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
+            topk_weights.data_ptr<float>(),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), tokens);
+    } else if (mode == 3) {
+        tiled_k6_reduce_kernel<256, 1><<<dim3(8, tokens), 256, 0, stream>>>(
+            reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
+            topk_weights.data_ptr<float>(),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), tokens);
+    } else if (mode == 4) {
+        tiled_k6_reduce_kernel<256, 2><<<dim3(4, tokens), 256, 0, stream>>>(
+            reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
+            topk_weights.data_ptr<float>(),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), tokens);
+    } else {
+        TORCH_CHECK(false, "tiled k6 reduce mode must be 1,2,3,4");
+    }
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void fused_route_quant(
         torch::Tensor topk_ids, torch::Tensor input,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
@@ -1459,6 +1564,8 @@ void reduce_swiglu_quant(torch::Tensor partials, torch::Tensor activation,
                          torch::Tensor quantized, torch::Tensor scale,
                          int intermediate, int split_k);
 void cast_bf16(torch::Tensor input, torch::Tensor output);
+void tiled_k6_reduce(torch::Tensor input, torch::Tensor topk_weights,
+                     torch::Tensor output, int mode);
 void fused_route_quant(torch::Tensor topk_ids, torch::Tensor input,
                        torch::Tensor sorted_ids, torch::Tensor expert_ids,
                        torch::Tensor num_tokens_padded,
@@ -1481,12 +1588,13 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v49"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v50tk6"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
         "run_w13_impl", "run_w2", "reduce_swiglu", "reduce_swiglu_quant",
         "cast_bf16",
+        "tiled_k6_reduce",
         "fused_route_quant",
         "braid_mode2",
     ],
@@ -1756,6 +1864,16 @@ def reduce_swiglu_quant(
 
 def cast_bf16(input: torch.Tensor, output: torch.Tensor) -> None:
     _ext.cast_bf16(input, output)
+
+
+def tiled_k6_reduce(
+    input: torch.Tensor,
+    topk_weights: torch.Tensor,
+    output: torch.Tensor,
+) -> None:
+    if TILED_K6_REDUCE_MODE == 0:
+        raise RuntimeError("V4_TILED_K6_REDUCE_MODE must be nonzero")
+    _ext.tiled_k6_reduce(input, topk_weights, output, TILED_K6_REDUCE_MODE)
 
 
 def fused_route_quant(

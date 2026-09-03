@@ -3553,3 +3553,22 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/iter58_current_w2_m32_coldl2_detailed_ncu.{log,ncu-rep}`
   and
   `bench/results/iter58_current_humming_custom_stage_coldl2_20260903.log`.
+
+### WGMMA iteration 58b — tiled-k6 launch batch failed before execution
+
+- Added an opt-in fixed H=4096/k=6 CUDA route reducer with four compiled
+  mappings: 128 threads x 1/2 BF16 pairs and 256 threads x 1/2 BF16 pairs,
+  yielding 16/8/8/4 CTAs per token.  Each output pair has one writer and
+  preserves route order, FP32 `weight*1.5`, FP32 FMA accumulation, and BF16
+  output.  The graph and stage harness select it only when
+  `V4_TILED_K6_REDUCE_MODE` is nonzero; mode 0 remains the exact SGLang
+  control.
+- The first combined correctness/timing batch did not execute a GPU kernel.
+  Its remote loop variables were embedded in a locally double-quoted ssh
+  command, so the local zsh expanded `$mode` and `$m` to empty strings before
+  transmission.  Imports failed on an empty reducer mode and argparse failed
+  on an empty M.  This is a benchmark-launcher quoting failure, not candidate
+  correctness or performance evidence; retain the candidate unselected and
+  rerun the same suite with escaped remote variables.
+- Evidence:
+  `bench/results/iter58_tiled_k6_initial_correctness_stage_coldl2_20260903.log`.

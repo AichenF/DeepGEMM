@@ -348,14 +348,19 @@ class CapturedCase:
         )
         if kernel.W2_ROUTE_OUTPUT:
             assert self.down is not None
-            moe_fused_mul_sum(
-                inputs=self.down.view(self.m, TOP_K, HIDDEN),
-                topk_weights=self.topk_weights,
-                topk_ids=self.topk_ids,
-                is_ep=False,
-                routed_scaling_factor=ROUTED_SCALING_FACTOR,
-                outputs=self.local_bf16,
-            )
+            if kernel.TILED_K6_REDUCE_MODE:
+                kernel.tiled_k6_reduce(
+                    self.down, self.topk_weights, self.local_bf16
+                )
+            else:
+                moe_fused_mul_sum(
+                    inputs=self.down.view(self.m, TOP_K, HIDDEN),
+                    topk_weights=self.topk_weights,
+                    topk_ids=self.topk_ids,
+                    is_ep=False,
+                    routed_scaling_factor=ROUTED_SCALING_FACTOR,
+                    outputs=self.local_bf16,
+                )
         else:
             assert self.local_float is not None
             kernel.cast_bf16(self.local_float, self.local_bf16)
@@ -560,8 +565,14 @@ def main() -> None:
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
                     "leader_mbar_wait": kernel.LEADER_MBAR_WAIT,
+                    "tiled_k6_reduce_mode": kernel.TILED_K6_REDUCE_MODE,
                     "w2_epilogue": (
-                        "BF16 route output + sglang moe_fused_mul_sum"
+                        (
+                            "BF16 route output + fixed tiled CUDA k6 reduce "
+                            f"mode {kernel.TILED_K6_REDUCE_MODE}"
+                        )
+                        if kernel.TILED_K6_REDUCE_MODE
+                        else "BF16 route output + sglang moe_fused_mul_sum"
                         if kernel.W2_ROUTE_OUTPUT
                         else "FP32 weighted atomic scatter + BF16 cast"
                     ),

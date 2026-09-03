@@ -128,14 +128,19 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
 
     def local_reduce() -> None:
         if kernel.W2_ROUTE_OUTPUT:
-            bench.moe_fused_mul_sum(
-                inputs=case.down.view(case.m, bench.TOP_K, bench.HIDDEN),
-                topk_weights=case.topk_weights,
-                topk_ids=case.topk_ids,
-                is_ep=False,
-                routed_scaling_factor=bench.ROUTED_SCALING_FACTOR,
-                outputs=case.local_bf16,
-            )
+            if kernel.TILED_K6_REDUCE_MODE:
+                kernel.tiled_k6_reduce(
+                    case.down, case.topk_weights, case.local_bf16
+                )
+            else:
+                bench.moe_fused_mul_sum(
+                    inputs=case.down.view(case.m, bench.TOP_K, bench.HIDDEN),
+                    topk_weights=case.topk_weights,
+                    topk_ids=case.topk_ids,
+                    is_ep=False,
+                    routed_scaling_factor=bench.ROUTED_SCALING_FACTOR,
+                    outputs=case.local_bf16,
+                )
         else:
             kernel.cast_bf16(case.local_float, case.local_bf16)
 
@@ -346,6 +351,11 @@ def main() -> None:
                 ),
                 "custom_leader_mbar_wait": (
                     os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
+                    if args.impl == "custom"
+                    else None
+                ),
+                "custom_tiled_k6_reduce_mode": (
+                    int(os.environ.get("V4_TILED_K6_REDUCE_MODE", "0"))
                     if args.impl == "custom"
                     else None
                 ),
