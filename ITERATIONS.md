@@ -3271,3 +3271,20 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/iter53_leader_mbar_wait_correctness_20260903.log` and
   `bench/results/iter53_leader_mbar_wait_stage_aba_coldl2_20260903.log`.
+
+### WGMMA iteration 53c — W13-only leader wait passes core screen
+
+- The repaired specialization again passes TP4 split-K=4/2 and TP8-shape
+  correctness with errors identical to the selected kernel.  W2 now compiles
+  and executes the exact all-warp mbarrier wait path regardless of the flag.
+- W13-only candidate A/control/candidate B local total medians average to
+  87.704/88.256 us at M8, 198.016/199.136 us at M32, and
+  328.064/329.680 us at M128.  The candidate improves the full local path by
+  0.63%/0.56%/0.49%, consistently in both surrounding windows.
+- W13 medians improve by 0.90%/0.89%/0.86%; W2 medians stay within 0.16% of
+  control.  Proceed to TP4 candidate/control/candidate full-graph timing with
+  the same SGLang `CustomAllReduceV2` and per-replay excluded cold-L2 clear.
+  The effect is small enough that paired-Humming normalization is required.
+- Evidence:
+  `bench/results/iter53_w13_leader_wait_correctness_20260903.log` and
+  `bench/results/iter53_w13_leader_wait_stage_aba_coldl2_20260903.log`.
