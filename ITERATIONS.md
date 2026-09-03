@@ -4737,3 +4737,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - Correctness passes TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256.  Route/input preparation is exact; W13 cosine is at least `0.999999997`, W2 cosine is at least `0.999997240`, and all outputs are finite.
 - Next inspect cubin/SASS to confirm the intended materialization, then run a long same-process TP4 M128 cold-L2 paired gate before considering other shapes.
 - Artifact: `results/iter109_weight_policy_constant_correctness_20260903.log`.
+
+## Iteration 109b — M128 paired launch rejected by torchrun parser
+
+- The intended 8x100 TP4 M128 cold-L2 paired command exited before worker or GPU launch because this environment's `torchrun` parser treated the script argument `--m 128` as an ambiguous launcher option (`--max-restarts`, `--monitor-interval`, `--module`, and `--master-*`).
+- No timing samples were produced and this says nothing about candidate performance.  Re-run with the unambiguous `--m=128` script-argument form; keep every benchmark and cache-control setting unchanged.
+- Artifact: `results/iter109b_weight_policy_constant_tp4_m128_paired_cold800_20260903.log`.
