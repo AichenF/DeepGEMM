@@ -4526,3 +4526,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Correctness passed for both implementations at every M; custom minimum cosine 0.999995575, maximum relative L2 0.002974846, finite on all ranks.
 - This is formal replicate A. M32 and larger retain appreciable batch dispersion, so run an independent identical replicate B before reporting a stabilized post-selection headline.
 - Artifact: `bench/results/iter97_tp4_humming_custom_selected_coldl2_formal_a_20260903.log`.
+
+## Iteration 97b — Selected-default exact Humming formal audit B
+
+- Independent identical replicate B reports median Humming/custom latency and speedup: M8 0.090016/0.076944 ms = 1.169890x; M16 0.145984/0.122944 = 1.187402x; M32 0.232864/0.211072 = 1.103244x; M64 0.342176/0.302928 = 1.129562x; M128 0.410784/0.381136 = 1.077789x.
+- Replicate-B five-shape geometric means are Humming 0.212186659 ms versus custom 0.187303726 ms = 1.132848x (13.28% faster). All correctness gates pass with the same bounds as replicate A.
+- Stabilized A/B geometric aggregation: Humming 0.211728734 ms, custom 0.187036520 ms, speedup 1.132018x (13.20% faster). The two independently measured speedups differ by only 0.001659x.
+- At the aggregate Humming level, 1.20x requires custom <=0.176440612 ms. The residual is 0.010595908 ms (5.67% of current custom latency).
+- Decision: use the two-run aggregate as the current selected-default headline. The 20% target remains unproven; focus further work on the M32–M128 local W13/W2 path rather than the already-selected small-M communication tail.
+- Artifact: `bench/results/iter97b_tp4_humming_custom_selected_coldl2_formal_b_20260903.log`.
