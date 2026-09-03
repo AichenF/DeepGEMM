@@ -4517,3 +4517,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Dispatch/correctness smoke:** TP4 random-route M8 selected `multicast_push`, while M64 selected `stock`/CARv2. Both passed independent NCCL-sum checks; cosine was 0.999995565 and 0.999995583 respectively, relative L2 below 0.002979, and every output finite.
 - The 40-sample smoke is not used as performance evidence. Selection relies on iteration 95's 2,000-sample/M cold-L2 audit; this smoke verifies only default wiring and the M32 boundary.
 - Artifact: `bench/results/iter96_multicast_default_dispatch_tp4_smoke_20260903.log`.
+
+## Iteration 97 — Selected-default exact Humming formal audit A
+
+- Ran the exact paired protocol after enabling both selected defaults: `w13_distributed_prep=true` and TP4 M<=32 `fused_k6_mc_push_ar=true`. The log explicitly records both flags. Random routes, identical Humming/custom inputs, CUDA Graphs, shared SGLang CARv2 object, 10x200 samples/M, max rank, and excluded 256 MiB clear before every replay are unchanged.
+- Median Humming/custom latency and speedup: M8 0.090272/0.077216 ms = 1.169084x; M16 0.146016/0.123104 = 1.186119x; M32 0.230912/0.208544 = 1.107258x; M64 0.337952/0.298816 = 1.130970x; M128 0.409216/0.383664 = 1.066600x.
+- Five-shape geometric means: Humming 0.211271796 ms, custom 0.186769695 ms, Humming/custom 1.131189x (13.12% faster). At this baseline, 1.20x requires custom <=0.176059830 ms: another 0.010709865 ms (10.71 us), or 5.73% of current latency.
+- Correctness passed for both implementations at every M; custom minimum cosine 0.999995575, maximum relative L2 0.002974846, finite on all ranks.
+- This is formal replicate A. M32 and larger retain appreciable batch dispersion, so run an independent identical replicate B before reporting a stabilized post-selection headline.
+- Artifact: `bench/results/iter97_tp4_humming_custom_selected_coldl2_formal_a_20260903.log`.
