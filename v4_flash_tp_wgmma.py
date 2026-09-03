@@ -204,6 +204,18 @@ LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
 W13_DISTRIBUTED_PREP = (
     os.environ.get("V4_W13_DISTRIBUTED_PREP", "1") == "1"
 )
+W13_DUAL_WG_SPLIT = os.environ.get("V4_W13_DUAL_WG_SPLIT", "0") == "1"
+if W13_DUAL_WG_SPLIT and (
+    WOUT != 128
+    or not NORMALIZED_WEIGHT_SCALE
+    or not BULK_WEIGHT_COPY
+    or not INTERLEAVED_BULK_COPY
+    or W13_PAIRED_WG
+):
+    raise ValueError(
+        "V4_W13_DUAL_WG_SPLIT requires the selected WOUT128 normalized "
+        "interleaved split-K W13 path"
+    )
 W2_DISTRIBUTED_PREP = (
     os.environ.get("V4_W2_DISTRIBUTED_PREP", "1") == "1"
 )
@@ -293,6 +305,7 @@ static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
 static constexpr bool kLeaderMbarWait = K_LEADER_MBAR_WAIT;
 static constexpr bool kW13DistributedPrep = K_W13_DISTRIBUTED_PREP;
+static constexpr bool kW13DualWgSplit = K_W13_DUAL_WG_SPLIT;
 static constexpr bool kW2DistributedPrep = K_W2_DISTRIBUTED_PREP;
 static constexpr bool kW13MergedWgmmaGroup = K_W13_MERGED_WGMMA_GROUP;
 static constexpr int kTok = 8;
@@ -312,9 +325,10 @@ static constexpr bool kW2CoalescedStore = K_W2_COALESCED_STORE;
 static constexpr bool kW2FoldGlobalScale = K_W2_FOLD_GLOBAL_SCALE;
 
 #if K_MIN_BLOCKS_PER_SM > 0
-#define ROUTE_LAUNCH_BOUNDS __launch_bounds__(128, K_MIN_BLOCKS_PER_SM)
+#define ROUTE_LAUNCH_BOUNDS(DUAL) \
+    __launch_bounds__((DUAL) ? 256 : 128, K_MIN_BLOCKS_PER_SM)
 #else
-#define ROUTE_LAUNCH_BOUNDS __launch_bounds__(128)
+#define ROUTE_LAUNCH_BOUNDS(DUAL) __launch_bounds__((DUAL) ? 256 : 128)
 #endif
 
 __device__ __forceinline__ void mbar_init(uint32_t address) {
@@ -510,8 +524,8 @@ __device__ __forceinline__ uint2 dequant_weight_word(
 }
 
 template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
-          bool PublishW2Progress = false>
-__global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
+          bool PublishW2Progress = false, bool DualWgW13 = false>
+__global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
         const __grid_constant__ CUtensorMap tma_weight,
         const __grid_constant__ CUtensorMap tma_weight_scale,
         const uint8_t* __restrict__ weight,
@@ -554,6 +568,12 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     constexpr int kLaunchNTiles =
         LaunchNTiles == 0 ? kNumNTiles : LaunchNTiles;
     static_assert(kNumNTiles % kLaunchNTiles == 0);
+    constexpr int kMathWGs = DualWgW13 ? 2 : 1;
+    static_assert(kLaunchNTiles % kMathWGs == 0);
+    static_assert(!DualWgW13 || (IsW13 && kWout == 128
+                  && LaunchNTiles == 0 && kInterleavedScale),
+                  "dual-WG split-K is specialized for selected W13");
+    constexpr int kTaskNTiles = kLaunchNTiles / kMathWGs;
     constexpr bool kS2RPrefetch =
         IsW13 ? kW13S2RPrefetch : kW2S2RPrefetch;
     constexpr bool kMergedWgmmaGroup =
@@ -563,10 +583,14 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     constexpr int kTmaIssuerTid =
         kDistributedPrep ? 32 : 0;
 
+    const int tid = threadIdx.x;
+    const int math_wg = DualWgW13 ? tid >> 7 : 0;
+    const int mtid = DualWgW13 ? tid & 127 : tid;
     const int split_idx = blockIdx.x % SplitK;
     const int task_idx = blockIdx.x / SplitK;
-    const int m_block_idx = task_idx / kLaunchNTiles;
-    const int local_n_block_idx = task_idx % kLaunchNTiles;
+    const int m_block_idx = task_idx / kTaskNTiles;
+    const int local_n_task_idx = task_idx % kTaskNTiles;
+    const int local_n_block_idx = local_n_task_idx * kMathWGs + math_wg;
     const int n_block_idx = LaunchNTiles == 0
         ? local_n_block_idx
         : n_tile_begin + local_n_block_idx;
@@ -579,17 +603,20 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     const int weight_row = expert_idx * N + n_block_idx * kWout;
     const int kt_begin = split_idx * kKTilesPerSplit;
 
+    constexpr int kWeightWGBytes = kInterleavedScale
+        ? kStages * kCombinedStageBytes
+        : kStages * kWeightStageBytes
+            + kEffectiveScaleBuffers * kScaleStageBytes;
     extern __shared__ __align__(1024) uint8_t dynamic_smem[];
-    uint8_t* weight_smem = dynamic_smem;
+    uint8_t* weight_smem = dynamic_smem + math_wg * kWeightWGBytes;
     uint8_t* weight_scale_smem =
         weight_smem + (kInterleavedScale
             ? kWeightStageBytes
             : kStages * kWeightStageBytes);
     uint8_t* activation_smem =
         kInterleavedScale
-        ? weight_smem + kStages * kCombinedStageBytes
-        : weight_scale_smem
-            + kEffectiveScaleBuffers * kScaleStageBytes;
+        ? dynamic_smem + kMathWGs * kWeightWGBytes
+        : dynamic_smem + kMathWGs * kWeightWGBytes;
     __nv_bfloat16* w2_output_smem = reinterpret_cast<__nv_bfloat16*>(
         activation_smem + kTok * kBlockK);
     const uint32_t weight_smem_addr =
@@ -601,8 +628,8 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     const int weight_swizzle_row_offset =
         kWeightSwizzle == 64 ? ((weight_smem_addr >> 7) & 3) : 0;
 
-    __shared__ __align__(8) uint64_t full_barriers[kStages];
-    __shared__ __align__(8) uint64_t scale_barrier;
+    __shared__ __align__(8) uint64_t full_barriers[kMathWGs][kStages];
+    __shared__ __align__(8) uint64_t scale_barriers[kMathWGs];
     __shared__ uint2 lut_smem[
         (kNormalizedWeightScale && kNormalizedSharedLut) ? 13 :
         (kNormalizedWeightScale || kDequantSynthLut
@@ -612,7 +639,6 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     __shared__ int32_t route_ids[kTok];
     __shared__ int32_t activation_rows[kTok];
 
-    const int tid = threadIdx.x;
     uint64_t weight_cache_policy = 0;
     if constexpr (kWeightEvictFirst && kWeightPolicyHoist) {
         asm volatile(
@@ -659,10 +685,10 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     #pragma unroll
     for (int stage = 0; stage < kStages; ++stage)
         barrier_addr[stage] = static_cast<uint32_t>(
-            __cvta_generic_to_shared(&full_barriers[stage]));
+            __cvta_generic_to_shared(&full_barriers[math_wg][stage]));
     const uint32_t scale_barrier_addr = static_cast<uint32_t>(
-        __cvta_generic_to_shared(&scale_barrier));
-    if (tid == 0) {
+        __cvta_generic_to_shared(&scale_barriers[math_wg]));
+    if (mtid == 0) {
         #pragma unroll
         for (int stage = 0; stage < kStages; ++stage)
             mbar_init(barrier_addr[stage]);
@@ -674,7 +700,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     __syncthreads();
 
     const auto load_weight_stage = [&](int local_kt, int stage) {
-        if (tid == kTmaIssuerTid) {
+        if (mtid == kTmaIssuerTid) {
             const int global_kt = kt_begin + local_kt;
             const uint32_t weight_dst =
                 weight_smem_addr + stage * kWeightStageStride;
@@ -805,7 +831,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     const auto load_single_scale = [&](int global_kt) {
         if constexpr (kUseTmaScale && kScaleQuadReuse == 4
                       && kScaleBuffers == 1) {
-            if (tid == kTmaIssuerTid) {
+            if (mtid == kTmaIssuerTid) {
                 asm volatile(
                     "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
                     :: "r"(scale_barrier_addr), "n"(kScaleStageBytes));
@@ -849,8 +875,8 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     for (int stage = 0; stage < kStages && stage < kKTilesPerSplit; ++stage)
         load_weight_stage(stage, stage);
 
-    const int warp = tid / 32;
-    const int lane = tid % 32;
+    const int warp = mtid / 32;
+    const int lane = mtid % 32;
     const int row0 = warp * 16 + lane / 4;
     const int row1 = row0 + 8;
     const int packed_k_offset = (lane % 4) * 4;
@@ -870,26 +896,30 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                : stage));
 
         // One uint2 per thread covers the complete 8x128 activation tile.
-        const int token_slot = tid / 16;
-        const int k8 = (tid % 16) * 8;
-        uint2 value = make_uint2(0, 0);
-        const int activation_row = activation_rows[token_slot];
-        if (activation_row >= 0) {
-            value = load_reused_u64(reinterpret_cast<const uint2*>(
-                activation + static_cast<int64_t>(activation_row) * K
-                + global_kt * kBlockK + k8), reused_cache_policy);
+        if (!DualWgW13 || math_wg == 0) {
+            const int token_slot = mtid / 16;
+            const int k8 = (mtid % 16) * 8;
+            uint2 value = make_uint2(0, 0);
+            const int activation_row = activation_rows[token_slot];
+            if (activation_row >= 0) {
+                value = load_reused_u64(reinterpret_cast<const uint2*>(
+                    activation + static_cast<int64_t>(activation_row) * K
+                    + global_kt * kBlockK + k8), reused_cache_policy);
+            }
+            *reinterpret_cast<uint2*>(
+                activation_smem + token_slot * kBlockK
+                + (k8 ^ ((token_slot & 7) << 4))) = value;
         }
-        *reinterpret_cast<uint2*>(
-            activation_smem + token_slot * kBlockK
-            + (k8 ^ ((token_slot & 7) << 4))) = value;
 
         int scale_slot = -1;
-        if constexpr (kDistributedPrep) {
-            const int warp_lane = tid & 31;
-            if (warp_lane < 2)
-                scale_slot = (tid >> 5) * 2 + warp_lane;
-        } else if (tid < kTok) {
-            scale_slot = tid;
+        if (!DualWgW13 || math_wg == 0) {
+            if constexpr (kDistributedPrep) {
+                const int warp_lane = mtid & 31;
+                if (warp_lane < 2)
+                    scale_slot = (mtid >> 5) * 2 + warp_lane;
+            } else if (mtid < kTok) {
+                scale_slot = mtid;
+            }
         }
         if (scale_slot >= 0) {
             const int row = activation_rows[scale_slot];
@@ -927,7 +957,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         // The long-K W13 path benefits from one polling lane.  Short-K W2
         // retains all-warp waits, which wake the consumer faster in practice.
         if constexpr (kLeaderMbarWait && IsW13) {
-            if (tid == 0)
+            if (mtid == 0)
                 mbar_wait(barrier_addr[stage], (local_kt / kStages) & 1u);
         } else {
             mbar_wait(barrier_addr[stage], (local_kt / kStages) & 1u);
@@ -936,7 +966,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                       && kScaleBuffers == 1) {
             if ((local_kt & 3) == 0) {
                 if constexpr (kLeaderMbarWait && IsW13) {
-                    if (tid == 0)
+                    if (mtid == 0)
                         mbar_wait(scale_barrier_addr, (local_kt >> 2) & 1u);
                 } else {
                     mbar_wait(scale_barrier_addr, (local_kt >> 2) & 1u);
@@ -2980,7 +3010,7 @@ CUtensorMap make_weight_scale_desc(void* pointer, int K, int64_t elements) {
 }
 
 template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
-          bool PublishW2Progress = false>
+          bool PublishW2Progress = false, bool DualWgW13 = false>
 void launch_route_gemm(
         torch::Tensor weight, torch::Tensor weight_scale,
         torch::Tensor weight_global_scale,
@@ -3013,14 +3043,16 @@ void launch_route_gemm(
     const int max_m_blocks = expert_ids.numel();
     constexpr int launch_n_tiles =
         LaunchNTiles == 0 ? N / kWout : LaunchNTiles;
+    constexpr int math_wgs = DualWgW13 ? 2 : 1;
+    static_assert(launch_n_tiles % math_wgs == 0);
     TORCH_CHECK(n_tile_begin >= 0
                     && n_tile_begin + launch_n_tiles <= N / kWout,
                 "invalid output-N tile range");
-    const int grid = max_m_blocks * launch_n_tiles * SplitK;
+    const int grid = max_m_blocks * (launch_n_tiles / math_wgs) * SplitK;
     constexpr int effective_scale_buffers = K >= 512 ? kScaleBuffers : kStages;
     constexpr bool interleaved_scale = kInterleavedBulkCopy && K >= 512;
     constexpr int dynamic_smem_bytes =
-        (interleaved_scale
+        math_wgs * (interleaved_scale
             ? kStages * kWout * ((kBlockK / 2) + 16)
             : kStages * kWout * (kBlockK / 2)
                 + effective_scale_buffers * kWout * 16)
@@ -3030,8 +3062,8 @@ void launch_route_gemm(
             : 0);
     const auto stream = at::cuda::getCurrentCUDAStream();
     route_gemm<K, N, SplitK, IsW13, LaunchNTiles,
-               PublishW2Progress><<<
-        grid, 128, dynamic_smem_bytes, stream>>>(
+               PublishW2Progress, DualWgW13><<<
+        grid, math_wgs * 128, dynamic_smem_bytes, stream>>>(
         weight_descriptor,
         scale_descriptor,
         weight.data_ptr<uint8_t>(),
@@ -3063,20 +3095,38 @@ void run_w13_impl(
     const int routes = partials.size(1);
     if (intermediate == 512) {
         if (split_k == 4) {
-            launch_route_gemm<4096, 1024, 4, true>(
+            if constexpr (kW13DualWgSplit)
+                launch_route_gemm<4096, 1024, 4, true, 0, false, true>(
+                    weight, weight_scale, weight_global_scale,
+                    activation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, partials,
+                    partials, lut, routes);
+            else launch_route_gemm<4096, 1024, 4, true>(
                 weight, weight_scale, weight_global_scale,
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
                 partials, lut, routes);
         } else if (split_k == 2) {
-            launch_route_gemm<4096, 1024, 2, true>(
+            if constexpr (kW13DualWgSplit)
+                launch_route_gemm<4096, 1024, 2, true, 0, false, true>(
+                    weight, weight_scale, weight_global_scale,
+                    activation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, partials,
+                    partials, lut, routes);
+            else launch_route_gemm<4096, 1024, 2, true>(
                 weight, weight_scale, weight_global_scale,
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
                 partials, lut, routes);
         } else {
             TORCH_CHECK(split_k == 1, "split_k must be 1, 2, or 4");
-            launch_route_gemm<4096, 1024, 1, true>(
+            if constexpr (kW13DualWgSplit)
+                launch_route_gemm<4096, 1024, 1, true, 0, false, true>(
+                    weight, weight_scale, weight_global_scale,
+                    activation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, partials,
+                    partials, lut, routes);
+            else launch_route_gemm<4096, 1024, 1, true>(
                 weight, weight_scale, weight_global_scale,
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
@@ -3084,20 +3134,38 @@ void run_w13_impl(
         }
     } else if (intermediate == 256) {
         if (split_k == 4) {
-            launch_route_gemm<4096, 512, 4, true>(
+            if constexpr (kW13DualWgSplit)
+                launch_route_gemm<4096, 512, 4, true, 0, false, true>(
+                    weight, weight_scale, weight_global_scale,
+                    activation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, partials,
+                    partials, lut, routes);
+            else launch_route_gemm<4096, 512, 4, true>(
                 weight, weight_scale, weight_global_scale,
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
                 partials, lut, routes);
         } else if (split_k == 2) {
-            launch_route_gemm<4096, 512, 2, true>(
+            if constexpr (kW13DualWgSplit)
+                launch_route_gemm<4096, 512, 2, true, 0, false, true>(
+                    weight, weight_scale, weight_global_scale,
+                    activation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, partials,
+                    partials, lut, routes);
+            else launch_route_gemm<4096, 512, 2, true>(
                 weight, weight_scale, weight_global_scale,
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
                 partials, lut, routes);
         } else {
             TORCH_CHECK(split_k == 1, "split_k must be 1, 2, or 4");
-            launch_route_gemm<4096, 512, 1, true>(
+            if constexpr (kW13DualWgSplit)
+                launch_route_gemm<4096, 512, 1, true, 0, false, true>(
+                    weight, weight_scale, weight_global_scale,
+                    activation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, partials,
+                    partials, lut, routes);
+            else launch_route_gemm<4096, 512, 1, true>(
                 weight, weight_scale, weight_global_scale,
                 activation, activation_scale,
                 sorted_ids, expert_ids, num_tokens_padded, partials,
@@ -4038,8 +4106,9 @@ _ext = load_inline(
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
           f"lmw{int(LEADER_MBAR_WAIT)}_"
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
+          f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v109wpc"),
+          f"mb{MIN_BLOCKS_PER_SM}_v111dwg"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -4086,6 +4155,7 @@ _ext = load_inline(
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
         f"-DK_LEADER_MBAR_WAIT={int(LEADER_MBAR_WAIT)}",
         f"-DK_W13_DISTRIBUTED_PREP={int(W13_DISTRIBUTED_PREP)}",
+        f"-DK_W13_DUAL_WG_SPLIT={int(W13_DUAL_WG_SPLIT)}",
         f"-DK_W2_DISTRIBUTED_PREP={int(W2_DISTRIBUTED_PREP)}",
         f"-DK_W13_MERGED_WGMMA_GROUP={int(W13_MERGED_WGMMA_GROUP)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",

@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_wgmma.py", line 14, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 4084, in <module>
+    _ext = load_inline(
+           ^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2174, in load_inline
+    return _jit_compile(
+           ^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2294, in _jit_compile
+    return _import_module_from_library(name, build_directory, is_python_module)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2812, in _import_module_from_library
+    module = importlib.util.module_from_spec(spec)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ImportError: dynamic module does not define module export function (PyInit_v4_flash_tp_wgmma_sdyn_wo128_lr256_sr4_sb2_st2_ws64_wca1_dh1_dl1_dsl0_nws1_nsl0_ael0_twl1_bwc1_tcs0_wef1_wph0_wpc0_ibc1_m21_ro1_sa0_ms0_fg0_cs0_w2gl0_w2pf1_w13pf1_lmw1_dp1_w2dp1_dwg1_w13mg0_mb0_v111dwg)

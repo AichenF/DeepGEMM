@@ -4767,3 +4767,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - W13+W2 consume 79.6%, 86.1%, 90.4%, 92.3%, and 92.9% of local time respectively.  At M32/M64/M128, W13 alone is 58.6-60.3% and W2 is 31.8-32.6%; route quantization, fused activation/requantization, and local k6 reduction together are only 7.1-9.6%.
 - Conclusion: the remaining 1.20x gap cannot be closed by epilogue or route-preparation micro-optimizations at medium/large M.  Prioritize a structural W13 improvement, preserving the selected W2 and communication paths.
 - Artifact: `results/iter110_selected_custom_tp4_stage_budget_cold1000_20260903.log`.
+
+## Iteration 111 — dual-WG split-K W13 first build is not importable
+
+- Added opt-in `V4_W13_DUAL_WG_SPLIT=1`: one 256-thread CTA contains two independent N128 WGMMA warpgroups with separate packed-weight/barrier state while sharing one 8xK128 activation and activation-scale stage.  The existing split-K factor, per-issue weight cache policy, output workspace, activation epilogue, W2, and communication remain unchanged; TP4 and TP8 output widths both divide into N256 task pairs.
+- The first JIT attempt reached extension import but failed before any GPU launch: the shared object did not expose the `PyInit_*` symbol matching the new, very long extension name.  Consequently no correctness or performance conclusion is available from this attempt.
+- Preserve the failed source/log, inspect the exported symbol, then repair only the extension-key naming before repeating the same three numerical gates.
+- Artifact: `results/iter111_w13_dual_wg_split_correctness_20260903.log`.
