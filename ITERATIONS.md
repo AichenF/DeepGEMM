@@ -4049,3 +4049,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Launcher failed before Python or CUDA started because container `dpskv4_h20_weekly_gap_20260727` does not expose `/home/xutingz/fac/DeepGEMM_tp`; its repository mount is under `/lustre/raplab/client/xutingz/fac/DeepGEMM_tp`.
 - Evidence: `results/v4_flash_tp_wgmma_pair2wg_tp4_m8_invalid_path_20260903.log`.
 - Classification: infrastructure invocation error; no correctness or performance conclusion. Retry only with the resolved container path.
+
+### Iteration 82b — 256-thread dual-WG TP4 M8 correctness
+
+- Candidate: the two 128-thread math warpgroups independently issue their two-stage W13 weight/scale bulk copies and duplicate the indexed M8 activation tile into private stages; the producer warpgroup and empty-stage barriers are absent from the compiled path.
+- Shape: TP4 local intermediate 512, M=8, balanced 48 active experts / 384 padded routes.
+- Result: route preparation exact; W13 cosine 0.999999998, relative L2 0.000076187; fused SwiGLU/requant cosine 0.999999746, relative L2 0.000712793; W2 cosine 0.999997256, relative L2 0.002342693, finite.
+- Evidence: `results/v4_flash_tp_wgmma_pair2wg_tp4_m8_correctness_20260903.log`.
+- Decision: correctness gate passes. Next iteration must measure cold-L2 candidate/control/candidate before considering any default integration.
