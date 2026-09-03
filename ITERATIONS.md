@@ -4714,3 +4714,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Correctness passes TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256. Route/input preparation is exact; W13 cosine is at least 0.999999997, W2 cosine is at least 0.999997240, and all outputs are finite.
 - Next inspect SASS/resource usage to verify the intended hoist and ensure no occupancy loss, then run a long paired TP4 M128 cold-L2 gate.
 - Artifact: `results/iter107_weight_policy_hoist_correctness_20260903.log`.
+
+## Iteration 107b — hoisted weight policy is a paired regression
+
+- Cubin inspection verified the intended static simplification: TP4 W2 SASS shrank by eight instruction lines and registers fell 55→54; W13 split2 registers fell 55→48, with no spill.
+- Same-process TP4 M128 random-route timing used 8×100 samples per variant, exact graph-output equality, per-sample ABBA ordering, and a separate excluded 256 MiB L2 clear before every replay.
+- Per-issue control median: **0.354976 ms**; hoisted-policy candidate: **0.359552 ms**; control/candidate: **0.987273x**. The candidate is 4.576 us (1.289%) slower, and all eight candidate batch medians lose.
+- Static instruction/register reductions did not shorten the dynamic critical path; retaining the policy across the kernel likely adds dependency/uniform-transfer pressure to each TMA issue. Reject `V4_WEIGHT_POLICY_HOIST=1` and retain per-issue policy creation as the selected default.
+- Artifact: `results/iter107b_weight_policy_hoist_tp4_m128_paired_cold800_20260903.log`.
