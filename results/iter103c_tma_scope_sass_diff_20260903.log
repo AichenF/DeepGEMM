@@ -1,0 +1,8 @@
+Iteration 103c TP4 W2 SASS comparison
+GPU target: sm_90a (H20)
+Specialization: route_gemm<K=512,N=4096,SplitK=1,IsW13=false,LaunchNTiles=0>
+Control: V4_TMA_CTA_SCOPE=0
+Candidate: V4_TMA_CTA_SCOPE=1
+Method: cuobjdump --dump-sass --function <specialization> on both JIT .so files; remove only the source-path identifier line; diff -u.
+Diff output: empty.
+Result: complete function SASS is byte-for-byte identical. Both PTX forms lower to the same UBLKCP.S.G instructions on sm_90a.

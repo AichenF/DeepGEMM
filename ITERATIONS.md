@@ -4637,3 +4637,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Batch direction is mixed (three candidate wins and three losses) and all differences are sub-microsecond. Narrowing the PTX shared-memory scope supplies no measurable end-to-end benefit on H20.
 - Reject `V4_TMA_CTA_SCOPE=1` and keep the default off. A cubin/SASS comparison may explain whether ptxas maps both forms to the same instruction, but no broader timing sweep is justified.
 - Artifact: `results/iter103b_tma_cta_scope_tp4_m128_paired_cold600_20260903.log`.
+
+## Iteration 103c — CTA/cluster scope lowers to identical H20 SASS
+
+- Disassembled the exact TP4 W2 `route_gemm<K=512,N=4096,SplitK=1>` specialization from the control and candidate JIT objects with `cuobjdump`.
+- After removing only the source-path identifier, the complete function dumps have an empty byte-level diff. Both PTX scope spellings lower to the same `UBLKCP.S.G` instructions and identical surrounding SASS on sm_90a.
+- This explains iteration 103b's mixed noise-scale timing and closes the scope experiment conclusively. Keep `V4_TMA_CTA_SCOPE=0`; no further shape sweep is warranted.
+- Artifact: `results/iter103c_tma_scope_sass_diff_20260903.log`.
