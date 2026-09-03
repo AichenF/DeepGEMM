@@ -68,6 +68,7 @@ if BULK_WEIGHT_COPY and not TILED_WEIGHT_LAYOUT:
     raise ValueError("V4_BULK_WEIGHT_COPY requires tiled weight layout")
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
+FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "0") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
@@ -922,6 +923,104 @@ __global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
     quantized[index] = __nv_fp8_e4m3(value / group_scale).__x;
 }
 
+// Fixed DeepSeek-V4-Flash TP preparation.  Route alignment and input
+// quantization are independent, so place them in one launch: CTA 0 performs
+// the E=256/top-k=6/block-M=8 alignment before quantizing its own group, while
+// all other CTAs quantize one H=4096 group-128 slice immediately.
+__global__ __launch_bounds__(128) void fused_route_quant_kernel(
+        const int32_t* __restrict__ topk_ids,
+        const __nv_bfloat16* __restrict__ input,
+        int32_t* __restrict__ sorted_ids,
+        int32_t* __restrict__ expert_ids,
+        int32_t* __restrict__ num_tokens_padded,
+        uint8_t* __restrict__ quantized,
+        float* __restrict__ scale,
+        int routes) {
+    constexpr int kExperts = 256;
+    constexpr int kHidden = 4096;
+    constexpr int kGroup = 128;
+    constexpr int kGroupsPerToken = kHidden / kGroup;
+    __shared__ int counts[kExperts];
+    __shared__ int offsets[kExperts];
+    __shared__ int cursors[kExperts];
+    __shared__ int total_padded;
+    __shared__ float warp_max[4];
+    __shared__ float group_scale;
+
+    const int tid = threadIdx.x;
+    if (blockIdx.x == 0) {
+        counts[tid] = 0;
+        counts[tid + 128] = 0;
+        __syncthreads();
+
+        for (int route = tid; route < routes; route += blockDim.x) {
+            const int expert = __ldg(topk_ids + route);
+            if (static_cast<unsigned>(expert) < kExperts)
+                atomicAdd(counts + expert, 1);
+        }
+        __syncthreads();
+
+        if (tid == 0) {
+            int total = 0;
+            #pragma unroll 1
+            for (int expert = 0; expert < kExperts; ++expert) {
+                offsets[expert] = total;
+                cursors[expert] = total;
+                total += (counts[expert] + 7) & ~7;
+            }
+            total_padded = total;
+            *num_tokens_padded = total;
+        }
+        __syncthreads();
+
+        for (int expert = tid; expert < kExperts; expert += blockDim.x) {
+            const int end = offsets[expert] + ((counts[expert] + 7) & ~7);
+            for (int position = offsets[expert]; position < end; position += 8)
+                expert_ids[position >> 3] = expert;
+        }
+        for (int position = tid; position < total_padded;
+             position += blockDim.x)
+            sorted_ids[position] = routes;
+        __syncthreads();
+
+        for (int route = tid; route < routes; route += blockDim.x) {
+            const int expert = __ldg(topk_ids + route);
+            if (static_cast<unsigned>(expert) < kExperts) {
+                const int position = atomicAdd(cursors + expert, 1);
+                sorted_ids[position] = route;
+            }
+        }
+        __syncthreads();
+    }
+
+    const int quant_group = blockIdx.x;
+    const int index = quant_group * kGroup + tid;
+    const float value = __bfloat162float(input[index]);
+    float absmax = fabsf(value);
+    #pragma unroll
+    for (int delta = 16; delta > 0; delta >>= 1)
+        absmax = fmaxf(absmax, __shfl_down_sync(0xffffffffu, absmax, delta));
+
+    const int lane = tid & 31;
+    const int warp = tid >> 5;
+    if (lane == 0)
+        warp_max[warp] = absmax;
+    __syncthreads();
+    if (warp == 0) {
+        absmax = lane < 4 ? warp_max[lane] : 0.0f;
+        #pragma unroll
+        for (int delta = 16; delta > 0; delta >>= 1)
+            absmax = fmaxf(absmax,
+                           __shfl_down_sync(0xffffffffu, absmax, delta));
+        if (lane == 0) {
+            group_scale = fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
+            scale[quant_group] = group_scale;
+        }
+    }
+    __syncthreads();
+    quantized[index] = __nv_fp8_e4m3(value / group_scale).__x;
+}
+
 __global__ void cast_bf16_kernel(
         const float* __restrict__ input,
         __nv_bfloat16* __restrict__ output,
@@ -1205,6 +1304,35 @@ void cast_bf16(torch::Tensor input, torch::Tensor output) {
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+void fused_route_quant(
+        torch::Tensor topk_ids, torch::Tensor input,
+        torch::Tensor sorted_ids, torch::Tensor expert_ids,
+        torch::Tensor num_tokens_padded, torch::Tensor quantized,
+        torch::Tensor scale) {
+    TORCH_CHECK(topk_ids.scalar_type() == torch::kInt32,
+                "topk_ids must be int32");
+    TORCH_CHECK(input.scalar_type() == torch::kBFloat16,
+                "input must be bfloat16");
+    TORCH_CHECK(input.dim() == 2 && input.size(1) == 4096,
+                "input must have shape [M,4096]");
+    TORCH_CHECK(topk_ids.numel() == input.size(0) * 6,
+                "topk_ids must have shape [M,6]");
+    TORCH_CHECK(quantized.numel() == input.numel(),
+                "quantized output shape mismatch");
+    TORCH_CHECK(scale.numel() == input.size(0) * 32,
+                "scale output must have shape [M,32]");
+    const int routes = topk_ids.numel();
+    const int blocks = input.size(0) * 32;
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    fused_route_quant_kernel<<<blocks, 128, 0, stream>>>(
+        topk_ids.data_ptr<int32_t>(),
+        reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
+        sorted_ids.data_ptr<int32_t>(), expert_ids.data_ptr<int32_t>(),
+        num_tokens_padded.data_ptr<int32_t>(),
+        quantized.data_ptr<uint8_t>(), scale.data_ptr<float>(), routes);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void braid_mode2(torch::Tensor weight) {
     TORCH_CHECK(weight.scalar_type() == torch::kUInt8,
                 "mode2 weight must be uint8");
@@ -1241,6 +1369,10 @@ void reduce_swiglu_quant(torch::Tensor partials, torch::Tensor activation,
                          torch::Tensor quantized, torch::Tensor scale,
                          int intermediate, int split_k);
 void cast_bf16(torch::Tensor input, torch::Tensor output);
+void fused_route_quant(torch::Tensor topk_ids, torch::Tensor input,
+                       torch::Tensor sorted_ids, torch::Tensor expert_ids,
+                       torch::Tensor num_tokens_padded,
+                       torch::Tensor quantized, torch::Tensor scale);
 void braid_mode2(torch::Tensor weight);
 """
 
@@ -1258,12 +1390,13 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v39"),
+          f"mb{MIN_BLOCKS_PER_SM}_v40"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
         "run_w13_impl", "run_w2", "reduce_swiglu", "reduce_swiglu_quant",
         "cast_bf16",
+        "fused_route_quant",
         "braid_mode2",
     ],
     extra_cuda_cflags=[
@@ -1510,6 +1643,26 @@ def reduce_swiglu_quant(
 
 def cast_bf16(input: torch.Tensor, output: torch.Tensor) -> None:
     _ext.cast_bf16(input, output)
+
+
+def fused_route_quant(
+    topk_ids: torch.Tensor,
+    input: torch.Tensor,
+    sorted_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_padded: torch.Tensor,
+    quantized: torch.Tensor,
+    scale: torch.Tensor,
+) -> None:
+    _ext.fused_route_quant(
+        topk_ids,
+        input,
+        sorted_ids,
+        expert_ids,
+        num_tokens_padded,
+        quantized,
+        scale,
+    )
 
 
 def braid_mode2_(weight: torch.Tensor) -> torch.Tensor:

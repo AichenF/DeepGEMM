@@ -221,10 +221,23 @@ class CapturedCase:
         self.local_bf16 = torch.empty(
             (self.m, HIDDEN), dtype=torch.bfloat16, device=device
         )
-        self.sorted_ids: torch.Tensor | None = None
-        self.expert_ids: torch.Tensor | None = None
-        self.num_tokens_padded: torch.Tensor | None = None
-        self.x_scale: torch.Tensor | None = None
+        max_padded = (
+            routes * 8
+            if routes < NUM_EXPERTS + 1
+            else routes + (NUM_EXPERTS + 1) * 7
+        )
+        self.sorted_ids = torch.empty(
+            (max_padded,), dtype=torch.int32, device=device
+        )
+        self.expert_ids = torch.empty(
+            ((max_padded + 7) // 8,), dtype=torch.int32, device=device
+        )
+        self.num_tokens_padded = torch.empty(
+            (1,), dtype=torch.int32, device=device
+        )
+        self.x_scale = torch.empty(
+            (self.m, HIDDEN // 128), dtype=torch.float32, device=device
+        )
         self.activation_scale: torch.Tensor | None = (
             torch.empty(
                 (routes, self.intermediate_per_rank // 128),
@@ -247,24 +260,35 @@ class CapturedCase:
         return self.m * TOP_K
 
     def run_local(self) -> torch.Tensor:
-        (
-            self.sorted_ids,
-            self.expert_ids,
-            self.num_tokens_padded,
-        ) = moe_align_block_size(
-            topk_ids=self.topk_ids,
-            block_size=8,
-            num_experts=NUM_EXPERTS,
-            ignore_invalid_expert=True,
-        )
-        self.qx, self.x_scale = humming_ops.quant_input(
-            inputs=self.x,
-            outputs=self.qx,
-            dtype="float8e4m3",
-            group_size=128,
-            m_major_scale=False,
-            scale_dtype="float32",
-        )
+        if kernel.FUSED_ROUTE_QUANT:
+            kernel.fused_route_quant(
+                self.topk_ids,
+                self.x,
+                self.sorted_ids,
+                self.expert_ids,
+                self.num_tokens_padded,
+                self.qx.view(torch.uint8),
+                self.x_scale,
+            )
+        else:
+            (
+                self.sorted_ids,
+                self.expert_ids,
+                self.num_tokens_padded,
+            ) = moe_align_block_size(
+                topk_ids=self.topk_ids,
+                block_size=8,
+                num_experts=NUM_EXPERTS,
+                ignore_invalid_expert=True,
+            )
+            self.qx, self.x_scale = humming_ops.quant_input(
+                inputs=self.x,
+                outputs=self.qx,
+                dtype="float8e4m3",
+                group_size=128,
+                m_major_scale=False,
+                scale_dtype="float32",
+            )
         kernel.run_w13(
             self.w13,
             self.s13,
@@ -530,6 +554,7 @@ def main() -> None:
                     "bulk_weight_copy": kernel.BULK_WEIGHT_COPY,
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
+                    "fused_route_quant": kernel.FUSED_ROUTE_QUANT,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,

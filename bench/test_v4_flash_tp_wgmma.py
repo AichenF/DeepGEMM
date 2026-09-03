@@ -58,6 +58,36 @@ def rel_l2(a: torch.Tensor, b: torch.Tensor) -> float:
     )
 
 
+def route_contract_matches(
+    topk_ids: torch.Tensor,
+    sorted_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_padded: torch.Tensor,
+) -> bool:
+    """Compare semantic (expert, route) pairs; intra-expert order may differ."""
+    routes = topk_ids.numel()
+    total = int(num_tokens_padded.item())
+    sorted_cpu = sorted_ids[:total].cpu().tolist()
+    experts_cpu = expert_ids[: (total + 7) // 8].cpu().tolist()
+    actual = sorted(
+        (experts_cpu[position // 8], route)
+        for position, route in enumerate(sorted_cpu)
+        if route < routes
+    )
+    flat_experts = topk_ids.flatten().cpu().tolist()
+    expected = sorted(
+        (expert, route)
+        for route, expert in enumerate(flat_experts)
+        if 0 <= expert < E
+    )
+    expected_total = sum(
+        ((flat_experts.count(expert) + 7) // 8) * 8
+        for expert in set(flat_experts)
+        if 0 <= expert < E
+    )
+    return actual == expected and total == expected_total
+
+
 @torch.inference_mode()
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -132,23 +162,71 @@ def main() -> None:
         w2, s2 = kernel.tile_mxfp4_weight_layout(w2, s2)
 
     topk_ids, topk_weights = make_routes(args.m, args.pattern, device)
-    sorted_ids, expert_ids, num_tokens_padded = moe_align_block_size(
-        topk_ids, block_size=8, num_experts=E, ignore_invalid_expert=True
+    reference_sorted_ids, reference_expert_ids, reference_num_tokens_padded = (
+        moe_align_block_size(
+            topk_ids,
+            block_size=8,
+            num_experts=E,
+            ignore_invalid_expert=True,
+        )
     )
     routes = args.m * TOP_K
     x = (
         torch.randn((args.m, H), dtype=torch.bfloat16, device=device)
         * args.input_scale
     )
-    qx = torch.empty_like(x, dtype=torch.float8_e4m3fn)
-    qx, x_scale = ops.quant_input(
+    reference_qx = torch.empty_like(x, dtype=torch.float8_e4m3fn)
+    reference_qx, reference_x_scale = ops.quant_input(
         inputs=x,
-        outputs=qx,
+        outputs=reference_qx,
         dtype="float8e4m3",
         group_size=128,
         m_major_scale=False,
         scale_dtype="float32",
     )
+    if kernel.FUSED_ROUTE_QUANT:
+        max_padded = routes * 8 if routes < E + 1 else routes + (E + 1) * 7
+        sorted_ids = torch.empty(
+            (max_padded,), dtype=torch.int32, device=device
+        )
+        expert_ids = torch.empty(
+            ((max_padded + 7) // 8,), dtype=torch.int32, device=device
+        )
+        num_tokens_padded = torch.empty((1,), dtype=torch.int32, device=device)
+        qx = torch.empty_like(x, dtype=torch.float8_e4m3fn)
+        x_scale = torch.empty(
+            (args.m, H // 128), dtype=torch.float32, device=device
+        )
+        kernel.fused_route_quant(
+            topk_ids,
+            x,
+            sorted_ids,
+            expert_ids,
+            num_tokens_padded,
+            qx.view(torch.uint8),
+            x_scale,
+        )
+        torch.cuda.synchronize()
+        routes_ok = route_contract_matches(
+            topk_ids, sorted_ids, expert_ids, num_tokens_padded
+        )
+        quant_exact = torch.equal(
+            qx.view(torch.uint8), reference_qx.view(torch.uint8)
+        )
+        scale_max_abs = float((x_scale - reference_x_scale).abs().max())
+        print(
+            "V4_WGMMA_PREP "
+            f"routes_ok={routes_ok} quant_exact={quant_exact} "
+            f"scale_max_abs={scale_max_abs:.9g}"
+        )
+        if not routes_ok or not quant_exact or scale_max_abs != 0.0:
+            raise SystemExit("V4_WGMMA_PREP_WRONG")
+    else:
+        sorted_ids = reference_sorted_ids
+        expert_ids = reference_expert_ids
+        num_tokens_padded = reference_num_tokens_padded
+        qx = reference_qx
+        x_scale = reference_x_scale
 
     partials = torch.empty(
         (kernel.W13_MAX_SPLITS, routes, n13), dtype=torch.float32, device=device
