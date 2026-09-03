@@ -210,12 +210,12 @@ class CapturedCase:
         )
         self.local_float = (
             None
-            if kernel.W2_ROUTE_OUTPUT or kernel.W2_BF16_ATOMIC
+            if kernel.W2_ROUTE_OUTPUT
             else torch.empty((self.m, HIDDEN), dtype=torch.float32, device=device)
         )
         self.down = (
             torch.empty((routes, HIDDEN), dtype=torch.bfloat16, device=device)
-            if kernel.W2_ROUTE_OUTPUT and not kernel.W2_BF16_ATOMIC
+            if kernel.W2_ROUTE_OUTPUT
             else None
         )
         self.local_bf16 = torch.empty(
@@ -328,16 +328,9 @@ class CapturedCase:
                 m_major_scale=False,
                 scale_dtype="float32",
             )
-        if kernel.W2_BF16_ATOMIC:
-            self.local_bf16.zero_()
-        elif self.local_float is not None:
+        if self.local_float is not None:
             self.local_float.zero_()
-        if kernel.W2_BF16_ATOMIC:
-            w2_output = self.local_bf16
-        elif kernel.W2_ROUTE_OUTPUT:
-            w2_output = self.down
-        else:
-            w2_output = self.local_float
+        w2_output = self.down if kernel.W2_ROUTE_OUTPUT else self.local_float
         assert w2_output is not None
         kernel.run_w2(
             self.w2,
@@ -353,9 +346,7 @@ class CapturedCase:
             self.lut,
             self.intermediate_per_rank,
         )
-        if kernel.W2_BF16_ATOMIC:
-            pass
-        elif kernel.W2_ROUTE_OUTPUT:
+        if kernel.W2_ROUTE_OUTPUT:
             assert self.down is not None
             moe_fused_mul_sum(
                 inputs=self.down.view(self.m, TOP_K, HIDDEN),
@@ -568,15 +559,10 @@ def main() -> None:
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
-                    "w2_bf16_atomic": kernel.W2_BF16_ATOMIC,
                     "w2_epilogue": (
-                        "BF16 weighted atomic scatter"
-                        if kernel.W2_BF16_ATOMIC
-                        else (
-                            "BF16 route output + sglang moe_fused_mul_sum"
-                            if kernel.W2_ROUTE_OUTPUT
-                            else "FP32 weighted atomic scatter + BF16 cast"
-                        )
+                        "BF16 route output + sglang moe_fused_mul_sum"
+                        if kernel.W2_ROUTE_OUTPUT
+                        else "FP32 weighted atomic scatter + BF16 cast"
                     ),
                     "min_blocks_per_sm": kernel.MIN_BLOCKS_PER_SM,
                     "weight_dtype": "OCP MXFP4 E2M1",

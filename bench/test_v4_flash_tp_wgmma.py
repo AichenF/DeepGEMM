@@ -273,22 +273,12 @@ def main() -> None:
             scale_dtype="float32",
         )
     local = torch.zeros((args.m, H), dtype=torch.float32, device=device)
-    output = (
-        torch.zeros((args.m, H), dtype=torch.bfloat16, device=device)
-        if kernel.W2_BF16_ATOMIC
-        else torch.empty((args.m, H), dtype=torch.bfloat16, device=device)
-    )
     down = (
         torch.empty((routes, H), dtype=torch.bfloat16, device=device)
-        if kernel.W2_ROUTE_OUTPUT and not kernel.W2_BF16_ATOMIC
+        if kernel.W2_ROUTE_OUTPUT
         else None
     )
-    if kernel.W2_BF16_ATOMIC:
-        w2_output = output
-    elif down is not None:
-        w2_output = down
-    else:
-        w2_output = local
+    w2_output = down if down is not None else local
     kernel.run_w2(
         w2,
         s2,
@@ -303,9 +293,8 @@ def main() -> None:
         lut,
         intermediate,
     )
-    if kernel.W2_BF16_ATOMIC:
-        local = output.float()
-    elif kernel.W2_ROUTE_OUTPUT:
+    output = torch.empty((args.m, H), dtype=torch.bfloat16, device=device)
+    if kernel.W2_ROUTE_OUTPUT:
         assert down is not None
         moe_fused_mul_sum(
             inputs=down.view(args.m, TOP_K, H),
@@ -363,8 +352,7 @@ def main() -> None:
         f"split_k={selected_split_k} mode2={kernel.MODE2_BRAID} "
         f"interleaved_bulk={kernel.INTERLEAVED_BULK_COPY} "
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
-        f"w2_global_lut={kernel.W2_GLOBAL_LUT} "
-        f"w2_bf16_atomic={kernel.W2_BF16_ATOMIC}"
+        f"w2_global_lut={kernel.W2_GLOBAL_LUT}"
     )
     print(
         "V4_WGMMA_W13 "

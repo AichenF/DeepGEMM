@@ -82,7 +82,6 @@ MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
-W2_BF16_ATOMIC = os.environ.get("V4_W2_BF16_ATOMIC", "0") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
@@ -172,7 +171,6 @@ static_assert(!kInterleavedBulkCopy
                   && kScaleBuffers == 2));
 static constexpr float kRoutedScale = 1.5f;
 static constexpr bool kW2RouteOutput = K_W2_ROUTE_OUTPUT;
-static constexpr bool kW2Bf16Atomic = K_W2_BF16_ATOMIC;
 
 #if K_MIN_BLOCKS_PER_SM > 0
 #define ROUTE_LAUNCH_BOUNDS __launch_bounds__(128, K_MIN_BLOCKS_PER_SM)
@@ -867,44 +865,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                        + output_n1] = accum[group][3];
             }
         } else {
-            if constexpr (kW2Bf16Atomic) {
-                auto* local_output =
-                    reinterpret_cast<__nv_bfloat16*>(output);
-                if (route0 < max_routes) {
-                    const int token = route0 / kTopK;
-                    const float route_weight =
-                        topk_weights[route0] * kRoutedScale;
-                    const float value0 = __bfloat162float(
-                        __float2bfloat16(accum[group][0]));
-                    const float value1 = __bfloat162float(
-                        __float2bfloat16(accum[group][2]));
-                    atomicAdd(
-                        local_output
-                            + static_cast<int64_t>(token) * N + output_n0,
-                        __float2bfloat16(value0 * route_weight));
-                    atomicAdd(
-                        local_output
-                            + static_cast<int64_t>(token) * N + output_n1,
-                        __float2bfloat16(value1 * route_weight));
-                }
-                if (route1 < max_routes) {
-                    const int token = route1 / kTopK;
-                    const float route_weight =
-                        topk_weights[route1] * kRoutedScale;
-                    const float value0 = __bfloat162float(
-                        __float2bfloat16(accum[group][1]));
-                    const float value1 = __bfloat162float(
-                        __float2bfloat16(accum[group][3]));
-                    atomicAdd(
-                        local_output
-                            + static_cast<int64_t>(token) * N + output_n0,
-                        __float2bfloat16(value0 * route_weight));
-                    atomicAdd(
-                        local_output
-                            + static_cast<int64_t>(token) * N + output_n1,
-                        __float2bfloat16(value1 * route_weight));
-                }
-            } else if constexpr (kW2RouteOutput) {
+            if constexpr (kW2RouteOutput) {
                 auto* route_output = reinterpret_cast<__nv_bfloat16*>(output);
                 if (route0 < max_routes) {
                     route_output[static_cast<int64_t>(route0) * N + output_n0] =
@@ -1503,10 +1464,9 @@ _ext = load_inline(
           f"bwc{int(BULK_WEIGHT_COPY)}_"
           f"ibc{int(INTERLEAVED_BULK_COPY)}_"
           f"m2{int(MODE2_BRAID)}_"
-          f"ro{int(W2_ROUTE_OUTPUT)}_ba{int(W2_BF16_ATOMIC)}_"
-          f"w2gl{int(W2_GLOBAL_LUT)}_"
+          f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v47"),
+          f"mb{MIN_BLOCKS_PER_SM}_v44"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1536,7 +1496,6 @@ _ext = load_inline(
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
-        f"-DK_W2_BF16_ATOMIC={int(W2_BF16_ATOMIC)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
