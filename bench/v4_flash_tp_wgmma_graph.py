@@ -1001,6 +1001,9 @@ def main() -> None:
                     "weight_evict_first": kernel.WEIGHT_EVICT_FIRST,
                     "weight_policy_hoist": kernel.WEIGHT_POLICY_HOIST,
                     "weight_policy_constant": kernel.WEIGHT_POLICY_CONSTANT,
+                    "w2_no_weight_evict_first": (
+                        kernel.W2_NO_WEIGHT_EVICT_FIRST
+                    ),
                     "interleaved_bulk_copy": kernel.INTERLEAVED_BULK_COPY,
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,

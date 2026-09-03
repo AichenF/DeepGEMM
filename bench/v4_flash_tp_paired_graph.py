@@ -296,6 +296,9 @@ def main() -> None:
                     "custom_weight_policy_constant": (
                         kernel.WEIGHT_POLICY_CONSTANT
                     ),
+                    "custom_w2_no_weight_evict_first": (
+                        kernel.W2_NO_WEIGHT_EVICT_FIRST
+                    ),
                     "custom_interleaved_bulk_copy": (
                         kernel.INTERLEAVED_BULK_COPY
                     ),

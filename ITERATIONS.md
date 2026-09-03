@@ -4802,3 +4802,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Selected control median: **0.344176 ms**; dual-WG candidate: **0.383552 ms**; control/candidate: **0.897339x**.  The candidate is 39.376 us (11.44%) slower, and all eight candidate batch medians lose.
 - Decision: reject `V4_W13_DUAL_WG_SPLIT=1` and retain default off.  Halving repeated activation staging and CTA setup does not compensate for lower resident-warp concurrency plus the cross-WG reuse handshake.  The loss is decisive enough not to spend more samples on smaller M.
 - Artifact: `results/iter111d_w13_dual_wg_split_tp4_m128_paired_cold800_20260903.log`.
+
+## Iteration 112 — isolate W2 evict-first correctness gate
+
+- Added opt-in `V4_W2_NO_WEIGHT_EVICT_FIRST=1`.  W13 retains the selected per-issue evict-first policy; only W2 falls back to ordinary bulk TMA.  Weight bytes/layout, barriers, dequantization, math, output, and communication are unchanged.  The experiment tests whether policy construction costs more than its cache benefit on W2's four K128 tiles.
+- Correctness passes TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256 with error metrics identical to the selected control.  Route/input quantization is exact, W13 cosine is at least `0.999999997`, W2 cosine is at least `0.999997240`, and all outputs are finite.
+- Keep opt-in and run a long same-process TP4 M128 cold-L2 paired gate before screening other shapes.
+- Artifact: `results/iter112_w2_no_evict_first_correctness_20260903.log`.

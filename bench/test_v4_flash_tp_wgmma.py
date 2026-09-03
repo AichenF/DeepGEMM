@@ -422,6 +422,7 @@ def main() -> None:
         f"weight_evict_first={kernel.WEIGHT_EVICT_FIRST} "
         f"weight_policy_hoist={kernel.WEIGHT_POLICY_HOIST} "
         f"weight_policy_constant={kernel.WEIGHT_POLICY_CONSTANT} "
+        f"w2_no_weight_evict_first={kernel.W2_NO_WEIGHT_EVICT_FIRST} "
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
         f"w13_tail_fused_act={w13_tail_fused_act} "
         f"w2_sorted_act={kernel.W2_SORTED_ACT} "

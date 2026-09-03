@@ -95,6 +95,13 @@ if WEIGHT_POLICY_CONSTANT and WEIGHT_POLICY_HOIST:
     raise ValueError(
         "V4_WEIGHT_POLICY_CONSTANT and V4_WEIGHT_POLICY_HOIST are exclusive"
     )
+W2_NO_WEIGHT_EVICT_FIRST = (
+    os.environ.get("V4_W2_NO_WEIGHT_EVICT_FIRST", "0") == "1"
+)
+if W2_NO_WEIGHT_EVICT_FIRST and not WEIGHT_EVICT_FIRST:
+    raise ValueError(
+        "V4_W2_NO_WEIGHT_EVICT_FIRST requires global weight evict-first"
+    )
 INTERLEAVED_BULK_COPY = (
     os.environ.get("V4_INTERLEAVED_BULK_COPY", "1") == "1"
 )
@@ -299,6 +306,7 @@ static constexpr bool kTmaCtaScope = K_TMA_CTA_SCOPE;
 static constexpr bool kWeightEvictFirst = K_WEIGHT_EVICT_FIRST;
 static constexpr bool kWeightPolicyHoist = K_WEIGHT_POLICY_HOIST;
 static constexpr bool kWeightPolicyConstant = K_WEIGHT_POLICY_CONSTANT;
+static constexpr bool kW2NoWeightEvictFirst = K_W2_NO_WEIGHT_EVICT_FIRST;
 static constexpr bool kInterleavedBulkCopy = K_INTERLEAVED_BULK_COPY;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
@@ -350,11 +358,12 @@ __device__ __forceinline__ void mbar_arrive(uint32_t address) {
         : "=l"(state) : "r"(address) : "memory");
 }
 
+template <bool UseEvictFirst>
 __device__ __forceinline__ void bulk_gmem_to_smem(
         uint32_t dst, const void* src, int bytes, uint32_t mbar,
         uint64_t cache_policy) {
     if constexpr (kTmaCtaScope) {
-        if constexpr (kWeightEvictFirst) {
+        if constexpr (UseEvictFirst) {
             if constexpr (kWeightPolicyHoist) {
                 asm volatile(
                     "cp.async.bulk.shared::cta.global.mbarrier::"
@@ -391,7 +400,7 @@ __device__ __forceinline__ void bulk_gmem_to_smem(
                 :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar) : "memory");
         }
     } else {
-        if constexpr (kWeightEvictFirst) {
+        if constexpr (UseEvictFirst) {
             if constexpr (kWeightPolicyHoist) {
                 asm volatile(
                     "cp.async.bulk.shared::cluster.global.mbarrier::"
@@ -581,6 +590,8 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
         IsW13 && kW13MergedWgmmaGroup;
     constexpr bool kDistributedPrep =
         IsW13 ? kW13DistributedPrep : kW2DistributedPrep;
+    constexpr bool kUseWeightEvictFirst =
+        kWeightEvictFirst && (IsW13 || !kW2NoWeightEvictFirst);
     constexpr int kTmaIssuerTid =
         kDistributedPrep ? 32 : 0;
 
@@ -642,7 +653,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
     __shared__ int32_t activation_rows[kTok];
 
     uint64_t weight_cache_policy = 0;
-    if constexpr (kWeightEvictFirst && kWeightPolicyHoist) {
+    if constexpr (kUseWeightEvictFirst && kWeightPolicyHoist) {
         asm volatile(
             "createpolicy.fractional.L2::evict_first.b64 %0,1.0;"
             : "=l"(weight_cache_policy));
@@ -768,7 +779,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
                 const int copy_bytes = load_scale
                     ? kCombinedStageBytes
                     : kWeightStageBytes;
-                bulk_gmem_to_smem(
+                bulk_gmem_to_smem<kUseWeightEvictFirst>(
                     weight_dst, weight_src, copy_bytes,
                     barrier_addr[stage], weight_cache_policy);
             } else if constexpr (kBulkWeightCopy) {
@@ -777,7 +788,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
                      + n_block_idx) * kNumKTiles + global_kt;
                 const uint8_t* weight_src =
                     weight + tile * kWeightStageBytes;
-                bulk_gmem_to_smem(
+                bulk_gmem_to_smem<kUseWeightEvictFirst>(
                     weight_dst, weight_src, kWeightStageBytes,
                     barrier_addr[stage], weight_cache_policy);
             } else if constexpr (kTiledWeightLayout) {
@@ -809,7 +820,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
                          + n_block_idx) * kScaleTiles + (scale_kt >> 2);
                     const uint8_t* scale_src =
                         weight_scale + scale_tile * kScaleStageBytes;
-                    bulk_gmem_to_smem(
+                    bulk_gmem_to_smem<kUseWeightEvictFirst>(
                         scale_dst, scale_src, kScaleStageBytes,
                         barrier_addr[stage], weight_cache_policy);
                 } else if constexpr (kTiledWeightLayout) {
@@ -850,7 +861,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
                          + n_block_idx) * kScaleTiles + (global_kt >> 2);
                     const uint8_t* scale_src =
                         weight_scale + scale_tile * kScaleStageBytes;
-                    bulk_gmem_to_smem(
+                    bulk_gmem_to_smem<kUseWeightEvictFirst>(
                         weight_scale_smem_addr, scale_src,
                         kScaleStageBytes, scale_barrier_addr,
                         weight_cache_policy);
@@ -4122,6 +4133,7 @@ _EXTENSION_CONFIG = (
           f"wef{int(WEIGHT_EVICT_FIRST)}_"
           f"wph{int(WEIGHT_POLICY_HOIST)}_"
           f"wpc{int(WEIGHT_POLICY_CONSTANT)}_"
+          f"w2ne{int(W2_NO_WEIGHT_EVICT_FIRST)}_"
           f"ibc{int(INTERLEAVED_BULK_COPY)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_sa{int(W2_SORTED_ACT)}_"
@@ -4134,9 +4146,9 @@ _EXTENSION_CONFIG = (
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v111c")
+          f"mb{MIN_BLOCKS_PER_SM}_v112w2ne")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v111c"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v112w2ne"
 )
 
 _ext = load_inline(
@@ -4180,6 +4192,7 @@ _ext = load_inline(
         f"-DK_WEIGHT_EVICT_FIRST={int(WEIGHT_EVICT_FIRST)}",
         f"-DK_WEIGHT_POLICY_HOIST={int(WEIGHT_POLICY_HOIST)}",
         f"-DK_WEIGHT_POLICY_CONSTANT={int(WEIGHT_POLICY_CONSTANT)}",
+        f"-DK_W2_NO_WEIGHT_EVICT_FIRST={int(W2_NO_WEIGHT_EVICT_FIRST)}",
         f"-DK_INTERLEAVED_BULK_COPY={int(INTERLEAVED_BULK_COPY)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
