@@ -2729,3 +2729,26 @@ maximum rank latency of a full CUDA-Graph replay.
   Mode2 braiding.  It is outside graph capture/timing and leaves MXFP4 data,
   scale semantics, route metadata, and output math unchanged.  Gate TP4
   split-K=4/2 and TP8 correctness before graph-internal cold-L2 core timing.
+
+### WGMMA iteration 42b — contiguous TMA tiles selected
+
+- Correctness passes TP4 split-K=4, forced split-K=2 skew, and TP8 shape with
+  exactly the accepted errors.  Thus both tiled weight/scale TMA coordinates
+  and TP8 W2's tiled-weight/scalar-scale combination are covered.
+- Graph-internal candidate/control/candidate measurements use 100 separately
+  cold-L2 samples at M8/M32/M128.  Candidate A/control local-total ratios are
+  0.945/0.980/0.986; both W13 and W2 improve at every point.  Candidate B
+  repeats all three directions.
+- TP4 distributed candidate/control/candidate screens use 400 individually
+  cold-L2 CUDA-Graph samples per implementation/M and the same
+  CustomAllReduceV2 in both graphs.  Conservative Candidate A/control custom
+  ratios are 0.938478/0.963120/0.974130/0.974059/0.973095, a 0.964478
+  geomean or 3.68% speedup.  Normalizing by each run's paired Humming window
+  gives 0.964132 geomean or 3.72%.  Every M improves; Candidate B confirms.
+- Select tiled layout as the new default and require a fresh 10x200 formal
+  paired run before updating the headline Humming gap.  Physical permutation
+  remains one-time model-load work excluded from graph replay timing.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_tiled_layout_correctness_20260903.log`,
+  `bench/results/tp4_tiled_weight_layout_local_coldl2_screen_20260903.log`,
+  and `bench/results/tp4_tiled_layout_{candidate_a,control,candidate_b}_coldl2_screen_20260903.log`.
