@@ -35,3 +35,11 @@
 - Primary score is TP4 max-rank latency for the full routed-expert pipeline plus `CustomAllReduceV2`, reported independently for all five M values and as their equal-weight geometric mean. TP8 is a required correctness/run-through target, not the primary tuning score.
 - For every formal point, report at least five outer runs as min/median/max. Keep stage timings and a pre-quantized-X core timing only as diagnostics; neither may replace the full BF16-entry result.
 - **Cold-L2 is mandatory for every performance benchmark from 2026-09-02 onward.** H20 reports a 60 MiB L2. Before each individually timed graph replay, use Triton's standard 256 MiB cache-clear buffer on the same CUDA stream; record the start event after the clear and the end event immediately after the replay so cache eviction is enforced but its cost is excluded. Apply the identical protocol to Humming and custom kernels. Earlier continuous-replay results are warm/steady-state diagnostics only and must never be used for a final speedup claim.
+
+## 2026-09-03 approved interleaved-TP design (from the user's `ok` reply)
+- Pursue a TP-local persistent/interleaved MegaMoE path adapted from the read-only DeepGEMM SM90 MegaMoE scheduler/body; do not implement a static-route shortcut.
+- Preserve the public numerical boundaries: W13 emits BF16, SwiGLU emits BF16, the W2 input is dynamically FP8-E4M3 group-128 quantized, W2 emits BF16 route rows, and `topk_weight * 1.5` is applied only in the local k=6 reduction. Do not move route weights into W2 activation scales merely for speed.
+- Route IDs and weights are graph inputs and may change between replays. Scheduler bounds/readiness must be produced on device without host inspection of the captured route distribution.
+- Reuse local replicated X/routes; remove the original EP dispatch, remote expert ownership, return/combine, and EP barriers. The only inter-rank operation is the final TP reduction.
+- TP4 is the optimized specialization. TP8 must remain correct and runnable and may initially use the selected separate-kernel fallback.
+- For TP4 M=8/16/32, the bitwise-equivalent multicast fused-k6/one-shot-push path is an accepted component after iteration 73. M=64/128 retain stock SGLang CARv2 unless stronger cold-L2 evidence replaces it.
