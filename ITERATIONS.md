@@ -4327,3 +4327,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Verification:** TP4 balanced M8, TP4 skew M8, and TP8-shape balanced M8 all passed the full all-route reference. W2 cosine was 0.999997256, 0.999997235, and 0.999997278 respectively; all outputs finite. Fused route/quant remained bit-exact to its reference.
 - **Decision:** Correctness and TP8-runnable gate passed. Performance is not yet measured, so this remains an opt-in candidate and is not selected.
 - **Artifact:** `results/iter85_w2_sorted_act_correctness_20260903.log`.
+
+## Iteration 85b — TP4 M128 cold-L2 A/B/A/B screen of sorted W2 layout
+
+- **Method:** Four independent CUDA-Graph runs in control/candidate/control/candidate order, random routes, TP4 on GPUs 1–4. Each run used 3×100 samples; every replay had a separate 256 MiB L2 clear excluded from CUDA events; rank-max latency reported.
+- **Control medians:** 0.345328 and 0.348320 ms; paired geometric mean 0.346821 ms.
+- **Candidate medians:** 0.341680 and 0.356272 ms; paired geometric mean 0.348900 ms.
+- **Result:** control/candidate = 0.994041x; the candidate is 0.599% slower overall. Individual pair direction changed, so the apparent scale-sector saving did not produce stable end-to-end latency improvement.
+- **Decision:** Reject `V4_W2_SORTED_ACT=1`; keep it opt-in and keep the formal default disabled. Next isolate scale-only coalescing or attack the larger scalar W2 output-store sector waste.
+- **Artifact:** `results/iter85b_w2_sorted_act_tp4_m128_cold_abba_20260903.log`.
