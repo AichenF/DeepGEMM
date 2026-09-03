@@ -5437,3 +5437,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP8-shape Is=256 restores the selected W2 cosine/rel-L2 exactly to 0.999997278/0.002333323, with W13/activation at 0.000076998/0.000714756. This proves the all-kernel regression was isolated to W2 and that the W13-only refinement preserves the established coarse reference metrics.
 - Result: the W13-only candidate passes the first TP4/TP8 correctness gate. Next require control/candidate output equivalence, cubin register/stack inspection, and SASS confirmation before any timing decision.
 - Evidence: `results/iter137d_w13_predicated_activation_tp4_tp8shape_correctness_20260904.log`.
+
+## Iteration 137e — cubin audit confirms a narrow branch reduction with neutral resources
+
+- Added a reusable per-function cubin/SASS comparator and applied it to exact flag-off/flag-on JIT objects for TP4 and TP8 route-GEMM specializations.
+- TP4 and TP8 W2 functions are byte-identical between arms. TP4 W2 remains 61 registers and TP8 W2 58 registers, with zero stack/local allocation, explaining the restored TP8 numerical result after the W13-only refinement.
+- Every W13 split2/split4 specialization stays at 52 registers, zero stack/local allocation, and the same static shared memory. Candidate SASS falls from 1,448 to 1,424 instructions, `BRA` 42→37, `BSSY/BSYNC` 18→17, and shared stores 15→11; LDG, `SYNCS.PHASECHK`, and `WARPGROUP.DEPBAR` counts are unchanged.
+- The candidate therefore removes 24 static instructions and one reconvergence region without paying an occupancy cost. The modest scope is consistent with the four dynamic NCU hotspots being repeated visits through an unroll-four body, not four independently removable static regions.
+- Result: resource/SASS gate passes. Proceed to a same-process TP4 all-M control/candidate test with per-replay 256 MiB cold-L2; selection still requires exact/tolerance output equivalence and a reproducible aggregate gain.
+- Evidence: `results/iter137e_w13_predicated_activation_cubin_sass_20260904.log`.
