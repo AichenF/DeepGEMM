@@ -230,6 +230,7 @@ class CapturedCase:
         self.fused_push_mc_ptr = 0
         self.fused_pull_output = None
         self.fused_pull_mc_ptr = 0
+        self.fused_pull_sem_local = None
         self.symm_route_input = None
         self.symm_route_mc_ptr = 0
         self.symm_route_sem_local = None
@@ -495,9 +496,38 @@ class CapturedCase:
             self.m, HIDDEN
         )
         self.fused_pull_mc_ptr = self.fused_push_mc_ptr + pull_offset
+        sem_offset = pull_offset + comm.max_pull_size
+        sem_nbytes = comm.config.num_pull_blocks * 128
+        self.fused_pull_sem_local = local_slab[
+            sem_offset : sem_offset + sem_nbytes
+        ]
         from sglang.kernels.ops.kimi_k3.all_reduce import register_comm
 
         register_comm(comm.obj, pull_sem_mc_ptr=comm.pull_sem_mc_ptr)
+
+    def run_fused_k6_nvls_pull(self, comm: CustomAllReduceV2) -> torch.Tensor:
+        self.prepare_fused_pull(comm)
+        assert self.down is not None
+        assert self.fused_pull_output is not None
+        assert self.fused_pull_sem_local is not None
+        if not self.fused_pull_mc_ptr or not comm.pull_sem_mc_ptr:
+            raise RuntimeError("fused k6 NVLS pull requires multicast memory")
+
+        self.run_before_local_reduce()
+        kernel.fused_k6_nvls_pull_tp4(
+            self.down,
+            self.topk_weights,
+            self.fused_pull_output,
+            self.fused_graph_output,
+            self.fused_pull_sem_local,
+            self.fused_pull_mc_ptr,
+            comm.pull_sem_mc_ptr,
+            kernel.K6_NVLS_PULL_BLOCKS,
+        )
+        self.fused_k6_push_active = True
+        self.fused_k6_ar_mode = "fused_k6_nvls_one_shot_pull"
+        self.graph_output = self.fused_graph_output
+        return self.graph_output
 
     def prepare_symm_route_pull(self, comm: CustomAllReduceV2) -> None:
         if self.symm_route_input is not None:
@@ -576,6 +606,14 @@ class CapturedCase:
         return output
 
     def run_full(self, comm: CustomAllReduceV2) -> torch.Tensor:
+        use_fused_k6_nvls_pull = (
+            kernel.FUSED_K6_NVLS_PULL_AR
+            and comm.world_size == 4
+            and self.m <= 128
+            and kernel.W2_ROUTE_OUTPUT
+        )
+        if use_fused_k6_nvls_pull:
+            return self.run_fused_k6_nvls_pull(comm)
         use_rank_route_pull = (
             kernel.FUSED_RANK_ROUTE_MC_PULL_AR
             and comm.world_size == 4
@@ -860,6 +898,8 @@ def main() -> None:
                         kernel.FUSED_RANK_ROUTE_MC_PULL_AR
                     ),
                     "rank_route_pull_blocks": kernel.RANK_ROUTE_PULL_BLOCKS,
+                    "fused_k6_nvls_pull_ar": kernel.FUSED_K6_NVLS_PULL_AR,
+                    "k6_nvls_pull_blocks": kernel.K6_NVLS_PULL_BLOCKS,
                     "mc_pull_blocks": kernel.MC_PULL_BLOCKS or "default",
                     "mc_pull_unroll": kernel.MC_PULL_UNROLL or "default",
                     "w2_epilogue": (

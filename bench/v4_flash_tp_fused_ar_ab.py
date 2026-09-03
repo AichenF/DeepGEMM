@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
             "multicast_pull",
             "pipeline",
             "rank_route_pull",
+            "k6_nvls_pull",
         ),
         default="multicast",
     )
@@ -57,11 +58,19 @@ def parse_args() -> argparse.Namespace:
         choices=(1, 2, 4, 8, 16, 32, 64),
         default=16,
     )
+    parser.add_argument(
+        "--k6-nvls-pull-blocks",
+        type=int,
+        choices=(1, 2, 4, 8, 16, 32, 64),
+        default=16,
+    )
     parser.add_argument("--seed", type=int, default=20260902)
     args = parser.parse_args()
     args.ms = tuple(int(value) for value in args.ms.split(",") if value)
     if args.candidate in ("pipeline", "rank_route_pull"):
         supported = (128,)
+    elif args.candidate == "k6_nvls_pull":
+        supported = (8, 16, 32, 64, 128)
     elif args.candidate == "multicast_pull":
         supported = (8, 16, 32, 64, 128)
     elif args.candidate == "multicast":
@@ -145,6 +154,7 @@ def main() -> None:
                     "pipeline_chunks": args.pipeline_chunks,
                     "pipeline_ar_blocks": args.pipeline_ar_blocks,
                     "rank_route_pull_blocks": args.rank_route_pull_blocks,
+                    "k6_nvls_pull_blocks": args.k6_nvls_pull_blocks,
                     "route_pattern": args.route_pattern,
                     "outer": args.outer,
                     "replays_per_outer_per_impl": args.replays,
@@ -179,6 +189,7 @@ def main() -> None:
         kernel.PIPELINE_CHUNKS = args.pipeline_chunks
         kernel.PIPELINE_AR_BLOCKS = args.pipeline_ar_blocks
         kernel.RANK_ROUTE_PULL_BLOCKS = args.rank_route_pull_blocks
+        kernel.K6_NVLS_PULL_BLOCKS = args.k6_nvls_pull_blocks
         kernel.FUSED_K6_PUSH_AR = args.candidate == "unicast"
         kernel.FUSED_K6_MC_PUSH_AR = args.candidate == "multicast"
         kernel.FUSED_K6_MC_PULL_AR = args.candidate == "multicast_pull"
@@ -186,6 +197,7 @@ def main() -> None:
         kernel.FUSED_RANK_ROUTE_MC_PULL_AR = (
             args.candidate == "rank_route_pull"
         )
+        kernel.FUSED_K6_NVLS_PULL_AR = args.candidate == "k6_nvls_pull"
         fused_graph = paired.capture_graph(fused_case, comm, cpu_group, device)
         if not fused_case.fused_k6_push_active:
             raise RuntimeError(f"fused graph did not select fused AR at M={m}")
@@ -194,6 +206,7 @@ def main() -> None:
         kernel.FUSED_K6_MC_PULL_AR = False
         kernel.PIPELINED_W2_MC_PUSH_AR = False
         kernel.FUSED_RANK_ROUTE_MC_PULL_AR = False
+        kernel.FUSED_K6_NVLS_PULL_AR = False
         control_graph = paired.capture_graph(control_case, comm, cpu_group, device)
         if control_case.fused_k6_push_active:
             raise RuntimeError(f"control graph selected fused AR at M={m}")

@@ -3939,3 +3939,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Performance: candidate median is 0.391136 ms versus 0.324320 ms control, `control/candidate=0.82917x`; candidate batches 0.390896/0.391296 ms both lose to 0.323984/0.324512 ms control.
 - Result: reject. Although the kernel eliminates a local pass and one output collective, six rank-reducing NVLS loads per output vector expand cross-rank data movement enough to add 66.816 us. Linearity is algebraically useful but the communication placement is wrong for k=6.
 - Evidence: `bench/results/iter70_rank_route_nvls_pull_tp4_m128_smoke_coldl2_20260903.log`.
+## Iteration 71 — fused local k6 + one-shot NVLS pull
+
+- Change: added the opt-in `FUSED_K6_NVLS_PULL_AR` path. Each CTA reduces its disjoint local k6 output into the SGLang symmetric output slab, synchronizes through the existing CustomAllReduceV2 semaphore window, then performs one TP4 `multimem.ld_reduce` pull and writes the final output. Added graph-harness and same-process A/B support plus `K6_NVLS_PULL_BLOCKS` tuning (tested at 16).
+- Protocol: TP4 on GPUs 1–4; random routes; identical inputs/weights and communicator; CUDA Graph; 256 MiB L2 clear immediately before every replay and excluded from timing; 2 paired-order outer batches × 20 cold samples per implementation; max-rank latency. Log: `bench/results/iter71_fused_k6_nvls_pull_tp4_m8_m128_smoke_coldl2_20260903.log`.
+- Correctness: both sizes passed all-rank reference checks. M=8 fused/control were bitwise identical (`max_abs=0`); M=128 had expected reduction-order variation (`max_abs=32`) with fused cosine `0.9999956431` and rel-L2 `0.0029519584`.
+- M=8: control median `0.076656 ms`, fused median `0.079952 ms`, speedup `0.9588x` (4.30% slower).
+- M=128: control median `0.327056 ms`, fused median `0.360576 ms`, speedup `0.9070x` (10.25% slower).
+- Two-point geometric mean: control `0.158338 ms`, fused `0.169790 ms`, speedup `0.9325x`.
+- Decision: reject. Removing the intermediate local-k6 launch does not repay the extra synchronization/launch geometry inside the fused NVLS kernel; no parameter sweep is justified after both endpoint sizes regress materially. Keep the path opt-in for evidence only; the selected default remains stock CARv2 with the iteration-58g reducer policy.
