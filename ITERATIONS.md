@@ -2813,3 +2813,15 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_quad_lut_shuffle_correctness_20260903.log`
   and
   `bench/results/tp4_quad_lut_shuffle_local_coldl2_screen_20260903.log`.
+
+### WGMMA iteration 44a — retune WOUT after tiled storage
+
+- Revisit `V4_WOUT=64` against the selected 128-channel output tile.  Earlier
+  row-major weights favored WOUT128 by amortizing CTA setup and activation
+  loads, but contiguous offline TMA tiles materially change each CTA's global
+  transaction shape.  WOUT64 also lowers accumulator/register pressure and
+  exposes twice as many independent CTAs, which may matter at small M.
+- This is an existing compiled specialization, not a new math path.  Validate
+  tiled-layout coordinates at TP4 split-K=4/2 and TP8, then run graph-internal
+  WOUT64/128/64 cold-L2 stage screens at M8/M32/M128.  Only a repeatable core
+  win merits an M-dependent dispatch or distributed benchmark.

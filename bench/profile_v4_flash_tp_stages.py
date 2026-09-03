@@ -303,6 +303,11 @@ def main() -> None:
                     if args.impl == "custom"
                     else None
                 ),
+                "custom_wout": (
+                    int(os.environ.get("V4_WOUT", "128"))
+                    if args.impl == "custom"
+                    else None
+                ),
                 "m": args.m,
                 "tp": args.tp,
                 "route_pattern": args.route_pattern,
