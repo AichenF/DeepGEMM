@@ -3638,3 +3638,24 @@ maximum rank latency of a full CUDA-Graph replay.
   structural hotspot afterward.
 - Evidence:
   `bench/results/iter58e_tiled_k6_mode4_tp4_m8_fullgraph_aba_coldl2_20260903.log`.
+
+### WGMMA iteration 58f — bound tiled-k6 selection to M <= 16
+
+- TP4 M16 production candidate/control/candidate medians are
+  121.184/121.728/121.152 us over 5x100 cold-L2 samples per window.  Mode 4
+  averages 121.168 us, a repeatable 0.560 us or 0.46% reduction.  Minimum-
+  rank cosine remains 0.999995547, relative-L2 0.002984397, all values are
+  finite, and both candidate windows pass the NCCL all-reduce check.
+- TP4 M64 candidate/control/candidate medians are
+  272.768/272.384/273.600 us.  The two candidate windows average
+  273.184 us, 0.29% slower than control.  This larger point also exhibits a
+  system-level two-mode distribution across its five batch medians, but the
+  candidate fails even under an average of its surrounding direction.
+- Select fixed mode 4 only for M <= 16; retain SGLang `moe_fused_mul_sum` at
+  M >= 32.  This policy is backed by full distributed graphs at every
+  boundary-adjacent point: M8 and M16 repeatably win, while M32/M64/M128 do
+  not show a complete-pipeline win.  Encode the policy without changing the
+  compile-time kernel or graph node count, then run TP4/TP8 numerical gates
+  and a five-point formal paired audit.
+- Evidence:
+  `bench/results/iter58f_tiled_k6_mode4_tp4_m16_m64_fullgraph_aba_coldl2_20260903.log`.
