@@ -3058,3 +3058,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_fixed_k6_reduce_{first_,}correctness_20260903.log`
   and `bench/results/tp4_fixed_k6_reduce_stage_coldl2_screen_20260903.log`.
+
+### WGMMA iteration 49a — pair activation-quant groups per CTA
+
+- The fused W13 reduction/SwiGLU/group-128 FP8 quantizer still launches one
+  128-thread CTA per route/group.  Test an opt-in 256-thread specialization
+  that handles two independent groups per CTA, halving CTA count while keeping
+  each 128-lane reduction subgroup and every arithmetic operation unchanged.
+- Keep `V4_ACT_QUANT_PAIR=0` by default and retain both implementations in one
+  JIT module for same-binary A/B timing.  Gate TP4/TP8 output numerics, then
+  compare activation-stage and total cold-L2 medians.  Do not distribute-test
+  a noise-sized or mixed-sign local result.
