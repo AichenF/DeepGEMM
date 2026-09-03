@@ -26,6 +26,7 @@ def main() -> None:
     parser.add_argument("--m", type=int, default=8)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--chunks", type=int, choices=(2, 4, 8), default=4)
+    parser.add_argument("--inline-finish", action="store_true")
     parser.add_argument(
         "--launch-mode", choices=("sequential", "concurrent"),
         default="sequential"
@@ -36,6 +37,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     kernel.W2_PROGRESS_CHUNKS = args.chunks
+    kernel.W2_PROGRESS_INLINE_FINISH = args.inline_finish
 
     rank, world_size, device, cpu_group = custom.init_distributed()
     if world_size != 4:
@@ -58,6 +60,7 @@ def main() -> None:
         raise RuntimeError("worker probe requires multicast memory")
     comm._symm_tensor.zero_()
     case.fused_push_counter.zero_()
+    case.fused_graph_output.zero_()
     torch.cuda.synchronize(device)
     dist.barrier(group=cpu_group)
     if rank == 0:
@@ -90,8 +93,10 @@ def main() -> None:
             kernel.progress_k6_mc_push_tp4(
                 case.down,
                 case.topk_weights,
+                case.fused_graph_output,
                 case.w2_progress_state,
                 case.fused_push_counter,
+                case.fused_push_workspaces,
                 case.fused_push_mc_ptr,
                 case.fused_push_rank,
                 case.fused_push_stride,
@@ -105,8 +110,10 @@ def main() -> None:
         kernel.progress_k6_mc_push_tp4(
             case.down,
             case.topk_weights,
+            case.fused_graph_output,
             case.w2_progress_state,
             case.fused_push_counter,
+            case.fused_push_workspaces,
             case.fused_push_mc_ptr,
             case.fused_push_rank,
             case.fused_push_stride,
@@ -133,6 +140,7 @@ def main() -> None:
         "rank": rank,
         "launch_mode": args.launch_mode,
         "chunks": args.chunks,
+        "inline_finish": args.inline_finish,
         "marker_min": int(state[:marker_end].min().item()),
         "marker_max": int(state[:marker_end].max().item()),
         "marker_sum": int(state[:marker_end].sum().item()),
@@ -151,12 +159,25 @@ def main() -> None:
     local_state["phase"] = phase
     local_state["source_nonzero_words"] = source_nonzero_words
     local_state["expected_words_per_source"] = nbytes // 4
+    expected_nonzero = 0 if args.inline_finish else nbytes // 4
+    counters = case.fused_push_counter.cpu()
+    local_state["counter_min"] = int(counters.min().item())
+    local_state["counter_max"] = int(counters.max().item())
+    local_state["output_finite"] = bool(
+        torch.isfinite(case.fused_graph_output.float()).all().item()
+    )
     local_state["pass"] = bool(
         local_state["marker_min"] == local_state["marker_max"] == 1
         and local_state["marker_sum"] == marker_end
         and local_state["task_done"] == total_tasks
         and local_state["worker_done"] == args.workers
-        and all(count == nbytes // 4 for count in source_nonzero_words)
+        and all(count == expected_nonzero for count in source_nonzero_words)
+        and (
+            local_state["counter_min"] == local_state["counter_max"] == 1
+            if args.inline_finish
+            else local_state["counter_min"] == local_state["counter_max"] == 0
+        )
+        and local_state["output_finite"]
     )
     gathered = [None for _ in range(world_size)] if rank == 0 else None
     dist.gather_object(local_state, gathered, dst=0, group=cpu_group)

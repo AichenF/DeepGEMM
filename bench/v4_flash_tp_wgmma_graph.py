@@ -545,8 +545,10 @@ class CapturedCase:
             kernel.progress_k6_mc_push_tp4(
                 self.down,
                 self.topk_weights,
+                self.fused_graph_output,
                 self.w2_progress_state,
                 self.fused_push_counter,
+                self.fused_push_workspaces,
                 self.fused_push_mc_ptr,
                 self.fused_push_rank,
                 self.fused_push_stride,
@@ -555,15 +557,20 @@ class CapturedCase:
         with torch.cuda.stream(self.pipeline_stream):
             self.pipeline_done_event.record(self.pipeline_stream)
         main_stream.wait_event(self.pipeline_done_event)
-        kernel.progress_mc_push_finish_tp4(
-            self.fused_graph_output,
-            self.fused_push_counter,
-            self.fused_push_workspaces,
-            self.fused_push_rank,
-            self.fused_push_stride,
-        )
+        if not kernel.W2_PROGRESS_INLINE_FINISH:
+            kernel.progress_mc_push_finish_tp4(
+                self.fused_graph_output,
+                self.fused_push_counter,
+                self.fused_push_workspaces,
+                self.fused_push_rank,
+                self.fused_push_stride,
+            )
         self.fused_k6_push_active = True
-        self.fused_k6_ar_mode = "w2_progress_multicast_push"
+        self.fused_k6_ar_mode = (
+            "w2_progress_inline_finish_multicast_push"
+            if kernel.W2_PROGRESS_INLINE_FINISH
+            else "w2_progress_multicast_push"
+        )
         self.graph_output = self.fused_graph_output
         return self.graph_output
 

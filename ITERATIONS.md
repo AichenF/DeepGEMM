@@ -4274,3 +4274,12 @@ maximum rank latency of a full CUDA-Graph replay.
   - results/iter83p_progress_chunks2_workers16_tp4_m8_cold_ab_20260903.log
   - results/iter83p_progress_chunks4_workers32_tp4_m8_cold_ab_20260903.log
   - results/iter83p_progress_chunks8_workers64_tp4_m8_cold_ab_20260903.log
+
+### Iteration 83q0 — inline-finish compile/run reached host-probe dtype failure (2026-09-03)
+
+- Change: added an opt-in inline finish to the W2 release-marker worker. After every local worker has multicast its chunks, the same resident grid polls all four symmetric source slots, performs the rank sum, clears the slots, and advances all 78 CARv2 phase counters. The legacy separate finish kernel remains available.
+- Intended benefit: remove one CUDA-Graph kernel node and reuse the already resident 8-chunk/64-worker grid.
+- TP4 M=8 concurrent probe: the new extension compiled and all GPU work reached worker_complete without deadlock.
+- Failure: the host-side probe then called min/max on the uint32 CARv2 counter tensor; this PyTorch build reports NotImplementedError: min_all not implemented for UInt32 on every rank. Therefore no counter/slot correctness verdict is claimed from this run.
+- Decision: implementation remains unaccepted. Repair only the probe by viewing counters as int32, then repeat the identical gate before benchmarking.
+- Artifact: results/iter83q_inline_finish_chunks8_workers64_tp4_m8_compile_probe_20260903.log
