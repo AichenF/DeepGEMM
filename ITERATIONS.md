@@ -5271,3 +5271,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Every M again passes the full route reference and same-CARv2 correctness checks; custom minimum cosine is 0.999995575, maximum rel-L2 is 0.002974846, and all outputs are finite.
 - Result: select four-way outer K128 unrolling as the new optimization baseline. The aggregate target is now independently reproduced; continue from this baseline with fresh profiling rather than treating the first threshold crossing as sufficient.
 - Evidence: `results/iter130c_selected_unroll4_exact_humming_tp4_allm_repeat_cold2000_20260903.log`
+
+## Iteration 131 — selected four-way route GEMMs captured for fresh NCU analysis
+
+- Captured both selected-default TP4 M128 random-route kernels in one Nsight Compute full-set report after the standard excluded 256 MiB cold-L2 clear: W13 `route_gemm<4096,1024,split2>` followed by W2 `route_gemm<512,4096,split1>`.
+- NCU completed 38 replay passes for each kernel and the runtime metadata confirms both two-way and four-way flags are true, so this is the newly selected four-way path rather than the prior iteration-124 unroll2 profile.
+- Result: profile collection succeeded. Preserve the raw report and filtered metric export; use the next analysis step to identify whether W13 or W2 now offers the larger issue/barrier/memory opportunity before changing source.
+- Evidence: `results/iter131_selected_unroll4_tp4_m128_route_gemms_cold_ncu.{log,ncu-rep}` and `results/iter131a_selected_unroll4_tp4_m128_route_gemms_ncu_details_20260903.log`.
