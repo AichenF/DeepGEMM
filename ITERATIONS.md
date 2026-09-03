@@ -4167,3 +4167,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Cold latency:** control median `0.079104 ms` (min `0.077856`, max `0.088768`); candidate median `0.081152 ms` (min `0.080192`, max `0.086656`).
 - **Result:** control/candidate `0.974763x`; candidate remains `2.59%` slower by `2.048 us`. This is only a small improvement over the 16-worker point and does not cross control.
 - **Decision:** reject the current progress protocol as a default. Stop worker-count sweeping and isolate the producer-only publication tax.
+
+## Iteration 83g — isolate the producer-only W2 publication tax
+
+- **Benchmark change:** extended the single-rank progress probe with order-balanced CUDA Graph A/B timing. Control and candidate share the same tensors and both capture an identical progress-state reset, so only `run_w2` versus `run_w2_progress` differs.
+- **Method:** TP4-local M8 random routes on GPU1, four alternating outer batches × 200 samples per implementation. A separate 256 MiB L2 clear ran immediately before every graph replay and outside CUDA events.
+- **Correctness:** publication counts and queue permutation pass; progress and control W2 route outputs are bitwise equal both eagerly and through the captured graphs.
+- **Cold W2 latency:** control median `29.792 us` (min `28.992`, max `32.000`); progress median `33.120 us` (min `31.872`, max `35.008`). Control/progress is `0.899517x`.
+- **Finding:** per-tile thread fences/counters/queue publication add `3.328 us`, or `11.17%` of the ordinary W2 stage. The full 32-worker experiment regressed by only `2.048 us`, so overlap hides about `1.28 us` but cannot repay producer publication.
+- **Decision:** stop consumer-count tuning. Any viable overlap successor must reduce publication frequency or synchronization scope before another end-to-end screen.
