@@ -4183,3 +4183,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Rationale:** this follows DeepGEMM MegaMoE's shared-to-TMA-store-to-notify epilogue ordering and is intended to replace 128 per-thread device fences with an explicit asynchronous-copy completion boundary.
 - **Failure:** NVCC stopped before GPU execution because the unqualified helper name `tma_store_1d` is undefined at the call site. No correctness or performance result exists.
 - **Decision:** retain this failed compile as evidence, resolve the helper's actual namespace from the read-only DeepGEMM header, and make only that qualification repair before retrying.
+
+## Iteration 83h1 — TMA-store progress epilogue compiles and passes
+
+- **Repair:** qualified the DeepGEMM helper as `ptx::tma_store_1d`. The progress-only W2 path stages `[8,128]` BF16 in shared memory, issues one 256-byte TMA store per valid route, waits for bulk-group completion, then publishes counters/queue entries from the elected lane.
+- **Correctness:** TP4-local M8 random publication counts, queue permutation, eager output, and captured-graph output all pass; progress W2 is bitwise equal to ordinary W2.
+- **Method:** four order-balanced outer batches × 200 graph replays per implementation, identical captured state reset on both sides, separately cold L2 before every replay.
+- **Cold W2 latency:** control median `29.872 us` (min `29.056`, max `32.096`); TMA-progress median `32.800 us` (min `31.776`, max `34.816`), control/progress `0.910732x`.
+- **Finding:** TMA lowers the publication tax from iteration 83g's `3.328 us` to `2.928 us`, recovering only about `0.40 us`. Per-thread fences were a cost, but per-CTA completion and multi-level publication remain dominant.
+- **Decision:** keep the TMA ordering for one end-to-end TP4 screen; it is still opt-in and not a selected path.

@@ -1059,7 +1059,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             for (int route_slot = 0; route_slot < kTok; ++route_slot) {
                 const int route = route_ids[route_slot];
                 if (route < max_routes) {
-                    tma_store_1d(
+                    ptx::tma_store_1d(
                         route_output + static_cast<int64_t>(route) * N
                             + n_block_idx * kWout,
                         route_smem + route_slot * kWout,
@@ -3622,7 +3622,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v83htma"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v83h1tma"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
