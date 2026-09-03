@@ -4243,3 +4243,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** PASS on all ranks. Every rank reports 1,536 markers all equal to one, `task_done=32`, and `worker_done=32`.
 - **Communication evidence:** all four source regions in every local symmetric workspace contain `16384/16384` nonzero words; the acquire readers observe complete W2 route tiles before multicast.
 - **Decision:** concurrency correctness passes. Proceed to complete finish-kernel and repeated cold-L2 CUDA Graph timing.
+
+## Iteration 83n — release-marker overlap reaches near parity
+
+- **Change under test:** direct global W2 stores, release markers, 32 static N1024 workers, and finish kernel versus accepted stock CARv2.
+- **Method:** TP4 M8 random routes, same process/data/communicator, four balanced AB/BA batches × 50 graph replays per implementation; separate excluded 256 MiB cold-L2 clear before every replay.
+- **Correctness:** all-rank reference and all-reduce checks pass; candidate and control graph outputs are bitwise identical.
+- **Cold latency:** control median `0.079040 ms` (min `0.077664`, max `0.095744`); candidate median `0.079424 ms` (min `0.078144`, max `0.088800`). Control/candidate is `0.995165x`.
+- **Finding:** the end-to-end deficit is now only `0.384 us` or `0.49%`, down from iteration 83f2's `2.048 us`. All four candidate batch medians still lose narrowly, so this is near parity rather than a selected win.
+- **Decision:** keep opt-in. Sweep N2048/N1024/N512 worker chunk granularity; finer N512 readiness needs to hide only another 0.4 us to cross control.
