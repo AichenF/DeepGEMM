@@ -2924,3 +2924,21 @@ maximum rank latency of a full CUDA-Graph replay.
   for selection.  TP4 remains the primary optimization target.
 - Evidence:
   `bench/results/tp8_wgmma_bulk_copy_default_smoke_20260903.log`.
+
+### Post-iteration-46 TP4 formal cold-L2 score
+
+- Formal paired protocol remains random real k6 routes on TP4 GPUs 1–4, both
+  full CUDA Graphs including the same SGLang CustomAllReduceV2, alternating
+  complete Humming/custom batches, 10 outer batches x 200 replays, and a
+  separate excluded 256 MiB L2 clear before every implementation replay.
+- Humming/custom medians (ms) at M8/16/32/64/128 are
+  0.090048/0.080800, 0.145664/0.128768, 0.232272/0.212304,
+  0.342592/0.298672, and 0.408608/0.385072.  Custom wins every point; all
+  finite, cosine and independent NCCL all-reduce validations pass.
+- Geometric means are 0.211827/0.190978 ms, so custom/Humming=0.901574 and
+  Humming/custom=1.109171: 10.92% speedup (or 9.84% latency reduction).
+  Relative to the previous tiled-layout formal score of 1.076017, the accepted
+  bulk-copy default improves the Humming/custom ratio by 3.08%.  It remains
+  well short of the 20% objective.
+- Evidence:
+  `bench/results/tp4_paired_bulk_copy_default_coldl2_formal_20260903.log`.
