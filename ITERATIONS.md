@@ -5208,3 +5208,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP4 balanced auto split4 exactly reproduces selected W13/activation/W2 cosine and rel-L2 metrics.  TP4 skew forced split2 and TP8-shape balanced auto split4 likewise reproduce the selected errors exactly; route alignment and input quantization are exact and all outputs finite.
 - Result: four-way unrolling is numerically safe across the required TP4/TP8 and split4/split2 gates.  Keep default at two-way pending cubin-resource inspection and same-process M128 cold-L2 timing; reject early if code/register growth removes the prior gain.
 - Evidence: `results/iter129_route_k_unroll4_correctness_20260903.log`.
+
+## Iteration 129b — M128 timing launch rejected before kernel execution
+
+- The first M128 paired-timing invocation used malformed concatenated CLI options (`--m128`, `--outer8`, `--replays100`, and `--warmup-replays20`). `argparse` rejected them on all four ranks before graph construction or kernel execution.
+- This run contains no performance evidence and does not change the four-way-unroll decision. The corrected invocation will use `--m 128 --outer 8 --replays 100 --warmup-replays 20`.
+- Evidence: `results/iter129b_route_k_unroll4_tp4_m128_paired_cold800_20260903.log`
