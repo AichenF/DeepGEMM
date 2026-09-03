@@ -4469,3 +4469,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The profiled replay preserves the benchmark cold-L2 policy: a separate 256 MiB cache clear immediately precedes the local pipeline and is outside the measured/profiled workload. NCU completed 20 passes and produced a valid report.
 - This iteration records collection only; metric extraction and the control/candidate mechanism comparison are intentionally separated into the next audit before changing the default.
 - Artifacts: `bench/results/iter92_w13_distributed_prep_m128_coldl2_detailed_ncu.{log,ncu-rep}`.
+
+## Iteration 92a — Distributed W13 NCU first-pass interpretation
+
+- Against the iteration-84 selected-control report, distributed preparation reduced NCU's uncoalesced-global-access warning from 132,864 excessive sectors (11% of 1,224,096) to 80,384 (7% of the same 1,224,096): 52,480 fewer sectors, or 39.50%. This is direct mechanism evidence that the redistributed activation-scale gathers are more coalesced.
+- Launch geometry is unchanged at 5,136 CTAs, 128 threads, and 7.32 waves/SM. Registers rise from 54 to 55 per thread; theoretical/achieved occupancy remain effectively unchanged (56.25%/52.97% in the candidate), with no local-memory spills.
+- The separate NCU runs report 195.90 us control versus 213.57 us candidate, but clocks were uncontrolled and multi-pass profiling is not the acceptance timing source. The same-process 600-sample cold-L2 paired audit remains the valid latency evidence.
+- The candidate `detailed` report omitted Scheduler Statistics and Warp State Statistics (20 passes versus 21 previously), so barrier-stall confirmation is incomplete. Run a focused `SchedulerStats,WarpStateStats,InstructionStats` capture before default selection.
+- Artifact: `bench/results/iter92_w13_distributed_prep_m128_ncu_details.log`.
