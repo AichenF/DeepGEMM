@@ -2942,3 +2942,19 @@ maximum rank latency of a full CUDA-Graph replay.
   well short of the 20% objective.
 - Evidence:
   `bench/results/tp4_paired_bulk_copy_default_coldl2_formal_20260903.log`.
+
+### WGMMA iteration 47a — fuse TP route alignment with input quantization
+
+- The selected local stage profile still spends roughly 8 us in SGLang's
+  E=256 route alignment and 6–8 us in the independent H=4096 group-128 FP8
+  input quantizer.  The two operations have no data dependency but currently
+  serialize as separate graph kernels.
+- Add an opt-in TP-specialized preparation kernel for fixed E=256, top-k=6,
+  block-M=8 and H=4096.  CTA 0 builds the expert histogram, padded offsets,
+  expert-block IDs and route permutation in shared memory; the remaining CTA
+  work performs the same BF16-to-E4M3 group-128 quantization.  Both halves run
+  in one launch, with preallocated graph-stable output buffers.
+- Keep `V4_FUSED_ROUTE_QUANT=0` by default.  First require route-contract
+  checks against `moe_align_block_size`, exact/near-exact quantizer comparison,
+  full TP4 split-K=4/2 and TP8 numerical checks, then graph-internal cold-L2
+  candidate/control/candidate timing.  The Humming baseline remains unchanged.
