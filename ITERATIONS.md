@@ -5228,3 +5228,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Control/candidate is 1.043227x: four-way unrolling removes 14.576 us (4.14% of control) and wins all eight batch medians despite the register increase. Outputs are bitwise identical on all ranks.
 - Result: four-way unrolling passes the M128 performance gate. Continue with M16/M32/M64 and a separate M8 neutrality check before changing the default.
 - Evidence: `results/iter129d_route_k_unroll4_tp4_m128_paired_cold800_20260903.log`
+
+## Iteration 129e — four-way K128 unroll wins every required M
+
+- Same-process TP4 random-route screening used five x 100 rank-max cold-L2 samples per arm, alternating A/B then B/A before every replay. Selected-two-way versus four-way median latency and control/candidate speedup: M8 0.073712/0.071456 ms (1.031572x), M16 0.116128/0.112496 ms (1.032286x), M32 0.188880/0.181648 ms (1.039813x), and M64 0.276432/0.264960 ms (1.043297x).
+- Candidate min/median/max latency is 0.069984/0.071456/0.073184 ms at M8, 0.111392/0.112496/0.114496 ms at M16, 0.174048/0.181648/0.186272 ms at M32, and 0.245568/0.264960/0.270304 ms at M64. The control min/median/max values are respectively 0.072384/0.073712/0.220480, 0.114528/0.116128/0.230176, 0.180352/0.188880/0.334112, and 0.254336/0.276432/0.372960 ms.
+- Four-way unrolling wins every one of the 20 batch medians and is bitwise identical on all ranks. Combined with the M128 gate, its five-shape geometric-mean self-control speedup is about 1.0380x with no required-shape regression.
+- Result: promote four-way unrolling to the formal exact-Humming-plus-CARv2 benchmark gate. Do not change the production default until that 10 x 200 comparison and fresh no-environment TP4/TP8 correctness both pass.
+- Evidence: `results/iter129e_route_k_unroll4_tp4_m8_m64_paired_cold2000_20260903.log`
