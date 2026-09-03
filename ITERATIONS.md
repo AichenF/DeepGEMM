@@ -4086,3 +4086,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - Added worker-exit accounting and a TP4 diagnostic for all four multicast source-slot ranges. The diagnostic command did not execute: this torchrun parser treated the script's `--m` as an ambiguous launcher abbreviation for `--master-*`.
 - Evidence: `results/iter83c0_w2_progress_worker_launcher_error_20260903.log`.
 - Classification: launcher error, not a kernel result. Retry with an explicit `--` separator before the training script.
+
+### Iteration 83c1 — worker probe phase-read host error
+
+- The corrected torchrun invocation initializes all four ranks and builds the new extension, but the diagnostic exits before launching the worker: PyTorch CUDA does not implement `bitwise_and` for SGLang's uint32 push counter.
+- Evidence: `results/iter83c1_w2_progress_worker_phase_read_error_20260903.log`.
+- Classification: host diagnostic error, not a synchronization result. Read the scalar with `.item()` before applying integer parity and rerun unchanged device code.

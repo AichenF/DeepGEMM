@@ -1,0 +1,3 @@
+All four ranks failed before the worker launch at:
+  phase = int((case.fused_push_counter[0] & 1).item())
+NotImplementedError: "bitwise_and_cuda" not implemented for 'UInt32'
