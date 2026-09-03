@@ -3024,3 +3024,18 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/tp8_wgmma_fused_route_quant_default_smoke_20260903.log` and
   `bench/results/tp4_paired_fused_route_quant_default_coldl2_formal_20260903.log`.
+
+### WGMMA iteration 48a — fixed-shape vectorized local k6 reduction
+
+- The selected custom path still uses SGLang's generic Triton
+  `moe_fused_mul_sum`; its cold-L2 stage costs about 5.7–7.5 us and launches
+  roughly 4M 256-thread CTAs for this BF16/top-k=6/H=4096 contract.
+- Add an opt-in custom reduction with one 256-thread CTA per token.  Each lane
+  traverses the fixed hidden row using `bfloat162` vector loads, accumulates
+  the six route values in FP32 with the same FP32 weights and routed factor,
+  and emits BF16.  W2 output layout, MXFP4 math and CustomAllReduceV2 are
+  unchanged.
+- Keep `V4_CUSTOM_ROUTE_REDUCE=0` by default.  Require full-path numerical
+  checks and graph-internal candidate/control/candidate cold-L2 timing before
+  any distributed comparison; reject if reduced CTA count under-fills H20 or
+  changes output beyond the existing tolerance.
