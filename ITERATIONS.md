@@ -4236,3 +4236,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Cold W2 latency:** control median `29.536 us` (min `28.704`, max `31.360`); release-marker progress median `30.880 us` (min `29.952`, max `33.024`), control/candidate `0.956477x`.
 - **Finding:** producer tax falls to `1.344 us`, half iteration 83i's `2.688 us` and `1.984 us` below the original queue implementation. This reaches the range previously hidden by communication overlap.
 - **Decision:** advance to the TP4 concurrent worker gate and an end-to-end cold-L2 A/B; remain opt-in until both pass.
+
+## Iteration 83m — release-marker TP4 concurrent worker gate
+
+- **Change under test:** no source change; ran the direct-global-store/release-marker producer with all 32 static consumers concurrently on TP4.
+- **Result:** PASS on all ranks. Every rank reports 1,536 markers all equal to one, `task_done=32`, and `worker_done=32`.
+- **Communication evidence:** all four source regions in every local symmetric workspace contain `16384/16384` nonzero words; the acquire readers observe complete W2 route tiles before multicast.
+- **Decision:** concurrency correctness passes. Proceed to complete finish-kernel and repeated cold-L2 CUDA Graph timing.
