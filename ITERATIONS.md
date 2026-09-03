@@ -4152,3 +4152,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Attempt:** requested progress-worker counts `24,32` in the existing cold-L2 A/B harness.
 - **Failure:** argparse rejected `24`; the supported set is `{1,2,4,8,16,32}`. `set -e` stopped the loop before the 32-worker case, so no GPU performance result was produced.
 - **Decision:** this is a benchmark-invocation error, not a kernel result. Keep the harness restriction and rerun the valid 32-worker endpoint.
+
+## Iteration 83f1 — invalid odd outer-count invocation
+
+- **Attempt:** valid 32-worker endpoint with `outer=3`, `replays=7`.
+- **Failure:** the order-balanced A/B harness requires a positive even outer count and rejected the invocation before GPU execution.
+- **Decision:** no kernel or performance result; rerun unchanged with `outer=4`.

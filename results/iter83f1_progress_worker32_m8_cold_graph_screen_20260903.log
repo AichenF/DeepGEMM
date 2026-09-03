@@ -1,0 +1,116 @@
+W0903 10:07:15.831000 307351 torch/distributed/run.py:851] 
+W0903 10:07:15.831000 307351 torch/distributed/run.py:851] *****************************************
+W0903 10:07:15.831000 307351 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0903 10:07:15.831000 307351 torch/distributed/run.py:851] *****************************************
+usage: v4_flash_tp_fused_ar_ab.py [-h] [--ms MS]
+                                  [--candidate {unicast,multicast,multicast_pull,pipeline,progress,rank_route_pull,k6_nvls_pull}]
+                                  [--route-pattern {random,balanced,skew}]
+                                  [--outer OUTER] [--replays REPLAYS]
+                                  [--warmup-replays WARMUP_REPLAYS]
+                                  [--pull-blocks PULL_BLOCKS]
+                                  [--pull-unroll {0,2,4,8,16}]
+                                  [--pipeline-chunks {2,4,8}]
+                                  [--pipeline-ar-blocks {1,2,4,8,16,32,78}]
+                                  [--progress-workers {1,2,4,8,16,32}]
+                                  [--rank-route-pull-blocks {1,2,4,8,16,32,64}]
+                                  [--k6-nvls-pull-blocks {1,2,4,8,16,32,64}]
+                                  [--seed SEED]
+v4_flash_tp_fused_ar_ab.py: error: --outer must be positive and even for balanced AB/BA
+usage: v4_flash_tp_fused_ar_ab.py [-h] [--ms MS]
+                                  [--candidate {unicast,multicast,multicast_pull,pipeline,progress,rank_route_pull,k6_nvls_pull}]
+                                  [--route-pattern {random,balanced,skew}]
+                                  [--outer OUTER] [--replays REPLAYS]
+                                  [--warmup-replays WARMUP_REPLAYS]
+                                  [--pull-blocks PULL_BLOCKS]
+                                  [--pull-unroll {0,2,4,8,16}]
+                                  [--pipeline-chunks {2,4,8}]
+                                  [--pipeline-ar-blocks {1,2,4,8,16,32,78}]
+                                  [--progress-workers {1,2,4,8,16,32}]
+                                  [--rank-route-pull-blocks {1,2,4,8,16,32,64}]
+                                  [--k6-nvls-pull-blocks {1,2,4,8,16,32,64}]
+                                  [--seed SEED]
+v4_flash_tp_fused_ar_ab.py: error: --outer must be positive and even for balanced AB/BA
+usage: v4_flash_tp_fused_ar_ab.py [-h] [--ms MS]
+                                  [--candidate {unicast,multicast,multicast_pull,pipeline,progress,rank_route_pull,k6_nvls_pull}]
+                                  [--route-pattern {random,balanced,skew}]
+                                  [--outer OUTER] [--replays REPLAYS]
+                                  [--warmup-replays WARMUP_REPLAYS]
+                                  [--pull-blocks PULL_BLOCKS]
+                                  [--pull-unroll {0,2,4,8,16}]
+                                  [--pipeline-chunks {2,4,8}]
+                                  [--pipeline-ar-blocks {1,2,4,8,16,32,78}]
+                                  [--progress-workers {1,2,4,8,16,32}]
+                                  [--rank-route-pull-blocks {1,2,4,8,16,32,64}]
+                                  [--k6-nvls-pull-blocks {1,2,4,8,16,32,64}]
+                                  [--seed SEED]
+v4_flash_tp_fused_ar_ab.py: error: --outer must be positive and even for balanced AB/BA
+usage: v4_flash_tp_fused_ar_ab.py [-h] [--ms MS]
+                                  [--candidate {unicast,multicast,multicast_pull,pipeline,progress,rank_route_pull,k6_nvls_pull}]
+                                  [--route-pattern {random,balanced,skew}]
+                                  [--outer OUTER] [--replays REPLAYS]
+                                  [--warmup-replays WARMUP_REPLAYS]
+                                  [--pull-blocks PULL_BLOCKS]
+                                  [--pull-unroll {0,2,4,8,16}]
+                                  [--pipeline-chunks {2,4,8}]
+                                  [--pipeline-ar-blocks {1,2,4,8,16,32,78}]
+                                  [--progress-workers {1,2,4,8,16,32}]
+                                  [--rank-route-pull-blocks {1,2,4,8,16,32,64}]
+                                  [--k6-nvls-pull-blocks {1,2,4,8,16,32,64}]
+                                  [--seed SEED]
+v4_flash_tp_fused_ar_ab.py: error: --outer must be positive and even for balanced AB/BA
+W0903 10:07:26.886000 307351 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 307420 closing signal SIGTERM
+W0903 10:07:26.887000 307351 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 307421 closing signal SIGTERM
+W0903 10:07:26.887000 307351 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 307422 closing signal SIGTERM
+E0903 10:07:27.016000 307351 torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 2) local_rank: 3 (pid: 307423) of binary: /usr/bin/python3
+Traceback (most recent call last):
+  File "/usr/local/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+bench/v4_flash_tp_fused_ar_ab.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-09-03_10:07:27
+  host      : H20-GPU-06.cm.cluster
+  rank      : 0 (local_rank: 0)
+  exitcode  : -15 (pid: 307420)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 307420
+[2]:
+  time      : 2026-09-03_10:07:27
+  host      : H20-GPU-06.cm.cluster
+  rank      : 1 (local_rank: 1)
+  exitcode  : -15 (pid: 307421)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 307421
+[3]:
+  time      : 2026-09-03_10:07:27
+  host      : H20-GPU-06.cm.cluster
+  rank      : 2 (local_rank: 2)
+  exitcode  : -15 (pid: 307422)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 307422
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-09-03_10:07:26
+  host      : H20-GPU-06.cm.cluster
+  rank      : 3 (local_rank: 3)
+  exitcode  : 2 (pid: 307423)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
