@@ -5311,3 +5311,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Outputs are bitwise identical on all ranks. Together with M128's 1.007563x gain, the five-shape geometric mean is only about 0.9991x: M8/M16/M32 all regress while the split2 M64/M128 points improve.
 - Result: reject global eight-way unrolling and keep the production default at four-way. Refine the candidate to use pragma-eight only for `SplitK <= 2` while retaining pragma-four for split4; this follows the measured split-policy boundary and should preserve small-M code generation.
 - Evidence: `results/iter132c_route_k_unroll8_tp4_m8_m64_paired_cold2000_20260903.log`.
+
+## Iteration 133 — split-aware eight-way K unroll passes correctness
+
+- Added opt-in `V4_ROUTE_K_UNROLL8_SPLIT2=1` without changing the rejected global-eight flag. The pragma factor is the template constant expression `SplitK <= 2 ? 8 : 4`: split1/split2 kernels receive eight-way unrolling, while split4 kernels retain the selected four-way code path.
+- Propagated the new flag through extension hashing/compile flags, graph and correctness metadata, local profiling, and the same-process comparison harness. The production default remains pure four-way.
+- TP4 balanced auto split4, TP4 skew forced split2, and TP8-shape balanced auto split4 all exactly reproduce the selected W13/activation/W2 numerical metrics. Route preparation and quantization are exact and all outputs are finite.
+- Result: split-aware unrolling is numerically safe and NVCC accepts the template-dependent pragma. Verify that cubin resources match selected for split4 and global-eight for split2, then run M128 and all-M cold-L2 paired gates.
+- Evidence: `results/iter133_splitaware_route_k_unroll8_correctness_20260903.log`.
