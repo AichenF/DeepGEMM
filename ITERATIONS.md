@@ -3390,3 +3390,25 @@ maximum rank latency of a full CUDA-Graph replay.
   require finite outputs and no material cosine/relative-L2 regression, then
   use candidate/control/candidate cold-L2 stage timing.  Reject on either
   numerical risk or a non-repeatable sub-microsecond result.
+
+### WGMMA iteration 55b — FP16 W13 split-K workspace rejected
+
+- Balanced TP4 M8/M128, maximally skewed TP4 M128, TP8-shape M128 skew, and
+  the elevated-scale M8 gate all remain finite.  Final W2 cosine/relative-L2
+  are 0.99999722--0.99999728 and 0.00233--0.00236, effectively unchanged.
+  However, the new rounding is visible upstream: balanced M8 W13 and
+  activation relative-L2 rise to 0.0002823 and 0.0016985 versus roughly
+  0.000193 and 0.001192 for the selected FP32 workspace.
+- Candidate A/control/candidate B cold-L2 local-total medians average to
+  87.840/87.968 us at M8, 197.944/197.936 us at M32, and
+  328.104/327.952 us at M128.  This is a 0.15% M8 reduction, effectively
+  zero at M32, and a 0.05% M128 regression.  The half-size workspace makes
+  activation/reduction 0.096--0.160 us faster, but FP16 conversion in W13
+  offsets it; W13 itself improves only 0.35% at M8 and regresses at M32/M128.
+- Reject without distributed timing.  The result is below the predeclared
+  repeatability threshold, supplies no end-to-end gain at the important
+  M32/M128 points, and introduces narrower intermediate range plus extra
+  rounding.  Restore the exact iteration-53 FP32 workspace implementation.
+- Evidence:
+  `bench/results/iter55_fp16_w13_partial_correctness_20260903.log` and
+  `bench/results/iter55_fp16_w13_partial_stage_aba_coldl2_20260903.log`.
