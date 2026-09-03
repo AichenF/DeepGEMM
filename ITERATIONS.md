@@ -4682,3 +4682,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - All eight candidate batch medians beat their paired controls, by approximately 2.75–5.28 us. The consistent multi-microsecond separation is materially stronger than the rejected scope/cache-policy noise.
 - Keep opt-in while screening M8/M16/M32/M64. If every shape remains non-regressive, proceed to a long five-shape exact-Humming audit and select it as the default.
 - Artifact: `results/iter105b_weight_evict_first_tp4_m128_paired_cold800_20260903.log`.
+
+## Iteration 105c — streaming-weight evict-first wins all TP4 shapes
+
+- Extended the same-process random-route cold-L2 comparison to M8/M16/M32/M64 with 4×100 samples per variant, exact output checks, per-sample ABBA ordering, and a separate excluded 256 MiB clear before every replay.
+- Control/candidate medians (ms) and speedups: M8 `0.076000/0.075136 = 1.011499x`; M16 `0.120992/0.119424 = 1.013130x`; M32 `0.192160/0.190320 = 1.009668x`; M64 `0.281312/0.279200 = 1.007564x`.
+- Combined with iteration 105b M128 (`1.009028x`), the five-shape geometric-mean improvement is approximately **1.01018x**. All 28 paired batch medians across the five shapes favor evict-first, and all graph outputs are bitwise identical.
+- This is a broad ~1% custom-pipeline improvement with a mechanism matching cold streamed weights. Proceed to the exact MXFP4 Humming/custom 10×200 five-shape formal audit before changing the default.
+- Artifact: `results/iter105c_weight_evict_first_tp4_m8_m16_m32_m64_paired_cold400_20260903.log`.
