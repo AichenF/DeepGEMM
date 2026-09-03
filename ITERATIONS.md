@@ -4699,3 +4699,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Relative to iteration 101d, custom geomean improves from 0.186609677 to 0.184569426 ms (1.105%); simultaneous Humming drift is -0.31%, so headline speedup rises by 0.90%. Same-process iterations 105b/c isolate the candidate itself at approximately 1.018%.
 - At this window, 1.20x requires custom <= `0.175593166 ms`; the residual is `0.008976260 ms`, or **4.86%** of current custom latency. Accept streaming-weight evict-first and make it the default, then re-gate no-environment TP4/TP8 paths.
 - Artifact: `results/iter105d_weight_evict_first_exact_humming_tp4_formal_cold2000_20260903.log`.
+
+## Iteration 106 — select streaming-weight evict-first as default
+
+- Changed the no-environment default of `V4_WEIGHT_EVICT_FIRST` from 0 to 1 after all 28 paired batches favored it and the exact-Humming formal graph reached 1.141640x.
+- Re-ran the selected default without the flag: TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256 all pass. Route/input preparation is exact; W13 cosine is at least 0.999999997, W2 cosine is at least 0.999997240, and all outputs are finite.
+- Current formal TP4 cold-L2 score is Humming/custom `0.210711799/0.184569426 ms = 1.141640x`; the remaining 1.20x gap is approximately 8.98 us geometric mean, or 4.86% of custom.
+- Artifact: `results/iter106_weight_evict_first_default_correctness_20260903.log`.

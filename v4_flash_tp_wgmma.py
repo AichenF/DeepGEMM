@@ -79,7 +79,7 @@ if BULK_WEIGHT_COPY and not TILED_WEIGHT_LAYOUT:
 TMA_CTA_SCOPE = os.environ.get("V4_TMA_CTA_SCOPE", "0") == "1"
 if TMA_CTA_SCOPE and not BULK_WEIGHT_COPY:
     raise ValueError("V4_TMA_CTA_SCOPE requires bulk weight copy")
-WEIGHT_EVICT_FIRST = os.environ.get("V4_WEIGHT_EVICT_FIRST", "0") == "1"
+WEIGHT_EVICT_FIRST = os.environ.get("V4_WEIGHT_EVICT_FIRST", "1") == "1"
 if WEIGHT_EVICT_FIRST and not BULK_WEIGHT_COPY:
     raise ValueError("V4_WEIGHT_EVICT_FIRST requires bulk weight copy")
 INTERLEAVED_BULK_COPY = (
