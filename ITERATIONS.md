@@ -3948,3 +3948,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - M=128: control median `0.327056 ms`, fused median `0.360576 ms`, speedup `0.9070x` (10.25% slower).
 - Two-point geometric mean: control `0.158338 ms`, fused `0.169790 ms`, speedup `0.9325x`.
 - Decision: reject. Removing the intermediate local-k6 launch does not repay the extra synchronization/launch geometry inside the fused NVLS kernel; no parameter sweep is justified after both endpoint sizes regress materially. Keep the path opt-in for evidence only; the selected default remains stock CARv2 with the iteration-58g reducer policy.
+### Iteration 72 — long-window M128 NVLS-pull confirmation rejects the short-window lead
+
+- Re-tested the two best iteration-67 production K3 NVLS-pull geometries at TP4 M128 in the same process as stock CARv2. Each geometry used 10 balanced AB/BA outer batches × 200 samples per implementation (2,000 cold samples each), identical inputs/weights/routes/communicator, max-rank timing, and a separate excluded 256 MiB L2 clear immediately before every graph replay.
+- `(blocks=4, unroll=16)`: stock median `0.363376 ms`, NVLS pull `0.363472 ms`, stock/candidate `0.999736x`. Candidate batch medians span `0.343312–0.398304 ms`; control spans `0.342352–0.469728 ms`, confirming strong platform bimodality rather than a stable candidate advantage.
+- `(blocks=16, unroll=4)`: stock median `0.360528 ms`, NVLS pull `0.360400 ms`, stock/candidate `1.000355x`, only `0.128 us` or `0.036%` and far below noise. Both configurations retain finite output, independent all-reduce/reference success, cosine `0.999995609`, and rel-L2 about `0.00296351`; reduction-order max difference versus stock is 128 output units.
+- Decision: reject the iteration-67 short-window 3.74% lead. Neither finalist supplies a repeatable M128 improvement across 2,000 samples, so stock CARv2 remains the selected large-message path. Close launch-geometry tuning and return to the local compute/data path.
+- Evidence: `bench/results/iter72_m128_nvls_pull_long_ab_coldl2_20260903.log`.
