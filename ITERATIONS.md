@@ -5286,3 +5286,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Selected W13 is now the larger route kernel at 196.032 us, 52 registers, 52.86% achieved occupancy, 2.822 TB/s DRAM reads, 72.65% compute and 59.01% DRAM throughput. Its main per-issued costs are barrier 2.504, not-selected 2.196, wait 1.264, math-pipe 1.231, GMMA 1.036, selected 1.000, and long-scoreboard 0.799 cycles.
 - Interpretation: four-way unrolling fully covers W2's four K128 iterations, so further global K unrolling should leave W2 code generation essentially unchanged while targeting W13's 32 iterations. Test an opt-in eight-way pragma with strict cubin-resource and M128 paired gates; reject if W13 code/register growth erases the instruction saving.
 - Evidence: `results/iter131b_selected_unroll4_tp4_m128_route_gemms_ncu_human_20260903.log`, `results/iter131c_selected_unroll4_tp4_m128_route_gemms_ncu_compact_metrics_20260903.csv`, and `results/iter131d_prior_unroll2_tp4_m128_w2_ncu_compact_metrics_20260903.csv`.
+
+## Iteration 132 — eight-way K128 unroll passes TP4/TP8 correctness
+
+- Added opt-in `V4_ROUTE_K_UNROLL8=1` above the selected four-way branch and propagated it through extension hashing, compile flags, correctness/graph metadata, local profiling, and the same-process comparison harness. The production default remains four-way.
+- The hypothesis is deliberately asymmetric: W2 has only four K128 iterations and is already fully expanded by the selected pragma, whereas W13 has 32 iterations and can still shed loop/stage/index work in groups of eight.
+- TP4 balanced auto split4 passes with W13/activation/W2 rel-L2 0.000076187/0.000694956/0.002342691; TP4 skew forced split2 passes with 0.000077291/0.000838720/0.002351904; TP8-shape balanced auto split4 passes with 0.000076998/0.000714756/0.002333323.
+- Route preparation and activation quantization are exact, all outputs are finite, and every numerical metric exactly matches the selected four-way path.
+- Result: eight-way unrolling is numerically safe. Inspect cubin registers/stack and then require same-process M128 cold-L2 A/B before any wider timing sweep.
+- Evidence: `results/iter132_route_k_unroll8_correctness_20260903.log`.

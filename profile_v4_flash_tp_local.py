@@ -210,6 +210,9 @@ def main() -> None:
                 "route_k_unroll4": kernel_module.ROUTE_K_UNROLL4
                 if args.impl == "custom"
                 else None,
+                "route_k_unroll8": kernel_module.ROUTE_K_UNROLL8
+                if args.impl == "custom"
+                else None,
                 "compact_interleaved_scale": (
                     kernel_module.COMPACT_INTERLEAVED_SCALE
                 )
