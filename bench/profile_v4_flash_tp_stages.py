@@ -335,7 +335,7 @@ def main() -> None:
                     else None
                 ),
                 "custom_interleaved_bulk_copy": (
-                    os.environ.get("V4_INTERLEAVED_BULK_COPY", "0") == "1"
+                    os.environ.get("V4_INTERLEAVED_BULK_COPY", "1") == "1"
                     if args.impl == "custom"
                     else None
                 ),

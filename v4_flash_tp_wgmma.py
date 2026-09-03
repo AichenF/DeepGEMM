@@ -67,7 +67,7 @@ BULK_WEIGHT_COPY = os.environ.get("V4_BULK_WEIGHT_COPY", "1") == "1"
 if BULK_WEIGHT_COPY and not TILED_WEIGHT_LAYOUT:
     raise ValueError("V4_BULK_WEIGHT_COPY requires tiled weight layout")
 INTERLEAVED_BULK_COPY = (
-    os.environ.get("V4_INTERLEAVED_BULK_COPY", "0") == "1"
+    os.environ.get("V4_INTERLEAVED_BULK_COPY", "1") == "1"
 )
 if INTERLEAVED_BULK_COPY and not BULK_WEIGHT_COPY:
     raise ValueError("V4_INTERLEAVED_BULK_COPY requires bulk weight copy")
