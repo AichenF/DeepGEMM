@@ -5128,3 +5128,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP4 skew forced split2 passes with W13/activation/W2 rel-L2 0.000077291/0.000838720/0.002351904.  TP8-shape balanced auto split4 passes with 0.000076998/0.000714756/0.002333323.  Route alignment and input quantization remain exact.
 - Result: the address substitution is semantics-preserving across split4, split2, TP4, and TP8 shapes.  Proceed to same-process TP4 M128 cold-L2 A/B, then verify SASS local traffic only if latency is favorable.
 - Evidence: `results/iter125_direct_barrier_addr_correctness_20260903.log`.
+
+### Iteration 125b — direct barrier addressing is a consistent M128 regression
+
+- Same-process TP4 M128 random-route comparison used identical inputs, weights, routes, and one CARv2 communicator, with eight batches x 100 samples per arm.  Replay order alternated A/B then B/A and every replay received a separate excluded 256 MiB cold-L2 clear.
+- Control min/median/max is 0.315904/0.352528/0.475040 ms; direct-address candidate is 0.319616/0.356800/0.397440 ms.  Control/candidate is 0.988027x, so the candidate is 4.272 us or 1.21% slower.
+- The candidate loses all eight paired batch medians by 3.44--4.58 us.  Complete graph outputs are bitwise equal on every TP rank (cosine 1.0, rel-L2/max-abs 0), excluding arithmetic or communicator drift.
+- Result: reject `V4_DIRECT_BARRIER_ADDR=1` and retain the local two-address array default.  The local accesses are L1-resident and apparently better scheduled than repeated uniform base/stage arithmetic; do not infer latency savings from the sector diagnostic alone.
+- Evidence: `results/iter125b_direct_barrier_addr_tp4_m128_paired_cold800_20260903.log`.
