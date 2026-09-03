@@ -4984,3 +4984,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Control min/median/max: 0.316704/0.343600/0.703712 ms.  Candidate: 0.337376/0.367152/0.415776 ms.
 - Result: control/candidate = 0.935852x; the launch-bound candidate is 6.85% slower and loses all 6 batch medians.  Reject it immediately; higher nominal occupancy does not repay the 55 -> 48 register constraint.  Default remains off and no smaller-M sweep is justified.
 - Evidence: `results/iter118c_w13_launch_bound10_m128_screen_cold600_20260903.log`.
+
+## Iteration 119 — selected compact W13 M128 NCU capture
+
+- Captured the first selected TP4 M128 random-route W13 `route_gemm<4096,1024,split2>` launch with Nsight Compute `detailed` over 20 passes.
+- The profile helper explicitly records compact_interleaved_scale=true, W13 launch-bound probe=false, auto split policy, H20 60MiB L2, and a separate 256MiB cold-L2 clear immediately before the local pipeline.
+- Collection completed successfully and produced a valid report.  Metric extraction and comparison with iteration 116c are deferred to the next audit so the raw artifact remains independently reproducible.
+- Evidence: `results/iter119_compact_selected_tp4_m128_w13_cold_ncu.{log,ncu-rep}`.
