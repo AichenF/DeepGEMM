@@ -1,0 +1,18 @@
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+V4_WGMMA_CHECK M=32 pattern=balanced Is=512 active=192 padded=1536 split_k=4 mode2=True interleaved_bulk=True tma_cta_scope=False fused_act_quant=True w13_tail_fused_act=False w2_sorted_act=False w2_mblock_scale=False w2_fold_global_scale=False w2_coalesced_store=False w2_global_lut=False leader_mbar_wait=True w13_distributed_prep=True w2_distributed_prep=True w13_merged_wgmma_group=False normalized_shared_lut=False activation_evict_last=True
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077594
+V4_WGMMA_ACT cos=0.999999691 rel_l2=0.000787278
+V4_WGMMA_W2 cos=0.999997241 rel_l2=0.002348885 finite=True
+V4_WGMMA_OK
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+V4_WGMMA_CHECK M=128 pattern=skew Is=512 active=6 padded=768 split_k=2 mode2=True interleaved_bulk=True tma_cta_scope=False fused_act_quant=True w13_tail_fused_act=False w2_sorted_act=False w2_mblock_scale=False w2_fold_global_scale=False w2_coalesced_store=False w2_global_lut=False leader_mbar_wait=True w13_distributed_prep=True w2_distributed_prep=True w13_merged_wgmma_group=False normalized_shared_lut=False activation_evict_last=True
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077612
+V4_WGMMA_ACT cos=0.999999683 rel_l2=0.000797898
+V4_WGMMA_W2 cos=0.999997240 rel_l2=0.002349543 finite=True
+V4_WGMMA_OK
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+V4_WGMMA_CHECK M=32 pattern=balanced Is=256 active=192 padded=1536 split_k=4 mode2=True interleaved_bulk=True tma_cta_scope=False fused_act_quant=True w13_tail_fused_act=False w2_sorted_act=False w2_mblock_scale=False w2_fold_global_scale=False w2_coalesced_store=False w2_global_lut=False leader_mbar_wait=True w13_distributed_prep=True w2_distributed_prep=True w13_merged_wgmma_group=False normalized_shared_lut=False activation_evict_last=True
+V4_WGMMA_W13 cos=0.999999997 rel_l2=0.000077372
+V4_WGMMA_ACT cos=0.999999586 rel_l2=0.000913643
+V4_WGMMA_W2 cos=0.999997267 rel_l2=0.002338037 finite=True
+V4_WGMMA_OK

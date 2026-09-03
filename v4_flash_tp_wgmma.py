@@ -332,23 +332,27 @@ __device__ __forceinline__ void bulk_gmem_to_smem(
     }
 }
 
-__device__ __forceinline__ uint2 load_reused_u64(const uint2* pointer) {
+__device__ __forceinline__ uint2 load_reused_u64(
+        const uint2* pointer, uint64_t cache_policy) {
     if constexpr (kActivationEvictLast) {
         uint2 value;
         asm volatile(
-            "ld.global.L2::evict_last.v2.u32 {%0,%1},[%2];"
-            : "=r"(value.x), "=r"(value.y) : "l"(pointer) : "memory");
+            "ld.global.L2::cache_hint.v2.u32 {%0,%1},[%2],%3;"
+            : "=r"(value.x), "=r"(value.y)
+            : "l"(pointer), "l"(cache_policy) : "memory");
         return value;
     }
     return __ldg(pointer);
 }
 
-__device__ __forceinline__ float load_reused_f32(const float* pointer) {
+__device__ __forceinline__ float load_reused_f32(
+        const float* pointer, uint64_t cache_policy) {
     if constexpr (kActivationEvictLast) {
         float value;
         asm volatile(
-            "ld.global.L2::evict_last.f32 %0,[%1];"
-            : "=f"(value) : "l"(pointer) : "memory");
+            "ld.global.L2::cache_hint.f32 %0,[%1],%2;"
+            : "=f"(value)
+            : "l"(pointer), "l"(cache_policy) : "memory");
         return value;
     }
     return __ldg(pointer);
@@ -529,6 +533,12 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     __shared__ int32_t activation_rows[kTok];
 
     const int tid = threadIdx.x;
+    uint64_t reused_cache_policy = 0;
+    if constexpr (kActivationEvictLast) {
+        asm volatile(
+            "createpolicy.fractional.L2::evict_last.b64 %0,1.0;"
+            : "=l"(reused_cache_policy));
+    }
     if (tid < kTok) {
         const int position = m_block_idx * kTok + tid;
         const int route = __ldg(sorted_ids + position);
@@ -542,7 +552,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         if constexpr (kNormalizedWeightScale
                       && (IsW13 || !kW2FoldGlobalScale)) {
             expert_weight_scale = load_reused_f32(
-                weight_global_scale + expert_idx);
+                weight_global_scale + expert_idx, reused_cache_policy);
         } else {
             expert_weight_scale = 1.0f;
         }
@@ -780,7 +790,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         if (activation_row >= 0) {
             value = load_reused_u64(reinterpret_cast<const uint2*>(
                 activation + static_cast<int64_t>(activation_row) * K
-                + global_kt * kBlockK + k8));
+                + global_kt * kBlockK + k8), reused_cache_policy);
         }
         *reinterpret_cast<uint2*>(
             activation_smem + token_slot * kBlockK
@@ -807,7 +817,9 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                         static_cast<int64_t>(row) * kNumKTiles + global_kt;
                 }
                 activation_scale_smem[scale_slot] =
-                    load_reused_f32(activation_scale + scale_index)
+                    load_reused_f32(
+                        activation_scale + scale_index,
+                        reused_cache_policy)
                     * expert_weight_scale;
             } else {
                 activation_scale_smem[scale_slot] = 0.0f;
@@ -3937,7 +3949,7 @@ _ext = load_inline(
           f"lmw{int(LEADER_MBAR_WAIT)}_"
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v104ael"),
+          f"mb{MIN_BLOCKS_PER_SM}_v104bael"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[

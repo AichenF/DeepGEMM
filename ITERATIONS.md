@@ -4651,3 +4651,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - The JIT reaches ptxas but fails before any kernel runs: sm90a reports that an `ld` carrying the direct `.L2::evict_last` modifier requires `.v8.b32` or `.v4.b64`. The route kernel's natural per-thread accesses are 8-byte activation vectors and 4-byte scales, so the direct priority qualifier is illegal at this width.
 - This is a compile failure, not a correctness or performance result. Preserve the failure log, then repair with the general `.L2::cache_hint` operand backed by `createpolicy.fractional.L2::evict_last`, which PTX permits independently of the direct wide-load modifier.
 - Artifact: `results/iter104_activation_evict_last_correctness_20260903.log`.
+
+## Iteration 104b — legal activation L2 cache-policy correctness gate
+
+- Repaired iteration 104 by creating one per-thread `createpolicy.fractional.L2::evict_last` value and using the general `ld.global.L2::cache_hint` operand for 8-byte FP8 activation loads and 4-byte activation/expert scales. This form is legal at the natural access widths.
+- The candidate compiles and passes TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256. Route/input preparation is exact; W13 cosine is at least 0.999999997, W2 cosine is at least 0.999997240, and all outputs are finite.
+- The 64-bit policy may increase register pressure, so the next gate must inspect cubin resources as well as same-process paired cold-L2 M128 timing. Reject if occupancy cost outweighs reuse.
+- Artifact: `results/iter104b_activation_cache_policy_correctness_20260903.log`.
