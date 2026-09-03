@@ -353,7 +353,8 @@ def main() -> None:
         f"interleaved_bulk={kernel.INTERLEAVED_BULK_COPY} "
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
         f"w2_global_lut={kernel.W2_GLOBAL_LUT} "
-        f"leader_mbar_wait={kernel.LEADER_MBAR_WAIT}"
+        f"leader_mbar_wait={kernel.LEADER_MBAR_WAIT} "
+        f"single_imad_lut={kernel.SINGLE_IMAD_LUT}"
     )
     print(
         "V4_WGMMA_W13 "

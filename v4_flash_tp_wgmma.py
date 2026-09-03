@@ -86,6 +86,7 @@ W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
 LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
+SINGLE_IMAD_LUT = os.environ.get("V4_SINGLE_IMAD_LUT", "0") == "1"
 if W2_S2R_PREFETCH and (DEQUANT_SYNTH_LUT or W2_GLOBAL_LUT):
     raise ValueError(
         "V4_W2_S2R_PREFETCH currently probes only the shared-LUT path"
@@ -162,6 +163,7 @@ static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
 static constexpr bool kLeaderMbarWait = K_LEADER_MBAR_WAIT;
+static constexpr bool kSingleImadLut = K_SINGLE_IMAD_LUT;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
@@ -221,6 +223,14 @@ __device__ __forceinline__ uint2 synth_e2m1_e8m0_lut(uint32_t exponent) {
 
 __device__ __forceinline__ uint2 synth_normalized_e2m1_lut(
         uint32_t exponent_offset) {
+    if constexpr (kSingleImadLut) {
+        // Normalized offsets are 1..12, so 8*offset cannot carry between
+        // bytes.  One affine multiply supplies both packed LUT words.
+        const uint32_t affine = exponent_offset * 0x08080808u;
+        return make_uint2(
+            (affine & 0xffffff00u) + 0x0c080000u,
+            affine + 0x1c181410u);
+    }
     return make_uint2(
         exponent_offset * 0x08080800u + 0x0c080000u,
         exponent_offset * 0x08080808u + 0x1c181410u);
@@ -1481,7 +1491,8 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v49"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_sil{int(SINGLE_IMAD_LUT)}_"
+          f"mb{MIN_BLOCKS_PER_SM}_v50"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1511,6 +1522,7 @@ _ext = load_inline(
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
         f"-DK_LEADER_MBAR_WAIT={int(LEADER_MBAR_WAIT)}",
+        f"-DK_SINGLE_IMAD_LUT={int(SINGLE_IMAD_LUT)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         "--expt-relaxed-constexpr",

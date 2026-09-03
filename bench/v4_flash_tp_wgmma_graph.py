@@ -560,6 +560,7 @@ def main() -> None:
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
                     "leader_mbar_wait": kernel.LEADER_MBAR_WAIT,
+                    "single_imad_lut": kernel.SINGLE_IMAD_LUT,
                     "w2_epilogue": (
                         "BF16 route output + sglang moe_fused_mul_sum"
                         if kernel.W2_ROUTE_OUTPUT

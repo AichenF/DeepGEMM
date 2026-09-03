@@ -349,6 +349,11 @@ def main() -> None:
                     if args.impl == "custom"
                     else None
                 ),
+                "custom_single_imad_lut": (
+                    os.environ.get("V4_SINGLE_IMAD_LUT", "0") == "1"
+                    if args.impl == "custom"
+                    else None
+                ),
                 "m": args.m,
                 "tp": args.tp,
                 "route_pattern": args.route_pattern,
