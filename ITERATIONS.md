@@ -4398,3 +4398,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Change:** Added opt-in `V4_W2_MBLOCK_SCALE=1`, reusing the dynamic `route_to_sorted` inverse map but changing only scale output/read addressing. Extended the paired harness to select a compile-time flag through `V4_COMPARE_FLAG`.
 - **Verification:** Local Python syntax compilation passed for the kernel wrapper, graph benchmark, numerical test, and paired harness. CUDA correctness/performance are pending.
 - **Decision:** Implementation checkpoint only; default remains disabled.
+
+## Iteration 88b — Mblock-major W2 scale correctness gate
+
+- **Verification:** With `V4_W2_MBLOCK_SCALE=1`, TP4 balanced M8, TP4 skew M8, and TP8-shape balanced M8 all passed the full all-route reference. W2 cosine was 0.999997256, 0.999997235, and 0.999997278; all outputs finite. Input fused quantization remained bit-exact.
+- **Coverage:** FP8 activation stayed route-major; only activation-scale production/consumption used the inverse route-to-sorted map. Both heavy padding and six-expert skew were exercised.
+- **Decision:** Correctness and TP8-runnable gate passed. Candidate remains opt-in pending paired cold-L2 performance.
+- **Artifact:** `results/iter88b_w2_mblock_scale_correctness_20260903.log`.
