@@ -228,6 +228,8 @@ class CapturedCase:
         self.fused_push_rank = -1
         self.fused_push_stride = 0
         self.fused_push_mc_ptr = 0
+        self.fused_pull_output = None
+        self.fused_pull_mc_ptr = 0
         self.fused_k6_push_active = False
         self.fused_k6_ar_mode = "stock"
         max_padded = (
@@ -404,7 +406,69 @@ class CapturedCase:
         self.fused_push_stride = comm.max_push_size
         self.fused_push_mc_ptr = int(symm.multicast_ptr)
 
+    def prepare_fused_pull(self, comm: CustomAllReduceV2) -> None:
+        if self.fused_pull_output is not None:
+            return
+        self.prepare_fused_push(comm)
+        assert self.fused_push_workspaces is not None
+        pull_offset = 2 * comm.world_size * comm.max_push_size
+        nbytes = self.m * HIDDEN * torch.bfloat16.itemsize
+        if nbytes > comm.max_pull_size:
+            raise RuntimeError("fused pull output exceeds symmetric workspace")
+        local_slab = self.fused_push_workspaces[comm.rank]
+        pull_bytes = local_slab[pull_offset : pull_offset + nbytes]
+        self.fused_pull_output = pull_bytes.view(torch.bfloat16).view(
+            self.m, HIDDEN
+        )
+        self.fused_pull_mc_ptr = self.fused_push_mc_ptr + pull_offset
+        from sglang.kernels.ops.kimi_k3.all_reduce import register_comm
+
+        register_comm(comm.obj, pull_sem_mc_ptr=comm.pull_sem_mc_ptr)
+
+    def reduce_local_to(self, output: torch.Tensor) -> torch.Tensor:
+        assert self.down is not None
+        if self.tiled_k6_reduce_mode:
+            kernel.tiled_k6_reduce(
+                self.down,
+                self.topk_weights,
+                output,
+                self.tiled_k6_reduce_mode,
+            )
+        else:
+            moe_fused_mul_sum(
+                inputs=self.down.view(self.m, TOP_K, HIDDEN),
+                topk_weights=self.topk_weights,
+                topk_ids=self.topk_ids,
+                is_ep=False,
+                routed_scaling_factor=ROUTED_SCALING_FACTOR,
+                outputs=output,
+            )
+        return output
+
     def run_full(self, comm: CustomAllReduceV2) -> torch.Tensor:
+        use_mc_pull = (
+            kernel.FUSED_K6_MC_PULL_AR
+            and comm.world_size == 4
+            and self.m <= 128
+        )
+        if use_mc_pull:
+            self.prepare_fused_pull(comm)
+            assert self.fused_pull_output is not None
+            self.run_before_local_reduce()
+            self.reduce_local_to(self.fused_pull_output)
+            from sglang.kernels.ops.kimi_k3.all_reduce import (
+                all_reduce_pull_res,
+            )
+
+            all_reduce_pull_res(
+                comm.world_size,
+                self.fused_pull_output,
+                input_mc_ptr=self.fused_pull_mc_ptr,
+            )
+            self.fused_k6_push_active = True
+            self.fused_k6_ar_mode = "multicast_pull"
+            self.graph_output = self.fused_pull_output
+            return self.graph_output
         use_mc_push = (
             kernel.FUSED_K6_MC_PUSH_AR
             and comm.world_size == 4
@@ -640,6 +704,7 @@ def main() -> None:
                     "tiled_k6_reduce_policy": kernel.TILED_K6_REDUCE_POLICY,
                     "fused_k6_push_ar": kernel.FUSED_K6_PUSH_AR,
                     "fused_k6_mc_push_ar": kernel.FUSED_K6_MC_PUSH_AR,
+                    "fused_k6_mc_pull_ar": kernel.FUSED_K6_MC_PULL_AR,
                     "w2_epilogue": (
                         "BF16 route output + fixed tiled CUDA k6 mode 4 at "
                         "M<=16, SGLang moe_fused_mul_sum otherwise"

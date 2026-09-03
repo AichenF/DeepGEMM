@@ -97,6 +97,7 @@ def select_tiled_k6_reduce_mode(tokens: int) -> int:
 
 FUSED_K6_PUSH_AR = os.environ.get("V4_FUSED_K6_PUSH_AR", "0") == "1"
 FUSED_K6_MC_PUSH_AR = os.environ.get("V4_FUSED_K6_MC_PUSH_AR", "0") == "1"
+FUSED_K6_MC_PULL_AR = os.environ.get("V4_FUSED_K6_MC_PULL_AR", "0") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"

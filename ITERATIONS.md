@@ -3853,3 +3853,26 @@ maximum rank latency of a full CUDA-Graph replay.
   or producer/communication overlap, especially for M128.
 - Evidence:
   `bench/results/iter64_multicast_push_tp4_m8_m16_m32_m64_ab_coldl2_20260903.log`.
+
+### WGMMA iteration 65 — production low-SM NVLS pull integration
+
+- Added an opt-in path that writes the existing k6 local reduction directly
+  into `CustomAllReduceV2`'s symmetric pull workspace, then calls SGLang's
+  production K3 `all_reduce_pull_res`.  That kernel uses a low-SM pipelined
+  `multimem.ld_reduce` reduce-scatter plus multicast broadcast in place and
+  reuses the exact CARv2 pull-semaphore reservation protocol.  No new
+  synchronization protocol or private communication allocation was added;
+  baseline capture still calls stock CARv2, and TP8 falls back unchanged.
+- The strict TP4 M128 first-run gate succeeds: K3 JIT compilation, CUDA Graph
+  capture, and 20 consecutive 1 MiB cold-L2 replays complete without hang.
+  Minimum-rank cosine is 0.999995609, relative-L2 is 0.002963508, output is
+  finite, and the independent NCCL sum check passes.  This validates both
+  in-place symmetric output lifetime and interoperability with the existing
+  communicator semaphores.
+- The initial M128 median is 0.323728 ms (0.322656 ms minimum), much lower
+  than iteration 58's 0.379152 ms formal stock-custom point.  This is a
+  cross-window observation and is not yet a speedup claim; the unusually
+  large delta exceeds the previously measured standalone AR tail and must be
+  audited in the same process against stock CARv2 at all five M values.
+- Evidence:
+  `bench/results/iter65_multicast_pull_tp4_m128_compile_correctness_smoke_coldl2_20260903.log`.
