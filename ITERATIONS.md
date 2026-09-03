@@ -5024,3 +5024,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Grid remains 5,136 CTAs x 128 threads.  This verifies the intended mechanism that iteration 118c lacked.
 - Result: proceed to the same-process M128 cold-L2 paired latency gate.  Occupancy is mechanism evidence only, not a performance win.
 - Evidence: `results/iter120b_w13_lb10_max_smem_m128_ncu_details_20260903.log`.
+
+## Iteration 120c — real 10-CTA W13 occupancy still regresses M128
+
+- Method: TP4 M128 random routes, same-process selected-control/compound-candidate CUDA Graphs, 6 x 100 rank-max samples, per-replay AB/BA alternation, separate excluded 256MiB cold-L2 clear.
+- Numerical comparison passes: cosine 0.999999583, relative L2 0.001013555, finite on all ranks; bitwise equality is false because split2 atomic arrival order changes.
+- Control min/median/max: 0.316736/0.342576/0.542688 ms.  Candidate: 0.337120/0.365120/0.398720 ms.
+- Result: control/candidate = 0.938256x; despite NCU-confirmed 10-CTA residency, the candidate is 6.58% slower and loses all 6 batch medians.  The 48-register constraint itself dominates any occupancy benefit.  Reject the compound flag and keep both launch-bound/carveout defaults off.
+- Evidence: `results/iter120c_w13_lb10_max_smem_m128_screen_cold600_20260903.log`.
