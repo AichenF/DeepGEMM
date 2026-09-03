@@ -1154,6 +1154,94 @@ __global__ __launch_bounds__(256) void fused_route_quant_kernel(
         __nv_fp8_e4m3(value / group_scale[quant_subgroup]).__x;
 }
 
+// Scheduler-only correctness probe for the TP-local interleaved design.
+// One lane per persistent CTA claims dynamically bounded W13 tasks.  The last
+// W13 tile for an M block publishes that block into a ready queue; W2 tasks
+// can only be claimed from published queue entries.  No task bound depends on
+// host inspection of the route distribution.
+__global__ void interleaved_scheduler_probe_kernel(
+        const int32_t* __restrict__ expert_ids,
+        const int32_t* __restrict__ num_tokens_padded,
+        int32_t* __restrict__ counters,
+        int32_t* __restrict__ readiness,
+        int32_t* __restrict__ ready_queue,
+        int32_t* __restrict__ ready_valid,
+        int32_t* __restrict__ w13_owner,
+        int32_t* __restrict__ w13_order,
+        int32_t* __restrict__ w2_owner,
+        int32_t* __restrict__ w2_mblock,
+        int32_t* __restrict__ w2_order,
+        int max_mblocks, int w13_tiles, int w2_tiles) {
+    if (threadIdx.x != 0)
+        return;
+
+    const int num_mblocks = __ldg(num_tokens_padded) / kTok;
+    if (blockIdx.x == 0)
+        counters[7] = num_mblocks;
+    const int total_w13 = num_mblocks * w13_tiles;
+    const int total_w2 = num_mblocks * w2_tiles;
+
+    while (true) {
+        // Prefer a ready W2 task so W2 follows completed W13 blocks instead
+        // of waiting for the complete W13 task space to drain.
+        bool claimed_w2 = false;
+        while (true) {
+            const int next_w2 = atomicAdd(counters + 1, 0);
+            const int published = atomicAdd(counters + 2, 0);
+            const int available_w2 = published * w2_tiles;
+            if (next_w2 >= available_w2)
+                break;
+            if (atomicCAS(counters + 1, next_w2, next_w2 + 1) != next_w2)
+                continue;
+
+            const int queue_slot = next_w2 / w2_tiles;
+            const int n_tile = next_w2 - queue_slot * w2_tiles;
+            while (atomicAdd(ready_valid + queue_slot, 0) == 0) {}
+            const int mblock = __ldg(ready_queue + queue_slot);
+            if (static_cast<unsigned>(mblock) >=
+                    static_cast<unsigned>(num_mblocks)
+                    || atomicAdd(readiness + mblock, 0) != w13_tiles)
+                atomicAdd(counters + 6, 1);
+            w2_owner[next_w2] = blockIdx.x;
+            w2_mblock[next_w2] = mblock;
+            w2_order[next_w2] = atomicAdd(counters + 3, 1);
+            atomicAdd(counters + 5, 1);
+            claimed_w2 = true;
+            (void)n_tile;
+            break;
+        }
+        if (claimed_w2)
+            continue;
+
+        const int w13_task = atomicAdd(counters + 0, 1);
+        if (w13_task < total_w13) {
+            const int mblock = w13_task / w13_tiles;
+            if (static_cast<unsigned>(mblock) >=
+                    static_cast<unsigned>(max_mblocks)
+                    || __ldg(expert_ids + mblock) < 0)
+                atomicAdd(counters + 6, 1);
+            w13_owner[w13_task] = blockIdx.x;
+            w13_order[w13_task] = atomicAdd(counters + 3, 1);
+            __threadfence();
+            const int done = atomicAdd(readiness + mblock, 1) + 1;
+            atomicAdd(counters + 4, 1);
+            if (done == w13_tiles) {
+                const int queue_slot = atomicAdd(counters + 2, 1);
+                ready_queue[queue_slot] = mblock;
+                __threadfence();
+                atomicExch(ready_valid + queue_slot, 1);
+            } else if (done > w13_tiles) {
+                atomicAdd(counters + 6, 1);
+            }
+            continue;
+        }
+
+        if (atomicAdd(counters + 4, 0) == total_w13
+                && atomicAdd(counters + 5, 0) == total_w2)
+            break;
+    }
+}
+
 __global__ void cast_bf16_kernel(
         const float* __restrict__ input,
         __nv_bfloat16* __restrict__ output,
@@ -2305,6 +2393,56 @@ void fused_route_quant(
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+void interleaved_scheduler_probe(
+        torch::Tensor expert_ids, torch::Tensor num_tokens_padded,
+        torch::Tensor counters, torch::Tensor readiness,
+        torch::Tensor ready_queue, torch::Tensor ready_valid,
+        torch::Tensor w13_owner, torch::Tensor w13_order,
+        torch::Tensor w2_owner, torch::Tensor w2_mblock,
+        torch::Tensor w2_order, int w13_tiles, int w2_tiles,
+        int num_sms) {
+    TORCH_CHECK(expert_ids.scalar_type() == torch::kInt32,
+                "expert_ids must be int32");
+    TORCH_CHECK(num_tokens_padded.scalar_type() == torch::kInt32,
+                "num_tokens_padded must be int32");
+    TORCH_CHECK(counters.scalar_type() == torch::kInt32
+                    && counters.numel() >= 8,
+                "counters must contain at least eight int32 values");
+    TORCH_CHECK(readiness.scalar_type() == torch::kInt32
+                    && ready_queue.scalar_type() == torch::kInt32
+                    && ready_valid.scalar_type() == torch::kInt32,
+                "scheduler state tensors must be int32");
+    TORCH_CHECK(w13_owner.scalar_type() == torch::kInt32
+                    && w13_order.scalar_type() == torch::kInt32
+                    && w2_owner.scalar_type() == torch::kInt32
+                    && w2_mblock.scalar_type() == torch::kInt32
+                    && w2_order.scalar_type() == torch::kInt32,
+                "scheduler trace tensors must be int32");
+    TORCH_CHECK(w13_tiles > 0 && w2_tiles > 0 && num_sms > 0,
+                "scheduler geometry must be positive");
+    const int max_mblocks = readiness.numel();
+    TORCH_CHECK(ready_queue.numel() >= max_mblocks
+                    && ready_valid.numel() >= max_mblocks,
+                "ready queue capacity is too small");
+    TORCH_CHECK(w13_owner.numel() >= max_mblocks * w13_tiles
+                    && w13_order.numel() >= max_mblocks * w13_tiles,
+                "W13 trace capacity is too small");
+    TORCH_CHECK(w2_owner.numel() >= max_mblocks * w2_tiles
+                    && w2_mblock.numel() >= max_mblocks * w2_tiles
+                    && w2_order.numel() >= max_mblocks * w2_tiles,
+                "W2 trace capacity is too small");
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    interleaved_scheduler_probe_kernel<<<num_sms, 32, 0, stream>>>(
+        expert_ids.data_ptr<int32_t>(),
+        num_tokens_padded.data_ptr<int32_t>(),
+        counters.data_ptr<int32_t>(), readiness.data_ptr<int32_t>(),
+        ready_queue.data_ptr<int32_t>(), ready_valid.data_ptr<int32_t>(),
+        w13_owner.data_ptr<int32_t>(), w13_order.data_ptr<int32_t>(),
+        w2_owner.data_ptr<int32_t>(), w2_mblock.data_ptr<int32_t>(),
+        w2_order.data_ptr<int32_t>(), max_mblocks, w13_tiles, w2_tiles);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void braid_mode2(torch::Tensor weight) {
     TORCH_CHECK(weight.scalar_type() == torch::kUInt8,
                 "mode2 weight must be uint8");
@@ -2377,6 +2515,13 @@ void fused_route_quant(torch::Tensor topk_ids, torch::Tensor input,
                        torch::Tensor sorted_ids, torch::Tensor expert_ids,
                        torch::Tensor num_tokens_padded,
                        torch::Tensor quantized, torch::Tensor scale);
+void interleaved_scheduler_probe(
+    torch::Tensor expert_ids, torch::Tensor num_tokens_padded,
+    torch::Tensor counters, torch::Tensor readiness,
+    torch::Tensor ready_queue, torch::Tensor ready_valid,
+    torch::Tensor w13_owner, torch::Tensor w13_order,
+    torch::Tensor w2_owner, torch::Tensor w2_mblock,
+    torch::Tensor w2_order, int w13_tiles, int w2_tiles, int num_sms);
 void braid_mode2(torch::Tensor weight);
 """
 
@@ -2395,7 +2540,7 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v52mcps"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v75sched"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -2408,6 +2553,7 @@ _ext = load_inline(
         "fused_rank_route_mc_pull_tp4",
         "fused_k6_nvls_pull_tp4",
         "fused_route_quant",
+        "interleaved_scheduler_probe",
         "braid_mode2",
     ],
     extra_cuda_cflags=[
@@ -2714,6 +2860,40 @@ def reduce_swiglu_quant(
 
 def cast_bf16(input: torch.Tensor, output: torch.Tensor) -> None:
     _ext.cast_bf16(input, output)
+
+
+def interleaved_scheduler_probe(
+    expert_ids: torch.Tensor,
+    num_tokens_padded: torch.Tensor,
+    counters: torch.Tensor,
+    readiness: torch.Tensor,
+    ready_queue: torch.Tensor,
+    ready_valid: torch.Tensor,
+    w13_owner: torch.Tensor,
+    w13_order: torch.Tensor,
+    w2_owner: torch.Tensor,
+    w2_mblock: torch.Tensor,
+    w2_order: torch.Tensor,
+    w13_tiles: int,
+    w2_tiles: int,
+    num_sms: int,
+) -> None:
+    _ext.interleaved_scheduler_probe(
+        expert_ids,
+        num_tokens_padded,
+        counters,
+        readiness,
+        ready_queue,
+        ready_valid,
+        w13_owner,
+        w13_order,
+        w2_owner,
+        w2_mblock,
+        w2_order,
+        w13_tiles,
+        w2_tiles,
+        num_sms,
+    )
 
 
 def tiled_k6_reduce(

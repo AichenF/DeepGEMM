@@ -1,0 +1,12 @@
+SCHED_PROBE {"actual_mblocks": 48, "expected_mblocks": 48, "interleaved_observed": true, "m": 8, "pattern": "balanced", "valid": false, "violations": 5, "w13_claim_cursor": 382, "w13_tasks": 192, "w2_claim_cursor": 768, "w2_tasks": 768}
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_interleaved_scheduler.py", line 226, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_interleaved_scheduler.py", line 199, in main
+    validate(case, pattern, props.multi_processor_count)
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_interleaved_scheduler.py", line 181, in validate
+    raise RuntimeError(f"scheduler probe failed: {result}")
+RuntimeError: scheduler probe failed: {'m': 8, 'pattern': 'balanced', 'expected_mblocks': 48, 'actual_mblocks': 48, 'w13_tasks': 192, 'w2_tasks': 768, 'w13_claim_cursor': 382, 'w2_claim_cursor': 768, 'interleaved_observed': True, 'violations': 5, 'valid': False}
