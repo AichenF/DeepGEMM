@@ -274,6 +274,7 @@ def main() -> None:
                         kernel.NORMALIZED_WEIGHT_SCALE
                     ),
                     "custom_tiled_weight_layout": kernel.TILED_WEIGHT_LAYOUT,
+                    "custom_quad_lut_shuffle": kernel.QUAD_LUT_SHUFFLE,
                     "timed_allreduce": "same SGLang CustomAllReduceV2 instance",
                 },
                 sort_keys=True,

@@ -63,6 +63,9 @@ NORMALIZED_WEIGHT_SCALE = (
     os.environ.get("V4_NORMALIZED_WEIGHT_SCALE", "1") == "1"
 )
 TILED_WEIGHT_LAYOUT = os.environ.get("V4_TILED_WEIGHT_LAYOUT", "1") == "1"
+QUAD_LUT_SHUFFLE = os.environ.get("V4_QUAD_LUT_SHUFFLE", "0") == "1"
+if QUAD_LUT_SHUFFLE and not NORMALIZED_WEIGHT_SCALE:
+    raise ValueError("V4_QUAD_LUT_SHUFFLE requires normalized weight scales")
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
@@ -137,6 +140,7 @@ static constexpr bool kDequantDp4aLo = K_DEQUANT_DP4A_LO;
 static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kNormalizedWeightScale = K_NORMALIZED_WEIGHT_SCALE;
 static constexpr bool kTiledWeightLayout = K_TILED_WEIGHT_LAYOUT;
+static constexpr bool kQuadLutShuffle = K_QUAD_LUT_SHUFFLE;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
@@ -199,6 +203,20 @@ __device__ __forceinline__ uint2 synth_normalized_e2m1_lut(
     return make_uint2(
         exponent_offset * 0x08080800u + 0x0c080000u,
         exponent_offset * 0x08080808u + 0x1c181410u);
+}
+
+__device__ __forceinline__ uint2 load_normalized_e2m1_lut(
+        const uint8_t* scale, int lane) {
+    if constexpr (kQuadLutShuffle) {
+        uint2 value = make_uint2(0, 0);
+        if ((lane & 3) == 0)
+            value = synth_normalized_e2m1_lut(*scale);
+        const int source_lane = lane & ~3;
+        value.x = __shfl_sync(0xffffffffu, value.x, source_lane);
+        value.y = __shfl_sync(0xffffffffu, value.y, source_lane);
+        return value;
+    }
+    return synth_normalized_e2m1_lut(*scale);
 }
 
 __device__ __forceinline__ uint2 dequant_mode2_braided_word(
@@ -564,18 +582,25 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                 : "r"(stage_base + group_row1 * (kBlockK / 2)
                                       + weight_chunk1 * 16 + packed_k_offset));
                         }
-                        const uint32_t exponent0 =
-                            weight_scale_smem[scale_stage * kScaleStageBytes
-                                              + group_row0 * kScaleRowBytes
-                                              + (global_kt & 3) * 4];
-                        const uint32_t exponent1 =
-                            weight_scale_smem[scale_stage * kScaleStageBytes
-                                              + group_row1 * kScaleRowBytes
-                                              + (global_kt & 3) * 4];
                         if constexpr (kNormalizedWeightScale) {
-                            weight_lut0 = synth_normalized_e2m1_lut(exponent0);
-                            weight_lut1 = synth_normalized_e2m1_lut(exponent1);
+                            const int scale_offset =
+                                scale_stage * kScaleStageBytes
+                                + (global_kt & 3) * 4;
+                            weight_lut0 = load_normalized_e2m1_lut(
+                                weight_scale_smem + scale_offset
+                                + group_row0 * kScaleRowBytes, lane);
+                            weight_lut1 = load_normalized_e2m1_lut(
+                                weight_scale_smem + scale_offset
+                                + group_row1 * kScaleRowBytes, lane);
                         } else {
+                            const uint32_t exponent0 =
+                                weight_scale_smem[scale_stage * kScaleStageBytes
+                                                  + group_row0 * kScaleRowBytes
+                                                  + (global_kt & 3) * 4];
+                            const uint32_t exponent1 =
+                                weight_scale_smem[scale_stage * kScaleStageBytes
+                                                  + group_row1 * kScaleRowBytes
+                                                  + (global_kt & 3) * 4];
                             weight_lut0 = lut_smem[scale_lut_index(exponent0)];
                             weight_lut1 = lut_smem[scale_lut_index(exponent1)];
                         }
@@ -605,32 +630,40 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                             : "r"(stage_base + group_row1 * (kBlockK / 2)
                                   + weight_chunk1 * 16 + packed_k_offset));
                     }
-                    const uint32_t exponent0 =
-                        weight_scale_smem[scale_stage * kScaleStageBytes
-                                          + group_row0 * kScaleRowBytes
-                                          + (global_kt & 3) * 4 + k_step];
-                    const uint32_t exponent1 =
-                        weight_scale_smem[scale_stage * kScaleStageBytes
-                                          + group_row1 * kScaleRowBytes
-                                          + (global_kt & 3) * 4 + k_step];
                     if constexpr (kNormalizedWeightScale) {
-                        weight_lut0 = synth_normalized_e2m1_lut(exponent0);
-                        weight_lut1 = synth_normalized_e2m1_lut(exponent1);
-                    } else if constexpr (kDequantSynthLut) {
-                        weight_lut0 = synth_e2m1_e8m0_lut(exponent0);
-                        weight_lut1 = synth_e2m1_e8m0_lut(exponent1);
-                    } else if constexpr (!IsW13 && kW2GlobalLut) {
-                        constexpr int kGlobalLutOffset =
-                            kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
-                        weight_lut0 = __ldg(
-                            global_lut + kGlobalLutOffset
-                            + scale_lut_index(exponent0));
-                        weight_lut1 = __ldg(
-                            global_lut + kGlobalLutOffset
-                            + scale_lut_index(exponent1));
+                        const int scale_offset = scale_stage * kScaleStageBytes
+                            + (global_kt & 3) * 4 + k_step;
+                        weight_lut0 = load_normalized_e2m1_lut(
+                            weight_scale_smem + scale_offset
+                            + group_row0 * kScaleRowBytes, lane);
+                        weight_lut1 = load_normalized_e2m1_lut(
+                            weight_scale_smem + scale_offset
+                            + group_row1 * kScaleRowBytes, lane);
                     } else {
-                        weight_lut0 = lut_smem[scale_lut_index(exponent0)];
-                        weight_lut1 = lut_smem[scale_lut_index(exponent1)];
+                        const uint32_t exponent0 =
+                            weight_scale_smem[scale_stage * kScaleStageBytes
+                                              + group_row0 * kScaleRowBytes
+                                              + (global_kt & 3) * 4 + k_step];
+                        const uint32_t exponent1 =
+                            weight_scale_smem[scale_stage * kScaleStageBytes
+                                              + group_row1 * kScaleRowBytes
+                                              + (global_kt & 3) * 4 + k_step];
+                        if constexpr (kDequantSynthLut) {
+                            weight_lut0 = synth_e2m1_e8m0_lut(exponent0);
+                            weight_lut1 = synth_e2m1_e8m0_lut(exponent1);
+                        } else if constexpr (!IsW13 && kW2GlobalLut) {
+                            constexpr int kGlobalLutOffset =
+                                kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
+                            weight_lut0 = __ldg(
+                                global_lut + kGlobalLutOffset
+                                + scale_lut_index(exponent0));
+                            weight_lut1 = __ldg(
+                                global_lut + kGlobalLutOffset
+                                + scale_lut_index(exponent1));
+                        } else {
+                            weight_lut0 = lut_smem[scale_lut_index(exponent0)];
+                            weight_lut1 = lut_smem[scale_lut_index(exponent1)];
+                        }
                     }
                 }
                 const uint2 fp8_0 =
@@ -674,22 +707,27 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                       + next_weight_chunk1 * 16
                                       + packed_k_offset));
                         }
-                        const uint32_t next_exponent0 =
-                            weight_scale_smem[scale_stage * kScaleStageBytes
-                                              + group_row0 * kScaleRowBytes
-                                              + (global_kt & 3) * 4
-                                              + next_k_step];
-                        const uint32_t next_exponent1 =
-                            weight_scale_smem[scale_stage * kScaleStageBytes
-                                              + group_row1 * kScaleRowBytes
-                                              + (global_kt & 3) * 4
-                                              + next_k_step];
                         if constexpr (kNormalizedWeightScale) {
-                            next_weight_lut0[group] =
-                                synth_normalized_e2m1_lut(next_exponent0);
-                            next_weight_lut1[group] =
-                                synth_normalized_e2m1_lut(next_exponent1);
+                            const int next_scale_offset =
+                                scale_stage * kScaleStageBytes
+                                + (global_kt & 3) * 4 + next_k_step;
+                            next_weight_lut0[group] = load_normalized_e2m1_lut(
+                                weight_scale_smem + next_scale_offset
+                                + group_row0 * kScaleRowBytes, lane);
+                            next_weight_lut1[group] = load_normalized_e2m1_lut(
+                                weight_scale_smem + next_scale_offset
+                                + group_row1 * kScaleRowBytes, lane);
                         } else {
+                            const uint32_t next_exponent0 =
+                                weight_scale_smem[scale_stage * kScaleStageBytes
+                                                  + group_row0 * kScaleRowBytes
+                                                  + (global_kt & 3) * 4
+                                                  + next_k_step];
+                            const uint32_t next_exponent1 =
+                                weight_scale_smem[scale_stage * kScaleStageBytes
+                                                  + group_row1 * kScaleRowBytes
+                                                  + (global_kt & 3) * 4
+                                                  + next_k_step];
                             next_weight_lut0[group] =
                                 lut_smem[scale_lut_index(next_exponent0)];
                             next_weight_lut1[group] =
@@ -1210,6 +1248,7 @@ _ext = load_inline(
           f"dsl{int(DEQUANT_SYNTH_LUT)}_"
           f"nws{int(NORMALIZED_WEIGHT_SCALE)}_"
           f"twl{int(TILED_WEIGHT_LAYOUT)}_"
+          f"qls{int(QUAD_LUT_SHUFFLE)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
@@ -1235,6 +1274,7 @@ _ext = load_inline(
         f"-DK_DEQUANT_SYNTH_LUT={int(DEQUANT_SYNTH_LUT)}",
         f"-DK_NORMALIZED_WEIGHT_SCALE={int(NORMALIZED_WEIGHT_SCALE)}",
         f"-DK_TILED_WEIGHT_LAYOUT={int(TILED_WEIGHT_LAYOUT)}",
+        f"-DK_QUAD_LUT_SHUFFLE={int(QUAD_LUT_SHUFFLE)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
