@@ -631,6 +631,7 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
 
     __shared__ __align__(8) uint64_t full_barriers[kMathWGs][kStages];
     __shared__ __align__(8) uint64_t scale_barriers[kMathWGs];
+    __shared__ __align__(8) uint64_t activation_empty_barrier;
     __shared__ uint2 lut_smem[
         (kNormalizedWeightScale && kNormalizedSharedLut) ? 13 :
         (kNormalizedWeightScale || kDequantSynthLut
@@ -689,6 +690,12 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
             __cvta_generic_to_shared(&full_barriers[math_wg][stage]));
     const uint32_t scale_barrier_addr = static_cast<uint32_t>(
         __cvta_generic_to_shared(&scale_barriers[math_wg]));
+    const uint32_t activation_empty_barrier_addr = static_cast<uint32_t>(
+        __cvta_generic_to_shared(&activation_empty_barrier));
+    if constexpr (DualWgW13) {
+        if (tid == 0)
+            mbar_init(activation_empty_barrier_addr);
+    }
     if (mtid == 0) {
         #pragma unroll
         for (int stage = 0; stage < kStages; ++stage)
@@ -895,6 +902,20 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
             : (kScaleQuadReuse == 4
                ? ((global_kt >> 2) & 1)
                : stage));
+
+        if constexpr (DualWgW13) {
+            if (local_kt > 0 && math_wg == 0) {
+                if (mtid == 0) {
+                    mbar_wait(
+                        activation_empty_barrier_addr,
+                        (local_kt - 1) & 1u);
+                }
+                // Only WG0 participates.  Its leader observes WG1's
+                // WGMMA-complete arrival before any lane overwrites the
+                // shared activation tile for the next K128 iteration.
+                asm volatile("bar.sync 1,128;" ::: "memory");
+            }
+        }
 
         // One uint2 per thread covers the complete 8x128 activation tile.
         if (!DualWgW13 || math_wg == 0) {
@@ -1217,6 +1238,10 @@ __global__ ROUTE_LAUNCH_BOUNDS(DualWgW13) void route_gemm(
                     ptx::warpgroup_fence_operand(tile[group][value]);
             }
             ptx::warpgroup_wait<0>();
+        }
+        if constexpr (DualWgW13) {
+            if (math_wg == 1 && mtid == 0)
+                mbar_arrive(activation_empty_barrier_addr);
         }
         #pragma unroll
         for (int group = 0; group < kWgmmaGroups; ++group) {
@@ -4109,9 +4134,9 @@ _EXTENSION_CONFIG = (
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v111b")
+          f"mb{MIN_BLOCKS_PER_SM}_v111c")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v111b"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v111c"
 )
 
 _ext = load_inline(

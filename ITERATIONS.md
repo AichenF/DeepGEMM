@@ -4787,3 +4787,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - The compact module imports and runs.  TP4 balanced split4 and TP8-local balanced split4 exactly reproduce the selected W13/activation/W2 errors.  TP4 maximal-skew forced split2 passes the old broad threshold but does **not** reproduce the control: W13 cosine drops from about `0.999999997` to `0.999999330`, and rel-L2 rises from about `7.76e-5` to `1.158e-3`.
 - This is consistent with WG0 overwriting the single shared activation tile for the next K128 iteration before WG1 has completed its prior WGMMA read.  Do not time or accept this version.  Add a one-lane consumer-complete mbarrier plus a WG0-only named-barrier gate before buffer reuse, avoiding a second full-CTA barrier.
 - Artifact: `results/iter111b_w13_dual_wg_split_correctness_20260903.log`.
+
+### Iteration 111c — asymmetric activation-buffer reuse handshake is correct
+
+- Added one shared mbarrier for the dual-WG activation buffer.  After its final WGMMA wait, WG1 leader publishes buffer-empty; before the next K128 overwrite, WG0 leader waits and releases its own 128 lanes through a WG0-only named barrier.  WG1 can proceed independently until the existing pre-math full-CTA barrier, avoiding a second full-CTA synchronization per tile.
+- TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256 now exactly reproduce the selected error metrics.  In particular the split2 W13 cosine/rel-L2 recover from `0.999999330/1.158e-3` to `0.999999997/7.76e-5`; route/input quantization is exact, W2 cosine is at least `0.999997240`, and all outputs are finite.
+- Correctness and TP8 runnability gates pass.  Keep opt-in, inspect cubin occupancy/resources, then run a same-process TP4 M128 cold-L2 paired performance gate.
+- Artifact: `results/iter111c_w13_dual_wg_split_handshake_correctness_20260903.log`.
