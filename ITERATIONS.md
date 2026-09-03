@@ -2781,15 +2781,3 @@ maximum rank latency of a full CUDA-Graph replay.
   pass.  The accepted result is still well short of the 20% objective.
 - Evidence:
   `bench/results/tp4_paired_tiled_layout_default_coldl2_formal_20260903.log`.
-
-### WGMMA iteration 43a — share normalized scale LUTs within lane quads
-
-- Added opt-in `V4_QUAD_LUT_SHUFFLE=1`.  Four lanes map to the same output row
-  and E8M0 group for each K32 step, but the winner redundantly performs four
-  shared-byte loads and four affine LUT syntheses.  The candidate lets the
-  first lane load/synthesize one `uint2`, then broadcasts its two words to the
-  other three lanes with warp shuffles.
-- Packed FP4 loads, PRMT/sign reconstruction, WGMMA issue, tiled global TMA
-  traffic and output math are unchanged.  Gate all TP4 split modes and TP8
-  before graph-internal candidate/control/candidate cold-L2 timing; the extra
-  shuffles may cost more than the eliminated shared/integer work.
