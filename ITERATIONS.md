@@ -3349,3 +3349,26 @@ maximum rank latency of a full CUDA-Graph replay.
   gates.  Then use candidate/control/candidate cold-L2 W13/W2 stage timing;
   reject if compiler code generation, register live ranges, or integer-pipe
   scheduling erase the source-level instruction reduction.
+
+### WGMMA iteration 54b — one-multiply LUT rejected
+
+- The two formulas are word-exact for all normalized offsets 1..12, and TP4
+  split-K=4/2 plus TP8-shape numerical gates reproduce the selected errors.
+  This isolates performance from correctness and data-layout changes.
+- Candidate A/control/candidate B local total medians average to
+  91.632/87.712 us at M8, 209.976/197.936 us at M32, and
+  349.216/328.112 us at M128.  The source-level instruction reduction instead
+  regresses the pipeline by 4.47%/6.08%/6.43%; both W13 and W2 lose in every
+  candidate window.
+- Resource inspection does not show an occupancy explanation: TP4 W13 and W2
+  use 53 registers/thread versus 54 for control, with no local spill.  The
+  shared affine value serializes the two result words and adds a mask on their
+  common dependency; the control's independent constant IMADs expose more
+  integer instruction-level parallelism to nvcc/Hopper.
+- Reject without distributed timing, remove `V4_SINGLE_IMAD_LUT`, and restore
+  the exact iteration-53 source.  Fewer source multiplies are not equivalent
+  to a shorter dequant critical path.
+- Evidence:
+  `bench/results/iter54_single_imad_lut_correctness_20260903.log`,
+  `bench/results/iter54_single_imad_lut_stage_aba_coldl2_20260903.log`, and
+  `bench/results/iter54_single_imad_lut_resource_control_candidate_20260903.log`.
