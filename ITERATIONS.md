@@ -2841,3 +2841,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_wout64_tiled_correctness_20260903.log` and
   `bench/results/tp4_wout64_tiled_local_coldl2_screen_20260903.log`.
+
+### WGMMA iteration 45a — retune W13 split-K after tiled storage
+
+- Re-sweep legal W13 split-K 2 and 4 under the selected contiguous TMA layout.
+  The current auto boundary (split4 through M32, split2 at M64/M128) was
+  selected before normalization and tiled storage; those changes can alter
+  the balance between parallel waves, TMA latency and partial-reduction cost.
+- No kernel source or math changes.  Use identical seeded random routes and
+  graph-internal events with a separate excluded 256 MiB L2 clear for every
+  sample.  Measure all M values and repeat boundary points before changing
+  the pre-capture dispatch policy.
