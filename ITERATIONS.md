@@ -4759,3 +4759,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Including iteration 109c M128 (`1.000582x`), the five-shape geometric mean is approximately **0.99884x**, a 0.116% regression.  Only 12 of the 24 paired batch medians across all five shapes favor the candidate; M8 and M16 lose every batch.
 - Decision: reject `V4_WEIGHT_POLICY_CONSTANT=1` and retain the selected short-lived per-issue `createpolicy` path.  Static instruction reduction alone does not produce a repeatable end-to-end win, and the opaque target-specific encoding is not justified by these results.
 - Artifact: `results/iter109d_weight_policy_constant_tp4_m8_m16_m32_m64_paired_cold400_20260903.log`.
+
+## Iteration 110 — selected-default TP4 local stage budget
+
+- Re-profiled the current selected default without experimental flags at M={8,16,32,64,128}, random routing, 200 CUDA-Graph samples per point.  Every replay has a separate excluded 256 MiB clear; the H20 reports 60 MiB L2.  External stage-event overhead means these values are diagnostic and are not headline end-to-end timings.
+- Total/W13/W2 median latencies (us): M8 `86.080/43.456/25.088`; M16 `131.520/72.640/40.576`; M32 `197.504/115.776/62.848`; M64 `271.456/162.640/87.872`; M128 `327.808/197.632/106.880`.
+- W13+W2 consume 79.6%, 86.1%, 90.4%, 92.3%, and 92.9% of local time respectively.  At M32/M64/M128, W13 alone is 58.6-60.3% and W2 is 31.8-32.6%; route quantization, fused activation/requantization, and local k6 reduction together are only 7.1-9.6%.
+- Conclusion: the remaining 1.20x gap cannot be closed by epilogue or route-preparation micro-optimizations at medium/large M.  Prioritize a structural W13 improvement, preserving the selected W2 and communication paths.
+- Artifact: `results/iter110_selected_custom_tp4_stage_budget_cold1000_20260903.log`.
