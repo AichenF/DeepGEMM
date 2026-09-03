@@ -4098,3 +4098,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Fixed the uint32 phase read and reran the worker-only TP4 probe with the finish kernel disabled. The process produced no stage/result line for more than two minutes and was interrupted.
 - Evidence: `results/iter83c2_w2_progress_worker_multicast_probe_20260903.log`.
 - Classification: probable device-side stall, but this version prints only after model setup and final synchronization, so it cannot yet distinguish slow preprocessing from worker non-termination. Add rank-synchronized stage markers immediately before worker launch, after W2 launch, and after the worker event; also run a zero-worker/control setup to bound initialization time.
+
+### Iteration 83c3 — sequential worker and multicast coverage pass
+
+- Added explicit stage markers and ran progress W2 to completion before starting eight queue consumers, with the finish kernel still disabled.
+- All four ranks pass. Each rank reports tile counts 6, chunk counts 8, queue tail 32, worker claim 40 (=32 tasks+8 exit claims), worker-done 8, and a complete task permutation. In every rank-local symmetric workspace, all 16,384 uint32 words are nonzero for each of the four source slots, proving the multicast address, source/phase offsets, zero sentinel, and worker termination are correct in sequential execution.
+- Evidence: `results/iter83c3_w2_progress_worker_sequential_probe_20260903.log`.
+- Finding: the original deadlock boundary is concurrency, not queue completeness or multicast coverage. Run the same marked probe with worker/W2 concurrency; if it stalls after launches are submitted, replace spinning resident consumers with programmatic launch/dependency or a nonresident progress mechanism rather than touching the verified publication math.

@@ -26,6 +26,10 @@ def main() -> None:
     parser.add_argument("--m", type=int, default=8)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument(
+        "--launch-mode", choices=("sequential", "concurrent"),
+        default="sequential"
+    )
+    parser.add_argument(
         "--route-pattern", choices=("random", "balanced", "skew"),
         default="random"
     )
@@ -54,24 +58,27 @@ def main() -> None:
     case.fused_push_counter.zero_()
     torch.cuda.synchronize(device)
     dist.barrier(group=cpu_group)
+    if rank == 0:
+        print("W2_PROGRESS_STAGE setup_complete", flush=True)
 
     case.run_before_w2()
     case.w2_progress_state.zero_()
     main_stream = torch.cuda.current_stream(device)
-    case.pipeline_start_event.record(main_stream)
     phase = int(case.fused_push_counter[0].item()) & 1
-    with torch.cuda.stream(case.pipeline_stream):
-        case.pipeline_stream.wait_event(case.pipeline_start_event)
-        kernel.progress_k6_mc_push_tp4(
-            case.down,
-            case.topk_weights,
-            case.w2_progress_state,
-            case.fused_push_counter,
-            case.fused_push_mc_ptr,
-            case.fused_push_rank,
-            case.fused_push_stride,
-            args.workers,
-        )
+    if args.launch_mode == "concurrent":
+        case.pipeline_start_event.record(main_stream)
+        with torch.cuda.stream(case.pipeline_stream):
+            case.pipeline_stream.wait_event(case.pipeline_start_event)
+            kernel.progress_k6_mc_push_tp4(
+                case.down,
+                case.topk_weights,
+                case.w2_progress_state,
+                case.fused_push_counter,
+                case.fused_push_mc_ptr,
+                case.fused_push_rank,
+                case.fused_push_stride,
+                args.workers,
+            )
     kernel.run_w2_progress(
         case.w2,
         case.s2,
@@ -87,11 +94,34 @@ def main() -> None:
         case.w2_progress_state,
         case.intermediate_per_rank,
     )
-    with torch.cuda.stream(case.pipeline_stream):
-        case.pipeline_done_event.record(case.pipeline_stream)
-    main_stream.wait_event(case.pipeline_done_event)
+    if args.launch_mode == "sequential":
+        torch.cuda.synchronize(device)
+        dist.barrier(group=cpu_group)
+        if rank == 0:
+            print("W2_PROGRESS_STAGE publication_complete", flush=True)
+        kernel.progress_k6_mc_push_tp4(
+            case.down,
+            case.topk_weights,
+            case.w2_progress_state,
+            case.fused_push_counter,
+            case.fused_push_mc_ptr,
+            case.fused_push_rank,
+            case.fused_push_stride,
+            args.workers,
+        )
+    else:
+        with torch.cuda.stream(case.pipeline_stream):
+            case.pipeline_done_event.record(case.pipeline_stream)
+        main_stream.wait_event(case.pipeline_done_event)
+    if rank == 0:
+        print(
+            f"W2_PROGRESS_STAGE launches_submitted mode={args.launch_mode}",
+            flush=True,
+        )
     torch.cuda.synchronize(device)
     dist.barrier(group=cpu_group)
+    if rank == 0:
+        print("W2_PROGRESS_STAGE worker_complete", flush=True)
 
     state = case.w2_progress_state.cpu()
     tile_end = args.m * 32
@@ -101,6 +131,7 @@ def main() -> None:
     total_tasks = args.m * 4
     local_state = {
         "rank": rank,
+        "launch_mode": args.launch_mode,
         "tile_min": int(state[:tile_end].min().item()),
         "tile_max": int(state[:tile_end].max().item()),
         "chunk_min": int(state[tile_end:chunk_end].min().item()),
