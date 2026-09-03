@@ -3250,3 +3250,24 @@ maximum rank latency of a full CUDA-Graph replay.
   publishing the async-proxy writes to the CTA.  If correct, use cold-L2
   candidate/control/candidate stage timing at M8/M32/M128; only a repeatable
   W13/W2 reduction proceeds to distributed timing.
+
+### WGMMA iteration 53b — isolate leader wait to long-K W13
+
+- TP4 split-K=4/2 and TP8-shape numerical gates reproduce the selected
+  errors exactly, confirming that a lane-0 acquire wait followed by
+  `bar.sync` safely publishes the TMA-written shared stage on H20.
+- With leader waits enabled for both route GEMMs, candidate A/control/
+  candidate B total medians average to 88.672/88.448 us at M8,
+  200.200/199.360 us at M32, and 331.224/329.904 us at M128: small but
+  consistent 0.25%/0.42%/0.40% regressions.
+- The layer split is equally consistent.  W13 improves by
+  0.69%/0.95%/0.87%, while W2 regresses by 2.92%/3.02%/2.99%.  Long-K W13
+  benefits from removing redundant polling; short-K W2 instead pays for the
+  leader warp plus CTA-barrier wakeup latency.
+- Preserve this evidence and make one bounded repair: apply
+  `V4_LEADER_MBAR_WAIT=1` only when `IsW13`, leaving W2's exact selected wait
+  path unchanged.  Re-run numerical gates and A/control/A cold-L2 stage
+  timing; the expected W13-only savings are roughly 0.3/1.1/1.7 us.
+- Evidence:
+  `bench/results/iter53_leader_mbar_wait_correctness_20260903.log` and
+  `bench/results/iter53_leader_mbar_wait_stage_aba_coldl2_20260903.log`.
