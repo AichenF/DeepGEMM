@@ -4031,3 +4031,12 @@ maximum rank latency of a full CUDA-Graph replay.
   - M128: fused W13+activation `289.360 us` vs `196.064+8.784=204.848 us` (41.26% slower); local total `413.744 vs 328.288 us` (26.03% slower).
 - Decision: REJECT this first 384-thread paired compute body. Correct gate/up pairing and direct epilogue do not compensate for its full-K task serialization and producer/consumer synchronization. Do not connect W2 to this body or claim scheduler overlap. Preserve the validated dynamic scheduler separately; inspect compiled resource use and isolate whether the producer pipeline itself is defective before considering a split-K or persistent repair.
 - Evidence: `bench/results/iter80_paired_w13_correctness_stage_aba_coldl2_20260903.log`.
+
+## Iteration 81 — NCU diagnosis of the rejected paired body (2026-09-03)
+
+- Collected matching cold-cache NCU profiles of one TP4 M8 balanced paired launch and the selected split4 W13 launch. Profiling replay durations are diagnostic, not benchmark headline numbers.
+- Paired/control durations are `77.18/44.10 us`; DRAM throughput is `29.66%/52.14%` and SM throughput `38.26%/63.78%`. The paired kernel is neither HBM- nor tensor-pipe-saturated.
+- The paired CTA uses 59 registers/thread (64 allocated) and 47.10 KiB shared memory. Both registers and shared memory cap it at two 384-thread CTAs/SM. The control uses 54 registers/thread (56 allocated), 23.55 KiB shared memory and permits nine 128-thread CTAs/SM. Paired barrier-stall pressure is also higher (`4.78` versus `3.59` instructions per issue-active cycle).
+- Finding: the first body dedicates one third of resident warps to producers while only four math warpgroups/SM remain; its two-stage empty/full barrier topology then leaves both compute and DRAM underfilled. This is an implementation/occupancy failure, not evidence against gate/up interleaving itself.
+- Next bounded repair: use a 256-thread CTA containing only two aligned math warpgroups. Each warpgoup independently performs the selected two-stage load/dequant/WGMMA loop for one N128 half, then the CTA shares only the group128 epilogue. This removes four producer warps and empty-stage barriers while retaining paired semantics. Reject if it cannot approach the selected `W13 + activation` latency.
+- Evidence: `bench/results/iter81_{paired,control}_w13_m8_ncu.{log,ncu-rep}` and `bench/results/iter81_paired_vs_control_w13_m8_ncu_summary.log`.

@@ -1,0 +1,30 @@
+[301567] python3.12@127.0.0.1
+  void paired_w13_fused_kernel<512>(const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, float *, __nv_bfloat16 *, unsigned char *, float *, int) (192, 1, 1)x(384, 1, 1), Context 1, Stream 7, Device 0, CC 9.0
+  Metric Name                                                          Metric Unit         Metric Value
+  ---------------------------------------------------------------- --------------- --------------------
+  gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed                         %                29.66
+  gpu__time_duration.sum                                                        us                77.18
+  launch__occupancy_limit_registers                                          block                    2
+  launch__occupancy_limit_shared_mem                                         block                    2
+  launch__registers_per_thread                                     register/thread                   59
+  launch__registers_per_thread_allocated                           register/thread                   64
+  launch__shared_mem_per_block                                         Kbyte/block                47.10
+  launch__waves_per_multiprocessor                                                                 1.23
+  sm__throughput.avg.pct_of_peak_sustained_elapsed                               %                38.26
+  smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio            inst                 4.78
+
+[302003] python3.12@127.0.0.1
+  void route_gemm<4096, 1024, 4, 1, 0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int, int) (1536, 1, 1)x(128, 1, 1), Context 1, Stream 7, Device 0, CC 9.0
+  Metric Name                                                          Metric Unit         Metric Value
+  ---------------------------------------------------------------- --------------- --------------------
+  gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed                         %                52.14
+  gpu__time_duration.sum                                                        us                44.10
+  launch__occupancy_limit_registers                                          block                    9
+  launch__occupancy_limit_shared_mem                                         block                    9
+  launch__registers_per_thread                                     register/thread                   54
+  launch__registers_per_thread_allocated                           register/thread                   56
+  launch__shared_mem_per_block                                         Kbyte/block                23.55
+  launch__waves_per_multiprocessor                                                                 2.19
+  sm__throughput.avg.pct_of_peak_sustained_elapsed                               %                63.78
+  smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio            inst                 3.59
+
