@@ -185,15 +185,211 @@ Correctness properties your scheduler must satisfy:
 
 ## W2 warp-specialized persistent direction
 
+Sources consulted:
+
+- `cudac-tensor-core-expert/references/group_gemm_01_optimizations.md`
+- `cudac-tensor-core-expert/references/optimization_02_persistent_kernel.md`
+- `cudac-tensor-core-expert/references/optimization_04_warp_specialization.md`
+- `cudac-tensor-core-expert/references/optimization_01_mbarrier.md`
+- `cudac-tensor-core-expert/references/wgmma_04_tma_loading_pattern.md`
+- `cudac-tensor-core-expert/references/wgmma_05_execution.md`
+
+Implementation constraints distilled for this kernel:
+
 1. Launch a fixed, occupancy-sized worker grid and let each CTA iterate a
-   deterministic strided task sequence. Runtime `num_tokens_padded` controls
-   termination so graph replays remain safe when route values change.
-2. Producer and consumer must derive the same task sequence and preserve
-   exactly-once coverage.
-3. Use a dedicated producer warpgroup for packed-weight TMA plus activation
-   gathering and one 128-thread consumer warpgroup for RS-WGMMA.
-4. Initialize transaction-full and consumer-empty barriers once and reuse them
-   across tasks. A full stage represents both completed TMA bytes and published
-   ordinary shared-memory writes.
-5. Retain WOUT=128 and judge only complete TP4 CUDA Graphs under per-replay
-   256 MiB cold-L2; require TP8 correctness and graph run-through as well.
+   deterministic strided task sequence.  Runtime `num_tokens_padded` is the
+   termination source, so CUDA-Graph replays remain safe when routing changes.
+2. Preserve exactly-once tile coverage.  Producer and consumer roles must
+   derive the same `(m_block, n_block, k_tile)` sequence or consume a shared
+   mailbox; neither role may independently claim work from a racing counter.
+3. Use a dedicated producer warpgroup for packed-weight TMA and cooperative
+   activation gathering, and one 128-thread consumer warpgroup for RS-WGMMA.
+   Keep accumulator registers out of the producer path.
+4. Initialize transaction-full and consumer-empty barriers once.  A stage is
+   reusable only after the consumer has completed every shared-memory read;
+   termination must not leave either role waiting for an arrival that will
+   never occur.
+5. A transaction-full stage needs both conditions: the TMA byte transaction
+   must complete and ordinary shared-memory activation/metadata writes must be
+   published.  Model these as separate arrivals on the same full barrier.
+6. Retain a 128-channel output tile.  Prior measurements already rejected a
+   global 64-channel tile and a two-independent-task 256-thread CTA; the new
+   experiment tests role specialization and cross-task overlap, not either
+   rejected design.
+7. Benchmark only complete TP4 CUDA Graphs, with a separate 256 MiB L2 clear
+   before every timed replay and the clear outside the CUDA-event interval.
+   TP8 must pass numerical and graph run-through checks before acceptance.
+
+
+### mbarrier instruction
+
+Instruction: PTX `mbarrier` for Warp-Specialized (and Persistent) TMA + WGMMA GEMM on Hopper
+
+---
+
+#### 1. Motivation: lower overhead than CUDA barriers in a queue
+
+The CUDA barrier API is clean, but in a warp-specialized queue it can become expensive:
+
+- You may do many barrier ops per slot per K-tile.
+- Arrival-token protocols can force bookkeeping that you don’t strictly need.
+
+`mbarrier` is a lower-level primitive that enables an efficient protocol:
+
+- Track slot reuse via a **software parity bit** \(p \in \{0,1\}\).
+- Track TMA completion via **tx-count in bytes** using `complete_tx::bytes`.
+- Arrange the protocol so **only one thread per warpgroup** touches `empty[]`, and consumers do not `arrive()` on `full[]`.
+
+---
+
+#### 2. Concept: phases, parity, and tx-count
+
+An `mbarrier` phase completes when:
+
+- arrival count reaches 0, and
+- tx-count reaches 0
+
+We reuse each slot across many phases. The **parity bit** tells you which phase you’re waiting for.
+
+---
+
+#### 3. Queue protocol overview: `full[]` + `empty[]`
+
+We use two `mbarrier` arrays per queue slot:
+
+- `full[q]`: producer-owned barrier
+  - expected arrivals per phase: **1** (producer thread)
+  - tx-count: total bytes of A+B for that slot
+  - consumers only **wait** on it (no arrive)
+
+- `empty[q]`: consumer-owned barrier
+  - expected arrivals per phase: **num_consumers** (one arrival per consumer warpgroup)
+  - producer waits on it before overwriting the slot
+
+Parity handling (typical ring-buffer reuse):
+
+```cpp
+int p = 0;
+int qidx = 0;
+// each time qidx wraps, flip parity (slot reuse enters next phase)
+if (++qidx == QSIZE) { qidx = 0; p ^= 1; }
+```
+
+---
+
+```cpp
+// One-time init (single thread):
+if (threadIdx.x == 0) {
+  for (int i = 0; i < QSIZE; ++i) {
+    init_barrier(&full[i],  1);             // producer-only
+    init_barrier(&empty[i], num_consumers); // one arrive per consumer warpgroup
+  }
+}
+__syncthreads();
+
+// Producer (one thread, per slot):
+wait_parity(&empty[qidx], p);
+expect_bytes(&full[qidx], bytes_total);
+tma_load_2d_mbarrier(dstA, tmaA, &full[qidx], colA, rowA);
+tma_load_2d_mbarrier(dstB, tmaB, &full[qidx], colB, rowB);
+
+// Consumer (all threads participate in compute, but only tid==0 arrives on empty):
+wait_parity(&full[qidx], p);
+// TODO: WGMMA compute reading from shared slot qidx
+if (tid == 0) arrive(&empty[qidx], 1);
+```
+
+---
+
+#### 7. Critical tips / common failure modes
+
+- [ ] `full[]` and `empty[]` are `.b64` aligned to 8 bytes in shared memory.
+- [ ] Barriers are initialized exactly once per block before use.
+- [ ] Parity bit `p` flips consistently on slot reuse (commonly on `qidx` wrap).
+- [ ] `full[]` expected arrivals is **1** (producer only); consumers do not call `arrive()` on it.
+- [ ] `empty[]` expected arrivals equals `num_consumers` and **exactly one thread per consumer warpgroup** calls `arrive()` per slot.
+- [ ] Producer calls `expect_bytes(full[q], bytes_total)` **before** issuing all copies linked to `full[q]`.
+- [ ] The sum of copy bytes linked to `full[q]` equals `bytes_total`.
+- [ ] Do not mix CUDA barrier objects with `mbarrier` in the same queue protocol.
+- [ ] Do not reinitialize `mbarrier` objects per tile or per K-iteration; reuse phases via parity.
+- [ ] If results “sometimes pass, sometimes fail”, suspect: wrong byte count, wrong parity flip, or tensor-map addressability (tma pointer not in device memory).
+- [ ] Store mapping uses warpgroup-local indexing (`tid = threadIdx.x % 128`) when writing WGMMA fragments.
+
+
+##### Accumulation Loop
+```cpp
+// Compute over K dimension
+warpgroup_arrive();
+for (int k = 0; k < BK/WGMMA_K; ++k) {
+    wgmma64<1, 1, 1, 0, 0>(d, &sA[k*WGMMA_K], &sB[k*WGMMA_K]);
+}
+warpgroup_commit_batch();
+warpgroup_wait<0>();
+```
+
+**For BK=64, WGMMA_K=16**: Need 4 WGMMA operations per block.
+
+**Important**: The indexing pattern depends on the memory layout of sA and sB:
+
+**Example 1 - sA row-major [BM, BK], sB column-major [BK, BN]**:
+```cpp
+// For sA [64, 64] row-major: advance by WGMMA_K columns
+// For sB [64, 64] column-major (K contiguous): advance by WGMMA_K elements
+warpgroup_arrive();
+wgmma64<1, 1, 1, 0, 0>(d, &sA[0*WGMMA_K], &sB[0*WGMMA_K]);
+wgmma64<1, 1, 1, 0, 0>(d, &sA[1*WGMMA_K], &sB[1*WGMMA_K]);
+wgmma64<1, 1, 1, 0, 0>(d, &sA[2*WGMMA_K], &sB[2*WGMMA_K]);
+wgmma64<1, 1, 1, 0, 0>(d, &sA[3*WGMMA_K], &sB[3*WGMMA_K]);
+warpgroup_commit_batch();
+warpgroup_wait<0>();
+```
+
+**Explanation for sB column-major indexing**:
+- sB is stored as `[BK, BN] = [64, 64]` in column-major format
+- The K dimension is contiguous (stride-1)
+- To advance by WGMMA_K=16 elements in the K dimension, simply offset by 16 elements
+
+- Leading dimension is BK=64 (the major dimension stride)
+
+
+#### 1. Motivation: overlap TMA loads with tensor-core compute
+
+TMA loads (global → shared) have latency. If a single warpgroup does:
+
+- load A/B tile
+- wait for completion
+- run WGMMA
+
+then WGMMA execution is often blocked by loads.
+
+Warp specialization turns the kernel into a producer/consumer pipeline:
+
+- **Producer warpgroup** keeps loading upcoming tiles into a shared-memory ring buffer.
+- **Consumer warpgroup(s)** keep running WGMMA as soon as tiles are ready.
+
+With `QSIZE > 1`, producer and consumers can run mostly independently, hiding load latency.
+
+---
+
+#### 4. Practical notes (layout/indexing + tuning)
+
+These are common sources of subtle correctness/perf issues:
+
+- **Indexing consistency**: Your tensor-map encoding (global shape/stride), your shared-memory indexing, and your WGMMA `TransA/TransB` flags must all agree.
+- **Queue depth** (`QSIZE`): typical values are **2–8**. Larger `QSIZE` improves latency hiding but increases dynamic shared memory.
+- **Single-thread producer**: start with `wg_idx==0 && tid==0` issuing TMA to avoid duplicated loads and complicated barrier accounting.
+- **Dynamic shared memory**: ring buffers typically require dynamic shared memory; make sure host launch sets both:
+  - the dynamic shared memory **bytes**, and
+  - `cudaFuncAttributeMaxDynamicSharedMemorySize` for the kernel.
+
+---
+
+#### 5. Critical tip: store mapping must use warpgroup-local `tid`
+
+WGMMA register layouts and the standard store mapping are defined **within a single warpgroup**. Always compute store indices from warpgroup-local `tid`:
+
+```cpp
+const int tid  = threadIdx.x % 128;
+const int lane = tid % 32;
+const int warp = tid / 32; // 0..3
+```

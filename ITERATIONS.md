@@ -5389,3 +5389,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Control/candidate is only 0.937386x: the candidate is 22.480 us or 6.68% slower and loses all eight batch medians. Outputs remain bitwise identical on all ranks.
 - Result: reject W13 factor-16 unrolling immediately; do not spend GPU time on other M values or a formal Humming run. The residency cliff dominates any instruction saving, confirming factor eight is the practical ceiling and factor four remains the robust production default.
 - Evidence: `results/iter135b_w13_split2_route_k_unroll16_tp4_m128_paired_cold800_20260903.log`.
+
+## Optimization evidence refresh — Hopper barrier/control-path audit
+
+- Refreshed `instructions.txt` with narrow, verbatim extracts from the Hopper WGMMA execution, warp-specialization, and PTX `mbarrier` references before changing kernel source.
+- The barrier protocol constraints rule out speculative early refill or relaxed publication: a full stage requires both arrival and transaction counts to reach zero, parity must follow slot reuse, and the consumer must finish all shared-memory reads before release.
+- The scheduling references identify L2-local tile grouping/raster order as the remaining independent lever, while the current profile and prior iterations already reject deeper staging, wider global unrolling, and unsafe barrier changes.
+- Result: no production source or benchmark result changed. Use source-correlated SASS/profile evidence to decide whether the next candidate targets necessary barrier wait, address/control instructions, or route-tile locality.
