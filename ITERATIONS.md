@@ -5144,3 +5144,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP4 skew forced split2 and TP8-shape balanced auto split4 also reproduce the selected W13/activation/W2 errors exactly; all route-alignment and input-quantization checks pass.
 - Result: two-way unrolling is numerically safe for every required topology/split gate.  Keep default off pending same-process TP4 M128 cold-L2 timing and resource/SASS inspection if favorable.
 - Evidence: `results/iter126_route_k_unroll2_correctness_20260903.log`.
+
+### Iteration 126b — two-way K128 unroll wins TP4 M128 consistently
+
+- Same-process TP4 M128 random-route A/B used eight batches x 100 samples per arm, identical tensors and CARv2 communicator, per-sample alternating order, rank-max timing, and a separate excluded 256 MiB cold-L2 clear immediately before every replay.
+- Control min/median/max is 0.316224/0.354144/0.583776 ms; unroll2 candidate is 0.310656/0.347488/0.385312 ms.  Control/candidate is 1.019155x, a 6.656 us or 1.88% latency reduction.
+- Candidate wins all eight paired batch medians by 5.696--7.184 us.  Complete graph outputs are bitwise equal on all ranks (cosine 1.0, rel-L2/max-abs 0).
+- Result: this is a directionally strong candidate rather than a drift-sized screen.  Keep opt-in and test M8/M16/M32/M64 under the same cold-L2 paired protocol before selecting; inspect resources/SASS to confirm whether stage-index constant folding removed local traffic.
+- Evidence: `results/iter126b_route_k_unroll2_tp4_m128_paired_cold800_20260903.log`.
