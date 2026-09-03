@@ -184,7 +184,7 @@ W13_DISTRIBUTED_PREP = (
     os.environ.get("V4_W13_DISTRIBUTED_PREP", "1") == "1"
 )
 W2_DISTRIBUTED_PREP = (
-    os.environ.get("V4_W2_DISTRIBUTED_PREP", "0") == "1"
+    os.environ.get("V4_W2_DISTRIBUTED_PREP", "1") == "1"
 )
 W13_MERGED_WGMMA_GROUP = (
     os.environ.get("V4_W13_MERGED_WGMMA_GROUP", "0") == "1"

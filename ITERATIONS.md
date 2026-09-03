@@ -4614,3 +4614,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Against this exact window, a 1.20x result requires custom <= `0.176139633 ms`; the remaining geometric-mean reduction is `0.010470044 ms`, or **5.61%** of current custom latency.
 - Cross-window headline drift masks most of the candidate's approximately 0.41% same-process control win, so selection rests on iterations 101b/c's 22/22 paired-batch direction, while this run establishes end-to-end correctness and the new absolute score. Make W2 distributed preparation the default, re-gate the no-environment TP4/TP8 paths, then resume structural GEMM work.
 - Artifact: `results/iter101d_w2_distributed_prep_exact_humming_tp4_formal_cold2000_20260903.log`.
+
+## Iteration 102 — select W2 distributed preparation as the default
+
+- Changed the no-environment default of `V4_W2_DISTRIBUTED_PREP` from 0 to 1 after the five-shape paired screen favored it in all 22 batch comparisons and the exact-Humming formal graph passed.
+- Re-ran the default path without the flag: TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256 all pass. Route/input preparation is exact; W13 cosine is at least 0.999999997, W2 cosine is at least 0.999997240, and every output is finite.
+- TP8 remains source- and shape-valid while the available non-shared GPUs constrain distributed performance work to TP4. Resume optimization from this selected default; the remaining 1.20x gap is about 10.47 us geometric mean (5.61% of custom).
+- Artifact: `results/iter102_w2_distributed_prep_default_correctness_20260903.log`.
