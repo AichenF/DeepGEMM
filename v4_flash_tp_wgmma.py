@@ -1351,7 +1351,7 @@ void launch_reduce_swiglu(
     const auto stream = at::cuda::getCurrentCUDAStream();
     reduce_swiglu_kernel<Intermediate, SplitK><<<
         (numel + threads - 1) / threads, threads, 0, stream>>>(
-        partials.data_ptr<float>(),
+        static_cast<const float*>(partials.data_ptr()),
         reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), routes);
 }
 
@@ -1391,7 +1391,7 @@ void launch_reduce_swiglu_quant(
         : nullptr;
     reduce_swiglu_quant_kernel<Intermediate, SplitK><<<
         routes * groups_per_route, threads, 0, stream>>>(
-        partials.data_ptr<float>(), activation_ptr,
+        static_cast<const float*>(partials.data_ptr()), activation_ptr,
         quantized.data_ptr<uint8_t>(), scale.data_ptr<float>(), routes);
 }
 
