@@ -3829,3 +3829,27 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/iter63_tp4_multimem_capability_probe_20260903.log` and
   `bench/results/iter63_multicast_push_tp4_m8_compile_correctness_smoke_coldl2_20260903.log`.
+
+### WGMMA iteration 64 — multicast push same-process selection audit
+
+- Compared multicast-push against stock `CustomAllReduceV2` in one TP4
+  process with identical inputs/weights and communicator, six balanced AB/BA
+  batches, 1200 max-rank cold-L2 samples per implementation and point.  Both
+  paths pass the independent NCCL sum check at M8/M16/M32/M64, and every
+  complete graph output is bitwise identical (`max_abs=0`).
+- Multicast/control medians are 0.075904/0.076672 ms at M8,
+  0.122048/0.123360 ms at M16, 0.192832/0.194736 ms at M32, and
+  0.287904/0.289248 ms at M64.  The point speedups are 1.01012x, 1.01075x,
+  1.00987x, and 1.00467x; four-point geometric-mean speedup is 1.00885x.
+  Replacing four unicast stores with one multicast store approximately
+  doubles iteration 61's small-tail gain at M8/M32.
+- M8--M32 are repeatable enough to select provisionally: all six M8/M16
+  candidate batch medians beat control, and M32's pooled result saves 1.904
+  us despite system drift.  M64 is not selected yet because both paths show
+  a broad 0.27--0.41 ms two-mode distribution and candidate/control batch
+  order is mixed; its 1.344 us pooled advantage needs a focused repeat.
+  Even the four-point result remains far below the 20% end-to-end objective,
+  so retain multicast push as a component and continue toward multicast pull
+  or producer/communication overlap, especially for M128.
+- Evidence:
+  `bench/results/iter64_multicast_push_tp4_m8_m16_m32_m64_ab_coldl2_20260903.log`.
