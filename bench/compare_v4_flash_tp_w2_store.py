@@ -40,6 +40,7 @@ if COMPARE_FLAG not in {
     "V4_W13_LAUNCH_BOUND_10",
     "V4_W13_LB10_MAX_SMEM",
     "V4_DIRECT_BARRIER_ADDR",
+    "V4_ROUTE_K_UNROLL2",
     "V4_EXACT_ROUTE_CAPACITY",
 }:
     raise ValueError(f"unsupported V4_COMPARE_FLAG={COMPARE_FLAG}")

@@ -433,6 +433,7 @@ def main() -> None:
         f"w2_global_lut={kernel.W2_GLOBAL_LUT} "
         f"leader_mbar_wait={kernel.LEADER_MBAR_WAIT}"
         f" direct_barrier_addr={kernel.DIRECT_BARRIER_ADDR}"
+        f" route_k_unroll2={kernel.ROUTE_K_UNROLL2}"
         f" w13_distributed_prep={kernel.W13_DISTRIBUTED_PREP}"
         f" w13_dual_wg_split={kernel.W13_DUAL_WG_SPLIT}"
         f" w13_launch_bound_10={kernel.W13_LAUNCH_BOUND_10}"

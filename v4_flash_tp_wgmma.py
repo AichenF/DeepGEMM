@@ -226,6 +226,7 @@ W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
 LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
 DIRECT_BARRIER_ADDR = os.environ.get("V4_DIRECT_BARRIER_ADDR", "0") == "1"
+ROUTE_K_UNROLL2 = os.environ.get("V4_ROUTE_K_UNROLL2", "0") == "1"
 W13_DISTRIBUTED_PREP = (
     os.environ.get("V4_W13_DISTRIBUTED_PREP", "1") == "1"
 )
@@ -348,6 +349,7 @@ static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
 static constexpr bool kLeaderMbarWait = K_LEADER_MBAR_WAIT;
 static constexpr bool kDirectBarrierAddr = K_DIRECT_BARRIER_ADDR;
+static constexpr bool kRouteKUnroll2 = K_ROUTE_K_UNROLL2;
 static constexpr bool kW13DistributedPrep = K_W13_DISTRIBUTED_PREP;
 static constexpr bool kW13DualWgSplit = K_W13_DUAL_WG_SPLIT;
 static constexpr bool kW2DistributedPrep = K_W2_DISTRIBUTED_PREP;
@@ -967,6 +969,11 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
     const int column_base = (lane % 4) * 2;
     float accum[kWgmmaGroups][4] = {};
 
+    #if K_ROUTE_K_UNROLL2
+    #pragma unroll 2
+    #else
+    #pragma unroll 1
+    #endif
     for (int local_kt = 0; local_kt < kKTilesPerSplit; ++local_kt) {
         const int stage = local_kt % kStages;
         const int global_kt = kt_begin + local_kt;
@@ -4231,13 +4238,14 @@ _EXTENSION_CONFIG = (
           f"w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
           f"lmw{int(LEADER_MBAR_WAIT)}_dba{int(DIRECT_BARRIER_ADDR)}_"
+          f"ku2{int(ROUTE_K_UNROLL2)}_"
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v125dba")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v126ku2")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v125dba"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v126ku2"
 )
 
 _ext = load_inline(
@@ -4290,6 +4298,7 @@ _ext = load_inline(
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
         f"-DK_LEADER_MBAR_WAIT={int(LEADER_MBAR_WAIT)}",
         f"-DK_DIRECT_BARRIER_ADDR={int(DIRECT_BARRIER_ADDR)}",
+        f"-DK_ROUTE_K_UNROLL2={int(ROUTE_K_UNROLL2)}",
         f"-DK_W13_DISTRIBUTED_PREP={int(W13_DISTRIBUTED_PREP)}",
         f"-DK_W13_DUAL_WG_SPLIT={int(W13_DUAL_WG_SPLIT)}",
         f"-DK_W2_DISTRIBUTED_PREP={int(W2_DISTRIBUTED_PREP)}",

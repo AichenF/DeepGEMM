@@ -1021,6 +1021,7 @@ def main() -> None:
                     "w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
                     "leader_mbar_wait": kernel.LEADER_MBAR_WAIT,
                     "direct_barrier_addr": kernel.DIRECT_BARRIER_ADDR,
+                    "route_k_unroll2": kernel.ROUTE_K_UNROLL2,
                     "w13_distributed_prep": kernel.W13_DISTRIBUTED_PREP,
                     "w2_distributed_prep": kernel.W2_DISTRIBUTED_PREP,
                     "w13_merged_wgmma_group": (

@@ -5136,3 +5136,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The candidate loses all eight paired batch medians by 3.44--4.58 us.  Complete graph outputs are bitwise equal on every TP rank (cosine 1.0, rel-L2/max-abs 0), excluding arithmetic or communicator drift.
 - Result: reject `V4_DIRECT_BARRIER_ADDR=1` and retain the local two-address array default.  The local accesses are L1-resident and apparently better scheduled than repeated uniform base/stage arithmetic; do not infer latency savings from the sector diagnostic alone.
 - Evidence: `results/iter125b_direct_barrier_addr_tp4_m128_paired_cold800_20260903.log`.
+
+## Iteration 126 — two-way outer K128 unroll passes TP4/TP8 correctness
+
+- Added opt-in `V4_ROUTE_K_UNROLL2=1`, applying `#pragma unroll 2` to the existing route-GEMM outer K128 loop while leaving the selected non-unrolled path as control.  With two weight stages, each unrolled body has a fixed stage parity and can simplify barrier/shared-address indexing without changing the inner K32 WGMMA order or task geometry.
+- TP4 balanced auto split4 reproduces selected metrics exactly: W13 cosine/rel-L2 0.999999998/0.000076187, activation 0.999999759/0.000694956, W2 0.999997256/0.002342691 finite.
+- TP4 skew forced split2 and TP8-shape balanced auto split4 also reproduce the selected W13/activation/W2 errors exactly; all route-alignment and input-quantization checks pass.
+- Result: two-way unrolling is numerically safe for every required topology/split gate.  Keep default off pending same-process TP4 M128 cold-L2 timing and resource/SASS inspection if favorable.
+- Evidence: `results/iter126_route_k_unroll2_correctness_20260903.log`.
