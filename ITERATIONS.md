@@ -4743,3 +4743,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The intended 8x100 TP4 M128 cold-L2 paired command exited before worker or GPU launch because this environment's `torchrun` parser treated the script argument `--m 128` as an ambiguous launcher option (`--max-restarts`, `--monitor-interval`, `--module`, and `--master-*`).
 - No timing samples were produced and this says nothing about candidate performance.  Re-run with the unambiguous `--m=128` script-argument form; keep every benchmark and cache-control setting unchanged.
 - Artifact: `results/iter109b_weight_policy_constant_tp4_m128_paired_cold800_20260903.log`.
+
+## Iteration 109c — constant weight policy narrowly wins M128
+
+- Cubin inspection confirms the intended lowering.  The per-issue control's roughly six uniform policy-synthesis instructions become two adjacent `UMOV` instructions (`UR20=0`, `UR21=0x12f00000`) before `UBLKCP.S.G`; total cubin SASS output falls from 43,034 to 42,874 lines.  Relevant W13/W2 registers, stack, local memory, and shared memory are unchanged.
+- Same-process TP4 M128 random-route timing used 8x100 samples per variant, exact graph-output equality, per-sample ABBA ordering, and a separate excluded 256 MiB L2 clear before every replay.
+- Per-issue-create control median: **0.357456 ms**; short-lived-constant candidate: **0.357248 ms**; control/candidate: **1.000582x**.  The candidate saves 0.208 us, and seven of eight candidate batch medians beat their paired controls.
+- The direction is encouraging but far below one percent.  Keep opt-in and screen M8/M16/M32/M64 under the same paired cold-L2 protocol before selecting or rejecting it.
+- Artifact: `results/iter109c_weight_policy_constant_tp4_m128_paired_cold800_20260903.log`.
