@@ -4864,3 +4864,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The Python process then exited only while printing metadata because the helper still referenced the subsequently removed `W13_FP16_PARTIAL` module flag.  This post-profile `AttributeError` does not invalidate the already-written report, but the shell's `&&` correctly prevented automatic report import.
 - Preserve the report and failure log.  Next import the existing report read-only for bottleneck analysis, then remove the stale metadata field before future captures; no selected-kernel source changed in this iteration.
 - Artifacts: `profile_v4_flash_tp_local.py`, `results/iter116b_selected_tp4_m128_w13_cold_ncu.log`, and `results/iter116b_selected_tp4_m128_w13_cold_ncu.ncu-rep`.
+
+### Iteration 116c — selected M128 W13 is issue/occupancy bound, not at HBM roof
+
+- Parsed the valid iteration 116b report for the current TP4 M128 split2 W13 specialization: grid 5,136 CTAs, 128 threads, 55 registers/thread, 21.50 KiB dynamic plus 1.02 KiB static shared memory, and 7.32 waves/SM.
+- NCU duration is `213.47 us` under kernel replay.  SM/issue-slot throughput is `77.53%`, while DRAM throughput is only `54.34%`; L2 throughput is `67.33%`, effective memory throughput is `2.61 TB/s`, and cold-streaming L2 hit rate is `5.59%`.  The kernel is therefore not sitting at the H20 HBM roof.
+- Both registers and shared memory limit residency to nine 128-thread CTAs/SM (36 warps, 56.25% theoretical occupancy); achieved occupancy is 52.95% / 33.89 warps.  Branch efficiency is 70.88%, consistent with route-bound predicates and max-grid tail work.
+- Direction: seek a single-warpgoup W13 change that reduces per-K128 issue/dequant/synchronization work or resource footprint without the dual-WG candidate's occupancy loss.  Weight bandwidth/cache-policy and CAR geometry are already separately gated; do not infer a bandwidth-only solution from this profile.
+- Artifact: `results/iter116c_selected_tp4_m128_w13_ncu_details_20260903.log`.

@@ -1,0 +1,117 @@
+[357752] python3.12@127.0.0.1
+  void route_gemm<4096, 1024, 2, 1, 0, 0, 0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int *, int, int) (5136, 1, 1)x(128, 1, 1), Device 0, CC 9.0, Invocations 1
+    Section: Compute Workload Analysis
+    -------------------- ----------- ------- ------- -------
+    Metric Name          Metric Unit Minimum Maximum Average
+    -------------------- ----------- ------- ------- -------
+    Executed Ipc Active   inst/cycle    3.18    3.18    3.18
+    Executed Ipc Elapsed  inst/cycle    3.10    3.10    3.10
+    Issue Slots Busy               %   77.53   77.53   77.53
+    Issued Ipc Active     inst/cycle    3.18    3.18    3.18
+    SM Busy                        %   77.53   77.53   77.53
+    -------------------- ----------- ------- ------- -------
+
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- ---------- ---------- ----------
+    Metric Name             Metric Unit    Minimum    Maximum    Average
+    ----------------------- ----------- ---------- ---------- ----------
+    DRAM Frequency                  Ghz       3.20       3.20       3.20
+    SM Frequency                    Ghz       1.62       1.62       1.62
+    Elapsed Cycles                cycle 348,243.00 348,243.00 348,243.00
+    Memory Throughput                 %      54.34      54.34      54.34
+    DRAM Throughput                   %      54.34      54.34      54.34
+    Duration                         us     213.47     213.47     213.47
+    L1/TEX Cache Throughput           %      51.85      51.85      51.85
+    L2 Cache Throughput               %      67.33      67.33      67.33
+    SM Active Cycles              cycle 337,927.58 337,927.58 337,927.58
+    Compute (SM) Throughput           %      77.53      77.53      77.53
+    ----------------------- ----------- ---------- ---------- ----------
+
+    Section: GPU and Memory Workload Distribution
+    -------------------------- ----------- -------------- -------------- --------------
+    Metric Name                Metric Unit        Minimum        Maximum        Average
+    -------------------------- ----------- -------------- -------------- --------------
+    Average DRAM Active Cycles       cycle     363,382.50     363,382.50     363,382.50
+    Total DRAM Elapsed Cycles        cycle  32,779,648.00  32,779,648.00  32,779,648.00
+    Average L1 Active Cycles         cycle     337,927.58     337,927.58     337,927.58
+    Total L1 Elapsed Cycles          cycle  27,053,798.00  27,053,798.00  27,053,798.00
+    Average L2 Active Cycles         cycle     357,433.98     357,433.98     357,433.98
+    Total L2 Elapsed Cycles          cycle  34,256,702.00  34,256,702.00  34,256,702.00
+    Average SM Active Cycles         cycle     337,927.58     337,927.58     337,927.58
+    Total SM Elapsed Cycles          cycle  27,053,798.00  27,053,798.00  27,053,798.00
+    Average SMSP Active Cycles       cycle     337,913.08     337,913.08     337,913.08
+    Total SMSP Elapsed Cycles        cycle 108,215,192.00 108,215,192.00 108,215,192.00
+    -------------------------- ----------- -------------- -------------- --------------
+
+    Section: Launch Statistics
+    -------------------------------- --------------- ---------- ---------- ----------
+    Metric Name                          Metric Unit    Minimum    Maximum    Average
+    -------------------------------- --------------- ---------- ---------- ----------
+    Block Size                                           128.00     128.00     128.00
+    Cluster Size                                           0.00       0.00       0.00
+    Grid Size                                          5,136.00   5,136.00   5,136.00
+    Registers Per Thread             register/thread      55.00      55.00      55.00
+    Shared Memory Configuration Size           Kbyte     233.47     233.47     233.47
+    Driver Shared Memory Per Block       Kbyte/block       1.02       1.02       1.02
+    Dynamic Shared Memory Per Block      Kbyte/block      21.50      21.50      21.50
+    Static Shared Memory Per Block       Kbyte/block       1.02       1.02       1.02
+    # SMs                                         SM      78.00      78.00      78.00
+    Stack Size                                         1,024.00   1,024.00   1,024.00
+    Threads                                   thread 657,408.00 657,408.00 657,408.00
+    # TPCs                                                39.00      39.00      39.00
+    Uses Green Context                                     0.00       0.00       0.00
+    Waves Per SM                                           7.32       7.32       7.32
+    -------------------------------- --------------- ---------- ---------- ----------
+
+    Section: Memory Workload Analysis
+    -------------------------------------- ----------- ---------- ---------- ----------
+    Metric Name                            Metric Unit    Minimum    Maximum    Average
+    -------------------------------------- ----------- ---------- ---------- ----------
+    Local Memory Spilling Requests                           0.00       0.00       0.00
+    Local Memory Spilling Request Overhead           %       0.00       0.00       0.00
+    Memory Throughput                          Tbyte/s       2.61       2.61       2.61
+    Mem Busy                                         %      50.51      50.51      50.51
+    Max Bandwidth                                    %      54.34      54.34      54.34
+    L1/TEX Hit Rate                                  %      30.91      30.91      30.91
+    L2 Persisting Size                           Mbyte      11.80      11.80      11.80
+    L2 Compression Success Rate                      %       0.00       0.00       0.00
+    L2 Compression Ratio                             %       0.00       0.00       0.00
+    L2 Compression Input Sectors                sector 325,931.00 325,931.00 325,931.00
+    L2 Hit Rate                                      %       5.59       5.59       5.59
+    Mem Pipes Busy                                   %      38.57      38.57      38.57
+    -------------------------------------- ----------- ---------- ---------- ----------
+
+    Section: Occupancy
+    ------------------------------- ----------- ------- ------- -------
+    Metric Name                     Metric Unit Minimum Maximum Average
+    ------------------------------- ----------- ------- ------- -------
+    Max Active Clusters                 cluster    0.00    0.00    0.00
+    Max Cluster Size                      block    8.00    8.00    8.00
+    Overall GPU Occupancy                     %    0.00    0.00    0.00
+    Cluster Occupancy                         %    0.00    0.00    0.00
+    Block Limit Barriers                  block   32.00   32.00   32.00
+    Block Limit SM                        block   32.00   32.00   32.00
+    Block Limit Registers                 block    9.00    9.00    9.00
+    Block Limit Shared Mem                block    9.00    9.00    9.00
+    Block Limit Warps                     block   16.00   16.00   16.00
+    Theoretical Active Warps per SM        warp   36.00   36.00   36.00
+    Theoretical Occupancy                     %   56.25   56.25   56.25
+    Achieved Occupancy                        %   52.95   52.95   52.95
+    Achieved Active Warps Per SM           warp   33.89   33.89   33.89
+    ------------------------------- ----------- ------- ------- -------
+
+    Section: Source Counters
+    ------------------------- ----------- ------------ ------------ ------------
+    Metric Name               Metric Unit      Minimum      Maximum      Average
+    ------------------------- ----------- ------------ ------------ ------------
+    Branch Instructions Ratio           %         0.04         0.04         0.04
+    Branch Instructions              inst 3,007,954.00 3,007,954.00 3,007,954.00
+    Branch Efficiency                   %        70.88        70.88        70.88
+    Avg. Divergent Branches      branches     1,353.49     1,353.49     1,353.49
+    ------------------------- ----------- ------------ ------------ ------------
+
+  Note: The shown averages are calculated as the arithmetic mean of the metric values after the evaluation of the    
+  metrics for each individual kernel launch.                                                                         
+  If aggregating across varying launch configurations (like shared memory, cache config settings), the arithmetic    
+  mean can be misleading and looking at the individual results is recommended instead.                               
+
