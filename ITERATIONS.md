@@ -4300,3 +4300,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: control/candidate = 1.009206; candidate wins by 0.720 us (0.912% of control latency).
 - Decision: first successful end-to-end result for the release-marker overlap branch. Keep opt-in pending a longer confirmation window and M=16/M=32 generalization; do not yet alter the accepted default dispatch.
 - Artifact: results/iter83q2_inline_finish_chunks8_workers64_tp4_m8_cold_ab_20260903.log
+
+### Iteration 83q3 — long cold-L2 inline-finish confirmation and shape boundary (2026-09-03)
+
+- Method: same-process TP4 CUDA-Graph A/B, random routes, 8 chunks / 64 workers / inline finish, 6 x 100 = 600 cold samples per arm and M. Cache clear and correctness policy match 83q2.
+- M=8: control 79.040 us, candidate 78.720 us, control/candidate 1.004065; candidate wins by 0.320 us. Candidate/control output max_abs=0.
+- M=16: control 123.616 us, candidate 124.896 us, control/candidate 0.989752; candidate loses by 1.280 us. Candidate/control output max_abs=0.
+- M=32: control 193.696 us, candidate 199.456 us, control/candidate 0.971121; candidate loses by 5.760 us. Candidate/control output max_abs=0.
+- Three-shape geometric mean: control 123.694 us, candidate 125.168 us, control/candidate 0.988220.
+- Decision: reject inline finish for M>=16 and as a general progress dispatch. M=8 remains a narrowly positive opt-in point, confirmed over 600 cold samples, but its sub-percent margin warrants one independent repeat before default selection.
+- Artifact: results/iter83q3_inline_finish_chunks8_workers64_tp4_m8_m16_m32_cold_long_ab_20260903.log
