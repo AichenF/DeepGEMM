@@ -1010,6 +1010,7 @@ def main() -> None:
                     "w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
                     "leader_mbar_wait": kernel.LEADER_MBAR_WAIT,
                     "w13_distributed_prep": kernel.W13_DISTRIBUTED_PREP,
+                    "w2_distributed_prep": kernel.W2_DISTRIBUTED_PREP,
                     "w13_merged_wgmma_group": (
                         kernel.W13_MERGED_WGMMA_GROUP
                     ),

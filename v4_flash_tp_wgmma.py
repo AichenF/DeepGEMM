@@ -183,6 +183,9 @@ LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
 W13_DISTRIBUTED_PREP = (
     os.environ.get("V4_W13_DISTRIBUTED_PREP", "1") == "1"
 )
+W2_DISTRIBUTED_PREP = (
+    os.environ.get("V4_W2_DISTRIBUTED_PREP", "0") == "1"
+)
 W13_MERGED_WGMMA_GROUP = (
     os.environ.get("V4_W13_MERGED_WGMMA_GROUP", "0") == "1"
 )
@@ -264,6 +267,7 @@ static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
 static constexpr bool kW13S2RPrefetch = K_W13_S2R_PREFETCH;
 static constexpr bool kLeaderMbarWait = K_LEADER_MBAR_WAIT;
 static constexpr bool kW13DistributedPrep = K_W13_DISTRIBUTED_PREP;
+static constexpr bool kW2DistributedPrep = K_W2_DISTRIBUTED_PREP;
 static constexpr bool kW13MergedWgmmaGroup = K_W13_MERGED_WGMMA_GROUP;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
@@ -425,8 +429,10 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         IsW13 ? kW13S2RPrefetch : kW2S2RPrefetch;
     constexpr bool kMergedWgmmaGroup =
         IsW13 && kW13MergedWgmmaGroup;
+    constexpr bool kDistributedPrep =
+        IsW13 ? kW13DistributedPrep : kW2DistributedPrep;
     constexpr int kTmaIssuerTid =
-        IsW13 && kW13DistributedPrep ? 32 : 0;
+        kDistributedPrep ? 32 : 0;
 
     const int split_idx = blockIdx.x % SplitK;
     const int task_idx = blockIdx.x / SplitK;
@@ -747,7 +753,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
             + (k8 ^ ((token_slot & 7) << 4))) = value;
 
         int scale_slot = -1;
-        if constexpr (IsW13 && kW13DistributedPrep) {
+        if constexpr (kDistributedPrep) {
             const int warp_lane = tid & 31;
             if (warp_lane < 2)
                 scale_slot = (tid >> 5) * 2 + warp_lane;
@@ -3894,9 +3900,9 @@ _ext = load_inline(
           f"w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
           f"lmw{int(LEADER_MBAR_WAIT)}_"
-          f"dp{int(W13_DISTRIBUTED_PREP)}_"
+          f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v100nslut"),
+          f"mb{MIN_BLOCKS_PER_SM}_v101w2dp"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -3938,6 +3944,7 @@ _ext = load_inline(
         f"-DK_W13_S2R_PREFETCH={int(W13_S2R_PREFETCH)}",
         f"-DK_LEADER_MBAR_WAIT={int(LEADER_MBAR_WAIT)}",
         f"-DK_W13_DISTRIBUTED_PREP={int(W13_DISTRIBUTED_PREP)}",
+        f"-DK_W2_DISTRIBUTED_PREP={int(W2_DISTRIBUTED_PREP)}",
         f"-DK_W13_MERGED_WGMMA_GROUP={int(W13_MERGED_WGMMA_GROUP)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_W2_SORTED_ACT={int(W2_SORTED_ACT)}",

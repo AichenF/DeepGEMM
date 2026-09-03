@@ -4581,3 +4581,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Control median: **0.351600 ms**; candidate median: **0.370528 ms**; control/candidate: **0.948916x**. Equivalently, the candidate is about **5.38% slower**.
 - All six candidate batch medians were slower than their paired controls; outputs were bitwise identical on all ranks. This is a decisive regression rather than timing noise.
 - Conclusion: reject the shared normalized LUT and keep `V4_NORMALIZED_SHARED_LUT=0` by default. Replacing independent integer synthesis with shared-memory lookups adds more latency/traffic than it removes from the ALU path.
+
+## Iteration 101 — W2 distributed preparation correctness gate
+
+- Hypothesis: W2 still concentrates all eight noncontiguous activation-scale gathers in warp 0. The selected W13 distributed-preparation path reduced NCU's excessive global sectors by 39.5%, while the prior W2 NCU audit specifically attributed 66,432 excessive sectors to the analogous route-scale gather. Distribute two scale loads to each warp and move the TMA issuer to warp 1 without changing math or bytes.
+- Added opt-in `V4_W2_DISTRIBUTED_PREP=1`, default off. The generic route GEMM now chooses distributed preparation independently for W13 and W2; accepted W13 behavior is unchanged.
+- Correctness passes TP4 balanced/auto split4, TP4 maximal-skew/forced split2, and the TP8 local intermediate=256 shape. Route alignment and FP8 input quantization are exact; W13 cosine is at least 0.999999997, W2 cosine is at least 0.999997240, and all outputs are finite.
+- Next gate is an in-process paired TP4 M128 cold-L2 graph comparison. Select only if the sector/coalescing mechanism produces a repeatable end-to-end win.
+- Artifact: `results/iter101_w2_distributed_prep_correctness_20260903.log`.
