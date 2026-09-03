@@ -5009,3 +5009,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP8-shape I/rank=256 M8 balanced passes; W13 cosine 0.999999997 and W2 cosine 0.999997278.
 - Result: combination is correctness-qualified.  Profile actual shared configuration/occupancy before timing.
 - Evidence: `results/iter120_w13_lb10_max_smem_correctness_20260903.log`.
+
+## Iteration 120a — W13 10-CTA maximum-carveout occupancy capture
+
+- Captured the TP4 M128 random-route split2 W13 candidate with Nsight Compute LaunchStats+Occupancy in one pass.
+- The helper confirms compact scales, launch_bound_10=true, max_smem_carveout=true, and the standard excluded 256MiB cold-L2 clear.
+- Collection completed and produced a valid report.  Parse the raw report next to determine configured shared memory and actual theoretical/achieved residency before performance timing.
+- Evidence: `results/iter120a_w13_lb10_max_smem_m128_ncu.{log,ncu-rep}`.
