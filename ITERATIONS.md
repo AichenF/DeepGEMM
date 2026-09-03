@@ -4573,3 +4573,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP4 balanced auto-split4, TP4 max-skew forced split2, and TP8-local-shape auto-split4 all pass. Route/input quantization is exact; W13 cosine is at least 0.999999997, W2 cosine at least 0.999997235, and all outputs are finite.
 - Numerical values match the current default to printed precision. Proceed to resource inspection and same-process cold-L2 timing; reject if shared-load latency or bank pressure outweighs reduced ALU work.
 - Artifact: `results/iter100_normalized_shared_lut_correctness_20260903.log`.
+
+### Iteration 100b — reject normalized shared LUT on paired cold-L2 timing
+
+- Compared `V4_NORMALIZED_SHARED_LUT=0/1` in one TP4 process at M=128 with random routing, exact graph-output comparison, ABBA ordering, 6 outer batches × 100 replays per variant.
+- Cache policy remained the required cold-L2 protocol: a separate 256 MiB clear immediately before every graph replay, outside CUDA-event timing.
+- Control median: **0.351600 ms**; candidate median: **0.370528 ms**; control/candidate: **0.948916x**. Equivalently, the candidate is about **5.38% slower**.
+- All six candidate batch medians were slower than their paired controls; outputs were bitwise identical on all ranks. This is a decisive regression rather than timing noise.
+- Conclusion: reject the shared normalized LUT and keep `V4_NORMALIZED_SHARED_LUT=0` by default. Replacing independent integer synthesis with shared-memory lookups adds more latency/traffic than it removes from the ALU path.
