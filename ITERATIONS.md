@@ -4551,3 +4551,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The three requested correctness processes executed route preparation and the kernel path but the harness then raised `AttributeError` while printing the new flag. Investigation found an accidentally uploaded stale `bench/v4_flash_tp_wgmma.py` shadowing the repository-root module because Python places the script directory first on `sys.path`.
 - This is a test-launch/import failure, not eligible correctness or performance evidence. Preserve the candidate and failure log; remove only the newly introduced stale shadow module, then rerun all three gates with an unambiguous root-module import.
 - Artifact: `results/iter99_w13_merged_wgmma_group_correctness_20260903.log`.
+
+## Iteration 99b — W13 merged-WGMMA-group correctness gate
+
+- Re-ran via `python -m bench.test_v4_flash_tp_wgmma` after removing the accidental shadow module, guaranteeing import of the repository-root candidate.
+- TP4 balanced auto-split4, TP4 max-skew forced split2, and TP8-local-shape auto-split4 all pass. Route alignment/input quantization remain exact; W13 cosine is at least 0.999999997, W2 cosine at least 0.999997235, and all outputs are finite.
+- Numerical values reproduce the selected control to printed precision, including the split2 skew path. This confirms that four same-accumulator K32 WGMMA operations may share one commit group under the retained operand-fence protocol.
+- Decision: correctness gate passed; keep opt-in and proceed to same-process cold-L2 paired timing before any default change.
+- Artifact: `results/iter99b_w13_merged_wgmma_group_correctness_20260903.log`.
