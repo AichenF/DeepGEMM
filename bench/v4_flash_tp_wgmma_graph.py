@@ -522,19 +522,6 @@ class CapturedCase:
         self.w2_progress_state.zero_()
         main_stream = torch.cuda.current_stream(self.x.device)
         self.pipeline_start_event.record(main_stream)
-        with torch.cuda.stream(self.pipeline_stream):
-            self.pipeline_stream.wait_event(self.pipeline_start_event)
-            kernel.progress_k6_mc_push_tp4(
-                self.down,
-                self.topk_weights,
-                self.w2_progress_state,
-                self.fused_push_counter,
-                self.fused_push_mc_ptr,
-                self.fused_push_rank,
-                self.fused_push_stride,
-                kernel.W2_PROGRESS_WORKERS,
-            )
-
         kernel.run_w2_progress(
             self.w2,
             self.s2,
@@ -550,6 +537,21 @@ class CapturedCase:
             self.w2_progress_state,
             self.intermediate_per_rank,
         )
+        # Submit the finite W2 producer before the persistent polling
+        # consumers.  The consumers depend only on the pre-W2 start event, so
+        # they can overlap once scheduled without blocking producer admission.
+        with torch.cuda.stream(self.pipeline_stream):
+            self.pipeline_stream.wait_event(self.pipeline_start_event)
+            kernel.progress_k6_mc_push_tp4(
+                self.down,
+                self.topk_weights,
+                self.w2_progress_state,
+                self.fused_push_counter,
+                self.fused_push_mc_ptr,
+                self.fused_push_rank,
+                self.fused_push_stride,
+                kernel.W2_PROGRESS_WORKERS,
+            )
         with torch.cuda.stream(self.pipeline_stream):
             self.pipeline_done_event.record(self.pipeline_stream)
         main_stream.wait_event(self.pipeline_done_event)

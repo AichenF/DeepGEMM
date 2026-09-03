@@ -67,18 +67,6 @@ def main() -> None:
     phase = int(case.fused_push_counter[0].item()) & 1
     if args.launch_mode == "concurrent":
         case.pipeline_start_event.record(main_stream)
-        with torch.cuda.stream(case.pipeline_stream):
-            case.pipeline_stream.wait_event(case.pipeline_start_event)
-            kernel.progress_k6_mc_push_tp4(
-                case.down,
-                case.topk_weights,
-                case.w2_progress_state,
-                case.fused_push_counter,
-                case.fused_push_mc_ptr,
-                case.fused_push_rank,
-                case.fused_push_stride,
-                args.workers,
-            )
     kernel.run_w2_progress(
         case.w2,
         case.s2,
@@ -94,6 +82,19 @@ def main() -> None:
         case.w2_progress_state,
         case.intermediate_per_rank,
     )
+    if args.launch_mode == "concurrent":
+        with torch.cuda.stream(case.pipeline_stream):
+            case.pipeline_stream.wait_event(case.pipeline_start_event)
+            kernel.progress_k6_mc_push_tp4(
+                case.down,
+                case.topk_weights,
+                case.w2_progress_state,
+                case.fused_push_counter,
+                case.fused_push_mc_ptr,
+                case.fused_push_rank,
+                case.fused_push_stride,
+                args.workers,
+            )
     if args.launch_mode == "sequential":
         torch.cuda.synchronize(device)
         dist.barrier(group=cpu_group)

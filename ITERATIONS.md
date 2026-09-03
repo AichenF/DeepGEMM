@@ -4111,3 +4111,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Reused the marked worker probe in concurrent mode with only one 128-thread worker CTA per GPU. Setup completes and both launches are submitted, but the worker event never completes; the process was interrupted after a bounded observation window.
 - Evidence: `results/iter83c4_w2_progress_worker1_concurrent_probe_20260903.log`.
 - Finding: this is not occupancy pressure from eight workers. A resident tight acquire-poll loop issued before W2 creates a forward-progress dependency the scheduler does not resolve here. Do not sweep worker counts. Add nanosleep/backoff plus a finite device timeout/error word so the consumer can yield/exit and expose whether W2 publication begins only after the polling kernel retires.
+
+### Iteration 83c5 — producer-first concurrent worker passes
+
+- Changed only host submission order: record a pre-W2 event, submit the finite full-grid W2 producer on the main stream, then submit the polling worker on the auxiliary stream with a dependency on that earlier event. The worker remains eligible to overlap W2 but cannot prevent producer admission.
+- With one worker CTA, all four ranks complete. Counts and queue are exact, worker claim/done are 33/1, and every rank-local workspace contains all 16,384 nonzero words for all four source slots.
+- Evidence: `results/iter83c5_w2_first_worker1_concurrent_probe_20260903.log`.
+- Decision: accept producer-first ordering as the synchronization repair. Verify eight workers under the same probe before re-enabling the finish kernel and repeated CUDA Graph replay.
