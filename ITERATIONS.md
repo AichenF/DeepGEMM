@@ -3618,3 +3618,23 @@ maximum rank latency of a full CUDA-Graph replay.
   reduction beyond noise; otherwise reject the tiled reducer wholesale.
 - Evidence:
   `bench/results/iter58d_tiled_k6_modes2_4_interleaved_stage_coldl2_20260903.log`.
+
+### WGMMA iteration 58e — mode-4 TP4 M8 full graph wins narrowly
+
+- Production TP4 candidate/control/candidate graph medians over 5x100
+  separately cold-L2 samples are 76.640/77.024/76.672 us.  The two mode-4
+  candidate windows average 76.656 us, a repeatable 0.368 us or 0.478%
+  reduction from control.  All three runs use a 64 KiB SGLang
+  `ONE_SHOT_PUSH` CustomAllReduceV2 after the reducer.
+- Candidate correctness is unchanged: minimum-rank cosine is 0.999995565,
+  relative-L2 is 0.002978479, all values are finite, and the independent
+  NCCL sum check passes.  This validates the M8 local-stage signal in the
+  actual distributed graph rather than merely event-boundary timing.
+- Retain mode 4 as a provisional M8-specific winner, not a global default:
+  M32/M128 complete-local screens did not win.  Screen the two missing score
+  points M16/M64 before encoding an automatic policy.  Even if M16 also
+  wins, this optimization contributes far below the roughly 9 us geometric-
+  mean reduction still needed for the 1.20x objective, so resume a larger
+  structural hotspot afterward.
+- Evidence:
+  `bench/results/iter58e_tiled_k6_mode4_tp4_m8_fullgraph_aba_coldl2_20260903.log`.
