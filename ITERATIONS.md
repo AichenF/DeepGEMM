@@ -2958,3 +2958,23 @@ maximum rank latency of a full CUDA-Graph replay.
   checks against `moe_align_block_size`, exact/near-exact quantizer comparison,
   full TP4 split-K=4/2 and TP8 numerical checks, then graph-internal cold-L2
   candidate/control/candidate timing.  The Humming baseline remains unchanged.
+
+### WGMMA iteration 47b — serial-prefix fused preparation rejected
+
+- The first implementation is numerically exact where required: random and
+  balanced route contracts match semantically through M128, its FP8 bytes and
+  FP32 scales are bitwise identical to Humming `quant_input`, and complete TP4
+  split-K=4/2 plus TP8-shape output checks retain the selected errors.
+- Its CTA-0 alignment prefix is serial over 256 experts.  Graph-internal
+  cold-L2 fused-stage medians at M8/M32/M128 are 14.368/15.040/17.920 us,
+  versus 13.536/13.728/16.160 us for the control's separate align plus quant
+  medians.  Local total medians regress from 95.648/208.240/338.816 us to
+  96.480/208.640/340.896 us even though the candidate graph contains one less
+  profiling event node.
+- Reject this implementation as a selectable default and preserve the raw
+  result.  Retain the opt-in framework for one bounded repair: use a
+  256-thread block-wide exclusive scan and quantize two group-128 slices per
+  CTA, removing both the serial prefix and half of the quant CTAs.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_fused_route_quant_{first_,}correctness_20260903.log`
+  and `bench/results/tp4_fused_route_quant_stage_coldl2_screen_20260903.log`.
