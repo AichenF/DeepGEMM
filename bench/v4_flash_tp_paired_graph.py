@@ -285,6 +285,9 @@ def main() -> None:
                     "custom_w13_k_unroll8_split2": (
                         kernel.W13_K_UNROLL8_SPLIT2
                     ),
+                    "custom_w13_k_unroll16_split2": (
+                        kernel.W13_K_UNROLL16_SPLIT2
+                    ),
                     "custom_w13_distributed_prep": (
                         kernel.W13_DISTRIBUTED_PREP
                     ),

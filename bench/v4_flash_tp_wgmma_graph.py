@@ -1026,6 +1026,7 @@ def main() -> None:
                     "route_k_unroll8": kernel.ROUTE_K_UNROLL8,
                     "route_k_unroll8_split2": kernel.ROUTE_K_UNROLL8_SPLIT2,
                     "w13_k_unroll8_split2": kernel.W13_K_UNROLL8_SPLIT2,
+                    "w13_k_unroll16_split2": kernel.W13_K_UNROLL16_SPLIT2,
                     "w13_distributed_prep": kernel.W13_DISTRIBUTED_PREP,
                     "w2_distributed_prep": kernel.W2_DISTRIBUTED_PREP,
                     "w13_merged_wgmma_group": (

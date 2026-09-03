@@ -5373,3 +5373,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Geometric-mean latency is 0.210792353 ms for Humming and 0.176465859 ms for custom, giving 1.194522x. Correctness and all-reduce checks again pass at every M.
 - Result: reject W13-only eight-way unrolling for production selection. Its small 1.00172x self-control gain is real for split2 but is too weak to survive whole-baseline variance, and two consecutive formal runs miss the 1.2x gate (1.191597x and 1.194522x). Retain the four-way default and its independently reproduced 1.202732x/1.211085x headline results.
 - Evidence: `results/iter134f_w13_split2_unroll8_exact_humming_tp4_allm_repeat_cold2000_20260903.log`.
+
+## Iteration 135 — W13 split1/split2 full unroll passes correctness
+
+- Added opt-in `V4_W13_K_UNROLL16_SPLIT2=1` with factor `K == 4096 && SplitK <= 2 ? 16 : 4`. For the common W13 split2 case this fully expands all 16 local K128 iterations; W2 and W13 split4 remain on factor four. The default remains the selected four-way path.
+- Propagated the candidate through extension hashing/flags, correctness and graph metadata, comparison validation, and profiling.
+- TP4 balanced auto split4, TP4 skew forced split2, and TP8-shape balanced auto split4 exactly reproduce selected numerical metrics. Route and input-quantization checks are exact and all outputs are finite.
+- Result: full unrolling is numerically safe. Inspect W13 split2 register count and resident-block limit before timing; if it crosses the nine-to-eight-CTA threshold, use one M128 paired gate and reject early on a loss.
+- Evidence: `results/iter135_w13_split2_route_k_unroll16_correctness_20260903.log`.
