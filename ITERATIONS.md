@@ -4722,3 +4722,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Per-issue control median: **0.354976 ms**; hoisted-policy candidate: **0.359552 ms**; control/candidate: **0.987273x**. The candidate is 4.576 us (1.289%) slower, and all eight candidate batch medians lose.
 - Static instruction/register reductions did not shorten the dynamic critical path; retaining the policy across the kernel likely adds dependency/uniform-transfer pressure to each TMA issue. Reject `V4_WEIGHT_POLICY_HOIST=1` and retain per-issue policy creation as the selected default.
 - Artifact: `results/iter107b_weight_policy_hoist_tp4_m128_paired_cold800_20260903.log`.
+
+## Iteration 108 — read back H20 evict-first policy encoding
+
+- Added a standalone sm90a CUDA probe that executes `createpolicy.fractional.L2::evict_first.b64 ...,1.0` and copies the opaque 64-bit result to the host.
+- On the benchmark H20/CUDA toolchain the exact value is **`0x12f0000000000000`**.
+- This enables a bounded candidate that materializes the same constant immediately beside each TMA use, preserving the selected short dependency lifetime while replacing the multi-instruction policy synthesis. The value is architecture/toolchain-specific, so the candidate must remain guarded for sm90a and be proven bit-identical by SASS/runtime gates before selection.
+- Artifact: `bench/probe_l2_policy.cu` and `results/iter108_l2_policy_encoding_probe_20260903.log`.
