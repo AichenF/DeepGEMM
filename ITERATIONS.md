@@ -4092,3 +4092,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - The corrected torchrun invocation initializes all four ranks and builds the new extension, but the diagnostic exits before launching the worker: PyTorch CUDA does not implement `bitwise_and` for SGLang's uint32 push counter.
 - Evidence: `results/iter83c1_w2_progress_worker_phase_read_error_20260903.log`.
 - Classification: host diagnostic error, not a synchronization result. Read the scalar with `.item()` before applying integer parity and rerun unchanged device code.
+
+### Iteration 83c2 — worker-only probe remains silent
+
+- Fixed the uint32 phase read and reran the worker-only TP4 probe with the finish kernel disabled. The process produced no stage/result line for more than two minutes and was interrupted.
+- Evidence: `results/iter83c2_w2_progress_worker_multicast_probe_20260903.log`.
+- Classification: probable device-side stall, but this version prints only after model setup and final synchronization, so it cannot yet distinguish slow preprocessing from worker non-termination. Add rank-synchronized stage markers immediately before worker launch, after W2 launch, and after the worker event; also run a zero-worker/control setup to bound initialization time.

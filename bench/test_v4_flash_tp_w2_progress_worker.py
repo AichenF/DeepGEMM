@@ -59,7 +59,7 @@ def main() -> None:
     case.w2_progress_state.zero_()
     main_stream = torch.cuda.current_stream(device)
     case.pipeline_start_event.record(main_stream)
-    phase = int((case.fused_push_counter[0] & 1).item())
+    phase = int(case.fused_push_counter[0].item()) & 1
     with torch.cuda.stream(case.pipeline_stream):
         case.pipeline_stream.wait_event(case.pipeline_start_event)
         kernel.progress_k6_mc_push_tp4(
