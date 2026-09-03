@@ -4910,3 +4910,18 @@ maximum rank latency of a full CUDA-Graph replay.
 - Paired result: control/candidate = 1.017733x (1.74% latency reduction); candidate won all 6 outer batch medians.
 - Result: benefit extends to the split4 M32 path.  Proceed to formal all-M 10 x 200 validation before selecting the default.
 - Evidence: `results/iter117d_compact_interleaved_scale_m32_screen_20260903.log`.
+
+## Iteration 117e — compact interleaved scale formal all-M TP4 validation
+
+- Method: exact same-process control/candidate CUDA Graphs, TP4 random routes, rank-max latency, 10 outer x 200 samples per variant at every M, per-sample AB/BA alternation, and separate 256MiB cold-L2 clear outside timing.
+- Correctness: candidate graph output was bit-exact to control on all four ranks at every M.
+- Median latency control -> compact candidate:
+  - M8: 0.074848 -> 0.073568 ms, 1.017399x.
+  - M16: 0.119488 -> 0.117632 ms, 1.015778x.
+  - M32: 0.195488 -> 0.192128 ms, 1.017488x.
+  - M64: 0.283344 -> 0.277600 ms, 1.020692x.
+  - M128: 0.365872 -> 0.358544 ms, 1.020438x.
+- Geometric-mean latency: 0.178506307 -> 0.175288491 ms; control/candidate 1.018357x (1.80% reduction).
+- Stability: compact won all 50 paired outer batch medians (10/10 at each M), including the intervals with shared temporal drift.
+- Result: accept compact per-K128 scales as the new selected layout; switch its default on, then rerun default-path correctness and exact Humming comparison.
+- Evidence: `results/iter117e_compact_interleaved_scale_allm_formal_20260903.log`.
