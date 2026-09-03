@@ -4690,3 +4690,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Combined with iteration 105b M128 (`1.009028x`), the five-shape geometric-mean improvement is approximately **1.01018x**. All 28 paired batch medians across the five shapes favor evict-first, and all graph outputs are bitwise identical.
 - This is a broad ~1% custom-pipeline improvement with a mechanism matching cold streamed weights. Proceed to the exact MXFP4 Humming/custom 10×200 five-shape formal audit before changing the default.
 - Artifact: `results/iter105c_weight_evict_first_tp4_m8_m16_m32_m64_paired_cold400_20260903.log`.
+
+## Iteration 105d — exact-Humming formal audit accepts streaming-weight evict-first
+
+- Ran exact MXFP4 Humming/custom TP4 CUDA graphs with `V4_WEIGHT_EVICT_FIRST=1`, random routes, M={8,16,32,64,128}, 10 balanced batch-order windows × 200 samples per implementation/M. A separate excluded 256 MiB L2 clear preceded every graph replay; both paths shared one SGLang `CustomAllReduceV2` communicator.
+- Humming/custom medians (ms) and speedups: M8 `0.090080/0.075072 = 1.199915x`; M16 `0.145728/0.120480 = 1.209562x`; M32 `0.231632/0.207296 = 1.117397x`; M64 `0.334704/0.300832 = 1.112594x`; M128 `0.408144/0.379744 = 1.074787x`.
+- Geometric means are Humming **0.210711799 ms** and custom **0.184569426 ms**, for **1.141640x (14.16%)**. Every point passes independent reference and all-reduce correctness.
+- Relative to iteration 101d, custom geomean improves from 0.186609677 to 0.184569426 ms (1.105%); simultaneous Humming drift is -0.31%, so headline speedup rises by 0.90%. Same-process iterations 105b/c isolate the candidate itself at approximately 1.018%.
+- At this window, 1.20x requires custom <= `0.175593166 ms`; the residual is `0.008976260 ms`, or **4.86%** of current custom latency. Accept streaming-weight evict-first and make it the default, then re-gate no-environment TP4/TP8 paths.
+- Artifact: `results/iter105d_weight_evict_first_exact_humming_tp4_formal_cold2000_20260903.log`.
