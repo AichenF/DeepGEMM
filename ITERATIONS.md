@@ -3093,3 +3093,19 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/v4_flash_tp_wgmma_act_quant_pair_correctness_20260903.log`,
   `bench/results/tp4_act_quant_pair_stage_coldl2_screen_v2_20260903.log`, and
   `bench/results/tp4_act_quant_pair_{candidate_a,control,candidate_b}_coldl2_screen_20260903.log`.
+
+### WGMMA iteration 50a — interleave bulk weight and scale records
+
+- The selected tiled path issues a separate linear bulk copy for every 8 KiB
+  packed-weight tile and every 2 KiB scale quartet.  Test an opt-in model-load
+  layout that places each required scale quartet immediately after the weight
+  tile which prefetches it, so one 10 KiB `cp.async.bulk` transaction and one
+  mbarrier completion replace the two independent transactions.
+- Preserve two weight stages and two scale buffers in the same 20 KiB total
+  shared footprint.  With legal W13 split boundaries aligned to K-tile 8,
+  records 0 and 3 of every eight-tile block carry the even and odd scale
+  quartets; TP4 W2 carries its sole quartet with record 0.  TP8 W2 K=256 keeps
+  the existing scalar-scale fallback unchanged.
+- Keep `V4_INTERLEAVED_BULK_COPY=0` by default and require the existing TP4
+  split-K=4/2 and TP8 numerical gates.  Then compare W13/W2 and total local
+  cold-L2 medians candidate/control/candidate before any distributed run.
