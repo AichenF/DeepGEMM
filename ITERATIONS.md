@@ -4004,3 +4004,11 @@ maximum rank latency of a full CUDA-Graph replay.
   - M128: W13 205.320 us vs 195.904 us (4.81% slower); local total 337.456 us vs 327.392 us (3.07% slower).
 - Decision: REJECT full-K as the standalone W13 execution granularity. It is correct but loses consistently, most severely at small M. Preserve split4 for M8/M32 and split2 for M128; the paired/interleaved implementation must retain parallel K work (or use the native 384-thread producer/math pipeline) rather than serializing all 32 K tiles in one 128-thread CTA.
 - Evidence: `bench/results/iter78_fullk_w13_feasibility_correctness_stage_coldl2_20260903.log`.
+
+## Iteration 79a — first paired-warpgroups W13 execution fault (2026-09-03)
+
+- Implemented the first real-compute version of the approved MegaMoE task: model-load gate/up row interleaving at granularity 8, one N256/full-K W13 task per output group, a 128-thread producer, two 128-thread RS-WGMMA consumer warpgroups, two weight/activation stages, and an in-CTA BF16/SwiGLU/BF16/group128-FP8 epilogue. The graph path can bypass the old split workspace and activation kernel; a debug-only raw W13 output remains available to the correctness test.
+- The JIT extension compiled successfully and fused route/input preparation remained exact (`routes_ok=True`, bitwise FP8 input quantization, zero scale error).
+- The first TP4 M8 balanced execution faults asynchronously with `CUDA error: an illegal memory access` before the W2 allocation. No performance timing ran and the candidate is not selectable.
+- The likely fault classes are bounded and device-local: producer/consumer mbarrier phase protocol, the two-record shared-memory addresses, or the paired epilogue indexing. Diagnose with synchronous launch plus compute-sanitizer or a staged debug output before making any performance claim.
+- Evidence: `bench/results/iter79_paired_w13_first_compile_correctness_20260903.log`.

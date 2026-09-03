@@ -81,6 +81,7 @@ if INTERLEAVED_BULK_COPY and (
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
+W13_PAIRED_WG = os.environ.get("V4_W13_PAIRED_WG", "0") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 TILED_K6_REDUCE_POLICY = os.environ.get("V4_TILED_K6_REDUCE_MODE", "auto")
 if TILED_K6_REDUCE_POLICY not in ("auto", "0", "1", "2", "3", "4"):
@@ -234,6 +235,13 @@ __device__ __forceinline__ void mbar_wait(uint32_t address, uint32_t phase) {
         "{.reg .pred p; L_wait: mbarrier.try_wait.parity.shared.b64 "
         "p,[%0],%1; @!p bra L_wait;}"
         :: "r"(address), "r"(phase) : "memory");
+}
+
+__device__ __forceinline__ void mbar_arrive(uint32_t address) {
+    uint64_t state;
+    asm volatile(
+        "mbarrier.arrive.shared.b64 %0,[%1];"
+        : "=l"(state) : "r"(address) : "memory");
 }
 
 __device__ __forceinline__ cute::GmmaDescriptor desc_128b(uint32_t pointer) {
@@ -963,6 +971,456 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     atomicAdd(output + static_cast<int64_t>(token) * N + output_n1,
                               route_weight * accum[group][3]);
                 }
+            }
+        }
+    }
+}
+
+// Native MegaMoE-style TP-local W13 task.  Two math warpgroups consume one
+// N256 block whose physical rows alternate gate/up in eight-row chunks.  A
+// 128-thread producer group streams two packed N128 records and one indexed
+// M8 activation tile through a two-stage pipeline.  Full K stays inside the
+// CTA, so its epilogue can preserve the public BF16 -> SwiGLU -> BF16 ->
+// group-128 FP8 boundary without a split-K workspace or completion atomics.
+template <int Intermediate>
+__global__ __launch_bounds__(384, 1) void paired_w13_fused_kernel(
+        const uint8_t* __restrict__ weight,
+        const float* __restrict__ weight_global_scale,
+        const uint8_t* __restrict__ activation,
+        const float* __restrict__ activation_scale,
+        const int32_t* __restrict__ sorted_ids,
+        const int32_t* __restrict__ expert_ids,
+        const int32_t* __restrict__ num_tokens_padded,
+        float* __restrict__ raw_output,
+        __nv_bfloat16* __restrict__ bf16_output,
+        uint8_t* __restrict__ quantized_output,
+        float* __restrict__ output_scale,
+        int max_routes) {
+    constexpr int K = 4096;
+    constexpr int kNumKTiles = K / kBlockK;
+    constexpr int kPairStages = 2;
+    constexpr int kMathWGs = 2;
+    constexpr int kWeightStageBytes = kWout * (kBlockK / 2);
+    constexpr int kScaleStageBytes = kWout * 16;
+    constexpr int kCombinedStageBytes =
+        kWeightStageBytes + kScaleStageBytes;
+    constexpr int kWeightWGBytes = kPairStages * kCombinedStageBytes;
+    constexpr int kActivationStageBytes = kTok * kBlockK;
+    constexpr int kOutputGroups = Intermediate / 128;
+    constexpr int kRawN = 2 * Intermediate;
+    constexpr int kRawNTiles = kRawN / kWout;
+    constexpr int kScaleTiles = kNumKTiles / 4;
+    constexpr int kBytesPerNTile =
+        kNumKTiles * kWeightStageBytes
+        + kScaleTiles * kScaleStageBytes;
+    static_assert(kWout == 128,
+                  "paired W13 requires two N128 math warpgroups");
+    static_assert(Intermediate == 512 || Intermediate == 256);
+    static_assert(kRawNTiles == 2 * kOutputGroups);
+
+    const int task_idx = blockIdx.x;
+    const int m_block_idx = task_idx / kOutputGroups;
+    const int output_group = task_idx - m_block_idx * kOutputGroups;
+    if (m_block_idx * kTok >= __ldg(num_tokens_padded))
+        return;
+    const int expert_idx = __ldg(expert_ids + m_block_idx);
+    if (expert_idx < 0)
+        return;
+
+    extern __shared__ __align__(1024) uint8_t dynamic_smem[];
+    uint8_t* weight_smem = dynamic_smem;
+    uint8_t* activation_smem =
+        weight_smem + kMathWGs * kWeightWGBytes;
+    const uint32_t weight_smem_addr = static_cast<uint32_t>(
+        __cvta_generic_to_shared(weight_smem));
+    const uint32_t activation_smem_addr = static_cast<uint32_t>(
+        __cvta_generic_to_shared(activation_smem));
+    const int weight_swizzle_row_offset =
+        (weight_smem_addr >> 7) & 3;
+
+    __shared__ __align__(8) uint64_t full_barriers[kPairStages];
+    __shared__ __align__(8) uint64_t empty_barriers[kPairStages];
+    __shared__ int32_t route_ids[kTok];
+    __shared__ int32_t activation_rows[kTok];
+    __shared__ float activation_scale_smem[kPairStages][kTok];
+    __shared__ float expert_scale;
+    __shared__ float epilogue_amax[kMathWGs][kTok][32];
+    __shared__ float epilogue_scale_inv[kTok];
+
+    const int tid = threadIdx.x;
+    if (tid < kTok) {
+        const int route = __ldg(sorted_ids + m_block_idx * kTok + tid);
+        route_ids[tid] = route;
+        activation_rows[tid] = route < max_routes ? route / kTopK : -1;
+    }
+    if (tid == 0)
+        expert_scale = __ldg(weight_global_scale + expert_idx);
+
+    uint32_t full_barrier_addr[kPairStages];
+    uint32_t empty_barrier_addr[kPairStages];
+    #pragma unroll
+    for (int stage = 0; stage < kPairStages; ++stage) {
+        full_barrier_addr[stage] = static_cast<uint32_t>(
+            __cvta_generic_to_shared(&full_barriers[stage]));
+        empty_barrier_addr[stage] = static_cast<uint32_t>(
+            __cvta_generic_to_shared(&empty_barriers[stage]));
+    }
+    if (tid == 0) {
+        #pragma unroll
+        for (int stage = 0; stage < kPairStages; ++stage) {
+            mbar_init(full_barrier_addr[stage]);
+            asm volatile("mbarrier.init.shared.b64 [%0],2;"
+                         :: "r"(empty_barrier_addr[stage]));
+        }
+        asm volatile("fence.proxy.async.shared::cta;");
+    }
+    __syncthreads();
+
+    float epilogue_value0[kWgmmaGroups] = {};
+    float epilogue_value1[kWgmmaGroups] = {};
+
+    if (tid < 128) {
+        // Producer group.  Named barrier 1 contains exactly these four warps.
+        for (int kt = 0; kt < kNumKTiles; ++kt) {
+            const int stage = kt & 1;
+            if (kt >= kPairStages && tid == 0)
+                mbar_wait(empty_barrier_addr[stage],
+                          ((kt / kPairStages) - 1) & 1u);
+            asm volatile("bar.sync 1,128;" ::: "memory");
+
+            const int token_slot = tid >> 4;
+            const int k8 = (tid & 15) * 8;
+            uint2 value = make_uint2(0u, 0u);
+            const int activation_row = activation_rows[token_slot];
+            if (activation_row >= 0) {
+                value = *reinterpret_cast<const uint2*>(
+                    activation + static_cast<int64_t>(activation_row) * K
+                    + kt * kBlockK + k8);
+            }
+            *reinterpret_cast<uint2*>(
+                activation_smem + stage * kActivationStageBytes
+                + token_slot * kBlockK
+                + (k8 ^ ((token_slot & 7) << 4))) = value;
+            if (tid < kTok) {
+                const int row = activation_rows[tid];
+                activation_scale_smem[stage][tid] = row >= 0
+                    ? __ldg(activation_scale
+                            + static_cast<int64_t>(row) * kNumKTiles + kt)
+                        * expert_scale
+                    : 0.0f;
+            }
+            asm volatile("bar.sync 1,128;" ::: "memory");
+
+            if (tid == 0) {
+                asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+                const int record = kt & 7;
+                const bool load_scale =
+                    record == 0 || (record == 3 && kt + 1 < kNumKTiles);
+                if (load_scale) {
+                    asm volatile(
+                        "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
+                        :: "r"(full_barrier_addr[stage]),
+                           "n"(kMathWGs * kCombinedStageBytes));
+                } else {
+                    asm volatile(
+                        "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
+                        :: "r"(full_barrier_addr[stage]),
+                           "n"(kMathWGs * kWeightStageBytes));
+                }
+                const int scales_before =
+                    (kt >> 3) * 2
+                    + (record >= 1 ? 1 : 0)
+                    + (record >= 4 ? 1 : 0);
+                const int record_offset =
+                    kt * kWeightStageBytes
+                    + scales_before * kScaleStageBytes;
+                const int copy_bytes = load_scale
+                    ? kCombinedStageBytes : kWeightStageBytes;
+                #pragma unroll
+                for (int math_wg = 0; math_wg < kMathWGs; ++math_wg) {
+                    const int raw_n_tile = output_group * 2 + math_wg;
+                    const int64_t ntile =
+                        static_cast<int64_t>(expert_idx) * kRawNTiles
+                        + raw_n_tile;
+                    const uint8_t* src =
+                        weight + ntile * kBytesPerNTile + record_offset;
+                    const uint32_t dst = weight_smem_addr
+                        + math_wg * kWeightWGBytes
+                        + stage * kCombinedStageBytes;
+                    asm volatile(
+                        "cp.async.bulk.shared::cluster.global.mbarrier::"
+                        "complete_tx::bytes [%0],[%1],%2,[%3];"
+                        :: "r"(dst), "l"(src), "r"(copy_bytes),
+                           "r"(full_barrier_addr[stage]) : "memory");
+                }
+            }
+        }
+    } else {
+        const int math_thread = tid - 128;
+        const int math_wg = math_thread >> 7;
+        const int mtid = math_thread & 127;
+        const int warp = mtid >> 5;
+        const int lane = mtid & 31;
+        const int row0 = warp * 16 + lane / 4;
+        const int row1 = row0 + 8;
+        const int packed_k_offset = (lane & 3) * 4;
+        const int route_slot0 = (lane & 3) * 2;
+        const int route_slot1 = route_slot0 + 1;
+        float accum[kWgmmaGroups][4] = {};
+        uint32_t next_packed0[kWgmmaGroups];
+        uint32_t next_packed1[kWgmmaGroups];
+        uint2 next_lut0[kWgmmaGroups];
+        uint2 next_lut1[kWgmmaGroups];
+
+        for (int kt = 0; kt < kNumKTiles; ++kt) {
+            const int stage = kt & 1;
+            if (mtid == 0)
+                mbar_wait(full_barrier_addr[stage], (kt >> 1) & 1u);
+            if (math_wg == 0)
+                asm volatile("bar.sync 2,128;" ::: "memory");
+            else
+                asm volatile("bar.sync 3,128;" ::: "memory");
+
+            const uint32_t stage_base = weight_smem_addr
+                + math_wg * kWeightWGBytes
+                + stage * kCombinedStageBytes;
+            const uint32_t scale_base = weight_smem_addr
+                + math_wg * kWeightWGBytes
+                + ((kt >> 2) & 1) * kCombinedStageBytes
+                + kWeightStageBytes;
+            float tile[kWgmmaGroups][4] = {};
+            #pragma unroll
+            for (int k_step = 0; k_step < kBlockK / 32; ++k_step) {
+                const int common_chunk = k_step ^
+                    (((row0 >> 1) + weight_swizzle_row_offset) & 3);
+                const uint32_t common_address = stage_base
+                    + row0 * (kBlockK / 2)
+                    + common_chunk * 16 + packed_k_offset;
+                const auto activation_desc = desc_128b(
+                    activation_smem_addr + stage * kActivationStageBytes
+                    + k_step * 32);
+                #pragma unroll
+                for (int group = 0; group < kWgmmaGroups; ++group) {
+                    #pragma unroll
+                    for (int value_idx = 0; value_idx < 4; ++value_idx)
+                        ptx::warpgroup_fence_operand(tile[group][value_idx]);
+                }
+                ptx::warpgroup_arrive();
+                #pragma unroll
+                for (int group = 0; group < kWgmmaGroups; ++group) {
+                    const int group_row0 = group * 64 + row0;
+                    const int group_row1 = group * 64 + row1;
+                    uint32_t packed0;
+                    uint32_t packed1;
+                    uint2 lut0;
+                    uint2 lut1;
+                    if (k_step == 0) {
+                        asm volatile("ld.shared.b32 %0,[%1];"
+                            : "=r"(packed0)
+                            : "r"(common_address
+                                  + group * 64 * (kBlockK / 2)));
+                        asm volatile("ld.shared.b32 %0,[%1];"
+                            : "=r"(packed1)
+                            : "r"(common_address
+                                  + (group * 64 + 8) * (kBlockK / 2)));
+                        const uint32_t exponent0 =
+                            *reinterpret_cast<const uint8_t*>(
+                                scale_base + group_row0 * 16
+                                + (kt & 3) * 4);
+                        const uint32_t exponent1 =
+                            *reinterpret_cast<const uint8_t*>(
+                                scale_base + group_row1 * 16
+                                + (kt & 3) * 4);
+                        lut0 = synth_normalized_e2m1_lut(exponent0);
+                        lut1 = synth_normalized_e2m1_lut(exponent1);
+                    } else {
+                        packed0 = next_packed0[group];
+                        packed1 = next_packed1[group];
+                        lut0 = next_lut0[group];
+                        lut1 = next_lut1[group];
+                    }
+                    const uint2 fp8_0 =
+                        dequant_weight_word<kMode2Braid>(packed0, lut0);
+                    const uint2 fp8_1 =
+                        dequant_weight_word<kMode2Braid>(packed1, lut1);
+                    if (k_step + 1 < kBlockK / 32) {
+                        const int next_step = k_step + 1;
+                        const int next_common_chunk = next_step ^
+                            (((row0 >> 1) + weight_swizzle_row_offset) & 3);
+                        const uint32_t next_common_address = stage_base
+                            + row0 * (kBlockK / 2)
+                            + next_common_chunk * 16 + packed_k_offset;
+                        asm volatile("ld.shared.b32 %0,[%1];"
+                            : "=r"(next_packed0[group])
+                            : "r"(next_common_address
+                                  + group * 64 * (kBlockK / 2)));
+                        asm volatile("ld.shared.b32 %0,[%1];"
+                            : "=r"(next_packed1[group])
+                            : "r"(next_common_address
+                                  + (group * 64 + 8) * (kBlockK / 2)));
+                        const uint32_t next_exponent0 =
+                            *reinterpret_cast<const uint8_t*>(
+                                scale_base + group_row0 * 16
+                                + (kt & 3) * 4 + next_step);
+                        const uint32_t next_exponent1 =
+                            *reinterpret_cast<const uint8_t*>(
+                                scale_base + group_row1 * 16
+                                + (kt & 3) * 4 + next_step);
+                        next_lut0[group] =
+                            synth_normalized_e2m1_lut(next_exponent0);
+                        next_lut1[group] =
+                            synth_normalized_e2m1_lut(next_exponent1);
+                    }
+                    cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
+                        fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
+                        activation_desc,
+                        tile[group][0], tile[group][1],
+                        tile[group][2], tile[group][3],
+                        cute::SM90::GMMA::ScaleOut::One);
+                }
+                ptx::warpgroup_commit_batch();
+                #pragma unroll
+                for (int group = 0; group < kWgmmaGroups; ++group) {
+                    #pragma unroll
+                    for (int value_idx = 0; value_idx < 4; ++value_idx)
+                        ptx::warpgroup_fence_operand(tile[group][value_idx]);
+                }
+                ptx::warpgroup_wait<0>();
+            }
+            #pragma unroll
+            for (int group = 0; group < kWgmmaGroups; ++group) {
+                accum[group][0] += tile[group][0]
+                    * activation_scale_smem[stage][route_slot0];
+                accum[group][1] += tile[group][1]
+                    * activation_scale_smem[stage][route_slot1];
+                accum[group][2] += tile[group][2]
+                    * activation_scale_smem[stage][route_slot0];
+                accum[group][3] += tile[group][3]
+                    * activation_scale_smem[stage][route_slot1];
+            }
+
+            if (math_wg == 0)
+                asm volatile("bar.sync 2,128;" ::: "memory");
+            else
+                asm volatile("bar.sync 3,128;" ::: "memory");
+            if (mtid == 0)
+                mbar_arrive(empty_barrier_addr[stage]);
+        }
+
+        const int route0 = route_ids[route_slot0];
+        const int route1 = route_ids[route_slot1];
+        const int column_in_half_base = warp * 8 + lane / 4;
+        #pragma unroll
+        for (int group = 0; group < kWgmmaGroups; ++group) {
+            const int column_in_group =
+                math_wg * 64 + group * 32 + column_in_half_base;
+            const int output_column = output_group * 128 + column_in_group;
+            if (route0 < max_routes) {
+                if (raw_output != nullptr) {
+                    raw_output[static_cast<int64_t>(route0) * kRawN
+                               + output_column] = accum[group][0];
+                    raw_output[static_cast<int64_t>(route0) * kRawN
+                               + Intermediate + output_column] =
+                        accum[group][2];
+                }
+                const float gate = __bfloat162float(
+                    __float2bfloat16(accum[group][0]));
+                const float up = __bfloat162float(
+                    __float2bfloat16(accum[group][2]));
+                const __nv_bfloat16 result = __float2bfloat16(
+                    gate / (1.0f + __expf(-gate)) * up);
+                epilogue_value0[group] = __bfloat162float(result);
+                if (bf16_output != nullptr)
+                    bf16_output[static_cast<int64_t>(route0) * Intermediate
+                                + output_column] = result;
+            }
+            if (route1 < max_routes) {
+                if (raw_output != nullptr) {
+                    raw_output[static_cast<int64_t>(route1) * kRawN
+                               + output_column] = accum[group][1];
+                    raw_output[static_cast<int64_t>(route1) * kRawN
+                               + Intermediate + output_column] =
+                        accum[group][3];
+                }
+                const float gate = __bfloat162float(
+                    __float2bfloat16(accum[group][1]));
+                const float up = __bfloat162float(
+                    __float2bfloat16(accum[group][3]));
+                const __nv_bfloat16 result = __float2bfloat16(
+                    gate / (1.0f + __expf(-gate)) * up);
+                epilogue_value1[group] = __bfloat162float(result);
+                if (bf16_output != nullptr)
+                    bf16_output[static_cast<int64_t>(route1) * Intermediate
+                                + output_column] = result;
+            }
+        }
+        const int contributor = warp * 8 + lane / 4;
+        epilogue_amax[math_wg][route_slot0][contributor] =
+            route0 < max_routes
+            ? fmaxf(fabsf(epilogue_value0[0]),
+                    fabsf(epilogue_value0[1])) : 0.0f;
+        epilogue_amax[math_wg][route_slot1][contributor] =
+            route1 < max_routes
+            ? fmaxf(fabsf(epilogue_value1[0]),
+                    fabsf(epilogue_value1[1])) : 0.0f;
+    }
+
+    __syncthreads();
+    if (tid < 128) {
+        const int producer_warp = tid >> 5;
+        const int lane = tid & 31;
+        #pragma unroll
+        for (int route_slot = producer_warp;
+             route_slot < kTok; route_slot += 4) {
+            float value = fmaxf(
+                epilogue_amax[0][route_slot][lane],
+                epilogue_amax[1][route_slot][lane]);
+            #pragma unroll
+            for (int delta = 16; delta > 0; delta >>= 1)
+                value = fmaxf(value,
+                    __shfl_down_sync(0xffffffffu, value, delta));
+            if (lane == 0) {
+                const int route = route_ids[route_slot];
+                const float scale =
+                    fmaxf(value, 1.0e-30f) * (1.0f / 448.0f);
+                epilogue_scale_inv[route_slot] = 1.0f / scale;
+                if (route < max_routes) {
+                    output_scale[static_cast<int64_t>(route) * kOutputGroups
+                                 + output_group] = scale;
+                }
+            }
+        }
+    }
+    __syncthreads();
+
+    if (tid >= 128) {
+        const int math_thread = tid - 128;
+        const int math_wg = math_thread >> 7;
+        const int mtid = math_thread & 127;
+        const int warp = mtid >> 5;
+        const int lane = mtid & 31;
+        const int route_slot0 = (lane & 3) * 2;
+        const int route_slot1 = route_slot0 + 1;
+        const int route0 = route_ids[route_slot0];
+        const int route1 = route_ids[route_slot1];
+        const int column_in_half_base = warp * 8 + lane / 4;
+        #pragma unroll
+        for (int group = 0; group < kWgmmaGroups; ++group) {
+            const int output_column = output_group * 128
+                + math_wg * 64 + group * 32 + column_in_half_base;
+            if (route0 < max_routes) {
+                quantized_output[
+                    static_cast<int64_t>(route0) * Intermediate
+                    + output_column] = __nv_fp8_e4m3(
+                        epilogue_value0[group]
+                        * epilogue_scale_inv[route_slot0]).__x;
+            }
+            if (route1 < max_routes) {
+                quantized_output[
+                    static_cast<int64_t>(route1) * Intermediate
+                    + output_column] = __nv_fp8_e4m3(
+                        epilogue_value1[group]
+                        * epilogue_scale_inv[route_slot1]).__x;
             }
         }
     }
@@ -1956,6 +2414,88 @@ void run_w13_impl(
     }
 }
 
+void run_w13_paired_impl(
+        torch::Tensor weight, torch::Tensor weight_global_scale,
+        torch::Tensor activation, torch::Tensor activation_scale,
+        torch::Tensor sorted_ids, torch::Tensor expert_ids,
+        torch::Tensor num_tokens_padded, torch::Tensor raw_output,
+        torch::Tensor bf16_output, torch::Tensor quantized_output,
+        torch::Tensor output_scale, int intermediate) {
+    TORCH_CHECK(kWout == 128,
+                "paired W13 requires V4_WOUT=128");
+    TORCH_CHECK(kNormalizedWeightScale && kBulkWeightCopy
+                    && kInterleavedBulkCopy && kMode2Braid,
+                "paired W13 requires normalized Mode2 interleaved bulk weights");
+    TORCH_CHECK(intermediate == 512 || intermediate == 256,
+                "intermediate must be 512 (TP4) or 256 (TP8)");
+    TORCH_CHECK(weight.scalar_type() == torch::kUInt8
+                    && activation.scalar_type() == torch::kUInt8,
+                "paired W13 weight/activation must be uint8");
+    TORCH_CHECK(weight_global_scale.scalar_type() == torch::kFloat32
+                    && activation_scale.scalar_type() == torch::kFloat32
+                    && output_scale.scalar_type() == torch::kFloat32,
+                "paired W13 scales must be float32");
+    TORCH_CHECK(quantized_output.scalar_type() == torch::kUInt8,
+                "paired W13 quantized output must be uint8");
+    TORCH_CHECK(raw_output.numel() == 0
+                    || raw_output.scalar_type() == torch::kFloat32,
+                "paired W13 debug output must be empty or float32");
+    TORCH_CHECK(bf16_output.numel() == 0
+                    || bf16_output.scalar_type() == torch::kBFloat16,
+                "paired W13 activation output must be empty or bfloat16");
+    TORCH_CHECK(activation.dim() == 2 && activation.size(1) == 4096,
+                "paired W13 activation must have K=4096");
+    TORCH_CHECK(quantized_output.numel()
+                    == activation.size(0) * 6 * intermediate,
+                "paired W13 quantized output shape mismatch");
+    TORCH_CHECK(output_scale.numel()
+                    == activation.size(0) * 6 * (intermediate / 128),
+                "paired W13 output scale shape mismatch");
+    const int max_routes = activation.size(0) * 6;
+    const int output_groups = intermediate / 128;
+    const int grid = expert_ids.numel() * output_groups;
+    constexpr int dynamic_smem_bytes =
+        2 * 2 * (kWout * (kBlockK / 2) + kWout * 16)
+        + 2 * kTok * kBlockK;
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    if (intermediate == 512) {
+        cudaFuncSetAttribute(paired_w13_fused_kernel<512>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize, dynamic_smem_bytes);
+        paired_w13_fused_kernel<512><<<
+            grid, 384, dynamic_smem_bytes, stream>>>(
+            weight.data_ptr<uint8_t>(),
+            weight_global_scale.data_ptr<float>(),
+            activation.data_ptr<uint8_t>(),
+            activation_scale.data_ptr<float>(),
+            sorted_ids.data_ptr<int32_t>(), expert_ids.data_ptr<int32_t>(),
+            num_tokens_padded.data_ptr<int32_t>(),
+            raw_output.numel() ? raw_output.data_ptr<float>() : nullptr,
+            bf16_output.numel()
+                ? reinterpret_cast<__nv_bfloat16*>(bf16_output.data_ptr())
+                : nullptr,
+            quantized_output.data_ptr<uint8_t>(),
+            output_scale.data_ptr<float>(), max_routes);
+    } else {
+        cudaFuncSetAttribute(paired_w13_fused_kernel<256>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize, dynamic_smem_bytes);
+        paired_w13_fused_kernel<256><<<
+            grid, 384, dynamic_smem_bytes, stream>>>(
+            weight.data_ptr<uint8_t>(),
+            weight_global_scale.data_ptr<float>(),
+            activation.data_ptr<uint8_t>(),
+            activation_scale.data_ptr<float>(),
+            sorted_ids.data_ptr<int32_t>(), expert_ids.data_ptr<int32_t>(),
+            num_tokens_padded.data_ptr<int32_t>(),
+            raw_output.numel() ? raw_output.data_ptr<float>() : nullptr,
+            bf16_output.numel()
+                ? reinterpret_cast<__nv_bfloat16*>(bf16_output.data_ptr())
+                : nullptr,
+            quantized_output.data_ptr<uint8_t>(),
+            output_scale.data_ptr<float>(), max_routes);
+    }
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void run_w2(
         torch::Tensor weight, torch::Tensor weight_scale,
         torch::Tensor weight_global_scale,
@@ -2521,6 +3061,13 @@ void run_w13_impl(torch::Tensor weight, torch::Tensor weight_scale,
                   torch::Tensor sorted_ids, torch::Tensor expert_ids,
                   torch::Tensor num_tokens_padded, torch::Tensor partials,
                   torch::Tensor lut, int intermediate, int split_k);
+void run_w13_paired_impl(
+    torch::Tensor weight, torch::Tensor weight_global_scale,
+    torch::Tensor activation, torch::Tensor activation_scale,
+    torch::Tensor sorted_ids, torch::Tensor expert_ids,
+    torch::Tensor num_tokens_padded, torch::Tensor raw_output,
+    torch::Tensor bf16_output, torch::Tensor quantized_output,
+    torch::Tensor output_scale, int intermediate);
 void run_w2(torch::Tensor weight, torch::Tensor weight_scale,
             torch::Tensor weight_global_scale,
             torch::Tensor activation, torch::Tensor activation_scale,
@@ -2594,11 +3141,11 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v78split1"),
+          f"lmw{int(LEADER_MBAR_WAIT)}_mb{MIN_BLOCKS_PER_SM}_v79pairwg"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
-        "run_w13_impl", "run_w2", "run_w2_chunk",
+        "run_w13_impl", "run_w13_paired_impl", "run_w2", "run_w2_chunk",
         "reduce_swiglu", "reduce_swiglu_quant",
         "cast_bf16",
         "tiled_k6_reduce",
@@ -2702,6 +3249,34 @@ def normalize_mxfp4_weight_scales_(
     return normalized, expert_scale
 
 
+def pair_gate_up_weight_layout(
+    weight: torch.Tensor, weight_scale: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Interleave W13 gate/up rows in eight-channel chunks at model load."""
+    if weight.ndim != 3 or weight_scale.ndim != 3:
+        raise ValueError("paired W13 layout expects rank-three tensors")
+    experts, raw_channels, packed_k = weight.shape
+    if raw_channels % 16:
+        raise ValueError("paired W13 output width must be divisible by 16")
+    if weight_scale.shape[:2] != (experts, raw_channels):
+        raise ValueError("paired W13 weight/scale shapes do not match")
+    intermediate = raw_channels // 2
+    weight = (
+        weight.view(experts, 2, intermediate // 8, 8, packed_k)
+        .permute(0, 2, 1, 3, 4)
+        .contiguous()
+        .view_as(weight)
+    )
+    scale_k = weight_scale.shape[-1]
+    weight_scale = (
+        weight_scale.view(experts, 2, intermediate // 8, 8, scale_k)
+        .permute(0, 2, 1, 3, 4)
+        .contiguous()
+        .view_as(weight_scale)
+    )
+    return weight, weight_scale
+
+
 def tile_mxfp4_weight_layout(
     weight: torch.Tensor, weight_scale: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -2801,6 +3376,38 @@ def run_w13(
         lut,
         intermediate,
         split_k,
+    )
+
+
+def run_w13_paired(
+    weight: torch.Tensor,
+    weight_global_scale: torch.Tensor,
+    activation: torch.Tensor,
+    activation_scale: torch.Tensor,
+    sorted_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_padded: torch.Tensor,
+    raw_output: torch.Tensor,
+    bf16_output: torch.Tensor,
+    quantized_output: torch.Tensor,
+    output_scale: torch.Tensor,
+    intermediate: int,
+) -> None:
+    if WOUT != 128:
+        raise ValueError("paired W13 requires V4_WOUT=128")
+    _ext.run_w13_paired_impl(
+        weight,
+        weight_global_scale,
+        activation,
+        activation_scale,
+        sorted_ids,
+        expert_ids,
+        num_tokens_padded,
+        raw_output,
+        bf16_output,
+        quantized_output,
+        output_scale,
+        intermediate,
     )
 
 

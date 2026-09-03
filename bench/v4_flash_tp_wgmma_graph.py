@@ -158,6 +158,8 @@ def make_weights(
     if kernel.NORMALIZED_WEIGHT_SCALE:
         s13, g13 = kernel.normalize_mxfp4_weight_scales_(w13, s13)
         s2, g2 = kernel.normalize_mxfp4_weight_scales_(w2, s2)
+    if kernel.W13_PAIRED_WG:
+        w13, s13 = kernel.pair_gate_up_weight_layout(w13, s13)
     if kernel.MODE2_BRAID:
         kernel.braid_mode2_(w13)
         kernel.braid_mode2_(w2)
@@ -194,6 +196,7 @@ class CapturedCase:
             dtype=torch.float32,
             device=device,
         )
+        self.paired_raw = torch.empty(0, dtype=torch.float32, device=device)
         self.activation = (
             torch.empty(0, dtype=torch.bfloat16, device=device)
             if kernel.FUSED_ACT_QUANT
@@ -272,8 +275,10 @@ class CapturedCase:
         # Routes are fixed benchmark inputs.  Inspect them once before graph
         # capture; this synchronization and policy selection are not timed.
         self.active_experts = int(torch.unique(self.topk_ids).numel())
-        self.w13_split_k = kernel.select_w13_split_k(
-            routes, self.active_experts
+        self.w13_split_k = (
+            1
+            if kernel.W13_PAIRED_WG
+            else kernel.select_w13_split_k(routes, self.active_experts)
         )
         self.tiled_k6_reduce_mode = kernel.select_tiled_k6_reduce_mode(self.m)
 
@@ -311,45 +316,62 @@ class CapturedCase:
                 m_major_scale=False,
                 scale_dtype="float32",
             )
-        kernel.run_w13(
-            self.w13,
-            self.s13,
-            self.g13,
-            self.qx.view(torch.uint8),
-            self.x_scale,
-            self.sorted_ids,
-            self.expert_ids,
-            self.num_tokens_padded,
-            self.partials,
-            self.lut,
-            self.intermediate_per_rank,
-            self.w13_split_k,
-        )
-        if kernel.FUSED_ACT_QUANT:
+        if kernel.W13_PAIRED_WG:
             assert self.activation_scale is not None
-            kernel.reduce_swiglu_quant(
-                self.partials,
+            kernel.run_w13_paired(
+                self.w13,
+                self.g13,
+                self.qx.view(torch.uint8),
+                self.x_scale,
+                self.sorted_ids,
+                self.expert_ids,
+                self.num_tokens_padded,
+                self.paired_raw,
                 self.activation,
                 self.qactivation.view(torch.uint8),
                 self.activation_scale,
                 self.intermediate_per_rank,
-                self.w13_split_k,
             )
         else:
-            kernel.reduce_swiglu(
+            kernel.run_w13(
+                self.w13,
+                self.s13,
+                self.g13,
+                self.qx.view(torch.uint8),
+                self.x_scale,
+                self.sorted_ids,
+                self.expert_ids,
+                self.num_tokens_padded,
                 self.partials,
-                self.activation,
+                self.lut,
                 self.intermediate_per_rank,
                 self.w13_split_k,
             )
-            self.qactivation, self.activation_scale = humming_ops.quant_input(
-                inputs=self.activation,
-                outputs=self.qactivation,
-                dtype="float8e4m3",
-                group_size=128,
-                m_major_scale=False,
-                scale_dtype="float32",
-            )
+            if kernel.FUSED_ACT_QUANT:
+                assert self.activation_scale is not None
+                kernel.reduce_swiglu_quant(
+                    self.partials,
+                    self.activation,
+                    self.qactivation.view(torch.uint8),
+                    self.activation_scale,
+                    self.intermediate_per_rank,
+                    self.w13_split_k,
+                )
+            else:
+                kernel.reduce_swiglu(
+                    self.partials,
+                    self.activation,
+                    self.intermediate_per_rank,
+                    self.w13_split_k,
+                )
+                self.qactivation, self.activation_scale = humming_ops.quant_input(
+                    inputs=self.activation,
+                    outputs=self.qactivation,
+                    dtype="float8e4m3",
+                    group_size=128,
+                    m_major_scale=False,
+                    scale_dtype="float32",
+                )
 
     def run_w2_full(self) -> None:
         if self.local_float is not None:
@@ -883,6 +905,7 @@ def main() -> None:
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "fused_route_quant": kernel.FUSED_ROUTE_QUANT,
+                    "w13_paired_wg": kernel.W13_PAIRED_WG,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,

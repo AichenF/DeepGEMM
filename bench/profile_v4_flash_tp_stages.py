@@ -68,22 +68,40 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
         )
 
     def w13() -> None:
-        kernel.run_w13(
-            case.w13,
-            case.s13,
-            case.g13,
-            case.qx.view(torch.uint8),
-            case.x_scale,
-            case.sorted_ids,
-            case.expert_ids,
-            case.num_tokens_padded,
-            case.partials,
-            case.lut,
-            case.intermediate_per_rank,
-            case.w13_split_k,
-        )
+        if kernel.W13_PAIRED_WG:
+            kernel.run_w13_paired(
+                case.w13,
+                case.g13,
+                case.qx.view(torch.uint8),
+                case.x_scale,
+                case.sorted_ids,
+                case.expert_ids,
+                case.num_tokens_padded,
+                case.paired_raw,
+                case.activation,
+                case.qactivation.view(torch.uint8),
+                case.activation_scale,
+                case.intermediate_per_rank,
+            )
+        else:
+            kernel.run_w13(
+                case.w13,
+                case.s13,
+                case.g13,
+                case.qx.view(torch.uint8),
+                case.x_scale,
+                case.sorted_ids,
+                case.expert_ids,
+                case.num_tokens_padded,
+                case.partials,
+                case.lut,
+                case.intermediate_per_rank,
+                case.w13_split_k,
+            )
 
     def activation() -> None:
+        if kernel.W13_PAIRED_WG:
+            return
         if kernel.FUSED_ACT_QUANT:
             kernel.reduce_swiglu_quant(
                 case.partials,
@@ -147,6 +165,11 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
         else:
             kernel.cast_bf16(case.local_float, case.local_bf16)
 
+    if kernel.FUSED_ROUTE_QUANT and kernel.W13_PAIRED_WG:
+        return (
+            ("route_quant", "w13_activation_quant", "w2", "local_reduce"),
+            (route_quant, w13, w2, local_reduce),
+        )
     if kernel.FUSED_ROUTE_QUANT:
         return (
             ("route_quant", "w13", "activation_quant", "w2", "local_reduce"),
@@ -334,6 +357,11 @@ def main() -> None:
                 ),
                 "custom_w13_split_mode": (
                     os.environ.get("V4_W13_SPLIT_K", "auto")
+                    if args.impl == "custom"
+                    else None
+                ),
+                "custom_w13_paired_wg": (
+                    os.environ.get("V4_W13_PAIRED_WG", "0") == "1"
                     if args.impl == "custom"
                     else None
                 ),

@@ -143,6 +143,7 @@ def main() -> None:
         kernel.MODE2_BRAID
         or kernel.NORMALIZED_WEIGHT_SCALE
         or kernel.TILED_WEIGHT_LAYOUT
+        or kernel.W13_PAIRED_WG
     )
     w13_reference = w13.clone() if needs_weight_copy else w13
     w2_reference = w2.clone() if needs_weight_copy else w2
@@ -153,6 +154,8 @@ def main() -> None:
     if kernel.NORMALIZED_WEIGHT_SCALE:
         s13, g13 = kernel.normalize_mxfp4_weight_scales_(w13, s13)
         s2, g2 = kernel.normalize_mxfp4_weight_scales_(w2, s2)
+    if kernel.W13_PAIRED_WG:
+        w13, s13 = kernel.pair_gate_up_weight_layout(w13, s13)
     if kernel.MODE2_BRAID:
         # Convert only the kernel operands to the Mode2 physical layout.
         kernel.braid_mode2_(w13)
@@ -234,26 +237,20 @@ def main() -> None:
     activation = torch.empty(
         (routes, intermediate), dtype=torch.bfloat16, device=device
     )
-    lut = kernel.make_e2m1_e8m0_lut(device)
-    kernel.run_w13(
-        w13,
-        s13,
-        g13,
-        qx.view(torch.uint8),
-        x_scale,
-        sorted_ids,
-        expert_ids,
-        num_tokens_padded,
-        partials,
-        lut,
-        intermediate,
-    )
     qact = torch.empty_like(activation, dtype=torch.float8_e4m3fn)
-    if kernel.FUSED_ACT_QUANT:
-        act_scale = torch.empty(
-            (routes, intermediate // 128), dtype=torch.float32, device=device
-        )
-        kernel.reduce_swiglu_quant(
+    act_scale = torch.empty(
+        (routes, intermediate // 128), dtype=torch.float32, device=device
+    )
+    lut = kernel.make_e2m1_e8m0_lut(device)
+    if kernel.W13_PAIRED_WG:
+        kernel.run_w13_paired(
+            w13,
+            g13,
+            qx.view(torch.uint8),
+            x_scale,
+            sorted_ids,
+            expert_ids,
+            num_tokens_padded,
             partials,
             activation,
             qact.view(torch.uint8),
@@ -261,17 +258,39 @@ def main() -> None:
             intermediate,
         )
     else:
-        kernel.reduce_swiglu(
-            partials, activation, intermediate
+        kernel.run_w13(
+            w13,
+            s13,
+            g13,
+            qx.view(torch.uint8),
+            x_scale,
+            sorted_ids,
+            expert_ids,
+            num_tokens_padded,
+            partials,
+            lut,
+            intermediate,
         )
-        qact, act_scale = ops.quant_input(
-            inputs=activation,
-            outputs=qact,
-            dtype="float8e4m3",
-            group_size=128,
-            m_major_scale=False,
-            scale_dtype="float32",
-        )
+        if kernel.FUSED_ACT_QUANT:
+            kernel.reduce_swiglu_quant(
+                partials,
+                activation,
+                qact.view(torch.uint8),
+                act_scale,
+                intermediate,
+            )
+        else:
+            kernel.reduce_swiglu(
+                partials, activation, intermediate
+            )
+            qact, act_scale = ops.quant_input(
+                inputs=activation,
+                outputs=qact,
+                dtype="float8e4m3",
+                group_size=128,
+                m_major_scale=False,
+                scale_dtype="float32",
+            )
     local = torch.zeros((args.m, H), dtype=torch.float32, device=device)
     down = (
         torch.empty((routes, H), dtype=torch.bfloat16, device=device)
@@ -343,7 +362,9 @@ def main() -> None:
         * topk_weights[:, :, None]
     ).sum(dim=1) * 1.5
 
-    selected_split_k = kernel.select_w13_split_k(routes)
+    selected_split_k = (
+        1 if kernel.W13_PAIRED_WG else kernel.select_w13_split_k(routes)
+    )
     w13_actual = partials[:selected_split_k].sum(dim=0)
     print(
         "V4_WGMMA_CHECK "
@@ -352,6 +373,7 @@ def main() -> None:
         f"split_k={selected_split_k} mode2={kernel.MODE2_BRAID} "
         f"interleaved_bulk={kernel.INTERLEAVED_BULK_COPY} "
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
+        f"w13_paired_wg={kernel.W13_PAIRED_WG} "
         f"w2_global_lut={kernel.W2_GLOBAL_LUT} "
         f"leader_mbar_wait={kernel.LEADER_MBAR_WAIT}"
     )
