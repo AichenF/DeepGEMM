@@ -5186,3 +5186,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Outputs are bitwise identical at M8/M16/M32/M128.  M64 differs only by cosine 0.999999881 / rel-L2 0.000017986 and passes the tolerance-qualified gate; all values are finite.
 - Result: select `V4_ROUTE_K_UNROLL2=1` as the new default.  It is reference-correct, TP8-runnable, neutral at M8, and provides direction-consistent 1.0--1.95% full-pipeline gains at all larger shapes.
 - Evidence: `results/iter126f_route_k_unroll2_tp4_allm_paired_cold2000_20260903.log`.
+
+## Iteration 127 — select two-way K128 unroll by default
+
+- Changed the no-environment default of `V4_ROUTE_K_UNROLL2` from 0 to 1 after the long five-shape self-control established a 1.013183x geometric-mean gain with no required-shape regression.  The flag remains available as `0` for reproducible rollback/control measurements.
+- Fresh selected-extension TP4 balanced auto split4 passes with W13/activation/W2 rel-L2 0.000076187/0.000694956/0.002342691; TP4 skew forced split2 passes with 0.000077291/0.000838720/0.002351904; TP8-shape balanced auto split4 passes with 0.000076998/0.000714756/0.002333323.  All outputs are finite, and route/quant checks are exact.
+- Result: the production default now uses compact per-K128 scales plus two-way outer K unrolling for both W13 and W2.  Continue optimization from this selected baseline; all future benchmarks remain per-replay cold L2.
+- Evidence: `results/iter127_select_route_k_unroll2_default_correctness_20260903.log`.
