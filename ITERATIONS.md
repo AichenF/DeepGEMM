@@ -5087,3 +5087,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - A full cross-warp memory barrier is therefore insufficient while WGMMA is still outstanding.  The likely lifetime is the asynchronous WGMMA register-source group: issuing refill/address work before `warpgroup_wait<0>` permits compiler/register reuse before hardware completion.
 - Result: reject without timing.  Any final early-refill probe must occur only after `warpgroup_wait<0>` and may overlap only the scalar accumulation/loop tail.
 - Evidence: `results/iter122b_w13_early_refill_full_barrier_correctness_20260903.log`.
+
+## Iteration 122c — issuer-local post-WGMMA-wait refill is still unsafe
+
+- Moved early refill after the final `warpgroup_wait<0>` and before tile accumulation, removing the pre-wait barrier.  This was intended to respect asynchronous WGMMA source lifetime.
+- The strengthened gate still fails TP4 split4 (W13 cosine/rel-L2 0.999996422/0.002675167; activation rel-L2 0.003549752) and TP8-shape split4 (W13 cosine/rel-L2 0.999995812/0.002894152; activation rel-L2 0.004505135).  Forced split2 again passes.
+- The reduced but persistent corruption means the issuer warp can return from its wait and overwrite shared stage data before another warpgroup member has completed the corresponding lifetime.
+- Result: reject without timing.  The only remaining safe placement is a full four-warp barrier after `warpgroup_wait<0>`; test that once, then close early refill regardless of performance if it fails.
+- Evidence: `results/iter122c_w13_post_wait_stage_refill_correctness_20260903.log`.

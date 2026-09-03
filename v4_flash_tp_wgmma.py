@@ -1303,19 +1303,16 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                     for (int value = 0; value < 4; ++value)
                         ptx::warpgroup_fence_operand(tile[group][value]);
                 }
-                // At the final K32 step all weight/scale operands from this
-                // stage are already in registers.  A full warpgroup barrier
-                // establishes the stage release before the issuer overwrites
-                // it; the next TMA can then overlap the asynchronous GMMA
-                // wait and per-tile accumulation below.
+                ptx::warpgroup_wait<0>();
+                // Reuse the stage only after WGMMA has released its async
+                // register-source group.  This shorter overlap window is
+                // safe and still hides the refill under tile accumulation.
                 if constexpr (kW13EarlyStageRefill && IsW13) {
                     if (k_step + 1 == kBlockK / 32
                             && local_kt + kStages < kKTilesPerSplit) {
-                        asm volatile("bar.sync 2,128;" ::: "memory");
                         load_weight_stage(local_kt + kStages, stage);
                     }
                 }
-                ptx::warpgroup_wait<0>();
             }
         }
         if constexpr (kMergedWgmmaGroup) {
@@ -4245,9 +4242,9 @@ _EXTENSION_CONFIG = (
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
           f"w13er{int(W13_EARLY_STAGE_REFILL)}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v122ber")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v122cer")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v122ber"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v122cer"
 )
 
 _ext = load_inline(
