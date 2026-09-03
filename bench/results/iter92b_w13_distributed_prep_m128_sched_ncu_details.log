@@ -1,0 +1,50 @@
+[325631] python3.12@127.0.0.1
+  void route_gemm<4096, 1024, 2, 1, 0, 0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int *, int, int) (5136, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Scheduler Statistics
+    ---------------------------- ----------- ------------
+    Metric Name                  Metric Unit Metric Value
+    ---------------------------- ----------- ------------
+    One or More Eligible                   %        78.84
+    Issued Warp Per Scheduler                        0.79
+    No Eligible                            %        21.16
+    Active Warps Per Scheduler          warp         8.47
+    Eligible Warps Per Scheduler        warp         2.65
+    ---------------------------- ----------- ------------
+
+    Section: Warp State Statistics
+    ---------------------------------------- ----------- ------------
+    Metric Name                              Metric Unit Metric Value
+    ---------------------------------------- ----------- ------------
+    Warp Cycles Per Issued Instruction             cycle        10.74
+    Warp Cycles Per Executed Instruction           cycle        10.75
+    Avg. Active Threads Per Warp                                29.89
+    Avg. Not Predicated Off Threads Per Warp                    29.69
+    ---------------------------------------- ----------- ------------
+
+    Section: Instruction Statistics
+    ---------------------------------------- ----------- ------------
+    Metric Name                              Metric Unit Metric Value
+    ---------------------------------------- ----------- ------------
+    Avg. Executed Instructions Per Scheduler        inst   267,606.38
+    Executed Instructions                           inst   83,493,190
+    Avg. Issued Instructions Per Scheduler          inst   267,749.96
+    Issued Instructions                             inst   83,537,987
+    ---------------------------------------- ----------- ------------
+
+    Section: Source Counters
+    ------------------------- ----------- ------------
+    Metric Name               Metric Unit Metric Value
+    ------------------------- ----------- ------------
+    Branch Instructions Ratio           %         0.04
+    Branch Instructions              inst    3,007,646
+    Branch Efficiency                   %        70.88
+    Avg. Divergent Branches      branches     1,353.49
+    ------------------------- ----------- ------------
+
+    OPT   Est. Speedup: 6.425%                                                                                          
+          This kernel has uncoalesced global accesses resulting in a total of 80384 excessive sectors (7% of the total  
+          1224096 sectors). Check the L2 Theoretical Sectors Global Excessive table for the primary source locations.   
+          The CUDA Programming Guide                                                                                    
+          (https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-memory-accesses) has additional      
+          information on reducing uncoalesced device memory accesses.                                                   
+

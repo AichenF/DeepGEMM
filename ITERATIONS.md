@@ -4477,3 +4477,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - The separate NCU runs report 195.90 us control versus 213.57 us candidate, but clocks were uncontrolled and multi-pass profiling is not the acceptance timing source. The same-process 600-sample cold-L2 paired audit remains the valid latency evidence.
 - The candidate `detailed` report omitted Scheduler Statistics and Warp State Statistics (20 passes versus 21 previously), so barrier-stall confirmation is incomplete. Run a focused `SchedulerStats,WarpStateStats,InstructionStats` capture before default selection.
 - Artifact: `bench/results/iter92_w13_distributed_prep_m128_ncu_details.log`.
+
+## Iteration 92b — Focused W13 scheduler/warp-state NCU gate
+
+- Re-profiled the same TP4 M128/random-route candidate under the same cold-L2 replay, explicitly requesting `SchedulerStats`, `WarpStateStats`, `InstructionStats`, and `SourceCounters`; NCU completed 13 passes.
+- Candidate metrics: No Eligible 21.16%; Eligible Warps/Scheduler 2.65; Warp Cycles/Issued Instruction 10.74; Executed Instructions 83,493,190. The iteration-84 control was 22.74%, 2.38, 10.96 cycles, and 80,218,472 instructions respectively. The requested candidate report did not emit a per-state Stall Barrier row, so the old 3.6-cycle barrier value has no direct candidate counterpart.
+- Use the normalized scheduler/warp-state comparison—not cross-run NCU duration—together with the already-completed same-process 600-sample paired latency audit to decide default selection.
+- Artifacts: `bench/results/iter92b_w13_distributed_prep_m128_coldl2_sched_ncu.{log,ncu-rep}` and `bench/results/iter92b_w13_distributed_prep_m128_sched_ncu_details.log`.
