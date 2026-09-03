@@ -554,6 +554,7 @@ def main() -> None:
                     "bulk_weight_copy": kernel.BULK_WEIGHT_COPY,
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
+                    "activation_quant_pair": kernel.ACT_QUANT_PAIR,
                     "fused_route_quant": kernel.FUSED_ROUTE_QUANT,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,

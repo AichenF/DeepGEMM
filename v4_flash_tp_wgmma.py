@@ -68,6 +68,7 @@ if BULK_WEIGHT_COPY and not TILED_WEIGHT_LAYOUT:
     raise ValueError("V4_BULK_WEIGHT_COPY requires tiled weight layout")
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
+ACT_QUANT_PAIR = os.environ.get("V4_ACT_QUANT_PAIR", "0") == "1"
 FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
@@ -924,6 +925,69 @@ __global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
     quantized[index] = __nv_fp8_e4m3(value / group_scale).__x;
 }
 
+template <int Intermediate, int SplitK>
+__global__ __launch_bounds__(256) void reduce_swiglu_quant_pair_kernel(
+        const float* __restrict__ partials,
+        __nv_bfloat16* __restrict__ activation,
+        uint8_t* __restrict__ quantized,
+        float* __restrict__ scale,
+        int routes) {
+    static_assert(Intermediate % 256 == 0);
+    constexpr int kGroupsPerRoute = Intermediate / 128;
+    const int subgroup = threadIdx.x >> 7;
+    const int group_lane = threadIdx.x & 127;
+    const int group = blockIdx.x * 2 + subgroup;
+    const int route = group / kGroupsPerRoute;
+    const int group_in_route = group - route * kGroupsPerRoute;
+    const int column = group_in_route * 128 + group_lane;
+    constexpr int N = 2 * Intermediate;
+
+    float gate = 0.0f;
+    float up = 0.0f;
+    #pragma unroll
+    for (int split = 0; split < SplitK; ++split) {
+        const int64_t base =
+            (static_cast<int64_t>(split) * routes + route) * N;
+        gate += partials[base + column];
+        up += partials[base + Intermediate + column];
+    }
+    gate = __bfloat162float(__float2bfloat16(gate));
+    up = __bfloat162float(__float2bfloat16(up));
+    const float silu = gate / (1.0f + __expf(-gate));
+    const __nv_bfloat16 activation_bf16 = __float2bfloat16(silu * up);
+    const float value = __bfloat162float(activation_bf16);
+    const int index = route * Intermediate + column;
+    if (activation != nullptr)
+        activation[index] = activation_bf16;
+
+    float absmax = fabsf(value);
+    #pragma unroll
+    for (int delta = 16; delta > 0; delta >>= 1)
+        absmax = fmaxf(absmax, __shfl_down_sync(0xffffffffu, absmax, delta));
+
+    __shared__ float warp_max[8];
+    __shared__ float group_scale[2];
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    if (lane == 0)
+        warp_max[warp] = absmax;
+    __syncthreads();
+    if ((warp & 3) == 0) {
+        absmax = lane < 4 ? warp_max[(warp & ~3) + lane] : 0.0f;
+        #pragma unroll
+        for (int delta = 16; delta > 0; delta >>= 1)
+            absmax = fmaxf(absmax,
+                           __shfl_down_sync(0xffffffffu, absmax, delta));
+        if (lane == 0) {
+            group_scale[subgroup] =
+                fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
+            scale[group] = group_scale[subgroup];
+        }
+    }
+    __syncthreads();
+    quantized[index] = __nv_fp8_e4m3(value / group_scale[subgroup]).__x;
+}
+
 // Fixed DeepSeek-V4-Flash TP preparation.  Route alignment and input
 // quantization are independent, so place them in one launch: CTA 0 performs
 // the E=256/top-k=6/block-M=8 alignment, while every 256-thread CTA quantizes
@@ -1292,6 +1356,51 @@ void reduce_swiglu_quant(
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+template <int Intermediate, int SplitK>
+void launch_reduce_swiglu_quant_pair(
+        torch::Tensor partials, torch::Tensor activation,
+        torch::Tensor quantized, torch::Tensor scale, int routes) {
+    constexpr int threads = 256;
+    constexpr int groups_per_route = Intermediate / 128;
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    auto* activation_ptr = activation.numel()
+        ? reinterpret_cast<__nv_bfloat16*>(activation.data_ptr())
+        : nullptr;
+    reduce_swiglu_quant_pair_kernel<Intermediate, SplitK><<<
+        routes * groups_per_route / 2, threads, 0, stream>>>(
+        partials.data_ptr<float>(), activation_ptr,
+        quantized.data_ptr<uint8_t>(), scale.data_ptr<float>(), routes);
+}
+
+void reduce_swiglu_quant_pair(
+        torch::Tensor partials, torch::Tensor activation,
+        torch::Tensor quantized, torch::Tensor scale,
+        int intermediate, int split_k) {
+    const int routes = partials.size(1);
+    if (intermediate == 512) {
+        if (split_k == 4)
+            launch_reduce_swiglu_quant_pair<512, 4>(
+                partials, activation, quantized, scale, routes);
+        else {
+            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+            launch_reduce_swiglu_quant_pair<512, 2>(
+                partials, activation, quantized, scale, routes);
+        }
+    } else if (intermediate == 256) {
+        if (split_k == 4)
+            launch_reduce_swiglu_quant_pair<256, 4>(
+                partials, activation, quantized, scale, routes);
+        else {
+            TORCH_CHECK(split_k == 2, "split_k must be 2 or 4");
+            launch_reduce_swiglu_quant_pair<256, 2>(
+                partials, activation, quantized, scale, routes);
+        }
+    } else {
+        TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
+    }
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void cast_bf16(torch::Tensor input, torch::Tensor output) {
     const int numel = input.numel();
     const int threads = 256;
@@ -1366,6 +1475,9 @@ void reduce_swiglu(torch::Tensor partials, torch::Tensor output,
 void reduce_swiglu_quant(torch::Tensor partials, torch::Tensor activation,
                          torch::Tensor quantized, torch::Tensor scale,
                          int intermediate, int split_k);
+void reduce_swiglu_quant_pair(torch::Tensor partials, torch::Tensor activation,
+                              torch::Tensor quantized, torch::Tensor scale,
+                              int intermediate, int split_k);
 void cast_bf16(torch::Tensor input, torch::Tensor output);
 void fused_route_quant(torch::Tensor topk_ids, torch::Tensor input,
                        torch::Tensor sorted_ids, torch::Tensor expert_ids,
@@ -1388,11 +1500,12 @@ _ext = load_inline(
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v41"),
+          f"mb{MIN_BLOCKS_PER_SM}_v43"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
         "run_w13_impl", "run_w2", "reduce_swiglu", "reduce_swiglu_quant",
+        "reduce_swiglu_quant_pair",
         "cast_bf16",
         "fused_route_quant",
         "braid_mode2",
@@ -1629,7 +1742,12 @@ def reduce_swiglu_quant(
         split_k = select_w13_split_k(partials.size(1))
     if split_k not in (2, 4):
         raise ValueError("W13 split_k must be 2 or 4")
-    _ext.reduce_swiglu_quant(
+    reduce_impl = (
+        _ext.reduce_swiglu_quant_pair
+        if ACT_QUANT_PAIR
+        else _ext.reduce_swiglu_quant
+    )
+    reduce_impl(
         partials,
         activation,
         quantized,
