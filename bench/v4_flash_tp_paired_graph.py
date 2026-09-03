@@ -272,6 +272,7 @@ def main() -> None:
                     "custom_w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "custom_w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
                     "custom_leader_mbar_wait": kernel.LEADER_MBAR_WAIT,
+                    "custom_w13_fp16_partial": kernel.W13_FP16_PARTIAL,
                     "custom_normalized_weight_scale": (
                         kernel.NORMALIZED_WEIGHT_SCALE
                     ),

@@ -229,7 +229,9 @@ def main() -> None:
         x_scale = reference_x_scale
 
     partials = torch.empty(
-        (kernel.W13_MAX_SPLITS, routes, n13), dtype=torch.float32, device=device
+        (kernel.W13_MAX_SPLITS, routes, n13),
+        dtype=(torch.float16 if kernel.W13_FP16_PARTIAL else torch.float32),
+        device=device,
     )
     activation = torch.empty(
         (routes, intermediate), dtype=torch.bfloat16, device=device
@@ -344,7 +346,7 @@ def main() -> None:
     ).sum(dim=1) * 1.5
 
     selected_split_k = kernel.select_w13_split_k(routes)
-    w13_actual = partials[:selected_split_k].sum(dim=0)
+    w13_actual = partials[:selected_split_k].float().sum(dim=0)
     print(
         "V4_WGMMA_CHECK "
         f"M={args.m} pattern={args.pattern} Is={intermediate} "
@@ -353,7 +355,8 @@ def main() -> None:
         f"interleaved_bulk={kernel.INTERLEAVED_BULK_COPY} "
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
         f"w2_global_lut={kernel.W2_GLOBAL_LUT} "
-        f"leader_mbar_wait={kernel.LEADER_MBAR_WAIT}"
+        f"leader_mbar_wait={kernel.LEADER_MBAR_WAIT} "
+        f"w13_fp16_partial={kernel.W13_FP16_PARTIAL}"
     )
     print(
         "V4_WGMMA_W13 "

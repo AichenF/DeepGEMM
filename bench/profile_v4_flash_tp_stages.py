@@ -349,6 +349,11 @@ def main() -> None:
                     if args.impl == "custom"
                     else None
                 ),
+                "custom_w13_fp16_partial": (
+                    os.environ.get("V4_W13_FP16_PARTIAL", "0") == "1"
+                    if args.impl == "custom"
+                    else None
+                ),
                 "m": args.m,
                 "tp": args.tp,
                 "route_pattern": args.route_pattern,

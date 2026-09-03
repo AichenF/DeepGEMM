@@ -191,7 +191,7 @@ class CapturedCase:
         )
         self.partials = torch.empty(
             (kernel.W13_MAX_SPLITS, routes, n13),
-            dtype=torch.float32,
+            dtype=(torch.float16 if kernel.W13_FP16_PARTIAL else torch.float32),
             device=device,
         )
         self.activation = (
@@ -560,6 +560,9 @@ def main() -> None:
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
                     "leader_mbar_wait": kernel.LEADER_MBAR_WAIT,
+                    "w13_partial_dtype": (
+                        "FP16" if kernel.W13_FP16_PARTIAL else "FP32"
+                    ),
                     "w2_epilogue": (
                         "BF16 route output + sglang moe_fused_mul_sum"
                         if kernel.W2_ROUTE_OUTPUT
