@@ -279,6 +279,9 @@ def main() -> None:
                     "custom_interleaved_bulk_copy": (
                         kernel.INTERLEAVED_BULK_COPY
                     ),
+                    "custom_bulk_l2_prefetch_distance": (
+                        kernel.BULK_L2_PREFETCH
+                    ),
                     "timed_allreduce": "same SGLang CustomAllReduceV2 instance",
                 },
                 sort_keys=True,
