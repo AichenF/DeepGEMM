@@ -4462,3 +4462,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Correctness:** Candidate and control graph outputs were bitwise equal on every rank and shape.
 - **Decision:** Accept the mechanism provisionally across all TP4 shapes. Before changing the default/headline, collect a focused W13 NCU confirmation and run TP8 graph plus exact Humming/custom full formal.
 - **Artifact:** `results/iter91c_w13_distributed_prep_paired_tp4_m8_m16_m32_m64_cold_600_20260903.log` plus iteration 91b's M128 log.
+
+## Iteration 92 — Distributed W13 preparation NCU capture gate
+
+- Captured the accepted `V4_W13_DISTRIBUTED_PREP=1` TP4 M128/random-route W13 kernel with Nsight Compute `detailed`, selecting the first `route_gemm` launch only.
+- The profiled replay preserves the benchmark cold-L2 policy: a separate 256 MiB cache clear immediately precedes the local pipeline and is outside the measured/profiled workload. NCU completed 20 passes and produced a valid report.
+- This iteration records collection only; metric extraction and the control/candidate mechanism comparison are intentionally separated into the next audit before changing the default.
+- Artifacts: `bench/results/iter92_w13_distributed_prep_m128_coldl2_detailed_ncu.{log,ncu-rep}`.
