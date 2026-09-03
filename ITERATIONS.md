@@ -4429,3 +4429,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Verification:** TP4 balanced/skew M8 and TP8-shape balanced M8 all passed the full all-route reference. W2 cosine was 0.999997256, 0.999997235, and 0.999997278; outputs finite.
 - **Decision:** Correctness and TP8-runnable gate passed; remain opt-in pending paired cold-L2 timing.
 - **Artifact:** `results/iter90_w2_fold_global_scale_correctness_20260903.log`.
+
+## Iteration 90b — Paired TP4 M128 cold-L2 folded W2 expert scale
+
+- **Method:** Same-process control/candidate graphs over identical random routes/weights, alternating order, 6×100 samples per variant, separate untimed 256 MiB L2 clear before each replay, four-rank maximum latency.
+- **Correctness:** Outputs were bitwise equal on all ranks.
+- **Result:** control median 0.358560 ms; folded-scale candidate 0.358544 ms; control/candidate 1.000045x, only 0.016 microseconds. Batch direction was mixed.
+- **Decision:** Treat as neutral and reject for selection. Removing repeated W2 expert-scale loads/multiplies merely moves equivalent work into the quantizer and does not shorten the graph critical path.
+- **Artifact:** `results/iter90b_w2_fold_global_scale_paired_tp4_m128_cold_600_20260903.log`.
