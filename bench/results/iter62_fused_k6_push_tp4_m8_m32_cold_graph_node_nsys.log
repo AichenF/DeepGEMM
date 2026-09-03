@@ -1,0 +1,161 @@
+W0903 06:17:40.126000 278841 torch/distributed/run.py:851] 
+W0903 06:17:40.126000 278841 torch/distributed/run.py:851] *****************************************
+W0903 06:17:40.126000 278841 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0903 06:17:40.126000 278841 torch/distributed/run.py:851] *****************************************
+CUSTOM_ENV {"activation_dtype": "FP8 E4M3 group128", "benchmark": "v4_flash_tp_route_wgmma_cuda_graph", "bulk_weight_copy": true, "capability": "9.0", "dequant_dp4a_hi": true, "dequant_dp4a_lo": true, "dequant_synth_lut": false, "fused_activation_quant": true, "fused_k6_push_ar": true, "fused_route_quant": true, "gpu": "NVIDIA H20-3e", "interleaved_bulk_copy": true, "l2_cache_bytes": 62914560, "l2_flush_bytes": 268435456, "l2_policy": "cold; 256MiB Triton clear before every replay, clear excluded from events", "leader_mbar_wait": true, "m_values": [8], "min_blocks_per_sm": 0, "mode2_braid": true, "mxfp4_lut_rows": 256, "normalized_weight_scale": true, "outer": 1, "output_dtype": "BF16", "output_tile_channels": 128, "replays_per_outer": 1, "route_pattern": "random", "scale_buffers": 2, "scale_quad_reuse": 4, "sm_count": 78, "tiled_k6_reduce_policy": "auto", "tiled_weight_layout": true, "timed_allreduce": "sglang CustomAllReduceV2 default graph heuristic", "w13_s2r_prefetch": true, "w13_split_policy": "auto; routed_rows<=192 or active_experts<=96 -> 4, else 2; selected before capture", "w2_epilogue": "BF16 route output + fixed tiled CUDA k6 mode 4 at M<=16, SGLang moe_fused_mul_sum otherwise", "w2_global_lut": false, "w2_s2r_prefetch": true, "warmup_replays": 1, "weight_common_address": true, "weight_dtype": "OCP MXFP4 E2M1", "weight_scale": "E8M0 group32", "weight_stages": 2, "weight_swizzle_bytes": 64, "world_size": 4}
+CUSTOM_SHAPES {"H": 4096, "I": 2048, "I_per_rank": 512, "W13_bytes_with_scale": 570425344, "W13_per_rank": [256, 8, 278528], "W2_bytes_with_scale": 285212672, "W2_per_rank": [256, 32, 34816], "experts": 256, "top_k": 6}
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-root/nsys-report-048a.qdstrm'
+[1/1] [0%                          ] iter62_fused_tp4_m8_cold_graph_rank2.nsys-repProcessing events...
+[1/1] [0%                          ] iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep[1/1] [5%                          ] iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep[1/1] [8%                          ] iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep[1/1] [=17%                        ] iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep[1/1] [==19%                       ] iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep[1/1] [==20%                       ] iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep[1/1] [====25%                     ] iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep[1/1] [=====30%                    ] iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep[1/1] [=======================96%  ] iter62_fused_tp4_m8_cold_graph_rank2.nsys-repCapture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-root/nsys-report-4f5c.qdstrm'
+[1/1] [0%                          ] iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep[1/1] [========================98% ] iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-root/nsys-report-dea0.qdstrm'
+[1/1] [0%                          ] iter62_fused_tp4_m8_cold_graph_rank0.nsys-repCapture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-root/nsys-report-b6ce.qdstrm'
+[1/1] [0%                          ] iter62_fused_tp4_m8_cold_graph_rank1.nsys-repProcessing events...
+[1/1] [0%                          ] iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep[1/1] [5%                          ] iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep[1/1] [8%                          ] iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep[1/1] [=17%                        ] iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep[1/1] [==19%                       ] iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep[1/1] [==20%                       ] iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep[1/1] [====25%                     ] iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep[1/1] [=====30%                    ] iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep[1/1] [=======================96%  ] iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep[1/1] [========================98% ] iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m8_cold_graph_rank3.nsys-repProcessing events...
+[1/1] [0%                          ] iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep
+[1/1] [5%                          ] iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep[1/1] [7%                          ] iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep[1/1] [=17%                        ] iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep[1/1] [==19%                       ] iter62_fused_tp4_m8_cold_graph_rank0.nsys-repProcessing events...
+[1/1] [0%                          ] iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep[1/1] [==20%                       ] iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep[1/1] [5%                          ] iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep[1/1] [====25%                     ] iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep[1/1] [=====30%                    ] iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep[1/1] [8%                          ] iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep[1/1] [=======================96%  ] iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep[1/1] [=17%                        ] iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep[1/1] [==19%                       ] iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep[1/1] [==20%                       ] iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep[1/1] [========================98% ] iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep[1/1] [====25%                     ] iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep[1/1] [=====30%                    ] iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep[1/1] [=======================96%  ] iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep
+[1/1] [========================98% ] iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep
+CUSTOM_PROFILE_REPLAY {"l2_policy": "cold; 256MiB clear immediately before replay", "m": 8}
+Generated:
+	/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/results/iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep
+Generated:
+	/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/results/iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep
+Generated:
+	/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/results/iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep
+Generated:
+	/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/results/iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep
+PROFILE_M8_EXIT_STATUS=0
+W0903 06:18:13.931000 279434 torch/distributed/run.py:851] 
+W0903 06:18:13.931000 279434 torch/distributed/run.py:851] *****************************************
+W0903 06:18:13.931000 279434 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0903 06:18:13.931000 279434 torch/distributed/run.py:851] *****************************************
+CUSTOM_ENV {"activation_dtype": "FP8 E4M3 group128", "benchmark": "v4_flash_tp_route_wgmma_cuda_graph", "bulk_weight_copy": true, "capability": "9.0", "dequant_dp4a_hi": true, "dequant_dp4a_lo": true, "dequant_synth_lut": false, "fused_activation_quant": true, "fused_k6_push_ar": true, "fused_route_quant": true, "gpu": "NVIDIA H20-3e", "interleaved_bulk_copy": true, "l2_cache_bytes": 62914560, "l2_flush_bytes": 268435456, "l2_policy": "cold; 256MiB Triton clear before every replay, clear excluded from events", "leader_mbar_wait": true, "m_values": [32], "min_blocks_per_sm": 0, "mode2_braid": true, "mxfp4_lut_rows": 256, "normalized_weight_scale": true, "outer": 1, "output_dtype": "BF16", "output_tile_channels": 128, "replays_per_outer": 1, "route_pattern": "random", "scale_buffers": 2, "scale_quad_reuse": 4, "sm_count": 78, "tiled_k6_reduce_policy": "auto", "tiled_weight_layout": true, "timed_allreduce": "sglang CustomAllReduceV2 default graph heuristic", "w13_s2r_prefetch": true, "w13_split_policy": "auto; routed_rows<=192 or active_experts<=96 -> 4, else 2; selected before capture", "w2_epilogue": "BF16 route output + fixed tiled CUDA k6 mode 4 at M<=16, SGLang moe_fused_mul_sum otherwise", "w2_global_lut": false, "w2_s2r_prefetch": true, "warmup_replays": 1, "weight_common_address": true, "weight_dtype": "OCP MXFP4 E2M1", "weight_scale": "E8M0 group32", "weight_stages": 2, "weight_swizzle_bytes": 64, "world_size": 4}
+CUSTOM_SHAPES {"H": 4096, "I": 2048, "I_per_rank": 512, "W13_bytes_with_scale": 570425344, "W13_per_rank": [256, 8, 278528], "W2_bytes_with_scale": 285212672, "W2_per_rank": [256, 32, 34816], "experts": 256, "top_k": 6}
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-root/nsys-report-c1b1.qdstrm'
+[1/1] [0%                          ] iter62_fused_tp4_m32_cold_graph_rank2.nsys-repProcessing events...
+[1/1] [0%                          ] iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep[1/1] [5%                          ] iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep[1/1] [8%                          ] iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep[1/1] [=17%                        ] iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep[1/1] [==19%                       ] iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep[1/1] [==20%                       ] iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep[1/1] [====25%                     ] iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep[1/1] [=====30%                    ] iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep[1/1] [=======================96%  ] iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep[1/1] [========================98% ] iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-root/nsys-report-73e3.qdstrm'
+[1/1] [0%                          ] iter62_fused_tp4_m32_cold_graph_rank3.nsys-repCapture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-root/nsys-report-5d92.qdstrm'
+[1/1] [0%                          ] iter62_fused_tp4_m32_cold_graph_rank1.nsys-repProcessing events...
+[1/1] [0%                          ] iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep[1/1] [5%                          ] iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep[1/1] [8%                          ] iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep[1/1] [=17%                        ] iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep[1/1] [==19%                       ] iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep[1/1] [==20%                       ] iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep[1/1] [====25%                     ] iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep[1/1] [=====30%                    ] iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep[1/1] [=======================96%  ] iter62_fused_tp4_m32_cold_graph_rank3.nsys-repCapture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-root/nsys-report-d014.qdstrm'
+[1/1] [0%                          ] iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep[1/1] [========================98% ] iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep
+Processing events...
+[1/1] [0%                          ] iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep[1/1] [5%                          ] iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep[1/1] [8%                          ] iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep[1/1] [=17%                        ] iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep[1/1] [==19%                       ] iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep[1/1] [==20%                       ] iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep[1/1] [====25%                     ] iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep[1/1] [=====30%                    ] iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep[1/1] [=======================96%  ] iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep[1/1] [========================98% ] iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m32_cold_graph_rank1.nsys-repProcessing events...
+[1/1] [0%                          ] iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep[1/1] [5%                          ] iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep[1/1] [7%                          ] iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep
+[1/1] [=17%                        ] iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep[1/1] [==19%                       ] iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep[1/1] [==20%                       ] iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep[1/1] [====25%                     ] iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep[1/1] [=====30%                    ] iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep[1/1] [=======================96%  ] iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep[1/1] [========================98% ] iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep[1/1] [========================100%] iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep
+CUSTOM_PROFILE_REPLAY {"l2_policy": "cold; 256MiB clear immediately before replay", "m": 32}
+Generated:
+	/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/results/iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep
+Generated:
+	/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/results/iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep
+Generated:
+	/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/results/iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep
+Generated:
+	/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/results/iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep
+PROFILE_M32_EXIT_STATUS=0
+REPORT=bench/results/iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep
+Generating SQLite file bench/results/iter62_fused_tp4_m8_cold_graph_rank0.sqlite from bench/results/iter62_fused_tp4_m8_cold_graph_rank0.nsys-rep
+Processing [bench/results/iter62_fused_tp4_m8_cold_graph_rank0.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+98.2,7292423,1,7292423.0,7292423.0,7292423,7292423,0.0,"void fused_k6_push_ar_tp4_kernel<(int)128>(const __nv_bfloat16 *, const float *, __nv_bfloat16 *, unsigned int *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, int, int, long)"
+0.9,63360,1,63360.0,63360.0,63360,63360,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+0.5,40607,1,40607.0,40607.0,40607,40607,0.0,"void route_gemm<(int)4096, (int)1024, (int)4, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.3,22111,1,22111.0,22111.0,22111,22111,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.0,3168,1,3168.0,3168.0,3168,3168,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+0.0,2271,1,2271.0,2271.0,2271,2271,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)4>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+
+REPORT=bench/results/iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep
+Generating SQLite file bench/results/iter62_fused_tp4_m8_cold_graph_rank1.sqlite from bench/results/iter62_fused_tp4_m8_cold_graph_rank1.nsys-rep
+Processing [bench/results/iter62_fused_tp4_m8_cold_graph_rank1.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+46.3,63360,1,63360.0,63360.0,63360,63360,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+30.1,41247,1,41247.0,41247.0,41247,41247,0.0,"void route_gemm<(int)4096, (int)1024, (int)4, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+16.4,22495,1,22495.0,22495.0,22495,22495,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+3.2,4416,1,4416.0,4416.0,4416,4416,0.0,"void fused_k6_push_ar_tp4_kernel<(int)128>(const __nv_bfloat16 *, const float *, __nv_bfloat16 *, unsigned int *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, int, int, long)"
+2.2,3072,1,3072.0,3072.0,3072,3072,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+1.8,2399,1,2399.0,2399.0,2399,2399,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)4>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+
+REPORT=bench/results/iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep
+Generating SQLite file bench/results/iter62_fused_tp4_m8_cold_graph_rank2.sqlite from bench/results/iter62_fused_tp4_m8_cold_graph_rank2.nsys-rep
+Processing [bench/results/iter62_fused_tp4_m8_cold_graph_rank2.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+99.9,263459666,1,263459666.0,263459666.0,263459666,263459666,0.0,"void fused_k6_push_ar_tp4_kernel<(int)128>(const __nv_bfloat16 *, const float *, __nv_bfloat16 *, unsigned int *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, int, int, long)"
+0.0,63744,1,63744.0,63744.0,63744,63744,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+0.0,40416,1,40416.0,40416.0,40416,40416,0.0,"void route_gemm<(int)4096, (int)1024, (int)4, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.0,22559,1,22559.0,22559.0,22559,22559,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.0,3104,1,3104.0,3104.0,3104,3104,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+0.0,2400,1,2400.0,2400.0,2400,2400,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)4>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+
+REPORT=bench/results/iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep
+Generating SQLite file bench/results/iter62_fused_tp4_m8_cold_graph_rank3.sqlite from bench/results/iter62_fused_tp4_m8_cold_graph_rank3.nsys-rep
+Processing [bench/results/iter62_fused_tp4_m8_cold_graph_rank3.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+99.5,24633469,1,24633469.0,24633469.0,24633469,24633469,0.0,"void fused_k6_push_ar_tp4_kernel<(int)128>(const __nv_bfloat16 *, const float *, __nv_bfloat16 *, unsigned int *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, int, int, long)"
+0.3,63167,1,63167.0,63167.0,63167,63167,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+0.2,41823,1,41823.0,41823.0,41823,41823,0.0,"void route_gemm<(int)4096, (int)1024, (int)4, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.1,22655,1,22655.0,22655.0,22655,22655,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.0,3296,1,3296.0,3296.0,3296,3296,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+0.0,2367,1,2367.0,2367.0,2367,2367,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)4>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+
+REPORT=bench/results/iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep
+Generating SQLite file bench/results/iter62_fused_tp4_m32_cold_graph_rank0.sqlite from bench/results/iter62_fused_tp4_m32_cold_graph_rank0.nsys-rep
+Processing [bench/results/iter62_fused_tp4_m32_cold_graph_rank0.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+45.5,113694,1,113694.0,113694.0,113694,113694,0.0,"void route_gemm<(int)4096, (int)1024, (int)4, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+25.3,63296,1,63296.0,63296.0,63296,63296,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+24.1,60319,1,60319.0,60319.0,60319,60319,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+2.4,6048,1,6048.0,6048.0,6048,6048,0.0,"void fused_k6_push_ar_tp4_kernel<(int)256>(const __nv_bfloat16 *, const float *, __nv_bfloat16 *, unsigned int *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, int, int, long)"
+1.4,3552,1,3552.0,3552.0,3552,3552,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+1.3,3135,1,3135.0,3135.0,3135,3135,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)4>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+
+REPORT=bench/results/iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep
+Generating SQLite file bench/results/iter62_fused_tp4_m32_cold_graph_rank1.sqlite from bench/results/iter62_fused_tp4_m32_cold_graph_rank1.nsys-rep
+Processing [bench/results/iter62_fused_tp4_m32_cold_graph_rank1.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+97.9,11477253,1,11477253.0,11477253.0,11477253,11477253,0.0,"void fused_k6_push_ar_tp4_kernel<(int)256>(const __nv_bfloat16 *, const float *, __nv_bfloat16 *, unsigned int *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, int, int, long)"
+1.0,115391,1,115391.0,115391.0,115391,115391,0.0,"void route_gemm<(int)4096, (int)1024, (int)4, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.5,63393,1,63393.0,63393.0,63393,63393,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+0.5,60544,1,60544.0,60544.0,60544,60544,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.0,3552,1,3552.0,3552.0,3552,3552,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+0.0,3135,1,3135.0,3135.0,3135,3135,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)4>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+
+REPORT=bench/results/iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep
+Generating SQLite file bench/results/iter62_fused_tp4_m32_cold_graph_rank2.sqlite from bench/results/iter62_fused_tp4_m32_cold_graph_rank2.nsys-rep
+Processing [bench/results/iter62_fused_tp4_m32_cold_graph_rank2.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+99.7,84101627,1,84101627.0,84101627.0,84101627,84101627,0.0,"void fused_k6_push_ar_tp4_kernel<(int)256>(const __nv_bfloat16 *, const float *, __nv_bfloat16 *, unsigned int *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, int, int, long)"
+0.1,113376,1,113376.0,113376.0,113376,113376,0.0,"void route_gemm<(int)4096, (int)1024, (int)4, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.1,63264,1,63264.0,63264.0,63264,63264,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+0.1,60767,1,60767.0,60767.0,60767,60767,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.0,3680,1,3680.0,3680.0,3680,3680,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+0.0,3072,1,3072.0,3072.0,3072,3072,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)4>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+
+REPORT=bench/results/iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep
+Generating SQLite file bench/results/iter62_fused_tp4_m32_cold_graph_rank3.sqlite from bench/results/iter62_fused_tp4_m32_cold_graph_rank3.nsys-rep
+Processing [bench/results/iter62_fused_tp4_m32_cold_graph_rank3.sqlite] with [/opt/nvidia/nsight-systems-cli/2026.3.1/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+99.3,34468299,1,34468299.0,34468299.0,34468299,34468299,0.0,"void fused_k6_push_ar_tp4_kernel<(int)256>(const __nv_bfloat16 *, const float *, __nv_bfloat16 *, unsigned int *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, int, int, long)"
+0.3,114431,1,114431.0,114431.0,114431,114431,0.0,"void route_gemm<(int)4096, (int)1024, (int)4, (bool)1>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.2,63264,1,63264.0,63264.0,63264,63264,0.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long)1>>(int, T2, T3)"
+0.2,60127,1,60127.0,60127.0,60127,60127,0.0,"void route_gemm<(int)512, (int)4096, (int)1, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int)"
+0.0,3488,1,3488.0,3488.0,3488,3488,0.0,"fused_route_quant_kernel(const int *, const __nv_bfloat16 *, int *, int *, int *, unsigned char *, float *, int)"
+0.0,3040,1,3040.0,3040.0,3040,3040,0.0,"void reduce_swiglu_quant_kernel<(int)512, (int)4>(const float *, __nv_bfloat16 *, unsigned char *, float *, int)"
+
+BENCH_EXIT_STATUS=0

@@ -3776,3 +3776,30 @@ maximum rank latency of a full CUDA-Graph replay.
   M8/M32.
 - Evidence:
   `bench/results/iter61_fused_k6_push_tp4_m8_m16_m32_ab_coldl2_20260903.log`.
+
+### WGMMA iteration 62 — fused-tail graph-node profile
+
+- Captured one explicitly cold graph replay for the selected fused path at
+  TP4 M8 and M32.  As in iteration 59, the CUDA profiler start call is not
+  synchronized after each rank enters it, so early ranks spin in the
+  collective for milliseconds; those durations are synchronization artifacts
+  and must not be interpreted as kernel cost.  The last-arriving ranks give
+  usable tail measurements of 4.416 us for the 128-thread M8 fused kernel and
+  6.048 us for the 256-thread M32 fused kernel.
+- The comparable stock M8 trace had approximately 1.63--1.70 us of tiled k6
+  reduction followed by a 4.032 us one-shot-push kernel.  Fusing therefore
+  removes a graph node and intermediate BF16 write/read, but moves the six-row
+  calculation into the communication CTA and still spends about 4.4 us in
+  its push/poll protocol.  The profile predicts at most roughly 1.2 us of M8
+  tail reduction; iteration 61 observes 0.448 us at the full-graph max-rank
+  boundary.  The result rules out launch fusion alone as a route to the
+  remaining approximately 5% geometric-mean reduction.
+- Keep the bitwise-correct fused tail, but change structural direction.  A
+  plausible larger target is producer-side W2 epilogue progress: publish
+  completed token/hidden tiles before the entire W2 grid drains, while a
+  following communication kernel only polls/reduces.  This can overlap NVLink
+  stores with W2 tail work; it must avoid in-producer polling and global
+  co-residency barriers to prevent the failures seen in iterations 56--57.
+- Evidence:
+  `bench/results/iter62_fused_k6_push_tp4_m8_m32_cold_graph_node_nsys.log`
+  and `bench/results/iter62_fused_tp4_m{8,32}_cold_graph_rank*.nsys-rep`.
