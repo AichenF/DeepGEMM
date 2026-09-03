@@ -335,7 +335,7 @@ def main() -> None:
                     else None
                 ),
                 "custom_fused_route_quant": (
-                    os.environ.get("V4_FUSED_ROUTE_QUANT", "0") == "1"
+                    os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
                     if args.impl == "custom"
                     else None
                 ),

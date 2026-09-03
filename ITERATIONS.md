@@ -2978,3 +2978,29 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/v4_flash_tp_wgmma_fused_route_quant_{first_,}correctness_20260903.log`
   and `bench/results/tp4_fused_route_quant_stage_coldl2_screen_20260903.log`.
+
+### WGMMA iteration 47c — accept parallel-scan fused preparation
+
+- Replace CTA 0's serial expert loop with a 256-thread CUB exclusive scan and
+  let each CTA quantize two independent group-128 slices.  Route semantics
+  pass through the maximum M128 balanced case; FP8 bytes and scales remain
+  bitwise identical to Humming `quant_input`.  Full TP4 and TP8-shape output
+  checks retain the selected W2 cosine/relative-L2 values.
+- Graph-internal candidate/control/candidate local total medians (us) are
+  M8 88.656/96.064/88.528, M32 200.384/207.648/200.544, and
+  M128 331.520/339.168/331.776.  The fused preparation itself is
+  6.432/6.768/8.832 us versus 13.664/13.856/16.160 us for the two control
+  stages in the central window.
+- Distributed TP4 candidate A/control/candidate B custom geometric means are
+  0.182974/0.186461/0.184167 ms.  Direct reductions are 1.87% and 1.23%; after
+  normalizing each window by its paired Humming graph they remain 2.59% and
+  1.73%.  Candidate Humming/custom ratios are 1.15905 and 1.14897.
+- Accept `V4_FUSED_ROUTE_QUANT=1` as the default and require a TP8 full-graph
+  smoke plus the formal TP4 10x200 cold-L2 score.  This optimization is valid
+  only for the fixed V4 Flash TP contract (E=256, top-k=6, block-M=8,
+  H=4096); unsupported shapes must not call it.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_parallel_fused_route_quant_{first_,}correctness_20260903.log`,
+  `bench/results/tp4_parallel_fused_route_quant_stage_coldl2_screen_20260903.log`,
+  and
+  `bench/results/tp4_parallel_fused_route_quant_{candidate_a,control,candidate_b}_coldl2_screen_20260903.log`.

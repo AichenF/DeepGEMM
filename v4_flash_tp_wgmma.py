@@ -68,7 +68,7 @@ if BULK_WEIGHT_COPY and not TILED_WEIGHT_LAYOUT:
     raise ValueError("V4_BULK_WEIGHT_COPY requires tiled weight layout")
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
-FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "0") == "1"
+FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
@@ -938,7 +938,6 @@ __global__ __launch_bounds__(256) void fused_route_quant_kernel(
         float* __restrict__ scale,
         int routes) {
     constexpr int kExperts = 256;
-    constexpr int kHidden = 4096;
     constexpr int kGroup = 128;
     using ExpertScan = cub::BlockScan<int, 256>;
     __shared__ int counts[kExperts];
