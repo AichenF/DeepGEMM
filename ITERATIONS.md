@@ -4842,3 +4842,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - For M128, `2shot_pull/40` is the best directionally supported point: control/candidate medians `0.378928/0.372416 ms = 1.01749x`, with three of four batches winning.  Other block counts are neutral/mixed.
 - Conclusion: H200's fixed 64-block geometry is plausibly suboptimal for the 78-SM H20, but this broad screen is noisy.  Advance only M64/32 and M128/40 to independent long 10x200 AB/BA audits before changing runtime policy; retain stock 64 blocks meanwhile.
 - Artifact: `results/iter115_car_policy_screen_tp4_m64_m128_cold400_20260903.log`.
+
+### Iteration 115b — reduced CARv2 pull-block signal does not survive long audit
+
+- Re-tested the two screen-selected 2-shot candidates and their cross-points at M64/M128 with ten balanced candidate/control batches x 200 cold-L2 samples per implementation.  The control remains stock graph `2shot_pull/64`; every graph output is bit-exact versus control and every independent distributed-reference check passes.
+- M64/32 reverses from the short screen's `1.01943x` to control/candidate `0.281952/0.283472 ms = 0.99464x`, with five of ten batch wins.  M64/40 is worse at `0.299600/0.310256 ms = 0.96565x`, despite six nominal batch wins; the mismatch between pooled medians and paired directions reflects the same large mode shifts seen in iteration 114.
+- M128/32 is neutral/slightly slower at `0.376384/0.376656 ms = 0.99928x` with five of ten wins.  M128/40 is only `0.378160/0.377648 ms = 1.00136x`, also five of ten wins and far below a selectable effect.
+- Conclusion: the H200-derived 64-block geometry is not disproven on H20 by end-to-end cold-L2 evidence.  Reject reduced pull-block dispatch and retain stock 64 blocks for M64/M128.  The screen's apparent 1.7-1.9% gains were window noise, not a durable optimization.
+- Artifact: `results/iter115b_car_pull_blocks_long_tp4_m64_m128_cold2000_20260903.log`.
