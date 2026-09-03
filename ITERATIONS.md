@@ -4453,3 +4453,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** control median 0.347104 ms; distributed-prep candidate 0.343808 ms; control/candidate 1.009587x (+0.959%, 3.296 microseconds). Candidate beat control in all six batch medians by 3.09–5.06 microseconds.
 - **Decision:** First credible new core gain after the NCU audit. Retain opt-in and test all five M values before selection; also profile W13 to confirm barrier-stall reduction rather than relying only on the mechanism hypothesis.
 - **Artifact:** `results/iter91b_w13_distributed_prep_paired_tp4_m128_cold_600_20260903.log`.
+
+## Iteration 91c — Five-shape paired selection audit for distributed W13 prep
+
+- **Method:** Added M8/M16/M32/M64 same-process control/candidate audits to the prior M128 result. Each point used identical random routes/weights, alternating replay order, 6×100 samples per variant, separate untimed 256 MiB L2 clear per graph replay, and four-rank maximum latency.
+- **Control/candidate medians (ms):** M8 0.078560/0.077552, M16 0.124256/0.122816, M32 0.197440/0.195120, M64 0.284656/0.281440, M128 0.347104/0.343808.
+- **Speedups:** 1.012998x, 1.011725x, 1.011890x, 1.011427x, and 1.009587x; five-shape geometric mean 1.011525x. Candidate batch medians beat control throughout all four new points, as they did at M128.
+- **Correctness:** Candidate and control graph outputs were bitwise equal on every rank and shape.
+- **Decision:** Accept the mechanism provisionally across all TP4 shapes. Before changing the default/headline, collect a focused W13 NCU confirmation and run TP8 graph plus exact Humming/custom full formal.
+- **Artifact:** `results/iter91c_w13_distributed_prep_paired_tp4_m8_m16_m32_m64_cold_600_20260903.log` plus iteration 91b's M128 log.
