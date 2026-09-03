@@ -4057,3 +4057,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: route preparation exact; W13 cosine 0.999999998, relative L2 0.000076187; fused SwiGLU/requant cosine 0.999999746, relative L2 0.000712793; W2 cosine 0.999997256, relative L2 0.002342693, finite.
 - Evidence: `results/v4_flash_tp_wgmma_pair2wg_tp4_m8_correctness_20260903.log`.
 - Decision: correctness gate passes. Next iteration must measure cold-L2 candidate/control/candidate before considering any default integration.
+
+### Iteration 82c — 256-thread dual-WG cold-L2 rejection
+
+- Method: TP4 local shape, M=8 balanced routing, CUDA Graph stage profiler, 200 timed samples per process, candidate/control/candidate ordering. A separate 256 MiB buffer is cleared immediately before every replay and outside the CUDA-event interval; H20 reports 60 MiB L2.
+- Candidate fused W13+activation/requant median: 67.680 / 67.760 us, average 67.720 us. Control split W13 plus fused activation/requant median: 47.680 + 6.016 = 53.696 us. Candidate is 26.12% slower at the target stage.
+- Candidate total local-pipeline median: 108.016 / 108.144 us, average 108.080 us. Control total median: 93.632 us. Candidate is 15.43% slower end to end before all-reduce.
+- The repair materially improves the first 384-thread prototype (which was roughly 38% slower in total at M8), confirming that producer warps/barriers were real overhead, but full-K N256 still loses the concurrency supplied by split-K N128 tasks.
+- Evidence: `results/v4_flash_tp_wgmma_pair2wg_tp4_m8_coldl2_abc_20260903.log`.
+- Decision: reject the full-K paired W13 family and keep it opt-in only. Do not spend another iteration on this same fusion topology; pivot back to the accepted split-K path or W2/collective overlap.
