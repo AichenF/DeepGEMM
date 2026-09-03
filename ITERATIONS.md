@@ -3144,3 +3144,25 @@ maximum rank latency of a full CUDA-Graph replay.
   the new headline on a TP8 full-graph smoke plus TP4 10x200 formal run.
 - Evidence:
   `bench/results/tp4_interleaved_bulk_{candidate_a,control,candidate_b}_coldl2_screen_20260903.log`.
+
+### Post-iteration-50 TP8 smoke and TP4 formal score
+
+- The selected default runs the true eight-rank M8 CUDA Graph in 0.062800 ms
+  median over 20 individually cold-L2 samples.  Minimum-rank cosine is
+  0.999991240, relative L2 is 0.004185668, all outputs are finite, and the
+  independent NCCL all-reduce check passes.  TP8 W2 retains its original
+  scalar-scale storage and runtime path.
+- Formal TP4 10x200 Humming/custom medians (ms) at M8/16/32/64/128 are
+  0.090080/0.077664, 0.145760/0.124096, 0.232752/0.204256,
+  0.340896/0.297328, and 0.409120/0.380640.  Humming/custom speedups are
+  1.15987/1.17457/1.13951/1.14653/1.07482; every point remains a win.
+- Geometric means are 0.211800/0.186029 ms, giving custom/Humming=0.878322
+  and Humming/custom=1.138534: 13.85% speedup (12.17% latency reduction).
+  Versus the iteration-47 formal score, custom latency falls 1.32%, Humming
+  shifts only +0.22%, and the speedup ratio improves 1.56%.
+- Correctness and the same excluded 256 MiB per-replay cold-L2 policy pass.
+  The selected result remains 6.15 percentage points short of the 20% target;
+  continue with core W13/W2 optimization rather than launch micro-tuning.
+- Evidence:
+  `bench/results/tp8_wgmma_interleaved_bulk_default_smoke_20260903.log` and
+  `bench/results/tp4_paired_interleaved_bulk_default_coldl2_formal_20260903.log`.
