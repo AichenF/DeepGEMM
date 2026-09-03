@@ -3749,3 +3749,30 @@ maximum rank latency of a full CUDA-Graph replay.
   result survives drift.
 - Evidence:
   `bench/results/iter60_fused_k6_push_tp4_m8_compile_correctness_smoke_coldl2_20260903.log`.
+
+### WGMMA iteration 61 — same-process fused versus stock CARv2 audit
+
+- Added a diagnostic harness that captures fused and stock custom graphs in
+  one TP4 process with identical X, routing, weights, and one shared SGLang
+  communicator.  It alternates complete fused/control and control/fused
+  batches, performs a separate 256 MiB L2 clear immediately before every
+  replay, excludes the clear from CUDA events, and reduces every sample to
+  the slowest rank.  This removes cross-process clock and communicator drift
+  from the selection decision.
+- Over six batches and 1200 samples per implementation per point, fused versus
+  control medians are 0.076416/0.076864 ms at M8, 0.122592/0.123648 ms at
+  M16, and 0.193600/0.194528 ms at M32.  The corresponding reductions are
+  0.448 us (0.583%), 1.056 us (0.854%), and 0.928 us (0.477%); three-point
+  geometric-mean speedup is 1.006422x.  Every fused batch-median sequence is
+  below or substantially overlaps its control neighborhood, so this is a
+  small but credible win rather than the multi-microsecond gain initially
+  hypothesized.
+- Both paths pass the independent NCCL sum gate at all three shapes and their
+  complete graph outputs are bitwise identical (`max_abs=0`).  Select the
+  fused path provisionally for TP4 M8/M16/M32, but do not claim the 20%
+  objective: with M64/M128 unchanged, this can improve the five-point score
+  by only roughly half a percent.  Profile the two tail implementations next
+  to locate why eliminating a graph node saves less than one microsecond at
+  M8/M32.
+- Evidence:
+  `bench/results/iter61_fused_k6_push_tp4_m8_m16_m32_ab_coldl2_20260903.log`.
