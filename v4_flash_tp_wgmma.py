@@ -174,7 +174,7 @@ W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
 LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
 W13_DISTRIBUTED_PREP = (
-    os.environ.get("V4_W13_DISTRIBUTED_PREP", "0") == "1"
+    os.environ.get("V4_W13_DISTRIBUTED_PREP", "1") == "1"
 )
 if W2_S2R_PREFETCH and (DEQUANT_SYNTH_LUT or W2_GLOBAL_LUT):
     raise ValueError(

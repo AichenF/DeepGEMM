@@ -4484,3 +4484,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Candidate metrics: No Eligible 21.16%; Eligible Warps/Scheduler 2.65; Warp Cycles/Issued Instruction 10.74; Executed Instructions 83,493,190. The iteration-84 control was 22.74%, 2.38, 10.96 cycles, and 80,218,472 instructions respectively. The requested candidate report did not emit a per-state Stall Barrier row, so the old 3.6-cycle barrier value has no direct candidate counterpart.
 - Use the normalized scheduler/warp-state comparison—not cross-run NCU duration—together with the already-completed same-process 600-sample paired latency audit to decide default selection.
 - Artifacts: `bench/results/iter92b_w13_distributed_prep_m128_coldl2_sched_ncu.{log,ncu-rep}` and `bench/results/iter92b_w13_distributed_prep_m128_sched_ncu_details.log`.
+
+## Iteration 93 — Select distributed W13 preparation as the default
+
+- **Decision:** Changed the default of `V4_W13_DISTRIBUTED_PREP` from disabled to enabled. This selects the candidate that won every batch across M={8,16,32,64,128} in the same-process 600-sample TP4 cold-L2 paired audit (five-shape geometric speedup 1.01152x). Setting the environment variable to `0` remains an explicit rollback/control.
+- **Mechanism gate:** candidate versus iteration-84 control reduced No Eligible from 22.74% to 21.16%, raised Eligible Warps/Scheduler from 2.38 to 2.65, shortened Warp Cycles/Issued Instruction from 10.96 to 10.74, and cut excessive global sectors from 132,864 to 80,384. Registers rose by one and executed instructions by about 4.1%, without occupancy or spill regression.
+- **Correctness:** default-enabled TP4 balanced, TP4 max-skew, and TP8-local-shape tests all passed. Route alignment and input quantization were exact; W13 cosine was at least 0.999999997 and W2 cosine at least 0.999997235; all outputs were finite.
+- **Cold-L2 status:** this iteration is a correctness/default-selection gate; its timing evidence is the already-recorded iteration-91 paired benchmark, where every replay had an excluded 256 MiB clear.
+- Artifact: `results/iter93_w13_distributed_prep_default_correctness_20260903.log`.
