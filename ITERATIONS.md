@@ -4958,3 +4958,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP8-shape I/rank=256 M8 balanced also passes; W13 cosine 0.999999997 and W2 cosine 0.999997278.
 - Result: correctness-qualified only.  Inspect cubin resources before any cold-L2 performance screen.
 - Evidence: `results/iter118_w13_launch_bound10_correctness_20260903.log`.
+
+## Iteration 118a — neutralize W2 side effect of W13 launch-bound probe
+
+- Cubin audit of iteration 118 found the W13 objective was met (55 -> 48 registers/thread), but the non-W13 false arm `min_blocks=1` let ptxas inflate W2 from 55 to 62 registers/thread, dropping its register-limited residency from nine to eight CTAs.  That mixed candidate was not timed.
+- Changed the non-W13 arm to `min_blocks=9`, matching W2's natural occupancy ceiling, while retaining ten for W13.
+- Resource result: TP4/TP8 W13 split2/split4 are 48 registers/thread with no local allocation; K=512 and K=256 W2 are 53 registers/thread with no local allocation.  Thus W13 can reach ten resident CTAs and W2 retains nine-register-limited-CTA capacity.
+- Correctness again passes TP4 split4, TP4 split2 maximal skew, and TP8-shape; W13 cosine >=0.999999997 and W2 cosine >=0.999997235.
+- Result: corrected candidate is qualified for paired cold-L2 timing; default remains off.
+- Evidence: `results/iter118a_w13_launch_bound10_w2_neutral_correctness_resources_20260903.log`.

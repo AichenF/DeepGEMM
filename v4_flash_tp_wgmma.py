@@ -367,8 +367,11 @@ static constexpr bool kW2FoldGlobalScale = K_W2_FOLD_GLOBAL_SCALE;
 #define ROUTE_LAUNCH_BOUNDS(IS_W13, DUAL) \
     __launch_bounds__((DUAL) ? 256 : 128, K_MIN_BLOCKS_PER_SM)
 #elif K_W13_LAUNCH_BOUND_10
+// A min-block value of one lets ptxas inflate the non-W13 instantiations
+// from their natural 55 registers to 62, reducing W2 occupancy.  Nine keeps
+// the existing W2 occupancy ceiling while W13 alone is forced to ten CTAs.
 #define ROUTE_LAUNCH_BOUNDS(IS_W13, DUAL) \
-    __launch_bounds__((DUAL) ? 256 : 128, (IS_W13) ? 10 : 1)
+    __launch_bounds__((DUAL) ? 256 : 128, (IS_W13) ? 10 : 9)
 #else
 #define ROUTE_LAUNCH_BOUNDS(IS_W13, DUAL) \
     __launch_bounds__((DUAL) ? 256 : 128)
@@ -4200,9 +4203,9 @@ _EXTENSION_CONFIG = (
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_v118lb")
+          f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_v118alb")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v118lb"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v118alb"
 )
 
 _ext = load_inline(
