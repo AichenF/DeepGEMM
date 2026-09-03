@@ -1,0 +1,9 @@
+==PROF== Connected to process 367503 (/usr/bin/python3.12)
+==PROF== Connected to process 367642 (/usr/bin/python3.12)
+==PROF== Connected to process 367640 (/usr/bin/python3.12)
+==PROF== Disconnected from process 367642
+==PROF== Disconnected from process 367640
+==PROF== Profiling "void route_gemm<(int)4096, (int)1024, (int)2, (bool)1, (int)0, (bool)0, (bool)0>(CUtensorMap_st, CUtensorMap_st, const unsigned char *, const unsigned char *, const float *, const unsigned char *, const float *, const int *, const int *, const int *, const float *, float *, const uint2 *, int *, int, int)": 0%....50%....100% - 7 passes
+LOCAL_PROFILE_REPLAY {"compact_interleaved_scale": true, "dequant_synth_lut": false, "fused_activation_quant": true, "impl": "custom", "l2_cache_bytes": 62914560, "l2_flush_bytes": 268435456, "l2_policy": "cold; 256MiB clear immediately before pipeline", "m": 128, "min_blocks_per_sm": 0, "mode2_braid": true, "mxfp4_lut_rows": 256, "output_tile_channels": 128, "route_pattern": "random", "scale_buffers": 2, "scale_quad_reuse": 4, "tp": 4, "w13_launch_bound_10": false, "w13_leader_mbar_wait": true, "w13_max_smem_carveout": false, "w13_s2r_prefetch": true, "w13_split_policy": "auto", "w2_global_lut": false, "w2_route_output": true, "w2_s2r_prefetch": true, "weight_common_address": true, "weight_stages": 2, "weight_swizzle_bytes": 64}
+==PROF== Disconnected from process 367503
+==PROF== Report: /lustre/raplab/client/xutingz/fac/DeepGEMM_tp/results/iter121b_compact_selected_m128_w13_stall_metrics_ncu.ncu-rep

@@ -5047,3 +5047,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - The kernel executes 79,693,436 instructions (79,738,732 issued) in this launch.
 - This NCU section set did not include the optional PC-sampling counter, so it cannot attribute the 21.93% no-eligible interval to barrier, scoreboard, wait, or dispatch stalls.  Collect explicit `smsp__warp_issue_stalled_*` metrics before changing code.
 - Evidence: `results/iter121a_compact_selected_m128_w13_sched_details_20260903.log`.
+
+## Iteration 121b — explicit selected-W13 stall-metric capture
+
+- Collected all nineteen `smsp__warp_issue_stalled_*_per_warp_active` metrics for selected compact TP4 M128 split2 W13 over seven replay passes.
+- The profile uses the same random-route cold-L2 local replay and leaves both rejected launch-bound/carveout probes off.
+- Collection completed successfully with a valid report.  Parse and rank stall ratios next.
+- Evidence: `results/iter121b_compact_selected_m128_w13_stall_metrics_ncu.{log,ncu-rep}`.
