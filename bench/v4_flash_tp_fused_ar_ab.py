@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ms", default="8,16,32")
     parser.add_argument(
         "--candidate",
-        choices=("unicast", "multicast", "multicast_pull"),
+        choices=("unicast", "multicast", "multicast_pull", "pipeline"),
         default="multicast",
     )
     parser.add_argument(
@@ -38,10 +38,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-replays", type=int, default=10)
     parser.add_argument("--pull-blocks", type=int, default=0)
     parser.add_argument("--pull-unroll", type=int, choices=(0, 2, 4, 8, 16), default=0)
+    parser.add_argument("--pipeline-chunks", type=int, choices=(2, 4, 8), default=4)
+    parser.add_argument(
+        "--pipeline-ar-blocks",
+        type=int,
+        choices=(1, 2, 4, 8, 16, 32, 78),
+        default=8,
+    )
     parser.add_argument("--seed", type=int, default=20260902)
     args = parser.parse_args()
     args.ms = tuple(int(value) for value in args.ms.split(",") if value)
-    if args.candidate == "multicast_pull":
+    if args.candidate == "pipeline":
+        supported = (128,)
+    elif args.candidate == "multicast_pull":
         supported = (8, 16, 32, 64, 128)
     elif args.candidate == "multicast":
         supported = (8, 16, 32, 64)
@@ -121,6 +130,8 @@ def main() -> None:
                     "candidate": args.candidate,
                     "pull_blocks": args.pull_blocks or "default",
                     "pull_unroll": args.pull_unroll or "default",
+                    "pipeline_chunks": args.pipeline_chunks,
+                    "pipeline_ar_blocks": args.pipeline_ar_blocks,
                     "route_pattern": args.route_pattern,
                     "outer": args.outer,
                     "replays_per_outer_per_impl": args.replays,
@@ -152,15 +163,19 @@ def main() -> None:
 
         kernel.MC_PULL_BLOCKS = args.pull_blocks
         kernel.MC_PULL_UNROLL = args.pull_unroll
+        kernel.PIPELINE_CHUNKS = args.pipeline_chunks
+        kernel.PIPELINE_AR_BLOCKS = args.pipeline_ar_blocks
         kernel.FUSED_K6_PUSH_AR = args.candidate == "unicast"
         kernel.FUSED_K6_MC_PUSH_AR = args.candidate == "multicast"
         kernel.FUSED_K6_MC_PULL_AR = args.candidate == "multicast_pull"
+        kernel.PIPELINED_W2_MC_PUSH_AR = args.candidate == "pipeline"
         fused_graph = paired.capture_graph(fused_case, comm, cpu_group, device)
         if not fused_case.fused_k6_push_active:
             raise RuntimeError(f"fused graph did not select fused AR at M={m}")
         kernel.FUSED_K6_PUSH_AR = False
         kernel.FUSED_K6_MC_PUSH_AR = False
         kernel.FUSED_K6_MC_PULL_AR = False
+        kernel.PIPELINED_W2_MC_PUSH_AR = False
         control_graph = paired.capture_graph(control_case, comm, cpu_group, device)
         if control_case.fused_k6_push_active:
             raise RuntimeError(f"control graph selected fused AR at M={m}")

@@ -232,6 +232,12 @@ class CapturedCase:
         self.fused_pull_mc_ptr = 0
         self.fused_k6_push_active = False
         self.fused_k6_ar_mode = "stock"
+        self.pipeline_stream = torch.cuda.Stream(device=device)
+        self.pipeline_start_event = torch.cuda.Event()
+        self.pipeline_chunk_events = tuple(
+            torch.cuda.Event() for _ in range(8)
+        )
+        self.pipeline_done_event = torch.cuda.Event()
         max_padded = (
             routes * 8
             if routes < NUM_EXPERTS + 1
@@ -271,7 +277,7 @@ class CapturedCase:
     def routes(self) -> int:
         return self.m * TOP_K
 
-    def run_before_local_reduce(self) -> None:
+    def run_before_w2(self) -> None:
         if kernel.FUSED_ROUTE_QUANT:
             kernel.fused_route_quant(
                 self.topk_ids,
@@ -340,6 +346,8 @@ class CapturedCase:
                 m_major_scale=False,
                 scale_dtype="float32",
             )
+
+    def run_w2_full(self) -> None:
         if self.local_float is not None:
             self.local_float.zero_()
         w2_output = self.down if kernel.W2_ROUTE_OUTPUT else self.local_float
@@ -358,6 +366,11 @@ class CapturedCase:
             self.lut,
             self.intermediate_per_rank,
         )
+
+    def run_before_local_reduce(self) -> None:
+        self.run_before_w2()
+        self.run_w2_full()
+
     def reduce_local(self) -> torch.Tensor:
         if kernel.W2_ROUTE_OUTPUT:
             assert self.down is not None
@@ -406,6 +419,64 @@ class CapturedCase:
         self.fused_push_stride = comm.max_push_size
         self.fused_push_mc_ptr = int(symm.multicast_ptr)
 
+    def run_pipelined_w2_mc_push(self, comm: CustomAllReduceV2) -> torch.Tensor:
+        self.prepare_fused_push(comm)
+        assert self.down is not None
+        assert self.fused_push_workspaces is not None
+        assert self.fused_push_counter is not None
+        if not self.fused_push_mc_ptr:
+            raise RuntimeError("pipelined W2 requires multicast symmetric memory")
+
+        self.run_before_w2()
+        main_stream = torch.cuda.current_stream(self.x.device)
+        self.pipeline_start_event.record(main_stream)
+        with torch.cuda.stream(self.pipeline_stream):
+            self.pipeline_stream.wait_event(self.pipeline_start_event)
+
+        for chunk_idx in range(kernel.PIPELINE_CHUNKS):
+            kernel.run_w2_chunk(
+                self.w2,
+                self.s2,
+                self.g2,
+                self.qactivation.view(torch.uint8),
+                self.activation_scale,
+                self.sorted_ids,
+                self.expert_ids,
+                self.num_tokens_padded,
+                self.topk_weights,
+                self.down,
+                self.lut,
+                self.intermediate_per_rank,
+                kernel.PIPELINE_CHUNKS,
+                chunk_idx,
+            )
+            self.pipeline_chunk_events[chunk_idx].record(main_stream)
+            with torch.cuda.stream(self.pipeline_stream):
+                self.pipeline_stream.wait_event(
+                    self.pipeline_chunk_events[chunk_idx]
+                )
+                kernel.fused_k6_push_ar_tp4_chunk(
+                    self.down,
+                    self.topk_weights,
+                    self.fused_graph_output,
+                    self.fused_push_counter,
+                    self.fused_push_workspaces,
+                    self.fused_push_rank,
+                    self.fused_push_stride,
+                    self.fused_push_mc_ptr,
+                    kernel.PIPELINE_CHUNKS,
+                    chunk_idx,
+                    kernel.PIPELINE_AR_BLOCKS,
+                )
+
+        with torch.cuda.stream(self.pipeline_stream):
+            self.pipeline_done_event.record(self.pipeline_stream)
+        main_stream.wait_event(self.pipeline_done_event)
+        self.fused_k6_push_active = True
+        self.fused_k6_ar_mode = "pipelined_w2_multicast_push"
+        self.graph_output = self.fused_graph_output
+        return self.graph_output
+
     def prepare_fused_pull(self, comm: CustomAllReduceV2) -> None:
         if self.fused_pull_output is not None:
             return
@@ -446,6 +517,14 @@ class CapturedCase:
         return output
 
     def run_full(self, comm: CustomAllReduceV2) -> torch.Tensor:
+        use_pipeline = (
+            kernel.PIPELINED_W2_MC_PUSH_AR
+            and comm.world_size == 4
+            and self.m == 128
+            and kernel.W2_ROUTE_OUTPUT
+        )
+        if use_pipeline:
+            return self.run_pipelined_w2_mc_push(comm)
         use_mc_pull = (
             kernel.FUSED_K6_MC_PULL_AR
             and comm.world_size == 4
@@ -707,6 +786,9 @@ def main() -> None:
                     "fused_k6_push_ar": kernel.FUSED_K6_PUSH_AR,
                     "fused_k6_mc_push_ar": kernel.FUSED_K6_MC_PUSH_AR,
                     "fused_k6_mc_pull_ar": kernel.FUSED_K6_MC_PULL_AR,
+                    "pipelined_w2_mc_push_ar": kernel.PIPELINED_W2_MC_PUSH_AR,
+                    "pipeline_chunks": kernel.PIPELINE_CHUNKS,
+                    "pipeline_ar_blocks": kernel.PIPELINE_AR_BLOCKS,
                     "mc_pull_blocks": kernel.MC_PULL_BLOCKS or "default",
                     "mc_pull_unroll": kernel.MC_PULL_UNROLL or "default",
                     "w2_epilogue": (

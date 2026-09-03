@@ -98,6 +98,15 @@ def select_tiled_k6_reduce_mode(tokens: int) -> int:
 FUSED_K6_PUSH_AR = os.environ.get("V4_FUSED_K6_PUSH_AR", "0") == "1"
 FUSED_K6_MC_PUSH_AR = os.environ.get("V4_FUSED_K6_MC_PUSH_AR", "0") == "1"
 FUSED_K6_MC_PULL_AR = os.environ.get("V4_FUSED_K6_MC_PULL_AR", "0") == "1"
+PIPELINED_W2_MC_PUSH_AR = (
+    os.environ.get("V4_PIPELINED_W2_MC_PUSH_AR", "0") == "1"
+)
+PIPELINE_CHUNKS = int(os.environ.get("V4_PIPELINE_CHUNKS", "4"))
+PIPELINE_AR_BLOCKS = int(os.environ.get("V4_PIPELINE_AR_BLOCKS", "8"))
+if PIPELINE_CHUNKS not in (2, 4, 8):
+    raise ValueError("V4_PIPELINE_CHUNKS must be 2,4,8")
+if PIPELINE_AR_BLOCKS not in (1, 2, 4, 8, 16, 32, 78):
+    raise ValueError("V4_PIPELINE_AR_BLOCKS must be 1,2,4,8,16,32,78")
 MC_PULL_BLOCKS = int(os.environ.get("V4_MC_PULL_BLOCKS", "0"))
 MC_PULL_UNROLL = int(os.environ.get("V4_MC_PULL_UNROLL", "0"))
 if MC_PULL_BLOCKS < 0:
@@ -268,7 +277,7 @@ __device__ __forceinline__ uint2 dequant_weight_word(
         kDequantDp4aHi, kDequantDp4aLo>(packed, lut);
 }
 
-template <int K, int N, int SplitK, bool IsW13>
+template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0>
 __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const __grid_constant__ CUtensorMap tma_weight,
         const __grid_constant__ CUtensorMap tma_weight_scale,
@@ -283,7 +292,8 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         const float* __restrict__ topk_weights,
         float* __restrict__ output,
         const uint2* __restrict__ global_lut,
-        int max_routes) {
+        int max_routes,
+        int n_tile_begin) {
     static_assert(K % kBlockK == 0);
     static_assert(N % kWout == 0);
     static_assert((K / kBlockK) % SplitK == 0);
@@ -307,13 +317,19 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     constexpr int kEffectiveScaleBuffers =
         kUseTmaScale ? kScaleBuffers : kStages;
     constexpr int kNumNTiles = N / kWout;
+    constexpr int kLaunchNTiles =
+        LaunchNTiles == 0 ? kNumNTiles : LaunchNTiles;
+    static_assert(kNumNTiles % kLaunchNTiles == 0);
     constexpr bool kS2RPrefetch =
         IsW13 ? kW13S2RPrefetch : kW2S2RPrefetch;
 
     const int split_idx = blockIdx.x % SplitK;
     const int task_idx = blockIdx.x / SplitK;
-    const int m_block_idx = task_idx / kNumNTiles;
-    const int n_block_idx = task_idx % kNumNTiles;
+    const int m_block_idx = task_idx / kLaunchNTiles;
+    const int local_n_block_idx = task_idx % kLaunchNTiles;
+    const int n_block_idx = LaunchNTiles == 0
+        ? local_n_block_idx
+        : n_tile_begin + local_n_block_idx;
     if (m_block_idx * kTok >= __ldg(num_tokens_padded))
         return;
 
@@ -1231,7 +1247,7 @@ __device__ __forceinline__ uint32_t clear_positive_bf16_zero(uint32_t word) {
 // The symmetric slots and per-CTA phase counters are owned by the unchanged
 // CustomAllReduceV2 communicator, so stock Humming and this kernel can safely
 // alternate on the same communicator and inside separately captured graphs.
-template <int Threads, bool UseMulticast>
+template <int Threads, bool UseMulticast, bool Chunked = false>
 __global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
         const __nv_bfloat16* __restrict__ input,
         const float* __restrict__ topk_weights,
@@ -1239,13 +1255,16 @@ __global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
         uint32_t* __restrict__ push_counter,
         uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
         uint8_t* push_mc,
-        int tokens, int rank, int64_t push_stride) {
+        int tokens, int rank, int64_t push_stride,
+        int hidden_offset, int hidden_size) {
     constexpr int kWorld = 4;
     constexpr int kHidden = 4096;
     constexpr int kPairsPerToken = kHidden / 2;
     constexpr int kPairsPerVec = 8 / 2;
     constexpr int kVecsPerToken = kHidden / 8;
-    const int num_vecs = tokens * kVecsPerToken;
+    const int vecs_per_token =
+        Chunked ? hidden_size / 8 : kVecsPerToken;
+    const int num_vecs = tokens * vecs_per_token;
     const int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
     const int global_threads = gridDim.x * blockDim.x;
     const int phase = push_counter[blockIdx.x] & 1u;
@@ -1254,9 +1273,10 @@ __global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
         static_cast<int64_t>(phase) * push_stride * kWorld;
 
     for (int vec = global_tid; vec < num_vecs; vec += global_threads) {
-        const int token = vec / kVecsPerToken;
-        const int vec_in_token = vec - token * kVecsPerToken;
-        const int pair0 = vec_in_token * kPairsPerVec;
+        const int token = vec / vecs_per_token;
+        const int vec_in_token = vec - token * vecs_per_token;
+        const int pair0 = (Chunked ? hidden_offset / 2 : 0)
+            + vec_in_token * kPairsPerVec;
         float2 accum[kPairsPerVec];
         #pragma unroll
         for (int pair = 0; pair < kPairsPerVec; ++pair)
@@ -1360,7 +1380,10 @@ __global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
                 __floats2bfloat162_rn(sum.x, sum.y);
             result_words[pair] = *reinterpret_cast<const uint32_t*>(&value);
         }
-        reinterpret_cast<uint4*>(output)[vec] = result;
+        const int64_t output_vec =
+            static_cast<int64_t>(token) * kVecsPerToken
+            + (Chunked ? hidden_offset / 8 : 0) + vec_in_token;
+        reinterpret_cast<uint4*>(output)[output_vec] = result;
 
         const uint4 empty = make_uint4(0u, 0u, 0u, 0u);
         #pragma unroll
@@ -1439,14 +1462,15 @@ CUtensorMap make_weight_scale_desc(void* pointer, int K, int64_t elements) {
     return descriptor;
 }
 
-template <int K, int N, int SplitK, bool IsW13>
+template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0>
 void launch_route_gemm(
         torch::Tensor weight, torch::Tensor weight_scale,
         torch::Tensor weight_global_scale,
         torch::Tensor activation, torch::Tensor activation_scale,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
         torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
-        torch::Tensor output, torch::Tensor lut, int max_routes) {
+        torch::Tensor output, torch::Tensor lut, int max_routes,
+        int n_tile_begin = 0) {
     static CUtensorMap weight_descriptor;
     static CUtensorMap scale_descriptor;
     static void* last_weight_pointer = nullptr;
@@ -1469,7 +1493,12 @@ void launch_route_gemm(
         last_scale_pointer = weight_scale.data_ptr();
     }
     const int max_m_blocks = expert_ids.numel();
-    const int grid = max_m_blocks * (N / kWout) * SplitK;
+    constexpr int launch_n_tiles =
+        LaunchNTiles == 0 ? N / kWout : LaunchNTiles;
+    TORCH_CHECK(n_tile_begin >= 0
+                    && n_tile_begin + launch_n_tiles <= N / kWout,
+                "invalid output-N tile range");
+    const int grid = max_m_blocks * launch_n_tiles * SplitK;
     constexpr int effective_scale_buffers = K >= 512 ? kScaleBuffers : kStages;
     constexpr bool interleaved_scale = kInterleavedBulkCopy && K >= 512;
     constexpr int dynamic_smem_bytes =
@@ -1479,7 +1508,7 @@ void launch_route_gemm(
                 + effective_scale_buffers * kWout * 16)
         + kTok * kBlockK;
     const auto stream = at::cuda::getCurrentCUDAStream();
-    route_gemm<K, N, SplitK, IsW13><<<
+    route_gemm<K, N, SplitK, IsW13, LaunchNTiles><<<
         grid, 128, dynamic_smem_bytes, stream>>>(
         weight_descriptor,
         scale_descriptor,
@@ -1496,7 +1525,8 @@ void launch_route_gemm(
         topk_weights.numel() ? topk_weights.data_ptr<float>() : nullptr,
         static_cast<float*>(output.data_ptr()),
         reinterpret_cast<const uint2*>(lut.data_ptr<uint8_t>()),
-        max_routes);
+        max_routes,
+        n_tile_begin);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -1566,6 +1596,49 @@ void run_w2(
     } else {
         TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
     }
+}
+
+void run_w2_chunk(
+        torch::Tensor weight, torch::Tensor weight_scale,
+        torch::Tensor weight_global_scale,
+        torch::Tensor activation, torch::Tensor activation_scale,
+        torch::Tensor sorted_ids, torch::Tensor expert_ids,
+        torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
+        torch::Tensor output, torch::Tensor lut, int intermediate,
+        int chunks, int chunk_idx) {
+    TORCH_CHECK(chunks == 2 || chunks == 4 || chunks == 8,
+                "W2 pipeline chunks must be 2,4,8");
+    TORCH_CHECK(chunk_idx >= 0 && chunk_idx < chunks,
+                "W2 pipeline chunk index is out of range");
+    const int ntiles = 4096 / kWout;
+    const int tiles_per_chunk = ntiles / chunks;
+    const int n_tile_begin = chunk_idx * tiles_per_chunk;
+
+#define LAUNCH_W2_CHUNK(K_VALUE, TILES_VALUE)                              \
+    launch_route_gemm<K_VALUE, 4096, 1, false, TILES_VALUE>(               \
+        weight, weight_scale, weight_global_scale,                         \
+        activation, activation_scale, sorted_ids, expert_ids,             \
+        num_tokens_padded, topk_weights, output, lut,                      \
+        topk_weights.numel(), n_tile_begin)
+
+    if (intermediate == 512) {
+        if (chunks == 2)
+            LAUNCH_W2_CHUNK(512, 16);
+        else if (chunks == 4)
+            LAUNCH_W2_CHUNK(512, 8);
+        else
+            LAUNCH_W2_CHUNK(512, 4);
+    } else if (intermediate == 256) {
+        if (chunks == 2)
+            LAUNCH_W2_CHUNK(256, 16);
+        else if (chunks == 4)
+            LAUNCH_W2_CHUNK(256, 8);
+        else
+            LAUNCH_W2_CHUNK(256, 4);
+    } else {
+        TORCH_CHECK(false, "intermediate must be 512 (TP4) or 256 (TP8)");
+    }
+#undef LAUNCH_W2_CHUNK
 }
 
 template <int Intermediate, int SplitK>
@@ -1763,7 +1836,7 @@ void fused_k6_push_ar_tp4(
             reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), counter,
             push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
             push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
-            push_mc, tokens, rank, push_stride);
+            push_mc, tokens, rank, push_stride, 0, 4096);
     } else if (use_multicast && tokens <= 16) {
         fused_k6_push_ar_tp4_kernel<128, true><<<78, 128, 0, stream>>>(
             reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
@@ -1771,7 +1844,7 @@ void fused_k6_push_ar_tp4(
             reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), counter,
             push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
             push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
-            push_mc, tokens, rank, push_stride);
+            push_mc, tokens, rank, push_stride, 0, 4096);
     } else if (use_multicast) {
         fused_k6_push_ar_tp4_kernel<256, true><<<78, 256, 0, stream>>>(
             reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
@@ -1779,7 +1852,7 @@ void fused_k6_push_ar_tp4(
             reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), counter,
             push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
             push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
-            push_mc, tokens, rank, push_stride);
+            push_mc, tokens, rank, push_stride, 0, 4096);
     } else if (tokens <= 16) {
         fused_k6_push_ar_tp4_kernel<128, false><<<78, 128, 0, stream>>>(
             reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
@@ -1787,7 +1860,7 @@ void fused_k6_push_ar_tp4(
             reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), counter,
             push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
             push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
-            nullptr, tokens, rank, push_stride);
+            nullptr, tokens, rank, push_stride, 0, 4096);
     } else {
         fused_k6_push_ar_tp4_kernel<256, false><<<78, 256, 0, stream>>>(
             reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
@@ -1795,8 +1868,72 @@ void fused_k6_push_ar_tp4(
             reinterpret_cast<__nv_bfloat16*>(output.data_ptr()), counter,
             push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
             push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
-            nullptr, tokens, rank, push_stride);
+            nullptr, tokens, rank, push_stride, 0, 4096);
     }
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void fused_k6_push_ar_tp4_chunk(
+        torch::Tensor input, torch::Tensor topk_weights,
+        torch::Tensor output, torch::Tensor push_counter,
+        torch::Tensor push0, torch::Tensor push1,
+        torch::Tensor push2, torch::Tensor push3,
+        int rank, int64_t push_stride, int64_t push_mc_ptr,
+        int chunks, int chunk_idx, int active_blocks) {
+    TORCH_CHECK(input.scalar_type() == torch::kBFloat16,
+                "route input must be bfloat16");
+    TORCH_CHECK(topk_weights.scalar_type() == torch::kFloat32,
+                "topk_weights must be float32");
+    TORCH_CHECK(output.scalar_type() == torch::kBFloat16,
+                "all-reduce output must be bfloat16");
+    TORCH_CHECK(input.is_cuda() && input.is_contiguous(),
+                "route input must be contiguous CUDA");
+    TORCH_CHECK(output.is_cuda() && output.is_contiguous(),
+                "all-reduce output must be contiguous CUDA");
+    TORCH_CHECK(input.dim() == 2 && input.size(1) == 4096,
+                "route input must have shape [M*6,4096]");
+    TORCH_CHECK(output.dim() == 2 && output.size(1) == 4096,
+                "all-reduce output must have shape [M,4096]");
+    TORCH_CHECK(input.size(0) == output.size(0) * 6,
+                "route input row count must equal M*6");
+    TORCH_CHECK(topk_weights.numel() == output.size(0) * 6,
+                "topk_weights must have shape [M,6]");
+    TORCH_CHECK(push_counter.is_cuda() && push_counter.element_size() == 4
+                    && push_counter.numel() == 78,
+                "TP4 H20 push counter must contain 78 CUDA uint32 values");
+    TORCH_CHECK(rank >= 0 && rank < 4, "TP4 rank must be in [0,4)");
+    TORCH_CHECK(push_mc_ptr != 0,
+                "pipelined W2 all-reduce requires multicast memory");
+    TORCH_CHECK(chunks == 2 || chunks == 4 || chunks == 8,
+                "pipeline chunks must be 2,4,8");
+    TORCH_CHECK(chunk_idx >= 0 && chunk_idx < chunks,
+                "pipeline chunk index is out of range");
+    TORCH_CHECK(active_blocks > 0 && active_blocks <= 78,
+                "pipeline all-reduce block count must be in [1,78]");
+    for (const auto& workspace : {push0, push1, push2, push3}) {
+        TORCH_CHECK(workspace.is_cuda() && workspace.is_contiguous()
+                        && workspace.scalar_type() == torch::kUInt8,
+                    "push workspaces must be contiguous CUDA uint8 tensors");
+    }
+
+    const int tokens = output.size(0);
+    const int hidden_size = 4096 / chunks;
+    const int hidden_offset = chunk_idx * hidden_size;
+    TORCH_CHECK(push_stride >=
+                    static_cast<int64_t>(tokens) * hidden_size
+                        * output.element_size(),
+                "push workspace stride is too small for pipeline chunk");
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    fused_k6_push_ar_tp4_kernel<256, true, true><<<
+        active_blocks, 256, 0, stream>>>(
+        reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
+        topk_weights.data_ptr<float>(),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        reinterpret_cast<uint32_t*>(push_counter.data_ptr()),
+        push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
+        push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
+        reinterpret_cast<uint8_t*>(push_mc_ptr), tokens, rank, push_stride,
+        hidden_offset, hidden_size);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -1859,6 +1996,14 @@ void run_w2(torch::Tensor weight, torch::Tensor weight_scale,
             torch::Tensor sorted_ids, torch::Tensor expert_ids,
             torch::Tensor num_tokens_padded, torch::Tensor topk_weights,
             torch::Tensor output, torch::Tensor lut, int intermediate);
+void run_w2_chunk(torch::Tensor weight, torch::Tensor weight_scale,
+                  torch::Tensor weight_global_scale,
+                  torch::Tensor activation, torch::Tensor activation_scale,
+                  torch::Tensor sorted_ids, torch::Tensor expert_ids,
+                  torch::Tensor num_tokens_padded,
+                  torch::Tensor topk_weights, torch::Tensor output,
+                  torch::Tensor lut, int intermediate,
+                  int chunks, int chunk_idx);
 void reduce_swiglu(torch::Tensor partials, torch::Tensor output,
                    int intermediate, int split_k);
 void reduce_swiglu_quant(torch::Tensor partials, torch::Tensor activation,
@@ -1873,6 +2018,13 @@ void fused_k6_push_ar_tp4(
     torch::Tensor push0, torch::Tensor push1,
     torch::Tensor push2, torch::Tensor push3,
     int rank, int64_t push_stride, int64_t push_mc_ptr);
+void fused_k6_push_ar_tp4_chunk(
+    torch::Tensor input, torch::Tensor topk_weights,
+    torch::Tensor output, torch::Tensor push_counter,
+    torch::Tensor push0, torch::Tensor push1,
+    torch::Tensor push2, torch::Tensor push3,
+    int rank, int64_t push_stride, int64_t push_mc_ptr,
+    int chunks, int chunk_idx, int active_blocks);
 void fused_route_quant(torch::Tensor topk_ids, torch::Tensor input,
                        torch::Tensor sorted_ids, torch::Tensor expert_ids,
                        torch::Tensor num_tokens_padded,
@@ -1899,10 +2051,12 @@ _ext = load_inline(
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
-        "run_w13_impl", "run_w2", "reduce_swiglu", "reduce_swiglu_quant",
+        "run_w13_impl", "run_w2", "run_w2_chunk",
+        "reduce_swiglu", "reduce_swiglu_quant",
         "cast_bf16",
         "tiled_k6_reduce",
         "fused_k6_push_ar_tp4",
+        "fused_k6_push_ar_tp4_chunk",
         "fused_route_quant",
         "braid_mode2",
     ],
@@ -2130,6 +2284,44 @@ def run_w2(
     )
 
 
+def run_w2_chunk(
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    weight_global_scale: torch.Tensor,
+    activation: torch.Tensor,
+    activation_scale: torch.Tensor,
+    sorted_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_padded: torch.Tensor,
+    topk_weights: torch.Tensor,
+    output: torch.Tensor,
+    lut: torch.Tensor,
+    intermediate: int,
+    chunks: int,
+    chunk_idx: int,
+) -> None:
+    if WOUT != 128:
+        raise ValueError("pipelined W2 currently requires V4_WOUT=128")
+    if chunks not in (2, 4, 8) or not 0 <= chunk_idx < chunks:
+        raise ValueError("invalid W2 pipeline chunk")
+    _ext.run_w2_chunk(
+        weight,
+        weight_scale,
+        weight_global_scale,
+        activation,
+        activation_scale,
+        sorted_ids,
+        expert_ids,
+        num_tokens_padded,
+        topk_weights,
+        output,
+        lut,
+        intermediate,
+        chunks,
+        chunk_idx,
+    )
+
+
 def reduce_swiglu(
     partials: torch.Tensor,
     output: torch.Tensor,
@@ -2207,6 +2399,37 @@ def fused_k6_push_ar_tp4(
         rank,
         push_stride,
         push_mc_ptr,
+    )
+
+
+def fused_k6_push_ar_tp4_chunk(
+    input: torch.Tensor,
+    topk_weights: torch.Tensor,
+    output: torch.Tensor,
+    push_counter: torch.Tensor,
+    push_workspaces: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+    rank: int,
+    push_stride: int,
+    push_mc_ptr: int,
+    chunks: int,
+    chunk_idx: int,
+    active_blocks: int,
+) -> None:
+    _ext.fused_k6_push_ar_tp4_chunk(
+        input,
+        topk_weights,
+        output,
+        push_counter,
+        push_workspaces[0],
+        push_workspaces[1],
+        push_workspaces[2],
+        push_workspaces[3],
+        rank,
+        push_stride,
+        push_mc_ptr,
+        chunks,
+        chunk_idx,
+        active_blocks,
     )
 
 

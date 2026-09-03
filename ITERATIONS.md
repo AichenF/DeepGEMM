@@ -3910,3 +3910,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Median speedup (`stock CARv2 / NVLS pull`) by `(blocks, unroll)`: `(1,4)=0.9909`, `(1,8)=1.0068`, `(1,16)=1.0171`; `(2,4)=1.0089`, `(2,8)=0.9799`, `(2,16)=0.9946`; `(4,4)=0.9913`, `(4,8)=1.0066`, `(4,16)=1.0374`; `(8,4)=1.0213`, `(8,8)=1.0182`, `(8,16)=0.9589`; `(16,4)=1.0335`, `(16,8)=1.0057`, `(16,16)=1.0075`.
 - Result: the best one-window point was `(4,16)` at 0.344784 ms versus 0.357664 ms (1.03736×), closely followed by `(16,4)` at 1.03346×. The non-monotonic/bimodal batches show this is only a tuning lead, not yet a stable accepted policy; it needs a longer focused A/B/A confirmation.
 - Evidence: `bench/results/iter67_multicast_pull_tp4_m128_blocks_unroll_sweep_coldl2_20260903.log`.
+
+### Iteration 68 — chunked W2 / multicast-push overlap prototype (cold L2)
+
+- Change: added an opt-in TP4 M128 CUDA-Graph pipeline. W2 is split into four disjoint 1024-channel launches on the graph's main stream; after each chunk event, a second stream runs an eight-CTA fused k6 reduction plus multicast one-shot push into the existing SGLang CARv2 symmetric workspace. The main stream joins the communication stream before graph completion. The stock path and baseline are unchanged.
+- Safety/design: each communication chunk starts only after its entire W2 chunk completes, so this prototype needs no producer completion atomics, device fences, sentinels, dispatch, or combine. It reuses CARv2's phase counters and push slots and writes each reduced chunk into its final `[M,4096]` offset.
+- Protocol: same-process TP4 M128 pipeline/control, identical communicator/weights/input/routes, balanced two-batch AB/BA order, 20 replays per implementation per batch. Every replay gets a separate 256 MiB L2 clear immediately beforehand and outside CUDA-event timing.
+- Correctness: multi-stream graph capture and repeated replay complete without hang. Candidate and control independently pass (`cosine_min_rank=0.999995609`, `rel_l2_max_rank=0.002963504`, finite, all-reduce OK), and their BF16 outputs are bitwise identical (`max_abs=0`).
+- Performance: pipeline median is 0.411248 ms versus 0.326768 ms control, `control/pipeline=0.79458x`; both candidate batch medians (0.410832/0.411824 ms) lose decisively to both control batches (0.326704/0.327056 ms).
+- Result: reject four-chunk/eight-CTA overlap as configured. Splitting the route-GEMM destroys more scheduling/weight-pipeline efficiency and/or creates more compute/communication contention than it hides. Preserve the opt-in prototype for stage profiling or a bounded two-chunk/low-CTA test; do not select it.
+- Evidence: `bench/results/iter68_pipeline_w2_mc_push_tp4_m128_smoke_coldl2_20260903.log`.
