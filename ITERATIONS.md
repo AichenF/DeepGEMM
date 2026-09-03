@@ -2781,3 +2781,35 @@ maximum rank latency of a full CUDA-Graph replay.
   pass.  The accepted result is still well short of the 20% objective.
 - Evidence:
   `bench/results/tp4_paired_tiled_layout_default_coldl2_formal_20260903.log`.
+
+### WGMMA iteration 43a — share normalized scale LUTs within lane quads
+
+- Added opt-in `V4_QUAD_LUT_SHUFFLE=1`.  Four lanes map to the same output row
+  and E8M0 group for each K32 step, but the winner redundantly performs four
+  shared-byte loads and four affine LUT syntheses.  The candidate lets the
+  first lane load/synthesize one `uint2`, then broadcasts its two words to the
+  other three lanes with warp shuffles.
+- Packed FP4 loads, PRMT/sign reconstruction, WGMMA issue, tiled global TMA
+  traffic and output math are unchanged.  Gate all TP4 split modes and TP8
+  before graph-internal candidate/control/candidate cold-L2 timing; the extra
+  shuffles may cost more than the eliminated shared/integer work.
+
+### WGMMA iteration 43b — lane-quad LUT sharing rejected
+
+- TP4 split-K=4, forced split-K=2 skew and TP8 shape reproduce the selected
+  numerical errors.  However, two warp shuffles per synthesized `uint2` extend
+  live ranges: TP4 W13/W2 rise from 54 to 64 registers/thread without spill.
+- Graph-internal 100-sample cold-L2 medians for candidate/control/candidate
+  local totals (us) are M8 108.800/96.688/108.640, M32
+  246.912/210.464/247.232, and M128 409.424/346.352/409.392.  Both GEMMs
+  regress by double digits at every point, so no distributed screen is
+  justified.
+- Reject and restore the exact iteration-42 tiled-layout winner.  The raw
+  stage log's `custom_tiled_weight_layout=false` is a metadata-only bug: the
+  field read an unset environment variable with the old default after tiled
+  layout had become kernel-default true.  All candidate/control runs used
+  tiled weights; the logger default is corrected for subsequent profiles.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_quad_lut_shuffle_correctness_20260903.log`
+  and
+  `bench/results/tp4_quad_lut_shuffle_local_coldl2_screen_20260903.log`.

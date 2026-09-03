@@ -299,7 +299,7 @@ def main() -> None:
             {
                 "impl": args.impl,
                 "custom_tiled_weight_layout": (
-                    os.environ.get("V4_TILED_WEIGHT_LAYOUT", "0") == "1"
+                    os.environ.get("V4_TILED_WEIGHT_LAYOUT", "1") == "1"
                     if args.impl == "custom"
                     else None
                 ),
