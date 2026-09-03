@@ -214,6 +214,11 @@ def main() -> None:
                 )
                 if args.impl == "custom"
                 else None,
+                "w13_early_stage_refill": (
+                    kernel_module.W13_EARLY_STAGE_REFILL
+                )
+                if args.impl == "custom"
+                else None,
                 "l2_cache_bytes": props.L2_cache_size,
                 "l2_flush_bytes": l2_flush_buffer.nbytes,
                 "l2_policy": "cold; 256MiB clear immediately before pipeline",

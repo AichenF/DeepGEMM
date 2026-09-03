@@ -5062,3 +5062,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - The report also confirms selected resources: 55 registers/thread allocated as 56, 20.48 kB total shared/block, nine CTAs and 36 theoretical warps/SM.
 - Direction: inspect the per-K128 barrier topology and test a semantics-preserving reduction of CTA-wide barriers before changing dequant math.  Preserve the existing leader-only mbarrier polling and split-K arithmetic.
 - Evidence: `results/iter121c_compact_selected_m128_w13_stall_metrics_20260903.log`.
+
+## Iteration 122 — unsynchronized early W13 stage refill is numerically invalid
+
+- Candidate moved the same-stage TMA refill from the end of each K128 iteration to after the final K32 WGMMA commit, intending to overlap it with GMMA wait and accumulation.  W2 and split-K arithmetic were unchanged; default remained off.
+- TP4 split4 balanced degrades to W13 cosine 0.999993116 / rel-L2 0.003710623 and activation cosine 0.999982946 / rel-L2 0.005841401.  TP8-shape split4 similarly degrades to W13 cosine 0.999992579 and activation rel-L2 0.005338274.
+- TP4 forced split2 happened to retain prior accuracy, but this does not validate the race.  The test's broad legacy pass threshold prints OK, yet the candidate clearly fails the selected-control numerical standard.
+- Cause: WGMMA commit is not a cross-warp completion barrier for prior shared loads; the TMA issuer can overwrite the released stage before another warp completes its final load.
+- Result: reject the unsynchronized candidate without performance timing.  A repair must use an explicit cross-warp release handshake before the refill.
+- Evidence: `results/iter122_w13_early_stage_refill_correctness_20260903.log`.

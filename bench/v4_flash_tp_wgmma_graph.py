@@ -1025,6 +1025,9 @@ def main() -> None:
                     "w13_merged_wgmma_group": (
                         kernel.W13_MERGED_WGMMA_GROUP
                     ),
+                    "w13_early_stage_refill": (
+                        kernel.W13_EARLY_STAGE_REFILL
+                    ),
                     "w13_dual_wg_split": kernel.W13_DUAL_WG_SPLIT,
                     "w13_launch_bound_10": kernel.W13_LAUNCH_BOUND_10,
                     "w13_max_smem_carveout": (
