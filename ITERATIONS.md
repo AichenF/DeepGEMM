@@ -3004,3 +3004,23 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/tp4_parallel_fused_route_quant_stage_coldl2_screen_20260903.log`,
   and
   `bench/results/tp4_parallel_fused_route_quant_{candidate_a,control,candidate_b}_coldl2_screen_20260903.log`.
+
+### Post-iteration-47 TP8 smoke and TP4 formal score
+
+- The selected default runs the true eight-rank M8 CUDA Graph in 0.062608 ms
+  median over 20 individually cold-L2 samples.  Minimum-rank cosine is
+  0.999991970, relative L2 is 0.004007414, all outputs are finite and the
+  independent NCCL all-reduce check passes.  This remains a runnability gate.
+- Formal TP4 10x200 Humming/custom medians (ms) at M8/16/32/64/128 are
+  0.090144/0.078144, 0.145824/0.125152, 0.233584/0.209856,
+  0.336496/0.301216, and 0.407968/0.385184.  Humming/custom speedups are
+  1.15356/1.16518/1.11307/1.11713/1.05915; every point remains a win.
+- Geometric means are 0.211331/0.188521 ms, giving custom/Humming=0.892067
+  and Humming/custom=1.120993: 12.10% speedup (10.79% latency reduction).
+  Versus the pre-fusion formal ratio 1.109171, the ratio improves 1.07%.
+  Correctness and the same excluded 256 MiB per-replay cold-L2 policy pass.
+  The result remains short of the 20% goal, with the large-M W13/W2 kernels
+  dominating the remaining gap.
+- Evidence:
+  `bench/results/tp8_wgmma_fused_route_quant_default_smoke_20260903.log` and
+  `bench/results/tp4_paired_fused_route_quant_default_coldl2_formal_20260903.log`.
