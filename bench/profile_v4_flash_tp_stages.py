@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 
 import torch
@@ -297,6 +298,11 @@ def main() -> None:
         + json.dumps(
             {
                 "impl": args.impl,
+                "custom_tiled_weight_layout": (
+                    os.environ.get("V4_TILED_WEIGHT_LAYOUT", "0") == "1"
+                    if args.impl == "custom"
+                    else None
+                ),
                 "m": args.m,
                 "tp": args.tp,
                 "route_pattern": args.route_pattern,
