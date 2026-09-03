@@ -4816,3 +4816,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Selected W2-evict-first control median: **0.357984 ms**; W2-no-evict candidate: **0.359136 ms**; control/candidate: **0.996792x**.  Removing the hint costs 1.152 us (0.322%), and all eight candidate batch medians lose.
 - Decision: reject `V4_W2_NO_WEIGHT_EVICT_FIRST=1` and retain W2 evict-first.  Even across only four K128 tiles, the protection of reused activation/metadata cache lines is worth more than per-TMA policy creation.  The all-batch loss is sufficient to stop before other M values.
 - Artifact: `results/iter112b_w2_no_evict_first_tp4_m128_paired_cold800_20260903.log`.
+
+## Iteration 113 — exact-Humming TP4 local stage comparison
+
+- Profiled exact MXFP4 Humming at M={8,16,32,64,128}, random routing, 200 CUDA-Graph samples per point, with the same stage harness as iteration 110.  Every replay has a separate excluded 256 MiB clear.  External event nodes add instrumentation overhead, so these results locate work but do not replace end-to-end paired timings.
+- Humming total/W13/W2 medians (us): M8 `108.272/52.336/26.304`; M16 `162.176/86.336/44.576`; M32 `240.256/137.728/70.848`; M64 `326.784/192.832/100.256`; M128 `389.760/231.872/120.912`.
+- Against iteration 110's selected custom path, local-total Humming/custom ratios are `1.2578x`, `1.2331x`, `1.2165x`, `1.2038x`, and `1.1890x`.  Custom W13 wins every point by 17.3-20.4%; custom W2 wins every point by 4.8-14.1%.
+- Finding: neither MXFP4 Humming GEMM is currently ahead.  The exact end-to-end score is much lower because the common communication/graph tail dilutes local-kernel gains; at M128, however, the local ratio itself is still just below 1.20x.  Future work must both reduce the TP communication tail and retain a structural W13 path, rather than optimizing against a false premise that Humming's individual GEMMs are faster.
+- Artifact: `results/iter113_exact_humming_tp4_stage_budget_cold1000_20260903.log`.
