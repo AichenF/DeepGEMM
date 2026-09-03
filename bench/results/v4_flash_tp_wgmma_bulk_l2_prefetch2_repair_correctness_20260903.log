@@ -1,0 +1,12 @@
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+V4_WGMMA_CHECK M=64 pattern=skew Is=512 active=6 padded=384 split_k=2 mode2=True interleaved_bulk=True bulk_l2_prefetch=2 fused_act_quant=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999982 rel_l2=0.000193298
+V4_WGMMA_ACT cos=0.999999162 rel_l2=0.001295499
+V4_WGMMA_W2 cos=0.999997236 rel_l2=0.002350998 finite=True
+V4_WGMMA_OK
+V4_WGMMA_PREP routes_ok=True quant_exact=True scale_max_abs=0
+V4_WGMMA_CHECK M=8 pattern=balanced Is=256 active=48 padded=384 split_k=4 mode2=True interleaved_bulk=True bulk_l2_prefetch=2 fused_act_quant=True w2_global_lut=False
+V4_WGMMA_W13 cos=0.999999982 rel_l2=0.000192301
+V4_WGMMA_ACT cos=0.999999254 rel_l2=0.001221729
+V4_WGMMA_W2 cos=0.999997284 rel_l2=0.002330479 finite=True
+V4_WGMMA_OK

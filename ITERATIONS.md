@@ -3181,3 +3181,22 @@ maximum rank latency of a full CUDA-Graph replay.
 - Keep `V4_BULK_L2_PREFETCH=0` by default.  First gate TP4 split-K=4/2 and TP8,
   then require candidate/control/candidate W13 and W2 cold-L2 evidence; reject
   immediately if the hint merely doubles cache traffic without hiding waits.
+
+### WGMMA iteration 51b — software L2 prefetch rejected
+
+- TP4 split-K=4, forced split-K=2, and TP8-shape numerical gates pass after
+  explicitly excluding TP8 W2's non-interleaved K=256 specialization from the
+  hint.  The repair is preserved separately from the initial experiment.
+- Candidate A/control/candidate B local total medians (us) are
+  M8 93.376/87.984/93.168, M32 204.848/199.712/204.800, and
+  M128 339.744/329.744/339.584.  Both candidate windows regress by roughly
+  5.9%/2.6%/3.0%; W13 alone regresses about 4-8%, while W2 also never wins.
+- Reject without distributed timing and remove the hint path.  The prefetch
+  duplicates L2/TMA traffic and contention rather than hiding the compulsory
+  cold HBM access; deeper logical prefetch without shared capacity is not a
+  substitute for the hardware bulk-copy pipeline here.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_bulk_l2_prefetch2_correctness_20260903.log`,
+  `bench/results/v4_flash_tp_wgmma_bulk_l2_prefetch2_repair_correctness_20260903.log`,
+  and
+  `bench/results/tp4_bulk_l2_prefetch2_stage_coldl2_screen_20260903.log`.
