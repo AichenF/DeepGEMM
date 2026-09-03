@@ -5160,3 +5160,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - M8 stopped before timing because the generic comparison harness required bitwise identity for this newly added flag.  Unrolling permits compiler reassociation/scheduling across adjacent K128 accumulation bodies: candidate/control remains finite with cosine 0.999999762 and rel-L2 0.000721341, well inside the strengthened production thresholds, but is not bitwise equal (max-abs 1536 at the large synthetic output scale).
 - This is a harness-classification failure, not evidence of reference incorrectness: iteration 126 independently passed TP4 split4, split2, and TP8 full-route references.  Add `V4_ROUTE_K_UNROLL2` to the existing tolerance-qualified reordering set and rerun M8; selection still requires an independent exact-Humming/reference audit.
 - Evidence: `results/iter126c_route_k_unroll2_tp4_m8_m16_m32_m64_paired_cold500_20260903.log`.
+
+### Iteration 126d — tolerance-qualified harness rerun makes M8 neutral
+
+- Renamed the compare harness's narrowly scoped set to `TOLERANCE_QUALIFIED_FLAGS` and added the already reference-validated unroll2 flag.  Non-bitwise candidates still must be finite with cosine >=0.99999 and rel-L2 <=0.005; all other flags remain bitwise-gated.
+- Repeated TP4 M8 random-route timing for eight batches x 100 samples per arm with identical graphs/data/CARv2, rank-max events, alternating replay order, and an excluded 256 MiB cold-L2 clear before every replay.
+- Control min/median/max is 0.072064/0.073536/0.227104 ms; unroll2 is 0.072352/0.073504/0.075712 ms, for control/candidate 1.000435x.  The 0.032 us pooled difference is neutral at this shape; batch directions are mixed.
+- This repeat happened to be bitwise identical on all ranks, so iteration 126c's small non-bitwise difference is not a deterministic corruption signature.  Combined screens now show neutral M8 and consistent 1.02--1.92% wins for M16--M128.  Advance to resource/SASS confirmation and a long five-shape exact-Humming audit before selection.
+- Evidence: `results/iter126d_route_k_unroll2_tp4_m8_paired_cold800_20260903.log`.

@@ -45,9 +45,10 @@ if COMPARE_FLAG not in {
 }:
     raise ValueError(f"unsupported V4_COMPARE_FLAG={COMPARE_FLAG}")
 LAYOUT_CHANGING_FLAGS = {"V4_COMPACT_INTERLEAVED_SCALE"}
-SPLITK_REORDERING_FLAGS = {
+TOLERANCE_QUALIFIED_FLAGS = {
     "V4_W13_LAUNCH_BOUND_10",
     "V4_W13_LB10_MAX_SMEM",
+    "V4_ROUTE_K_UNROLL2",
 }
 if COMPARE_FLAG != "V4_EXACT_ROUTE_CAPACITY":
     os.environ[COMPARE_FLAG] = "0"
@@ -280,7 +281,7 @@ def main() -> None:
         and comparison["rel_l2_max_rank"] <= 0.005
     )
     if not exact_all_ranks and (
-        COMPARE_FLAG not in SPLITK_REORDERING_FLAGS or not tolerance_ok
+        COMPARE_FLAG not in TOLERANCE_QUALIFIED_FLAGS or not tolerance_ok
     ):
         raise RuntimeError(
             "control/candidate graph outputs fail comparison: "
