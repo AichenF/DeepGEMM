@@ -254,6 +254,7 @@ class CapturedCase:
         self.w13_split_k = kernel.select_w13_split_k(
             routes, self.active_experts
         )
+        self.tiled_k6_reduce_mode = kernel.select_tiled_k6_reduce_mode(self.m)
 
     @property
     def routes(self) -> int:
@@ -348,9 +349,12 @@ class CapturedCase:
         )
         if kernel.W2_ROUTE_OUTPUT:
             assert self.down is not None
-            if kernel.TILED_K6_REDUCE_MODE:
+            if self.tiled_k6_reduce_mode:
                 kernel.tiled_k6_reduce(
-                    self.down, self.topk_weights, self.local_bf16
+                    self.down,
+                    self.topk_weights,
+                    self.local_bf16,
+                    self.tiled_k6_reduce_mode,
                 )
             else:
                 moe_fused_mul_sum(
@@ -565,14 +569,17 @@ def main() -> None:
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,
                     "leader_mbar_wait": kernel.LEADER_MBAR_WAIT,
-                    "tiled_k6_reduce_mode": kernel.TILED_K6_REDUCE_MODE,
+                    "tiled_k6_reduce_policy": kernel.TILED_K6_REDUCE_POLICY,
                     "w2_epilogue": (
-                        (
+                        "BF16 route output + fixed tiled CUDA k6 mode 4 at "
+                        "M<=16, SGLang moe_fused_mul_sum otherwise"
+                        if kernel.TILED_K6_REDUCE_POLICY == "auto"
+                        else (
                             "BF16 route output + fixed tiled CUDA k6 reduce "
-                            f"mode {kernel.TILED_K6_REDUCE_MODE}"
+                            f"mode {kernel.TILED_K6_REDUCE_POLICY}"
+                            if kernel.TILED_K6_REDUCE_POLICY != "0"
+                            else "BF16 route output + sglang moe_fused_mul_sum"
                         )
-                        if kernel.TILED_K6_REDUCE_MODE
-                        else "BF16 route output + sglang moe_fused_mul_sum"
                         if kernel.W2_ROUTE_OUTPUT
                         else "FP32 weighted atomic scatter + BF16 cast"
                     ),
@@ -689,6 +696,7 @@ def main() -> None:
             "padded_rows": padded_rows,
             "padding_ratio": padded_rows / (m * TOP_K),
             "w13_split_k": case.w13_split_k,
+            "tiled_k6_reduce_mode": case.tiled_k6_reduce_mode,
             "allreduce_bytes": nbytes,
             "allreduce_algo": None if ar_algo is None else ar_algo.name,
             "allreduce_mode": ar_mode.name,

@@ -3659,3 +3659,32 @@ maximum rank latency of a full CUDA-Graph replay.
   and a five-point formal paired audit.
 - Evidence:
   `bench/results/iter58f_tiled_k6_mode4_tp4_m16_m64_fullgraph_aba_coldl2_20260903.log`.
+
+### WGMMA iteration 58g — select small-M tiled-k6 auto policy
+
+- The selected default is now `auto`: M8/M16 use fixed tiled CUDA mode 4;
+  M32/M64/M128 use the unchanged SGLang reducer.  Explicit 0--4 overrides
+  remain available for controlled regressions.  TP4 balanced M8, skew M16,
+  balanced M32, and TP8-shape M8 all pass.  The two selected small-M outputs
+  are bitwise equal to SGLang (`max_abs=0`), while final local cosine is
+  0.99999723--0.99999728 and every output is finite.
+- Formal TP4 paired 10x200 Humming/custom medians (ms) are
+  0.090240/0.076928 at M8, 0.146048/0.122944 at M16,
+  0.232272/0.206368 at M32, 0.336192/0.298816 at M64, and
+  0.407856/0.379152 at M128.  Point speedups are
+  1.17304/1.18792/1.12552/1.12508/1.07571.  Every point passes independent
+  Humming and custom correctness plus the all-reduce check.
+- Humming/custom geometric means are 0.211153/0.185751 ms, speedup 1.136755
+  (13.68%).  Relative to the previous selected formal window, custom itself
+  falls from 0.186248 to 0.185751 ms (0.27%), consistent with the bounded
+  M8/M16 wins.  Humming simultaneously falls 0.71%, so the cross-window
+  headline ratio is lower; do not misattribute that baseline drift to this
+  candidate.  At this paired baseline, 1.20x requires custom <=0.175961 ms,
+  another 9.79 us or 5.27% reduction.
+- The true TP8 M8 graph also passes with a 0.061840 ms median over 20 cold-L2
+  samples, minimum-rank cosine 0.999991970, relative-L2 0.004007414, finite
+  output, and all-reduce OK.  Select iteration 58's auto policy, then return
+  to a structural hotspot capable of multi-microsecond savings; further
+  local-reducer tuning cannot close the objective.
+- Evidence:
+  `bench/results/iter58g_tiled_k6_auto_correctness_tp4_formal_tp8_smoke_coldl2_20260903.log`.

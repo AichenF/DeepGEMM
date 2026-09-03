@@ -82,9 +82,19 @@ MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
-TILED_K6_REDUCE_MODE = int(os.environ.get("V4_TILED_K6_REDUCE_MODE", "0"))
-if TILED_K6_REDUCE_MODE not in (0, 1, 2, 3, 4):
-    raise ValueError("V4_TILED_K6_REDUCE_MODE must be one of 0,1,2,3,4")
+TILED_K6_REDUCE_POLICY = os.environ.get("V4_TILED_K6_REDUCE_MODE", "auto")
+if TILED_K6_REDUCE_POLICY not in ("auto", "0", "1", "2", "3", "4"):
+    raise ValueError(
+        "V4_TILED_K6_REDUCE_MODE must be auto or one of 0,1,2,3,4"
+    )
+
+
+def select_tiled_k6_reduce_mode(tokens: int) -> int:
+    if TILED_K6_REDUCE_POLICY == "auto":
+        return 4 if tokens <= 16 else 0
+    return int(TILED_K6_REDUCE_POLICY)
+
+
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
@@ -1870,10 +1880,11 @@ def tiled_k6_reduce(
     input: torch.Tensor,
     topk_weights: torch.Tensor,
     output: torch.Tensor,
+    mode: int,
 ) -> None:
-    if TILED_K6_REDUCE_MODE == 0:
-        raise RuntimeError("V4_TILED_K6_REDUCE_MODE must be nonzero")
-    _ext.tiled_k6_reduce(input, topk_weights, output, TILED_K6_REDUCE_MODE)
+    if mode not in (1, 2, 3, 4):
+        raise ValueError("tiled k6 reduce mode must be one of 1,2,3,4")
+    _ext.tiled_k6_reduce(input, topk_weights, output, mode)
 
 
 def fused_route_quant(
