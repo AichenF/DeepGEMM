@@ -3039,3 +3039,22 @@ maximum rank latency of a full CUDA-Graph replay.
   checks and graph-internal candidate/control/candidate cold-L2 timing before
   any distributed comparison; reject if reduced CTA count under-fills H20 or
   changes output beyond the existing tolerance.
+
+### WGMMA iteration 48b — one-CTA-per-token reduction rejected
+
+- The fixed kernel is bitwise identical to SGLang `moe_fused_mul_sum` on the
+  full M8 route output, and end-to-end W2 cosine remains 0.999997272.  This
+  rules out numerical differences as an explanation for timing.
+- It under-fills the H20 and makes every lane execute a long serial hidden
+  loop.  At M8/M32 the candidate/control local-reduction medians are
+  7.840/5.744 and 9.600/6.592 us; corresponding local total medians regress
+  from 89.536/201.360 to 91.344/203.344 us (2.02%/0.99%).  The candidate's
+  unpaired M128 reduction is also 10.240 us, already worse than recent
+  7.4-us controls.
+- Stop the remaining local repeats, do not spend a distributed run, and
+  remove the candidate path to restore the exact iteration-47 winner.  Fewer
+  CTAs are not useful here; any future reduction work must retain enough
+  independent hidden tiles to occupy 78 SMs.
+- Evidence:
+  `bench/results/v4_flash_tp_wgmma_fixed_k6_reduce_{first_,}correctness_20260903.log`
+  and `bench/results/tp4_fixed_k6_reduce_stage_coldl2_screen_20260903.log`.
