@@ -4020,3 +4020,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Synchronous TP4 M8 balanced correctness now passes. Preparation remains exact; W13 cosine/relative-L2 are `0.999999998/0.000076187`, activation `0.999999746/0.000712793`, W2 `0.999997256/0.002342693`, and output is finite.
 - Decision: accept the address repair. The new task is now eligible for TP4 skew, TP8-shape, graph replay, and cold-L2 performance screening; no speed claim yet.
 - Evidence: `bench/results/iter79b_paired_w13_shared_scale_fix_correctness_20260903.log`.
+
+## Iteration 80 — paired two-warpgroups W13 core screen (2026-09-03)
+
+- Correctness coverage passes for TP4 M8 maximal skew and TP8-shape M8 balanced in addition to iteration 79b's TP4 balanced case. W13 cosine is at least `0.999999997`, activation cosine at least `0.999999652`, W2 cosine at least `0.999997235`, and all outputs are finite.
+- Method: TP4 GPU1, random routes, CUDA Graph, 200 samples per point, separate excluded 256 MiB L2 clear before every replay. Candidate/control/candidate order used the same selected W2 and route/local reducers.
+- Median cold-L2 candidate averages versus control:
+  - M8: fused W13+activation `82.936 us` vs `43.856+6.016=49.872 us` (66.30% slower); local total `121.016 vs 87.808 us` (37.82% slower).
+  - M32: fused W13+activation `173.672 us` vs `115.008+6.560=121.568 us` (42.86% slower); local total `251.480 vs 197.840 us` (27.11% slower).
+  - M128: fused W13+activation `289.360 us` vs `196.064+8.784=204.848 us` (41.26% slower); local total `413.744 vs 328.288 us` (26.03% slower).
+- Decision: REJECT this first 384-thread paired compute body. Correct gate/up pairing and direct epilogue do not compensate for its full-K task serialization and producer/consumer synchronization. Do not connect W2 to this body or claim scheduler overlap. Preserve the validated dynamic scheduler separately; inspect compiled resource use and isolate whether the producer pipeline itself is defective before considering a split-K or persistent repair.
+- Evidence: `bench/results/iter80_paired_w13_correctness_stage_aba_coldl2_20260903.log`.
