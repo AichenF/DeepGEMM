@@ -4925,3 +4925,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Stability: compact won all 50 paired outer batch medians (10/10 at each M), including the intervals with shared temporal drift.
 - Result: accept compact per-K128 scales as the new selected layout; switch its default on, then rerun default-path correctness and exact Humming comparison.
 - Evidence: `results/iter117e_compact_interleaved_scale_allm_formal_20260903.log`.
+
+## Iteration 117f — select compact interleaved scales by default
+
+- Change: default `V4_COMPACT_INTERLEAVED_SCALE` from 0 to 1 after the formal all-M win; expose `compact_scale` in the correctness-test record.
+- Default TP4 I/rank=512, M8 balanced: compact_scale=True, routes/quant exact; W13 cosine 0.999999998, activation cosine 0.999999759, W2 cosine 0.999997256.
+- Default TP8-shape I/rank=256, M8 balanced: compact_scale=True, routes/quant exact; W13 cosine 0.999999997, activation cosine 0.999999745, W2 cosine 0.999997278.
+- Result: selected default passes both TP4 and TP8-shape paths without an environment override.
+- Evidence: `results/iter117f_select_compact_scale_default_correctness_20260903.log`.

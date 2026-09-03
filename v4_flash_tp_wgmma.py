@@ -115,7 +115,7 @@ if INTERLEAVED_BULK_COPY and (
         "and scale-quad reuse"
     )
 COMPACT_INTERLEAVED_SCALE = (
-    os.environ.get("V4_COMPACT_INTERLEAVED_SCALE", "0") == "1"
+    os.environ.get("V4_COMPACT_INTERLEAVED_SCALE", "1") == "1"
 )
 if COMPACT_INTERLEAVED_SCALE and not INTERLEAVED_BULK_COPY:
     raise ValueError(

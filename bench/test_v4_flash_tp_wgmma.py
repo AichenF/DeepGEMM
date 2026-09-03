@@ -418,6 +418,7 @@ def main() -> None:
         f"active={torch.unique(flat_ids).numel()} padded={num_tokens_padded.item()} "
         f"split_k={selected_split_k} mode2={kernel.MODE2_BRAID} "
         f"interleaved_bulk={kernel.INTERLEAVED_BULK_COPY} "
+        f"compact_scale={kernel.COMPACT_INTERLEAVED_SCALE} "
         f"tma_cta_scope={kernel.TMA_CTA_SCOPE} "
         f"weight_evict_first={kernel.WEIGHT_EVICT_FIRST} "
         f"weight_policy_hoist={kernel.WEIGHT_POLICY_HOIST} "
