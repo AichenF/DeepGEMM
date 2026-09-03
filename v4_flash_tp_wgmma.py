@@ -1304,12 +1304,21 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                         ptx::warpgroup_fence_operand(tile[group][value]);
                 }
                 // At the final K32 step all weight/scale operands from this
-                // stage are already in registers.  Refill the released stage
-                // after committing WGMMA so TMA overlaps the asynchronous
-                // GMMA wait and per-tile accumulation below.
+                // stage are already in registers.  Non-issuer warps release
+                // the stage with a non-blocking named-barrier arrival; the
+                // issuer warp waits for all four releases before overwriting
+                // it.  The other warps can advance toward the asynchronous
+                // GMMA wait while the next TMA transfer starts.
                 if constexpr (kW13EarlyStageRefill && IsW13) {
                     if (k_step + 1 == kBlockK / 32
                             && local_kt + kStages < kKTilesPerSplit) {
+                        if (warp == (kTmaIssuerTid >> 5)) {
+                            asm volatile(
+                                "bar.sync 2,128;" ::: "memory");
+                        } else {
+                            asm volatile(
+                                "bar.arrive 2,128;" ::: "memory");
+                        }
                         load_weight_stage(local_kt + kStages, stage);
                     }
                 }
@@ -4243,9 +4252,9 @@ _EXTENSION_CONFIG = (
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
           f"w13er{int(W13_EARLY_STAGE_REFILL)}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v122er")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v122aer")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v122er"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v122aer"
 )
 
 _ext = load_inline(

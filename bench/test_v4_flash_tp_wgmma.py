@@ -442,23 +442,36 @@ def main() -> None:
         f" normalized_shared_lut={kernel.NORMALIZED_SHARED_LUT}"
         f" activation_evict_last={kernel.ACTIVATION_EVICT_LAST}"
     )
+    w13_cosine = cosine(w13_actual, gate_up_ref)
+    w13_rel_l2 = rel_l2(w13_actual, gate_up_ref)
+    activation_cosine = cosine(activation, activation_ref)
+    activation_rel_l2 = rel_l2(activation, activation_ref)
+    local_cosine = cosine(local, local_ref)
+    local_rel_l2 = rel_l2(local, local_ref)
+    output_finite = bool(torch.isfinite(output).all())
     print(
         "V4_WGMMA_W13 "
-        f"cos={cosine(w13_actual, gate_up_ref):.9f} "
-        f"rel_l2={rel_l2(w13_actual, gate_up_ref):.9f}"
+        f"cos={w13_cosine:.9f} "
+        f"rel_l2={w13_rel_l2:.9f}"
     )
     print(
         "V4_WGMMA_ACT "
-        f"cos={cosine(activation, activation_ref):.9f} "
-        f"rel_l2={rel_l2(activation, activation_ref):.9f}"
+        f"cos={activation_cosine:.9f} "
+        f"rel_l2={activation_rel_l2:.9f}"
     )
     print(
         "V4_WGMMA_W2 "
-        f"cos={cosine(local, local_ref):.9f} "
-        f"rel_l2={rel_l2(local, local_ref):.9f} "
-        f"finite={bool(torch.isfinite(output).all())}"
+        f"cos={local_cosine:.9f} "
+        f"rel_l2={local_rel_l2:.9f} "
+        f"finite={output_finite}"
     )
-    if cosine(local, local_ref) < 0.99 or not torch.isfinite(output).all():
+    if (
+        w13_rel_l2 > 0.001
+        or activation_rel_l2 > 0.002
+        or local_cosine < 0.99999
+        or local_rel_l2 > 0.005
+        or not output_finite
+    ):
         raise SystemExit("V4_WGMMA_WRONG")
     print("V4_WGMMA_OK")
 

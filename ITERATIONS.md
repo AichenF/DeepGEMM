@@ -5071,3 +5071,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Cause: WGMMA commit is not a cross-warp completion barrier for prior shared loads; the TMA issuer can overwrite the released stage before another warp completes its final load.
 - Result: reject the unsynchronized candidate without performance timing.  A repair must use an explicit cross-warp release handshake before the refill.
 - Evidence: `results/iter122_w13_early_stage_refill_correctness_20260903.log`.
+
+## Iteration 122a — split-phase release barrier does not repair early refill
+
+- Added a named-barrier release handshake before early refill: three non-issuer warps use non-blocking `bar.arrive`, while the TMA issuer warp uses `bar.sync` before overwriting the stage.  Also strengthened the standalone gate to W13 rel-L2 <=0.001, activation rel-L2 <=0.002, W2 cosine >=0.99999 / rel-L2 <=0.005, and finite output.
+- The strengthened gate correctly fails TP4 split4: W13 cosine/rel-L2 0.999988722/0.004749736 and activation cosine/rel-L2 0.999977113/0.006765970.  TP8-shape split4 also fails with W13 rel-L2 0.004476430 and activation rel-L2 0.005196902.
+- TP4 forced split2 still passes, but split4 corruption proves the stage-release protocol remains unsafe; the hybrid named-barrier arrival/sync does not establish the required lifecycle for this reuse point.
+- Result: reject without performance timing.  Keep the stronger correctness gate.  If early refill is tested once more, require a full four-warp barrier after WGMMA commit; otherwise retain end-of-iteration refill.
+- Evidence: `results/iter122a_w13_early_stage_refill_release_barrier_correctness_20260903.log`.
