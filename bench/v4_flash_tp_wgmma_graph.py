@@ -348,14 +348,19 @@ class CapturedCase:
         )
         if kernel.W2_ROUTE_OUTPUT:
             assert self.down is not None
-            moe_fused_mul_sum(
-                inputs=self.down.view(self.m, TOP_K, HIDDEN),
-                topk_weights=self.topk_weights,
-                topk_ids=self.topk_ids,
-                is_ep=False,
-                routed_scaling_factor=ROUTED_SCALING_FACTOR,
-                outputs=self.local_bf16,
-            )
+            if kernel.CUSTOM_ROUTE_REDUCE:
+                kernel.fixed_k6_reduce(
+                    self.down, self.topk_weights, self.local_bf16
+                )
+            else:
+                moe_fused_mul_sum(
+                    inputs=self.down.view(self.m, TOP_K, HIDDEN),
+                    topk_weights=self.topk_weights,
+                    topk_ids=self.topk_ids,
+                    is_ep=False,
+                    routed_scaling_factor=ROUTED_SCALING_FACTOR,
+                    outputs=self.local_bf16,
+                )
         else:
             assert self.local_float is not None
             kernel.cast_bf16(self.local_float, self.local_bf16)
@@ -555,6 +560,7 @@ def main() -> None:
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "fused_route_quant": kernel.FUSED_ROUTE_QUANT,
+                    "custom_route_reduce": kernel.CUSTOM_ROUTE_REDUCE,
                     "w2_global_lut": kernel.W2_GLOBAL_LUT,
                     "w2_s2r_prefetch": kernel.W2_S2R_PREFETCH,
                     "w13_s2r_prefetch": kernel.W13_S2R_PREFETCH,

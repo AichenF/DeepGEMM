@@ -296,14 +296,17 @@ def main() -> None:
     output = torch.empty((args.m, H), dtype=torch.bfloat16, device=device)
     if kernel.W2_ROUTE_OUTPUT:
         assert down is not None
-        moe_fused_mul_sum(
-            inputs=down.view(args.m, TOP_K, H),
-            topk_weights=topk_weights,
-            topk_ids=topk_ids,
-            is_ep=False,
-            routed_scaling_factor=1.5,
-            outputs=output,
-        )
+        if kernel.CUSTOM_ROUTE_REDUCE:
+            kernel.fixed_k6_reduce(down, topk_weights, output)
+        else:
+            moe_fused_mul_sum(
+                inputs=down.view(args.m, TOP_K, H),
+                topk_weights=topk_weights,
+                topk_ids=topk_ids,
+                is_ep=False,
+                routed_scaling_factor=1.5,
+                outputs=output,
+            )
         local = output.float()
     else:
         kernel.cast_bf16(local, output)
