@@ -1,0 +1,20 @@
+==PROF== Connected to process 357408 (/usr/bin/python3.12)
+==PROF== Connected to process 357544 (/usr/bin/python3.12)
+==PROF== Connected to process 357542 (/usr/bin/python3.12)
+==PROF== Disconnected from process 357544
+==PROF== Disconnected from process 357542
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/profile_v4_flash_tp_local.py", line 133, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/profile_v4_flash_tp_local.py", line 92, in main
+    case = make_custom_case(args.m, args.tp, device)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/profile_v4_flash_tp_local.py", line 62, in make_custom_case
+    w13, s13, w2, s2 = bench.make_weights(intermediate_per_rank, device)
+    ^^^^^^^^^^^^^^^^
+ValueError: too many values to unpack (expected 4)
+==PROF== Disconnected from process 357408
+==ERROR== The application returned an error code (1).

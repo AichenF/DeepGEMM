@@ -4850,3 +4850,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - M128/32 is neutral/slightly slower at `0.376384/0.376656 ms = 0.99928x` with five of ten wins.  M128/40 is only `0.378160/0.377648 ms = 1.00136x`, also five of ten wins and far below a selectable effect.
 - Conclusion: the H200-derived 64-block geometry is not disproven on H20 by end-to-end cold-L2 evidence.  Reject reduced pull-block dispatch and retain stock 64 blocks for M64/M128.  The screen's apparent 1.7-1.9% gains were window noise, not a durable optimization.
 - Artifact: `results/iter115b_car_pull_blocks_long_tp4_m64_m128_cold2000_20260903.log`.
+
+## Iteration 116 — selected W13 NCU launch hit a stale profiler driver
+
+- Attempted a detailed, cache-controlled NCU capture of the first current TP4 M128 `route_gemm` launch, with profiling enabled only around one explicitly cold local pipeline.
+- The application exited before any target kernel launch because the untracked remote root copy of `profile_v4_flash_tp_local.py` still expected the old four-tensor `make_weights` return, while the current benchmark returns six tensors including normalized global scales (`ValueError: too many values to unpack`).  This is profiler-driver skew, not a kernel correctness or performance failure.
+- No NCU metrics or timing result were produced.  Replace only the stale profiler helper with the already-current local staging copy and repeat the identical capture; do not alter the selected kernel.
+- Artifact: `results/iter116_selected_tp4_m128_w13_cold_ncu.log`.
