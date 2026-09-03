@@ -4774,3 +4774,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - The first JIT attempt reached extension import but failed before any GPU launch: the shared object did not expose the `PyInit_*` symbol matching the new, very long extension name.  Consequently no correctness or performance conclusion is available from this attempt.
 - Preserve the failed source/log, inspect the exported symbol, then repair only the extension-key naming before repeating the same three numerical gates.
 - Artifact: `results/iter111_w13_dual_wg_split_correctness_20260903.log`.
+
+### Iteration 111a — deterministic import failure and symbol audit
+
+- A cache-hit standalone import reproduces the same missing-`PyInit_*` error, ruling out an incomplete first-build race.
+- `nm -D` shows that the `.so` does contain a globally exported `PyInit_v4_flash_tp_wgmma_..._v111dwg` symbol with the configured flag suffix.  The failure is therefore in resolving the oversized module short name rather than CUDA compilation or kernel launch.
+- Repair by shortening only the Python extension name; keep every compile-time field in the CUDA flags and retain the `dwg` discriminator plus iteration suffix so control/candidate caches remain distinct.
