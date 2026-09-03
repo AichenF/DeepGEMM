@@ -4158,3 +4158,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Attempt:** valid 32-worker endpoint with `outer=3`, `replays=7`.
 - **Failure:** the order-balanced A/B harness requires a positive even outer count and rejected the invocation before GPU execution.
 - **Decision:** no kernel or performance result; rerun unchanged with `outer=4`.
+
+## Iteration 83f2 — 32-worker progress endpoint cold-L2 screen
+
+- **Change under test:** no source change; measured the maximum supported 32 progress-worker blocks at TP4 M8.
+- **Method:** same-process, same-communicator, order-balanced CUDA Graph A/B with four outer batches and seven timed replays each; separate 256 MiB cold-L2 clear immediately before every replay and outside timing.
+- **Correctness:** PASS on all ranks and bitwise equal to control (`fused_vs_control_max_abs=0`).
+- **Cold latency:** control median `0.079104 ms` (min `0.077856`, max `0.088768`); candidate median `0.081152 ms` (min `0.080192`, max `0.086656`).
+- **Result:** control/candidate `0.974763x`; candidate remains `2.59%` slower by `2.048 us`. This is only a small improvement over the 16-worker point and does not cross control.
+- **Decision:** reject the current progress protocol as a default. Stop worker-count sweeping and isolate the producer-only publication tax.
