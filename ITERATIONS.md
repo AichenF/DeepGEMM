@@ -4127,3 +4127,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Communication evidence:** every local symmetric workspace contained all `16384/16384` nonzero words for each of the four source-rank slots.
 - **Decision:** accept the producer-first concurrent protocol at the intended eight-worker occupancy. This is a correctness/progress probe only, not a performance result.
 - **Next:** exercise the finish kernel and repeated CUDA Graph replay end to end, then cold-L2 A/B against the accepted path.
+
+## Iteration 83d — end-to-end progress overlap cold-L2 graph screen
+
+- **Change under test:** eight-block producer-progress W2 + local-k6/multicast consumers + finish kernel versus the accepted stock-CARv2 control, in the same process and communicator.
+- **Method:** TP4 on GPUs 1–4, random routes, `M=8`, two order-balanced outer batches, five timed graph replays per implementation per batch. A separate 256 MiB L2 clear ran immediately before every replay and outside CUDA events.
+- **Correctness:** PASS on all ranks. Candidate and control had identical reported accuracy (`cosine_min_rank=0.999995565`, `rel_l2_max_rank=0.00297848`) and `fused_vs_control_max_abs=0.0`.
+- **Cold latency:** accepted control median `0.079488 ms` (min `0.078528`, max `0.088160`); progress candidate median `0.083920 ms` (min `0.083488`, max `0.105952`).
+- **Result:** control/candidate `0.947188x`; the progress path is `5.58%` slower than control at M=8.
+- **Decision:** reject this eight-worker progress implementation as a default. The concurrency protocol is valid, but W2 publication/fence/counter cost plus worker/finish overhead exceeds the overlap benefit.
+- **Next:** isolate producer-only W2 tax from worker/finish cost before deciding whether a cheaper publication granularity is viable.
