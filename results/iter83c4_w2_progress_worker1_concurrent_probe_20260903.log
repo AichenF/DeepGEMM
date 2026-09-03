@@ -1,0 +1,3 @@
+W2_PROGRESS_STAGE setup_complete
+W2_PROGRESS_STAGE launches_submitted mode=concurrent
+No worker_complete line appeared with one worker CTA; the targeted process was interrupted after the bounded observation window.

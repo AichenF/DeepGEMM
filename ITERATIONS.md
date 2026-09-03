@@ -4105,3 +4105,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - All four ranks pass. Each rank reports tile counts 6, chunk counts 8, queue tail 32, worker claim 40 (=32 tasks+8 exit claims), worker-done 8, and a complete task permutation. In every rank-local symmetric workspace, all 16,384 uint32 words are nonzero for each of the four source slots, proving the multicast address, source/phase offsets, zero sentinel, and worker termination are correct in sequential execution.
 - Evidence: `results/iter83c3_w2_progress_worker_sequential_probe_20260903.log`.
 - Finding: the original deadlock boundary is concurrency, not queue completeness or multicast coverage. Run the same marked probe with worker/W2 concurrency; if it stalls after launches are submitted, replace spinning resident consumers with programmatic launch/dependency or a nonresident progress mechanism rather than touching the verified publication math.
+
+### Iteration 83c4 — one concurrent polling CTA still stalls
+
+- Reused the marked worker probe in concurrent mode with only one 128-thread worker CTA per GPU. Setup completes and both launches are submitted, but the worker event never completes; the process was interrupted after a bounded observation window.
+- Evidence: `results/iter83c4_w2_progress_worker1_concurrent_probe_20260903.log`.
+- Finding: this is not occupancy pressure from eight workers. A resident tight acquire-poll loop issued before W2 creates a forward-progress dependency the scheduler does not resolve here. Do not sweep worker counts. Add nanosleep/backoff plus a finite device timeout/error word so the consumer can yield/exit and expose whether W2 publication begins only after the polling kernel retires.
