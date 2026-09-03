@@ -5364,3 +5364,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - This conflicts with the long same-process 1.00172x candidate gain because both sides drifted relative to the selected-default repeat (Humming improves from 0.211990 to 0.210718 ms while custom worsens from 0.175042 to 0.176836 ms), a combined swing far larger than the candidate's expected 0.17% aggregate effect.
 - Result: the formal gate is not passed; do not select this candidate. Check contemporaneous GPU interference and permit one controlled repeat, but do not cherry-pick the faster of noisy runs. The production default remains four-way and its two independently passing results remain the headline.
 - Evidence: `results/iter134e_w13_split2_unroll8_exact_humming_tp4_allm_cold2000_20260903.log`.
+
+## Iteration 134f — second formal miss rejects W13-only eight-way selection
+
+- Repeated the exact Humming MXFP4 plus same-CARv2 benchmark after confirming GPUs 1-4 were idle: ten x 200 rank-max cold-L2 samples per implementation and M, standard batch AB/BA pairing, same fixed random routes.
+- Humming/custom medians and speedups: M8 0.090048/0.070976 ms (1.268711x), M16 0.145952/0.113536 ms (1.285513x), M32 0.232720/0.200256 ms (1.162112x), M64 0.332016/0.286448 ms (1.159079x), and M128 0.409824/0.370192 ms (1.107058x).
+- Candidate min/median/max is 0.069760/0.070976/0.122016, 0.112384/0.113536/0.143616, 0.176096/0.200256/0.255456, 0.245920/0.286448/0.367008, and 0.310912/0.370192/0.493728 ms. Humming is 0.088256/0.090048/0.159872, 0.144192/0.145952/0.192544, 0.224032/0.232720/0.286560, 0.313344/0.332016/0.421024, and 0.379264/0.409824/0.526432 ms.
+- Geometric-mean latency is 0.210792353 ms for Humming and 0.176465859 ms for custom, giving 1.194522x. Correctness and all-reduce checks again pass at every M.
+- Result: reject W13-only eight-way unrolling for production selection. Its small 1.00172x self-control gain is real for split2 but is too weak to survive whole-baseline variance, and two consecutive formal runs miss the 1.2x gate (1.191597x and 1.194522x). Retain the four-way default and its independently reproduced 1.202732x/1.211085x headline results.
+- Evidence: `results/iter134f_w13_split2_unroll8_exact_humming_tp4_allm_repeat_cold2000_20260903.log`.
