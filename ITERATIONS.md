@@ -5079,3 +5079,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP4 forced split2 still passes, but split4 corruption proves the stage-release protocol remains unsafe; the hybrid named-barrier arrival/sync does not establish the required lifecycle for this reuse point.
 - Result: reject without performance timing.  Keep the stronger correctness gate.  If early refill is tested once more, require a full four-warp barrier after WGMMA commit; otherwise retain end-of-iteration refill.
 - Evidence: `results/iter122a_w13_early_stage_refill_release_barrier_correctness_20260903.log`.
+
+## Iteration 122b — full-barrier pre-wait refill remains invalid
+
+- Replaced the split-phase release handshake with a full four-warp `bar.sync` after the final K32 WGMMA commit and before same-stage TMA refill.
+- The strengthened gate still fails TP4 split4 (W13 cosine/rel-L2 0.999992477/0.003879049; activation rel-L2 0.005216170) and TP8-shape split4 (W13 cosine/rel-L2 0.999988827/0.004727490; activation rel-L2 0.004419442).  Forced split2 again happens to pass.
+- A full cross-warp memory barrier is therefore insufficient while WGMMA is still outstanding.  The likely lifetime is the asynchronous WGMMA register-source group: issuing refill/address work before `warpgroup_wait<0>` permits compiler/register reuse before hardware completion.
+- Result: reject without timing.  Any final early-refill probe must occur only after `warpgroup_wait<0>` and may overlap only the scalar accumulation/loop tail.
+- Evidence: `results/iter122b_w13_early_refill_full_barrier_correctness_20260903.log`.
