@@ -4261,3 +4261,16 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: PASS on all four ranks. Every rank observed marker_sum=1536 with marker_min=marker_max=1, task_done=64, worker_done=64, and all four symmetric source slots contained the expected 16384 nonzero words.
 - Correctness scope: validates the device-scope release/acquire publication protocol and chunk/task completion under concurrent TP4 execution. End-to-end numerical and cold-L2 performance selection follows separately.
 - Artifact: results/iter83o_chunks8_worker64_tp4_m8_compile_concurrent_probe_20260903.log
+
+### Iteration 83p — cold-L2 M=8 progress chunk/worker sweep (2026-09-03)
+
+- Method: same-process CUDA-Graph A/B against the stock W2 + local k6 reduction + SGLang CARv2 control, TP4 on GPUs 1-4. A separate 256 MiB cache clear ran immediately before every replay and outside CUDA events. Each arm received 4 x 50 = 200 cold samples; AB/BA batch order was balanced.
+- Correctness: all three candidates passed the distributed reference checks and were bitwise identical to their paired control graph (fused_vs_control_max_abs=0).
+- 2 chunks / 16 workers: control 79.072 us, candidate 79.632 us, control/candidate 0.992968 (candidate +0.560 us).
+- 4 chunks / 32 workers: control 79.264 us, candidate 79.616 us, control/candidate 0.995579 (candidate +0.352 us).
+- 8 chunks / 64 workers: control 79.264 us, candidate 79.456 us, control/candidate 0.997584 (candidate +0.192 us).
+- Decision: reject all three as defaults because none beats control. Retain 8 chunks / 64 workers as the best progress-overlap research point; finer readiness reduced the deficit versus the previously confirmed 4-chunk prototype, but the remaining fixed worker/finish overhead still exceeds the hidden communication time.
+- Artifacts:
+  - results/iter83p_progress_chunks2_workers16_tp4_m8_cold_ab_20260903.log
+  - results/iter83p_progress_chunks4_workers32_tp4_m8_cold_ab_20260903.log
+  - results/iter83p_progress_chunks8_workers64_tp4_m8_cold_ab_20260903.log
