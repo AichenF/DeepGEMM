@@ -334,6 +334,11 @@ def main() -> None:
                     if args.impl == "custom"
                     else None
                 ),
+                "custom_interleaved_bulk_copy": (
+                    os.environ.get("V4_INTERLEAVED_BULK_COPY", "0") == "1"
+                    if args.impl == "custom"
+                    else None
+                ),
                 "custom_fused_route_quant": (
                     os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
                     if args.impl == "custom"

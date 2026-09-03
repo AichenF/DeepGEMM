@@ -350,6 +350,7 @@ def main() -> None:
         f"M={args.m} pattern={args.pattern} Is={intermediate} "
         f"active={torch.unique(flat_ids).numel()} padded={num_tokens_padded.item()} "
         f"split_k={selected_split_k} mode2={kernel.MODE2_BRAID} "
+        f"interleaved_bulk={kernel.INTERLEAVED_BULK_COPY} "
         f"fused_act_quant={kernel.FUSED_ACT_QUANT} "
         f"w2_global_lut={kernel.W2_GLOBAL_LUT}"
     )

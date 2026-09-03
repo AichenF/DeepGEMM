@@ -66,6 +66,18 @@ TILED_WEIGHT_LAYOUT = os.environ.get("V4_TILED_WEIGHT_LAYOUT", "1") == "1"
 BULK_WEIGHT_COPY = os.environ.get("V4_BULK_WEIGHT_COPY", "1") == "1"
 if BULK_WEIGHT_COPY and not TILED_WEIGHT_LAYOUT:
     raise ValueError("V4_BULK_WEIGHT_COPY requires tiled weight layout")
+INTERLEAVED_BULK_COPY = (
+    os.environ.get("V4_INTERLEAVED_BULK_COPY", "0") == "1"
+)
+if INTERLEAVED_BULK_COPY and not BULK_WEIGHT_COPY:
+    raise ValueError("V4_INTERLEAVED_BULK_COPY requires bulk weight copy")
+if INTERLEAVED_BULK_COPY and (
+    WEIGHT_STAGES != 2 or SCALE_QUAD_REUSE != 4 or SCALE_BUFFERS != 2
+):
+    raise ValueError(
+        "V4_INTERLEAVED_BULK_COPY requires two weight/scale stages "
+        "and scale-quad reuse"
+    )
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
 FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
@@ -143,6 +155,7 @@ static constexpr bool kDequantSynthLut = K_DEQUANT_SYNTH_LUT;
 static constexpr bool kNormalizedWeightScale = K_NORMALIZED_WEIGHT_SCALE;
 static constexpr bool kTiledWeightLayout = K_TILED_WEIGHT_LAYOUT;
 static constexpr bool kBulkWeightCopy = K_BULK_WEIGHT_COPY;
+static constexpr bool kInterleavedBulkCopy = K_INTERLEAVED_BULK_COPY;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
 static constexpr bool kW2S2RPrefetch = K_W2_S2R_PREFETCH;
@@ -152,6 +165,10 @@ static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
 static constexpr int kStages = K_WEIGHT_STAGES;
 static_assert(kStages == 2 || kStages == 3 || kStages == 4);
+static_assert(!kInterleavedBulkCopy
+              || (kBulkWeightCopy && kTiledWeightLayout
+                  && kStages == 2 && kScaleQuadReuse == 4
+                  && kScaleBuffers == 2));
 static constexpr float kRoutedScale = 1.5f;
 static constexpr bool kW2RouteOutput = K_W2_ROUTE_OUTPUT;
 
@@ -255,6 +272,14 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     constexpr int kScaleRowBytes = 16;
     constexpr int kScaleStageBytes = kWout * kScaleRowBytes;
     constexpr bool kUseTmaScale = K >= 512;
+    constexpr bool kInterleavedScale =
+        kInterleavedBulkCopy && kUseTmaScale;
+    constexpr int kCombinedStageBytes =
+        kWeightStageBytes + kScaleStageBytes;
+    constexpr int kWeightStageStride =
+        kInterleavedScale ? kCombinedStageBytes : kWeightStageBytes;
+    constexpr int kScaleStageStride =
+        kInterleavedScale ? kCombinedStageBytes : kScaleStageBytes;
     constexpr int kEffectiveScaleBuffers =
         kUseTmaScale ? kScaleBuffers : kStages;
     constexpr int kNumNTiles = N / kWout;
@@ -277,9 +302,14 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
     extern __shared__ __align__(1024) uint8_t dynamic_smem[];
     uint8_t* weight_smem = dynamic_smem;
     uint8_t* weight_scale_smem =
-        weight_smem + kStages * kWeightStageBytes;
+        weight_smem + (kInterleavedScale
+            ? kWeightStageBytes
+            : kStages * kWeightStageBytes);
     uint8_t* activation_smem =
-        weight_scale_smem + kEffectiveScaleBuffers * kScaleStageBytes;
+        kInterleavedScale
+        ? weight_smem + kStages * kCombinedStageBytes
+        : weight_scale_smem
+            + kEffectiveScaleBuffers * kScaleStageBytes;
     const uint32_t weight_smem_addr =
         static_cast<uint32_t>(__cvta_generic_to_shared(weight_smem));
     const uint32_t weight_scale_smem_addr =
@@ -343,11 +373,19 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         if (tid == 0) {
             const int global_kt = kt_begin + local_kt;
             const uint32_t weight_dst =
-                weight_smem_addr + stage * kWeightStageBytes;
+                weight_smem_addr + stage * kWeightStageStride;
             bool load_scale = kUseTmaScale && kScaleBuffers == 2;
             int scale_kt = global_kt;
             int scale_stage = stage;
-            if constexpr (kUseTmaScale && kScaleQuadReuse == 4
+            if constexpr (kInterleavedScale) {
+                const int record = global_kt & 7;
+                const bool even_quartet = record == 0;
+                const bool odd_quartet =
+                    record == 3 && local_kt + 1 < kKTilesPerSplit;
+                load_scale = even_quartet || odd_quartet;
+                scale_kt = even_quartet ? global_kt : global_kt + 1;
+                scale_stage = (scale_kt >> 2) & 1;
+            } else if constexpr (kUseTmaScale && kScaleQuadReuse == 4
                           && kScaleBuffers == 2) {
                 // One 16-byte scale row covers four K128 tiles.  Load the
                 // first quartet with tile 0; prefetch each following quartet
@@ -360,7 +398,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                 scale_stage = (scale_kt >> 2) & 1;
             }
             const uint32_t scale_dst =
-                weight_scale_smem_addr + scale_stage * kScaleStageBytes;
+                weight_scale_smem_addr + scale_stage * kScaleStageStride;
             if (load_scale) {
                 asm volatile(
                     "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
@@ -371,7 +409,34 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                     "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
                     :: "r"(barrier_addr[stage]), "n"(kWeightStageBytes));
             }
-            if constexpr (kBulkWeightCopy) {
+            if constexpr (kInterleavedScale) {
+                constexpr int kScaleTiles = kNumKTiles / 4;
+                constexpr int kBytesPerNTile =
+                    kNumKTiles * kWeightStageBytes
+                    + kScaleTiles * kScaleStageBytes;
+                const int record = global_kt & 7;
+                const int scales_before =
+                    (global_kt >> 3) * 2
+                    + (record >= 1 ? 1 : 0)
+                    + (record >= 4 ? 1 : 0);
+                const int offset =
+                    global_kt * kWeightStageBytes
+                    + scales_before * kScaleStageBytes;
+                const int64_t ntile =
+                    static_cast<int64_t>(expert_idx) * kNumNTiles
+                    + n_block_idx;
+                const uint8_t* weight_src =
+                    weight + ntile * kBytesPerNTile + offset;
+                const int copy_bytes = load_scale
+                    ? kCombinedStageBytes
+                    : kWeightStageBytes;
+                asm volatile(
+                    "cp.async.bulk.shared::cluster.global.mbarrier::"
+                    "complete_tx::bytes [%0],[%1],%2,[%3];"
+                    :: "r"(weight_dst), "l"(weight_src),
+                       "r"(copy_bytes), "r"(barrier_addr[stage])
+                    : "memory");
+            } else if constexpr (kBulkWeightCopy) {
                 const int64_t tile =
                     (static_cast<int64_t>(expert_idx) * kNumNTiles
                      + n_block_idx) * kNumKTiles + global_kt;
@@ -402,7 +467,10 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                        "r"(barrier_addr[stage]) : "memory");
             }
             if (load_scale) {
-                if constexpr (kBulkWeightCopy) {
+                if constexpr (kInterleavedScale) {
+                    // The combined transaction above lands the scale bytes
+                    // immediately after the selected weight stage.
+                } else if constexpr (kBulkWeightCopy) {
                     constexpr int kScaleTiles = kNumKTiles / 4;
                     const int64_t scale_tile =
                         (static_cast<int64_t>(expert_idx) * kNumNTiles
@@ -557,7 +625,7 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
         #pragma unroll
         for (int k_step = 0; k_step < kBlockK / 32; ++k_step) {
             const uint32_t stage_base =
-                weight_smem_addr + stage * kWeightStageBytes;
+                weight_smem_addr + stage * kWeightStageStride;
             const int common_weight_chunk = k_step ^
                 (((row0 >> 1) + weight_swizzle_row_offset) & 3);
             const uint32_t common_weight_address =
@@ -610,11 +678,11 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                       + weight_chunk1 * 16 + packed_k_offset));
                         }
                         const uint32_t exponent0 =
-                            weight_scale_smem[scale_stage * kScaleStageBytes
+                            weight_scale_smem[scale_stage * kScaleStageStride
                                               + group_row0 * kScaleRowBytes
                                               + (global_kt & 3) * 4];
                         const uint32_t exponent1 =
-                            weight_scale_smem[scale_stage * kScaleStageBytes
+                            weight_scale_smem[scale_stage * kScaleStageStride
                                               + group_row1 * kScaleRowBytes
                                               + (global_kt & 3) * 4];
                         if constexpr (kNormalizedWeightScale) {
@@ -651,11 +719,11 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                   + weight_chunk1 * 16 + packed_k_offset));
                     }
                     const uint32_t exponent0 =
-                        weight_scale_smem[scale_stage * kScaleStageBytes
+                        weight_scale_smem[scale_stage * kScaleStageStride
                                           + group_row0 * kScaleRowBytes
                                           + (global_kt & 3) * 4 + k_step];
                     const uint32_t exponent1 =
-                        weight_scale_smem[scale_stage * kScaleStageBytes
+                        weight_scale_smem[scale_stage * kScaleStageStride
                                           + group_row1 * kScaleRowBytes
                                           + (global_kt & 3) * 4 + k_step];
                     if constexpr (kNormalizedWeightScale) {
@@ -720,12 +788,12 @@ __global__ ROUTE_LAUNCH_BOUNDS void route_gemm(
                                       + packed_k_offset));
                         }
                         const uint32_t next_exponent0 =
-                            weight_scale_smem[scale_stage * kScaleStageBytes
+                            weight_scale_smem[scale_stage * kScaleStageStride
                                               + group_row0 * kScaleRowBytes
                                               + (global_kt & 3) * 4
                                               + next_k_step];
                         const uint32_t next_exponent1 =
-                            weight_scale_smem[scale_stage * kScaleStageBytes
+                            weight_scale_smem[scale_stage * kScaleStageStride
                                               + group_row1 * kScaleRowBytes
                                               + (global_kt & 3) * 4
                                               + next_k_step];
@@ -1108,8 +1176,14 @@ void launch_route_gemm(
         weight_descriptor = make_weight_desc(
             weight.data_ptr(), K, weight.numel());
         if constexpr (K >= 512) {
-            scale_descriptor = make_weight_scale_desc(
-                weight_scale.data_ptr(), K, weight_scale.numel());
+            if constexpr (kInterleavedBulkCopy) {
+                // Neither tensor map is consumed by the linear interleaved
+                // path, but keep a valid by-value descriptor argument.
+                scale_descriptor = weight_descriptor;
+            } else {
+                scale_descriptor = make_weight_scale_desc(
+                    weight_scale.data_ptr(), K, weight_scale.numel());
+            }
         }
         last_weight_pointer = weight.data_ptr();
         last_scale_pointer = weight_scale.data_ptr();
@@ -1117,9 +1191,12 @@ void launch_route_gemm(
     const int max_m_blocks = expert_ids.numel();
     const int grid = max_m_blocks * (N / kWout) * SplitK;
     constexpr int effective_scale_buffers = K >= 512 ? kScaleBuffers : kStages;
+    constexpr bool interleaved_scale = kInterleavedBulkCopy && K >= 512;
     constexpr int dynamic_smem_bytes =
-        kStages * kWout * (kBlockK / 2)
-        + effective_scale_buffers * kWout * 16
+        (interleaved_scale
+            ? kStages * kWout * ((kBlockK / 2) + 16)
+            : kStages * kWout * (kBlockK / 2)
+                + effective_scale_buffers * kWout * 16)
         + kTok * kBlockK;
     const auto stream = at::cuda::getCurrentCUDAStream();
     route_gemm<K, N, SplitK, IsW13><<<
@@ -1385,10 +1462,11 @@ _ext = load_inline(
           f"nws{int(NORMALIZED_WEIGHT_SCALE)}_"
           f"twl{int(TILED_WEIGHT_LAYOUT)}_"
           f"bwc{int(BULK_WEIGHT_COPY)}_"
+          f"ibc{int(INTERLEAVED_BULK_COPY)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_w2gl{int(W2_GLOBAL_LUT)}_"
           f"w2pf{int(W2_S2R_PREFETCH)}_w13pf{int(W13_S2R_PREFETCH)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v41"),
+          f"mb{MIN_BLOCKS_PER_SM}_v44"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -1412,6 +1490,7 @@ _ext = load_inline(
         f"-DK_NORMALIZED_WEIGHT_SCALE={int(NORMALIZED_WEIGHT_SCALE)}",
         f"-DK_TILED_WEIGHT_LAYOUT={int(TILED_WEIGHT_LAYOUT)}",
         f"-DK_BULK_WEIGHT_COPY={int(BULK_WEIGHT_COPY)}",
+        f"-DK_INTERLEAVED_BULK_COPY={int(INTERLEAVED_BULK_COPY)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
         f"-DK_W2_S2R_PREFETCH={int(W2_S2R_PREFETCH)}",
@@ -1532,6 +1611,26 @@ def tile_mxfp4_weight_layout(
         # TP8 W2 has eight scale bytes per logical row, below TMA's 16-byte
         # minimum contiguous box; keep its existing scalar-load fallback.
         tiled_scale = weight_scale
+    if INTERLEAVED_BULK_COPY and weight_scale.shape[-1] >= 16:
+        weight_tiles = tiled_weight.view(experts, ntiles, ktiles, -1)
+        scale_tiles = tiled_scale.view(
+            experts, ntiles, weight_scale.shape[-1] // 16, -1
+        )
+        records: list[torch.Tensor] = []
+        for kt in range(ktiles):
+            records.append(weight_tiles[:, :, kt])
+            if kt % 8 == 0:
+                records.append(scale_tiles[:, :, kt // 4])
+            elif kt % 8 == 3 and kt + 1 < ktiles:
+                records.append(scale_tiles[:, :, (kt + 1) // 4])
+        tiled_weight = torch.cat(records, dim=-1).contiguous()
+        expected_bytes = (
+            ktiles * WOUT * (128 // 2)
+            + (ktiles // 4) * WOUT * 16
+        )
+        if tiled_weight.shape[-1] != expected_bytes:
+            raise RuntimeError("interleaved MXFP4 tile packing is incomplete")
+        tiled_scale = torch.empty(0, dtype=torch.uint8, device=weight.device)
     return tiled_weight, tiled_scale
 
 
