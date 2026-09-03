@@ -4445,3 +4445,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Verification:** TP4 balanced/skew M8 and TP8-shape balanced M8 passed the full all-route reference with the same W13/activation/W2 cosines as control; all outputs finite.
 - **Decision:** Correctness and TP8-runnable gate passed; candidate remains opt-in pending paired cold-L2 timing.
 - **Artifact:** `results/iter91_w13_distributed_prep_correctness_20260903.log`.
+
+## Iteration 91b — Paired TP4 M128 cold-L2 distributed W13 preparation
+
+- **Method:** Same-process control/candidate graphs over identical random routes/weights; alternating A/B then B/A; 6×100 samples per variant; separate untimed 256 MiB L2 clear before every replay; four-rank maximum latency.
+- **Correctness:** Graph outputs were bitwise equal on all ranks.
+- **Result:** control median 0.347104 ms; distributed-prep candidate 0.343808 ms; control/candidate 1.009587x (+0.959%, 3.296 microseconds). Candidate beat control in all six batch medians by 3.09–5.06 microseconds.
+- **Decision:** First credible new core gain after the NCU audit. Retain opt-in and test all five M values before selection; also profile W13 to confirm barrier-stall reduction rather than relying only on the mechanism hypothesis.
+- **Artifact:** `results/iter91b_w13_distributed_prep_paired_tp4_m128_cold_600_20260903.log`.
