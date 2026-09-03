@@ -4666,3 +4666,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Control median: **0.353680 ms**; cache-policy candidate: **0.358192 ms**; control/candidate: **0.987403x**. The candidate is 4.512 us (1.276%) slower, and all eight candidate batch medians lose.
 - Conclusion: the `createpolicy`/cache-hint execution and/or forced eviction priority costs more than any activation reuse benefit. Reject `V4_ACTIVATION_EVICT_LAST=1`, retain default off, and do not extend it to the other M values.
 - Artifact: `results/iter104c_activation_cache_policy_tp4_m128_paired_cold800_20260903.log`.
+
+## Iteration 105 — streaming-weight evict-first correctness gate
+
+- Added opt-in `V4_WEIGHT_EVICT_FIRST=1`, default off. Each selected linear bulk-TMA issue creates a short-lived fractional L2 evict-first policy and passes it through `.L2::cache_hint`; activation/metadata loads, packed layout, transfer bytes, barriers, math, and grid are unchanged.
+- The policy matches the actual cold workload: each active expert's packed weight record is streamed once, while much smaller activation and route data are reused by many output tiles/splits.
+- Correctness passes TP4 balanced auto-split4, TP4 maximal-skew forced split2, and TP8-local intermediate=256. Route/input preparation is exact; W13 cosine is at least 0.999999997, W2 cosine is at least 0.999997240, and all outputs are finite.
+- Next run a long in-process paired TP4 M128 cold-L2 gate. Keep disabled unless the cache hint beats the extra policy instruction repeatably.
+- Artifact: `results/iter105_weight_evict_first_correctness_20260903.log`.

@@ -79,6 +79,9 @@ if BULK_WEIGHT_COPY and not TILED_WEIGHT_LAYOUT:
 TMA_CTA_SCOPE = os.environ.get("V4_TMA_CTA_SCOPE", "0") == "1"
 if TMA_CTA_SCOPE and not BULK_WEIGHT_COPY:
     raise ValueError("V4_TMA_CTA_SCOPE requires bulk weight copy")
+WEIGHT_EVICT_FIRST = os.environ.get("V4_WEIGHT_EVICT_FIRST", "0") == "1"
+if WEIGHT_EVICT_FIRST and not BULK_WEIGHT_COPY:
+    raise ValueError("V4_WEIGHT_EVICT_FIRST requires bulk weight copy")
 INTERLEAVED_BULK_COPY = (
     os.environ.get("V4_INTERLEAVED_BULK_COPY", "1") == "1"
 )
@@ -268,6 +271,7 @@ static constexpr bool kActivationEvictLast = K_ACTIVATION_EVICT_LAST;
 static constexpr bool kTiledWeightLayout = K_TILED_WEIGHT_LAYOUT;
 static constexpr bool kBulkWeightCopy = K_BULK_WEIGHT_COPY;
 static constexpr bool kTmaCtaScope = K_TMA_CTA_SCOPE;
+static constexpr bool kWeightEvictFirst = K_WEIGHT_EVICT_FIRST;
 static constexpr bool kInterleavedBulkCopy = K_INTERLEAVED_BULK_COPY;
 static constexpr bool kMode2Braid = K_MODE2_BRAID;
 static constexpr bool kW2GlobalLut = K_W2_GLOBAL_LUT;
@@ -320,15 +324,35 @@ __device__ __forceinline__ void mbar_arrive(uint32_t address) {
 __device__ __forceinline__ void bulk_gmem_to_smem(
         uint32_t dst, const void* src, int bytes, uint32_t mbar) {
     if constexpr (kTmaCtaScope) {
-        asm volatile(
-            "cp.async.bulk.shared::cta.global.mbarrier::"
-            "complete_tx::bytes [%0],[%1],%2,[%3];"
-            :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar) : "memory");
+        if constexpr (kWeightEvictFirst) {
+            asm volatile(
+                "{.reg .b64 policy;"
+                " createpolicy.fractional.L2::evict_first.b64 policy,1.0;"
+                " cp.async.bulk.shared::cta.global.mbarrier::"
+                "complete_tx::bytes.L2::cache_hint "
+                "[%0],[%1],%2,[%3],policy;}"
+                :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar) : "memory");
+        } else {
+            asm volatile(
+                "cp.async.bulk.shared::cta.global.mbarrier::"
+                "complete_tx::bytes [%0],[%1],%2,[%3];"
+                :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar) : "memory");
+        }
     } else {
-        asm volatile(
-            "cp.async.bulk.shared::cluster.global.mbarrier::"
-            "complete_tx::bytes [%0],[%1],%2,[%3];"
-            :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar) : "memory");
+        if constexpr (kWeightEvictFirst) {
+            asm volatile(
+                "{.reg .b64 policy;"
+                " createpolicy.fractional.L2::evict_first.b64 policy,1.0;"
+                " cp.async.bulk.shared::cluster.global.mbarrier::"
+                "complete_tx::bytes.L2::cache_hint "
+                "[%0],[%1],%2,[%3],policy;}"
+                :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar) : "memory");
+        } else {
+            asm volatile(
+                "cp.async.bulk.shared::cluster.global.mbarrier::"
+                "complete_tx::bytes [%0],[%1],%2,[%3];"
+                :: "r"(dst), "l"(src), "r"(bytes), "r"(mbar) : "memory");
+        }
     }
 }
 
@@ -3938,6 +3962,7 @@ _ext = load_inline(
           f"ael{int(ACTIVATION_EVICT_LAST)}_"
           f"twl{int(TILED_WEIGHT_LAYOUT)}_"
           f"bwc{int(BULK_WEIGHT_COPY)}_tcs{int(TMA_CTA_SCOPE)}_"
+          f"wef{int(WEIGHT_EVICT_FIRST)}_"
           f"ibc{int(INTERLEAVED_BULK_COPY)}_"
           f"m2{int(MODE2_BRAID)}_"
           f"ro{int(W2_ROUTE_OUTPUT)}_sa{int(W2_SORTED_ACT)}_"
@@ -3949,7 +3974,7 @@ _ext = load_inline(
           f"lmw{int(LEADER_MBAR_WAIT)}_"
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"mb{MIN_BLOCKS_PER_SM}_v104bael"),
+          f"mb{MIN_BLOCKS_PER_SM}_v105wef"),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=[
@@ -3986,6 +4011,7 @@ _ext = load_inline(
         f"-DK_TILED_WEIGHT_LAYOUT={int(TILED_WEIGHT_LAYOUT)}",
         f"-DK_BULK_WEIGHT_COPY={int(BULK_WEIGHT_COPY)}",
         f"-DK_TMA_CTA_SCOPE={int(TMA_CTA_SCOPE)}",
+        f"-DK_WEIGHT_EVICT_FIRST={int(WEIGHT_EVICT_FIRST)}",
         f"-DK_INTERLEAVED_BULK_COPY={int(INTERLEAVED_BULK_COPY)}",
         f"-DK_MODE2_BRAID={int(MODE2_BRAID)}",
         f"-DK_W2_GLOBAL_LUT={int(W2_GLOBAL_LUT)}",
