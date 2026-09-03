@@ -3166,3 +3166,18 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence:
   `bench/results/tp8_wgmma_interleaved_bulk_default_smoke_20260903.log` and
   `bench/results/tp4_paired_interleaved_bulk_default_coldl2_formal_20260903.log`.
+
+### WGMMA iteration 51a — L2-prefetch future interleaved records
+
+- Two shared stages avoid the severe residency loss of the rejected deeper
+  shared-memory pipelines, but each cold weight record still waits on HBM.
+  Test an opt-in Hopper `cp.async.bulk.prefetch.L2.global` hint for the record
+  two K128 iterations ahead while retaining exactly two shared stages.
+- The prefetch executes inside the timed GEMM, so it does not violate the cold
+  policy or hide bytes outside measurement.  Every record is still fetched
+  once from HBM; the later shared-memory bulk copy may consume it from L2 at
+  the cost of additional L2 traffic.  Weight/scale storage, math, barriers,
+  shared memory, grid, and epilogue remain unchanged.
+- Keep `V4_BULK_L2_PREFETCH=0` by default.  First gate TP4 split-K=4/2 and TP8,
+  then require candidate/control/candidate W13 and W2 cold-L2 evidence; reject
+  immediately if the hint merely doubles cache traffic without hiding waits.
