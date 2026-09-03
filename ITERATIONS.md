@@ -4217,3 +4217,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** PASS on every rank. Each reports all 1,536 route/N128 markers equal to one, `task_done=32`, and `worker_done=32`.
 - **Communication evidence:** every rank-local symmetric workspace contains `16384/16384` nonzero words for each of the four source slots; no task or multicast region is missing.
 - **Decision:** accept the direct-marker protocol's TP4 concurrency correctness. Proceed to a complete finish-kernel/CUDA-Graph cold-L2 A/B; no performance claim from this probe.
+
+## Iteration 83k — direct-marker end-to-end TP4 screen
+
+- **Change under test:** direct release markers plus 32 static progress workers and the finish kernel versus accepted stock CARv2.
+- **Method:** TP4 M8 random routes, same process/data/communicator, four order-balanced outer batches × 20 graph replays per implementation; separate excluded 256 MiB cold-L2 clear before each replay.
+- **Correctness:** both paths pass every all-rank reference/all-reduce check and are bitwise identical (`fused_vs_control_max_abs=0`).
+- **Cold latency:** control median `0.079200 ms` (min `0.077728`, max `0.105120`); candidate median `0.080560 ms` (min `0.078688`, max `0.110144`). Control/candidate is `0.983118x`.
+- **Finding:** direct markers recover another `0.416 us` end to end versus TMA plus the dynamic queue and reduce the original 32-worker deficit from `2.048 us` to `1.360 us`. All four candidate batch medians remain above control, so the `1.72%` regression is stable.
+- **Decision:** reject as default. Before testing a cheaper CTA-leader fence publication, establish that its cross-thread/device-scope happens-before chain is valid under the CUDA memory model.
