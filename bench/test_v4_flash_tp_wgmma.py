@@ -438,7 +438,6 @@ def main() -> None:
         f" w13_max_smem={kernel.W13_MAX_SMEM_CARVEOUT}"
         f" w2_distributed_prep={kernel.W2_DISTRIBUTED_PREP}"
         f" w13_merged_wgmma_group={kernel.W13_MERGED_WGMMA_GROUP}"
-        f" w13_early_stage_refill={kernel.W13_EARLY_STAGE_REFILL}"
         f" normalized_shared_lut={kernel.NORMALIZED_SHARED_LUT}"
         f" activation_evict_last={kernel.ACTIVATION_EVICT_LAST}"
     )

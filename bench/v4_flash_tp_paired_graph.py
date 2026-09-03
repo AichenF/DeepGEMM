@@ -285,9 +285,6 @@ def main() -> None:
                     "custom_w13_max_smem_carveout": (
                         kernel.W13_MAX_SMEM_CARVEOUT
                     ),
-                    "custom_w13_early_stage_refill": (
-                        kernel.W13_EARLY_STAGE_REFILL
-                    ),
                     "custom_w2_distributed_prep": (
                         kernel.W2_DISTRIBUTED_PREP
                     ),

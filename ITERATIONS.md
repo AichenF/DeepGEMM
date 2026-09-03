@@ -5103,3 +5103,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Since even post-wait full synchronization does not preserve split4, moving the refill call across the tile-accumulation scope is not semantically safe in this implementation (whether due to async proxy/barrier lifecycle or compiler operand lifetime).
 - Result: permanently reject the early-stage-refill direction without performance timing.  Retain the selected end-of-iteration refill and remove/disable this numerically unsafe opt-in path.
 - Evidence: `results/iter122d_w13_post_wait_full_barrier_refill_correctness_20260903.log`.
+
+## Iteration 123 — remove the rejected early-refill path
+
+- Deleted `V4_W13_EARLY_STAGE_REFILL` end to end: Python validation/configuration, CUDA compile-time branch, benchmark/profile metadata, and compare-harness support.  The selected kernel now has only the original end-of-iteration stage refill, so the known-corrupt split4 experiment cannot be enabled accidentally.
+- Strengthened default correctness passes TP4 balanced auto split4: W13 cosine/rel-L2 0.999999998/0.000076187, activation 0.999999759/0.000694956, W2 0.999997256/0.002342691 finite.
+- TP4 skew forced split2 passes: W13 rel-L2 0.000077291, activation 0.000838720, W2 0.002351904 finite.  TP8-shape balanced auto split4 also passes: W13 rel-L2 0.000076998, activation 0.000714756, W2 0.002333323 finite.
+- Result: retain the compact selected default and close early refill permanently.  The next performance experiment must preserve this full-route numerical gate.
+- Evidence: `results/iter123_remove_unsafe_early_refill_default_correctness_20260903.log`.

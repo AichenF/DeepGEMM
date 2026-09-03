@@ -246,15 +246,6 @@ W2_DISTRIBUTED_PREP = (
 W13_MERGED_WGMMA_GROUP = (
     os.environ.get("V4_W13_MERGED_WGMMA_GROUP", "0") == "1"
 )
-W13_EARLY_STAGE_REFILL = (
-    os.environ.get("V4_W13_EARLY_STAGE_REFILL", "0") == "1"
-)
-if W13_EARLY_STAGE_REFILL and (
-    W13_MERGED_WGMMA_GROUP or W13_DUAL_WG_SPLIT or W13_PAIRED_WG
-):
-    raise ValueError(
-        "V4_W13_EARLY_STAGE_REFILL probes only the selected split-K W13 path"
-    )
 if W2_S2R_PREFETCH and (DEQUANT_SYNTH_LUT or W2_GLOBAL_LUT):
     raise ValueError(
         "V4_W2_S2R_PREFETCH currently probes only the shared-LUT path"
@@ -359,7 +350,6 @@ static constexpr bool kW13DistributedPrep = K_W13_DISTRIBUTED_PREP;
 static constexpr bool kW13DualWgSplit = K_W13_DUAL_WG_SPLIT;
 static constexpr bool kW2DistributedPrep = K_W2_DISTRIBUTED_PREP;
 static constexpr bool kW13MergedWgmmaGroup = K_W13_MERGED_WGMMA_GROUP;
-static constexpr bool kW13EarlyStageRefill = K_W13_EARLY_STAGE_REFILL;
 static constexpr bool kW13MaxSmemCarveout = K_W13_MAX_SMEM_CARVEOUT;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
@@ -1304,16 +1294,6 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                         ptx::warpgroup_fence_operand(tile[group][value]);
                 }
                 ptx::warpgroup_wait<0>();
-                // Reuse the stage only after WGMMA has released its async
-                // register-source group.  This shorter overlap window is
-                // safe and still hides the refill under tile accumulation.
-                if constexpr (kW13EarlyStageRefill && IsW13) {
-                    if (k_step + 1 == kBlockK / 32
-                            && local_kt + kStages < kKTilesPerSplit) {
-                        asm volatile("bar.sync 2,128;" ::: "memory");
-                        load_weight_stage(local_kt + kStages, stage);
-                    }
-                }
             }
         }
         if constexpr (kMergedWgmmaGroup) {
@@ -1345,10 +1325,8 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
         if ((local_kt & 3) == 3 && local_kt + 1 < kKTilesPerSplit)
             load_single_scale(global_kt + 1);
 
-        if constexpr (!kW13EarlyStageRefill || !IsW13) {
-            if (local_kt + kStages < kKTilesPerSplit)
-                load_weight_stage(local_kt + kStages, stage);
-        }
+        if (local_kt + kStages < kKTilesPerSplit)
+            load_weight_stage(local_kt + kStages, stage);
     }
 
     const int route0 = route_ids[column_base];
@@ -4241,11 +4219,10 @@ _EXTENSION_CONFIG = (
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"w13er{int(W13_EARLY_STAGE_REFILL)}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v122der")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v123clean")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v122der"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v123clean"
 )
 
 _ext = load_inline(
@@ -4301,7 +4278,6 @@ _ext = load_inline(
         f"-DK_W13_DUAL_WG_SPLIT={int(W13_DUAL_WG_SPLIT)}",
         f"-DK_W2_DISTRIBUTED_PREP={int(W2_DISTRIBUTED_PREP)}",
         f"-DK_W13_MERGED_WGMMA_GROUP={int(W13_MERGED_WGMMA_GROUP)}",
-        f"-DK_W13_EARLY_STAGE_REFILL={int(W13_EARLY_STAGE_REFILL)}",
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_W2_SORTED_ACT={int(W2_SORTED_ACT)}",
         f"-DK_W2_MBLOCK_SCALE={int(W2_MBLOCK_SCALE)}",
