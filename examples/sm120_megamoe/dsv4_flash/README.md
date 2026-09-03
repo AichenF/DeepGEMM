@@ -62,6 +62,7 @@ manifest next to them.
 - `..._chunk8_perf_host.cu`: timed executable with pre/post correctness audits
 - `build.sh`: containerized build for one configuration
 - `run_correctness_matrix.py`: fail-closed correctness gate and receipt writer
+- `run_perf_abba.py`: paired CUPTI max-rank performance gate
 
 ## Correctness gate
 
@@ -69,6 +70,7 @@ manifest next to them.
 ./build.sh out/ep4 -DCAKE_MOE_LOCAL_EXPERTS=64
 python3 run_correctness_matrix.py \
   --build out/ep4 --gpus 0,1,2,3 --world-size 4 \
+  --hidden 4096 --intermediate 4096 --experts 256 --topk 6 \
   --output evidence/ep4-correctness-matrix.json
 ```
 
@@ -91,7 +93,8 @@ docker run --rm -v $PWD:/src:ro -v $PWD/out:/out nvcr.io/nvidia/pytorch:26.07-py
 python3 run_perf_abba.py \
   --arm baseline=out/ep4 --arm candidate=out/ep4-candidate \
   --injection out/libcake_cupti_trace.so \
-  --gpus 0,1,2,3 --world-size 4 --rows 2048 --repeat 20 \
+  --gpus 0,1,2,3 --world-size 4 --rows 2048 \
+  --hidden 4096 --intermediate 4096 --experts 256 --topk 6 --repeat 20 \
   --output evidence/ep4-abba.json
 ```
 
@@ -102,6 +105,11 @@ ranks before any statistic, and the two arms run in A/B/B/A order. Because the
 envelope is reconstructed from activity records rather than read from a CUDA
 event around one launch, a multi-kernel candidate is measured on the same basis
 as the fused kernel, with launch gaps and inter-kernel idle time included.
+For a partially fused implementation, pass one ordered `--arm-kernel
+candidate:KERNEL_SUBSTRING` argument per dependent kernel. The runner rejects a
+trace with a missing, duplicated or reordered kernel instead of silently timing
+only part of an iteration. Both runners also reject a build whose recorded
+compile-time shape or expert partition differs from the requested workload.
 
 A null A/A run of the EP4 build resolves a 0.18% median difference with 0.06%
 endpoint drift, which sets the floor for a believable improvement.
