@@ -3518,3 +3518,38 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/iter57_tail_w13_stage_initial_20260903.log`,
   `bench/results/iter57b_fused_reset_m8_stage_aba_20260903.log`, and
   `bench/results/iter57b_tp4_m8_tail_{candidate,control}_coldl2_screen_20260903.log`.
+
+### WGMMA iteration 58a — post-stall W2/profile reassessment
+
+- Three structurally different W13 fusion/narrowing attempts (iterations
+  55--57) failed, so pause source changes and re-profile the exact selected
+  iteration-53 implementation under the mandatory excluded 256 MiB cold-L2
+  protocol.  A fresh M32 Nsight Compute capture of the selected W2 launch
+  reports 61.34 us under profiler replay, 2.60 TB/s DRAM throughput, 54.05%
+  DRAM-throughput utilization, 71.87% compute-throughput utilization, 6.74%
+  L2 hit rate, 54 registers/thread, no spills, 56.25% theoretical and 53.26%
+  achieved occupancy.  The grid is 6144 CTAs of 128 threads (8.75 waves/SM).
+  This supersedes the older iteration-32 W2 profile: the selected W2 is
+  neither at a simple HBM ceiling nor clearly occupancy-starved.
+- A same-window CUDA-Graph stage audit shows Humming/custom local medians of
+  108.672/88.352 us at M8, 240.288/198.624 us at M32, and
+  389.920/328.480 us at M128.  Thus the complete local custom pipeline is
+  already 18.7%--21.0% faster than Humming.  W2 itself is
+  26.336/25.920 us, 70.816/63.184 us, and 120.896/106.992 us respectively;
+  it is no longer the old implementation's isolated loss.  The formal full
+  TP ratio is lower because the identical CustomAllReduceV2 latency is a
+  shared serial term, especially at M128.
+- The only cheap local boundary not tested in the selected implementation is
+  the fixed-shape k=6 weighted route reduction.  SGLang's BF16 Triton path
+  uses BLOCK_M=2 and BLOCK_K=512, giving only 32 CTAs at M8.  Iteration 48's
+  rejected CUDA replacement used one CTA per token and serialized all H=4096;
+  that does not test a hidden-tiled multi-CTA mapping.  Next, screen fixed
+  CUDA variants with 8 or 16 hidden tiles per token and 128/256 threads,
+  preserving FP32 route weights, the exact 1.5 multiplier, FP32 ordered k=6
+  accumulation, BF16 output, graph topology, and cold-L2 protocol.  Any
+  sub-microsecond result must survive candidate/control/candidate timing and
+  a full distributed graph before selection.
+- Evidence:
+  `bench/results/iter58_current_w2_m32_coldl2_detailed_ncu.{log,ncu-rep}`
+  and
+  `bench/results/iter58_current_humming_custom_stage_coldl2_20260903.log`.
