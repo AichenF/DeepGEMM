@@ -4559,3 +4559,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Numerical values reproduce the selected control to printed precision, including the split2 skew path. This confirms that four same-accumulator K32 WGMMA operations may share one commit group under the retained operand-fence protocol.
 - Decision: correctness gate passed; keep opt-in and proceed to same-process cold-L2 paired timing before any default change.
 - Artifact: `results/iter99b_w13_merged_wgmma_group_correctness_20260903.log`.
+
+## Iteration 99c — W13 merged-WGMMA-group paired screen
+
+- Compared current default (`V4_W13_MERGED_WGMMA_GROUP=0`) with the candidate in one TP4 process at M128/random routes, identical weights/routes/communicator, six x 100 samples, per-replay A/B then B/A alternation, maximum-rank latency, and an excluded 256 MiB clear before every replay.
+- Control/candidate medians are 0.357791990/0.357743993 ms, control/candidate 1.000134x: only 0.048 us or 0.013%. Batch medians are effectively paired ties and direction is mixed. Candidate output is bitwise identical on all ranks.
+- Decision: reject as noise-sized and keep the default disabled. Do not extend the same change to W2: the expected wait-overlap benefit is absent even at the M128 W13-dominated point, indicating the dependency/issue chain already hides or serializes this wait structure.
+- Artifact: `bench/results/iter99c_w13_merged_wgmma_group_tp4_m128_paired_cold600_20260903.log`.
