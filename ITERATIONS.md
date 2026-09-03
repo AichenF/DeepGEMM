@@ -5253,3 +5253,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The first fresh-default correctness invocation supplied only the repository on `PYTHONPATH`; `bench/test_v4_flash_tp_wgmma.py` exited at `from humming import ops` with `ModuleNotFoundError` before extension compilation or GPU execution.
 - This run contains no numerical evidence. Repeat the same TP4 balanced auto-split4, TP4 skew forced-split2, and TP8-shape balanced auto-split4 gates with the exact Humming and SGLang source paths restored.
 - Evidence: `results/iter130_select_route_k_unroll4_default_correctness_20260903.log`
+
+## Iteration 130b — selected four-way default passes fresh TP4/TP8 correctness
+
+- Re-ran with both route-unroll environment variables explicitly absent, loading the fresh `v130sel` extension. The reported configuration confirms `route_k_unroll2=True` and `route_k_unroll4=True`, so the four-way branch is selected by default.
+- TP4 balanced auto split4 passes with W13/activation/W2 rel-L2 0.000076187/0.000694956/0.002342691; TP4 skew forced split2 passes with 0.000077291/0.000838720/0.002351904; TP8-shape balanced auto split4 passes with 0.000076998/0.000714756/0.002333323.
+- Route preparation and activation quantization checks are exact in all three cases, all outputs are finite, and the errors exactly match the pre-selection four-way candidate gates.
+- Result: correctness no longer blocks the four-way production default. Require one independent 10 x 200 exact-Humming-plus-CARv2 cold-L2 repeat to quantify threshold robustness.
+- Evidence: `results/iter130b_select_route_k_unroll4_default_correctness_20260903.log`
