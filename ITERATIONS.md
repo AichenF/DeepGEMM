@@ -5177,3 +5177,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Both implementations pass independent full-pipeline references and all-reduce checks at every M.  Custom minimum cosine is 0.999995575 and maximum rel-L2 is 0.002974846, all finite.
 - At this Humming geometric mean, 1.20x requires custom <=0.176134183 ms; the remaining reduction is 0.005757276 ms, or 3.17% of the candidate.  Retain opt-in until a long same-process five-shape control/candidate audit confirms the broad screen before changing the default.
 - Evidence: `results/iter126e_route_k_unroll2_exact_humming_tp4_formal_cold2000_20260903.log`.
+
+### Iteration 126f — long five-shape self-control confirms unroll2 broadly
+
+- Ran the same-process TP4 control/unroll2 comparison at all five required M values for ten batches x 200 samples per arm.  Every replay used rank-max CUDA events, AB/BA alternation, identical tensors/CARv2, and a separate excluded 256 MiB cold-L2 clear.
+- Control/candidate medians (ms) and speedups: M8 0.073536/0.073472 = 1.000871x; M16 0.117376/0.116160 = 1.010468x; M32 0.192320/0.188960 = 1.017782x; M64 0.280448/0.275648 = 1.017413x; M128 0.363072/0.356128 = 1.019499x.
+- Geometric means are control 0.176031251 ms and candidate 0.173740818 ms, for 1.013183x (1.32%).  Candidate wins every one of the 40 paired batch medians at M16--M128; M8 is neutral with ties/mixed sub-0.1-us differences.
+- Outputs are bitwise identical at M8/M16/M32/M128.  M64 differs only by cosine 0.999999881 / rel-L2 0.000017986 and passes the tolerance-qualified gate; all values are finite.
+- Result: select `V4_ROUTE_K_UNROLL2=1` as the new default.  It is reference-correct, TP8-runnable, neutral at M8, and provides direction-consistent 1.0--1.95% full-pipeline gains at all larger shapes.
+- Evidence: `results/iter126f_route_k_unroll2_tp4_allm_paired_cold2000_20260903.log`.
