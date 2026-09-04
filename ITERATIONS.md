@@ -6294,3 +6294,15 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: infrastructure FAIL before extension import, JIT compilation, CUDA initialization, correctness, or timing. The command used a stale SGLang worktree path and Python could not import `sglang.kernels.ops.communication.mp` on any rank.
 - Decision: no kernel conclusion. Preserve this exact source state, recover the successful harness environment from repository/history, and rerun unchanged.
 - Evidence: `results/iter173_tp4_single_launch_parallel_route_scan_m8_m128_20260904.log`.
+
+## Iteration 174 — parallel route scan validation (TP4, cold L2)
+
+- Date: 2026-09-04
+- Change under test: same source as Iteration 173, now with the correct SGLang/Humming PYTHONPATH. CTA 0 uses a CUB `BlockScan<int,128>` over two consecutive experts per thread; input remains caller-provided FP8 E4M3 plus FP32 group-128 scales, with BF16-to-FP8 input quantization outside both timed graphs. Launch bound/requested residency are both eight CTAs per SM.
+- Protocol: paired same-process CUDA Graphs on TP4 GPUs 4–7, random routing, M={8,128}, two outer batches × 20 cold-L2 replays per implementation and four warmups; a separate excluded 256 MiB L2 clear immediately precedes every graph replay; rank-max timing.
+- Correctness: PASS for finite/allreduce checks at both points. M8 minimum cosine 0.9999948123 and relative L2 0.00322113; M128 minimum cosine 0.9999955807 and relative L2 0.00297299. M8's different within-expert atomic ordering changes which rows share intermediate quantization groups, so its error is slightly larger than the control and needs a dedicated determinism/reference audit.
+- M8 cold-L2: control/candidate 0.071600/0.077280 ms, speedup 0.926501x. Candidate route/W13/activation/W2 = 2.528/41.568/3.136/21.312 us. Versus Iteration 170, candidate improves 15.1% and route drops by 13.568 us (84.3%).
+- M128 cold-L2: control/candidate 0.306656/0.402752 ms, speedup 0.761402x. Candidate route/W13/activation/W2 = 4.672/219.616/6.752/113.248 us. Versus Iteration 170, candidate improves 5.58% and route drops by 23.584 us (83.5%).
+- M8/M128 geometric mean: control 0.148177 ms, candidate 0.176422 ms, speedup 0.839904x.
+- Decision: keep the parallel scan. M8 is now only 7.9% slower than the frozen multi-kernel path, while M128 remains 31.3% slower. The phase stamps leave roughly 9 us after W2 at M8 and 58.5 us at M128; next audit/parallelize the in-kernel M128 k6+NVLS-pull collective tail, while separately verifying that route-order-dependent quantization error stays within the intended numerical contract.
+- Evidence: `results/iter174_tp4_single_launch_parallel_route_scan_m8_m128_20260904.log`.
