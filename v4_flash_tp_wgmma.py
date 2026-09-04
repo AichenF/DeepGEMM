@@ -280,14 +280,19 @@ SINGLE_LAUNCH_PERSISTENT_GEMM_STATE = (
 SINGLE_LAUNCH_COOPERATIVE_GRID = (
     os.environ.get("V4_SINGLE_LAUNCH_COOPERATIVE_GRID", "0") == "1"
 )
+# The selected serving path uses relaxed progress detection followed by one
+# acquire import.  Legacy acquire polling remains available for A/B checks.
 SINGLE_LAUNCH_RELAXED_GRID_POLL = (
-    os.environ.get("V4_SINGLE_LAUNCH_RELAXED_GRID_POLL", "0") == "1"
+    os.environ.get("V4_SINGLE_LAUNCH_RELAXED_GRID_POLL", "1") == "1"
 )
+# Production builds omit profiling-only globaltimer stores and use one packed
+# count/generation word per whole-grid phase.  Both legacy controls remain
+# explicitly selectable for diagnostics.
 SINGLE_LAUNCH_PHASE_STAMPS = (
-    os.environ.get("V4_SINGLE_LAUNCH_PHASE_STAMPS", "1") == "1"
+    os.environ.get("V4_SINGLE_LAUNCH_PHASE_STAMPS", "0") == "1"
 )
 SINGLE_LAUNCH_PACKED_GRID_BARRIER = (
-    os.environ.get("V4_SINGLE_LAUNCH_PACKED_GRID_BARRIER", "0") == "1"
+    os.environ.get("V4_SINGLE_LAUNCH_PACKED_GRID_BARRIER", "1") == "1"
 )
 SINGLE_LAUNCH_GRID_POLL_SLEEP_NS = int(
     os.environ.get("V4_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS", "64")

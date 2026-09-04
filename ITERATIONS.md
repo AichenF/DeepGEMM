@@ -7394,3 +7394,25 @@ maximum rank latency of a full CUDA-Graph replay.
   select packed generation barriers and timestamp-free serving builds.
 - **Artifact:**
   `bench/results/iter258_packed_grid_barrier_tp4_cold_graph_liveness_20260904.log`.
+
+## Iteration 259 — promote the validated barrier settings to defaults
+
+- **Change:** Made the selected single-launch synchronization settings the
+  module defaults: relaxed grid progress polling enabled, profiling phase
+  stamps disabled, and packed count/generation grid barriers enabled.  Every
+  legacy behavior remains explicitly recoverable with its existing
+  environment variable.  `V4_SINGLE_LAUNCH_TP4` itself remains opt-in, so
+  importing the module does not silently replace the multi-kernel path.
+- **Protocol:** TP4 GPUs 0-3, M={8,128}, random routes, no synchronization
+  environment overrides (only `V4_SINGLE_LAUNCH_TP4=1`), CUDA Graph, two
+  AB/BA batches x 20 cold-L2 replays/implementation, four warmups, shared
+  prequantized input and full rank-max/all-reduce correctness checks.
+- **Configuration check:** Benchmark metadata reports
+  `relaxed_grid_poll=true`, `phase_stamps=false`, and
+  `packed_grid_barrier=true`, proving the intended defaults are active.
+- **Correctness/result:** PASS at both shapes.  Humming/custom medians are
+  `0.088192/0.076016 ms` at M8 (`1.16018x`) and
+  `0.375440/0.358016 ms` at M128 (`1.04867x`).
+- **Decision:** Select these defaults for the TP4 one-launch implementation.
+- **Artifact:**
+  `bench/results/iter259_selected_defaults_tp4_m8_m128_cold_smoke_20260904.log`.
