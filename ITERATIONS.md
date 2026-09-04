@@ -6364,3 +6364,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Two-point geometric mean speedup is 0.867814x, effectively identical to the bound-8 all-M screen; a global switch is rejected.
 - Decision: retain bound 9 only as a large-M tuning lead. Test M64, then encode per-specialization bound 8 for M<=32 and bound 9 only where it wins; inspect cubin resources before selection.
 - Evidence: `results/iter179_tp4_single_launch_bound9_m8_m128_20260904.log`.
+
+## Iteration 180 — bound-9 middle-M screen contaminated by host/GPU slow mode
+
+- Date: 2026-09-04
+- Configuration/protocol: unchanged bound-9 M-specialized source, TP4 GPUs 4–7, random M={16,32,64}, paired CUDA Graphs, two batches × 20 separately cold-L2 replays per implementation, four warmups, rank-max timing.
+- Correctness: all candidate/control outputs pass unchanged numerical and allreduce gates.
+- Contamination: M16 candidate/control batch medians split 4.225840/0.127472 ms and 4.239312/0.113904 ms; M32 split 0.212256/1.999088 ms and 0.177200/1.497280 ms. These correlated whole-batch millisecond modes make their pooled medians and the printed geometric summary invalid for kernel selection.
+- Stable M64 result: control/candidate 0.249888/0.293056 ms, speedup 0.852697x; phases route/W13/activation/W2 = 3.872/172.384/5.120/93.504 us. Relative to bound 8, W13 improves roughly 3.3 us while W2 regresses roughly 2.4 us, leaving only a noise-sized net change.
+- Decision: do not select bound 9 for M16/M32/M64 from this run. Its only supported lead remains M128 from Iteration 179. Future formal comparisons must be rerun in a clean window and judged with paired batch medians.
+- Evidence: `results/iter180_tp4_single_launch_bound9_m16_m32_m64_20260904.log`.
