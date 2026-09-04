@@ -243,12 +243,12 @@ SINGLE_LAUNCH_NOINLINE_GEMM = (
     os.environ.get("V4_SINGLE_LAUNCH_NOINLINE_GEMM", "0") == "1"
 )
 SINGLE_LAUNCH_MIN_BLOCKS = int(
-    os.environ.get("V4_SINGLE_LAUNCH_MIN_BLOCKS", "4")
+    os.environ.get("V4_SINGLE_LAUNCH_MIN_BLOCKS", "8")
 )
 if SINGLE_LAUNCH_MIN_BLOCKS not in (4, 5, 6, 7, 8):
     raise ValueError("V4_SINGLE_LAUNCH_MIN_BLOCKS must be in [4,8]")
 SINGLE_LAUNCH_CTAS_PER_SM = int(
-    os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "5")
+    os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "8")
 )
 if SINGLE_LAUNCH_CTAS_PER_SM not in (1, 2, 3, 4, 5, 6, 7, 8):
     raise ValueError("V4_SINGLE_LAUNCH_CTAS_PER_SM must be in [1,8]")
@@ -2507,9 +2507,12 @@ __device__ __forceinline__ void single_launch_route_task(
         int32_t* __restrict__ route_to_sorted,
         int tokens, int linear_block_idx) {
     constexpr int kExperts = 256;
+    constexpr int kExpertsPerThread = 2;
+    using ExpertScan = cub::BlockScan<int, 128>;
     __shared__ int counts[kExperts];
     __shared__ int cursors[kExperts];
     __shared__ int total_padded;
+    __shared__ typename ExpertScan::TempStorage scan_storage;
 
     const int tid = threadIdx.x;
     const int routes = tokens * kTopK;
@@ -2525,19 +2528,28 @@ __device__ __forceinline__ void single_launch_route_task(
         }
         __syncthreads();
 
+        const int expert0 = tid * kExpertsPerThread;
+        const int expert1 = expert0 + 1;
+        int padded_counts[kExpertsPerThread] = {
+            (counts[expert0] + 7) & ~7,
+            (counts[expert1] + 7) & ~7,
+        };
+        int offsets[kExpertsPerThread];
+        int block_aggregate;
+        ExpertScan(scan_storage).ExclusiveSum(
+            padded_counts, offsets, block_aggregate);
+        cursors[expert0] = offsets[0];
+        cursors[expert1] = offsets[1];
         if (tid == 0) {
-            int offset = 0;
-            for (int expert = 0; expert < kExperts; ++expert) {
-                cursors[expert] = offset;
-                const int padded_count = (counts[expert] + 7) & ~7;
-                for (int position = offset;
-                     position < offset + padded_count; position += 8)
-                    expert_ids[position >> 3] = expert;
-                offset += padded_count;
-            }
-            total_padded = offset;
-            *num_tokens_padded = offset;
+            total_padded = block_aggregate;
+            *num_tokens_padded = block_aggregate;
         }
+        for (int position = offsets[0];
+             position < offsets[0] + padded_counts[0]; position += 8)
+            expert_ids[position >> 3] = expert0;
+        for (int position = offsets[1];
+             position < offsets[1] + padded_counts[1]; position += 8)
+            expert_ids[position >> 3] = expert1;
         __syncthreads();
 
         for (int position = tid; position < total_padded; position += 128)
@@ -5546,9 +5558,9 @@ _EXTENSION_CONFIG = (
           f"slnig{int(SINGLE_LAUNCH_NOINLINE_GEMM)}_"
           f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v170lb")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v173rscan")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v170lb"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v173rscan"
 )
 
 _ext = load_inline(

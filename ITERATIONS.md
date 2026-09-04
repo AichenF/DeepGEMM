@@ -6286,3 +6286,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Correctness: both points passed allreduce/finite checks; minimum cosine across ranks exceeded 0.999995.
 - Decision: bound 7 is slower than bound 8 from Iteration 170. Keep bound 8 as the best measured residency point. The intended bound-6 half of this shell sweep was not retained because the second `tee` overwrote the first log; measure it separately before closing that comparison.
 - Raw log: `results/iter172_tp4_single_launch_bound6_7_sweep_20260904.log`.
+
+## Iteration 173 — parallel route scan first validation attempt
+
+- Date: 2026-09-04
+- Change under test: advance the validated single-launch defaults to an eight-block launch bound/eight requested CTAs per SM, and replace CTA 0's serial 256-expert padded-prefix loop with a 128-thread CUB block scan over two consecutive experts per thread. The serving ABI remains prequantized FP8 `qx/x_scale`; no BF16-to-FP8 input quantization was added. Only the SwiGLU output is requantized for FC2.
+- Result: infrastructure FAIL before extension import, JIT compilation, CUDA initialization, correctness, or timing. The command used a stale SGLang worktree path and Python could not import `sglang.kernels.ops.communication.mp` on any rank.
+- Decision: no kernel conclusion. Preserve this exact source state, recover the successful harness environment from repository/history, and rerun unchanged.
+- Evidence: `results/iter173_tp4_single_launch_parallel_route_scan_m8_m128_20260904.log`.
