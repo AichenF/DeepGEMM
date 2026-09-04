@@ -8943,3 +8943,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Inference: the bug is not merely a correct final `down` consumed too early. Invoking the chunk helper mid-loop perturbs, drops, or corrupts W2 results, or the arrival condition permits a nominally completed chunk to still have unfinished stores that are subsequently lost. Post-barrier helper modes remain correct.
 - Decision: keep overlap rejected/default-off. Next isolate helper-return effects on W2 execution and test a stronger producer fence/task accounting before changing the collective protocol.
 - Artifact: `bench/results/iter348_w2_chunk_overlap_down_localization_20260904.log`.
+
+## Iteration 349 — audit packed chunk-ready generations (2026-09-04)
+
+- Hypothesis: duplicate or missing per-CTA chunk arrivals could publish a chunk early and carry a partial count into the next CUDA Graph replay.
+- Instrumentation: the output diagnostic now snapshots packed chunk-ready words 18–21 after each replay and reports their low 10-bit arrival count plus 22-bit generation.
+- Setup: TP4 GPUs 0–3, M128 random routes, seed 20260904, overlap enabled, four diagnostic graph replays with the same prequantized FP8/MXFP4 contract.
+- Counter evidence: after the four observed replays, all four chunk words had low arrival count exactly zero. Their generations advanced in lockstep as `[3,3,3,3]`, `[4,4,4,4]`, `[5,5,5,5]`, and `[6,6,6,6]`.
+- Correctness evidence: `down` remained nondeterministically corrupted, with repeat-versus-first max-absolute differences of 73,728–120,832 and the same early-chunk-heavy mismatch distribution.
+- Inference: there is no leftover arrival count, generation skew, or obvious duplicate/missing-arrival carry across replays. The failure is downstream of nominal chunk completion and tied to executing/resuming W2 around the mid-loop helper.
+- Decision: retain overlap default-off. Isolate a mid-loop no-op/wait path from the actual communication helper, and map corrupted elements back to W2 task/CTA ownership.
+- Artifact: `bench/results/iter349_w2_chunk_ready_generation_audit_20260904.log`.

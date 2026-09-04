@@ -362,6 +362,7 @@ def main() -> None:
             control_down = control_case.down.clone()
             candidate_snapshots: list[torch.Tensor] = []
             candidate_down_snapshots: list[torch.Tensor] = []
+            candidate_chunk_state: list[list[int]] = []
             for _ in range(4):
                 candidate_graph.replay()
                 torch.cuda.synchronize(device)
@@ -369,6 +370,13 @@ def main() -> None:
                 assert candidate_case.down is not None
                 candidate_snapshots.append(candidate_case.graph_output.clone())
                 candidate_down_snapshots.append(candidate_case.down.clone())
+                packed_words = [
+                    int(value) & 0xFFFFFFFF
+                    for value in candidate_case.single_launch_barrier_state[
+                        18:22
+                    ].cpu().tolist()
+                ]
+                candidate_chunk_state.append(packed_words)
             diagnostic_reference = (
                 candidate_case.make_reference_case().run_local().clone()
             )
@@ -528,6 +536,14 @@ def main() -> None:
                             "repeat_vs_first_max_abs_rank_max": (
                                 down_repeat_max_abs
                             ),
+                            "chunk_ready_counts_rank0": [
+                                [word & 0x3FF for word in words]
+                                for words in candidate_chunk_state
+                            ],
+                            "chunk_ready_generations_rank0": [
+                                [word >> 10 for word in words]
+                                for words in candidate_chunk_state
+                            ],
                         },
                         sort_keys=True,
                     ),
