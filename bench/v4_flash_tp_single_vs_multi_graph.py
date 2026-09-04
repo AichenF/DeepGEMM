@@ -13,7 +13,10 @@ import torch.distributed as dist
 from triton import runtime as triton_runtime
 
 import sglang.srt.distributed.parallel_state as ps
-from sglang.kernels.ops.communication.mp import register_comm_cleanup
+try:
+    from sglang.jit_kernel.mp import register_comm_cleanup
+except ImportError:  # Compatibility with the older benchmark checkout.
+    from sglang.kernels.ops.communication.mp import register_comm_cleanup
 from sglang.srt.distributed.device_communicators.custom_all_reduce_v2 import (
     CustomAllReduceV2,
 )

@@ -6641,3 +6641,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** The local kernel compiled and passed its existing canonical-Marlin checks unchanged: finite output, exact L1 X/scale/weight pool copies, and weighted FC1 intermediate cosine `0.9996428552` with rel-L2 `0.02710524`. The paired process did not reach graph creation because the launch command supplied a stale SGLang worktree in `PYTHONPATH`, producing `ModuleNotFoundError: sglang.kernels.ops.communication.mp` on all ranks. No latency result exists for this iteration.
 - **Conclusion:** The lookup implementation is compile- and local-correct, but performance and distributed replay correctness remain unverified. Locate the SGLang checkout that contains the required CARv2 module and rerun the identical paired cold-L2 benchmark before retaining or reverting this direction.
 - **Artifact:** `bench/results/iter218_native_task_lookup_tp4_allm_cold_smoke_20260904.log`.
+
+## Iteration 219 — Update the paired harness for SGLang's moved cleanup helper
+
+- **Change:** Added a current-path-first compatibility import for `register_comm_cleanup` (`sglang.jit_kernel.mp`, falling back to the legacy `sglang.kernels.ops.communication.mp`) in the single-vs-multi entry and its two direct helper modules. No kernel, graph contents, or timing protocol changed.
+- **Test:** Attempted the TP4 random-route all-M paired cold-L2 smoke in the weekly container using the authoritative `/workspace/sglang/python` checkout.
+- **Result:** Infrastructure FAIL before communicator construction, graph capture, CUDA kernel execution, correctness, or timing. The paired helper imports `bench/v4_flash_tp_humming_graph.py`, which contained one additional legacy-only cleanup import and raised the same `ModuleNotFoundError` on every rank.
+- **Conclusion:** The selected SGLang checkout and replacement API are correct, but the import closure was incomplete. Search all modules loaded by this benchmark, update the remaining compatibility import, and rerun unchanged; no task-lookup performance conclusion is possible from this attempt.
+- **Artifact:** `bench/results/iter219_native_task_lookup_tp4_allm_cold_smoke_20260904.log`.
