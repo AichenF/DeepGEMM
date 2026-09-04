@@ -8215,3 +8215,27 @@ maximum rank latency of a full CUDA-Graph replay.
   The selected one-WG schedule remains the default.
 - **Artifact:**
   `bench/results/iter290_tail_activation_only_m128_smoke_20260904.log`.
+
+## Iteration 291 — current two-shot path still rejects persistent GEMM state
+
+- **Change:** No source change after Iteration 290.  Re-screened the existing
+  opt-in `V4_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE=1` now that TP4 M128 uses the
+  selected embedded P2P two-shot collective.  This mode reuses each CTA's
+  TMA mbarriers/LUT across task rounds and removes the separate post-task CTA
+  rendezvous; the multi-kernel control is unchanged.
+- **Protocol:** TP4 GPUs 0-3, random M128, two balanced batches x 20
+  independently cold-L2 CUDA-Graph replays per arm, four warmups, rank-max,
+  excluded 256 MiB clears, and device phase stamps.  Both paths start from
+  caller-provided FP8 E4M3 X/FP32 group-128 scales and MXFP4 weights.
+- **Correctness:** PASS exactly against control; output is finite and the
+  embedded P2P two-shot all-reduce oracle passes.
+- **Cold-L2 result:** Multi/candidate medians are
+  `0.303120/0.355680 ms`; candidate is `17.34%` slower.  Candidate phases are
+  route/W13/requant/W2 = `4.224/213.888/6.304/110.752 us`.
+- **Interpretation:** Persistent state does not recover the current M128 gap.
+  W2 is effectively unchanged and W13 is slightly slower than the recent
+  selected-path phase window; the prior short compute-only signal again fails
+  to survive distributed paired timing even with the new collective.
+- **Decision:** Keep disabled and close this retest.
+- **Artifact:**
+  `bench/results/iter291_persistent_state_current_twoshot_m128_screen_20260904.log`.
