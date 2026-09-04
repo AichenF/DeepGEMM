@@ -143,6 +143,11 @@ W2_MBLOCK_SCALE = os.environ.get("V4_W2_MBLOCK_SCALE", "0") == "1"
 SINGLE_LAUNCH_TAIL_OVERLAP = (
     os.environ.get("V4_SINGLE_LAUNCH_TAIL_OVERLAP", "0") == "1"
 )
+SINGLE_LAUNCH_TAIL_GROUP_CTAS = int(
+    os.environ.get("V4_SINGLE_LAUNCH_TAIL_GROUP_CTAS", "16")
+)
+if SINGLE_LAUNCH_TAIL_GROUP_CTAS not in (16, 32):
+    raise ValueError("V4_SINGLE_LAUNCH_TAIL_GROUP_CTAS must be 16 or 32")
 W2_NEEDS_ROUTE_MAP = (
     W2_SORTED_ACT or W2_MBLOCK_SCALE or SINGLE_LAUNCH_TAIL_OVERLAP
 )
@@ -3382,7 +3387,8 @@ static constexpr int kSingleLaunchPhaseStampWords =
     kSingleLaunchPhaseStamps * 2;
 static constexpr int kSingleLaunchStatePrefixWords =
     kSingleLaunchBarrierWords + kSingleLaunchPhaseStampWords;
-static constexpr int kSingleLaunchTailGroupCtas = 16;
+static constexpr int kSingleLaunchTailGroupCtas =
+    K_SINGLE_LAUNCH_TAIL_GROUP_CTAS;
 static constexpr int kSingleLaunchTailMaxGroups = 39;
 static constexpr int kSingleLaunchTailStateWords =
     2 * kSingleLaunchTailMaxGroups;
@@ -3393,11 +3399,9 @@ __device__ __forceinline__ void single_launch_grid_barrier(
     if constexpr (kSingleLaunchCooperativeGrid) {
         cooperative_groups::this_grid().sync();
         if (record_timestamp && blockIdx.x == 0 && threadIdx.x == 0) {
-            if (record_timestamp) {
-                reinterpret_cast<uint64_t*>(
-                    state + kSingleLaunchBarrierWords)[phase + 1] =
-                        read_globaltimer();
-            }
+            reinterpret_cast<uint64_t*>(
+                state + kSingleLaunchBarrierWords)[phase + 1] =
+                    read_globaltimer();
         }
         return;
     }
@@ -3409,9 +3413,11 @@ __device__ __forceinline__ void single_launch_grid_barrier(
         observed_epoch = load_acquire_gpu_i32(epoch);
         const int arrival = atomic_add_acq_rel_gpu_i32(count, 1);
         if (arrival == expected_blocks - 1) {
-            reinterpret_cast<uint64_t*>(
-                state + kSingleLaunchBarrierWords)[phase + 1] =
-                    read_globaltimer();
+            if (record_timestamp) {
+                reinterpret_cast<uint64_t*>(
+                    state + kSingleLaunchBarrierWords)[phase + 1] =
+                        read_globaltimer();
+            }
             atomicExch(count, 0);
             store_release_gpu_i32(epoch, observed_epoch + 1);
         } else {
@@ -5908,6 +5914,7 @@ _EXTENSION_CONFIG = (
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slto{int(SINGLE_LAUNCH_TAIL_OVERLAP)}_"
+          f"sltg{SINGLE_LAUNCH_TAIL_GROUP_CTAS}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
@@ -6007,6 +6014,7 @@ _ext = load_inline(
             f"{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}"
         ),
         f"-DK_SINGLE_LAUNCH_TAIL_OVERLAP={int(SINGLE_LAUNCH_TAIL_OVERLAP)}",
+        f"-DK_SINGLE_LAUNCH_TAIL_GROUP_CTAS={SINGLE_LAUNCH_TAIL_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",

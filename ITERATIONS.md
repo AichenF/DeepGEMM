@@ -6806,3 +6806,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Analysis: advancing 31/43 M8 mblocks and 24/249 M128 mblocks cuts the later W2 phase by roughly 12/10 us, but two W2 tasks per cohort CTA make the overlap window 23-28 us and increase the total measured compute interval by about 8-10 us. The dependency design is valid; the 16-CTA workload is over-aggressive.
 - Decision: retain behind the flag and next test 32-CTA cohorts, which perform one activation task and one W2 tile per CTA, advance only 15/12 mblocks at M8/M128, and should fit M128's residual W13 tail. Do not run distributed timing or claim a gain for this version.
 - Artifact: `bench/results/iter236_tail_overlap_m8_m128_compute_smoke_20260904.log`.
+## Iteration 237 — 32-CTA tail-overlap cohorts still lose
+
+- Change: parameterized the opt-in tail-overlap cohort as `V4_SINGLE_LAUNCH_TAIL_GROUP_CTAS={16,32}` and fixed phase instrumentation so the extra balanced pre-tail barrier no longer overwrites the route timestamp. Tested 32 CTAs: one activation group and one W2 N128 tile per CTA, advancing 15 M8 or 12 M128 prefix mblocks. Relaxed grid polling remains enabled.
+- Protocol: H20 GPU 0, random M={8,128}, prequantized FP8 X/group-128 scale plus MXFP4 weights, excluded 256 MiB cold-L2 clear, compute-only W2 route tensor checked against the independent multi-kernel path.
+- Correctness: PASS bitwise at both M (`cosine=1`, `rel_l2=0`, finite=true).
+- Phase result (route / W13 plus overlap / remaining activation / remaining W2 us): M8 `2.368/54.656/3.872/18.656`; M128 `4.800/225.312/7.648/105.888`.
+- Analysis: compared with relaxed-poll schedule 0, early W2 reduces the remaining W2 phase only about 3-4 us, while mixed W13/W2 traffic plus the extra rendezvous expands the W13/overlap interval by roughly 14 us. Total compute time regresses about 11 us at both sizes. The 16-CTA and 32-CTA variants agree that pushing W2 into the W13 tail is counterproductive on cold weights.
+- Decision: reject W2 tail overlap and keep disabled; do not run distributed timing. If this structural path is revisited, overlap activation only, never concurrent cold W13/W2 weight streams.
+- Artifact: `bench/results/iter237_tail_overlap_group32_m8_m128_compute_smoke_20260904.log`.

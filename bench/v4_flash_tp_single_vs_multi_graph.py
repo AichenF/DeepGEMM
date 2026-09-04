@@ -204,6 +204,9 @@ def main() -> None:
                     "single_launch_tail_overlap": (
                         kernel.SINGLE_LAUNCH_TAIL_OVERLAP
                     ),
+                    "single_launch_tail_group_ctas": (
+                        kernel.SINGLE_LAUNCH_TAIL_GROUP_CTAS
+                    ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
                     ),
