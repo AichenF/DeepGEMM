@@ -78,6 +78,7 @@ class NativeWorkspace:
     topk_weights: torch.Tensor
     l1_acts: torch.Tensor
     l1_acts_sf: torch.Tensor
+    l1_topk_weights: torch.Tensor
     l2_acts: torch.Tensor
     l2_acts_sf: torch.Tensor
 
@@ -159,6 +160,7 @@ def allocate_workspace(
         topk_weights=view("topk_weights"),
         l1_acts=view("l1_acts"),
         l1_acts_sf=view("l1_acts_sf"),
+        l1_topk_weights=view("l1_topk_weights"),
         l2_acts=view("l2_acts"),
         l2_acts_sf=view("l2_acts_sf"),
     )

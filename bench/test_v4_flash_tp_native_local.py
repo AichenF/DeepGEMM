@@ -39,7 +39,13 @@ def main() -> None:
     qx = (torch.randn((args.m, 4096), device=device) * 0.1).to(
         torch.float8_e4m3fn
     )
-    x_scale = torch.ones((args.m, 32), dtype=torch.float32, device=device)
+    x_scale = (
+        1.0
+        + torch.arange(args.m, dtype=torch.float32, device=device)[:, None]
+        * 0.01
+        + torch.arange(32, dtype=torch.float32, device=device)[None, :]
+        * 0.0001
+    )
     topk_ids = (
         torch.arange(args.m * 6, dtype=torch.int64, device=device)
         .view(args.m, 6)
@@ -55,6 +61,25 @@ def main() -> None:
     )
     native.run_local(workspace, native_w13, native_w2, output, args.m)
     torch.cuda.synchronize()
+
+    # With one route per expert, expert e owns one padded BM8 pool block and
+    # its single valid row is e * 8.  Verify the persistent dispatch payload
+    # before attributing any error to the GEMMs or TP communication.
+    route_indices = torch.arange(args.m * 6, device=device)
+    pool_rows = route_indices * native.BLOCK_M
+    src_tokens = torch.div(route_indices, native.TOP_K, rounding_mode="floor")
+    src_topk = route_indices.remainder(native.TOP_K)
+    pooled_x = workspace.l1_acts.index_select(0, pool_rows)
+    expected_x = qx.index_select(0, src_tokens)
+    pooled_sf = workspace.l1_acts_sf[:, pool_rows].T.contiguous()
+    expected_sf = x_scale.index_select(0, src_tokens)
+    pooled_weights = workspace.l1_topk_weights.index_select(0, pool_rows)
+    expected_weights = topk_weights[src_tokens, src_topk]
+    x_mismatch_bytes = int(
+        (pooled_x.view(torch.uint8) != expected_x.view(torch.uint8)).sum()
+    )
+    sf_max_abs = float((pooled_sf - expected_sf).abs().max())
+    weight_max_abs = float((pooled_weights - expected_weights).abs().max())
     print(
         "NATIVE_LOCAL_RESULT "
         + json.dumps(
@@ -62,6 +87,9 @@ def main() -> None:
                 "m": args.m,
                 "finite": bool(torch.isfinite(output).all()),
                 "max_abs": float(output.float().abs().max()),
+                "l1_x_mismatch_bytes": x_mismatch_bytes,
+                "l1_sf_max_abs": sf_max_abs,
+                "l1_weight_max_abs": weight_max_abs,
                 "workspace_bytes": workspace.storage.numel(),
             },
             sort_keys=True,

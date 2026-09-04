@@ -6502,3 +6502,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** Multi-kernel control remains correct (cosine 0.9999956066, rel-L2 0.00296430). Native local output remains incorrect (raw cosine -0.00884177, rel-L2 1.210887; scaled-by-1.5 cosine -0.00884466, rel-L2 1.430907), and native TP final remains incorrect (cosine 0.00261821, rel-L2 1.403450).
 - **Conclusion:** The 32-vs-16 experts-per-wave divergence is not the numerical root cause. The output exactly reproduces the earlier Iteration 197 failure under the official braid+Mode2 contract, so weight row encoding and wave width are deprioritized. Next isolate the route/pool copy boundary by checking persisted L1 activation rows and scale columns against their source FP8 X/scale.
 - **Artifact:** `bench/results/iter200_native_mode2_wave16_tp4_m8_20260904.log`.
+
+## Iteration 201 — Audit the prequantized input at the native L1 pool boundary
+
+- **Change:** Exposed the already allocated L1 route-weight view and extended the single-GPU local diagnostic. For the deterministic one-route-per-expert pattern, it compares each expert's valid BM8 pool row against the caller-provided FP8-E4M3 X bytes, FP32 group-128 scale vector, and route weight after the native kernel returns.
+- **Input contract:** No input quantization was added to the kernel. The diagnostic passes prequantized FP8 X and explicit FP32 scales; only the kernel's route/pad copy is inspected.
+- **Test:** H20 GPU 0, native local body, M=8, experts 0..47 each receiving exactly one route.
+- **Result:** `l1_x_mismatch_bytes=0`, `l1_sf_max_abs=0.0`, and `l1_weight_max_abs=0.0`; output remains finite/nonzero. The workspace route/pool boundary preserves all three caller inputs exactly.
+- **Conclusion:** The near-zero end-to-end cosine is downstream of dispatch/pool formation. Input FP8 X, activation scales, route mapping, and route weights arrive correctly at FC1. Next compare the native FC1+SwiGLU intermediate FP8 rows/scales against the correct multi-kernel stage output before investigating FC2/combine.
+- **Artifact:** `bench/results/iter201_native_l1_pool_audit_m8_20260904.log`.
