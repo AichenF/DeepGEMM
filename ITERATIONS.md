@@ -6438,3 +6438,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: **still failed with `cudaErrorIllegalInstruction`**; evidence is `bench/results/iter188_native_cleanup_barrier_m8_20260904.log`.
 - Interpretation: the first race hypothesis was incomplete. A repeated barrier at loop entry/exit may itself permit adjacent generations to alias, or another dispatch/control-flow mismatch reaches the same PC.
 - Decision: retain the owned body for safe TP-specific fixes; re-run compute-sanitizer to identify the new exact PC before another edit.
+
+## Iteration 189/190 — single-warp TP cleanup
+
+- Diagnosis: the post-Iteration-188 sanitizer still reported barrier-0 illegal instructions at the cleanup entry (`v4_flash_tp_native_body.inl:421`), recorded in `bench/results/iter189_native_cleanup_barrier_compute_sanitizer_20260904.log`.
+- Change: specialized TP-local cleanup to warp 0, removed every loop-local 64-thread barrier, and left the existing following grid/NVLink barrier as the CTA-wide completion point.
+- Test: one H20 GPU, M=8 local-only body, CUDA_LAUNCH_BLOCKING=1.
+- Result: **still failed with `cudaErrorIllegalInstruction`**; evidence is `bench/results/iter190_native_warp0_cleanup_m8_20260904.log`.
+- Decision: the error has likely moved. Preserve the single-warp cleanup (it removes the proven multi-iteration hazard) and collect a new sanitizer PC before deciding whether this repair is sufficient.

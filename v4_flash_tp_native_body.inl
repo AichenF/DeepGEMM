@@ -411,38 +411,28 @@
                     *workspace.get_l2_task_count_ptr() = 0;
                 }
             }
-        } else {
+        } else if (warp_idx == 0) {
+            // TP-local uses 256 experts on one rank, so a CTA revisits this
+            // loop several times.  Keep cleanup on one warp: the original
+            // cross-warp barrier scheme assumes the small EP expert count and
+            // can alias barrier generations once a CTA owns 3-4 experts.
             for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
                 const auto num_recv_tokens = static_cast<uint32_t>(
                     *workspace.get_expert_recv_count_sum_ptr(i));
                 const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
                 const auto cleanup_pool_block_offset = scheduler.get_pool_block_offset(i);
 
-                ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
-
-                DG_STATIC_ASSERT(kNumDispatchWarps >= 2, "Not enough dispatch warps");
-                if (warp_idx == 0) {
+                if (lane_idx == 0)
                     *workspace.get_expert_recv_count_sum_ptr(i) = 0;
-                } else if (warp_idx == 1) {
-                    if (cute::elect_one_sync() and cumulative_local_expert_recv_stats != nullptr)
-                        ptx::red_add(cumulative_local_expert_recv_stats + i, static_cast<int>(num_recv_tokens));
-                    __syncwarp();
-                }
 
-                for (uint32_t j = thread_idx; j < kNumRanks; j += kNumDispatchThreads)
+                for (uint32_t j = lane_idx; j < kNumRanks; j += 32)
                     *workspace.get_expert_recv_count_ptr(j, i) = 0;
-                __syncwarp();
 
-                for (uint32_t j = thread_idx; j < num_recv_m_blocks; j += kNumDispatchThreads) {
+                for (uint32_t j = lane_idx; j < num_recv_m_blocks; j += 32) {
                     *workspace.get_l1_arrival_count_ptr(cleanup_pool_block_offset + j) = 0;
                     *workspace.get_l2_arrival_mask_ptr(cleanup_pool_block_offset + j) = 0;
                 }
                 __syncwarp();
-                // TP-local mode has 256 experts/rank, so each CTA cleans
-                // several experts.  Pair both dispatch warps at the end of
-                // every iteration before either warp can reuse barrier 0 for
-                // the next expert or the following NVLink barrier.
-                ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
             }
         }
     };
