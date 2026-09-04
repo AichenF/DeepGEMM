@@ -5553,3 +5553,17 @@ maximum rank latency of a full CUDA-Graph replay.
 - Full-graph smoke medians (ms): P2P push `0.307616`, P2P 1-shot pull `0.311952`, P2P 2-shot `0.305616`, NVLS push `0.307040`, NVLS 2-shot `0.304048`.  The local compute dilutes the AR-only differences to 0.2–1.3%; two batches are insufficient for selection.
 - Next: execute the single-process M64/M128 10x200 formal matrix and retain all batch med, p05/p95, and correctness evidence.
 - Artifact: `results/iter142_ar_transport_matrix_tp4_m128_smoke_coldl2_20260904.log`.
+
+## Iteration 143 — formal TP4 M64/M128 one/two-shot and NVLS/P2P matrix
+
+- Ran the committed clean matrix on physical GPUs 4–7 with random nonzero AR inputs and replicated full-path X/routes.  Each of five variants received 10 balanced rotation/reversal batches x 200 CUDA Graph replays per M/scope; every replay restored AR-only input first, then performed an excluded 256 MiB L2 clear, and reduced event time to the TP4 maximum rank.
+- Correctness: all 20 `(M,scope,variant)` cases pass; all five variants are bitwise identical to P2P 2-shot at both M values.  AR-only cosine is `0.999995578/0.999995622` at M64/M128; full cosine is `0.999995487/0.999995568`.
+- AR-only medians (us), ordered P2P push / P2P 1-shot pull / P2P 2-shot / NVLS multicast push / direct-symmetric NVLS 2-shot:
+  - M64 (512 KiB): `12.896 / 15.040 / 12.544 / 12.832 / 12.576`.  P2P 2-shot is 2.81% faster than P2P push; multicast push is only 0.50% faster than ordinary push; NVLS 2-shot is 0.25% slower than P2P 2-shot and wins only 2/10 batches.  Treat P2P/NVLS 2-shot as a tie at this size.
+  - M128 (1 MiB): `17.536 / 20.320 / 14.880 / 18.752 / 14.656`.  P2P 2-shot is 17.85% faster than P2P push.  NVLS multicast push is 6.94% slower than ordinary push.  NVLS 2-shot is 1.53% faster than P2P 2-shot and wins all 10/10 batches; it is 27.95% faster than NVLS push.
+- Full current TP-MoE medians (ms), same order:
+  - M64: `0.282112 / 0.278816 / 0.274688 / 0.275056 / 0.281152`.  P2P 2-shot and NVLS push differ by only `0.368 us`; NVLS push wins 6/10 batches, so this is a practical tie.  Direct-symmetric NVLS 2-shot loses pooled by `6.464 us` and wins only 2/10.
+  - M128: `0.357200 / 0.372992 / 0.366112 / 0.360032 / 0.354688`.  The pooled winner is NVLS 2-shot, `11.424 us` (3.22%) ahead of P2P 2-shot, but it wins only 6/10 batches.  P2P push also appears `8.912 us` ahead of P2P 2-shot while winning only 6/10; these contradictory full-path rankings track the large compute-latency modes and are not yet selectable.
+- Finding: the AR-only result robustly establishes the algorithm crossover: 2-shot is modestly better at 512 KiB and decisively better at 1 MiB.  It also isolates NVLS: multicast does not make full-vector 1-shot competitive at 1 MiB, while direct-symmetric NVLS 2-shot has a small repeatable transport-only lead there.  The noisy full path needs focused pairwise confirmation before changing production.
+- Next: pair only the plausible finalists (`NVLS push vs P2P 2-shot` at M64; `NVLS 2-shot vs P2P 2-shot` at M128) with replay-granularity AB/BA and a separate batch-granularity repeat, then reject any order-sensitive result.
+- Artifact: `results/iter143_ar_transport_matrix_tp4_m64_m128_formal_cold2000_20260904.log`.
