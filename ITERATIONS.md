@@ -8454,3 +8454,17 @@ maximum rank latency of a full CUDA-Graph replay.
   screen.
 - **Artifact:**
   `bench/results/iter306_native_rs_k128_batch_m8_correctness_20260904.log`.
+
+## Iteration 307 — TP4 K128-batch screen blocked at Humming import
+
+- **Attempt:** Launch the Iteration-306 native K128-batch candidate against the
+  selected multi-kernel control on GPUs 0-3 for random M8/M128, two AB/BA
+  batches x 10 individually cold-L2 CUDA-Graph replays, three warmups.
+- **Result:** BLOCKED before CUDA setup or timing.  All four ranks exited during
+  module import with `ModuleNotFoundError: humming`; the launch omitted the
+  Humming checkout from `PYTHONPATH`.  No GPU result, correctness result, or
+  latency sample was produced, so this says nothing about the candidate.
+- **Next:** Rerun the identical command with both this repository and the pinned
+  Humming v0.1.12 checkout on `PYTHONPATH`.
+- **Artifact:**
+  `bench/results/iter307_native_rs_k128_batch_tp4_m8_m128_cold_screen_20260904.log`.
