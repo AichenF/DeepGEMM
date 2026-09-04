@@ -8890,3 +8890,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Bracket-normalized effect:** chunk-major is about **1.05% slower at M8** and **0.48% slower at M128**. Direct candidate medians agree: M8 0.077552/0.077552 ms OFF versus 0.078464/0.078416 ms ON; M128 0.342368/0.343008 ms OFF versus 0.343488/0.344320 ms ON.
 - **Decision:** **Do not select the permutation alone.** It is a modest enabling cost, not a performance win. Continue to the intended M64/M128-only chunk-ready communication overlap only if that fused overlap recovers more than this 0.5% large-M tax and produces at least 2% net cold-L2 gain. Leave the opt-in default off.
 - **Artifact:** `bench/results/iter343_w2_chunk_major_sass_cold_ab_20260904.log`.
+
+## Iteration 344 — First in-kernel FC2-chunk / P2P-two-shot overlap smoke
+
+- **Hypothesis:** After four-way chunk-major FC2 ordering, publish each N1024 chunk with a release-arrival counter and let 16 tail-wave CTAs perform that chunk's local k6 combine + P2P two-shot while the remaining CTAs compute later FC2 chunks. This removes the terminal FC2 whole-grid barrier on the fast path and aims to hide the former 17–21 us serial tail.
+- **Implementation:** Added opt-in `V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP=1`, four generation-counted chunk-ready words, uniform fallback when `num_mblocks*8 < gridDim.x`, four interleaved groups across the physical tail 64 CTAs, 64 unique CARv2 semaphore slots, and full token-major symmetric-buffer addressing. External X quantization remains outside the public FP8/MXFP4 contract and outside timing.
+- **Setup:** TP4 GPUs 0–3, M128 random routes, seed 20260904, release-arrival + assume-valid + chunk-major + chunk-AR-overlap, CUDA Graph outer=1/replays=2/warmup=1. Every implementation replay used its own excluded 256 MiB L2 clear.
+- **Liveness:** Compilation, capture, warmup, and timed replays completed without a hang.
+- **Correctness:** **FAIL.** The harness's loose acceptance flag remained true, but the overlap output materially diverged from the unchanged control: cosine fell from 0.9999956090 to 0.9999581111, rel-L2 rose from 0.00296345 to 0.00915340, and max absolute error rose from 1024 to 26272 (16.45% of reference max). This is not acceptable despite finite/all-rank-equal output.
+- **Smoke timing:** 0.395408 ms candidate median versus 0.325040 ms noisy control median (two samples only), substantially slower than the ~0.343 ms non-overlapped candidate. No performance conclusion is valid until the data race/addressing error is fixed.
+- **Decision:** **REJECT current implementation; keep default off.** Next step is a correctness-first audit of chunk ownership, symmetric-buffer overwrite order, and semaphore publication. Do not benchmark this variant further before exact-output diagnostics.
+- **Artifact:** `bench/results/iter344_w2_chunk_ar_overlap_m128_smoke_20260904.log`.

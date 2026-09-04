@@ -222,6 +222,9 @@ def main() -> None:
                     "single_launch_w2_chunk_major": (
                         kernel.SINGLE_LAUNCH_W2_CHUNK_MAJOR
                     ),
+                    "single_launch_w2_chunk_ar_overlap": (
+                        kernel.SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+                    ),
                     "single_launch_cooperative_grid": (
                         kernel.SINGLE_LAUNCH_COOPERATIVE_GRID
                     ),

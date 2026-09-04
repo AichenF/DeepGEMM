@@ -769,6 +769,23 @@ if SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS not in (16, 32, 64):
     )
 if SINGLE_LAUNCH_P2P_TWO_SHOT and SINGLE_LAUNCH_SCHEDULE != 0:
     raise ValueError("V4_SINGLE_LAUNCH_P2P_TWO_SHOT requires schedule 0")
+SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP", "0") == "1"
+)
+if SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP and (
+    not SINGLE_LAUNCH_W2_CHUNK_MAJOR
+    or not SINGLE_LAUNCH_P2P_TWO_SHOT
+    or SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS != 64
+    or SINGLE_LAUNCH_CTAS_PER_SM != 8
+    or not SINGLE_LAUNCH_PACKED_GRID_BARRIER
+    or not SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL
+    or SINGLE_LAUNCH_PHASE_STAMPS
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP requires chunk-major W2, "
+        "the isolated 8-CTA/SM path, release-arrival packed barriers, "
+        "phase stamps off, and the 64-block P2P two-shot collective"
+    )
 if SINGLE_LAUNCH_DUAL_WG_PHASES and (
     not SINGLE_LAUNCH_P2P_TWO_SHOT
     or SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS != 64
@@ -979,6 +996,8 @@ static constexpr bool kSingleLaunchAssumeValidGemmTasks =
     K_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS;
 static constexpr bool kSingleLaunchW2ChunkMajor =
     K_SINGLE_LAUNCH_W2_CHUNK_MAJOR;
+static constexpr bool kSingleLaunchW2ChunkArOverlap =
+    K_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -4230,6 +4249,15 @@ __device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
         uint8_t* __restrict__ sem_local,
         int rank, int linear_block_idx);
 
+template <int Threads, int Blocks, int Tokens>
+__device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_chunk_task(
+        const __nv_bfloat16* __restrict__ route_input,
+        const float* __restrict__ topk_weights,
+        __nv_bfloat16* __restrict__ symm_input,
+        uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
+        uint8_t* __restrict__ sem_local,
+        int rank, int chunk_idx, int group_block_idx, int comm_id);
+
 // Reusable local-rank grid barrier.  The CTA barrier makes every lane's prior
 // writes happen-before lane 0; an acq_rel arrival chain transfers them through
 // the last CTA's release epoch.  Each phase owns a count/epoch pair, so graph
@@ -4241,10 +4269,14 @@ static constexpr int kSingleLaunchPhaseStampWords =
 static constexpr int kSingleLaunchH20Sms = 78;
 static constexpr int kSingleLaunchHierarchicalStateWords =
     4 * kSingleLaunchH20Sms * 2;
-static constexpr int kSingleLaunchStatePrefixWords =
+static constexpr int kSingleLaunchChunkReadyWords =
+    kSingleLaunchW2ChunkArOverlap ? 4 : 0;
+static constexpr int kSingleLaunchChunkReadyOffset =
     kSingleLaunchBarrierWords + kSingleLaunchPhaseStampWords
     + (kSingleLaunchHierarchicalGrid
         ? kSingleLaunchHierarchicalStateWords : 0);
+static constexpr int kSingleLaunchStatePrefixWords =
+    kSingleLaunchChunkReadyOffset + kSingleLaunchChunkReadyWords;
 static constexpr int kSingleLaunchTailGroupCtas =
     K_SINGLE_LAUNCH_TAIL_GROUP_CTAS;
 static constexpr int kSingleLaunchTailMaxGroups = 39;
@@ -4411,6 +4443,40 @@ __device__ __forceinline__ void single_launch_grid_barrier(
             }
         }
     }
+    __syncthreads();
+}
+
+// Non-blocking whole-grid arrival for one FC2 N1024 chunk.  Every CTA arrives
+// exactly once after its final logical task in the chunk.  Only the selected
+// communication CTA waits; all other CTAs immediately continue the next FC2
+// chunk.  The saved generation avoids missing a publication that races ahead
+// of the wait, and the packed word wraps naturally after 2^22 graph replays.
+__device__ __forceinline__ void single_launch_chunk_arrive_and_wait(
+        int32_t* __restrict__ word, int expected_blocks, bool wait_for_ready) {
+    if (threadIdx.x == 0) {
+        constexpr uint32_t kCountBits = 10;
+        constexpr uint32_t kCountMask = (1u << kCountBits) - 1u;
+        const uint32_t observed = static_cast<uint32_t>(
+            atomic_add_release_gpu_i32(word, 1));
+        const uint32_t generation = observed >> kCountBits;
+        const uint32_t arrival = observed & kCountMask;
+        if (arrival == static_cast<uint32_t>(expected_blocks - 1)) {
+            // Import every preceding release in the same-address atomic RMW
+            // chain before publishing completion to the communication CTAs.
+            (void)atomic_add_acquire_gpu_i32(word, 0);
+            const uint32_t next = (generation + 1u) << kCountBits;
+            store_release_gpu_i32(word, static_cast<int32_t>(next));
+        }
+        if (wait_for_ready) {
+            while ((static_cast<uint32_t>(load_relaxed_gpu_i32(word))
+                    >> kCountBits) == generation)
+                __nanosleep(kSingleLaunchGridPollSleepNs);
+            while ((static_cast<uint32_t>(load_acquire_gpu_i32(word))
+                    >> kCountBits) == generation) {
+            }
+        }
+    }
+    // Waiting CTAs return to the WGMMA loop, so all lanes must reconverge.
     __syncthreads();
 }
 
@@ -4838,6 +4904,7 @@ void tp4_megamoe_single_launch_kernel(
         topk_ids, sorted_ids, expert_ids, num_tokens_padded,
         route_to_sorted, tokens, cta);
     single_launch_grid_barrier(barrier_state, 0, ctas);
+    bool chunk_ar_overlap_active = false;
 
     if constexpr (kSingleLaunchSchedule == 1) {
         static_assert(SplitK == 2 || SplitK == 4);
@@ -5200,6 +5267,15 @@ void tp4_megamoe_single_launch_kernel(
         single_launch_grid_barrier(barrier_state, 3, ctas);
     } else {
         const int num_mblocks = __ldg(num_tokens_padded) / kTok;
+        const int w2_chunk_tasks = num_mblocks * 8;
+        if constexpr (kSingleLaunchW2ChunkArOverlap && Tokens >= 64) {
+            // Every CTA must own at least one logical task in every chunk so
+            // the readiness counter has the same expected arrival count.
+            // Highly skewed routes can fall below this bound; keep their
+            // correctness by uniformly reverting to the old barrier + AR.
+            chunk_ar_overlap_active =
+                enable_tp_collective && w2_chunk_tasks >= ctas;
+        }
         constexpr int kW13TasksPerMblock =
             kW13NTiles * SplitK / kPhaseMathWgs;
         const int w13_tasks = num_mblocks * kW13TasksPerMblock;
@@ -5876,29 +5952,32 @@ void tp4_megamoe_single_launch_kernel(
             constexpr bool kW2PersistentState =
                 kSingleLaunchPersistentGemmState
                 || kSingleLaunchW2NextTaskPrefetch;
+            const bool use_chunk_order =
+                kSingleLaunchW2ChunkMajor && Tokens >= 64
+                && (!kSingleLaunchW2ChunkArOverlap
+                    || chunk_ar_overlap_active);
             for (int logical_task = cta;
                  cta < w2_workers && logical_task < w2_tasks;
                  logical_task += w2_workers, ++w2_sequence) {
                 int task = logical_task;
-                if constexpr (kSingleLaunchW2ChunkMajor) {
+                int chunk = 0;
+                if (use_chunk_order) {
                     static_assert(kW2NTiles == 32);
                     // Preserve the flat scheduler's task/wave count while
                     // completing one N1024 output chunk at a time.  Avoid a
                     // runtime integer divide: four chunks need at most three
                     // uniform compare/subtract steps.
-                    const int chunk_tasks = num_mblocks * 8;
                     int task_in_chunk = logical_task;
-                    int chunk = 0;
-                    if (task_in_chunk >= chunk_tasks) {
-                        task_in_chunk -= chunk_tasks;
+                    if (task_in_chunk >= w2_chunk_tasks) {
+                        task_in_chunk -= w2_chunk_tasks;
                         ++chunk;
                     }
-                    if (task_in_chunk >= chunk_tasks) {
-                        task_in_chunk -= chunk_tasks;
+                    if (task_in_chunk >= w2_chunk_tasks) {
+                        task_in_chunk -= w2_chunk_tasks;
                         ++chunk;
                     }
-                    if (task_in_chunk >= chunk_tasks) {
-                        task_in_chunk -= chunk_tasks;
+                    if (task_in_chunk >= w2_chunk_tasks) {
+                        task_in_chunk -= w2_chunk_tasks;
                         ++chunk;
                     }
                     const int mblock = task_in_chunk >> 3;
@@ -5939,9 +6018,42 @@ void tp4_megamoe_single_launch_kernel(
                         __syncthreads();
                     }
                 }
+                if constexpr (kSingleLaunchW2ChunkArOverlap
+                              && Tokens >= 64) {
+                    if (chunk_ar_overlap_active
+                            && logical_task + w2_workers
+                                >= (chunk + 1) * w2_chunk_tasks) {
+                        constexpr int kChunkCommBlocks = 16;
+                        constexpr int kTotalCommBlocks = 64;
+                        const int comm_block =
+                            cta - (ctas - kTotalCommBlocks);
+                        // Interleave chunk ownership across the tail wave so
+                        // every group spans the suffix resident SMs.
+                        const bool is_chunk_comm = comm_block >= 0
+                            && (comm_block & 3) == chunk;
+                        single_launch_chunk_arrive_and_wait(
+                            barrier_state + kSingleLaunchChunkReadyOffset
+                                + chunk,
+                            ctas, is_chunk_comm);
+                        if (is_chunk_comm) {
+                            fused_k6_p2p_twoshot_tp4_chunk_task<
+                                kSingleLaunchThreads, kChunkCommBlocks,
+                                Tokens>(
+                                down, topk_weights, pull_input,
+                                push0, push1, push2, push3,
+                                pull_sem_local, rank, chunk,
+                                comm_block >> 2, comm_block);
+                        }
+                    }
+                }
             }
         }
-        single_launch_grid_barrier(barrier_state, 3, ctas);
+        if constexpr (kSingleLaunchW2ChunkArOverlap && Tokens >= 64) {
+            if (!chunk_ar_overlap_active)
+                single_launch_grid_barrier(barrier_state, 3, ctas);
+        } else {
+            single_launch_grid_barrier(barrier_state, 3, ctas);
+        }
     }
 
     // The opt-in large-message path embeds CARv2-style P2P two-shot at
@@ -5954,7 +6066,9 @@ void tp4_megamoe_single_launch_kernel(
             constexpr int kTwoShotBlocks =
                 kSingleLaunchDualWgPhases && Tokens == 64
                 ? 32 : kSingleLaunchP2pTwoShotBlocks;
-            if (cta < kTwoShotBlocks) {
+            if ((!kSingleLaunchW2ChunkArOverlap
+                    || !chunk_ar_overlap_active)
+                    && cta < kTwoShotBlocks) {
                 fused_k6_p2p_twoshot_tp4_task<
                     kSingleLaunchThreads, kTwoShotBlocks, Tokens>(
                     down, topk_weights, pull_input,
@@ -6188,6 +6302,181 @@ __device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
             }
         }
     }
+}
+
+// Four-way hidden-chunk specialization of the validated two-shot helper.
+// Sixteen communication CTAs retain exactly the per-CTA vector workload of
+// the 64-CTA full-output helper.  Chunk-local ordinals are mapped back into
+// the full token-major symmetric slab, while a unique comm_id preserves the
+// communicator's one semaphore stripe per CTA protocol.
+template <int Threads, int Blocks, int Tokens>
+__device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_chunk_task(
+        const __nv_bfloat16* __restrict__ route_input,
+        const float* __restrict__ topk_weights,
+        __nv_bfloat16* __restrict__ symm_input,
+        uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
+        uint8_t* __restrict__ sem_local,
+        int rank, int chunk_idx, int group_block_idx, int comm_id) {
+    constexpr int kWorld = 4;
+    constexpr int kHidden = 4096;
+    constexpr int kChunks = 4;
+    constexpr int kPairsPerToken = kHidden / 2;
+    constexpr int kVecBytes = 16;
+    constexpr int kPairsPerVec = kVecBytes / sizeof(__nv_bfloat162);
+    constexpr int kVecsPerToken =
+        kHidden * sizeof(__nv_bfloat16) / kVecBytes;
+    constexpr int kChunkVecsPerToken = kVecsPerToken / kChunks;
+    constexpr int kChunkTotalVecs = Tokens * kChunkVecsPerToken;
+    constexpr int kChunkLocalVecs = kChunkTotalVecs / kWorld;
+    constexpr int kGlobalThreads = Blocks * Threads;
+    constexpr int kSemaphoreBytes = 128;
+    static_assert(Tokens == 64 || Tokens == 128);
+    static_assert(Blocks == 16);
+    static_assert(kChunkLocalVecs % kGlobalThreads == 0);
+
+    const int global_tid = group_block_idx * Threads + threadIdx.x;
+    for (int chunk_vec = global_tid; chunk_vec < kChunkTotalVecs;
+         chunk_vec += kGlobalThreads) {
+        const int token = chunk_vec / kChunkVecsPerToken;
+        const int vec_in_chunk =
+            chunk_vec - token * kChunkVecsPerToken;
+        const int vec_in_token =
+            chunk_idx * kChunkVecsPerToken + vec_in_chunk;
+        const int pair0 = vec_in_token * kPairsPerVec;
+        float2 accum[kPairsPerVec];
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair)
+            accum[pair] = make_float2(0.0f, 0.0f);
+
+        const auto* route_input2 =
+            reinterpret_cast<const __nv_bfloat162*>(route_input);
+        #pragma unroll
+        for (int route = 0; route < kTopK; ++route) {
+            const float route_weight =
+                __ldg(topk_weights + token * kTopK + route) * kRoutedScale;
+            const int64_t route_base =
+                (static_cast<int64_t>(token) * kTopK + route)
+                * kPairsPerToken;
+            #pragma unroll
+            for (int pair = 0; pair < kPairsPerVec; ++pair) {
+                const float2 value = __bfloat1622float2(
+                    route_input2[route_base + pair0 + pair]);
+                accum[pair].x =
+                    fmaf(value.x, route_weight, accum[pair].x);
+                accum[pair].y =
+                    fmaf(value.y, route_weight, accum[pair].y);
+            }
+        }
+
+        uint4 local_value;
+        auto* words = reinterpret_cast<uint32_t*>(&local_value);
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair) {
+            const __nv_bfloat162 value =
+                __floats2bfloat162_rn(accum[pair].x, accum[pair].y);
+            words[pair] = *reinterpret_cast<const uint32_t*>(&value);
+        }
+        const int full_vec = token * kVecsPerToken + vec_in_token;
+        reinterpret_cast<uint4*>(symm_input)[full_vec] = local_value;
+    }
+
+    uint8_t* peer_base[kWorld] = {push0, push1, push2, push3};
+    const int64_t pull_offset =
+        reinterpret_cast<uint8_t*>(symm_input) - peer_base[rank];
+    const int64_t semaphore_offset = sem_local - peer_base[rank];
+    uint8_t* peer_pull[kWorld];
+    #pragma unroll
+    for (int peer = 0; peer < kWorld; ++peer)
+        peer_pull[peer] = peer_base[peer] + pull_offset;
+
+    __shared__ uint32_t chunk_entry_target;
+    __syncthreads();
+    if (threadIdx.x < kWorld) {
+        const int peer = threadIdx.x;
+        uint8_t* peer_sem = peer_base[peer] + semaphore_offset
+            + comm_id * kSemaphoreBytes;
+        uint32_t reserved = 0;
+        if (peer == rank) {
+            auto* local_counter = reinterpret_cast<uint32_t*>(
+                sem_local + comm_id * kSemaphoreBytes + sizeof(uint32_t));
+            reserved = atomicAdd(local_counter, 2 * kWorld);
+            chunk_entry_target = reserved + kWorld;
+        }
+        red_release_sys_add_u32(reinterpret_cast<uint32_t*>(peer_sem));
+        if (peer == rank) {
+            const auto* local_flag = reinterpret_cast<const uint32_t*>(
+                sem_local + comm_id * kSemaphoreBytes);
+            while (load_acquire_sys_u32(local_flag) - reserved < kWorld) {
+            }
+        }
+    }
+    __syncthreads();
+
+    // Reduce a contiguous quarter in chunk-local ordinal space, then map each
+    // vector back to the full [token, hidden] symmetric slot for all-gather.
+    const int local_bias = rank * kChunkLocalVecs;
+    for (int local_vec = global_tid; local_vec < kChunkLocalVecs;
+         local_vec += kGlobalThreads) {
+        const int chunk_vec = local_bias + local_vec;
+        const int token = chunk_vec / kChunkVecsPerToken;
+        const int vec_in_chunk =
+            chunk_vec - token * kChunkVecsPerToken;
+        const int full_vec = token * kVecsPerToken
+            + chunk_idx * kChunkVecsPerToken + vec_in_chunk;
+        uint4 rank_value[kWorld];
+        #pragma unroll
+        for (int source = 0; source < kWorld; ++source)
+            rank_value[source] = load_relaxed_sys_16b(
+                peer_pull[source]
+                    + static_cast<int64_t>(full_vec) * kVecBytes);
+
+        uint4 result;
+        auto* result_words = reinterpret_cast<uint32_t*>(&result);
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair) {
+            float2 sum = make_float2(0.0f, 0.0f);
+            #pragma unroll
+            for (int source = 0; source < kWorld; ++source) {
+                const uint32_t word = reinterpret_cast<const uint32_t*>(
+                    &rank_value[source])[pair];
+                const __nv_bfloat162 value =
+                    *reinterpret_cast<const __nv_bfloat162*>(&word);
+                const float2 value_f32 = __bfloat1622float2(value);
+                if (source == 0) {
+                    sum = value_f32;
+                } else {
+                    sum.x += value_f32.x;
+                    sum.y += value_f32.y;
+                }
+            }
+            const __nv_bfloat162 value =
+                __floats2bfloat162_rn(sum.x, sum.y);
+            result_words[pair] = *reinterpret_cast<const uint32_t*>(&value);
+        }
+        #pragma unroll
+        for (int peer = 0; peer < kWorld; ++peer)
+            store_relaxed_sys_16b(
+                peer_pull[peer]
+                    + static_cast<int64_t>(full_vec) * kVecBytes,
+                result);
+    }
+
+    __syncthreads();
+    if (threadIdx.x < kWorld) {
+        const int peer = threadIdx.x;
+        uint8_t* peer_sem = peer_base[peer] + semaphore_offset
+            + comm_id * kSemaphoreBytes;
+        red_release_sys_add_u32(reinterpret_cast<uint32_t*>(peer_sem));
+        if (peer == rank) {
+            const auto* local_flag = reinterpret_cast<const uint32_t*>(
+                sem_local + comm_id * kSemaphoreBytes);
+            while (load_acquire_sys_u32(local_flag) - chunk_entry_target
+                   < kWorld) {
+            }
+        }
+    }
+    // Unlike the old terminal helper, this CTA resumes its FC2 task loop.
+    __syncthreads();
 }
 
 // The per-rank W2 route tensor is allocated in multicast-bound symmetric
@@ -7300,7 +7589,8 @@ void run_tp4_megamoe_single_launch(
     TORCH_CHECK(pull_sem_local.scalar_type() == torch::kUInt8
                     && pull_sem_local.is_cuda()
                     && pull_sem_local.numel()
-                        >= kSingleLaunchNvlsBlocks * 128,
+                        >= (kSingleLaunchW2ChunkArOverlap
+                                ? 64 : kSingleLaunchNvlsBlocks) * 128,
                 "single-launch pull semaphore slab is too small");
     if (enable_tp_collective) {
         TORCH_CHECK(push_counter.numel() == 78,
@@ -8080,6 +8370,7 @@ _EXTENSION_CONFIG = (
           f"slw2np{int(SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH)}_"
           f"slavgt{int(SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS)}_"
           f"slw2cm{int(SINGLE_LAUNCH_W2_CHUNK_MAJOR)}_"
+          f"slw2cao{int(SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
@@ -8220,6 +8511,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_CHUNK_MAJOR="
             f"{int(SINGLE_LAUNCH_W2_CHUNK_MAJOR)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP="
+            f"{int(SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="

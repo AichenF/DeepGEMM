@@ -311,9 +311,9 @@ class CapturedCase:
         self.w2_progress_state = torch.empty(
             (self.m * TOP_K * 32 + 2,), dtype=torch.int32, device=device
         )
-        # Four count/epoch pairs and five uint64 device timestamps precede the
-        # optional scheduler suffix.  The suffix is reset inside the same
-        # business kernel and stores the
+        # Four count/epoch pairs and five uint64 device timestamps precede an
+        # optional four-word FC2 chunk-readiness slab and scheduler suffix.
+        # The suffix is reset inside the same business kernel and stores the
         # W13->activation->W2 task-DAG counters/readiness queues.  No captured
         # memset or additional launch is part of the single-launch path.
         oversubscribed_grid = (
@@ -339,8 +339,11 @@ class CapturedCase:
         hierarchical_words = (
             4 * 78 * 2 if kernel.SINGLE_LAUNCH_HIERARCHICAL_GRID else 0
         )
+        chunk_ready_words = (
+            4 if kernel.SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP else 0
+        )
         self.single_launch_barrier_state = torch.zeros(
-            (18 + hierarchical_words + scheduler_words,),
+            (18 + hierarchical_words + chunk_ready_words + scheduler_words,),
             dtype=torch.int32,
             device=device,
         )
@@ -850,7 +853,11 @@ class CapturedCase:
         )
         self.fused_k6_push_active = True
         if kernel.SINGLE_LAUNCH_P2P_TWO_SHOT and self.m >= 64:
-            self.fused_k6_ar_mode = "single_launch_p2p_two_shot"
+            self.fused_k6_ar_mode = (
+                "single_launch_p2p_two_shot_chunk_overlap"
+                if kernel.SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+                else "single_launch_p2p_two_shot"
+            )
             self.graph_output = self.fused_pull_output
         else:
             self.fused_k6_ar_mode = (
@@ -1268,6 +1275,15 @@ def main() -> None:
                     ),
                     "single_launch_w2_unroll2_bound9": (
                         kernel.SINGLE_LAUNCH_W2_UNROLL2_BOUND9
+                    ),
+                    "single_launch_assume_valid_gemm_tasks": (
+                        kernel.SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS
+                    ),
+                    "single_launch_w2_chunk_major": (
+                        kernel.SINGLE_LAUNCH_W2_CHUNK_MAJOR
+                    ),
+                    "single_launch_w2_chunk_ar_overlap": (
+                        kernel.SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
                     ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
