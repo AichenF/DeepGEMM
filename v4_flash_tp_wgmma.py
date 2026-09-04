@@ -160,6 +160,9 @@ SINGLE_LAUNCH_W13_N64_TAIL = (
 SINGLE_LAUNCH_CLUSTER_W13_ACT = (
     os.environ.get("V4_SINGLE_LAUNCH_CLUSTER_W13_ACT", "0") == "1"
 )
+SINGLE_LAUNCH_DUAL_WG_PHASES = (
+    os.environ.get("V4_SINGLE_LAUNCH_DUAL_WG_PHASES", "0") == "1"
+)
 W2_NEEDS_ROUTE_MAP = (
     W2_SORTED_ACT or W2_MBLOCK_SCALE or SINGLE_LAUNCH_TAIL_OVERLAP
 )
@@ -388,6 +391,22 @@ if SINGLE_LAUNCH_W13_COMPLETION_ACT and (
         "V4_SINGLE_LAUNCH_W13_COMPLETION_ACT requires the isolated inline "
         "schedule-0 path"
     )
+if SINGLE_LAUNCH_DUAL_WG_PHASES and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_M128_BOUND9
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_DUAL_WG_PHASES requires the isolated bound-8 "
+        "schedule-0 path"
+    )
 if SINGLE_LAUNCH_W13_N64_TAIL and (
     SINGLE_LAUNCH_TAIL_OVERLAP
     or SINGLE_LAUNCH_GROUPED_W13_ACT
@@ -463,6 +482,14 @@ if SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS not in (16, 32, 64):
     )
 if SINGLE_LAUNCH_P2P_TWO_SHOT and SINGLE_LAUNCH_SCHEDULE != 0:
     raise ValueError("V4_SINGLE_LAUNCH_P2P_TWO_SHOT requires schedule 0")
+if SINGLE_LAUNCH_DUAL_WG_PHASES and (
+    not SINGLE_LAUNCH_P2P_TWO_SHOT
+    or SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS != 64
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_DUAL_WG_PHASES requires the selected 64-block "
+        "P2P two-shot transport"
+    )
 MC_PULL_BLOCKS = int(os.environ.get("V4_MC_PULL_BLOCKS", "0"))
 MC_PULL_UNROLL = int(os.environ.get("V4_MC_PULL_UNROLL", "0"))
 if MC_PULL_BLOCKS < 0:
@@ -681,6 +708,8 @@ static constexpr bool kSingleLaunchW13N64Tail =
     K_SINGLE_LAUNCH_W13_N64_TAIL;
 static constexpr bool kSingleLaunchClusterW13Act =
     K_SINGLE_LAUNCH_CLUSTER_W13_ACT;
+static constexpr bool kSingleLaunchDualWgPhases =
+    K_SINGLE_LAUNCH_DUAL_WG_PHASES;
 static constexpr bool kSingleLaunchP2pTwoShot =
     K_SINGLE_LAUNCH_P2P_TWO_SHOT;
 static constexpr int kSingleLaunchP2pTwoShotBlocks =
@@ -1021,9 +1050,9 @@ __device__ __forceinline__ void route_gemm_task(
     static_assert(!PersistentState || !DualWgW13,
                   "persistent task state supports one WGMMA warpgroup");
     static_assert(kLaunchNTiles % kMathWGs == 0);
-    static_assert(!DualWgW13 || (IsW13 && kWout == 128
+    static_assert(!DualWgW13 || (kWout == 128
                   && LaunchNTiles == 0 && kInterleavedScale),
-                  "dual-WG split-K is specialized for selected W13");
+                  "dual-WG route GEMM requires selected N128 interleaving");
     constexpr int kTaskNTiles = kLaunchNTiles / kMathWGs;
     constexpr bool kS2RPrefetch =
         IsW13 ? kW13S2RPrefetch : kW2S2RPrefetch;
@@ -2673,7 +2702,7 @@ __global__ void reduce_swiglu_kernel(
     output[index] = __float2bfloat16(silu * up);
 }
 
-template <int Intermediate, int SplitK>
+template <int Intermediate, int SplitK, bool DualWg = false>
 __device__ __forceinline__ void reduce_swiglu_quant_task(
         const float* __restrict__ partials,
         __nv_bfloat16* __restrict__ activation,
@@ -2686,9 +2715,13 @@ __device__ __forceinline__ void reduce_swiglu_quant_task(
         int group) {
     static_assert(Intermediate % 128 == 0);
     constexpr int kGroupsPerRoute = Intermediate / 128;
-    const int route = group / kGroupsPerRoute;
-    const int group_in_route = group - route * kGroupsPerRoute;
-    const int column = group_in_route * 128 + threadIdx.x;
+    constexpr int kWorkers = DualWg ? 2 : 1;
+    const int worker = DualWg ? threadIdx.x >> 7 : 0;
+    const int local_tid = DualWg ? threadIdx.x & 127 : threadIdx.x;
+    const int worker_group = group * kWorkers + worker;
+    const int route = worker_group / kGroupsPerRoute;
+    const int group_in_route = worker_group - route * kGroupsPerRoute;
+    const int column = group_in_route * 128 + local_tid;
     constexpr int N = 2 * Intermediate;
 
     float gate = 0.0f;
@@ -2721,23 +2754,24 @@ __device__ __forceinline__ void reduce_swiglu_quant_task(
     for (int delta = 16; delta > 0; delta >>= 1)
         absmax = fmaxf(absmax, __shfl_down_sync(0xffffffffu, absmax, delta));
 
-    __shared__ float warp_max[4];
-    __shared__ float group_scale;
-    const int lane = threadIdx.x & 31;
-    const int warp = threadIdx.x >> 5;
+    __shared__ float warp_max[4 * kWorkers];
+    __shared__ float group_scale[kWorkers];
+    const int lane = local_tid & 31;
+    const int warp = local_tid >> 5;
     if (lane == 0)
-        warp_max[warp] = absmax;
+        warp_max[worker * 4 + warp] = absmax;
     __syncthreads();
 
     if (warp == 0) {
-        absmax = lane < 4 ? warp_max[lane] : 0.0f;
+        absmax = lane < 4 ? warp_max[worker * 4 + lane] : 0.0f;
         #pragma unroll
         for (int delta = 16; delta > 0; delta >>= 1)
             absmax = fmaxf(absmax,
                            __shfl_down_sync(0xffffffffu, absmax, delta));
         if (lane == 0) {
-            group_scale = fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
-            float output_scale = group_scale;
+            group_scale[worker] =
+                fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
+            float output_scale = group_scale[worker];
             if constexpr (kW2FoldGlobalScale) {
                 const int expert = __ldg(topk_ids + route);
                 output_scale *= __ldg(w2_global_scale + expert);
@@ -2748,13 +2782,13 @@ __device__ __forceinline__ void reduce_swiglu_quant_task(
                 scale[(mblock * kGroupsPerRoute + group_in_route) * 8
                       + slot] = output_scale;
             } else {
-                scale[group] = output_scale;
+                scale[worker_group] = output_scale;
             }
         }
     }
     __syncthreads();
     quantized[quantized_index] =
-        __nv_fp8_e4m3(value / group_scale).__x;
+        __nv_fp8_e4m3(value / group_scale[worker]).__x;
 }
 
 template <int Intermediate, int SplitK>
@@ -2927,20 +2961,22 @@ __global__ __launch_bounds__(256) void fused_route_quant_kernel(
         __nv_fp8_e4m3(value / group_scale[quant_subgroup]).__x;
 }
 
-// 128-thread route preparation body for the resident single-launch kernel.
+// Route preparation body for the resident single-launch kernel.
 // CTA 0 builds the exact E=256/block-M=8 route pool.  X and X scales are
 // caller-owned FP8 inputs, so the following grid barrier only publishes route
 // metadata to the W13 phase.
+template <int Threads = 128>
 __device__ __forceinline__ void single_launch_route_task(
         const int32_t* __restrict__ topk_ids,
         int32_t* __restrict__ sorted_ids,
         int32_t* __restrict__ expert_ids,
         int32_t* __restrict__ num_tokens_padded,
-        int32_t* __restrict__ route_to_sorted,
-        int tokens, int linear_block_idx) {
+    int32_t* __restrict__ route_to_sorted,
+    int tokens, int linear_block_idx) {
     constexpr int kExperts = 256;
-    constexpr int kExpertsPerThread = 2;
-    using ExpertScan = cub::BlockScan<int, 128>;
+    static_assert(Threads == 128 || Threads == 256);
+    constexpr int kExpertsPerThread = kExperts / Threads;
+    using ExpertScan = cub::BlockScan<int, Threads>;
     #if K_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM
     extern __shared__ __align__(1024) uint8_t dynamic_smem[];
     int* counts = reinterpret_cast<int*>(dynamic_smem);
@@ -2967,46 +3003,52 @@ __device__ __forceinline__ void single_launch_route_task(
     const int tid = threadIdx.x;
     const int routes = tokens * kTopK;
     if (linear_block_idx == 0) {
-        for (int expert = tid; expert < kExperts; expert += 128)
+        for (int expert = tid; expert < kExperts; expert += Threads)
             counts[expert] = 0;
         __syncthreads();
 
-        for (int route = tid; route < routes; route += 128) {
+        for (int route = tid; route < routes; route += Threads) {
             const int expert = __ldg(topk_ids + route);
             if (static_cast<unsigned>(expert) < kExperts)
                 atomicAdd(counts + expert, 1);
         }
         __syncthreads();
 
-        const int expert0 = tid * kExpertsPerThread;
-        const int expert1 = expert0 + 1;
-        int padded_counts[kExpertsPerThread] = {
-            (counts[expert0] + 7) & ~7,
-            (counts[expert1] + 7) & ~7,
-        };
+        int padded_counts[kExpertsPerThread];
+        #pragma unroll
+        for (int item = 0; item < kExpertsPerThread; ++item) {
+            const int expert = tid * kExpertsPerThread + item;
+            padded_counts[item] = (counts[expert] + 7) & ~7;
+        }
         int offsets[kExpertsPerThread];
         int block_aggregate;
         ExpertScan(*scan_storage).ExclusiveSum(
             padded_counts, offsets, block_aggregate);
-        cursors[expert0] = offsets[0];
-        cursors[expert1] = offsets[1];
+        #pragma unroll
+        for (int item = 0; item < kExpertsPerThread; ++item) {
+            const int expert = tid * kExpertsPerThread + item;
+            cursors[expert] = offsets[item];
+        }
         if (tid == 0) {
             *total_padded = block_aggregate;
             *num_tokens_padded = block_aggregate;
         }
-        for (int position = offsets[0];
-             position < offsets[0] + padded_counts[0]; position += 8)
-            expert_ids[position >> 3] = expert0;
-        for (int position = offsets[1];
-             position < offsets[1] + padded_counts[1]; position += 8)
-            expert_ids[position >> 3] = expert1;
+        #pragma unroll
+        for (int item = 0; item < kExpertsPerThread; ++item) {
+            const int expert = tid * kExpertsPerThread + item;
+            for (int position = offsets[item];
+                 position < offsets[item] + padded_counts[item];
+                 position += 8)
+                expert_ids[position >> 3] = expert;
+        }
         __syncthreads();
 
-        for (int position = tid; position < *total_padded; position += 128)
+        for (int position = tid; position < *total_padded;
+             position += Threads)
             sorted_ids[position] = routes;
         __syncthreads();
 
-        for (int route = tid; route < routes; route += 128) {
+        for (int route = tid; route < routes; route += Threads) {
             const int expert = __ldg(topk_ids + route);
             if (static_cast<unsigned>(expert) < kExperts) {
                 const int position = atomicAdd(cursors + expert, 1);
@@ -3991,14 +4033,23 @@ __device__ __forceinline__ void single_launch_group_barrier(
 // both MXFP4 GEMMs, internal SwiGLU/FP8 requantization, fixed-k6 reduction and
 // TP all-reduce.  Input X is already FP8 at this API boundary.
 template <int Tokens>
+struct SingleLaunchThreads {
+    static constexpr int value =
+        kSingleLaunchDualWgPhases ? 256 : 128;
+};
+
+template <int Tokens>
 struct SingleLaunchMinBlocks {
     static constexpr int value =
-        kSingleLaunchM128Bound9 && Tokens == 128
+        kSingleLaunchDualWgPhases
+        ? 4
+        : kSingleLaunchM128Bound9 && Tokens == 128
         ? 9 : K_SINGLE_LAUNCH_MIN_BLOCKS;
 };
 
 template <int SplitK, int Tokens>
-__global__ __launch_bounds__(128, SingleLaunchMinBlocks<Tokens>::value)
+__global__ __launch_bounds__(SingleLaunchThreads<Tokens>::value,
+                             SingleLaunchMinBlocks<Tokens>::value)
 void tp4_megamoe_single_launch_kernel(
         const __grid_constant__ CUtensorMap w13_tma_weight,
         const __grid_constant__ CUtensorMap w13_tma_weight_scale,
@@ -4039,6 +4090,10 @@ void tp4_megamoe_single_launch_kernel(
     constexpr int kW13NTiles = (2 * kIntermediate) / kWout;
     constexpr int kW2NTiles = 4096 / kWout;
     constexpr int tokens = Tokens;
+    constexpr int kPhaseMathWgs =
+        kSingleLaunchDualWgPhases ? 2 : 1;
+    constexpr int kSingleLaunchThreads =
+        SingleLaunchThreads<Tokens>::value;
     const int cta = static_cast<int>(blockIdx.x);
     const int ctas = static_cast<int>(gridDim.x);
     const int routes = tokens * kTopK;
@@ -4318,7 +4373,7 @@ void tp4_megamoe_single_launch_kernel(
             scheduler[word] = 0;
     }
 
-    single_launch_route_task(
+    single_launch_route_task<kSingleLaunchThreads>(
         topk_ids, sorted_ids, expert_ids, num_tokens_padded,
         route_to_sorted, tokens, cta);
     single_launch_grid_barrier(barrier_state, 0, ctas);
@@ -4518,7 +4573,8 @@ void tp4_megamoe_single_launch_kernel(
         single_launch_grid_barrier(barrier_state, 3, ctas);
     } else if constexpr (kSingleLaunchSchedule == 2) {
         constexpr int kCtasPerGroup = kSingleLaunchGroupCtas;
-        constexpr int kW13TasksPerMblock = kW13NTiles * SplitK;
+        constexpr int kW13TasksPerMblock =
+            kW13NTiles * SplitK / kPhaseMathWgs;
         constexpr int kW13TasksPerCta =
             kW13TasksPerMblock / kCtasPerGroup;
         constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
@@ -4683,7 +4739,8 @@ void tp4_megamoe_single_launch_kernel(
         single_launch_grid_barrier(barrier_state, 3, ctas);
     } else {
         const int num_mblocks = __ldg(num_tokens_padded) / kTok;
-        constexpr int kW13TasksPerMblock = kW13NTiles * SplitK;
+        constexpr int kW13TasksPerMblock =
+            kW13NTiles * SplitK / kPhaseMathWgs;
         const int w13_tasks = num_mblocks * kW13TasksPerMblock;
         int tail_overlap_mblocks = 0;
         if constexpr (kSingleLaunchClusterW13Act) {
@@ -5038,7 +5095,8 @@ void tp4_megamoe_single_launch_kernel(
                                 topk_weights, partials, lut, routes, task);
                         } else {
                             route_gemm_task<
-                                4096, 1024, SplitK, true, 0, false, false,
+                                4096, 1024, SplitK, true, 0, false,
+                                kSingleLaunchDualWgPhases,
                                 kSingleLaunchPersistentGemmState>(
                                 &w13_tma_weight, &w13_tma_weight_scale,
                                 w13, s13, g13, qx, x_scale,
@@ -5059,7 +5117,8 @@ void tp4_megamoe_single_launch_kernel(
             }
             single_launch_grid_barrier(barrier_state, 1, ctas);
 
-            const int activation_groups = routes * (kIntermediate / 128);
+            const int activation_groups =
+                routes * (kIntermediate / 128) / kPhaseMathWgs;
             const int activation_rounds =
                 (activation_groups + ctas - 1) / ctas;
             const int activation_workers =
@@ -5075,7 +5134,8 @@ void tp4_megamoe_single_launch_kernel(
                         && (__ldg(route_to_sorted + route) >> 3)
                             < tail_overlap_mblocks)
                     continue;
-                reduce_swiglu_quant_task<kIntermediate, SplitK>(
+                reduce_swiglu_quant_task<
+                    kIntermediate, SplitK, kSingleLaunchDualWgPhases>(
                     partials, activation, qactivation, activation_scale,
                     route_to_sorted, topk_ids, g2, routes, group);
                 if constexpr (!kSingleLaunchSkipFinalCtaSync) {
@@ -5087,7 +5147,8 @@ void tp4_megamoe_single_launch_kernel(
             single_launch_grid_barrier(barrier_state, 2, ctas);
         }
 
-        const int w2_tasks = num_mblocks * kW2NTiles;
+        const int w2_tasks =
+            num_mblocks * kW2NTiles / kPhaseMathWgs;
         const int w2_rounds = (w2_tasks + ctas - 1) / ctas;
         const int w2_workers =
             kSingleLaunchBalancedWorkers && Tokens >= 64
@@ -5107,7 +5168,8 @@ void tp4_megamoe_single_launch_kernel(
                     down, lut, routes, task);
             } else {
                 route_gemm_task<
-                    512, 4096, 1, false, 0, false, false,
+                    512, 4096, 1, false, 0, false,
+                    kSingleLaunchDualWgPhases,
                     kSingleLaunchPersistentGemmState, -1, false,
                     (kSingleLaunchW2Unroll2Bound9 && Tokens == 128)
                         ? 2 : 0>(
@@ -5136,23 +5198,26 @@ void tp4_megamoe_single_launch_kernel(
     // every communication CTA.
     if (enable_tp_collective) {
         if constexpr (kSingleLaunchP2pTwoShot && Tokens >= 64) {
-            if (cta < kSingleLaunchP2pTwoShotBlocks) {
+            constexpr int kTwoShotBlocks =
+                kSingleLaunchDualWgPhases && Tokens == 64
+                ? 32 : kSingleLaunchP2pTwoShotBlocks;
+            if (cta < kTwoShotBlocks) {
                 fused_k6_p2p_twoshot_tp4_task<
-                    128, kSingleLaunchP2pTwoShotBlocks, Tokens>(
+                    kSingleLaunchThreads, kTwoShotBlocks, Tokens>(
                     down, topk_weights, pull_input,
                     push0, push1, push2, push3,
                     pull_sem_local, rank, cta);
             }
         } else if constexpr (Tokens == 128) {
             if (cta < kSingleLaunchNvlsBlocks) {
-                fused_k6_nvls_pull_tp4_task<128>(
+                fused_k6_nvls_pull_tp4_task<kSingleLaunchThreads>(
                     down, topk_weights, pull_input, pull_input_mc, output,
                     pull_sem_local, pull_sem_mc, tokens, cta,
                     kSingleLaunchNvlsBlocks);
             }
         } else {
             if (cta < 78) {
-                fused_k6_push_ar_tp4_task<128, true>(
+                fused_k6_push_ar_tp4_task<kSingleLaunchThreads, true>(
                     down, topk_weights, output, push_counter,
                     push0, push1, push2, push3, push_mc,
                     tokens, rank, push_stride, 0, 4096, cta, 78);
@@ -6195,8 +6260,12 @@ void launch_tp4_megamoe_single(
         int rank, int64_t push_stride, int64_t push_mc_ptr,
         int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr,
         int requested_ctas_per_sm, bool enable_tp_collective) {
+    constexpr int kPhaseThreads = SingleLaunchThreads<Tokens>::value;
+    constexpr int kDualRouteTaskDynamicBytes =
+        2 * kStages * kWout * ((kBlockK / 2) + 4) + kTok * kBlockK;
     constexpr int dynamic_smem_bytes =
-        kRouteTaskDynamicBytes
+        (kSingleLaunchDualWgPhases
+            ? kDualRouteTaskDynamicBytes : kRouteTaskDynamicBytes)
         + (kSingleLaunchClusterW13Act
            ? kTok * kWout * static_cast<int>(sizeof(float)) : 0);
     TORCH_CHECK(output.size(0) == Tokens,
@@ -6214,7 +6283,7 @@ void launch_tp4_megamoe_single(
         cudaOccupancyMaxActiveBlocksPerMultiprocessor(
             &active_per_sm,
             tp4_megamoe_single_launch_kernel<SplitK, Tokens>,
-            128, dynamic_smem_bytes);
+            kPhaseThreads, dynamic_smem_bytes);
     TORCH_CHECK(occupancy_result == cudaSuccess && active_per_sm > 0,
                 "single-launch occupancy query failed: ",
                 cudaGetErrorString(occupancy_result));
@@ -6227,13 +6296,19 @@ void launch_tp4_megamoe_single(
     TORCH_CHECK(requested_ctas_per_sm > 0,
                 "requested single-launch CTAs/SM must be positive");
     const int effective_requested_ctas_per_sm =
-        kSingleLaunchM128Bound9 && Tokens == 128
+        kSingleLaunchDualWgPhases
+        ? 4
+        : kSingleLaunchM128Bound9 && Tokens == 128
         ? 9 : requested_ctas_per_sm;
     const int selected_ctas_per_sm = std::min(
         effective_requested_ctas_per_sm, active_per_sm);
     if constexpr (kSingleLaunchM128Bound9 && Tokens == 128) {
         TORCH_CHECK(selected_ctas_per_sm == 9,
                     "M128 specialization requires exactly 9 CTAs/SM");
+    }
+    if constexpr (kSingleLaunchDualWgPhases) {
+        TORCH_CHECK(selected_ctas_per_sm == 4,
+                    "dual-WG phases require exactly 4 CTAs/SM");
     }
     if constexpr (kSingleLaunchTailOverlap) {
         TORCH_CHECK(selected_ctas_per_sm == 8,
@@ -6274,7 +6349,7 @@ void launch_tp4_megamoe_single(
     const auto stream = at::cuda::getCurrentCUDAStream();
     cudaLaunchConfig_t launch_config{};
     launch_config.gridDim = dim3(launch_grid);
-    launch_config.blockDim = dim3(128);
+    launch_config.blockDim = dim3(kPhaseThreads);
     launch_config.dynamicSmemBytes = dynamic_smem_bytes;
     launch_config.stream = stream;
     cudaLaunchAttribute launch_attributes[2]{};
@@ -7258,6 +7333,7 @@ _EXTENSION_CONFIG = (
           f"slca{int(SINGLE_LAUNCH_W13_COMPLETION_ACT)}_"
           f"sln64{int(SINGLE_LAUNCH_W13_N64_TAIL)}_"
           f"slcl{int(SINGLE_LAUNCH_CLUSTER_W13_ACT)}_"
+          f"sldwg{int(SINGLE_LAUNCH_DUAL_WG_PHASES)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"slp2p2{int(SINGLE_LAUNCH_P2P_TWO_SHOT)}_"
@@ -7407,6 +7483,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_CLUSTER_W13_ACT="
             f"{int(SINGLE_LAUNCH_CLUSTER_W13_ACT)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_DUAL_WG_PHASES="
+            f"{int(SINGLE_LAUNCH_DUAL_WG_PHASES)}"
         ),
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",

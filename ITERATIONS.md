@@ -8097,3 +8097,19 @@ maximum rank latency of a full CUDA-Graph replay.
   unroll 4.
 - **Artifact:**
   `bench/results/iter285_m128_bound9_w2_unroll2_20260904.log`.
+
+## Iteration 286 — dual-WG phase smoke rejected by benchmark argument gate
+
+- **Change staged:** Added the opt-in 256-thread dual-WG phase prototype.
+  Two N128 tasks share each physical CTA in both W13 and W2; the physical
+  resident grid is 312 CTAs (four/SM), while total math warps remain 32/SM.
+  Route alignment and internal SwiGLU/FP8 requant were generalized to 256
+  threads, and M64/M128 embedded two-shot mappings use 32/64 CTAs.
+- **Attempted validation:** TP4 M8 cold-L2 graph smoke.  The extension import
+  completed, but argparse rejected `--outer 1` because batch pairing requires
+  an even outer count.  No graph capture, correctness check, GPU kernel, or
+  timing ran.
+- **Decision:** Treat as launcher-only failure and rerun unchanged source with
+  `--outer 2`.
+- **Artifact:**
+  `bench/results/iter286_dual_wg_phases_m8_smoke_20260904.log`.

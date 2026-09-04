@@ -1290,6 +1290,9 @@ def main() -> None:
                     "single_launch_w13_completion_act": (
                         kernel.SINGLE_LAUNCH_W13_COMPLETION_ACT
                     ),
+                    "single_launch_dual_wg_phases": (
+                        kernel.SINGLE_LAUNCH_DUAL_WG_PHASES
+                    ),
                     "single_launch_skip_final_cta_sync": (
                         kernel.SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
                     ),

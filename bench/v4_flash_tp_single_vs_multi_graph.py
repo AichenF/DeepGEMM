@@ -231,11 +231,20 @@ def main() -> None:
                     "single_launch_grouped_w13_act": (
                         kernel.SINGLE_LAUNCH_GROUPED_W13_ACT
                     ),
+                    "single_launch_w13_completion_act": (
+                        kernel.SINGLE_LAUNCH_W13_COMPLETION_ACT
+                    ),
                     "single_launch_w13_n64_tail": (
                         kernel.SINGLE_LAUNCH_W13_N64_TAIL
                     ),
                     "single_launch_cluster_w13_act": (
                         kernel.SINGLE_LAUNCH_CLUSTER_W13_ACT
+                    ),
+                    "single_launch_dual_wg_phases": (
+                        kernel.SINGLE_LAUNCH_DUAL_WG_PHASES
+                    ),
+                    "single_launch_w2_unroll2_bound9": (
+                        kernel.SINGLE_LAUNCH_W2_UNROLL2_BOUND9
                     ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
