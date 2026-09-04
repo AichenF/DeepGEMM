@@ -309,6 +309,18 @@ if SINGLE_LAUNCH_M128_BOUND9 and not SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM:
     raise ValueError(
         "V4_SINGLE_LAUNCH_M128_BOUND9 requires dynamic route shared memory"
     )
+SINGLE_LAUNCH_W2_UNROLL2_BOUND9 = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_UNROLL2_BOUND9", "0") == "1"
+)
+if SINGLE_LAUNCH_W2_UNROLL2_BOUND9 and (
+    not SINGLE_LAUNCH_M128_BOUND9
+    or SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_UNROLL2_BOUND9 requires the inline schedule-0 "
+        "M128-bound9 path"
+    )
 SINGLE_LAUNCH_PERSISTENT_GEMM_STATE = (
     os.environ.get("V4_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE", "0") == "1"
 )
@@ -639,6 +651,8 @@ static constexpr bool kSingleLaunchRouteDynamicSmem =
     K_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM;
 static constexpr bool kSingleLaunchM128Bound9 =
     K_SINGLE_LAUNCH_M128_BOUND9;
+static constexpr bool kSingleLaunchW2Unroll2Bound9 =
+    K_SINGLE_LAUNCH_W2_UNROLL2_BOUND9;
 static constexpr bool kSingleLaunchPersistentGemmState =
     K_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE;
 static constexpr bool kSingleLaunchCooperativeGrid =
@@ -936,7 +950,7 @@ __device__ __forceinline__ uint2 dequant_weight_word(
 template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool PublishW2Progress = false, bool DualWgW13 = false,
           bool PersistentState = false, int WgmmaHalf = -1,
-          bool SharedPartial = false>
+          bool SharedPartial = false, int ForcedKUnroll = 0>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -994,6 +1008,10 @@ __device__ __forceinline__ void route_gemm_task(
                   "N64 tail tasks require compact-interleaved W13 N128");
     static_assert(!SharedPartial || (IsW13 && !kHalfWgmma && !DualWgW13),
                   "DSM partial output requires one full W13 warpgroup");
+    static_assert(ForcedKUnroll == 0 || ForcedKUnroll == 1
+                  || ForcedKUnroll == 2 || ForcedKUnroll == 4
+                  || ForcedKUnroll == 8 || ForcedKUnroll == 16,
+                  "invalid route GEMM K-loop unroll override");
     constexpr int kActiveWgmmaGroups =
         kHalfWgmma ? 1 : kWgmmaGroups;
     constexpr int kOutputGroupBase =
@@ -1385,20 +1403,25 @@ __device__ __forceinline__ void route_gemm_task(
     float accum[kActiveWgmmaGroups][4] = {};
 
     #if K_W13_K_UNROLL16_SPLIT2
-    #pragma unroll (K == 4096 && SplitK <= 2 ? 16 : 4)
+    constexpr int kConfiguredKUnroll =
+        K == 4096 && SplitK <= 2 ? 16 : 4;
     #elif K_W13_K_UNROLL8_SPLIT2
-    #pragma unroll (K == 4096 && SplitK <= 2 ? 8 : 4)
+    constexpr int kConfiguredKUnroll =
+        K == 4096 && SplitK <= 2 ? 8 : 4;
     #elif K_ROUTE_K_UNROLL8_SPLIT2
-    #pragma unroll (SplitK <= 2 ? 8 : 4)
+    constexpr int kConfiguredKUnroll = SplitK <= 2 ? 8 : 4;
     #elif K_ROUTE_K_UNROLL8
-    #pragma unroll 8
+    constexpr int kConfiguredKUnroll = 8;
     #elif K_ROUTE_K_UNROLL4
-    #pragma unroll 4
+    constexpr int kConfiguredKUnroll = 4;
     #elif K_ROUTE_K_UNROLL2
-    #pragma unroll 2
+    constexpr int kConfiguredKUnroll = 2;
     #else
-    #pragma unroll 1
+    constexpr int kConfiguredKUnroll = 1;
     #endif
+    constexpr int kTaskKUnroll =
+        ForcedKUnroll == 0 ? kConfiguredKUnroll : ForcedKUnroll;
+    #pragma unroll kTaskKUnroll
     for (int local_kt = 0; local_kt < kKTilesPerSplit; ++local_kt) {
         const int item_idx = sequence_tile_base + local_kt;
         const int stage = item_idx % kStages;
@@ -5085,7 +5108,9 @@ void tp4_megamoe_single_launch_kernel(
             } else {
                 route_gemm_task<
                     512, 4096, 1, false, 0, false, false,
-                    kSingleLaunchPersistentGemmState>(
+                    kSingleLaunchPersistentGemmState, -1, false,
+                    (kSingleLaunchW2Unroll2Bound9 && Tokens == 128)
+                        ? 2 : 0>(
                     &w2_tma_weight, &w2_tma_weight_scale,
                     w2, s2, g2, qactivation, activation_scale,
                     sorted_ids, expert_ids, num_tokens_padded, topk_weights,
@@ -7217,6 +7242,7 @@ _EXTENSION_CONFIG = (
           f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
           f"sldr{int(SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM)}_"
           f"slm128b9{int(SINGLE_LAUNCH_M128_BOUND9)}_"
+          f"slw2u2b9{int(SINGLE_LAUNCH_W2_UNROLL2_BOUND9)}_"
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
@@ -7323,6 +7349,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_M128_BOUND9="
             f"{int(SINGLE_LAUNCH_M128_BOUND9)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_UNROLL2_BOUND9="
+            f"{int(SINGLE_LAUNCH_W2_UNROLL2_BOUND9)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE="

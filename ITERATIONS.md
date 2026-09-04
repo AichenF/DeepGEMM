@@ -8070,3 +8070,30 @@ maximum rank latency of a full CUDA-Graph replay.
   structural experiment; do not broaden to all M.
 - **Artifact:**
   `bench/results/iter284_w13_completion_activation_m8_m128_20260904.log`.
+
+## Iteration 285 — M128 bound-9 with one-kernel W2 unroll-2 regresses
+
+- **Change:** Parameterized `route_gemm_task`'s K-loop unroll with a
+  compile-time override and added opt-in
+  `V4_SINGLE_LAUNCH_W2_UNROLL2_BOUND9=1`.  Only the Tokens=128 monolithic W2
+  instantiation uses unroll 2; independent baseline W2 remains at selected
+  unroll 4.  The candidate combines dynamic route scratch and the existing
+  M128 nine-CTA launch bound.
+- **Protocol:** TP4 GPUs 0-3, random M128, two balanced batches x 20
+  independently cold-L2 CUDA-Graph replays per arm, four warmups, rank-max,
+  excluded 256 MiB clears, and device phase stamps.  Inputs are prequantized
+  FP8 X/scales plus MXFP4 weights.
+- **Correctness:** PASS exactly against the multi-kernel path; output is
+  finite and the embedded all-reduce oracle passes.
+- **Cold-L2 result:** Multi/candidate medians are
+  `0.303472/0.362800 ms`; candidate is `19.55%` slower.  Candidate phases are
+  route/W13/requant/W2 = `4.224/207.104/6.336/119.808 us`.
+- **Interpretation:** The ninth CTA shortens W13 by roughly 4 us versus the
+  selected recent phase measurement, but reducing W2 unroll costs roughly
+  9 us and more than consumes that gain.  Occupancy cannot replace W2's
+  four-iteration software schedule.
+- **Decision:** Reject and keep disabled.  Retain the compile-time override
+  as an isolated reproducibility knob; selected M128 remains bound-8 with W2
+  unroll 4.
+- **Artifact:**
+  `bench/results/iter285_m128_bound9_w2_unroll2_20260904.log`.
