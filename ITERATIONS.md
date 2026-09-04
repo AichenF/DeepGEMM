@@ -6374,3 +6374,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Stable M64 result: control/candidate 0.249888/0.293056 ms, speedup 0.852697x; phases route/W13/activation/W2 = 3.872/172.384/5.120/93.504 us. Relative to bound 8, W13 improves roughly 3.3 us while W2 regresses roughly 2.4 us, leaving only a noise-sized net change.
 - Decision: do not select bound 9 for M16/M32/M64 from this run. Its only supported lead remains M128 from Iteration 179. Future formal comparisons must be rerun in a clean window and judged with paired batch medians.
 - Evidence: `results/iter180_tp4_single_launch_bound9_m16_m32_m64_20260904.log`.
+
+## Iteration 181 — 16-CTA coarse wavefront does not improve medium/large M
+
+- Date: 2026-09-04
+- Environment: moved to idle physical GPUs 0–3 after GPUs 4 and 7 were observed at 98% utilization. Candidate/control still share each replay and use the same cold-L2 protocol.
+- Configuration: existing schedule 2, 39 independent 16-CTA cohorts at bound/requested residency 8, parallel route scan, 64-CTA M128 NVLS tail; M={32,64,128}, random routes, two batches × 20 cold-L2 replays, four warmups, rank-max.
+- Correctness: all three points pass finite/reference/allreduce gates. M128's tiny numerical change remains inside the established bound (cosine 0.9999955807, relative L2 0.0029729911).
+- Timing control/candidate/speedup: M32 0.174944/0.211328 ms (0.827832x); M64 0.249312/0.294416 ms (0.846802x); M128 0.308048/0.368608 ms (0.835706x). Against schedule 0, M32/M64 are slightly slower and M128 only ties the bound-9 result.
+- Instrumentation note: schedule 2 intentionally does not execute the schedule-0 W13/activation intermediate grid barriers, so timestamp slots 2/3 remain stale. The printed enormous negative/positive W13/W2 deltas are invalid and excluded.
+- Decision: reject schedule 2 across medium/large M as well as its earlier M8 rejection. Coarse cross-mblock overlap does not repay cohort barriers and mixed W13/W2 traffic.
+- Evidence: `results/iter181_tp4_single_launch_group16_m32_m64_m128_gpus0_3_20260904.log`.
