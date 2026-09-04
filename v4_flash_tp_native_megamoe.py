@@ -574,6 +574,7 @@ v4_flash_tp4_native_megamoe_impl(
     constexpr uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks;
 #include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused_body.inl>
 
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900) && (__CUDA_ARCH__ < 1000)
     // The last combine store is asynchronous.  Drain it before the local-rank
     // grid barrier transfers ownership of y to the communication tail.
     ptx::tma_store_wait<0>();
@@ -596,6 +597,7 @@ v4_flash_tp4_native_megamoe_impl(
             num_tokens, rank, push_stride,
             static_cast<int>(sm_idx), static_cast<int>(kNumSMs));
     }
+#endif
 }
 
 }  // namespace deep_gemm
@@ -791,7 +793,7 @@ _ext = load_inline(
         "--expt-extended-lambda",
         "-gencode",
         "arch=compute_90a,code=sm_90a",
-        "-std=c++17",
+        "-std=c++20",
         "-lineinfo",
         f"-I{DEEP_GEMM_INCLUDE}",
     ],

@@ -6404,3 +6404,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: **compile failed before execution**. NVCC rejects the pre-existing wrapper header's C++17 floating-point template parameter, and the separately included body hides `workspace/sm_idx/thread_idx` inside its architecture preprocessor scope before the appended tail.
 - Evidence: NVCC reports `floating-point template parameter is nonstandard` at the original SM90 fused wrapper declaration, followed by undefined `workspace`, `sm_idx`, and `thread_idx` at the appended grid barrier.
 - Decision: keep the benchmark/input-contract integration, but stop including the wrapper declaration. Copy only the small decoder-helper prefix into an owned header (or guard the original kernel declaration), and place the appended communication tail inside the same body lexical scope before its `#else/#endif`.
+
+## Iteration 184 — C++20/device-pass compile repair
+
+- Change: compile the CUDA translation unit as C++20 so the read-only DeepGEMM wrapper's floating-point non-type template parameter parses, and guard the appended communication tail so only the CUDA device pass references body-local state.
+- Test: imported the new JIT module on H20 GPU 0 with verbose build.
+- Result: **CUDA compile and shared-library link passed** (`nvcc` plus final `.so` link both completed). The shell-only diagnostic print then raised `NameError` because nested SSH quoting removed the string quotes; this occurred after the module import and does not affect the extension.
+- Decision: proceed to a TP4 M=8 distributed correctness smoke; compilation is no longer the blocker.
