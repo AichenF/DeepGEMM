@@ -8901,3 +8901,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Smoke timing:** 0.395408 ms candidate median versus 0.325040 ms noisy control median (two samples only), substantially slower than the ~0.343 ms non-overlapped candidate. No performance conclusion is valid until the data race/addressing error is fixed.
 - **Decision:** **REJECT current implementation; keep default off.** Next step is a correctness-first audit of chunk ownership, symmetric-buffer overwrite order, and semaphore publication. Do not benchmark this variant further before exact-output diagnostics.
 - **Artifact:** `bench/results/iter344_w2_chunk_ar_overlap_m128_smoke_20260904.log`.
+
+## Iteration 345 — localize chunk-overlap output race (2026-09-04)
+
+- Purpose: localize the Iteration 344 correctness failure before doing any further performance tuning.
+- Setup: TP4, M=128 random routing, prequantized FP8 activation input, MXFP4 weights, candidate CUDA graph replayed four times; outputs were compared both with the reference and across identical graph replays. The formal cold-L2 policy and public MegaMoE input boundary were unchanged.
+- Evidence: per-hidden-chunk relative-L2 error was consistently largest in the early chunks and generally smallest in chunk 3. Across the four replays, chunk-0 relative-L2 ranged from 0.01055 to 0.01279 with max-absolute errors of 17,504–25,472, while chunk-3 ranged from 0.00296 to 0.00417 with max-absolute errors of 1,024–7,104.
+- Repeatability: every replay after the first differed from the first by max-absolute 25,472. The changing values and changing worst-token set prove a nondeterministic race, not a deterministic layout permutation or reference mismatch.
+- Decision: keep `V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP` disabled. Isolate the four-chunk collective helper from W2 overlap before changing the mapping or attempting more optimization.
+- Artifact: `bench/results/iter345_w2_chunk_overlap_output_localization_20260904.log`.

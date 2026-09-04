@@ -43,6 +43,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replays", type=int, default=200)
     parser.add_argument("--warmup-replays", type=int, default=20)
     parser.add_argument(
+        "--diagnose-output",
+        action="store_true",
+        help="Print repeat/chunk error localization before performance timing.",
+    )
+    parser.add_argument(
         "--pair-granularity", choices=("batch", "replay"), default="batch"
     )
     parser.add_argument("--seed", type=int, default=20260902)
@@ -343,6 +348,103 @@ def main() -> None:
         control_graph = capture_graph(control_case, comm, cpu_group, device)
         kernel.SINGLE_LAUNCH_TP4 = True
         candidate_graph = capture_graph(candidate_case, comm, cpu_group, device)
+
+        if args.diagnose_output:
+            candidate_snapshots: list[torch.Tensor] = []
+            for _ in range(4):
+                candidate_graph.replay()
+                torch.cuda.synchronize(device)
+                assert candidate_case.graph_output is not None
+                candidate_snapshots.append(candidate_case.graph_output.clone())
+            diagnostic_reference = (
+                candidate_case.make_reference_case().run_local().clone()
+            )
+            dist.all_reduce(diagnostic_reference, group=nccl_group)
+            torch.cuda.synchronize(device)
+            repeat_metrics: list[dict[str, Any]] = []
+            for repeat, snapshot in enumerate(candidate_snapshots):
+                chunk_metrics: list[dict[str, float | int]] = []
+                for chunk in range(4):
+                    begin = chunk * custom.HIDDEN // 4
+                    end = (chunk + 1) * custom.HIDDEN // 4
+                    actual_chunk = snapshot[:, begin:end].double()
+                    reference_chunk = diagnostic_reference[:, begin:end].double()
+                    chunk_diff = actual_chunk - reference_chunk
+                    chunk_metrics.append(
+                        {
+                            "chunk": chunk,
+                            "max_abs_rank_max": custom.reduce_rank_metric(
+                                float(chunk_diff.abs().max()),
+                                dist.ReduceOp.MAX,
+                                device,
+                                nccl_group,
+                            ),
+                            "rel_l2_rank_max": custom.reduce_rank_metric(
+                                float(
+                                    torch.linalg.vector_norm(chunk_diff)
+                                    / torch.linalg.vector_norm(
+                                        reference_chunk
+                                    ).clamp_min(1e-40)
+                                ),
+                                dist.ReduceOp.MAX,
+                                device,
+                                nccl_group,
+                            ),
+                            "bf16_mismatches_rank_max": int(
+                                custom.reduce_rank_metric(
+                                    float(
+                                        (snapshot[:, begin:end]
+                                         != diagnostic_reference[:, begin:end])
+                                        .sum()
+                                        .item()
+                                    ),
+                                    dist.ReduceOp.MAX,
+                                    device,
+                                    nccl_group,
+                                )
+                            ),
+                        }
+                    )
+                repeat_metrics.append(
+                    {"repeat": repeat, "chunks": chunk_metrics}
+                )
+            repeat_max_abs = []
+            for repeat in range(1, len(candidate_snapshots)):
+                repeat_max_abs.append(
+                    custom.reduce_rank_metric(
+                        float(
+                            (candidate_snapshots[repeat]
+                             - candidate_snapshots[0]).abs().max()
+                        ),
+                        dist.ReduceOp.MAX,
+                        device,
+                        nccl_group,
+                    )
+                )
+            if rank == 0:
+                token_max = (
+                    candidate_snapshots[-1].double()
+                    - diagnostic_reference.double()
+                ).abs().amax(dim=1)
+                top_values, top_tokens = torch.topk(
+                    token_max, k=min(8, token_max.numel())
+                )
+                print(
+                    "SINGLE_MULTI_OUTPUT_DIAG "
+                    + json.dumps(
+                        {
+                            "m": m,
+                            "repeat_metrics": repeat_metrics,
+                            "repeat_vs_first_max_abs_rank_max": repeat_max_abs,
+                            "worst_tokens_rank0": top_tokens.cpu().tolist(),
+                            "worst_token_max_abs_rank0": (
+                                top_values.cpu().tolist()
+                            ),
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
 
         control_check = custom.correctness_metrics(
             control_case, control_graph, nccl_group, device
