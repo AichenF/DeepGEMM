@@ -7942,3 +7942,33 @@ maximum rank latency of a full CUDA-Graph replay.
   longer paired ratio remains worse.
 - **Artifact:**
   `bench/results/iter278_embedded_p2p_twoshot_m64_cold_screen_20260904.log`.
+
+## Iteration 279 — all-M pairing selects embedded two-shot at M64/M128
+
+- **Protocol:** TP4 GPUs 0-3, random M={8,16,32,64,128}, six balanced AB/BA
+  batches x 30 independently cold-L2 CUDA-Graph replays per implementation
+  (180 samples/shape), six warmups, rank-max timing, and a separate excluded
+  256 MiB clear before every replay.  M<=32 uses the unchanged embedded
+  multicast push; M64/M128 uses the new 64-CTA ordinary-P2P two-shot tail.
+  Both paths share prequantized FP8 X/scales, MXFP4 weights and route inputs.
+- **Correctness:** PASS exactly at every M for both implementations; candidate
+  cosine is at least `0.9999955955`, rel-L2 at most `0.0029680026`, all ranks
+  are finite, and every all-reduce oracle passes.
+- **Cold-L2 multi/candidate medians and candidate overhead:** M8
+  `0.071200/0.075680 ms, +6.29%`; M16
+  `0.113776/0.125632 ms, +10.42%`; M32
+  `0.178240/0.206576 ms, +15.90%`; M64
+  `0.258288/0.293856 ms, +13.77%`; M128
+  `0.322128/0.368800 ms, +14.49%`.
+- **Aggregate/comparison:** Geometric means are multi
+  `0.164412 ms` and candidate `0.184339 ms`; candidate is `12.12%` slower.
+  Iteration 262's selected NVLS-one-shot aggregate was `13.24%` slower, with
+  M64/M128 overheads `14.25%/20.57%`.  The new tail improves the all-shape
+  relative gap by about 1.1 percentage points and removes roughly six points
+  at M128; M64 also improves slightly in the longer paired window.
+- **Decision:** Select 64-CTA P2P two-shot for M64/M128 and preserve multicast
+  push below M64.  This is a genuine one-entry improvement, but the candidate
+  still misses the required 1.10x win by a wide margin; compute scheduling is
+  now the dominant target.
+- **Artifact:**
+  `bench/results/iter279_embedded_p2p_twoshot_tp4_allm_cold_paired_20260904.log`.
