@@ -221,9 +221,24 @@ FUSED_K6_NVLS_PULL_AR = (
     os.environ.get("V4_FUSED_K6_NVLS_PULL_AR", "0") == "1"
 )
 SINGLE_LAUNCH_TP4 = os.environ.get("V4_SINGLE_LAUNCH_TP4", "0") == "1"
-SINGLE_LAUNCH_INTERLEAVED = (
-    os.environ.get("V4_SINGLE_LAUNCH_INTERLEAVED", "1") == "1"
+_legacy_single_launch_interleaved = os.environ.get(
+    "V4_SINGLE_LAUNCH_INTERLEAVED"
 )
+_single_launch_schedule_default = (
+    "1"
+    if _legacy_single_launch_interleaved == "1"
+    else "0"
+    if _legacy_single_launch_interleaved == "0"
+    else "2"
+)
+SINGLE_LAUNCH_SCHEDULE = int(
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_SCHEDULE", _single_launch_schedule_default
+    )
+)
+if SINGLE_LAUNCH_SCHEDULE not in (0, 1, 2):
+    raise ValueError("V4_SINGLE_LAUNCH_SCHEDULE must be 0, 1, or 2")
+SINGLE_LAUNCH_INTERLEAVED = SINGLE_LAUNCH_SCHEDULE != 0
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "5")
 )
@@ -407,8 +422,10 @@ static constexpr bool kW2SortedAct = K_W2_SORTED_ACT;
 static constexpr bool kW2MblockScale = K_W2_MBLOCK_SCALE || kW2SortedAct;
 static constexpr bool kW2CoalescedStore = K_W2_COALESCED_STORE;
 static constexpr bool kW2FoldGlobalScale = K_W2_FOLD_GLOBAL_SCALE;
+static constexpr int kSingleLaunchSchedule = K_SINGLE_LAUNCH_SCHEDULE;
+static_assert(kSingleLaunchSchedule >= 0 && kSingleLaunchSchedule <= 2);
 static constexpr bool kSingleLaunchInterleaved =
-    K_SINGLE_LAUNCH_INTERLEAVED;
+    kSingleLaunchSchedule != 0;
 
 #if K_MIN_BLOCKS_PER_SM > 0
 #define ROUTE_LAUNCH_BOUNDS(IS_W13, DUAL) \
@@ -2506,6 +2523,17 @@ __device__ __forceinline__ int32_t atomic_add_release_gpu_i32(
     return static_cast<int32_t>(old);
 }
 
+__device__ __forceinline__ int32_t atomic_add_acq_rel_gpu_i32(
+        int32_t* pointer, int32_t value) {
+    uint32_t old;
+    asm volatile(
+        "atom.acq_rel.gpu.global.add.u32 %0,[%1],%2;"
+        : "=r"(old)
+        : "l"(pointer), "r"(static_cast<uint32_t>(value))
+        : "memory");
+    return static_cast<int32_t>(old);
+}
+
 // Scheduler-only correctness probe for the TP-local interleaved design.
 // One lane per persistent CTA claims dynamically bounded W13 tasks.  The last
 // W13 tile for an M block publishes that block into a ready queue; W2 tasks
@@ -3182,6 +3210,7 @@ __device__ __forceinline__ void single_launch_grid_barrier(
             store_release_gpu_i32(epoch, observed_epoch + 1);
         } else {
             while (load_acquire_gpu_i32(epoch) == observed_epoch) {
+                __nanosleep(64);
             }
         }
     }
@@ -3200,12 +3229,35 @@ enum SingleLaunchSchedulerOffset : int {
     kSchedulerHeaderWords = 8,
 };
 
-// First complete bring-up of the real one-launch TP4 path.  It intentionally
-// keeps phase barriers between the already validated kernels before the next
-// optimization step introduces the MegaMoE task DAG and W13/W2 overlap.  The
-// one global launch nevertheless owns route preparation, intermediate
-// requantization, both MXFP4 GEMMs, SwiGLU, fixed-k6 reduction and multicast
-// all-reduce.  Input X is already FP8 at this API boundary.
+// Reusable barrier for a fixed contiguous CTA cohort.  A CTA barrier makes
+// all member lanes' stores happen-before lane 0.  The acq_rel arrival chain
+// then transfers those stores through the last arriver's release epoch to all
+// peers, without one global readiness operation per GEMM tile.
+__device__ __forceinline__ void single_launch_group_barrier(
+        int32_t* __restrict__ state, int group, int expected_blocks) {
+    __shared__ int observed_group_epoch;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        int32_t* count = state + group * 2;
+        int32_t* epoch = count + 1;
+        observed_group_epoch = load_acquire_gpu_i32(epoch);
+        const int arrival = atomic_add_acq_rel_gpu_i32(count, 1);
+        if (arrival == expected_blocks - 1) {
+            atomicExch(count, 0);
+            store_release_gpu_i32(epoch, observed_group_epoch + 1);
+        } else {
+            while (load_acquire_gpu_i32(epoch) == observed_group_epoch)
+                __nanosleep(64);
+        }
+    }
+    __syncthreads();
+}
+
+// One-launch TP4 path.  Schedule 0 preserves the validated global-phase
+// bring-up, schedule 1 is the fine-grained diagnostic DAG, and schedule 2 is
+// the selected fixed-cohort wavefront.  Every schedule owns route preparation,
+// both MXFP4 GEMMs, internal SwiGLU/FP8 requantization, fixed-k6 reduction and
+// TP all-reduce.  Input X is already FP8 at this API boundary.
 template <int SplitK>
 __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
         const __grid_constant__ CUtensorMap w13_tma_weight,
@@ -3266,7 +3318,7 @@ __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
         route_to_sorted, tokens, cta);
     single_launch_grid_barrier(barrier_state, 0, ctas);
 
-    if constexpr (kSingleLaunchInterleaved) {
+    if constexpr (kSingleLaunchSchedule == 1) {
         static_assert(SplitK == 2 || SplitK == 4);
         constexpr int kSplitPairs = SplitK / 2;
         constexpr int kW13GroupsPerMblock = kW13NTiles * kSplitPairs;
@@ -3458,6 +3510,91 @@ __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
         // This remaining barrier is the only compute-wide phase boundary:
         // every lane publishes W2 route rows before the communication CTAs
         // begin k6 reduction and the TP collective.
+        single_launch_grid_barrier(barrier_state, 3, ctas);
+    } else if constexpr (kSingleLaunchSchedule == 2) {
+        constexpr int kCtasPerGroup = 16;
+        constexpr int kW13TasksPerMblock = kW13NTiles * SplitK;
+        constexpr int kW13TasksPerCta =
+            kW13TasksPerMblock / kCtasPerGroup;
+        constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
+        constexpr int kActivationTasksPerMblock =
+            kTok * kActivationGroupsPerRoute;
+        constexpr int kActivationTasksPerCta =
+            kActivationTasksPerMblock / kCtasPerGroup;
+        constexpr int kW2TasksPerCta = kW2NTiles / kCtasPerGroup;
+        static_assert(SplitK == 2 || SplitK == 4);
+        static_assert(kW13TasksPerMblock % kCtasPerGroup == 0);
+        static_assert(kActivationTasksPerMblock % kCtasPerGroup == 0);
+        static_assert(kW2NTiles % kCtasPerGroup == 0);
+
+        const int num_groups = ctas / kCtasPerGroup;
+        const int group = cta / kCtasPerGroup;
+        const int group_rank = cta - group * kCtasPerGroup;
+        const int num_mblocks = __ldg(num_tokens_padded) / kTok;
+        int32_t* group_barriers = scheduler + kSchedulerHeaderWords;
+
+        // A fixed 16-CTA cohort owns one routed M8 block at a time.  There are
+        // no tile claims, ready queues, or idle global-counter polling.  Each
+        // cohort advances independently, so W2 from an early expert block can
+        // overlap W13 from another cohort's later block.
+        for (int mblock = group; mblock < num_mblocks;
+             mblock += num_groups) {
+            #pragma unroll
+            for (int task_in_cta = 0;
+                 task_in_cta < kW13TasksPerCta; ++task_in_cta) {
+                const int local_task =
+                    group_rank * kW13TasksPerCta + task_in_cta;
+                const int task =
+                    mblock * kW13TasksPerMblock + local_task;
+                route_gemm_task<4096, 1024, SplitK, true>(
+                    &w13_tma_weight, &w13_tma_weight_scale,
+                    w13, s13, g13, qx, x_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                    partials, lut, nullptr, routes, 0, task);
+                __syncthreads();
+            }
+            single_launch_group_barrier(
+                group_barriers, group, kCtasPerGroup);
+
+            #pragma unroll
+            for (int task_in_cta = 0;
+                 task_in_cta < kActivationTasksPerCta; ++task_in_cta) {
+                const int local_task =
+                    group_rank * kActivationTasksPerCta + task_in_cta;
+                const int route_slot =
+                    local_task / kActivationGroupsPerRoute;
+                const int group_in_route = local_task
+                    - route_slot * kActivationGroupsPerRoute;
+                const int route = __ldg(
+                    sorted_ids + mblock * kTok + route_slot);
+                if (route < routes) {
+                    reduce_swiglu_quant_task<kIntermediate, SplitK>(
+                        partials, activation, qactivation,
+                        activation_scale, route_to_sorted, topk_ids,
+                        g2, routes,
+                        route * kActivationGroupsPerRoute + group_in_route);
+                    __syncthreads();
+                }
+            }
+            single_launch_group_barrier(
+                group_barriers, group, kCtasPerGroup);
+
+            #pragma unroll
+            for (int task_in_cta = 0;
+                 task_in_cta < kW2TasksPerCta; ++task_in_cta) {
+                const int local_task =
+                    group_rank * kW2TasksPerCta + task_in_cta;
+                const int task = mblock * kW2NTiles + local_task;
+                route_gemm_task<512, 4096, 1, false>(
+                    &w2_tma_weight, &w2_tma_weight_scale,
+                    w2, s2, g2, qactivation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                    reinterpret_cast<float*>(down), lut, nullptr,
+                    routes, 0, task);
+                __syncthreads();
+            }
+        }
+
         single_launch_grid_barrier(barrier_state, 3, ctas);
     } else {
         const int w13_tasks = max_mblocks * kW13NTiles * SplitK;
@@ -4404,8 +4541,10 @@ void launch_tp4_megamoe_single(
                 "requested single-launch CTAs/SM must be positive");
     const int selected_ctas_per_sm = std::min(
         requested_ctas_per_sm, active_per_sm);
-    const int resident_grid =
+    int resident_grid =
         properties.multiProcessorCount * selected_ctas_per_sm;
+    if constexpr (kSingleLaunchSchedule == 2)
+        resident_grid = (resident_grid / 16) * 16;
     TORCH_CHECK(resident_grid >= 78,
                 "single-launch kernel cannot keep the 78 communication CTAs resident");
 
@@ -5225,11 +5364,11 @@ _EXTENSION_CONFIG = (
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
-          f"sidag{int(SINGLE_LAUNCH_INTERLEAVED)}_"
+          f"slsch{SINGLE_LAUNCH_SCHEDULE}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v163rel")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v164g16")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v163rel"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v164g16"
 )
 
 _ext = load_inline(
@@ -5300,7 +5439,7 @@ _ext = load_inline(
         f"-DK_W2_MBLOCK_SCALE={int(W2_MBLOCK_SCALE)}",
         f"-DK_W2_FOLD_GLOBAL_SCALE={int(W2_FOLD_GLOBAL_SCALE)}",
         f"-DK_W2_COALESCED_STORE={int(W2_COALESCED_STORE)}",
-        f"-DK_SINGLE_LAUNCH_INTERLEAVED={int(SINGLE_LAUNCH_INTERLEAVED)}",
+        f"-DK_SINGLE_LAUNCH_SCHEDULE={SINGLE_LAUNCH_SCHEDULE}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         f"-DK_W13_LAUNCH_BOUND_10={int(W13_LAUNCH_BOUND_10)}",
         f"-DK_W13_MAX_SMEM_CARVEOUT={int(W13_MAX_SMEM_CARVEOUT)}",

@@ -125,6 +125,7 @@ def main() -> None:
                     "single_launch_interleaved": (
                         kernel.SINGLE_LAUNCH_INTERLEAVED
                     ),
+                    "single_launch_schedule": kernel.SINGLE_LAUNCH_SCHEDULE,
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
                     ),

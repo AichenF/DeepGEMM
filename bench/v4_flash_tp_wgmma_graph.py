@@ -1151,6 +1151,9 @@ def main() -> None:
                     "rank_route_pull_blocks": kernel.RANK_ROUTE_PULL_BLOCKS,
                     "fused_k6_nvls_pull_ar": kernel.FUSED_K6_NVLS_PULL_AR,
                     "single_launch_tp4": kernel.SINGLE_LAUNCH_TP4,
+                    "single_launch_schedule": (
+                        kernel.SINGLE_LAUNCH_SCHEDULE
+                    ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
                     ),

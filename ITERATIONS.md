@@ -6032,3 +6032,38 @@ maximum rank latency of a full CUDA-Graph replay.
   replay, then move to a static coarse wavefront and/or direct W13 epilogue
   fusion that avoids per-tile atomics and shrinks live state.
 - **Evidence:** `results/iter163_tp4_interleaved_release_m8_screen_20260904.log`.
+
+## Iteration 164 — static 16-CTA mblock wavefront
+
+- **Change under test:** add schedule 2, a 384-CTA static wavefront split into
+  24 independent cohorts of 16 CTAs.  Each cohort processes one routed M8
+  block at a time: its CTAs statically partition all W13 split/N tiles, use
+  one cohort-local acq_rel barrier, partition all 32 SwiGLU/group-128 FP8
+  quant tasks, use a second cohort barrier, then partition all 32 W2 N tiles.
+  Cohorts advance independently and only one full-grid boundary remains
+  before k6 reduction/all-reduce.  Schedule 1 remains available only as the
+  rejected fine-grained diagnostic.
+- **Protocol:** TP4 physical GPUs 4-7, random M8 routes, schedule 2, five
+  requested CTAs/SM, same-process paired CUDA Graphs, two outer batches x ten
+  replays, four cold warmups, rank-max timing.  Every replay is immediately
+  preceded by a separate excluded 256 MiB Triton L2 clear.
+- **Correctness:** PASS on every rank for control and candidate.  Candidate
+  minimum cosine is `0.9999956066`, maximum relative L2 `0.0029643002`, all
+  outputs are finite, and both paths report 344 padded rows / 43 active
+  experts.  Repeated cohort barrier generations therefore preserve W13 to
+  requantization to W2 ordering for M8.
+- **Cold-L2 timing:** control median `0.071552 ms` (min/max
+  `0.070656/0.087872`); candidate median `0.105280 ms` (min/max
+  `0.104352/0.126816`).  Control/candidate is `0.67964x`; candidate remains
+  47.14% slower than control.
+- **Analysis:** eliminating queue polling recovers almost all of the
+  fine-grained DAG catastrophe (`0.578048 -> 0.105280 ms`, 5.49x faster),
+  proving the polling dispatcher was dominant.  However schedule 2 is about
+  9.7% slower than iteration 160's `0.095968 ms` barrier-separated candidate:
+  two cohort barriers per mblock and concurrent W13/W2 weight streams cost
+  more than the exposed cross-block overlap saves at sparse M8.
+- **Decision:** keep schedule 2 as a correct structural experiment but do not
+  select it.  Return to schedule 0 as the performance base; reduce its route
+  and full-grid wait overhead, then pursue direct W13 epilogue fusion without
+  cross-stage weight contention.
+- **Evidence:** `results/iter164_tp4_group16_wavefront_m8_screen_20260904.log`.
