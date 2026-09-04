@@ -9008,3 +9008,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Isolation result: symmetric-output write addresses and mid-loop local stores do not corrupt W2. Stage 1 fails only when the helper additionally reads/combines `down`, strongly implicating insufficient producer visibility or a concurrent global-load/global-store hazard on nominally completed chunk data.
 - Decision: add an opt-in per-producer device fence before chunk-ready publication and rerun stage 1/full overlap. Keep all overlap variants default-off.
 - Artifact: `bench/results/iter354_w2_chunk_helper_stage0_write_only_smoke_20260904.log`.
+
+## Iteration 355 — per-lane strong producer-fence probe (2026-09-04)
+
+- Hypothesis: the original CTA barrier followed by a lane-0 release arrival might not safely publish every lane's ordinary W2 stores for a mid-kernel consumer. Make every lane execute `__threadfence()`, rendezvous again, and only then publish chunk completion.
+- Implementation: added opt-in `V4_SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE=1`; no public-input, task mapping, or collective-layout change.
+- Setup: TP4 GPUs 0–3, M128 random routes, seed 20260904, helper stage 1, four diagnostic graph replays and one cold-L2 smoke.
+- Correctness: **FAIL.** Strong producer fences reduced some observed error magnitudes but did not restore correctness. Final `down` still differed nondeterministically from control, with up to 1,922 BF16 mismatches in chunk 0 and repeat-versus-first max-absolute difference 98,816.
+- Inference: a missing per-writer device fence is not the root cause. Since write-only stage 0 passes and read/combine stage 1 fails, the remaining leading hypothesis is that helper reads overlap addresses still being written despite the logical chunk accounting, or that the read/combine body perturbs later W2 execution through another state/resource hazard.
+- Decision: reject the fence as a fix and keep default-off. Map corrupt elements to physical W2 task/CTA ownership and test a read-only copy/checksum body next.
+- Artifact: `bench/results/iter355_w2_chunk_stage1_strong_producer_fence_20260904.log`.

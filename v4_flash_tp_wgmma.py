@@ -812,6 +812,20 @@ if (
         "staged chunk-helper diagnostics require "
         "V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP=1"
     )
+SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE = (
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE", "0"
+    )
+    == "1"
+)
+if (
+    SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE
+    and not SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE requires "
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP=1"
+    )
 SINGLE_LAUNCH_W2_CHUNK_AR_POST = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_AR_POST", "0") == "1"
 )
@@ -1055,6 +1069,8 @@ static constexpr bool kSingleLaunchW2ChunkArWaitOnly =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY;
 static constexpr int kSingleLaunchW2ChunkArHelperStage =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE;
+static constexpr bool kSingleLaunchW2ChunkArStrongProducerFence =
+    K_SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE;
 static constexpr bool kSingleLaunchW2ChunkArPost =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_POST;
 static constexpr bool kSingleLaunchW2ChunkArPostConcurrent =
@@ -6092,6 +6108,14 @@ void tp4_megamoe_single_launch_kernel(
                         // every group spans the suffix resident SMs.
                         const bool is_chunk_comm = comm_block >= 0
                             && (comm_block & 3) == chunk;
+                        if constexpr (
+                                kSingleLaunchW2ChunkArStrongProducerFence) {
+                            // Every lane that emitted W2 global stores makes
+                            // its own writes device-visible before lane 0
+                            // publishes this CTA's chunk completion.
+                            __threadfence();
+                            __syncthreads();
+                        }
                         single_launch_chunk_arrive_and_wait(
                             barrier_state + kSingleLaunchChunkReadyOffset
                                 + chunk,
@@ -8493,6 +8517,7 @@ _EXTENSION_CONFIG = (
           f"slw2cao{int(SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP)}_"
           f"slw2cawo{int(SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY)}_"
           f"slw2cahs{SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE}_"
+          f"slw2caspf{int(SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE)}_"
           f"slw2cap{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST)}_"
           f"slw2capc{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
@@ -8647,6 +8672,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE="
             f"{SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE="
+            f"{int(SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_POST="
