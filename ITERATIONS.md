@@ -5503,3 +5503,17 @@ maximum rank latency of a full CUDA-Graph replay.
 - Fused K6 reduction matched the SGLang reference bitwise in all three cases (`max_abs=0`); every test emitted `V4_WGMMA_OK`.
 - Evidence: `results/iter138c_current_head_default_tp4_tp8_correctness_20260904.log`.
 - Decision: correctness closure passes for the primary TP4 shape, highly imbalanced routing/split-K atomic accumulation, and required TP8 shape.
+
+## Iteration 139 — exact-Humming all-reduce breakdown harness smoke
+
+- Date: 2026-09-04
+- Change: add `bench/v4_flash_tp_humming_ar_breakdown.py`, a read-only performance decomposition that captures exact Humming `full = local + CARv2`, the identical Humming local-only path, and CARv2-only over the same TP4 communicator. Production kernels are unchanged.
+- Protocol smoke: TP4 GPUs 1–4, random fixed routes, M8, complete-batch AB/BA pairing, 2 outer × 20 replays per graph, separate 256 MiB cold-L2 clear before every replay, rank-max CUDA-event latency.
+- Correctness: full Humming graph passed CAR-vs-NCCL validation (minimum cosine 0.999995600, relative L2 0.002966756); repeated AR-only zero input stayed exactly zero.
+- Result:
+  - full/local paired medians: 0.092719998 / 0.089168001 ms.
+  - incremental `full-local`: 0.003551997 ms, 3.8309% of full.
+  - independently paired CAR-only/full medians: 0.009136000 / 0.092976000 ms, 9.8262%.
+- Interpretation: the harness is functional and confirms that standalone CAR latency is not the same quantity as its end-to-end incremental critical-path cost. The 40-sample smoke is not the reported verdict.
+- Evidence: `results/iter139_humming_ar_breakdown_tp4_m8_smoke_cold40_20260904.log`.
+- Decision: retain the harness and run the requested all-M 10×200 formal decomposition.
