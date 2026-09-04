@@ -5710,3 +5710,32 @@ maximum rank latency of a full CUDA-Graph replay.
   Next compile and run a bounded TP4 M8 CUDA-Graph smoke; any failure will be
   repaired in a new recorded iteration.
 - Artifact: `results/iter151_single_launch_source_ast_check_20260904.log`.
+
+## Iteration 152 — first distributed TP4 single-launch CUDA-Graph bring-up
+
+- Date: 2026-09-04.
+- Source: iteration 151 (`f1f9c1d`), with
+  `V4_SINGLE_LAUNCH_TP4=1`.
+- Protocol: TP4 physical GPUs 0–3, H20-3e (78 SM), `M=8`, balanced routes,
+  two explicit pre-capture executions, CUDA Graph capture, two cold warmups,
+  correctness replay, then one batch x two cold-L2 timed replays.  A 256 MiB
+  Triton clear immediately precedes every replay and is excluded from events;
+  timing is TP4 rank-max.  The process was bounded by a 900-second timeout.
+- Compilation/liveness: both split-K specializations compiled, the occupancy-
+  bounded resident grid completed all four generation barriers, and repeated
+  graph replays plus the inline multicast collective returned without timeout
+  or stale-state failure.
+- Correctness: final TP result versus independently recomputed multi-kernel
+  local output plus NCCL sum passes on all ranks: minimum cosine
+  `0.9999956246`, maximum relative L2 `0.0029582442`, finite true, and
+  `allreduce_ok=true`.  Route metadata reports 48 active experts, 48 routed
+  rows and 384 padded rows, as expected for balanced M8.
+- Timing: the two diagnostic samples are `0.108224/0.261984 ms` with median
+  `0.185104 ms`.  This tiny, bimodal sample is explicitly not a performance
+  comparison and cannot be compared with the formal baseline.
+- Decision: the first end-to-end one-global-kernel implementation is now
+  functionally alive for TP4 M8.  Next prove the graph contains one business
+  kernel node, expand correctness across all M/random/skew, then replace the
+  phase-separated scheduler because the current bring-up structure is not yet
+  performance eligible.
+- Artifact: `results/iter152_tp4_single_launch_m8_graph_bringup_20260904.log`.
