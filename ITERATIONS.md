@@ -7861,3 +7861,30 @@ maximum rank latency of a full CUDA-Graph replay.
   considering M64 or a default change.
 - **Artifact:**
   `bench/results/iter275_embedded_p2p_twoshot_m128_smoke_20260904.log`.
+
+## Iteration 276 — 64 CTAs win the embedded P2P two-shot geometry sweep
+
+- **Protocol:** No source change from Iteration 275.  Screened 16 and 32
+  communication CTAs at TP4 M128 against the same multi-kernel control; each
+  configuration used two balanced batches x 20 independently cold-L2 CUDA
+  Graph replays, four warmups, rank-max timing, identical prequantized FP8
+  inputs, and an excluded 256 MiB clear before every replay.  Compare with the
+  already tested 64-CTA implementation.
+- **Correctness:** Both new geometries pass exactly with the control and the
+  independent all-reduce oracle (`cosine=0.9999955977`,
+  `rel_l2=0.0029672640`, finite).
+- **Cold-L2 control/candidate medians:** 16 CTAs
+  `0.303200/0.366624 ms` (`20.92%` slower); 32 CTAs
+  `0.302880/0.355632 ms` (`17.42%` slower); 64 CTAs in Iteration 275
+  `0.303120/0.352000 ms` (`16.13%` slower).
+- **Interpretation:** Increasing CTA count monotonically reduces the fused
+  local-k6 plus two-shot tail.  At M128 each 64-CTA lane performs eight local
+  k6 vectors and two reduce-scatter vectors, which is enough parallelism to
+  dominate the extra semaphore traffic.  No tested smaller grid wins.
+- **Decision:** Select 64 for a longer M128 paired confirmation.  Do not spend
+  another compilation on intermediate block counts unless the long window
+  reverses the direction.
+- **Artifacts:**
+  `bench/results/iter276_embedded_p2p_twoshot_b16_m128_cold_screen_20260904.log`
+  and
+  `bench/results/iter276_embedded_p2p_twoshot_b32_m128_cold_screen_20260904.log`.
