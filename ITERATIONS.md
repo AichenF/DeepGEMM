@@ -8860,3 +8860,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Representative ON medians across its two runs were approximately M8 0.0777 ms, M16 0.1223 ms, M32 0.1970 ms, M64 0.2776 ms, M128 0.3461 ms. The stronger selected multi-kernel control remains faster: the optimized single kernel is still about 5.6%, 7.7%, 12.8%, 13.4%, and 14.6% slower respectively under this seed/route realization.
 - Result: PASS as a small, directionally consistent instruction-path optimization; it does not close the structural gap. Keep opt-in pending a combined long graph-replay stress with release arrivals.
 - Artifact: `bench/results/iter340_assume_valid_off_on_on_off_tp4_allm_cold_screen_20260904.log`.
+
+## Iteration 341 — combined release-arrival + assume-valid graph stress
+
+- Setup: H20 GPU0, compute-only, release-arrival packed barriers ON and assume-valid schedule-0 GEMM tasks ON together. Captured one CUDA Graph per shape and replayed M8(split-K4) and M128(split-K2) 10,000 times each. This is a warm-cache liveness/correctness stress with no timing and no performance conclusion.
+- Barrier state: all four packed words matched their exact expected generations at every 1,000-replay checkpoint, all arrival counts returned to zero, legacy words stayed zero, generation wrapped exactly to zero at replay 5,000, and finished at packed word 5,120,000 after replay 10,000.
+- Fresh-output guard: before the final replay, changed the fixed-address public FP8 `qx`/FP32 group-128 scales and poisoned `down` with NaNs. M8 and M128 both finished finite and bitwise equal to independent multi-kernel references (`cosine=1.0`, `rel_l2=0.0`).
+- Result: PASS. The two opt-in changes compose without a stale-task, stale-output, hang, or barrier-wrap failure across 20,000 graph replays.
+- Artifact: `bench/results/iter341_combined_release_assume_valid_graph_stress_20260904.log`.
