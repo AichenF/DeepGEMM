@@ -614,6 +614,40 @@ if SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH and (
         "V4_SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH requires the isolated "
         "two-stage compact-interleaved one-WG schedule-0 path"
     )
+# The selected flat schedule derives every GEMM task from num_mblocks after
+# route publication.  In that one path the task index itself proves that the
+# mblock exists and route alignment proves its expert slot is initialized.
+# Keep this opt-in while the SASS/resource/correctness/performance gates run;
+# standalone and experimental schedulers retain their defensive guards.
+SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS = (
+    os.environ.get("V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS", "0") == "1"
+)
+if SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or SINGLE_LAUNCH_M128_BOUND9
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS requires the isolated "
+        "inline bound-8 schedule-0 path"
+    )
 if SINGLE_LAUNCH_W13_TAIL_SPLIT4 and (
     SINGLE_LAUNCH_NOINLINE_GEMM
     or SINGLE_LAUNCH_DUAL_WG_PHASES
@@ -905,6 +939,8 @@ static constexpr bool kSingleLaunchW13NextTaskPrefetch =
     K_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH;
 static constexpr bool kSingleLaunchW2NextTaskPrefetch =
     K_SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH;
+static constexpr bool kSingleLaunchAssumeValidGemmTasks =
+    K_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -1214,7 +1250,8 @@ __device__ __forceinline__ uint2 dequant_weight_word(
 template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool PublishW2Progress = false, bool DualWgW13 = false,
           bool PersistentState = false, int WgmmaHalf = -1,
-          bool SharedPartial = false, int ForcedKUnroll = 0>
+          bool SharedPartial = false, int ForcedKUnroll = 0,
+          bool AssumeValidMblock = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -1327,12 +1364,16 @@ __device__ __forceinline__ void route_gemm_task(
     const int n_block_idx = LaunchNTiles == 0
         ? local_n_block_idx
         : n_tile_begin + local_n_block_idx;
-    if (m_block_idx * kTok >= __ldg(num_tokens_padded))
-        return;
+    if constexpr (!AssumeValidMblock) {
+        if (m_block_idx * kTok >= __ldg(num_tokens_padded))
+            return;
+    }
 
     const int expert_idx = __ldg(expert_ids + m_block_idx);
-    if (expert_idx < 0)
-        return;
+    if constexpr (!AssumeValidMblock) {
+        if (expert_idx < 0)
+            return;
+    }
     const int weight_row = expert_idx * N + n_block_idx * kWout;
     const int kt_begin = split_idx * kKTilesPerSplit;
 
@@ -5631,7 +5672,8 @@ void tp4_megamoe_single_launch_kernel(
                             route_gemm_task<
                                 4096, 1024, SplitK, true, 0, false,
                                 kSingleLaunchDualWgPhases,
-                                kW13PersistentState>(
+                                kW13PersistentState, -1, false, 0,
+                                kSingleLaunchAssumeValidGemmTasks>(
                                 &w13_tma_weight, &w13_tma_weight_scale,
                                 w13, s13, g13, qx, x_scale,
                                 sorted_ids, expert_ids, num_tokens_padded,
@@ -5813,7 +5855,8 @@ void tp4_megamoe_single_launch_kernel(
                         kSingleLaunchDualWgPhases,
                         kW2PersistentState, -1, false,
                         (kSingleLaunchW2Unroll2Bound9 && Tokens == 128)
-                            ? 2 : 0>(
+                            ? 2 : 0,
+                        kSingleLaunchAssumeValidGemmTasks>(
                         &w2_tma_weight, &w2_tma_weight_scale,
                         w2, s2, g2, qactivation, activation_scale,
                         sorted_ids, expert_ids, num_tokens_padded,
@@ -7970,6 +8013,7 @@ _EXTENSION_CONFIG = (
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
           f"slw13np{int(SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH)}_"
           f"slw2np{int(SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH)}_"
+          f"slavgt{int(SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
@@ -8102,6 +8146,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH="
             f"{int(SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS="
+            f"{int(SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="

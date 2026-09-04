@@ -8825,3 +8825,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Fresh-output guard: before replay 10,000, copied a newly generated prequantized FP8 `qx` and FP32 group-128 `x_scale` into the fixed graph addresses, computed an independent multi-kernel reference, and poisoned the prior single-launch `down` with NaNs. Both shapes finished finite and bitwise equal to reference (`cosine=1.0`, `rel_l2=0.0`).
 - Result: PASS. Across both shapes this covered 20,000 captured-kernel replays, 80,000 whole-grid barrier generations, and approximately 49.92 million release-arrival atomics at 624 CTAs. No hang or stale-output failure occurred across the forced generation wrap.
 - Artifact: `bench/results/iter336_release_arrival_graph_stress_20260904.log`.
+
+## Iteration 337 — assume-valid GEMM task cubin gate shell failure
+
+- Change under test: opt-in `V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS=1` removes only the selected flat schedule-0 `route_gemm_task` mblock-bound and negative-expert guards. All standalone/experimental call sites and all per-route padding predicates retain the guards. The flag is part of the extension hash, compile defines, and benchmark metadata, and rejects incompatible scheduler experiments.
+- Intended gate: compile control/optimized M128 main-kernel cubins with release-arrival enabled, compare SASS guard loads/branches, and require unchanged 64-register allocation with no local spill.
+- Result: INVALID / analysis did not run. The shell expanded `/tmp/iter337_$tag_m128.sass` as the unset variable `tag_m128` under `set -u`; it exited after the control import/compile and before either SASS/resource report was emitted. No correctness or performance conclusion is drawn.
+- Follow-up: use explicit brace-delimited shell variable names in the temporary paths and rerun the two-cubin gate.
+- Artifact: `bench/results/iter337_assume_valid_gemm_tasks_cubin_sass_gate_20260904.log`.

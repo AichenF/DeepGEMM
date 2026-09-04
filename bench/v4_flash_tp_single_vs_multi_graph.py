@@ -216,6 +216,9 @@ def main() -> None:
                     "single_launch_w2_next_task_prefetch": (
                         kernel.SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
                     ),
+                    "single_launch_assume_valid_gemm_tasks": (
+                        kernel.SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS
+                    ),
                     "single_launch_cooperative_grid": (
                         kernel.SINGLE_LAUNCH_COOPERATIVE_GRID
                     ),

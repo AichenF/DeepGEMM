@@ -1,0 +1,4 @@
+ITERATION=337
+PURPOSE=compile_resource_sass_gate_assume_valid_gemm_tasks
+INPUT_CONTRACT=prequantized_FP8_E4M3_qx_plus_FP32_group128_x_scale
+bash: line 14: tag_m128: unbound variable
