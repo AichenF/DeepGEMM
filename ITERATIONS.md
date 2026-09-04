@@ -8816,3 +8816,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Intended gate: M=8 (split-K4) and M=128 (split-K2), `V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL=1`, compute-only, no L2 eviction and no timing. This is explicitly not a performance benchmark.
 - Result: INVALID / NO GPU WORK. The invocation used `/home/xutingz/fac/DeepGEMM_tp` inside container `dpskv4_h20_weekly_gap_20260727`, but that container does not expose that path; `cd` failed before Python started. No correctness or performance conclusion is drawn.
 - Follow-up: rerun from the container-visible `/lustre/raplab/client/xutingz/fac/DeepGEMM_tp` path and preserve this failed attempt as provenance.
+
+## Iteration 336 — release-arrival packed barrier 10k graph-replay stress
+
+- Setup: H20 GPU0, compute-only single-launch kernel, CUDA Graph captured once per shape, `V4_SINGLE_LAUNCH_SCHEDULE=0`, packed grid barrier ON, release arrivals ON, phase stamps OFF. M=8 and M=128 each replayed 10,000 times. This is a warm-cache correctness/liveness stress test with no timing and no performance conclusion.
+- State protocol: seeded each of four packed barrier words at generation `2^22-5000` (`-5120000` as signed int32), synchronized and checked every 1,000 replays. All low 10-bit arrival counts were zero at every checkpoint, all four generations exactly matched expectation, and the four unused legacy epoch words remained zero.
+- Wrap result: after replay 5,000 all four packed words were exactly zero; after replay 10,000 all were exactly `5120000` (generation 5000). M8 exercised split-K4 with padded rows 360; M128 exercised split-K2 with padded rows 1944.
+- Fresh-output guard: before replay 10,000, copied a newly generated prequantized FP8 `qx` and FP32 group-128 `x_scale` into the fixed graph addresses, computed an independent multi-kernel reference, and poisoned the prior single-launch `down` with NaNs. Both shapes finished finite and bitwise equal to reference (`cosine=1.0`, `rel_l2=0.0`).
+- Result: PASS. Across both shapes this covered 20,000 captured-kernel replays, 80,000 whole-grid barrier generations, and approximately 49.92 million release-arrival atomics at 624 CTAs. No hang or stale-output failure occurred across the forced generation wrap.
+- Artifact: `bench/results/iter336_release_arrival_graph_stress_20260904.log`.
