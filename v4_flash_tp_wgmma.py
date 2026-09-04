@@ -290,8 +290,8 @@ SINGLE_LAUNCH_NOINLINE_GEMM = (
 SINGLE_LAUNCH_MIN_BLOCKS = int(
     os.environ.get("V4_SINGLE_LAUNCH_MIN_BLOCKS", "8")
 )
-if SINGLE_LAUNCH_MIN_BLOCKS not in (4, 5, 6, 7, 8, 9):
-    raise ValueError("V4_SINGLE_LAUNCH_MIN_BLOCKS must be in [4,9]")
+if SINGLE_LAUNCH_MIN_BLOCKS not in (4, 5, 6, 7, 8, 9, 10):
+    raise ValueError("V4_SINGLE_LAUNCH_MIN_BLOCKS must be in [4,10]")
 SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM = (
     os.environ.get("V4_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM", "0") == "1"
 )
@@ -407,8 +407,8 @@ if SINGLE_LAUNCH_BALANCED_WORKERS and (
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "8")
 )
-if SINGLE_LAUNCH_CTAS_PER_SM not in (1, 2, 3, 4, 5, 6, 7, 8, 9):
-    raise ValueError("V4_SINGLE_LAUNCH_CTAS_PER_SM must be in [1,9]")
+if SINGLE_LAUNCH_CTAS_PER_SM not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
+    raise ValueError("V4_SINGLE_LAUNCH_CTAS_PER_SM must be in [1,10]")
 if SINGLE_LAUNCH_CLUSTER_W13_ACT and SINGLE_LAUNCH_CTAS_PER_SM != 8:
     raise ValueError("V4_SINGLE_LAUNCH_CLUSTER_W13_ACT requires 8 CTAs/SM")
 SINGLE_LAUNCH_GROUP_CTAS = int(

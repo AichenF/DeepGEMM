@@ -7803,3 +7803,28 @@ maximum rank latency of a full CUDA-Graph replay.
   persistent dataflow rather than rescheduling identical monolithic CTAs.
 - **Artifact:**
   `bench/results/iter273_sharded_turnover_tp4_m8_m128_cold_screen_20260904.log`.
+
+## Iteration 274 — ten resident CTAs are correct but lose locally at M128
+
+- **Hypothesis/change:** Extended the diagnostic launch-bound/request knobs to
+  10.  With route scratch aliased into the later GEMM dynamic shared memory,
+  `__launch_bounds__(128,10)` targets roughly 51 registers/thread and requests
+  780 resident CTAs, testing whether extra W13 cold-weight concurrency offsets
+  the tighter W2 register budget.
+- **Protocol:** H20 GPU 0, M128 random TP4 shape, schedule 0, SplitK2,
+  prequantized FP8-E4M3 X plus FP32 group-128 scales, phase stamps enabled,
+  full W2 route tensor compared against the independent multi-kernel local
+  reference after an excluded 256 MiB cold-L2 clear.
+- **Correctness:** PASS bitwise (`cosine=1.0`, `rel_l2=0.0`, all finite), with
+  all four packed barrier generations advancing cleanly.
+- **Phase result:** route/W13/internal requant/W2 =
+  `4.480/215.904/6.048/112.448 us`, sum `338.880 us`.
+- **Interpretation:** The selected bound-8 packed path's recent W13 range is
+  roughly 208-212 us and W2 about 108-111 us.  Bound 10 does not produce the
+  expected bandwidth gain and instead raises the combined phase time.  The
+  compiler/resource pressure and additional resident polling outweigh any
+  theoretical CTA concurrency.
+- **Decision:** Reject bound 10 without distributed timing; keep the accepted
+  range only as an opt-in diagnostic and retain bound/request 8 by default.
+- **Artifact:**
+  `bench/results/iter274_bound10_m128_compute_smoke_20260904.log`.
