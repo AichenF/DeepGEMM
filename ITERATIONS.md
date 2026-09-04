@@ -5914,3 +5914,35 @@ maximum rank latency of a full CUDA-Graph replay.
   already-plumbed resident-CTA count, then replace phase serialization with
   per-mblock readiness/interleaving.
 - **Evidence:** `results/iter159_tp4_fp8_input_pair_screen_20260904.log`.
+
+## Iteration 160 — screen five resident CTAs per SM
+
+- **Change under test:** no source change after iteration 159; requested five
+  resident CTAs per H20 SM instead of four through
+  `V4_SINGLE_LAUNCH_CTAS_PER_SM=5`.
+- **Command:** TP4 on physical GPUs 4-7,
+  `torchrun --standalone --nproc-per-node=4
+  bench/v4_flash_tp_single_vs_multi_graph.py --ms 8,32,128
+  --route-pattern random --outer 2 --replays 40 --warmup-replays 6
+  --pair-granularity batch`, with CTA/SM=5.
+- **Protocol:** same FP8-input, same-process paired CUDA Graph protocol as
+  iteration 159; 256 MiB independently cold L2 before every replay, clear
+  excluded from events, TP rank-max, 80 samples per implementation and M.
+- **Correctness:** PASS at M=8/32/128 for both implementations.  Minimum
+  candidate cosine was 0.9999955807, maximum relative L2 was 0.0029729925,
+  and every rank was finite.
+- **Cold-L2 medians (control / candidate / speedup):**
+  - M8: 0.071360 / 0.095968 ms / 0.7436x.
+  - M32: 0.178176 / 0.232896 ms / 0.7650x.
+  - M128: 0.307264 / 0.436240 ms / 0.7043x.
+  - Three-point geometric mean: 0.157497 / 0.213634 ms, or 0.7372x.
+- **Analysis:** candidate latency improved by 7.18%, 6.88%, and 7.32% versus
+  the corresponding CTA/SM=4 medians in iteration 159 while the paired control
+  stayed stable.  The occupancy query therefore admits five CTAs/SM and the
+  previous four-CTA cap was materially under-filling the phase task loops.
+  Even after this free gain, candidate latency remains 30.7%-42.0% above the
+  multi-kernel control at the screened points.
+- **Decision:** select five CTAs/SM as the new default.  The result is large
+  enough to retain, but still far from the 1.10x goal; proceed to eliminate
+  global phase serialization rather than screen more launch-count values first.
+- **Evidence:** `results/iter160_tp4_fp8_input_cta5_pair_screen_20260904.log`.
