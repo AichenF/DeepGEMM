@@ -5970,3 +5970,34 @@ maximum rank latency of a full CUDA-Graph replay.
   `PYTHONPATH`; do not interpret this infrastructure failure as kernel
   evidence.
 - **Evidence:** `results/iter161_tp4_interleaved_dag_m8_smoke_20260904.log`.
+
+## Iteration 162 — interleaved task-DAG TP4 M8 correctness smoke
+
+- **Change under test:** unchanged iteration-161 interleaved implementation;
+  retry with the repository root added to `PYTHONPATH` so the new `v161dag`
+  extension can compile and execute.
+- **Protocol:** TP4 on physical GPUs 4-7, random M8 routes, CUDA Graph paired
+  control/candidate in one process, two outer batches x two replays, two cold
+  warmups, five resident CTAs/SM.  A separate 256 MiB Triton clear immediately
+  precedes every replay and is excluded from CUDA-event timing.
+- **Correctness:** PASS on all ranks without a scheduler deadlock.  Candidate
+  and control both report minimum cosine `0.9999956066`, maximum relative L2
+  `0.0029643002`, finite outputs, and the same 344 padded rows / 43 active
+  experts.  This proves the W13 completion, activation queue, W2 queue, and
+  final in-kernel multicast collective are functionally ordered for this
+  point.
+- **Cold-L2 timing:** control median `0.072320 ms` (min/max
+  `0.071616/0.080640`); candidate median `0.570512 ms` (min/max
+  `0.570336/0.584256`).  Control/candidate is only `0.12676x`; the candidate
+  is `7.8887x` slower than the multi-kernel control and about `5.94x` slower
+  than the iteration-160 barrier-separated M8 candidate.
+- **Analysis:** correctness alone does not validate this scheduler.  Per-task
+  global atomic claims/completions, all-lane device fences, block-wide mailbox
+  barriers, and pairing two independently initialized route-GEMM bodies under
+  every W13 claim overwhelm any tail overlap.  The result decisively rejects
+  this fine-grained implementation as the performance path.
+- **Decision:** retain the evidence but do not promote the interleaved DAG.
+  Next inspect generated resource usage/profile and replace per-tile global
+  scheduling with a much coarser/static wavefront or fuse W13 epilogue
+  requantization directly, keeping the known-good barrier path selectable.
+- **Evidence:** `results/iter162_tp4_interleaved_dag_m8_smoke_20260904.log`.
