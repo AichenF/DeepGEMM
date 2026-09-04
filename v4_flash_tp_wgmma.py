@@ -5393,7 +5393,7 @@ void tp4_megamoe_single_launch_kernel(
             if (tail_overlap_mblocks == 0
                     && !kSingleLaunchTailActOnly) {
                 if constexpr (kSingleLaunchW13TailSplit4
-                              && Tokens >= 64) {
+                              && Tokens >= 64 && SplitK == 2) {
                     static_assert(SplitK == 2);
                     static_assert(kPhaseMathWgs == 1);
                     constexpr int kTailSplitK = 4;
@@ -5401,8 +5401,19 @@ void tp4_megamoe_single_launch_kernel(
                         ctas / kW13TasksPerMblock;
                     const int full_mblock_rounds =
                         num_mblocks / mblocks_per_full_round;
-                    tail_split4_mblock_begin =
+                    const int candidate_tail_mblock_begin =
                         full_mblock_rounds * mblocks_per_full_round;
+                    const int candidate_tail_tasks =
+                        (num_mblocks - candidate_tail_mblock_begin)
+                        * kW13NTiles * kTailSplitK;
+                    // A split-K4 tail is useful only when it still fits in a
+                    // single grid wave.  Dense/balanced routing can leave 20+
+                    // mblocks after the last full split-K2 wave; splitting
+                    // those would create a second tail wave and regress.
+                    tail_split4_mblock_begin =
+                        candidate_tail_tasks <= ctas
+                        ? candidate_tail_mblock_begin
+                        : num_mblocks;
                     const int full_tasks =
                         tail_split4_mblock_begin * kW13TasksPerMblock;
 
@@ -5590,7 +5601,8 @@ void tp4_megamoe_single_launch_kernel(
                         continue;
                     reduce_swiglu_quant_task<
                         kIntermediate, SplitK, kSingleLaunchDualWgPhases,
-                        kSingleLaunchW13TailSplit4 && Tokens >= 64>(
+                        kSingleLaunchW13TailSplit4 && Tokens >= 64
+                            && SplitK == 2>(
                         partials, activation, qactivation, activation_scale,
                         route_to_sorted, topk_ids, g2, routes, group,
                         tail_split4_mblock_begin);

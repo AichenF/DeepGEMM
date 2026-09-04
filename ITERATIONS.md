@@ -8675,3 +8675,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: rejected at the compile gate before executing GPU work. NVCC instantiated the single-launch kernel for both `SplitK=2` and `SplitK=4`; the new `if constexpr (kSingleLaunchW13TailSplit4 && Tokens >= 64)` branch and activation template therefore hit `static_assert(SplitK == 2)` for the unused `SplitK=4` instantiations. No correctness or performance claim is drawn from this run.
 - Next: make the hybrid compile-time branch conditional on `SplitK == 2`, leaving the ordinary split-K4 instantiation on the unchanged path, then rerun the same correctness gate.
 - Artifact: `bench/results/iter319_w13_tail_split4_m64_m128_compute_correctness_20260904.log`.
+
+## Iteration 320 — Reject initial W13 tail split-K4 mapping (2026-09-04)
+
+- Change: restricted the hybrid specialization to `SplitK == 2` so the unused split-K4 launch template compiles, and added a runtime fallback to all-split-K2 whenever the split-K4 tail would exceed one 624-CTA wave.
+- Test: H20 GPU0 compute-only correctness, random-route M64 followed by M128, prequantized FP8 input contract, cold 256 MiB L2 clear outside the profiled kernel, TP collective disabled.
+- Result: compilation succeeded and M64 executed, but correctness failed before M128. M64 had 1,624 padded routed rows with split-K2 selected; output cosine was `0.9909730255` and relative L2 error was `0.1340619704` (`accepted=false`). Packed barrier generations wrapped correctly. This is a real hybrid indexing/partial-reduction defect, not numerical drift from a harmless FP32 reassociation.
+- Decision: reject this implementation. Audit the split-K4 tail linear-task mapping and which routes the activation reducer classifies as tail before any timing.
+- Artifact: `bench/results/iter320_w13_tail_split4_m64_m128_compute_correctness_20260904.log`.
