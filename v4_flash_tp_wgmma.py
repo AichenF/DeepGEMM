@@ -3106,6 +3106,17 @@ __global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
         static_cast<int>(blockIdx.x), static_cast<int>(gridDim.x));
 }
 
+template <int Threads>
+__device__ __forceinline__ void fused_k6_nvls_pull_tp4_task(
+        const __nv_bfloat16* __restrict__ route_input,
+        const float* __restrict__ topk_weights,
+        __nv_bfloat16* __restrict__ symm_input,
+        const uint8_t* __restrict__ symm_input_mc,
+        __nv_bfloat16* __restrict__ output,
+        uint8_t* __restrict__ sem_local,
+        uint8_t* __restrict__ sem_mc,
+        int tokens, int linear_block_idx, int linear_grid_dim);
+
 // Reusable local-rank grid barrier.  Every CTA first publishes all lanes'
 // writes, then one lane contributes to a generation-counted barrier.  Each
 // phase owns a separate count/epoch pair, so CUDA-graph replays need no memset
@@ -4906,9 +4917,9 @@ _EXTENSION_CONFIG = (
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v154slp")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v155slp")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v154slp"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v155slp"
 )
 
 _ext = load_inline(

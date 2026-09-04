@@ -5787,3 +5787,28 @@ maximum rank latency of a full CUDA-Graph replay.
   template forward declaration before the monolithic entry and retry without
   changing the transport algorithm.
 - Artifact: `results/iter154_tp4_single_launch_m128_nvls_pull_bringup_20260904.log`.
+
+## Iteration 155 — TP4 M128 single-launch NVLS-pull bring-up passes
+
+- Date: 2026-09-04.
+- Change: add the missing forward declaration for the reusable NVLS-pull
+  device template and force a new extension build; the transport body and
+  single-launch phase structure are otherwise unchanged from iteration 154.
+- Protocol: TP4 physical GPUs 0–3, M128 random routes, two pre-capture
+  executions, CUDA Graph capture, two cold warmups, correctness replay and one
+  batch x two timed cold-L2 replays, with a 256 MiB excluded clear before each
+  replay and a 900-second process bound.
+- Result: compilation succeeds; the resident grid and 16-CTA in-kernel pull
+  tail complete repeatedly.  Final output versus independent multi-kernel
+  local recompute plus NCCL sum passes on every rank: minimum cosine
+  `0.9999956089`, maximum relative L2 `0.0029635041`, finite true and
+  `allreduce_ok=true`.  Random routing produced 248 active experts and 1992
+  padded rows; split-K 2 was exercised.
+- Diagnostic timing: two samples are `0.475616/0.696288 ms`, median
+  `0.585952 ms`.  This is not a formal comparison and confirms only that the
+  barrier-separated bring-up remains far from the performance target.
+- Decision: TP4 now has a functionally complete one-global-kernel path for
+  every requested M, with push below M128 and the CARv2 pull slab at M128.
+  Keep the goal open: profiler launch-count proof, stronger all-M/replay
+  coverage, TP8, and the >=1.10x cold-L2 speedup are all still outstanding.
+- Artifact: `results/iter155_tp4_single_launch_m128_nvls_pull_retry_20260904.log`.
