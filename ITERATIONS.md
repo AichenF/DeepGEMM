@@ -7132,3 +7132,27 @@ maximum rank latency of a full CUDA-Graph replay.
   reduces deterministic work rather than relying on residency noise.
 - **Artifact:**
   `bench/results/iter248_m128_bound9_specialized_tp4_allm_cold_paired_20260904.log`.
+
+## Iteration 249 — final CTA sync elimination is not bitwise safe
+
+- **Hypothesis/change:** Added opt-in
+  `V4_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC=1`.  For isolated schedule 0, omit the
+  route/W13/activation/W2 CTA rendezvous after a CTA's final task because the
+  immediately following grid barrier begins with a CTA-wide rendezvous.  All
+  between-task synchronization and the device-wide barriers remain.
+- **Protocol:** H20 GPU 0, M={8,128}, ordinary relaxed barrier, bound/request
+  8, prequantized FP8/group-128 input and cold-L2 compute-only full-W2-route
+  comparison.  Tail/group/persistent schedules are excluded by validation.
+- **Result:** M8 is finite and passes the loose public threshold but loses the
+  required bitwise agreement: cosine `0.9999995846`, rel-L2
+  `0.0009114654`.  M128 happens to remain bitwise exact.  Phase sums are also
+  non-improving: M8 `69.216 us` and M128 `333.792 us`.
+- **Interpretation:** At least one final rendezvous participates in a shared
+  state lifetime/reuse edge not represented solely by the following global
+  publication.  A high cosine is insufficient evidence for removing it, and
+  the performance result provides no compensating reason to isolate each
+  barrier separately.
+- **Decision:** Reject immediately; keep the flag disabled and preserve every
+  selected-path CTA sync.  Do not run distributed timing.
+- **Artifact:**
+  `bench/results/iter249_skip_final_cta_sync_m8_m128_compute_smoke_20260904.log`.

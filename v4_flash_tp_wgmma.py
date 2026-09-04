@@ -290,6 +290,9 @@ if SINGLE_LAUNCH_GRID_POLL_SLEEP_NS not in (32, 64, 128, 256, 512, 1024):
     raise ValueError(
         "V4_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS must be 32,64,128,256,512,1024"
     )
+SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC = (
+    os.environ.get("V4_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC", "0") == "1"
+)
 SINGLE_LAUNCH_HIERARCHICAL_GRID = (
     os.environ.get("V4_SINGLE_LAUNCH_HIERARCHICAL_GRID", "0") == "1"
 )
@@ -316,6 +319,15 @@ if SINGLE_LAUNCH_M128_BOUND9 and (
 ):
     raise ValueError(
         "V4_SINGLE_LAUNCH_M128_BOUND9 excludes fixed-eight-CTA experiments"
+    )
+if SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC requires isolated schedule 0"
     )
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "8")
@@ -524,6 +536,8 @@ static constexpr bool kSingleLaunchRelaxedGridPoll =
     K_SINGLE_LAUNCH_RELAXED_GRID_POLL;
 static constexpr int kSingleLaunchGridPollSleepNs =
     K_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS;
+static constexpr bool kSingleLaunchSkipFinalCtaSync =
+    K_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC;
 static constexpr bool kSingleLaunchHierarchicalGrid =
     K_SINGLE_LAUNCH_HIERARCHICAL_GRID;
 static constexpr bool kSingleLaunchTailOverlap =
@@ -2715,7 +2729,8 @@ __device__ __forceinline__ void single_launch_route_task(
                     route_to_sorted[route] = position;
             }
         }
-        __syncthreads();
+        if constexpr (!kSingleLaunchSkipFinalCtaSync)
+            __syncthreads();
     }
 }
 
@@ -4229,8 +4244,13 @@ void tp4_megamoe_single_launch_kernel(
                             routes, 0, task, w13_sequence);
                     }
                     if constexpr (kSingleLaunchNoInlineGemm
-                                  || !kSingleLaunchPersistentGemmState)
-                        __syncthreads();
+                                  || !kSingleLaunchPersistentGemmState) {
+                        if constexpr (!kSingleLaunchSkipFinalCtaSync) {
+                            __syncthreads();
+                        } else if (task + ctas < w13_tasks) {
+                            __syncthreads();
+                        }
+                    }
                 }
             }
             single_launch_grid_barrier(barrier_state, 1, ctas);
@@ -4245,7 +4265,11 @@ void tp4_megamoe_single_launch_kernel(
                 reduce_swiglu_quant_task<kIntermediate, SplitK>(
                     partials, activation, qactivation, activation_scale,
                     route_to_sorted, topk_ids, g2, routes, group);
-                __syncthreads();
+                if constexpr (!kSingleLaunchSkipFinalCtaSync) {
+                    __syncthreads();
+                } else if (group + ctas < activation_groups) {
+                    __syncthreads();
+                }
             }
             single_launch_grid_barrier(barrier_state, 2, ctas);
         }
@@ -4274,8 +4298,13 @@ void tp4_megamoe_single_launch_kernel(
                     routes, 0, task, w2_sequence);
             }
             if constexpr (kSingleLaunchNoInlineGemm
-                          || !kSingleLaunchPersistentGemmState)
-                __syncthreads();
+                          || !kSingleLaunchPersistentGemmState) {
+                if constexpr (!kSingleLaunchSkipFinalCtaSync) {
+                    __syncthreads();
+                } else if (task + ctas < w2_tasks) {
+                    __syncthreads();
+                }
+            }
         }
         single_launch_grid_barrier(barrier_state, 3, ctas);
     }
@@ -6130,6 +6159,7 @@ _EXTENSION_CONFIG = (
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slpsn{SINGLE_LAUNCH_GRID_POLL_SLEEP_NS}_"
+          f"slfs{int(SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC)}_"
           f"slhg{int(SINGLE_LAUNCH_HIERARCHICAL_GRID)}_"
           f"slto{int(SINGLE_LAUNCH_TAIL_OVERLAP)}_"
           f"sltg{SINGLE_LAUNCH_TAIL_GROUP_CTAS}_"
@@ -6239,6 +6269,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS="
             f"{SINGLE_LAUNCH_GRID_POLL_SLEEP_NS}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC="
+            f"{int(SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_HIERARCHICAL_GRID="

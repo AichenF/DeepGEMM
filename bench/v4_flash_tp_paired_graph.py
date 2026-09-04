@@ -290,6 +290,9 @@ def main() -> None:
                     "custom_single_launch_grid_poll_sleep_ns": (
                         kernel.SINGLE_LAUNCH_GRID_POLL_SLEEP_NS
                     ),
+                    "custom_single_launch_skip_final_cta_sync": (
+                        kernel.SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+                    ),
                     "custom_fused_k6_mc_push_ar": (
                         kernel.FUSED_K6_MC_PUSH_AR
                     ),
