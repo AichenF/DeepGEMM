@@ -7726,3 +7726,32 @@ maximum rank latency of a full CUDA-Graph replay.
   cold-L2 CUDA-Graph screen before deciding whether broader tuning is useful.
 - **Artifact:**
   `bench/results/iter270_oversubscribed_turnover_m8_compute_smoke_20260904.log`.
+
+## Iteration 271 — per-task CTA turnover is correct distributed but slower
+
+- **Protocol:** TP4 GPUs 0-3, random routes at M={8,128}, same-process paired
+  CUDA Graphs, two balanced AB/BA batches x 20 independently cold-L2 replays
+  per implementation, four warmups, and rank-max timing.  A separate 256 MiB
+  clear immediately precedes every replay and is excluded from CUDA events.
+  Inputs are shared prequantized FP8-E4M3 X plus FP32 group-128 scales.
+- **Correctness:** PASS for both shapes and all ranks.  Candidate cosine is at
+  least `0.9999955977`, relative L2 at most `0.0029672595`, all outputs are
+  finite, and both embedded multicast push (M8) and NVLS pull (M128) satisfy
+  the all-reduce oracle.
+- **Cold-L2 result:** Multi/candidate medians are M8
+  `0.071136/0.089136 ms` (`25.30%` slower) and M128
+  `0.306176/0.389456 ms` (`27.20%` slower).  Endpoint geometric means are
+  `0.147581/0.186318 ms`, so schedule 4 is `26.25%` slower.
+- **Interpretation:** Fresh CTA turnover does not restore standalone GEMM
+  throughput.  The single global task-claim and completion RMW per tile add a
+  heavily contended serialization point, while every CTA still carries the
+  monolithic kernel's uniform register/resource allocation.  At M128 the
+  absolute candidate is roughly flat versus the selected persistent-grid
+  range, while M8 regresses by about 13 us; the approach increases the paired
+  gap at both endpoints.
+- **Decision:** Reject schedule 4 and keep schedule 0 selected.  Do not run an
+  all-M long confirmation.  A future turnover design would need static block
+  ranges or sharded queues, but it still would not address monolithic resource
+  allocation, so direct GEMM/body specialization has higher priority.
+- **Artifact:**
+  `bench/results/iter271_oversubscribed_turnover_tp4_m8_m128_cold_screen_20260904.log`.
