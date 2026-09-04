@@ -43,3 +43,10 @@
 - Reuse local replicated X/routes; remove the original EP dispatch, remote expert ownership, return/combine, and EP barriers. The only inter-rank operation is the final TP reduction.
 - TP4 is the optimized specialization. TP8 must remain correct and runnable and may initially use the selected separate-kernel fallback.
 - For TP4 M=8/16/32, the bitwise-equivalent multicast fused-k6/one-shot-push path is an accepted component after iteration 73. M=64/128 retain stock SGLang CARv2 unless stronger cold-L2 evidence replaces it.
+
+## 2026-09-04 large-M collective audit (from the user's follow-up)
+- Re-validate TP4 M=64/128 one-shot versus two-shot and NVLS multicast versus ordinary P2P with clean, same-process controls; do not infer the answer from earlier mixed W2-overlap experiments.
+- Separate AR-only transport timing from the full current TP-MoE CUDA Graph.  AR-only inputs must be random, nonzero and restored before every replay; restore first, then clear 256 MiB L2, and exclude both restore and cache clear from CUDA-event timing.
+- Include ordinary-P2P 1-shot push, ordinary-P2P 1-shot pull, ordinary-P2P 2-shot pull, NVLS multicast 1-shot push, and direct-symmetric-memory NVLS 2-shot pull whenever supported.  Keep identical communicator, tensor shape, input values and graph protocol.
+- Report TP4 max-rank min/median/max plus per-batch medians from a balanced-order 10x200 cold-L2 window.  Treat pooled sub-percent wins as unselected if paired batches are directionally mixed.
+- Do not change the production M<=32 multicast dispatch boundary unless the clean long-window evidence is repeatable and materially faster.

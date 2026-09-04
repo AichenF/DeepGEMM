@@ -5535,3 +5535,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Interpretation: the baseline always included AR. Its removable end-to-end critical-path contribution is about 1.4–4.2% per M and 2.77% on the benchmark geometric mean. Standalone CAR launch cost is larger (3.9–9.9%, aggregate 5.48%) and must not be substituted for the removal delta.
 - Evidence: `results/iter140_exact_humming_ar_breakdown_tp4_allm_cold2000_20260904.log`.
 - Decision: accept this decomposition as the formal answer; no production-kernel change.
+## Iteration 141 — clean TP4 AR transport matrix smoke (cold L2)
+
+- Added `bench/v4_flash_tp_ar_transport_matrix.py` and persisted the user's large-M audit contract in `HINTS.md`.  The harness separates random-nonzero AR-only timing from the unchanged full TP-MoE graph and captures five paths on one communicator: generic P2P 1-shot push, graph P2P 1-shot pull, graph P2P 2-shot pull, K3 NVLS multicast 1-shot push, and direct-symmetric K3 NVLS 2-shot pull.  AR inputs are restored before a separate excluded 256 MiB L2 clear; timing is CUDA Graph rank-max with balanced rotation/reversal.
+- Environment smoke: TP4 physical GPUs 4–7, H20-3e (78 SM, 60 MiB L2), random routes, M64 / 512 KiB, two outer batches x five cold replays.  The communicator was explicitly sized to 512 KiB for push and pull, and both multicast VAs were nonzero.
+- Correctness: all five AR-only and full graphs pass the independent NCCL sum/reference gate.  Every variant is bitwise identical to graph P2P 2-shot in this smoke (`max_abs_vs_p2p_2shot=0`); AR-only cosine is `0.999995578`, full cosine `0.999995487`.
+- AR-only smoke medians (us): P2P push `13.456`, P2P 1-shot pull `15.344`, P2P 2-shot `12.240`, NVLS multicast push `12.944`, direct-symmetric NVLS 2-shot `12.608`.  This tiny window suggests the expected large-message 2-shot direction but contains 29–50 us outliers and is not a verdict.
+- Full-graph smoke medians (ms): P2P push `0.249184`, P2P 1-shot pull `0.251664`, P2P 2-shot `0.248288`, NVLS multicast push `0.247040`, NVLS 2-shot `0.248128`.  Sub-percent gaps are explicitly provisional with only two batches.
+- Next: run M64/M128 long 10x200 cold-L2 in the same harness; use per-batch direction rather than pooled smoke medians for selection.
+- Artifact: `results/iter141_ar_transport_matrix_tp4_m64_smoke_coldl2_20260904.log`.
