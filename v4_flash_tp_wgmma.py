@@ -140,7 +140,12 @@ if COMPACT_INTERLEAVED_SCALE and W13_PAIRED_WG:
 W2_ROUTE_OUTPUT = os.environ.get("V4_W2_ROUTE_OUTPUT", "1") == "1"
 W2_SORTED_ACT = os.environ.get("V4_W2_SORTED_ACT", "0") == "1"
 W2_MBLOCK_SCALE = os.environ.get("V4_W2_MBLOCK_SCALE", "0") == "1"
-W2_NEEDS_ROUTE_MAP = W2_SORTED_ACT or W2_MBLOCK_SCALE
+SINGLE_LAUNCH_TAIL_OVERLAP = (
+    os.environ.get("V4_SINGLE_LAUNCH_TAIL_OVERLAP", "0") == "1"
+)
+W2_NEEDS_ROUTE_MAP = (
+    W2_SORTED_ACT or W2_MBLOCK_SCALE or SINGLE_LAUNCH_TAIL_OVERLAP
+)
 W2_FOLD_GLOBAL_SCALE = (
     os.environ.get("V4_W2_FOLD_GLOBAL_SCALE", "0") == "1"
 )
@@ -238,6 +243,8 @@ SINGLE_LAUNCH_SCHEDULE = int(
 )
 if SINGLE_LAUNCH_SCHEDULE not in (0, 1, 2, 3):
     raise ValueError("V4_SINGLE_LAUNCH_SCHEDULE must be 0, 1, 2, or 3")
+if SINGLE_LAUNCH_TAIL_OVERLAP and SINGLE_LAUNCH_SCHEDULE != 0:
+    raise ValueError("V4_SINGLE_LAUNCH_TAIL_OVERLAP requires schedule 0")
 SINGLE_LAUNCH_INTERLEAVED = SINGLE_LAUNCH_SCHEDULE != 0
 SINGLE_LAUNCH_NOINLINE_GEMM = (
     os.environ.get("V4_SINGLE_LAUNCH_NOINLINE_GEMM", "0") == "1"
@@ -259,6 +266,12 @@ SINGLE_LAUNCH_COOPERATIVE_GRID = (
 SINGLE_LAUNCH_RELAXED_GRID_POLL = (
     os.environ.get("V4_SINGLE_LAUNCH_RELAXED_GRID_POLL", "0") == "1"
 )
+if SINGLE_LAUNCH_TAIL_OVERLAP and (
+    SINGLE_LAUNCH_NOINLINE_GEMM or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_TAIL_OVERLAP requires inline, nonpersistent GEMM tasks"
+    )
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "8")
 )
@@ -462,6 +475,8 @@ static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
     K_SINGLE_LAUNCH_RELAXED_GRID_POLL;
+static constexpr bool kSingleLaunchTailOverlap =
+    K_SINGLE_LAUNCH_TAIL_OVERLAP;
 static constexpr int kSingleLaunchNvlsBlocks =
     K_SINGLE_LAUNCH_NVLS_BLOCKS;
 static constexpr int kSingleLaunchGroupCtas =
@@ -2518,7 +2533,8 @@ __global__ __launch_bounds__(256) void fused_route_quant_kernel(
             if (static_cast<unsigned>(expert) < kExperts) {
                 const int position = atomicAdd(cursors + expert, 1);
                 sorted_ids[position] = route;
-                if constexpr (kW2SortedAct || kW2MblockScale)
+                if constexpr (kW2SortedAct || kW2MblockScale
+                              || kSingleLaunchTailOverlap)
                     route_to_sorted[route] = position;
             }
         }
@@ -2641,7 +2657,8 @@ __device__ __forceinline__ void single_launch_route_task(
             if (static_cast<unsigned>(expert) < kExperts) {
                 const int position = atomicAdd(cursors + expert, 1);
                 sorted_ids[position] = route;
-                if constexpr (kW2SortedAct || kW2MblockScale)
+                if constexpr (kW2SortedAct || kW2MblockScale
+                              || kSingleLaunchTailOverlap)
                     route_to_sorted[route] = position;
             }
         }
@@ -3365,15 +3382,22 @@ static constexpr int kSingleLaunchPhaseStampWords =
     kSingleLaunchPhaseStamps * 2;
 static constexpr int kSingleLaunchStatePrefixWords =
     kSingleLaunchBarrierWords + kSingleLaunchPhaseStampWords;
+static constexpr int kSingleLaunchTailGroupCtas = 16;
+static constexpr int kSingleLaunchTailMaxGroups = 39;
+static constexpr int kSingleLaunchTailStateWords =
+    2 * kSingleLaunchTailMaxGroups;
 
 __device__ __forceinline__ void single_launch_grid_barrier(
-        int32_t* __restrict__ state, int phase, int expected_blocks) {
+        int32_t* __restrict__ state, int phase, int expected_blocks,
+        bool record_timestamp = true) {
     if constexpr (kSingleLaunchCooperativeGrid) {
         cooperative_groups::this_grid().sync();
-        if (blockIdx.x == 0 && threadIdx.x == 0) {
-            reinterpret_cast<uint64_t*>(
-                state + kSingleLaunchBarrierWords)[phase + 1] =
-                    read_globaltimer();
+        if (record_timestamp && blockIdx.x == 0 && threadIdx.x == 0) {
+            if (record_timestamp) {
+                reinterpret_cast<uint64_t*>(
+                    state + kSingleLaunchBarrierWords)[phase + 1] =
+                        read_globaltimer();
+            }
         }
         return;
     }
@@ -3510,6 +3534,11 @@ void tp4_megamoe_single_launch_kernel(
         const int scheduler_words = kSchedulerHeaderWords + 3 * max_mblocks;
         for (int word = cta * blockDim.x + threadIdx.x;
              word < scheduler_words; word += ctas * blockDim.x)
+            scheduler[word] = 0;
+    } else if constexpr (kSingleLaunchTailOverlap) {
+        for (int word = cta * blockDim.x + threadIdx.x;
+             word < kSingleLaunchTailStateWords;
+             word += ctas * blockDim.x)
             scheduler[word] = 0;
     }
 
@@ -3878,33 +3907,136 @@ void tp4_megamoe_single_launch_kernel(
         single_launch_grid_barrier(barrier_state, 3, ctas);
     } else {
         const int num_mblocks = __ldg(num_tokens_padded) / kTok;
-        const int w13_tasks = num_mblocks * kW13NTiles * SplitK;
-        int w13_sequence = 0;
-        for (int task = cta; task < w13_tasks;
-             task += ctas, ++w13_sequence) {
-            if constexpr (kSingleLaunchNoInlineGemm) {
-                single_launch_w13_gemm_task<SplitK>(
-                    &w13_tma_weight, &w13_tma_weight_scale,
-                    w13, s13, g13, qx, x_scale,
-                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-                    partials, lut, routes, task);
-            } else {
-                route_gemm_task<
-                    4096, 1024, SplitK, true, 0, false, false,
-                    kSingleLaunchPersistentGemmState>(
-                    &w13_tma_weight, &w13_tma_weight_scale,
-                    w13, s13, g13, qx, x_scale,
-                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-                    partials, lut, nullptr, routes, 0, task, w13_sequence);
+        constexpr int kW13TasksPerMblock = kW13NTiles * SplitK;
+        const int w13_tasks = num_mblocks * kW13TasksPerMblock;
+        int tail_overlap_mblocks = 0;
+        if constexpr (kSingleLaunchTailOverlap) {
+            const int common_rounds = w13_tasks / ctas;
+            const int common_tasks = common_rounds * ctas;
+            const int tail_tasks = w13_tasks - common_tasks;
+            const int safe_mblocks = common_tasks / kW13TasksPerMblock;
+            const int idle_ctas = ctas - tail_tasks;
+            const int idle_groups = idle_ctas / kSingleLaunchTailGroupCtas;
+            tail_overlap_mblocks = tail_tasks > 0
+                ? (safe_mblocks < idle_groups ? safe_mblocks : idle_groups)
+                : 0;
+
+            if (tail_overlap_mblocks > 0) {
+                for (int round = 0; round < common_rounds; ++round) {
+                    const int task = round * ctas + cta;
+                    route_gemm_task<4096, 1024, SplitK, true>(
+                        &w13_tma_weight, &w13_tma_weight_scale,
+                        w13, s13, g13, qx, x_scale,
+                        sorted_ids, expert_ids, num_tokens_padded,
+                        topk_weights, partials, lut, nullptr,
+                        routes, 0, task);
+                    __syncthreads();
+                }
+
+                // At this point every task in [0, common_tasks) is complete.
+                // The extra rendezvous is balanced (all CTAs did the same
+                // number of tasks), then the otherwise-idle suffix advances
+                // complete prefix mblocks through activation and W2 while
+                // the prefix CTAs execute the one remaining W13 tail round.
+                single_launch_grid_barrier(
+                    barrier_state, 0, ctas, false);
+                if (cta < tail_tasks) {
+                    route_gemm_task<4096, 1024, SplitK, true>(
+                        &w13_tma_weight, &w13_tma_weight_scale,
+                        w13, s13, g13, qx, x_scale,
+                        sorted_ids, expert_ids, num_tokens_padded,
+                        topk_weights, partials, lut, nullptr,
+                        routes, 0, common_tasks + cta);
+                    __syncthreads();
+                } else {
+                    const int idle_rank = cta - tail_tasks;
+                    const int overlap_group =
+                        idle_rank / kSingleLaunchTailGroupCtas;
+                    const int group_rank =
+                        idle_rank % kSingleLaunchTailGroupCtas;
+                    if (overlap_group < tail_overlap_mblocks) {
+                        constexpr int kActivationGroupsPerRoute =
+                            kIntermediate / 128;
+                        constexpr int kActivationTasksPerMblock =
+                            kTok * kActivationGroupsPerRoute;
+                        for (int local_task = group_rank;
+                             local_task < kActivationTasksPerMblock;
+                             local_task += kSingleLaunchTailGroupCtas) {
+                            const int route_slot =
+                                local_task / kActivationGroupsPerRoute;
+                            const int group_in_route =
+                                local_task
+                                - route_slot * kActivationGroupsPerRoute;
+                            const int route = __ldg(
+                                sorted_ids + overlap_group * kTok
+                                + route_slot);
+                            if (route < routes) {
+                                reduce_swiglu_quant_task<
+                                    kIntermediate, SplitK>(
+                                    partials, activation, qactivation,
+                                    activation_scale, route_to_sorted,
+                                    topk_ids, g2, routes,
+                                    route * kActivationGroupsPerRoute
+                                        + group_in_route);
+                                __syncthreads();
+                            }
+                        }
+                        single_launch_group_barrier(
+                            scheduler, overlap_group,
+                            kSingleLaunchTailGroupCtas);
+                        for (int n_tile = group_rank;
+                             n_tile < kW2NTiles;
+                             n_tile += kSingleLaunchTailGroupCtas) {
+                            const int task =
+                                overlap_group * kW2NTiles + n_tile;
+                            route_gemm_task<512, 4096, 1, false>(
+                                &w2_tma_weight, &w2_tma_weight_scale,
+                                w2, s2, g2, qactivation, activation_scale,
+                                sorted_ids, expert_ids, num_tokens_padded,
+                                topk_weights,
+                                reinterpret_cast<float*>(down), lut,
+                                nullptr, routes, 0, task);
+                            __syncthreads();
+                        }
+                    }
+                }
             }
-            if constexpr (kSingleLaunchNoInlineGemm
-                          || !kSingleLaunchPersistentGemmState)
-                __syncthreads();
+        }
+
+        if (tail_overlap_mblocks == 0) {
+            int w13_sequence = 0;
+            for (int task = cta; task < w13_tasks;
+                 task += ctas, ++w13_sequence) {
+                if constexpr (kSingleLaunchNoInlineGemm) {
+                    single_launch_w13_gemm_task<SplitK>(
+                        &w13_tma_weight, &w13_tma_weight_scale,
+                        w13, s13, g13, qx, x_scale,
+                        sorted_ids, expert_ids, num_tokens_padded,
+                        topk_weights, partials, lut, routes, task);
+                } else {
+                    route_gemm_task<
+                        4096, 1024, SplitK, true, 0, false, false,
+                        kSingleLaunchPersistentGemmState>(
+                        &w13_tma_weight, &w13_tma_weight_scale,
+                        w13, s13, g13, qx, x_scale,
+                        sorted_ids, expert_ids, num_tokens_padded,
+                        topk_weights, partials, lut, nullptr,
+                        routes, 0, task, w13_sequence);
+                }
+                if constexpr (kSingleLaunchNoInlineGemm
+                              || !kSingleLaunchPersistentGemmState)
+                    __syncthreads();
+            }
         }
         single_launch_grid_barrier(barrier_state, 1, ctas);
 
         const int activation_groups = routes * (kIntermediate / 128);
         for (int group = cta; group < activation_groups; group += ctas) {
+            const int route = group / (kIntermediate / 128);
+            if (tail_overlap_mblocks > 0
+                    && (__ldg(route_to_sorted + route) >> 3)
+                        < tail_overlap_mblocks)
+                continue;
             reduce_swiglu_quant_task<kIntermediate, SplitK>(
                 partials, activation, qactivation, activation_scale,
                 route_to_sorted, topk_ids, g2, routes, group);
@@ -3916,6 +4048,9 @@ void tp4_megamoe_single_launch_kernel(
         int w2_sequence = 0;
         for (int task = cta; task < w2_tasks;
              task += ctas, ++w2_sequence) {
+            if (tail_overlap_mblocks > 0
+                    && task / kW2NTiles < tail_overlap_mblocks)
+                continue;
             if constexpr (kSingleLaunchNoInlineGemm) {
                 single_launch_w2_gemm_task(
                     &w2_tma_weight, &w2_tma_weight_scale,
@@ -4860,6 +4995,10 @@ void launch_tp4_megamoe_single(
                 "requested single-launch CTAs/SM must be positive");
     const int selected_ctas_per_sm = std::min(
         requested_ctas_per_sm, active_per_sm);
+    if constexpr (kSingleLaunchTailOverlap) {
+        TORCH_CHECK(selected_ctas_per_sm == 8,
+                    "tail overlap currently requires exactly 8 CTAs/SM");
+    }
     int resident_grid =
         properties.multiProcessorCount * selected_ctas_per_sm;
     if constexpr (kSingleLaunchSchedule == 2)
@@ -4996,12 +5135,18 @@ void run_tp4_megamoe_single_launch(
                 "single-launch route workspaces must be int32");
     const int64_t scheduler_words = kSingleLaunchInterleaved
         ? kSchedulerHeaderWords + 3LL * expert_ids.numel()
-        : 0;
+        : kSingleLaunchTailOverlap ? kSingleLaunchTailStateWords : 0;
     TORCH_CHECK(barrier_state.scalar_type() == torch::kInt32
                     && barrier_state.is_cuda()
                     && barrier_state.numel()
                         >= kSingleLaunchStatePrefixWords + scheduler_words,
                 "single-launch barrier/scheduler state is too small");
+    if constexpr (kSingleLaunchTailOverlap) {
+        TORCH_CHECK(route_to_sorted.scalar_type() == torch::kInt32
+                        && route_to_sorted.is_cuda()
+                        && route_to_sorted.numel() == routes,
+                    "tail overlap requires an int32 route-to-sorted map");
+    }
     TORCH_CHECK(push_counter.is_cuda() && push_counter.element_size() == 4,
                 "single-launch push counter must use CUDA 32-bit storage");
     for (const auto& workspace : {push0, push1, push2, push3}) {
@@ -5762,6 +5907,7 @@ _EXTENSION_CONFIG = (
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
+          f"slto{int(SINGLE_LAUNCH_TAIL_OVERLAP)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
@@ -5860,6 +6006,7 @@ _ext = load_inline(
             "-DK_SINGLE_LAUNCH_RELAXED_GRID_POLL="
             f"{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}"
         ),
+        f"-DK_SINGLE_LAUNCH_TAIL_OVERLAP={int(SINGLE_LAUNCH_TAIL_OVERLAP)}",
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",

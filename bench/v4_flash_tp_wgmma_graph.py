@@ -308,7 +308,9 @@ class CapturedCase:
         # W13->activation->W2 task-DAG counters/readiness queues.  No captured
         # memset or additional launch is part of the single-launch path.
         scheduler_words = (
-            8 + 3 * max_mblocks if kernel.SINGLE_LAUNCH_INTERLEAVED else 0
+            8 + 3 * max_mblocks
+            if kernel.SINGLE_LAUNCH_INTERLEAVED
+            else 78 if kernel.SINGLE_LAUNCH_TAIL_OVERLAP else 0
         )
         self.single_launch_barrier_state = torch.zeros(
             (18 + scheduler_words,), dtype=torch.int32, device=device
