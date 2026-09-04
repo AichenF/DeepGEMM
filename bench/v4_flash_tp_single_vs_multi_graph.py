@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 from typing import Any
 
@@ -179,6 +180,11 @@ def main() -> None:
                         "BF16-to-FP8 quantization outside timed graphs"
                     ),
                     "native_megamoe": use_native,
+                    "native_register_dequant": bool(
+                        use_native
+                        and os.environ.get("V4_NATIVE_REGISTER_DEQUANT", "0")
+                        == "1"
+                    ),
                     "single_launch_interleaved": (
                         kernel.SINGLE_LAUNCH_INTERLEAVED
                     ),
@@ -358,7 +364,12 @@ def main() -> None:
                 device,
             )
             candidate_accept = bool(
-                candidate_accept
+                candidate_check["finite_all_ranks"]
+                and candidate_check["cosine_min_rank"] >= 0.999
+                and candidate_check["rel_l2_max_rank"] <= 0.05
+                and native_local_scaled_check["finite_all_ranks"]
+                and native_local_scaled_check["cosine_min_rank"] >= 0.999
+                and native_local_scaled_check["rel_l2_max_rank"] <= 0.05
                 and native_embedded_comm_check["finite_all_ranks"]
                 and native_embedded_comm_check["cosine_min_rank"] >= 0.999
                 and native_embedded_comm_check["rel_l2_max_rank"] <= 0.01
