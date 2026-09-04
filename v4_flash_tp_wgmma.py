@@ -143,6 +143,9 @@ W2_MBLOCK_SCALE = os.environ.get("V4_W2_MBLOCK_SCALE", "0") == "1"
 SINGLE_LAUNCH_TAIL_OVERLAP = (
     os.environ.get("V4_SINGLE_LAUNCH_TAIL_OVERLAP", "0") == "1"
 )
+SINGLE_LAUNCH_TAIL_ACT_ONLY = (
+    os.environ.get("V4_SINGLE_LAUNCH_TAIL_ACT_ONLY", "0") == "1"
+)
 SINGLE_LAUNCH_TAIL_GROUP_CTAS = int(
     os.environ.get("V4_SINGLE_LAUNCH_TAIL_GROUP_CTAS", "16")
 )
@@ -377,6 +380,26 @@ if SINGLE_LAUNCH_TAIL_OVERLAP and (
 ):
     raise ValueError(
         "V4_SINGLE_LAUNCH_TAIL_OVERLAP requires inline, nonpersistent GEMM tasks"
+    )
+if SINGLE_LAUNCH_TAIL_ACT_ONLY and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or SINGLE_LAUNCH_M128_BOUND9
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_TAIL_ACT_ONLY requires the isolated bound-8 "
+        "schedule-0 path"
     )
 if SINGLE_LAUNCH_GROUPED_W13_ACT and (
     SINGLE_LAUNCH_TAIL_OVERLAP
@@ -708,6 +731,8 @@ static constexpr bool kSingleLaunchHierarchicalGrid =
     K_SINGLE_LAUNCH_HIERARCHICAL_GRID;
 static constexpr bool kSingleLaunchTailOverlap =
     K_SINGLE_LAUNCH_TAIL_OVERLAP;
+static constexpr bool kSingleLaunchTailActOnly =
+    K_SINGLE_LAUNCH_TAIL_ACT_ONLY;
 static constexpr bool kSingleLaunchGroupedW13Act =
     K_SINGLE_LAUNCH_GROUPED_W13_ACT;
 static constexpr bool kSingleLaunchW13CompletionAct =
@@ -4765,6 +4790,7 @@ void tp4_megamoe_single_launch_kernel(
             kW13NTiles * SplitK / kPhaseMathWgs;
         const int w13_tasks = num_mblocks * kW13TasksPerMblock;
         int tail_overlap_mblocks = 0;
+        int tail_activation_safe_mblocks = 0;
         if constexpr (kSingleLaunchClusterW13Act) {
             static_assert(SplitK == 2 || SplitK == 4);
             constexpr int kActivationGroupsPerRoute = kIntermediate / kWout;
@@ -4960,6 +4986,88 @@ void tp4_megamoe_single_launch_kernel(
                 stamps[3] = stamps[2];
             }
         } else {
+            if constexpr (kSingleLaunchTailActOnly) {
+                constexpr int kActivationGroupsPerRoute =
+                    kIntermediate / 128;
+                constexpr int kActivationTasksPerMblock =
+                    kTok * kActivationGroupsPerRoute;
+                const int common_rounds = w13_tasks / ctas;
+                const int common_tasks = common_rounds * ctas;
+                const int tail_tasks = w13_tasks - common_tasks;
+                const int idle_ctas = ctas - tail_tasks;
+                const int safe_mblocks =
+                    common_tasks / kW13TasksPerMblock;
+
+                if (tail_tasks > 0 && idle_ctas > 0) {
+                    for (int round = 0; round < common_rounds; ++round) {
+                        const int task = round * ctas + cta;
+                        route_gemm_task<4096, 1024, SplitK, true>(
+                            &w13_tma_weight, &w13_tma_weight_scale,
+                            w13, s13, g13, qx, x_scale,
+                            sorted_ids, expert_ids, num_tokens_padded,
+                            topk_weights, partials, lut, nullptr,
+                            routes, 0, task);
+                        __syncthreads();
+                    }
+
+                    // Publish the complete prefix once.  CTAs assigned to
+                    // the underfilled W13 tail keep consuming cold weights;
+                    // otherwise-idle CTAs quantize only prefix mblocks whose
+                    // gate/up split partials are already complete.  W2 stays
+                    // behind the normal W13 barrier, so no cold W2 stream
+                    // competes with the final W13 wave.
+                    single_launch_grid_barrier(
+                        barrier_state, 0, ctas, false);
+                    if (cta < tail_tasks) {
+                        route_gemm_task<4096, 1024, SplitK, true>(
+                            &w13_tma_weight, &w13_tma_weight_scale,
+                            w13, s13, g13, qx, x_scale,
+                            sorted_ids, expert_ids, num_tokens_padded,
+                            topk_weights, partials, lut, nullptr,
+                            routes, 0, common_tasks + cta);
+                        __syncthreads();
+                    } else {
+                        const int idle_rank = cta - tail_tasks;
+                        const int early_activation_tasks =
+                            safe_mblocks * kActivationTasksPerMblock;
+                        for (int activation_task = idle_rank;
+                             activation_task < early_activation_tasks;
+                             activation_task += idle_ctas) {
+                            const int mblock = activation_task
+                                / kActivationTasksPerMblock;
+                            const int local_task = activation_task
+                                - mblock * kActivationTasksPerMblock;
+                            const int route_slot =
+                                local_task / kActivationGroupsPerRoute;
+                            const int group_in_route = local_task
+                                - route_slot * kActivationGroupsPerRoute;
+                            const int route = __ldg(
+                                sorted_ids + mblock * kTok + route_slot);
+                            if (route >= 0 && route < routes) {
+                                reduce_swiglu_quant_task<
+                                    kIntermediate, SplitK>(
+                                    partials, activation, qactivation,
+                                    activation_scale, route_to_sorted,
+                                    topk_ids, g2, routes,
+                                    route * kActivationGroupsPerRoute
+                                        + group_in_route);
+                                __syncthreads();
+                            }
+                        }
+                    }
+                    tail_activation_safe_mblocks = safe_mblocks;
+                } else {
+                    for (int task = cta; task < w13_tasks; task += ctas) {
+                        route_gemm_task<4096, 1024, SplitK, true>(
+                            &w13_tma_weight, &w13_tma_weight_scale,
+                            w13, s13, g13, qx, x_scale,
+                            sorted_ids, expert_ids, num_tokens_padded,
+                            topk_weights, partials, lut, nullptr,
+                            routes, 0, task);
+                        __syncthreads();
+                    }
+                }
+            }
             if constexpr (kSingleLaunchTailOverlap) {
             const int common_rounds = w13_tasks / ctas;
             const int common_tasks = common_rounds * ctas;
@@ -5053,7 +5161,8 @@ void tp4_megamoe_single_launch_kernel(
             }
             }
 
-            if (tail_overlap_mblocks == 0) {
+            if (tail_overlap_mblocks == 0
+                    && !kSingleLaunchTailActOnly) {
                 if constexpr (kSingleLaunchW13N64Tail
                               && Tokens == 128 && SplitK == 2) {
                     // Preserve the high-bandwidth N128 task for every full
@@ -5139,31 +5248,66 @@ void tp4_megamoe_single_launch_kernel(
             }
             single_launch_grid_barrier(barrier_state, 1, ctas);
 
-            const int activation_groups =
-                routes * (kIntermediate / 128) / kPhaseMathWgs;
-            const int activation_rounds =
-                (activation_groups + ctas - 1) / ctas;
-            const int activation_workers =
-                kSingleLaunchBalancedWorkers && Tokens >= 64
-                ? (activation_groups + activation_rounds - 1)
-                    / activation_rounds
-                : ctas;
-            for (int group = cta;
-                 cta < activation_workers && group < activation_groups;
-                 group += activation_workers) {
-                const int route = group / (kIntermediate / 128);
-                if (tail_overlap_mblocks > 0
-                        && (__ldg(route_to_sorted + route) >> 3)
-                            < tail_overlap_mblocks)
-                    continue;
-                reduce_swiglu_quant_task<
-                    kIntermediate, SplitK, kSingleLaunchDualWgPhases>(
-                    partials, activation, qactivation, activation_scale,
-                    route_to_sorted, topk_ids, g2, routes, group);
-                if constexpr (!kSingleLaunchSkipFinalCtaSync) {
-                    __syncthreads();
-                } else if (group + ctas < activation_groups) {
-                    __syncthreads();
+            if constexpr (kSingleLaunchTailActOnly) {
+                constexpr int kActivationGroupsPerRoute =
+                    kIntermediate / 128;
+                constexpr int kActivationTasksPerMblock =
+                    kTok * kActivationGroupsPerRoute;
+                const int remaining_mblocks =
+                    num_mblocks - tail_activation_safe_mblocks;
+                const int remaining_activation_tasks =
+                    remaining_mblocks * kActivationTasksPerMblock;
+                for (int local_task = cta;
+                     local_task < remaining_activation_tasks;
+                     local_task += ctas) {
+                    const int mblock = tail_activation_safe_mblocks
+                        + local_task / kActivationTasksPerMblock;
+                    const int mblock_task = local_task
+                        - (local_task / kActivationTasksPerMblock)
+                            * kActivationTasksPerMblock;
+                    const int route_slot =
+                        mblock_task / kActivationGroupsPerRoute;
+                    const int group_in_route = mblock_task
+                        - route_slot * kActivationGroupsPerRoute;
+                    const int route = __ldg(
+                        sorted_ids + mblock * kTok + route_slot);
+                    if (route >= 0 && route < routes) {
+                        reduce_swiglu_quant_task<kIntermediate, SplitK>(
+                            partials, activation, qactivation,
+                            activation_scale, route_to_sorted, topk_ids,
+                            g2, routes,
+                            route * kActivationGroupsPerRoute
+                                + group_in_route);
+                        __syncthreads();
+                    }
+                }
+            } else {
+                const int activation_groups =
+                    routes * (kIntermediate / 128) / kPhaseMathWgs;
+                const int activation_rounds =
+                    (activation_groups + ctas - 1) / ctas;
+                const int activation_workers =
+                    kSingleLaunchBalancedWorkers && Tokens >= 64
+                    ? (activation_groups + activation_rounds - 1)
+                        / activation_rounds
+                    : ctas;
+                for (int group = cta;
+                     cta < activation_workers && group < activation_groups;
+                     group += activation_workers) {
+                    const int route = group / (kIntermediate / 128);
+                    if (tail_overlap_mblocks > 0
+                            && (__ldg(route_to_sorted + route) >> 3)
+                                < tail_overlap_mblocks)
+                        continue;
+                    reduce_swiglu_quant_task<
+                        kIntermediate, SplitK, kSingleLaunchDualWgPhases>(
+                        partials, activation, qactivation, activation_scale,
+                        route_to_sorted, topk_ids, g2, routes, group);
+                    if constexpr (!kSingleLaunchSkipFinalCtaSync) {
+                        __syncthreads();
+                    } else if (group + ctas < activation_groups) {
+                        __syncthreads();
+                    }
                 }
             }
             single_launch_grid_barrier(barrier_state, 2, ctas);
@@ -7351,6 +7495,7 @@ _EXTENSION_CONFIG = (
           f"slfs{int(SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC)}_"
           f"slhg{int(SINGLE_LAUNCH_HIERARCHICAL_GRID)}_"
           f"slto{int(SINGLE_LAUNCH_TAIL_OVERLAP)}_"
+          f"slta{int(SINGLE_LAUNCH_TAIL_ACT_ONLY)}_"
           f"sltg{SINGLE_LAUNCH_TAIL_GROUP_CTAS}_"
           f"slga{int(SINGLE_LAUNCH_GROUPED_W13_ACT)}_"
           f"slca{int(SINGLE_LAUNCH_W13_COMPLETION_ACT)}_"
@@ -7491,6 +7636,7 @@ _ext = load_inline(
             f"{int(SINGLE_LAUNCH_HIERARCHICAL_GRID)}"
         ),
         f"-DK_SINGLE_LAUNCH_TAIL_OVERLAP={int(SINGLE_LAUNCH_TAIL_OVERLAP)}",
+        f"-DK_SINGLE_LAUNCH_TAIL_ACT_ONLY={int(SINGLE_LAUNCH_TAIL_ACT_ONLY)}",
         f"-DK_SINGLE_LAUNCH_TAIL_GROUP_CTAS={SINGLE_LAUNCH_TAIL_GROUP_CTAS}",
         (
             "-DK_SINGLE_LAUNCH_GROUPED_W13_ACT="

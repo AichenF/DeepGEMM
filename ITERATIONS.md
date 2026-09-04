@@ -8185,3 +8185,33 @@ maximum rank latency of a full CUDA-Graph replay.
   other M values; selected code remains the one-WG/CTA implementation.
 - **Artifact:**
   `bench/results/iter289_dual_wg_private_activation_m128_smoke_20260904.log`.
+
+## Iteration 290 — activation-only W13 tail overlap is correct but slower
+
+- **Change:** Added opt-in `V4_SINGLE_LAUNCH_TAIL_ACT_ONLY=1`.  After every
+  CTA finishes the same number of complete W13 rounds, one extra packed grid
+  barrier publishes that prefix.  CTAs assigned to the underfilled final W13
+  wave keep running W13, while otherwise-idle CTAs perform only the internal
+  SwiGLU/FP8 requant for dependency-safe prefix mblocks.  W2 remains entirely
+  behind W13 completion, avoiding the cold W13/W2 bandwidth contention of the
+  older full tail-overlap experiment.
+- **Protocol:** TP4 GPUs 0-3, random M128, two balanced batches x 10
+  independently cold-L2 CUDA-Graph replays per arm, three warmups, rank-max,
+  an excluded 256 MiB clear before every replay, and device phase stamps.
+  Inputs are caller-provided FP8 E4M3 X/FP32 group-128 scales with MXFP4
+  weights; external input quantization remains outside both graphs.
+- **Correctness:** PASS exactly against the selected multi-kernel path;
+  output is finite and the embedded 64-CTA P2P two-shot all-reduce oracle
+  passes.
+- **Cold-L2 result:** Multi/candidate medians are
+  `0.303504/0.362608 ms`; candidate is `19.47%` slower.  Candidate phase
+  times are route/combined-W13-tail/remainder-requant/W2 =
+  `4.320/224.576/2.976/109.088 us`.
+- **Interpretation:** The residual activation wave shrinks by about `3.3 us`
+  versus Iteration 283, and W2 is unchanged-to-better, but the extra prefix
+  publication plus concurrent activation expands the W13 interval by roughly
+  `13.2 us`.  Activation is too small to amortize another whole-grid barrier.
+- **Decision:** Reject and keep disabled; do not broaden to other M values.
+  The selected one-WG schedule remains the default.
+- **Artifact:**
+  `bench/results/iter290_tail_activation_only_m128_smoke_20260904.log`.
