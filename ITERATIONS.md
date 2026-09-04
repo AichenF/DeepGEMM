@@ -8841,3 +8841,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - SASS gate: M128 main-kernel SASS shrank from 1,148,171 to 1,144,043 bytes. Exact `num_tokens_padded` parameter `LDC.64 c[0x0][0x4e0]` occurrences fell from 4 to 2: the W13 task-local load at control PC 0x2750 and W2 task-local load at 0x9180 disappeared, while route setup and the one phase-level `num_mblocks` load remain. The expert-id loads remain, as required, but the immediately following negative-expert predicate/exit branches visible in control are absent in the specialized W13/W2 bodies. Route/padding logic outside those two task-entry guards remains compiled.
 - Result: PASS for compile/resource/SASS. This confirms ptxas materialized the intended task-entry instruction deletion without increasing resources. Correctness and cold-L2 performance remain unproven.
 - Artifact: `bench/results/iter338_assume_valid_gemm_tasks_cubin_sass_gate_20260904.log`.
+
+## Iteration 339 — assume-valid task compute correctness and wrap gate
+
+- Setup: H20 GPU0 compute-only single-launch path with assume-valid GEMM tasks and release arrivals enabled. Tested M8/M128 under both random and maximally skewed routes. Each profiled replay used the required cold 256 MiB L2 clear; no latency is reported or inferred.
+- Random routes: M8 padded rows 360, split-K4; M128 padded rows 1944, split-K2. Both produced finite FC2 route outputs with `rel_l2=0.0` versus the independent multi-kernel reference and cosine effectively 1.0.
+- Skew routes: M8 padded rows 48, split-K4; M128 padded rows 768, split-K4. Both again produced finite outputs with `rel_l2=0.0` and cosine effectively 1.0. This specifically exercises many consecutive valid mblocks owned by the same small expert set.
+- Packed barrier gate: all four cases seeded generation at `2^22-1`; after one complete replay all four packed words were exactly zero and the wrap check passed.
+- Result: PASS. The specialized task-bound proof holds for sparse/random and highly concentrated routing at both endpoint M values. TP4 collective correctness and cold-L2 performance remain to be tested.
+- Artifact: `bench/results/iter339_assume_valid_tasks_compute_correctness_20260904.log`.
