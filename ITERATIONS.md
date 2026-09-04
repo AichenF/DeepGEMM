@@ -6484,3 +6484,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Interpretation: the original body’s assertion is nondependent and prevents selecting the braided decoder for any specialization. This does not invalidate the identified host/decoder layout mismatch, but this direction would require touching generic decoder control flow.
 - Decision: use the lower-risk equivalent repair next: retain `kUseMode2RowDecoder=true` and stop braiding the packed words during the native model-load transform. The direct Mode2 decoder then consumes canonical checkpoint nibble order; scale fusion remains unchanged.
 - Evidence: `bench/results/iter198_native_braided_decoder_tp4_m8_20260904.log`.
+
+## Iteration 199 — canonical Mode2 nibble order is necessary but insufficient
+
+- Change: restore `kUseMode2RowDecoder=true` and remove the offline sign/magnitude braid from native W13/W2 preprocessing. Packed FP4 values remain in canonical checkpoint nibble order while each K128 row is still fused with its eight duplicated E8M0 scale bytes and padding.
+- Protocol: same TP4 GPUs 0–3, random M8 paired graph correctness smoke as Iteration 197; prequantized FP8 input and logical MXFP4 weights are identical between candidate/control.
+- Result: compile and execution PASS, but numerical correctness still FAILS. Control remains correct (`cos=0.99999561`, `rel_l2=0.0029643`). Native final gives `cos=0.0048585`, `rel_l2=1.40717`; native local raw gives `cos=-0.0008704`, `rel_l2=1.21631`, and the 1.5-scaled local result gives `cos=-0.0008817`, `rel_l2=1.44143`. All outputs remain finite.
+- Analysis: removing the definite decoder/host-format mismatch changes the wrong output but does not recover correlation. At least one additional ABI mismatch remains, most likely activation-scale/TMA indexing, fused weight row ordering, or route-pool metadata. End-to-end output is too indirect to distinguish these.
+- Decision: keep canonical nibble order for the direct decoder. Add stage-boundary diagnostics to expose routed L1 FP8/SF and L2 route output, then compare W13 first against the selected multi-kernel implementation with a deterministic route/weight probe.
+- Evidence: `bench/results/iter199_native_direct_mode2_tp4_m8_20260904.log`.

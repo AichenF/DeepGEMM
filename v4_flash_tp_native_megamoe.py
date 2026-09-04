@@ -265,11 +265,13 @@ def transform_weights(
         raise TypeError("native MXFP4 weights/scales must be rank-three uint8")
     w13_il = _interleave_l1(w13)
     s13_il = _interleave_l1(s13)
-    native_w13 = _braid_mode2_signs(
-        _fuse_packed_and_scale(w13_il, _scale_to_tile_major(s13_il))
+    # The body currently selects the direct Mode2 nibble decoder.  Preserve
+    # canonical checkpoint nibble order while fusing packed values and scales.
+    native_w13 = _fuse_packed_and_scale(
+        w13_il, _scale_to_tile_major(s13_il)
     )
-    native_w2 = _braid_mode2_signs(
-        _fuse_packed_and_scale(w2.contiguous(), _scale_to_tile_major(s2))
+    native_w2 = _fuse_packed_and_scale(
+        w2.contiguous(), _scale_to_tile_major(s2)
     )
     return native_w13, native_w2
 
@@ -556,9 +558,7 @@ v4_flash_tp4_native_megamoe_impl(
     constexpr bool kFastMath = true;
     constexpr bool kSwapABRequested = true;
     constexpr bool kSingleActiveDispatchWarp = true;
-    // transform_weights() materializes the Mode2 sign/magnitude braid once at
-    // model load, so select the matching braided row decoder in the body.
-    constexpr bool kUseMode2RowDecoder = false;
+    constexpr bool kUseMode2RowDecoder = true;
     constexpr bool kUseInterleavedScheduler = true;
     constexpr uint32_t kHidden = 4096;
     constexpr uint32_t kIntermediateHidden = kIntermediate;
