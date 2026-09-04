@@ -8683,3 +8683,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: compilation succeeded and M64 executed, but correctness failed before M128. M64 had 1,624 padded routed rows with split-K2 selected; output cosine was `0.9909730255` and relative L2 error was `0.1340619704` (`accepted=false`). Packed barrier generations wrapped correctly. This is a real hybrid indexing/partial-reduction defect, not numerical drift from a harmless FP32 reassociation.
 - Decision: reject this implementation. Audit the split-K4 tail linear-task mapping and which routes the activation reducer classifies as tail before any timing.
 - Artifact: `bench/results/iter320_w13_tail_split4_m64_m128_compute_correctness_20260904.log`.
+
+## Iteration 321 — W13 tail split-K4 mapping fix correctness (2026-09-04)
+
+- Change: populate `route_to_sorted` in the actual `single_launch_route_task` used by the production one-kernel path, and in the route-only helper. The previous attempt updated only the legacy fused input-quant helper.
+- Test: H20 GPU0 compute-only correctness for random-route M64 and M128, `V4_SINGLE_LAUNCH_W13_TAIL_SPLIT4=1`; prequantized FP8 E4M3 `qx` + FP32 group-128 `x_scale`; cold 256 MiB L2 clear; TP collective disabled.
+- Result: both shapes passed exactly. M64 used 1,624 padded rows and M128 used 1,992; both selected split-K2 for the normal W13 waves. For both M64 and M128, final per-route FC2 output had cosine `1.0`, relative L2 `0.0`, finite output, and valid packed barrier generations (`[2048, 2048, 2048, 2048]`).
+- Decision: correctness gate passed. Proceed to cubin register/local-memory inspection before distributed timing.
+- Artifact: `bench/results/iter321_w13_tail_split4_mapfix_m64_m128_compute_correctness_20260904.log`.

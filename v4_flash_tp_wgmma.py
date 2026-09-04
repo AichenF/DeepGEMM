@@ -3131,7 +3131,8 @@ __global__ __launch_bounds__(256) void route_align_kernel(
         if (static_cast<unsigned>(expert) < kExperts) {
             const int position = atomicAdd(cursors + expert, 1);
             sorted_ids[position] = route;
-            if constexpr (kW2SortedAct || kW2MblockScale)
+            if constexpr (kW2SortedAct || kW2MblockScale
+                          || kSingleLaunchW13TailSplit4)
                 route_to_sorted[route] = position;
         }
     }
@@ -3328,7 +3329,8 @@ __device__ __forceinline__ void single_launch_route_task(
                 const int position = atomicAdd(cursors + expert, 1);
                 sorted_ids[position] = route;
                 if constexpr (kW2SortedAct || kW2MblockScale
-                              || kSingleLaunchTailOverlap)
+                              || kSingleLaunchTailOverlap
+                              || kSingleLaunchW13TailSplit4)
                     route_to_sorted[route] = position;
             }
         }
