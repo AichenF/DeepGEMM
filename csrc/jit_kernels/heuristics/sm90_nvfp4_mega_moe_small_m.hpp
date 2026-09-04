@@ -72,6 +72,11 @@ struct SM90NVFP4SmallMScheduleTuning {
 struct SM90NVFP4SmallMPlan {
     SM90NVFP4SmallMConfig config;
     bool swap_ab;
+    bool rs_swap_ab;
+    bool rs_batch4;
+    bool rs_vector_scale;
+    bool rs_direct_lut;
+    bool rs_compact_smem;
     bool use_mode2_lop3_decoder;
     bool single_active_dispatch_warp;
 };
@@ -253,6 +258,11 @@ static SM90NVFP4SmallMPlan materialize_sm90_nvfp4_small_m_tuning(
             smem_size,
         },
         tuning.swap_ab,
+        false,
+        false,
+        false,
+        false,
+        false,
         tuning.use_mode2_lop3_decoder,
         tuning.single_active_dispatch_warp,
     };
@@ -301,6 +311,85 @@ static SM90NVFP4SmallMPlan select_sm90_nvfp4_small_m(
     const auto load = get_sm90_nvfp4_small_m_load(input);
     const auto tuning = select_sm90_nvfp4_small_m_tuning(load);
     const auto plan = materialize_sm90_nvfp4_small_m_tuning(input, tuning);
+    DG_HOST_ASSERT(is_sm90_nvfp4_small_m_plan_legal(input, plan));
+    return plan;
+}
+
+// Materialize the four exact-key KF 424 static-RS arms accepted by D40.
+// These constants come from candidate 424345bd and intentionally do not
+// interpolate to neighbouring M values or unknown model geometries.
+static SM90NVFP4SmallMPlan select_sm90_nvfp4_small_m_kf424(
+        const SM90NVFP4SmallMInput& input) {
+    // Reuse the normal selector's input validation before replacing only the
+    // schedule fields with the independently accepted route-exact plan.
+    static_cast<void>(select_sm90_nvfp4_small_m(input));
+
+    const bool is_flash =
+        input.num_ranks == 8 && input.num_experts == 256 &&
+        input.num_experts_per_rank == 32 && input.num_topk == 6 &&
+        input.hidden == 4096 && input.intermediate_hidden == 2048;
+    const bool is_pro =
+        input.num_ranks == 8 && input.num_experts == 384 &&
+        input.num_experts_per_rank == 48 && input.num_topk == 6 &&
+        input.hidden == 7168 && input.intermediate_hidden == 3072;
+
+    int block_m = 0;
+    int num_experts_per_wave = 0;
+    int num_stages = 0;
+    int smem_size = 0;
+    bool single_active_dispatch_warp = false;
+    bool compact_smem = false;
+
+    if (is_flash && input.num_tokens == 16) {
+        block_m = 8;
+        num_experts_per_wave = 32;
+        num_stages = 4;
+        smem_size = 229120;
+        single_active_dispatch_warp = true;
+    } else if (is_flash && input.num_tokens == 32) {
+        block_m = 8;
+        num_experts_per_wave = 32;
+        num_stages = 3;
+        smem_size = 186112;
+    } else if (is_flash && input.num_tokens == 64) {
+        block_m = 16;
+        num_experts_per_wave = 32;
+        num_stages = 3;
+        smem_size = 189184;
+        single_active_dispatch_warp = true;
+    } else if (is_pro && input.num_tokens == 128) {
+        block_m = 24;
+        num_experts_per_wave = 48;
+        num_stages = 4;
+        smem_size = 193280;
+        single_active_dispatch_warp = true;
+        compact_smem = true;
+    } else {
+        DG_HOST_UNREACHABLE("Point is not part of the D40 KF 424 policy");
+    }
+
+    const SM90NVFP4SmallMPlan plan {
+        {
+            block_m,
+            layout::get_num_max_pool_tokens(
+                input.num_ranks,
+                input.num_max_tokens_per_rank,
+                input.num_topk,
+                input.num_experts_per_rank),
+            input.num_padded_sf_pool_tokens,
+            num_experts_per_wave,
+            num_stages,
+            smem_size,
+        },
+        true,  // swap_ab
+        true,  // rs_swap_ab
+        true,  // rs_batch4 (mode5)
+        true,  // rs_vector_scale (mode5)
+        false, // direct-LUT mode3 is deliberately excluded
+        compact_smem,
+        true,  // RS consumes the Mode2 LOP3 decoder ABI
+        single_active_dispatch_warp,
+    };
     DG_HOST_ASSERT(is_sm90_nvfp4_small_m_plan_legal(input, plan));
     return plan;
 }

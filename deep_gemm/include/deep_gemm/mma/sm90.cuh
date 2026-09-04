@@ -96,7 +96,14 @@ template <int N>
 struct FP8RSMMASelector {
     static constexpr auto select_mma() {
         using namespace cute::SM90::GMMA;
-        DG_STATIC_ASSERT(N == 128, "Invalid N");
+        DG_STATIC_ASSERT(N == 8 || N == 16 || N == 24 || N == 32 ||
+                         N == 64 || N == 128,
+                         "Invalid FP8 RS WGMMA N");
+        if constexpr (N == 8) return MMA_64x8x32_F32E4M3E4M3_RS_TN();
+        if constexpr (N == 16) return MMA_64x16x32_F32E4M3E4M3_RS_TN();
+        if constexpr (N == 24) return MMA_64x24x32_F32E4M3E4M3_RS_TN();
+        if constexpr (N == 32) return MMA_64x32x32_F32E4M3E4M3_RS_TN();
+        if constexpr (N == 64) return MMA_64x64x32_F32E4M3E4M3_RS_TN();
         if constexpr (N == 128) return MMA_64x128x32_F32E4M3E4M3_RS_TN();
     }
 
