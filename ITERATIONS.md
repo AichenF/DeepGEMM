@@ -5544,3 +5544,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Full-graph smoke medians (ms): P2P push `0.249184`, P2P 1-shot pull `0.251664`, P2P 2-shot `0.248288`, NVLS multicast push `0.247040`, NVLS 2-shot `0.248128`.  Sub-percent gaps are explicitly provisional with only two batches.
 - Next: run M64/M128 long 10x200 cold-L2 in the same harness; use per-batch direction rather than pooled smoke medians for selection.
 - Artifact: `results/iter141_ar_transport_matrix_tp4_m64_smoke_coldl2_20260904.log`.
+
+## Iteration 142 — clean TP4 M128 AR transport smoke (cold L2)
+
+- Reused the committed iteration-141 matrix at M128 / 1 MiB with an explicitly 1 MiB push/pull symmetric workspace on physical GPUs 4–7.  Two outer batches x five cold replays exercise all five ordinary-P2P/NVLS paths without W2 fragmentation or staging inside the timed AR-only interval.
+- Correctness: every AR-only and full graph passes the independent NCCL reference and is bitwise identical to graph P2P 2-shot (`max_abs_vs_p2p_2shot=0`).  AR-only cosine is `0.999995622`; full cosine is `0.999995568`.
+- AR-only smoke medians (us): P2P push `17.648`, P2P 1-shot pull `20.048`, P2P 2-shot `14.912`, NVLS multicast push `18.800`, direct-symmetric NVLS 2-shot `14.720`.  Thus both transports favor 2-shot at 1 MiB in this smoke; P2P 2-shot is 18.35% faster than P2P push, while NVLS 2-shot is 27.72% faster than NVLS push.  P2P push contains one 71.7 us outlier, so only the long window is dispositive.
+- Full-graph smoke medians (ms): P2P push `0.307616`, P2P 1-shot pull `0.311952`, P2P 2-shot `0.305616`, NVLS push `0.307040`, NVLS 2-shot `0.304048`.  The local compute dilutes the AR-only differences to 0.2–1.3%; two batches are insufficient for selection.
+- Next: execute the single-process M64/M128 10x200 formal matrix and retain all batch med, p05/p95, and correctness evidence.
+- Artifact: `results/iter142_ar_transport_matrix_tp4_m128_smoke_coldl2_20260904.log`.
