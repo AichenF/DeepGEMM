@@ -826,6 +826,17 @@ if (
         "V4_SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE requires "
         "V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP=1"
     )
+SINGLE_LAUNCH_W2_CHUNK_AR_L2_LOAD = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_AR_L2_LOAD", "0") == "1"
+)
+if (
+    SINGLE_LAUNCH_W2_CHUNK_AR_L2_LOAD
+    and not SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_L2_LOAD requires "
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP=1"
+    )
 SINGLE_LAUNCH_W2_CHUNK_AR_POST = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_AR_POST", "0") == "1"
 )
@@ -1071,6 +1082,8 @@ static constexpr int kSingleLaunchW2ChunkArHelperStage =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE;
 static constexpr bool kSingleLaunchW2ChunkArStrongProducerFence =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE;
+static constexpr bool kSingleLaunchW2ChunkArL2Load =
+    K_SINGLE_LAUNCH_W2_CHUNK_AR_L2_LOAD;
 static constexpr bool kSingleLaunchW2ChunkArPost =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_POST;
 static constexpr bool kSingleLaunchW2ChunkArPostConcurrent =
@@ -6245,6 +6258,15 @@ __device__ __forceinline__ uint32_t load_acquire_sys_u32(
     return value;
 }
 
+__device__ __forceinline__ uint32_t load_cg_u32(
+        const uint32_t* pointer) {
+    uint32_t value;
+    asm volatile(
+        "ld.global.cg.u32 %0, [%1];"
+        : "=r"(value) : "l"(pointer) : "memory");
+    return value;
+}
+
 __device__ __forceinline__ void red_release_sys_add_u32(
         uint32_t* pointer) {
     asm volatile(
@@ -6313,8 +6335,18 @@ __device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
                 * kPairsPerToken;
             #pragma unroll
             for (int pair = 0; pair < kPairsPerVec; ++pair) {
-                const float2 value = __bfloat1622float2(
-                    route_input2[route_base + pair0 + pair]);
+                __nv_bfloat162 packed_value;
+                if constexpr (kSingleLaunchW2ChunkArL2Load) {
+                    const uint32_t word = load_cg_u32(
+                        reinterpret_cast<const uint32_t*>(route_input2)
+                            + route_base + pair0 + pair);
+                    packed_value =
+                        *reinterpret_cast<const __nv_bfloat162*>(&word);
+                } else {
+                    packed_value = route_input2[
+                        route_base + pair0 + pair];
+                }
+                const float2 value = __bfloat1622float2(packed_value);
                 accum[pair].x =
                     fmaf(value.x, route_weight, accum[pair].x);
                 accum[pair].y =
@@ -8518,6 +8550,7 @@ _EXTENSION_CONFIG = (
           f"slw2cawo{int(SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY)}_"
           f"slw2cahs{SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE}_"
           f"slw2caspf{int(SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE)}_"
+          f"slw2cal2{int(SINGLE_LAUNCH_W2_CHUNK_AR_L2_LOAD)}_"
           f"slw2cap{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST)}_"
           f"slw2capc{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
@@ -8676,6 +8709,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE="
             f"{int(SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_L2_LOAD="
+            f"{int(SINGLE_LAUNCH_W2_CHUNK_AR_L2_LOAD)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_POST="

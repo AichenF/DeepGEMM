@@ -239,6 +239,9 @@ def main() -> None:
                     "single_launch_w2_chunk_ar_strong_producer_fence": (
                         kernel.SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE
                     ),
+                    "single_launch_w2_chunk_ar_l2_load": (
+                        kernel.SINGLE_LAUNCH_W2_CHUNK_AR_L2_LOAD
+                    ),
                     "single_launch_w2_chunk_ar_post": (
                         kernel.SINGLE_LAUNCH_W2_CHUNK_AR_POST
                     ),

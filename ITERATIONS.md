@@ -9028,3 +9028,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Inference: corruption is not limited to CTAs that execute and return from the helper, so per-CTA local state clobber is not sufficient to explain it. The read/combine overlaps globally produced `down` cache lines and triggers a cross-CTA visibility/coherence hazard despite nominal readiness accounting.
 - Decision: retain overlap default-off. Next isolate plain vector reads/copies from arithmetic, and consider changing the pipeline so communication consumes a producer-owned staging buffer rather than rereading the shared route tensor while the persistent grid is active.
 - Artifact: `bench/results/iter356_w2_chunk_corruption_task_ownership_20260904.log`.
+
+## Iteration 357 — L2-only consumer-load probe (2026-09-04)
+
+- Hypothesis: only lane 0 executes the chunk-ready acquire; ordinary helper loads from the other lanes might hit stale per-SM L1 lines. Force every BF16-pair read of `down` through PTX `ld.global.cg.u32`, bypassing L1 and sourcing L2.
+- Implementation: added opt-in `V4_SINGLE_LAUNCH_W2_CHUNK_AR_L2_LOAD=1` and a `load_cg_u32` helper used only by the staged/full chunk production path.
+- Setup: TP4 GPUs 0–3, M128 random routes, seed 20260904, helper stage 1, strong producer fence off, four diagnostic replays and one cold-L2 smoke.
+- Correctness: **FAIL.** L2-only reads did not restore `down`; repeat-versus-first max-absolute differences remained 55,296–62,720 and 2,765 rank-0 BF16 elements differed on the final replay. Most mismatches again mapped to noncommunication CTAs.
+- Inference: stale consumer L1 is not the root cause. Combined with the failed producer-fence probe, simple cache-policy publication fixes are disproven.
+- Decision: reject L2-only loads as a fix. The overlap design's separate pass over `down` is both slower and correctness-fragile; redirect optimization toward producer-side route combination or a staging scheme with ownership that avoids concurrent global rereads.
+- Artifact: `bench/results/iter357_w2_chunk_stage1_l2_only_load_smoke_20260904.log`.
