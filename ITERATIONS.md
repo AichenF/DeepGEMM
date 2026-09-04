@@ -7288,3 +7288,38 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Decision:** Correctness gate passed; retain opt-in for full paired timing.
 - **Artifact:**
   `bench/results/iter254_packed_grid_barrier_m8_m128_compute_smoke_20260904.log`.
+
+## Iteration 255 — packed generation barrier crosses 1.10x on all-shape TP4
+
+- **Protocol:** TP4 GPUs 0-3, random M={8,16,32,64,128}, shared
+  prequantized FP8-E4M3 X/FP32 group-128 scales, Humming MXFP4 versus the
+  one-launch custom path with phase stamps off and the packed generation
+  barrier enabled.  CUDA Graph, six balanced AB/BA batches x 30 separately
+  cold-L2 replays per implementation (180 samples/shape), six warmups,
+  rank-max timing.  The 256 MiB clear immediately precedes each replay and is
+  excluded; external input quantization is excluded from both paths.
+- **Correctness/liveness:** PASS for both implementations at every shape;
+  custom minimum cosine exceeds `0.9999955`, maximum relative L2 is below
+  `0.002968`, all ranks are finite, and every TP all-reduce check passes.
+- **Cold-L2 median Humming/custom and ratio:** M8
+  `0.088320/0.075744 ms, 1.16603x`; M16
+  `0.143904/0.126112 ms, 1.14108x`; M32
+  `0.222960/0.202944 ms, 1.09863x`; M64
+  `0.311616/0.284640 ms, 1.09477x`; M128
+  `0.380704/0.360880 ms, 1.05493x`.
+- **Aggregate:** Humming/custom geometric means are
+  `0.201982/0.181898 ms`, ratio `1.11041x`, exceeding the 1.10x target.
+  Against the immediately preceding timestamp-off Iteration 252 run, Humming
+  geometric mean is essentially unchanged (`0.202000 -> 0.201982 ms`) while
+  custom improves by `2.562 us` (`0.184460 -> 0.181898 ms`, 1.39%).  Per-shape
+  custom gains are `1.728/2.208/1.792/2.080/5.072 us` for
+  M=8/16/32/64/128.
+- **Interpretation:** Removing the redundant initial epoch acquire from every
+  CTA at four whole-grid barriers addresses the NCU-observed barrier/CCTL
+  pressure.  The consistent five-shape direction and stationary paired
+  Humming control make this stronger than a clock-drift explanation.
+- **Decision:** Promote to a confirmation candidate, not yet a final claim.
+  Repeat the paired run independently and stress many graph replays before
+  changing defaults.
+- **Artifact:**
+  `bench/results/iter255_packed_grid_barrier_tp4_allm_cold_paired_20260904.log`.
