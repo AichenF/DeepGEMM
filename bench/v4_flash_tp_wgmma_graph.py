@@ -1253,6 +1253,9 @@ def main() -> None:
                     "single_launch_hierarchical_grid": (
                         kernel.SINGLE_LAUNCH_HIERARCHICAL_GRID
                     ),
+                    "single_launch_grid_poll_sleep_ns": (
+                        kernel.SINGLE_LAUNCH_GRID_POLL_SLEEP_NS
+                    ),
                     "k6_nvls_pull_blocks": kernel.K6_NVLS_PULL_BLOCKS,
                     "mc_pull_blocks": kernel.MC_PULL_BLOCKS or "default",
                     "mc_pull_unroll": kernel.MC_PULL_UNROLL or "default",

@@ -276,6 +276,13 @@ SINGLE_LAUNCH_COOPERATIVE_GRID = (
 SINGLE_LAUNCH_RELAXED_GRID_POLL = (
     os.environ.get("V4_SINGLE_LAUNCH_RELAXED_GRID_POLL", "0") == "1"
 )
+SINGLE_LAUNCH_GRID_POLL_SLEEP_NS = int(
+    os.environ.get("V4_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS", "64")
+)
+if SINGLE_LAUNCH_GRID_POLL_SLEEP_NS not in (32, 64, 128, 256, 512, 1024):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS must be 32,64,128,256,512,1024"
+    )
 SINGLE_LAUNCH_HIERARCHICAL_GRID = (
     os.environ.get("V4_SINGLE_LAUNCH_HIERARCHICAL_GRID", "0") == "1"
 )
@@ -500,6 +507,8 @@ static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
     K_SINGLE_LAUNCH_RELAXED_GRID_POLL;
+static constexpr int kSingleLaunchGridPollSleepNs =
+    K_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS;
 static constexpr bool kSingleLaunchHierarchicalGrid =
     K_SINGLE_LAUNCH_HIERARCHICAL_GRID;
 static constexpr bool kSingleLaunchTailOverlap =
@@ -3474,28 +3483,28 @@ __device__ __forceinline__ void single_launch_grid_barrier(
                 } else if constexpr (kSingleLaunchRelaxedGridPoll) {
                     while (load_relaxed_gpu_i32(global_epoch)
                            == observed_global_epoch)
-                        __nanosleep(64);
+                        __nanosleep(kSingleLaunchGridPollSleepNs);
                     while (load_acquire_gpu_i32(global_epoch)
                            == observed_global_epoch) {
                     }
                 } else {
                     while (load_acquire_gpu_i32(global_epoch)
                            == observed_global_epoch)
-                        __nanosleep(64);
+                        __nanosleep(kSingleLaunchGridPollSleepNs);
                 }
                 store_release_gpu_i32(
                     local_epoch, observed_local_epoch + 1);
             } else if constexpr (kSingleLaunchRelaxedGridPoll) {
                 while (load_relaxed_gpu_i32(local_epoch)
                        == observed_local_epoch)
-                    __nanosleep(64);
+                    __nanosleep(kSingleLaunchGridPollSleepNs);
                 while (load_acquire_gpu_i32(local_epoch)
                        == observed_local_epoch) {
                 }
             } else {
                 while (load_acquire_gpu_i32(local_epoch)
                        == observed_local_epoch)
-                    __nanosleep(64);
+                    __nanosleep(kSingleLaunchGridPollSleepNs);
             }
         }
         __syncthreads();
@@ -3519,14 +3528,14 @@ __device__ __forceinline__ void single_launch_grid_barrier(
         } else {
             if constexpr (kSingleLaunchRelaxedGridPoll) {
                 while (load_relaxed_gpu_i32(epoch) == observed_epoch)
-                    __nanosleep(64);
+                    __nanosleep(kSingleLaunchGridPollSleepNs);
                 // The relaxed loop only detects progress.  This single
                 // acquire imports the last arriver's release publication.
                 while (load_acquire_gpu_i32(epoch) == observed_epoch) {
                 }
             } else {
                 while (load_acquire_gpu_i32(epoch) == observed_epoch)
-                    __nanosleep(64);
+                    __nanosleep(kSingleLaunchGridPollSleepNs);
             }
         }
     }
@@ -6090,6 +6099,7 @@ _EXTENSION_CONFIG = (
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
+          f"slpsn{SINGLE_LAUNCH_GRID_POLL_SLEEP_NS}_"
           f"slhg{int(SINGLE_LAUNCH_HIERARCHICAL_GRID)}_"
           f"slto{int(SINGLE_LAUNCH_TAIL_OVERLAP)}_"
           f"sltg{SINGLE_LAUNCH_TAIL_GROUP_CTAS}_"
@@ -6191,6 +6201,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_RELAXED_GRID_POLL="
             f"{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS="
+            f"{SINGLE_LAUNCH_GRID_POLL_SLEEP_NS}"
         ),
         (
             "-DK_SINGLE_LAUNCH_HIERARCHICAL_GRID="

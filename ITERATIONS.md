@@ -6984,3 +6984,26 @@ maximum rank latency of a full CUDA-Graph replay.
   relaxed barrier remains faster.  Do not spend NCU time on this variant.
 - **Artifact:**
   `bench/results/iter242_hierarchical_grid_tp4_allm_cold_paired_20260904.log`.
+
+## Iteration 243 — 256 ns relaxed-poll backoff is too long
+
+- **Hypothesis/change:** Parameterized the ordinary grid-barrier poll sleep as
+  `V4_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS` (32/64/128/256/512/1024, default 64)
+  and tested 256 ns.  A longer pause should reduce repeated relaxed loads to
+  the shared epoch line, at the cost of later wake-up.
+- **Protocol:** H20 GPU 0, ordinary one-level barrier, relaxed polling,
+  8 CTAs/SM, M={8,128}, random routes, prequantized FP8-E4M3 X/group-128 scale
+  and MXFP4 weights.  Cold-L2 compute-only correctness protocol is identical
+  to Iterations 234 and 241.
+- **Correctness:** PASS bitwise at M8 and M128 (`cosine=1`, `rel_l2=0`, finite).
+- **Phase result (route/W13/activation/W2 us):** M8
+  `2.304/41.088/3.680/22.272`, sum `69.344 us`; M128
+  `4.224/210.272/6.752/111.552`, sum `332.800 us`.
+- **Analysis:** Versus the 64 ns relaxed-poll smoke in Iteration 234, the phase
+  sums regress by about 1.57 us at M8 and 0.54 us at M128.  Reduced load
+  traffic does not repay the longer wake latency at 256 ns.
+- **Decision:** Reject 256 ns without distributed timing.  Keep the tuning
+  knob for a focused 32/128 ns screen, with 64 ns remaining the default and
+  selected value.
+- **Artifact:**
+  `bench/results/iter243_grid_poll_sleep256_m8_m128_compute_smoke_20260904.log`.

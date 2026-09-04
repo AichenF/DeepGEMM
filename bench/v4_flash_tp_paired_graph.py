@@ -284,6 +284,9 @@ def main() -> None:
                     "custom_single_launch_hierarchical_grid": (
                         kernel.SINGLE_LAUNCH_HIERARCHICAL_GRID
                     ),
+                    "custom_single_launch_grid_poll_sleep_ns": (
+                        kernel.SINGLE_LAUNCH_GRID_POLL_SLEEP_NS
+                    ),
                     "custom_fused_k6_mc_push_ar": (
                         kernel.FUSED_K6_MC_PUSH_AR
                     ),
