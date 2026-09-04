@@ -50,3 +50,12 @@
 - Include ordinary-P2P 1-shot push, ordinary-P2P 1-shot pull, ordinary-P2P 2-shot pull, NVLS multicast 1-shot push, and direct-symmetric-memory NVLS 2-shot pull whenever supported.  Keep identical communicator, tensor shape, input values and graph protocol.
 - Report TP4 max-rank min/median/max plus per-batch medians from a balanced-order 10x200 cold-L2 window.  Treat pooled sub-percent wins as unselected if paired batches are directionally mixed.
 - Do not change the production M<=32 multicast dispatch boundary unless the clean long-window evidence is repeatable and materially faster.
+
+## 2026-09-04 single-launch TP MegaMoE objective (supersedes the earlier preparation/tail split)
+- The deliverable is one CUDA kernel launch **per TP rank** for the complete routed-expert layer.  A CUDA Graph containing several kernels does not satisfy this requirement.
+- The single kernel accepts BF16 `X`, precomputed `topk_idx/topk_weights`, MXFP4 weights/scales and graph-stable symmetric-memory pointers, and performs device route preparation, BF16-to-FP8 group-128 quantization, W13, SwiGLU plus FP8 requantization, W2, ordered weighted k=6 reduction, TP all-reduce and replay-state cleanup before returning.
+- Router logits/top-k selection, weight preprocessing, allocation, JIT and graph capture remain outside the kernel/timed interval.  There is no EP dispatch/combine.
+- Use branch `megamoe_nvfp4_dev_m` only as a read-only reference for its one-launch persistent scheduler, W13/W2 dependency pipeline and in-kernel communication structure.  Do not copy its EP ownership semantics or NVFP4 numerical path, and do not modify or checkout the dirty `/lustre/raplab/client/xutingz/fac/DeepGEMM` worktree.
+- TP4 uses exactly 78 persistent CTAs and is the performance target.  TP8 must have a correct one-launch specialization/run-through; it is not the primary performance score.
+- The comparison baseline is the currently selected custom TP implementation, which launches five kernels at M=8/16/32 and six at M=64/128.  Success requires at least `1.10x` equal-weight geometric-mean speedup over M=8/16/32/64/128 in a same-process, TP-rank-max, CUDA-Graph, 10x200 independently cold-L2 comparison.  Report every M and do not hide regressions behind the aggregate.
+- Nsight verification must show exactly one timed kernel node per replay after excluding the separate 256 MiB cold-L2 clear.  No hidden timed memset, copy, reset or child-kernel launch is allowed.
