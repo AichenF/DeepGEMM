@@ -6583,3 +6583,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** Correctness is restored: W13 cosine `0.999999997`, rel-L2 `0.00007742`; SwiGLU activation cosine `0.999999690`, rel-L2 `0.00078906`; final W2/local-k6 cosine `0.999997253`, rel-L2 `0.00234399`. Tiled k6 remains bitwise equal to SGLang.
 - **Conclusion:** The previous native-vs-control failure was an apples-to-oranges physical packing bug in the benchmark. Both implementations now represent the same OCP/Humming MXFP4 logical weights, while all conversion stays outside CUDA Graph timing. Next rerun paired TP4 correctness and then validate native final output against canonical math.
 - **Artifact:** `bench/results/iter211_multikernel_marlin_adapter_m8_20260904.log`.
+
+## Iteration 212 — First valid native-vs-control TP4 comparison under one logical weight
+
+- **Change:** No new production change; reran the paired graph after Iteration 211 made both implementations consume the same canonical OCP/Marlin logical MXFP4 weights.
+- **Test:** TP4 H20 GPUs 0-3, M=8 balanced, static native scheduler, paired cold-L2 CUDA Graph correctness.
+- **Result:** All previously near-zero metrics recover. Weighted FC1 intermediate cosine `0.99936770`, rel-L2 `0.03556667`; every route's best cross-match is its own route. Per-route FC2 cosine `0.99936105`, rel-L2 `0.03574207`. Native local output scaled by 1.5 reaches cosine `0.99935345`, rel-L2 `0.03595380`; TP final cosine `0.99937286`, rel-L2 `0.03541134`. Native local combine remains exact against the sum of its own route buffer.
+- **Conclusion:** Native computation is now numerically correlated end-to-end and the prior catastrophic failure is disproved as a benchmark packing bug. The harness still marks native false because its strict rel-L2 threshold was tuned for the control's FP32 exact-scale quantizer; native uses DeepGEMM's power-of-two UE8M0-style intermediate scale and folds route weight before FC2. Next compare TP output directly with NCCL reduction of native local output to isolate communication, and set an accuracy criterion against canonical math rather than implementation identity.
+- **Artifact:** `bench/results/iter212_native_vs_baseline_marlin_tp4_m8_20260904.log`.
