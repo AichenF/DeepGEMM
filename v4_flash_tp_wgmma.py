@@ -878,6 +878,52 @@ if (
         "V4_SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT requires "
         "V4_SINGLE_LAUNCH_W2_CHUNK_AR_POST=1"
     )
+# Producer-side fixed-k6 combine using Hopper bulk asynchronous FP32 reduce.
+# This is deliberately isolated from every scheduler/epilogue experiment:
+# standalone W2 remains the unchanged per-route BF16 baseline.
+SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE", "0") == "1"
+)
+if SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or WOUT != 128
+    or not W2_ROUTE_OUTPUT
+    or W2_COALESCED_STORE
+    or SINGLE_LAUNCH_MIN_BLOCKS != 8
+    or SINGLE_LAUNCH_CTAS_PER_SM != 8
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or SINGLE_LAUNCH_M128_BOUND9
+    or SINGLE_LAUNCH_W2_UNROLL2_BOUND9
+    or SINGLE_LAUNCH_W2_CHUNK_MAJOR
+    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+    or SINGLE_LAUNCH_W2_CHUNK_AR_POST
+    or SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM
+    or not SINGLE_LAUNCH_P2P_TWO_SHOT
+    or SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS != 64
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE requires the isolated "
+        "inline WOUT128 two-stage schedule-0 TP4 path"
+    )
 if SINGLE_LAUNCH_DUAL_WG_PHASES and (
     not SINGLE_LAUNCH_P2P_TWO_SHOT
     or SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS != 64
@@ -1104,6 +1150,8 @@ static constexpr bool kSingleLaunchW2ChunkArPost =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_POST;
 static constexpr bool kSingleLaunchW2ChunkArPostConcurrent =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT;
+static constexpr bool kSingleLaunchW2BulkReduceCombine =
+    K_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -1410,11 +1458,33 @@ __device__ __forceinline__ uint2 dequant_weight_word(
         kDequantDp4aHi, kDequantDp4aLo>(packed, lut);
 }
 
+// Hopper bulk asynchronous shared->global FP32 reduction.  The issuing lane
+// owns the bulk group; callers publish generic shared stores through the
+// async proxy before issuing and must observe full completion before the
+// staging region is reused or the grid publishes W2 completion.
+__device__ __forceinline__ void bulk_reduce_add_f32(
+        float* dst, const float* src, uint32_t bytes) {
+    const uint32_t src_smem =
+        static_cast<uint32_t>(__cvta_generic_to_shared(src));
+    asm volatile(
+        "cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32 "
+        "[%0], [%1], %2;"
+        : : "l"(dst), "r"(src_smem), "r"(bytes) : "memory");
+}
+
+__device__ __forceinline__ void bulk_reduce_commit_group() {
+    asm volatile("cp.async.bulk.commit_group;" ::: "memory");
+}
+
+__device__ __forceinline__ void bulk_reduce_wait_group_0() {
+    asm volatile("cp.async.bulk.wait_group 0;" ::: "memory");
+}
+
 template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool PublishW2Progress = false, bool DualWgW13 = false,
           bool PersistentState = false, int WgmmaHalf = -1,
           bool SharedPartial = false, int ForcedKUnroll = 0,
-          bool AssumeValidMblock = false>
+          bool AssumeValidMblock = false, bool BulkReduceW2 = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -1473,6 +1543,12 @@ __device__ __forceinline__ void route_gemm_task(
                   "N64 tail tasks require compact-interleaved W13 N128");
     static_assert(!SharedPartial || (IsW13 && !kHalfWgmma && !DualWgW13),
                   "DSM partial output requires one full W13 warpgroup");
+    static_assert(!BulkReduceW2
+                  || (!IsW13 && SplitK == 1 && N == 4096
+                      && kWout == 128 && LaunchNTiles == 0
+                      && !DualWgW13 && !PersistentState
+                      && !kW2CoalescedStore),
+                  "bulk W2 combine requires the flat single-WG N4096 path");
     static_assert(ForcedKUnroll == 0 || ForcedKUnroll == 1
                   || ForcedKUnroll == 2 || ForcedKUnroll == 4
                   || ForcedKUnroll == 8 || ForcedKUnroll == 16,
@@ -2377,6 +2453,10 @@ __device__ __forceinline__ void route_gemm_task(
         }
     }
 
+    if constexpr (BulkReduceW2)
+        __syncthreads();
+    constexpr int kBulkReducePitch = 132;
+    float* bulk_reduce_smem = reinterpret_cast<float*>(weight_smem);
     const int route0 = route_ids[metadata_slot][column_base];
     const int route1 = route_ids[metadata_slot][column_base + 1];
     #pragma unroll
@@ -2411,7 +2491,40 @@ __device__ __forceinline__ void route_gemm_task(
                 }
             }
         } else {
-            if constexpr (kW2RouteOutput) {
+            if constexpr (BulkReduceW2) {
+                // Preserve the selected route-output numerical boundary:
+                // round each route result to BF16 before applying its route
+                // weight, then use bulk FP32 reductions only for the k6 sum.
+                // Pitch 132 keeps every 512-byte route row contiguous and
+                // 16-byte aligned while removing the pitch-128 4-way bank
+                // conflict in this WGMMA register mapping.
+                const bool valid0 = static_cast<unsigned>(route0)
+                    < static_cast<unsigned>(max_routes);
+                const bool valid1 = static_cast<unsigned>(route1)
+                    < static_cast<unsigned>(max_routes);
+                const float route_weight0 = valid0
+                    ? __ldg(topk_weights + route0) * kRoutedScale : 0.0f;
+                const float route_weight1 = valid1
+                    ? __ldg(topk_weights + route1) * kRoutedScale : 0.0f;
+                const int local_n0 = group * 64 + row0;
+                const int local_n1 = group * 64 + row1;
+                bulk_reduce_smem[
+                    column_base * kBulkReducePitch + local_n0] =
+                    __bfloat162float(__float2bfloat16(accum[group][0]))
+                    * route_weight0;
+                bulk_reduce_smem[
+                    column_base * kBulkReducePitch + local_n1] =
+                    __bfloat162float(__float2bfloat16(accum[group][2]))
+                    * route_weight0;
+                bulk_reduce_smem[
+                    (column_base + 1) * kBulkReducePitch + local_n0] =
+                    __bfloat162float(__float2bfloat16(accum[group][1]))
+                    * route_weight1;
+                bulk_reduce_smem[
+                    (column_base + 1) * kBulkReducePitch + local_n1] =
+                    __bfloat162float(__float2bfloat16(accum[group][3]))
+                    * route_weight1;
+            } else if constexpr (kW2RouteOutput) {
                 if constexpr (kW2CoalescedStore) {
                     // Each warp owns 16 columns in each N64 accumulator
                     // group.  Keep its eight-route, 32-column slice private
@@ -2472,7 +2585,25 @@ __device__ __forceinline__ void route_gemm_task(
             }
         }
     }
-    if constexpr (!IsW13 && kW2RouteOutput && kW2CoalescedStore) {
+    if constexpr (BulkReduceW2) {
+        __syncthreads();
+        if (tid < kTok) {
+            asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+            const int route = route_ids[metadata_slot][tid];
+            if (static_cast<unsigned>(route)
+                    < static_cast<unsigned>(max_routes)) {
+                const int token = route / kTopK;
+                bulk_reduce_add_f32(
+                    output + static_cast<int64_t>(token) * N
+                        + n_block_idx * kWout,
+                    bulk_reduce_smem + tid * kBulkReducePitch,
+                    kWout * sizeof(float));
+                bulk_reduce_commit_group();
+                bulk_reduce_wait_group_0();
+            }
+        }
+    } else if constexpr (!IsW13 && kW2RouteOutput
+                         && kW2CoalescedStore) {
         __syncwarp();
         // Each group of four lanes emits one route's 32 columns owned by
         // this warp.  The four 16-byte vectors cover two contiguous N16
@@ -4161,7 +4292,8 @@ __global__ __launch_bounds__(Threads) void progress_mc_push_finish_tp4_kernel(
 // The symmetric slots and per-CTA phase counters are owned by the unchanged
 // CustomAllReduceV2 communicator, so stock Humming and this kernel can safely
 // alternate on the same communicator and inside separately captured graphs.
-template <int Threads, bool UseMulticast, bool Chunked = false>
+template <int Threads, bool UseMulticast, bool Chunked = false,
+          bool LocalSumFp32 = false>
 __device__ __forceinline__ void fused_k6_push_ar_tp4_task(
         const __nv_bfloat16* __restrict__ input,
         const float* __restrict__ topk_weights,
@@ -4190,39 +4322,68 @@ __device__ __forceinline__ void fused_k6_push_ar_tp4_task(
     for (int vec = global_tid; vec < num_vecs; vec += global_threads) {
         const int token = vec / vecs_per_token;
         const int vec_in_token = vec - token * vecs_per_token;
-        const int pair0 = (Chunked ? hidden_offset / 2 : 0)
-            + vec_in_token * kPairsPerVec;
-        float2 accum[kPairsPerVec];
-        #pragma unroll
-        for (int pair = 0; pair < kPairsPerVec; ++pair)
-            accum[pair] = make_float2(0.0f, 0.0f);
-
-        const auto* input2 = reinterpret_cast<const __nv_bfloat162*>(input);
-        #pragma unroll
-        for (int route = 0; route < kTopK; ++route) {
-            const float route_weight =
-                __ldg(topk_weights + token * kTopK + route) * kRoutedScale;
-            const int64_t route_base =
-                (static_cast<int64_t>(token) * kTopK + route)
-                * kPairsPerToken;
-            #pragma unroll
-            for (int pair = 0; pair < kPairsPerVec; ++pair) {
-                const float2 value = __bfloat1622float2(
-                    input2[route_base + pair0 + pair]);
-                accum[pair].x =
-                    fmaf(value.x, route_weight, accum[pair].x);
-                accum[pair].y =
-                    fmaf(value.y, route_weight, accum[pair].y);
-            }
-        }
-
         uint4 local_vec;
         uint32_t* local_words = reinterpret_cast<uint32_t*>(&local_vec);
+        if constexpr (LocalSumFp32) {
+            const int scalar0 = token * kHidden
+                + (Chunked ? hidden_offset : 0) + vec_in_token * 8;
+            const auto* local_sum = reinterpret_cast<const float*>(input);
+            const float4 value0 = *reinterpret_cast<const float4*>(
+                local_sum + scalar0);
+            const float4 value1 = *reinterpret_cast<const float4*>(
+                local_sum + scalar0 + 4);
+            const __nv_bfloat162 pair0 =
+                __floats2bfloat162_rn(value0.x, value0.y);
+            const __nv_bfloat162 pair1 =
+                __floats2bfloat162_rn(value0.z, value0.w);
+            const __nv_bfloat162 pair2 =
+                __floats2bfloat162_rn(value1.x, value1.y);
+            const __nv_bfloat162 pair3 =
+                __floats2bfloat162_rn(value1.z, value1.w);
+            local_words[0] = *reinterpret_cast<const uint32_t*>(&pair0);
+            local_words[1] = *reinterpret_cast<const uint32_t*>(&pair1);
+            local_words[2] = *reinterpret_cast<const uint32_t*>(&pair2);
+            local_words[3] = *reinterpret_cast<const uint32_t*>(&pair3);
+        } else {
+            const int pair0 = (Chunked ? hidden_offset / 2 : 0)
+                + vec_in_token * kPairsPerVec;
+            float2 accum[kPairsPerVec];
+            #pragma unroll
+            for (int pair = 0; pair < kPairsPerVec; ++pair)
+                accum[pair] = make_float2(0.0f, 0.0f);
+
+            const auto* input2 =
+                reinterpret_cast<const __nv_bfloat162*>(input);
+            #pragma unroll
+            for (int route = 0; route < kTopK; ++route) {
+                const float route_weight =
+                    __ldg(topk_weights + token * kTopK + route)
+                    * kRoutedScale;
+                const int64_t route_base =
+                    (static_cast<int64_t>(token) * kTopK + route)
+                    * kPairsPerToken;
+                #pragma unroll
+                for (int pair = 0; pair < kPairsPerVec; ++pair) {
+                    const float2 value = __bfloat1622float2(
+                        input2[route_base + pair0 + pair]);
+                    accum[pair].x =
+                        fmaf(value.x, route_weight, accum[pair].x);
+                    accum[pair].y =
+                        fmaf(value.y, route_weight, accum[pair].y);
+                }
+            }
+
+            #pragma unroll
+            for (int pair = 0; pair < kPairsPerVec; ++pair) {
+                const __nv_bfloat162 value =
+                    __floats2bfloat162_rn(accum[pair].x, accum[pair].y);
+                local_words[pair] =
+                    *reinterpret_cast<const uint32_t*>(&value);
+            }
+        }
         #pragma unroll
         for (int pair = 0; pair < kPairsPerVec; ++pair) {
-            const __nv_bfloat162 value =
-                __floats2bfloat162_rn(accum[pair].x, accum[pair].y);
-            uint32_t word = *reinterpret_cast<const uint32_t*>(&value);
+            const uint32_t word = local_words[pair];
             if constexpr (UseMulticast) {
                 // K3's push protocol only needs to distinguish an untouched
                 // 4-byte atom from a written one.  If both BF16 lanes are
@@ -4346,7 +4507,7 @@ __device__ __forceinline__ void fused_k6_nvls_pull_tp4_task(
         uint8_t* __restrict__ sem_mc,
         int tokens, int linear_block_idx, int linear_grid_dim);
 
-template <int Threads, int Blocks, int Tokens>
+template <int Threads, int Blocks, int Tokens, bool LocalSumFp32 = false>
 __device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
         const __nv_bfloat16* __restrict__ route_input,
         const float* __restrict__ topk_weights,
@@ -5006,10 +5167,22 @@ void tp4_megamoe_single_launch_kernel(
             scheduler[word] = 0;
     }
 
+    if constexpr (kSingleLaunchW2BulkReduceCombine) {
+        auto* local_sum_zero = reinterpret_cast<uint4*>(down);
+        constexpr int kLocalSumVecs = Tokens * 4096 / 4;
+        for (int vec = cta * blockDim.x + threadIdx.x;
+             vec < kLocalSumVecs; vec += ctas * blockDim.x) {
+            local_sum_zero[vec] = make_uint4(0u, 0u, 0u, 0u);
+        }
+    }
     single_launch_route_task<kSingleLaunchThreads>(
         topk_ids, sorted_ids, expert_ids, num_tokens_padded,
         route_to_sorted, tokens, cta);
     single_launch_grid_barrier(barrier_state, 0, ctas);
+    if constexpr (kSingleLaunchW2BulkReduceCombine) {
+        if (threadIdx.x < kTok)
+            asm volatile("fence.proxy.async.global;" ::: "memory");
+    }
     bool chunk_ar_overlap_active = false;
 
     if constexpr (kSingleLaunchSchedule == 1) {
@@ -6114,7 +6287,8 @@ void tp4_megamoe_single_launch_kernel(
                         kW2PersistentState, -1, false,
                         (kSingleLaunchW2Unroll2Bound9 && Tokens == 128)
                             ? 2 : 0,
-                        kSingleLaunchAssumeValidGemmTasks>(
+                        kSingleLaunchAssumeValidGemmTasks,
+                        kSingleLaunchW2BulkReduceCombine>(
                         &w2_tma_weight, &w2_tma_weight_scale,
                         w2, s2, g2, qactivation, activation_scale,
                         sorted_ids, expert_ids, num_tokens_padded,
@@ -6266,7 +6440,8 @@ void tp4_megamoe_single_launch_kernel(
                         || kSingleLaunchW2ChunkArHelperStage < 3)
                         && cta < kTwoShotBlocks) {
                     fused_k6_p2p_twoshot_tp4_task<
-                        kSingleLaunchThreads, kTwoShotBlocks, Tokens>(
+                        kSingleLaunchThreads, kTwoShotBlocks, Tokens,
+                        kSingleLaunchW2BulkReduceCombine>(
                         down, topk_weights, pull_input,
                         push0, push1, push2, push3,
                         pull_sem_local, rank, cta);
@@ -6281,7 +6456,9 @@ void tp4_megamoe_single_launch_kernel(
             }
         } else {
             if (cta < 78) {
-                fused_k6_push_ar_tp4_task<kSingleLaunchThreads, true>(
+                fused_k6_push_ar_tp4_task<
+                    kSingleLaunchThreads, true, false,
+                    kSingleLaunchW2BulkReduceCombine>(
                     down, topk_weights, output, push_counter,
                     push0, push1, push2, push3, push_mc,
                     tokens, rank, push_stride, 0, 4096, cta, 78);
@@ -6354,7 +6531,7 @@ __device__ __forceinline__ void multimem_red_add_release_u32(
 // Block b produces exactly the vectors that block b later consumes in this
 // rank's reduce-scatter quarter, so its per-block semaphore publication is
 // sufficient: no additional whole-grid barrier is needed between the two.
-template <int Threads, int Blocks, int Tokens>
+template <int Threads, int Blocks, int Tokens, bool LocalSumFp32>
 __device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
         const __nv_bfloat16* __restrict__ route_input,
         const float* __restrict__ topk_weights,
@@ -6380,49 +6557,73 @@ __device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
     for (int vec = global_tid; vec < kTotalVecs; vec += kGlobalThreads) {
         const int token = vec / kVecsPerToken;
         const int vec_in_token = vec - token * kVecsPerToken;
-        const int pair0 = vec_in_token * kPairsPerVec;
-        float2 accum[kPairsPerVec];
-        #pragma unroll
-        for (int pair = 0; pair < kPairsPerVec; ++pair)
-            accum[pair] = make_float2(0.0f, 0.0f);
-
-        const auto* route_input2 =
-            reinterpret_cast<const __nv_bfloat162*>(route_input);
-        #pragma unroll
-        for (int route = 0; route < kTopK; ++route) {
-            const float route_weight =
-                __ldg(topk_weights + token * kTopK + route) * kRoutedScale;
-            const int64_t route_base =
-                (static_cast<int64_t>(token) * kTopK + route)
-                * kPairsPerToken;
-            #pragma unroll
-            for (int pair = 0; pair < kPairsPerVec; ++pair) {
-                __nv_bfloat162 packed_value;
-                if constexpr (kSingleLaunchW2ChunkArL2Load) {
-                    const uint32_t word = load_cg_u32(
-                        reinterpret_cast<const uint32_t*>(route_input2)
-                            + route_base + pair0 + pair);
-                    packed_value =
-                        *reinterpret_cast<const __nv_bfloat162*>(&word);
-                } else {
-                    packed_value = route_input2[
-                        route_base + pair0 + pair];
-                }
-                const float2 value = __bfloat1622float2(packed_value);
-                accum[pair].x =
-                    fmaf(value.x, route_weight, accum[pair].x);
-                accum[pair].y =
-                    fmaf(value.y, route_weight, accum[pair].y);
-            }
-        }
-
         uint4 local_value;
         auto* words = reinterpret_cast<uint32_t*>(&local_value);
-        #pragma unroll
-        for (int pair = 0; pair < kPairsPerVec; ++pair) {
-            const __nv_bfloat162 value =
-                __floats2bfloat162_rn(accum[pair].x, accum[pair].y);
-            words[pair] = *reinterpret_cast<const uint32_t*>(&value);
+        if constexpr (LocalSumFp32) {
+            const int scalar0 = token * kHidden + vec_in_token * 8;
+            const auto* local_sum =
+                reinterpret_cast<const float*>(route_input);
+            const float4 value0 = *reinterpret_cast<const float4*>(
+                local_sum + scalar0);
+            const float4 value1 = *reinterpret_cast<const float4*>(
+                local_sum + scalar0 + 4);
+            const __nv_bfloat162 pair0 =
+                __floats2bfloat162_rn(value0.x, value0.y);
+            const __nv_bfloat162 pair1 =
+                __floats2bfloat162_rn(value0.z, value0.w);
+            const __nv_bfloat162 pair2 =
+                __floats2bfloat162_rn(value1.x, value1.y);
+            const __nv_bfloat162 pair3 =
+                __floats2bfloat162_rn(value1.z, value1.w);
+            words[0] = *reinterpret_cast<const uint32_t*>(&pair0);
+            words[1] = *reinterpret_cast<const uint32_t*>(&pair1);
+            words[2] = *reinterpret_cast<const uint32_t*>(&pair2);
+            words[3] = *reinterpret_cast<const uint32_t*>(&pair3);
+        } else {
+            const int pair0 = vec_in_token * kPairsPerVec;
+            float2 accum[kPairsPerVec];
+            #pragma unroll
+            for (int pair = 0; pair < kPairsPerVec; ++pair)
+                accum[pair] = make_float2(0.0f, 0.0f);
+
+            const auto* route_input2 =
+                reinterpret_cast<const __nv_bfloat162*>(route_input);
+            #pragma unroll
+            for (int route = 0; route < kTopK; ++route) {
+                const float route_weight =
+                    __ldg(topk_weights + token * kTopK + route)
+                    * kRoutedScale;
+                const int64_t route_base =
+                    (static_cast<int64_t>(token) * kTopK + route)
+                    * kPairsPerToken;
+                #pragma unroll
+                for (int pair = 0; pair < kPairsPerVec; ++pair) {
+                    __nv_bfloat162 packed_value;
+                    if constexpr (kSingleLaunchW2ChunkArL2Load) {
+                        const uint32_t word = load_cg_u32(
+                            reinterpret_cast<const uint32_t*>(route_input2)
+                                + route_base + pair0 + pair);
+                        packed_value =
+                            *reinterpret_cast<const __nv_bfloat162*>(&word);
+                    } else {
+                        packed_value = route_input2[
+                            route_base + pair0 + pair];
+                    }
+                    const float2 value = __bfloat1622float2(packed_value);
+                    accum[pair].x =
+                        fmaf(value.x, route_weight, accum[pair].x);
+                    accum[pair].y =
+                        fmaf(value.y, route_weight, accum[pair].y);
+                }
+            }
+
+            #pragma unroll
+            for (int pair = 0; pair < kPairsPerVec; ++pair) {
+                const __nv_bfloat162 value =
+                    __floats2bfloat162_rn(accum[pair].x, accum[pair].y);
+                words[pair] =
+                    *reinterpret_cast<const uint32_t*>(&value);
+            }
         }
         reinterpret_cast<uint4*>(symm_input)[vec] = local_value;
     }
@@ -7551,6 +7752,17 @@ void launch_tp4_megamoe_single(
            ? kTok * kWout * static_cast<int>(sizeof(float)) : 0);
     TORCH_CHECK(output.size(0) == Tokens,
                 "single-launch token specialization mismatch");
+    if constexpr (kSingleLaunchW2BulkReduceCombine) {
+        constexpr int64_t kLocalSumBytes =
+            static_cast<int64_t>(Tokens) * 4096 * sizeof(float);
+        TORCH_CHECK(
+            static_cast<int64_t>(down.numel()) * down.element_size()
+                >= kLocalSumBytes,
+            "bulk-reduce local FP32 sum exceeds the W2 down workspace");
+        TORCH_CHECK(
+            (reinterpret_cast<uintptr_t>(down.data_ptr()) & 15u) == 0u,
+            "bulk-reduce local FP32 sum requires 16-byte alignment");
+    }
     const cudaError_t attr_result = cudaFuncSetAttribute(
         tp4_megamoe_single_launch_kernel<SplitK, Tokens>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -8616,6 +8828,7 @@ _EXTENSION_CONFIG = (
           f"slw2cal2{int(SINGLE_LAUNCH_W2_CHUNK_AR_L2_LOAD)}_"
           f"slw2cap{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST)}_"
           f"slw2capc{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT)}_"
+          f"slw2brc{int(SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
@@ -8788,6 +9001,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT="
             f"{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE="
+            f"{int(SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="

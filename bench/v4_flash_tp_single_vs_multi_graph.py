@@ -251,6 +251,9 @@ def main() -> None:
                     "single_launch_w2_chunk_ar_post_concurrent": (
                         kernel.SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT
                     ),
+                    "single_launch_w2_bulk_reduce_combine": (
+                        kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+                    ),
                     "single_launch_cooperative_grid": (
                         kernel.SINGLE_LAUNCH_COOPERATIVE_GRID
                     ),

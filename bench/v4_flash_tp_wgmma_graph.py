@@ -854,7 +854,9 @@ class CapturedCase:
         self.fused_k6_push_active = True
         if kernel.SINGLE_LAUNCH_P2P_TWO_SHOT and self.m >= 64:
             self.fused_k6_ar_mode = (
-                "single_launch_p2p_two_shot_chunk_overlap"
+                "single_launch_p2p_two_shot_bulk_local_sum"
+                if kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+                else "single_launch_p2p_two_shot_chunk_overlap"
                 if kernel.SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
                 and not kernel.SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY
                 and not kernel.SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED
@@ -872,7 +874,9 @@ class CapturedCase:
             self.graph_output = self.fused_pull_output
         else:
             self.fused_k6_ar_mode = (
-                "single_launch_nvls_pull"
+                "single_launch_multicast_push_bulk_local_sum"
+                if kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+                else "single_launch_nvls_pull"
                 if self.m == 128
                 else "single_launch_multicast_push"
             )
@@ -1316,6 +1320,9 @@ def main() -> None:
                     ),
                     "single_launch_w2_chunk_ar_post_concurrent": (
                         kernel.SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT
+                    ),
+                    "single_launch_w2_bulk_reduce_combine": (
+                        kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
                     ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
