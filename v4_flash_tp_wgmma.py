@@ -3620,6 +3620,7 @@ __device__ __forceinline__ void single_launch_grid_barrier(
                     while (load_acquire_gpu_i32(epoch) == observed_epoch)
                         __nanosleep(kSingleLaunchGridPollSleepNs);
                 }
+            }
         }
     }
     __syncthreads();

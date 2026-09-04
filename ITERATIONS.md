@@ -7267,3 +7267,24 @@ maximum rank latency of a full CUDA-Graph replay.
   about the barrier protocol.
 - **Artifact:**
   `bench/results/iter253_packed_grid_barrier_m8_m128_compute_smoke_20260904.log`.
+
+## Iteration 254 — packed generation barrier compiles and is bitwise correct
+
+- **Repair:** Closed the missing legacy-branch and CTA-leader scopes in
+  `single_launch_grid_barrier`; the packed protocol itself is unchanged from
+  Iteration 253.  Its 10-bit count supports the largest current resident grid
+  (702 CTAs), and the remaining 22 bits form a graph-replay generation.
+- **Protocol:** H20 GPU 0, M={8,128}, random routes, phase stamps off,
+  relaxed 64 ns polling, 8 CTAs/SM, prequantized FP8-E4M3 X plus FP32
+  group-128 scales, MXFP4 weights, and an excluded 256 MiB cold-L2 clear.
+  TP communication was disabled only for this smoke; the complete W2 route
+  tensor was compared against the independent multi-kernel reference.
+- **Correctness/liveness:** PASS at both shapes without timeout.  Both are
+  bitwise identical to the reference (`cosine=1`, `rel_l2=0`, finite=true),
+  covering all four route/W13/requant/W2 global rendezvous in one launch.
+- **Performance status:** Not measured because phase stamps are intentionally
+  absent.  A distributed TP4 CUDA-Graph cold-L2 benchmark is required both to
+  exercise cross-rank completion and to quantify the barrier change.
+- **Decision:** Correctness gate passed; retain opt-in for full paired timing.
+- **Artifact:**
+  `bench/results/iter254_packed_grid_barrier_m8_m128_compute_smoke_20260904.log`.
