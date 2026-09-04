@@ -7828,3 +7828,36 @@ maximum rank latency of a full CUDA-Graph replay.
   range only as an opt-in diagnostic and retain bound/request 8 by default.
 - **Artifact:**
   `bench/results/iter274_bound10_m128_compute_smoke_20260904.log`.
+
+## Iteration 275 — embedded P2P two-shot removes most of the M128 tail loss
+
+- **Hypothesis/change:** Added opt-in
+  `V4_SINGLE_LAUNCH_P2P_TWO_SHOT=1`, porting SGLang CARv2's graph-mode
+  two-shot reduce-scatter/all-gather semantics into the same MegaMoE entry.
+  Each of 64 communication CTAs first computes its ordered local k6 stripe
+  directly into the symmetric pull slab, release-publishes that exact stripe,
+  reduces its rank's quarter from four ordinary peer mappings, and writes the
+  result to all peers.  The producer and consumer block/vector mapping is
+  congruent, so this needs no extra whole-grid barrier or kernel launch.
+- **Protocol:** TP4 GPUs 0-3, M128 random routes, same-process multi-kernel
+  control versus one-entry candidate, two balanced batches x five separately
+  cold-L2 CUDA-Graph replays, two warmups, rank-max timing.  A separate
+  excluded 256 MiB clear precedes every replay; both paths consume identical
+  prequantized FP8 X/scales.
+- **Correctness:** PASS exactly against the control at the final tensor
+  (`cosine=0.9999955977`, `rel_l2=0.0029672640`, finite and all-reduce OK).
+  The candidate uses the new embedded ordinary-P2P two-shot tail.
+- **Cold-L2 smoke:** Control/candidate medians are
+  `0.303120/0.352000 ms`; candidate is `16.13%` slower.  Both candidate batch
+  medians are tight at `0.351808/0.352352 ms`.
+- **Comparison:** The selected embedded NVLS one-shot path measured
+  `0.386656 ms` against `0.320688 ms` in the longer Iteration 262 window.
+  Although clocks/control also shifted, the new absolute candidate is about
+  34.7 us faster and cuts the paired M128 overhead from roughly 20.6% to
+  16.1%.  This is the largest recent structural improvement, but the
+  ten-sample window is not a selection gate.
+- **Decision:** Retain opt-in.  Sweep 16/32/64 CTA geometries in one paired
+  process, then give the winner a longer distributed confirmation before
+  considering M64 or a default change.
+- **Artifact:**
+  `bench/results/iter275_embedded_p2p_twoshot_m128_smoke_20260904.log`.

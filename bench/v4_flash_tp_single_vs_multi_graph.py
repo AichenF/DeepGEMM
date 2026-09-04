@@ -240,6 +240,12 @@ def main() -> None:
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
                     ),
+                    "single_launch_p2p_two_shot": (
+                        kernel.SINGLE_LAUNCH_P2P_TWO_SHOT
+                    ),
+                    "single_launch_p2p_two_shot_blocks": (
+                        kernel.SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS
+                    ),
                     "control": "selected multi-kernel path from the same source",
                     "candidate": (
                         "native one-CTA-per-SM MegaMoE kernel"

@@ -419,6 +419,18 @@ if SINGLE_LAUNCH_GROUP_CTAS not in (4, 8, 16):
 K6_NVLS_PULL_BLOCKS = int(os.environ.get("V4_K6_NVLS_PULL_BLOCKS", "64"))
 if K6_NVLS_PULL_BLOCKS not in (1, 2, 4, 8, 16, 32, 64):
     raise ValueError("V4_K6_NVLS_PULL_BLOCKS must be 1,2,4,8,16,32,64")
+SINGLE_LAUNCH_P2P_TWO_SHOT = (
+    os.environ.get("V4_SINGLE_LAUNCH_P2P_TWO_SHOT", "0") == "1"
+)
+SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS = int(
+    os.environ.get("V4_SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS", "64")
+)
+if SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS not in (16, 32, 64):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS must be 16,32,64"
+    )
+if SINGLE_LAUNCH_P2P_TWO_SHOT and SINGLE_LAUNCH_SCHEDULE != 0:
+    raise ValueError("V4_SINGLE_LAUNCH_P2P_TWO_SHOT requires schedule 0")
 MC_PULL_BLOCKS = int(os.environ.get("V4_MC_PULL_BLOCKS", "0"))
 MC_PULL_UNROLL = int(os.environ.get("V4_MC_PULL_UNROLL", "0"))
 if MC_PULL_BLOCKS < 0:
@@ -633,6 +645,10 @@ static constexpr bool kSingleLaunchW13N64Tail =
     K_SINGLE_LAUNCH_W13_N64_TAIL;
 static constexpr bool kSingleLaunchClusterW13Act =
     K_SINGLE_LAUNCH_CLUSTER_W13_ACT;
+static constexpr bool kSingleLaunchP2pTwoShot =
+    K_SINGLE_LAUNCH_P2P_TWO_SHOT;
+static constexpr int kSingleLaunchP2pTwoShotBlocks =
+    K_SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS;
 static constexpr int kSingleLaunchNvlsBlocks =
     K_SINGLE_LAUNCH_NVLS_BLOCKS;
 static constexpr int kSingleLaunchGroupCtas =
@@ -3666,6 +3682,15 @@ __device__ __forceinline__ void fused_k6_nvls_pull_tp4_task(
         uint8_t* __restrict__ sem_mc,
         int tokens, int linear_block_idx, int linear_grid_dim);
 
+template <int Threads, int Blocks, int Tokens>
+__device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
+        const __nv_bfloat16* __restrict__ route_input,
+        const float* __restrict__ topk_weights,
+        __nv_bfloat16* __restrict__ symm_input,
+        uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
+        uint8_t* __restrict__ sem_local,
+        int rank, int linear_block_idx);
+
 // Reusable local-rank grid barrier.  The CTA barrier makes every lane's prior
 // writes happen-before lane 0; an acq_rel arrival chain transfers them through
 // the last CTA's release epoch.  Each phase owns a count/epoch pair, so graph
@@ -4987,11 +5012,21 @@ void tp4_megamoe_single_launch_kernel(
     // because kernel completion still waits for every communication CTA.
     if (enable_tp_collective) {
         if constexpr (Tokens == 128) {
-            if (cta < kSingleLaunchNvlsBlocks) {
-                fused_k6_nvls_pull_tp4_task<128>(
-                    down, topk_weights, pull_input, pull_input_mc, output,
-                    pull_sem_local, pull_sem_mc, tokens, cta,
-                    kSingleLaunchNvlsBlocks);
+            if constexpr (kSingleLaunchP2pTwoShot) {
+                if (cta < kSingleLaunchP2pTwoShotBlocks) {
+                    fused_k6_p2p_twoshot_tp4_task<
+                        128, kSingleLaunchP2pTwoShotBlocks, Tokens>(
+                        down, topk_weights, pull_input,
+                        push0, push1, push2, push3,
+                        pull_sem_local, rank, cta);
+                }
+            } else {
+                if (cta < kSingleLaunchNvlsBlocks) {
+                    fused_k6_nvls_pull_tp4_task<128>(
+                        down, topk_weights, pull_input, pull_input_mc, output,
+                        pull_sem_local, pull_sem_mc, tokens, cta,
+                        kSingleLaunchNvlsBlocks);
+                }
             }
         } else {
             if (cta < 78) {
@@ -5034,6 +5069,13 @@ __device__ __forceinline__ uint32_t load_acquire_sys_u32(
     return value;
 }
 
+__device__ __forceinline__ void red_release_sys_add_u32(
+        uint32_t* pointer) {
+    asm volatile(
+        "red.release.sys.global.add.u32 [%0], 1;"
+        : : "l"(pointer) : "memory");
+}
+
 __device__ __forceinline__ void multimem_red_add_relaxed_u32(
         uint32_t* pointer) {
     asm volatile(
@@ -5046,6 +5088,166 @@ __device__ __forceinline__ void multimem_red_add_release_u32(
     asm volatile(
         "multimem.red.release.sys.global.add.u32 [%0], 1;"
         : : "l"(pointer) : "memory");
+}
+
+// Fuse the ordered local k6 reduction with CARv2's graph-mode two-shot pull.
+// Block b produces exactly the vectors that block b later consumes in this
+// rank's reduce-scatter quarter, so its per-block semaphore publication is
+// sufficient: no additional whole-grid barrier is needed between the two.
+template <int Threads, int Blocks, int Tokens>
+__device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
+        const __nv_bfloat16* __restrict__ route_input,
+        const float* __restrict__ topk_weights,
+        __nv_bfloat16* __restrict__ symm_input,
+        uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
+        uint8_t* __restrict__ sem_local,
+        int rank, int linear_block_idx) {
+    constexpr int kWorld = 4;
+    constexpr int kHidden = 4096;
+    constexpr int kPairsPerToken = kHidden / 2;
+    constexpr int kVecBytes = 16;
+    constexpr int kPairsPerVec = kVecBytes / sizeof(__nv_bfloat162);
+    constexpr int kVecsPerToken =
+        kHidden * sizeof(__nv_bfloat16) / kVecBytes;
+    constexpr int kTotalVecs = Tokens * kVecsPerToken;
+    constexpr int kLocalVecs = kTotalVecs / kWorld;
+    constexpr int kGlobalThreads = Blocks * Threads;
+    constexpr int kSemaphoreBytes = 128;
+    static_assert(Tokens == 64 || Tokens == 128);
+    static_assert(kLocalVecs % kGlobalThreads == 0);
+
+    const int global_tid = linear_block_idx * Threads + threadIdx.x;
+    for (int vec = global_tid; vec < kTotalVecs; vec += kGlobalThreads) {
+        const int token = vec / kVecsPerToken;
+        const int vec_in_token = vec - token * kVecsPerToken;
+        const int pair0 = vec_in_token * kPairsPerVec;
+        float2 accum[kPairsPerVec];
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair)
+            accum[pair] = make_float2(0.0f, 0.0f);
+
+        const auto* route_input2 =
+            reinterpret_cast<const __nv_bfloat162*>(route_input);
+        #pragma unroll
+        for (int route = 0; route < kTopK; ++route) {
+            const float route_weight =
+                __ldg(topk_weights + token * kTopK + route) * kRoutedScale;
+            const int64_t route_base =
+                (static_cast<int64_t>(token) * kTopK + route)
+                * kPairsPerToken;
+            #pragma unroll
+            for (int pair = 0; pair < kPairsPerVec; ++pair) {
+                const float2 value = __bfloat1622float2(
+                    route_input2[route_base + pair0 + pair]);
+                accum[pair].x =
+                    fmaf(value.x, route_weight, accum[pair].x);
+                accum[pair].y =
+                    fmaf(value.y, route_weight, accum[pair].y);
+            }
+        }
+
+        uint4 local_value;
+        auto* words = reinterpret_cast<uint32_t*>(&local_value);
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair) {
+            const __nv_bfloat162 value =
+                __floats2bfloat162_rn(accum[pair].x, accum[pair].y);
+            words[pair] = *reinterpret_cast<const uint32_t*>(&value);
+        }
+        reinterpret_cast<uint4*>(symm_input)[vec] = local_value;
+    }
+
+    uint8_t* peer_base[kWorld] = {push0, push1, push2, push3};
+    const int64_t pull_offset =
+        reinterpret_cast<uint8_t*>(symm_input) - peer_base[rank];
+    const int64_t semaphore_offset = sem_local - peer_base[rank];
+    uint8_t* peer_pull[kWorld];
+    #pragma unroll
+    for (int peer = 0; peer < kWorld; ++peer)
+        peer_pull[peer] = peer_base[peer] + pull_offset;
+
+    // Publish this CTA's local k6 stripe to the corresponding CTA on every
+    // rank.  A release system atomic is required because production and the
+    // peer read occur inside the same long-lived MegaMoE kernel.
+    __shared__ uint32_t entry_target;
+    __syncthreads();
+    if (threadIdx.x < kWorld) {
+        const int peer = threadIdx.x;
+        uint8_t* peer_sem = peer_base[peer] + semaphore_offset
+            + linear_block_idx * kSemaphoreBytes;
+        uint32_t reserved = 0;
+        if (peer == rank) {
+            auto* local_counter = reinterpret_cast<uint32_t*>(
+                sem_local + linear_block_idx * kSemaphoreBytes
+                + sizeof(uint32_t));
+            reserved = atomicAdd(local_counter, 2 * kWorld);
+            entry_target = reserved + kWorld;
+        }
+        red_release_sys_add_u32(reinterpret_cast<uint32_t*>(peer_sem));
+        if (peer == rank) {
+            const auto* local_flag = reinterpret_cast<const uint32_t*>(
+                sem_local + linear_block_idx * kSemaphoreBytes);
+            while (load_acquire_sys_u32(local_flag) - reserved < kWorld) {
+            }
+        }
+    }
+    __syncthreads();
+
+    // Reduce this rank's contiguous quarter and all-gather it by writing the
+    // reduced BF16 vector into the identical position on every peer.
+    const int local_bias = rank * kLocalVecs;
+    for (int local_vec = global_tid; local_vec < kLocalVecs;
+         local_vec += kGlobalThreads) {
+        const int vec = local_bias + local_vec;
+        uint4 rank_value[kWorld];
+        #pragma unroll
+        for (int source = 0; source < kWorld; ++source)
+            rank_value[source] = load_relaxed_sys_16b(
+                peer_pull[source] + static_cast<int64_t>(vec) * kVecBytes);
+
+        uint4 result;
+        auto* result_words = reinterpret_cast<uint32_t*>(&result);
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair) {
+            float2 sum = make_float2(0.0f, 0.0f);
+            #pragma unroll
+            for (int source = 0; source < kWorld; ++source) {
+                const uint32_t word = reinterpret_cast<const uint32_t*>(
+                    &rank_value[source])[pair];
+                const __nv_bfloat162 value =
+                    *reinterpret_cast<const __nv_bfloat162*>(&word);
+                const float2 value_f32 = __bfloat1622float2(value);
+                if (source == 0) {
+                    sum = value_f32;
+                } else {
+                    sum.x += value_f32.x;
+                    sum.y += value_f32.y;
+                }
+            }
+            const __nv_bfloat162 value =
+                __floats2bfloat162_rn(sum.x, sum.y);
+            result_words[pair] = *reinterpret_cast<const uint32_t*>(&value);
+        }
+        #pragma unroll
+        for (int peer = 0; peer < kWorld; ++peer)
+            store_relaxed_sys_16b(
+                peer_pull[peer] + static_cast<int64_t>(vec) * kVecBytes,
+                result);
+    }
+
+    __syncthreads();
+    if (threadIdx.x < kWorld) {
+        const int peer = threadIdx.x;
+        uint8_t* peer_sem = peer_base[peer] + semaphore_offset
+            + linear_block_idx * kSemaphoreBytes;
+        red_release_sys_add_u32(reinterpret_cast<uint32_t*>(peer_sem));
+        if (peer == rank) {
+            const auto* local_flag = reinterpret_cast<const uint32_t*>(
+                sem_local + linear_block_idx * kSemaphoreBytes);
+            while (load_acquire_sys_u32(local_flag) - entry_target < kWorld) {
+            }
+        }
+    }
 }
 
 // The per-rank W2 route tensor is allocated in multicast-bound symmetric
@@ -6932,6 +7134,8 @@ _EXTENSION_CONFIG = (
           f"slcl{int(SINGLE_LAUNCH_CLUSTER_W13_ACT)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
+          f"slp2p2{int(SINGLE_LAUNCH_P2P_TWO_SHOT)}_"
+          f"slp2pb{SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
           f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v178mspec")
 _EXTENSION_NAME = (
@@ -7072,6 +7276,14 @@ _ext = load_inline(
         ),
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",
+        (
+            "-DK_SINGLE_LAUNCH_P2P_TWO_SHOT="
+            f"{int(SINGLE_LAUNCH_P2P_TWO_SHOT)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS="
+            f"{SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS}"
+        ),
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         f"-DK_W13_LAUNCH_BOUND_10={int(W13_LAUNCH_BOUND_10)}",
         f"-DK_W13_MAX_SMEM_CARVEOUT={int(W13_MAX_SMEM_CARVEOUT)}",

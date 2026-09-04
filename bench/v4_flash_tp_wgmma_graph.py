@@ -847,12 +847,16 @@ class CapturedCase:
             self.w13_split_k,
         )
         self.fused_k6_push_active = True
-        self.fused_k6_ar_mode = (
-            "single_launch_nvls_pull"
-            if self.m == 128
-            else "single_launch_multicast_push"
-        )
-        self.graph_output = self.fused_graph_output
+        if kernel.SINGLE_LAUNCH_P2P_TWO_SHOT and self.m == 128:
+            self.fused_k6_ar_mode = "single_launch_p2p_two_shot"
+            self.graph_output = self.fused_pull_output
+        else:
+            self.fused_k6_ar_mode = (
+                "single_launch_nvls_pull"
+                if self.m == 128
+                else "single_launch_multicast_push"
+            )
+            self.graph_output = self.fused_graph_output
         return self.graph_output
 
     def run_native_tp4_single_launch(
