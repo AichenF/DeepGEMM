@@ -294,6 +294,9 @@ SINGLE_LAUNCH_PHASE_STAMPS = (
 SINGLE_LAUNCH_PACKED_GRID_BARRIER = (
     os.environ.get("V4_SINGLE_LAUNCH_PACKED_GRID_BARRIER", "1") == "1"
 )
+SINGLE_LAUNCH_BALANCED_WORKERS = (
+    os.environ.get("V4_SINGLE_LAUNCH_BALANCED_WORKERS", "0") == "1"
+)
 SINGLE_LAUNCH_GRID_POLL_SLEEP_NS = int(
     os.environ.get("V4_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS", "64")
 )
@@ -339,6 +342,14 @@ if SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC and (
 ):
     raise ValueError(
         "V4_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC requires isolated schedule 0"
+    )
+if SINGLE_LAUNCH_BALANCED_WORKERS and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_BALANCED_WORKERS requires isolated schedule 0"
     )
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "8")
@@ -549,6 +560,8 @@ static constexpr bool kSingleLaunchRecordPhaseStamps =
     K_SINGLE_LAUNCH_PHASE_STAMPS;
 static constexpr bool kSingleLaunchPackedGridBarrier =
     K_SINGLE_LAUNCH_PACKED_GRID_BARRIER;
+static constexpr bool kSingleLaunchBalancedWorkers =
+    K_SINGLE_LAUNCH_BALANCED_WORKERS;
 static constexpr int kSingleLaunchGridPollSleepNs =
     K_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS;
 static constexpr bool kSingleLaunchSkipFinalCtaSync =
@@ -4285,9 +4298,14 @@ void tp4_megamoe_single_launch_kernel(
             }
 
             if (tail_overlap_mblocks == 0) {
+                const int w13_rounds = (w13_tasks + ctas - 1) / ctas;
+                const int w13_workers =
+                    kSingleLaunchBalancedWorkers && Tokens >= 64
+                    ? (w13_tasks + w13_rounds - 1) / w13_rounds
+                    : ctas;
                 int w13_sequence = 0;
-                for (int task = cta; task < w13_tasks;
-                     task += ctas, ++w13_sequence) {
+                for (int task = cta; cta < w13_workers && task < w13_tasks;
+                     task += w13_workers, ++w13_sequence) {
                     if constexpr (kSingleLaunchNoInlineGemm) {
                         single_launch_w13_gemm_task<SplitK>(
                             &w13_tma_weight, &w13_tma_weight_scale,
@@ -4317,7 +4335,16 @@ void tp4_megamoe_single_launch_kernel(
             single_launch_grid_barrier(barrier_state, 1, ctas);
 
             const int activation_groups = routes * (kIntermediate / 128);
-            for (int group = cta; group < activation_groups; group += ctas) {
+            const int activation_rounds =
+                (activation_groups + ctas - 1) / ctas;
+            const int activation_workers =
+                kSingleLaunchBalancedWorkers && Tokens >= 64
+                ? (activation_groups + activation_rounds - 1)
+                    / activation_rounds
+                : ctas;
+            for (int group = cta;
+                 cta < activation_workers && group < activation_groups;
+                 group += activation_workers) {
                 const int route = group / (kIntermediate / 128);
                 if (tail_overlap_mblocks > 0
                         && (__ldg(route_to_sorted + route) >> 3)
@@ -4336,9 +4363,14 @@ void tp4_megamoe_single_launch_kernel(
         }
 
         const int w2_tasks = num_mblocks * kW2NTiles;
+        const int w2_rounds = (w2_tasks + ctas - 1) / ctas;
+        const int w2_workers =
+            kSingleLaunchBalancedWorkers && Tokens >= 64
+            ? (w2_tasks + w2_rounds - 1) / w2_rounds
+            : ctas;
         int w2_sequence = 0;
-        for (int task = cta; task < w2_tasks;
-             task += ctas, ++w2_sequence) {
+        for (int task = cta; cta < w2_workers && task < w2_tasks;
+             task += w2_workers, ++w2_sequence) {
             if (tail_overlap_mblocks > 0
                     && task / kW2NTiles < tail_overlap_mblocks)
                 continue;
@@ -6250,6 +6282,7 @@ _EXTENSION_CONFIG = (
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
           f"slpb{int(SINGLE_LAUNCH_PACKED_GRID_BARRIER)}_"
+          f"slbw{int(SINGLE_LAUNCH_BALANCED_WORKERS)}_"
           f"slpsn{SINGLE_LAUNCH_GRID_POLL_SLEEP_NS}_"
           f"slfs{int(SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC)}_"
           f"slhg{int(SINGLE_LAUNCH_HIERARCHICAL_GRID)}_"
@@ -6365,6 +6398,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_PACKED_GRID_BARRIER="
             f"{int(SINGLE_LAUNCH_PACKED_GRID_BARRIER)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_BALANCED_WORKERS="
+            f"{int(SINGLE_LAUNCH_BALANCED_WORKERS)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS="

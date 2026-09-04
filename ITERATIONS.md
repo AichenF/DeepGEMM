@@ -7416,3 +7416,32 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Decision:** Select these defaults for the TP4 one-launch implementation.
 - **Artifact:**
   `bench/results/iter259_selected_defaults_tp4_m8_m128_cold_smoke_20260904.log`.
+
+## Iteration 260 — phase-local balanced workers reduce bandwidth too much
+
+- **Hypothesis/change:** Added opt-in
+  `V4_SINGLE_LAUNCH_BALANCED_WORKERS=1` for isolated schedule 0 at M>=64.
+  For each W13/requant/W2 phase it holds the physical resident/barrier grid
+  fixed but chooses the smallest logical worker count that preserves the
+  original ceiling number of task rounds.  This makes almost every logical
+  worker execute the longest round count instead of leaving a sparse final
+  wave; all tasks and per-task arithmetic remain unchanged.
+- **Protocol:** H20 GPU 0, M={64,128}, random routes, selected packed barrier
+  and relaxed polling, profiling stamps temporarily enabled, prequantized FP8
+  input, excluded 256 MiB cold-L2 clear, and complete W2 route-tensor check
+  against the independent multi-kernel reference.
+- **Correctness:** PASS bitwise at both shapes (`cosine=1`, `rel_l2=0`, all
+  finite).
+- **Result:** M64 route/W13/requant/W2 measured
+  `3.360/194.048/4.736/94.336 us`; M128 measured
+  `4.448/229.888/6.496/113.504 us`.  W13 alone is roughly 18-24 us slower
+  than the recent fixed-624-CTA split-K 2 screens (about 170-212 us), far
+  beyond noise and opposite the intended tail gain.
+- **Interpretation:** The last-wave utilization improvement does not preserve
+  cold-weight throughput: removing 54-82 concurrent logical W13 workers
+  reduces memory/TMA concurrency throughout every full wave, and that loss
+  dominates the denser tail.
+- **Decision:** Reject; keep the flag disabled and do not spend distributed
+  timing on this direction.
+- **Artifact:**
+  `bench/results/iter260_balanced_workers_m64_m128_compute_smoke_20260904.log`.
