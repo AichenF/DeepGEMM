@@ -8699,3 +8699,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Tail split-K4: `.so` 7,027,712 bytes (+204,800); `REG:64 STACK:32 SHARED:5120 LOCAL:0`; the same five selected-function `LDL/STL` instructions.
 - Decision: pass the resource gate. The extra 1 KiB static shared memory does not constrain the selected 8-CTA/SM residency; register allocation, stack frame, local-memory allocation, and local-op count are unchanged. Proceed to paired distributed cold-L2 timing.
 - Artifact: `bench/results/iter322_w13_tail_split4_cubin_resource_gate_20260904.log`.
+
+## Iteration 323 — W13 tail split-K4 TP4 cold-L2 screen (2026-09-04)
+
+- Method: adjacent ON then OFF TP4 runs on GPUs 0–3, random routes, M64/M128, CUDA Graph, four outer batches × 20 replays = 80 samples/implementation/shape. A separate 256 MiB clear runs immediately before every graph replay and outside event timing. Both implementations consume the same caller-provided FP8 `qx/x_scale`; input quantization is excluded.
+- Correctness: control and candidate passed TP all-reduce checks at both shapes. Worst-rank candidate cosine was `0.9999956225` (M64) and `0.9999955977` (M128), with relative L2 `0.0029589` and `0.0029673`.
+- Tail split-K4 ON: M64 multi/single medians `0.247328/0.283392 ms` (single `+14.581%`); M128 `0.309008/0.358464 ms` (`+16.005%`). Two-shape geometric candidate/control ratio `1.152909`.
+- Tail split-K4 OFF: M64 `0.247552/0.285792 ms` (`+15.447%`); M128 `0.309472/0.369888 ms` (`+19.522%`). Geometric ratio `1.174671`.
+- Normalized effect: ON/OFF candidate-to-control ratio improved by about `0.75%` at M64, `2.94%` at M128, and `1.85%` geometric mean. Direct candidate medians improved `0.84%` and `3.09%` respectively.
+- Decision: promising but not yet selected. The OFF M128 outer batches were bimodal (`~354 us` then `~374 us`), so repeat in reversed OFF→ON order before attributing the full M128 gain to the kernel.
+- Artifact: `bench/results/iter323_w13_tail_split4_on_off_tp4_cold_screen_20260904.log`.
