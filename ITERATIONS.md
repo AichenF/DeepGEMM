@@ -6385,3 +6385,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Instrumentation note: schedule 2 intentionally does not execute the schedule-0 W13/activation intermediate grid barriers, so timestamp slots 2/3 remain stale. The printed enormous negative/positive W13/W2 deltas are invalid and excluded.
 - Decision: reject schedule 2 across medium/large M as well as its earlier M8 rejection. Coarse cross-mblock overlap does not repay cohort barriers and mixed W13/W2 traffic.
 - Evidence: `results/iter181_tp4_single_launch_group16_m32_m64_m128_gpus0_3_20260904.log`.
+
+## Iteration 182 — eight-CTA wavefront cohorts regress decisively
+
+- Date: 2026-09-04
+- Change under test: parameterize schedule-2 cohort width and halve it from 16 to 8 CTAs. This doubles concurrent expert/mblock cohorts and halves software-barrier arrivals while keeping the 624-CTA resident grid and one business launch.
+- Protocol: idle TP4 GPUs 0–3, random M={32,64,128}, paired CUDA Graphs, bound/requested residency 8, two batches × 20 cold-L2 replays per implementation, four warmups, rank-max.
+- Correctness: all points pass finite/reference/allreduce checks with unchanged numerical bounds.
+- Timing control/candidate/speedup: M32 0.175312/0.236752 ms (0.740488x); M64 0.247184/0.303248 ms (0.815122x); M128 0.303216/0.373328 ms (0.812197x). Every point is slower than the 16-CTA cohort and schedule 0.
+- Instrumentation note: as in Iteration 181, schedule-0-only intermediate timestamp slots are stale; their printed huge deltas are invalid.
+- Decision: reject 8 CTAs and stop shrinking to 4. Extra serial GEMM tasks per CTA dominate the cheaper cohort barrier. Keep the knob for evidence only and return production work to schedule 0.
+- Evidence: `results/iter182_tp4_single_launch_group8_m32_m64_m128_gpus0_3_20260904.log`.

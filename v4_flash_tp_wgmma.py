@@ -252,6 +252,11 @@ SINGLE_LAUNCH_CTAS_PER_SM = int(
 )
 if SINGLE_LAUNCH_CTAS_PER_SM not in (1, 2, 3, 4, 5, 6, 7, 8, 9):
     raise ValueError("V4_SINGLE_LAUNCH_CTAS_PER_SM must be in [1,9]")
+SINGLE_LAUNCH_GROUP_CTAS = int(
+    os.environ.get("V4_SINGLE_LAUNCH_GROUP_CTAS", "16")
+)
+if SINGLE_LAUNCH_GROUP_CTAS not in (4, 8, 16):
+    raise ValueError("V4_SINGLE_LAUNCH_GROUP_CTAS must be 4, 8, or 16")
 K6_NVLS_PULL_BLOCKS = int(os.environ.get("V4_K6_NVLS_PULL_BLOCKS", "64"))
 if K6_NVLS_PULL_BLOCKS not in (1, 2, 4, 8, 16, 32, 64):
     raise ValueError("V4_K6_NVLS_PULL_BLOCKS must be 1,2,4,8,16,32,64")
@@ -438,6 +443,8 @@ static constexpr bool kSingleLaunchNoInlineGemm =
     K_SINGLE_LAUNCH_NOINLINE_GEMM;
 static constexpr int kSingleLaunchNvlsBlocks =
     K_SINGLE_LAUNCH_NVLS_BLOCKS;
+static constexpr int kSingleLaunchGroupCtas =
+    K_SINGLE_LAUNCH_GROUP_CTAS;
 
 #if K_MIN_BLOCKS_PER_SM > 0
 #define ROUTE_LAUNCH_BOUNDS(IS_W13, DUAL) \
@@ -3607,7 +3614,7 @@ void tp4_megamoe_single_launch_kernel(
         // begin k6 reduction and the TP collective.
         single_launch_grid_barrier(barrier_state, 3, ctas);
     } else if constexpr (kSingleLaunchSchedule == 2) {
-        constexpr int kCtasPerGroup = 16;
+        constexpr int kCtasPerGroup = kSingleLaunchGroupCtas;
         constexpr int kW13TasksPerMblock = kW13NTiles * SplitK;
         constexpr int kW13TasksPerCta =
             kW13TasksPerMblock / kCtasPerGroup;
@@ -5605,6 +5612,7 @@ _EXTENSION_CONFIG = (
           f"slsch{SINGLE_LAUNCH_SCHEDULE}_"
           f"slnig{int(SINGLE_LAUNCH_NOINLINE_GEMM)}_"
           f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
+          f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
           f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v178mspec")
@@ -5686,6 +5694,7 @@ _ext = load_inline(
             f"{int(SINGLE_LAUNCH_NOINLINE_GEMM)}"
         ),
         f"-DK_SINGLE_LAUNCH_MIN_BLOCKS={SINGLE_LAUNCH_MIN_BLOCKS}",
+        f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         f"-DK_W13_LAUNCH_BOUND_10={int(W13_LAUNCH_BOUND_10)}",
