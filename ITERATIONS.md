@@ -6664,3 +6664,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Test:** Ran Python bytecode compilation for the modified graph helper and its single-vs-multi, paired, and Humming import closure.
 - **Result:** PASS for syntax/import parsing. No GPU kernel or performance benchmark was run in this iteration.
 - **Conclusion:** The pointer path is ready for distributed runtime validation. Correctness must verify both the M<128 multicast-push tail and M128 NVLS-pull semaphore protocol before any performance result is accepted.
+
+## Iteration 222 — Distributed cold-L2 verdict for the O(1) native task lookup
+
+- **Change:** No further kernel change after Iteration 218. With the current CARv2 pointer compatibility in place, ran the previously blocked distributed verdict for the replay-local task table.
+- **Test:** TP4 H20 GPUs 0-3, random routes, M=`8,16,32,64,128`, paired same-process CUDA Graphs, two outer batches x twenty separately cold-L2 replays per implementation and four cold warmups; rank-max timing. Caller-provided FP8 X/scales enter both graphs.
+- **Correctness:** PASS under the split native criterion for every M. Final cosine is `0.9993588..0.9993672`; embedded multicast/NVLS communication versus NCCL has cosine at least `0.99999155` and rel-L2 at most `0.00411048`.
+- **Latency (control/native median ms):** M8 `0.071616/0.178144`; M16 `0.114608/0.255856`; M32 `0.176832/0.372384`; M64 `0.249392/0.503744`; M128 `0.304992/0.611264`. Geometric means are `0.161656/0.349655 ms`, so native is `2.163x` slower than control.
+- **Conclusion:** Reject the lookup. Relative to Iteration 216, serial construction adds a large fixed cost and more than offsets the removed warp-parallel owner scans; it regresses every M and widens the gap. Restore the Iteration-217 native source. More importantly, the already-valid TP-specialized one-launch path measured only 15.25% behind control in Iteration 177, so subsequent performance work should resume from that much stronger candidate rather than the generic native body.
+- **Artifact:** `bench/results/iter222_native_task_lookup_tp4_allm_cold_screen_20260904.log`.
