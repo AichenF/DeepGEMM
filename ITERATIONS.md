@@ -9067,3 +9067,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Smoke timing only:** candidate median `0.352384 ms` versus noisy control `0.322816 ms` from two cold samples.  This sample is not a selection decision; a bracketed same-process cold-L2 A/B against the non-overlapped single-kernel variant is required to measure whether overlap repays the 16-CTA producer reservation and chunk-major cost.
 - **Decision:** advance to an order-balanced M64/M128 cold-L2 A/B.  Keep all chunk-overlap flags default-off until a repeatable gain is shown.
 - **Artifact:** `bench/results/iter360_w2_chunk_dedicated_m128_smoke_20260905.log`.
+
+## Iteration 361 — dedicated chunk overlap bracketed cold-L2 rejection (2026-09-05)
+
+- **Purpose:** Measure the complete cost/benefit of the now-correct dedicated 16-CTA chunk communication design against the selected non-overlapped single kernel.
+- **Method:** TP4 GPUs 0–3, M={64,128}, random routes, seed 20260904, process order OFF_A → ON_A → ON_B → OFF_B.  Every process used two outer batches × 20 replay-interleaved CUDA Graph samples per implementation, four warmups, and a distinct excluded 256 MiB L2 clear immediately before every timed replay.  Both arms used release-arrival and assume-valid-task opt-ins.  OFF retained flat W2 plus terminal P2P two-shot; ON included chunk-major order, 608 W2 producers, 16 dedicated communication CTAs, and four overlapped N1024 helpers.  Public X was prequantized FP8-E4M3 with FP32 group-128 scales; external X quantization was absent from the graph.
+- **Correctness:** Every OFF/ON run passed on all ranks with finite/equal outputs.  M64 candidate cosine was at least `0.9999956319`, relative L2 `0.0029557145`; M128 cosine `0.9999956090`, relative L2 `0.0029634544`.
+- **Candidate/control ratios OFF_A / ON_A / ON_B / OFF_B:** M64 `1.140954 / 1.174837 / 1.174802 / 1.144150`; M128 `1.140566 / 1.170122 / 1.169549 / 1.140224`.
+- **Bracket-normalized result:** dedicated overlap is approximately **2.82% slower at M64** and **2.58% slower at M128**.  Direct single-kernel medians agree: OFF/ON average `276.936/284.936 us` at M64 and `342.456/351.456 us` at M128, regressions of about `2.89%` and `2.63%`.
+- **Conclusion:** The dedicated design fixes the race but cannot repay the chunk-major scheduling tax plus removal of 16 W2 producers.  The terminal communication tail is too small relative to the disrupted cold W2 stream.  **Reject for performance and keep default-off.**  Close the separate-route-buffer chunk-overlap line; the next structural attempt should eliminate the route reread through producer-side combine/staging, not reserve more compute CTAs.
+- **Artifact:** `bench/results/iter361_w2_chunk_dedicated_off_on_m64_m128_cold_20260905.log`.
