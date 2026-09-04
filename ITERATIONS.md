@@ -6067,3 +6067,36 @@ maximum rank latency of a full CUDA-Graph replay.
   and full-grid wait overhead, then pursue direct W13 epilogue fusion without
   cross-stage weight contention.
 - **Evidence:** `results/iter164_tp4_group16_wavefront_m8_screen_20260904.log`.
+
+## Iteration 165 — static W13 completion / readiness wave
+
+- **Change under test:** add schedule 3.  All resident CTAs retain the selected
+  static round-robin W13 mapping.  Each completed W13 tile contributes one
+  acq_rel per-mblock count; the last tile's CTA immediately performs that
+  mblock's SwiGLU/group-128 FP8 requantization and release-publishes it.  A CTA
+  that exhausts its W13 stripe starts its static W2 stripe, waiting only for
+  the corresponding mblock readiness.  This removes both intermediate
+  full-grid barriers without a global task queue.
+- **Protocol:** TP4 physical GPUs 4-7, random M8 routes, schedule 3, five
+  requested CTAs/SM, same-process paired CUDA Graphs, two outer batches x ten
+  replays, four cold warmups, rank-max timing.  A separate excluded 256 MiB
+  Triton clear immediately precedes every replay.
+- **Correctness:** PASS on all ranks for both paths.  Candidate minimum cosine
+  is `0.9999956066`, maximum relative L2 `0.0029643002`, every output is
+  finite, and route padding agrees at 344 rows / 43 active experts.
+- **Cold-L2 timing:** control median `0.071392 ms` (min/max
+  `0.070624/0.169408`; one control outlier); candidate median `0.119744 ms`
+  (min/max `0.116160/0.138720`).  Control/candidate is `0.59621x`; candidate
+  is 67.73% slower than control, 13.7% slower than schedule 2, and 24.8%
+  slower than iteration 160's barrier-separated candidate.
+- **Analysis:** queue-free static scheduling is numerically sound, but placing
+  the whole dependent activation epilogue on the last W13 CTA creates a long
+  per-expert straggler.  Early W2 CTAs then wait behind that straggler while
+  competing with unfinished W13 CTAs.  Removing global barriers does not help
+  if it destroys balanced phase-wide activation parallelism.
+- **Decision:** reject schedule 3.  Schedule 0 remains the measured winner.
+  The next optimization must keep activation work balanced: first improve the
+  schedule-0 barrier/tail mechanics and dynamic actual-task bounds, then only
+  revisit fusion through a CTA-internal W13 epilogue that needs no cross-CTA
+  last-arriver work.
+- **Evidence:** `results/iter165_tp4_static_readiness_m8_screen_20260904.log`.

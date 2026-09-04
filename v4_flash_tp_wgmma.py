@@ -229,15 +229,15 @@ _single_launch_schedule_default = (
     if _legacy_single_launch_interleaved == "1"
     else "0"
     if _legacy_single_launch_interleaved == "0"
-    else "2"
+    else "3"
 )
 SINGLE_LAUNCH_SCHEDULE = int(
     os.environ.get(
         "V4_SINGLE_LAUNCH_SCHEDULE", _single_launch_schedule_default
     )
 )
-if SINGLE_LAUNCH_SCHEDULE not in (0, 1, 2):
-    raise ValueError("V4_SINGLE_LAUNCH_SCHEDULE must be 0, 1, or 2")
+if SINGLE_LAUNCH_SCHEDULE not in (0, 1, 2, 3):
+    raise ValueError("V4_SINGLE_LAUNCH_SCHEDULE must be 0, 1, 2, or 3")
 SINGLE_LAUNCH_INTERLEAVED = SINGLE_LAUNCH_SCHEDULE != 0
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "5")
@@ -423,7 +423,7 @@ static constexpr bool kW2MblockScale = K_W2_MBLOCK_SCALE || kW2SortedAct;
 static constexpr bool kW2CoalescedStore = K_W2_COALESCED_STORE;
 static constexpr bool kW2FoldGlobalScale = K_W2_FOLD_GLOBAL_SCALE;
 static constexpr int kSingleLaunchSchedule = K_SINGLE_LAUNCH_SCHEDULE;
-static_assert(kSingleLaunchSchedule >= 0 && kSingleLaunchSchedule <= 2);
+static_assert(kSingleLaunchSchedule >= 0 && kSingleLaunchSchedule <= 3);
 static constexpr bool kSingleLaunchInterleaved =
     kSingleLaunchSchedule != 0;
 
@@ -3254,8 +3254,9 @@ __device__ __forceinline__ void single_launch_group_barrier(
 }
 
 // One-launch TP4 path.  Schedule 0 preserves the validated global-phase
-// bring-up, schedule 1 is the fine-grained diagnostic DAG, and schedule 2 is
-// the selected fixed-cohort wavefront.  Every schedule owns route preparation,
+// bring-up, schedule 1 is the fine-grained diagnostic DAG, schedule 2 is the
+// fixed-cohort experiment, and schedule 3 is a static readiness wave.  Every
+// schedule owns route preparation,
 // both MXFP4 GEMMs, internal SwiGLU/FP8 requantization, fixed-k6 reduction and
 // TP all-reduce.  Input X is already FP8 at this API boundary.
 template <int SplitK>
@@ -3593,6 +3594,86 @@ __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
                     routes, 0, task);
                 __syncthreads();
             }
+        }
+
+        single_launch_grid_barrier(barrier_state, 3, ctas);
+    } else if constexpr (kSingleLaunchSchedule == 3) {
+        constexpr int kW13TasksPerMblock = kW13NTiles * SplitK;
+        constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
+        const int num_mblocks = __ldg(num_tokens_padded) / kTok;
+        const int w13_tasks = num_mblocks * kW13TasksPerMblock;
+        const int w2_tasks = num_mblocks * kW2NTiles;
+        int32_t* w13_done = scheduler + kSchedulerHeaderWords;
+        int32_t* activation_ready = w13_done + max_mblocks;
+        __shared__ int completed_mblock;
+
+        // Preserve the selected static round-robin W13 mapping.  The last
+        // tile of each mblock performs its small dependent epilogue directly,
+        // so no activation queue or whole-grid phase is required.
+        for (int task = cta; task < w13_tasks; task += ctas) {
+            route_gemm_task<4096, 1024, SplitK, true>(
+                &w13_tma_weight, &w13_tma_weight_scale,
+                w13, s13, g13, qx, x_scale,
+                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                partials, lut, nullptr, routes, 0, task);
+            __syncthreads();
+
+            const int mblock = task / kW13TasksPerMblock;
+            if (threadIdx.x == 0) {
+                const int done =
+                    atomic_add_acq_rel_gpu_i32(w13_done + mblock, 1) + 1;
+                completed_mblock =
+                    done == kW13TasksPerMblock ? mblock : -1;
+            }
+            __syncthreads();
+
+            if (completed_mblock >= 0) {
+                #pragma unroll
+                for (int route_slot = 0; route_slot < kTok; ++route_slot) {
+                    const int route = __ldg(
+                        sorted_ids + completed_mblock * kTok + route_slot);
+                    if (route < routes) {
+                        #pragma unroll
+                        for (int group_in_route = 0;
+                             group_in_route < kActivationGroupsPerRoute;
+                             ++group_in_route) {
+                            reduce_swiglu_quant_task<kIntermediate, SplitK>(
+                                partials, activation, qactivation,
+                                activation_scale, route_to_sorted, topk_ids,
+                                g2, routes,
+                                route * kActivationGroupsPerRoute
+                                    + group_in_route);
+                            __syncthreads();
+                        }
+                    }
+                }
+                __syncthreads();
+                if (threadIdx.x == 0)
+                    store_release_gpu_i32(
+                        activation_ready + completed_mblock, 1);
+            }
+            __syncthreads();
+        }
+
+        // Once a CTA has exhausted its own W13 tiles it immediately consumes
+        // the same static W2 stripe.  An acquire wait is normally already
+        // satisfied for early mblocks and never prevents another CTA from
+        // finishing its independently assigned W13 work.
+        for (int task = cta; task < w2_tasks; task += ctas) {
+            const int mblock = task / kW2NTiles;
+            if (threadIdx.x == 0) {
+                while (load_acquire_gpu_i32(
+                           activation_ready + mblock) == 0)
+                    __nanosleep(64);
+            }
+            __syncthreads();
+            route_gemm_task<512, 4096, 1, false>(
+                &w2_tma_weight, &w2_tma_weight_scale,
+                w2, s2, g2, qactivation, activation_scale,
+                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                reinterpret_cast<float*>(down), lut, nullptr,
+                routes, 0, task);
+            __syncthreads();
         }
 
         single_launch_grid_barrier(barrier_state, 3, ctas);
@@ -5366,9 +5447,9 @@ _EXTENSION_CONFIG = (
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
           f"slsch{SINGLE_LAUNCH_SCHEDULE}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v164g16")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v165sr")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v164g16"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v165sr"
 )
 
 _ext = load_inline(
