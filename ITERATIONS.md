@@ -8361,3 +8361,32 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Artifacts:**
   `bench/results/iter302_native_register_dequant_m128_profile_only_ncu_20260904.log`
   and `results/iter302_native_register_dequant_m128_profile_only.ncu-rep`.
+
+## Iteration 303 — clean native RS profile confirms one-CTA latency limit
+
+- **Evidence source:** Read-only import of the clean Iteration-302 NCU report;
+  no new GPU launch.  The report used profiler cache control `all`, so these are
+  cold-cache target-kernel counters.  External activation quantization and
+  model-load weight conversion are excluded.
+- **Result:** M128 local native duration `543.74 us`; compute throughput
+  `45.54%`, DRAM throughput `39.59%`, aggregate memory throughput `1.90 TB/s`,
+  and L2 hit rate `57.45%`.  The kernel executes `122,800,200` instructions
+  with zero local-memory spill requests.
+- **Latency/occupancy evidence:** Grid/block are `78 x 384`, register allocation
+  is `168 registers/thread`, dynamic shared memory is `102.40 KB/CTA`, and
+  achieved occupancy is only `18.78%` (`12.02` active warps/SM).  Both register
+  and shared-memory occupancy analyses limit the launch to one CTA/SM.
+  Schedulers have only `0.54` eligible warps each and report `55.94%` cycles
+  with no eligible warp; issue rate is `0.44` warp/cycle.
+- **Comparison:** Versus the original shared-decoder native profile
+  (`558.27 us`, `61.34%` no-eligible), direct register dequant improves the NCU
+  duration by only `2.60%` and reduces no-eligible time by `5.40` percentage
+  points, while instruction count rises slightly from about `120.35M` to
+  `122.80M`.  This agrees directionally with the Iteration-300 cold graph
+  speedup but confirms that removing decoded-B shared storage alone cannot
+  close the roughly `68%` end-to-end gap.
+- **Decision:** Keep register dequant as a correct experimental building block,
+  but reject the current 384-thread one-CTA/SM native topology as a winner.
+  Any further native experiment must target at least two resident CTAs/SM by
+  reducing both the 208-register consumer allocation and shared combine/GEMM
+  footprint; otherwise return to the selected 128-thread high-occupancy path.
