@@ -9038,3 +9038,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Inference: stale consumer L1 is not the root cause. Combined with the failed producer-fence probe, simple cache-policy publication fixes are disproven.
 - Decision: reject L2-only loads as a fix. The overlap design's separate pass over `down` is both slower and correctness-fragile; redirect optimization toward producer-side route combination or a staging scheme with ownership that avoids concurrent global rereads.
 - Artifact: `bench/results/iter357_w2_chunk_stage1_l2_only_load_smoke_20260904.log`.
+
+## Iteration 358 — compute-sanitizer memcheck attempt (2026-09-04)
+
+- Purpose: look for a hidden out-of-bounds access in the stage-1 mid-loop local-production path.
+- Setup: TP4 GPUs 0–3, M64 random routes, `compute-sanitizer --tool memcheck --target-processes all`, helper stage 1. This was a diagnostic run, not a performance benchmark.
+- Result: **inconclusive; target kernel was not reached.** Compute Sanitizer repeatedly reported `CUDA_ERROR_INVALID_VALUE` from `cuGetProcAddress_v2` while Python/CUDA dependencies were importing, producing host backtraces before graph construction.
+- Decision: do not interpret this as a clean memcheck or as kernel evidence. Preserve the failed-tool artifact, and continue with controlled in-kernel stage isolation instead of retrying the same incompatible wrapper path.
+- Artifact: `bench/results/iter358_w2_chunk_stage1_memcheck_m64_20260904.log`.
