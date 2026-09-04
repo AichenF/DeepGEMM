@@ -7323,3 +7323,28 @@ maximum rank latency of a full CUDA-Graph replay.
   changing defaults.
 - **Artifact:**
   `bench/results/iter255_packed_grid_barrier_tp4_allm_cold_paired_20260904.log`.
+
+## Iteration 256 — independent repeat confirms the >1.10x result
+
+- **Protocol:** Exact independent repeat of Iteration 255: TP4 GPUs 0-3,
+  random M={8,16,32,64,128}, shared prequantized inputs, CUDA Graph, six
+  balanced AB/BA batches x 30 cold-L2 replays per implementation, six
+  warmups, packed generation barrier, no phase stamps, rank-max timing.
+- **Correctness/liveness:** PASS at all shapes for both implementations with
+  the same strict all-rank finite/all-reduce and reference checks.
+- **Cold-L2 median Humming/custom and ratio:** M8
+  `0.088368/0.076256 ms, 1.15883x`; M16
+  `0.144224/0.126320 ms, 1.14174x`; M32
+  `0.222944/0.202944 ms, 1.09855x`; M64
+  `0.312896/0.285456 ms, 1.09613x`; M128
+  `0.382176/0.362160 ms, 1.05527x`.
+- **Aggregate:** Humming/custom geometric means are
+  `0.202413/0.182437 ms`, ratio `1.10950x`.  The two independent all-shape
+  runs therefore produce `1.11041x` and `1.10950x`; both clear 1.10x, while
+  custom geometric means differ by only `0.539 us` (0.30%).
+- **Decision:** Performance confirmation passes.  Before selecting defaults,
+  stress repeated graph generations and explicitly exercise 22-bit
+  generation wraparound so the packed protocol is not accepted on short-run
+  timing alone.
+- **Artifact:**
+  `bench/results/iter256_packed_grid_barrier_tp4_allm_cold_paired_repeat_20260904.log`.
