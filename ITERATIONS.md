@@ -6535,3 +6535,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result (rank 0):** Diagonal cosine mean `-0.00108`; best control-route cosine per native row averages only `0.10145` and peaks at `0.17593`; only 1/48 argmax routes is diagonal. The best-route indices are irregular rather than a fixed expert permutation.
 - **Conclusion:** Native is not merely selecting another active expert's weight. The corruption is inside decoded-B/WGMMA column/K interpretation or FC1 epilogue pairing. Expert index and task mapping are deprioritized.
 - **Artifact:** `bench/results/iter204_native_l2_cross_route_tp4_m8_20260904.log`.
+
+## Iteration 205 — Isolated CUDA Mode2 decoder probe
+
+- **Change:** Added a one-CTA diagnostic that runs the exact native `dequant_smem_b_from_packed_mode2_nibble` helper on one fused W13 N256/K128 tile, unswizzles the shared-memory rows, and compares the resulting FP8 bytes with direct dequantization of the original interleaved MXFP4+E8M0 tile. No WGMMA, activation, scheduler, or communication is involved.
+- **Test:** H20 GPU 0, expert 0, W13 output rows 0..255, K 0..127, random MXFP4 bytes and E8M0 exponents 125..128.
+- **Result:** The isolated comparison fails strongly: cosine `0.01151794`, rel-L2 `1.40604556`, max abs `24.0`, and 30,739/32,768 FP8 bytes differ.
+- **Conclusion:** The end-to-end FC1 failure can be reproduced before WGMMA. Either the current offline braid/fused-row construction does not match the selected Mode2 decoder, or the probe's assumed logical unswizzle/reference nibble order is wrong. Next test all plausible row-swizzle and raw-nibble permutations against the actual decoder output before changing production encoding.
+- **Artifact:** `bench/results/iter205_native_mode2_decode_probe_20260904.log`.
