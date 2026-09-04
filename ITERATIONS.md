@@ -8833,3 +8833,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: INVALID / analysis did not run. The shell expanded `/tmp/iter337_$tag_m128.sass` as the unset variable `tag_m128` under `set -u`; it exited after the control import/compile and before either SASS/resource report was emitted. No correctness or performance conclusion is drawn.
 - Follow-up: use explicit brace-delimited shell variable names in the temporary paths and rerun the two-cubin gate.
 - Artifact: `bench/results/iter337_assume_valid_gemm_tasks_cubin_sass_gate_20260904.log`.
+
+## Iteration 338 — assume-valid GEMM task cubin/SASS/resource gate
+
+- Setup: compiled schedule-0 control and `V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS=1` with packed barriers and release arrivals enabled; extracted only `tp4_megamoe_single_launch_kernel<2,128>` from each cubin. No latency was measured.
+- Resource gate: both control and optimized main kernels remain `REG=64`, `STACK=32`, `SHARED=4096`, `LOCAL=0`, `CONSTANT[0]=1425`; both extension `.so` files are 6,827,008 bytes. There is no occupancy or spill regression.
+- SASS gate: M128 main-kernel SASS shrank from 1,148,171 to 1,144,043 bytes. Exact `num_tokens_padded` parameter `LDC.64 c[0x0][0x4e0]` occurrences fell from 4 to 2: the W13 task-local load at control PC 0x2750 and W2 task-local load at 0x9180 disappeared, while route setup and the one phase-level `num_mblocks` load remain. The expert-id loads remain, as required, but the immediately following negative-expert predicate/exit branches visible in control are absent in the specialized W13/W2 bodies. Route/padding logic outside those two task-entry guards remains compiled.
+- Result: PASS for compile/resource/SASS. This confirms ptxas materialized the intended task-entry instruction deletion without increasing resources. Correctness and cold-L2 performance remain unproven.
+- Artifact: `bench/results/iter338_assume_valid_gemm_tasks_cubin_sass_gate_20260904.log`.
