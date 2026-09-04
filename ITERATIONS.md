@@ -8280,3 +8280,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: register decoding is bitwise exact (`decode_mismatch_bytes=0`).  All eight simple operand permutations fail the GEMM reference; the best is variant 1 at cosine `0.287452`, rel-L2 `1.20788`, while the production-order variant 0 is cosine `-0.0238168`, rel-L2 `1.45707`.
 - Interpretation: packed row access, Mode2 sign braid, exponent selection and FP8 reconstruction are all cleared.  The fault lies in the RS matrix-fragment lane mapping and/or the activation shared-memory descriptor/layout; it cannot be repaired by merely swapping the four scalar register operands.
 - Decision: retain the diagnostic.  Next make the isolated probe reproduce the already-correct fast kernel's exact shared A staging and weight shared swizzle first; once that control passes, vary only the native fused-row source addressing.
+
+## Iteration 297: canonical-Marlin adapter makes isolated RS-WGMMA correct
+
+- Hypothesis/change: the proven RS register mapping consumes the inherited core's K32 physical code order, not canonical Marlin K8 bytes.  In the isolated probe only, apply the existing model-load `Marlin K8 -> legacy K32` repack before Mode2 braid and fused-row packing; keep the mathematical reference on the original canonical tensor.
+- Test: same deterministic H20 GPU-0 one-tile probe as Iteration 296.  Artifact: `bench/results/iter297_native_rs_tile_legacy_adapter_probe_20260904.log`.
+- Result: production RS operand variant 0 becomes correct with cosine `0.99999999915`, relative L2 `4.1823e-05`, and max absolute error `0.00170898` versus Torch.  Every alternative permutation remains wrong (next-best cosine `0.4887`).  The diagnostic natural-byte decoder intentionally reports mismatches (`15,327`) because legacy K32 packing is an RS physical representation, not canonical row-major FP8 order.
+- Conclusion: root cause confirmed.  Activation staging/descriptor, lane-row mapping, WGMMA operand order, and arithmetic are correct.  The native path needs a register-dequant-specific model-load adapter; no runtime conversion belongs in the kernel and no external X quantization is involved.
+- Decision: add the adapter behind `V4_NATIVE_REGISTER_DEQUANT=1`, then rerun the full M8 native intermediate/final correctness gate before measuring latency.

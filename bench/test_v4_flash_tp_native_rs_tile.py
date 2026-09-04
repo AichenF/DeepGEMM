@@ -114,6 +114,19 @@ def dequant_marlin(packed: torch.Tensor, exponent: torch.Tensor) -> torch.Tensor
     ).repeat_interleave(32, dim=1)
 
 
+def marlin_to_legacy_mxfp4(weight: torch.Tensor) -> torch.Tensor:
+    """Repack canonical Marlin K8 codes for the proven RS operand mapping."""
+    *leading, half_k = weight.shape
+    chunks = weight.view(*leading, half_k // 4, 4)
+    logical = torch.cat((chunks >> 4, chunks & 0x0F), dim=-1).reshape(
+        *leading, half_k * 2
+    )
+    groups = logical.view(*leading, half_k // 16, 32)
+    return (
+        groups[..., :16] | (groups[..., 16:] << 4)
+    ).reshape_as(weight).contiguous()
+
+
 CUDA = r"""
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
@@ -335,7 +348,8 @@ def main() -> None:
     interleaved_scale = interleave_l1(raw_scale)
     native_weight = braid_mode2_signs(
         fuse_packed_and_scale(
-            interleaved_weight, scale_to_tile_major(interleaved_scale)
+            marlin_to_legacy_mxfp4(interleaved_weight),
+            scale_to_tile_major(interleaved_scale),
         )
     )
     packed_tile = native_weight[0, :128, :80].contiguous()
