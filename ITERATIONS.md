@@ -7888,3 +7888,31 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/iter276_embedded_p2p_twoshot_b16_m128_cold_screen_20260904.log`
   and
   `bench/results/iter276_embedded_p2p_twoshot_b32_m128_cold_screen_20260904.log`.
+
+## Iteration 277 — long M128 pairing confirms the embedded two-shot gain
+
+- **Protocol:** TP4 GPUs 0-3, M128 random routes, six balanced AB/BA batches
+  x 30 independently cold-L2 CUDA-Graph replays per implementation (180
+  samples), six warmups, rank-max timing, and a separate excluded 256 MiB
+  clear immediately before every replay.  Candidate uses the 64-CTA embedded
+  ordinary-P2P two-shot tail; both paths share FP8 X/scales, weights and
+  routes.
+- **Correctness:** PASS exactly at the final tensor; both implementations
+  report cosine `0.9999955977`, rel-L2 `0.0029672640`, finite output and a
+  passing all-reduce oracle.
+- **Cold-L2 result:** Multi/candidate min/median/max are
+  `0.301376/0.317200/0.333312 ms` and
+  `0.348864/0.369856/0.390624 ms`.  Candidate is `16.60%` slower.  Candidate
+  batch medians show the same platform mode shift as the control
+  (`0.3515-0.3516` then `0.3704-0.3716 ms`), so the paired ratio is the useful
+  quantity.
+- **Comparison:** Iteration 262's selected NVLS-one-shot candidate was
+  `0.386656 ms` against a `0.320688 ms` control (`20.57%` overhead).  The new
+  long window retains a roughly four percentage-point relative improvement
+  and about 16.8 us lower absolute candidate latency despite shared drift.
+- **Decision:** The two-shot tail is a real retained optimization, but does
+  not close the one-entry compute deficit.  Extend it to M64, then run an
+  all-M comparison with the best per-M communication selection before making
+  it default.
+- **Artifact:**
+  `bench/results/iter277_embedded_p2p_twoshot_b64_m128_cold_paired_20260904.log`.
