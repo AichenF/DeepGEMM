@@ -230,6 +230,9 @@ def main() -> None:
                     "single_launch_w2_chunk_ar_overlap": (
                         kernel.SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
                     ),
+                    "single_launch_w2_chunk_ar_dedicated": (
+                        kernel.SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED
+                    ),
                     "single_launch_w2_chunk_ar_wait_only": (
                         kernel.SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY
                     ),

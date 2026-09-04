@@ -772,6 +772,9 @@ if SINGLE_LAUNCH_P2P_TWO_SHOT and SINGLE_LAUNCH_SCHEDULE != 0:
 SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP", "0") == "1"
 )
+SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED", "0") == "1"
+)
 if SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP and (
     not SINGLE_LAUNCH_W2_CHUNK_MAJOR
     or not SINGLE_LAUNCH_P2P_TWO_SHOT
@@ -795,6 +798,17 @@ if (
 ):
     raise ValueError(
         "V4_SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY requires "
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP=1"
+    )
+if (
+    SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED
+    and (
+        not SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+        or SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY
+    )
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED requires full "
         "V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP=1"
     )
 SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE = int(
@@ -1076,6 +1090,8 @@ static constexpr bool kSingleLaunchW2ChunkMajor =
     K_SINGLE_LAUNCH_W2_CHUNK_MAJOR;
 static constexpr bool kSingleLaunchW2ChunkArOverlap =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP;
+static constexpr bool kSingleLaunchW2ChunkArDedicated =
+    K_SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED;
 static constexpr bool kSingleLaunchW2ChunkArWaitOnly =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY;
 static constexpr int kSingleLaunchW2ChunkArHelperStage =
@@ -5358,13 +5374,18 @@ void tp4_megamoe_single_launch_kernel(
     } else {
         const int num_mblocks = __ldg(num_tokens_padded) / kTok;
         const int w2_chunk_tasks = num_mblocks * 8;
+        constexpr int kDedicatedChunkCommBlocks = 16;
+        const int chunk_w2_workers = ctas -
+            (kSingleLaunchW2ChunkArDedicated
+                ? kDedicatedChunkCommBlocks : 0);
         if constexpr (kSingleLaunchW2ChunkArOverlap && Tokens >= 64) {
             // Every CTA must own at least one logical task in every chunk so
             // the readiness counter has the same expected arrival count.
             // Highly skewed routes can fall below this bound; keep their
             // correctness by uniformly reverting to the old barrier + AR.
             chunk_ar_overlap_active =
-                enable_tp_collective && w2_chunk_tasks >= ctas;
+                enable_tp_collective
+                && w2_chunk_tasks >= chunk_w2_workers;
         }
         constexpr int kW13TasksPerMblock =
             kW13NTiles * SplitK / kPhaseMathWgs;
@@ -6035,7 +6056,10 @@ void tp4_megamoe_single_launch_kernel(
                 num_mblocks * kW2NTiles / kPhaseMathWgs;
             const int w2_rounds = (w2_tasks + ctas - 1) / ctas;
             const int w2_workers =
-                kSingleLaunchBalancedWorkers && Tokens >= 64
+                kSingleLaunchW2ChunkArDedicated
+                    && Tokens >= 64 && chunk_ar_overlap_active
+                ? chunk_w2_workers
+                : kSingleLaunchBalancedWorkers && Tokens >= 64
                 ? (w2_tasks + w2_rounds - 1) / w2_rounds
                 : ctas;
             int w2_sequence = 0;
@@ -6115,12 +6139,6 @@ void tp4_megamoe_single_launch_kernel(
                                 >= (chunk + 1) * w2_chunk_tasks) {
                         constexpr int kChunkCommBlocks = 16;
                         constexpr int kTotalCommBlocks = 64;
-                        const int comm_block =
-                            cta - (ctas - kTotalCommBlocks);
-                        // Interleave chunk ownership across the tail wave so
-                        // every group spans the suffix resident SMs.
-                        const bool is_chunk_comm = comm_block >= 0
-                            && (comm_block & 3) == chunk;
                         if constexpr (
                                 kSingleLaunchW2ChunkArStrongProducerFence) {
                             // Every lane that emitted W2 global stores makes
@@ -6129,22 +6147,66 @@ void tp4_megamoe_single_launch_kernel(
                             __threadfence();
                             __syncthreads();
                         }
+                        if constexpr (kSingleLaunchW2ChunkArDedicated) {
+                            // Dedicated communication CTAs arrive separately
+                            // below.  Producers only publish their completed
+                            // chunk and never execute the helper body.
+                            single_launch_chunk_arrive_and_wait(
+                                barrier_state
+                                    + kSingleLaunchChunkReadyOffset + chunk,
+                                ctas, false);
+                        } else {
+                            const int comm_block =
+                                cta - (ctas - kTotalCommBlocks);
+                            // Interleave chunk ownership across the tail wave
+                            // so every group spans the suffix resident SMs.
+                            const bool is_chunk_comm = comm_block >= 0
+                                && (comm_block & 3) == chunk;
+                            single_launch_chunk_arrive_and_wait(
+                                barrier_state
+                                    + kSingleLaunchChunkReadyOffset + chunk,
+                                ctas, is_chunk_comm);
+                            if (is_chunk_comm) {
+                                if constexpr (
+                                        !kSingleLaunchW2ChunkArWaitOnly) {
+                                    fused_k6_p2p_twoshot_tp4_chunk_task<
+                                        kSingleLaunchThreads,
+                                        kChunkCommBlocks, Tokens,
+                                        kSingleLaunchW2ChunkArHelperStage>(
+                                        down, topk_weights, pull_input,
+                                        push0, push1, push2, push3,
+                                        pull_sem_local, rank, chunk,
+                                        comm_block >> 2, comm_block);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if constexpr (kSingleLaunchW2ChunkArDedicated
+                          && Tokens >= 64) {
+                if (chunk_ar_overlap_active
+                        && cta >= ctas - kDedicatedChunkCommBlocks) {
+                    const int comm_block =
+                        cta - (ctas - kDedicatedChunkCommBlocks);
+                    #pragma unroll
+                    for (int chunk = 0; chunk < 4; ++chunk) {
+                        // The 16 waiting CTAs also arrive on the packed word.
+                        // Therefore the final publication cannot occur until
+                        // all 608 W2 producers and all waiters have joined,
+                        // even if a waiter reaches a later chunk late.
                         single_launch_chunk_arrive_and_wait(
                             barrier_state + kSingleLaunchChunkReadyOffset
                                 + chunk,
-                            ctas, is_chunk_comm);
-                        if (is_chunk_comm) {
-                            if constexpr (!kSingleLaunchW2ChunkArWaitOnly) {
-                                fused_k6_p2p_twoshot_tp4_chunk_task<
-                                    kSingleLaunchThreads, kChunkCommBlocks,
-                                    Tokens,
-                                    kSingleLaunchW2ChunkArHelperStage>(
-                                    down, topk_weights, pull_input,
-                                    push0, push1, push2, push3,
-                                    pull_sem_local, rank, chunk,
-                                    comm_block >> 2, comm_block);
-                            }
-                        }
+                            ctas, true);
+                        fused_k6_p2p_twoshot_tp4_chunk_task<
+                            kSingleLaunchThreads,
+                            kDedicatedChunkCommBlocks, Tokens,
+                            kSingleLaunchW2ChunkArHelperStage>(
+                            down, topk_weights, pull_input,
+                            push0, push1, push2, push3,
+                            pull_sem_local, rank, chunk, comm_block,
+                            chunk * kDedicatedChunkCommBlocks + comm_block);
                     }
                 }
             }
@@ -8547,6 +8609,7 @@ _EXTENSION_CONFIG = (
           f"slavgt{int(SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS)}_"
           f"slw2cm{int(SINGLE_LAUNCH_W2_CHUNK_MAJOR)}_"
           f"slw2cao{int(SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP)}_"
+          f"slw2cad{int(SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED)}_"
           f"slw2cawo{int(SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY)}_"
           f"slw2cahs{SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE}_"
           f"slw2caspf{int(SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE)}_"
@@ -8697,6 +8760,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP="
             f"{int(SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED="
+            f"{int(SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY="

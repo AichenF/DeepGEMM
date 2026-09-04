@@ -857,6 +857,9 @@ class CapturedCase:
                 "single_launch_p2p_two_shot_chunk_overlap"
                 if kernel.SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
                 and not kernel.SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY
+                and not kernel.SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED
+                else "single_launch_p2p_two_shot_chunk_dedicated"
+                if kernel.SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED
                 else "single_launch_p2p_two_shot_chunk_wait_only"
                 if kernel.SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY
                 else "single_launch_p2p_two_shot_chunk_post"
@@ -1292,6 +1295,9 @@ def main() -> None:
                     ),
                     "single_launch_w2_chunk_ar_overlap": (
                         kernel.SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+                    ),
+                    "single_launch_w2_chunk_ar_dedicated": (
+                        kernel.SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED
                     ),
                     "single_launch_w2_chunk_ar_wait_only": (
                         kernel.SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY
