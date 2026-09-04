@@ -6599,3 +6599,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** Embedded communication vs native-local NCCL has cosine `0.999991558` and rel-L2 `0.00410915` on the worst rank. Native combine vs its own six-route sum remains exact. End-to-end vs the different-quantizer control remains cosine `0.99937286`, rel-L2 `0.03541134`.
 - **Conclusion:** The fused TP4 multicast/all-reduce tail is correct; almost all native-vs-control discrepancy is already present before communication and comes from internal quantization semantics. Future acceptance should separately require (1) native math cosine against canonical MXFP4 reference and (2) embedded communication against NCCL, rather than a 2% rel-L2 identity check against another quantizer.
 - **Artifact:** `bench/results/iter213_native_embedded_comm_audit_tp4_m8_20260904.log`.
+
+## Iteration 214 — Remove external X quantization from the Humming baseline graph
+
+- **Change:** Changed the Humming baseline case boundary from BF16 X to caller-provided FP8-E4M3 `qx` plus its group-128 scale. The first `HummingMethod.may_quant_input` now runs once before graph capture; the timed graph begins at route alignment/W13. The FC1-output SwiGLU-to-FP8 quantization needed by W2 remains inside. Router/top-k remains untimed.
+- **Test:** TP4 H20 GPUs 0-3, M=8 random routes, CUDA Graph, 256 MiB cold-L2 clear before each replay, smoke `outer=2,replays=2`.
+- **Result:** Correctness passes (cosine `0.99999560`, rel-L2 `0.00296676`). Four cold samples give min/median/max `0.088672 / 0.107616 / 0.230176 ms`; the small smoke is intentionally not a formal performance estimate.
+- **Conclusion:** Humming baseline now matches the requested operator contract: MXFP4 weights and prequantized FP8 activation enter the timed MoE. No input X quantization kernel is part of future baseline or candidate measurements. A longer paired/formal run is still required for stable latency.
+- **Artifact:** `bench/results/iter214_humming_prequantized_input_tp4_m8_20260904.log`.
