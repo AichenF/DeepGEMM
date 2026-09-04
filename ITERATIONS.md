@@ -7999,3 +7999,24 @@ maximum rank latency of a full CUDA-Graph replay.
   restore the complete path used by prior successful runs before retrying.
 - **Artifact:**
   `bench/results/iter281_default_large_m_twoshot_smoke_20260904.log`.
+
+## Iteration 282 — default large-M two-shot selection validated
+
+- **Protocol:** TP4 GPUs 0-3, random M64/M128, two balanced batches x 10
+  independently cold-L2 CUDA-Graph replays per arm, three warmups, rank-max,
+  and an excluded 256 MiB clear before every replay.  The two-shot flag was
+  intentionally omitted; inputs were prequantized FP8 X/group-128 scale and
+  MXFP4 weights.
+- **Configuration check:** The reported default is
+  `single_launch_p2p_two_shot=true`, 64 blocks, and both shapes report
+  `candidate_ar_mode=single_launch_p2p_two_shot`.
+- **Correctness:** PASS at M64 and M128 with matching candidate/control
+  metrics, finite outputs, and passing all-reduce oracles.
+- **Cold-L2 smoke:** Multi/candidate medians are
+  `0.246848/0.283440 ms` at M64 and `0.305424/0.351600 ms` at M128; candidate
+  overheads are `14.82%` and `15.12%`.  This short run is a default-selection
+  validation, not a replacement for Iteration 279's 180-sample result.
+- **Decision:** Keep embedded P2P two-shot enabled by default for TP4
+  M64/M128.
+- **Artifact:**
+  `bench/results/iter282_default_large_m_twoshot_smoke_20260904.log`.
