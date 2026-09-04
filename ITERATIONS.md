@@ -8910,3 +8910,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Repeatability: every replay after the first differed from the first by max-absolute 25,472. The changing values and changing worst-token set prove a nondeterministic race, not a deterministic layout permutation or reference mismatch.
 - Decision: keep `V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP` disabled. Isolate the four-chunk collective helper from W2 overlap before changing the mapping or attempting more optimization.
 - Artifact: `bench/results/iter345_w2_chunk_overlap_output_localization_20260904.log`.
+
+## Iteration 346 — isolate chunk helper behind the W2 barrier (2026-09-04)
+
+- Hypothesis: if the four-way helper is correct after the existing whole-grid W2 barrier, Iteration 344's nondeterminism is caused by overlap/readiness lifetime rather than hidden-chunk addressing, rank-quarter ownership, or the 64 CARv2 semaphore slots.
+- Implementation: added diagnostic-only `V4_SINGLE_LAUNCH_W2_CHUNK_AR_POST=1`. It retains chunk-major W2 and the normal phase-3 whole-grid barrier, then uses 16 CTAs to execute chunks 0–3 serially through the exact Iteration 344 helper. Public inputs remain prequantized FP8 activation plus MXFP4 weights; external X quantization remains outside the graph and timing.
+- Setup: TP4 GPUs 0–3, M128 random routes, seed 20260904, CUDA Graph outer=1/replays=2/warmup=1, release-arrival + assume-valid enabled. Each implementation replay received its own excluded 256 MiB L2 clear.
+- Correctness: **PASS.** Candidate and control were numerically identical under the harness metrics on every rank: cosine 0.9999956090, rel-L2 0.0029634544, max-absolute 1024, finite output, and rank-consistent allreduce.
+- Isolation result: the chunk helper's address mapping, rank ownership, symmetric-buffer writes, and semaphore-slot protocol work when W2 is globally complete. The Iteration 344 failure is therefore confined to concurrent W2/communication execution or the chunk-ready publication path.
+- Diagnostic timing only: candidate median 0.373216 ms versus a noisy 0.302064 ms control median with two samples. The deliberately serial 16-CTA communication path is not a performance candidate.
+- Decision: keep both chunk experiments default-off. Next isolate concurrent post-barrier 4×16 helpers, then strengthen overlap lifetime synchronization only if that passes.
+- Artifact: `bench/results/iter346_w2_chunk_post_barrier_serial_smoke_20260904.log`.

@@ -786,6 +786,21 @@ if SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP and (
         "the isolated 8-CTA/SM path, release-arrival packed barriers, "
         "phase stamps off, and the 64-block P2P two-shot collective"
     )
+SINGLE_LAUNCH_W2_CHUNK_AR_POST = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_AR_POST", "0") == "1"
+)
+if SINGLE_LAUNCH_W2_CHUNK_AR_POST and (
+    not SINGLE_LAUNCH_W2_CHUNK_MAJOR
+    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+    or not SINGLE_LAUNCH_P2P_TWO_SHOT
+    or SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS != 64
+    or SINGLE_LAUNCH_CTAS_PER_SM != 8
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_POST requires chunk-major W2, "
+        "overlap off, the isolated 8-CTA/SM path, and the 64-block "
+        "P2P two-shot collective"
+    )
 if SINGLE_LAUNCH_DUAL_WG_PHASES and (
     not SINGLE_LAUNCH_P2P_TWO_SHOT
     or SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS != 64
@@ -998,6 +1013,8 @@ static constexpr bool kSingleLaunchW2ChunkMajor =
     K_SINGLE_LAUNCH_W2_CHUNK_MAJOR;
 static constexpr bool kSingleLaunchW2ChunkArOverlap =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP;
+static constexpr bool kSingleLaunchW2ChunkArPost =
+    K_SINGLE_LAUNCH_W2_CHUNK_AR_POST;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -6066,14 +6083,32 @@ void tp4_megamoe_single_launch_kernel(
             constexpr int kTwoShotBlocks =
                 kSingleLaunchDualWgPhases && Tokens == 64
                 ? 32 : kSingleLaunchP2pTwoShotBlocks;
-            if ((!kSingleLaunchW2ChunkArOverlap
-                    || !chunk_ar_overlap_active)
-                    && cta < kTwoShotBlocks) {
-                fused_k6_p2p_twoshot_tp4_task<
-                    kSingleLaunchThreads, kTwoShotBlocks, Tokens>(
-                    down, topk_weights, pull_input,
-                    push0, push1, push2, push3,
-                    pull_sem_local, rank, cta);
+            if constexpr (kSingleLaunchW2ChunkArPost) {
+                // Diagnostic isolation: retain the normal whole-grid W2
+                // barrier, then execute the same four hidden-chunk helpers
+                // serially with 16 CTAs.  This separates helper mapping and
+                // CARv2 semaphore correctness from W2/communication overlap.
+                if (cta < 16) {
+                    #pragma unroll
+                    for (int chunk = 0; chunk < 4; ++chunk) {
+                        fused_k6_p2p_twoshot_tp4_chunk_task<
+                            kSingleLaunchThreads, 16, Tokens>(
+                            down, topk_weights, pull_input,
+                            push0, push1, push2, push3,
+                            pull_sem_local, rank, chunk, cta,
+                            chunk * 16 + cta);
+                    }
+                }
+            } else {
+                if ((!kSingleLaunchW2ChunkArOverlap
+                        || !chunk_ar_overlap_active)
+                        && cta < kTwoShotBlocks) {
+                    fused_k6_p2p_twoshot_tp4_task<
+                        kSingleLaunchThreads, kTwoShotBlocks, Tokens>(
+                        down, topk_weights, pull_input,
+                        push0, push1, push2, push3,
+                        pull_sem_local, rank, cta);
+                }
             }
         } else if constexpr (Tokens == 128) {
             if (cta < kSingleLaunchNvlsBlocks) {
@@ -8371,6 +8406,7 @@ _EXTENSION_CONFIG = (
           f"slavgt{int(SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS)}_"
           f"slw2cm{int(SINGLE_LAUNCH_W2_CHUNK_MAJOR)}_"
           f"slw2cao{int(SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP)}_"
+          f"slw2cap{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
@@ -8515,6 +8551,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP="
             f"{int(SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_POST="
+            f"{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="
