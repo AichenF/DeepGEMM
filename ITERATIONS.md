@@ -8764,3 +8764,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - SASS gate: the four inlined whole-grid barriers each contain one release arrival `ATOMG` with no following `CCTL.IVALL`, plus a last-arriver-only zero-add `ATOMG` followed by `CCTL.IVALL`.  Selected-main totals are 8 `MEMBAR.ALL.GPU`, 10 `CCTL.IVALL`, and 9 `ATOMG` instructions; four arrival/acquire pairs are the grid barriers and the ninth atomic belongs to communication.  This confirms the intended dynamic change: 623 non-last CTAs per phase no longer execute arrival-side acquire invalidation, while the last CTA retains it.
 - Decision: pass the compile/resource/SASS gate.  No performance claim yet.  Next run compute-only M8/M128 bitwise correctness, packed-generation wrap, and replay liveness before any distributed cold-L2 timing.
 - Artifact: `bench/results/iter329_release_arrival_cubin_sass_gate_20260904.log`.
+
+## Iteration 330 — Invalid release-arrival correctness invocation (2026-09-04)
+
+- Intended test: H20 GPU 0 compute-only M8/M128 random-route correctness with the release-arrival packed barrier and generation wraparound seeded to `2^22-1`.
+- Result: invalid/non-evidence.  The first process failed during benchmark-module import with `ModuleNotFoundError: No module named 'humming'`; no candidate launch or GPU correctness check executed, and M128 was not reached.
+- Correction: repeat with the pinned Humming checkout added to `PYTHONPATH`.  Do not use this iteration in any correctness or performance conclusion.
+- Artifact: `bench/results/iter330_release_arrival_m8_m128_compute_correctness_20260904.log`.
