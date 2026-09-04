@@ -525,6 +525,27 @@ if SINGLE_LAUNCH_BALANCED_WORKERS and (
     raise ValueError(
         "V4_SINGLE_LAUNCH_BALANCED_WORKERS requires isolated schedule 0"
     )
+SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH = (
+    os.environ.get("V4_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH", "0") == "1"
+)
+if SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH requires the isolated "
+        "two-stage compact-interleaved one-WG schedule-0 path"
+    )
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "8")
 )
@@ -752,6 +773,8 @@ static constexpr bool kSingleLaunchW2Unroll2Bound9 =
     K_SINGLE_LAUNCH_W2_UNROLL2_BOUND9;
 static constexpr bool kSingleLaunchPersistentGemmState =
     K_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE;
+static constexpr bool kSingleLaunchW13NextTaskPrefetch =
+    K_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -1077,7 +1100,8 @@ __device__ __forceinline__ void route_gemm_task(
         int n_tile_begin,
         int linear_block_idx,
         int task_sequence = 0,
-        float* shared_partial = nullptr) {
+        float* shared_partial = nullptr,
+        int next_linear_block_idx = -1) {
     static_assert(K % kBlockK == 0);
     static_assert(N % kWout == 0);
     static_assert((K / kBlockK) % SplitK == 0);
@@ -1128,8 +1152,15 @@ __device__ __forceinline__ void route_gemm_task(
         DualWgW13 && kSingleLaunchDualWgPrivateAct;
     constexpr int kActivationCopies = kPrivateDualActivation ? 2 : 1;
     constexpr int kMetadataSlots = PersistentState ? 2 : 1;
+    constexpr bool kCrossTaskWeightPrefetch =
+        PersistentState && IsW13 && kSingleLaunchW13NextTaskPrefetch;
     static_assert(!PersistentState || !DualWgW13,
                   "persistent task state supports one WGMMA warpgroup");
+    static_assert(!kCrossTaskWeightPrefetch
+                  || (kCompactInterleavedScale && kInterleavedScale
+                      && kStages == 2 && LaunchNTiles == 0
+                      && !kHalfWgmma && !SharedPartial),
+                  "cross-task prefetch requires full compact N128 tasks");
     static_assert(kLaunchNTiles % kMathWGs == 0);
     static_assert(!DualWgW13 || (kWout == 128
                   && LaunchNTiles == 0 && kInterleavedScale),
@@ -1495,15 +1526,57 @@ __device__ __forceinline__ void route_gemm_task(
         }
     };
 
+    // Once each of the last two current-task stages has passed its GMMA wait,
+    // reuse that stage for K0/K1 of this CTA's next task.  The next invocation
+    // waits on the ordinary generation parity, so this advances only the TMA
+    // transaction and never consumes a record before it is complete.
+    const auto load_next_task_stage = [&](int next_local_kt, int stage) {
+        if constexpr (kCrossTaskWeightPrefetch) {
+            if (next_linear_block_idx >= 0 && mtid == kTmaIssuerTid) {
+                const int next_split_idx = next_linear_block_idx % SplitK;
+                const int next_task_idx = next_linear_block_idx / SplitK;
+                const int next_m_block_idx = next_task_idx / kTaskNTiles;
+                const int next_local_n_task_idx =
+                    next_task_idx % kTaskNTiles;
+                const int next_n_block_idx =
+                    next_local_n_task_idx * kMathWGs + math_wg;
+                const int next_expert_idx =
+                    __ldg(expert_ids + next_m_block_idx);
+                const int next_global_kt =
+                    next_split_idx * kKTilesPerSplit + next_local_kt;
+                const uint32_t next_barrier_addr =
+                    weight_barrier_addr(stage);
+                const uint32_t next_weight_dst =
+                    weight_smem_addr + stage * kWeightStageStride;
+                asm volatile(
+                    "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
+                    :: "r"(next_barrier_addr), "n"(kCombinedStageBytes));
+                constexpr int kBytesPerNTile =
+                    kNumKTiles * kCombinedStageBytes;
+                const int64_t next_ntile =
+                    static_cast<int64_t>(next_expert_idx) * kNumNTiles
+                    + next_n_block_idx;
+                const uint8_t* next_weight_src =
+                    weight + next_ntile * kBytesPerNTile
+                    + next_global_kt * kCombinedStageBytes;
+                bulk_gmem_to_smem<kUseWeightEvictFirst>(
+                    next_weight_dst, next_weight_src, kCombinedStageBytes,
+                    next_barrier_addr, weight_cache_policy);
+            }
+        }
+    };
+
     load_single_scale(kt_begin);
 
     const int sequence_tile_base =
         PersistentState ? task_sequence * kKTilesPerSplit : 0;
-    #pragma unroll
-    for (int local_kt = 0;
-         local_kt < kStages && local_kt < kKTilesPerSplit; ++local_kt) {
-        const int item_idx = sequence_tile_base + local_kt;
-        load_weight_stage(local_kt, item_idx % kStages);
+    if (!kCrossTaskWeightPrefetch || task_sequence == 0) {
+        #pragma unroll
+        for (int local_kt = 0;
+             local_kt < kStages && local_kt < kKTilesPerSplit; ++local_kt) {
+            const int item_idx = sequence_tile_base + local_kt;
+            load_weight_stage(local_kt, item_idx % kStages);
+        }
     }
 
     const int warp = mtid / 32;
@@ -1952,8 +2025,13 @@ __device__ __forceinline__ void route_gemm_task(
         if ((local_kt & 3) == 3 && local_kt + 1 < kKTilesPerSplit)
             load_single_scale(global_kt + 1);
 
-        if (local_kt + kStages < kKTilesPerSplit)
+        if (local_kt + kStages < kKTilesPerSplit) {
             load_weight_stage(local_kt + kStages, stage);
+        } else if constexpr (kCrossTaskWeightPrefetch) {
+            const int next_local_kt =
+                local_kt + kStages - kKTilesPerSplit;
+            load_next_task_stage(next_local_kt, stage);
+        }
     }
 
     const int route0 = route_ids[metadata_slot][column_base];
@@ -5259,6 +5337,9 @@ void tp4_megamoe_single_launch_kernel(
                         ? (w13_tasks + w13_rounds - 1) / w13_rounds
                         : ctas;
                     int w13_sequence = 0;
+                    constexpr bool kW13PersistentState =
+                        kSingleLaunchPersistentGemmState
+                        || kSingleLaunchW13NextTaskPrefetch;
                     for (int task = cta;
                          cta < w13_workers && task < w13_tasks;
                          task += w13_workers, ++w13_sequence) {
@@ -5272,15 +5353,18 @@ void tp4_megamoe_single_launch_kernel(
                             route_gemm_task<
                                 4096, 1024, SplitK, true, 0, false,
                                 kSingleLaunchDualWgPhases,
-                                kSingleLaunchPersistentGemmState>(
+                                kW13PersistentState>(
                                 &w13_tma_weight, &w13_tma_weight_scale,
                                 w13, s13, g13, qx, x_scale,
                                 sorted_ids, expert_ids, num_tokens_padded,
                                 topk_weights, partials, lut, nullptr,
-                                routes, 0, task, w13_sequence);
+                                routes, 0, task, w13_sequence, nullptr,
+                                (kSingleLaunchW13NextTaskPrefetch
+                                     && task + w13_workers < w13_tasks)
+                                ? task + w13_workers : -1);
                         }
                         if constexpr (kSingleLaunchNoInlineGemm
-                                      || !kSingleLaunchPersistentGemmState) {
+                                      || !kW13PersistentState) {
                             if constexpr (!kSingleLaunchSkipFinalCtaSync) {
                                 __syncthreads();
                             } else if (task + ctas < w13_tasks) {
@@ -7596,6 +7680,7 @@ _EXTENSION_CONFIG = (
           f"slm128b9{int(SINGLE_LAUNCH_M128_BOUND9)}_"
           f"slw2u2b9{int(SINGLE_LAUNCH_W2_UNROLL2_BOUND9)}_"
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
+          f"slw13np{int(SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
@@ -7714,6 +7799,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE="
             f"{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH="
+            f"{int(SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="

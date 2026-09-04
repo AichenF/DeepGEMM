@@ -8584,3 +8584,13 @@ maximum rank latency of a full CUDA-Graph replay.
   only as an auditable specialization; do not spend an M8 or all-shape sweep.
 - **Artifact:**
   `bench/results/iter311_dual_wg_bound5_tp4_m128_cold_screen_20260904.log`.
+
+## Iteration 312 — W13 cross-task TMA prefetch correctness
+
+- Change: added an opt-in `V4_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH=1` path for the selected one-WG, schedule-0 single-launch kernel. During the last two K iterations of a W13 task, the issuer CTA prefetches the next task's compact MXFP4 weight+scale records into the two stages that have just become free. The persistent mbarrier/parity state is carried across tasks; W2 and the default path are unchanged.
+- Input/timing contract: MegaMoE receives prequantized FP8-E4M3 activations plus FP32 group-128 activation scales and MXFP4 weights. External activation quantization is excluded. This check used a 256 MiB cold-L2 clear outside the profiled kernel; the TP collective was intentionally disabled because this iteration validates the compute state machine.
+- Correctness, GPU 0, random routing:
+  - M=8, W13 split-K=4: accepted; cosine=1.0, relative L2=0.0, finite=true; packed-generation wrap check passed.
+  - M=128, W13 split-K=2: accepted; cosine=1.0, relative L2=0.0, finite=true; packed-generation wrap check passed.
+- Artifact: `bench/results/iter312_w13_next_task_prefetch_m8_m128_compute_correctness_20260904.log`.
+- Decision: correctness accepted. Performance is not claimed yet; inspect the generated cubin for register/local-memory regressions before a cold-L2 TP4 comparison against the selected multi-kernel baseline.

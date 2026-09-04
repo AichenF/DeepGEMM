@@ -204,6 +204,9 @@ def main() -> None:
                     "single_launch_persistent_gemm_state": (
                         kernel.SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
                     ),
+                    "single_launch_w13_next_task_prefetch": (
+                        kernel.SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+                    ),
                     "single_launch_cooperative_grid": (
                         kernel.SINGLE_LAUNCH_COOPERATIVE_GRID
                     ),
