@@ -1154,6 +1154,9 @@ def main() -> None:
                     "single_launch_schedule": (
                         kernel.SINGLE_LAUNCH_SCHEDULE
                     ),
+                    "single_launch_noinline_gemm": (
+                        kernel.SINGLE_LAUNCH_NOINLINE_GEMM
+                    ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
                     ),

@@ -6161,3 +6161,30 @@ maximum rank latency of a full CUDA-Graph replay.
   the monolithic kernel's inflated combined register/control-flow footprint
   or a CTA-local fused W13 epilogue.
 - **Evidence:** `results/iter167_tp4_schedule0_cta6_pair_screen_20260904.log`.
+
+## Iteration 168 — noinline W13/W2 device task boundary
+
+- **Change under test:** add single-launch-only `__noinline__` device wrappers
+  around the existing W13 and W2 `route_gemm_task` instantiations.  Standalone
+  control kernels continue to inline the same bodies.  The hypothesis was
+  that a call boundary would shorten cross-phase live ranges from the fused
+  entry's 85 registers toward standalone W13/W2's 47/61 registers.
+- **Protocol:** TP4 physical GPUs 4-7, random M8 routes, schedule 0, noinline
+  enabled, five requested CTAs/SM, same-process paired CUDA Graphs, two outer
+  batches x twenty replays, four cold warmups, rank-max timing.  Every replay
+  has a separate excluded 256 MiB Triton L2 clear immediately beforehand.
+- **Correctness:** PASS for candidate and control on all ranks.  Candidate
+  minimum cosine is `0.9999956066`, maximum relative L2 `0.0029643002`, all
+  outputs are finite, and both paths report 344 padded rows / 43 experts.
+- **Cold-L2 timing:** control median `0.071296 ms` (min/max
+  `0.070240/0.259456`; one control outlier); candidate median `0.103248 ms`
+  (min/max `0.101824/0.129344`).  Control/candidate is `0.69053x`; candidate
+  is 44.82% slower than control and 7.80% slower than iteration 166's inline
+  M8 result.
+- **Analysis:** the device-call ABI/argument movement costs more than any
+  register-live-range benefit.  Correctness proves shared/TMA state survives
+  the call boundary, but the latency result rejects it for production.
+- **Decision:** disable noinline by default after recording its cubin resource
+  usage.  A useful fused design must reduce the actual per-CTA work/dataflow,
+  not merely hide existing phases behind a compiler call boundary.
+- **Evidence:** `results/iter168_tp4_noinline_gemm_m8_screen_20260904.log`.

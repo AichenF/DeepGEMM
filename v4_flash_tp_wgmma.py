@@ -239,6 +239,9 @@ SINGLE_LAUNCH_SCHEDULE = int(
 if SINGLE_LAUNCH_SCHEDULE not in (0, 1, 2, 3):
     raise ValueError("V4_SINGLE_LAUNCH_SCHEDULE must be 0, 1, 2, or 3")
 SINGLE_LAUNCH_INTERLEAVED = SINGLE_LAUNCH_SCHEDULE != 0
+SINGLE_LAUNCH_NOINLINE_GEMM = (
+    os.environ.get("V4_SINGLE_LAUNCH_NOINLINE_GEMM", "1") == "1"
+)
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "5")
 )
@@ -426,6 +429,8 @@ static constexpr int kSingleLaunchSchedule = K_SINGLE_LAUNCH_SCHEDULE;
 static_assert(kSingleLaunchSchedule >= 0 && kSingleLaunchSchedule <= 3);
 static constexpr bool kSingleLaunchInterleaved =
     kSingleLaunchSchedule != 0;
+static constexpr bool kSingleLaunchNoInlineGemm =
+    K_SINGLE_LAUNCH_NOINLINE_GEMM;
 
 #if K_MIN_BLOCKS_PER_SM > 0
 #define ROUTE_LAUNCH_BOUNDS(IS_W13, DUAL) \
@@ -1619,6 +1624,57 @@ __device__ __forceinline__ void route_gemm_task(
                     progress_state + route * kNumW2Tiles + n_block_idx, 1);
         }
     }
+}
+
+// Keep the monolithic entry's cross-phase live range out of the two WGMMA
+// bodies.  The selected standalone kernels still inline route_gemm_task
+// directly; only the single-launch path pays this device-call boundary.
+template <int SplitK>
+__device__ __noinline__ void single_launch_w13_gemm_task(
+        const CUtensorMap* tma_weight,
+        const CUtensorMap* tma_weight_scale,
+        const uint8_t* __restrict__ weight,
+        const uint8_t* __restrict__ weight_scale,
+        const float* __restrict__ weight_global_scale,
+        const uint8_t* __restrict__ activation,
+        const float* __restrict__ activation_scale,
+        const int32_t* __restrict__ sorted_ids,
+        const int32_t* __restrict__ expert_ids,
+        const int32_t* __restrict__ num_tokens_padded,
+        const float* __restrict__ topk_weights,
+        float* __restrict__ output,
+        const uint2* __restrict__ global_lut,
+        int max_routes, int linear_block_idx) {
+    route_gemm_task<4096, 1024, SplitK, true>(
+        tma_weight, tma_weight_scale,
+        weight, weight_scale, weight_global_scale,
+        activation, activation_scale,
+        sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+        output, global_lut, nullptr, max_routes, 0, linear_block_idx);
+}
+
+__device__ __noinline__ void single_launch_w2_gemm_task(
+        const CUtensorMap* tma_weight,
+        const CUtensorMap* tma_weight_scale,
+        const uint8_t* __restrict__ weight,
+        const uint8_t* __restrict__ weight_scale,
+        const float* __restrict__ weight_global_scale,
+        const uint8_t* __restrict__ activation,
+        const float* __restrict__ activation_scale,
+        const int32_t* __restrict__ sorted_ids,
+        const int32_t* __restrict__ expert_ids,
+        const int32_t* __restrict__ num_tokens_padded,
+        const float* __restrict__ topk_weights,
+        __nv_bfloat16* __restrict__ output,
+        const uint2* __restrict__ global_lut,
+        int max_routes, int linear_block_idx) {
+    route_gemm_task<512, 4096, 1, false>(
+        tma_weight, tma_weight_scale,
+        weight, weight_scale, weight_global_scale,
+        activation, activation_scale,
+        sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+        reinterpret_cast<float*>(output), global_lut, nullptr,
+        max_routes, 0, linear_block_idx);
 }
 
 // Keep the selected standalone launch as a thin wrapper around the task body.
@@ -3676,11 +3732,19 @@ __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
         const int num_mblocks = __ldg(num_tokens_padded) / kTok;
         const int w13_tasks = num_mblocks * kW13NTiles * SplitK;
         for (int task = cta; task < w13_tasks; task += ctas) {
-            route_gemm_task<4096, 1024, SplitK, true>(
-                &w13_tma_weight, &w13_tma_weight_scale,
-                w13, s13, g13, qx, x_scale,
-                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-                partials, lut, nullptr, routes, 0, task);
+            if constexpr (kSingleLaunchNoInlineGemm) {
+                single_launch_w13_gemm_task<SplitK>(
+                    &w13_tma_weight, &w13_tma_weight_scale,
+                    w13, s13, g13, qx, x_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                    partials, lut, routes, task);
+            } else {
+                route_gemm_task<4096, 1024, SplitK, true>(
+                    &w13_tma_weight, &w13_tma_weight_scale,
+                    w13, s13, g13, qx, x_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                    partials, lut, nullptr, routes, 0, task);
+            }
             __syncthreads();
         }
         single_launch_grid_barrier(barrier_state, 1, ctas);
@@ -3696,12 +3760,20 @@ __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
 
         const int w2_tasks = num_mblocks * kW2NTiles;
         for (int task = cta; task < w2_tasks; task += ctas) {
-            route_gemm_task<512, 4096, 1, false>(
-                &w2_tma_weight, &w2_tma_weight_scale,
-                w2, s2, g2, qactivation, activation_scale,
-                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-                reinterpret_cast<float*>(down), lut, nullptr,
-                routes, 0, task);
+            if constexpr (kSingleLaunchNoInlineGemm) {
+                single_launch_w2_gemm_task(
+                    &w2_tma_weight, &w2_tma_weight_scale,
+                    w2, s2, g2, qactivation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                    down, lut, routes, task);
+            } else {
+                route_gemm_task<512, 4096, 1, false>(
+                    &w2_tma_weight, &w2_tma_weight_scale,
+                    w2, s2, g2, qactivation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                    reinterpret_cast<float*>(down), lut, nullptr,
+                    routes, 0, task);
+            }
             __syncthreads();
         }
         single_launch_grid_barrier(barrier_state, 3, ctas);
@@ -5442,10 +5514,11 @@ _EXTENSION_CONFIG = (
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
           f"slsch{SINGLE_LAUNCH_SCHEDULE}_"
+          f"slnig{int(SINGLE_LAUNCH_NOINLINE_GEMM)}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v166b0")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v168ni")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v166b0"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v168ni"
 )
 
 _ext = load_inline(
@@ -5517,6 +5590,10 @@ _ext = load_inline(
         f"-DK_W2_FOLD_GLOBAL_SCALE={int(W2_FOLD_GLOBAL_SCALE)}",
         f"-DK_W2_COALESCED_STORE={int(W2_COALESCED_STORE)}",
         f"-DK_SINGLE_LAUNCH_SCHEDULE={SINGLE_LAUNCH_SCHEDULE}",
+        (
+            "-DK_SINGLE_LAUNCH_NOINLINE_GEMM="
+            f"{int(SINGLE_LAUNCH_NOINLINE_GEMM)}"
+        ),
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         f"-DK_W13_LAUNCH_BOUND_10={int(W13_LAUNCH_BOUND_10)}",
         f"-DK_W13_MAX_SMEM_CARVEOUT={int(W13_MAX_SMEM_CARVEOUT)}",
