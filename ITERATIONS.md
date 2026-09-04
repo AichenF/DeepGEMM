@@ -5739,3 +5739,30 @@ maximum rank latency of a full CUDA-Graph replay.
   phase-separated scheduler because the current bring-up structure is not yet
   performance eligible.
 - Artifact: `results/iter152_tp4_single_launch_m8_graph_bringup_20260904.log`.
+
+## Iteration 153 — TP4 all-M random-route single-launch smoke
+
+- Date: 2026-09-04.
+- Source: unchanged iteration 151 single-launch kernel; TP4 physical GPUs
+  0–3, random routes, `M={8,16,32,64,128}`, CUDA Graph, two batches x ten
+  timed replays, three cold warmups and separate 256 MiB excluded L2 clears.
+- Correct cases: M8/M16/M32/M64 all complete repeated graph replay and pass
+  the independent local-recompute plus NCCL reference.  Minimum final cosine
+  across these cases is `0.9999955640`, maximum relative L2 is
+  `0.0029786034`, and every output is finite.  M64 exercises the split-K 2
+  specialization and the 512 KiB multicast one-shot tail successfully; the
+  smaller cases exercise split-K 4.
+- Diagnostic medians (not a formal paired verdict): M8 `0.102704 ms`, M16
+  `0.159440 ms`, M32 `0.250784 ms`, M64 `0.350032 ms`.  These already show
+  that the barrier-separated bring-up is slower than the selected multi-
+  kernel control and therefore needs scheduler/occupancy work rather than a
+  launch-count-only claim.
+- M128 failure: all ranks reject the case before launching because its 1 MiB
+  output exceeds CARv2's configured one-shot push stride.  The explicit host
+  guard reports `single-launch push workspace stride is too small`; this is a
+  bounded transport-capacity failure, not a CUDA hang or numerical failure.
+- Decision: retain the working M8–M64 evidence but do not treat all-M support
+  as complete.  M128 must use the communicator's pull slab and inline two-shot
+  NVLS protocol, matching the selected large-message algorithm, rather than
+  weakening the workspace guard or allocating a non-SGLang side channel.
+- Artifact: `results/iter153_tp4_single_launch_allm_random_graph_smoke_20260904.log`.

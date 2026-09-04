@@ -1,0 +1,130 @@
+W0904 08:55:47.687000 411853 torch/distributed/run.py:851] 
+W0904 08:55:47.687000 411853 torch/distributed/run.py:851] *****************************************
+W0904 08:55:47.687000 411853 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0904 08:55:47.687000 411853 torch/distributed/run.py:851] *****************************************
+CUSTOM_ENV {"activation_dtype": "FP8 E4M3 group128", "activation_evict_last": false, "benchmark": "v4_flash_tp_route_wgmma_cuda_graph", "bulk_weight_copy": true, "capability": "9.0", "compact_interleaved_scale": true, "dequant_dp4a_hi": true, "dequant_dp4a_lo": true, "dequant_synth_lut": false, "direct_barrier_addr": false, "fused_activation_quant": true, "fused_k6_mc_pull_ar": false, "fused_k6_mc_push_ar": true, "fused_k6_mc_push_max_m": 32, "fused_k6_nvls_pull_ar": false, "fused_k6_push_ar": false, "fused_rank_route_mc_pull_ar": false, "fused_route_quant": true, "gpu": "NVIDIA H20-3e", "interleaved_bulk_copy": true, "k6_nvls_pull_blocks": 16, "l2_cache_bytes": 62914560, "l2_flush_bytes": 268435456, "l2_policy": "cold; 256MiB Triton clear before every replay, clear excluded from events", "leader_mbar_wait": true, "m_values": [8, 16, 32, 64, 128], "mc_pull_blocks": "default", "mc_pull_unroll": "default", "min_blocks_per_sm": 0, "mode2_braid": true, "mxfp4_lut_rows": 256, "normalized_shared_lut": false, "normalized_weight_scale": true, "outer": 2, "output_dtype": "BF16", "output_tile_channels": 128, "pipeline_ar_blocks": 8, "pipeline_chunks": 4, "pipelined_w2_mc_push_ar": false, "predicated_padded_activation": false, "rank_route_pull_blocks": 16, "replays_per_outer": 10, "route_k_unroll2": true, "route_k_unroll4": true, "route_k_unroll8": false, "route_k_unroll8_split2": false, "route_pattern": "random", "scale_buffers": 2, "scale_quad_reuse": 4, "single_launch_tp4": true, "sm_count": 78, "tiled_k6_reduce_policy": "auto", "tiled_weight_layout": true, "timed_allreduce": "sglang CustomAllReduceV2 default graph heuristic", "tma_cta_scope": false, "w13_distributed_prep": true, "w13_dual_wg_split": false, "w13_k_unroll16_split2": false, "w13_k_unroll8_split2": false, "w13_launch_bound_10": false, "w13_max_smem_carveout": false, "w13_merged_wgmma_group": false, "w13_paired_wg": false, "w13_s2r_prefetch": true, "w13_split_policy": "auto; routed_rows<=192 or active_experts<=96 -> 4, else 2; selected before capture", "w2_coalesced_store": false, "w2_distributed_prep": true, "w2_epilogue": "BF16 route output + fixed tiled CUDA k6 mode 4 at M<=16, SGLang moe_fused_mul_sum otherwise", "w2_fold_global_scale": false, "w2_global_lut": false, "w2_mblock_scale": false, "w2_no_weight_evict_first": false, "w2_s2r_prefetch": true, "w2_sorted_activation": false, "warmup_replays": 3, "weight_common_address": true, "weight_dtype": "OCP MXFP4 E2M1", "weight_evict_first": true, "weight_policy_constant": false, "weight_policy_hoist": false, "weight_scale": "E8M0 group32", "weight_stages": 2, "weight_swizzle_bytes": 64, "world_size": 4}
+CUSTOM_SHAPES {"H": 4096, "I": 2048, "I_per_rank": 512, "W13_bytes_with_scale": 570425344, "W13_per_rank": [256, 8, 278528], "W2_bytes_with_scale": 285212672, "W2_per_rank": [256, 32, 34816], "experts": 256, "top_k": 6}
+CUSTOM_RESULT {"active_experts": 43, "allreduce_algo": "ONE_SHOT_PUSH", "allreduce_bytes": 65536, "allreduce_mode": "EAGER", "allreduce_ok": true, "batch_medians_ms_max_rank": [0.10265599936246872, 0.10286400094628334], "cold_samples": 20, "cosine_min_rank": 0.9999955649297207, "finite_all_ranks": true, "fused_k6_ar_mode": "single_launch_multicast_push", "fused_k6_push_ar": true, "latency_ms_max": 0.2531200051307678, "latency_ms_median": 0.1027039997279644, "latency_ms_min": 0.10099200159311295, "m": 8, "max_abs_max_rank": 512.0, "max_abs_over_ref_max_rank": 0.003424657534246575, "padded_rows": 344, "padding_ratio": 7.166666666666667, "rel_l2_max_rank": 0.002978479233510109, "route_pattern": "random", "routed_rows": 48, "tiled_k6_reduce_mode": 4, "w13_split_k": 4}
+CUSTOM_RESULT {"active_experts": 82, "allreduce_algo": "ONE_SHOT_PUSH", "allreduce_bytes": 131072, "allreduce_mode": "EAGER", "allreduce_ok": true, "batch_medians_ms_max_rank": [0.1595200002193451, 0.15915200114250183], "cold_samples": 20, "cosine_min_rank": 0.9999955639556686, "finite_all_ranks": true, "fused_k6_ar_mode": "single_launch_multicast_push", "fused_k6_push_ar": true, "latency_ms_max": 0.16569599509239197, "latency_ms_median": 0.15944000333547592, "latency_ms_min": 0.15833599865436554, "m": 16, "max_abs_max_rank": 1024.0, "max_abs_over_ref_max_rank": 0.006993006993006993, "padded_rows": 656, "padding_ratio": 6.833333333333333, "rel_l2_max_rank": 0.0029786033837726324, "route_pattern": "random", "routed_rows": 96, "tiled_k6_reduce_mode": 4, "w13_split_k": 4}
+CUSTOM_RESULT {"active_experts": 140, "allreduce_algo": "ONE_SHOT_PUSH", "allreduce_bytes": 262144, "allreduce_mode": "EAGER", "allreduce_ok": true, "batch_medians_ms_max_rank": [0.2508160024881363, 0.2507359981536865], "cold_samples": 20, "cosine_min_rank": 0.9999956311614007, "finite_all_ranks": true, "fused_k6_ar_mode": "single_launch_multicast_push", "fused_k6_push_ar": true, "latency_ms_max": 0.3043839931488037, "latency_ms_median": 0.2507840096950531, "latency_ms_min": 0.24902400374412537, "m": 32, "max_abs_max_rank": 1024.0, "max_abs_over_ref_max_rank": 0.006756756756756757, "padded_rows": 1120, "padding_ratio": 5.833333333333333, "rel_l2_max_rank": 0.00295597660688464, "route_pattern": "random", "routed_rows": 192, "tiled_k6_reduce_mode": 0, "w13_split_k": 4}
+CUSTOM_RESULT {"active_experts": 203, "allreduce_algo": "TWO_SHOT_PULL", "allreduce_bytes": 524288, "allreduce_mode": "GRAPH", "allreduce_ok": true, "batch_medians_ms_max_rank": [0.34960000216960907, 0.35020799934864044], "cold_samples": 20, "cosine_min_rank": 0.9999955768230482, "finite_all_ranks": true, "fused_k6_ar_mode": "single_launch_multicast_push", "fused_k6_push_ar": true, "latency_ms_max": 0.3757759928703308, "latency_ms_median": 0.3500320017337799, "latency_ms_min": 0.3477439880371094, "m": 64, "max_abs_max_rank": 1024.0, "max_abs_over_ref_max_rank": 0.0058823529411764705, "padded_rows": 1624, "padding_ratio": 4.229166666666667, "rel_l2_max_rank": 0.0029742821032667423, "route_pattern": "random", "routed_rows": 384, "tiled_k6_reduce_mode": 0, "w13_split_k": 2}
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1280, in <module>
+[rank0]:     main()
+[rank0]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1181, in main
+[rank0]:     case.run_full(comm)
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 770, in run_full
+[rank0]:     return self.run_tp4_single_launch(comm)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 732, in run_tp4_single_launch
+[rank0]:     kernel.run_tp4_megamoe_single_launch(
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 5432, in run_tp4_megamoe_single_launch
+[rank0]:     _ext.run_tp4_megamoe_single_launch(
+[rank0]: RuntimeError: single-launch push workspace stride is too small
+[rank3]: Traceback (most recent call last):
+[rank3]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1280, in <module>
+[rank3]:     main()
+[rank3]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank3]:     return func(*args, **kwargs)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1181, in main
+[rank3]:     case.run_full(comm)
+[rank3]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 770, in run_full
+[rank3]:     return self.run_tp4_single_launch(comm)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 732, in run_tp4_single_launch
+[rank3]:     kernel.run_tp4_megamoe_single_launch(
+[rank3]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 5432, in run_tp4_megamoe_single_launch
+[rank3]:     _ext.run_tp4_megamoe_single_launch(
+[rank3]: RuntimeError: single-launch push workspace stride is too small
+[rank2]: Traceback (most recent call last):
+[rank2]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1280, in <module>
+[rank2]:     main()
+[rank2]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank2]:     return func(*args, **kwargs)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1181, in main
+[rank2]:     case.run_full(comm)
+[rank2]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 770, in run_full
+[rank2]:     return self.run_tp4_single_launch(comm)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 732, in run_tp4_single_launch
+[rank2]:     kernel.run_tp4_megamoe_single_launch(
+[rank2]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 5432, in run_tp4_megamoe_single_launch
+[rank2]:     _ext.run_tp4_megamoe_single_launch(
+[rank2]: RuntimeError: single-launch push workspace stride is too small
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1280, in <module>
+[rank1]:     main()
+[rank1]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank1]:     return func(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1181, in main
+[rank1]:     case.run_full(comm)
+[rank1]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 770, in run_full
+[rank1]:     return self.run_tp4_single_launch(comm)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 732, in run_tp4_single_launch
+[rank1]:     kernel.run_tp4_megamoe_single_launch(
+[rank1]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 5432, in run_tp4_megamoe_single_launch
+[rank1]:     _ext.run_tp4_megamoe_single_launch(
+[rank1]: RuntimeError: single-launch push workspace stride is too small
+W0904 08:56:03.291000 411853 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 411922 closing signal SIGTERM
+W0904 08:56:03.292000 411853 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 411923 closing signal SIGTERM
+W0904 08:56:03.292000 411853 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 411924 closing signal SIGTERM
+E0904 08:56:03.671000 411853 torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 0 (pid: 411921) of binary: /usr/bin/python3
+Traceback (most recent call last):
+  File "/usr/local/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+bench/v4_flash_tp_wgmma_graph.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-09-04_08:56:03
+  host      : H20-GPU-06.cm.cluster
+  rank      : 1 (local_rank: 1)
+  exitcode  : 1 (pid: 411922)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[2]:
+  time      : 2026-09-04_08:56:03
+  host      : H20-GPU-06.cm.cluster
+  rank      : 2 (local_rank: 2)
+  exitcode  : -15 (pid: 411923)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 411923
+[3]:
+  time      : 2026-09-04_08:56:03
+  host      : H20-GPU-06.cm.cluster
+  rank      : 3 (local_rank: 3)
+  exitcode  : 1 (pid: 411924)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-09-04_08:56:03
+  host      : H20-GPU-06.cm.cluster
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 411921)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
