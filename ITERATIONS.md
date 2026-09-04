@@ -6657,3 +6657,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** The harness initialized distributed state and reached native candidate graph preparation, then failed before candidate kernel execution because `prepare_fused_pull` imports another removed API, `sglang.kernels.ops.kimi_k3.all_reduce.register_comm`. Thus correctness and latency remain unmeasured.
 - **Conclusion:** Cleanup-helper compatibility is fixed, but this SGLang checkout also moved the CUDA-graph symmetric-memory registration helper. Inspect the installed CARv2/Communicator implementation and use its authoritative current API rather than guessing another module path.
 - **Artifact:** `bench/results/iter220_native_task_lookup_tp4_allm_cold_screen_20260904.log`.
+
+## Iteration 221 — Derive CARv2 multicast semaphore pointers from current storage
+
+- **Change:** Removed the paired graph's dependency on the deleted Kimi-K3 communicator registry. `prepare_fused_pull` now derives the multicast semaphore VA directly from CARv2's documented symmetric allocation layout (`multicast_base + 2*world*push_bytes + pull_bytes`) and stores it on the captured case; every fused/native call receives that graph-stable pointer explicitly.
+- **Test:** Ran Python bytecode compilation for the modified graph helper and its single-vs-multi, paired, and Humming import closure.
+- **Result:** PASS for syntax/import parsing. No GPU kernel or performance benchmark was run in this iteration.
+- **Conclusion:** The pointer path is ready for distributed runtime validation. Correctness must verify both the M<128 multicast-push tail and M128 NVLS-pull semaphore protocol before any performance result is accepted.

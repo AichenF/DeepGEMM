@@ -284,6 +284,7 @@ class CapturedCase:
         self.fused_pull_output = None
         self.fused_pull_mc_ptr = 0
         self.fused_pull_sem_local = None
+        self.fused_pull_sem_mc_ptr = 0
         self.symm_route_input = None
         self.symm_route_mc_ptr = 0
         self.symm_route_sem_local = None
@@ -665,16 +666,14 @@ class CapturedCase:
         self.fused_pull_sem_local = local_slab[
             sem_offset : sem_offset + sem_nbytes
         ]
-        from sglang.kernels.ops.kimi_k3.all_reduce import register_comm
-
-        register_comm(comm.obj, pull_sem_mc_ptr=comm.pull_sem_mc_ptr)
+        self.fused_pull_sem_mc_ptr = self.fused_push_mc_ptr + sem_offset
 
     def run_fused_k6_nvls_pull(self, comm: CustomAllReduceV2) -> torch.Tensor:
         self.prepare_fused_pull(comm)
         assert self.down is not None
         assert self.fused_pull_output is not None
         assert self.fused_pull_sem_local is not None
-        if not self.fused_pull_mc_ptr or not comm.pull_sem_mc_ptr:
+        if not self.fused_pull_mc_ptr or not self.fused_pull_sem_mc_ptr:
             raise RuntimeError("fused k6 NVLS pull requires multicast memory")
 
         self.run_before_local_reduce()
@@ -685,7 +684,7 @@ class CapturedCase:
             self.fused_graph_output,
             self.fused_pull_sem_local,
             self.fused_pull_mc_ptr,
-            comm.pull_sem_mc_ptr,
+            self.fused_pull_sem_mc_ptr,
             kernel.K6_NVLS_PULL_BLOCKS,
         )
         self.fused_k6_push_active = True
@@ -712,12 +711,13 @@ class CapturedCase:
         self.symm_route_sem_local = local_slab[
             sem_offset : sem_offset + sem_nbytes
         ]
+        self.fused_pull_sem_mc_ptr = self.fused_push_mc_ptr + sem_offset
 
     def run_rank_route_mc_pull(self, comm: CustomAllReduceV2) -> torch.Tensor:
         self.prepare_symm_route_pull(comm)
         assert self.symm_route_input is not None
         assert self.symm_route_sem_local is not None
-        if not self.symm_route_mc_ptr or not comm.pull_sem_mc_ptr:
+        if not self.symm_route_mc_ptr or not self.fused_pull_sem_mc_ptr:
             raise RuntimeError("rank-route pull requires multicast symmetric memory")
 
         self.run_before_w2()
@@ -741,7 +741,7 @@ class CapturedCase:
             self.fused_graph_output,
             self.symm_route_sem_local,
             self.symm_route_mc_ptr,
-            comm.pull_sem_mc_ptr,
+            self.fused_pull_sem_mc_ptr,
             kernel.RANK_ROUTE_PULL_BLOCKS,
         )
         self.fused_k6_push_active = True
@@ -786,7 +786,7 @@ class CapturedCase:
             comm.world_size != 4
             or not self.fused_push_mc_ptr
             or not self.fused_pull_mc_ptr
-            or not comm.pull_sem_mc_ptr
+            or not self.fused_pull_sem_mc_ptr
         ):
             raise RuntimeError(
                 "single-launch bring-up requires TP4 NVLS multicast memory"
@@ -822,7 +822,7 @@ class CapturedCase:
             self.fused_push_stride,
             self.fused_push_mc_ptr,
             self.fused_pull_mc_ptr,
-            comm.pull_sem_mc_ptr,
+            self.fused_pull_sem_mc_ptr,
             self.w13_split_k,
         )
         self.fused_k6_push_active = True
@@ -851,7 +851,7 @@ class CapturedCase:
             comm.world_size != 4
             or not self.fused_push_mc_ptr
             or not self.fused_pull_mc_ptr
-            or not comm.pull_sem_mc_ptr
+            or not self.fused_pull_sem_mc_ptr
         ):
             raise RuntimeError(
                 "native single-launch bring-up requires TP4 NVLS multicast memory"
@@ -868,7 +868,7 @@ class CapturedCase:
             self.fused_pull_sem_local,
             self.fused_push_mc_ptr,
             self.fused_pull_mc_ptr,
-            comm.pull_sem_mc_ptr,
+            self.fused_pull_sem_mc_ptr,
             self.fused_push_rank,
             self.fused_push_stride,
             self.m,
