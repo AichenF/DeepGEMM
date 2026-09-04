@@ -244,6 +244,18 @@ def main() -> None:
         native_local_scaled_check = tensor_comparison_metrics(
             native_local_scaled, local_reference, nccl_group, device
         )
+        assert candidate_case.graph_output is not None
+        native_nccl_reference = native_local_raw.clone()
+        dist.all_reduce(native_nccl_reference, group=nccl_group)
+        native_nccl_reference = (
+            native_nccl_reference.float() * custom.ROUTED_SCALING_FACTOR
+        ).to(torch.bfloat16)
+        native_embedded_comm_check = tensor_comparison_metrics(
+            candidate_case.graph_output,
+            native_nccl_reference,
+            nccl_group,
+            device,
+        )
         native_l2_check = None
         native_l2_unweighted_check = None
         native_l2_scale_check = None
@@ -354,6 +366,9 @@ def main() -> None:
                         "candidate_final": candidate_check,
                         "candidate_local_raw": native_local_raw_check,
                         "candidate_local_scaled_1p5": native_local_scaled_check,
+                        "candidate_embedded_comm_vs_native_nccl": (
+                            native_embedded_comm_check
+                        ),
                         "candidate_l2_dequant": native_l2_check,
                         "candidate_l2_dequant_vs_unweighted_control": (
                             native_l2_unweighted_check
