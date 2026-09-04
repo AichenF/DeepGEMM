@@ -1,0 +1,76 @@
+
+*****************************************
+Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+*****************************************
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 24, in <module>
+    import v4_flash_tp_wgmma as kernel
+ModuleNotFoundError: No module named 'v4_flash_tp_wgmma'
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 24, in <module>
+    import v4_flash_tp_wgmma as kernel
+ModuleNotFoundError: No module named 'v4_flash_tp_wgmma'
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 24, in <module>
+    import v4_flash_tp_wgmma as kernel
+ModuleNotFoundError: No module named 'v4_flash_tp_wgmma'
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 24, in <module>
+    import v4_flash_tp_wgmma as kernel
+ModuleNotFoundError: No module named 'v4_flash_tp_wgmma'
+W0904 17:34:10.485000 495554 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 495624 closing signal SIGTERM
+W0904 17:34:10.485000 495554 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 495625 closing signal SIGTERM
+E0904 17:34:10.614000 495554 torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 0 (pid: 495623) of binary: /usr/bin/python
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 994, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+bench/v4_flash_tp_single_vs_multi_graph.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-09-04_17:34:10
+  host      : H20-GPU-06.cm.cluster
+  rank      : 3 (local_rank: 3)
+  exitcode  : 1 (pid: 495626)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[2]:
+  time      : 2026-09-04_17:34:10
+  host      : H20-GPU-06.cm.cluster
+  rank      : 1 (local_rank: 1)
+  exitcode  : 1 (pid: 495624)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[3]:
+  time      : 2026-09-04_17:34:10
+  host      : H20-GPU-06.cm.cluster
+  rank      : 2 (local_rank: 2)
+  exitcode  : 1 (pid: 495625)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-09-04_17:34:10
+  host      : H20-GPU-06.cm.cluster
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 495623)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

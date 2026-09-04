@@ -420,7 +420,7 @@ K6_NVLS_PULL_BLOCKS = int(os.environ.get("V4_K6_NVLS_PULL_BLOCKS", "64"))
 if K6_NVLS_PULL_BLOCKS not in (1, 2, 4, 8, 16, 32, 64):
     raise ValueError("V4_K6_NVLS_PULL_BLOCKS must be 1,2,4,8,16,32,64")
 SINGLE_LAUNCH_P2P_TWO_SHOT = (
-    os.environ.get("V4_SINGLE_LAUNCH_P2P_TWO_SHOT", "0") == "1"
+    os.environ.get("V4_SINGLE_LAUNCH_P2P_TWO_SHOT", "1") == "1"
 )
 SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS = int(
     os.environ.get("V4_SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS", "64")
