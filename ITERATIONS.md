@@ -8020,3 +8020,26 @@ maximum rank latency of a full CUDA-Graph replay.
   M64/M128.
 - **Artifact:**
   `bench/results/iter282_default_large_m_twoshot_smoke_20260904.log`.
+
+## Iteration 283 — selected-path device phase breakdown at M64/M128
+
+- **Protocol:** TP4 GPUs 0-3, default selected embedded two-shot, random
+  M64/M128, two balanced batches x 10 independently cold-L2 graph replays
+  per arm, three warmups, rank-max, and excluded 256 MiB clears.  Device
+  globaltimer stamps were enabled at kernel entry and the four grid barriers.
+- **Correctness:** PASS at both shapes with matching control/candidate
+  metrics and passing all-reduce oracles.
+- **M64:** Candidate median `285.632 us`; route/W13/requant/W2 are
+  `3.680/171.360/4.608/89.120 us`, totaling `268.768 us`.  Launch-front plus
+  embedded k6/two-shot tail is therefore about `16.864 us`.
+- **M128:** Candidate median `353.472 us`; route/W13/requant/W2 are
+  `4.128/211.328/6.304/110.784 us`, totaling `332.544 us`.  The un-stamped
+  launch-front plus embedded k6/two-shot tail is about `20.928 us`.
+- **Interpretation:** Communication-side work is only about 6% of candidate
+  latency, whereas the paired deficits versus multi-kernel are about
+  `38.7 us` (M64) and `48.0 us` (M128).  Further transport-only tuning cannot
+  reach the target; W13/W2 scheduling and FC1-to-FC2 dataflow are dominant.
+- **Decision:** Stop prioritizing semaphore/transport micro-tuning and focus
+  on eliminating phase serialization/materialization in compute.
+- **Artifact:**
+  `bench/results/iter283_selected_phase_breakdown_m64_m128_20260904.log`.
