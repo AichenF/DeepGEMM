@@ -6133,3 +6133,31 @@ maximum rank latency of a full CUDA-Graph replay.
   tuning grid barrier mechanics.
 - **Evidence:**
   `results/iter166_tp4_barrier_acqrel_actual_bounds_m8_m128_screen_20260904.log`.
+
+## Iteration 167 — six resident CTAs/SM screen
+
+- **Change under test:** no source change after iteration 166; request six
+  resident schedule-0 CTAs per H20 SM instead of five.  The selected cubin is
+  85 registers/thread with 18 KiB dynamic shared memory, and the runtime
+  occupancy query admits the sixth CTA.
+- **Protocol:** TP4 physical GPUs 4-7, random routes, M8/M32/M128, same-process
+  paired CUDA Graphs, two outer batches x forty replays, six cold warmups,
+  rank-max timing.  Every sample has a separate excluded 256 MiB Triton L2
+  clear immediately before replay.
+- **Correctness:** PASS for control/candidate at all points.  Candidate minimum
+  cosine is `0.9999955807`, maximum relative L2 `0.0029729925`, all ranks are
+  finite, and padding agrees exactly.
+- **Cold-L2 timing (control / candidate / control-over-candidate):**
+  - M8: `0.071536 / 0.096016 ms / 0.74504x`.
+  - M32: `0.178016 / 0.231184 ms / 0.77002x`.
+  - M128: `0.306224 / 0.437184 ms / 0.70045x`.
+  - Three-point geometric mean: `0.157401 / 0.213299 ms`, or `0.73794x`.
+- **Analysis:** the sixth CTA does not repeat the 4-to-5 gain.  Relative to
+  iteration 160's five-CTA medians, candidate changes are +0.05% at M8,
+  -0.74% at M32, and +0.22% at M128; the mixed sub-percent movement is noise,
+  not a selectable improvement.  Resource admission is therefore not the
+  same as useful extra concurrency for this combined instruction stream.
+- **Decision:** retain five CTAs/SM.  Stop occupancy-count sweeps and target
+  the monolithic kernel's inflated combined register/control-flow footprint
+  or a CTA-local fused W13 epilogue.
+- **Evidence:** `results/iter167_tp4_schedule0_cta6_pair_screen_20260904.log`.
