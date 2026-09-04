@@ -955,8 +955,7 @@
                     ptx::sync_aligned(
                         128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
 
-                    #pragma unroll
-                    for (uint32_t k = 0; k < BLOCK_K / 32; ++ k) {
+                    if constexpr (K_NATIVE_RS_K128_BATCH) {
                         #pragma unroll
                         for (uint32_t half = 0;
                              half < kSwapABWeightHalves; ++ half) {
@@ -966,6 +965,21 @@
                                     swap_accum[half][i]);
                         }
                         ptx::warpgroup_arrive();
+                    }
+
+                    #pragma unroll
+                    for (uint32_t k = 0; k < BLOCK_K / 32; ++ k) {
+                        if constexpr (!K_NATIVE_RS_K128_BATCH) {
+                            #pragma unroll
+                            for (uint32_t half = 0;
+                                 half < kSwapABWeightHalves; ++ half) {
+                                #pragma unroll
+                                for (uint32_t i = 0; i < kRSAccum; ++ i)
+                                    ptx::warpgroup_fence_operand(
+                                        swap_accum[half][i]);
+                            }
+                            ptx::warpgroup_arrive();
+                        }
 
                         const auto activation_desc =
                             mma::sm90::make_smem_desc(
@@ -1014,6 +1028,21 @@
                                 swap_accum[half][3],
                                 cute::SM90::GMMA::ScaleOut::One);
                         }
+                        if constexpr (!K_NATIVE_RS_K128_BATCH) {
+                            ptx::warpgroup_commit_batch();
+                            #pragma unroll
+                            for (uint32_t half = 0;
+                                 half < kSwapABWeightHalves; ++ half) {
+                                #pragma unroll
+                                for (uint32_t i = 0; i < kRSAccum; ++ i)
+                                    ptx::warpgroup_fence_operand(
+                                        swap_accum[half][i]);
+                            }
+                            ptx::warpgroup_wait<0>();
+                        }
+                    }
+
+                    if constexpr (K_NATIVE_RS_K128_BATCH) {
                         ptx::warpgroup_commit_batch();
                         #pragma unroll
                         for (uint32_t half = 0;

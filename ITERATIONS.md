@@ -8431,3 +8431,26 @@ maximum rank latency of a full CUDA-Graph replay.
   GMMA wait and creates room to overlap packed/exponent/LUT operand work.  Do
   not attempt a 156-CTA resident-grid rewrite until this lower-risk issue path
   is measured.
+
+## Iteration 306 — batch four RS K32 issues per K128 tile
+
+- **Hypothesis:** The register-dequant path serializes each K128 tile as four
+  independent K32 `arrive -> issue -> commit -> wait` sequences.  Issuing all
+  eight M64N8 RS instructions for the K128 tile in one committed group and
+  waiting once should reduce the line-1026 GMMA barrier and expose operand-load
+  latency to the asynchronous engine.
+- **Change:** Added opt-in `V4_NATIVE_RS_K128_BATCH=1`.  Only the native
+  register-dequant branch changes: accumulator fencing/warpgroup arrival moves
+  before the four-step loop and commit/wait moves after it.  The default path,
+  caller-provided FP8 input contract, MXFP4 model-load representation, route,
+  epilogue, combine, and communication are unchanged.
+- **Correctness smoke:** H20 GPU 0, local M8, full route/input audit and Torch
+  FC1/intermediate reference.  PASS: all tensors finite, route FP8 bytes and
+  scales/weights exact, weighted intermediate cosine `0.9996428552` and
+  relative L2 `0.02710524`, exactly matching the accepted native envelope.
+- **Compiler evidence:** The SM90a build succeeds.  `ptxas` reports injected
+  warpgroup-arrive fences around GMMA register uses; no compile or runtime
+  error occurs.  No performance claim is made before a paired cold-L2 TP4
+  screen.
+- **Artifact:**
+  `bench/results/iter306_native_rs_k128_batch_m8_correctness_20260904.log`.

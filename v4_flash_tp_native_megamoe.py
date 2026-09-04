@@ -28,6 +28,9 @@ PADDED_SF_POOL_TOKENS = (MAX_POOL_TOKENS // BLOCK_M) * 128
 NATIVE_REGISTER_DEQUANT = (
     os.environ.get("V4_NATIVE_REGISTER_DEQUANT", "0") == "1"
 )
+NATIVE_RS_K128_BATCH = (
+    os.environ.get("V4_NATIVE_RS_K128_BATCH", "0") == "1"
+)
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
@@ -315,6 +318,9 @@ _CUDA = r"""
 
 #ifndef K_NATIVE_REGISTER_DEQUANT
 #define K_NATIVE_REGISTER_DEQUANT 0
+#endif
+#ifndef K_NATIVE_RS_K128_BATCH
+#define K_NATIVE_RS_K128_BATCH 0
 #endif
 
 using namespace deep_gemm;
@@ -822,11 +828,17 @@ void run_native_tp4(
 """
 
 _SOURCE_HASH = hashlib.sha1(
-    (_CPP + _CUDA + str(int(NATIVE_REGISTER_DEQUANT))).encode()
+    (
+        _CPP
+        + _CUDA
+        + str(int(NATIVE_REGISTER_DEQUANT))
+        + str(int(NATIVE_RS_K128_BATCH))
+    ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
     name=(
         f"v4tp_native_megamoe_rd{int(NATIVE_REGISTER_DEQUANT)}_"
+        f"kb{int(NATIVE_RS_K128_BATCH)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
@@ -842,6 +854,7 @@ _ext = load_inline(
         "-std=c++20",
         "-lineinfo",
         f"-DK_NATIVE_REGISTER_DEQUANT={int(NATIVE_REGISTER_DEQUANT)}",
+        f"-DK_NATIVE_RS_K128_BATCH={int(NATIVE_RS_K128_BATCH)}",
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",
     ],
