@@ -8265,3 +8265,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: JIT compile and kernel execution PASS without a CUDA fault; routing payload is exact (`l1_x_mismatch_bytes=0`, scale/route-weight max error `0`).  Numerical correctness FAILS at the FC1-derived intermediate: cosine versus weighted BF16 Torch is only `0.0288884`, relative L2 `1.52780`; final output is finite but has max magnitude `55808`.
 - Interpretation: scheduler, input staging, shared-memory capacity and liveness are intact.  The failure is isolated to the new RS operand mapping, most likely the row-record order or the packed Mode2 word/sign ordering expected by `MMA_64x8x32_RS_TN`; no latency is valid.
 - Decision: keep the path opt-in and nonselectable.  Build an isolated one-tile RS decoder/WGMMA comparison against the already-correct shared-decoded SS path before another end-to-end timing run.
+
+## Iteration 295: restoring the decoder's warpgroup barrier does not fix RS math
+
+- Hypothesis/repair: the legacy shared decoder ended with a 128-thread named barrier, while the first RS path went directly from independent mbarrier waits/register loads into warpgroup collectives.  Restored the same per-consumer-WG convergence before the RS-WGMMA loop.
+- Test: identical H20 GPU-0 M8 full native local correctness entry, prequantized FP8 input, `V4_NATIVE_REGISTER_DEQUANT=1`.  Artifact: `bench/results/iter295_native_register_dequant_wg_sync_m8_20260904.log`.
+- Result: compile and execution PASS with no CUDA fault/deadlock, and route/input payload remains exact.  Numerical output is byte-for-byte unchanged from Iteration 294's failed mapping: weighted-BF16 intermediate cosine `0.0288884`, rel-L2 `1.52780`, final max magnitude `55808`.
+- Conclusion: reject the missing-convergence hypothesis.  The deterministic identical failure points to register operand/data-layout mapping rather than warp timing.  Keep the barrier because WGMMA convergence is required, but proceed with an isolated one-K128 tile comparison of decoded bytes, SS-WGMMA and RS-WGMMA.

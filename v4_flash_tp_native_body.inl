@@ -948,6 +948,13 @@
                     float swap_accum[kSwapABWeightHalves][kRSAccum] = {};
                     const uint32_t packed_k_offset = col_idx * sizeof(uint32_t);
 
+                    // The legacy decoder's named barrier also converged all
+                    // four consumer warps after their independent mbarrier
+                    // waits.  RS keeps operands private, but WGMMA remains a
+                    // warpgroup collective and needs the same convergence.
+                    ptx::sync_aligned(
+                        128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
+
                     #pragma unroll
                     for (uint32_t k = 0; k < BLOCK_K / 32; ++ k) {
                         #pragma unroll
