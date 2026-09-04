@@ -6682,6 +6682,16 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Latency:** control/native medians `0.071216/0.128800 ms`; native is `1.809x` slower. The two native batch medians are `0.128688/0.128912 ms`, reproducing Iteration 216 and proving the Iteration-222 regression is removed.
 - **Conclusion:** Keep native only as a correctness/reference implementation. Its measured gap is much larger than the TP-specialized single-launch candidate, so optimization returns to the latter.
 - **Artifact:** `bench/results/iter223_restore_native_interleaved_tp4_m8_cold_screen_20260904.log`.
+## Iteration 225 — distributed NCU kernel replay is incompatible with embedded TP synchronization
+
+- Date: 2026-09-04
+- Goal: collect a basic Nsight Compute profile of one TP4 M128 `tp4_megamoe_single_launch_kernel` launch without changing source or benchmark semantics.
+- Method: `ncu --target-processes all`, demangled kernel-name filter, one matching launch per process, basic set, kernel replay, CUDA Graph paired harness on GPUs 0-3.
+- Result: profiling failed before the first replay completed. NCU attached to all four ranks and found the correct `SplitK=2, Tokens=128` kernel, then all ranks reported `UnknownError` at 0% and the application exited with code 9. No valid counter values or report were produced.
+- Interpretation: kernel replay perturbs/replays each process's embedded TP synchronization independently and is not a valid collection method for this same-launch collective. This is tooling evidence only, not a kernel correctness or performance regression.
+- Decision: do not retry distributed kernel replay. Profile a compute-only instantiation of the identical route/W13/requant/W2 body, and retain distributed device timestamps plus cold-L2 CUDA-event timing for the communication-bearing entry.
+- Artifact: `bench/results/iter225_tp_single_m128_basic_ncu_20260904.log`.
+
 ## Iteration 224 — make the TP-specialized single-launch candidate explicit
 
 - Date: 2026-09-04
