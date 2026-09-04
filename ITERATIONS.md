@@ -6815,3 +6815,33 @@ maximum rank latency of a full CUDA-Graph replay.
 - Analysis: compared with relaxed-poll schedule 0, early W2 reduces the remaining W2 phase only about 3-4 us, while mixed W13/W2 traffic plus the extra rendezvous expands the W13/overlap interval by roughly 14 us. Total compute time regresses about 11 us at both sizes. The 16-CTA and 32-CTA variants agree that pushing W2 into the W13 tail is counterproductive on cold weights.
 - Decision: reject W2 tail overlap and keep disabled; do not run distributed timing. If this structural path is revisited, overlap activation only, never concurrent cold W13/W2 weight streams.
 - Artifact: `bench/results/iter237_tail_overlap_group32_m8_m128_compute_smoke_20260904.log`.
+
+## Iteration 238 — group W13 completion with activation
+
+- **Hypothesis:** Assign each `(mblock, N128)` gate/up pair to one fixed
+  `SplitK`-CTA cohort, then have that cohort perform the matching SwiGLU and
+  FP8 requant work.  This should remove the standalone activation wave and
+  one whole-grid barrier without overlapping cold W13 and W2 weight traffic.
+- **Input/timing contract:** The business kernel receives shared prequantized
+  FP8-E4M3 `qx` plus FP32 group-128 `x_scale`; external X quantization is not
+  launched or timed.  The internal SwiGLU-to-FP8 requant before W2 remains in
+  the kernel.  Compute-only measurements use a 256 MiB cold-L2 clear outside
+  the profiled kernel.
+- **Change:** Added opt-in `V4_SINGLE_LAUNCH_GROUPED_W13_ACT=1`.  A reusable
+  per-cohort count/epoch barrier publishes W13 split partials, cohort CTAs
+  divide the eight routed activation rows, and a single grid barrier publishes
+  all quantized activation before the unchanged W2 phase.
+- **Artifact:**
+  `bench/results/iter238_grouped_w13_act_m8_m128_compute_smoke_20260904.log`.
+- **Correctness:** Accepted for both smoke points.  M=8 and M=128 both report
+  `down_check cosine=1.0`, `rel_l2=0.0`, finite output.
+- **Cold-L2 compute-only result:** M=8 (SplitK=4, padded rows 344): route
+  2.304 us, grouped W13+requant 56.032 us, standalone requant 0.000 us, W2
+  22.336 us, total 80.672 us.  M=128 (SplitK=2, padded rows 1992): route
+  4.128 us, grouped W13+requant 218.048 us, standalone requant 0.000 us, W2
+  109.888 us, total 332.064 us.
+- **Decision:** Reject as the default performance path.  It is bitwise safe
+  and removes the phase barrier, but M=8 regresses versus the current relaxed
+  grid-poll best (~77.360 us compute-only), while M=128 is not materially
+  better than the prior phase total (~331.9 us).  Keep behind an opt-in flag as
+  a documented structural checkpoint; do not run the distributed paired sweep.

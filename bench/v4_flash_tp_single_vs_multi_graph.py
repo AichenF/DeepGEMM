@@ -207,6 +207,9 @@ def main() -> None:
                     "single_launch_tail_group_ctas": (
                         kernel.SINGLE_LAUNCH_TAIL_GROUP_CTAS
                     ),
+                    "single_launch_grouped_w13_act": (
+                        kernel.SINGLE_LAUNCH_GROUPED_W13_ACT
+                    ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
                     ),

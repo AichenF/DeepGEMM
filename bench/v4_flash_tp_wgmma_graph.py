@@ -310,7 +310,11 @@ class CapturedCase:
         scheduler_words = (
             8 + 3 * max_mblocks
             if kernel.SINGLE_LAUNCH_INTERLEAVED
-            else 78 if kernel.SINGLE_LAUNCH_TAIL_OVERLAP else 0
+            else 624
+            if kernel.SINGLE_LAUNCH_GROUPED_W13_ACT
+            else 78
+            if kernel.SINGLE_LAUNCH_TAIL_OVERLAP
+            else 0
         )
         self.single_launch_barrier_state = torch.zeros(
             (18 + scheduler_words,), dtype=torch.int32, device=device
