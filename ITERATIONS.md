@@ -7464,3 +7464,43 @@ maximum rank latency of a full CUDA-Graph replay.
   warranted.
 - **Artifact:**
   `bench/results/iter261_packed_grid_poll_backoff_compute_screen_20260904.log`.
+
+## Iteration 262 — current single-launch remains behind the optimized multi-kernel path
+
+- **Purpose:** Re-audit whether the selected packed-barrier one-launch kernel
+  is itself faster than the optimized multi-kernel implementation.  This is a
+  direct same-process comparison, not an inference from the separate Humming
+  benchmark.
+- **Protocol:** TP4 GPUs 0-3 at commit `1f39652`, random
+  M={8,16,32,64,128} routes, shared caller-provided FP8-E4M3 X plus FP32
+  group-128 scales, CUDA Graph, six balanced AB/BA batches x 30 separately
+  cold-L2 replays per implementation (180 samples/shape), six warmups and
+  rank-max timing.  A separate 256 MiB clear immediately precedes every graph
+  replay and is excluded from events.  Both complete paths include route
+  alignment, W13, internal SwiGLU/FP8 requantization, W2, local k6 reduction
+  and TP all-reduce; external X quantization is excluded.
+- **Correctness:** PASS for both implementations at every shape.  Candidate
+  cosine is at least `0.99999559`, relative L2 at most `0.00296801`, all ranks
+  are finite, and all-reduce checks pass.
+- **Cold-L2 median multi-kernel / one-launch and one-launch overhead:** M8
+  `0.071040/0.075712 ms, +6.58%`; M16
+  `0.113728/0.125648 ms, +10.48%`; M32
+  `0.177184/0.203456 ms, +14.83%`; M64
+  `0.258400/0.295216 ms, +14.25%`; M128
+  `0.320688/0.386656 ms, +20.57%`.
+- **Aggregate:** Geometric means are multi-kernel `0.163996 ms` and
+  one-launch `0.185717 ms`; the fused path is `13.24%` slower.  M64/M128 show
+  noticeable within-run drift on both sides, but the paired end-to-end result
+  remains decisively against one-launch.
+- **Interpretation:** The current win over Humming does not demonstrate a
+  positive fusion gain.  CUDA Graph already makes launch overhead small, while
+  the resident one-launch schedule loses GEMM utilization to fixed-grid task
+  waves and whole-grid phase synchronization.  Prior NCU compute-only evidence
+  independently measured fused M128 W13+W2 at `336.352 us` versus
+  `301.760 us` standalone, a `34.592 us` (`11.46%`) compute deficit before
+  considering the rest of the end-to-end path.
+- **Decision:** Treat the optimized multi-kernel path as the stronger internal
+  performance ceiling.  Continue optimizing the one-launch schedule; do not
+  attribute the approximately 1.11x Humming speedup to fusion itself.
+- **Artifact:**
+  `bench/results/iter262_current_packed_single_vs_multi_tp4_allm_cold_paired_20260904.log`.
