@@ -330,6 +330,8 @@ class CapturedCase:
             if kernel.SINGLE_LAUNCH_INTERLEAVED
             else 624
             if kernel.SINGLE_LAUNCH_GROUPED_W13_ACT
+            else 4 * max_mblocks
+            if kernel.SINGLE_LAUNCH_W13_COMPLETION_ACT
             else 78
             if kernel.SINGLE_LAUNCH_TAIL_OVERLAP
             else 0
@@ -1281,6 +1283,9 @@ def main() -> None:
                     ),
                     "single_launch_balanced_workers": (
                         kernel.SINGLE_LAUNCH_BALANCED_WORKERS
+                    ),
+                    "single_launch_w13_completion_act": (
+                        kernel.SINGLE_LAUNCH_W13_COMPLETION_ACT
                     ),
                     "single_launch_skip_final_cta_sync": (
                         kernel.SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC

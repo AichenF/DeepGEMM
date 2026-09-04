@@ -151,6 +151,9 @@ if SINGLE_LAUNCH_TAIL_GROUP_CTAS not in (16, 32):
 SINGLE_LAUNCH_GROUPED_W13_ACT = (
     os.environ.get("V4_SINGLE_LAUNCH_GROUPED_W13_ACT", "0") == "1"
 )
+SINGLE_LAUNCH_W13_COMPLETION_ACT = (
+    os.environ.get("V4_SINGLE_LAUNCH_W13_COMPLETION_ACT", "0") == "1"
+)
 SINGLE_LAUNCH_W13_N64_TAIL = (
     os.environ.get("V4_SINGLE_LAUNCH_W13_N64_TAIL", "0") == "1"
 )
@@ -263,6 +266,10 @@ if SINGLE_LAUNCH_TAIL_OVERLAP and SINGLE_LAUNCH_SCHEDULE != 0:
     raise ValueError("V4_SINGLE_LAUNCH_TAIL_OVERLAP requires schedule 0")
 if SINGLE_LAUNCH_GROUPED_W13_ACT and SINGLE_LAUNCH_SCHEDULE != 0:
     raise ValueError("V4_SINGLE_LAUNCH_GROUPED_W13_ACT requires schedule 0")
+if SINGLE_LAUNCH_W13_COMPLETION_ACT and SINGLE_LAUNCH_SCHEDULE != 0:
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W13_COMPLETION_ACT requires schedule 0"
+    )
 if SINGLE_LAUNCH_W13_N64_TAIL and (
     SINGLE_LAUNCH_SCHEDULE != 0
     or WOUT != 128
@@ -355,6 +362,19 @@ if SINGLE_LAUNCH_GROUPED_W13_ACT and (
 ):
     raise ValueError(
         "V4_SINGLE_LAUNCH_GROUPED_W13_ACT requires the isolated inline path"
+    )
+if SINGLE_LAUNCH_W13_COMPLETION_ACT and (
+    SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W13_COMPLETION_ACT requires the isolated inline "
+        "schedule-0 path"
     )
 if SINGLE_LAUNCH_W13_N64_TAIL and (
     SINGLE_LAUNCH_TAIL_OVERLAP
@@ -641,6 +661,8 @@ static constexpr bool kSingleLaunchTailOverlap =
     K_SINGLE_LAUNCH_TAIL_OVERLAP;
 static constexpr bool kSingleLaunchGroupedW13Act =
     K_SINGLE_LAUNCH_GROUPED_W13_ACT;
+static constexpr bool kSingleLaunchW13CompletionAct =
+    K_SINGLE_LAUNCH_W13_COMPLETION_ACT;
 static constexpr bool kSingleLaunchW13N64Tail =
     K_SINGLE_LAUNCH_W13_N64_TAIL;
 static constexpr bool kSingleLaunchClusterW13Act =
@@ -4262,6 +4284,10 @@ void tp4_megamoe_single_launch_kernel(
              word < kSingleLaunchGroupedStateWords;
              word += ctas * blockDim.x)
             scheduler[word] = 0;
+    } else if constexpr (kSingleLaunchW13CompletionAct) {
+        for (int word = cta * blockDim.x + threadIdx.x;
+             word < 4 * max_mblocks; word += ctas * blockDim.x)
+            scheduler[word] = 0;
     } else if constexpr (kSingleLaunchTailOverlap) {
         for (int word = cta * blockDim.x + threadIdx.x;
              word < kSingleLaunchTailStateWords;
@@ -4753,6 +4779,78 @@ void tp4_megamoe_single_launch_kernel(
                 }
                 single_launch_group_barrier(scheduler, cohort, SplitK);
             }
+            single_launch_grid_barrier(barrier_state, 1, ctas);
+            if (cta == 0 && threadIdx.x == 0) {
+                uint64_t* stamps = reinterpret_cast<uint64_t*>(
+                    barrier_state + kSingleLaunchBarrierWords);
+                stamps[3] = stamps[2];
+            }
+        } else if constexpr (kSingleLaunchW13CompletionAct) {
+            constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
+            constexpr int kArrivalsPerGroup = 2 * SplitK;
+            __shared__ int completed_activation_unit;
+            int w13_sequence = 0;
+
+            // Keep the selected flat W13 tile order and residency.  Each
+            // gate/up N128 group has a small release-sequenced completion
+            // counter.  Its last split CTA performs only the matching N128
+            // SwiGLU/FP8 group for the valid routed rows, distributing the
+            // epilogue over many W13 completers instead of one CTA/expert.
+            for (int task = cta; task < w13_tasks;
+                 task += ctas, ++w13_sequence) {
+                route_gemm_task<
+                    4096, 1024, SplitK, true, 0, false, false, false>(
+                    &w13_tma_weight, &w13_tma_weight_scale,
+                    w13, s13, g13, qx, x_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                    partials, lut, nullptr, routes, 0, task, w13_sequence);
+                __syncthreads();
+
+                const int tile = task / SplitK;
+                const int mblock = tile / kW13NTiles;
+                const int n_tile = tile - mblock * kW13NTiles;
+                const int activation_group =
+                    n_tile % kActivationGroupsPerRoute;
+                const int activation_unit =
+                    mblock * kActivationGroupsPerRoute + activation_group;
+                if (threadIdx.x == 0) {
+                    const int arrived = atomic_add_acq_rel_gpu_i32(
+                        scheduler + activation_unit, 1) + 1;
+                    completed_activation_unit =
+                        arrived == kArrivalsPerGroup
+                        ? activation_unit : -1;
+                }
+                __syncthreads();
+
+                if (completed_activation_unit >= 0) {
+                    const int ready_mblock =
+                        completed_activation_unit
+                        / kActivationGroupsPerRoute;
+                    const int ready_group =
+                        completed_activation_unit
+                        - ready_mblock * kActivationGroupsPerRoute;
+                    #pragma unroll
+                    for (int route_slot = 0; route_slot < kTok;
+                         ++route_slot) {
+                        const int route = __ldg(
+                            sorted_ids + ready_mblock * kTok + route_slot);
+                        if (route >= 0 && route < routes) {
+                            reduce_swiglu_quant_task<kIntermediate, SplitK>(
+                                partials, activation, qactivation,
+                                activation_scale, route_to_sorted, topk_ids,
+                                g2, routes,
+                                route * kActivationGroupsPerRoute
+                                    + ready_group);
+                            __syncthreads();
+                        }
+                    }
+                }
+                __syncthreads();
+            }
+
+            // This one publication covers both W13 partial completion and
+            // every dependent quantized N128 group.  The standalone
+            // activation wave and its second grid barrier are absent.
             single_launch_grid_barrier(barrier_state, 1, ctas);
             if (cta == 0 && threadIdx.x == 0) {
                 uint64_t* stamps = reinterpret_cast<uint64_t*>(
@@ -6318,6 +6416,8 @@ void run_tp4_megamoe_single_launch(
         ? kSchedulerHeaderWords + 3LL * expert_ids.numel()
         : kSingleLaunchGroupedW13Act
             ? kSingleLaunchGroupedStateWords
+            : kSingleLaunchW13CompletionAct
+                ? 4LL * expert_ids.numel()
             : kSingleLaunchTailOverlap ? kSingleLaunchTailStateWords : 0;
     TORCH_CHECK(barrier_state.scalar_type() == torch::kInt32
                     && barrier_state.is_cuda()
@@ -7129,6 +7229,7 @@ _EXTENSION_CONFIG = (
           f"slto{int(SINGLE_LAUNCH_TAIL_OVERLAP)}_"
           f"sltg{SINGLE_LAUNCH_TAIL_GROUP_CTAS}_"
           f"slga{int(SINGLE_LAUNCH_GROUPED_W13_ACT)}_"
+          f"slca{int(SINGLE_LAUNCH_W13_COMPLETION_ACT)}_"
           f"sln64{int(SINGLE_LAUNCH_W13_N64_TAIL)}_"
           f"slcl{int(SINGLE_LAUNCH_CLUSTER_W13_ACT)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
@@ -7264,6 +7365,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_GROUPED_W13_ACT="
             f"{int(SINGLE_LAUNCH_GROUPED_W13_ACT)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W13_COMPLETION_ACT="
+            f"{int(SINGLE_LAUNCH_W13_COMPLETION_ACT)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W13_N64_TAIL="

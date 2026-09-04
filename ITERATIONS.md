@@ -8043,3 +8043,30 @@ maximum rank latency of a full CUDA-Graph replay.
   on eliminating phase serialization/materialization in compute.
 - **Artifact:**
   `bench/results/iter283_selected_phase_breakdown_m64_m128_20260904.log`.
+
+## Iteration 284 — per-N128 W13-completer activation is correct but slower
+
+- **Change:** Added opt-in `V4_SINGLE_LAUNCH_W13_COMPLETION_ACT=1`.  Static
+  W13 tile order and 624-CTA residency are preserved.  Each `(mblock,N128)`
+  gate/up group uses an acq-rel completion counter; the last of `2*SplitK`
+  CTAs quantizes only that N128 activation group.  One grid publication then
+  enters unchanged W2, removing the standalone activation wave/barrier.
+- **Protocol:** TP4 GPUs 0-3, random M8/M128, two balanced batches x 10
+  separately cold-L2 CUDA-Graph replays per arm, three warmups, rank-max,
+  excluded 256 MiB clears, and device phase stamps.  Inputs remain caller-
+  supplied FP8 E4M3 X/group-128 FP32 scales plus MXFP4 weights.
+- **Correctness:** PASS at both shapes; candidate/control final metrics match
+  exactly, outputs are finite, and all-reduce oracles pass.
+- **Cold-L2 result:** M8 multi/candidate is `0.071088/0.078928 ms`
+  (`+11.03%`); M128 is `0.306064/0.366528 ms` (`+19.76%`).  Candidate phase
+  times are M8 route/combined-W13+requant/W2
+  `2.368/44.992/21.600 us`, and M128
+  `4.672/233.120/111.328 us`.
+- **Interpretation:** Removing the activation barrier does not repay the
+  release atomic and interspersed epilogue disruption of the cold W13
+  stream.  At M128 the combined W13 phase is roughly 15.5 us above the
+  selected W13+requant sum from Iteration 283.
+- **Decision:** Reject and keep disabled.  Preserve as a correctness-proven
+  structural experiment; do not broaden to all M.
+- **Artifact:**
+  `bench/results/iter284_w13_completion_activation_m8_m128_20260904.log`.
