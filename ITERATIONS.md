@@ -6751,3 +6751,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: infrastructure FAIL before JIT compilation, CUDA initialization, or kernel execution. `profile_v4_flash_tp_single_compute.py` imports the shared graph helper, whose Humming dependency was absent from `PYTHONPATH`; Python raised `ModuleNotFoundError: No module named 'humming'`.
 - Decision: no correctness or performance conclusion. Commit the exact source checkpoint, then rerun unchanged with the Humming checkout added to `PYTHONPATH`.
 - Artifact: `bench/results/iter230_persistent_gemm_state_m8_m128_compute_smoke_20260904.log`.
+## Iteration 231 — persistent GEMM state passes compute-only correctness
+
+- Source/configuration: unchanged Iteration 230 opt-in `V4_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE=1`, schedule 0, launch bound/requested residency 8. The retry adds only the missing Humming checkout to `PYTHONPATH`.
+- Protocol: H20 GPU 0, M={8,128}, random routes, caller-provided FP8 E4M3 X plus FP32 group-128 scale and MXFP4 weights. Each candidate launch follows an excluded 256 MiB L2 clear and compares its complete W2 route tensor with the independent multi-kernel local path.
+- Correctness: PASS bitwise at both sizes (`cosine=1.0`, `rel_l2=0`, finite=true). M8/M128 padded rows are 344/1992 and exercise split-K 4/2.
+- Phase result (route/W13/activation/W2 us): M8 `2.272/40.192/3.552/22.016`; M128 `4.224/213.568/6.400/113.536`.
+- Analysis: versus the prior compute-only profile, M128 saves 7.104 us in W13 and 2.144 us in W2 (9.248 us, 2.67% across the four measured phases), consistent with amortized barrier/LUT setup. M8 is mixed: W13 saves 0.640 us while W2 and activation move up by 0.832/0.544 us, so no small-M gain is established.
+- Decision: numerical safety is established for the two split-K variants. Run a same-process distributed TP4 cold-L2 paired M8/M128 screen before retaining; do not select from single-shot phase timestamps.
+- Artifact: `bench/results/iter231_persistent_gemm_state_m8_m128_compute_smoke_20260904.log`.
