@@ -6760,3 +6760,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Analysis: versus the prior compute-only profile, M128 saves 7.104 us in W13 and 2.144 us in W2 (9.248 us, 2.67% across the four measured phases), consistent with amortized barrier/LUT setup. M8 is mixed: W13 saves 0.640 us while W2 and activation move up by 0.832/0.544 us, so no small-M gain is established.
 - Decision: numerical safety is established for the two split-K variants. Run a same-process distributed TP4 cold-L2 paired M8/M128 screen before retaining; do not select from single-shot phase timestamps.
 - Artifact: `bench/results/iter231_persistent_gemm_state_m8_m128_compute_smoke_20260904.log`.
+## Iteration 232 — persistent task state is neutral in distributed cold-L2 timing
+
+- Configuration/protocol: unchanged Iteration 230 opt-in, schedule 0, bound/requested residency 8, TP4 GPUs 0-3, random M={8,128}, same-process control/candidate CUDA Graphs, two outer batches x twenty separately cold-L2 replays and four warmups. Every replay has an excluded 256 MiB clear; timing is rank-max. Both graphs consume the same prequantized FP8 E4M3 X/group-128 scale and MXFP4 weights.
+- Correctness: PASS for both paths and both M. Candidate cosine is 0.999995792/0.999995598, rel-L2 0.00290117/0.00296726, finite and all-reduce OK.
+- M8: control/candidate median `0.071264/0.077120 ms`, control-over-candidate `0.92407x`; candidate min/median/max `0.075296/0.077120/0.092480 ms`; phases route/W13/activation/W2 `2.336/42.944/3.040/21.792 us`.
+- M128: control/candidate median `0.306544/0.371680 ms`, control-over-candidate `0.82475x`; candidate min/median/max `0.369216/0.371680/0.383520 ms`; phases `4.352/218.464/6.464/113.568 us`.
+- Two-point geometric median: control/candidate `0.147802/0.169304 ms`; candidate is 14.55% slower.
+- Analysis: versus Iteration 224, M8 is numerically identical at 0.077120 ms and M128 regresses slightly from 0.371024 to 0.371680 ms. The single-GPU phase gain does not survive the distributed end-to-end gate. Source-correlated NCU review independently locates most barrier samples after whole-grid phase barriers rather than at caller-side per-task barriers.
+- Decision: reject persistent GEMM state as a performance direction and keep it disabled. Target whole-grid tail imbalance/static task striping next; no speedup claim.
+- Artifact: `bench/results/iter232_persistent_gemm_state_tp4_m8_m128_cold_screen_20260904.log`.
