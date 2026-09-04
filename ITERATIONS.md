@@ -8779,3 +8779,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: both shapes passed bitwise against the independent multi-kernel FC1→SwiGLU/requant→FC2 reference.  M8 and M128 each reported cosine `1.0`, relative L2 `0.0`, finite output, and packed words `[0,0,0,0]` after the seeded wrap (`packed_generation_wrap_ok=true`).
 - Decision: correctness and single-wrap gates pass.  Proceed to a repeated CUDA-Graph liveness/replay stress before distributed performance timing.
 - Artifact: `bench/results/iter331_release_arrival_m8_m128_compute_correctness_20260904.log`.
+
+## Iteration 332 — Release-arrival TP4 cold-L2 screen (2026-09-04)
+
+- Change/protocol: added the release-arrival flag to the paired harness metadata, then ran adjacent ON→OFF processes on TP4 GPUs 0–3.  M64/M128 used random routes, CUDA Graphs, replay-granularity control/candidate interleaving, four outer batches × 20 replays = 80 independently cold-L2 samples per implementation and shape.  Every replay had a separate excluded 256 MiB clear.  Inputs were shared prequantized FP8 `qx/x_scale`; both one-kernel candidates included the embedded P2P two-shot TP allreduce.
+- Correctness/liveness: ON and OFF candidate/control outputs all passed distributed allreduce checks.  Worst-rank candidate cosine was `0.9999956225` at M64 and `0.9999955977` at M128; all outputs were finite.  No barrier hang occurred over the 160 timed ON candidate graph replays plus warmups across the two shapes.
+- Release-arrival ON medians, control/single/candidate-over-control: M64 `0.246960/0.281200 ms`, `1.138646`; M128 `0.308544/0.353232 ms`, `1.144835`; two-shape geometric ratio `1.141736`.
+- Release-arrival OFF medians: M64 `0.246768/0.284048 ms`, `1.151073`; M128 `0.311536/0.358640 ms`, `1.151199`; geometric ratio `1.151136`.
+- Same-run-control normalized effect of ON versus OFF: candidate/control improved `1.08%` at M64, `0.55%` at M128, and `0.82%` geometric mean.  Direct candidate medians improved `1.00%`/`1.51%`, but the control also moved, especially at M128.
+- Decision: promising small barrier saving, not yet selected.  It does not close the main gap (single remains roughly 14% slower), and the effect is below 2%; repeat in reversed OFF→ON order before changing the default.  If confirmed, run all five M values and longer generation/liveness stress.
+- Artifact: `bench/results/iter332_release_arrival_on_off_tp4_m64_m128_cold_screen_20260904.log`.
