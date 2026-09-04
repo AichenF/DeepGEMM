@@ -9046,3 +9046,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: **inconclusive; target kernel was not reached.** Compute Sanitizer repeatedly reported `CUDA_ERROR_INVALID_VALUE` from `cuGetProcAddress_v2` while Python/CUDA dependencies were importing, producing host backtraces before graph construction.
 - Decision: do not interpret this as a clean memcheck or as kernel evidence. Preserve the failed-tool artifact, and continue with controlled in-kernel stage isolation instead of retrying the same incompatible wrapper path.
 - Artifact: `bench/results/iter358_w2_chunk_stage1_memcheck_m64_20260904.log`.
+
+## Iteration 359 — post-barrier full-helper `down` integrity (2026-09-04)
+
+- Purpose: verify explicitly that the same 64-CTA, four-chunk full helper does not modify or poison `down` when it runs only after W2 is globally complete.
+- Setup: TP4 GPUs 0–3, M128 random routes, seed 20260904, post-barrier concurrent chunk helper, four diagnostic graph replays and one cold-L2 smoke.
+- Correctness: **PASS exactly.** Candidate `down` was bitwise identical to the control for every chunk and replay; repeat-versus-first max difference was zero. Final output was also replay-stable with the normal cosine 0.9999956090 and rel-L2 0.0029634544.
+- Inference: the helper's complete local combine, semaphore, peer reduction, and all-gather leave `down` intact when no W2 producers remain. Corruption specifically requires helper reads concurrent in time with the still-active persistent W2 grid, despite logical chunk partitioning.
+- Timing note: one-sample candidate was 0.345536 ms; this post-barrier diagnostic does not improve the selected mainline.
+- Decision: close the separate-pass chunk-overlap experiment as rejected. Future overlap should consume producer-owned staging/accumulators or fuse route combination into W2 rather than reread `down` while W2 is active.
+- Artifact: `bench/results/iter359_w2_chunk_post_barrier_down_integrity_20260904.log`.
