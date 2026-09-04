@@ -37,6 +37,7 @@ _include_candidates = (
 DEEP_GEMM_INCLUDE = next((path for path in _include_candidates if path.exists()), None)
 if DEEP_GEMM_INCLUDE is None:
     raise FileNotFoundError("Cannot locate the read-only DeepGEMM include tree")
+REPO_INCLUDE = Path(__file__).resolve().parent
 
 
 def _align(value: int, alignment: int) -> int:
@@ -573,7 +574,7 @@ v4_flash_tp4_native_megamoe_impl(
     constexpr uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4;
     constexpr uint32_t kNumTokensPerWarp = 32 / kNumTopk;
     constexpr uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks;
-#include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused_body.inl>
+#include "v4_flash_tp_native_body.inl"
 
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900) && (__CUDA_ARCH__ < 1000)
     // The last combine store is asynchronous.  Drain it before the local-rank
@@ -801,6 +802,7 @@ _ext = load_inline(
         "-std=c++20",
         "-lineinfo",
         f"-I{DEEP_GEMM_INCLUDE}",
+        f"-I{REPO_INCLUDE}",
     ],
     extra_ldflags=["-lcuda"],
     verbose=os.environ.get("V4_VERBOSE_BUILD", "0") == "1",

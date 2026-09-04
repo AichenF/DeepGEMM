@@ -6429,3 +6429,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence: `bench/results/iter186_native_local_m8_smoke_20260904.log` on the remote branch.
 - Conclusion: the TP all-reduce tail is exonerated for this failure. The fault is in the adapted body configuration, TMA/WGMMA descriptors, or a body assertion.
 - Decision: next isolate the body by enabling device assertion diagnostics and inspecting the generated SASS/PC; do not tune communication until local execution is valid.
+
+## Iteration 187/188 — cleanup barrier PC and first repair
+
+- Diagnosis: compute-sanitizer localized 2,498 illegal-instruction reports to `ptx::sync_aligned(64, barrier 0)` in `cleanup_workspace` (body line 421), reached from the post-dispatch cleanup call. Evidence is `bench/results/iter187_native_local_m8_compute_sanitizer_20260904.log`.
+- Change: copied the otherwise-identical read-only body into the TP branch and added an end-of-iteration 64-thread barrier so two dispatch warps cannot cross-match cleanup and following barrier generations.
+- Test: one H20 GPU, M=8 local-only body, CUDA_LAUNCH_BLOCKING=1.
+- Result: **still failed with `cudaErrorIllegalInstruction`**; evidence is `bench/results/iter188_native_cleanup_barrier_m8_20260904.log`.
+- Interpretation: the first race hypothesis was incomplete. A repeated barrier at loop entry/exit may itself permit adjacent generations to alias, or another dispatch/control-flow mismatch reaches the same PC.
+- Decision: retain the owned body for safe TP-specific fixes; re-run compute-sanitizer to identify the new exact PC before another edit.
