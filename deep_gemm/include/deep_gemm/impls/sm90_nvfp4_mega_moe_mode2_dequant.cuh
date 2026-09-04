@@ -40,6 +40,38 @@ __device__ __forceinline__ uint2 load_nvfp4_lut(
 #endif
 }
 
+// Reconstruct the straight NVFP4-scale -> E4M3 magnitude table in registers.
+// For normal UE4M3 codes the low four entries are
+//   {0, round_even(scale / 2), scale, round_even(3 * scale / 2)}
+// and the high four are the same two non-zero chains advanced by one/two E4M3
+// exponent steps.  This is the direct-scale MegaMoE table, not Humming's
+// deliberately /6-adjusted helper.  Codes 0..7 are UE4M3 subnormals, where
+// exponent stepping is not valid, so they retain the exact shared-LUT path.
+// Code 0x7f is MegaMoE's documented saturating-448 fallback.
+__device__ __forceinline__ uint2 make_nvfp4_direct_lut(
+        const uint2* __restrict__ lut_smem, uint32_t idx) {
+    idx &= 0x7fu;
+    if (idx < 8u)
+        return lut_smem[idx];
+
+    const uint32_t one = idx == 0x7fu ? 0x7eu : idx;
+    const uint32_t half = idx == 0x7fu ? 0x76u :
+        (idx >= 16u ? idx - 8u :
+         ((idx >> 1u) + ((idx & 1u) & ((idx >> 1u) & 1u))));
+    const uint32_t one_and_half_raw =
+        idx + 4u + ((0x3eu >> (idx & 7u)) & 1u);
+    const uint32_t one_and_half =
+        one_and_half_raw < 0x7fu ? one_and_half_raw : 0x7fu;
+    const uint32_t lo =
+        (half << 8u) | (one << 16u) | (one_and_half << 24u);
+
+    uint32_t hi =
+        byte_perm_unchecked(lo, 0u, 0x3232u) + 0x10100808u;
+    const uint32_t sat = hi & 0x80808080u;
+    hi = (hi | (sat - (sat >> 7u))) & ~sat;
+    return make_uint2(lo, hi);
+}
+
 
 __device__ __forceinline__ uint2 dequant_mode2_lop3_word(
         const uint32_t packed, const uint2& lut) {

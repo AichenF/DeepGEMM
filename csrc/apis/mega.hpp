@@ -8,7 +8,9 @@
 #endif
 #include "../jit/device_runtime.hpp"
 #include "../jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp"
+#include "../jit_kernels/heuristics/sm90_nvfp4_mega_moe_allm.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe.hpp"
+#include "../jit_kernels/impls/sm90_nvfp4_mega_moe_h200_fused.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe_small_m.hpp"
 
 namespace deep_gemm::mega {
@@ -366,7 +368,37 @@ static void nvfp4_mega_moe(
     DG_HOST_ASSERT(sym_buffer.nbytes() >= static_cast<size_t>(num_required_bytes));
     DG_HOST_ASSERT(num_experts == num_experts_);
     const auto [x, x_sf, topk_idx, topk_weights, l1_acts, l1_acts_sf, l2_acts, l2_acts_sf] = slice(sym_buffer);
-    if (selected_kernel_block_n == SM90NVFP4SmallMConfig::kBlockN) {
+    const SM90NVFP4AllMPolicyInput allm_policy_input {
+        device_runtime->get_num_sms(),
+        num_ranks,
+        num_experts,
+        num_tokens,
+        num_topk,
+        hidden,
+        intermediate_hidden,
+        selected_kernel_block_n,
+    };
+    const auto allm_arm = select_sm90_nvfp4_allm_arm(allm_policy_input);
+
+    if (allm_arm == SM90NVFP4AllMArm::DevMDynamic ||
+        allm_arm == SM90NVFP4AllMArm::D40DynamicRS) {
+        sm90_nvfp4_h200_fused_mega_moe(
+            y,
+            l1_acts, l1_acts_sf,
+            l2_acts, l2_acts_sf,
+            l1_weights, l2_weights,
+            cumulative_local_expert_recv_stats,
+            l1_global_scales,
+            l2_global_scales,
+            sym_buffer_ptrs,
+            rank_idx, num_max_tokens_per_rank,
+            num_experts_per_rank,
+            num_tokens, num_topk,
+            hidden, intermediate_hidden,
+            activation_clamp, fast_math,
+            true,
+            allm_arm == SM90NVFP4AllMArm::D40DynamicRS);
+    } else if (allm_arm == SM90NVFP4AllMArm::D40KF424StaticRS) {
         sm90_nvfp4_small_m_fused_mega_moe(
             y,
             l1_acts, l1_acts_sf,
@@ -381,8 +413,10 @@ static void nvfp4_mega_moe(
             num_experts_per_rank,
             num_tokens, num_topk,
             hidden, intermediate_hidden,
-            activation_clamp, fast_math);
+            activation_clamp, fast_math,
+            true);
     } else {
+        DG_HOST_ASSERT(allm_arm == SM90NVFP4AllMArm::BigMSplit);
         sm90_nvfp4_split_mega_moe(
             y,
             l1_acts, l1_acts_sf,

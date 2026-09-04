@@ -12,6 +12,10 @@ static constexpr int kCandidateBlockM[kNumCandidateBlockMs] = {8, 16, 32, 64, 96
 static constexpr int kMaxCandidateBlockM = 192;
 static constexpr int kMinCandidateBlockM = 8;
 static constexpr int kLCMCandidateBlockM = 384;
+// D40's dev-m dynamic scheduler owns two global task counters.  Keep the
+// complete 128-byte scheduler-state ABI used by every accepted D40 run; the
+// big-M static split kernels simply leave these counters unused.
+static constexpr int kSM90InterleavedSchedulerSMEMBytes = 96;
 
 // Pool capacity for shared expert token pool: worst-case total tokens + per-expert BLOCK_M alignment padding, among all possible BLOCK_M
 template <typename T>
@@ -48,8 +52,10 @@ struct Workspace {
     uint32_t num_max_pool_tokens;
     uint32_t num_max_pool_blocks;
 
-    // For both grid barrier and NVLink barrier
-    static constexpr uint64_t kNumBarrierSignalBytes = 32;
+    // Grid/NVLink state plus the two dev-m dynamic task counters.  Expert
+    // counters begin at the next 128-byte cache line so the hot task counters
+    // do not share an L2 sector with communication state.
+    static constexpr uint64_t kNumBarrierSignalBytes = 128;
 
     CUTLASS_HOST_DEVICE
     Workspace(void* base,
@@ -70,7 +76,7 @@ struct Workspace {
     uint64_t get_num_bytes() const {
         uint64_t num_bytes = 0;
 
-        // Barrier
+        // Barrier and in-kernel scheduling counters
         num_bytes += kNumBarrierSignalBytes;
 
         // Expert send/recv count
@@ -123,6 +129,16 @@ struct Workspace {
     int* get_nvl_barrier_signal_ptr(const uint32_t& phase) const {
         // NOTES: the signal is signed, as we may minus
         return math::advance_ptr<int>(base, (kNumMaxGridSyncCounters + 1) * sizeof(uint32_t) + phase * sizeof(int));
+    }
+
+    CUTLASS_DEVICE
+    uint32_t* get_l1_task_count_ptr() const {
+        return math::advance_ptr<uint32_t>(base, 28u);
+    }
+
+    CUTLASS_DEVICE
+    uint32_t* get_l2_task_count_ptr() const {
+        return math::advance_ptr<uint32_t>(base, 32u);
     }
 
     CUTLASS_DEVICE

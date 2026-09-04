@@ -97,8 +97,14 @@ public:
         fsync_path(path);
     }
 
-    std::shared_ptr<KernelRuntime> build(const std::string& name, const std::string& code) const {
-        const auto kernel_signature = fmt::format("{}$${}$${}$${}", name, signature, flags, code);
+    std::shared_ptr<KernelRuntime> build(
+            const std::string& name,
+            const std::string& code,
+            const std::string& extra_flags = "") const {
+        const auto effective_flags = extra_flags.empty() ?
+            flags : fmt::format("{} {}", flags, extra_flags);
+        const auto kernel_signature = fmt::format(
+            "{}$${}$${}$${}", name, signature, effective_flags, code);
         const auto dir_path = cache_dir_path / "cache" / fmt::format("kernel.{}.{}", name, get_hex_digest(kernel_signature));
 
         // Hit the runtime cache
@@ -115,9 +121,11 @@ public:
         const auto tmp_cubin_path = tmp_dir_path / "kernel.cubin";
         if (get_env<int>("DG_JIT_DUMP_ASM") or get_env<int>("DG_JIT_DUMP_PTX")) {
             const auto tmp_ptx_path = tmp_dir_path / "kernel.ptx";
-            compile(code, tmp_dir_path, tmp_cubin_path, tmp_ptx_path);
+            compile(
+                code, tmp_dir_path, tmp_cubin_path,
+                effective_flags, tmp_ptx_path);
         } else {
-            compile(code, tmp_dir_path, tmp_cubin_path);
+            compile(code, tmp_dir_path, tmp_cubin_path, effective_flags);
         }
 
         // Disassemble if needed
@@ -160,7 +168,13 @@ public:
         }
     }
 
-    virtual void compile(const std::string &code, const std::filesystem::path& dir_path, const std::filesystem::path &cubin_path, const std::optional<std::filesystem::path> &ptx_path = std::nullopt) const = 0;
+    virtual void compile(
+        const std::string& code,
+        const std::filesystem::path& dir_path,
+        const std::filesystem::path& cubin_path,
+        const std::string& effective_flags,
+        const std::optional<std::filesystem::path>& ptx_path = std::nullopt
+    ) const = 0;
 };
 
 DG_DECLARE_STATIC_VAR_IN_CLASS(Compiler, library_root_path);
@@ -208,9 +222,12 @@ public:
                             flags, library_include_path.c_str(), arch);
     }
 
-    void compile(const std::string &code, const std::filesystem::path& dir_path,
-                 const std::filesystem::path &cubin_path,
-                 const std::optional<std::filesystem::path> &ptx_path) const override {
+    void compile(
+            const std::string& code,
+            const std::filesystem::path& dir_path,
+            const std::filesystem::path& cubin_path,
+            const std::string& effective_flags,
+            const std::optional<std::filesystem::path>& ptx_path) const override {
         // Write the code into the cache directory
         const auto code_path = dir_path / "kernel.cu";
         put(code_path, code);
@@ -219,7 +236,8 @@ public:
         // Avoid cwd files shadowing C++ standard library headers
         const auto compile_dir = make_tmp_dir();
         const auto command = fmt::format("cd {} && {} {} -cubin -o {} {}",
-            compile_dir.c_str(), nvcc_path.c_str(), code_path.c_str(), cubin_path.c_str(), flags);
+            compile_dir.c_str(), nvcc_path.c_str(), code_path.c_str(),
+            cubin_path.c_str(), effective_flags);
         if (get_env("DG_JIT_DEBUG", 0) or get_env("DG_JIT_PRINT_COMPILER_COMMAND", 0))
             printf("Running NVCC command: %s\n", command.c_str());
         const auto [return_code, output] = call_external_command(command);
@@ -231,7 +249,8 @@ public:
         // Compile to PTX if needed
         if (ptx_path.has_value()) {
             const auto ptx_command = fmt::format("cd {} && {} {} -ptx -o {} {}",
-                compile_dir.c_str(), nvcc_path.c_str(), code_path.c_str(), ptx_path->c_str(), flags);
+                compile_dir.c_str(), nvcc_path.c_str(), code_path.c_str(),
+                ptx_path->c_str(), effective_flags);
             if (get_env("DG_JIT_DEBUG", 0) or get_env("DG_JIT_PRINT_COMPILER_COMMAND", 0))
                 printf("Running NVCC PTX command: %s\n", ptx_command.c_str());
             const auto [ptx_return_code, ptx_output] = call_external_command(ptx_command);
@@ -281,15 +300,18 @@ public:
                             flags, include_dirs, arch, pch_flags);
     }
 
-    void compile(const std::string &code, const std::filesystem::path& dir_path,
-                 const std::filesystem::path &cubin_path,
-                 const std::optional<std::filesystem::path> &ptx_path) const override {
+    void compile(
+            const std::string& code,
+            const std::filesystem::path& dir_path,
+            const std::filesystem::path& cubin_path,
+            const std::string& effective_flags,
+            const std::optional<std::filesystem::path>& ptx_path) const override {
         // Write the code into the cache directory
         const auto code_path = dir_path / "kernel.cu";
         put(code_path, code);
 
         // Parse compilation options
-        std::istringstream iss(flags);
+        std::istringstream iss(effective_flags);
         std::vector<std::string> options;
         std::string option;
         while (iss >> option)

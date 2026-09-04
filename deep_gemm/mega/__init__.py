@@ -259,9 +259,13 @@ def nvfp4_mega_moe(y: torch.Tensor,
     the L1 gate/up interleave and prepack UE4M3 scales into
     ``(E, N/block_n, K/128, block_n, 8)``. Both layouts use Mode2 braided
     signs. The packed weights are shared by both kernel families. With
-    ``kernel_family='auto'``, every forward uses routed work per local expert
-    to select BN256 fused for small M or BN128 split for large M. The split
-    family is compiled as the fixed mode4+remap L1 followed by L2 scatter.
+    ``kernel_family='auto'``, every forward first uses routed work per local
+    expert to select BN256 fused or BN128 split.  On the validated physical
+    8xH200 Flash/Pro M=8..128 matrix, the fused side then applies the D40
+    exact-key portfolio (dev-m dynamic, dynamic+RS mode5, or KF 424
+    static-RS). Every other fused/small-M point uses dev-m dynamic rather than
+    the merged bigM static small-M implementation. The split family remains
+    the fixed bigM mode4+remap L1 followed by L2 scatter.
     """
     family_to_block_n = {
         'auto': 0,

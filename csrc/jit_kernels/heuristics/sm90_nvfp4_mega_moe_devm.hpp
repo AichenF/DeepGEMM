@@ -1,0 +1,181 @@
+#pragma once
+
+#include <deep_gemm/layout/mega_moe.cuh>
+
+#include "../../utils/exception.hpp"
+#include "sm90.hpp"
+
+namespace deep_gemm {
+
+static constexpr int kSM90NVFP4BStoragePerKBlock = 80;
+
+struct SM90NVFP4H200FusedConfig {
+    static constexpr int kBlockK = 128;
+    static constexpr int kSwizzleActsMode = 128;
+    static constexpr int kNumDispatchThreads = 64;
+    static constexpr int kNumNonEpilogueThreads = 64;
+    static constexpr int kNumEpilogueThreads = 256;
+    static constexpr int kNumThreads =
+        kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads;
+
+    int block_m, block_n;
+    int num_max_pool_tokens;
+    int num_padded_sf_pool_tokens;
+    int num_experts_per_wave;
+    int num_stages, smem_size;
+};
+
+struct SM90NVFP4H200FusedShape {
+    static constexpr int kH200NumSMs = 132;
+    static constexpr int kNumRanks = 8;
+
+    int num_sms;
+    int num_ranks;
+    int num_experts;
+    int num_topk;
+    int hidden;
+    int intermediate_hidden;
+
+    static constexpr bool is_supported_batch(const int num_tokens) noexcept {
+        return num_tokens > 0;
+    }
+
+    constexpr bool is_supported_h200_shape() const noexcept {
+        if (num_sms != kH200NumSMs || num_ranks != kNumRanks)
+            return false;
+        const bool flash =
+            num_experts == 256 && num_topk == 6 &&
+            hidden == 4096 && intermediate_hidden == 2048;
+        const bool pro =
+            num_experts == 384 && num_topk == 6 &&
+            hidden == 7168 && intermediate_hidden == 3072;
+        const bool mimo =
+            num_experts == 384 && num_topk == 8 &&
+            hidden == 6144 && intermediate_hidden == 2048;
+        return flash || pro || mimo;
+    }
+};
+
+struct SM90NVFP4H200FusedInput {
+    int num_sms;
+    int num_ranks, num_experts, num_experts_per_rank;
+    int num_max_tokens_per_rank, num_tokens, num_topk;
+    int hidden, intermediate_hidden;
+    int num_padded_sf_pool_tokens;
+
+    SM90NVFP4H200FusedShape shape() const noexcept {
+        return {
+            num_sms, num_ranks, num_experts, num_topk,
+            hidden, intermediate_hidden};
+    }
+};
+
+struct SM90NVFP4H200FusedPlan {
+    SM90NVFP4H200FusedConfig config;
+    bool swap_ab;
+    bool use_mode2_row_decoder;
+    bool single_active_dispatch_warp;
+    bool use_interleaved_scheduler;
+};
+
+static SM90NVFP4H200FusedPlan
+select_sm90_nvfp4_h200_fused(
+        const SM90NVFP4H200FusedInput& input,
+        const bool use_interleaved_scheduler = true) {
+    DG_HOST_ASSERT(input.shape().is_supported_h200_shape());
+    DG_HOST_ASSERT(input.num_experts ==
+                   input.num_experts_per_rank * input.num_ranks);
+    DG_HOST_ASSERT(input.num_experts_per_rank == 32 ||
+                   input.num_experts_per_rank == 48);
+    DG_HOST_ASSERT(input.num_max_tokens_per_rank > 0);
+    DG_HOST_ASSERT(input.num_tokens <= input.num_max_tokens_per_rank);
+    DG_HOST_ASSERT(
+        SM90NVFP4H200FusedShape::is_supported_batch(input.num_tokens));
+    DG_HOST_ASSERT(input.num_padded_sf_pool_tokens > 0);
+
+    struct Tuning {
+        int block_m, block_n;
+        int num_experts_per_wave;
+        int num_stages;
+        int smem_size;
+        bool swap_ab;
+        bool use_mode2_row_decoder;
+        bool single_active_dispatch_warp;
+    } tuning {};
+
+    if (input.num_tokens <= 1)
+        tuning = {8, 256, 24, 4, SM90ArchSpec::smem_capacity,
+                  true, true, true};
+    else if (input.num_tokens <= 8)
+        tuning = {8, 256, 16, 4, SM90ArchSpec::smem_capacity,
+                  true, true, true};
+    else if (input.num_tokens <= 16)
+        tuning = {8, 256, 24, 4, SM90ArchSpec::smem_capacity,
+                  true, true, true};
+    else if (input.num_tokens <= 32)
+        tuning = {16, 256, 48, 3, SM90ArchSpec::smem_capacity,
+                  true, true, false};
+    else if (input.num_tokens <= 64)
+        tuning = {24, 256, 48, 3, 229312,
+                  true, false, true};
+    else if (input.num_tokens <= 256)
+        tuning = {64, 256, 48, 3, 209856,
+                  false, true, false};
+    else
+        tuning = {128, 128, 48, 6, SM90ArchSpec::smem_capacity,
+                  false, true, false};
+
+    // The upstream MiMo table uses target wave sizes.  Flash has 32 local
+    // experts rather than 48, so round the target upward to the nearest legal
+    // divisor while keeping the same tile/stage policy for the A/B experiment.
+    tuning.num_experts_per_wave = cute::min(
+        tuning.num_experts_per_wave, input.num_experts_per_rank);
+    while (tuning.num_experts_per_wave < input.num_experts_per_rank &&
+           input.num_experts_per_rank % tuning.num_experts_per_wave != 0)
+        ++tuning.num_experts_per_wave;
+
+    // The two added shapes have different dispatch/combine footprints.  Use
+    // the legal H200 maximum for the isolated experiment so both scheduler
+    // arms receive exactly the same one-CTA-per-SM capacity.
+    const bool is_upstream_mimo =
+        input.num_experts == 384 && input.num_topk == 8 &&
+        input.hidden == 6144 && input.intermediate_hidden == 2048;
+    if (!is_upstream_mimo)
+        tuning.smem_size = SM90ArchSpec::smem_capacity;
+
+    // Pro's wider dispatch/combine footprint makes the MiMo BM8/stage4 ring
+    // exceed Hopper's 232448-byte CTA limit.  Match the existing local Pro
+    // policy and fall back to stage3 for both A/B scheduler arms.
+    const bool is_pro =
+        input.num_experts == 384 && input.num_topk == 6 &&
+        input.hidden == 7168 && input.intermediate_hidden == 3072;
+    if (is_pro && tuning.block_m == 8 && tuning.num_stages == 4)
+        tuning.num_stages = 3;
+
+    DG_HOST_ASSERT(
+        input.num_experts_per_rank % tuning.num_experts_per_wave == 0);
+    DG_HOST_ASSERT(tuning.smem_size <= SM90ArchSpec::smem_capacity);
+    return {
+        {
+            tuning.block_m,
+            tuning.block_n,
+            layout::get_num_max_pool_tokens(
+                input.num_ranks, input.num_max_tokens_per_rank,
+                input.num_topk, input.num_experts_per_rank),
+            input.num_padded_sf_pool_tokens,
+            tuning.num_experts_per_wave,
+            tuning.num_stages,
+            use_interleaved_scheduler ?
+                cute::min(tuning.smem_size +
+                              layout::kSM90InterleavedSchedulerSMEMBytes,
+                          SM90ArchSpec::smem_capacity) :
+                tuning.smem_size,
+        },
+        tuning.swap_ab,
+        tuning.use_mode2_row_decoder,
+        tuning.single_active_dispatch_warp,
+        use_interleaved_scheduler,
+    };
+}
+
+}  // namespace deep_gemm
