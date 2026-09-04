@@ -7186,3 +7186,30 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/iter250_splitk2_vs4_m64_m128_compute_screen_20260904.log`
   and
   `bench/results/iter250_allow_splitk4_m64_m128_compute_smoke_20260904.log`.
+
+## Iteration 251 — compile profiling timestamps out of the serving kernel
+
+- **Hypothesis/change:** Added `V4_SINGLE_LAUNCH_PHASE_STAMPS={0,1}` and
+  guarded the entry and four phase-boundary `%globaltimer` reads/stores with
+  a compile-time condition.  The timestamp slab remains in the workspace ABI,
+  but with the flag disabled no timing instruction or timestamp store exists
+  in the serving kernel.  These stamps are profiling-only and never
+  participate in route alignment, GEMM dataflow, barriers, or the collective.
+  Benchmark metadata now records the setting, and the compute profiler emits
+  `phase_us=null` rather than interpreting stale storage when stamps are off.
+- **Protocol:** H20 GPU 0, M={8,128}, random routes, selected schedule-0
+  kernel with 8 CTAs/SM, relaxed 64 ns grid polling, prequantized FP8-E4M3 X
+  plus FP32 group-128 scales, MXFP4 weights, and an excluded 256 MiB cold-L2
+  clear.  TP communication was disabled only for this compile/correctness
+  smoke; the full W2 route tensor was compared with the independent
+  multi-kernel reference.
+- **Correctness:** PASS bitwise at both shapes (`cosine=1`, `rel_l2=0`, all
+  finite).  M8 selected split-K 4 and M128 selected split-K 2.
+- **Performance status:** Not measured by this smoke because removing the
+  phase instrumentation intentionally removes its in-kernel timer.  The next
+  experiment is the TP4 CUDA-Graph cold-L2 paired benchmark.
+- **Decision:** Correctness gate passed; retain as an opt-in candidate pending
+  end-to-end timing.  Default remains phase stamps enabled until that timing
+  completes.
+- **Artifact:**
+  `bench/results/iter251_no_phase_stamps_m8_m128_compute_smoke_20260904.log`.

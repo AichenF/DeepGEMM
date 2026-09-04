@@ -142,15 +142,17 @@ def main() -> None:
     torch.cuda.cudart().cudaProfilerStop()
 
     check = compare(case.down, expected_down)
-    stamps = case.single_launch_barrier_state[8:18].view(torch.int64)
-    durations_us = (stamps[1:] - stamps[:-1]).double().cpu() / 1000.0
-    phases = dict(
-        zip(
-            ("route", "w13", "activation_requant", "w2"),
-            (float(value) for value in durations_us.tolist()),
-            strict=True,
+    phases = None
+    if kernel.SINGLE_LAUNCH_PHASE_STAMPS:
+        stamps = case.single_launch_barrier_state[8:18].view(torch.int64)
+        durations_us = (stamps[1:] - stamps[:-1]).double().cpu() / 1000.0
+        phases = dict(
+            zip(
+                ("route", "w13", "activation_requant", "w2"),
+                (float(value) for value in durations_us.tolist()),
+                strict=True,
+            )
         )
-    )
     accepted = bool(check["finite"] and check["cosine"] >= 0.999)
     print(
         "SINGLE_COMPUTE_PROFILE "
@@ -162,6 +164,7 @@ def main() -> None:
                 "tp_collective_executed": False,
                 "sm_count": props.multi_processor_count,
                 "l2_policy": "cold 256MiB clear outside profiled kernel",
+                "phase_stamps": kernel.SINGLE_LAUNCH_PHASE_STAMPS,
                 "w13_split_k": case.w13_split_k,
                 "padded_rows": int(case.num_tokens_padded.item()),
                 "phase_us": phases,

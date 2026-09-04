@@ -283,6 +283,9 @@ SINGLE_LAUNCH_COOPERATIVE_GRID = (
 SINGLE_LAUNCH_RELAXED_GRID_POLL = (
     os.environ.get("V4_SINGLE_LAUNCH_RELAXED_GRID_POLL", "0") == "1"
 )
+SINGLE_LAUNCH_PHASE_STAMPS = (
+    os.environ.get("V4_SINGLE_LAUNCH_PHASE_STAMPS", "1") == "1"
+)
 SINGLE_LAUNCH_GRID_POLL_SLEEP_NS = int(
     os.environ.get("V4_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS", "64")
 )
@@ -534,6 +537,8 @@ static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
     K_SINGLE_LAUNCH_RELAXED_GRID_POLL;
+static constexpr bool kSingleLaunchRecordPhaseStamps =
+    K_SINGLE_LAUNCH_PHASE_STAMPS;
 static constexpr int kSingleLaunchGridPollSleepNs =
     K_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS;
 static constexpr bool kSingleLaunchSkipFinalCtaSync =
@@ -3469,10 +3474,12 @@ __device__ __forceinline__ void single_launch_grid_barrier(
         bool record_timestamp = true) {
     if constexpr (kSingleLaunchCooperativeGrid) {
         cooperative_groups::this_grid().sync();
-        if (record_timestamp && blockIdx.x == 0 && threadIdx.x == 0) {
-            reinterpret_cast<uint64_t*>(
-                state + kSingleLaunchBarrierWords)[phase + 1] =
-                    read_globaltimer();
+        if constexpr (kSingleLaunchRecordPhaseStamps) {
+            if (record_timestamp && blockIdx.x == 0 && threadIdx.x == 0) {
+                reinterpret_cast<uint64_t*>(
+                    state + kSingleLaunchBarrierWords)[phase + 1] =
+                        read_globaltimer();
+            }
         }
         return;
     }
@@ -3502,10 +3509,12 @@ __device__ __forceinline__ void single_launch_grid_barrier(
                 const int global_arrival =
                     atomic_add_acq_rel_gpu_i32(global_count, 1);
                 if (global_arrival == kSingleLaunchH20Sms - 1) {
-                    if (record_timestamp) {
-                        reinterpret_cast<uint64_t*>(
-                            state + kSingleLaunchBarrierWords)[phase + 1] =
-                                read_globaltimer();
+                    if constexpr (kSingleLaunchRecordPhaseStamps) {
+                        if (record_timestamp) {
+                            reinterpret_cast<uint64_t*>(
+                                state + kSingleLaunchBarrierWords)[phase + 1] =
+                                    read_globaltimer();
+                        }
                     }
                     atomicExch(global_count, 0);
                     store_release_gpu_i32(
@@ -3548,10 +3557,12 @@ __device__ __forceinline__ void single_launch_grid_barrier(
         observed_epoch = load_acquire_gpu_i32(epoch);
         const int arrival = atomic_add_acq_rel_gpu_i32(count, 1);
         if (arrival == expected_blocks - 1) {
-            if (record_timestamp) {
-                reinterpret_cast<uint64_t*>(
-                    state + kSingleLaunchBarrierWords)[phase + 1] =
-                        read_globaltimer();
+            if constexpr (kSingleLaunchRecordPhaseStamps) {
+                if (record_timestamp) {
+                    reinterpret_cast<uint64_t*>(
+                        state + kSingleLaunchBarrierWords)[phase + 1] =
+                            read_globaltimer();
+                }
             }
             atomicExch(count, 0);
             store_release_gpu_i32(epoch, observed_epoch + 1);
@@ -3666,10 +3677,12 @@ void tp4_megamoe_single_launch_kernel(
     const int cta = static_cast<int>(blockIdx.x);
     const int ctas = static_cast<int>(gridDim.x);
     const int routes = tokens * kTopK;
-    if (cta == 0 && threadIdx.x == 0) {
-        reinterpret_cast<uint64_t*>(
-            barrier_state + kSingleLaunchBarrierWords)[0] =
-                read_globaltimer();
+    if constexpr (kSingleLaunchRecordPhaseStamps) {
+        if (cta == 0 && threadIdx.x == 0) {
+            reinterpret_cast<uint64_t*>(
+                barrier_state + kSingleLaunchBarrierWords)[0] =
+                    read_globaltimer();
+        }
     }
 
     // barrier_state[0:8] remains the generation-counted grid-barrier slab.
@@ -6187,6 +6200,7 @@ _EXTENSION_CONFIG = (
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
+          f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
           f"slpsn{SINGLE_LAUNCH_GRID_POLL_SLEEP_NS}_"
           f"slfs{int(SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC)}_"
           f"slhg{int(SINGLE_LAUNCH_HIERARCHICAL_GRID)}_"
@@ -6294,6 +6308,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_RELAXED_GRID_POLL="
             f"{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_PHASE_STAMPS="
+            f"{int(SINGLE_LAUNCH_PHASE_STAMPS)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS="
