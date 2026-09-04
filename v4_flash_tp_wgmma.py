@@ -2148,7 +2148,7 @@ __global__ void reduce_swiglu_kernel(
 }
 
 template <int Intermediate, int SplitK>
-__global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
+__device__ __forceinline__ void reduce_swiglu_quant_task(
         const float* __restrict__ partials,
         __nv_bfloat16* __restrict__ activation,
         uint8_t* __restrict__ quantized,
@@ -2156,10 +2156,10 @@ __global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
         const int32_t* __restrict__ route_to_sorted,
         const int32_t* __restrict__ topk_ids,
         const float* __restrict__ w2_global_scale,
-        int routes) {
+        int routes,
+        int group) {
     static_assert(Intermediate % 128 == 0);
     constexpr int kGroupsPerRoute = Intermediate / 128;
-    const int group = blockIdx.x;
     const int route = group / kGroupsPerRoute;
     const int group_in_route = group - route * kGroupsPerRoute;
     const int column = group_in_route * 128 + threadIdx.x;
@@ -2229,6 +2229,22 @@ __global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
     __syncthreads();
     quantized[quantized_index] =
         __nv_fp8_e4m3(value / group_scale).__x;
+}
+
+template <int Intermediate, int SplitK>
+__global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
+        const float* __restrict__ partials,
+        __nv_bfloat16* __restrict__ activation,
+        uint8_t* __restrict__ quantized,
+        float* __restrict__ scale,
+        const int32_t* __restrict__ route_to_sorted,
+        const int32_t* __restrict__ topk_ids,
+        const float* __restrict__ w2_global_scale,
+        int routes) {
+    reduce_swiglu_quant_task<Intermediate, SplitK>(
+        partials, activation, quantized, scale,
+        route_to_sorted, topk_ids, w2_global_scale, routes,
+        static_cast<int>(blockIdx.x));
 }
 
 // Fixed DeepSeek-V4-Flash TP preparation.  Route alignment and input

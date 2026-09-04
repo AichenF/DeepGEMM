@@ -5636,3 +5636,23 @@ maximum rank latency of a full CUDA-Graph replay.
   route/quant preparation, resident-grid barriers, persistent W13/W2 task
   loops, and the already validated fused k6+TP4 communication tail.
 - Artifact: `results/iter148_route_gemm_device_task_refactor_correctness_20260904.log`.
+
+## Iteration 149 — extract SwiGLU and requantization into a reusable device task
+
+- Date: 2026-09-04.
+- Change: refactor the selected split-K reduction, BF16-boundary SwiGLU and
+  group-128 FP8 requantization body into `reduce_swiglu_quant_task`, retaining
+  the existing standalone global kernel as a thin wrapper.  The task receives
+  an explicit route/group ID so a persistent single-launch kernel can execute
+  the phase directly after W13 without a child launch.
+- Scope: single-rank TP4-shape full-reference correctness on physical GPU 6,
+  `M=8`, balanced routes, `Is=512`, split-K 4.  This is structural validation,
+  not a latency result.
+- Preparation again passed bit-exact route/quant checks.  Numerical output is
+  unchanged from iterations 138c and 148: W13 cosine/rel-L2
+  `0.999999998/0.000076187`, activation `0.999999759/0.000694956`, W2
+  `0.999997256/0.002342691`, finite true, and `V4_WGMMA_OK`.
+- Decision: retain.  The complete selected W13, SwiGLU/requant and W2 compute
+  bodies are now device-callable while their multi-kernel baseline wrappers
+  remain behaviorally identical.
+- Artifact: `results/iter149_swiglu_quant_device_task_refactor_correctness_20260904.log`.
