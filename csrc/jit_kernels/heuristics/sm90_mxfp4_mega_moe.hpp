@@ -26,7 +26,6 @@ struct SM90MXFP4H200FusedConfig {
 };
 
 struct SM90MXFP4H200FusedShape {
-    static constexpr int kH200NumSMs = 132;
     static constexpr int kNumRanks = 8;
     static constexpr int kExpertsPerRank = 48;
     static constexpr int kTopk = 8;
@@ -44,8 +43,11 @@ struct SM90MXFP4H200FusedShape {
         return num_tokens > 0;
     }
 
-    constexpr bool is_supported_h200_shape() const noexcept {
-        return num_sms == kH200NumSMs &&
+    // kNumSMs is a kernel template parameter driven by the running device, so
+    // the SM count no longer has to match H200's 132. Everything below is still
+    // baked into the kernel body.
+    constexpr bool is_supported_shape() const noexcept {
+        return num_sms > 0 &&
             num_ranks == kNumRanks &&
             num_experts == kExpertsPerRank * kNumRanks &&
             num_topk == kTopk &&
@@ -79,7 +81,7 @@ struct SM90MXFP4H200FusedPlan {
 static SM90MXFP4H200FusedPlan
 select_sm90_mxfp4_h200_fused(
         const SM90MXFP4H200FusedInput& input) {
-    DG_HOST_ASSERT(input.shape().is_supported_h200_shape());
+    DG_HOST_ASSERT(input.shape().is_supported_shape());
     DG_HOST_ASSERT(
         input.num_experts_per_rank ==
         SM90MXFP4H200FusedShape::kExpertsPerRank);

@@ -97,18 +97,30 @@ instantiate 'sm90_nvfp4_mega_moe_h200'   120a gated-out "$nvfp4_src"
 # Same tuning row against the MXFP4 port. Without this the gate compiled only
 # the NVFP4 kernel and the standalone dequant probe, so the MXFP4 MegaMoE kernel
 # itself -- the thing the port adds -- was never codegen'd for any arch.
-mxfp4_src='#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1
+mxfp4_h20_src='#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1
 #include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused.cuh>
 using namespace deep_gemm;
 static void __instantiate_kernel() {
     auto ptr = reinterpret_cast<void*>(&sm90_mxfp4_mega_moe_h200_fused_impl<
-        2048, 48, 128, 128, 8192, 8192, 6, 10.0f, true,
+        78, 2048, 48, 128, 128, 8192, 8192, 6, 10.0f, true,
         false, false, true, false>);
     (void)ptr;
 }'
 
-instantiate 'sm90_mxfp4_mega_moe_h200'   90a  wgmma     "$mxfp4_src"
-instantiate 'sm90_mxfp4_mega_moe_h200'   120a gated-out "$mxfp4_src"
+mxfp4_h200_src='#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1
+#include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused.cuh>
+using namespace deep_gemm;
+static void __instantiate_kernel() {
+    auto ptr = reinterpret_cast<void*>(&sm90_mxfp4_mega_moe_h200_fused_impl<
+        132, 2048, 48, 128, 128, 8192, 8192, 6, 10.0f, true,
+        false, false, true, false>);
+    (void)ptr;
+}'
+
+# kNumSMs is now a template parameter, so both SM counts must build.
+instantiate 'sm90_mxfp4 (78 SM, H20)'    90a  wgmma     "$mxfp4_h20_src"
+instantiate 'sm90_mxfp4 (132 SM, H200)'  90a  wgmma     "$mxfp4_h200_src"
+instantiate 'sm90_mxfp4 (78 SM, H20)'    120a gated-out "$mxfp4_h20_src"
 
 # Template-only headers, not instantiated here: catches parse/merge damage but
 # not per-arch codegen.
