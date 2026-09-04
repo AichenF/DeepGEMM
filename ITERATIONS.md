@@ -8868,3 +8868,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Fresh-output guard: before the final replay, changed the fixed-address public FP8 `qx`/FP32 group-128 scales and poisoned `down` with NaNs. M8 and M128 both finished finite and bitwise equal to independent multi-kernel references (`cosine=1.0`, `rel_l2=0.0`).
 - Result: PASS. The two opt-in changes compose without a stale-task, stale-output, hang, or barrier-wrap failure across 20,000 graph replays.
 - Artifact: `bench/results/iter341_combined_release_assume_valid_graph_stress_20260904.log`.
+
+## Iteration 342 — FC2 four-chunk-major schedule correctness smoke
+
+- **Hypothesis:** Reorder the existing flat schedule-0 FC2 task ordinal into four hidden-dimension chunks without changing task count, CTA assignment, wave count, the final whole-grid barrier, or the embedded collective. This is the safety gate for later overlapping each completed FC2 chunk with TP communication.
+- **Input/timing contract:** TP4 on GPUs 0–3; public input is prequantized FP8-E4M3 `X` plus FP32 group-128 activation scale and MXFP4 weights. External BF16-to-FP8 quantization is absent from both graphs. Every measured replay individually evicts L2 with the benchmark's separate 256 MiB clear, excluded from CUDA events.
+- **Implementation:** Added opt-in `V4_SINGLE_LAUNCH_W2_CHUNK_MAJOR=1`. The unchanged flat logical ordinal `cta + sequence * workers` is bijectively mapped to `(chunk, mblock, N128 tile)` with four N1024 chunks using three compare/subtract steps (no runtime integer division). The old W2-to-collective grid barrier and collective are deliberately unchanged.
+- **Configuration:** Combined with the already-gated `V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL=1` and `V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS=1`; schedule 0, 624 CTAs, 128 threads, bound 8, packed barrier, 64 ns poll, M8 multicast one-shot and M128 P2P two-shot. Random routing, seed 20260904. CUDA Graph smoke: outer=1, replays=2, warmup=1, replay-interleaved.
+- **Correctness:** M8 and M128 both accepted on all four ranks, allreduce checks passed, finite outputs, and candidate/control metrics were identical for each M. M8 cosine 0.9999956134 / rel-L2 0.0029619922; M128 cosine 0.9999956090 / rel-L2 0.0029634544.
+- **Smoke timings (not a performance decision):** candidate medians were 0.078224 ms (M8) and 0.344736 ms (M128), from only two cold samples per implementation. The high variance in the control confirms these samples are only a compile/graph/correctness gate.
+- **Result:** **PASS correctness/graph gate; performance pending.** Next run must inspect SASS resources and use bracketed reverse-order cold-L2 A/B before enabling any communication overlap.
+- **Artifact:** `bench/results/iter342_w2_chunk_major_correctness_smoke_20260904.log`.

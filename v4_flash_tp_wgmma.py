@@ -648,6 +648,41 @@ if SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS and (
         "V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS requires the isolated "
         "inline bound-8 schedule-0 path"
     )
+# Safe first gate for FC2/communication overlap: enumerate the same W2 tasks
+# in four N1024 hidden chunks while retaining the existing whole-grid barrier
+# and collective.  This changes neither task count nor wave count; it only
+# makes each output chunk become complete earlier.  Keep the experiment
+# isolated from scheduler/state variants until its cold-L2 cost is measured.
+SINGLE_LAUNCH_W2_CHUNK_MAJOR = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_MAJOR", "0") == "1"
+)
+if SINGLE_LAUNCH_W2_CHUNK_MAJOR and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_MIN_BLOCKS != 8
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or SINGLE_LAUNCH_M128_BOUND9
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_CHUNK_MAJOR requires the isolated inline "
+        "bound-8 schedule-0 path"
+    )
 if SINGLE_LAUNCH_W13_TAIL_SPLIT4 and (
     SINGLE_LAUNCH_NOINLINE_GEMM
     or SINGLE_LAUNCH_DUAL_WG_PHASES
@@ -941,6 +976,8 @@ static constexpr bool kSingleLaunchW2NextTaskPrefetch =
     K_SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH;
 static constexpr bool kSingleLaunchAssumeValidGemmTasks =
     K_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS;
+static constexpr bool kSingleLaunchW2ChunkMajor =
+    K_SINGLE_LAUNCH_W2_CHUNK_MAJOR;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -5838,8 +5875,35 @@ void tp4_megamoe_single_launch_kernel(
             constexpr bool kW2PersistentState =
                 kSingleLaunchPersistentGemmState
                 || kSingleLaunchW2NextTaskPrefetch;
-            for (int task = cta; cta < w2_workers && task < w2_tasks;
-                 task += w2_workers, ++w2_sequence) {
+            for (int logical_task = cta;
+                 cta < w2_workers && logical_task < w2_tasks;
+                 logical_task += w2_workers, ++w2_sequence) {
+                int task = logical_task;
+                if constexpr (kSingleLaunchW2ChunkMajor) {
+                    static_assert(kW2NTiles == 32);
+                    // Preserve the flat scheduler's task/wave count while
+                    // completing one N1024 output chunk at a time.  Avoid a
+                    // runtime integer divide: four chunks need at most three
+                    // uniform compare/subtract steps.
+                    const int chunk_tasks = num_mblocks * 8;
+                    int task_in_chunk = logical_task;
+                    int chunk = 0;
+                    if (task_in_chunk >= chunk_tasks) {
+                        task_in_chunk -= chunk_tasks;
+                        ++chunk;
+                    }
+                    if (task_in_chunk >= chunk_tasks) {
+                        task_in_chunk -= chunk_tasks;
+                        ++chunk;
+                    }
+                    if (task_in_chunk >= chunk_tasks) {
+                        task_in_chunk -= chunk_tasks;
+                        ++chunk;
+                    }
+                    const int mblock = task_in_chunk >> 3;
+                    const int n_tile = (chunk << 3) + (task_in_chunk & 7);
+                    task = mblock * kW2NTiles + n_tile;
+                }
                 if (tail_overlap_mblocks > 0
                         && task / kW2NTiles < tail_overlap_mblocks)
                     continue;
@@ -5863,14 +5927,14 @@ void tp4_megamoe_single_launch_kernel(
                         topk_weights, reinterpret_cast<float*>(down), lut,
                         nullptr, routes, 0, task, w2_sequence, nullptr,
                         (kSingleLaunchW2NextTaskPrefetch
-                             && task + w2_workers < w2_tasks)
-                        ? task + w2_workers : -1);
+                             && logical_task + w2_workers < w2_tasks)
+                        ? logical_task + w2_workers : -1);
                 }
                 if constexpr (kSingleLaunchNoInlineGemm
                               || !kW2PersistentState) {
                     if constexpr (!kSingleLaunchSkipFinalCtaSync) {
                         __syncthreads();
-                    } else if (task + ctas < w2_tasks) {
+                    } else if (logical_task + ctas < w2_tasks) {
                         __syncthreads();
                     }
                 }
@@ -8014,6 +8078,7 @@ _EXTENSION_CONFIG = (
           f"slw13np{int(SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH)}_"
           f"slw2np{int(SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH)}_"
           f"slavgt{int(SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS)}_"
+          f"slw2cm{int(SINGLE_LAUNCH_W2_CHUNK_MAJOR)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
@@ -8150,6 +8215,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS="
             f"{int(SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_CHUNK_MAJOR="
+            f"{int(SINGLE_LAUNCH_W2_CHUNK_MAJOR)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="

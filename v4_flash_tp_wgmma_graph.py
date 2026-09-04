@@ -1272,6 +1272,9 @@ def main() -> None:
                     "single_launch_assume_valid_gemm_tasks": (
                         kernel.SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS
                     ),
+                    "single_launch_w2_chunk_major": (
+                        kernel.SINGLE_LAUNCH_W2_CHUNK_MAJOR
+                    ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
                     ),
