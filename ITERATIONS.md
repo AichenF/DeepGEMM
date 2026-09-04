@@ -5574,3 +5574,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - The first focused M128 launch exited before distributed initialization, CUDA Graph capture, or any GPU timing because `torchrun` prepended the benchmark directory to `sys.path` while the explicit `PYTHONPATH` omitted the repository root; all ranks raised `ModuleNotFoundError: v4_flash_tp_wgmma`.
 - No correctness or performance sample was produced.  Retry with both the repository root and the SGLang worktree on `PYTHONPATH`; keep the failed log as execution evidence.
 - Artifact: `results/iter144_ar_transport_focus_tp4_m128_replay_cold2000_20260904.log`.
+
+## Iteration 144b — focused M128 replay-pair second import failure
+
+- Retried on the newly idle physical GPUs 0–3 and added the repository root to `PYTHONPATH`.
+- The run again exited before process-group initialization, graph capture, or GPU timing: importing the shared graph harness requires the Humming checkout as an additional Python path, and every rank raised `ModuleNotFoundError: humming`.
+- No correctness or latency sample was produced.  The next retry must include repository root, SGLang source, and Humming source in `PYTHONPATH`.
+- Artifact: `results/iter144b_ar_transport_focus_tp4_m128_replay_cold2000_20260904.log`.
