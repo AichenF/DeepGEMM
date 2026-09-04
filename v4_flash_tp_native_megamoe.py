@@ -265,13 +265,13 @@ def transform_weights(
         raise TypeError("native MXFP4 weights/scales must be rank-three uint8")
     w13_il = _interleave_l1(w13)
     s13_il = _interleave_l1(s13)
-    # The body currently selects the direct Mode2 nibble decoder.  Preserve
-    # canonical checkpoint nibble order while fusing packed values and scales.
-    native_w13 = _fuse_packed_and_scale(
-        w13_il, _scale_to_tile_major(s13_il)
+    # Match DeepGEMM's SM90 Mode2 contract: braid the packed sign nibbles
+    # offline, then decode the resulting rows with kUseMode2RowDecoder.
+    native_w13 = _braid_mode2_signs(
+        _fuse_packed_and_scale(w13_il, _scale_to_tile_major(s13_il))
     )
-    native_w2 = _fuse_packed_and_scale(
-        w2.contiguous(), _scale_to_tile_major(s2)
+    native_w2 = _braid_mode2_signs(
+        _fuse_packed_and_scale(w2.contiguous(), _scale_to_tile_major(s2))
     )
     return native_w13, native_w2
 
@@ -544,7 +544,7 @@ v4_flash_tp4_native_megamoe_impl(
         const int64_t push_stride,
         const bool enable_tp) {
     constexpr uint32_t kNumMaxTokensPerRank = 128;
-    constexpr uint32_t kNumExpertsPerWave = 32;
+    constexpr uint32_t kNumExpertsPerWave = 16;
     constexpr uint32_t kNumSMs = 78;
     constexpr uint32_t kNumRanks = 1;
     constexpr uint32_t kNumExperts = 256;

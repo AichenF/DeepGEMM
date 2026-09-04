@@ -6493,3 +6493,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Analysis: removing the definite decoder/host-format mismatch changes the wrong output but does not recover correlation. At least one additional ABI mismatch remains, most likely activation-scale/TMA indexing, fused weight row ordering, or route-pool metadata. End-to-end output is too indirect to distinguish these.
 - Decision: keep canonical nibble order for the direct decoder. Add stage-boundary diagnostics to expose routed L1 FP8/SF and L2 route output, then compare W13 first against the selected multi-kernel implementation with a deterministic route/weight probe.
 - Evidence: `bench/results/iter199_native_direct_mode2_tp4_m8_20260904.log`.
+
+## Iteration 200 — Restore official Mode2 braid and M8 experts-per-wave
+
+- **Change:** Restored DeepGEMM's validated offline Mode2 sign braid for both W13 and W2 while keeping `kUseMode2RowDecoder=true`; changed `kNumExpertsPerWave` from the experimental 32 back to the original M<=8 heuristic value 16.
+- **Input/timing contract:** Both graphs consume caller-provided FP8-E4M3 X plus FP32 group-128 scales and prepacked MXFP4 weights. BF16-to-FP8 input quantization and router/top-k selection remain outside graph capture and timing.
+- **Test:** TP4, H20 GPUs 0-3, M=8, random routes, paired cold-L2 CUDA Graph smoke (`outer=2`, `replays=2`, 256 MiB L2 clear before every replay).
+- **Result:** Multi-kernel control remains correct (cosine 0.9999956066, rel-L2 0.00296430). Native local output remains incorrect (raw cosine -0.00884177, rel-L2 1.210887; scaled-by-1.5 cosine -0.00884466, rel-L2 1.430907), and native TP final remains incorrect (cosine 0.00261821, rel-L2 1.403450).
+- **Conclusion:** The 32-vs-16 experts-per-wave divergence is not the numerical root cause. The output exactly reproduces the earlier Iteration 197 failure under the official braid+Mode2 contract, so weight row encoding and wave width are deprioritized. Next isolate the route/pool copy boundary by checking persisted L1 activation rows and scale columns against their source FP8 X/scale.
+- **Artifact:** `bench/results/iter200_native_mode2_wave16_tp4_m8_20260904.log`.
