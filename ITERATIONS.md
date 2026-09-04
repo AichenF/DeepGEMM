@@ -8879,3 +8879,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Smoke timings (not a performance decision):** candidate medians were 0.078224 ms (M8) and 0.344736 ms (M128), from only two cold samples per implementation. The high variance in the control confirms these samples are only a compile/graph/correctness gate.
 - **Result:** **PASS correctness/graph gate; performance pending.** Next run must inspect SASS resources and use bracketed reverse-order cold-L2 A/B before enabling any communication overlap.
 - **Artifact:** `bench/results/iter342_w2_chunk_major_correctness_smoke_20260904.log`.
+
+## Iteration 343 — FC2 chunk-major SASS gate and bracketed cold-L2 A/B
+
+- **Purpose:** Quantify the cost of the four-chunk FC2 task permutation before adding any communication overlap. This run also validates the M128 resource envelope.
+- **Setup:** TP4 GPUs 0–3, random route IDs, seed 20260904, prequantized FP8-E4M3 `X` + FP32 group-128 scale input, MXFP4 weights, external activation quantization excluded. Both variants used release-arrival + assume-valid-task opt-ins. Order was OFF_A → ON_A → ON_B → OFF_B; each run used CUDA Graph replay-interleaving, outer=2, 20 replays/outer, four warmups, and a separate excluded 256 MiB L2 clear immediately before every implementation replay (40 cold samples/run/M, 80 samples/flag/M).
+- **Resources:** M128 SplitK2 stayed at `REG=64, STACK=32, SHARED=4096, LOCAL=0` for both OFF and ON. Thus the permutation caused no occupancy drop or local spill. Its implementation uses bounded compare/subtract mapping rather than runtime integer division.
+- **Correctness:** Every OFF/ON M8 and M128 run passed all-rank finiteness and allreduce checks. Candidate and control accuracy metrics were identical: M8 cosine 0.9999956134 / rel-L2 0.0029619922; M128 cosine 0.9999956090 / rel-L2 0.0029634544.
+- **Candidate/control ratios:** M8 OFF_A 1.057143, ON_A 1.067944, ON_B 1.066362, OFF_B 1.054842; M128 OFF_A 1.138615, ON_A 1.143984, ON_B 1.145534, OFF_B 1.139895.
+- **Bracket-normalized effect:** chunk-major is about **1.05% slower at M8** and **0.48% slower at M128**. Direct candidate medians agree: M8 0.077552/0.077552 ms OFF versus 0.078464/0.078416 ms ON; M128 0.342368/0.343008 ms OFF versus 0.343488/0.344320 ms ON.
+- **Decision:** **Do not select the permutation alone.** It is a modest enabling cost, not a performance win. Continue to the intended M64/M128-only chunk-ready communication overlap only if that fused overlap recovers more than this 0.5% large-M tax and produces at least 2% net cold-L2 gain. Leave the opt-in default off.
+- **Artifact:** `bench/results/iter343_w2_chunk_major_sass_cold_ab_20260904.log`.
