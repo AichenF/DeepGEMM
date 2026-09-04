@@ -118,6 +118,8 @@ def main() -> None:
     w2_reference = w2.clone() if needs_weight_copy else w2
     s13_reference = s13
     s2_reference = s2
+    w13 = kernel.marlin_to_legacy_mxfp4(w13)
+    w2 = kernel.marlin_to_legacy_mxfp4(w2)
     g13 = torch.empty(0, dtype=torch.float32, device=device)
     g2 = torch.empty(0, dtype=torch.float32, device=device)
     if kernel.NORMALIZED_WEIGHT_SCALE:

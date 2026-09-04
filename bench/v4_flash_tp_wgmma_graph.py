@@ -179,6 +179,10 @@ def make_weights(
         import v4_flash_tp_native_megamoe as native_kernel
 
         native_weights = native_kernel.transform_weights(w13, s13, w2, s2)
+    # The checkpoint/Humming contract is canonical Marlin K8.  The inherited
+    # custom route-GEMM core uses its older group32 nibble order internally.
+    w13 = kernel.marlin_to_legacy_mxfp4(w13)
+    w2 = kernel.marlin_to_legacy_mxfp4(w2)
     g13 = torch.empty(0, dtype=torch.float32, device=device)
     g2 = torch.empty(0, dtype=torch.float32, device=device)
     if kernel.NORMALIZED_WEIGHT_SCALE:

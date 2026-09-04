@@ -5728,6 +5728,29 @@ def make_e2m1_e8m0_lut(device: torch.device | str) -> torch.Tensor:
     )
 
 
+def marlin_to_legacy_mxfp4(weight: torch.Tensor) -> torch.Tensor:
+    """Adapt canonical Marlin K8 nibbles to the inherited WGMMA core layout.
+
+    This is a model-load transform.  Marlin stores each K8 chunk as four bytes
+    with high=K0..K3 and low=K4..K7.  The inherited route GEMM expects each
+    K32 group as sixteen low nibbles K0..K15 followed by sixteen high nibbles
+    K16..K31 in the same sixteen bytes.
+    """
+    if weight.dtype != torch.uint8 or weight.ndim != 3:
+        raise TypeError("MXFP4 weight must be rank-three uint8")
+    if weight.shape[-1] % 16:
+        raise ValueError("packed MXFP4 K dimension must contain full K32 groups")
+    *leading, half_k = weight.shape
+    chunks = weight.view(*leading, half_k // 4, 4)
+    logical = torch.cat((chunks >> 4, chunks & 0x0F), dim=-1).reshape(
+        *leading, half_k * 2
+    )
+    groups = logical.view(*leading, half_k // 16, 32)
+    return (
+        groups[..., :16] | (groups[..., 16:] << 4)
+    ).reshape_as(weight).contiguous()
+
+
 def normalize_mxfp4_weight_scales_(
     weight: torch.Tensor, weight_scale: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:

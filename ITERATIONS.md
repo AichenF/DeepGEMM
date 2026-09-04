@@ -6575,3 +6575,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** The prior multi-kernel path fails the canonical contract at the first GEMM: W13 cosine `0.00199911`, rel-L2 `1.41787384`; activation cosine `0.00061316`; final W2 cosine `-0.01320975`. Its internal tiled-k6 reducer still equals SGLang exactly, showing the failure is weight layout rather than reduction.
 - **Conclusion:** The frozen control's old correctness test was validating a legacy physical packing against itself, not the requested Humming/OCP MXFP4 logical weights. Native FC1 is correct against canonical Marlin (Iteration 209); the baseline operand adapter must be fixed before any performance/correctness claim is apples-to-apples. Do not use earlier native-vs-control cosine failures as kernel evidence.
 - **Artifact:** `bench/results/iter210_multikernel_marlin_correctness_m8_20260904.log`.
+
+## Iteration 211 — Adapt canonical Marlin weights to the legacy multi-kernel core
+
+- **Change:** Added an untimed model-load adapter `marlin_to_legacy_mxfp4`. It decodes each canonical Marlin K8 nibble group and repacks each K32 group into the inherited route-GEMM core's low-K0..15/high-K16..31 byte layout. The graph weight constructor now gives native the original Marlin tensor and the old multi-kernel core its adapted physical tensor; scales and logical values are shared. Updated the standalone correctness test likewise.
+- **Test:** H20 GPU 0, M=8 balanced, TP4 per-rank I=512, full old multi-kernel pipeline against direct canonical-Marlin Torch math.
+- **Result:** Correctness is restored: W13 cosine `0.999999997`, rel-L2 `0.00007742`; SwiGLU activation cosine `0.999999690`, rel-L2 `0.00078906`; final W2/local-k6 cosine `0.999997253`, rel-L2 `0.00234399`. Tiled k6 remains bitwise equal to SGLang.
+- **Conclusion:** The previous native-vs-control failure was an apples-to-oranges physical packing bug in the benchmark. Both implementations now represent the same OCP/Humming MXFP4 logical weights, while all conversion stays outside CUDA Graph timing. Next rerun paired TP4 correctness and then validate native final output against canonical math.
+- **Artifact:** `bench/results/iter211_multikernel_marlin_adapter_m8_20260904.log`.
