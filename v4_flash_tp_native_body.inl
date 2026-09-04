@@ -403,15 +403,15 @@
         DG_STATIC_ASSERT(kNumSMs > 1, "Invalid SM count");
         if (sm_idx == 0) {
             #pragma unroll
-            for (uint32_t i = thread_idx; i < kNumExperts; i += kNumDispatchThreads)
+            for (uint32_t i = lane_idx; i < kNumExperts; i += 32)
                 *workspace.get_expert_send_count_ptr(i) = 0;
             if constexpr (kUseInterleavedScheduler) {
-                if (thread_idx == 0) {
+                if (lane_idx == 0) {
                     *workspace.get_l1_task_count_ptr() = 0;
                     *workspace.get_l2_task_count_ptr() = 0;
                 }
             }
-        } else if (warp_idx == 0) {
+        } else {
             // TP-local uses 256 experts on one rank, so a CTA revisits this
             // loop several times.  Keep cleanup on one warp: the original
             // cross-warp barrier scheme assumes the small EP expert count and
@@ -667,15 +667,15 @@
         // Cleanup workspace, overlapping with combine
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
 
-        cleanup_workspace();
-        comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
-                             kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
-            workspace, sym_buffer, sm_idx, thread_idx,
-            // Warp 0 performs serialized cleanup while warp 1 can arrive here first.
-            // The grid-sync leader also diverges while polling, so use the
-            // divergence-safe barrier form for both scope synchronizations.
-            [=]() { ptx::sync_unaligned(kNumDispatchThreads, kDispatchBarrierIdx); },
-            true, false);
+        // TP routing is local (`kNumRanks == 1`), so cleanup needs a grid
+        // rendezvous but no self-directed NVLink signal.  Keep both cleanup
+        // and its grid-sync scope on warp 0; warp 1 has no writes after the
+        // dispatch/epilogue rendezvous above.
+        if (warp_idx == 0) {
+            cleanup_workspace();
+            comm::grid_sync<kNumSMs, kDispatchGridSyncIndex>(
+                workspace, sm_idx, thread_idx, [=]() { __syncwarp(); });
+        }
     } else if (warp_idx == kNumDispatchWarps) {
         // =====================================================================
         // ROLE 2: GEMM TMA LOAD warps (load A+SFA, B+SFB)

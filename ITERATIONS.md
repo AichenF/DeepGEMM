@@ -6455,3 +6455,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: **infrastructure FAIL before extension import, compilation, CUDA initialization, or kernel execution**. Invoking the script by `bench/...py` without `PYTHONPATH=.` made Python search the bench directory only, raising `ModuleNotFoundError: v4_flash_tp_native_megamoe`.
 - Decision: no correctness or barrier conclusion can be drawn. Commit the exact failed attempt, then rerun the unchanged source with `PYTHONPATH=.`.
 - Evidence: `bench/results/iter192_native_unaligned_final_cleanup_sync_m8_20260904.log`.
+
+## Iteration 193–195 — warp-0-only TP-local cleanup/grid rendezvous
+
+- Diagnosis: rerunning Iteration 192 with the corrected Python path still produced `cudaErrorIllegalInstruction`. Compute-sanitizer kept the PC at the final `sync_unaligned(64, barrier 0)` and reported 2,498 errors, with the first offenders at `threadIdx.x=32` across CTAs. This is approximately one complete second dispatch warp per each of the 78 persistent CTAs, showing that the invalid participant is warp 1 rather than an aligned-versus-unaligned opcode issue. Evidence: `bench/results/iter193_native_unaligned_final_cleanup_sync_m8_20260904.log` and `bench/results/iter194_native_unaligned_final_cleanup_compute_sanitizer_20260904.log`.
+- Change: make SM0 cleanup use warp-0 lanes with a 32-lane stride, matching the already serialized nonzero-SM cleanup; after the final 320-thread dispatch/epilogue rendezvous, only warp 0 now performs cleanup and participates in a warp-scoped `grid_sync<78,0>`. Remove the redundant `nvlink_barrier<1>` self-signal because TP-local routing compiles this body with `kNumRanks=1`; the real TP collective remains in the appended same-launch tail.
+- Test: one H20 GPU (GPU 0), M=8 local body, caller-provided FP8 E4M3 activation plus FP32 group-128 scales, `CUDA_LAUNCH_BLOCKING=1`.
+- Result: **PASS**. The kernel returned normally for the first time; output is finite and nonzero (`max_abs=50176`, random stress weights), workspace size 34,403,584 bytes. This is a runtime smoke only, not yet a numerical-reference proof.
+- Decision: keep the warp-0-only cleanup/grid rendezvous. Next strengthen the local test to replay the same workspace repeatedly and compare the full output against the selected multi-kernel MXFP4 path before enabling TP communication.
+- Evidence: `bench/results/iter195_native_warp0_grid_cleanup_m8_20260904.log`.
