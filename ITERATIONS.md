@@ -6673,3 +6673,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Latency (control/native median ms):** M8 `0.071616/0.178144`; M16 `0.114608/0.255856`; M32 `0.176832/0.372384`; M64 `0.249392/0.503744`; M128 `0.304992/0.611264`. Geometric means are `0.161656/0.349655 ms`, so native is `2.163x` slower than control.
 - **Conclusion:** Reject the lookup. Relative to Iteration 216, serial construction adds a large fixed cost and more than offsets the removed warp-parallel owner scans; it regresses every M and widens the gap. Restore the Iteration-217 native source. More importantly, the already-valid TP-specialized one-launch path measured only 15.25% behind control in Iteration 177, so subsequent performance work should resume from that much stronger candidate rather than the generic native body.
 - **Artifact:** `bench/results/iter222_native_task_lookup_tp4_allm_cold_screen_20260904.log`.
+
+## Iteration 223 — Restore the Iteration-217 native scheduler exactly
+
+- **Change:** Removed the rejected replay-local task lookup and restored both native source files byte-for-byte to their Iteration-217 hashes. The current CARv2 graph-pointer compatibility remains in the benchmark only.
+- **Test:** TP4 H20 GPUs 0-3, random M8, paired CUDA Graph, two batches x twenty separately cold-L2 replays and four cold warmups; prequantized FP8 input.
+- **Correctness:** PASS under the native criterion. Final cosine `0.99935880`; embedded communication versus NCCL cosine `0.99999178`, rel-L2 `0.00405562`.
+- **Latency:** control/native medians `0.071216/0.128800 ms`; native is `1.809x` slower. The two native batch medians are `0.128688/0.128912 ms`, reproducing Iteration 216 and proving the Iteration-222 regression is removed.
+- **Conclusion:** Keep native only as a correctness/reference implementation. Its measured gap is much larger than the TP-specialized single-launch candidate, so optimization returns to the latter.
+- **Artifact:** `bench/results/iter223_restore_native_interleaved_tp4_m8_cold_screen_20260904.log`.

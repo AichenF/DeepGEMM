@@ -73,15 +73,6 @@
     // Combine input area
     const auto combine_token_buffer = layout::Buffer(bf16_token_layout, kNumTopk, kNumMaxTokensPerRank, l2_sf_buffer.get_end_ptr());
 
-    // TP-local task lookup.  `cumulative_local_expert_recv_stats` points at
-    // the unused second half of the physically per-64 L2 scale allocation;
-    // this kernel consumes only the first per-128 half.  Route preparation
-    // builds the lookup once per replay so the interleaved producer does not
-    // scan all 256 expert counts again for every L1/L2 tile.
-    auto tp_task_header = reinterpret_cast<uint32_t*>(
-        cumulative_local_expert_recv_stats);
-    auto tp_task_records = reinterpret_cast<uint4*>(tp_task_header + 4);
-
     // =====================================================================
     // GEMM data types and shape constants
     // =====================================================================
@@ -94,7 +85,6 @@
         L2_SHAPE_N, L2_SHAPE_K,
         kNumExpertsPerRank, kNumSMs, kNumRanks>;
     constexpr uint32_t kNumRoutedL1BlockNs = L1_SHAPE_N / BLOCK_N;
-    constexpr uint32_t kNumRoutedL2BlockNs = L2_SHAPE_N / BLOCK_N;
     constexpr bool kSplitMDecodedWeightReuse =
         BLOCK_M == 128 && BLOCK_N == 128 && kNumEpilogueWarpgroups == 2;
     constexpr uint32_t WG_BLOCK_M =
@@ -398,84 +388,10 @@
     };
 
     const auto produce_interleaved_blocks = [&](auto&& func) {
-        uint32_t num_total_m_blocks = 0;
-        if (lane_idx == 0) {
-            while (ptx::ld_acq(tp_task_header) != 1u) {}
-            num_total_m_blocks = tp_task_header[1];
-        }
-        num_total_m_blocks = ptx::exchange(num_total_m_blocks, 0);
-        const uint32_t num_total_l1_tasks =
-            num_total_m_blocks * kNumRoutedL1BlockNs;
-        const uint32_t num_total_l1_waves =
-            math::ceil_div(num_total_l1_tasks, kNumSMs);
-        uint32_t num_l1_warmup_waves = cute::min(
-            static_cast<uint32_t>(sched::get_num_l1_warmup_waves(
-                num_total_m_blocks, kNumSMs,
-                kNumRoutedL1BlockNs, kNumRoutedL2BlockNs)),
-            num_total_l1_waves);
-
-        const auto create_tp_task = [&](const sched::BlockPhase& block_phase,
-                                         const uint32_t& task_idx,
-                                         const uint32_t& num_n_blocks,
-                                         const uint32_t& shape_n,
-                                         const uint32_t& shape_k) {
-            const uint32_t pool_block_idx = task_idx / num_n_blocks;
-            const uint32_t n_block_idx = task_idx % num_n_blocks;
-            uint4 record = {};
-            if (lane_idx == 0)
-                record = tp_task_records[pool_block_idx];
-            record.x = ptx::exchange(record.x, 0);
-            record.y = ptx::exchange(record.y, 0);
-            record.z = ptx::exchange(record.z, 0);
-            return task_info_t(
-                block_phase, record.x, record.y, n_block_idx,
-                pool_block_idx, record.z, shape_n, shape_k);
-        };
-
-        const auto claim_tp_task = [&]() {
-            constexpr uint32_t kL1WavesDone = 0xffffffffu;
-            while (true) {
-                if (num_l1_warmup_waves != kL1WavesDone &&
-                    num_l1_warmup_waves > 0) {
-                    -- num_l1_warmup_waves;
-                    const uint32_t task_idx =
-                        interleaved_scheduler_t::get_next_task_idx(
-                            workspace.get_l1_task_count_ptr());
-                    if (task_idx >=
-                        num_total_m_blocks * kNumRoutedL1BlockNs) {
-                        num_l1_warmup_waves = kL1WavesDone;
-                        continue;
-                    }
-                    return create_tp_task(
-                        sched::BlockPhase::Linear1, task_idx,
-                        kNumRoutedL1BlockNs, L1_SHAPE_N, L1_SHAPE_K);
-                }
-
-                const uint32_t task_idx =
-                    interleaved_scheduler_t::get_next_task_idx(
-                        workspace.get_l2_task_count_ptr());
-                if (task_idx >=
-                    num_total_m_blocks * kNumRoutedL2BlockNs)
-                    break;
-
-                if (num_l1_warmup_waves != kL1WavesDone)
-                    num_l1_warmup_waves = 1;
-
-                auto task_info = create_tp_task(
-                    sched::BlockPhase::Linear2, task_idx,
-                    kNumRoutedL2BlockNs, L2_SHAPE_N, L2_SHAPE_K);
-                const uint32_t num_required_l1_tasks =
-                    (task_info.pool_block_idx + 1) * kNumRoutedL1BlockNs;
-                while (ptx::ld_volatile(workspace.get_l1_task_count_ptr()) <
-                       num_required_l1_tasks) {}
-                return task_info;
-            }
-            return task_info_t();
-        };
-
+        interleaved_scheduler.fetch_expert_recv_count();
         while (true) {
             interleaved_scheduler.wait_task_slot_empty();
-            const auto task_info = claim_tp_task();
+            const auto task_info = interleaved_scheduler.claim_next_task();
             interleaved_scheduler.publish_task(task_info);
             if (!task_info.is_valid())
                 break;
@@ -493,7 +409,6 @@
                 if (lane_idx == 0) {
                     *workspace.get_l1_task_count_ptr() = 0;
                     *workspace.get_l2_task_count_ptr() = 0;
-                    atomicExch(tp_task_header, 0u);
                 }
             }
         } else {
@@ -598,32 +513,6 @@
             }
         }
         ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
-
-        // The first CTA materializes the compact pool-block lookup after all
-        // CTA-local expert counts have reached the global counters.  Publish
-        // it with a release sequence; each weight-loader warp waits with an
-        // acquire load before claiming its first task.
-        if (sm_idx == 0 and warp_idx == 0 and lane_idx == 0) {
-            uint32_t pool_block_idx = 0;
-            #pragma unroll
-            for (uint32_t expert_idx = 0;
-                 expert_idx < kNumExpertsPerRank; ++ expert_idx) {
-                const uint32_t num_expert_tokens = static_cast<uint32_t>(
-                    *workspace.get_expert_send_count_ptr(expert_idx));
-                const uint32_t num_m_blocks =
-                    math::ceil_div(num_expert_tokens, BLOCK_M);
-                for (uint32_t m_block_idx = 0;
-                     m_block_idx < num_m_blocks; ++ m_block_idx) {
-                    const uint32_t valid_m = cute::min(
-                        num_expert_tokens - m_block_idx * BLOCK_M, BLOCK_M);
-                    tp_task_records[pool_block_idx ++] = make_uint4(
-                        expert_idx, m_block_idx, valid_m, 0u);
-                }
-            }
-            tp_task_header[1] = pool_block_idx;
-            __threadfence();
-            atomicExch(tp_task_header, 1u);
-        }
 
         comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
                              kDispatchGridSyncIndex, kBeforeDispatchPullBarrierTag>(

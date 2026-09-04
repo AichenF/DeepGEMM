@@ -743,15 +743,8 @@ void run_native_tp4(
     C10_CUDA_CHECK(cudaFuncSetAttribute(
         kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, 232448));
     const auto stream = at::cuda::getCurrentCUDAStream();
-    // L2 scales reserve physical per-64 capacity while this kernel consumes
-    // per-128 scales.  Reuse the untouched second half for the replay-local
-    // TP task lookup without increasing the symmetric-buffer footprint.
-    auto* tp_task_lookup = reinterpret_cast<int*>(
-        l2_acts_sf.data_ptr<float>()
-        + static_cast<int64_t>(intermediate / 128) * 49152);
     kernel<<<78, 384, 232448, stream>>>(
-        local_output.data_ptr(), tp_task_lookup,
-        static_cast<uint32_t>(tokens),
+        local_output.data_ptr(), nullptr, static_cast<uint32_t>(tokens),
         sym_buffer,
         tensor_map_l1_acts, tensor_map_l1_acts_sf,
         tensor_map_l1_weights, tensor_map_l1_output,
