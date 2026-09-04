@@ -8719,3 +8719,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Normalized effect: tail split-K4 regressed candidate/control by `0.25%` at M64, `1.64%` at M128, and `0.94%` geometric mean. Direct single-kernel medians regressed `0.47%` and `3.42%`.
 - Decision: reject and keep disabled. The apparent benefit in the ON→OFF screen was not order-robust; extra template/control-flow footprint and the shorter split tasks do not reliably beat the original tail wave under cold-L2 distributed execution.
 - Artifact: `bench/results/iter324_w13_tail_split4_off_on_tp4_cold_confirm_20260904.log`.
+
+## Iteration 325 — W13 phase-level noinline correctness (2026-09-04)
+
+- Change: added an isolated W13 phase-level device-call experiment. Each CTA calls one `__noinline__` helper for the entire W13 grid-stride loop; `route_gemm_task` remains inlined inside that helper. This differs from the rejected per-task outline, which paid one call per GEMM tile. The global kernel count remains one.
+- Test: H20 GPU0 compute-only correctness for random-route M64 and M128, `V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE=1`; caller-provided FP8 `qx/x_scale`; cold 256 MiB L2 clear; TP collective disabled.
+- Result: both shapes passed bitwise. M64/M128 padded rows were 1,624/1,992; final FC2 route output cosine was `1.0`, relative L2 `0.0`, finite, with valid packed barrier generations on both runs.
+- Decision: correctness gate passed. Inspect main-kernel and outlined-callee resources plus CALL/stack behavior before distributed timing.
+- Artifact: `bench/results/iter325_w13_phase_noinline_m64_m128_compute_correctness_20260904.log`.
