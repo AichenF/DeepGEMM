@@ -8727,3 +8727,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: both shapes passed bitwise. M64/M128 padded rows were 1,624/1,992; final FC2 route output cosine was `1.0`, relative L2 `0.0`, finite, with valid packed barrier generations on both runs.
 - Decision: correctness gate passed. Inspect main-kernel and outlined-callee resources plus CALL/stack behavior before distributed timing.
 - Artifact: `bench/results/iter325_w13_phase_noinline_m64_m128_compute_correctness_20260904.log`.
+
+## Iteration 326 — W13 phase-level noinline preliminary cubin gate (2026-09-04)
+
+- Test: same-source default versus `V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE=1`, selected `tp4_megamoe_single_launch_kernel<2,128>`, using cuobjdump resource/SASS inspection.
+- Default: `.so` 6,822,912 bytes; main kernel `REG:64 STACK:32 SHARED:4096 LOCAL:0`; five main-function `LDL/STL` instructions.
+- Phase outline: `.so` 6,466,560 bytes (-356,352); main kernel remains `REG:64 STACK:32 SHARED:4096 LOCAL:0`; the same five main-function `LDL/STL` instructions. The identified W13 callee contained zero `LDL/STL` instructions.
+- CALL audit: the candidate main function contains three total CALL instructions (`0x24e0`, `0x2b90`, `0x2fd0`), with the latter two sharing a target. This first command did not count/default-resolve existing communication helper calls, so it does not yet prove which one is W13; a symbol/call-target audit is required before timing.
+- Decision: pass the resource-pressure portion of the gate. No register, stack, local-memory, or static-shared regression; total code size decreased. Resolve the one-added-call invariant, then run cold-L2 timing if satisfied.
+- Artifact: `bench/results/iter326_w13_phase_noinline_cubin_resource_gate_20260904.log`.
