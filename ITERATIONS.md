@@ -5827,3 +5827,18 @@ maximum rank latency of a full CUDA-Graph replay.
 - Artifacts: `results/iter156_tp4_single_launch_m8_profile.nsys-rep`, its
   exported `.sqlite`, the console log, and
   `results/iter156_tp4_single_launch_m8_launch_audit_20260904.log`.
+
+## Iteration 157 — node-granularity Nsight launch-count audit
+
+- Date: 2026-09-04.
+- Source: unchanged iteration 155 single-launch path.
+- Protocol: repeat the TP4 M8 random-route profiler replay with Nsight Systems
+  `--cuda-graph-trace=node`, then export SQLite and group CUDA kernels by
+  device, graph-node ID, demangled name and launch geometry.
+- Result: The node-granularity export contains four graph kernel launches total: exactly one on each device 0–3.  Every nonzero-graph-node kernel is `tp4_megamoe_single_launch_kernel<4>`; the four 256 MiB fill kernels have graph node ID zero and are the excluded L2 clears.
+- Audit predicate: `LAUNCH_AUDIT_OK=true`.  This is authoritative for the
+  captured TP4 M8 replay but does not substitute for all-M correctness, TP8 or
+  performance evidence.
+- Artifacts: `results/iter157_tp4_single_launch_m8_graph_nodes.nsys-rep`,
+  exported `.sqlite`, console log, and
+  `results/iter157_tp4_single_launch_m8_launch_audit_20260904.log`.
