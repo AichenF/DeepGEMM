@@ -9114,3 +9114,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Conclusion:** H20 supports the instruction and audited commit/wait/proxy sequence, a full 624-CTA resident grid can synchronously wait for it, and six-producer destination contention itself does not hang.  The full MegaMoE nonprogress must therefore come from integration-specific shared-memory lifetime/layout or scheduling state, not from `cp.reduce.async.bulk` availability or generic engine progress.
 - **Next isolation:** Run the single-launch kernel with the same bulk epilogue but collective disabled, and/or add phase stamps around W2 to distinguish a W2 bulk wait from the terminal communication barrier.  Do not alter the selected default path.
 - **Artifact:** `bench/results/iter365_cp_reduce_bulk_microprobe_20260905.log`.
+
+## Iteration 366 — compute-only bulk integration isolation (2026-09-05)
+
+- **Purpose:** Determine whether full-MegaMoE nonprogress occurs in the W2 bulk epilogue or only after entering the embedded TP collective.
+- **Harness change:** Extended `bench/profile_v4_flash_tp_single_compute.py` to understand the opt-in workspace format.  When bulk combine is enabled, it reinterprets the front of `down` as `M×4096` FP32 and compares it with an independent fixed-k6 sum of the control's BF16 route outputs; normal-path checks are unchanged.
+- **Setup:** Single rank/GPU 0, M128 random routes, seed 20260904, identical release-arrival/assume-valid/bulk flags, `enable_tp_collective=False`, 180-second hard timeout.  The public activation remained prequantized FP8-E4M3 with an FP32 group-128 scale.
+- **Result:** **TIMEOUT before output.**  The compute-only single kernel never returned and the process exited 124.  No collective code was entered, no correctness record was produced, and no timing is valid.
+- **Conclusion:** P2P two-shot and cross-rank synchronization are exonerated.  Combined with Iteration 365's exact standalone 624-CTA proof, the leading integration-specific suspect is reusing the WGMMA/TMA weight staging allocation as the async bulk source before all hardware-visible staging lifetime conditions are satisfied.
+- **Next isolation:** Move the eight pitch-132 FP32 rows to an independent aligned static shared slab (accepting a temporary occupancy change) and rerun compute-only.  If it still hangs, reduce to one bulk operation per W2 CTA and instrument W2/grid phase completion.
+- **Artifact:** `bench/results/iter366_bulk_reduce_compute_only_m128_20260905.log`.

@@ -84,6 +84,13 @@ def main() -> None:
     reference.run_before_local_reduce()
     assert reference.down is not None
     expected_down = reference.down.clone()
+    expected_local_sum = None
+    if kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE:
+        expected_local_sum = (
+            expected_down.view(args.m, bench.TOP_K, bench.HIDDEN).float()
+            * topk_weights.float().unsqueeze(-1)
+            * bench.ROUTED_SCALING_FACTOR
+        ).sum(dim=1)
     torch.cuda.synchronize(device)
 
     output = torch.empty((args.m, bench.HIDDEN), dtype=torch.bfloat16, device=device)
@@ -159,7 +166,17 @@ def main() -> None:
     torch.cuda.synchronize(device)
     torch.cuda.cudart().cudaProfilerStop()
 
-    check = compare(case.down, expected_down)
+    if kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE:
+        assert expected_local_sum is not None
+        actual_local_sum = (
+            case.down.view(torch.float32).flatten()[: args.m * bench.HIDDEN]
+            .view(args.m, bench.HIDDEN)
+        )
+        check = compare(actual_local_sum, expected_local_sum)
+        check_name = "local_sum_check"
+    else:
+        check = compare(case.down, expected_down)
+        check_name = "down_check"
     packed_count_words = [
         int(value)
         for value in case.single_launch_barrier_state[:8:2].cpu().tolist()
@@ -201,7 +218,7 @@ def main() -> None:
                 "w13_split_k": case.w13_split_k,
                 "padded_rows": int(case.num_tokens_padded.item()),
                 "phase_us": phases,
-                "down_check": check,
+                check_name: check,
                 "accepted": accepted,
             },
             sort_keys=True,
