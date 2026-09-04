@@ -561,7 +561,7 @@ v4_flash_tp4_native_megamoe_impl(
     constexpr bool kSwapABRequested = true;
     constexpr bool kSingleActiveDispatchWarp = true;
     constexpr bool kUseMode2RowDecoder = true;
-    constexpr bool kUseInterleavedScheduler = true;
+    constexpr bool kUseInterleavedScheduler = false;
     constexpr uint32_t kHidden = 4096;
     constexpr uint32_t kIntermediateHidden = kIntermediate;
     constexpr uint32_t kNumTopk = 6;

@@ -6519,3 +6519,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** The first computed intermediate is already wrong: dequantized L2 activation cosine `-0.00349220`, rel-L2 `1.01721447`; 23,333 of 24,576 FP8 bytes differ on the worst rank. Intermediate scale cosine is only `0.75738467` with rel-L2 `0.80994170`. Control final remains correct (cosine `0.99999557`), while native final fails as expected.
 - **Conclusion:** Dispatch/pool input was exact in Iteration 201, but FC1+SwiGLU output is uncorrelated. The root cause is now bounded to native FC1 math/weight interpretation or its epilogue, before FC2/combine/all-reduce. Inspect WGMMA A/B layout and scale application next; communication is not on the critical debug path.
 - **Artifact:** `bench/results/iter202_native_l2_stage_audit_tp4_m8_20260904.log`.
+
+## Iteration 203 — Disable interleaved mailbox scheduler
+
+- **Change:** Set native `kUseInterleavedScheduler=false` so all TMA-loader and math roles use the static MegaMoE scheduler. The official Mode2 braid/decoder, BM8/BN256/BK128 math, and all descriptors were unchanged.
+- **Test:** TP4 H20 GPUs 0-3, M=8 balanced routes, paired cold-L2 CUDA Graph correctness with the Iteration 202 FC1-stage probe.
+- **Result:** Metrics are bit-for-bit identical to the interleaved run: native FC1/SwiGLU dequant cosine `-0.00349220`, rel-L2 `1.01721447`; scale cosine `0.75738467`; native final cosine `-0.01416015`. Control remains correct.
+- **Conclusion:** Task publication/consumption is not the root cause. Also, the Iteration 200 experts-per-wave change only affected this static path; static wave16 still reproduces the same error, so both scheduler families and wave width are now excluded. Focus next on the FC1 decoded B layout/WGMMA output pairing and scale semantics.
+- **Artifact:** `bench/results/iter203_native_static_scheduler_tp4_m8_20260904.log`.
