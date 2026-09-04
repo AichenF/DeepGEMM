@@ -7244,3 +7244,26 @@ maximum rank latency of a full CUDA-Graph replay.
   grid-barrier and phase-tail work; do not attribute a larger gain to it.
 - **Artifact:**
   `bench/results/iter252_no_phase_stamps_tp4_allm_cold_paired_20260904.log`.
+
+## Iteration 253 — packed grid-barrier first checkpoint fails to compile
+
+- **Hypothesis/change:** Added opt-in
+  `V4_SINGLE_LAUNCH_PACKED_GRID_BARRIER=1`.  The proposed ordinary grid
+  barrier packs a 10-bit arrival count and 22-bit generation into the
+  existing count word, derives both from the acq-rel arrival atomic's return
+  value, and has the final CTA publish the next generation/reset count with a
+  release store.  This is intended to remove every CTA's separate acquire
+  load of the epoch while preserving the arrival release sequence.  The
+  hierarchical and legacy barriers remain available unchanged.
+- **Protocol:** Attempted H20 GPU-0 compute-only cold-L2 M={8,128} smoke with
+  phase stamps off, relaxed 64 ns polling, prequantized FP8 input, and the
+  complete W2 route-tensor correctness oracle.
+- **Result:** Infrastructure/source FAIL before CUDA execution.  NVCC reports
+  its first parse error at the following `single_launch_group_barrier`
+  declaration (`expected a ';'`), followed by cascading scope errors.  No
+  kernel launched, so there is no correctness or performance result.
+- **Decision:** Commit this exact failed checkpoint as required, repair the
+  brace/scope error, and rerun the same smoke before drawing any conclusion
+  about the barrier protocol.
+- **Artifact:**
+  `bench/results/iter253_packed_grid_barrier_m8_m128_compute_smoke_20260904.log`.

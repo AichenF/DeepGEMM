@@ -1,0 +1,405 @@
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2774, in _run_ninja_build
+    subprocess.run(
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['ninja', '-v']' returned non-zero exit status 2.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 12, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 6261, in <module>
+    _ext = load_inline(
+           ^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2174, in load_inline
+    return _jit_compile(
+           ^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2268, in _jit_compile
+    _write_ninja_file_and_build_library(
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2429, in _write_ninja_file_and_build_library
+    _run_ninja_build(
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2791, in _run_ninja_build
+    raise RuntimeError(message) from e
+RuntimeError: Error building extension 'v4tp_f2cbd13f5e38ea1dface_v178mspec': [1/3] /usr/local/cuda/bin/nvcc -MD -MF cuda.cuda.o.d -DTORCH_EXTENSION_NAME=v4tp_f2cbd13f5e38ea1dface_v178mspec -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.12/dist-packages/torch/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.12 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options '-fPIC' -O3 -DK_WOUT=128 -DK_LUT_ROWS=256 -DK_SCALE_QUAD_REUSE=4 -DK_SCALE_BUFFERS=2 -DK_WEIGHT_STAGES=2 -DK_WEIGHT_SWIZZLE=64 -DK_WEIGHT_COMMON_ADDRESS=1 -DK_DEQUANT_DP4A_HI=1 -DK_DEQUANT_DP4A_LO=1 -DK_DEQUANT_SYNTH_LUT=0 -DK_NORMALIZED_WEIGHT_SCALE=1 -DK_NORMALIZED_SHARED_LUT=0 -DK_ACTIVATION_EVICT_LAST=0 -DK_PREDICATED_PADDED_ACTIVATION=0 -DK_TILED_WEIGHT_LAYOUT=1 -DK_BULK_WEIGHT_COPY=1 -DK_TMA_CTA_SCOPE=0 -DK_WEIGHT_EVICT_FIRST=1 -DK_WEIGHT_POLICY_HOIST=0 -DK_WEIGHT_POLICY_CONSTANT=0 -DK_W2_NO_WEIGHT_EVICT_FIRST=0 -DK_INTERLEAVED_BULK_COPY=1 -DK_COMPACT_INTERLEAVED_SCALE=1 -DK_MODE2_BRAID=1 -DK_W2_GLOBAL_LUT=0 -DK_W2_S2R_PREFETCH=1 -DK_W13_S2R_PREFETCH=1 -DK_LEADER_MBAR_WAIT=1 -DK_DIRECT_BARRIER_ADDR=0 -DK_ROUTE_K_UNROLL2=1 -DK_ROUTE_K_UNROLL4=1 -DK_ROUTE_K_UNROLL8=0 -DK_ROUTE_K_UNROLL8_SPLIT2=0 -DK_W13_K_UNROLL8_SPLIT2=0 -DK_W13_K_UNROLL16_SPLIT2=0 -DK_W13_DISTRIBUTED_PREP=1 -DK_W13_DUAL_WG_SPLIT=0 -DK_W2_DISTRIBUTED_PREP=1 -DK_W13_MERGED_WGMMA_GROUP=0 -DK_W2_ROUTE_OUTPUT=1 -DK_W2_SORTED_ACT=0 -DK_W2_MBLOCK_SCALE=0 -DK_W2_FOLD_GLOBAL_SCALE=0 -DK_W2_COALESCED_STORE=0 -DK_SINGLE_LAUNCH_SCHEDULE=0 -DK_SINGLE_LAUNCH_NOINLINE_GEMM=0 -DK_SINGLE_LAUNCH_MIN_BLOCKS=8 -DK_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM=0 -DK_SINGLE_LAUNCH_M128_BOUND9=0 -DK_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE=0 -DK_SINGLE_LAUNCH_COOPERATIVE_GRID=0 -DK_SINGLE_LAUNCH_RELAXED_GRID_POLL=1 -DK_SINGLE_LAUNCH_PHASE_STAMPS=0 -DK_SINGLE_LAUNCH_PACKED_GRID_BARRIER=1 -DK_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS=64 -DK_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC=0 -DK_SINGLE_LAUNCH_HIERARCHICAL_GRID=0 -DK_SINGLE_LAUNCH_TAIL_OVERLAP=0 -DK_SINGLE_LAUNCH_TAIL_GROUP_CTAS=16 -DK_SINGLE_LAUNCH_GROUPED_W13_ACT=0 -DK_SINGLE_LAUNCH_GROUP_CTAS=16 -DK_SINGLE_LAUNCH_NVLS_BLOCKS=64 -DK_MIN_BLOCKS_PER_SM=0 -DK_W13_LAUNCH_BOUND_10=0 -DK_W13_MAX_SMEM_CARVEOUT=0 --expt-relaxed-constexpr --expt-extended-lambda -gencode arch=compute_90a,code=sm_90a -std=c++17 -lineinfo -I/lustre/raplab/client/xutingz/fac/DeepGEMM/deep_gemm/include -c /tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu -o cuda.cuda.o 
+FAILED: [code=2] cuda.cuda.o 
+/usr/local/cuda/bin/nvcc -MD -MF cuda.cuda.o.d -DTORCH_EXTENSION_NAME=v4tp_f2cbd13f5e38ea1dface_v178mspec -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.12/dist-packages/torch/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.12 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options '-fPIC' -O3 -DK_WOUT=128 -DK_LUT_ROWS=256 -DK_SCALE_QUAD_REUSE=4 -DK_SCALE_BUFFERS=2 -DK_WEIGHT_STAGES=2 -DK_WEIGHT_SWIZZLE=64 -DK_WEIGHT_COMMON_ADDRESS=1 -DK_DEQUANT_DP4A_HI=1 -DK_DEQUANT_DP4A_LO=1 -DK_DEQUANT_SYNTH_LUT=0 -DK_NORMALIZED_WEIGHT_SCALE=1 -DK_NORMALIZED_SHARED_LUT=0 -DK_ACTIVATION_EVICT_LAST=0 -DK_PREDICATED_PADDED_ACTIVATION=0 -DK_TILED_WEIGHT_LAYOUT=1 -DK_BULK_WEIGHT_COPY=1 -DK_TMA_CTA_SCOPE=0 -DK_WEIGHT_EVICT_FIRST=1 -DK_WEIGHT_POLICY_HOIST=0 -DK_WEIGHT_POLICY_CONSTANT=0 -DK_W2_NO_WEIGHT_EVICT_FIRST=0 -DK_INTERLEAVED_BULK_COPY=1 -DK_COMPACT_INTERLEAVED_SCALE=1 -DK_MODE2_BRAID=1 -DK_W2_GLOBAL_LUT=0 -DK_W2_S2R_PREFETCH=1 -DK_W13_S2R_PREFETCH=1 -DK_LEADER_MBAR_WAIT=1 -DK_DIRECT_BARRIER_ADDR=0 -DK_ROUTE_K_UNROLL2=1 -DK_ROUTE_K_UNROLL4=1 -DK_ROUTE_K_UNROLL8=0 -DK_ROUTE_K_UNROLL8_SPLIT2=0 -DK_W13_K_UNROLL8_SPLIT2=0 -DK_W13_K_UNROLL16_SPLIT2=0 -DK_W13_DISTRIBUTED_PREP=1 -DK_W13_DUAL_WG_SPLIT=0 -DK_W2_DISTRIBUTED_PREP=1 -DK_W13_MERGED_WGMMA_GROUP=0 -DK_W2_ROUTE_OUTPUT=1 -DK_W2_SORTED_ACT=0 -DK_W2_MBLOCK_SCALE=0 -DK_W2_FOLD_GLOBAL_SCALE=0 -DK_W2_COALESCED_STORE=0 -DK_SINGLE_LAUNCH_SCHEDULE=0 -DK_SINGLE_LAUNCH_NOINLINE_GEMM=0 -DK_SINGLE_LAUNCH_MIN_BLOCKS=8 -DK_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM=0 -DK_SINGLE_LAUNCH_M128_BOUND9=0 -DK_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE=0 -DK_SINGLE_LAUNCH_COOPERATIVE_GRID=0 -DK_SINGLE_LAUNCH_RELAXED_GRID_POLL=1 -DK_SINGLE_LAUNCH_PHASE_STAMPS=0 -DK_SINGLE_LAUNCH_PACKED_GRID_BARRIER=1 -DK_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS=64 -DK_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC=0 -DK_SINGLE_LAUNCH_HIERARCHICAL_GRID=0 -DK_SINGLE_LAUNCH_TAIL_OVERLAP=0 -DK_SINGLE_LAUNCH_TAIL_GROUP_CTAS=16 -DK_SINGLE_LAUNCH_GROUPED_W13_ACT=0 -DK_SINGLE_LAUNCH_GROUP_CTAS=16 -DK_SINGLE_LAUNCH_NVLS_BLOCKS=64 -DK_MIN_BLOCKS_PER_SM=0 -DK_W13_LAUNCH_BOUND_10=0 -DK_W13_MAX_SMEM_CARVEOUT=0 --expt-relaxed-constexpr --expt-extended-lambda -gencode arch=compute_90a,code=sm_90a -std=c++17 -lineinfo -I/lustre/raplab/client/xutingz/fac/DeepGEMM/deep_gemm/include -c /tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu -o cuda.cuda.o 
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(3215): error: expected a ";"
+          int32_t* __restrict__ state, int group, int expected_blocks) {
+                                                                       ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(3245): warning #12-D: parsing restarts here after previous syntax error
+  };
+   ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(3247): error: a template declaration is not allowed here
+  template <int SplitK, int Tokens>
+  ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(3248): error: identifier "SingleLaunchMinBlocks" is undefined
+            128, SingleLaunchMinBlocks<Tokens>::value
+                 ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(3248): error: the global scope has no "value"
+            128, SingleLaunchMinBlocks<Tokens>::value
+                                                ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(3961): error: expected a ";"
+          const void* pointer) {
+                               ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4037): warning #12-D: parsing restarts here after previous syntax error
+      const int global_tid = blockIdx.x * Threads + threadIdx.x;
+                                                               ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4038): error: identifier "Threads" is undefined
+      const int global_threads = gridDim.x * Threads;
+                                             ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4039): error: identifier "tokens" is undefined
+      const int num_vecs = tokens * kVecsPerToken;
+                           ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4039): error: identifier "kVecsPerToken" is undefined
+      const int num_vecs = tokens * kVecsPerToken;
+                                    ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4040): error: identifier "global_tid" is undefined
+      for (int vec = global_tid; vec < num_vecs; vec += global_threads) {
+                     ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4051): error: identifier "route_mc" is undefined
+                  route_mc + route_vec * kVecBytes);
+                  ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4051): error: identifier "kVecBytes" is undefined
+                  route_mc + route_vec * kVecBytes);
+                                         ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4054): error: identifier "kPairsPerVec" is undefined
+          float2 accum[kPairsPerVec];
+                       ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4061): error: identifier "topk_weights" is undefined
+                  __ldg(topk_weights + token * kTopK + route) * kRoutedScale;
+                        ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4084): error: identifier "output" is undefined
+          reinterpret_cast<uint4*>(output)[vec] = result;
+                                   ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4090): error: identifier "sem_local" is undefined
+              sem_local + blockIdx.x * kSemaphoreBytes);
+              ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4090): error: identifier "kSemaphoreBytes" is undefined
+              sem_local + blockIdx.x * kSemaphoreBytes);
+                                       ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4089): error: cannot deduce "auto" type
+          auto* flag = reinterpret_cast<uint32_t*>(
+          ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4092): error: identifier "sem_mc" is undefined
+              sem_mc + blockIdx.x * kSemaphoreBytes));
+              ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4091): error: identifier "multimem_red_add_release_u32" is undefined
+          multimem_red_add_release_u32(reinterpret_cast<uint32_t*>(
+          ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4093): error: identifier "load_acquire_sys_u32" is undefined
+          while (load_acquire_sys_u32(flag) - barrier_current < kWorld) {
+                 ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4093): error: identifier "barrier_current" is undefined
+          while (load_acquire_sys_u32(flag) - barrier_current < kWorld) {
+                                              ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4093): error: identifier "kWorld" is undefined
+          while (load_acquire_sys_u32(flag) - barrier_current < kWorld) {
+                                                                ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4173): error: identifier "multimem_red_add_release_u32" is undefined
+          multimem_red_add_release_u32(reinterpret_cast<uint32_t*>(
+          ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4175): error: identifier "load_acquire_sys_u32" is undefined
+          while (load_acquire_sys_u32(flag) - reserved < kWorld) {
+                 ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4181): error: identifier "load_multimem_reduce_bf16_16b" is undefined
+          const uint4 sum = load_multimem_reduce_bf16_16b(
+                            ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4190): error: identifier "multimem_red_add_release_u32" is undefined
+          multimem_red_add_release_u32(reinterpret_cast<uint32_t*>(
+          ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4192): error: identifier "load_acquire_sys_u32" is undefined
+          while (load_acquire_sys_u32(flag) - barrier_current < kWorld) {
+                 ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4832): error: identifier "tp4_megamoe_single_launch_kernel" is undefined
+          tp4_megamoe_single_launch_kernel<SplitK, Tokens>,
+          ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4832): error: expected an expression
+          tp4_megamoe_single_launch_kernel<SplitK, Tokens>,
+                                                          ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4831): error: no instance of overloaded function "cudaFuncSetAttribute" matches the argument list
+            argument types are: (<error-type>, <error-type>, cudaFuncAttribute, const int)
+      const cudaError_t attr_result = cudaFuncSetAttribute(
+                                      ^
+/usr/local/cuda/include/cuda_runtime.h(2448): note #3322-D: number of parameters of function template "cudaFuncSetAttribute(T *, cudaFuncAttribute, int)" does not match the call
+  static __inline__ __attribute__((host)) cudaError_t cudaFuncSetAttribute(
+                                                      ^
+/usr/local/cuda/include/cuda_runtime_api.h(4030): note #3322-D: number of parameters of function "cudaFuncSetAttribute(const void *, cudaFuncAttribute, int)" does not match the call
+  extern __attribute__((host)) __attribute__((cudart_builtin)) cudaError_t cudaFuncSetAttribute(const void *func, enum cudaFuncAttribute attr, int value);
+                                                                           ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4843): error: expected an expression
+              tp4_megamoe_single_launch_kernel<SplitK, Tokens>,
+                                                              ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4841): error: no instance of overloaded function "cudaOccupancyMaxActiveBlocksPerMultiprocessor" matches the argument list
+            argument types are: (int *, <error-type>, <error-type>, int, const int)
+          cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+          ^
+/usr/local/cuda/include/cuda_runtime_api.h(4276): note #3322-D: number of parameters of function "cudaOccupancyMaxActiveBlocksPerMultiprocessor(int *, const void *, int, size_t)" does not match the call
+  extern __attribute__((host)) __attribute__((cudart_builtin)) cudaError_t cudaOccupancyMaxActiveBlocksPerMultiprocessor(int *numBlocks, const void *func, int blockSize, size_t dynamicSMemSize);
+                                                                           ^
+/usr/local/cuda/include/cuda_runtime.h(1789): note #3322-D: number of parameters of function template "cudaOccupancyMaxActiveBlocksPerMultiprocessor(int *, T, int, size_t)" does not match the call
+  static __inline__ __attribute__((host)) cudaError_t cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+                                                      ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4902): error: expected an expression
+          tp4_megamoe_single_launch_kernel<SplitK, Tokens>,
+                                                          ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(5010): error: identifier "kSchedulerHeaderWords" is undefined
+          ? kSchedulerHeaderWords + 3LL * expert_ids.numel()
+            ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(5464): error: identifier "fused_rank_route_mc_pull_tp4_kernel" is undefined
+      fused_rank_route_mc_pull_tp4_kernel<256><<<
+      ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(5464): error: expected an expression
+      fused_rank_route_mc_pull_tp4_kernel<256><<<
+                                              ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(5471): warning #12-D: parsing restarts here after previous syntax error
+          output.size(0));
+                         ^
+
+36 errors detected in the compilation of "/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu".
+[2/3] c++ -MMD -MF main.o.d -DTORCH_EXTENSION_NAME=v4tp_f2cbd13f5e38ea1dface_v178mspec -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.12/dist-packages/torch/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.12 -fPIC -std=c++17 -c /tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/main.cpp -o main.o 
+ninja: build stopped: subcommand failed.
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2774, in _run_ninja_build
+    subprocess.run(
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['ninja', '-v']' returned non-zero exit status 2.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 12, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 6261, in <module>
+    _ext = load_inline(
+           ^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2174, in load_inline
+    return _jit_compile(
+           ^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2268, in _jit_compile
+    _write_ninja_file_and_build_library(
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2429, in _write_ninja_file_and_build_library
+    _run_ninja_build(
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py", line 2791, in _run_ninja_build
+    raise RuntimeError(message) from e
+RuntimeError: Error building extension 'v4tp_f2cbd13f5e38ea1dface_v178mspec': [1/2] /usr/local/cuda/bin/nvcc -MD -MF cuda.cuda.o.d -DTORCH_EXTENSION_NAME=v4tp_f2cbd13f5e38ea1dface_v178mspec -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.12/dist-packages/torch/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.12 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options '-fPIC' -O3 -DK_WOUT=128 -DK_LUT_ROWS=256 -DK_SCALE_QUAD_REUSE=4 -DK_SCALE_BUFFERS=2 -DK_WEIGHT_STAGES=2 -DK_WEIGHT_SWIZZLE=64 -DK_WEIGHT_COMMON_ADDRESS=1 -DK_DEQUANT_DP4A_HI=1 -DK_DEQUANT_DP4A_LO=1 -DK_DEQUANT_SYNTH_LUT=0 -DK_NORMALIZED_WEIGHT_SCALE=1 -DK_NORMALIZED_SHARED_LUT=0 -DK_ACTIVATION_EVICT_LAST=0 -DK_PREDICATED_PADDED_ACTIVATION=0 -DK_TILED_WEIGHT_LAYOUT=1 -DK_BULK_WEIGHT_COPY=1 -DK_TMA_CTA_SCOPE=0 -DK_WEIGHT_EVICT_FIRST=1 -DK_WEIGHT_POLICY_HOIST=0 -DK_WEIGHT_POLICY_CONSTANT=0 -DK_W2_NO_WEIGHT_EVICT_FIRST=0 -DK_INTERLEAVED_BULK_COPY=1 -DK_COMPACT_INTERLEAVED_SCALE=1 -DK_MODE2_BRAID=1 -DK_W2_GLOBAL_LUT=0 -DK_W2_S2R_PREFETCH=1 -DK_W13_S2R_PREFETCH=1 -DK_LEADER_MBAR_WAIT=1 -DK_DIRECT_BARRIER_ADDR=0 -DK_ROUTE_K_UNROLL2=1 -DK_ROUTE_K_UNROLL4=1 -DK_ROUTE_K_UNROLL8=0 -DK_ROUTE_K_UNROLL8_SPLIT2=0 -DK_W13_K_UNROLL8_SPLIT2=0 -DK_W13_K_UNROLL16_SPLIT2=0 -DK_W13_DISTRIBUTED_PREP=1 -DK_W13_DUAL_WG_SPLIT=0 -DK_W2_DISTRIBUTED_PREP=1 -DK_W13_MERGED_WGMMA_GROUP=0 -DK_W2_ROUTE_OUTPUT=1 -DK_W2_SORTED_ACT=0 -DK_W2_MBLOCK_SCALE=0 -DK_W2_FOLD_GLOBAL_SCALE=0 -DK_W2_COALESCED_STORE=0 -DK_SINGLE_LAUNCH_SCHEDULE=0 -DK_SINGLE_LAUNCH_NOINLINE_GEMM=0 -DK_SINGLE_LAUNCH_MIN_BLOCKS=8 -DK_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM=0 -DK_SINGLE_LAUNCH_M128_BOUND9=0 -DK_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE=0 -DK_SINGLE_LAUNCH_COOPERATIVE_GRID=0 -DK_SINGLE_LAUNCH_RELAXED_GRID_POLL=1 -DK_SINGLE_LAUNCH_PHASE_STAMPS=0 -DK_SINGLE_LAUNCH_PACKED_GRID_BARRIER=1 -DK_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS=64 -DK_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC=0 -DK_SINGLE_LAUNCH_HIERARCHICAL_GRID=0 -DK_SINGLE_LAUNCH_TAIL_OVERLAP=0 -DK_SINGLE_LAUNCH_TAIL_GROUP_CTAS=16 -DK_SINGLE_LAUNCH_GROUPED_W13_ACT=0 -DK_SINGLE_LAUNCH_GROUP_CTAS=16 -DK_SINGLE_LAUNCH_NVLS_BLOCKS=64 -DK_MIN_BLOCKS_PER_SM=0 -DK_W13_LAUNCH_BOUND_10=0 -DK_W13_MAX_SMEM_CARVEOUT=0 --expt-relaxed-constexpr --expt-extended-lambda -gencode arch=compute_90a,code=sm_90a -std=c++17 -lineinfo -I/lustre/raplab/client/xutingz/fac/DeepGEMM/deep_gemm/include -c /tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu -o cuda.cuda.o 
+FAILED: [code=2] cuda.cuda.o 
+/usr/local/cuda/bin/nvcc -MD -MF cuda.cuda.o.d -DTORCH_EXTENSION_NAME=v4tp_f2cbd13f5e38ea1dface_v178mspec -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.12/dist-packages/torch/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.12 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options '-fPIC' -O3 -DK_WOUT=128 -DK_LUT_ROWS=256 -DK_SCALE_QUAD_REUSE=4 -DK_SCALE_BUFFERS=2 -DK_WEIGHT_STAGES=2 -DK_WEIGHT_SWIZZLE=64 -DK_WEIGHT_COMMON_ADDRESS=1 -DK_DEQUANT_DP4A_HI=1 -DK_DEQUANT_DP4A_LO=1 -DK_DEQUANT_SYNTH_LUT=0 -DK_NORMALIZED_WEIGHT_SCALE=1 -DK_NORMALIZED_SHARED_LUT=0 -DK_ACTIVATION_EVICT_LAST=0 -DK_PREDICATED_PADDED_ACTIVATION=0 -DK_TILED_WEIGHT_LAYOUT=1 -DK_BULK_WEIGHT_COPY=1 -DK_TMA_CTA_SCOPE=0 -DK_WEIGHT_EVICT_FIRST=1 -DK_WEIGHT_POLICY_HOIST=0 -DK_WEIGHT_POLICY_CONSTANT=0 -DK_W2_NO_WEIGHT_EVICT_FIRST=0 -DK_INTERLEAVED_BULK_COPY=1 -DK_COMPACT_INTERLEAVED_SCALE=1 -DK_MODE2_BRAID=1 -DK_W2_GLOBAL_LUT=0 -DK_W2_S2R_PREFETCH=1 -DK_W13_S2R_PREFETCH=1 -DK_LEADER_MBAR_WAIT=1 -DK_DIRECT_BARRIER_ADDR=0 -DK_ROUTE_K_UNROLL2=1 -DK_ROUTE_K_UNROLL4=1 -DK_ROUTE_K_UNROLL8=0 -DK_ROUTE_K_UNROLL8_SPLIT2=0 -DK_W13_K_UNROLL8_SPLIT2=0 -DK_W13_K_UNROLL16_SPLIT2=0 -DK_W13_DISTRIBUTED_PREP=1 -DK_W13_DUAL_WG_SPLIT=0 -DK_W2_DISTRIBUTED_PREP=1 -DK_W13_MERGED_WGMMA_GROUP=0 -DK_W2_ROUTE_OUTPUT=1 -DK_W2_SORTED_ACT=0 -DK_W2_MBLOCK_SCALE=0 -DK_W2_FOLD_GLOBAL_SCALE=0 -DK_W2_COALESCED_STORE=0 -DK_SINGLE_LAUNCH_SCHEDULE=0 -DK_SINGLE_LAUNCH_NOINLINE_GEMM=0 -DK_SINGLE_LAUNCH_MIN_BLOCKS=8 -DK_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM=0 -DK_SINGLE_LAUNCH_M128_BOUND9=0 -DK_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE=0 -DK_SINGLE_LAUNCH_COOPERATIVE_GRID=0 -DK_SINGLE_LAUNCH_RELAXED_GRID_POLL=1 -DK_SINGLE_LAUNCH_PHASE_STAMPS=0 -DK_SINGLE_LAUNCH_PACKED_GRID_BARRIER=1 -DK_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS=64 -DK_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC=0 -DK_SINGLE_LAUNCH_HIERARCHICAL_GRID=0 -DK_SINGLE_LAUNCH_TAIL_OVERLAP=0 -DK_SINGLE_LAUNCH_TAIL_GROUP_CTAS=16 -DK_SINGLE_LAUNCH_GROUPED_W13_ACT=0 -DK_SINGLE_LAUNCH_GROUP_CTAS=16 -DK_SINGLE_LAUNCH_NVLS_BLOCKS=64 -DK_MIN_BLOCKS_PER_SM=0 -DK_W13_LAUNCH_BOUND_10=0 -DK_W13_MAX_SMEM_CARVEOUT=0 --expt-relaxed-constexpr --expt-extended-lambda -gencode arch=compute_90a,code=sm_90a -std=c++17 -lineinfo -I/lustre/raplab/client/xutingz/fac/DeepGEMM/deep_gemm/include -c /tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu -o cuda.cuda.o 
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(3215): error: expected a ";"
+          int32_t* __restrict__ state, int group, int expected_blocks) {
+                                                                       ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(3245): warning #12-D: parsing restarts here after previous syntax error
+  };
+   ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(3247): error: a template declaration is not allowed here
+  template <int SplitK, int Tokens>
+  ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(3248): error: identifier "SingleLaunchMinBlocks" is undefined
+            128, SingleLaunchMinBlocks<Tokens>::value
+                 ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(3248): error: the global scope has no "value"
+            128, SingleLaunchMinBlocks<Tokens>::value
+                                                ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(3961): error: expected a ";"
+          const void* pointer) {
+                               ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4037): warning #12-D: parsing restarts here after previous syntax error
+      const int global_tid = blockIdx.x * Threads + threadIdx.x;
+                                                               ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4038): error: identifier "Threads" is undefined
+      const int global_threads = gridDim.x * Threads;
+                                             ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4039): error: identifier "tokens" is undefined
+      const int num_vecs = tokens * kVecsPerToken;
+                           ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4039): error: identifier "kVecsPerToken" is undefined
+      const int num_vecs = tokens * kVecsPerToken;
+                                    ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4040): error: identifier "global_tid" is undefined
+      for (int vec = global_tid; vec < num_vecs; vec += global_threads) {
+                     ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4051): error: identifier "route_mc" is undefined
+                  route_mc + route_vec * kVecBytes);
+                  ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4051): error: identifier "kVecBytes" is undefined
+                  route_mc + route_vec * kVecBytes);
+                                         ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4054): error: identifier "kPairsPerVec" is undefined
+          float2 accum[kPairsPerVec];
+                       ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4061): error: identifier "topk_weights" is undefined
+                  __ldg(topk_weights + token * kTopK + route) * kRoutedScale;
+                        ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4084): error: identifier "output" is undefined
+          reinterpret_cast<uint4*>(output)[vec] = result;
+                                   ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4090): error: identifier "sem_local" is undefined
+              sem_local + blockIdx.x * kSemaphoreBytes);
+              ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4090): error: identifier "kSemaphoreBytes" is undefined
+              sem_local + blockIdx.x * kSemaphoreBytes);
+                                       ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4089): error: cannot deduce "auto" type
+          auto* flag = reinterpret_cast<uint32_t*>(
+          ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4092): error: identifier "sem_mc" is undefined
+              sem_mc + blockIdx.x * kSemaphoreBytes));
+              ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4091): error: identifier "multimem_red_add_release_u32" is undefined
+          multimem_red_add_release_u32(reinterpret_cast<uint32_t*>(
+          ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4093): error: identifier "load_acquire_sys_u32" is undefined
+          while (load_acquire_sys_u32(flag) - barrier_current < kWorld) {
+                 ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4093): error: identifier "barrier_current" is undefined
+          while (load_acquire_sys_u32(flag) - barrier_current < kWorld) {
+                                              ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4093): error: identifier "kWorld" is undefined
+          while (load_acquire_sys_u32(flag) - barrier_current < kWorld) {
+                                                                ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4173): error: identifier "multimem_red_add_release_u32" is undefined
+          multimem_red_add_release_u32(reinterpret_cast<uint32_t*>(
+          ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4175): error: identifier "load_acquire_sys_u32" is undefined
+          while (load_acquire_sys_u32(flag) - reserved < kWorld) {
+                 ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4181): error: identifier "load_multimem_reduce_bf16_16b" is undefined
+          const uint4 sum = load_multimem_reduce_bf16_16b(
+                            ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4190): error: identifier "multimem_red_add_release_u32" is undefined
+          multimem_red_add_release_u32(reinterpret_cast<uint32_t*>(
+          ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4192): error: identifier "load_acquire_sys_u32" is undefined
+          while (load_acquire_sys_u32(flag) - barrier_current < kWorld) {
+                 ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4832): error: identifier "tp4_megamoe_single_launch_kernel" is undefined
+          tp4_megamoe_single_launch_kernel<SplitK, Tokens>,
+          ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4832): error: expected an expression
+          tp4_megamoe_single_launch_kernel<SplitK, Tokens>,
+                                                          ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4831): error: no instance of overloaded function "cudaFuncSetAttribute" matches the argument list
+            argument types are: (<error-type>, <error-type>, cudaFuncAttribute, const int)
+      const cudaError_t attr_result = cudaFuncSetAttribute(
+                                      ^
+/usr/local/cuda/include/cuda_runtime.h(2448): note #3322-D: number of parameters of function template "cudaFuncSetAttribute(T *, cudaFuncAttribute, int)" does not match the call
+  static __inline__ __attribute__((host)) cudaError_t cudaFuncSetAttribute(
+                                                      ^
+/usr/local/cuda/include/cuda_runtime_api.h(4030): note #3322-D: number of parameters of function "cudaFuncSetAttribute(const void *, cudaFuncAttribute, int)" does not match the call
+  extern __attribute__((host)) __attribute__((cudart_builtin)) cudaError_t cudaFuncSetAttribute(const void *func, enum cudaFuncAttribute attr, int value);
+                                                                           ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4843): error: expected an expression
+              tp4_megamoe_single_launch_kernel<SplitK, Tokens>,
+                                                              ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4841): error: no instance of overloaded function "cudaOccupancyMaxActiveBlocksPerMultiprocessor" matches the argument list
+            argument types are: (int *, <error-type>, <error-type>, int, const int)
+          cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+          ^
+/usr/local/cuda/include/cuda_runtime_api.h(4276): note #3322-D: number of parameters of function "cudaOccupancyMaxActiveBlocksPerMultiprocessor(int *, const void *, int, size_t)" does not match the call
+  extern __attribute__((host)) __attribute__((cudart_builtin)) cudaError_t cudaOccupancyMaxActiveBlocksPerMultiprocessor(int *numBlocks, const void *func, int blockSize, size_t dynamicSMemSize);
+                                                                           ^
+/usr/local/cuda/include/cuda_runtime.h(1789): note #3322-D: number of parameters of function template "cudaOccupancyMaxActiveBlocksPerMultiprocessor(int *, T, int, size_t)" does not match the call
+  static __inline__ __attribute__((host)) cudaError_t cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+                                                      ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(4902): error: expected an expression
+          tp4_megamoe_single_launch_kernel<SplitK, Tokens>,
+                                                          ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(5010): error: identifier "kSchedulerHeaderWords" is undefined
+          ? kSchedulerHeaderWords + 3LL * expert_ids.numel()
+            ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(5464): error: identifier "fused_rank_route_mc_pull_tp4_kernel" is undefined
+      fused_rank_route_mc_pull_tp4_kernel<256><<<
+      ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(5464): error: expected an expression
+      fused_rank_route_mc_pull_tp4_kernel<256><<<
+                                              ^
+
+/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu(5471): warning #12-D: parsing restarts here after previous syntax error
+          output.size(0));
+                         ^
+
+36 errors detected in the compilation of "/tmp/torch_ext_v4_tp/v4tp_f2cbd13f5e38ea1dface_v178mspec/cuda.cu".
+ninja: build stopped: subcommand failed.
+

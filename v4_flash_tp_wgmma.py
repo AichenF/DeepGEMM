@@ -286,6 +286,9 @@ SINGLE_LAUNCH_RELAXED_GRID_POLL = (
 SINGLE_LAUNCH_PHASE_STAMPS = (
     os.environ.get("V4_SINGLE_LAUNCH_PHASE_STAMPS", "1") == "1"
 )
+SINGLE_LAUNCH_PACKED_GRID_BARRIER = (
+    os.environ.get("V4_SINGLE_LAUNCH_PACKED_GRID_BARRIER", "0") == "1"
+)
 SINGLE_LAUNCH_GRID_POLL_SLEEP_NS = int(
     os.environ.get("V4_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS", "64")
 )
@@ -539,6 +542,8 @@ static constexpr bool kSingleLaunchRelaxedGridPoll =
     K_SINGLE_LAUNCH_RELAXED_GRID_POLL;
 static constexpr bool kSingleLaunchRecordPhaseStamps =
     K_SINGLE_LAUNCH_PHASE_STAMPS;
+static constexpr bool kSingleLaunchPackedGridBarrier =
+    K_SINGLE_LAUNCH_PACKED_GRID_BARRIER;
 static constexpr int kSingleLaunchGridPollSleepNs =
     K_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS;
 static constexpr bool kSingleLaunchSkipFinalCtaSync =
@@ -3553,31 +3558,68 @@ __device__ __forceinline__ void single_launch_grid_barrier(
     __syncthreads();
     if (threadIdx.x == 0) {
         int32_t* count = state + phase * 2;
-        int32_t* epoch = count + 1;
-        observed_epoch = load_acquire_gpu_i32(epoch);
-        const int arrival = atomic_add_acq_rel_gpu_i32(count, 1);
-        if (arrival == expected_blocks - 1) {
-            if constexpr (kSingleLaunchRecordPhaseStamps) {
-                if (record_timestamp) {
-                    reinterpret_cast<uint64_t*>(
-                        state + kSingleLaunchBarrierWords)[phase + 1] =
-                            read_globaltimer();
+        if constexpr (kSingleLaunchPackedGridBarrier) {
+            // Pack a 10-bit arrival count and a 22-bit generation into the
+            // existing count word.  The acq_rel arrival RMW returns both the
+            // pre-increment count and generation, eliminating every CTA's
+            // separate epoch load.  The final CTA has acquired the complete
+            // arrival release sequence and publishes it while atomically
+            // advancing the generation and resetting the count with one
+            // release store.  No writer remains after the final arrival.
+            constexpr uint32_t kCountBits = 10;
+            constexpr uint32_t kCountMask = (1u << kCountBits) - 1u;
+            const uint32_t observed = static_cast<uint32_t>(
+                atomic_add_acq_rel_gpu_i32(count, 1));
+            const uint32_t generation = observed >> kCountBits;
+            const uint32_t arrival = observed & kCountMask;
+            if (arrival == static_cast<uint32_t>(expected_blocks - 1)) {
+                if constexpr (kSingleLaunchRecordPhaseStamps) {
+                    if (record_timestamp) {
+                        reinterpret_cast<uint64_t*>(
+                            state + kSingleLaunchBarrierWords)[phase + 1] =
+                                read_globaltimer();
+                    }
                 }
-            }
-            atomicExch(count, 0);
-            store_release_gpu_i32(epoch, observed_epoch + 1);
-        } else {
-            if constexpr (kSingleLaunchRelaxedGridPoll) {
-                while (load_relaxed_gpu_i32(epoch) == observed_epoch)
+                const uint32_t next = (generation + 1u) << kCountBits;
+                store_release_gpu_i32(count, static_cast<int32_t>(next));
+            } else if constexpr (kSingleLaunchRelaxedGridPoll) {
+                while ((static_cast<uint32_t>(load_relaxed_gpu_i32(count))
+                        >> kCountBits) == generation)
                     __nanosleep(kSingleLaunchGridPollSleepNs);
-                // The relaxed loop only detects progress.  This single
-                // acquire imports the last arriver's release publication.
-                while (load_acquire_gpu_i32(epoch) == observed_epoch) {
+                while ((static_cast<uint32_t>(load_acquire_gpu_i32(count))
+                        >> kCountBits) == generation) {
                 }
             } else {
-                while (load_acquire_gpu_i32(epoch) == observed_epoch)
+                while ((static_cast<uint32_t>(load_acquire_gpu_i32(count))
+                        >> kCountBits) == generation)
                     __nanosleep(kSingleLaunchGridPollSleepNs);
             }
+        } else {
+            int32_t* epoch = count + 1;
+            observed_epoch = load_acquire_gpu_i32(epoch);
+            const int arrival = atomic_add_acq_rel_gpu_i32(count, 1);
+            if (arrival == expected_blocks - 1) {
+                if constexpr (kSingleLaunchRecordPhaseStamps) {
+                    if (record_timestamp) {
+                        reinterpret_cast<uint64_t*>(
+                            state + kSingleLaunchBarrierWords)[phase + 1] =
+                                read_globaltimer();
+                    }
+                }
+                atomicExch(count, 0);
+                store_release_gpu_i32(epoch, observed_epoch + 1);
+            } else {
+                if constexpr (kSingleLaunchRelaxedGridPoll) {
+                    while (load_relaxed_gpu_i32(epoch) == observed_epoch)
+                        __nanosleep(kSingleLaunchGridPollSleepNs);
+                    // The relaxed loop only detects progress.  This single
+                    // acquire imports the last arriver's release publication.
+                    while (load_acquire_gpu_i32(epoch) == observed_epoch) {
+                    }
+                } else {
+                    while (load_acquire_gpu_i32(epoch) == observed_epoch)
+                        __nanosleep(kSingleLaunchGridPollSleepNs);
+                }
         }
     }
     __syncthreads();
@@ -6201,6 +6243,7 @@ _EXTENSION_CONFIG = (
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
+          f"slpb{int(SINGLE_LAUNCH_PACKED_GRID_BARRIER)}_"
           f"slpsn{SINGLE_LAUNCH_GRID_POLL_SLEEP_NS}_"
           f"slfs{int(SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC)}_"
           f"slhg{int(SINGLE_LAUNCH_HIERARCHICAL_GRID)}_"
@@ -6312,6 +6355,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_PHASE_STAMPS="
             f"{int(SINGLE_LAUNCH_PHASE_STAMPS)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_PACKED_GRID_BARRIER="
+            f"{int(SINGLE_LAUNCH_PACKED_GRID_BARRIER)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS="

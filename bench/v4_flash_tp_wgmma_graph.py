@@ -1262,6 +1262,9 @@ def main() -> None:
                     "single_launch_phase_stamps": (
                         kernel.SINGLE_LAUNCH_PHASE_STAMPS
                     ),
+                    "single_launch_packed_grid_barrier": (
+                        kernel.SINGLE_LAUNCH_PACKED_GRID_BARRIER
+                    ),
                     "single_launch_skip_final_cta_sync": (
                         kernel.SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
                     ),
