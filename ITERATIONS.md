@@ -9097,3 +9097,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Inference:** Concurrent per-lane bulk groups are disproven as the cause.  The remaining fault is either the bulk-reduce instruction/proxy protocol itself in this execution context or a residency/progress interaction created by making every resident W2 CTA synchronously wait for shared-to-global reductions.
 - **Decision:** Stop full-MegaMoE trials of this mechanism until a standalone one-CTA/one-route `cp.reduce.async.bulk` microkernel proves instruction semantics and completion on H20.  Keep the bulk-combine flag default-off; no performance claim is made.
 - **Artifact:** `bench/results/iter363_w2_bulk_reduce_lane0_m128_smoke_20260905.log`.
+
+## Iteration 364 — standalone bulk-reduce probe compile gate (2026-09-05)
+
+- **Purpose:** Remove MegaMoE scheduling, WGMMA, grid barriers, and TP communication from the problem by building a native CUDA microprobe for the exact Hopper bulk FP32-reduce PTX sequence.
+- **Probe design:** The new `bench/probe_cp_reduce_bulk.cu` is intended to test progressively: one CTA/one 512-byte operation, one CTA/eight operations, 624 CTAs with disjoint destinations, and 624 CTAs with six producers per destination.  Every case uses pitch-132 aligned shared staging, `fence.proxy.async` for global/shared, one bulk-group commit, and full wait.
+- **Result:** **COMPILE FAIL; no GPU instruction executed.**  `nvcc` rejected three uses of `uint32_t` because the standalone translation unit omitted `<cstdint>`.  This is a probe-only header defect and provides no evidence for or against `cp.reduce.async.bulk` semantics.
+- **Decision:** Add the missing standard header and rerun the identical probe.  No MegaMoE source or selected performance path changed.
+- **Artifact:** `bench/results/iter364_cp_reduce_bulk_microprobe_20260905.log`.

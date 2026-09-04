@@ -1,0 +1,13 @@
+bench/probe_cp_reduce_bulk.cu(19): error: identifier "uint32_t" is undefined
+          float* dst, const float* src, uint32_t bytes) {
+                                        ^
+
+bench/probe_cp_reduce_bulk.cu(20): error: identifier "uint32_t" is undefined
+      const uint32_t src_smem =
+            ^
+
+bench/probe_cp_reduce_bulk.cu(21): error: identifier "uint32_t" is undefined
+          static_cast<uint32_t>(__cvta_generic_to_shared(src));
+                      ^
+
+3 errors detected in the compilation of "bench/probe_cp_reduce_bulk.cu".
