@@ -8691,3 +8691,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: both shapes passed exactly. M64 used 1,624 padded rows and M128 used 1,992; both selected split-K2 for the normal W13 waves. For both M64 and M128, final per-route FC2 output had cosine `1.0`, relative L2 `0.0`, finite output, and valid packed barrier generations (`[2048, 2048, 2048, 2048]`).
 - Decision: correctness gate passed. Proceed to cubin register/local-memory inspection before distributed timing.
 - Artifact: `bench/results/iter321_w13_tail_split4_mapfix_m64_m128_compute_correctness_20260904.log`.
+
+## Iteration 322 — W13 tail split-K4 cubin resource gate (2026-09-04)
+
+- Test: compiled same-source default and tail-split4 variants, then inspected the selected `tp4_megamoe_single_launch_kernel<2,128>` with `cuobjdump --dump-resource-usage` and counted its SASS `LDL/STL` instructions.
+- Default: `.so` 6,822,912 bytes; `REG:64 STACK:32 SHARED:4096 LOCAL:0`; five selected-function `LDL/STL` instructions.
+- Tail split-K4: `.so` 7,027,712 bytes (+204,800); `REG:64 STACK:32 SHARED:5120 LOCAL:0`; the same five selected-function `LDL/STL` instructions.
+- Decision: pass the resource gate. The extra 1 KiB static shared memory does not constrain the selected 8-CTA/SM residency; register allocation, stack frame, local-memory allocation, and local-op count are unchanged. Proceed to paired distributed cold-L2 timing.
+- Artifact: `bench/results/iter322_w13_tail_split4_cubin_resource_gate_20260904.log`.
