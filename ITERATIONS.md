@@ -8594,3 +8594,16 @@ maximum rank latency of a full CUDA-Graph replay.
   - M=128, W13 split-K=2: accepted; cosine=1.0, relative L2=0.0, finite=true; packed-generation wrap check passed.
 - Artifact: `bench/results/iter312_w13_next_task_prefetch_m8_m128_compute_correctness_20260904.log`.
 - Decision: correctness accepted. Performance is not claimed yet; inspect the generated cubin for register/local-memory regressions before a cold-L2 TP4 comparison against the selected multi-kernel baseline.
+
+## Iteration 313 — TP4 cold-L2 screen of W13 cross-task prefetch
+
+- Configuration: selected one-WG single-launch kernel, 8 CTAs/SM, schedule 0, `V4_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH=1`; TP4 on GPUs 0–3; random routes; CUDA Graph; 2 outer batches × 20 individually cold replays per implementation. A separate 256 MiB L2 clear ran immediately before every replay and outside event timing.
+- Input contract: shared prequantized FP8-E4M3 X plus FP32 group-128 activation scales and MXFP4 weights; external BF16-to-FP8 quantization excluded from both graphs.
+- Correctness: candidate and selected multi-kernel control both passed final-output/allreduce checks at M=8 and M=128.
+- Median of all 40 cold samples, max rank:
+  - M=8: multi `0.071280 ms`; prefetched single-launch `0.076208 ms`; candidate is `6.91%` slower (`0.9353x` control/candidate).
+  - M=128: multi `0.306496 ms`; prefetched single-launch `0.353472 ms`; candidate is `15.33%` slower (`0.8671x`).
+  - Two-shape geometric mean: multi `0.147807 ms`; candidate `0.164126 ms`; candidate is `11.04%` slower.
+- Candidate batch medians were stable: M=8 `0.076304/0.076048 ms`; M=128 `0.353536/0.353280 ms`.
+- Artifact: `bench/results/iter313_w13_next_task_prefetch_tp4_cold_screen_20260904.log`.
+- Decision: this establishes a valid cold distributed point but does not isolate the prefetch delta, because the compile-time off-path was not alternated in the same run. Do not claim an optimization from this result. Run an adjacent off-path control under the same harness and normalize both candidates to their selected multi-kernel control before deciding.
