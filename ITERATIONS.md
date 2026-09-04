@@ -6188,3 +6188,41 @@ maximum rank latency of a full CUDA-Graph replay.
   usage.  A useful fused design must reduce the actual per-CTA work/dataflow,
   not merely hide existing phases behind a compiler call boundary.
 - **Evidence:** `results/iter168_tp4_noinline_gemm_m8_screen_20260904.log`.
+
+## Iteration 169 — in-kernel phase-clock attribution
+
+- **Change under test:** disable the rejected noinline wrappers and add five
+  `%globaltimer` stamps inside the same business kernel: CTA0 entry plus the
+  last arrival at route, W13, activation/requantization, and W2 grid
+  boundaries.  The paired harness reports adjacent device-time deltas after
+  timing.  This adds no graph node and only five untimed global stores per
+  replay.
+- **Protocol:** TP4 physical GPUs 4-7, random M8/M128 routes, inline schedule
+  0 with five CTAs/SM, same-process paired CUDA Graphs, two outer batches x
+  twenty replays, four cold warmups, rank-max timing.  Every replay has a
+  separate excluded 256 MiB Triton L2 clear immediately beforehand.
+- **Correctness:** PASS for both paths and M values.  Candidate minimum cosine
+  is `0.9999955807`, maximum relative L2 `0.0029729925`, all outputs are
+  finite, and route padding matches control.
+- **Cold-L2 medians:** M8 control/candidate `0.073200/0.096576 ms`
+  (`0.75795x`); M128 `0.308128/0.439136 ms` (`0.70167x`).  Candidate min/max
+  are `0.094816/0.123264 ms` and `0.436704/0.441216 ms`, respectively.
+- **Device phase deltas, TP-rank max (us):**
+  - M8: route `16.096`, W13 `44.928`, activation/requant `2.912`, W2
+    `24.000`; these account for `87.936 us`, leaving about `8.64 us` from the
+    final fused k6/collective, launch and retirement relative to the median.
+  - M128: route `27.616`, W13 `227.360`, activation/requant `7.872`, W2
+    `115.552`; these account for `378.400 us`, leaving about `60.74 us` after
+    the W2 boundary.
+- **Analysis:** this falsifies the hypothesis that middle epilogue launches
+  dominate.  Activation is only 3-8 us.  M8 W13/W2 are already close to the
+  standalone stage budget, while the one-CTA route plus resident-grid start
+  costs 16 us.  At M128 the monolithic W13/W2 phases themselves are roughly
+  30/9 us above prior standalone stage medians, consistent with the fused
+  entry's 85-register, five-CTA residency and a heavily underfilled final
+  wave.  The post-W2 M128 tail is also material.
+- **Decision:** use these clocks to target register-limited residency and
+  route preparation; do not spend another iteration on the 3-8 us activation
+  stage alone.  Next force an eight-CTA launch bound and inspect spill versus
+  phase-time tradeoff, since standalone W13/W2 require at most 47/61 registers.
+- **Evidence:** `results/iter169_tp4_single_phase_clock_m8_m128_20260904.log`.

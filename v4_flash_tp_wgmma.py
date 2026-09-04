@@ -240,7 +240,7 @@ if SINGLE_LAUNCH_SCHEDULE not in (0, 1, 2, 3):
     raise ValueError("V4_SINGLE_LAUNCH_SCHEDULE must be 0, 1, 2, or 3")
 SINGLE_LAUNCH_INTERLEAVED = SINGLE_LAUNCH_SCHEDULE != 0
 SINGLE_LAUNCH_NOINLINE_GEMM = (
-    os.environ.get("V4_SINGLE_LAUNCH_NOINLINE_GEMM", "1") == "1"
+    os.environ.get("V4_SINGLE_LAUNCH_NOINLINE_GEMM", "0") == "1"
 )
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "5")
@@ -2590,6 +2590,12 @@ __device__ __forceinline__ int32_t atomic_add_acq_rel_gpu_i32(
     return static_cast<int32_t>(old);
 }
 
+__device__ __forceinline__ uint64_t read_globaltimer() {
+    uint64_t value;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(value));
+    return value;
+}
+
 // Scheduler-only correctness probe for the TP-local interleaved design.
 // One lane per persistent CTA claims dynamically bounded W13 tasks.  The last
 // W13 tile for an M block publishes that block into a ready queue; W2 tasks
@@ -3247,6 +3253,13 @@ __device__ __forceinline__ void fused_k6_nvls_pull_tp4_task(
 // writes happen-before lane 0; an acq_rel arrival chain transfers them through
 // the last CTA's release epoch.  Each phase owns a count/epoch pair, so graph
 // replays need no memset node.
+static constexpr int kSingleLaunchBarrierWords = 8;
+static constexpr int kSingleLaunchPhaseStamps = 5;
+static constexpr int kSingleLaunchPhaseStampWords =
+    kSingleLaunchPhaseStamps * 2;
+static constexpr int kSingleLaunchStatePrefixWords =
+    kSingleLaunchBarrierWords + kSingleLaunchPhaseStampWords;
+
 __device__ __forceinline__ void single_launch_grid_barrier(
         int32_t* __restrict__ state, int phase, int expected_blocks) {
     __shared__ int observed_epoch;
@@ -3257,6 +3270,9 @@ __device__ __forceinline__ void single_launch_grid_barrier(
         observed_epoch = load_acquire_gpu_i32(epoch);
         const int arrival = atomic_add_acq_rel_gpu_i32(count, 1);
         if (arrival == expected_blocks - 1) {
+            reinterpret_cast<uint64_t*>(
+                state + kSingleLaunchBarrierWords)[phase + 1] =
+                    read_globaltimer();
             atomicExch(count, 0);
             store_release_gpu_i32(epoch, observed_epoch + 1);
         } else {
@@ -3352,12 +3368,18 @@ __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
     const int cta = static_cast<int>(blockIdx.x);
     const int ctas = static_cast<int>(gridDim.x);
     const int routes = tokens * kTopK;
+    if (cta == 0 && threadIdx.x == 0) {
+        reinterpret_cast<uint64_t*>(
+            barrier_state + kSingleLaunchBarrierWords)[0] =
+                read_globaltimer();
+    }
 
     // barrier_state[0:8] remains the generation-counted grid-barrier slab.
     // The suffix is graph-stable scheduler storage, reset cooperatively by
     // this kernel on every replay: eight counters followed by one W13-done
     // count and two release-published queues per possible routed M block.
-    int32_t* scheduler = barrier_state + 8;
+    int32_t* scheduler =
+        barrier_state + kSingleLaunchStatePrefixWords;
     if constexpr (kSingleLaunchInterleaved) {
         const int scheduler_words = kSchedulerHeaderWords + 3 * max_mblocks;
         for (int word = cta * blockDim.x + threadIdx.x;
@@ -4807,7 +4829,8 @@ void run_tp4_megamoe_single_launch(
         : 0;
     TORCH_CHECK(barrier_state.scalar_type() == torch::kInt32
                     && barrier_state.is_cuda()
-                    && barrier_state.numel() >= 8 + scheduler_words,
+                    && barrier_state.numel()
+                        >= kSingleLaunchStatePrefixWords + scheduler_words,
                 "single-launch barrier/scheduler state is too small");
     TORCH_CHECK(push_counter.is_cuda() && push_counter.element_size() == 4
                     && push_counter.numel() == 78,
@@ -5516,9 +5539,9 @@ _EXTENSION_CONFIG = (
           f"slsch{SINGLE_LAUNCH_SCHEDULE}_"
           f"slnig{int(SINGLE_LAUNCH_NOINLINE_GEMM)}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v168ni")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v169ph")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v168ni"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v169ph"
 )
 
 _ext = load_inline(

@@ -292,15 +292,16 @@ class CapturedCase:
         self.w2_progress_state = torch.empty(
             (self.m * TOP_K * 32 + 2,), dtype=torch.int32, device=device
         )
-        # Four count/epoch pairs back the generation barriers.  The optional
-        # suffix is reset inside the same business kernel and stores the
+        # Four count/epoch pairs and five uint64 device timestamps precede the
+        # optional scheduler suffix.  The suffix is reset inside the same
+        # business kernel and stores the
         # W13->activation->W2 task-DAG counters/readiness queues.  No captured
         # memset or additional launch is part of the single-launch path.
         scheduler_words = (
             8 + 3 * max_mblocks if kernel.SINGLE_LAUNCH_INTERLEAVED else 0
         )
         self.single_launch_barrier_state = torch.zeros(
-            (8 + scheduler_words,), dtype=torch.int32, device=device
+            (18 + scheduler_words,), dtype=torch.int32, device=device
         )
         self.sorted_ids = torch.empty(
             (max_padded,), dtype=torch.int32, device=device

@@ -212,6 +212,21 @@ def main() -> None:
         )
         control_median = statistics.median(control_samples)
         candidate_median = statistics.median(candidate_samples)
+        phase_stamps = candidate_case.single_launch_barrier_state[
+            8:18
+        ].view(torch.int64)
+        phase_durations_ns = phase_stamps[1:] - phase_stamps[:-1]
+        dist.all_reduce(
+            phase_durations_ns, op=dist.ReduceOp.MAX, group=nccl_group
+        )
+        phase_us = {
+            name: float(value) / 1000.0
+            for name, value in zip(
+                ("route", "w13", "activation_requant", "w2"),
+                phase_durations_ns.cpu().tolist(),
+                strict=True,
+            )
+        }
         record: dict[str, Any] = {
             "m": m,
             "active_experts": candidate_case.active_experts,
@@ -232,6 +247,7 @@ def main() -> None:
             "speedup_control_over_candidate": control_median / candidate_median,
             "control_batch_medians_ms_max_rank": control_batch_medians,
             "candidate_batch_medians_ms_max_rank": candidate_batch_medians,
+            "candidate_device_phase_us_rank_max": phase_us,
             "control_correctness": control_check,
             "candidate_correctness": candidate_check,
         }
