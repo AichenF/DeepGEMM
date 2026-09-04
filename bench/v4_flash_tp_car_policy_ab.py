@@ -65,7 +65,8 @@ def parse_args() -> argparse.Namespace:
 
 def make_case(
     m: int,
-    x: torch.Tensor,
+    qx: torch.Tensor,
+    x_scale: torch.Tensor,
     topk_ids: torch.Tensor,
     topk_weights: torch.Tensor,
     weights: tuple[torch.Tensor, ...],
@@ -75,7 +76,8 @@ def make_case(
     w13, s13, g13, w2, s2, g2 = weights
     return custom.CapturedCase(
         m=m,
-        x=x,
+        qx=qx,
+        x_scale=x_scale,
         topk_ids=topk_ids,
         topk_weights=topk_weights,
         w13=w13,
@@ -176,10 +178,11 @@ def main() -> None:
         topk_ids, topk_weights = custom.make_routes(
             m, args.route_pattern, device, args.seed
         )
-        x = torch.randn((m, custom.HIDDEN), dtype=torch.bfloat16, device=device) * 0.1
+        qx, x_scale = custom.make_fp8_input(m, device, args.seed)
 
         control_case = make_case(
-            m, x, topk_ids, topk_weights, weights, lut, intermediate_per_rank
+            m, qx, x_scale, topk_ids, topk_weights, weights, lut,
+            intermediate_per_rank
         )
         set_pull_policy(comm, None, allocated_pull_blocks)
         control_graph = paired.capture_graph(control_case, comm, cpu_group, device)
@@ -197,7 +200,8 @@ def main() -> None:
                     continue
                 candidate_case = make_case(
                     m,
-                    x,
+                    qx,
+                    x_scale,
                     topk_ids,
                     topk_weights,
                     weights,

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """CUDA-Graph baseline for DeepSeek-V4-Flash TP MXFP4 MoE.
 
-The timed graph follows SGLang's standard (non-EP) Humming path:
+The timed graph follows SGLang's standard (non-EP) Humming path, starting
+from the serving ABI's already-quantized activation:
 
-  route align -> BF16/FP8 quant -> Humming MXFP4 W13 -> SwiGLU
+  route align -> Humming MXFP4 W13 -> SwiGLU
   -> BF16/FP8 quant -> Humming MXFP4 W2 -> local top-k weighted sum
   -> SGLang custom_all_reduce_v2
 
-Router/top-k selection, weight construction/transform, allocations, JIT, and graph
-capture are deliberately outside the measured region.  ``topk_ids`` and
+External BF16-to-FP8 input quantization, router/top-k selection, weight
+construction/transform, allocations, JIT, and graph capture are deliberately
+outside the measured region.  ``qx``, ``x_scale``, ``topk_ids`` and
 ``topk_weights`` are static graph inputs, matching serving CUDA-graph replay.
 """
 
@@ -30,6 +32,7 @@ from triton import runtime as triton_runtime
 import sglang.srt.distributed.parallel_state as ps
 from humming.config import GemmType
 from humming.layer import HummingLayer, HummingMethod
+from humming import ops as humming_ops
 try:
     from sglang.jit_kernel.mp import register_comm_cleanup
 except ImportError:  # Compatibility with the older benchmark checkout.
@@ -184,6 +187,32 @@ def make_routes(
     return ids.to(device), weights.to(device)
 
 
+def make_fp8_input(
+    m: int, device: torch.device, seed: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Create replicated TP input and quantize it before graph capture."""
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed + m)
+    x_bf16 = (
+        torch.randn((m, HIDDEN), dtype=torch.float32, generator=generator)
+        .mul_(0.1)
+        .to(torch.bfloat16)
+        .to(device)
+    )
+    qx = torch.empty(
+        (m, HIDDEN), dtype=torch.float8_e4m3fn, device=device
+    )
+    qx, x_scale = humming_ops.quant_input(
+        inputs=x_bf16,
+        outputs=qx,
+        dtype="float8e4m3",
+        group_size=128,
+        m_major_scale=False,
+        scale_dtype="float32",
+    )
+    return qx, x_scale
+
+
 def select_tuning_config(configs: list[Any], valid_shape_m: int) -> dict[str, Any]:
     for min_shape_m, max_shape_m, config in configs:
         if valid_shape_m > min_shape_m and valid_shape_m <= max_shape_m:
@@ -194,7 +223,8 @@ def select_tuning_config(configs: list[Any], valid_shape_m: int) -> dict[str, An
 @dataclass
 class CapturedCase:
     m: int
-    x: torch.Tensor
+    qx: torch.Tensor
+    x_scale: torch.Tensor
     topk_ids: torch.Tensor
     topk_weights: torch.Tensor
     w13: HummingLayer
@@ -205,11 +235,18 @@ class CapturedCase:
     intermediate_per_rank: int
 
     def __post_init__(self) -> None:
-        device = self.x.device
+        device = self.qx.device
+        if self.qx.dtype != torch.float8_e4m3fn or self.qx.shape != (
+            self.m,
+            HIDDEN,
+        ):
+            raise ValueError("qx must be FP8-E4M3 [M,4096]")
+        if self.x_scale.dtype != torch.float32 or self.x_scale.shape != (
+            self.m,
+            HIDDEN // 128,
+        ):
+            raise ValueError("x_scale must be FP32 [M,32]")
         routed_m = self.m * TOP_K
-        self.qx = torch.empty(
-            (self.m, HIDDEN), dtype=torch.float8_e4m3fn, device=device
-        )
         self.gate_up = torch.empty(
             (routed_m, 2 * self.intermediate_per_rank),
             dtype=torch.bfloat16,
@@ -235,7 +272,6 @@ class CapturedCase:
         self.sorted_ids: torch.Tensor | None = None
         self.expert_ids: torch.Tensor | None = None
         self.num_tokens_padded: torch.Tensor | None = None
-        self.x_scale: torch.Tensor | None = None
         self.down_scale: torch.Tensor | None = None
 
     @property
@@ -257,14 +293,9 @@ class CapturedCase:
             ignore_invalid_expert=True,
         )
 
-        qx, self.x_scale = HummingMethod.may_quant_input(
-            layer=self.w13,
-            inputs=self.x,
-            quanted_input=self.qx,
-        )
         HummingMethod.forward_layer(
             layer=self.w13,
-            inputs=qx,
+            inputs=self.qx,
             input_scale=self.x_scale,
             outputs=self.gate_up,
             sorted_ids=self.sorted_ids,
@@ -342,7 +373,8 @@ def correctness_metrics(
     # pointers retained by the captured graph untouched.
     reference_case = CapturedCase(
         m=case.m,
-        x=case.x,
+        qx=case.qx,
+        x_scale=case.x_scale,
         topk_ids=case.topk_ids,
         topk_weights=case.topk_weights,
         w13=case.w13,
@@ -491,6 +523,10 @@ def main() -> None:
                     "weight_dtype": "OCP MXFP4 E2M1",
                     "weight_scale": "E8M0 group32",
                     "activation_dtype": "FP8 E4M3 group128",
+                    "input_contract": (
+                        "shared prequantized FP8-E4M3 qx plus FP32 group128 "
+                        "x_scale; external input quantization outside graphs"
+                    ),
                     "output_dtype": "BF16",
                     "timed_allreduce": "sglang CustomAllReduceV2 default graph heuristic",
                 },
@@ -525,13 +561,14 @@ def main() -> None:
         topk_ids, topk_weights = make_routes(
             m, args.route_pattern, device, args.seed
         )
-        x = torch.randn((m, HIDDEN), dtype=torch.bfloat16, device=device) * 0.1
+        qx, x_scale = make_fp8_input(m, device, args.seed)
         selected_w13 = select_tuning_config(w13_tuning, m * TOP_K)
         selected_w2 = select_tuning_config(w2_tuning, m * TOP_K)
         block_m = int(selected_w13["block_shape"][0])
         case = CapturedCase(
             m=m,
-            x=x,
+            qx=qx,
+            x_scale=x_scale,
             topk_ids=topk_ids,
             topk_weights=topk_weights,
             w13=w13,

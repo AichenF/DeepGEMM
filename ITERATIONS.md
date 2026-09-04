@@ -6845,3 +6845,36 @@ maximum rank latency of a full CUDA-Graph replay.
   grid-poll best (~77.360 us compute-only), while M=128 is not materially
   better than the prior phase total (~331.9 us).  Keep behind an opt-in flag as
   a documented structural checkpoint; do not run the distributed paired sweep.
+
+## Iteration 239 — move the Humming comparison boundary to prequantized X
+
+- **Problem:** The formal Humming graph still called BF16-to-FP8 input
+  quantization inside `run_local`, while the custom serving path already
+  accepted caller-provided FP8 activation.  The paired harness also passed the
+  obsolete `x=` API, so its prior numbers were not a valid comparison under
+  the requested serving contract.
+- **Change:** `CapturedCase` for Humming now requires FP8-E4M3 `qx [M,4096]`
+  and FP32 group-128 `x_scale [M,32]`; W13 consumes them directly.  One shared
+  `qx/x_scale` pair is constructed before capture and passed read-only to both
+  Humming and custom graphs.  The SwiGLU-to-FP8 quantization before W2 remains
+  inside both timed MoE paths.  Migrated the paired, AR-breakdown, local/stage
+  profiler, W2-store, AR-policy, and AR-transport entry points to the same ABI.
+- **Validation:** All nine migrated Python entry points pass `py_compile`.
+  TP4 GPUs 0-3 then ran paired M=8 CUDA Graph timing with two AB/BA outer
+  batches, ten replays per implementation and two warmups.  Every replay used
+  a separate 256 MiB L2 clear immediately before the start event; the clear was
+  excluded from timing.
+- **Correctness:** Humming and custom both pass distributed correctness.
+  Humming cosine/rel-L2 = `0.9999956724/0.00294207`; custom =
+  `0.9999957922/0.00290117`; all ranks finite.
+- **Cold-L2 M=8 smoke result (20 samples):** Humming min/median/max =
+  `0.087456/0.088448/0.171616 ms`; TP-specialized one-launch custom =
+  `0.076704/0.078032/0.100704 ms`.  Humming/custom median ratio is
+  `1.13348x` (custom latency 11.78% lower).  Batch medians are stable:
+  Humming `0.088608/0.088368 ms`, custom `0.077936/0.078080 ms`.
+- **Interpretation:** This is a contract/capture smoke for one M, not the final
+  five-shape result.  It proves the paired benchmark is runnable with the exact
+  shared prequantized input and cold-L2 policy; it supersedes any comparison
+  that charged only Humming for external X quantization.
+- **Artifact:**
+  `bench/results/iter239_prequant_input_contract_tp4_m8_smoke_20260904.log`.

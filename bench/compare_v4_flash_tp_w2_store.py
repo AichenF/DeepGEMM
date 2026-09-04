@@ -107,7 +107,8 @@ def capture_case(
     kernel: ModuleType,
     comm: CustomAllReduceV2,
     m: int,
-    x: torch.Tensor,
+    qx: torch.Tensor,
+    x_scale: torch.Tensor,
     topk_ids: torch.Tensor,
     topk_weights: torch.Tensor,
     weights: tuple[torch.Tensor, ...],
@@ -121,7 +122,8 @@ def capture_case(
     w13, s13, g13, w2, s2, g2 = weights
     case = bench.CapturedCase(
         m=m,
-        x=x,
+        qx=qx,
+        x_scale=x_scale,
         topk_ids=topk_ids,
         topk_weights=topk_weights,
         w13=w13,
@@ -192,9 +194,7 @@ def main() -> None:
     topk_ids, topk_weights = bench.make_routes(
         args.m, args.route_pattern, device, args.seed
     )
-    x = torch.randn(
-        (args.m, bench.HIDDEN), dtype=torch.bfloat16, device=device
-    ) * 0.1
+    qx, x_scale = bench.make_fp8_input(args.m, device, args.seed)
 
     comm = CustomAllReduceV2(cpu_group, device)
     if comm.disabled:
@@ -209,7 +209,8 @@ def main() -> None:
         control_kernel,
         comm,
         args.m,
-        x,
+        qx,
+        x_scale,
         topk_ids,
         topk_weights,
         control_weights,
@@ -223,7 +224,8 @@ def main() -> None:
         candidate_kernel,
         comm,
         args.m,
-        x,
+        qx,
+        x_scale,
         topk_ids,
         topk_weights,
         candidate_weights,

@@ -291,7 +291,8 @@ class FullCase:
 
 def make_compute_case(
     m: int,
-    x: torch.Tensor,
+    qx: torch.Tensor,
+    x_scale: torch.Tensor,
     topk_ids: torch.Tensor,
     topk_weights: torch.Tensor,
     weights: tuple[torch.Tensor, ...],
@@ -301,7 +302,8 @@ def make_compute_case(
     w13, s13, g13, w2, s2, g2 = weights
     return custom.CapturedCase(
         m=m,
-        x=x,
+        qx=qx,
+        x_scale=x_scale,
         topk_ids=topk_ids,
         topk_weights=topk_weights,
         w13=w13,
@@ -701,18 +703,16 @@ def main() -> None:
             topk_ids, topk_weights = custom.make_routes(
                 m, args.route_pattern, device, args.seed
             )
-            # TP ranks consume the same activation and routing metadata.
-            torch.manual_seed(args.seed + 200_000 + m)
-            torch.cuda.manual_seed(args.seed + 200_000 + m)
-            x = torch.randn(
-                (m, custom.HIDDEN), dtype=torch.bfloat16, device=device
-            ) * 0.1
+            # TP ranks consume the same prequantized activation and routing
+            # metadata.  Input quantization is outside every timed graph.
+            qx, x_scale = custom.make_fp8_input(m, device, args.seed)
             full_cases: dict[str, FullCase] = {}
             full_graphs: dict[str, torch.cuda.CUDAGraph] = {}
             for name in args.variants:
                 base = make_compute_case(
                     m,
-                    x,
+                    qx,
+                    x_scale,
                     topk_ids,
                     topk_weights,
                     weights,
@@ -730,7 +730,8 @@ def main() -> None:
 
             reference_case = make_compute_case(
                 m,
-                x,
+                qx,
+                x_scale,
                 topk_ids,
                 topk_weights,
                 weights,

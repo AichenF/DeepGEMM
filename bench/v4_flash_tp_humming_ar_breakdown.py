@@ -62,7 +62,8 @@ def parse_args() -> argparse.Namespace:
 
 def make_case(
     m: int,
-    x: torch.Tensor,
+    qx: torch.Tensor,
+    x_scale: torch.Tensor,
     topk_ids: torch.Tensor,
     topk_weights: torch.Tensor,
     w13,
@@ -74,7 +75,8 @@ def make_case(
     selected_w13 = humming.select_tuning_config(w13_tuning, m * humming.TOP_K)
     return humming.CapturedCase(
         m=m,
-        x=x,
+        qx=qx,
+        x_scale=x_scale,
         topk_ids=topk_ids,
         topk_weights=topk_weights,
         w13=w13,
@@ -185,6 +187,10 @@ def main() -> None:
                     ),
                     "primary_share": "(median(full)-median(local))/median(full)",
                     "diagnostic_share": "median(ar_only)/median(paired_full)",
+                    "input_contract": (
+                        "prequantized FP8-E4M3 qx plus FP32 group128 x_scale; "
+                        "external input quantization outside all graphs"
+                    ),
                 },
                 sort_keys=True,
             ),
@@ -196,13 +202,11 @@ def main() -> None:
         topk_ids, topk_weights = humming.make_routes(
             m, args.route_pattern, device, args.seed
         )
-        x = (
-            torch.randn((m, humming.HIDDEN), dtype=torch.bfloat16, device=device)
-            * 0.1
-        )
+        qx, x_scale = humming.make_fp8_input(m, device, args.seed)
         full_case = make_case(
             m,
-            x,
+            qx,
+            x_scale,
             topk_ids,
             topk_weights,
             w13,
@@ -213,7 +217,8 @@ def main() -> None:
         )
         local_case = make_case(
             m,
-            x,
+            qx,
+            x_scale,
             topk_ids,
             topk_weights,
             w13,

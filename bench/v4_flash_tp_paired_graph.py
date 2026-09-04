@@ -268,6 +268,11 @@ def main() -> None:
                     ),
                     "l2_cache_bytes": props.L2_cache_size,
                     "l2_flush_bytes": l2_flush_buffer.nbytes,
+                    "input_contract": (
+                        "one shared prequantized FP8-E4M3 qx plus FP32 "
+                        "group128 x_scale; external input quantization "
+                        "outside both graphs"
+                    ),
                     "custom_mode2_braid": kernel.MODE2_BRAID,
                     "custom_fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "custom_fused_route_quant": kernel.FUSED_ROUTE_QUANT,
@@ -342,14 +347,15 @@ def main() -> None:
         topk_ids, topk_weights = custom.make_routes(
             m, args.route_pattern, device, args.seed
         )
-        x = torch.randn((m, custom.HIDDEN), dtype=torch.bfloat16, device=device) * 0.1
+        qx, x_scale = custom.make_fp8_input(m, device, args.seed)
 
         selected_humming_w13 = humming.select_tuning_config(
             humming_w13_tuning, m * custom.TOP_K
         )
         humming_case = humming.CapturedCase(
             m=m,
-            x=x,
+            qx=qx,
+            x_scale=x_scale,
             topk_ids=topk_ids,
             topk_weights=topk_weights,
             w13=humming_w13,
@@ -361,7 +367,8 @@ def main() -> None:
         )
         custom_case = custom.CapturedCase(
             m=m,
-            x=x,
+            qx=qx,
+            x_scale=x_scale,
             topk_ids=topk_ids,
             topk_weights=topk_weights,
             w13=custom_w13,

@@ -47,11 +47,12 @@ def make_humming_case(
     topk_ids, topk_weights = bench.make_routes(
         m, route_pattern, device, seed
     )
-    x = torch.randn((m, bench.HIDDEN), dtype=torch.bfloat16, device=device) * 0.1
+    qx, x_scale = bench.make_fp8_input(m, device, seed)
     selected_w13 = bench.select_tuning_config(w13_tuning, m * bench.TOP_K)
     return bench.CapturedCase(
         m=m,
-        x=x,
+        qx=qx,
+        x_scale=x_scale,
         topk_ids=topk_ids,
         topk_weights=topk_weights,
         w13=w13,
@@ -76,10 +77,11 @@ def make_custom_case(
     topk_ids, topk_weights = bench.make_routes(
         m, route_pattern, device, seed
     )
-    x = torch.randn((m, bench.HIDDEN), dtype=torch.bfloat16, device=device) * 0.1
+    qx, x_scale = bench.make_fp8_input(m, device, seed)
     return bench.CapturedCase(
         m=m,
-        x=x,
+        qx=qx,
+        x_scale=x_scale,
         topk_ids=topk_ids,
         topk_weights=topk_weights,
         w13=w13,

@@ -37,35 +37,23 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
     import v4_flash_tp_wgmma_graph as bench
 
     def align() -> None:
-        case.sorted_ids, case.expert_ids, case.num_tokens_padded = (
-            bench.moe_align_block_size(
-                topk_ids=case.topk_ids,
-                block_size=8,
-                num_experts=bench.NUM_EXPERTS,
-                ignore_invalid_expert=True,
+        if kernel.FUSED_ROUTE_ALIGN:
+            kernel.route_align(
+                case.topk_ids,
+                case.sorted_ids,
+                case.expert_ids,
+                case.num_tokens_padded,
+                case.route_to_sorted,
             )
-        )
-
-    def quant_x() -> None:
-        case.qx, case.x_scale = bench.humming_ops.quant_input(
-            inputs=case.x,
-            outputs=case.qx,
-            dtype="float8e4m3",
-            group_size=128,
-            m_major_scale=False,
-            scale_dtype="float32",
-        )
-
-    def route_quant() -> None:
-        kernel.fused_route_quant(
-            case.topk_ids,
-            case.x,
-            case.sorted_ids,
-            case.expert_ids,
-            case.num_tokens_padded,
-            case.qx.view(torch.uint8),
-            case.x_scale,
-        )
+        else:
+            case.sorted_ids, case.expert_ids, case.num_tokens_padded = (
+                bench.moe_align_block_size(
+                    topk_ids=case.topk_ids,
+                    block_size=8,
+                    num_experts=bench.NUM_EXPERTS,
+                    ignore_invalid_expert=True,
+                )
+            )
 
     def w13() -> None:
         if kernel.W13_PAIRED_WG:
@@ -165,19 +153,14 @@ def custom_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
         else:
             kernel.cast_bf16(case.local_float, case.local_bf16)
 
-    if kernel.FUSED_ROUTE_QUANT and kernel.W13_PAIRED_WG:
+    if kernel.W13_PAIRED_WG:
         return (
-            ("route_quant", "w13_activation_quant", "w2", "local_reduce"),
-            (route_quant, w13, w2, local_reduce),
-        )
-    if kernel.FUSED_ROUTE_QUANT:
-        return (
-            ("route_quant", "w13", "activation_quant", "w2", "local_reduce"),
-            (route_quant, w13, activation, w2, local_reduce),
+            ("align", "w13_activation_quant", "w2", "local_reduce"),
+            (align, w13, w2, local_reduce),
         )
     return (
-        ("align", "quant_x", "w13", "activation_quant", "w2", "local_reduce"),
-        (align, quant_x, w13, activation, w2, local_reduce),
+        ("align", "w13", "activation_quant", "w2", "local_reduce"),
+        (align, w13, activation, w2, local_reduce),
     )
 
 
@@ -192,11 +175,6 @@ def humming_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
                 num_experts=bench.NUM_EXPERTS,
                 ignore_invalid_expert=True,
             )
-        )
-
-    def quant_x() -> None:
-        case.qx, case.x_scale = bench.HummingMethod.may_quant_input(
-            layer=case.w13, inputs=case.x, quanted_input=case.qx
         )
 
     def w13() -> None:
@@ -248,8 +226,8 @@ def humming_stages(case) -> tuple[tuple[str, ...], tuple[callable, ...]]:
         )
 
     return (
-        ("align", "quant_x", "w13", "activation", "quant_activation", "w2", "local_reduce"),
-        (align, quant_x, w13, activation, quant_activation, w2, local_reduce),
+        ("align", "w13", "activation", "quant_activation", "w2", "local_reduce"),
+        (align, w13, activation, quant_activation, w2, local_reduce),
     )
 
 
