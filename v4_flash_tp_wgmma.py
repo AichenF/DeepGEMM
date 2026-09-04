@@ -250,6 +250,9 @@ if SINGLE_LAUNCH_MIN_BLOCKS not in (4, 5, 6, 7, 8, 9):
 SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM = (
     os.environ.get("V4_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM", "0") == "1"
 )
+SINGLE_LAUNCH_PERSISTENT_GEMM_STATE = (
+    os.environ.get("V4_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE", "0") == "1"
+)
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "8")
 )
@@ -446,6 +449,8 @@ static constexpr bool kSingleLaunchNoInlineGemm =
     K_SINGLE_LAUNCH_NOINLINE_GEMM;
 static constexpr bool kSingleLaunchRouteDynamicSmem =
     K_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM;
+static constexpr bool kSingleLaunchPersistentGemmState =
+    K_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE;
 static constexpr int kSingleLaunchNvlsBlocks =
     K_SINGLE_LAUNCH_NVLS_BLOCKS;
 static constexpr int kSingleLaunchGroupCtas =
@@ -709,7 +714,8 @@ __device__ __forceinline__ uint2 dequant_weight_word(
 }
 
 template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
-          bool PublishW2Progress = false, bool DualWgW13 = false>
+          bool PublishW2Progress = false, bool DualWgW13 = false,
+          bool PersistentState = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -727,7 +733,8 @@ __device__ __forceinline__ void route_gemm_task(
         int32_t* __restrict__ progress_state,
         int max_routes,
         int n_tile_begin,
-        int linear_block_idx) {
+        int linear_block_idx,
+        int task_sequence = 0) {
     static_assert(K % kBlockK == 0);
     static_assert(N % kWout == 0);
     static_assert((K / kBlockK) % SplitK == 0);
@@ -756,6 +763,9 @@ __device__ __forceinline__ void route_gemm_task(
         LaunchNTiles == 0 ? kNumNTiles : LaunchNTiles;
     static_assert(kNumNTiles % kLaunchNTiles == 0);
     constexpr int kMathWGs = DualWgW13 ? 2 : 1;
+    constexpr int kMetadataSlots = PersistentState ? 2 : 1;
+    static_assert(!PersistentState || !DualWgW13,
+                  "persistent task state supports one WGMMA warpgroup");
     static_assert(kLaunchNTiles % kMathWGs == 0);
     static_assert(!DualWgW13 || (IsW13 && kWout == 128
                   && LaunchNTiles == 0 && kInterleavedScale),
@@ -825,9 +835,9 @@ __device__ __forceinline__ void route_gemm_task(
         (kNormalizedWeightScale || kDequantSynthLut
          || (!IsW13 && kW2GlobalLut)) ? 1 : kLutRows];
     __shared__ float activation_scale_smem[kTok];
-    __shared__ float expert_weight_scale;
-    __shared__ int32_t route_ids[kTok];
-    __shared__ int32_t activation_rows[kTok];
+    __shared__ float expert_weight_scale[kMetadataSlots];
+    __shared__ int32_t route_ids[kMetadataSlots][kTok];
+    __shared__ int32_t activation_rows[kMetadataSlots][kTok];
 
     uint64_t weight_cache_policy = 0;
     if constexpr (kUseWeightEvictFirst && kWeightPolicyHoist) {
@@ -841,11 +851,12 @@ __device__ __forceinline__ void route_gemm_task(
             "createpolicy.fractional.L2::evict_last.b64 %0,1.0;"
             : "=l"(reused_cache_policy));
     }
+    const int metadata_slot = PersistentState ? (task_sequence & 1) : 0;
     if (tid < kTok) {
         const int position = m_block_idx * kTok + tid;
         const int route = __ldg(sorted_ids + position);
-        route_ids[tid] = route;
-        activation_rows[tid] = route < max_routes
+        route_ids[metadata_slot][tid] = route;
+        activation_rows[metadata_slot][tid] = route < max_routes
             ? (IsW13 ? route / kTopK
                      : (kW2SortedAct ? position : route))
             : -1;
@@ -853,21 +864,25 @@ __device__ __forceinline__ void route_gemm_task(
     if (tid == 0) {
         if constexpr (kNormalizedWeightScale
                       && (IsW13 || !kW2FoldGlobalScale)) {
-            expert_weight_scale = load_reused_f32(
+            expert_weight_scale[metadata_slot] = load_reused_f32(
                 weight_global_scale + expert_idx, reused_cache_policy);
         } else {
-            expert_weight_scale = 1.0f;
+            expert_weight_scale[metadata_slot] = 1.0f;
         }
     }
     if constexpr (kNormalizedWeightScale && kNormalizedSharedLut) {
-        for (int i = tid; i < 13; i += blockDim.x)
-            lut_smem[i] = synth_normalized_e2m1_lut(i);
+        if (!PersistentState || task_sequence == 0) {
+            for (int i = tid; i < 13; i += blockDim.x)
+                lut_smem[i] = synth_normalized_e2m1_lut(i);
+        }
     } else if constexpr (!kNormalizedWeightScale && !kDequantSynthLut
                          && (IsW13 || !kW2GlobalLut)) {
-        for (int i = tid; i < kLutRows; i += blockDim.x) {
-            constexpr int kGlobalLutOffset =
-                kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
-            lut_smem[i] = global_lut[kGlobalLutOffset + i];
+        if (!PersistentState || task_sequence == 0) {
+            for (int i = tid; i < kLutRows; i += blockDim.x) {
+                constexpr int kGlobalLutOffset =
+                    kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
+                lut_smem[i] = global_lut[kGlobalLutOffset + i];
+            }
         }
     }
 
@@ -890,19 +905,25 @@ __device__ __forceinline__ void route_gemm_task(
         __cvta_generic_to_shared(&scale_barriers[math_wg]));
     const uint32_t activation_empty_barrier_addr = static_cast<uint32_t>(
         __cvta_generic_to_shared(&activation_empty_barrier));
-    if constexpr (DualWgW13) {
-        if (tid == 0)
-            mbar_init(activation_empty_barrier_addr);
+    if (!PersistentState || task_sequence == 0) {
+        if constexpr (DualWgW13) {
+            if (tid == 0)
+                mbar_init(activation_empty_barrier_addr);
+        }
+        if (mtid == 0) {
+            #pragma unroll
+            for (int stage = 0; stage < kStages; ++stage)
+                mbar_init(weight_barrier_addr(stage));
+            if constexpr (kUseTmaScale && kScaleQuadReuse == 4
+                          && kScaleBuffers == 1)
+                mbar_init(scale_barrier_addr);
+            asm volatile("fence.proxy.async.shared::cta;");
+        }
     }
-    if (mtid == 0) {
-        #pragma unroll
-        for (int stage = 0; stage < kStages; ++stage)
-            mbar_init(weight_barrier_addr(stage));
-        if constexpr (kUseTmaScale && kScaleQuadReuse == 4
-                      && kScaleBuffers == 1)
-            mbar_init(scale_barrier_addr);
-        asm volatile("fence.proxy.async.shared::cta;");
-    }
+    // In persistent mode this single rendezvous both completes the preceding
+    // task before its dynamic stages are reused and publishes the next task's
+    // double-buffered metadata.  The legacy caller retains its post-task
+    // barrier, so the nonpersistent path is unchanged.
     __syncthreads();
 
     const auto load_weight_stage = [&](int local_kt, int stage) {
@@ -1087,9 +1108,14 @@ __device__ __forceinline__ void route_gemm_task(
 
     load_single_scale(kt_begin);
 
+    const int sequence_tile_base =
+        PersistentState ? task_sequence * kKTilesPerSplit : 0;
     #pragma unroll
-    for (int stage = 0; stage < kStages && stage < kKTilesPerSplit; ++stage)
-        load_weight_stage(stage, stage);
+    for (int local_kt = 0;
+         local_kt < kStages && local_kt < kKTilesPerSplit; ++local_kt) {
+        const int item_idx = sequence_tile_base + local_kt;
+        load_weight_stage(local_kt, item_idx % kStages);
+    }
 
     const int warp = mtid / 32;
     const int lane = mtid % 32;
@@ -1115,7 +1141,8 @@ __device__ __forceinline__ void route_gemm_task(
     #pragma unroll 1
     #endif
     for (int local_kt = 0; local_kt < kKTilesPerSplit; ++local_kt) {
-        const int stage = local_kt % kStages;
+        const int item_idx = sequence_tile_base + local_kt;
+        const int stage = item_idx % kStages;
         const int global_kt = kt_begin + local_kt;
         const int scale_stage =
             kCompactInterleavedScale
@@ -1149,7 +1176,8 @@ __device__ __forceinline__ void route_gemm_task(
             const int token_slot = mtid / 16;
             const int k8 = (mtid % 16) * 8;
             uint2 value = make_uint2(0, 0);
-            const int activation_row = activation_rows[token_slot];
+            const int activation_row =
+                activation_rows[metadata_slot][token_slot];
             if constexpr (kPredicatedPaddedActivation && IsW13) {
                 const int safe_row = activation_row < 0 ? 0 : activation_row;
                 value = load_reused_u64_predicated(
@@ -1179,7 +1207,7 @@ __device__ __forceinline__ void route_gemm_task(
         }
         if constexpr (kPredicatedPaddedActivation && IsW13) {
             const int safe_slot = scale_slot < 0 ? 0 : scale_slot;
-            const int row = activation_rows[safe_slot];
+            const int row = activation_rows[metadata_slot][safe_slot];
             const int safe_row = row < 0 ? 0 : row;
             int64_t scale_index;
             if constexpr (!IsW13 && kW2MblockScale) {
@@ -1196,9 +1224,9 @@ __device__ __forceinline__ void route_gemm_task(
                 valid_load, reused_cache_policy);
             store_shared_f32_predicated(
                 activation_scale_smem + safe_slot,
-                loaded_scale * expert_weight_scale, scale_slot);
+                loaded_scale * expert_weight_scale[metadata_slot], scale_slot);
         } else if (scale_slot >= 0) {
-            const int row = activation_rows[scale_slot];
+            const int row = activation_rows[metadata_slot][scale_slot];
             if (row >= 0) {
                 int64_t scale_index;
                 if constexpr (!IsW13 && kW2MblockScale) {
@@ -1213,7 +1241,7 @@ __device__ __forceinline__ void route_gemm_task(
                     load_reused_f32(
                         activation_scale + scale_index,
                         reused_cache_policy)
-                    * expert_weight_scale;
+                    * expert_weight_scale[metadata_slot];
             } else {
                 activation_scale_smem[scale_slot] = 0.0f;
             }
@@ -1235,19 +1263,28 @@ __device__ __forceinline__ void route_gemm_task(
         if constexpr (kLeaderMbarWait && IsW13) {
             if (mtid == 0)
                 mbar_wait(weight_barrier_addr(stage),
-                          (local_kt / kStages) & 1u);
+                          (item_idx / kStages) & 1u);
         } else {
             mbar_wait(weight_barrier_addr(stage),
-                      (local_kt / kStages) & 1u);
+                      (item_idx / kStages) & 1u);
         }
         if constexpr (kUseTmaScale && kScaleQuadReuse == 4
                       && kScaleBuffers == 1) {
             if ((local_kt & 3) == 0) {
                 if constexpr (kLeaderMbarWait && IsW13) {
-                    if (mtid == 0)
-                        mbar_wait(scale_barrier_addr, (local_kt >> 2) & 1u);
+                    if (mtid == 0) {
+                        const int scale_item =
+                            (PersistentState ? task_sequence : 0)
+                                * ((kKTilesPerSplit + 3) / 4)
+                            + (local_kt >> 2);
+                        mbar_wait(scale_barrier_addr, scale_item & 1u);
+                    }
                 } else {
-                    mbar_wait(scale_barrier_addr, (local_kt >> 2) & 1u);
+                    const int scale_item =
+                        (PersistentState ? task_sequence : 0)
+                            * ((kKTilesPerSplit + 3) / 4)
+                        + (local_kt >> 2);
+                    mbar_wait(scale_barrier_addr, scale_item & 1u);
                 }
             }
         }
@@ -1518,8 +1555,8 @@ __device__ __forceinline__ void route_gemm_task(
             load_weight_stage(local_kt + kStages, stage);
     }
 
-    const int route0 = route_ids[column_base];
-    const int route1 = route_ids[column_base + 1];
+    const int route0 = route_ids[metadata_slot][column_base];
+    const int route1 = route_ids[metadata_slot][column_base + 1];
     #pragma unroll
     for (int group = 0; group < kWgmmaGroups; ++group) {
         const int output_n0 = n_block_idx * kWout + group * 64 + row0;
@@ -1606,7 +1643,7 @@ __device__ __forceinline__ void route_gemm_task(
         // spans without a CTA-wide synchronization point.
         const int output_slot = lane >> 2;
         const int vector_index = lane & 3;
-        const int output_route = route_ids[output_slot];
+        const int output_route = route_ids[metadata_slot][output_slot];
         if (output_route < max_routes) {
             auto* route_output = reinterpret_cast<__nv_bfloat16*>(output);
             const int local_column = vector_index * 8;
@@ -1637,7 +1674,7 @@ __device__ __forceinline__ void route_gemm_task(
         // to the worker's matching device-scope acquire load.
         __syncthreads();
         if (tid < kTok) {
-            const int route = route_ids[tid];
+            const int route = route_ids[metadata_slot][tid];
             if (route < max_routes)
                 progress_store_release(
                     progress_state + route * kNumW2Tiles + n_block_idx, 1);
@@ -3805,7 +3842,9 @@ void tp4_megamoe_single_launch_kernel(
     } else {
         const int num_mblocks = __ldg(num_tokens_padded) / kTok;
         const int w13_tasks = num_mblocks * kW13NTiles * SplitK;
-        for (int task = cta; task < w13_tasks; task += ctas) {
+        int w13_sequence = 0;
+        for (int task = cta; task < w13_tasks;
+             task += ctas, ++w13_sequence) {
             if constexpr (kSingleLaunchNoInlineGemm) {
                 single_launch_w13_gemm_task<SplitK>(
                     &w13_tma_weight, &w13_tma_weight_scale,
@@ -3813,13 +3852,17 @@ void tp4_megamoe_single_launch_kernel(
                     sorted_ids, expert_ids, num_tokens_padded, topk_weights,
                     partials, lut, routes, task);
             } else {
-                route_gemm_task<4096, 1024, SplitK, true>(
+                route_gemm_task<
+                    4096, 1024, SplitK, true, 0, false, false,
+                    kSingleLaunchPersistentGemmState>(
                     &w13_tma_weight, &w13_tma_weight_scale,
                     w13, s13, g13, qx, x_scale,
                     sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-                    partials, lut, nullptr, routes, 0, task);
+                    partials, lut, nullptr, routes, 0, task, w13_sequence);
             }
-            __syncthreads();
+            if constexpr (kSingleLaunchNoInlineGemm
+                          || !kSingleLaunchPersistentGemmState)
+                __syncthreads();
         }
         single_launch_grid_barrier(barrier_state, 1, ctas);
 
@@ -3833,7 +3876,9 @@ void tp4_megamoe_single_launch_kernel(
         single_launch_grid_barrier(barrier_state, 2, ctas);
 
         const int w2_tasks = num_mblocks * kW2NTiles;
-        for (int task = cta; task < w2_tasks; task += ctas) {
+        int w2_sequence = 0;
+        for (int task = cta; task < w2_tasks;
+             task += ctas, ++w2_sequence) {
             if constexpr (kSingleLaunchNoInlineGemm) {
                 single_launch_w2_gemm_task(
                     &w2_tma_weight, &w2_tma_weight_scale,
@@ -3841,14 +3886,18 @@ void tp4_megamoe_single_launch_kernel(
                     sorted_ids, expert_ids, num_tokens_padded, topk_weights,
                     down, lut, routes, task);
             } else {
-                route_gemm_task<512, 4096, 1, false>(
+                route_gemm_task<
+                    512, 4096, 1, false, 0, false, false,
+                    kSingleLaunchPersistentGemmState>(
                     &w2_tma_weight, &w2_tma_weight_scale,
                     w2, s2, g2, qactivation, activation_scale,
                     sorted_ids, expert_ids, num_tokens_padded, topk_weights,
                     reinterpret_cast<float*>(down), lut, nullptr,
-                    routes, 0, task);
+                    routes, 0, task, w2_sequence);
             }
-            __syncthreads();
+            if constexpr (kSingleLaunchNoInlineGemm
+                          || !kSingleLaunchPersistentGemmState)
+                __syncthreads();
         }
         single_launch_grid_barrier(barrier_state, 3, ctas);
     }
@@ -5652,6 +5701,7 @@ _EXTENSION_CONFIG = (
           f"slnig{int(SINGLE_LAUNCH_NOINLINE_GEMM)}_"
           f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
           f"sldr{int(SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM)}_"
+          f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
@@ -5737,6 +5787,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM="
             f"{int(SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE="
+            f"{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}"
         ),
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",
