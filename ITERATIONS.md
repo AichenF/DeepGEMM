@@ -6616,3 +6616,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Latency (control/native median ms):** M8 `0.072192/0.318096`; M16 `0.115056/0.499360`; M32 `0.177328/0.561424`; M64 `0.249712/0.618256`; M128 `0.306720/0.676368`. Geomean `0.162357/0.517992 ms`; native is 3.19x slower. These are stable enough to expose the gap but not formal due only four samples.
 - **Conclusion:** Numerical/runtime bring-up is complete for every requested TP4 M, including both communication tails, but performance is currently far from the target. The static scheduler is a likely major regression versus the intended interleaved persistent schedule; restore/interleave and profile before lower-level WGMMA tuning. The printed native padded-row field is uninitialized diagnostic data and must not be used.
 - **Artifact:** `bench/results/iter215_native_tp4_allm_random_cold_smoke_20260904.log`.
+
+## Iteration 216 — Restore interleaved native scheduler
+
+- **Change:** Re-enabled `kUseInterleavedScheduler=true`; all math, layouts, quantization, and communication are unchanged.
+- **Test:** TP4 H20 GPUs 0-3, random routes, M=8/16/32/64/128, paired cold-L2 CUDA Graph smoke, 4 samples per implementation per M.
+- **Correctness:** All M values retain final cosine about 0.99936 and embedded-communication rel-L2 about 0.0041; both multicast-push and M128 NVLS-pull pass.
+- **Latency (control/native median ms):** M8 `0.071120/0.128608`; M16 `0.114352/0.206176`; M32 `0.177040/0.326032`; M64 `0.250560/0.458864`; M128 `0.306464/0.564816`. Native geomean falls from 0.517992 to `0.295169 ms` (43.0% improvement), but remains `1.825x` slower than control geomean 0.161704 ms.
+- **Conclusion:** Interleaving removes most static L1/L2 serialization and is retained. The remaining nearly constant 1.8x gap across M points to per-tile/native-body efficiency rather than launch or all-reduce overhead. Profile one small and one large M before changing WGMMA/dequant scheduling.
+- **Artifact:** `bench/results/iter216_native_interleaved_tp4_allm_cold_smoke_20260904.log`.
