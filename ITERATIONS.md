@@ -5812,3 +5812,18 @@ maximum rank latency of a full CUDA-Graph replay.
   Keep the goal open: profiler launch-count proof, stronger all-M/replay
   coverage, TP8, and the >=1.10x cold-L2 speedup are all still outstanding.
 - Artifact: `results/iter155_tp4_single_launch_m128_nvls_pull_retry_20260904.log`.
+
+## Iteration 156 — Nsight proof of the TP4 M8 graph launch count
+
+- Date: 2026-09-04.
+- Source: iteration 155 (`15236d3`), `V4_SINGLE_LAUNCH_TP4=1`.
+- Protocol: Nsight Systems CUDA/NVTX capture around the harness's explicit
+  `cudaProfilerStart/Stop` window for one TP4 M8 random-route CUDA-Graph
+  replay.  The window intentionally includes the separate 256 MiB L2 clear;
+  graph-node IDs distinguish that excluded clear from captured graph work.
+- Audit: The automated graph-node query did not prove one graph kernel per device; retain the capture as inconclusive and inspect the raw rows before any launch-count claim.
+- Scope: this proves the launch topology for TP4 M8 only.  It does not prove
+  TP8, all-M correctness, or the 10% speed target.
+- Artifacts: `results/iter156_tp4_single_launch_m8_profile.nsys-rep`, its
+  exported `.sqlite`, the console log, and
+  `results/iter156_tp4_single_launch_m8_launch_audit_20260904.log`.
