@@ -8998,3 +8998,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Inference: ordinary local pointer-range aliasing is ruled out. The remaining local-production suspects are read/write overlap semantics with unfinished W2 stores, shared/TMA state disturbed by executing the helper body, or an out-of-range access not explained by the intended index formulas.
 - Decision: keep overlap rejected. Next run a write-only symmetric-buffer stage and a read-only/local-combine stage separately, then use sanitizer/task ownership evidence if needed.
 - Artifact: `bench/results/iter353_w2_chunk_pointer_range_audit_20260904.log`.
+
+## Iteration 354 — stage-0 symmetric write-only isolation (2026-09-04)
+
+- Hypothesis: touch exactly the intended symmetric-output vector addresses mid-W2 without reading `down`, route weights, peer memory, or semaphores. A failure would indicate output-range aliasing or bad write indices; a pass would isolate the trigger to concurrent reads of W2 output.
+- Implementation: extended helper stage diagnostics with stage 0. Sixteen CTAs per chunk write zero vectors to the same local symmetric-output slots, synchronize, and return. The original whole-grid barrier and full collective still produce the reported final output.
+- Setup: TP4 GPUs 0–3, M128 random routes, seed 20260904, four diagnostic graph replays plus one cold-L2 smoke.
+- Correctness: **PASS exactly.** Candidate `down` was bitwise identical to control in every chunk and replay; repeat-versus-first max-absolute difference was zero. Final output was replay-stable and matched the normal reference metrics.
+- Isolation result: symmetric-output write addresses and mid-loop local stores do not corrupt W2. Stage 1 fails only when the helper additionally reads/combines `down`, strongly implicating insufficient producer visibility or a concurrent global-load/global-store hazard on nominally completed chunk data.
+- Decision: add an opt-in per-producer device fence before chunk-ready publication and rerun stage 1/full overlap. Keep all overlap variants default-off.
+- Artifact: `bench/results/iter354_w2_chunk_helper_stage0_write_only_smoke_20260904.log`.

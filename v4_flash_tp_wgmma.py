@@ -800,9 +800,9 @@ if (
 SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE = int(
     os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE", "3")
 )
-if SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE not in (1, 2, 3):
+if SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE not in (0, 1, 2, 3):
     raise ValueError(
-        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE must be 1, 2, or 3"
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE must be 0, 1, 2, or 3"
     )
 if (
     SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE != 3
@@ -6430,10 +6430,26 @@ __device__ __noinline__ void fused_k6_p2p_twoshot_tp4_chunk_task(
     constexpr int kSemaphoreBytes = 128;
     static_assert(Tokens == 64 || Tokens == 128);
     static_assert(Blocks == 16);
-    static_assert(HelperStage >= 1 && HelperStage <= 3);
+    static_assert(HelperStage >= 0 && HelperStage <= 3);
     static_assert(kChunkLocalVecs % kGlobalThreads == 0);
 
     const int global_tid = group_block_idx * Threads + threadIdx.x;
+    if constexpr (HelperStage == 0) {
+        // Write-only control for the overlap race: touch the same symmetric
+        // output vectors without reading W2 `down` or using peer state.
+        const uint4 zero = make_uint4(0u, 0u, 0u, 0u);
+        for (int chunk_vec = global_tid; chunk_vec < kChunkTotalVecs;
+             chunk_vec += kGlobalThreads) {
+            const int token = chunk_vec / kChunkVecsPerToken;
+            const int vec_in_chunk =
+                chunk_vec - token * kChunkVecsPerToken;
+            const int full_vec = token * kVecsPerToken
+                + chunk_idx * kChunkVecsPerToken + vec_in_chunk;
+            reinterpret_cast<uint4*>(symm_input)[full_vec] = zero;
+        }
+        __syncthreads();
+        return;
+    }
     for (int chunk_vec = global_tid; chunk_vec < kChunkTotalVecs;
          chunk_vec += kGlobalThreads) {
         const int token = chunk_vec / kChunkVecsPerToken;
