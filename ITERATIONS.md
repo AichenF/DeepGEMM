@@ -8312,3 +8312,28 @@ maximum rank latency of a full CUDA-Graph replay.
 - Comparison: M8 improves about `5.96%` versus the restored native SS median `0.128800 ms` from Iteration 223.  Register dequant removes a real cost, but the one-CTA/SM native scheduler remains dramatically worse than the 624-CTA TP-specialized path and cannot approach the requested 1.10x win in its current topology.
 - Caveat: `candidate_padded_rows` is invalid after native cleanup resets/reuses workspace metadata; active-expert counts and the control's padded rows remain the valid route-shape evidence.  This does not affect timing or numerical checks.
 - Decision: keep register dequant opt-in as a valid native improvement, but do not select native as the performance mainline.  Profile its local M128 body once to attribute the remaining scheduler/producer stalls; then either make a bounded high-confidence role-scheduling repair or return to the much faster TP-specialized kernel.
+
+## Iteration 301 — NCU replay exposes native-workspace reset hazard
+
+- **Purpose:** Profile the Iteration-300 register-dequant native one-launch body at
+  TP-local M128 with profiler-controlled cold cache, without including external
+  activation quantization or model-load weight transforms.
+- **Protocol:** H20 GPU 0, caller-provided FP8-E4M3 activation plus FP32
+  group-128 scales and MXFP4 weights, `V4_NATIVE_REGISTER_DEQUANT=1`; Nsight
+  Compute targeted `v4_flash_tp4_native_megamoe_impl`, 18 replay passes,
+  `--cache-control all`, collecting SpeedOfLight, memory, scheduler, warp-state,
+  occupancy, launch, and instruction sections.
+- **Result:** BLOCKED before trustworthy metrics could be accepted.  The target
+  kernel was replayed, but subsequent audit indexing failed because replay left
+  native routing/pool metadata invalid (`vectorized_gather_kernel` index out of
+  bounds, blocks 414-415).  The application exited 1.  This reproduces the same
+  profiler-only workspace-reset hazard seen in the older native profile and is
+  not a timed cold-L2 regression result.
+- **Interpretation:** Do not use the generated report to compare throughput or
+  latency.  A profiling harness must either terminate immediately after the
+  captured launch or restore all mutable route/pool metadata on every replay.
+  Normal non-replayed correctness and the Iteration-300 cold CUDA-Graph timing
+  remain valid.
+- **Artifacts:**
+  `bench/results/iter301_native_register_dequant_m128_ncu_20260904.log` and
+  `results/iter301_native_register_dequant_m128.ncu-rep`.
