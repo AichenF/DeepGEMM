@@ -5842,3 +5842,35 @@ maximum rank latency of a full CUDA-Graph replay.
 - Artifacts: `results/iter157_tp4_single_launch_m8_graph_nodes.nsys-rep`,
   exported `.sqlite`, console log, and
   `results/iter157_tp4_single_launch_m8_launch_audit_20260904.log`.
+
+## Iteration 158 — first same-process single-vs-multi cold-L2 screen
+
+- Date: 2026-09-04.
+- Change: add `bench/v4_flash_tp_single_vs_multi_graph.py`.  It captures the
+  selected multi-kernel control and the one-node candidate from the same
+  source, sharing weights/X/routes and one CARv2 communicator.  Timed samples
+  use separate excluded 256 MiB clears, TP4 rank-max and whole-batch AB/BA
+  order; both graphs are checked independently against local recompute plus
+  NCCL before timing.
+- Protocol: physical GPUs 0–3, random routes, all five M values, two batches x
+  twenty cold replays per implementation and four cold warmups.  This is a
+  directional screen, not the required 10x200 final verdict.
+- Correctness: both control and candidate pass every M.  Candidate minimum
+  cosine is `0.99999556396`, maximum relative L2 `0.00297860338`, and all
+  outputs are finite.  Candidate/control padded-row counts agree exactly.
+- Median latency in ms, control / candidate / control-over-candidate speedup:
+  - M8: `0.072416 / 0.103744 / 0.6980x`.
+  - M16: `0.113872 / 0.160800 / 0.7082x`.
+  - M32: `0.177392 / 0.251552 / 0.7052x`.
+  - M64: `0.247568 / 0.351648 / 0.7040x`.
+  - M128: `0.305472 / 0.481616 / 0.6343x`.
+- Equal-weight geometric means: control `0.161722 ms`, candidate
+  `0.234605 ms`; the candidate is `1.45066x` slower, or control/candidate
+  `0.68934x`.  Batch medians are close within each implementation, so the
+  result is not explained by one pooled outlier.
+- Interpretation: removing launches alone cannot compensate for the resident
+  kernel's reduced GEMM concurrency and global phase waits.  The next screen
+  must vary resident CTAs/SM, then expose per-phase timing; the final design
+  still needs readiness-based W13/W2 overlap rather than retaining this
+  barrier-separated scheduler.
+- Artifact: `results/iter158_tp4_single_vs_multi_allm_cold_pair_screen_20260904.log`.
