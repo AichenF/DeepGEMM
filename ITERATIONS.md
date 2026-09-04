@@ -5581,3 +5581,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - The run again exited before process-group initialization, graph capture, or GPU timing: importing the shared graph harness requires the Humming checkout as an additional Python path, and every rank raised `ModuleNotFoundError: humming`.
 - No correctness or latency sample was produced.  The next retry must include repository root, SGLang source, and Humming source in `PYTHONPATH`.
 - Artifact: `results/iter144b_ar_transport_focus_tp4_m128_replay_cold2000_20260904.log`.
+
+## Iteration 144c — focused M128 replay-granularity P2P/NVLS two-shot pair
+
+- Ran the full TP4 MoE graph on physical GPUs 0–3 with only graph P2P two-shot pull and direct-symmetric NVLS two-shot pull.  Each candidate received 10 batches x 200 cold-L2 CUDA Graph replays; candidate order alternated inside every replay, and timing used the TP4 maximum rank.  All source imports were pinned through explicit repository, SGLang, and Humming paths.
+- Correctness: both variants pass the independent NCCL reference (`cosine_min_rank=0.999995568`, `rel_l2_max_rank=0.00297712`) and remain bitwise identical to each other (`max_abs_vs_p2p_2shot=0`).
+- Full-path pooled medians: P2P two-shot `0.349408001 ms`; NVLS two-shot `0.348895997 ms`.  NVLS leads by only `0.512004 us` / `0.1467%`, but wins 9/10 paired batch medians.  The nearly identical per-batch slow modes on both variants show the replay pairing successfully cancels compute drift.
+- Interpretation: M128 direct-symmetric NVLS two-shot has a directionally repeatable but very small full-graph lead.  It still needs an independent whole-batch AB/BA repeat before changing production defaults.
+- Artifact: `results/iter144c_ar_transport_focus_tp4_m128_replay_cold2000_20260904.log`.
