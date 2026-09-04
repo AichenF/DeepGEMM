@@ -244,6 +244,48 @@ def main() -> None:
         native_local_scaled_check = tensor_comparison_metrics(
             native_local_scaled, local_reference, nccl_group, device
         )
+        native_l2_check = None
+        native_l2_scale_check = None
+        native_l2_byte_mismatches = None
+        if args.route_pattern == "balanced" and m * custom.TOP_K <= custom.NUM_EXPERTS:
+            assert candidate_case.native_workspace is not None
+            assert control_case.activation_scale is not None
+            route_indices = torch.arange(m * custom.TOP_K, device=device)
+            pool_rows = route_indices * 8
+            native_l2_q = candidate_case.native_workspace.l2_acts.index_select(
+                0, pool_rows
+            )
+            control_l2_q = control_case.qactivation[: m * custom.TOP_K]
+            scale_groups = intermediate_per_rank // 128
+            native_l2_scale = (
+                candidate_case.native_workspace.l2_acts_sf[
+                    :scale_groups, pool_rows
+                ]
+                .T.contiguous()
+            )
+            control_l2_scale = control_case.activation_scale[
+                : m * custom.TOP_K
+            ].reshape(m * custom.TOP_K, scale_groups)
+            native_l2 = native_l2_q.float() * native_l2_scale.repeat_interleave(
+                128, dim=1
+            )
+            control_l2 = control_l2_q.float() * control_l2_scale.repeat_interleave(
+                128, dim=1
+            )
+            native_l2_check = tensor_comparison_metrics(
+                native_l2, control_l2, nccl_group, device
+            )
+            native_l2_scale_check = tensor_comparison_metrics(
+                native_l2_scale, control_l2_scale, nccl_group, device
+            )
+            byte_mismatches = float(
+                (native_l2_q.view(torch.uint8) != control_l2_q.view(torch.uint8))
+                .sum()
+                .item()
+            )
+            native_l2_byte_mismatches = custom.reduce_rank_metric(
+                byte_mismatches, dist.ReduceOp.MAX, device, nccl_group
+            )
         if rank == 0:
             print(
                 "SINGLE_MULTI_CORRECTNESS "
@@ -254,6 +296,11 @@ def main() -> None:
                         "candidate_final": candidate_check,
                         "candidate_local_raw": native_local_raw_check,
                         "candidate_local_scaled_1p5": native_local_scaled_check,
+                        "candidate_l2_dequant": native_l2_check,
+                        "candidate_l2_scale": native_l2_scale_check,
+                        "candidate_l2_fp8_byte_mismatches_max_rank": (
+                            native_l2_byte_mismatches
+                        ),
                     },
                     sort_keys=True,
                 ),

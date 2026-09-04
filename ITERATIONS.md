@@ -6511,3 +6511,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** `l1_x_mismatch_bytes=0`, `l1_sf_max_abs=0.0`, and `l1_weight_max_abs=0.0`; output remains finite/nonzero. The workspace route/pool boundary preserves all three caller inputs exactly.
 - **Conclusion:** The near-zero end-to-end cosine is downstream of dispatch/pool formation. Input FP8 X, activation scales, route mapping, and route weights arrive correctly at FC1. Next compare the native FC1+SwiGLU intermediate FP8 rows/scales against the correct multi-kernel stage output before investigating FC2/combine.
 - **Artifact:** `bench/results/iter201_native_l1_pool_audit_m8_20260904.log`.
+
+## Iteration 202 — Compare native FC1/SwiGLU FP8 intermediate against control
+
+- **Change:** Added a stage-boundary diagnostic to the paired TP4 harness. For balanced M=8 (48 unique experts), native pool row `route * 8` is compared with the correct multi-kernel route-order W13+SwiGLU+FP8 output. Both raw FP8 bytes and dequantized FP8×group128-scale values are reported, along with scale-only metrics.
+- **Test:** TP4 H20 GPUs 0-3, M=8 balanced routes, paired cold-L2 CUDA Graph smoke. Input X is already FP8 and its quantization remains outside both graphs.
+- **Result:** The first computed intermediate is already wrong: dequantized L2 activation cosine `-0.00349220`, rel-L2 `1.01721447`; 23,333 of 24,576 FP8 bytes differ on the worst rank. Intermediate scale cosine is only `0.75738467` with rel-L2 `0.80994170`. Control final remains correct (cosine `0.99999557`), while native final fails as expected.
+- **Conclusion:** Dispatch/pool input was exact in Iteration 201, but FC1+SwiGLU output is uncorrelated. The root cause is now bounded to native FC1 math/weight interpretation or its epilogue, before FC2/combine/all-reduce. Inspect WGMMA A/B layout and scale application next; communication is not on the critical debug path.
+- **Artifact:** `bench/results/iter202_native_l2_stage_audit_tp4_m8_20260904.log`.
