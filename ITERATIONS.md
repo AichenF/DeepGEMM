@@ -7007,3 +7007,24 @@ maximum rank latency of a full CUDA-Graph replay.
   selected value.
 - **Artifact:**
   `bench/results/iter243_grid_poll_sleep256_m8_m128_compute_smoke_20260904.log`.
+
+## Iteration 244 — bracket grid-poll backoff at 32 and 128 ns
+
+- **Protocol:** No source change after Iteration 243.  Screened ordinary
+  one-level relaxed grid polling at 32 ns and 128 ns on H20 GPU 0, M={8,128},
+  8 CTAs/SM, prequantized FP8/group-128 input, excluded 256 MiB L2 clear and
+  bitwise comparison to the independent local pipeline.
+- **Correctness:** All four points pass (`cosine=1`, `rel_l2=0`, finite).
+- **32 ns phase result (route/W13/activation/W2 us):** M8
+  `2.240/40.384/3.616/21.664`, sum `67.904 us`; M128
+  `4.384/211.808/6.688/109.824`, sum `332.704 us`.
+- **128 ns phase result:** M8 `2.272/40.384/3.328/21.760`, sum
+  `67.744 us`; M128 `4.864/211.104/6.720/110.880`, sum `333.568 us`.
+- **Analysis:** M8 differences from 64 ns are at the 0.1 us noise scale, while
+  both alternatives worsen M128 by roughly 0.45-1.31 us versus Iteration 234.
+  Together with the 256 ns rejection, the backoff sweep has no candidate worth
+  distributed timing.
+- **Decision:** Keep 64 ns as the selected/default relaxed-poll backoff.  Close
+  this micro-tuning direction and return to reducing work/tail imbalance.
+- **Artifacts:** `bench/results/iter244_grid_poll_sleep32_m8_m128_compute_20260904.log`
+  and `bench/results/iter244_grid_poll_sleep128_m8_m128_compute_20260904.log`.
