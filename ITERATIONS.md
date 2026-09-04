@@ -7663,3 +7663,26 @@ maximum rank latency of a full CUDA-Graph replay.
   `0.61%`.  Reject and keep persistent state disabled.
 - **Artifact:**
   `bench/results/iter267_persistent_packed_tp4_allm_cold_paired_20260904.log`.
+
+## Iteration 268 — oversubscribed CTA-turnover smoke was blocked before launch
+
+- **Hypothesis/change:** Added opt-in schedule 4 for the single-entry TP4
+  kernel.  It launches the maximum W13, internal SwiGLU/FP8 requant, W2 and
+  collective task count as one oversubscribed grid.  Each CTA performs at
+  most one useful task and exits, while release-published phase completion
+  replaces the resident 624-CTA whole-grid barriers.  A persistent per-block
+  generation slab allows any first-scheduled CTA to initialize route metadata
+  safely on CUDA Graph replay.  The public input remains prequantized FP8 X
+  plus FP32 group-128 scales; no external X quantization was added.
+- **Attempted protocol:** H20 GPU 0, M8 random routes, compute-only one-launch
+  correctness against the independent multi-kernel local reference, with the
+  harness's excluded 256 MiB cold-L2 clear.
+- **Result:** BLOCKED before any CUDA launch.  The direct command omitted the
+  Humming checkout from `PYTHONPATH`, so importing the shared benchmark helper
+  failed with `ModuleNotFoundError: No module named 'humming'`.  This is a
+  harness invocation error, not kernel evidence; no correctness or latency
+  conclusion is drawn.
+- **Decision:** Keep schedule 4 opt-in only and rerun the same smoke with the
+  repository's established Humming `PYTHONPATH` before any performance test.
+- **Artifact:**
+  `bench/results/iter268_oversubscribed_turnover_m8_compute_smoke_20260904.log`.

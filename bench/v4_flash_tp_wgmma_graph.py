@@ -307,8 +307,16 @@ class CapturedCase:
         # business kernel and stores the
         # W13->activation->W2 task-DAG counters/readiness queues.  No captured
         # memset or additional launch is part of the single-launch path.
+        oversubscribed_grid = (
+            max_mblocks * 8 * self.w13_split_k
+            + routes * 4
+            + max_mblocks * 32
+            + (64 if self.m == 128 else 78)
+        )
         scheduler_words = (
-            8 + 3 * max_mblocks
+            16 + oversubscribed_grid
+            if kernel.SINGLE_LAUNCH_OVERSUBSCRIBED
+            else 8 + 3 * max_mblocks
             if kernel.SINGLE_LAUNCH_INTERLEAVED
             else 624
             if kernel.SINGLE_LAUNCH_GROUPED_W13_ACT

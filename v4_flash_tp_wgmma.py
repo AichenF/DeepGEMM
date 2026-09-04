@@ -255,8 +255,8 @@ SINGLE_LAUNCH_SCHEDULE = int(
         "V4_SINGLE_LAUNCH_SCHEDULE", _single_launch_schedule_default
     )
 )
-if SINGLE_LAUNCH_SCHEDULE not in (0, 1, 2, 3):
-    raise ValueError("V4_SINGLE_LAUNCH_SCHEDULE must be 0, 1, 2, or 3")
+if SINGLE_LAUNCH_SCHEDULE not in (0, 1, 2, 3, 4):
+    raise ValueError("V4_SINGLE_LAUNCH_SCHEDULE must be 0, 1, 2, 3, or 4")
 if SINGLE_LAUNCH_TAIL_OVERLAP and SINGLE_LAUNCH_SCHEDULE != 0:
     raise ValueError("V4_SINGLE_LAUNCH_TAIL_OVERLAP requires schedule 0")
 if SINGLE_LAUNCH_GROUPED_W13_ACT and SINGLE_LAUNCH_SCHEDULE != 0:
@@ -279,7 +279,8 @@ if SINGLE_LAUNCH_CLUSTER_W13_ACT and (
         "V4_SINGLE_LAUNCH_CLUSTER_W13_ACT requires schedule 0, WOUT128, "
         "and compact interleaved weights"
     )
-SINGLE_LAUNCH_INTERLEAVED = SINGLE_LAUNCH_SCHEDULE != 0
+SINGLE_LAUNCH_INTERLEAVED = SINGLE_LAUNCH_SCHEDULE in (1, 2, 3)
+SINGLE_LAUNCH_OVERSUBSCRIBED = SINGLE_LAUNCH_SCHEDULE == 4
 SINGLE_LAUNCH_NOINLINE_GEMM = (
     os.environ.get("V4_SINGLE_LAUNCH_NOINLINE_GEMM", "0") == "1"
 )
@@ -594,9 +595,9 @@ static constexpr bool kW2MblockScale = K_W2_MBLOCK_SCALE || kW2SortedAct;
 static constexpr bool kW2CoalescedStore = K_W2_COALESCED_STORE;
 static constexpr bool kW2FoldGlobalScale = K_W2_FOLD_GLOBAL_SCALE;
 static constexpr int kSingleLaunchSchedule = K_SINGLE_LAUNCH_SCHEDULE;
-static_assert(kSingleLaunchSchedule >= 0 && kSingleLaunchSchedule <= 3);
+static_assert(kSingleLaunchSchedule >= 0 && kSingleLaunchSchedule <= 4);
 static constexpr bool kSingleLaunchInterleaved =
-    kSingleLaunchSchedule != 0;
+    kSingleLaunchSchedule >= 1 && kSingleLaunchSchedule <= 3;
 static constexpr bool kSingleLaunchNoInlineGemm =
     K_SINGLE_LAUNCH_NOINLINE_GEMM;
 static constexpr bool kSingleLaunchRouteDynamicSmem =
@@ -3850,6 +3851,24 @@ enum SingleLaunchSchedulerOffset : int {
     kSchedulerHeaderWords = 8,
 };
 
+// Schedule 4 launches enough blocks for the maximum routed work and lets
+// hardware CTA turnover replace the resident-grid barriers.  Each block does
+// at most one real W13, activation, W2, or communication task.  The suffix
+// records which graph-replay generation each block has joined, allowing any
+// first-scheduled block (rather than assuming block 0) to initialize the run.
+enum SingleLaunchOversubscribedOffset : int {
+    kOversubscribedGeneration = 0,
+    kOversubscribedPhase = 1,
+    kOversubscribedNextW13 = 2,
+    kOversubscribedDoneW13 = 3,
+    kOversubscribedNextActivation = 4,
+    kOversubscribedDoneActivation = 5,
+    kOversubscribedNextW2 = 6,
+    kOversubscribedDoneW2 = 7,
+    kOversubscribedNextCommunication = 8,
+    kOversubscribedHeaderWords = 16,
+};
+
 // Reusable barrier for a fixed contiguous CTA cohort.  A CTA barrier makes
 // all member lanes' stores happen-before lane 0.  The acq_rel arrival chain
 // then transfers those stores through the last arriver's release epoch to all
@@ -3876,8 +3895,9 @@ __device__ __forceinline__ void single_launch_group_barrier(
 
 // One-launch TP4 path.  Schedule 0 preserves the validated global-phase
 // bring-up, schedule 1 is the fine-grained diagnostic DAG, schedule 2 is the
-// fixed-cohort experiment, and schedule 3 is a static readiness wave.  Every
-// schedule owns route preparation,
+// fixed-cohort experiment, schedule 3 is a static readiness wave, and
+// schedule 4 uses hardware CTA turnover without a resident whole-grid
+// barrier.  Every schedule owns route preparation,
 // both MXFP4 GEMMs, internal SwiGLU/FP8 requantization, fixed-k6 reduction and
 // TP all-reduce.  Input X is already FP8 at this API boundary.
 template <int Tokens>
@@ -3946,6 +3966,193 @@ void tp4_megamoe_single_launch_kernel(
     // count and two release-published queues per possible routed M block.
     int32_t* scheduler =
         barrier_state + kSingleLaunchStatePrefixWords;
+    if constexpr (kSingleLaunchSchedule == 4) {
+        constexpr uint32_t kGenerationBusy = 0x80000000u;
+        constexpr uint32_t kGenerationMask = 0x7fffffffu;
+        constexpr int kPhaseW13 = 1;
+        constexpr int kPhaseActivation = 2;
+        constexpr int kPhaseW2 = 3;
+        constexpr int kPhaseCommunication = 4;
+        constexpr int kW13TasksPerMblock = kW13NTiles * SplitK;
+        constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
+        constexpr int kCommunicationBlocks = Tokens == 128 ? 64 : 78;
+        int32_t* const joined_generation =
+            scheduler + kOversubscribedHeaderWords;
+        __shared__ int initialize_generation;
+        __shared__ int ready_generation;
+        __shared__ int scheduled_kind;
+        __shared__ int scheduled_index;
+
+        // A graph replay cannot depend on block 0 being scheduled before an
+        // oversubscribed set of waiters.  The first block whose persistent
+        // per-block generation matches the ready generation claims a busy
+        // bit, resets the tiny scheduler header, and performs route setup.
+        if (threadIdx.x == 0) {
+            const int joined = load_relaxed_gpu_i32(joined_generation + cta);
+            initialize_generation = 0;
+            while (true) {
+                const int generation =
+                    load_acquire_gpu_i32(scheduler + kOversubscribedGeneration);
+                if ((static_cast<uint32_t>(generation) & kGenerationBusy) != 0) {
+                    __nanosleep(64);
+                    continue;
+                }
+                if (generation != joined) {
+                    ready_generation = generation;
+                    break;
+                }
+                const int busy_generation = static_cast<int>(
+                    static_cast<uint32_t>(generation) | kGenerationBusy);
+                if (atomicCAS(
+                        scheduler + kOversubscribedGeneration,
+                        generation, busy_generation) == generation) {
+                    ready_generation = generation;
+                    initialize_generation = 1;
+                    break;
+                }
+            }
+        }
+        __syncthreads();
+
+        if (initialize_generation != 0) {
+            for (int word = 1 + threadIdx.x;
+                 word < kOversubscribedHeaderWords; word += blockDim.x)
+                scheduler[word] = 0;
+            __syncthreads();
+            single_launch_route_task(
+                topk_ids, sorted_ids, expert_ids, num_tokens_padded,
+                route_to_sorted, tokens, 0);
+            __syncthreads();
+            if (threadIdx.x == 0) {
+                store_release_gpu_i32(
+                    scheduler + kOversubscribedPhase, kPhaseW13);
+                const int next_generation = static_cast<int>(
+                    (static_cast<uint32_t>(ready_generation) + 1u)
+                    & kGenerationMask);
+                store_release_gpu_i32(
+                    scheduler + kOversubscribedGeneration, next_generation);
+                store_release_gpu_i32(
+                    joined_generation + cta, next_generation);
+                ready_generation = next_generation;
+            }
+        } else if (threadIdx.x == 0) {
+            store_release_gpu_i32(joined_generation + cta, ready_generation);
+        }
+        __syncthreads();
+
+        const int num_mblocks = __ldg(num_tokens_padded) / kTok;
+        const int total_w13_tasks = num_mblocks * kW13TasksPerMblock;
+        const int total_activation_tasks =
+            routes * kActivationGroupsPerRoute;
+        const int total_w2_tasks = num_mblocks * kW2NTiles;
+
+        // A block that arrives after a phase's last task was already claimed
+        // waits for that phase's release publication and then carries itself
+        // into the next phase.  A block exits immediately after one useful
+        // task, freeing its slot exactly as a standalone GEMM grid would.
+        if (threadIdx.x == 0) {
+            while (true) {
+                const int phase = load_acquire_gpu_i32(
+                    scheduler + kOversubscribedPhase);
+                int task = -1;
+                int task_count = 0;
+                int kind = 0;
+                int32_t* next = nullptr;
+                if (phase == kPhaseW13) {
+                    kind = 1;
+                    task_count = total_w13_tasks;
+                    next = scheduler + kOversubscribedNextW13;
+                } else if (phase == kPhaseActivation) {
+                    kind = 2;
+                    task_count = total_activation_tasks;
+                    next = scheduler + kOversubscribedNextActivation;
+                } else if (phase == kPhaseW2) {
+                    kind = 3;
+                    task_count = total_w2_tasks;
+                    next = scheduler + kOversubscribedNextW2;
+                } else if (phase == kPhaseCommunication) {
+                    kind = 4;
+                    task_count = enable_tp_collective
+                        ? kCommunicationBlocks : 0;
+                    next = scheduler + kOversubscribedNextCommunication;
+                }
+                if (next != nullptr)
+                    task = atomicAdd(next, 1);
+                if (task >= 0 && task < task_count) {
+                    scheduled_kind = kind;
+                    scheduled_index = task;
+                    break;
+                }
+                if (phase == kPhaseCommunication) {
+                    scheduled_kind = 0;
+                    scheduled_index = -1;
+                    break;
+                }
+                while (load_acquire_gpu_i32(
+                           scheduler + kOversubscribedPhase) == phase)
+                    __nanosleep(64);
+            }
+        }
+        __syncthreads();
+
+        const int kind = scheduled_kind;
+        const int task = scheduled_index;
+        int32_t* done = nullptr;
+        int expected_done = 0;
+        int next_phase = 0;
+        if (kind == 1) {
+            route_gemm_task<4096, 1024, SplitK, true>(
+                &w13_tma_weight, &w13_tma_weight_scale,
+                w13, s13, g13, qx, x_scale,
+                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                partials, lut, nullptr, routes, 0, task);
+            done = scheduler + kOversubscribedDoneW13;
+            expected_done = total_w13_tasks;
+            next_phase = kPhaseActivation;
+        } else if (kind == 2) {
+            reduce_swiglu_quant_task<kIntermediate, SplitK>(
+                partials, activation, qactivation, activation_scale,
+                route_to_sorted, topk_ids, g2, routes, task);
+            done = scheduler + kOversubscribedDoneActivation;
+            expected_done = total_activation_tasks;
+            next_phase = kPhaseW2;
+        } else if (kind == 3) {
+            route_gemm_task<512, 4096, 1, false>(
+                &w2_tma_weight, &w2_tma_weight_scale,
+                w2, s2, g2, qactivation, activation_scale,
+                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                reinterpret_cast<float*>(down), lut, nullptr,
+                routes, 0, task);
+            done = scheduler + kOversubscribedDoneW2;
+            expected_done = total_w2_tasks;
+            next_phase = kPhaseCommunication;
+        } else if (kind == 4) {
+            if constexpr (Tokens == 128) {
+                fused_k6_nvls_pull_tp4_task<128>(
+                    down, topk_weights, pull_input, pull_input_mc, output,
+                    pull_sem_local, pull_sem_mc, tokens, task,
+                    kCommunicationBlocks);
+            } else {
+                fused_k6_push_ar_tp4_task<128, true>(
+                    down, topk_weights, output, push_counter,
+                    push0, push1, push2, push3, push_mc,
+                    tokens, rank, push_stride, 0, 4096,
+                    task, kCommunicationBlocks);
+            }
+        }
+
+        if (kind >= 1 && kind <= 3) {
+            __syncthreads();
+            if (threadIdx.x == 0) {
+                const int completed =
+                    atomic_add_acq_rel_gpu_i32(done, 1) + 1;
+                if (completed == expected_done)
+                    store_release_gpu_i32(
+                        scheduler + kOversubscribedPhase, next_phase);
+            }
+        }
+        return;
+    }
     if constexpr (kSingleLaunchInterleaved) {
         const int scheduler_words = kSchedulerHeaderWords + 3 * max_mblocks;
         for (int word = cta * blockDim.x + threadIdx.x;
@@ -5653,9 +5860,21 @@ void launch_tp4_megamoe_single(
     TORCH_CHECK(resident_grid >= 78,
                 "single-launch kernel cannot keep the 78 communication CTAs resident");
 
+    int launch_grid = resident_grid;
+    if constexpr (kSingleLaunchSchedule == 4) {
+        constexpr int kW13NTiles = 8;
+        constexpr int kActivationGroupsPerRoute = 4;
+        constexpr int kW2NTiles = 32;
+        constexpr int kCommunicationBlocks = Tokens == 128 ? 64 : 78;
+        launch_grid = static_cast<int>(expert_ids.numel())
+                * (kW13NTiles * SplitK + kW2NTiles)
+            + Tokens * kTopK * kActivationGroupsPerRoute
+            + kCommunicationBlocks;
+    }
+
     const auto stream = at::cuda::getCurrentCUDAStream();
     cudaLaunchConfig_t launch_config{};
-    launch_config.gridDim = dim3(resident_grid);
+    launch_config.gridDim = dim3(launch_grid);
     launch_config.blockDim = dim3(128);
     launch_config.dynamicSmemBytes = dynamic_smem_bytes;
     launch_config.stream = stream;
@@ -5810,7 +6029,13 @@ void run_tp4_megamoe_single_launch(
                     && num_tokens_padded.scalar_type() == torch::kInt32
                     && num_tokens_padded.numel() == 1,
                 "single-launch route workspaces must be int32");
-    const int64_t scheduler_words = kSingleLaunchInterleaved
+    const int64_t oversubscribed_grid =
+        expert_ids.numel() * (8LL * split_k + 32LL)
+        + static_cast<int64_t>(routes) * 4
+        + (tokens == 128 ? 64 : 78);
+    const int64_t scheduler_words = kSingleLaunchSchedule == 4
+        ? kOversubscribedHeaderWords + oversubscribed_grid
+        : kSingleLaunchInterleaved
         ? kSchedulerHeaderWords + 3LL * expert_ids.numel()
         : kSingleLaunchGroupedW13Act
             ? kSingleLaunchGroupedStateWords
