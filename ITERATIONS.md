@@ -6551,3 +6551,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** Exact agreement: cosine `1.0`, rel-L2 `0.0`, max abs `0.0`, and `0/32768` FP8 byte mismatches.
 - **Conclusion:** The official offline braid, fused 80-byte row, E8M0 scale duplication, CUDA Mode2 decoder, and row unswizzle are all bitwise correct. Iteration 205 was a diagnostic-reference error. The remaining FC1 failure is after decoded B: inspect WGMMA operand descriptors/output-to-gate-up pairing or the control benchmark's weight contract.
 - **Artifact:** `bench/results/iter206_native_mode2_decode_reference_fix_20260904.log`.
+
+## Iteration 208 — Correct native SF workspace ABI and expose combine stages
+
+- **Change:** Corrected the native L2-scale allocation from 32 to 8 FP32 physical rows for TP4 (`I/64` capacity, matching the body's `I/16` bytes/token), exposed the now ABI-aligned combine buffer, and added weighted-stage checks. Native folds each route weight after SwiGLU and before linear FC2, so the new comparison weights the control intermediate/route output exactly once.
+- **Test:** TP4 H20 GPUs 0-3, M=8 balanced, static native scheduler, paired cold-L2 graph correctness.
+- **Result:** Native local output equals the BF16 sum of its own six combine-buffer routes exactly (cosine `1.0`, rel-L2 `0.0`), proving native L2 scatter and combine reduction agree. However native weighted FC1 intermediate and per-route FC2 remain uncorrelated with the old multi-kernel control (cosines `-0.00452` and `-0.02281`).
+- **Conclusion:** The route-weight fold is intentional and combine itself is correct. Together with the bitwise-correct native decoder and the prior expert-0 Torch direction match, the remaining discrepancy increasingly indicates that the paired harness feeds one packed tensor under two incompatible logical weight contracts. Run the corrected Marlin Torch weighted reference directly next, then make baseline/native operands represent the same logical weights.
+- **Artifact:** `bench/results/iter208_native_weighted_stage_audit_tp4_m8_20260904.log`.

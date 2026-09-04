@@ -11,6 +11,44 @@ import torch
 import v4_flash_tp_native_megamoe as native
 
 
+def dequant_marlin_weight(
+    packed: torch.Tensor, exponent: torch.Tensor
+) -> torch.Tensor:
+    rows, half_k = packed.shape
+    chunks = packed.view(rows, half_k // 4, 4)
+    nibble = torch.cat((chunks >> 4, chunks & 0x0F), dim=-1).reshape(
+        rows, half_k * 2
+    )
+    fp4 = torch.tensor(
+        [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0],
+        dtype=torch.float32,
+        device=packed.device,
+    )
+    magnitude = fp4[(nibble & 7).long()]
+    value = torch.where((nibble & 8).bool(), -magnitude, magnitude)
+    scale = torch.exp2((exponent.int() - 127).float()).repeat_interleave(
+        32, dim=1
+    )
+    return value * scale
+
+
+def cosine(actual: torch.Tensor, reference: torch.Tensor) -> float:
+    return float(
+        torch.nn.functional.cosine_similarity(
+            actual.double().flatten(), reference.double().flatten(), dim=0
+        ).item()
+    )
+
+
+def rel_l2(actual: torch.Tensor, reference: torch.Tensor) -> float:
+    return float(
+        (
+            torch.linalg.vector_norm(actual.double() - reference.double())
+            / torch.linalg.vector_norm(reference.double()).clamp_min(1e-40)
+        ).item()
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--m", type=int, default=8)
@@ -80,6 +118,34 @@ def main() -> None:
     )
     sf_max_abs = float((pooled_sf - expected_sf).abs().max())
     weight_max_abs = float((pooled_weights - expected_weights).abs().max())
+
+    x0 = qx[0].float() * x_scale[0].repeat_interleave(128)
+    w13_expert0 = dequant_marlin_weight(w13[0], s13[0])
+    gate_up = x0 @ w13_expert0.T
+    gate_fp32, up_fp32 = gate_up.chunk(2)
+    swiglu_fp32 = torch.nn.functional.silu(gate_fp32) * up_fp32
+    gate_bf16 = gate_fp32.bfloat16().float()
+    up_bf16 = up_fp32.bfloat16().float()
+    swiglu_bf16 = (
+        torch.nn.functional.silu(gate_bf16) * up_bf16
+    ).bfloat16().float()
+    native_l2_scale = workspace.l2_acts_sf[:4, 0]
+    native_l2 = workspace.l2_acts[0].float() * native_l2_scale.repeat_interleave(
+        128
+    )
+    native_vs_fp32 = {
+        "cosine": cosine(native_l2, swiglu_fp32),
+        "rel_l2": rel_l2(native_l2, swiglu_fp32),
+    }
+    native_vs_bf16 = {
+        "cosine": cosine(native_l2, swiglu_bf16),
+        "rel_l2": rel_l2(native_l2, swiglu_bf16),
+    }
+    route0_weight = topk_weights[0, 0]
+    native_vs_weighted_bf16 = {
+        "cosine": cosine(native_l2, swiglu_bf16 * route0_weight),
+        "rel_l2": rel_l2(native_l2, swiglu_bf16 * route0_weight),
+    }
     print(
         "NATIVE_LOCAL_RESULT "
         + json.dumps(
@@ -90,6 +156,11 @@ def main() -> None:
                 "l1_x_mismatch_bytes": x_mismatch_bytes,
                 "l1_sf_max_abs": sf_max_abs,
                 "l1_weight_max_abs": weight_max_abs,
+                "native_l2_vs_torch_fp32": native_vs_fp32,
+                "native_l2_vs_torch_bf16": native_vs_bf16,
+                "native_l2_vs_torch_weighted_bf16": (
+                    native_vs_weighted_bf16
+                ),
                 "workspace_bytes": workspace.storage.numel(),
             },
             sort_keys=True,

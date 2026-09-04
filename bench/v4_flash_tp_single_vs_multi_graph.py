@@ -245,9 +245,12 @@ def main() -> None:
             native_local_scaled, local_reference, nccl_group, device
         )
         native_l2_check = None
+        native_l2_unweighted_check = None
         native_l2_scale_check = None
         native_l2_byte_mismatches = None
         native_l2_cross_route_rank0 = None
+        native_combine_route_check = None
+        native_combine_sum_check = None
         if args.route_pattern == "balanced" and m * custom.TOP_K <= custom.NUM_EXPERTS:
             assert candidate_case.native_workspace is not None
             assert control_case.activation_scale is not None
@@ -273,8 +276,12 @@ def main() -> None:
             control_l2 = control_l2_q.float() * control_l2_scale.repeat_interleave(
                 128, dim=1
             )
-            native_l2_check = tensor_comparison_metrics(
+            native_l2_unweighted_check = tensor_comparison_metrics(
                 native_l2, control_l2, nccl_group, device
+            )
+            route_weights = topk_weights.reshape(-1, 1)
+            native_l2_check = tensor_comparison_metrics(
+                native_l2, control_l2 * route_weights, nccl_group, device
             )
             native_l2_scale_check = tensor_comparison_metrics(
                 native_l2_scale, control_l2_scale, nccl_group, device
@@ -308,6 +315,35 @@ def main() -> None:
                     ),
                     "best_route_first_16": best_route[:16].tolist(),
                 }
+            if control_case.down is not None:
+                native_combine = (
+                    candidate_case.native_workspace.combine[
+                        : custom.TOP_K, :m
+                    ]
+                    .permute(1, 0, 2)
+                    .reshape(m * custom.TOP_K, custom.HIDDEN)
+                )
+                control_weighted_routes = (
+                    control_case.down.float() * route_weights
+                )
+                native_combine_route_check = tensor_comparison_metrics(
+                    native_combine,
+                    control_weighted_routes,
+                    nccl_group,
+                    device,
+                )
+                native_combine_sum = (
+                    native_combine.float()
+                    .view(m, custom.TOP_K, custom.HIDDEN)
+                    .sum(dim=1)
+                    .to(torch.bfloat16)
+                )
+                native_combine_sum_check = tensor_comparison_metrics(
+                    native_local_raw,
+                    native_combine_sum,
+                    nccl_group,
+                    device,
+                )
         if rank == 0:
             print(
                 "SINGLE_MULTI_CORRECTNESS "
@@ -319,12 +355,19 @@ def main() -> None:
                         "candidate_local_raw": native_local_raw_check,
                         "candidate_local_scaled_1p5": native_local_scaled_check,
                         "candidate_l2_dequant": native_l2_check,
+                        "candidate_l2_dequant_vs_unweighted_control": (
+                            native_l2_unweighted_check
+                        ),
                         "candidate_l2_scale": native_l2_scale_check,
                         "candidate_l2_fp8_byte_mismatches_max_rank": (
                             native_l2_byte_mismatches
                         ),
                         "candidate_l2_cross_route_rank0": (
                             native_l2_cross_route_rank0
+                        ),
+                        "candidate_combine_routes": native_combine_route_check,
+                        "candidate_local_vs_own_combine_sum": (
+                            native_combine_sum_check
                         ),
                     },
                     sort_keys=True,

@@ -81,6 +81,7 @@ class NativeWorkspace:
     l1_topk_weights: torch.Tensor
     l2_acts: torch.Tensor
     l2_acts_sf: torch.Tensor
+    combine: torch.Tensor
 
     def load_inputs(
         self,
@@ -137,7 +138,7 @@ def allocate_workspace(
     # half for BM8/BN256.
     reserve(
         "l2_acts_sf",
-        (intermediate_per_rank // 16, PADDED_SF_POOL_TOKENS),
+        (intermediate_per_rank // 64, PADDED_SF_POOL_TOKENS),
         torch.float32,
     )
     reserve(
@@ -163,6 +164,7 @@ def allocate_workspace(
         l1_topk_weights=view("l1_topk_weights"),
         l2_acts=view("l2_acts"),
         l2_acts_sf=view("l2_acts_sf"),
+        combine=view("combine"),
     )
 
 
