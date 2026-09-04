@@ -70,6 +70,53 @@ class SymmBuffer:
         self.x_sf = None
 
 
+class SM90SymmBuffer:
+    def __init__(self, group: dist.ProcessGroup,
+                 num_experts: int,
+                 num_max_tokens_per_rank: int, num_topk: int,
+                 hidden: int, intermediate_hidden: int,
+                 use_fp8_dispatch: bool = True,
+                 activation: str = 'swiglu'):
+        self.group = group
+        self.num_experts = num_experts
+        self.num_max_tokens_per_rank = num_max_tokens_per_rank
+        self.num_topk = num_topk
+        self.hidden = hidden
+        self.intermediate_hidden = intermediate_hidden
+
+        num_bytes, slice_input_buffers = _C.get_symm_buffer_size_for_sm90_mega_moe(
+            group.size(), num_experts,
+            num_max_tokens_per_rank, num_topk,
+            hidden, intermediate_hidden,
+            use_fp8_dispatch, activation,
+        )
+        allocator = torch if group.size() == 1 else symm_mem
+        self.buffer = allocator.empty(num_bytes, dtype=torch.int8, device='cuda')
+        self.handle = (
+            types.SimpleNamespace(buffer_ptrs=[self.buffer.data_ptr()])
+            if group.size() == 1
+            else symm_mem.rendezvous(self.buffer, group=group)
+        )
+        self.buffer.zero_()
+        self.group.barrier()
+        torch.cuda.synchronize()
+
+        (self.x, self.x_sf,
+         self.topk_idx, self.topk_weights,
+         self.l1_acts, self.l1_acts_sf,
+         self.l2_acts, self.l2_acts_sf) = slice_input_buffers(self.buffer)
+
+    def destroy(self):
+        self.handle = None
+        for name in (
+            'x', 'x_sf', 'topk_idx', 'topk_weights',
+            'l1_acts', 'l1_acts_sf', 'l2_acts', 'l2_acts_sf',
+        ):
+            setattr(self, name, None)
+        self.buffer = None
+        self.group = None
+
+
 def get_symm_buffer_for_mega_moe(group: dist.ProcessGroup,
                                  num_experts: int,
                                  num_max_tokens_per_rank: int, num_topk: int,
@@ -95,6 +142,22 @@ def get_symm_buffer_for_mega_moe(group: dist.ProcessGroup,
         hidden, intermediate_hidden,
         num_shared_experts,
         mma_type=mma_type, activation=activation
+    )
+
+
+def get_symm_buffer_for_sm90_mega_moe(group: dist.ProcessGroup,
+                                      num_experts: int,
+                                      num_max_tokens_per_rank: int, num_topk: int,
+                                      hidden: int, intermediate_hidden: int,
+                                      use_fp8_dispatch: bool = True,
+                                      activation: str = 'swiglu') -> SM90SymmBuffer:
+    num_max_tokens_per_rank = align(
+        num_max_tokens_per_rank, _C.get_token_alignment_for_sm90_mega_moe())
+    return SM90SymmBuffer(
+        group, num_experts,
+        num_max_tokens_per_rank, num_topk,
+        hidden, intermediate_hidden,
+        use_fp8_dispatch, activation,
     )
 
 
@@ -155,6 +218,59 @@ def transform_weights_for_mega_moe(
         l2_transformed = l2_weights
     return l1_transformed, l2_transformed
 
+
+def transform_weights_for_mega_moe_sm90(
+    l1_weights: Tuple[torch.Tensor, torch.Tensor],
+    l2_weights: Tuple[torch.Tensor, torch.Tensor]
+) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]:
+    """SM90 (Hopper) variant of `transform_weights_for_mega_moe`.
+
+    SM90 has no TMEM / UTCCP path, so the SF tensors are consumed directly by
+    WGMMA promote and don't need the 4x32 transpose. With block (128, 128)
+    weight quantization, weight SFs are read by the math warpgroup directly
+    from global memory in their natural ``(E, N/128, K/128)`` MN-major layout
+    and require no transformation. Only L1's gate/up FP8 weight interleave is
+    preserved.
+    """
+    def validate_pair(name, pair):
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+            raise TypeError(f'{name} must be a (FP8 weight, FP32 scale-factor) pair')
+        weight, sf = pair
+        if not isinstance(weight, torch.Tensor) or not isinstance(sf, torch.Tensor):
+            raise TypeError(f'{name} weight and scale factor must both be tensors')
+        if weight.ndim != 3 or sf.ndim != 3:
+            raise ValueError(f'{name} weight and scale factor must both be rank-3 tensors')
+        if weight.dtype != torch.float8_e4m3fn or sf.dtype != torch.float32:
+            raise TypeError(f'{name} requires an FP8 E4M3 weight and an FP32 scale factor')
+        if weight.device != sf.device:
+            raise ValueError(f'{name} weight and scale factor must be on the same device')
+        if not weight.is_contiguous() or not sf.is_contiguous():
+            raise ValueError(f'{name} weight and scale factor must use contiguous natural layouts')
+        num_experts, n, k = weight.shape
+        if num_experts <= 0 or n <= 0 or k <= 0 or n % 128 != 0 or k % 128 != 0:
+            raise ValueError(
+                f'{name} expert count must be positive and N/K must be positive multiples of 128')
+        expected_sf_shape = (num_experts, n // 128, k // 128)
+        if tuple(sf.shape) != expected_sf_shape:
+            raise ValueError(
+                f'{name} scale-factor shape must be {expected_sf_shape}, got {tuple(sf.shape)}')
+        return weight, sf
+
+    l1_fp8, l1_sf = validate_pair('l1_weights', l1_weights)
+    l2_fp8, l2_sf = validate_pair('l2_weights', l2_weights)
+    if (l1_fp8.shape[0] != l2_fp8.shape[0] or
+        l1_fp8.shape[1] != 2 * l2_fp8.shape[2] or
+        l1_fp8.shape[2] != l2_fp8.shape[1]):
+        raise ValueError(
+            'SM90 MegaMoE weights must have shapes (E, 2*IH, H) and (E, H, IH)')
+    if l2_fp8.shape[1] % 256 != 0:
+        raise ValueError('SM90 MegaMoE hidden must be a multiple of 256 for combine vectorization')
+    if l1_fp8.device != l2_fp8.device:
+        raise ValueError('L1 and L2 SM90 MegaMoE weights must be on the same device')
+
+    l1_transformed = (_interleave_weights(l1_fp8), l1_sf)
+    l2_transformed = (l2_fp8, l2_sf)
+    return l1_transformed, l2_transformed
 
 
 def fp8_fp4_mega_moe(y: torch.Tensor,
@@ -265,6 +381,36 @@ def bf16_mega_moe(y: torch.Tensor,
         sym_buffer.num_max_tokens_per_rank,
         sym_buffer.num_experts,
         sym_buffer.num_topk,
+        activation, activation_clamp,
+        fast_math
+    )
+
+
+def fp8_mega_moe(y: torch.Tensor,
+                 l1_weights: Tuple[torch.Tensor, torch.Tensor],
+                 l2_weights: Tuple[torch.Tensor, torch.Tensor],
+                 sym_buffer: SM90SymmBuffer,
+                 cumulative_local_expert_recv_stats: Optional[torch.Tensor] = None,
+                 recipe: Tuple[int, int, int] = (128, 128, 128),
+                 activation: str = 'swiglu',
+                 activation_clamp: Optional[float] = None,
+                 fast_math: bool = True):
+    """SM90 (Hopper) MegaMoE entry point.
+
+    Expects FP8 e4m3 weights and block-(128, 128) float scale factors. The
+    weight SF layout matches the convention used by ``DeepSeekV4FlashFp8`` /
+    DeepEP, so the same SF tensors can be physically shared between the
+    DeepEP path and this kernel.
+    """
+    _C.fp8_mega_moe(
+        y,
+        l1_weights, l2_weights,
+        cumulative_local_expert_recv_stats,
+        sym_buffer.buffer,
+        sym_buffer.handle.buffer_ptrs, sym_buffer.group.rank(),
+        sym_buffer.num_max_tokens_per_rank,
+        sym_buffer.num_experts, sym_buffer.num_topk,
+        recipe,
         activation, activation_clamp,
         fast_math
     )
