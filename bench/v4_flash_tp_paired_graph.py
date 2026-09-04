@@ -276,6 +276,14 @@ def main() -> None:
                     "custom_mode2_braid": kernel.MODE2_BRAID,
                     "custom_fused_activation_quant": kernel.FUSED_ACT_QUANT,
                     "custom_fused_route_quant": kernel.FUSED_ROUTE_QUANT,
+                    "timed_external_input_quantization": False,
+                    "custom_single_launch_tp4": kernel.SINGLE_LAUNCH_TP4,
+                    "custom_single_launch_relaxed_grid_poll": (
+                        kernel.SINGLE_LAUNCH_RELAXED_GRID_POLL
+                    ),
+                    "custom_single_launch_hierarchical_grid": (
+                        kernel.SINGLE_LAUNCH_HIERARCHICAL_GRID
+                    ),
                     "custom_fused_k6_mc_push_ar": (
                         kernel.FUSED_K6_MC_PUSH_AR
                     ),

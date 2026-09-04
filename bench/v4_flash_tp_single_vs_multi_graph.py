@@ -201,6 +201,9 @@ def main() -> None:
                     "single_launch_relaxed_grid_poll": (
                         kernel.SINGLE_LAUNCH_RELAXED_GRID_POLL
                     ),
+                    "single_launch_hierarchical_grid": (
+                        kernel.SINGLE_LAUNCH_HIERARCHICAL_GRID
+                    ),
                     "single_launch_tail_overlap": (
                         kernel.SINGLE_LAUNCH_TAIL_OVERLAP
                     ),

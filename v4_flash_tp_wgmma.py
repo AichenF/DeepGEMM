@@ -276,6 +276,13 @@ SINGLE_LAUNCH_COOPERATIVE_GRID = (
 SINGLE_LAUNCH_RELAXED_GRID_POLL = (
     os.environ.get("V4_SINGLE_LAUNCH_RELAXED_GRID_POLL", "0") == "1"
 )
+SINGLE_LAUNCH_HIERARCHICAL_GRID = (
+    os.environ.get("V4_SINGLE_LAUNCH_HIERARCHICAL_GRID", "0") == "1"
+)
+if SINGLE_LAUNCH_HIERARCHICAL_GRID and SINGLE_LAUNCH_COOPERATIVE_GRID:
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_HIERARCHICAL_GRID and cooperative grid are exclusive"
+    )
 if SINGLE_LAUNCH_TAIL_OVERLAP and (
     SINGLE_LAUNCH_NOINLINE_GEMM or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
 ):
@@ -493,6 +500,8 @@ static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
     K_SINGLE_LAUNCH_RELAXED_GRID_POLL;
+static constexpr bool kSingleLaunchHierarchicalGrid =
+    K_SINGLE_LAUNCH_HIERARCHICAL_GRID;
 static constexpr bool kSingleLaunchTailOverlap =
     K_SINGLE_LAUNCH_TAIL_OVERLAP;
 static constexpr bool kSingleLaunchGroupedW13Act =
@@ -3400,8 +3409,13 @@ static constexpr int kSingleLaunchBarrierWords = 8;
 static constexpr int kSingleLaunchPhaseStamps = 5;
 static constexpr int kSingleLaunchPhaseStampWords =
     kSingleLaunchPhaseStamps * 2;
+static constexpr int kSingleLaunchH20Sms = 78;
+static constexpr int kSingleLaunchHierarchicalStateWords =
+    4 * kSingleLaunchH20Sms * 2;
 static constexpr int kSingleLaunchStatePrefixWords =
-    kSingleLaunchBarrierWords + kSingleLaunchPhaseStampWords;
+    kSingleLaunchBarrierWords + kSingleLaunchPhaseStampWords
+    + (kSingleLaunchHierarchicalGrid
+        ? kSingleLaunchHierarchicalStateWords : 0);
 static constexpr int kSingleLaunchTailGroupCtas =
     K_SINGLE_LAUNCH_TAIL_GROUP_CTAS;
 static constexpr int kSingleLaunchTailMaxGroups = 39;
@@ -3421,6 +3435,70 @@ __device__ __forceinline__ void single_launch_grid_barrier(
                 state + kSingleLaunchBarrierWords)[phase + 1] =
                     read_globaltimer();
         }
+        return;
+    }
+    if constexpr (kSingleLaunchHierarchicalGrid) {
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            uint32_t smid;
+            asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
+            int32_t* local_count =
+                state + kSingleLaunchBarrierWords
+                + kSingleLaunchPhaseStampWords
+                + (phase * kSingleLaunchH20Sms + static_cast<int>(smid)) * 2;
+            int32_t* local_epoch = local_count + 1;
+            const int observed_local_epoch =
+                load_acquire_gpu_i32(local_epoch);
+            const int blocks_per_sm =
+                expected_blocks / kSingleLaunchH20Sms;
+            const int local_arrival =
+                atomic_add_acq_rel_gpu_i32(local_count, 1);
+            if (local_arrival == blocks_per_sm - 1) {
+                atomicExch(local_count, 0);
+
+                int32_t* global_count = state + phase * 2;
+                int32_t* global_epoch = global_count + 1;
+                const int observed_global_epoch =
+                    load_acquire_gpu_i32(global_epoch);
+                const int global_arrival =
+                    atomic_add_acq_rel_gpu_i32(global_count, 1);
+                if (global_arrival == kSingleLaunchH20Sms - 1) {
+                    if (record_timestamp) {
+                        reinterpret_cast<uint64_t*>(
+                            state + kSingleLaunchBarrierWords)[phase + 1] =
+                                read_globaltimer();
+                    }
+                    atomicExch(global_count, 0);
+                    store_release_gpu_i32(
+                        global_epoch, observed_global_epoch + 1);
+                } else if constexpr (kSingleLaunchRelaxedGridPoll) {
+                    while (load_relaxed_gpu_i32(global_epoch)
+                           == observed_global_epoch)
+                        __nanosleep(64);
+                    while (load_acquire_gpu_i32(global_epoch)
+                           == observed_global_epoch) {
+                    }
+                } else {
+                    while (load_acquire_gpu_i32(global_epoch)
+                           == observed_global_epoch)
+                        __nanosleep(64);
+                }
+                store_release_gpu_i32(
+                    local_epoch, observed_local_epoch + 1);
+            } else if constexpr (kSingleLaunchRelaxedGridPoll) {
+                while (load_relaxed_gpu_i32(local_epoch)
+                       == observed_local_epoch)
+                    __nanosleep(64);
+                while (load_acquire_gpu_i32(local_epoch)
+                       == observed_local_epoch) {
+                }
+            } else {
+                while (load_acquire_gpu_i32(local_epoch)
+                       == observed_local_epoch)
+                    __nanosleep(64);
+            }
+        }
+        __syncthreads();
         return;
     }
     __shared__ int observed_epoch;
@@ -6012,6 +6090,7 @@ _EXTENSION_CONFIG = (
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
+          f"slhg{int(SINGLE_LAUNCH_HIERARCHICAL_GRID)}_"
           f"slto{int(SINGLE_LAUNCH_TAIL_OVERLAP)}_"
           f"sltg{SINGLE_LAUNCH_TAIL_GROUP_CTAS}_"
           f"slga{int(SINGLE_LAUNCH_GROUPED_W13_ACT)}_"
@@ -6112,6 +6191,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_RELAXED_GRID_POLL="
             f"{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_HIERARCHICAL_GRID="
+            f"{int(SINGLE_LAUNCH_HIERARCHICAL_GRID)}"
         ),
         f"-DK_SINGLE_LAUNCH_TAIL_OVERLAP={int(SINGLE_LAUNCH_TAIL_OVERLAP)}",
         f"-DK_SINGLE_LAUNCH_TAIL_GROUP_CTAS={SINGLE_LAUNCH_TAIL_GROUP_CTAS}",

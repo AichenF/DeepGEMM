@@ -316,8 +316,13 @@ class CapturedCase:
             if kernel.SINGLE_LAUNCH_TAIL_OVERLAP
             else 0
         )
+        hierarchical_words = (
+            4 * 78 * 2 if kernel.SINGLE_LAUNCH_HIERARCHICAL_GRID else 0
+        )
         self.single_launch_barrier_state = torch.zeros(
-            (18 + scheduler_words,), dtype=torch.int32, device=device
+            (18 + hierarchical_words + scheduler_words,),
+            dtype=torch.int32,
+            device=device,
         )
         self.sorted_ids = torch.empty(
             (max_padded,), dtype=torch.int32, device=device
@@ -1244,6 +1249,9 @@ def main() -> None:
                     ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
+                    ),
+                    "single_launch_hierarchical_grid": (
+                        kernel.SINGLE_LAUNCH_HIERARCHICAL_GRID
                     ),
                     "k6_nvls_pull_blocks": kernel.K6_NVLS_PULL_BLOCKS,
                     "mc_pull_blocks": kernel.MC_PULL_BLOCKS or "default",

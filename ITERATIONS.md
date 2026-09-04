@@ -6920,3 +6920,37 @@ maximum rank latency of a full CUDA-Graph replay.
   older Humming numbers that included external input quantization.
 - **Artifact:**
   `bench/results/iter240_prequant_tp4_allm_cold_paired_20260904.log`.
+
+## Iteration 241 — hierarchical per-SM grid barrier smoke
+
+- **Hypothesis:** The 624 resident CTAs should first rendezvous in eight-CTA
+  per-SM cohorts, then only one representative from each of H20's 78 SMs
+  should enter the device-wide barrier.  This reduces global atomic arrivals
+  from 624 to 78 and makes nonleader polling hit 78 separate local epoch cache
+  lines instead of one globally contended line.
+- **Change:** Added opt-in `V4_SINGLE_LAUNCH_HIERARCHICAL_GRID=1`.  Each phase
+  uses a device-scope acq-rel arrival chain within an SM, a 78-way acq-rel
+  global arrival chain, then release/acquire publication back to every local
+  CTA.  Counts reset generation-safely and epochs persist across CUDA Graph
+  replays; no memset or extra kernel is added.  Cooperative-grid mode is
+  explicitly mutually exclusive.
+- **Protocol:** H20 GPU 0, 8 CTAs/SM, relaxed epoch polling, random routes,
+  M={8,128}, caller-provided FP8-E4M3 X plus FP32 group-128 scales and MXFP4
+  weights.  Each compute-only launch follows an excluded 256 MiB cold-L2
+  clear and compares the full W2 route tensor against the independent
+  multi-kernel local reference.
+- **Correctness:** PASS bitwise at both M values (`cosine=1.0`, `rel_l2=0`,
+  finite=true), exercising SplitK=4 and SplitK=2.
+- **Phase result (route/W13/activation/W2 us):** M8
+  `2.912/42.272/4.768/23.872`, sum `73.824 us`; M128
+  `4.992/207.808/7.872/110.656`, sum `331.328 us`.
+- **Analysis:** M8 is about 3.54 us (4.6%) below Iteration 235's relaxed-poll
+  phase sum, a clear local win.  M128 is only about 0.93 us below the same
+  relaxed-poll phase sum, so its benefit is noise-sized but nonnegative in
+  this smoke.  The extra local publication makes route/activation timestamps
+  slightly larger while reducing the long W13 barrier tail.
+- **Decision:** Numerical safety is established.  Retain opt-in and run the
+  distributed TP4 cold-L2 paired five-shape screen plus a long graph replay
+  liveness check before selecting it as default.
+- **Artifact:**
+  `bench/results/iter241_hierarchical_grid_barrier_m8_m128_compute_smoke_20260904.log`.
