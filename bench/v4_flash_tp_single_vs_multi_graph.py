@@ -356,12 +356,19 @@ def main() -> None:
         candidate_graph = capture_graph(candidate_case, comm, cpu_group, device)
 
         if args.diagnose_output:
+            control_graph.replay()
+            torch.cuda.synchronize(device)
+            assert control_case.down is not None
+            control_down = control_case.down.clone()
             candidate_snapshots: list[torch.Tensor] = []
+            candidate_down_snapshots: list[torch.Tensor] = []
             for _ in range(4):
                 candidate_graph.replay()
                 torch.cuda.synchronize(device)
                 assert candidate_case.graph_output is not None
+                assert candidate_case.down is not None
                 candidate_snapshots.append(candidate_case.graph_output.clone())
+                candidate_down_snapshots.append(candidate_case.down.clone())
             diagnostic_reference = (
                 candidate_case.make_reference_case().run_local().clone()
             )
@@ -445,6 +452,81 @@ def main() -> None:
                             "worst_tokens_rank0": top_tokens.cpu().tolist(),
                             "worst_token_max_abs_rank0": (
                                 top_values.cpu().tolist()
+                            ),
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+            down_repeat_metrics: list[dict[str, Any]] = []
+            for repeat, snapshot in enumerate(candidate_down_snapshots):
+                chunk_metrics = []
+                for chunk in range(4):
+                    begin = chunk * custom.HIDDEN // 4
+                    end = (chunk + 1) * custom.HIDDEN // 4
+                    actual_chunk = snapshot[:, begin:end].double()
+                    control_chunk = control_down[:, begin:end].double()
+                    chunk_diff = actual_chunk - control_chunk
+                    chunk_metrics.append(
+                        {
+                            "chunk": chunk,
+                            "max_abs_rank_max": custom.reduce_rank_metric(
+                                float(chunk_diff.abs().max()),
+                                dist.ReduceOp.MAX,
+                                device,
+                                nccl_group,
+                            ),
+                            "rel_l2_rank_max": custom.reduce_rank_metric(
+                                float(
+                                    torch.linalg.vector_norm(chunk_diff)
+                                    / torch.linalg.vector_norm(
+                                        control_chunk
+                                    ).clamp_min(1e-40)
+                                ),
+                                dist.ReduceOp.MAX,
+                                device,
+                                nccl_group,
+                            ),
+                            "bf16_mismatches_rank_max": int(
+                                custom.reduce_rank_metric(
+                                    float(
+                                        (snapshot[:, begin:end]
+                                         != control_down[:, begin:end])
+                                        .sum()
+                                        .item()
+                                    ),
+                                    dist.ReduceOp.MAX,
+                                    device,
+                                    nccl_group,
+                                )
+                            ),
+                        }
+                    )
+                down_repeat_metrics.append(
+                    {"repeat": repeat, "chunks": chunk_metrics}
+                )
+            down_repeat_max_abs = []
+            for repeat in range(1, len(candidate_down_snapshots)):
+                down_repeat_max_abs.append(
+                    custom.reduce_rank_metric(
+                        float(
+                            (candidate_down_snapshots[repeat]
+                             - candidate_down_snapshots[0]).abs().max()
+                        ),
+                        dist.ReduceOp.MAX,
+                        device,
+                        nccl_group,
+                    )
+                )
+            if rank == 0:
+                print(
+                    "SINGLE_MULTI_DOWN_DIAG "
+                    + json.dumps(
+                        {
+                            "m": m,
+                            "candidate_vs_control": down_repeat_metrics,
+                            "repeat_vs_first_max_abs_rank_max": (
+                                down_repeat_max_abs
                             ),
                         },
                         sort_keys=True,

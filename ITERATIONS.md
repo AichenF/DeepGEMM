@@ -8932,3 +8932,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Diagnostic timing only: candidate median 0.344656 ms versus a noisy 0.338912 ms control median with two samples. This is not a formal performance comparison.
 - Decision: retain the experiment default-off. Next test stronger producer publication and the chunk-ready protocol while preserving the overlap schedule.
 - Artifact: `bench/results/iter347_w2_chunk_post_barrier_concurrent_smoke_20260904.log`.
+
+## Iteration 348 — localize overlap failure in the final W2 route tensor (2026-09-04)
+
+- Purpose: distinguish an early-but-eventually-correct read of `down` from corruption or loss of W2 work after a communication CTA returns to the W2 loop.
+- Instrumentation: `--diagnose-output` now snapshots the candidate's final per-route BF16 `down` tensor on four identical graph replays and compares every hidden chunk with a separately replayed multi-kernel control. This is diagnostic-only and does not enter timed graph nodes.
+- Setup: TP4 GPUs 0–3, M128 random routes, seed 20260904, Iteration 344 overlap enabled, prequantized FP8 activation input, MXFP4 weights, four diagnostic replays, then the usual tiny cold-L2 smoke.
+- Result: **the final candidate `down` tensor is itself nondeterministically wrong.** Candidate-versus-control BF16 mismatches per chunk ranged from 1,420–2,446 in chunk 0, 758–1,222 in chunk 1, 127–251 in chunk 2, and 31–189 in chunk 3. Repeat-versus-first max-absolute differences were 71,680–79,872.
+- Output correlation: final reduced-output errors show the same early-chunk-heavy pattern. Chunk-0 output rel-L2 reached 0.01285 while chunk 3 could remain near the normal 0.00296 reference error.
+- Inference: the bug is not merely a correct final `down` consumed too early. Invoking the chunk helper mid-loop perturbs, drops, or corrupts W2 results, or the arrival condition permits a nominally completed chunk to still have unfinished stores that are subsequently lost. Post-barrier helper modes remain correct.
+- Decision: keep overlap rejected/default-off. Next isolate helper-return effects on W2 execution and test a stronger producer fence/task accounting before changing the collective protocol.
+- Artifact: `bench/results/iter348_w2_chunk_overlap_down_localization_20260904.log`.
