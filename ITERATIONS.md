@@ -8977,3 +8977,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Inference: helper inlining/code-size pressure is not the cause. The failure requires actual mid-loop helper memory/communication operations, not just the chunk wait or a call boundary.
 - Decision: **reject and keep default-off.** Retain noinline only as a diagnostic implementation detail for subsequent staged-helper isolation; do not promote it as an optimization.
 - Artifact: `bench/results/iter351_w2_chunk_overlap_noinline_helper_smoke_20260904.log`.
+
+## Iteration 352 — stage-1 chunk-helper production-only isolation (2026-09-04)
+
+- Hypothesis: split the mid-loop helper into compile-time stages. Stage 1 only reads the completed local `down` chunk, performs local k6 weighted combine, writes the symmetric pull buffer, synchronizes the CTA, and returns; it performs no semaphore, peer read, peer write, reduce-scatter, or all-gather. The original full collective runs after a final whole-grid barrier for the reported output.
+- Implementation: added diagnostic `V4_SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE={1,2,3}`; stage 3 is the prior full helper, stage 2 adds only a complete entry/exit semaphore handshake, and stage 1 is production-only.
+- Setup: TP4 GPUs 0–3, M128 random routes, seed 20260904, stage 1, four diagnostic graph replays plus one cold-L2 smoke.
+- Correctness: **FAIL already at stage 1.** Final `down` remained nondeterministically corrupted despite no cross-GPU operation in the mid-loop helper. Candidate-versus-control mismatches reached 2,212 BF16 elements in chunk 0, and repeat-versus-first max-absolute difference was 93,184.
+- Isolation result: peer reads/writes, two-shot reduction, and CARv2 semaphore ordering are not required to trigger the bug. The trigger is narrowed to the helper's local read/combine/write path or an unexpected alias/address/lifetime interaction between `down`, the symmetric output, and later W2 execution.
+- Decision: do not spend time on stage 2 until pointer/range aliasing and the C++ launch ABI are audited. Keep staged diagnostics and overlap default-off.
+- Artifact: `bench/results/iter352_w2_chunk_helper_stage1_production_smoke_20260904.log`.

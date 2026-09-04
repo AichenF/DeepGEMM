@@ -797,6 +797,21 @@ if (
         "V4_SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY requires "
         "V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP=1"
     )
+SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE = int(
+    os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE", "3")
+)
+if SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE not in (1, 2, 3):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE must be 1, 2, or 3"
+    )
+if (
+    SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE != 3
+    and not SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+):
+    raise ValueError(
+        "staged chunk-helper diagnostics require "
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP=1"
+    )
 SINGLE_LAUNCH_W2_CHUNK_AR_POST = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_AR_POST", "0") == "1"
 )
@@ -1038,6 +1053,8 @@ static constexpr bool kSingleLaunchW2ChunkArOverlap =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP;
 static constexpr bool kSingleLaunchW2ChunkArWaitOnly =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY;
+static constexpr int kSingleLaunchW2ChunkArHelperStage =
+    K_SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE;
 static constexpr bool kSingleLaunchW2ChunkArPost =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_POST;
 static constexpr bool kSingleLaunchW2ChunkArPostConcurrent =
@@ -4293,7 +4310,7 @@ __device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
         uint8_t* __restrict__ sem_local,
         int rank, int linear_block_idx);
 
-template <int Threads, int Blocks, int Tokens>
+template <int Threads, int Blocks, int Tokens, int HelperStage = 3>
 __device__ __noinline__ void fused_k6_p2p_twoshot_tp4_chunk_task(
         const __nv_bfloat16* __restrict__ route_input,
         const float* __restrict__ topk_weights,
@@ -6083,7 +6100,8 @@ void tp4_megamoe_single_launch_kernel(
                             if constexpr (!kSingleLaunchW2ChunkArWaitOnly) {
                                 fused_k6_p2p_twoshot_tp4_chunk_task<
                                     kSingleLaunchThreads, kChunkCommBlocks,
-                                    Tokens>(
+                                    Tokens,
+                                    kSingleLaunchW2ChunkArHelperStage>(
                                     down, topk_weights, pull_input,
                                     push0, push1, push2, push3,
                                     pull_sem_local, rank, chunk,
@@ -6096,7 +6114,8 @@ void tp4_megamoe_single_launch_kernel(
         }
         if constexpr (kSingleLaunchW2ChunkArOverlap && Tokens >= 64) {
             if (!chunk_ar_overlap_active
-                    || kSingleLaunchW2ChunkArWaitOnly)
+                    || kSingleLaunchW2ChunkArWaitOnly
+                    || kSingleLaunchW2ChunkArHelperStage < 3)
                 single_launch_grid_barrier(barrier_state, 3, ctas);
         } else {
             single_launch_grid_barrier(barrier_state, 3, ctas);
@@ -6144,7 +6163,8 @@ void tp4_megamoe_single_launch_kernel(
             } else {
                 if ((!kSingleLaunchW2ChunkArOverlap
                         || !chunk_ar_overlap_active
-                        || kSingleLaunchW2ChunkArWaitOnly)
+                        || kSingleLaunchW2ChunkArWaitOnly
+                        || kSingleLaunchW2ChunkArHelperStage < 3)
                         && cta < kTwoShotBlocks) {
                     fused_k6_p2p_twoshot_tp4_task<
                         kSingleLaunchThreads, kTwoShotBlocks, Tokens>(
@@ -6387,7 +6407,7 @@ __device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
 // the 64-CTA full-output helper.  Chunk-local ordinals are mapped back into
 // the full token-major symmetric slab, while a unique comm_id preserves the
 // communicator's one semaphore stripe per CTA protocol.
-template <int Threads, int Blocks, int Tokens>
+template <int Threads, int Blocks, int Tokens, int HelperStage>
 __device__ __noinline__ void fused_k6_p2p_twoshot_tp4_chunk_task(
         const __nv_bfloat16* __restrict__ route_input,
         const float* __restrict__ topk_weights,
@@ -6410,6 +6430,7 @@ __device__ __noinline__ void fused_k6_p2p_twoshot_tp4_chunk_task(
     constexpr int kSemaphoreBytes = 128;
     static_assert(Tokens == 64 || Tokens == 128);
     static_assert(Blocks == 16);
+    static_assert(HelperStage >= 1 && HelperStage <= 3);
     static_assert(kChunkLocalVecs % kGlobalThreads == 0);
 
     const int global_tid = group_block_idx * Threads + threadIdx.x;
@@ -6469,6 +6490,8 @@ __device__ __noinline__ void fused_k6_p2p_twoshot_tp4_chunk_task(
 
     __shared__ uint32_t chunk_entry_target;
     __syncthreads();
+    if constexpr (HelperStage == 1)
+        return;
     if (threadIdx.x < kWorld) {
         const int peer = threadIdx.x;
         uint8_t* peer_sem = peer_base[peer] + semaphore_offset
@@ -6490,53 +6513,56 @@ __device__ __noinline__ void fused_k6_p2p_twoshot_tp4_chunk_task(
     }
     __syncthreads();
 
-    // Reduce a contiguous quarter in chunk-local ordinal space, then map each
-    // vector back to the full [token, hidden] symmetric slot for all-gather.
-    const int local_bias = rank * kChunkLocalVecs;
-    for (int local_vec = global_tid; local_vec < kChunkLocalVecs;
-         local_vec += kGlobalThreads) {
-        const int chunk_vec = local_bias + local_vec;
-        const int token = chunk_vec / kChunkVecsPerToken;
-        const int vec_in_chunk =
-            chunk_vec - token * kChunkVecsPerToken;
-        const int full_vec = token * kVecsPerToken
-            + chunk_idx * kChunkVecsPerToken + vec_in_chunk;
-        uint4 rank_value[kWorld];
-        #pragma unroll
-        for (int source = 0; source < kWorld; ++source)
-            rank_value[source] = load_relaxed_sys_16b(
-                peer_pull[source]
-                    + static_cast<int64_t>(full_vec) * kVecBytes);
-
-        uint4 result;
-        auto* result_words = reinterpret_cast<uint32_t*>(&result);
-        #pragma unroll
-        for (int pair = 0; pair < kPairsPerVec; ++pair) {
-            float2 sum = make_float2(0.0f, 0.0f);
+    if constexpr (HelperStage == 3) {
+        // Reduce a contiguous quarter in chunk-local ordinal space, then map
+        // each vector back to the full [token, hidden] symmetric slot.
+        const int local_bias = rank * kChunkLocalVecs;
+        for (int local_vec = global_tid; local_vec < kChunkLocalVecs;
+             local_vec += kGlobalThreads) {
+            const int chunk_vec = local_bias + local_vec;
+            const int token = chunk_vec / kChunkVecsPerToken;
+            const int vec_in_chunk =
+                chunk_vec - token * kChunkVecsPerToken;
+            const int full_vec = token * kVecsPerToken
+                + chunk_idx * kChunkVecsPerToken + vec_in_chunk;
+            uint4 rank_value[kWorld];
             #pragma unroll
-            for (int source = 0; source < kWorld; ++source) {
-                const uint32_t word = reinterpret_cast<const uint32_t*>(
-                    &rank_value[source])[pair];
-                const __nv_bfloat162 value =
-                    *reinterpret_cast<const __nv_bfloat162*>(&word);
-                const float2 value_f32 = __bfloat1622float2(value);
-                if (source == 0) {
-                    sum = value_f32;
-                } else {
-                    sum.x += value_f32.x;
-                    sum.y += value_f32.y;
+            for (int source = 0; source < kWorld; ++source)
+                rank_value[source] = load_relaxed_sys_16b(
+                    peer_pull[source]
+                        + static_cast<int64_t>(full_vec) * kVecBytes);
+
+            uint4 result;
+            auto* result_words = reinterpret_cast<uint32_t*>(&result);
+            #pragma unroll
+            for (int pair = 0; pair < kPairsPerVec; ++pair) {
+                float2 sum = make_float2(0.0f, 0.0f);
+                #pragma unroll
+                for (int source = 0; source < kWorld; ++source) {
+                    const uint32_t word = reinterpret_cast<const uint32_t*>(
+                        &rank_value[source])[pair];
+                    const __nv_bfloat162 value =
+                        *reinterpret_cast<const __nv_bfloat162*>(&word);
+                    const float2 value_f32 = __bfloat1622float2(value);
+                    if (source == 0) {
+                        sum = value_f32;
+                    } else {
+                        sum.x += value_f32.x;
+                        sum.y += value_f32.y;
+                    }
                 }
+                const __nv_bfloat162 value =
+                    __floats2bfloat162_rn(sum.x, sum.y);
+                result_words[pair] =
+                    *reinterpret_cast<const uint32_t*>(&value);
             }
-            const __nv_bfloat162 value =
-                __floats2bfloat162_rn(sum.x, sum.y);
-            result_words[pair] = *reinterpret_cast<const uint32_t*>(&value);
+            #pragma unroll
+            for (int peer = 0; peer < kWorld; ++peer)
+                store_relaxed_sys_16b(
+                    peer_pull[peer]
+                        + static_cast<int64_t>(full_vec) * kVecBytes,
+                    result);
         }
-        #pragma unroll
-        for (int peer = 0; peer < kWorld; ++peer)
-            store_relaxed_sys_16b(
-                peer_pull[peer]
-                    + static_cast<int64_t>(full_vec) * kVecBytes,
-                result);
     }
 
     __syncthreads();
@@ -8450,6 +8476,7 @@ _EXTENSION_CONFIG = (
           f"slw2cm{int(SINGLE_LAUNCH_W2_CHUNK_MAJOR)}_"
           f"slw2cao{int(SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP)}_"
           f"slw2cawo{int(SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY)}_"
+          f"slw2cahs{SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE}_"
           f"slw2cap{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST)}_"
           f"slw2capc{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
@@ -8600,6 +8627,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY="
             f"{int(SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE="
+            f"{SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_POST="

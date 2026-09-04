@@ -233,6 +233,9 @@ def main() -> None:
                     "single_launch_w2_chunk_ar_wait_only": (
                         kernel.SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY
                     ),
+                    "single_launch_w2_chunk_ar_helper_stage": (
+                        kernel.SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE
+                    ),
                     "single_launch_w2_chunk_ar_post": (
                         kernel.SINGLE_LAUNCH_W2_CHUNK_AR_POST
                     ),
