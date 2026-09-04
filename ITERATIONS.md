@@ -8709,3 +8709,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Normalized effect: ON/OFF candidate-to-control ratio improved by about `0.75%` at M64, `2.94%` at M128, and `1.85%` geometric mean. Direct candidate medians improved `0.84%` and `3.09%` respectively.
 - Decision: promising but not yet selected. The OFF M128 outer batches were bimodal (`~354 us` then `~374 us`), so repeat in reversed OFF→ON order before attributing the full M128 gain to the kernel.
 - Artifact: `bench/results/iter323_w13_tail_split4_on_off_tp4_cold_screen_20260904.log`.
+
+## Iteration 324 — Reject W13 tail split-K4 after reversed cold-L2 confirmation (2026-09-04)
+
+- Method: reversed OFF→ON run order and used replay-level control/candidate interleaving. TP4 GPUs 0–3, random routes, M64/M128, CUDA Graph, 80 cold-L2 samples/implementation/shape; every individual replay received its own excluded 256 MiB L2 clear.
+- Correctness: all control and candidate runs passed the distributed all-reduce checks with the same worst-rank cosine/relative-L2 values as Iteration 323.
+- OFF: M64 multi/single `0.246752/0.283904 ms`, ratio `1.150564`; M128 `0.310592/0.356016 ms`, ratio `1.146250`; geometric ratio `1.148405`.
+- ON: M64 `0.247280/0.285232 ms`, ratio `1.153478`; M128 `0.316016/0.368176 ms`, ratio `1.165055`; geometric ratio `1.159252`.
+- Normalized effect: tail split-K4 regressed candidate/control by `0.25%` at M64, `1.64%` at M128, and `0.94%` geometric mean. Direct single-kernel medians regressed `0.47%` and `3.42%`.
+- Decision: reject and keep disabled. The apparent benefit in the ON→OFF screen was not order-robust; extra template/control-flow footprint and the shorter split tasks do not reliably beat the original tail wave under cold-L2 distributed execution.
+- Artifact: `bench/results/iter324_w13_tail_split4_off_on_tp4_cold_confirm_20260904.log`.
