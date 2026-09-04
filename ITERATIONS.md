@@ -9134,3 +9134,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Conclusion:** Simple WGMMA/TMA shared-storage aliasing is disproven.  Since the standalone microprobe supports eight requests per group and six-way destination contention, the next smallest integration delta is the number/address pattern of reductions issued by each W2 CTA.  Test one valid route-slot reduction per W2 task; if that progresses, grow 1→2→4→8 and inspect destination mapping rather than proxy fences.
 - **Decision:** Retain the independent slab only inside the rejected experimental flag while isolating; selected source path remains unaffected.
 - **Artifact:** `bench/results/iter367_bulk_reduce_independent_smem_compute_m128_20260905.log`.
+
+## Iteration 368 — one bulk reduction per W2 task still hangs (2026-09-05)
+
+- **Purpose:** Test whether the full integration hangs because one W2 CTA issues up to eight bulk operations or because of a particular multi-route destination pattern.
+- **Implementation:** Added compile-time diagnostic `V4_SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES={1,2,4,8}`, included it in extension identity and benchmark metadata, and taught the compute-only harness to construct the exact independent reference subset from aligned `sorted_ids`.  This run selected one route slot only; the independent shared slab from Iteration 367 remained.
+- **Setup:** Single rank/GPU 0, compute-only M8 random routes, seed 20260904, one 512-byte bulk reduction per valid W2 task, no TP collective, 240-second timeout.  Native stack sampling again found the process in the first post-`run()` CUDA synchronization.
+- **Result:** **TIMEOUT; no correctness or timing record.**  Reducing per-CTA bulk work from eight rows to one did not restore forward progress.
+- **Conclusion:** Per-group request count and intra-task destination pattern are disproven.  The strongest remaining protocol discrepancy versus the exact standalone probe is ownership of the local-sum zero initialization: many lanes perform generic stores, while only the later async issuer executed the proxy fence.  Test a writer-side `fence.proxy.async.global` on every clearing lane before phase-0 publication.
+- **Decision:** Keep route-count instrumentation for isolation only and bulk combine default-off.
+- **Artifact:** `bench/results/iter368_bulk_reduce_route1_compute_m8_20260905.log`.

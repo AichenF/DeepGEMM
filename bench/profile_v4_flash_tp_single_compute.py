@@ -86,11 +86,24 @@ def main() -> None:
     expected_down = reference.down.clone()
     expected_local_sum = None
     if kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE:
+        routes = args.m * bench.TOP_K
+        route_mask = torch.zeros(routes, dtype=torch.float32, device=device)
+        padded_rows = int(case.num_tokens_padded.item())
+        selected_routes = (
+            case.sorted_ids[:padded_rows]
+            .view(-1, 8)[:, : kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES]
+            .flatten()
+        )
+        selected_routes = selected_routes[
+            (selected_routes >= 0) & (selected_routes < routes)
+        ]
+        route_mask[selected_routes.long()] = 1.0
         expected_local_sum = (
-            expected_down.view(args.m, bench.TOP_K, bench.HIDDEN).float()
-            * topk_weights.float().unsqueeze(-1)
+            expected_down.float()
+            * topk_weights.float().flatten().unsqueeze(-1)
+            * route_mask.unsqueeze(-1)
             * bench.ROUTED_SCALING_FACTOR
-        ).sum(dim=1)
+        ).view(args.m, bench.TOP_K, bench.HIDDEN).sum(dim=1)
     torch.cuda.synchronize(device)
 
     output = torch.empty((args.m, bench.HIDDEN), dtype=torch.bfloat16, device=device)
@@ -210,6 +223,11 @@ def main() -> None:
                 "sm_count": props.multi_processor_count,
                 "l2_policy": "cold 256MiB clear outside profiled kernel",
                 "phase_stamps": kernel.SINGLE_LAUNCH_PHASE_STAMPS,
+                "bulk_reduce_routes_per_w2_task": (
+                    kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES
+                    if kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+                    else None
+                ),
                 "packed_generation_wrap_requested": (
                     args.packed_generation_wrap
                 ),

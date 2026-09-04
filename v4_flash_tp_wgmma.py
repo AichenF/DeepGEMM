@@ -884,6 +884,18 @@ if (
 SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE", "0") == "1"
 )
+SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES = int(
+    os.environ.get("V4_SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES", "8")
+)
+if SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES not in (1, 2, 4, 8):
+    raise ValueError("V4_SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES must be 1,2,4,8")
+if (
+    SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES != 8
+    and not SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES requires bulk combine"
+    )
 if SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE and (
     SINGLE_LAUNCH_SCHEDULE != 0
     or WOUT != 128
@@ -1156,6 +1168,8 @@ static constexpr bool kSingleLaunchW2ChunkArPostConcurrent =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT;
 static constexpr bool kSingleLaunchW2BulkReduceCombine =
     K_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE;
+static constexpr int kSingleLaunchW2BulkReduceRoutes =
+    K_SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -2595,7 +2609,9 @@ __device__ __forceinline__ void route_gemm_task(
         if (tid == 0) {
             asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
             #pragma unroll
-            for (int route_slot = 0; route_slot < kTok; ++route_slot) {
+            for (int route_slot = 0;
+                 route_slot < kSingleLaunchW2BulkReduceRoutes;
+                 ++route_slot) {
                 const int route = route_ids[metadata_slot][route_slot];
                 if (static_cast<unsigned>(route)
                         < static_cast<unsigned>(max_routes)) {
@@ -8838,6 +8854,7 @@ _EXTENSION_CONFIG = (
           f"slw2cap{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST)}_"
           f"slw2capc{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT)}_"
           f"slw2brc{int(SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE)}_"
+          f"slw2brr{SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
@@ -9014,6 +9031,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE="
             f"{int(SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES="
+            f"{SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="

@@ -1324,6 +1324,9 @@ def main() -> None:
                     "single_launch_w2_bulk_reduce_combine": (
                         kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
                     ),
+                    "single_launch_w2_bulk_reduce_routes": (
+                        kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES
+                    ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
                     ),
