@@ -7101,3 +7101,34 @@ maximum rank latency of a full CUDA-Graph replay.
   Iteration 246 gain.
 - **Artifact:**
   `bench/results/iter247_m128_bound9_specialization_compute_smoke_20260904.log`.
+
+## Iteration 248 — token-specialized bound-9 all-shape paired screen
+
+- **Protocol:** TP4 GPUs 0-3, random M={8,16,32,64,128}, shared prequantized
+  FP8-E4M3 X/FP32 group-128 scale, Humming versus token-specialized custom,
+  six AB/BA batches x 30 separately cold-L2 replays.  M<=64 uses bound/request
+  8; M128 uses bound/request 9 through dynamic route scratch.  Ordinary
+  relaxed barrier, 64 ns backoff.
+- **Correctness:** PASS for both implementations at all five points; minimum
+  cosine >0.9999955, maximum relative L2 <0.002982, all ranks finite and every
+  TP all-reduce check passes.
+- **Cold-L2 median Humming/custom and ratio:** M8
+  `0.088304/0.077440 ms, 1.14029x`; M16
+  `0.144112/0.128224 ms, 1.12391x`; M32
+  `0.222768/0.205056 ms, 1.08638x`; M64
+  `0.311616/0.287344 ms, 1.08447x`; M128
+  `0.383424/0.366880 ms, 1.04509x`.
+- **Aggregate:** Geometric means are Humming `0.202286 ms` and custom
+  `0.184649 ms`, ratio `1.09552x`.  This improves the corrected Iteration 240
+  ratio from 1.09216x, but remains below the 1.10x requirement.
+- **Stability finding:** Small-M custom batch medians remain tight and match
+  Iteration 240.  M128 custom is bimodal: first batches `0.36197/0.36106 ms`,
+  later batches `0.36947/0.36974/0.36720/0.36688 ms`; pooled `0.36688 ms` is
+  effectively unchanged from Iteration 240's `0.366816 ms`.  The isolated
+  Iteration 246 gain therefore does not reproduce robustly in the all-M run.
+- **Decision:** Keep M128 bound-9 behind its opt-in flag, not as the selected
+  default.  It is safe and sometimes ~1% faster, but cannot support a claimed
+  gain until its rank/batch drift is understood.  Continue with a change that
+  reduces deterministic work rather than relying on residency noise.
+- **Artifact:**
+  `bench/results/iter248_m128_bound9_specialized_tp4_allm_cold_paired_20260904.log`.
