@@ -7972,3 +7972,18 @@ maximum rank latency of a full CUDA-Graph replay.
   now the dominant target.
 - **Artifact:**
   `bench/results/iter279_embedded_p2p_twoshot_tp4_allm_cold_paired_20260904.log`.
+
+## Iteration 280 — promote the selected large-M transport default
+
+- **Change:** Changed `V4_SINGLE_LAUNCH_P2P_TWO_SHOT`'s default from disabled
+  to enabled.  TP4 M64/M128 therefore select the validated embedded 64-CTA
+  ordinary-P2P two-shot tail without a benchmark-only environment override;
+  M8/M16/M32 remain on embedded multicast push.
+- **Attempted validation:** A cold-L2 CUDA-Graph M64/M128 smoke was launched
+  without the override, but all workers exited during Python import because
+  the repository root was absent from `PYTHONPATH`.  No extension compile,
+  graph capture, correctness check, GPU kernel, or timing ran.
+- **Decision:** Keep the default change, classify this attempt as launcher
+  failure rather than performance evidence, and rerun with `PYTHONPATH=.`.
+- **Artifact:**
+  `bench/results/iter280_default_large_m_twoshot_smoke_20260904.log`.
