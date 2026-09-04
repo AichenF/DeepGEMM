@@ -5681,3 +5681,32 @@ maximum rank latency of a full CUDA-Graph replay.
   single global entry, resident-grid synchronization, and in-kernel phase
   orchestration; this refactor alone is not performance eligible.
 - Artifact: `results/iter150_k6_push_ar_device_task_refactor_correctness_20260904.log`.
+
+## Iteration 151 — wire the first complete TP4 single-launch source skeleton
+
+- Date: 2026-09-04.
+- Change: add `tp4_megamoe_single_launch_kernel<SplitK>`, a resident
+  128-thread CTA grid that performs device-side route alignment and BF16/FP8
+  input quantization, the selected split-K MXFP4 W13 task loop, fused
+  SwiGLU/group-128 requantization, MXFP4 W2, fixed-k6 weighted reduction and
+  TP4 multicast push all-reduce under one global entry.  Four reusable
+  generation-counted grid barriers keep their count/epoch state across CUDA
+  Graph replays without a memset node.  The host wrapper caps the launch at
+  four resident CTAs per H20 SM after an occupancy query and routes only the
+  first 78 logical CTAs into the existing CARv2-compatible communication
+  protocol.
+- Integration: add `V4_SINGLE_LAUNCH_TP4=1` selection to the existing graph
+  harness, allocate its eight-int barrier state once, and retain the unchanged
+  multi-kernel path when the flag is absent.
+- Verification scope: Python AST parsing only for
+  `v4_flash_tp_wgmma.py` and `bench/v4_flash_tp_wgmma_graph.py`; both passed.
+  CUDA compilation, distributed correctness, barrier liveness and launch
+  count are deliberately **unproven** at this checkpoint.
+- Source SHA256: kernel module
+  `e1ed3596b6a327e38fdcc24bab4173cfa6d79c85da4b92f64a9fd2bfbdff7844`;
+  graph harness
+  `823a3fe64e0943846e552a7fedd90c358f946c6451b0f6e519ee5c0104339858`.
+- Decision: commit as a bring-up boundary, not as a performance candidate.
+  Next compile and run a bounded TP4 M8 CUDA-Graph smoke; any failure will be
+  repaired in a new recorded iteration.
+- Artifact: `results/iter151_single_launch_source_ast_check_20260904.log`.

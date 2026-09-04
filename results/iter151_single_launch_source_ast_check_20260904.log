@@ -1,0 +1,10 @@
+Iteration 151 TP4 single-launch source check
+Date: 2026-09-04
+Scope: Python AST parsing only; no CUDA compile or GPU execution
+v4_flash_tp_wgmma.py AST_OK
+bench/v4_flash_tp_wgmma_graph.py AST_OK
+v4_flash_tp_wgmma.py sha256=e1ed3596b6a327e38fdcc24bab4173cfa6d79c85da4b92f64a9fd2bfbdff7844
+bench/v4_flash_tp_wgmma_graph.py sha256=823a3fe64e0943846e552a7fedd90c358f946c6451b0f6e519ee5c0104339858
+CUDA_COMPILE_UNPROVEN
+GPU_CORRECTNESS_UNPROVEN
+SINGLE_LAUNCH_COUNT_UNPROVEN

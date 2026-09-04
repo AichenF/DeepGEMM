@@ -258,6 +258,12 @@ class CapturedCase:
         self.w2_progress_state = torch.empty(
             (self.m * TOP_K * 32 + 2,), dtype=torch.int32, device=device
         )
+        # Four count/epoch pairs back the in-kernel generation barriers.  The
+        # kernel advances epochs across graph replays, so no captured memset
+        # or additional launch is part of the single-launch path.
+        self.single_launch_barrier_state = torch.zeros(
+            (8,), dtype=torch.int32, device=device
+        )
         self.sorted_ids = torch.empty(
             (max_padded,), dtype=torch.int32, device=device
         )
@@ -713,7 +719,55 @@ class CapturedCase:
             )
         return output
 
+    def run_tp4_single_launch(self, comm: CustomAllReduceV2) -> torch.Tensor:
+        self.prepare_fused_push(comm)
+        assert self.down is not None
+        assert self.activation_scale is not None
+        assert self.fused_push_workspaces is not None
+        assert self.fused_push_counter is not None
+        if comm.world_size != 4 or not self.fused_push_mc_ptr:
+            raise RuntimeError(
+                "single-launch bring-up requires TP4 NVLS multicast memory"
+            )
+        kernel.run_tp4_megamoe_single_launch(
+            self.w13,
+            self.s13,
+            self.g13,
+            self.w2,
+            self.s2,
+            self.g2,
+            self.x,
+            self.topk_ids,
+            self.topk_weights,
+            self.sorted_ids,
+            self.expert_ids,
+            self.num_tokens_padded,
+            self.qx,
+            self.x_scale,
+            self.partials,
+            self.activation,
+            self.qactivation,
+            self.activation_scale,
+            self.down,
+            self.lut,
+            self.single_launch_barrier_state,
+            self.route_to_sorted,
+            self.fused_graph_output,
+            self.fused_push_counter,
+            self.fused_push_workspaces,
+            self.fused_push_rank,
+            self.fused_push_stride,
+            self.fused_push_mc_ptr,
+            self.w13_split_k,
+        )
+        self.fused_k6_push_active = True
+        self.fused_k6_ar_mode = "single_launch_multicast_push"
+        self.graph_output = self.fused_graph_output
+        return self.graph_output
+
     def run_full(self, comm: CustomAllReduceV2) -> torch.Tensor:
+        if kernel.SINGLE_LAUNCH_TP4:
+            return self.run_tp4_single_launch(comm)
         use_w2_progress = (
             kernel.W2_PROGRESS_MC_PUSH_AR
             and comm.world_size == 4
@@ -1053,6 +1107,7 @@ def main() -> None:
                     ),
                     "rank_route_pull_blocks": kernel.RANK_ROUTE_PULL_BLOCKS,
                     "fused_k6_nvls_pull_ar": kernel.FUSED_K6_NVLS_PULL_AR,
+                    "single_launch_tp4": kernel.SINGLE_LAUNCH_TP4,
                     "k6_nvls_pull_blocks": kernel.K6_NVLS_PULL_BLOCKS,
                     "mc_pull_blocks": kernel.MC_PULL_BLOCKS or "default",
                     "mc_pull_unroll": kernel.MC_PULL_UNROLL or "default",
