@@ -1,0 +1,11 @@
+ITERATION=335
+STATUS=INVALID_NO_GPU_WORK
+PURPOSE=release-arrival packed-grid-barrier CUDA Graph liveness stress
+COMMAND_SHAPE=M8,M128; 10000 replays; checkpoint 1000; compute-only
+L2_POLICY=warm-cache correctness/liveness only; no timing performed
+ERROR=bash: cd: /home/xutingz/fac/DeepGEMM_tp: No such file or directory
+ERROR=tee: bench/results/iter335_release_arrival_graph_stress_20260904.log: No such file or directory
+ERROR=python: cannot open /workspace/bench/stress_v4_flash_tp_single_graph.py
+GPU_WORK=none
+CONCLUSION=no correctness or performance conclusion
+FOLLOW_UP=rerun from /lustre/raplab/client/xutingz/fac/DeepGEMM_tp inside the container
