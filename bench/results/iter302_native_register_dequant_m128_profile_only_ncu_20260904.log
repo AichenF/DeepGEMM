@@ -1,0 +1,5 @@
+==PROF== Connected to process 501443 (/usr/bin/python3.12)
+==PROF== Profiling "v4_flash_tp4_native_megamoe_impl": 0%....50%....100% - 18 passes
+NATIVE_LOCAL_PROFILE_ONLY {"m": 128, "synchronized": true}
+==PROF== Disconnected from process 501443
+==PROF== Report: /lustre/raplab/client/xutingz/fac/DeepGEMM_tp/results/iter302_native_register_dequant_m128_profile_only.ncu-rep

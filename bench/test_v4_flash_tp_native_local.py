@@ -52,6 +52,11 @@ def rel_l2(actual: torch.Tensor, reference: torch.Tensor) -> float:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--m", type=int, default=8)
+    parser.add_argument(
+        "--profile-only",
+        action="store_true",
+        help="synchronize and exit immediately after the captured native launch",
+    )
     args = parser.parse_args()
     if args.m not in (8, 16, 32, 64, 128):
         parser.error("--m must be one of 8,16,32,64,128")
@@ -99,6 +104,17 @@ def main() -> None:
     )
     native.run_local(workspace, native_w13, native_w2, output, args.m)
     torch.cuda.synchronize()
+
+    # Nsight Compute kernel replay restores mutable workspace allocations to
+    # their pre-launch contents after the final pass.  The detailed numerical
+    # audit below therefore cannot consume route/pool metadata after replay.
+    if args.profile_only:
+        print(
+            "NATIVE_LOCAL_PROFILE_ONLY "
+            + json.dumps({"m": args.m, "synchronized": True}),
+            flush=True,
+        )
+        return
 
     # With one route per expert, expert e owns one padded BM8 pool block and
     # its single valid row is e * 8.  Verify the persistent dispatch payload

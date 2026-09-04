@@ -8337,3 +8337,27 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Artifacts:**
   `bench/results/iter301_native_register_dequant_m128_ncu_20260904.log` and
   `results/iter301_native_register_dequant_m128.ncu-rep`.
+
+## Iteration 302 — native NCU profile-only harness exits cleanly
+
+- **Hypothesis:** The Iteration-301 post-profile indexing fault is caused by
+  Nsight Compute restoring mutable route/pool workspace after kernel replay,
+  not by the captured native launch.  Exiting immediately after synchronization
+  should isolate profiling from the numerical audit.
+- **Change:** Added `--profile-only` to
+  `bench/test_v4_flash_tp_native_local.py`.  This mode uses the identical input,
+  weight transform, workspace load, and native kernel launch, synchronizes, then
+  exits before reading any mutable workspace metadata.  Normal correctness mode
+  is unchanged.
+- **Protocol:** H20 GPU 0, local M128, caller-provided FP8-E4M3 activation plus
+  FP32 group-128 scales and MXFP4 weights,
+  `V4_NATIVE_REGISTER_DEQUANT=1`; Nsight Compute target-kernel replay with
+  `--cache-control all` and the same seven detailed section groups as Iteration
+  301 (18 passes).
+- **Result:** PASS.  All 18 passes completed, the synchronized profile-only
+  marker printed, and the process exited 0 without CUDA assertions.  The report
+  is therefore suitable for a subsequent read-only metric import; no latency
+  conclusion is recorded before that import.
+- **Artifacts:**
+  `bench/results/iter302_native_register_dequant_m128_profile_only_ncu_20260904.log`
+  and `results/iter302_native_register_dequant_m128_profile_only.ncu-rep`.
