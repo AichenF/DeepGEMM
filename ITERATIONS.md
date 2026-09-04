@@ -6878,3 +6878,45 @@ maximum rank latency of a full CUDA-Graph replay.
   that charged only Humming for external X quantization.
 - **Artifact:**
   `bench/results/iter239_prequant_input_contract_tp4_m8_smoke_20260904.log`.
+
+## Iteration 240 — formal TP4 five-shape comparison with prequantized X
+
+- **Protocol:** TP4 H20 GPUs 0-3, random DeepGEMM-style routes,
+  M={8,16,32,64,128}, one shared caller-provided FP8-E4M3 `qx` plus FP32
+  group-128 `x_scale`, and MXFP4/E8M0 weights.  Both implementations include
+  route alignment, FC1, SwiGLU plus internal FC2 requant, FC2, local k=6
+  reduction and TP all-reduce; external X quantization is outside both CUDA
+  Graphs.  Six balanced AB/BA outer batches x 30 replays yield 180 samples per
+  implementation and M.  A separate 256 MiB clear precedes every replay and
+  is excluded from CUDA-event timing.
+- **Candidate:** TP-specialized one-launch path with relaxed grid polling,
+  8 CTAs/SM; grouped/tail/cooperative/persistent experiments disabled.
+- **Correctness:** Both Humming and custom pass at all five M values.  Minimum
+  cosine is above 0.9999955, maximum relative L2 below 0.002982, all ranks
+  finite, and every CustomAllReduceV2/reference check passes.
+- **Cold-L2 median latency (Humming / custom, Humming-over-custom):**
+  M8 `0.088352 / 0.077728 ms, 1.13668x`; M16
+  `0.144064 / 0.128208 ms, 1.12367x`; M32
+  `0.222784 / 0.204896 ms, 1.08730x`; M64
+  `0.311472 / 0.287584 ms, 1.08306x`; M128
+  `0.378960 / 0.366816 ms, 1.03311x`.
+- **Custom min/median/max (ms):** M8
+  `0.075712/0.077728/0.123808`; M16
+  `0.126784/0.128208/0.171648`; M32
+  `0.202752/0.204896/0.228064`; M64
+  `0.284800/0.287584/0.317696`; M128
+  `0.361696/0.366816/0.378144`.
+- **Humming min/median/max (ms):** M8
+  `0.087008/0.088352/0.115552`; M16
+  `0.142432/0.144064/0.266464`; M32
+  `0.221248/0.222784/0.258752`; M64
+  `0.308736/0.311472/0.344576`; M128
+  `0.376000/0.378960/0.407712`.
+- **Aggregate:** Geometric-mean latency is Humming `0.201806 ms` versus custom
+  `0.184777 ms`, ratio `1.09216x` (custom latency 8.44% lower).  The requested
+  1.10x speedup target is therefore not yet met; M128 is the limiting point.
+- **Decision:** Adopt this corrected input boundary as the sole formal
+  baseline.  Optimize the large-M schedule/barrier tail next; do not cite the
+  older Humming numbers that included external input quantization.
+- **Artifact:**
+  `bench/results/iter240_prequant_tp4_allm_cold_paired_20260904.log`.
