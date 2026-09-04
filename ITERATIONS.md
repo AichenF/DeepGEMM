@@ -8134,3 +8134,24 @@ maximum rank latency of a full CUDA-Graph replay.
   reject globally if that endpoint also loses.
 - **Artifact:**
   `bench/results/iter287_dual_wg_phases_m8_smoke_20260904.log`.
+
+## Iteration 288 — dual-WG phases also regress decisively at M128
+
+- **Protocol:** TP4 GPUs 0-3, unchanged dual-WG phase prototype, random
+  M128, two balanced batches x 10 independently cold-L2 CUDA-Graph replays
+  per arm, three warmups, rank-max, excluded 256 MiB clears, and device phase
+  stamps.
+- **Correctness:** PASS exactly against multi-kernel at the final tensor;
+  output is finite and the embedded two-shot all-reduce oracle passes.
+- **Cold-L2 result:** Multi/candidate medians are
+  `0.303312/0.377104 ms`; candidate is `24.33%` slower.  Candidate phases are
+  route/W13/requant/W2 = `3.904/223.168/5.760/121.728 us`.
+- **Interpretation:** Equal aggregate math-warp occupancy is insufficient.
+  Pairing WGs behind CTA-wide activation reuse/handshakes slows W13 and W2,
+  and the halved grid-barrier population cannot recover the loss.  This
+  reproduces the earlier standalone dual-WG failure at the complete one-
+  kernel level.
+- **Decision:** Reject globally and retain behind the opt-in flag only.  The
+  selected path remains one 128-thread math WG per CTA.
+- **Artifact:**
+  `bench/results/iter288_dual_wg_phases_m128_smoke_20260904.log`.
