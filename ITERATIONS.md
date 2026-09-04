@@ -8771,3 +8771,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: invalid/non-evidence.  The first process failed during benchmark-module import with `ModuleNotFoundError: No module named 'humming'`; no candidate launch or GPU correctness check executed, and M128 was not reached.
 - Correction: repeat with the pinned Humming checkout added to `PYTHONPATH`.  Do not use this iteration in any correctness or performance conclusion.
 - Artifact: `bench/results/iter330_release_arrival_m8_m128_compute_correctness_20260904.log`.
+
+## Iteration 331 — Release-arrival compute correctness and generation wrap (2026-09-04)
+
+- Test: H20 GPU 0, selected schedule-0 one-kernel compute body with `V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL=1`, random routes at M8 and M128.  Each checked launch followed an excluded 256 MiB cold-L2 clear.  All four packed barrier words were seeded at generation `2^22-1`, so every barrier had to wrap safely to generation zero.  TP communication was disabled only for this state-machine check.
+- Input contract: caller-provided FP8-E4M3 `qx`, FP32 group-128 `x_scale`, and MXFP4 weights/scales; external X quantization excluded.  M8/M128 used W13 split-K 4/2 and had 344/1,992 padded routed rows.
+- Result: both shapes passed bitwise against the independent multi-kernel FC1→SwiGLU/requant→FC2 reference.  M8 and M128 each reported cosine `1.0`, relative L2 `0.0`, finite output, and packed words `[0,0,0,0]` after the seeded wrap (`packed_generation_wrap_ok=true`).
+- Decision: correctness and single-wrap gates pass.  Proceed to a repeated CUDA-Graph liveness/replay stress before distributed performance timing.
+- Artifact: `bench/results/iter331_release_arrival_m8_m128_compute_correctness_20260904.log`.
