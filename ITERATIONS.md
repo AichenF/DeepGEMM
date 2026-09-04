@@ -7686,3 +7686,21 @@ maximum rank latency of a full CUDA-Graph replay.
   repository's established Humming `PYTHONPATH` before any performance test.
 - **Artifact:**
   `bench/results/iter268_oversubscribed_turnover_m8_compute_smoke_20260904.log`.
+
+## Iteration 269 — first schedule-4 harness construction exposed allocation order
+
+- **Attempted protocol:** Repeated the M8 random compute-only correctness
+  smoke on H20 GPU 0 with the established Humming checkout included in
+  `PYTHONPATH`; the intended launch still used the excluded 256 MiB cold-L2
+  clear and prequantized FP8 X contract.
+- **Result:** BLOCKED before kernel launch.  `CapturedCase.__post_init__`
+  sized the schedule-4 generation slab using `self.w13_split_k` before that
+  attribute is assigned, raising `AttributeError`.  No GPU correctness or
+  performance result was produced.
+- **Root cause/fix direction:** Compute the split directly from the same
+  M-dependent rule at allocation time (SplitK4 for M<=32, selected configured
+  split for M>=64), or move the allocation after `w13_split_k` assignment.
+- **Decision:** This is a benchmark-construction bug in the new opt-in path;
+  fix the ordering and rerun before evaluating the CUDA scheduler.
+- **Artifact:**
+  `bench/results/iter269_oversubscribed_turnover_m8_compute_smoke_20260904.log`.

@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 216, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 65, in main
+    case = bench.CapturedCase(
+           ^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 18, in __init__
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 311, in __post_init__
+    max_mblocks * 8 * self.w13_split_k
+                      ^^^^^^^^^^^^^^^^
+AttributeError: 'CapturedCase' object has no attribute 'w13_split_k'
