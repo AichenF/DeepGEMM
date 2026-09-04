@@ -10,9 +10,10 @@ source change follows the AKO sequence: run, append `ITERATIONS.md`, commit.
   its exact weights, inputs, routes, numerical checks and CARv2 communicator.
 - Add an Nsight launch-count check to the candidate harness.  The candidate
   must expose a path identifier and reject fallback for target shapes.
-- Kernel ABI: BF16 X, INT32 top-k IDs, FP32 top-k weights, transformed MXFP4
-  W13/W2 data and scales, owned persistent workspace, CARv2 symmetric pointers
-  and counters, BF16 output, M/rank/world metadata.
+- Kernel ABI: FP8-E4M3 X plus FP32 group-128 X scales, INT32 top-k IDs, FP32
+  top-k weights, transformed MXFP4 W13/W2 data and scales, owned persistent
+  workspace, CARv2 symmetric pointers and counters, BF16 output, M/rank/world
+  metadata. BF16-to-FP8 X quantization is an upstream, untimed operation.
 
 ## Phase 1: one-launch local MegaMoE skeleton
 
@@ -24,10 +25,10 @@ source change follows the AKO sequence: run, append `ITERATIONS.md`, commit.
   Prove exactly one compute launch, repeated graph replay and local output
   correctness.  This milestone is not eligible for a performance claim.
 
-## Phase 2: move preparation inside the launch
+## Phase 2: move route preparation inside the launch
 
-- Add in-kernel state reset, BF16-to-FP8 group-128 quantization, route counts,
-  padded offsets and token/top-k pool construction.
+- Add in-kernel state reset, route counts, padded offsets and token/top-k pool
+  construction; consume caller-provided FP8 X/X scales directly.
 - Use a fully resident 78-CTA grid and local grid barriers.  Route mutation
   across replays must change device task bounds without recapture.
 - Remove every input staging/copy/reset node from the timed graph.

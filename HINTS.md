@@ -59,3 +59,9 @@
 - TP4 uses exactly 78 persistent CTAs and is the performance target.  TP8 must have a correct one-launch specialization/run-through; it is not the primary performance score.
 - The comparison baseline is the currently selected custom TP implementation, which launches five kernels at M=8/16/32 and six at M=64/128.  Success requires at least `1.10x` equal-weight geometric-mean speedup over M=8/16/32/64/128 in a same-process, TP-rank-max, CUDA-Graph, 10x200 independently cold-L2 comparison.  Report every M and do not hide regressions behind the aggregate.
 - Nsight verification must show exactly one timed kernel node per replay after excluding the separate 256 MiB cold-L2 clear.  No hidden timed memset, copy, reset or child-kernel launch is allowed.
+
+## 2026-09-04 FP8-input contract correction (from the user's latest directive)
+- This section supersedes every earlier statement that the timed MegaMoE entry accepts BF16 `X` or performs BF16-to-FP8 input quantization.
+- The MegaMoE input is already-quantized FP8-E4M3 activation plus its group-128 scale, together with precomputed `topk_idx/topk_weights` and MXFP4 weights/scales. BF16-to-FP8 input quantization belongs to the upstream runtime and is outside both the kernel and the timed graph.
+- The single-launch kernel must still perform device route-metadata preparation, W13, SwiGLU plus intermediate FP8 requantization, W2, ordered weighted k=6 reduction, TP all-reduce, and replay-state cleanup.
+- Rebuild the multi-kernel comparison baseline around the identical prequantized FP8 activation and scale. Do not compare a quantization-free candidate against a baseline that still times input quantization.

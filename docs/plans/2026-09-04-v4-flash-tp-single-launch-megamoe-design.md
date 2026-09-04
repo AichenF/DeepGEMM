@@ -5,12 +5,14 @@ Date: 2026-09-04
 ## Goal and definition
 
 Replace the selected five/six-kernel TP4 pipeline with one persistent CUDA
-kernel per rank.  The timed operation begins with BF16 `X[M,4096]` and
+kernel per rank.  Per the corrected serving boundary, the timed operation
+begins with FP8-E4M3 `X[M,4096]`, its FP32 group-128 scale `X_scale[M,32]`, and
 precomputed `topk_idx/topk_weights [M,6]`, and returns the final TP-summed BF16
-`Y[M,4096]`.  Route preparation, dynamic activation quantization, both MXFP4
-GEMMs, SwiGLU, route reduction, communication and replay-state cleanup all
-execute inside that launch.  A multi-node CUDA Graph, CUDA dynamic parallelism
-or device-launched child kernels do not qualify.
+`Y[M,4096]`.  BF16-to-FP8 input quantization is upstream and untimed.  Route
+preparation, both MXFP4 GEMMs, SwiGLU plus intermediate requantization, route
+reduction, communication and replay-state cleanup all execute inside that
+launch.  A multi-node CUDA Graph, CUDA dynamic parallelism or device-launched
+child kernels do not qualify.
 
 TP4 is optimized for `M={8,16,32,64,128}` with `I_rank=512`; TP8 with
 `I_rank=256` must execute the same one-launch contract correctly.  Router/top-k
@@ -80,12 +82,11 @@ different compile-time block policy while still issuing exactly one launch.
 ### In-kernel preparation
 
 The prologue clears graph-stable route/scheduler state from within the launch;
-there is no captured memset node.  Persistent CTAs cooperatively quantize BF16
-X once to FP8-E4M3 with group-128 FP32 scales.  Preparation warps consume the
-precomputed top-k IDs, count local routes for all 256 experts, form padded
-expert offsets and write token/top-k metadata into a contiguous local route
-pool.  TP ranks use identical routes and own all experts, so no token is sent
-to another rank.
+there is no captured memset node.  It consumes the caller-provided FP8 X and
+group-128 scales directly.  Preparation warps consume the precomputed top-k
+IDs, count local routes for all 256 experts, form padded expert offsets and
+write token/top-k metadata into a contiguous local route pool.  TP ranks use
+identical routes and own all experts, so no token is sent to another rank.
 
 Publication uses GPU-scope release stores and consumers use acquire loads.
 Grid barriers are legal only because the launch is capped at one resident CTA
@@ -140,8 +141,9 @@ communicator.
 
 - Validate route counts, offsets, token/top-k metadata and task uniqueness for
   random, balanced and maximal-skew routes at every M.
-- Mutate X/routes/weights in place between CUDA Graph replays to prove that no
-  captured host specialization or stale scheduler state exists.
+- Mutate FP8 X/X scales, routes and weights in place between CUDA Graph
+  replays to prove that no captured host specialization or stale scheduler
+  state exists.
 - Compare intermediate W13/SwiGLU quantization, W2 route rows, local k6 output
   and final TP result against the dequantized-MXFP4 golden.  Final gates are
   finite output, cosine >=0.999 and relative L2 <=0.02 on every rank.
@@ -156,8 +158,9 @@ communicator.
 
 1. Create an owned single-launch JIT wrapper/header and port only the reference
    scheduler/body pieces required for TP4 H20.
-2. Bring up one persistent launch with in-kernel route/X preparation and a
-   trace-only scheduler; prove graph replay and state cleanup.
+2. Bring up one persistent launch with in-kernel route preparation and direct
+   FP8-X consumption plus a trace-only scheduler; prove graph replay and state
+   cleanup.
 3. Port native-style MXFP4 W13 plus fused SwiGLU/requant and validate its
    intermediate tensor.
 4. Enable interleaved W2 and validate route rows/local k6 output.
