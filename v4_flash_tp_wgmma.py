@@ -4294,7 +4294,7 @@ __device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
         int rank, int linear_block_idx);
 
 template <int Threads, int Blocks, int Tokens>
-__device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_chunk_task(
+__device__ __noinline__ void fused_k6_p2p_twoshot_tp4_chunk_task(
         const __nv_bfloat16* __restrict__ route_input,
         const float* __restrict__ topk_weights,
         __nv_bfloat16* __restrict__ symm_input,
@@ -6388,7 +6388,7 @@ __device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
 // the full token-major symmetric slab, while a unique comm_id preserves the
 // communicator's one semaphore stripe per CTA protocol.
 template <int Threads, int Blocks, int Tokens>
-__device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_chunk_task(
+__device__ __noinline__ void fused_k6_p2p_twoshot_tp4_chunk_task(
         const __nv_bfloat16* __restrict__ route_input,
         const float* __restrict__ topk_weights,
         __nv_bfloat16* __restrict__ symm_input,

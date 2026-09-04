@@ -8966,3 +8966,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Diagnostic timing only: 0.351328 ms candidate versus 0.313632 ms one-sample control; not a performance result.
 - Decision: focus on helper-induced per-CTA state/shared-memory effects and compile/resource lifetime across the subsequent W2 tasks. Keep every diagnostic feature default-off.
 - Artifact: `bench/results/iter350_w2_chunk_wait_only_isolation_20260904.log`.
+
+## Iteration 351 — noinline chunk-helper overlap probe (2026-09-04)
+
+- Hypothesis: forcing the large chunk collective out of the WGMMA loop might prevent inlining-induced register/shared-memory lifetime interference when a communication CTA resumes later W2 tasks.
+- Implementation: changed both declaration and definition of `fused_k6_p2p_twoshot_tp4_chunk_task` from `__forceinline__` to `__noinline__`; no algorithm, address, semaphore, or public-input change.
+- Setup: TP4 GPUs 0–3, M128 random routes, seed 20260904, overlap enabled, four diagnostic graph replays plus a two-sample cold-L2 smoke.
+- Correctness: **FAIL unchanged.** Final `down` remained nondeterministic: per-repeat max differences were 76,800, and candidate-versus-control mismatch remained early-chunk heavy (up to 2,739 BF16 elements in chunk 0). Final output rel-L2 remained around 0.00779 versus the normal 0.00296.
+- Timing: 0.397888 ms candidate median; this wrong-result variant is invalid and its timing is not competitive.
+- Inference: helper inlining/code-size pressure is not the cause. The failure requires actual mid-loop helper memory/communication operations, not just the chunk wait or a call boundary.
+- Decision: **reject and keep default-off.** Retain noinline only as a diagnostic implementation detail for subsequent staged-helper isolation; do not promote it as an optimization.
+- Artifact: `bench/results/iter351_w2_chunk_overlap_noinline_helper_smoke_20260904.log`.
