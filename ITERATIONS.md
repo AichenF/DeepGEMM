@@ -5605,3 +5605,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Full-path medians: P2P two-shot `0.266256005 ms`; NVLS one-shot push `0.264703989 ms`.  NVLS leads by `1.552016 us` / `0.586%` and wins 9/10 paired batch medians.  Both paths share the same slow compute modes, indicating the per-replay pair cancels that drift.
 - Interpretation: this is a small candidate-level signal, despite isolated AR-only having favored P2P two-shot by `0.288 us` in iteration 143.  Require the independent whole-batch AB/BA repeat; do not change production from this result alone.
 - Artifact: `results/iter146_ar_transport_focus_tp4_m64_replay_cold2000_20260904.log`.
+
+## Iteration 147 — focused M64 batch-granularity P2P two-shot/NVLS push pair
+
+- Repeated the same full TP4 M64 pair with whole-batch AB/BA scheduling on physical GPUs 0–3: 10 batches x 200 cold-L2 replays per candidate, TP4 rank-max.
+- Correctness again passes the independent NCCL reference (`cosine_min_rank=0.999995487`) and both results are bitwise identical (`max_abs_vs_p2p_2shot=0`).
+- Full-path pooled medians: P2P two-shot `0.273728013 ms`; NVLS multicast one-shot push `0.268128008 ms`.  NVLS leads by `5.600005 us` / `2.09%`, but wins only 6/10 paired batch medians amid large compute-mode drift.
+- Decision: retain P2P two-shot as the production M64 default for now.  Replay- and batch-level pooled medians both favor NVLS push, but the batch direction is not stable and isolated AR-only favors P2P two-shot; audit the graph buffer paths before attributing this to communication.
+- Artifact: `results/iter147_ar_transport_focus_tp4_m64_batch_cold2000_20260904.log`.
