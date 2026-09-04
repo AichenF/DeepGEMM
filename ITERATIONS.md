@@ -8113,3 +8113,24 @@ maximum rank latency of a full CUDA-Graph replay.
   `--outer 2`.
 - **Artifact:**
   `bench/results/iter286_dual_wg_phases_m8_smoke_20260904.log`.
+
+## Iteration 287 — dual-WG phases are correct but regress at M8
+
+- **Protocol:** TP4 GPUs 0-3, dual-WG phase prototype, random M8, two
+  balanced batches x five independently cold-L2 CUDA-Graph replays per arm,
+  two warmups, rank-max, excluded 256 MiB clears, and device phase stamps.
+  Input remains caller-provided FP8 X/scales with MXFP4 weights.
+- **Correctness:** PASS exactly against the selected multi-kernel path;
+  final output is finite and the multicast all-reduce oracle passes.
+- **Cold-L2 smoke:** Multi/candidate medians are
+  `0.071616/0.083648 ms`; candidate is `16.80%` slower.  Candidate phases are
+  route/W13/requant/W2 = `1.984/45.184/2.944/24.352 us`.
+- **Interpretation:** Halving physical CTAs improves route/grid bookkeeping,
+  but the shared-activation dual-WG handshake and four-CTA residency lengthen
+  both GEMMs.  Versus the selected M8 region, W13 and W2 each lose several
+  microseconds, overwhelming the barrier saving.
+- **Decision:** Do not select for small M.  Test M128 once because its six to
+  seven persistent task rounds may amortize the same handshake differently;
+  reject globally if that endpoint also loses.
+- **Artifact:**
+  `bench/results/iter287_dual_wg_phases_m8_smoke_20260904.log`.
