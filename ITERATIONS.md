@@ -8745,3 +8745,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - The ELF metadata reports a `0x20`-byte frame for outlined W13 helper clones. Iteration 326 already showed no callee `LDL/STL` and no change to the main kernel's stack/local-op counts.
 - Decision: one-added-call invariant is satisfied: one W13 phase call per CTA, not one call per task. Proceed to a short paired cold-L2 performance screen.
 - Artifact: `bench/results/iter327_w13_phase_noinline_callsite_audit_20260904.log`.
+
+## Iteration 328 — Reject W13 phase-level noinline cold-L2 screen (2026-09-04)
+
+- Method: ON→OFF TP4 endpoint screen on GPUs 0–3, random routes, M8/M128, CUDA Graph, replay-level control/candidate interleaving, 80 independently cold-L2 samples/implementation/shape. Input is shared prequantized FP8 `qx/x_scale`; external X quantization is excluded.
+- Correctness: both variants and the multi-kernel control passed distributed all-reduce checks at both shapes.
+- Phase outline ON: M8 multi/single `0.071520/0.077520 ms`, ratio `1.083893`; M128 `0.307216/0.357648 ms`, ratio `1.164158`; geometric ratio `1.123309`.
+- Default OFF: M8 `0.071296/0.076144 ms`, ratio `1.067998`; M128 `0.307120/0.353376 ms`, ratio `1.150612`; geometric ratio `1.108536`.
+- Normalized effect: the phase outline regressed candidate/control by about `1.49%` at M8, `1.18%` at M128, and `1.33%` geometric mean. Direct single-kernel medians regressed `1.81%` and `1.21%`.
+- Decision: reject and keep disabled. Paying only one W13 call per CTA avoids the catastrophic per-task ABI cost, but it still loses; unchanged register/local resources and reduced module size did not translate into lower cold-L2 latency. Do not spend a confirmation run unless a materially different ABI (for example shape-specialized zero-argument scheduling) is implemented.
+- Artifact: `bench/results/iter328_w13_phase_noinline_on_off_tp4_cold_screen_20260904.log`.
