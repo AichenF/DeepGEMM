@@ -6543,3 +6543,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** The isolated comparison fails strongly: cosine `0.01151794`, rel-L2 `1.40604556`, max abs `24.0`, and 30,739/32,768 FP8 bytes differ.
 - **Conclusion:** The end-to-end FC1 failure can be reproduced before WGMMA. Either the current offline braid/fused-row construction does not match the selected Mode2 decoder, or the probe's assumed logical unswizzle/reference nibble order is wrong. Next test all plausible row-swizzle and raw-nibble permutations against the actual decoder output before changing production encoding.
 - **Artifact:** `bench/results/iter205_native_mode2_decode_probe_20260904.log`.
+
+## Iteration 206 — Correct the isolated decoder reference's Marlin K8 order
+
+- **Change:** Fixed only the diagnostic reference: each 4-byte Marlin chunk now decodes high nibbles as K0..K3 and low nibbles as K4..K7, repeated over 16 K8 chunks. Production transform/decoder code was unchanged.
+- **Test:** Same H20 GPU-0 expert-0 N256/K128 isolated CUDA Mode2 decode probe as Iteration 205.
+- **Result:** Exact agreement: cosine `1.0`, rel-L2 `0.0`, max abs `0.0`, and `0/32768` FP8 byte mismatches.
+- **Conclusion:** The official offline braid, fused 80-byte row, E8M0 scale duplication, CUDA Mode2 decoder, and row unswizzle are all bitwise correct. Iteration 205 was a diagnostic-reference error. The remaining FC1 failure is after decoded B: inspect WGMMA operand descriptors/output-to-gate-up pairing or the control benchmark's weight contract.
+- **Artifact:** `bench/results/iter206_native_mode2_decode_reference_fix_20260904.log`.

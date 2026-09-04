@@ -62,8 +62,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
 
 def dequant_raw_tile(packed: torch.Tensor, exponent: torch.Tensor) -> torch.Tensor:
-    pair = packed.view(256, 4, 16)
-    nibble = torch.cat((pair & 0x0F, pair >> 4), dim=-1).reshape(256, 128)
+    chunks = packed.view(256, 16, 4)
+    # Marlin K8 packing: byte b contains high=K[b], low=K[b+4].
+    nibble = torch.cat((chunks >> 4, chunks & 0x0F), dim=-1).reshape(256, 128)
     fp4 = torch.tensor(
         [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0],
         dtype=torch.float32,
