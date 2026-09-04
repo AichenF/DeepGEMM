@@ -245,13 +245,13 @@ SINGLE_LAUNCH_NOINLINE_GEMM = (
 SINGLE_LAUNCH_MIN_BLOCKS = int(
     os.environ.get("V4_SINGLE_LAUNCH_MIN_BLOCKS", "8")
 )
-if SINGLE_LAUNCH_MIN_BLOCKS not in (4, 5, 6, 7, 8):
-    raise ValueError("V4_SINGLE_LAUNCH_MIN_BLOCKS must be in [4,8]")
+if SINGLE_LAUNCH_MIN_BLOCKS not in (4, 5, 6, 7, 8, 9):
+    raise ValueError("V4_SINGLE_LAUNCH_MIN_BLOCKS must be in [4,9]")
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "8")
 )
-if SINGLE_LAUNCH_CTAS_PER_SM not in (1, 2, 3, 4, 5, 6, 7, 8):
-    raise ValueError("V4_SINGLE_LAUNCH_CTAS_PER_SM must be in [1,8]")
+if SINGLE_LAUNCH_CTAS_PER_SM not in (1, 2, 3, 4, 5, 6, 7, 8, 9):
+    raise ValueError("V4_SINGLE_LAUNCH_CTAS_PER_SM must be in [1,9]")
 K6_NVLS_PULL_BLOCKS = int(os.environ.get("V4_K6_NVLS_PULL_BLOCKS", "64"))
 if K6_NVLS_PULL_BLOCKS not in (1, 2, 4, 8, 16, 32, 64):
     raise ValueError("V4_K6_NVLS_PULL_BLOCKS must be 1,2,4,8,16,32,64")

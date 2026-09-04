@@ -6352,3 +6352,15 @@ maximum rank latency of a full CUDA-Graph replay.
 - Phase audit: M8–M64 phases are effectively unchanged. The reported M128 W13 stamp is 2658.592 us while its candidate median is only 374.320 us; it captured the same multi-millisecond system outlier visible in maxima and is invalid for phase attribution.
 - Decision: reject and revert the five-way code duplication. The compiler already folds the runtime token-tail predicates well enough; target stage scheduling/dataflow instead.
 - Evidence: `results/iter178_tp4_single_launch_m_specialized_allm_20260904.log`.
+
+## Iteration 179 — ninth resident CTA has opposite small/large-M effects
+
+- Date: 2026-09-04
+- Change under test: extend the single-launch launch-bound/requested-residency knobs to nine and compile the M-specialized kernel with `__launch_bounds__(128,9)`, targeting roughly a 56-register ceiling and nine resident CTAs/SM. M128 retains 64 NVLS tail workers; FP8 input contract unchanged.
+- Protocol: paired TP4 GPUs 4–7, random M8/M128 routes, two batches × 20 cold-L2 replays per implementation, four warmups, excluded 256 MiB clear immediately before every graph replay, rank-max timing.
+- Correctness: both points pass with the same finite/allreduce/reference metrics as the bound-8 kernel.
+- M8: control/candidate 0.072528/0.079984 ms, speedup 0.906781x; phases route/W13/activation/W2 = 2.304/42.720/3.008/23.008 us. This is slower than bound 8 (Iteration 178 candidate 0.077552 ms).
+- M128: control/candidate 0.306336/0.368848 ms, speedup 0.830521x; phases = 4.576/215.552/6.592/113.344 us. This improves over bound 8's 0.374320 ms short-window result, led by W13.
+- Two-point geometric mean speedup is 0.867814x, effectively identical to the bound-8 all-M screen; a global switch is rejected.
+- Decision: retain bound 9 only as a large-M tuning lead. Test M64, then encode per-specialization bound 8 for M<=32 and bound 9 only where it wins; inspect cubin resources before selection.
+- Evidence: `results/iter179_tp4_single_launch_bound9_m8_m128_20260904.log`.
