@@ -8468,3 +8468,32 @@ maximum rank latency of a full CUDA-Graph replay.
   Humming v0.1.12 checkout on `PYTHONPATH`.
 - **Artifact:**
   `bench/results/iter307_native_rs_k128_batch_tp4_m8_m128_cold_screen_20260904.log`.
+
+## Iteration 308 — K128 RS batching gives a real 3-4% native gain
+
+- **Protocol:** TP4 GPUs 0-3, random M={8,128}, candidate is native register
+  dequant plus `V4_NATIVE_RS_K128_BATCH=1`; selected multi-kernel control in the
+  same process/CUDA Graph.  Two balanced AB/BA batches x 10 individually
+  cold-L2 replays per arm, three warmups, rank-max timing.  A separate 256 MiB
+  clear immediately precedes each replay and is excluded.  Inputs are
+  caller-provided FP8-E4M3 X plus FP32 group-128 scales; external X quantization
+  remains excluded.
+- **Correctness:** PASS at both shapes with exactly the accepted native
+  numerical envelope.  Final cosine is `0.99935880/0.99936043`, relative L2 is
+  `0.03584385/0.03576344`; embedded communication versus native-local NCCL has
+  cosine at least `0.99999162` and relative L2 at most `0.00409333`.
+- **Cold-L2 result (multi / batched-native median):** M8
+  `0.071376/0.117184 ms` (`1.6418x` slower); M128
+  `0.305968/0.495280 ms` (`1.6187x` slower).  Two-point geometric means are
+  `0.147779/0.240913 ms`, so batched native remains `1.6302x` slower.
+- **Delta versus Iteration 300 native RS:** Candidate latency improves from
+  `0.121120` to `0.117184 ms` at M8 (`3.25%`) and from `0.516048` to
+  `0.495280 ms` at M128 (`4.02%`).  The gain is stable across the two candidate
+  batch medians (`0.117168/0.117200` and `0.495696/0.494592 ms`).
+- **Decision:** Keep K128 batching as the preferred native experimental issue
+  schedule because it is correct and consistently faster, but it is still not
+  competitive with the multi-kernel baseline or the selected 128-thread
+  one-launch path.  The remaining roughly 62-64% gap requires structural role
+  utilization, not more GMMA wait micro-tuning.
+- **Artifact:**
+  `bench/results/iter308_native_rs_k128_batch_tp4_m8_m128_cold_screen_20260904.log`.
