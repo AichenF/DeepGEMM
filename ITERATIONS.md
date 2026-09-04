@@ -5517,3 +5517,21 @@ maximum rank latency of a full CUDA-Graph replay.
 - Interpretation: the harness is functional and confirms that standalone CAR latency is not the same quantity as its end-to-end incremental critical-path cost. The 40-sample smoke is not the reported verdict.
 - Evidence: `results/iter139_humming_ar_breakdown_tp4_m8_smoke_cold40_20260904.log`.
 - Decision: retain the harness and run the requested all-M 10×200 formal decomposition.
+
+## Iteration 140 — exact-Humming TP4 all-reduce formal cold-L2 breakdown
+
+- Date: 2026-09-04
+- Source: unchanged production kernels; iter139 breakdown harness.
+- Protocol: TP4 GPUs 1–4, exact Humming MXFP4 indexed pipeline, random precomputed routes, `M={8,16,32,64,128}`, complete-batch AB/BA pairing, 10 outer × 200 replays per graph, 20 warmups, separate 256 MiB cold-L2 clear before every graph replay, clear excluded, rank-max timing.
+- Primary definition: end-to-end incremental AR share = `(median(full)-median(local))/median(full)`. Diagnostic definition: independently timed `median(CAR-only)/median(paired full)`.
+- Per-M results (full / local / delta ms, primary share; CAR-only ms, diagnostic share):
+  - M8, one-shot push: 0.093088001 / 0.089216001 / 0.003872000, 4.1595%; 0.009216000, 9.8969%.
+  - M16, one-shot push: 0.145600006 / 0.140832007 / 0.004767999, 3.2747%; 0.009728000, 6.6754%.
+  - M32, one-shot push: 0.226528004 / 0.220640004 / 0.005888000, 2.5992%; 0.010816000, 4.7862%.
+  - M64, graph two-shot pull: 0.324703991 / 0.320176005 / 0.004527986, 1.3945%; 0.012768000, 4.0139%.
+  - M128, graph two-shot pull: 0.407424003 / 0.397727996 / 0.009696007, 2.3798%; 0.015488000, 3.8957%.
+- Equal-weight geometric means: full 0.209769453 ms; local 0.203967355 ms; incremental difference 0.005802098 ms = **2.7659%** of full. Independent CAR-only geometric mean 0.011390694 ms versus its paired full 0.207838818 ms = **5.4805%**.
+- Correctness: full CARv2 graph passed NCCL validation for every M (minimum cosine 0.999995543); every repeated CAR-only zero result remained exactly zero.
+- Interpretation: the baseline always included AR. Its removable end-to-end critical-path contribution is about 1.4–4.2% per M and 2.77% on the benchmark geometric mean. Standalone CAR launch cost is larger (3.9–9.9%, aggregate 5.48%) and must not be substituted for the removal delta.
+- Evidence: `results/iter140_exact_humming_ar_breakdown_tp4_allm_cold2000_20260904.log`.
+- Decision: accept this decomposition as the formal answer; no production-kernel change.
