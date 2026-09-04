@@ -32,6 +32,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--route-pattern", choices=("random", "balanced", "skew"), default="random"
     )
+    parser.add_argument(
+        "--candidate",
+        choices=("tp", "native"),
+        default="tp",
+        help="single-launch implementation to compare against the multi-kernel control",
+    )
     parser.add_argument("--outer", type=int, default=10)
     parser.add_argument("--replays", type=int, default=200)
     parser.add_argument("--warmup-replays", type=int, default=20)
@@ -136,8 +142,9 @@ def main() -> None:
     intermediate_per_rank = custom.INTERMEDIATE // world_size
     torch.manual_seed(args.seed + rank)
     torch.cuda.manual_seed(args.seed + rank)
+    use_native = args.candidate == "native"
     weights = custom.make_weights(
-        intermediate_per_rank, device, include_native=True
+        intermediate_per_rank, device, include_native=use_native
     )
     lut = kernel.make_e2m1_e8m0_lut(device)
     comm = CustomAllReduceV2(cpu_group, device)
@@ -171,7 +178,7 @@ def main() -> None:
                         "shared FP8-E4M3 X + FP32 group128 scale; "
                         "BF16-to-FP8 quantization outside timed graphs"
                     ),
-                    "native_megamoe": True,
+                    "native_megamoe": use_native,
                     "single_launch_interleaved": (
                         kernel.SINGLE_LAUNCH_INTERLEAVED
                     ),
@@ -186,7 +193,11 @@ def main() -> None:
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
                     ),
                     "control": "selected multi-kernel path from the same source",
-                    "candidate": "one tp4_megamoe_single_launch_kernel graph node",
+                    "candidate": (
+                        "native one-CTA-per-SM MegaMoE kernel"
+                        if use_native
+                        else "TP-specialized MegaMoE single kernel"
+                    ),
                 },
                 sort_keys=True,
             ),
@@ -220,7 +231,7 @@ def main() -> None:
             weights,
             lut,
             intermediate_per_rank,
-            use_native=True,
+            use_native=use_native,
         )
 
         kernel.SINGLE_LAUNCH_TP4 = False
@@ -234,38 +245,10 @@ def main() -> None:
         candidate_check = custom.correctness_metrics(
             candidate_case, candidate_graph, nccl_group, device
         )
-        assert candidate_case.native_local_output is not None
-        native_local_raw = candidate_case.native_local_output.clone()
-        native_local_scaled = (
-            native_local_raw.float() * custom.ROUTED_SCALING_FACTOR
-        ).to(torch.bfloat16)
-        local_reference = candidate_case.make_reference_case().run_local().clone()
-        torch.cuda.synchronize(device)
-        native_local_raw_check = tensor_comparison_metrics(
-            native_local_raw, local_reference, nccl_group, device
-        )
-        native_local_scaled_check = tensor_comparison_metrics(
-            native_local_scaled, local_reference, nccl_group, device
-        )
-        assert candidate_case.graph_output is not None
-        native_nccl_reference = native_local_raw.clone()
-        dist.all_reduce(native_nccl_reference, group=nccl_group)
-        native_nccl_reference = (
-            native_nccl_reference.float() * custom.ROUTED_SCALING_FACTOR
-        ).to(torch.bfloat16)
-        native_embedded_comm_check = tensor_comparison_metrics(
-            candidate_case.graph_output,
-            native_nccl_reference,
-            nccl_group,
-            device,
-        )
-        native_accept = bool(
-            candidate_check["finite_all_ranks"]
-            and candidate_check["cosine_min_rank"] >= 0.999
-            and native_embedded_comm_check["finite_all_ranks"]
-            and native_embedded_comm_check["cosine_min_rank"] >= 0.999
-            and native_embedded_comm_check["rel_l2_max_rank"] <= 0.01
-        )
+        native_local_raw = None
+        native_local_raw_check = None
+        native_local_scaled_check = None
+        native_embedded_comm_check = None
         native_l2_check = None
         native_l2_unweighted_check = None
         native_l2_scale_check = None
@@ -273,7 +256,46 @@ def main() -> None:
         native_l2_cross_route_rank0 = None
         native_combine_route_check = None
         native_combine_sum_check = None
-        if args.route_pattern == "balanced" and m * custom.TOP_K <= custom.NUM_EXPERTS:
+        candidate_accept = bool(candidate_check["allreduce_ok"])
+        if use_native:
+            assert candidate_case.native_local_output is not None
+            native_local_raw = candidate_case.native_local_output.clone()
+            native_local_scaled = (
+                native_local_raw.float() * custom.ROUTED_SCALING_FACTOR
+            ).to(torch.bfloat16)
+            local_reference = (
+                candidate_case.make_reference_case().run_local().clone()
+            )
+            torch.cuda.synchronize(device)
+            native_local_raw_check = tensor_comparison_metrics(
+                native_local_raw, local_reference, nccl_group, device
+            )
+            native_local_scaled_check = tensor_comparison_metrics(
+                native_local_scaled, local_reference, nccl_group, device
+            )
+            assert candidate_case.graph_output is not None
+            native_nccl_reference = native_local_raw.clone()
+            dist.all_reduce(native_nccl_reference, group=nccl_group)
+            native_nccl_reference = (
+                native_nccl_reference.float() * custom.ROUTED_SCALING_FACTOR
+            ).to(torch.bfloat16)
+            native_embedded_comm_check = tensor_comparison_metrics(
+                candidate_case.graph_output,
+                native_nccl_reference,
+                nccl_group,
+                device,
+            )
+            candidate_accept = bool(
+                candidate_accept
+                and native_embedded_comm_check["finite_all_ranks"]
+                and native_embedded_comm_check["cosine_min_rank"] >= 0.999
+                and native_embedded_comm_check["rel_l2_max_rank"] <= 0.01
+            )
+        if (
+            use_native
+            and args.route_pattern == "balanced"
+            and m * custom.TOP_K <= custom.NUM_EXPERTS
+        ):
             assert candidate_case.native_workspace is not None
             assert control_case.activation_scale is not None
             route_indices = torch.arange(m * custom.TOP_K, device=device)
@@ -379,7 +401,7 @@ def main() -> None:
                         "candidate_embedded_comm_vs_native_nccl": (
                             native_embedded_comm_check
                         ),
-                        "candidate_accept": native_accept,
+                        "candidate_accept": candidate_accept,
                         "candidate_l2_dequant": native_l2_check,
                         "candidate_l2_dequant_vs_unweighted_control": (
                             native_l2_unweighted_check
@@ -400,7 +422,7 @@ def main() -> None:
                 ),
                 flush=True,
             )
-        if not control_check["allreduce_ok"] or not native_accept:
+        if not control_check["allreduce_ok"] or not candidate_accept:
             raise RuntimeError(f"correctness failure at M={m}")
 
         for warmup_idx in range(args.warmup_replays):

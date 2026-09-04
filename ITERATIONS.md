@@ -6682,3 +6682,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Latency:** control/native medians `0.071216/0.128800 ms`; native is `1.809x` slower. The two native batch medians are `0.128688/0.128912 ms`, reproducing Iteration 216 and proving the Iteration-222 regression is removed.
 - **Conclusion:** Keep native only as a correctness/reference implementation. Its measured gap is much larger than the TP-specialized single-launch candidate, so optimization returns to the latter.
 - **Artifact:** `bench/results/iter223_restore_native_interleaved_tp4_m8_cold_screen_20260904.log`.
+## Iteration 224 — make the TP-specialized single-launch candidate explicit
+
+- Date: 2026-09-04
+- Hypothesis: explicitly selecting the faster TP-specialized single-launch path should reproduce its earlier approximately 15% gap while preserving the corrected prequantized-input contract.
+- Change: added `--candidate {tp,native}` (default `tp`), allocated native-repacked weights/workspace only for the native option, and gated native-only intermediate diagnostics. Both candidates consume prequantized FP8-E4M3 X plus FP32 group-128 scales; external BF16-to-FP8 quantization remains outside captured/timed graphs.
+- Benchmark: TP4 GPUs 0-3, random routes, M={8,16,32,64,128}, CUDA Graph, paired cold-L2, 2 outer x 20 replays, 4 warmups. A separate 256 MiB clear runs immediately before each replay and outside CUDA events.
+- Correctness: passed every M. Candidate cosine 0.99999560-0.99999579 and relative L2 0.002901-0.002968 versus independent local recompute plus NCCL all-reduce.
+- Results (control / candidate median ms, overhead): M8 0.071648 / 0.077120 (+7.64%); M16 0.114256 / 0.128784 (+12.72%); M32 0.177408 / 0.210336 (+18.56%); M64 0.249136 / 0.292720 (+17.49%); M128 0.305280 / 0.371024 (+21.54%). Geometric mean 0.161673 / 0.186706 ms: candidate 15.48% slower.
+- Communication: candidate multicast push for M<=64 and NVLS pull for M128; control multicast push for M<=32 and stock CARv2 for M>=64.
+- Verdict: semantically valid but not a performance win. Keep this TP-specialized path as the performance mainline and profile its fused-stage overhead next; the native scheduler remains a correctness/reference implementation.
+- Artifact: `bench/results/iter224_tp_specialized_single_launch_allm_cold_screen_20260904.log`.
