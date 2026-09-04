@@ -5613,3 +5613,26 @@ maximum rank latency of a full CUDA-Graph replay.
 - Full-path pooled medians: P2P two-shot `0.273728013 ms`; NVLS multicast one-shot push `0.268128008 ms`.  NVLS leads by `5.600005 us` / `2.09%`, but wins only 6/10 paired batch medians amid large compute-mode drift.
 - Decision: retain P2P two-shot as the production M64 default for now.  Replay- and batch-level pooled medians both favor NVLS push, but the batch direction is not stable and isolated AR-only favors P2P two-shot; audit the graph buffer paths before attributing this to communication.
 - Artifact: `results/iter147_ar_transport_focus_tp4_m64_batch_cold2000_20260904.log`.
+
+## Iteration 148 — extract the selected route GEMM into a reusable device task
+
+- Date: 2026-09-04.
+- Change: refactor the selected `route_gemm` implementation into an inlined
+  `route_gemm_task` device function and retain the existing standalone kernel
+  as a thin global wrapper.  The task now receives an explicit linear task ID
+  and tensor-map pointers, which lets the forthcoming persistent TP MegaMoE
+  kernel invoke exactly the same validated W13/W2 core without a child launch.
+- Scope: single-rank TP4-shape full-reference correctness on idle physical GPU
+  6, `M=8`, balanced routes, `Is=512`, split-K 4.  This is a structural
+  bring-up test, not a performance measurement.
+- Preparation remains exact: route contract passed, BF16-to-FP8 bytes matched
+  the Humming quantizer bitwise, and activation scales had zero max error.
+- Numerical result exactly reproduces iteration 138c: W13 cosine/rel-L2
+  `0.999999998/0.000076187`, activation `0.999999759/0.000694956`, and W2
+  `0.999997256/0.002342691`; output is finite and the test emitted
+  `V4_WGMMA_OK`.
+- Decision: retain the refactor.  It is semantics-neutral and establishes the
+  reusable compute seam needed by a single global kernel.  Next add in-kernel
+  route/quant preparation, resident-grid barriers, persistent W13/W2 task
+  loops, and the already validated fused k6+TP4 communication tail.
+- Artifact: `results/iter148_route_gemm_device_task_refactor_correctness_20260904.log`.

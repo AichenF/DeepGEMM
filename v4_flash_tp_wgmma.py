@@ -652,9 +652,9 @@ __device__ __forceinline__ uint2 dequant_weight_word(
 
 template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool PublishW2Progress = false, bool DualWgW13 = false>
-__global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
-        const __grid_constant__ CUtensorMap tma_weight,
-        const __grid_constant__ CUtensorMap tma_weight_scale,
+__device__ __forceinline__ void route_gemm_task(
+        const CUtensorMap* tma_weight,
+        const CUtensorMap* tma_weight_scale,
         const uint8_t* __restrict__ weight,
         const uint8_t* __restrict__ weight_scale,
         const float* __restrict__ weight_global_scale,
@@ -668,7 +668,8 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
         const uint2* __restrict__ global_lut,
         int32_t* __restrict__ progress_state,
         int max_routes,
-        int n_tile_begin) {
+        int n_tile_begin,
+        int linear_block_idx) {
     static_assert(K % kBlockK == 0);
     static_assert(N % kWout == 0);
     static_assert((K / kBlockK) % SplitK == 0);
@@ -716,8 +717,8 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
     const int tid = threadIdx.x;
     const int math_wg = DualWgW13 ? tid >> 7 : 0;
     const int mtid = DualWgW13 ? tid & 127 : tid;
-    const int split_idx = blockIdx.x % SplitK;
-    const int task_idx = blockIdx.x / SplitK;
+    const int split_idx = linear_block_idx % SplitK;
+    const int task_idx = linear_block_idx / SplitK;
     const int m_block_idx = task_idx / kTaskNTiles;
     const int local_n_task_idx = task_idx % kTaskNTiles;
     const int local_n_block_idx = local_n_task_idx * kMathWGs + math_wg;
@@ -936,14 +937,14 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                 asm volatile(
                     "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
                     "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
-                    :: "r"(weight_dst), "l"(&tma_weight),
+                    :: "r"(weight_dst), "l"(tma_weight),
                        "r"(0), "r"(tiled_row),
                        "r"(stage_barrier_addr) : "memory");
             } else {
                 asm volatile(
                     "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
                     "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
-                    :: "r"(weight_dst), "l"(&tma_weight),
+                    :: "r"(weight_dst), "l"(tma_weight),
                        "r"(global_kt * (kBlockK / 2)), "r"(weight_row),
                        "r"(stage_barrier_addr) : "memory");
             }
@@ -969,14 +970,14 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                     asm volatile(
                         "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
                         "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
-                        :: "r"(scale_dst), "l"(&tma_weight_scale),
+                        :: "r"(scale_dst), "l"(tma_weight_scale),
                            "r"(0), "r"(tiled_scale_row),
                            "r"(stage_barrier_addr) : "memory");
                 } else {
                     asm volatile(
                         "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
                         "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
-                        :: "r"(scale_dst), "l"(&tma_weight_scale),
+                        :: "r"(scale_dst), "l"(tma_weight_scale),
                            "r"((scale_kt & ~3) * (kBlockK / 32)),
                            "r"(weight_row),
                            "r"(stage_barrier_addr) : "memory");
@@ -1011,14 +1012,14 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                     asm volatile(
                         "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
                         "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
-                        :: "r"(weight_scale_smem_addr), "l"(&tma_weight_scale),
+                        :: "r"(weight_scale_smem_addr), "l"(tma_weight_scale),
                            "r"(0), "r"(tiled_scale_row),
                            "r"(scale_barrier_addr) : "memory");
                 } else {
                     asm volatile(
                         "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
                         "complete_tx::bytes [%0],[%1,{%2,%3}],[%4];"
-                        :: "r"(weight_scale_smem_addr), "l"(&tma_weight_scale),
+                        :: "r"(weight_scale_smem_addr), "l"(tma_weight_scale),
                            "r"((global_kt & ~3) * (kBlockK / 32)),
                            "r"(weight_row), "r"(scale_barrier_addr) : "memory");
                 }
@@ -1584,6 +1585,38 @@ __global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
                     progress_state + route * kNumW2Tiles + n_block_idx, 1);
         }
     }
+}
+
+// Keep the selected standalone launch as a thin wrapper around the task body.
+// The same task body is also the compute building block for the single-launch
+// TP MegaMoE path, avoiding a second independently maintained GEMM core.
+template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
+          bool PublishW2Progress = false, bool DualWgW13 = false>
+__global__ ROUTE_LAUNCH_BOUNDS(IsW13, DualWgW13) void route_gemm(
+        const __grid_constant__ CUtensorMap tma_weight,
+        const __grid_constant__ CUtensorMap tma_weight_scale,
+        const uint8_t* __restrict__ weight,
+        const uint8_t* __restrict__ weight_scale,
+        const float* __restrict__ weight_global_scale,
+        const uint8_t* __restrict__ activation,
+        const float* __restrict__ activation_scale,
+        const int32_t* __restrict__ sorted_ids,
+        const int32_t* __restrict__ expert_ids,
+        const int32_t* __restrict__ num_tokens_padded,
+        const float* __restrict__ topk_weights,
+        float* __restrict__ output,
+        const uint2* __restrict__ global_lut,
+        int32_t* __restrict__ progress_state,
+        int max_routes,
+        int n_tile_begin) {
+    route_gemm_task<K, N, SplitK, IsW13, LaunchNTiles,
+                    PublishW2Progress, DualWgW13>(
+        &tma_weight, &tma_weight_scale,
+        weight, weight_scale, weight_global_scale,
+        activation, activation_scale,
+        sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+        output, global_lut, progress_state, max_routes, n_tile_begin,
+        static_cast<int>(blockIdx.x));
 }
 
 // Native MegaMoE-style TP-local W13 task.  Two aligned math warpgroups consume
