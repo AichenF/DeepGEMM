@@ -7613,3 +7613,53 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Artifacts:**
   `bench/results/iter265_selected_packed_m128_full_ncu_20260904.log` and
   `results/iter265_selected_packed_m128_full.ncu-rep`.
+
+## Iteration 266 — persistent GEMM state plus packed barriers gives a false short-window lead
+
+- **Hypothesis:** Reusing per-CTA LUT/mbarrier state may become useful after
+  packed generation counters remove part of the whole-grid synchronization
+  cost.  This combines the existing opt-in
+  `V4_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE=1` with the selected packed,
+  relaxed 64 ns barrier; no source or numerical contract changes were made.
+- **Compute-only screen:** Five independently cold-L2 launches on H20 GPU 0
+  passed bitwise at M8/M128.  Median route/W13/requant/W2 phase times were
+  M8 `2.048/40.896/3.072/21.824 us` and M128
+  `3.808/208.352/6.304/108.256 us`.  The M128 phase sum is directionally
+  better than the selected nonpersistent path, while M8 is effectively flat.
+- **TP4 short screen:** GPUs 0-3, random M8/M128, two balanced batches x 20
+  separately cold-L2 CUDA-Graph replays per arm, four warmups, rank-max.
+  Correctness and all-reduce checks pass.  Multi/candidate medians are M8
+  `0.071584/0.076128 ms` and M128 `0.306000/0.363616 ms`; candidate overheads
+  are `6.35%` and `18.83%`.
+- **Interpretation:** The M128 absolute number looked about 23 us better than
+  Iteration 262, but its paired control was also about 15 us faster.  The
+  relative endpoint geometric gap only moved from roughly 12.4% to 12.4%.
+  This is sufficient to justify an all-M confirmation, not selection.
+- **Artifact:**
+  `bench/results/iter266_persistent_packed_tp4_m8_m128_cold_screen_20260904.log`.
+
+## Iteration 267 — long all-M pairing rejects persistent GEMM state
+
+- **Protocol:** Same persistent+packed candidate, TP4 GPUs 0-3, random
+  M={8,16,32,64,128}, six balanced AB/BA batches x 30 independently cold-L2
+  graph replays per implementation (180 samples/shape), six warmups and
+  rank-max timing.  The separate 256 MiB clear is excluded from events.
+  Inputs remain caller-provided FP8-E4M3 X plus FP32 group-128 scales; external
+  X quantization is excluded.
+- **Correctness:** PASS at every M for candidate and multi-kernel control.
+  Candidate cosine is at least `0.99999560`, relative L2 at most
+  `0.00296801`, all ranks are finite, and the embedded collective passes.
+- **Cold-L2 multi/candidate medians and candidate overhead:** M8
+  `0.071328/0.076480 ms, +7.22%`; M16
+  `0.114368/0.126816 ms, +10.88%`; M32
+  `0.176672/0.203968 ms, +15.45%`; M64
+  `0.254304/0.294400 ms, +15.77%`; M128
+  `0.324736/0.391024 ms, +20.41%`.
+- **Aggregate/verdict:** Geometric means are multi `0.164106 ms` and
+  candidate `0.186847 ms`; persistent state is `13.86%` slower.  The selected
+  Iteration 262 nonpersistent result was `13.24%` slower with nearly identical
+  control geometric mean, so the long paired window reverses the short
+  compute-only signal and regresses candidate geometric latency by about
+  `0.61%`.  Reject and keep persistent state disabled.
+- **Artifact:**
+  `bench/results/iter267_persistent_packed_tp4_allm_cold_paired_20260904.log`.
