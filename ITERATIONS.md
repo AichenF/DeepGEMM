@@ -8642,3 +8642,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Delta: occupancy remains register-compatible with 8 CTAs/SM and ptxas reports no fixed local allocation, but the candidate grows the stack by 16 bytes/thread and adds one scalar `STL`/`LDL` pair. The other five local-stack instructions already exist in the default path.
 - Artifact: `bench/results/iter316_w2_prefetch_cubin_resource_gate_20260904.log`.
 - Decision: the strict no-added-stack-traffic gate is not met. Because the added pair appears once across the inlined phase rather than once per W2 K tile, permit only a short cold-L2 TP4 on/off screen; reject immediately unless normalized timing shows a clear benefit.
+
+## Iteration 317 — Invalid W2 prefetch timing invocation
+
+- Intended test: adjacent W2-prefetch on/off TP4 cold-L2 screen at M=8/128.
+- Outcome: no benchmark samples were collected. The harness rejected `--outer 3` before CUDA Graph timing because batch pairing requires an even outer count; both on and off invocations exited with code 2.
+- Artifact: `bench/results/iter317_w2_prefetch_on_off_tp4_cold_screen_20260904.log`.
+- Decision: invalid/non-evidence. Repeat with an even outer count; do not use this iteration in any performance conclusion.

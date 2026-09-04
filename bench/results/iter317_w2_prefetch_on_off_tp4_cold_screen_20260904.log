@@ -1,0 +1,194 @@
+W2_PREFETCH=ON
+W0904 20:08:05.350000 509255 torch/distributed/run.py:851] 
+W0904 20:08:05.350000 509255 torch/distributed/run.py:851] *****************************************
+W0904 20:08:05.350000 509255 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0904 20:08:05.350000 509255 torch/distributed/run.py:851] *****************************************
+usage: v4_flash_tp_single_vs_multi_graph.py [-h] [--ms MS]
+                                            [--route-pattern {random,balanced,skew}]
+                                            [--candidate {tp,native}]
+                                            [--outer OUTER]
+                                            [--replays REPLAYS]
+                                            [--warmup-replays WARMUP_REPLAYS]
+                                            [--pair-granularity {batch,replay}]
+                                            [--seed SEED]
+v4_flash_tp_single_vs_multi_graph.py: error: batch pairing requires an even --outer
+usage: v4_flash_tp_single_vs_multi_graph.py [-h] [--ms MS]
+                                            [--route-pattern {random,balanced,skew}]
+                                            [--candidate {tp,native}]
+                                            [--outer OUTER]
+                                            [--replays REPLAYS]
+                                            [--warmup-replays WARMUP_REPLAYS]
+                                            [--pair-granularity {batch,replay}]
+                                            [--seed SEED]
+v4_flash_tp_single_vs_multi_graph.py: error: batch pairing requires an even --outer
+usage: v4_flash_tp_single_vs_multi_graph.py [-h] [--ms MS]
+                                            [--route-pattern {random,balanced,skew}]
+                                            [--candidate {tp,native}]
+                                            [--outer OUTER]
+                                            [--replays REPLAYS]
+                                            [--warmup-replays WARMUP_REPLAYS]
+                                            [--pair-granularity {batch,replay}]
+                                            [--seed SEED]
+v4_flash_tp_single_vs_multi_graph.py: error: batch pairing requires an even --outer
+usage: v4_flash_tp_single_vs_multi_graph.py [-h] [--ms MS]
+                                            [--route-pattern {random,balanced,skew}]
+                                            [--candidate {tp,native}]
+                                            [--outer OUTER]
+                                            [--replays REPLAYS]
+                                            [--warmup-replays WARMUP_REPLAYS]
+                                            [--pair-granularity {batch,replay}]
+                                            [--seed SEED]
+v4_flash_tp_single_vs_multi_graph.py: error: batch pairing requires an even --outer
+W0904 20:08:17.389000 509255 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 509324 closing signal SIGTERM
+W0904 20:08:17.389000 509255 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 509325 closing signal SIGTERM
+W0904 20:08:17.389000 509255 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 509326 closing signal SIGTERM
+E0904 20:08:17.553000 509255 torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 2) local_rank: 3 (pid: 509327) of binary: /usr/bin/python3
+Traceback (most recent call last):
+  File "/usr/local/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+bench/v4_flash_tp_single_vs_multi_graph.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-09-04_20:08:17
+  host      : H20-GPU-06.cm.cluster
+  rank      : 0 (local_rank: 0)
+  exitcode  : -15 (pid: 509324)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 509324
+[2]:
+  time      : 2026-09-04_20:08:17
+  host      : H20-GPU-06.cm.cluster
+  rank      : 1 (local_rank: 1)
+  exitcode  : -15 (pid: 509325)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 509325
+[3]:
+  time      : 2026-09-04_20:08:17
+  host      : H20-GPU-06.cm.cluster
+  rank      : 2 (local_rank: 2)
+  exitcode  : -15 (pid: 509326)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 509326
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-09-04_20:08:17
+  host      : H20-GPU-06.cm.cluster
+  rank      : 3 (local_rank: 3)
+  exitcode  : 2 (pid: 509327)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
+W2_PREFETCH=OFF
+W0904 20:08:19.073000 509412 torch/distributed/run.py:851] 
+W0904 20:08:19.073000 509412 torch/distributed/run.py:851] *****************************************
+W0904 20:08:19.073000 509412 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0904 20:08:19.073000 509412 torch/distributed/run.py:851] *****************************************
+usage: v4_flash_tp_single_vs_multi_graph.py [-h] [--ms MS]
+                                            [--route-pattern {random,balanced,skew}]
+                                            [--candidate {tp,native}]
+                                            [--outer OUTER]
+                                            [--replays REPLAYS]
+                                            [--warmup-replays WARMUP_REPLAYS]
+                                            [--pair-granularity {batch,replay}]
+                                            [--seed SEED]
+v4_flash_tp_single_vs_multi_graph.py: error: batch pairing requires an even --outer
+usage: v4_flash_tp_single_vs_multi_graph.py [-h] [--ms MS]
+                                            [--route-pattern {random,balanced,skew}]
+                                            [--candidate {tp,native}]
+                                            [--outer OUTER]
+                                            [--replays REPLAYS]
+                                            [--warmup-replays WARMUP_REPLAYS]
+                                            [--pair-granularity {batch,replay}]
+                                            [--seed SEED]
+v4_flash_tp_single_vs_multi_graph.py: error: batch pairing requires an even --outer
+usage: v4_flash_tp_single_vs_multi_graph.py [-h] [--ms MS]
+                                            [--route-pattern {random,balanced,skew}]
+                                            [--candidate {tp,native}]
+                                            [--outer OUTER]
+                                            [--replays REPLAYS]
+                                            [--warmup-replays WARMUP_REPLAYS]
+                                            [--pair-granularity {batch,replay}]
+                                            [--seed SEED]
+v4_flash_tp_single_vs_multi_graph.py: error: batch pairing requires an even --outer
+usage: v4_flash_tp_single_vs_multi_graph.py [-h] [--ms MS]
+                                            [--route-pattern {random,balanced,skew}]
+                                            [--candidate {tp,native}]
+                                            [--outer OUTER]
+                                            [--replays REPLAYS]
+                                            [--warmup-replays WARMUP_REPLAYS]
+                                            [--pair-granularity {batch,replay}]
+                                            [--seed SEED]
+v4_flash_tp_single_vs_multi_graph.py: error: batch pairing requires an even --outer
+W0904 20:09:21.320000 509412 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 509481 closing signal SIGTERM
+W0904 20:09:21.321000 509412 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 509482 closing signal SIGTERM
+W0904 20:09:21.321000 509412 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 509483 closing signal SIGTERM
+E0904 20:09:21.485000 509412 torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 2) local_rank: 3 (pid: 509484) of binary: /usr/bin/python3
+Traceback (most recent call last):
+  File "/usr/local/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+bench/v4_flash_tp_single_vs_multi_graph.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-09-04_20:09:21
+  host      : H20-GPU-06.cm.cluster
+  rank      : 0 (local_rank: 0)
+  exitcode  : -15 (pid: 509481)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 509481
+[2]:
+  time      : 2026-09-04_20:09:21
+  host      : H20-GPU-06.cm.cluster
+  rank      : 1 (local_rank: 1)
+  exitcode  : -15 (pid: 509482)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 509482
+[3]:
+  time      : 2026-09-04_20:09:21
+  host      : H20-GPU-06.cm.cluster
+  rank      : 2 (local_rank: 2)
+  exitcode  : -15 (pid: 509483)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 509483
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-09-04_20:09:21
+  host      : H20-GPU-06.cm.cluster
+  rank      : 3 (local_rank: 3)
+  exitcode  : 2 (pid: 509484)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
