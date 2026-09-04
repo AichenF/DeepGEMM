@@ -5,9 +5,10 @@ retains their validated braided MXFP4 -> FP8 register dequantization and
 swap-AB RS-WGMMA core, while replacing the synthetic shared ``X[8, K]`` and
 raw ``G`` knob with SGLang-compatible indexed-MoE metadata.
 
-The module implements only the per-rank local expert computation.  The
-benchmark owns route alignment, activation quantization, and SGLang
-``CustomAllReduceV2`` so those operations can all be captured in one graph.
+The serving entry accepts an already-quantized FP8 activation and owns route
+alignment, both expert GEMMs, the internal SwiGLU/FP8 requantization, fixed-k6
+reduction, and the TP collective.  BF16-to-FP8 input quantization is upstream
+of this module and is deliberately excluded from both compared graphs.
 """
 
 from __future__ import annotations
@@ -220,8 +221,11 @@ FUSED_K6_NVLS_PULL_AR = (
     os.environ.get("V4_FUSED_K6_NVLS_PULL_AR", "0") == "1"
 )
 SINGLE_LAUNCH_TP4 = os.environ.get("V4_SINGLE_LAUNCH_TP4", "0") == "1"
+SINGLE_LAUNCH_INTERLEAVED = (
+    os.environ.get("V4_SINGLE_LAUNCH_INTERLEAVED", "1") == "1"
+)
 SINGLE_LAUNCH_CTAS_PER_SM = int(
-    os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "4")
+    os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "5")
 )
 if SINGLE_LAUNCH_CTAS_PER_SM not in (1, 2, 3, 4, 5, 6, 7, 8):
     raise ValueError("V4_SINGLE_LAUNCH_CTAS_PER_SM must be in [1,8]")
@@ -403,6 +407,8 @@ static constexpr bool kW2SortedAct = K_W2_SORTED_ACT;
 static constexpr bool kW2MblockScale = K_W2_MBLOCK_SCALE || kW2SortedAct;
 static constexpr bool kW2CoalescedStore = K_W2_COALESCED_STORE;
 static constexpr bool kW2FoldGlobalScale = K_W2_FOLD_GLOBAL_SCALE;
+static constexpr bool kSingleLaunchInterleaved =
+    K_SINGLE_LAUNCH_INTERLEAVED;
 
 #if K_MIN_BLOCKS_PER_SM > 0
 #define ROUTE_LAUNCH_BOUNDS(IS_W13, DUAL) \
@@ -3149,12 +3155,16 @@ __device__ __forceinline__ void fused_k6_nvls_pull_tp4_task(
 __device__ __forceinline__ void single_launch_grid_barrier(
         int32_t* __restrict__ state, int phase, int expected_blocks) {
     __shared__ int observed_epoch;
+    // A fence is per CUDA thread.  Every lane that produced ordinary global
+    // stores must publish its own writes before lane 0 announces CTA arrival.
+    // The old lane-0-only fence was sufficient in practice for the staged
+    // bring-up, but was not a valid publication primitive for a task DAG.
+    __threadfence();
     __syncthreads();
     if (threadIdx.x == 0) {
         int32_t* count = state + phase * 2;
         int32_t* epoch = count + 1;
         observed_epoch = load_acquire_gpu_i32(epoch);
-        __threadfence();
         const int arrival = atomicAdd(count, 1);
         if (arrival == expected_blocks - 1) {
             atomicExch(count, 0);
@@ -3166,6 +3176,18 @@ __device__ __forceinline__ void single_launch_grid_barrier(
     }
     __syncthreads();
 }
+
+enum SingleLaunchSchedulerOffset : int {
+    kSchedulerNextW13 = 0,
+    kSchedulerW13QueueTail = 1,
+    kSchedulerNextActivation = 2,
+    kSchedulerW2QueueTail = 3,
+    kSchedulerNextW2 = 4,
+    kSchedulerDoneW13 = 5,
+    kSchedulerDoneActivation = 6,
+    kSchedulerDoneW2 = 7,
+    kSchedulerHeaderWords = 8,
+};
 
 // First complete bring-up of the real one-launch TP4 path.  It intentionally
 // keeps phase barriers between the already validated kernels before the next
@@ -3216,41 +3238,248 @@ __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
     const int ctas = static_cast<int>(gridDim.x);
     const int routes = tokens * kTopK;
 
+    // barrier_state[0:8] remains the generation-counted grid-barrier slab.
+    // The suffix is graph-stable scheduler storage, reset cooperatively by
+    // this kernel on every replay: eight counters followed by one W13-done
+    // count and two release-published queues per possible routed M block.
+    int32_t* scheduler = barrier_state + 8;
+    if constexpr (kSingleLaunchInterleaved) {
+        const int scheduler_words = kSchedulerHeaderWords + 3 * max_mblocks;
+        for (int word = cta * blockDim.x + threadIdx.x;
+             word < scheduler_words; word += ctas * blockDim.x)
+            scheduler[word] = 0;
+    }
+
     single_launch_route_task(
         topk_ids, sorted_ids, expert_ids, num_tokens_padded,
         route_to_sorted, tokens, cta);
     single_launch_grid_barrier(barrier_state, 0, ctas);
 
-    const int w13_tasks = max_mblocks * kW13NTiles * SplitK;
-    for (int task = cta; task < w13_tasks; task += ctas) {
-        route_gemm_task<4096, 1024, SplitK, true>(
-            &w13_tma_weight, &w13_tma_weight_scale,
-            w13, s13, g13, qx, x_scale,
-            sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-            partials, lut, nullptr, routes, 0, task);
-        __syncthreads();
-    }
-    single_launch_grid_barrier(barrier_state, 1, ctas);
+    if constexpr (kSingleLaunchInterleaved) {
+        static_assert(SplitK == 2 || SplitK == 4);
+        constexpr int kSplitPairs = SplitK / 2;
+        constexpr int kW13GroupsPerMblock = kW13NTiles * kSplitPairs;
+        constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
 
-    const int activation_groups = routes * (kIntermediate / 128);
-    for (int group = cta; group < activation_groups; group += ctas) {
-        reduce_swiglu_quant_task<kIntermediate, SplitK>(
-            partials, activation, qactivation, activation_scale,
-            route_to_sorted, topk_ids, g2, routes, group);
-        __syncthreads();
-    }
-    single_launch_grid_barrier(barrier_state, 2, ctas);
+        const int num_mblocks = __ldg(num_tokens_padded) / kTok;
+        const int total_w13_groups = num_mblocks * kW13GroupsPerMblock;
+        const int total_w2_tasks = num_mblocks * kW2NTiles;
+        int32_t* w13_done = scheduler + kSchedulerHeaderWords;
+        int32_t* activation_queue = w13_done + max_mblocks;
+        int32_t* w2_queue = activation_queue + max_mblocks;
 
-    const int w2_tasks = max_mblocks * kW2NTiles;
-    for (int task = cta; task < w2_tasks; task += ctas) {
-        route_gemm_task<512, 4096, 1, false>(
-            &w2_tma_weight, &w2_tma_weight_scale,
-            w2, s2, g2, qactivation, activation_scale,
-            sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-            reinterpret_cast<float*>(down), lut, nullptr, routes, 0, task);
-        __syncthreads();
+        // One block-wide mailbox lets lane 0 perform global scheduling while
+        // all 128 lanes remain available to the selected WGMMA/quant task.
+        __shared__ int scheduled_kind;
+        __shared__ int scheduled_index;
+        __shared__ int scheduled_mblock;
+        bool w13_exhausted = false;
+
+        while (true) {
+            if (threadIdx.x == 0) {
+                int kind = -1;
+                int index = -1;
+                int mblock = -1;
+
+                while (kind < 0) {
+                    if (atomicAdd(scheduler + kSchedulerDoneW2, 0)
+                            == total_w2_tasks) {
+                        kind = 0;
+                        break;
+                    }
+
+                    // First drain any W2 tile whose activation block has
+                    // already been release-published.  The queue encodes
+                    // mblock+1 so zero remains the reset/not-ready sentinel.
+                    const int next_w2 =
+                        atomicAdd(scheduler + kSchedulerNextW2, 0);
+                    if (next_w2 < total_w2_tasks) {
+                        const int queue_slot = next_w2 / kW2NTiles;
+                        const int encoded = load_acquire_gpu_i32(
+                            w2_queue + queue_slot);
+                        if (encoded != 0
+                                && atomicCAS(
+                                    scheduler + kSchedulerNextW2,
+                                    next_w2, next_w2 + 1) == next_w2) {
+                            kind = 3;
+                            index = next_w2 - queue_slot * kW2NTiles;
+                            mblock = encoded - 1;
+                            break;
+                        }
+                    }
+
+                    // One CTA performs all four group-128 quant groups for
+                    // each valid route in a ready mblock.  This keeps every
+                    // route's scales complete before any W2 N tile sees it.
+                    const int next_activation = atomicAdd(
+                        scheduler + kSchedulerNextActivation, 0);
+                    if (next_activation < num_mblocks) {
+                        const int encoded = load_acquire_gpu_i32(
+                            activation_queue + next_activation);
+                        if (encoded != 0
+                                && atomicCAS(
+                                    scheduler + kSchedulerNextActivation,
+                                    next_activation,
+                                    next_activation + 1)
+                                    == next_activation) {
+                            kind = 2;
+                            index = next_activation;
+                            mblock = encoded - 1;
+                            break;
+                        }
+                    }
+
+                    // Pair adjacent split-K slices under one scheduler claim.
+                    // M8 still exposes 16 tasks/mblock (typically >390 total)
+                    // while halving global claim/publication overhead.
+                    if (!w13_exhausted) {
+                        const int next_w13 = atomicAdd(
+                            scheduler + kSchedulerNextW13, 1);
+                        if (next_w13 < total_w13_groups) {
+                            kind = 1;
+                            index = next_w13;
+                            mblock = next_w13 / kW13GroupsPerMblock;
+                            break;
+                        }
+                        w13_exhausted = true;
+                    }
+
+                    // All upstream work may be claimed but not yet complete.
+                    // Poll with one lane while the remaining lanes sleep at
+                    // the mailbox barrier; no resident CTA is stranded on a
+                    // specific not-yet-ready downstream task.
+                    __nanosleep(64);
+                }
+
+                scheduled_kind = kind;
+                scheduled_index = index;
+                scheduled_mblock = mblock;
+            }
+            __syncthreads();
+
+            const int kind = scheduled_kind;
+            if (kind == 0)
+                break;
+
+            if (kind == 1) {
+                const int local_group = scheduled_index
+                    - scheduled_mblock * kW13GroupsPerMblock;
+                const int n_tile = local_group / kSplitPairs;
+                const int split_pair = local_group - n_tile * kSplitPairs;
+                const int first_task =
+                    (scheduled_mblock * kW13NTiles + n_tile) * SplitK
+                    + split_pair * 2;
+                #pragma unroll
+                for (int split_in_pair = 0; split_in_pair < 2;
+                     ++split_in_pair) {
+                    route_gemm_task<4096, 1024, SplitK, true>(
+                        &w13_tma_weight, &w13_tma_weight_scale,
+                        w13, s13, g13, qx, x_scale,
+                        sorted_ids, expert_ids, num_tokens_padded,
+                        topk_weights, partials, lut, nullptr,
+                        routes, 0, first_task + split_in_pair);
+                    __syncthreads();
+                }
+
+                // Every output lane publishes its partials before lane 0
+                // increments this mblock's completion count.
+                __threadfence();
+                __syncthreads();
+                if (threadIdx.x == 0) {
+                    const int done =
+                        atomicAdd(w13_done + scheduled_mblock, 1) + 1;
+                    atomicAdd(scheduler + kSchedulerDoneW13, 1);
+                    if (done == kW13GroupsPerMblock) {
+                        const int queue_slot = atomicAdd(
+                            scheduler + kSchedulerW13QueueTail, 1);
+                        store_release_gpu_i32(
+                            activation_queue + queue_slot,
+                            scheduled_mblock + 1);
+                    }
+                }
+            } else if (kind == 2) {
+                #pragma unroll
+                for (int route_slot = 0; route_slot < kTok; ++route_slot) {
+                    const int route = __ldg(
+                        sorted_ids + scheduled_mblock * kTok + route_slot);
+                    if (route < routes) {
+                        #pragma unroll
+                        for (int group_in_route = 0;
+                             group_in_route < kActivationGroupsPerRoute;
+                             ++group_in_route) {
+                            reduce_swiglu_quant_task<kIntermediate, SplitK>(
+                                partials, activation, qactivation,
+                                activation_scale, route_to_sorted, topk_ids,
+                                g2, routes,
+                                route * kActivationGroupsPerRoute
+                                    + group_in_route);
+                            __syncthreads();
+                        }
+                    }
+                }
+
+                __threadfence();
+                __syncthreads();
+                if (threadIdx.x == 0) {
+                    atomicAdd(scheduler + kSchedulerDoneActivation, 1);
+                    const int queue_slot = atomicAdd(
+                        scheduler + kSchedulerW2QueueTail, 1);
+                    store_release_gpu_i32(
+                        w2_queue + queue_slot, scheduled_mblock + 1);
+                }
+            } else {
+                const int task =
+                    scheduled_mblock * kW2NTiles + scheduled_index;
+                route_gemm_task<512, 4096, 1, false>(
+                    &w2_tma_weight, &w2_tma_weight_scale,
+                    w2, s2, g2, qactivation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                    reinterpret_cast<float*>(down), lut, nullptr,
+                    routes, 0, task);
+                __syncthreads();
+                if (threadIdx.x == 0)
+                    atomicAdd(scheduler + kSchedulerDoneW2, 1);
+            }
+            __syncthreads();
+        }
+
+        // This remaining barrier is the only compute-wide phase boundary:
+        // every lane publishes W2 route rows before the communication CTAs
+        // begin k6 reduction and the TP collective.
+        single_launch_grid_barrier(barrier_state, 3, ctas);
+    } else {
+        const int w13_tasks = max_mblocks * kW13NTiles * SplitK;
+        for (int task = cta; task < w13_tasks; task += ctas) {
+            route_gemm_task<4096, 1024, SplitK, true>(
+                &w13_tma_weight, &w13_tma_weight_scale,
+                w13, s13, g13, qx, x_scale,
+                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                partials, lut, nullptr, routes, 0, task);
+            __syncthreads();
+        }
+        single_launch_grid_barrier(barrier_state, 1, ctas);
+
+        const int activation_groups = routes * (kIntermediate / 128);
+        for (int group = cta; group < activation_groups; group += ctas) {
+            reduce_swiglu_quant_task<kIntermediate, SplitK>(
+                partials, activation, qactivation, activation_scale,
+                route_to_sorted, topk_ids, g2, routes, group);
+            __syncthreads();
+        }
+        single_launch_grid_barrier(barrier_state, 2, ctas);
+
+        const int w2_tasks = max_mblocks * kW2NTiles;
+        for (int task = cta; task < w2_tasks; task += ctas) {
+            route_gemm_task<512, 4096, 1, false>(
+                &w2_tma_weight, &w2_tma_weight_scale,
+                w2, s2, g2, qactivation, activation_scale,
+                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                reinterpret_cast<float*>(down), lut, nullptr,
+                routes, 0, task);
+            __syncthreads();
+        }
+        single_launch_grid_barrier(barrier_state, 3, ctas);
     }
-    single_launch_grid_barrier(barrier_state, 3, ctas);
 
     // M128 exceeds CARv2's one-shot push slab.  Reuse its multicast-bound
     // pull region and semaphore protocol there; smaller messages retain the
@@ -4273,9 +4502,13 @@ void run_tp4_megamoe_single_launch(
                     && num_tokens_padded.scalar_type() == torch::kInt32
                     && num_tokens_padded.numel() == 1,
                 "single-launch route workspaces must be int32");
+    const int64_t scheduler_words = kSingleLaunchInterleaved
+        ? kSchedulerHeaderWords + 3LL * expert_ids.numel()
+        : 0;
     TORCH_CHECK(barrier_state.scalar_type() == torch::kInt32
-                    && barrier_state.is_cuda() && barrier_state.numel() >= 8,
-                "single-launch barrier state needs eight CUDA int32 values");
+                    && barrier_state.is_cuda()
+                    && barrier_state.numel() >= 8 + scheduler_words,
+                "single-launch barrier/scheduler state is too small");
     TORCH_CHECK(push_counter.is_cuda() && push_counter.element_size() == 4
                     && push_counter.numel() == 78,
                 "single-launch TP4 requires the 78-entry CARv2 push counter");
@@ -4980,10 +5213,11 @@ _EXTENSION_CONFIG = (
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
+          f"sidag{int(SINGLE_LAUNCH_INTERLEAVED)}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v160fp8")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v161dag")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v160fp8"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v161dag"
 )
 
 _ext = load_inline(
@@ -5054,6 +5288,7 @@ _ext = load_inline(
         f"-DK_W2_MBLOCK_SCALE={int(W2_MBLOCK_SCALE)}",
         f"-DK_W2_FOLD_GLOBAL_SCALE={int(W2_FOLD_GLOBAL_SCALE)}",
         f"-DK_W2_COALESCED_STORE={int(W2_COALESCED_STORE)}",
+        f"-DK_SINGLE_LAUNCH_INTERLEAVED={int(SINGLE_LAUNCH_INTERLEAVED)}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         f"-DK_W13_LAUNCH_BOUND_10={int(W13_LAUNCH_BOUND_10)}",
         f"-DK_W13_MAX_SMEM_CARVEOUT={int(W13_MAX_SMEM_CARVEOUT)}",

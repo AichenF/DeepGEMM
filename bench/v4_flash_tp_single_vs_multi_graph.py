@@ -122,6 +122,12 @@ def main() -> None:
                         "shared FP8-E4M3 X + FP32 group128 scale; "
                         "BF16-to-FP8 quantization outside timed graphs"
                     ),
+                    "single_launch_interleaved": (
+                        kernel.SINGLE_LAUNCH_INTERLEAVED
+                    ),
+                    "single_launch_ctas_per_sm": (
+                        kernel.SINGLE_LAUNCH_CTAS_PER_SM
+                    ),
                     "control": "selected multi-kernel path from the same source",
                     "candidate": "one tp4_megamoe_single_launch_kernel graph node",
                 },

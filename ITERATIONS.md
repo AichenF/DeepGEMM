@@ -5946,3 +5946,27 @@ maximum rank latency of a full CUDA-Graph replay.
   enough to retain, but still far from the 1.10x goal; proceed to eliminate
   global phase serialization rather than screen more launch-count values first.
 - **Evidence:** `results/iter160_tp4_fp8_input_cta5_pair_screen_20260904.log`.
+
+## Iteration 161 — interleaved task-DAG smoke harness import failure
+
+- **Change under test:** replace the three globally serialized W13,
+  SwiGLU/FP8-requantization, and W2 phases in the TP4 one-launch kernel with
+  device-side per-mblock readiness queues.  Adjacent W13 split-K slices share
+  a scheduler claim; a completed mblock publishes one activation task, which
+  then publishes its 32 W2 N128 tiles.  Also select the previously screened
+  five resident CTAs/SM by default.  FP8 X remains caller-provided.
+- **Command:** TP4 on physical GPUs 4-7,
+  `torchrun --standalone --nproc-per-node=4
+  bench/v4_flash_tp_single_vs_multi_graph.py --ms 8 --route-pattern random
+  --outer 2 --replays 2 --warmup-replays 2 --pair-granularity batch`, with
+  `V4_SINGLE_LAUNCH_INTERLEAVED=1` and CTA/SM=5.
+- **Result:** FAIL before extension import, compilation, CUDA initialization,
+  correctness, or timing.  Every rank reports `ModuleNotFoundError: No module
+  named 'v4_flash_tp_wgmma'` because the launch-time `PYTHONPATH` contained
+  SGLang and Humming but omitted the repository root while Python set
+  `sys.path[0]` to `bench/`.
+- **Decision:** retain the source change and failed attempt exactly.  Retry the
+  same smoke with `/lustre/raplab/client/xutingz/fac/DeepGEMM_tp` prepended to
+  `PYTHONPATH`; do not interpret this infrastructure failure as kernel
+  evidence.
+- **Evidence:** `results/iter161_tp4_interleaved_dag_m8_smoke_20260904.log`.
