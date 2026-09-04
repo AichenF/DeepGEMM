@@ -7213,3 +7213,34 @@ maximum rank latency of a full CUDA-Graph replay.
   completes.
 - **Artifact:**
   `bench/results/iter251_no_phase_stamps_m8_m128_compute_smoke_20260904.log`.
+
+## Iteration 252 — timestamp removal is safe but too small for 1.10x
+
+- **Protocol:** TP4 GPUs 0-3, random M={8,16,32,64,128} routes, one shared
+  prequantized FP8-E4M3 X/FP32 group-128 scale per implementation, Humming
+  MXFP4 baseline versus the custom one-launch kernel with phase stamps
+  compiled out.  CUDA Graph, six balanced AB/BA outer batches x 30 cold-L2
+  replays per implementation (180 samples/shape), six warmups.  A separate
+  excluded 256 MiB clear runs immediately before every replay; reported time
+  is rank-max and includes both MXFP4 GEMMs, internal SwiGLU/FP8 requant,
+  local k6 reduction, and TP all-reduce, but no external X quantization.
+- **Correctness:** PASS for both implementations at all five shapes; custom
+  minimum cosine is above `0.9999955`, maximum relative L2 below `0.002968`,
+  all ranks finite and every all-reduce check passes.
+- **Cold-L2 median Humming/custom and ratio:** M8
+  `0.088448/0.077472 ms, 1.14168x`; M16
+  `0.144352/0.128320 ms, 1.12494x`; M32
+  `0.222880/0.204736 ms, 1.08862x`; M64
+  `0.311168/0.286720 ms, 1.08527x`; M128
+  `0.379824/0.365952 ms, 1.03791x`.
+- **Aggregate:** Humming/custom geometric means are
+  `0.202000/0.184460 ms`, ratio `1.09509x`.  Relative to Iteration 240 and
+  Iteration 248, custom geometric mean improves by about `0.316 us` and
+  `0.189 us`, respectively; Humming drift means the paired speedup ratio does
+  not improve monotonically.
+- **Decision:** Timestamp removal is numerically safe and directionally
+  useful, but the measured sub-microsecond aggregate gain is insufficient to
+  claim 1.10x.  Keep it as a production-path candidate while continuing with
+  grid-barrier and phase-tail work; do not attribute a larger gain to it.
+- **Artifact:**
+  `bench/results/iter252_no_phase_stamps_tp4_allm_cold_paired_20260904.log`.
