@@ -127,7 +127,7 @@ static std::tuple<int, int, int, int, int> get_block_config_for_mega_moe(
 static std::pair<int, int> get_pipeline_config_for_mega_moe(
     const int& smem_capacity,
     const int& num_experts, const int& hidden,
-    const int& block_m, const int& block_n, const int& block_k, 
+    const int& block_m, const int& block_n, const int& block_k,
     const int& num_bytes_per_pull, const int& store_block_m,
     const int& sf_block_m, const int& sf_block_n, const int& gran_k,
     const int& num_dispatch_warps, const int& num_epilogue_warps,
