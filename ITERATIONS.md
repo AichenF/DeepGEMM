@@ -7370,3 +7370,27 @@ maximum rank latency of a full CUDA-Graph replay.
   graph liveness stress.
 - **Artifact:**
   `bench/results/iter257_packed_grid_barrier_generation_wrap_m8_m128_20260904.log`.
+
+## Iteration 258 — 8,000 distributed custom graph replays complete
+
+- **Protocol:** TP4 GPUs 0-3, M={8,128}, packed barrier with phase stamps
+  off, shared prequantized inputs, CUDA Graph, two balanced AB/BA batches x
+  2,000 cold-L2 replays per implementation and shape, plus 20 warmups.  This
+  executes 4,000 custom graph replays at each shape (8,000 total), with four
+  packed whole-grid generations per custom replay and the in-kernel TP
+  collective on every launch.
+- **Liveness/correctness:** PASS without timeout or rank divergence.  Both
+  shapes remain finite and `allreduce_ok=true`; M8 custom cosine/rel-L2 are
+  `0.99999579/0.002901`, M128 `0.99999549/0.003003`.  The small M128 variation
+  from shorter runs is consistent with nondeterministic split-K atomic-add
+  order; the independent all-reduce oracle still passes.
+- **Timing observation:** M8 remains stable at custom `0.076064 ms` versus
+  Humming `0.088352 ms` (`1.16155x`).  M128 has substantial long-batch drift
+  on both paths (custom batch medians `0.386624/0.382384 ms`, Humming
+  `0.386000/0.403392 ms`), so this stress result is not used to revise the
+  formal Iteration 255-256 speedup.
+- **Decision:** Repeated distributed graph liveness passes.  Combined with
+  the explicit generation-wrap test and two formal 180-sample/shape runs,
+  select packed generation barriers and timestamp-free serving builds.
+- **Artifact:**
+  `bench/results/iter258_packed_grid_barrier_tp4_cold_graph_liveness_20260904.log`.
