@@ -192,6 +192,9 @@ def main() -> None:
                     "single_launch_route_dynamic_smem": (
                         kernel.SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM
                     ),
+                    "single_launch_m128_bound9": (
+                        kernel.SINGLE_LAUNCH_M128_BOUND9
+                    ),
                     "single_launch_persistent_gemm_state": (
                         kernel.SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
                     ),

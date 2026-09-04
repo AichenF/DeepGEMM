@@ -267,6 +267,13 @@ if SINGLE_LAUNCH_MIN_BLOCKS not in (4, 5, 6, 7, 8, 9):
 SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM = (
     os.environ.get("V4_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM", "0") == "1"
 )
+SINGLE_LAUNCH_M128_BOUND9 = (
+    os.environ.get("V4_SINGLE_LAUNCH_M128_BOUND9", "0") == "1"
+)
+if SINGLE_LAUNCH_M128_BOUND9 and not SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM:
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_M128_BOUND9 requires dynamic route shared memory"
+    )
 SINGLE_LAUNCH_PERSISTENT_GEMM_STATE = (
     os.environ.get("V4_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE", "0") == "1"
 )
@@ -303,6 +310,12 @@ if SINGLE_LAUNCH_GROUPED_W13_ACT and (
 ):
     raise ValueError(
         "V4_SINGLE_LAUNCH_GROUPED_W13_ACT requires the isolated inline path"
+    )
+if SINGLE_LAUNCH_M128_BOUND9 and (
+    SINGLE_LAUNCH_TAIL_OVERLAP or SINGLE_LAUNCH_GROUPED_W13_ACT
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_M128_BOUND9 excludes fixed-eight-CTA experiments"
     )
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "8")
@@ -501,6 +514,8 @@ static constexpr bool kSingleLaunchNoInlineGemm =
     K_SINGLE_LAUNCH_NOINLINE_GEMM;
 static constexpr bool kSingleLaunchRouteDynamicSmem =
     K_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM;
+static constexpr bool kSingleLaunchM128Bound9 =
+    K_SINGLE_LAUNCH_M128_BOUND9;
 static constexpr bool kSingleLaunchPersistentGemmState =
     K_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE;
 static constexpr bool kSingleLaunchCooperativeGrid =
@@ -3584,8 +3599,15 @@ __device__ __forceinline__ void single_launch_group_barrier(
 // schedule owns route preparation,
 // both MXFP4 GEMMs, internal SwiGLU/FP8 requantization, fixed-k6 reduction and
 // TP all-reduce.  Input X is already FP8 at this API boundary.
+template <int Tokens>
+struct SingleLaunchMinBlocks {
+    static constexpr int value =
+        kSingleLaunchM128Bound9 && Tokens == 128
+        ? 9 : K_SINGLE_LAUNCH_MIN_BLOCKS;
+};
+
 template <int SplitK, int Tokens>
-__global__ __launch_bounds__(128, K_SINGLE_LAUNCH_MIN_BLOCKS)
+__global__ __launch_bounds__(128, SingleLaunchMinBlocks<Tokens>::value)
 void tp4_megamoe_single_launch_kernel(
         const __grid_constant__ CUtensorMap w13_tma_weight,
         const __grid_constant__ CUtensorMap w13_tma_weight_scale,
@@ -5177,8 +5199,15 @@ void launch_tp4_megamoe_single(
                 "single-launch TP4 push protocol currently requires 78-SM H20");
     TORCH_CHECK(requested_ctas_per_sm > 0,
                 "requested single-launch CTAs/SM must be positive");
+    const int effective_requested_ctas_per_sm =
+        kSingleLaunchM128Bound9 && Tokens == 128
+        ? 9 : requested_ctas_per_sm;
     const int selected_ctas_per_sm = std::min(
-        requested_ctas_per_sm, active_per_sm);
+        effective_requested_ctas_per_sm, active_per_sm);
+    if constexpr (kSingleLaunchM128Bound9 && Tokens == 128) {
+        TORCH_CHECK(selected_ctas_per_sm == 9,
+                    "M128 specialization requires exactly 9 CTAs/SM");
+    }
     if constexpr (kSingleLaunchTailOverlap) {
         TORCH_CHECK(selected_ctas_per_sm == 8,
                     "tail overlap currently requires exactly 8 CTAs/SM");
@@ -6096,6 +6125,7 @@ _EXTENSION_CONFIG = (
           f"slnig{int(SINGLE_LAUNCH_NOINLINE_GEMM)}_"
           f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
           f"sldr{int(SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM)}_"
+          f"slm128b9{int(SINGLE_LAUNCH_M128_BOUND9)}_"
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
@@ -6189,6 +6219,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM="
             f"{int(SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_M128_BOUND9="
+            f"{int(SINGLE_LAUNCH_M128_BOUND9)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE="

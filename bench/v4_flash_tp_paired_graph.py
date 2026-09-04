@@ -278,6 +278,9 @@ def main() -> None:
                     "custom_fused_route_quant": kernel.FUSED_ROUTE_QUANT,
                     "timed_external_input_quantization": False,
                     "custom_single_launch_tp4": kernel.SINGLE_LAUNCH_TP4,
+                    "custom_single_launch_m128_bound9": (
+                        kernel.SINGLE_LAUNCH_M128_BOUND9
+                    ),
                     "custom_single_launch_relaxed_grid_poll": (
                         kernel.SINGLE_LAUNCH_RELAXED_GRID_POLL
                     ),

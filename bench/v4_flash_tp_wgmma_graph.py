@@ -1247,6 +1247,9 @@ def main() -> None:
                     "single_launch_min_blocks": (
                         kernel.SINGLE_LAUNCH_MIN_BLOCKS
                     ),
+                    "single_launch_m128_bound9": (
+                        kernel.SINGLE_LAUNCH_M128_BOUND9
+                    ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
                     ),

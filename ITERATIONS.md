@@ -7074,3 +7074,30 @@ maximum rank latency of a full CUDA-Graph replay.
   then rerun all five M in one process before selection.
 - **Artifact:**
   `bench/results/iter246_bound9_relaxed_tp4_m128_cold_paired_20260904.log`.
+
+## Iteration 247 — token-specialize M128 launch bound and residency
+
+- **Change:** Added opt-in `V4_SINGLE_LAUNCH_M128_BOUND9=1`, requiring dynamic
+  route shared memory.  The `Tokens=128` kernel instantiation now compiles with
+  a nine-block launch bound and requests 9 CTAs/SM, while M=8/16/32/64 retain
+  the configured bound/request of 8.  Fixed-eight-CTA tail/group experiments
+  are rejected with this mode.
+- **Protocol:** H20 GPU 0, random M={8,128}, ordinary relaxed grid barrier at
+  64 ns, prequantized FP8-E4M3 X/group-128 scale, MXFP4 weights and excluded
+  256 MiB cold-L2 clear.  Full W2 route output is compared to the independent
+  multi-kernel local reference.
+- **Correctness:** PASS bitwise for both instantiations (`cosine=1`, `rel_l2=0`,
+  finite), proving the dependent launch-bounds specialization compiles and
+  selects valid resident grids for SplitK=4/2.
+- **Phase result (route/W13/activation/W2 us):** M8
+  `2.272/40.928/3.136/21.920`, sum `68.256 us`; M128
+  `4.480/207.456/6.720/111.008`, sum `329.664 us`.
+- **Analysis:** M128 retains the approximately 1% local gain from Iteration
+  245.  M8 is within 0.48 us of the prior bound-8 smoke and no longer receives
+  the harmful bound-9 register cap; the small difference may be dynamic-route
+  scratch noise and requires paired timing.
+- **Decision:** Run a same-process all-five-M TP4 cold-L2 comparison.  Select
+  only if small-M medians remain at Iteration 240 levels and M128 keeps the
+  Iteration 246 gain.
+- **Artifact:**
+  `bench/results/iter247_m128_bound9_specialization_compute_smoke_20260904.log`.
