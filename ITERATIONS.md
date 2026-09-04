@@ -6474,3 +6474,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Conclusion: the same-launch multicast all-reduce is not the primary source of this mismatch. The native local W13/SwiGLU-requant/W2 path or its input/weight layout is numerically wrong despite returning normally; scaling policy cannot explain near-zero cosine.
 - Decision: retain the diagnostic output. Isolate W13 first with deterministic sparse/identity-like packed MXFP4 data and compare native intermediate buffers against the existing WGMMA path before further TP or performance work.
 - Evidence: `bench/results/iter197_native_tp4_m8_correctness_split_20260904.log`.
+
+## Iteration 198 — braided decoder selection is blocked by a nondependent assertion
+
+- Hypothesis: the native host transform braids every Mode2 FP4 word, while `kUseMode2RowDecoder=true` selects the unbraided nibble decoder; selecting the matching braided decoder should repair the near-zero local cosine.
+- Change: set `kUseMode2RowDecoder=false` while retaining the existing model-load `_braid_mode2_signs` transform.
+- Test: TP4 M8 paired correctness/cold-L2 smoke on GPUs 0–3.
+- Result: **compile FAIL before CUDA execution**. NVCC evaluates the body’s `DG_STATIC_ASSERT(kUseMode2RowDecoder, "BM128 split-M uses the cooperative Mode2 decoder")` even though this BM8 specialization discards the `kSplitMDecodedWeightReuse` branch. The other ranks subsequently fail to load the absent shared object.
+- Interpretation: the original body’s assertion is nondependent and prevents selecting the braided decoder for any specialization. This does not invalidate the identified host/decoder layout mismatch, but this direction would require touching generic decoder control flow.
+- Decision: use the lower-risk equivalent repair next: retain `kUseMode2RowDecoder=true` and stop braiding the packed words during the native model-load transform. The direct Mode2 decoder then consumes canonical checkpoint nibble order; scale fusion remains unchanged.
+- Evidence: `bench/results/iter198_native_braided_decoder_tp4_m8_20260904.log`.

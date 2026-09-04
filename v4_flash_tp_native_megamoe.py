@@ -556,7 +556,9 @@ v4_flash_tp4_native_megamoe_impl(
     constexpr bool kFastMath = true;
     constexpr bool kSwapABRequested = true;
     constexpr bool kSingleActiveDispatchWarp = true;
-    constexpr bool kUseMode2RowDecoder = true;
+    // transform_weights() materializes the Mode2 sign/magnitude braid once at
+    // model load, so select the matching braided row decoder in the body.
+    constexpr bool kUseMode2RowDecoder = false;
     constexpr bool kUseInterleavedScheduler = true;
     constexpr uint32_t kHidden = 4096;
     constexpr uint32_t kIntermediateHidden = kIntermediate;
