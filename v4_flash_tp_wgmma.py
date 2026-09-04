@@ -391,6 +391,21 @@ SINGLE_LAUNCH_PHASE_STAMPS = (
 SINGLE_LAUNCH_PACKED_GRID_BARRIER = (
     os.environ.get("V4_SINGLE_LAUNCH_PACKED_GRID_BARRIER", "1") == "1"
 )
+# Experimental packed-barrier ordering: every CTA publishes its phase writes
+# with a release arrival, while only the last CTA acquires the complete atomic
+# RMW chain before publishing the next generation.  This avoids arrival-side
+# cache invalidation on the non-last CTAs without weakening the barrier.
+SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL = (
+    os.environ.get("V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL", "0") == "1"
+)
+if (
+    SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL
+    and not SINGLE_LAUNCH_PACKED_GRID_BARRIER
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL requires the packed grid "
+        "barrier"
+    )
 SINGLE_LAUNCH_BALANCED_WORKERS = (
     os.environ.get("V4_SINGLE_LAUNCH_BALANCED_WORKERS", "0") == "1"
 )
@@ -898,6 +913,8 @@ static constexpr bool kSingleLaunchRecordPhaseStamps =
     K_SINGLE_LAUNCH_PHASE_STAMPS;
 static constexpr bool kSingleLaunchPackedGridBarrier =
     K_SINGLE_LAUNCH_PACKED_GRID_BARRIER;
+static constexpr bool kSingleLaunchReleaseGridArrival =
+    K_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL;
 static constexpr bool kSingleLaunchBalancedWorkers =
     K_SINGLE_LAUNCH_BALANCED_WORKERS;
 static constexpr int kSingleLaunchGridPollSleepNs =
@@ -3444,6 +3461,17 @@ __device__ __forceinline__ int32_t atomic_add_release_gpu_i32(
     return static_cast<int32_t>(old);
 }
 
+__device__ __forceinline__ int32_t atomic_add_acquire_gpu_i32(
+        int32_t* pointer, int32_t value) {
+    uint32_t old;
+    asm volatile(
+        "atom.acquire.gpu.global.add.u32 %0,[%1],%2;"
+        : "=r"(old)
+        : "l"(pointer), "r"(static_cast<uint32_t>(value))
+        : "memory");
+    return static_cast<int32_t>(old);
+}
+
 __device__ __forceinline__ int32_t atomic_add_acq_rel_gpu_i32(
         int32_t* pointer, int32_t value) {
     uint32_t old;
@@ -4233,19 +4261,27 @@ __device__ __forceinline__ void single_launch_grid_barrier(
         int32_t* count = state + phase * 2;
         if constexpr (kSingleLaunchPackedGridBarrier) {
             // Pack a 10-bit arrival count and a 22-bit generation into the
-            // existing count word.  The acq_rel arrival RMW returns both the
-            // pre-increment count and generation, eliminating every CTA's
-            // separate epoch load.  The final CTA has acquired the complete
-            // arrival release sequence and publishes it while atomically
-            // advancing the generation and resetting the count with one
-            // release store.  No writer remains after the final arrival.
+            // existing count word.  In the selected experiment every CTA's
+            // arrival is a release RMW.  The final CTA follows its arrival
+            // with an acquire no-op RMW on the same word, importing the full
+            // release sequence before publishing the next generation.  The
+            // control path retains one acq_rel RMW on every CTA.
             constexpr uint32_t kCountBits = 10;
             constexpr uint32_t kCountMask = (1u << kCountBits) - 1u;
             const uint32_t observed = static_cast<uint32_t>(
-                atomic_add_acq_rel_gpu_i32(count, 1));
+                kSingleLaunchReleaseGridArrival
+                    ? atomic_add_release_gpu_i32(count, 1)
+                    : atomic_add_acq_rel_gpu_i32(count, 1));
             const uint32_t generation = observed >> kCountBits;
             const uint32_t arrival = observed & kCountMask;
             if (arrival == static_cast<uint32_t>(expected_blocks - 1)) {
+                if constexpr (kSingleLaunchReleaseGridArrival) {
+                    // Since no further arrival can exist in this generation,
+                    // this RMW reads the complete same-address release chain.
+                    // Its acquire makes every CTA's phase writes visible to
+                    // the following release publication.
+                    (void)atomic_add_acquire_gpu_i32(count, 0);
+                }
                 if constexpr (kSingleLaunchRecordPhaseStamps) {
                     if (record_timestamp) {
                         reinterpret_cast<uint64_t*>(
@@ -7938,6 +7974,7 @@ _EXTENSION_CONFIG = (
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
           f"slpb{int(SINGLE_LAUNCH_PACKED_GRID_BARRIER)}_"
+          f"slra{int(SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL)}_"
           f"slbw{int(SINGLE_LAUNCH_BALANCED_WORKERS)}_"
           f"slpsn{SINGLE_LAUNCH_GRID_POLL_SLEEP_NS}_"
           f"slfs{int(SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC)}_"
@@ -8081,6 +8118,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_PACKED_GRID_BARRIER="
             f"{int(SINGLE_LAUNCH_PACKED_GRID_BARRIER)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL="
+            f"{int(SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_BALANCED_WORKERS="

@@ -1,0 +1,146 @@
+RELEASE_ARRIVAL_SO=/tmp/torch_ext_v4_tp/v4tp_95ce24167c2ae92de237_v178mspec/v4tp_95ce24167c2ae92de237_v178mspec.so
+RELEASE_ARRIVAL_SO_BYTES=6822912
+
+Fatbin elf code:
+================
+arch = sm_90a
+code version = [1,8]
+host = linux
+compile_size = 64bit
+identifier = /tmp/torch_ext_v4_tp/v4tp_95ce24167c2ae92de237_v178mspec/cuda.cu
+
+Resource usage:
+ Common:
+  GLOBAL:29 CONSTANT[4]:232 CONSTANT[3]:32
+ Function _Z32tp4_megamoe_single_launch_kernelILi2ELi128EEv14CUtensorMap_stS0_S0_S0_PKhS2_PKfS2_S2_S4_S2_S4_PKiS4_PiS7_S7_PfP13__nv_bfloat16PhS8_SA_PK5uint2S7_S7_SA_PjSB_SB_SB_SB_SB_SA_S2_SB_SB_iilb:
+  REG:64 STACK:32 SHARED:4096 LOCAL:0 CONSTANT[0]:1425 TEXTURE:0 SURFACE:0 SAMPLER:0
+MAIN_MEMBAR_ALL_GPU=8
+MAIN_CCTL_IVALL=10
+MAIN_ATOMG=9
+ATOMG_CONTEXT_BEGIN
+1099-                                                                                                        /* 0x002fec000000a000 */
+1100-        /*21f0*/                   ERRBAR;                                                              /* 0x00000000000079ab */
+1101-                                                                                                        /* 0x000fc00000000000 */
+1102-        /*2200*/                   CGAERRBAR ;                                                          /* 0x00000000000075ab */
+1103-                                                                                                        /* 0x000fec0000000000 */
+1104:        /*2210*/                   ATOMG.E.ADD.STRONG.GPU PT, R4, desc[UR30][R2.64], R7 ;               /* 0x00000007020479a8 */
+1105-                                                                                                        /* 0x020ea200081ee1de */
+1106-        /*2220*/                   UIADD3 UR5, UR4, -0x1, URZ ;                                         /* 0xffffffff04057890 */
+1107-                                                                                                        /* 0x000fe2000fffe03f */
+1108-        /*2230*/                   LOP3.LUT R5, R4, 0x3ff, RZ, 0xc0, !PT ;                              /* 0x000003ff04057812 */
+1109-                                                                                                        /* 0x004fca00078ec0ff */
+1110-        /*2240*/                   ISETP.NE.AND P0, PT, R5, UR5, PT ;                                   /* 0x0000000505007c0c */
+1111-                                                                                                        /* 0x000fda000bf05270 */
+--
+1149-                                                                                                        /* 0x000fea000383ffff */
+1150-        /*2380*/                   BRA 0x2420 ;                                                         /* 0x0000000000247947 */
+1151-                                                                                                        /* 0x000fea0003800000 */
+1152-        /*2390*/                   VIADD R4, R4, 0x400 ;                                                /* 0x0000040004047836 */
+1153-                                                                                                        /* 0x000fe20000000000 */
+1154:        /*23a0*/                   ATOMG.E.ADD.STRONG.GPU PT, RZ, desc[UR30][R2.64], RZ ;               /* 0x000000ff02ff79a8 */
+1155-                                                                                                        /* 0x0002a800081ee1de */
+1156-        /*23b0*/                   CCTL.IVALL ;                                                         /* 0x00000000ff00798f */
+1157-                                                                                                        /* 0x004fe20002000000 */
+1158-        /*23c0*/                   LOP3.LUT R5, R4, 0xfffffc00, RZ, 0xc0, !PT ;                         /* 0xfffffc0004057812 */
+1159-                                                                                                        /* 0x000fe200078ec0ff */
+1160-        /*23d0*/                   MEMBAR.ALL.CTA ;                                                     /* 0x0000000000007992 */
+1161-                                                                                                        /* 0x0005ec0000008000 */
+--
+4157-                                                                                                        /* 0x002fec000000a000 */
+4158-        /*8180*/                   ERRBAR;                                                              /* 0x00000000000079ab */
+4159-                                                                                                        /* 0x000fc00000000000 */
+4160-        /*8190*/                   CGAERRBAR ;                                                          /* 0x00000000000075ab */
+4161-                                                                                                        /* 0x000fec0000000000 */
+4162:        /*81a0*/                   ATOMG.E.ADD.STRONG.GPU PT, R2, desc[UR30][R50.64], R5 ;              /* 0x00000005320279a8 */
+4163-                                                                                                        /* 0x001ea200081ee1de */
+4164-        /*81b0*/                   UIADD3 UR5, UR4, -0x1, URZ ;                                         /* 0xffffffff04057890 */
+4165-                                                                                                        /* 0x000fe2000fffe03f */
+4166-        /*81c0*/                   LOP3.LUT R3, R2, 0x3ff, RZ, 0xc0, !PT ;                              /* 0x000003ff02037812 */
+4167-                                                                                                        /* 0x004fca00078ec0ff */
+4168-        /*81d0*/                   ISETP.NE.AND P0, PT, R3, UR5, PT ;                                   /* 0x0000000503007c0c */
+4169-                                                                                                        /* 0x000fda000bf05270 */
+--
+4207-                                                                                                        /* 0x000fea000383ffff */
+4208-        /*8310*/                   BRA 0x83b0 ;                                                         /* 0x0000000000247947 */
+4209-                                                                                                        /* 0x000fea0003800000 */
+4210-        /*8320*/                   VIADD R2, R2, 0x400 ;                                                /* 0x0000040002027836 */
+4211-                                                                                                        /* 0x000fe20000000000 */
+4212:        /*8330*/                   ATOMG.E.ADD.STRONG.GPU PT, RZ, desc[UR30][R50.64], RZ ;              /* 0x000000ff32ff79a8 */
+4213-                                                                                                        /* 0x0002a800081ee1de */
+4214-        /*8340*/                   CCTL.IVALL ;                                                         /* 0x00000000ff00798f */
+4215-                                                                                                        /* 0x004fe20002000000 */
+4216-        /*8350*/                   LOP3.LUT R3, R2, 0xfffffc00, RZ, 0xc0, !PT ;                         /* 0xfffffc0002037812 */
+4217-                                                                                                        /* 0x000fe200078ec0ff */
+4218-        /*8360*/                   MEMBAR.ALL.CTA ;                                                     /* 0x0000000000007992 */
+4219-                                                                                                        /* 0x0001ec0000008000 */
+--
+4509-                                                                                                        /* 0x004fec000000a000 */
+4510-        /*8c80*/                   ERRBAR;                                                              /* 0x00000000000079ab */
+4511-                                                                                                        /* 0x000fc00000000000 */
+4512-        /*8c90*/                   CGAERRBAR ;                                                          /* 0x00000000000075ab */
+4513-                                                                                                        /* 0x000fec0000000000 */
+4514:        /*8ca0*/                   ATOMG.E.ADD.STRONG.GPU PT, R2, desc[UR30][R50.64+0x8], R5 ;          /* 0x00000805320279a8 */
+4515-                                                                                                        /* 0x008e6200081ee1de */
+4516-        /*8cb0*/                   UIADD3 UR5, UR4, -0x1, URZ ;                                         /* 0xffffffff04057890 */
+4517-                                                                                                        /* 0x000fe2000fffe03f */
+4518-        /*8cc0*/                   LOP3.LUT R3, R2, 0x3ff, RZ, 0xc0, !PT ;                              /* 0x000003ff02037812 */
+4519-                                                                                                        /* 0x002fca00078ec0ff */
+4520-        /*8cd0*/                   ISETP.NE.AND P1, PT, R3, UR5, PT ;                                   /* 0x0000000503007c0c */
+4521-                                                                                                        /* 0x000fda000bf25270 */
+--
+4559-                                                                                                        /* 0x000fea000383ffff */
+4560-        /*8e10*/                   BRA 0x8eb0 ;                                                         /* 0x0000000000247947 */
+4561-                                                                                                        /* 0x000fea0003800000 */
+4562-        /*8e20*/                   VIADD R2, R2, 0x400 ;                                                /* 0x0000040002027836 */
+4563-                                                                                                        /* 0x000fe20000000000 */
+4564:        /*8e30*/                   ATOMG.E.ADD.STRONG.GPU PT, RZ, desc[UR30][R50.64+0x8], RZ ;          /* 0x000008ff32ff79a8 */
+4565-                                                                                                        /* 0x0004e800081ee1de */
+4566-        /*8e40*/                   CCTL.IVALL ;                                                         /* 0x00000000ff00798f */
+4567-                                                                                                        /* 0x008fe20002000000 */
+4568-        /*8e50*/                   LOP3.LUT R3, R2, 0xfffffc00, RZ, 0xc0, !PT ;                         /* 0xfffffc0002037812 */
+4569-                                                                                                        /* 0x000fe200078ec0ff */
+4570-        /*8e60*/                   MEMBAR.ALL.CTA ;                                                     /* 0x0000000000007992 */
+4571-                                                                                                        /* 0x0003ec0000008000 */
+--
+7189-                                                                                                        /* 0x010fec000000a000 */
+7190-        /*e040*/                   ERRBAR;                                                              /* 0x00000000000079ab */
+7191-                                                                                                        /* 0x000fc00000000000 */
+7192-        /*e050*/                   CGAERRBAR ;                                                          /* 0x00000000000075ab */
+7193-                                                                                                        /* 0x000fec0000000000 */
+7194:        /*e060*/                   ATOMG.E.ADD.STRONG.GPU PT, R2, desc[UR30][R50.64+0x10], R5 ;         /* 0x00001005320279a8 */
+7195-                                                                                                        /* 0x009e6200081ee1de */
+7196-        /*e070*/                   UIADD3 UR5, UR4, -0x1, URZ ;                                         /* 0xffffffff04057890 */
+7197-                                                                                                        /* 0x000fe2000fffe03f */
+7198-        /*e080*/                   LOP3.LUT R3, R2, 0x3ff, RZ, 0xc0, !PT ;                              /* 0x000003ff02037812 */
+7199-                                                                                                        /* 0x006fca00078ec0ff */
+7200-        /*e090*/                   ISETP.NE.AND P0, PT, R3, UR5, PT ;                                   /* 0x0000000503007c0c */
+7201-                                                                                                        /* 0x000fda000bf05270 */
+--
+7239-                                                                                                        /* 0x000fea000383ffff */
+7240-        /*e1d0*/                   BRA 0xe270 ;                                                         /* 0x0000000000247947 */
+7241-                                                                                                        /* 0x000fea0003800000 */
+7242-        /*e1e0*/                   VIADD R2, R2, 0x400 ;                                                /* 0x0000040002027836 */
+7243-                                                                                                        /* 0x000fe20000000000 */
+7244:        /*e1f0*/                   ATOMG.E.ADD.STRONG.GPU PT, RZ, desc[UR30][R50.64+0x10], RZ ;         /* 0x000010ff32ff79a8 */
+7245-                                                                                                        /* 0x0008a800081ee1de */
+7246-        /*e200*/                   CCTL.IVALL ;                                                         /* 0x00000000ff00798f */
+7247-                                                                                                        /* 0x004fe20002000000 */
+7248-        /*e210*/                   LOP3.LUT R3, R2, 0xfffffc00, RZ, 0xc0, !PT ;                         /* 0xfffffc0002037812 */
+7249-                                                                                                        /* 0x000fe200078ec0ff */
+7250-        /*e220*/                   MEMBAR.ALL.CTA ;                                                     /* 0x0000000000007992 */
+7251-                                                                                                        /* 0x0001ec0000008000 */
+--
+7715-                                                                                                        /* 0x000fc600078e00ff */
+7716-        /*f0b0*/                   IADD3 R8, P2, R9, R2, RZ ;                                           /* 0x0000000209087210 */
+7717-                                                                                                        /* 0x000fc80007f5e0ff */
+7718-        /*f0c0*/                   LEA.HI.X.SX32 R9, R9, R3, 0x1, P2 ;                                  /* 0x0000000309097211 */
+7719-                                                                                                        /* 0x000fca00010f0eff */
+7720:        /*f0d0*/                   ATOMG.E.ADD.STRONG.GPU PT, R12, desc[UR30][R8.64], R17 ;             /* 0x00000011080c79a8 */
+7721-                                                                                                        /* 0x000ea200081ee1de */
+7722-        /*f0e0*/                   S2UR UR5, SR_CgaCtaId ;                                              /* 0x00000000000579c3 */
+7723-                                                                                                        /* 0x000e220000008800 */
+7724-        /*f0f0*/                   UMOV UR4, 0x400 ;                                                    /* 0x0000040000047882 */
+7725-                                                                                                        /* 0x000fe40000000000 */
+7726-        /*f100*/                   ULEA UR4, UR5, UR4, 0x18 ;                                           /* 0x0000000405047291 */
+7727-                                                                                                        /* 0x001fe2000f8ec03f */
+ATOMG_CONTEXT_END

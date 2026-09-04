@@ -1284,6 +1284,9 @@ def main() -> None:
                     "single_launch_packed_grid_barrier": (
                         kernel.SINGLE_LAUNCH_PACKED_GRID_BARRIER
                     ),
+                    "single_launch_release_grid_arrival": (
+                        kernel.SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL
+                    ),
                     "single_launch_balanced_workers": (
                         kernel.SINGLE_LAUNCH_BALANCED_WORKERS
                     ),
