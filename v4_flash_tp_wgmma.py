@@ -151,6 +151,9 @@ if SINGLE_LAUNCH_TAIL_GROUP_CTAS not in (16, 32):
 SINGLE_LAUNCH_GROUPED_W13_ACT = (
     os.environ.get("V4_SINGLE_LAUNCH_GROUPED_W13_ACT", "0") == "1"
 )
+SINGLE_LAUNCH_W13_N64_TAIL = (
+    os.environ.get("V4_SINGLE_LAUNCH_W13_N64_TAIL", "0") == "1"
+)
 W2_NEEDS_ROUTE_MAP = (
     W2_SORTED_ACT or W2_MBLOCK_SCALE or SINGLE_LAUNCH_TAIL_OVERLAP
 )
@@ -255,6 +258,15 @@ if SINGLE_LAUNCH_TAIL_OVERLAP and SINGLE_LAUNCH_SCHEDULE != 0:
     raise ValueError("V4_SINGLE_LAUNCH_TAIL_OVERLAP requires schedule 0")
 if SINGLE_LAUNCH_GROUPED_W13_ACT and SINGLE_LAUNCH_SCHEDULE != 0:
     raise ValueError("V4_SINGLE_LAUNCH_GROUPED_W13_ACT requires schedule 0")
+if SINGLE_LAUNCH_W13_N64_TAIL and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or WOUT != 128
+    or not COMPACT_INTERLEAVED_SCALE
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W13_N64_TAIL requires schedule 0, WOUT128, "
+        "and compact interleaved weights"
+    )
 SINGLE_LAUNCH_INTERLEAVED = SINGLE_LAUNCH_SCHEDULE != 0
 SINGLE_LAUNCH_NOINLINE_GEMM = (
     os.environ.get("V4_SINGLE_LAUNCH_NOINLINE_GEMM", "0") == "1"
@@ -327,6 +339,17 @@ if SINGLE_LAUNCH_GROUPED_W13_ACT and (
 ):
     raise ValueError(
         "V4_SINGLE_LAUNCH_GROUPED_W13_ACT requires the isolated inline path"
+    )
+if SINGLE_LAUNCH_W13_N64_TAIL and (
+    SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W13_N64_TAIL requires the isolated inline, "
+        "nonpersistent schedule-0 path"
     )
 if SINGLE_LAUNCH_M128_BOUND9 and (
     SINGLE_LAUNCH_TAIL_OVERLAP or SINGLE_LAUNCH_GROUPED_W13_ACT
@@ -572,6 +595,8 @@ static constexpr bool kSingleLaunchTailOverlap =
     K_SINGLE_LAUNCH_TAIL_OVERLAP;
 static constexpr bool kSingleLaunchGroupedW13Act =
     K_SINGLE_LAUNCH_GROUPED_W13_ACT;
+static constexpr bool kSingleLaunchW13N64Tail =
+    K_SINGLE_LAUNCH_W13_N64_TAIL;
 static constexpr int kSingleLaunchNvlsBlocks =
     K_SINGLE_LAUNCH_NVLS_BLOCKS;
 static constexpr int kSingleLaunchGroupCtas =
@@ -836,7 +861,7 @@ __device__ __forceinline__ uint2 dequant_weight_word(
 
 template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool PublishW2Progress = false, bool DualWgW13 = false,
-          bool PersistentState = false>
+          bool PersistentState = false, int WgmmaHalf = -1>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -873,6 +898,8 @@ __device__ __forceinline__ void route_gemm_task(
         kInterleavedBulkCopy && kUseTmaScale;
     constexpr int kCombinedStageBytes =
         kWeightStageBytes + kScaleStageBytes;
+    constexpr int kHalfWeightStageBytes = kWeightStageBytes / 2;
+    constexpr int kHalfScaleStageBytes = kScaleStageBytes / 2;
     constexpr int kWeightStageStride =
         kInterleavedScale ? kCombinedStageBytes : kWeightStageBytes;
     constexpr int kScaleStageStride =
@@ -883,6 +910,16 @@ __device__ __forceinline__ void route_gemm_task(
     constexpr int kLaunchNTiles =
         LaunchNTiles == 0 ? kNumNTiles : LaunchNTiles;
     static_assert(kNumNTiles % kLaunchNTiles == 0);
+    static_assert(WgmmaHalf >= -1 && WgmmaHalf <= 1);
+    constexpr bool kHalfWgmma = WgmmaHalf >= 0;
+    static_assert(!kHalfWgmma
+                  || (IsW13 && kWout == 128 && !DualWgW13
+                      && kCompactInterleavedScale),
+                  "N64 tail tasks require compact-interleaved W13 N128");
+    constexpr int kActiveWgmmaGroups =
+        kHalfWgmma ? 1 : kWgmmaGroups;
+    constexpr int kOutputGroupBase =
+        kHalfWgmma ? WgmmaHalf : 0;
     constexpr int kMathWGs = DualWgW13 ? 2 : 1;
     constexpr int kMetadataSlots = PersistentState ? 2 : 1;
     static_assert(!PersistentState || !DualWgW13,
@@ -1083,7 +1120,12 @@ __device__ __forceinline__ void route_gemm_task(
             }
             const uint32_t scale_dst =
                 weight_scale_smem_addr + scale_stage * kScaleStageStride;
-            if (load_scale) {
+            if constexpr (kHalfWgmma) {
+                asm volatile(
+                    "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
+                    :: "r"(stage_barrier_addr),
+                       "n"(kHalfWeightStageBytes + kHalfScaleStageBytes));
+            } else if (load_scale) {
                 asm volatile(
                     "mbarrier.arrive.expect_tx.shared.b64 _,[%0],%1;"
                     :: "r"(stage_barrier_addr),
@@ -1115,12 +1157,30 @@ __device__ __forceinline__ void route_gemm_task(
                     + n_block_idx;
                 const uint8_t* weight_src =
                     weight + ntile * kBytesPerNTile + offset;
-                const int copy_bytes = load_scale
-                    ? kCombinedStageBytes
-                    : kWeightStageBytes;
-                bulk_gmem_to_smem<kUseWeightEvictFirst>(
-                    weight_dst, weight_src, copy_bytes,
-                    stage_barrier_addr, weight_cache_policy);
+                if constexpr (kHalfWgmma) {
+                    // Physical compact records are N128: the scale halves
+                    // are not contiguous with their corresponding weight
+                    // halves.  Pack either half into shared-memory group 0
+                    // with two transactions on the same byte-count barrier.
+                    bulk_gmem_to_smem<kUseWeightEvictFirst>(
+                        weight_dst,
+                        weight_src + WgmmaHalf * kHalfWeightStageBytes,
+                        kHalfWeightStageBytes,
+                        stage_barrier_addr, weight_cache_policy);
+                    bulk_gmem_to_smem<kUseWeightEvictFirst>(
+                        scale_dst,
+                        weight_src + kWeightStageBytes
+                            + WgmmaHalf * kHalfScaleStageBytes,
+                        kHalfScaleStageBytes,
+                        stage_barrier_addr, weight_cache_policy);
+                } else {
+                    const int copy_bytes = load_scale
+                        ? kCombinedStageBytes
+                        : kWeightStageBytes;
+                    bulk_gmem_to_smem<kUseWeightEvictFirst>(
+                        weight_dst, weight_src, copy_bytes,
+                        stage_barrier_addr, weight_cache_policy);
+                }
             } else if constexpr (kBulkWeightCopy) {
                 const int64_t tile =
                     (static_cast<int64_t>(expert_idx) * kNumNTiles
@@ -1244,7 +1304,7 @@ __device__ __forceinline__ void route_gemm_task(
     const int row1 = row0 + 8;
     const int packed_k_offset = (lane % 4) * 4;
     const int column_base = (lane % 4) * 2;
-    float accum[kWgmmaGroups][4] = {};
+    float accum[kActiveWgmmaGroups][4] = {};
 
     #if K_W13_K_UNROLL16_SPLIT2
     #pragma unroll (K == 4096 && SplitK <= 2 ? 16 : 4)
@@ -1411,11 +1471,11 @@ __device__ __forceinline__ void route_gemm_task(
         }
         asm volatile("bar.sync 0;" ::: "memory");
 
-        float tile[kWgmmaGroups][4] = {};
-        uint32_t next_packed0[kWgmmaGroups];
-        uint32_t next_packed1[kWgmmaGroups];
-        uint2 next_weight_lut0[kWgmmaGroups];
-        uint2 next_weight_lut1[kWgmmaGroups];
+        float tile[kActiveWgmmaGroups][4] = {};
+        uint32_t next_packed0[kActiveWgmmaGroups];
+        uint32_t next_packed1[kActiveWgmmaGroups];
+        uint2 next_weight_lut0[kActiveWgmmaGroups];
+        uint2 next_weight_lut1[kActiveWgmmaGroups];
         #pragma unroll
         for (int k_step = 0; k_step < kBlockK / 32; ++k_step) {
             const uint32_t stage_base =
@@ -1428,14 +1488,14 @@ __device__ __forceinline__ void route_gemm_task(
             const auto activation_desc = desc_128b(
                 activation_smem_addr + k_step * 32);
             #pragma unroll
-            for (int group = 0; group < kWgmmaGroups; ++group) {
+            for (int group = 0; group < kActiveWgmmaGroups; ++group) {
                 #pragma unroll
                 for (int value = 0; value < 4; ++value)
                     ptx::warpgroup_fence_operand(tile[group][value]);
             }
             ptx::warpgroup_arrive();
             #pragma unroll
-            for (int group = 0; group < kWgmmaGroups; ++group) {
+            for (int group = 0; group < kActiveWgmmaGroups; ++group) {
                 const int group_row0 = group * 64 + row0;
                 const int group_row1 = group * 64 + row1;
                 const int weight_chunk0 = kWeightSwizzle == 64
@@ -1635,7 +1695,7 @@ __device__ __forceinline__ void route_gemm_task(
             if constexpr (!kMergedWgmmaGroup) {
                 ptx::warpgroup_commit_batch();
                 #pragma unroll
-                for (int group = 0; group < kWgmmaGroups; ++group) {
+                for (int group = 0; group < kActiveWgmmaGroups; ++group) {
                     #pragma unroll
                     for (int value = 0; value < 4; ++value)
                         ptx::warpgroup_fence_operand(tile[group][value]);
@@ -1646,7 +1706,7 @@ __device__ __forceinline__ void route_gemm_task(
         if constexpr (kMergedWgmmaGroup) {
             ptx::warpgroup_commit_batch();
             #pragma unroll
-            for (int group = 0; group < kWgmmaGroups; ++group) {
+            for (int group = 0; group < kActiveWgmmaGroups; ++group) {
                 #pragma unroll
                 for (int value = 0; value < 4; ++value)
                     ptx::warpgroup_fence_operand(tile[group][value]);
@@ -1658,7 +1718,7 @@ __device__ __forceinline__ void route_gemm_task(
                 mbar_arrive(activation_empty_barrier_addr);
         }
         #pragma unroll
-        for (int group = 0; group < kWgmmaGroups; ++group) {
+        for (int group = 0; group < kActiveWgmmaGroups; ++group) {
             accum[group][0] +=
                 tile[group][0] * activation_scale_smem[column_base];
             accum[group][1] +=
@@ -1679,9 +1739,10 @@ __device__ __forceinline__ void route_gemm_task(
     const int route0 = route_ids[metadata_slot][column_base];
     const int route1 = route_ids[metadata_slot][column_base + 1];
     #pragma unroll
-    for (int group = 0; group < kWgmmaGroups; ++group) {
-        const int output_n0 = n_block_idx * kWout + group * 64 + row0;
-        const int output_n1 = n_block_idx * kWout + group * 64 + row1;
+    for (int group = 0; group < kActiveWgmmaGroups; ++group) {
+        const int output_group = group + kOutputGroupBase;
+        const int output_n0 = n_block_idx * kWout + output_group * 64 + row0;
+        const int output_n1 = n_block_idx * kWout + output_group * 64 + row1;
         if constexpr (IsW13) {
             if (route0 < max_routes) {
                 output[(static_cast<int64_t>(split_idx) * max_routes + route0) * N
@@ -4298,36 +4359,84 @@ void tp4_megamoe_single_launch_kernel(
             }
 
             if (tail_overlap_mblocks == 0) {
-                const int w13_rounds = (w13_tasks + ctas - 1) / ctas;
-                const int w13_workers =
-                    kSingleLaunchBalancedWorkers && Tokens >= 64
-                    ? (w13_tasks + w13_rounds - 1) / w13_rounds
-                    : ctas;
-                int w13_sequence = 0;
-                for (int task = cta; cta < w13_workers && task < w13_tasks;
-                     task += w13_workers, ++w13_sequence) {
-                    if constexpr (kSingleLaunchNoInlineGemm) {
-                        single_launch_w13_gemm_task<SplitK>(
-                            &w13_tma_weight, &w13_tma_weight_scale,
-                            w13, s13, g13, qx, x_scale,
-                            sorted_ids, expert_ids, num_tokens_padded,
-                            topk_weights, partials, lut, routes, task);
-                    } else {
-                        route_gemm_task<
-                            4096, 1024, SplitK, true, 0, false, false,
-                            kSingleLaunchPersistentGemmState>(
+                if constexpr (kSingleLaunchW13N64Tail
+                              && Tokens == 128 && SplitK == 2) {
+                    // Preserve the high-bandwidth N128 task for every full
+                    // grid round.  Split only the underfilled final round
+                    // into independent N64 halves, doubling useful CTAs
+                    // without changing an output element's K accumulation.
+                    const int full_rounds = w13_tasks / ctas;
+                    const int full_tasks = full_rounds * ctas;
+                    for (int round = 0; round < full_rounds; ++round) {
+                        const int task = round * ctas + cta;
+                        route_gemm_task<4096, 1024, SplitK, true>(
                             &w13_tma_weight, &w13_tma_weight_scale,
                             w13, s13, g13, qx, x_scale,
                             sorted_ids, expert_ids, num_tokens_padded,
                             topk_weights, partials, lut, nullptr,
-                            routes, 0, task, w13_sequence);
+                            routes, 0, task);
+                        __syncthreads();
                     }
-                    if constexpr (kSingleLaunchNoInlineGemm
-                                  || !kSingleLaunchPersistentGemmState) {
-                        if constexpr (!kSingleLaunchSkipFinalCtaSync) {
-                            __syncthreads();
-                        } else if (task + ctas < w13_tasks) {
-                            __syncthreads();
+                    const int half_tail_tasks =
+                        (w13_tasks - full_tasks) * 2;
+                    for (int half_task = cta; half_task < half_tail_tasks;
+                         half_task += ctas) {
+                        const int task = full_tasks + (half_task >> 1);
+                        if ((half_task & 1) == 0) {
+                            route_gemm_task<
+                                4096, 1024, SplitK, true, 0, false,
+                                false, false, 0>(
+                                &w13_tma_weight, &w13_tma_weight_scale,
+                                w13, s13, g13, qx, x_scale,
+                                sorted_ids, expert_ids, num_tokens_padded,
+                                topk_weights, partials, lut, nullptr,
+                                routes, 0, task);
+                        } else {
+                            route_gemm_task<
+                                4096, 1024, SplitK, true, 0, false,
+                                false, false, 1>(
+                                &w13_tma_weight, &w13_tma_weight_scale,
+                                w13, s13, g13, qx, x_scale,
+                                sorted_ids, expert_ids, num_tokens_padded,
+                                topk_weights, partials, lut, nullptr,
+                                routes, 0, task);
+                        }
+                        __syncthreads();
+                    }
+                } else {
+                    const int w13_rounds =
+                        (w13_tasks + ctas - 1) / ctas;
+                    const int w13_workers =
+                        kSingleLaunchBalancedWorkers && Tokens >= 64
+                        ? (w13_tasks + w13_rounds - 1) / w13_rounds
+                        : ctas;
+                    int w13_sequence = 0;
+                    for (int task = cta;
+                         cta < w13_workers && task < w13_tasks;
+                         task += w13_workers, ++w13_sequence) {
+                        if constexpr (kSingleLaunchNoInlineGemm) {
+                            single_launch_w13_gemm_task<SplitK>(
+                                &w13_tma_weight, &w13_tma_weight_scale,
+                                w13, s13, g13, qx, x_scale,
+                                sorted_ids, expert_ids, num_tokens_padded,
+                                topk_weights, partials, lut, routes, task);
+                        } else {
+                            route_gemm_task<
+                                4096, 1024, SplitK, true, 0, false, false,
+                                kSingleLaunchPersistentGemmState>(
+                                &w13_tma_weight, &w13_tma_weight_scale,
+                                w13, s13, g13, qx, x_scale,
+                                sorted_ids, expert_ids, num_tokens_padded,
+                                topk_weights, partials, lut, nullptr,
+                                routes, 0, task, w13_sequence);
+                        }
+                        if constexpr (kSingleLaunchNoInlineGemm
+                                      || !kSingleLaunchPersistentGemmState) {
+                            if constexpr (!kSingleLaunchSkipFinalCtaSync) {
+                                __syncthreads();
+                            } else if (task + ctas < w13_tasks) {
+                                __syncthreads();
+                            }
                         }
                     }
                 }
@@ -6289,6 +6398,7 @@ _EXTENSION_CONFIG = (
           f"slto{int(SINGLE_LAUNCH_TAIL_OVERLAP)}_"
           f"sltg{SINGLE_LAUNCH_TAIL_GROUP_CTAS}_"
           f"slga{int(SINGLE_LAUNCH_GROUPED_W13_ACT)}_"
+          f"sln64{int(SINGLE_LAUNCH_W13_N64_TAIL)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
@@ -6420,6 +6530,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_GROUPED_W13_ACT="
             f"{int(SINGLE_LAUNCH_GROUPED_W13_ACT)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W13_N64_TAIL="
+            f"{int(SINGLE_LAUNCH_W13_N64_TAIL)}"
         ),
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",

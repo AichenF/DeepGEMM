@@ -7504,3 +7504,35 @@ maximum rank latency of a full CUDA-Graph replay.
   attribute the approximately 1.11x Humming speedup to fusion itself.
 - **Artifact:**
   `bench/results/iter262_current_packed_single_vs_multi_tp4_allm_cold_paired_20260904.log`.
+
+## Iteration 263 — W13 N64 final-wave subdivision is correct but does not improve the paired gap
+
+- **Hypothesis/change:** Added opt-in
+  `V4_SINGLE_LAUNCH_W13_N64_TAIL=1` for the isolated TP4/M128 schedule-0
+  path.  Every complete 624-CTA W13 round remains an N128 task; only the
+  underfilled final round is split into two N64 tasks.  Each N64 task copies
+  one 4096-byte MXFP4 weight half and its noncontiguous 256-byte scale half
+  into group-0 shared memory using the same mbarrier.  This preserves each
+  output element's K accumulation order while increasing useful tail CTAs.
+- **Protocol:** TP4 GPUs 0-3, M128 random routes, shared caller-provided
+  FP8-E4M3 X and FP32 group-128 scales, CUDA Graph, two balanced AB/BA
+  batches x 20 separately cold-L2 replays per implementation, four warmups,
+  rank-max timing.  A separate 256 MiB clear immediately precedes every
+  replay and is excluded from events; external X quantization is excluded.
+- **Correctness:** PASS.  Candidate cosine is `0.9999955977`, relative L2 is
+  `0.0029672595`, all ranks are finite, and the TP all-reduce oracle passes.
+- **Result:** Multi-kernel/candidate medians are
+  `0.303856/0.368624 ms`; candidate is `21.315%` slower.  The current selected
+  path's formal Iteration 262 paired overhead was `20.571%`.  Absolute clocks
+  shifted substantially in both controls, so the paired ratio is the useful
+  screen: N64 tail subdivision worsens it by about `0.62%` rather than
+  recovering the expected tail loss.
+- **Interpretation:** Doubling tail CTA count also halves WGMMA work per CTA
+  and replaces each compact N128 record load with two bulk transactions.
+  Those costs erase the occupancy gain.  Tail utilization is not the primary
+  M128 deficit; the next structural candidate should target the persistent
+  producer/consumer dataflow and eliminate whole-grid intermediate phases.
+- **Decision:** Reject the N64-tail flag for performance and keep it disabled
+  by default.  Retain the opt-in implementation as negative evidence.
+- **Artifact:**
+  `bench/results/iter263_w13_n64_tail_tp4_m128_cold_screen_20260904.log`.
