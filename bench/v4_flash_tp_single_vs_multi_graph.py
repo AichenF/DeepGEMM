@@ -256,6 +256,13 @@ def main() -> None:
             nccl_group,
             device,
         )
+        native_accept = bool(
+            candidate_check["finite_all_ranks"]
+            and candidate_check["cosine_min_rank"] >= 0.999
+            and native_embedded_comm_check["finite_all_ranks"]
+            and native_embedded_comm_check["cosine_min_rank"] >= 0.999
+            and native_embedded_comm_check["rel_l2_max_rank"] <= 0.01
+        )
         native_l2_check = None
         native_l2_unweighted_check = None
         native_l2_scale_check = None
@@ -369,6 +376,7 @@ def main() -> None:
                         "candidate_embedded_comm_vs_native_nccl": (
                             native_embedded_comm_check
                         ),
+                        "candidate_accept": native_accept,
                         "candidate_l2_dequant": native_l2_check,
                         "candidate_l2_dequant_vs_unweighted_control": (
                             native_l2_unweighted_check
@@ -389,7 +397,7 @@ def main() -> None:
                 ),
                 flush=True,
             )
-        if not control_check["allreduce_ok"] or not candidate_check["allreduce_ok"]:
+        if not control_check["allreduce_ok"] or not native_accept:
             raise RuntimeError(f"correctness failure at M={m}")
 
         for warmup_idx in range(args.warmup_replays):

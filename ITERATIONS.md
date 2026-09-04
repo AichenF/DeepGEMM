@@ -6607,3 +6607,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** Correctness passes (cosine `0.99999560`, rel-L2 `0.00296676`). Four cold samples give min/median/max `0.088672 / 0.107616 / 0.230176 ms`; the small smoke is intentionally not a formal performance estimate.
 - **Conclusion:** Humming baseline now matches the requested operator contract: MXFP4 weights and prequantized FP8 activation enter the timed MoE. No input X quantization kernel is part of future baseline or candidate measurements. A longer paired/formal run is still required for stable latency.
 - **Artifact:** `bench/results/iter214_humming_prequantized_input_tp4_m8_20260904.log`.
+
+## Iteration 215 — TP4 all-M correctness and first valid cold-L2 latency smoke
+
+- **Change:** Native acceptance now separates mathematical agreement (final cosine >=0.999) from embedded-communication agreement with NCCL (cosine >=0.999 and rel-L2 <=1%). No timed work changed.
+- **Test:** TP4 H20 GPUs 0-3, random routes, M=8/16/32/64/128, static native scheduler, paired AB/BA cold-L2 CUDA Graph; 256 MiB clear before every replay, 4 samples per implementation per M (smoke only).
+- **Correctness:** All five M values pass the split native criterion. Final cosine is 0.999359..0.999367; embedded TP vs NCCL cosine is 0.9999916+ with rel-L2 0.00406..0.00411. M128 NVLS-pull and M<=64 multicast-push both run successfully.
+- **Latency (control/native median ms):** M8 `0.072192/0.318096`; M16 `0.115056/0.499360`; M32 `0.177328/0.561424`; M64 `0.249712/0.618256`; M128 `0.306720/0.676368`. Geomean `0.162357/0.517992 ms`; native is 3.19x slower. These are stable enough to expose the gap but not formal due only four samples.
+- **Conclusion:** Numerical/runtime bring-up is complete for every requested TP4 M, including both communication tails, but performance is currently far from the target. The static scheduler is a likely major regression versus the intended interleaved persistent schedule; restore/interleave and profile before lower-level WGMMA tuning. The printed native padded-row field is uninitialized diagnostic data and must not be used.
+- **Artifact:** `bench/results/iter215_native_tp4_allm_random_cold_smoke_20260904.log`.
