@@ -7445,3 +7445,22 @@ maximum rank latency of a full CUDA-Graph replay.
   timing on this direction.
 - **Artifact:**
   `bench/results/iter260_balanced_workers_m64_m128_compute_smoke_20260904.log`.
+
+## Iteration 261 — packed-barrier poll backoff remains 64 ns
+
+- **Protocol:** H20 GPU 0, selected packed generation barrier with profiling
+  stamps temporarily enabled, M={8,128}, random routes, prequantized FP8
+  input, excluded cold-L2 clear, three complete compute samples per shape and
+  backoff in {32,64,128} ns.  Full W2 route output is bitwise checked on every
+  run; balanced workers are disabled.
+- **Correctness:** All 18 runs PASS bitwise (`cosine=1`, `rel_l2=0`, finite).
+- **Median route+W13+requant+W2 phase sum:** 32 ns gives
+  `67.520 us` at M8 and `325.888 us` at M128; 64 ns gives
+  `66.432/326.624 us`; 128 ns gives `67.072/326.048 us`.
+- **Interpretation:** Shorter/longer sleeps trade less than 0.8 us at M128
+  for 0.6-1.1 us regressions at M8.  No alternative wins both endpoints, and
+  the differences are close to three-sample noise.
+- **Decision:** Retain the selected 64 ns default; no distributed sweep is
+  warranted.
+- **Artifact:**
+  `bench/results/iter261_packed_grid_poll_backoff_compute_screen_20260904.log`.
