@@ -8622,3 +8622,14 @@ maximum rank latency of a full CUDA-Graph replay.
   - Geometric-mean ratio: on `1.110405`, off `1.106965`; prefetch regresses `0.31%`.
 - Artifact: `bench/results/iter314_w13_prefetch_off_tp4_cold_adjacent_control_20260904.log`.
 - Decision: reject W13 cross-task TMA prefetch. It produces no measurable saving, is slightly slower after same-run baseline normalization, and consumes the final register headroom (`REG64`). Keep the opt-in experiment for reproducibility but leave it disabled by default.
+
+## Iteration 315 — W2 cross-task TMA prefetch correctness
+
+- Change: generalized the validated two-stage cross-task TMA protocol to an opt-in W2-only path, `V4_SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH=1`. For each CTA's static W2 task chain, local K tiles 2 and 3 prefetch K tiles 0 and 1 of `task + w2_workers` after the current stage has passed its WGMMA wait and accumulation. W2 uses phase-local persistent metadata/mbarrier state; W13 and the default path remain unchanged.
+- Safety constraints: restricted to the selected inline, one-WG, schedule-0, compact-interleaved two-stage path. Balanced/tail/cohort/cluster/bound-9/global-persistent variants are rejected. Compile-time assertions require two scale buffers, at least two K tiles, and an integral stage cycle.
+- Input/timing contract: prequantized FP8-E4M3 X + FP32 group-128 activation scales and MXFP4 weights. External activation quantization is excluded. The correctness run used a 256 MiB cold-L2 clear outside the profiled kernel; TP collective execution was disabled to isolate the compute state machine.
+- Correctness, GPU 0, random routing:
+  - M=8: accepted; cosine=1.0, relative L2=0.0, finite=true; packed-generation check passed.
+  - M=128: accepted; cosine=1.0, relative L2=0.0, finite=true; packed-generation check passed.
+- Artifact: `bench/results/iter315_w2_next_task_prefetch_m8_m128_compute_correctness_20260904.log`.
+- Decision: correctness accepted. Before performance testing, inspect the generated cubin for a register/local-memory regression; the selected 8-CTA kernel has no register headroom.

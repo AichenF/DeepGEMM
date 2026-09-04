@@ -207,6 +207,9 @@ def main() -> None:
                     "single_launch_w13_next_task_prefetch": (
                         kernel.SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
                     ),
+                    "single_launch_w2_next_task_prefetch": (
+                        kernel.SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+                    ),
                     "single_launch_cooperative_grid": (
                         kernel.SINGLE_LAUNCH_COOPERATIVE_GRID
                     ),

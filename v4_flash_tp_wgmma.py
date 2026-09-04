@@ -528,6 +528,16 @@ if SINGLE_LAUNCH_BALANCED_WORKERS and (
 SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH = (
     os.environ.get("V4_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH", "0") == "1"
 )
+SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH", "0") == "1"
+)
+if (
+    SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+    and SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+):
+    raise ValueError(
+        "test one single-launch cross-task prefetch phase at a time"
+    )
 if SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH and (
     SINGLE_LAUNCH_SCHEDULE != 0
     or SINGLE_LAUNCH_NOINLINE_GEMM
@@ -544,6 +554,31 @@ if SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH and (
 ):
     raise ValueError(
         "V4_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH requires the isolated "
+        "two-stage compact-interleaved one-WG schedule-0 path"
+    )
+if SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_M128_BOUND9
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_W2_UNROLL2_BOUND9
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH requires the isolated "
         "two-stage compact-interleaved one-WG schedule-0 path"
     )
 SINGLE_LAUNCH_CTAS_PER_SM = int(
@@ -775,6 +810,8 @@ static constexpr bool kSingleLaunchPersistentGemmState =
     K_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE;
 static constexpr bool kSingleLaunchW13NextTaskPrefetch =
     K_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH;
+static constexpr bool kSingleLaunchW2NextTaskPrefetch =
+    K_SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -1153,14 +1190,19 @@ __device__ __forceinline__ void route_gemm_task(
     constexpr int kActivationCopies = kPrivateDualActivation ? 2 : 1;
     constexpr int kMetadataSlots = PersistentState ? 2 : 1;
     constexpr bool kCrossTaskWeightPrefetch =
-        PersistentState && IsW13 && kSingleLaunchW13NextTaskPrefetch;
+        PersistentState
+        && ((IsW13 && kSingleLaunchW13NextTaskPrefetch)
+            || (!IsW13 && kSingleLaunchW2NextTaskPrefetch));
     static_assert(!PersistentState || !DualWgW13,
                   "persistent task state supports one WGMMA warpgroup");
     static_assert(!kCrossTaskWeightPrefetch
                   || (kCompactInterleavedScale && kInterleavedScale
-                      && kStages == 2 && LaunchNTiles == 0
-                      && !kHalfWgmma && !SharedPartial),
-                  "cross-task prefetch requires full compact N128 tasks");
+                      && kStages == 2 && kScaleBuffers == 2
+                      && kKTilesPerSplit >= kStages
+                      && kKTilesPerSplit % kStages == 0
+                      && LaunchNTiles == 0 && !kHalfWgmma
+                      && !SharedPartial),
+                  "cross-task prefetch requires full compact two-stage tasks");
     static_assert(kLaunchNTiles % kMathWGs == 0);
     static_assert(!DualWgW13 || (kWout == 128
                   && LaunchNTiles == 0 && kInterleavedScale),
@@ -5512,6 +5554,9 @@ void tp4_megamoe_single_launch_kernel(
                 ? (w2_tasks + w2_rounds - 1) / w2_rounds
                 : ctas;
             int w2_sequence = 0;
+            constexpr bool kW2PersistentState =
+                kSingleLaunchPersistentGemmState
+                || kSingleLaunchW2NextTaskPrefetch;
             for (int task = cta; cta < w2_workers && task < w2_tasks;
                  task += w2_workers, ++w2_sequence) {
                 if (tail_overlap_mblocks > 0
@@ -5527,17 +5572,20 @@ void tp4_megamoe_single_launch_kernel(
                     route_gemm_task<
                         512, 4096, 1, false, 0, false,
                         kSingleLaunchDualWgPhases,
-                        kSingleLaunchPersistentGemmState, -1, false,
+                        kW2PersistentState, -1, false,
                         (kSingleLaunchW2Unroll2Bound9 && Tokens == 128)
                             ? 2 : 0>(
                         &w2_tma_weight, &w2_tma_weight_scale,
                         w2, s2, g2, qactivation, activation_scale,
                         sorted_ids, expert_ids, num_tokens_padded,
                         topk_weights, reinterpret_cast<float*>(down), lut,
-                        nullptr, routes, 0, task, w2_sequence);
+                        nullptr, routes, 0, task, w2_sequence, nullptr,
+                        (kSingleLaunchW2NextTaskPrefetch
+                             && task + w2_workers < w2_tasks)
+                        ? task + w2_workers : -1);
                 }
                 if constexpr (kSingleLaunchNoInlineGemm
-                              || !kSingleLaunchPersistentGemmState) {
+                              || !kW2PersistentState) {
                     if constexpr (!kSingleLaunchSkipFinalCtaSync) {
                         __syncthreads();
                     } else if (task + ctas < w2_tasks) {
@@ -7681,6 +7729,7 @@ _EXTENSION_CONFIG = (
           f"slw2u2b9{int(SINGLE_LAUNCH_W2_UNROLL2_BOUND9)}_"
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
           f"slw13np{int(SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH)}_"
+          f"slw2np{int(SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
@@ -7803,6 +7852,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH="
             f"{int(SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH="
+            f"{int(SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="
