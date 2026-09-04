@@ -562,6 +562,96 @@ def main() -> None:
                     )
                 )
             if rank == 0:
+                last_down = candidate_down_snapshots[-1]
+                down_mismatch = torch.nonzero(
+                    last_down != control_down, as_tuple=False
+                )
+                padded_rows = int(candidate_case.num_tokens_padded.item())
+                sorted_rows = candidate_case.sorted_ids[:padded_rows].long()
+                route_mblock = torch.full(
+                    (m * custom.TOP_K,), -1, dtype=torch.long, device=device
+                )
+                sorted_positions = torch.arange(
+                    padded_rows, dtype=torch.long, device=device
+                )
+                valid_sorted = (
+                    (sorted_rows >= 0) & (sorted_rows < m * custom.TOP_K)
+                )
+                route_mblock[sorted_rows[valid_sorted]] = (
+                    sorted_positions[valid_sorted] // 8
+                )
+                task_owners: list[dict[str, int | bool]] = []
+                top_cta_counts: list[dict[str, int]] = []
+                comm_owned_elements = 0
+                noncomm_owned_elements = 0
+                if down_mismatch.numel():
+                    mismatch_routes = down_mismatch[:, 0]
+                    mismatch_ntiles = down_mismatch[:, 1] // 128
+                    mismatch_mblocks = route_mblock[mismatch_routes]
+                    mismatch_chunks = mismatch_ntiles // 8
+                    chunk_tasks = padded_rows
+                    mismatch_logical = (
+                        mismatch_chunks * chunk_tasks
+                        + mismatch_mblocks * 8
+                        + mismatch_ntiles % 8
+                    )
+                    mismatch_ctas = mismatch_logical % (78 * 8)
+                    comm_owned = (
+                        (mismatch_ctas >= (78 * 8 - 64))
+                        & (((mismatch_ctas - (78 * 8 - 64)) & 3)
+                           == mismatch_chunks)
+                    )
+                    comm_owned_elements = int(comm_owned.sum().item())
+                    noncomm_owned_elements = int(
+                        comm_owned.numel() - comm_owned.sum().item()
+                    )
+                    task_keys = mismatch_mblocks * 32 + mismatch_ntiles
+                    unique_tasks, task_counts = torch.unique(
+                        task_keys, return_counts=True
+                    )
+                    top_count, top_index = torch.topk(
+                        task_counts,
+                        k=min(16, task_counts.numel()),
+                    )
+                    for key, count in zip(
+                        unique_tasks[top_index].cpu().tolist(),
+                        top_count.cpu().tolist(),
+                    ):
+                        mblock = int(key) // 32
+                        n_tile = int(key) % 32
+                        chunk = n_tile // 8
+                        logical = (
+                            chunk * chunk_tasks
+                            + mblock * 8 + n_tile % 8
+                        )
+                        owner_cta = logical % (78 * 8)
+                        task_owners.append(
+                            {
+                                "mblock": mblock,
+                                "n_tile": n_tile,
+                                "chunk": chunk,
+                                "owner_cta": owner_cta,
+                                "owner_is_chunk_comm": bool(
+                                    owner_cta >= (78 * 8 - 64)
+                                    and ((owner_cta - (78 * 8 - 64)) & 3)
+                                        == chunk
+                                ),
+                                "mismatches": int(count),
+                            }
+                        )
+                    unique_ctas, cta_counts = torch.unique(
+                        mismatch_ctas, return_counts=True
+                    )
+                    top_count, top_index = torch.topk(
+                        cta_counts, k=min(16, cta_counts.numel())
+                    )
+                    top_cta_counts = [
+                        {"cta": int(cta), "mismatches": int(count)}
+                        for cta, count in zip(
+                            unique_ctas[top_index].cpu().tolist(),
+                            top_count.cpu().tolist(),
+                        )
+                    ]
                 print(
                     "SINGLE_MULTI_DOWN_DIAG "
                     + json.dumps(
@@ -579,6 +669,17 @@ def main() -> None:
                                 [word >> 10 for word in words]
                                 for words in candidate_chunk_state
                             ],
+                            "rank0_owner_summary": {
+                                "total_mismatches": int(
+                                    down_mismatch.shape[0]
+                                ),
+                                "comm_owned_elements": comm_owned_elements,
+                                "noncomm_owned_elements": (
+                                    noncomm_owned_elements
+                                ),
+                                "top_tasks": task_owners,
+                                "top_ctas": top_cta_counts,
+                            },
                         },
                         sort_keys=True,
                     ),

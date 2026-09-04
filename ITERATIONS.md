@@ -9018,3 +9018,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Inference: a missing per-writer device fence is not the root cause. Since write-only stage 0 passes and read/combine stage 1 fails, the remaining leading hypothesis is that helper reads overlap addresses still being written despite the logical chunk accounting, or that the read/combine body perturbs later W2 execution through another state/resource hazard.
 - Decision: reject the fence as a fix and keep default-off. Map corrupt elements to physical W2 task/CTA ownership and test a read-only copy/checksum body next.
 - Artifact: `bench/results/iter355_w2_chunk_stage1_strong_producer_fence_20260904.log`.
+
+## Iteration 356 — map corrupted W2 elements to task/CTA ownership (2026-09-04)
+
+- Purpose: determine whether stage-1 corruption is confined to the 64 CTAs that run the mid-loop local-combine helper, which would indicate per-CTA WGMMA/shared state damage.
+- Instrumentation: for the final diagnostic replay, invert `sorted_ids` to recover each route's mblock, map every mismatching `(route,column)` to W2 `n_tile`, chunk-major logical task, physical CTA modulo the 624-CTA resident grid, and whether that CTA is the designated communicator for the chunk.
+- Setup: TP4, M128 random routes, seed 20260904, helper stage 1 without the rejected strong fence, four diagnostic replays and one cold-L2 smoke.
+- Rank-0 evidence: 2,734 BF16 elements differed from control. Only 610 belonged to designated chunk-communication CTAs; 2,124 belonged to ordinary compute CTAs. Top bad tasks included both communication owners (for example CTA 597, chunk 1) and noncommunication owners (CTAs 619, 532, 593, 594, 574, 416, and others).
+- Inference: corruption is not limited to CTAs that execute and return from the helper, so per-CTA local state clobber is not sufficient to explain it. The read/combine overlaps globally produced `down` cache lines and triggers a cross-CTA visibility/coherence hazard despite nominal readiness accounting.
+- Decision: retain overlap default-off. Next isolate plain vector reads/copies from arithmetic, and consider changing the pipeline so communication consumes a producer-owned staging buffer rather than rereading the shared route tensor while the persistent grid is active.
+- Artifact: `bench/results/iter356_w2_chunk_corruption_task_ownership_20260904.log`.
