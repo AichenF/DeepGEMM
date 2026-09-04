@@ -5597,3 +5597,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Full-path pooled medians reverse the replay-paired result: P2P two-shot `0.348704010 ms`; NVLS two-shot `0.355504006 ms`.  NVLS is `6.799996 us` / `1.95%` slower and wins only 2/10 paired batch medians.
 - Decision: reject a production M128 switch.  The isolated AR-only NVLS advantage (`0.224 us`, 10/10 in iteration 143) is real but too small to survive full-graph scheduling independently of benchmark granularity; replay-level and batch-level full-path results disagree.
 - Artifact: `results/iter145_ar_transport_focus_tp4_m128_batch_cold2000_20260904.log`.
+
+## Iteration 146 — focused M64 replay-granularity P2P two-shot/NVLS push pair
+
+- Ran the full TP4 M64 graph on physical GPUs 0–3, pairing the current graph P2P two-shot pull against the K3 NVLS multicast one-shot push.  Each received 10 x 200 cold-L2 replays, with AB/BA order alternated inside every replay and TP4 rank-max timing.
+- Correctness: both variants pass the independent NCCL reference (`cosine_min_rank=0.999995487`, `rel_l2_max_rank=0.00300430`) and are bitwise identical (`max_abs_vs_p2p_2shot=0`).
+- Full-path medians: P2P two-shot `0.266256005 ms`; NVLS one-shot push `0.264703989 ms`.  NVLS leads by `1.552016 us` / `0.586%` and wins 9/10 paired batch medians.  Both paths share the same slow compute modes, indicating the per-replay pair cancels that drift.
+- Interpretation: this is a small candidate-level signal, despite isolated AR-only having favored P2P two-shot by `0.288 us` in iteration 143.  Require the independent whole-batch AB/BA repeat; do not change production from this result alone.
+- Artifact: `results/iter146_ar_transport_focus_tp4_m64_replay_cold2000_20260904.log`.
