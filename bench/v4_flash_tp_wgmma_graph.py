@@ -720,12 +720,22 @@ class CapturedCase:
         return output
 
     def run_tp4_single_launch(self, comm: CustomAllReduceV2) -> torch.Tensor:
-        self.prepare_fused_push(comm)
+        # The single entry selects push for M<128 and the communicator's
+        # multicast-bound pull slab for M128.  Prepare both ABIs outside the
+        # timed graph; no allocation or registration occurs during replay.
+        self.prepare_fused_pull(comm)
         assert self.down is not None
         assert self.activation_scale is not None
         assert self.fused_push_workspaces is not None
         assert self.fused_push_counter is not None
-        if comm.world_size != 4 or not self.fused_push_mc_ptr:
+        assert self.fused_pull_output is not None
+        assert self.fused_pull_sem_local is not None
+        if (
+            comm.world_size != 4
+            or not self.fused_push_mc_ptr
+            or not self.fused_pull_mc_ptr
+            or not comm.pull_sem_mc_ptr
+        ):
             raise RuntimeError(
                 "single-launch bring-up requires TP4 NVLS multicast memory"
             )
@@ -755,13 +765,21 @@ class CapturedCase:
             self.fused_graph_output,
             self.fused_push_counter,
             self.fused_push_workspaces,
+            self.fused_pull_output,
+            self.fused_pull_sem_local,
             self.fused_push_rank,
             self.fused_push_stride,
             self.fused_push_mc_ptr,
+            self.fused_pull_mc_ptr,
+            comm.pull_sem_mc_ptr,
             self.w13_split_k,
         )
         self.fused_k6_push_active = True
-        self.fused_k6_ar_mode = "single_launch_multicast_push"
+        self.fused_k6_ar_mode = (
+            "single_launch_nvls_pull"
+            if self.m == 128
+            else "single_launch_multicast_push"
+        )
         self.graph_output = self.fused_graph_output
         return self.graph_output
 

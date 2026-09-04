@@ -5766,3 +5766,24 @@ maximum rank latency of a full CUDA-Graph replay.
   NVLS protocol, matching the selected large-message algorithm, rather than
   weakening the workspace guard or allocating a non-SGLang side channel.
 - Artifact: `results/iter153_tp4_single_launch_allm_random_graph_smoke_20260904.log`.
+
+## Iteration 154 — first M128 NVLS-pull integration compile failure
+
+- Date: 2026-09-04.
+- Change: refactor the existing fused k6 NVLS-pull body to accept explicit
+  logical CTA/grid IDs, extend the single-launch ABI with CARv2's pull slab and
+  multicast semaphore pointers, and select a 16-CTA pull tail for M128 while
+  retaining multicast push below M128.
+- Protocol: TP4 M128 random-route CUDA-Graph smoke on physical GPUs 0–3 with
+  a 900-second process bound.  The new extension name forced a clean CUDA
+  compilation before any distributed initialization or GPU launch.
+- Failure: nvcc stops with
+  `identifier "fused_k6_nvls_pull_tp4_task" is undefined` at the monolithic
+  kernel call site.  The device task definition is textually below the
+  monolithic kernel, and no forward declaration was added.  Other ranks then
+  fail to import the absent shared object; no GPU correctness or performance
+  sample exists.
+- Decision: retain this failed attempt as exact evidence, then add a device
+  template forward declaration before the monolithic entry and retry without
+  changing the transport algorithm.
+- Artifact: `results/iter154_tp4_single_launch_m128_nvls_pull_bringup_20260904.log`.
