@@ -6274,3 +6274,15 @@ maximum rank latency of a full CUDA-Graph replay.
   conclusion and do not alter source.
 - **Evidence:**
   `results/iter171_tp4_single_launch_bound6_7_sweep_20260904.log`.
+
+## Iteration 172 — phase-scheduler launch-bound 7 check (TP4, cold L2)
+
+- Date: 2026-09-04
+- Hypothesis: forcing seven resident 128-thread CTAs per SM may preserve more registers than the eight-CTA cap while exposing more phase-barrier parallelism than the original build.
+- Method: unchanged schedule-0 single-launch kernel; `V4_SINGLE_LAUNCH_MIN_BLOCKS=7`, `V4_SINGLE_LAUNCH_CTAS_PER_SM=7`; paired candidate/control CUDA Graph benchmark, TP4 GPUs 4–7, random routing, M={8,128}, two outer batches × 20 cold-L2 replays per implementation, four warmups. BF16→FP8 input quantization is outside both timed graphs.
+- M8: control 0.073200 ms, candidate 0.092128 ms, speedup 0.794547x; candidate route/W13/activation/W2 = 16.160/42.176/2.976/22.304 us.
+- M128: control 0.306736 ms, candidate 0.430624 ms, speedup 0.712306x; candidate route/W13/activation/W2 = 27.648/222.048/7.008/114.752 us.
+- Geometric mean: control 0.149843 ms, candidate 0.199180 ms, speedup 0.752303x.
+- Correctness: both points passed allreduce/finite checks; minimum cosine across ranks exceeded 0.999995.
+- Decision: bound 7 is slower than bound 8 from Iteration 170. Keep bound 8 as the best measured residency point. The intended bound-6 half of this shell sweep was not retained because the second `tee` overwrote the first log; measure it separately before closing that comparison.
+- Raw log: `results/iter172_tp4_single_launch_bound6_7_sweep_20260904.log`.
