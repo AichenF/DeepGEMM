@@ -786,6 +786,17 @@ if SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP and (
         "the isolated 8-CTA/SM path, release-arrival packed barriers, "
         "phase stamps off, and the 64-block P2P two-shot collective"
     )
+SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY", "0") == "1"
+)
+if (
+    SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY
+    and not SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY requires "
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP=1"
+    )
 SINGLE_LAUNCH_W2_CHUNK_AR_POST = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_AR_POST", "0") == "1"
 )
@@ -1025,6 +1036,8 @@ static constexpr bool kSingleLaunchW2ChunkMajor =
     K_SINGLE_LAUNCH_W2_CHUNK_MAJOR;
 static constexpr bool kSingleLaunchW2ChunkArOverlap =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP;
+static constexpr bool kSingleLaunchW2ChunkArWaitOnly =
+    K_SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY;
 static constexpr bool kSingleLaunchW2ChunkArPost =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_POST;
 static constexpr bool kSingleLaunchW2ChunkArPostConcurrent =
@@ -6067,20 +6080,23 @@ void tp4_megamoe_single_launch_kernel(
                                 + chunk,
                             ctas, is_chunk_comm);
                         if (is_chunk_comm) {
-                            fused_k6_p2p_twoshot_tp4_chunk_task<
-                                kSingleLaunchThreads, kChunkCommBlocks,
-                                Tokens>(
-                                down, topk_weights, pull_input,
-                                push0, push1, push2, push3,
-                                pull_sem_local, rank, chunk,
-                                comm_block >> 2, comm_block);
+                            if constexpr (!kSingleLaunchW2ChunkArWaitOnly) {
+                                fused_k6_p2p_twoshot_tp4_chunk_task<
+                                    kSingleLaunchThreads, kChunkCommBlocks,
+                                    Tokens>(
+                                    down, topk_weights, pull_input,
+                                    push0, push1, push2, push3,
+                                    pull_sem_local, rank, chunk,
+                                    comm_block >> 2, comm_block);
+                            }
                         }
                     }
                 }
             }
         }
         if constexpr (kSingleLaunchW2ChunkArOverlap && Tokens >= 64) {
-            if (!chunk_ar_overlap_active)
+            if (!chunk_ar_overlap_active
+                    || kSingleLaunchW2ChunkArWaitOnly)
                 single_launch_grid_barrier(barrier_state, 3, ctas);
         } else {
             single_launch_grid_barrier(barrier_state, 3, ctas);
@@ -6127,7 +6143,8 @@ void tp4_megamoe_single_launch_kernel(
                 }
             } else {
                 if ((!kSingleLaunchW2ChunkArOverlap
-                        || !chunk_ar_overlap_active)
+                        || !chunk_ar_overlap_active
+                        || kSingleLaunchW2ChunkArWaitOnly)
                         && cta < kTwoShotBlocks) {
                     fused_k6_p2p_twoshot_tp4_task<
                         kSingleLaunchThreads, kTwoShotBlocks, Tokens>(
@@ -8432,6 +8449,7 @@ _EXTENSION_CONFIG = (
           f"slavgt{int(SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS)}_"
           f"slw2cm{int(SINGLE_LAUNCH_W2_CHUNK_MAJOR)}_"
           f"slw2cao{int(SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP)}_"
+          f"slw2cawo{int(SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY)}_"
           f"slw2cap{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST)}_"
           f"slw2capc{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
@@ -8578,6 +8596,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP="
             f"{int(SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY="
+            f"{int(SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_POST="

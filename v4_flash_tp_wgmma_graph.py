@@ -856,6 +856,9 @@ class CapturedCase:
             self.fused_k6_ar_mode = (
                 "single_launch_p2p_two_shot_chunk_overlap"
                 if kernel.SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+                and not kernel.SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY
+                else "single_launch_p2p_two_shot_chunk_wait_only"
+                if kernel.SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY
                 else "single_launch_p2p_two_shot_chunk_post"
                 if kernel.SINGLE_LAUNCH_W2_CHUNK_AR_POST
                 and not kernel.SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT
@@ -1289,6 +1292,9 @@ def main() -> None:
                     ),
                     "single_launch_w2_chunk_ar_overlap": (
                         kernel.SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+                    ),
+                    "single_launch_w2_chunk_ar_wait_only": (
+                        kernel.SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY
                     ),
                     "single_launch_w2_chunk_ar_post": (
                         kernel.SINGLE_LAUNCH_W2_CHUNK_AR_POST

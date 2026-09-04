@@ -8954,3 +8954,15 @@ maximum rank latency of a full CUDA-Graph replay.
 - Inference: there is no leftover arrival count, generation skew, or obvious duplicate/missing-arrival carry across replays. The failure is downstream of nominal chunk completion and tied to executing/resuming W2 around the mid-loop helper.
 - Decision: retain overlap default-off. Isolate a mid-loop no-op/wait path from the actual communication helper, and map corrupted elements back to W2 task/CTA ownership.
 - Artifact: `bench/results/iter349_w2_chunk_ready_generation_audit_20260904.log`.
+
+## Iteration 350 — isolate mid-loop wait from the communication helper (2026-09-04)
+
+- Hypothesis: retain every chunk-ready arrival and communication-CTA wait, but skip the mid-loop chunk helper; after all W2 work, use the original phase-3 barrier and full 64-CTA two-shot collective.
+- Implementation: added diagnostic-only `V4_SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY=1`, gated by the overlap feature. It exercises the same chunk-major scheduler and four packed readiness words without any mid-loop symmetric-buffer access.
+- Setup: TP4 GPUs 0–3, M128 random routes, seed 20260904, four diagnostic graph replays, then one cold-L2 smoke replay. Public input remained prequantized FP8 activation plus MXFP4 weights.
+- Correctness: **PASS exactly.** Candidate `down` was bitwise identical to the multi-kernel control in every hidden chunk on all four replays, and repeat-versus-first max-absolute difference was zero. Final output was also replay-stable and matched the normal reference metrics: cosine 0.9999956090, rel-L2 0.0029634544, max-absolute 1024.
+- Counter evidence: all four readiness counts remained zero after each replay and generations advanced together from 3 through 6.
+- Isolation result: mid-loop arrive/wait and resuming W2 are correct by themselves. Corruption requires executing the chunk communication helper before resuming W2; post-barrier concurrent execution of that helper is separately correct.
+- Diagnostic timing only: 0.351328 ms candidate versus 0.313632 ms one-sample control; not a performance result.
+- Decision: focus on helper-induced per-CTA state/shared-memory effects and compile/resource lifetime across the subsequent W2 tasks. Keep every diagnostic feature default-off.
+- Artifact: `bench/results/iter350_w2_chunk_wait_only_isolation_20260904.log`.
