@@ -8789,3 +8789,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Same-run-control normalized effect of ON versus OFF: candidate/control improved `1.08%` at M64, `0.55%` at M128, and `0.82%` geometric mean.  Direct candidate medians improved `1.00%`/`1.51%`, but the control also moved, especially at M128.
 - Decision: promising small barrier saving, not yet selected.  It does not close the main gap (single remains roughly 14% slower), and the effect is below 2%; repeat in reversed OFF→ON order before changing the default.  If confirmed, run all five M values and longer generation/liveness stress.
 - Artifact: `bench/results/iter332_release_arrival_on_off_tp4_m64_m128_cold_screen_20260904.log`.
+
+## Iteration 333 — Reverse-order confirmation of release-arrival saving (2026-09-04)
+
+- Protocol: reversed Iteration 332 to OFF→ON with otherwise identical TP4 GPUs 0–3, random M64/M128 routes, replay-interleaved CUDA Graphs, 80 samples per implementation/shape, and a separate excluded 256 MiB L2 clear before every replay.  Both candidates include the embedded P2P two-shot allreduce and consume caller-provided prequantized FP8 X/scales.
+- Correctness/liveness: all four candidate/control shape runs passed distributed allreduce correctness; no grid-barrier hang occurred.  Worst candidate cosine/relative-L2 remained `0.9999956225/0.0029589` at M64 and `0.9999955977/0.0029673` at M128.
+- OFF medians, control/single/ratio: M64 `0.246848/0.284336 ms`, `1.151867`; M128 `0.308576/0.354544 ms`, `1.148968`; geometric ratio `1.150417`.
+- ON medians: M64 `0.247088/0.281248 ms`, `1.138250`; M128 `0.311808/0.356992 ms`, `1.144910`; geometric ratio `1.141575`.
+- Normalized ON effect: `1.18%` improvement at M64, `0.35%` at M128, `0.77%` geometric mean.  This agrees with Iteration 332's `1.08%/0.55%/0.82%` despite reversing process order.  Direct M128 latency moved the other way because its control moved by roughly 1%; candidate/control normalization is therefore the defensible comparison.
+- Decision: the barrier change is a repeatable but sub-1% two-shape aggregate optimization.  Keep it as the leading candidate, but do not flip the default until all five M values and a longer graph-replay/generation stress pass.  The remaining single-vs-multi gap is about 14.2%, so this is not the structural fix.
+- Artifact: `bench/results/iter333_release_arrival_off_on_tp4_m64_m128_cold_confirm_20260904.log`.
