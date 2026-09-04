@@ -8406,3 +8406,28 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Artifacts:**
   `bench/results/iter304_native_register_dequant_m128_source_ncu_20260904.log`
   and `results/iter304_native_register_dequant_m128_source.ncu-rep`.
+
+## Iteration 305 — source counters isolate idle dispatch and serialized RS dequant
+
+- **Evidence source:** Read-only CUDA/SASS correlation import of the cold-cache
+  Iteration-304 report; no new GPU launch.
+- **Largest non-issued site:** The dispatch branch at native-body line 689
+  accumulates `2,786` barrier samples while the two dispatch warps wait from the
+  end of route/pull work through GEMM/combine.  This is structural role idling,
+  not an input-quantization cost.
+- **RS critical path:** Packed-row, exponent, and shared LUT dependencies at
+  lines 990-1008 account for roughly `2.7k` not-issued samples among the main
+  reported sites.  Line 1002 alone has `867` (`630` short-scoreboard, `184`
+  wait); lines 995/999 have `564/498`, and packed row loads at 990/993 have
+  `255/204`.  The per-K32 `warpgroup_wait<0>` at line 1026 contributes another
+  `263` barrier samples.
+- **Producer/readiness evidence:** A/B producer empty-barrier waits contribute
+  `169/86` not-issued samples, while route/L2 readiness polling contributes
+  `77/29`; these are secondary to dispatch role idling and serialized RS
+  operand preparation.
+- **Decision:** First test a bounded RS scheduling change that issues the four
+  K32 groups of each K128 tile before a single final wait/fence, preserving all
+  data formats and the one-launch contract.  This directly targets the repeated
+  GMMA wait and creates room to overlap packed/exponent/LUT operand work.  Do
+  not attempt a 156-CTA resident-grid rewrite until this lower-risk issue path
+  is measured.
