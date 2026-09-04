@@ -8921,3 +8921,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Diagnostic timing only: candidate median 0.373216 ms versus a noisy 0.302064 ms control median with two samples. The deliberately serial 16-CTA communication path is not a performance candidate.
 - Decision: keep both chunk experiments default-off. Next isolate concurrent post-barrier 4×16 helpers, then strengthen overlap lifetime synchronization only if that passes.
 - Artifact: `bench/results/iter346_w2_chunk_post_barrier_serial_smoke_20260904.log`.
+
+## Iteration 347 — post-barrier concurrent chunk-helper isolation (2026-09-04)
+
+- Hypothesis: run all four 16-CTA hidden-chunk collectives concurrently only after the unchanged W2 whole-grid barrier, separating cross-chunk collective concurrency from true W2/communication overlap.
+- Implementation: added diagnostic-only `V4_SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT=1`. CTAs 0–63 map as `chunk=cta&3`, `group=cta>>2`, and `comm_id=cta`, matching Iteration 344 while retaining the old phase-3 barrier.
+- Setup: TP4 GPUs 0–3, M128 random routes, seed 20260904, CUDA Graph outer=1/replays=2/warmup=1, prequantized FP8 activation input, MXFP4 weights, and an excluded 256 MiB L2 clear before every implementation replay.
+- Correctness: **PASS.** Candidate and control again matched exactly under all reported metrics on every rank: cosine 0.9999956090, rel-L2 0.0029634544, max-absolute 1024, finite output, and rank-consistent allreduce.
+- Isolation result: four chunk helpers, 64 distinct semaphore slots, and concurrent cross-chunk CARv2 execution are correct. Iteration 344's race requires communication to overlap unfinished W2 work; it is not caused by helper concurrency itself.
+- Diagnostic timing only: candidate median 0.344656 ms versus a noisy 0.338912 ms control median with two samples. This is not a formal performance comparison.
+- Decision: retain the experiment default-off. Next test stronger producer publication and the chunk-ready protocol while preserving the overlap schedule.
+- Artifact: `bench/results/iter347_w2_chunk_post_barrier_concurrent_smoke_20260904.log`.

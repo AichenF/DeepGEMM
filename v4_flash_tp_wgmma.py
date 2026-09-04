@@ -801,6 +801,18 @@ if SINGLE_LAUNCH_W2_CHUNK_AR_POST and (
         "overlap off, the isolated 8-CTA/SM path, and the 64-block "
         "P2P two-shot collective"
     )
+SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT", "0")
+    == "1"
+)
+if (
+    SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT
+    and not SINGLE_LAUNCH_W2_CHUNK_AR_POST
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT requires "
+        "V4_SINGLE_LAUNCH_W2_CHUNK_AR_POST=1"
+    )
 if SINGLE_LAUNCH_DUAL_WG_PHASES and (
     not SINGLE_LAUNCH_P2P_TWO_SHOT
     or SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS != 64
@@ -1015,6 +1027,8 @@ static constexpr bool kSingleLaunchW2ChunkArOverlap =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP;
 static constexpr bool kSingleLaunchW2ChunkArPost =
     K_SINGLE_LAUNCH_W2_CHUNK_AR_POST;
+static constexpr bool kSingleLaunchW2ChunkArPostConcurrent =
+    K_SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -6085,18 +6099,30 @@ void tp4_megamoe_single_launch_kernel(
                 ? 32 : kSingleLaunchP2pTwoShotBlocks;
             if constexpr (kSingleLaunchW2ChunkArPost) {
                 // Diagnostic isolation: retain the normal whole-grid W2
-                // barrier, then execute the same four hidden-chunk helpers
-                // serially with 16 CTAs.  This separates helper mapping and
-                // CARv2 semaphore correctness from W2/communication overlap.
-                if (cta < 16) {
-                    #pragma unroll
-                    for (int chunk = 0; chunk < 4; ++chunk) {
+                // barrier, then execute the same four hidden-chunk helpers.
+                // Select 64 concurrent CTAs to distinguish cross-chunk
+                // collective concurrency from true W2/communication overlap;
+                // the 16-CTA control executes the chunks serially.
+                if constexpr (kSingleLaunchW2ChunkArPostConcurrent) {
+                    if (cta < 64) {
+                        const int chunk = cta & 3;
                         fused_k6_p2p_twoshot_tp4_chunk_task<
                             kSingleLaunchThreads, 16, Tokens>(
                             down, topk_weights, pull_input,
                             push0, push1, push2, push3,
-                            pull_sem_local, rank, chunk, cta,
-                            chunk * 16 + cta);
+                            pull_sem_local, rank, chunk, cta >> 2, cta);
+                    }
+                } else {
+                    if (cta < 16) {
+                        #pragma unroll
+                        for (int chunk = 0; chunk < 4; ++chunk) {
+                            fused_k6_p2p_twoshot_tp4_chunk_task<
+                                kSingleLaunchThreads, 16, Tokens>(
+                                down, topk_weights, pull_input,
+                                push0, push1, push2, push3,
+                                pull_sem_local, rank, chunk, cta,
+                                chunk * 16 + cta);
+                        }
                     }
                 }
             } else {
@@ -8407,6 +8433,7 @@ _EXTENSION_CONFIG = (
           f"slw2cm{int(SINGLE_LAUNCH_W2_CHUNK_MAJOR)}_"
           f"slw2cao{int(SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP)}_"
           f"slw2cap{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST)}_"
+          f"slw2capc{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
@@ -8555,6 +8582,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_POST="
             f"{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT="
+            f"{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="

@@ -858,6 +858,9 @@ class CapturedCase:
                 if kernel.SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
                 else "single_launch_p2p_two_shot_chunk_post"
                 if kernel.SINGLE_LAUNCH_W2_CHUNK_AR_POST
+                and not kernel.SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT
+                else "single_launch_p2p_two_shot_chunk_post_concurrent"
+                if kernel.SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT
                 else "single_launch_p2p_two_shot"
             )
             self.graph_output = self.fused_pull_output
@@ -1289,6 +1292,9 @@ def main() -> None:
                     ),
                     "single_launch_w2_chunk_ar_post": (
                         kernel.SINGLE_LAUNCH_W2_CHUNK_AR_POST
+                    ),
+                    "single_launch_w2_chunk_ar_post_concurrent": (
+                        kernel.SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT
                     ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
