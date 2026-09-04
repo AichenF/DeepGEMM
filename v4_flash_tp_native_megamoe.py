@@ -538,7 +538,8 @@ v4_flash_tp4_native_megamoe_impl(
         uint8_t* pull_sem_local,
         uint8_t* pull_sem_mc,
         const int rank,
-        const int64_t push_stride) {
+        const int64_t push_stride,
+        const bool enable_tp) {
     constexpr uint32_t kNumMaxTokensPerRank = 128;
     constexpr uint32_t kNumExpertsPerWave = 32;
     constexpr uint32_t kNumSMs = 78;
@@ -580,6 +581,8 @@ v4_flash_tp4_native_megamoe_impl(
     ptx::tma_store_wait<0>();
     comm::grid_sync<kNumSMs, 2>(
         workspace, sm_idx, thread_idx, []() { __syncthreads(); });
+    if (!enable_tp)
+        return;
 
     const auto* local_output = reinterpret_cast<const __nv_bfloat16*>(y);
     if (num_tokens == 128) {
@@ -650,7 +653,8 @@ void run_native_tp4(
         int rank,
         int64_t push_stride,
         int tokens,
-        int intermediate) {
+        int intermediate,
+        bool enable_tp) {
     TORCH_CHECK(workspace.scalar_type() == torch::kUInt8
                     && workspace.is_cuda() && workspace.is_contiguous(),
                 "native workspace must be contiguous CUDA uint8");
@@ -674,9 +678,9 @@ void run_native_tp4(
     TORCH_CHECK(push_counter.is_cuda() && push_counter.element_size() == 4
                     && push_counter.numel() >= 78,
                 "native TP4 needs at least 78 CARv2 push counters");
-    TORCH_CHECK(rank >= 0 && rank < 4 && push_mc_ptr != 0,
+    TORCH_CHECK(!enable_tp || (rank >= 0 && rank < 4 && push_mc_ptr != 0),
                 "native TP4 requires a valid rank and multicast push VA");
-    TORCH_CHECK(pull_input_mc_ptr != 0 && pull_sem_mc_ptr != 0,
+    TORCH_CHECK(!enable_tp || (pull_input_mc_ptr != 0 && pull_sem_mc_ptr != 0),
                 "native TP4 requires multicast pull/semaphore VAs");
 
     static void* last_workspace = nullptr;
@@ -748,7 +752,7 @@ void run_native_tp4(
         reinterpret_cast<const uint8_t*>(pull_input_mc_ptr),
         pull_sem_local.data_ptr<uint8_t>(),
         reinterpret_cast<uint8_t*>(pull_sem_mc_ptr),
-        rank, push_stride);
+        rank, push_stride, enable_tp);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 """
@@ -777,7 +781,8 @@ void run_native_tp4(
     int rank,
     int64_t push_stride,
     int tokens,
-    int intermediate);
+    int intermediate,
+    bool enable_tp);
 """
 
 _SOURCE_HASH = hashlib.sha1((_CPP + _CUDA).encode()).hexdigest()[:20]
@@ -843,4 +848,44 @@ def run_tp4(
         push_stride,
         tokens,
         512,
+        True,
+    )
+
+
+def run_local(
+    workspace: NativeWorkspace,
+    native_w13: torch.Tensor,
+    native_w2: torch.Tensor,
+    local_output: torch.Tensor,
+    tokens: int,
+) -> None:
+    """Diagnostic entry that executes the same body but skips the TP tail."""
+    device = local_output.device
+    dummy_counter = torch.zeros((78,), dtype=torch.int32, device=device)
+    dummy_bytes = workspace.storage[:128]
+    _ext.run_native_tp4(
+        workspace.storage,
+        workspace.l1_acts.view(torch.uint8),
+        workspace.l1_acts_sf,
+        workspace.l2_acts.view(torch.uint8),
+        workspace.l2_acts_sf,
+        native_w13,
+        native_w2,
+        local_output,
+        local_output,
+        dummy_counter,
+        dummy_bytes,
+        dummy_bytes,
+        dummy_bytes,
+        dummy_bytes,
+        local_output,
+        dummy_bytes,
+        0,
+        0,
+        0,
+        0,
+        0,
+        tokens,
+        512,
+        False,
     )

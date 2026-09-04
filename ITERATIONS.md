@@ -6420,3 +6420,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence: `bench/results/iter185_native_tp4_m8_smoke_20260904.log` on the remote branch.
 - Interpretation: the symmetric four-rank failure is consistent with a device trap/assert or an unsupported body invariant, not a single-peer communication timeout. The next run must isolate the local MegaMoE body from the appended TP communication and enable explicit stage markers/launch blocking.
 - Decision: keep this build as a recorded failed bring-up; add a local-only diagnostic mode before changing scheduling or performance policy.
+
+## Iteration 186 — local-body isolation
+
+- Change: added an `enable_tp=false` diagnostic entry that runs the identical 78-CTA/384-thread MegaMoE body and its local grid drain while skipping every multicast/NVLS instruction; added a standalone M8 local smoke.
+- Test: one H20 GPU (GPU 0), M=8 balanced routes, CUDA_LAUNCH_BLOCKING=1.
+- Result: **runtime failed with `cudaErrorIllegalInstruction` inside the local MegaMoE path**.
+- Evidence: `bench/results/iter186_native_local_m8_smoke_20260904.log` on the remote branch.
+- Conclusion: the TP all-reduce tail is exonerated for this failure. The fault is in the adapted body configuration, TMA/WGMMA descriptors, or a body assertion.
+- Decision: next isolate the body by enabling device assertion diagnostics and inspecting the generated SASS/PC; do not tune communication until local execution is valid.
