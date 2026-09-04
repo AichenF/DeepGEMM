@@ -7987,3 +7987,15 @@ maximum rank latency of a full CUDA-Graph replay.
   failure rather than performance evidence, and rerun with `PYTHONPATH=.`.
 - **Artifact:**
   `bench/results/iter280_default_large_m_twoshot_smoke_20260904.log`.
+
+## Iteration 281 — second default smoke also exits during import
+
+- **Attempted validation:** Repeated the M64/M128 cold-L2 graph smoke with
+  `PYTHONPATH=.` so workers could import the kernel module.
+- **Result:** Import advanced to the graph helper and then failed because the
+  Humming checkout was not also on `PYTHONPATH`.  No CUDA work or performance
+  measurement ran.
+- **Decision:** Treat this solely as benchmark-launcher environment evidence;
+  restore the complete path used by prior successful runs before retrying.
+- **Artifact:**
+  `bench/results/iter281_default_large_m_twoshot_smoke_20260904.log`.
