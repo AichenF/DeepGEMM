@@ -1,0 +1,176 @@
+W0904 10:26:02.257000 418780 torch/distributed/run.py:851] 
+W0904 10:26:02.257000 418780 torch/distributed/run.py:851] *****************************************
+W0904 10:26:02.257000 418780 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0904 10:26:02.257000 418780 torch/distributed/run.py:851] *****************************************
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 21, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 245, in <module>
+    SINGLE_LAUNCH_MIN_BLOCKS = int(
+                               ^^^^
+ValueError: invalid literal for int() with base 10: ''
+Traceback (most recent call last):
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 21, in <module>
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 21, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 245, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 245, in <module>
+    SINGLE_LAUNCH_MIN_BLOCKS = int(
+                               ^^^^
+ValueError: invalid literal for int() with base 10: ''
+    SINGLE_LAUNCH_MIN_BLOCKS = int(
+                               ^^^^
+ValueError: invalid literal for int() with base 10: ''
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 21, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 245, in <module>
+    SINGLE_LAUNCH_MIN_BLOCKS = int(
+                               ^^^^
+ValueError: invalid literal for int() with base 10: ''
+W0904 10:26:09.731000 418780 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 418848 closing signal SIGTERM
+W0904 10:26:09.731000 418780 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 418849 closing signal SIGTERM
+W0904 10:26:09.731000 418780 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 418851 closing signal SIGTERM
+E0904 10:26:09.876000 418780 torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 2 (pid: 418850) of binary: /usr/bin/python3
+Traceback (most recent call last):
+  File "/usr/local/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+bench/v4_flash_tp_single_vs_multi_graph.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-09-04_10:26:09
+  host      : H20-GPU-06.cm.cluster
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 418848)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[2]:
+  time      : 2026-09-04_10:26:09
+  host      : H20-GPU-06.cm.cluster
+  rank      : 1 (local_rank: 1)
+  exitcode  : 1 (pid: 418849)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[3]:
+  time      : 2026-09-04_10:26:09
+  host      : H20-GPU-06.cm.cluster
+  rank      : 3 (local_rank: 3)
+  exitcode  : -15 (pid: 418851)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 418851
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-09-04_10:26:09
+  host      : H20-GPU-06.cm.cluster
+  rank      : 2 (local_rank: 2)
+  exitcode  : 1 (pid: 418850)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
+W0904 10:26:11.460000 418857 torch/distributed/run.py:851] 
+W0904 10:26:11.460000 418857 torch/distributed/run.py:851] *****************************************
+W0904 10:26:11.460000 418857 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0904 10:26:11.460000 418857 torch/distributed/run.py:851] *****************************************
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 21, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 245, in <module>
+    SINGLE_LAUNCH_MIN_BLOCKS = int(
+                               ^^^^
+ValueError: invalid literal for int() with base 10: ''
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 21, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 245, in <module>
+    SINGLE_LAUNCH_MIN_BLOCKS = int(
+                               ^^^^
+ValueError: invalid literal for int() with base 10: ''
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 21, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 245, in <module>
+    SINGLE_LAUNCH_MIN_BLOCKS = int(
+                               ^^^^
+ValueError: invalid literal for int() with base 10: ''
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 21, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 245, in <module>
+    SINGLE_LAUNCH_MIN_BLOCKS = int(
+                               ^^^^
+ValueError: invalid literal for int() with base 10: ''
+W0904 10:26:18.952000 418857 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 418925 closing signal SIGTERM
+W0904 10:26:18.953000 418857 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 418926 closing signal SIGTERM
+W0904 10:26:18.953000 418857 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 418927 closing signal SIGTERM
+E0904 10:26:19.074000 418857 torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 3 (pid: 418928) of binary: /usr/bin/python3
+Traceback (most recent call last):
+  File "/usr/local/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+bench/v4_flash_tp_single_vs_multi_graph.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-09-04_10:26:19
+  host      : H20-GPU-06.cm.cluster
+  rank      : 0 (local_rank: 0)
+  exitcode  : -15 (pid: 418925)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 418925
+[2]:
+  time      : 2026-09-04_10:26:19
+  host      : H20-GPU-06.cm.cluster
+  rank      : 1 (local_rank: 1)
+  exitcode  : 1 (pid: 418926)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[3]:
+  time      : 2026-09-04_10:26:19
+  host      : H20-GPU-06.cm.cluster
+  rank      : 2 (local_rank: 2)
+  exitcode  : -15 (pid: 418927)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 418927
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-09-04_10:26:18
+  host      : H20-GPU-06.cm.cluster
+  rank      : 3 (local_rank: 3)
+  exitcode  : 1 (pid: 418928)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

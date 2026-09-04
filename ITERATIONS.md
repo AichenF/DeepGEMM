@@ -6259,3 +6259,18 @@ maximum rank latency of a full CUDA-Graph replay.
   cubin registers/local spills.  Then optimize the unchanged 16-28 us route
   phase and M128 post-W2 collective tail; do not claim the 10% objective.
 - **Evidence:** `results/iter170_tp4_single_lb8_m8_m128_screen_20260904.log`.
+
+## Iteration 171 — launch-bound 6/7 sweep command-expansion failure
+
+- **Change under test:** no source change after iteration 170; intended to run
+  schedule 0 at minimum-block/requested residency 6 and 7 on M8/M128.
+- **Result:** FAIL before module import, JIT, CUDA initialization, correctness,
+  or timing for both intended variants.  The outer local shell expanded
+  `$task_bound` before the quoted remote loop executed, exporting an empty
+  `V4_SINGLE_LAUNCH_MIN_BLOCKS`; Python therefore raised `ValueError: invalid
+  literal for int() with base 10: ''` on every rank.
+- **Decision:** this is command infrastructure evidence only.  Retry the same
+  bounded sweep with the remote loop variable escaped; do not draw any kernel
+  conclusion and do not alter source.
+- **Evidence:**
+  `results/iter171_tp4_single_launch_bound6_7_sweep_20260904.log`.
