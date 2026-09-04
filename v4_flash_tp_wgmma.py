@@ -3388,7 +3388,8 @@ void tp4_megamoe_single_launch_kernel(
         const uint8_t* __restrict__ pull_input_mc,
         uint8_t* __restrict__ pull_sem_local,
         uint8_t* __restrict__ pull_sem_mc,
-        int max_mblocks, int rank, int64_t push_stride) {
+        int max_mblocks, int rank, int64_t push_stride,
+        bool enable_tp_collective) {
     constexpr int kIntermediate = 512;
     constexpr int kW13NTiles = (2 * kIntermediate) / kWout;
     constexpr int kW2NTiles = 4096 / kWout;
@@ -3833,19 +3834,21 @@ void tp4_megamoe_single_launch_kernel(
     // pull region and semaphore protocol there; smaller messages retain the
     // validated 78-CTA multicast push path.  Extra compute CTAs can retire
     // because kernel completion still waits for every communication CTA.
-    if constexpr (Tokens == 128) {
-        if (cta < kSingleLaunchNvlsBlocks) {
-            fused_k6_nvls_pull_tp4_task<128>(
-                down, topk_weights, pull_input, pull_input_mc, output,
-                pull_sem_local, pull_sem_mc, tokens, cta,
-                kSingleLaunchNvlsBlocks);
-        }
-    } else {
-        if (cta < 78) {
-            fused_k6_push_ar_tp4_task<128, true>(
-                down, topk_weights, output, push_counter,
-                push0, push1, push2, push3, push_mc,
-                tokens, rank, push_stride, 0, 4096, cta, 78);
+    if (enable_tp_collective) {
+        if constexpr (Tokens == 128) {
+            if (cta < kSingleLaunchNvlsBlocks) {
+                fused_k6_nvls_pull_tp4_task<128>(
+                    down, topk_weights, pull_input, pull_input_mc, output,
+                    pull_sem_local, pull_sem_mc, tokens, cta,
+                    kSingleLaunchNvlsBlocks);
+            }
+        } else {
+            if (cta < 78) {
+                fused_k6_push_ar_tp4_task<128, true>(
+                    down, topk_weights, output, push_counter,
+                    push0, push1, push2, push3, push_mc,
+                    tokens, rank, push_stride, 0, 4096, cta, 78);
+            }
         }
     }
 }
@@ -4716,7 +4719,7 @@ void launch_tp4_megamoe_single(
         torch::Tensor pull_input, torch::Tensor pull_sem_local,
         int rank, int64_t push_stride, int64_t push_mc_ptr,
         int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr,
-        int requested_ctas_per_sm) {
+        int requested_ctas_per_sm, bool enable_tp_collective) {
     constexpr int dynamic_smem_bytes =
         kStages * kWout * ((kBlockK / 2) + 4) + kTok * kBlockK;
     TORCH_CHECK(output.size(0) == Tokens,
@@ -4785,7 +4788,7 @@ void launch_tp4_megamoe_single(
         reinterpret_cast<const uint8_t*>(pull_input_mc_ptr),
         pull_sem_local.data_ptr<uint8_t>(),
         reinterpret_cast<uint8_t*>(pull_sem_mc_ptr),
-        expert_ids.numel(), rank, push_stride);
+        expert_ids.numel(), rank, push_stride, enable_tp_collective);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -4805,7 +4808,8 @@ void run_tp4_megamoe_single_launch(
         torch::Tensor pull_input, torch::Tensor pull_sem_local,
         int rank, int64_t push_stride, int64_t push_mc_ptr,
         int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr,
-        int split_k, int requested_ctas_per_sm) {
+        int split_k, int requested_ctas_per_sm,
+        bool enable_tp_collective) {
     TORCH_CHECK(kWout == 128 && kTiledWeightLayout && kBulkWeightCopy
                     && kInterleavedBulkCopy && kCompactInterleavedScale
                     && kMode2Braid && kNormalizedWeightScale
@@ -4868,14 +4872,8 @@ void run_tp4_megamoe_single_launch(
                     && barrier_state.numel()
                         >= kSingleLaunchStatePrefixWords + scheduler_words,
                 "single-launch barrier/scheduler state is too small");
-    TORCH_CHECK(push_counter.is_cuda() && push_counter.element_size() == 4
-                    && push_counter.numel() == 78,
-                "single-launch TP4 requires the 78-entry CARv2 push counter");
-    TORCH_CHECK(rank >= 0 && rank < 4 && push_mc_ptr != 0,
-                "single-launch TP4 requires rank and multicast symmetric VA");
-    TORCH_CHECK(tokens == 128
-                    || push_stride >= output.numel() * output.element_size(),
-                "single-launch push workspace stride is too small");
+    TORCH_CHECK(push_counter.is_cuda() && push_counter.element_size() == 4,
+                "single-launch push counter must use CUDA 32-bit storage");
     for (const auto& workspace : {push0, push1, push2, push3}) {
         TORCH_CHECK(workspace.scalar_type() == torch::kUInt8
                         && workspace.is_cuda() && workspace.is_contiguous(),
@@ -4890,8 +4888,20 @@ void run_tp4_megamoe_single_launch(
                     && pull_sem_local.numel()
                         >= kSingleLaunchNvlsBlocks * 128,
                 "single-launch pull semaphore slab is too small");
-    TORCH_CHECK(pull_input_mc_ptr != 0 && pull_sem_mc_ptr != 0,
-                "single-launch TP4 requires multicast pull/semaphore VAs");
+    if (enable_tp_collective) {
+        TORCH_CHECK(push_counter.numel() == 78,
+                    "single-launch TP4 requires the 78-entry CARv2 push counter");
+        TORCH_CHECK(rank >= 0 && rank < 4 && push_mc_ptr != 0,
+                    "single-launch TP4 requires rank and multicast symmetric VA");
+        TORCH_CHECK(tokens == 128
+                        || push_stride >= output.numel() * output.element_size(),
+                    "single-launch push workspace stride is too small");
+        TORCH_CHECK(pull_input_mc_ptr != 0 && pull_sem_mc_ptr != 0,
+                    "single-launch TP4 requires multicast pull/semaphore VAs");
+    } else {
+        TORCH_CHECK(rank == -1,
+                    "compute-only profiling requires sentinel rank -1");
+    }
 
     static CUtensorMap w13_descriptor;
     static CUtensorMap w2_descriptor;
@@ -4916,7 +4926,8 @@ void run_tp4_megamoe_single_launch(
             barrier_state, route_to_sorted, output, push_counter,
             push0, push1, push2, push3, pull_input, pull_sem_local,
             rank, push_stride, push_mc_ptr,
-            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm);
+            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
+            enable_tp_collective);
     } else if (tokens == 16) {
         TORCH_CHECK(split_k == 4, "M16 single-launch requires split-K 4");
         launch_tp4_megamoe_single<4, 16>(
@@ -4927,7 +4938,8 @@ void run_tp4_megamoe_single_launch(
             barrier_state, route_to_sorted, output, push_counter,
             push0, push1, push2, push3, pull_input, pull_sem_local,
             rank, push_stride, push_mc_ptr,
-            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm);
+            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
+            enable_tp_collective);
     } else if (tokens == 32) {
         TORCH_CHECK(split_k == 4, "M32 single-launch requires split-K 4");
         launch_tp4_megamoe_single<4, 32>(
@@ -4938,7 +4950,8 @@ void run_tp4_megamoe_single_launch(
             barrier_state, route_to_sorted, output, push_counter,
             push0, push1, push2, push3, pull_input, pull_sem_local,
             rank, push_stride, push_mc_ptr,
-            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm);
+            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
+            enable_tp_collective);
     } else if (tokens == 64) {
         TORCH_CHECK(split_k == 2, "M64 single-launch requires split-K 2");
         launch_tp4_megamoe_single<2, 64>(
@@ -4949,7 +4962,8 @@ void run_tp4_megamoe_single_launch(
             barrier_state, route_to_sorted, output, push_counter,
             push0, push1, push2, push3, pull_input, pull_sem_local,
             rank, push_stride, push_mc_ptr,
-            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm);
+            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
+            enable_tp_collective);
     } else {
         TORCH_CHECK(tokens == 128 && split_k == 2,
                     "M128 single-launch requires split-K 2");
@@ -4961,7 +4975,8 @@ void run_tp4_megamoe_single_launch(
             barrier_state, route_to_sorted, output, push_counter,
             push0, push1, push2, push3, pull_input, pull_sem_local,
             rank, push_stride, push_mc_ptr,
-            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm);
+            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
+            enable_tp_collective);
     }
 }
 
@@ -5519,7 +5534,8 @@ void run_tp4_megamoe_single_launch(
     torch::Tensor pull_input, torch::Tensor pull_sem_local,
     int rank, int64_t push_stride, int64_t push_mc_ptr,
     int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr,
-    int split_k, int requested_ctas_per_sm);
+    int split_k, int requested_ctas_per_sm,
+    bool enable_tp_collective);
 void fused_k6_push_ar_tp4(
     torch::Tensor input, torch::Tensor topk_weights,
     torch::Tensor output, torch::Tensor push_counter,
@@ -6221,6 +6237,7 @@ def run_tp4_megamoe_single_launch(
     pull_input_mc_ptr: int,
     pull_sem_mc_ptr: int,
     split_k: int,
+    enable_tp_collective: bool = True,
 ) -> None:
     """Run FP8-input TP4 MoE and multicast all-reduce in one launch."""
     _ext.run_tp4_megamoe_single_launch(
@@ -6260,6 +6277,7 @@ def run_tp4_megamoe_single_launch(
         pull_sem_mc_ptr,
         split_k,
         SINGLE_LAUNCH_CTAS_PER_SM,
+        enable_tp_collective,
     )
 
 

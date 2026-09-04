@@ -6682,6 +6682,17 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Latency:** control/native medians `0.071216/0.128800 ms`; native is `1.809x` slower. The two native batch medians are `0.128688/0.128912 ms`, reproducing Iteration 216 and proving the Iteration-222 regression is removed.
 - **Conclusion:** Keep native only as a correctness/reference implementation. Its measured gap is much larger than the TP-specialized single-launch candidate, so optimization returns to the latter.
 - **Artifact:** `bench/results/iter223_restore_native_interleaved_tp4_m8_cold_screen_20260904.log`.
+## Iteration 227 — same-source compute-only profiling entry
+
+- Date: 2026-09-04
+- Hypothesis: a profiling-only uniform flag can skip the embedded TP collective while executing the identical single-launch route/W13/SwiGLU+FP8-requant/W2 body, making single-GPU NCU replay safe without duplicating compute code.
+- Change: added the `enable_tp_collective` argument to the single-launch entry, defaulting to true in the production Python API. False requires sentinel rank -1 and relaxes only communicator-pointer validation. Added `bench/profile_v4_flash_tp_single_compute.py`; it consumes prequantized FP8-E4M3 X plus FP32 group-128 scales and never performs external X quantization.
+- Test: H20 GPU 0, TP4 local intermediate=512, random M8 routes. The selected multi-kernel local path supplied an independent W2 route-tensor reference; the profiling launch was preceded by an excluded 256 MiB cold-L2 clear.
+- Correctness: PASS, W2 route output is bitwise identical to reference (`cosine=1.0`, `rel_l2=0`, finite=true).
+- Device phases: route 2.208 us, W13 40.832 us, activation/requant 3.008 us, W2 21.184 us; 344 padded rows, split-K 4.
+- Decision: retain as profiling infrastructure only. Next use NCU on M8/M128 compute-only launches, then run a distributed production regression because the production signature gained one uniform argument/branch.
+- Artifact: `bench/results/iter227_single_compute_profile_m8_smoke_20260904.log`.
+
 ## Iteration 226 — distributed NCU application replay also hangs embedded TP synchronization
 
 - Date: 2026-09-04
