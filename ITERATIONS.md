@@ -7050,3 +7050,27 @@ maximum rank latency of a full CUDA-Graph replay.
   only the Tokens=128 instantiation requests 9 CTAs/SM.
 - **Artifact:**
   `bench/results/iter245_bound9_relaxed_m128_compute_smoke_20260904.log`.
+
+## Iteration 246 — bound-9 M128 gain survives distributed paired timing
+
+- **Protocol:** TP4 GPUs 0-3, M=128 random routes, shared prequantized
+  FP8-E4M3 X/FP32 group-128 scale, Humming versus the custom one-launch path,
+  six balanced AB/BA batches x 30 separately cold-L2 replays (180 samples per
+  implementation).  Candidate uses dynamic route shared memory, launch bound
+  and request 9 CTAs/SM, ordinary relaxed barrier and 64 ns backoff.
+- **Correctness:** Both paths pass; custom cosine/rel-L2 =
+  `0.9999955977/0.00296726`, Humming = `0.9999955915/0.00296938`, all ranks
+  finite and all-reduce correct.
+- **Cold-L2 result:** Humming min/median/max =
+  `0.370144/0.377424/0.424384 ms`; custom =
+  `0.357632/0.363008/0.392384 ms`; Humming/custom median ratio `1.03971x`.
+  Custom batch medians are `0.360208, 0.360000, 0.364688, 0.363568,
+  0.363296, 0.363600 ms`.
+- **Comparison:** Versus Iteration 240's bound-8 M128 custom median
+  `0.366816 ms`, this saves 3.808 us (1.04%).  The direct ratio also improves
+  from 1.03311x to 1.03971x despite normal Humming drift.
+- **Decision:** Keep the large-M residency optimization.  Implement it as a
+  Tokens=128 specialization so M<=64 retains the faster bound/request 8 path,
+  then rerun all five M in one process before selection.
+- **Artifact:**
+  `bench/results/iter246_bound9_relaxed_tp4_m128_cold_paired_20260904.log`.
