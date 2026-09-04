@@ -154,6 +154,9 @@ SINGLE_LAUNCH_GROUPED_W13_ACT = (
 SINGLE_LAUNCH_W13_N64_TAIL = (
     os.environ.get("V4_SINGLE_LAUNCH_W13_N64_TAIL", "0") == "1"
 )
+SINGLE_LAUNCH_CLUSTER_W13_ACT = (
+    os.environ.get("V4_SINGLE_LAUNCH_CLUSTER_W13_ACT", "0") == "1"
+)
 W2_NEEDS_ROUTE_MAP = (
     W2_SORTED_ACT or W2_MBLOCK_SCALE or SINGLE_LAUNCH_TAIL_OVERLAP
 )
@@ -267,6 +270,15 @@ if SINGLE_LAUNCH_W13_N64_TAIL and (
         "V4_SINGLE_LAUNCH_W13_N64_TAIL requires schedule 0, WOUT128, "
         "and compact interleaved weights"
     )
+if SINGLE_LAUNCH_CLUSTER_W13_ACT and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or WOUT != 128
+    or not COMPACT_INTERLEAVED_SCALE
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_CLUSTER_W13_ACT requires schedule 0, WOUT128, "
+        "and compact interleaved weights"
+    )
 SINGLE_LAUNCH_INTERLEAVED = SINGLE_LAUNCH_SCHEDULE != 0
 SINGLE_LAUNCH_NOINLINE_GEMM = (
     os.environ.get("V4_SINGLE_LAUNCH_NOINLINE_GEMM", "0") == "1"
@@ -351,6 +363,20 @@ if SINGLE_LAUNCH_W13_N64_TAIL and (
         "V4_SINGLE_LAUNCH_W13_N64_TAIL requires the isolated inline, "
         "nonpersistent schedule-0 path"
     )
+if SINGLE_LAUNCH_CLUSTER_W13_ACT and (
+    SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or SINGLE_LAUNCH_M128_BOUND9
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_CLUSTER_W13_ACT requires the isolated bound-8 "
+        "schedule-0 path"
+    )
 if SINGLE_LAUNCH_M128_BOUND9 and (
     SINGLE_LAUNCH_TAIL_OVERLAP or SINGLE_LAUNCH_GROUPED_W13_ACT
 ):
@@ -379,6 +405,8 @@ SINGLE_LAUNCH_CTAS_PER_SM = int(
 )
 if SINGLE_LAUNCH_CTAS_PER_SM not in (1, 2, 3, 4, 5, 6, 7, 8, 9):
     raise ValueError("V4_SINGLE_LAUNCH_CTAS_PER_SM must be in [1,9]")
+if SINGLE_LAUNCH_CLUSTER_W13_ACT and SINGLE_LAUNCH_CTAS_PER_SM != 8:
+    raise ValueError("V4_SINGLE_LAUNCH_CLUSTER_W13_ACT requires 8 CTAs/SM")
 SINGLE_LAUNCH_GROUP_CTAS = int(
     os.environ.get("V4_SINGLE_LAUNCH_GROUP_CTAS", "16")
 )
@@ -551,6 +579,8 @@ static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
 static constexpr int kStages = K_WEIGHT_STAGES;
+static constexpr int kRouteTaskDynamicBytes =
+    kStages * kWout * ((kBlockK / 2) + 4) + kTok * kBlockK;
 static_assert(kStages == 2 || kStages == 3 || kStages == 4);
 static_assert(!kInterleavedBulkCopy
               || (kBulkWeightCopy && kTiledWeightLayout
@@ -597,6 +627,8 @@ static constexpr bool kSingleLaunchGroupedW13Act =
     K_SINGLE_LAUNCH_GROUPED_W13_ACT;
 static constexpr bool kSingleLaunchW13N64Tail =
     K_SINGLE_LAUNCH_W13_N64_TAIL;
+static constexpr bool kSingleLaunchClusterW13Act =
+    K_SINGLE_LAUNCH_CLUSTER_W13_ACT;
 static constexpr int kSingleLaunchNvlsBlocks =
     K_SINGLE_LAUNCH_NVLS_BLOCKS;
 static constexpr int kSingleLaunchGroupCtas =
@@ -861,7 +893,8 @@ __device__ __forceinline__ uint2 dequant_weight_word(
 
 template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool PublishW2Progress = false, bool DualWgW13 = false,
-          bool PersistentState = false, int WgmmaHalf = -1>
+          bool PersistentState = false, int WgmmaHalf = -1,
+          bool SharedPartial = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -880,7 +913,8 @@ __device__ __forceinline__ void route_gemm_task(
         int max_routes,
         int n_tile_begin,
         int linear_block_idx,
-        int task_sequence = 0) {
+        int task_sequence = 0,
+        float* shared_partial = nullptr) {
     static_assert(K % kBlockK == 0);
     static_assert(N % kWout == 0);
     static_assert((K / kBlockK) % SplitK == 0);
@@ -916,6 +950,8 @@ __device__ __forceinline__ void route_gemm_task(
                   || (IsW13 && kWout == 128 && !DualWgW13
                       && kCompactInterleavedScale),
                   "N64 tail tasks require compact-interleaved W13 N128");
+    static_assert(!SharedPartial || (IsW13 && !kHalfWgmma && !DualWgW13),
+                  "DSM partial output requires one full W13 warpgroup");
     constexpr int kActiveWgmmaGroups =
         kHalfWgmma ? 1 : kWgmmaGroups;
     constexpr int kOutputGroupBase =
@@ -1744,17 +1780,30 @@ __device__ __forceinline__ void route_gemm_task(
         const int output_n0 = n_block_idx * kWout + output_group * 64 + row0;
         const int output_n1 = n_block_idx * kWout + output_group * 64 + row1;
         if constexpr (IsW13) {
-            if (route0 < max_routes) {
-                output[(static_cast<int64_t>(split_idx) * max_routes + route0) * N
-                       + output_n0] = accum[group][0];
-                output[(static_cast<int64_t>(split_idx) * max_routes + route0) * N
-                       + output_n1] = accum[group][2];
-            }
-            if (route1 < max_routes) {
-                output[(static_cast<int64_t>(split_idx) * max_routes + route1) * N
-                       + output_n0] = accum[group][1];
-                output[(static_cast<int64_t>(split_idx) * max_routes + route1) * N
-                       + output_n1] = accum[group][3];
+            if constexpr (SharedPartial) {
+                const int local_n0 = group * 64 + row0;
+                const int local_n1 = group * 64 + row1;
+                shared_partial[column_base * kWout + local_n0] =
+                    route0 < max_routes ? accum[group][0] : 0.0f;
+                shared_partial[column_base * kWout + local_n1] =
+                    route0 < max_routes ? accum[group][2] : 0.0f;
+                shared_partial[(column_base + 1) * kWout + local_n0] =
+                    route1 < max_routes ? accum[group][1] : 0.0f;
+                shared_partial[(column_base + 1) * kWout + local_n1] =
+                    route1 < max_routes ? accum[group][3] : 0.0f;
+            } else {
+                if (route0 < max_routes) {
+                    output[(static_cast<int64_t>(split_idx) * max_routes + route0) * N
+                           + output_n0] = accum[group][0];
+                    output[(static_cast<int64_t>(split_idx) * max_routes + route0) * N
+                           + output_n1] = accum[group][2];
+                }
+                if (route1 < max_routes) {
+                    output[(static_cast<int64_t>(split_idx) * max_routes + route1) * N
+                           + output_n0] = accum[group][1];
+                    output[(static_cast<int64_t>(split_idx) * max_routes + route1) * N
+                           + output_n1] = accum[group][3];
+                }
             }
         } else {
             if constexpr (kW2RouteOutput) {
@@ -1861,6 +1910,90 @@ __device__ __forceinline__ void route_gemm_task(
                 progress_store_release(
                     progress_state + route * kNumW2Tiles + n_block_idx, 1);
         }
+    }
+}
+
+template <int SplitK>
+__device__ __forceinline__ void cluster_reduce_swiglu_quant_task(
+        cooperative_groups::cluster_group cluster,
+        float* local_partial,
+        const int32_t* __restrict__ sorted_ids,
+        __nv_bfloat16* __restrict__ activation,
+        uint8_t* __restrict__ quantized,
+        float* __restrict__ scale,
+        int routes,
+        int m_block_idx,
+        int activation_group) {
+    static_assert(SplitK == 2 || SplitK == 4);
+    constexpr int kIntermediate = 512;
+    constexpr int kGroupsPerRoute = kIntermediate / kWout;
+    __shared__ float cluster_warp_max[4];
+    __shared__ float cluster_group_scale;
+
+    const int tid = threadIdx.x;
+    const int lane = tid & 31;
+    const int warp = tid >> 5;
+    #pragma unroll
+    for (int route_slot = 0; route_slot < kTok; ++route_slot) {
+        float gate = 0.0f;
+        float up = 0.0f;
+        #pragma unroll
+        for (int split = 0; split < SplitK; ++split) {
+            const float* gate_partial = cluster.map_shared_rank(
+                local_partial, split);
+            const float* up_partial = cluster.map_shared_rank(
+                local_partial, SplitK + split);
+            gate += gate_partial[route_slot * kWout + tid];
+            up += up_partial[route_slot * kWout + tid];
+        }
+
+        gate = __bfloat162float(__float2bfloat16(gate));
+        up = __bfloat162float(__float2bfloat16(up));
+        const __nv_bfloat16 activation_bf16 = __float2bfloat16(
+            gate / (1.0f + __expf(-gate)) * up);
+        const float value = __bfloat162float(activation_bf16);
+        const int route = __ldg(
+            sorted_ids + m_block_idx * kTok + route_slot);
+        if (activation != nullptr && route < routes) {
+            activation[static_cast<int64_t>(route) * kIntermediate
+                       + activation_group * kWout + tid] =
+                activation_bf16;
+        }
+
+        float absmax = route < routes ? fabsf(value) : 0.0f;
+        #pragma unroll
+        for (int delta = 16; delta > 0; delta >>= 1) {
+            absmax = fmaxf(
+                absmax,
+                __shfl_down_sync(0xffffffffu, absmax, delta));
+        }
+        if (lane == 0)
+            cluster_warp_max[warp] = absmax;
+        __syncthreads();
+        if (warp == 0) {
+            absmax = lane < 4 ? cluster_warp_max[lane] : 0.0f;
+            #pragma unroll
+            for (int delta = 16; delta > 0; delta >>= 1) {
+                absmax = fmaxf(
+                    absmax,
+                    __shfl_down_sync(0xffffffffu, absmax, delta));
+            }
+            if (lane == 0) {
+                cluster_group_scale =
+                    fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
+                if (route < routes) {
+                    scale[static_cast<int64_t>(route) * kGroupsPerRoute
+                          + activation_group] = cluster_group_scale;
+                }
+            }
+        }
+        __syncthreads();
+        if (route < routes) {
+            quantized[static_cast<int64_t>(route) * kIntermediate
+                      + activation_group * kWout + tid] =
+                __nv_fp8_e4m3(value / cluster_group_scale).__x;
+        }
+        __syncthreads();
     }
 }
 
@@ -4198,7 +4331,63 @@ void tp4_megamoe_single_launch_kernel(
         constexpr int kW13TasksPerMblock = kW13NTiles * SplitK;
         const int w13_tasks = num_mblocks * kW13TasksPerMblock;
         int tail_overlap_mblocks = 0;
-        if constexpr (kSingleLaunchGroupedW13Act) {
+        if constexpr (kSingleLaunchClusterW13Act) {
+            static_assert(SplitK == 2 || SplitK == 4);
+            constexpr int kActivationGroupsPerRoute = kIntermediate / kWout;
+            constexpr int kClusterBlocks = 2 * SplitK;
+            auto cluster = cooperative_groups::this_cluster();
+            const int cluster_rank = static_cast<int>(cluster.block_rank());
+            const int cluster_id = cta / kClusterBlocks;
+            const int num_clusters = ctas / kClusterBlocks;
+            const int total_groups =
+                num_mblocks * kActivationGroupsPerRoute;
+            extern __shared__ __align__(1024)
+                uint8_t single_launch_dynamic_smem[];
+            float* cluster_partial = reinterpret_cast<float*>(
+                single_launch_dynamic_smem + kRouteTaskDynamicBytes);
+
+            // One cluster owns all split partials for a post-SwiGLU N128
+            // group: ranks [0,SplitK) compute gate and ranks
+            // [SplitK,2*SplitK) compute up.  Every CTA retains the selected
+            // N128/split-K WGMMA body and writes only its 8x128 partial to
+            // local shared memory.  Rank zero reduces the DSM tiles in the
+            // same split order as the public epilogue, then emits FP8 for W2.
+            for (int unit = cluster_id; unit < total_groups;
+                 unit += num_clusters) {
+                const int mblock = unit / kActivationGroupsPerRoute;
+                const int activation_group =
+                    unit - mblock * kActivationGroupsPerRoute;
+                const int split = cluster_rank % SplitK;
+                const int is_up = cluster_rank / SplitK;
+                const int n_tile = activation_group
+                    + is_up * kActivationGroupsPerRoute;
+                const int task =
+                    (mblock * kW13NTiles + n_tile) * SplitK + split;
+                route_gemm_task<
+                    4096, 1024, SplitK, true, 0, false, false,
+                    false, -1, true>(
+                    &w13_tma_weight, &w13_tma_weight_scale,
+                    w13, s13, g13, qx, x_scale,
+                    sorted_ids, expert_ids, num_tokens_padded,
+                    topk_weights, partials, lut, nullptr,
+                    routes, 0, task, 0, cluster_partial);
+                __syncthreads();
+                cluster.sync();
+                if (cluster_rank == 0) {
+                    cluster_reduce_swiglu_quant_task<SplitK>(
+                        cluster, cluster_partial, sorted_ids,
+                        activation, qactivation, activation_scale,
+                        routes, mblock, activation_group);
+                }
+                cluster.sync();
+            }
+            single_launch_grid_barrier(barrier_state, 1, ctas);
+            if (cta == 0 && threadIdx.x == 0) {
+                uint64_t* stamps = reinterpret_cast<uint64_t*>(
+                    barrier_state + kSingleLaunchBarrierWords);
+                stamps[3] = stamps[2];
+            }
+        } else if constexpr (kSingleLaunchGroupedW13Act) {
             static_assert(SplitK == 2 || SplitK == 4);
             constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
             constexpr int kW13GroupsPerMblock = kActivationGroupsPerRoute;
@@ -5402,7 +5591,9 @@ void launch_tp4_megamoe_single(
         int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr,
         int requested_ctas_per_sm, bool enable_tp_collective) {
     constexpr int dynamic_smem_bytes =
-        kStages * kWout * ((kBlockK / 2) + 4) + kTok * kBlockK;
+        kRouteTaskDynamicBytes
+        + (kSingleLaunchClusterW13Act
+           ? kTok * kWout * static_cast<int>(sizeof(float)) : 0);
     TORCH_CHECK(output.size(0) == Tokens,
                 "single-launch token specialization mismatch");
     const cudaError_t attr_result = cudaFuncSetAttribute(
@@ -5453,6 +5644,12 @@ void launch_tp4_megamoe_single(
                             <= kSingleLaunchGroupedMaxGroups,
                     "grouped W13/activation scheduler exceeds its cohort slab");
     }
+    if constexpr (kSingleLaunchClusterW13Act) {
+        constexpr int kClusterBlocks = 2 * SplitK;
+        resident_grid = (resident_grid / kClusterBlocks) * kClusterBlocks;
+        TORCH_CHECK(resident_grid % kClusterBlocks == 0,
+                    "cluster W13 grid must contain complete clusters");
+    }
     TORCH_CHECK(resident_grid >= 78,
                 "single-launch kernel cannot keep the 78 communication CTAs resident");
 
@@ -5462,17 +5659,47 @@ void launch_tp4_megamoe_single(
     launch_config.blockDim = dim3(128);
     launch_config.dynamicSmemBytes = dynamic_smem_bytes;
     launch_config.stream = stream;
-    cudaLaunchAttribute launch_attribute{};
+    cudaLaunchAttribute launch_attributes[2]{};
+    int num_launch_attributes = 0;
+    if constexpr (kSingleLaunchClusterW13Act) {
+        constexpr int kClusterBlocks = 2 * SplitK;
+        auto& cluster_attribute =
+            launch_attributes[num_launch_attributes++];
+        cluster_attribute.id = cudaLaunchAttributeClusterDimension;
+        cluster_attribute.val.clusterDim.x = kClusterBlocks;
+        cluster_attribute.val.clusterDim.y = 1;
+        cluster_attribute.val.clusterDim.z = 1;
+        launch_config.attrs = launch_attributes;
+        launch_config.numAttrs = num_launch_attributes;
+
+        int max_active_clusters = 0;
+        const cudaError_t cluster_occupancy_result =
+            cudaOccupancyMaxActiveClusters(
+                &max_active_clusters,
+                tp4_megamoe_single_launch_kernel<SplitK, Tokens>,
+                &launch_config);
+        TORCH_CHECK(cluster_occupancy_result == cudaSuccess
+                        && max_active_clusters > 0,
+                    "cluster occupancy query failed: ",
+                    cudaGetErrorString(cluster_occupancy_result));
+        resident_grid = std::min(
+            resident_grid, max_active_clusters * kClusterBlocks);
+        launch_config.gridDim = dim3(resident_grid);
+        TORCH_CHECK(resident_grid >= 78,
+                    "cluster residency cannot cover communication CTAs");
+    }
     if constexpr (kSingleLaunchCooperativeGrid) {
         int cooperative_supported = 0;
         C10_CUDA_CHECK(cudaDeviceGetAttribute(
             &cooperative_supported, cudaDevAttrCooperativeLaunch, device));
         TORCH_CHECK(cooperative_supported != 0,
                     "device does not support cooperative launch");
-        launch_attribute.id = cudaLaunchAttributeCooperative;
-        launch_attribute.val.cooperative = 1;
-        launch_config.attrs = &launch_attribute;
-        launch_config.numAttrs = 1;
+        auto& cooperative_attribute =
+            launch_attributes[num_launch_attributes++];
+        cooperative_attribute.id = cudaLaunchAttributeCooperative;
+        cooperative_attribute.val.cooperative = 1;
+        launch_config.attrs = launch_attributes;
+        launch_config.numAttrs = num_launch_attributes;
     }
     const cudaError_t launch_result = cudaLaunchKernelEx(
         &launch_config,
@@ -6399,6 +6626,7 @@ _EXTENSION_CONFIG = (
           f"sltg{SINGLE_LAUNCH_TAIL_GROUP_CTAS}_"
           f"slga{int(SINGLE_LAUNCH_GROUPED_W13_ACT)}_"
           f"sln64{int(SINGLE_LAUNCH_W13_N64_TAIL)}_"
+          f"slcl{int(SINGLE_LAUNCH_CLUSTER_W13_ACT)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
@@ -6534,6 +6762,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W13_N64_TAIL="
             f"{int(SINGLE_LAUNCH_W13_N64_TAIL)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_CLUSTER_W13_ACT="
+            f"{int(SINGLE_LAUNCH_CLUSTER_W13_ACT)}"
         ),
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",

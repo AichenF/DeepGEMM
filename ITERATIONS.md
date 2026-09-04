@@ -7536,3 +7536,43 @@ maximum rank latency of a full CUDA-Graph replay.
   by default.  Retain the opt-in implementation as negative evidence.
 - **Artifact:**
   `bench/results/iter263_w13_n64_tail_tp4_m128_cold_screen_20260904.log`.
+
+## Iteration 264 — DSM cluster fusion preserves split-K math but is much slower
+
+- **Hypothesis/change:** Added opt-in
+  `V4_SINGLE_LAUNCH_CLUSTER_W13_ACT=1`.  A Hopper thread-block cluster owns
+  one post-SwiGLU N128 group: `2*SplitK` existing 128-thread W13 CTAs compute
+  gate/up split partials concurrently, publish their 8x128 FP32 tiles through
+  distributed shared memory, and cluster rank zero reduces them in split
+  order and performs the BF16/SwiGLU/BF16/group-128 FP8 epilogue.  This
+  removes the global W13 partial round trip, the standalone requant phase,
+  and one whole-grid barrier while retaining N128 split-K WGMMA work.
+- **Launch safety:** The host uses `cudaLaunchAttributeClusterDimension`
+  with 8 blocks for SplitK4 and 4 blocks for SplitK2, calls
+  `cudaOccupancyMaxActiveClusters`, and caps the resident grid to the returned
+  device-wide coexistence limit before the in-kernel global barrier.
+- **Protocol:** H20 GPU 0, M={8,128} random routes, prequantized FP8-E4M3 X
+  plus FP32 group-128 scales, compute-only one-launch path, phase stamps on.
+  Each checked launch follows a separate excluded 256 MiB cold-L2 clear and
+  compares the full W2 route tensor bitwise with the selected independent
+  multi-kernel local reference.
+- **Correctness:** PASS bitwise at both points (`cosine=1`, `rel_l2=0`, all
+  finite).  Packed barrier generations advance on the used route,
+  W13+requant and W2 phases; the intentionally skipped phase word remains
+  zero.
+- **Cold-L2 phase result (route / fused W13+requant / W2):** M8
+  `2.720 / 72.224 / 23.904 us`; M128
+  `4.224 / 308.384 / 130.464 us`.  The selected non-cluster path is roughly
+  `41-43 + 3 us` at M8 and `211-220 + 6 us` at M128, so the cluster path
+  loses tens of microseconds before distributed communication.
+- **Interpretation:** Portable 8/4-block cluster placement and DSM
+  rendezvous destroy the weight/TMA concurrency that the flat 624-CTA grid
+  exploits.  Eliminating global partial traffic is too small to compensate;
+  this confirms the main problem is sustaining cold-weight issue bandwidth,
+  not intermediate-byte volume alone.
+- **Decision:** Reject without distributed timing; keep disabled.  Do not
+  pursue larger cluster/cohort fusion.  A viable structural rewrite must use
+  CTA-local producer/consumer pipelining without constraining the flat-grid
+  W13 placement, or improve the current flat GEMM bodies directly.
+- **Artifact:**
+  `bench/results/iter264_cluster_dsm_w13_act_m8_m128_compute_smoke_20260904.log`.
