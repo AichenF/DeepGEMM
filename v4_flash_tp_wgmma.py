@@ -252,7 +252,7 @@ SINGLE_LAUNCH_CTAS_PER_SM = int(
 )
 if SINGLE_LAUNCH_CTAS_PER_SM not in (1, 2, 3, 4, 5, 6, 7, 8):
     raise ValueError("V4_SINGLE_LAUNCH_CTAS_PER_SM must be in [1,8]")
-K6_NVLS_PULL_BLOCKS = int(os.environ.get("V4_K6_NVLS_PULL_BLOCKS", "16"))
+K6_NVLS_PULL_BLOCKS = int(os.environ.get("V4_K6_NVLS_PULL_BLOCKS", "64"))
 if K6_NVLS_PULL_BLOCKS not in (1, 2, 4, 8, 16, 32, 64):
     raise ValueError("V4_K6_NVLS_PULL_BLOCKS must be 1,2,4,8,16,32,64")
 MC_PULL_BLOCKS = int(os.environ.get("V4_MC_PULL_BLOCKS", "0"))
@@ -3345,7 +3345,7 @@ __device__ __forceinline__ void single_launch_group_barrier(
 // schedule owns route preparation,
 // both MXFP4 GEMMs, internal SwiGLU/FP8 requantization, fixed-k6 reduction and
 // TP all-reduce.  Input X is already FP8 at this API boundary.
-template <int SplitK>
+template <int SplitK, int Tokens>
 __global__ __launch_bounds__(128, K_SINGLE_LAUNCH_MIN_BLOCKS)
 void tp4_megamoe_single_launch_kernel(
         const __grid_constant__ CUtensorMap w13_tma_weight,
@@ -3381,10 +3381,11 @@ void tp4_megamoe_single_launch_kernel(
         const uint8_t* __restrict__ pull_input_mc,
         uint8_t* __restrict__ pull_sem_local,
         uint8_t* __restrict__ pull_sem_mc,
-        int tokens, int max_mblocks, int rank, int64_t push_stride) {
+        int max_mblocks, int rank, int64_t push_stride) {
     constexpr int kIntermediate = 512;
     constexpr int kW13NTiles = (2 * kIntermediate) / kWout;
     constexpr int kW2NTiles = 4096 / kWout;
+    constexpr int tokens = Tokens;
     const int cta = static_cast<int>(blockIdx.x);
     const int ctas = static_cast<int>(gridDim.x);
     const int routes = tokens * kTopK;
@@ -3825,16 +3826,20 @@ void tp4_megamoe_single_launch_kernel(
     // pull region and semaphore protocol there; smaller messages retain the
     // validated 78-CTA multicast push path.  Extra compute CTAs can retire
     // because kernel completion still waits for every communication CTA.
-    if (tokens == 128 && cta < kSingleLaunchNvlsBlocks) {
-        fused_k6_nvls_pull_tp4_task<128>(
-            down, topk_weights, pull_input, pull_input_mc, output,
-            pull_sem_local, pull_sem_mc, tokens, cta,
-            kSingleLaunchNvlsBlocks);
-    } else if (tokens != 128 && cta < 78) {
-        fused_k6_push_ar_tp4_task<128, true>(
-            down, topk_weights, output, push_counter,
-            push0, push1, push2, push3, push_mc,
-            tokens, rank, push_stride, 0, 4096, cta, 78);
+    if constexpr (Tokens == 128) {
+        if (cta < kSingleLaunchNvlsBlocks) {
+            fused_k6_nvls_pull_tp4_task<128>(
+                down, topk_weights, pull_input, pull_input_mc, output,
+                pull_sem_local, pull_sem_mc, tokens, cta,
+                kSingleLaunchNvlsBlocks);
+        }
+    } else {
+        if (cta < 78) {
+            fused_k6_push_ar_tp4_task<128, true>(
+                down, topk_weights, output, push_counter,
+                push0, push1, push2, push3, push_mc,
+                tokens, rank, push_stride, 0, 4096, cta, 78);
+        }
     }
 }
 
@@ -4685,7 +4690,7 @@ void tiled_k6_reduce(
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-template <int SplitK>
+template <int SplitK, int Tokens>
 void launch_tp4_megamoe_single(
         const CUtensorMap& w13_descriptor,
         const CUtensorMap& w2_descriptor,
@@ -4707,8 +4712,10 @@ void launch_tp4_megamoe_single(
         int requested_ctas_per_sm) {
     constexpr int dynamic_smem_bytes =
         kStages * kWout * ((kBlockK / 2) + 4) + kTok * kBlockK;
+    TORCH_CHECK(output.size(0) == Tokens,
+                "single-launch token specialization mismatch");
     const cudaError_t attr_result = cudaFuncSetAttribute(
-        tp4_megamoe_single_launch_kernel<SplitK>,
+        tp4_megamoe_single_launch_kernel<SplitK, Tokens>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         dynamic_smem_bytes);
     TORCH_CHECK(attr_result == cudaSuccess,
@@ -4718,7 +4725,8 @@ void launch_tp4_megamoe_single(
     int active_per_sm = 0;
     const cudaError_t occupancy_result =
         cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-            &active_per_sm, tp4_megamoe_single_launch_kernel<SplitK>,
+            &active_per_sm,
+            tp4_megamoe_single_launch_kernel<SplitK, Tokens>,
             128, dynamic_smem_bytes);
     TORCH_CHECK(occupancy_result == cudaSuccess && active_per_sm > 0,
                 "single-launch occupancy query failed: ",
@@ -4741,7 +4749,7 @@ void launch_tp4_megamoe_single(
                 "single-launch kernel cannot keep the 78 communication CTAs resident");
 
     const auto stream = at::cuda::getCurrentCUDAStream();
-    tp4_megamoe_single_launch_kernel<SplitK><<<
+    tp4_megamoe_single_launch_kernel<SplitK, Tokens><<<
         resident_grid, 128, dynamic_smem_bytes, stream>>>(
         w13_descriptor, w13_descriptor, w2_descriptor, w2_descriptor,
         w13.data_ptr<uint8_t>(), s13.data_ptr<uint8_t>(),
@@ -4770,7 +4778,7 @@ void launch_tp4_megamoe_single(
         reinterpret_cast<const uint8_t*>(pull_input_mc_ptr),
         pull_sem_local.data_ptr<uint8_t>(),
         reinterpret_cast<uint8_t*>(pull_sem_mc_ptr),
-        output.size(0), expert_ids.numel(), rank, push_stride);
+        expert_ids.numel(), rank, push_stride);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -4891,8 +4899,42 @@ void run_tp4_megamoe_single_launch(
         last_w2 = w2.data_ptr();
     }
 
-    if (split_k == 4) {
-        launch_tp4_megamoe_single<4>(
+    if (tokens == 8) {
+        TORCH_CHECK(split_k == 4, "M8 single-launch requires split-K 4");
+        launch_tp4_megamoe_single<4, 8>(
+            w13_descriptor, w2_descriptor,
+            w13, s13, g13, w2, s2, g2, qx, x_scale, topk_ids, topk_weights,
+            sorted_ids, expert_ids, num_tokens_padded, partials,
+            activation, qactivation, activation_scale, down, lut,
+            barrier_state, route_to_sorted, output, push_counter,
+            push0, push1, push2, push3, pull_input, pull_sem_local,
+            rank, push_stride, push_mc_ptr,
+            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm);
+    } else if (tokens == 16) {
+        TORCH_CHECK(split_k == 4, "M16 single-launch requires split-K 4");
+        launch_tp4_megamoe_single<4, 16>(
+            w13_descriptor, w2_descriptor,
+            w13, s13, g13, w2, s2, g2, qx, x_scale, topk_ids, topk_weights,
+            sorted_ids, expert_ids, num_tokens_padded, partials,
+            activation, qactivation, activation_scale, down, lut,
+            barrier_state, route_to_sorted, output, push_counter,
+            push0, push1, push2, push3, pull_input, pull_sem_local,
+            rank, push_stride, push_mc_ptr,
+            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm);
+    } else if (tokens == 32) {
+        TORCH_CHECK(split_k == 4, "M32 single-launch requires split-K 4");
+        launch_tp4_megamoe_single<4, 32>(
+            w13_descriptor, w2_descriptor,
+            w13, s13, g13, w2, s2, g2, qx, x_scale, topk_ids, topk_weights,
+            sorted_ids, expert_ids, num_tokens_padded, partials,
+            activation, qactivation, activation_scale, down, lut,
+            barrier_state, route_to_sorted, output, push_counter,
+            push0, push1, push2, push3, pull_input, pull_sem_local,
+            rank, push_stride, push_mc_ptr,
+            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm);
+    } else if (tokens == 64) {
+        TORCH_CHECK(split_k == 2, "M64 single-launch requires split-K 2");
+        launch_tp4_megamoe_single<2, 64>(
             w13_descriptor, w2_descriptor,
             w13, s13, g13, w2, s2, g2, qx, x_scale, topk_ids, topk_weights,
             sorted_ids, expert_ids, num_tokens_padded, partials,
@@ -4902,7 +4944,9 @@ void run_tp4_megamoe_single_launch(
             rank, push_stride, push_mc_ptr,
             pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm);
     } else {
-        launch_tp4_megamoe_single<2>(
+        TORCH_CHECK(tokens == 128 && split_k == 2,
+                    "M128 single-launch requires split-K 2");
+        launch_tp4_megamoe_single<2, 128>(
             w13_descriptor, w2_descriptor,
             w13, s13, g13, w2, s2, g2, qx, x_scale, topk_ids, topk_weights,
             sorted_ids, expert_ids, num_tokens_padded, partials,
@@ -5563,9 +5607,9 @@ _EXTENSION_CONFIG = (
           f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v175nvls")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v178mspec")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v175nvls"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v178mspec"
 )
 
 _ext = load_inline(

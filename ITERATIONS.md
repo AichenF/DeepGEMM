@@ -6340,3 +6340,15 @@ maximum rank latency of a full CUDA-Graph replay.
 - Candidate route/W13/activation/W2 us: M8 2.528/41.728/2.880/21.888; M16 2.336/76.384/3.392/38.784; M32 3.136/126.688/4.128/64.512; M64 3.904/176.224/4.928/91.264; M128 4.544/219.840/6.720/112.768.
 - Decision: route and M128 tail optimizations are retained, but the formal speed gate remains far away. The next high-value target is removal/overlap of schedule-0's whole-grid W13→activation→W2 phase boundaries without returning to the high-atomic-overhead dynamic DAG.
 - Evidence: `results/iter177_tp4_single_launch_parallel_route_nvls64_allm_20260904.log`.
+
+## Iteration 178 — compile-time M specialization is neutral (TP4, cold L2)
+
+- Date: 2026-09-04
+- Change under test: instantiate separate single-launch entries for M=8/16/32/64/128, make `tokens/routes` compile-time constants, and compile out the impossible multicast-push versus NVLS-pull tail. M128 keeps 64 NVLS workers; input remains caller-provided FP8 `X/x_scale`.
+- Protocol: paired same-process CUDA Graphs on TP4 GPUs 4–7, random routes, all five M values, two batches × 10 separately cold-L2 replays per implementation and four warmups; rank-max timing.
+- Correctness: all five candidate/control points pass finite/allreduce/reference gates with the same numerical metrics as Iteration 177.
+- Control/candidate ms and speedup: M8 0.072800/0.077552 (0.938725x); M16 0.114112/0.128928 (0.885083x); M32 0.176480/0.209424 (0.842692x); M64 0.249904/0.293632 (0.851079x); M128 0.307408/0.374320 (0.821244x).
+- Geometric mean: control 0.162304 ms, candidate 0.187242 ms, speedup 0.866816x versus Iteration 177's 0.867652x. This is neutral/slightly worse and far below the selection threshold.
+- Phase audit: M8–M64 phases are effectively unchanged. The reported M128 W13 stamp is 2658.592 us while its candidate median is only 374.320 us; it captured the same multi-millisecond system outlier visible in maxima and is invalid for phase attribution.
+- Decision: reject and revert the five-way code duplication. The compiler already folds the runtime token-tail predicates well enough; target stage scheduling/dataflow instead.
+- Evidence: `results/iter178_tp4_single_launch_m_specialized_allm_20260904.log`.
