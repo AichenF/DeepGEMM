@@ -56,8 +56,10 @@ def make_case(
     weights: tuple[torch.Tensor, ...],
     lut: torch.Tensor,
     intermediate_per_rank: int,
+    use_native: bool = False,
 ) -> custom.CapturedCase:
-    w13, s13, g13, w2, s2, g2 = weights
+    w13, s13, g13, w2, s2, g2 = weights[:6]
+    native_w13, native_w2 = weights[6:] if use_native else (None, None)
     return custom.CapturedCase(
         m=m,
         qx=qx,
@@ -72,6 +74,8 @@ def make_case(
         g2=g2,
         lut=lut,
         intermediate_per_rank=intermediate_per_rank,
+        native_w13=native_w13,
+        native_w2=native_w2,
     )
 
 
@@ -89,7 +93,9 @@ def main() -> None:
     intermediate_per_rank = custom.INTERMEDIATE // world_size
     torch.manual_seed(args.seed + rank)
     torch.cuda.manual_seed(args.seed + rank)
-    weights = custom.make_weights(intermediate_per_rank, device)
+    weights = custom.make_weights(
+        intermediate_per_rank, device, include_native=True
+    )
     lut = kernel.make_e2m1_e8m0_lut(device)
     comm = CustomAllReduceV2(cpu_group, device)
     if comm.disabled:
@@ -122,6 +128,7 @@ def main() -> None:
                         "shared FP8-E4M3 X + FP32 group128 scale; "
                         "BF16-to-FP8 quantization outside timed graphs"
                     ),
+                    "native_megamoe": True,
                     "single_launch_interleaved": (
                         kernel.SINGLE_LAUNCH_INTERLEAVED
                     ),
@@ -170,6 +177,7 @@ def main() -> None:
             weights,
             lut,
             intermediate_per_rank,
+            use_native=True,
         )
 
         kernel.SINGLE_LAUNCH_TP4 = False
@@ -215,21 +223,7 @@ def main() -> None:
         )
         control_median = statistics.median(control_samples)
         candidate_median = statistics.median(candidate_samples)
-        phase_stamps = candidate_case.single_launch_barrier_state[
-            8:18
-        ].view(torch.int64)
-        phase_durations_ns = phase_stamps[1:] - phase_stamps[:-1]
-        dist.all_reduce(
-            phase_durations_ns, op=dist.ReduceOp.MAX, group=nccl_group
-        )
-        phase_us = {
-            name: float(value) / 1000.0
-            for name, value in zip(
-                ("route", "w13", "activation_requant", "w2"),
-                phase_durations_ns.cpu().tolist(),
-                strict=True,
-            )
-        }
+        phase_us: dict[str, float] = {}
         record: dict[str, Any] = {
             "m": m,
             "active_experts": candidate_case.active_experts,

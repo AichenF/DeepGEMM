@@ -6396,3 +6396,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Instrumentation note: as in Iteration 181, schedule-0-only intermediate timestamp slots are stale; their printed huge deltas are invalid.
 - Decision: reject 8 CTAs and stop shrinking to 4. Extra serial GEMM tasks per CTA dominate the cheaper cohort barrier. Keep the knob for evidence only and return production work to schedule 0.
 - Evidence: `results/iter182_tp4_single_launch_group8_m32_m64_m128_gpus0_3_20260904.log`.
+
+## Iteration 183 — native 384-thread MegaMoE compile bring-up
+
+- Change: added a separate native one-CTA-per-SM SM90 path based on the read-only DeepGEMM MegaMoE body; benchmark inputs are already-quantized FP8 X plus FP32 group-128 scales, with model-load-only 80-byte Mode2 MXFP4 weight transforms and a same-launch TP4 multicast/NVLS tail.
+- Test: single-GPU extension import/compile in `dpskv4_h20_weekly_gap_20260727`, CUDA_VISIBLE_DEVICES=0.
+- Result: **compile failed before execution**. NVCC rejects the pre-existing wrapper header's C++17 floating-point template parameter, and the separately included body hides `workspace/sm_idx/thread_idx` inside its architecture preprocessor scope before the appended tail.
+- Evidence: NVCC reports `floating-point template parameter is nonstandard` at the original SM90 fused wrapper declaration, followed by undefined `workspace`, `sm_idx`, and `thread_idx` at the appended grid barrier.
+- Decision: keep the benchmark/input-contract integration, but stop including the wrapper declaration. Copy only the small decoder-helper prefix into an owned header (or guard the original kernel declaration), and place the appended communication tail inside the same body lexical scope before its `#else/#endif`.

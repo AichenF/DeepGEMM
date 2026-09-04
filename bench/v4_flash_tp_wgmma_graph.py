@@ -141,15 +141,10 @@ def make_fp8_input(
 
 
 def make_weights(
-    intermediate_per_rank: int, device: torch.device
-) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-]:
+    intermediate_per_rank: int,
+    device: torch.device,
+    include_native: bool = False,
+) -> tuple[torch.Tensor, ...]:
     n13 = 2 * intermediate_per_rank
     w13 = torch.randint(
         0,
@@ -179,6 +174,11 @@ def make_weights(
         dtype=torch.uint8,
         device=device,
     )
+    native_weights: tuple[torch.Tensor, ...] = ()
+    if include_native:
+        import v4_flash_tp_native_megamoe as native_kernel
+
+        native_weights = native_kernel.transform_weights(w13, s13, w2, s2)
     g13 = torch.empty(0, dtype=torch.float32, device=device)
     g2 = torch.empty(0, dtype=torch.float32, device=device)
     if kernel.NORMALIZED_WEIGHT_SCALE:
@@ -192,7 +192,7 @@ def make_weights(
     if kernel.TILED_WEIGHT_LAYOUT:
         w13, s13 = kernel.tile_mxfp4_weight_layout(w13, s13)
         w2, s2 = kernel.tile_mxfp4_weight_layout(w2, s2)
-    return w13, s13, g13, w2, s2, g2
+    return w13, s13, g13, w2, s2, g2, *native_weights
 
 
 @dataclass
@@ -210,6 +210,8 @@ class CapturedCase:
     g2: torch.Tensor
     lut: torch.Tensor
     intermediate_per_rank: int
+    native_w13: torch.Tensor | None = None
+    native_w2: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         device = self.qx.device
@@ -331,6 +333,22 @@ class CapturedCase:
             else None
         )
         self.graph_output: torch.Tensor | None = None
+        self.native_workspace = None
+        self.native_local_output = None
+        if (self.native_w13 is None) != (self.native_w2 is None):
+            raise ValueError("native W13 and W2 must be provided together")
+        if self.native_w13 is not None:
+            import v4_flash_tp_native_megamoe as native_kernel
+
+            self.native_workspace = native_kernel.allocate_workspace(
+                self.intermediate_per_rank, device
+            )
+            self.native_workspace.load_inputs(
+                self.qx, self.x_scale, self.topk_ids, self.topk_weights
+            )
+            self.native_local_output = torch.empty(
+                (self.m, HIDDEN), dtype=torch.bfloat16, device=device
+            )
         # Routes are fixed benchmark inputs.  Inspect them once before graph
         # capture; this synchronization and policy selection are not timed.
         self.active_experts = int(torch.unique(self.topk_ids).numel())
@@ -745,6 +763,8 @@ class CapturedCase:
         return output
 
     def run_tp4_single_launch(self, comm: CustomAllReduceV2) -> torch.Tensor:
+        if self.native_workspace is not None:
+            return self.run_native_tp4_single_launch(comm)
         # The single entry selects push for M<128 and the communicator's
         # multicast-bound pull slab for M128.  Prepare both ABIs outside the
         # timed graph; no allocation or registration occurs during replay.
@@ -803,6 +823,54 @@ class CapturedCase:
             "single_launch_nvls_pull"
             if self.m == 128
             else "single_launch_multicast_push"
+        )
+        self.graph_output = self.fused_graph_output
+        return self.graph_output
+
+    def run_native_tp4_single_launch(
+        self, comm: CustomAllReduceV2
+    ) -> torch.Tensor:
+        import v4_flash_tp_native_megamoe as native_kernel
+
+        self.prepare_fused_pull(comm)
+        assert self.native_workspace is not None
+        assert self.native_w13 is not None and self.native_w2 is not None
+        assert self.native_local_output is not None
+        assert self.fused_push_workspaces is not None
+        assert self.fused_push_counter is not None
+        assert self.fused_pull_output is not None
+        assert self.fused_pull_sem_local is not None
+        if (
+            comm.world_size != 4
+            or not self.fused_push_mc_ptr
+            or not self.fused_pull_mc_ptr
+            or not comm.pull_sem_mc_ptr
+        ):
+            raise RuntimeError(
+                "native single-launch bring-up requires TP4 NVLS multicast memory"
+            )
+        native_kernel.run_tp4(
+            self.native_workspace,
+            self.native_w13,
+            self.native_w2,
+            self.native_local_output,
+            self.fused_graph_output,
+            self.fused_push_counter,
+            self.fused_push_workspaces,
+            self.fused_pull_output,
+            self.fused_pull_sem_local,
+            self.fused_push_mc_ptr,
+            self.fused_pull_mc_ptr,
+            comm.pull_sem_mc_ptr,
+            self.fused_push_rank,
+            self.fused_push_stride,
+            self.m,
+        )
+        self.fused_k6_push_active = True
+        self.fused_k6_ar_mode = (
+            "native_single_launch_nvls_pull"
+            if self.m == 128
+            else "native_single_launch_multicast_push"
         )
         self.graph_output = self.fused_graph_output
         return self.graph_output
