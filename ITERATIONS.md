@@ -7028,3 +7028,25 @@ maximum rank latency of a full CUDA-Graph replay.
   this micro-tuning direction and return to reducing work/tail imbalance.
 - **Artifacts:** `bench/results/iter244_grid_poll_sleep32_m8_m128_compute_20260904.log`
   and `bench/results/iter244_grid_poll_sleep128_m8_m128_compute_20260904.log`.
+
+## Iteration 245 — combine M128 nine-CTA residency with relaxed polling
+
+- **Hypothesis/configuration:** Reuse the existing dynamic route-shared-memory
+  path to admit 9 x 128-thread CTAs/SM, but combine it with the selected
+  one-level relaxed grid barrier and 64 ns backoff.  Test M128 only because a
+  global nine-block launch bound previously hurt small M.
+- **Protocol:** H20 GPU 0, M=128 random routes, SplitK=2, caller-provided
+  FP8-E4M3 X/group-128 scale, MXFP4 weights, excluded 256 MiB cold-L2 clear and
+  full W2-route comparison to the independent local reference.
+- **Correctness:** PASS bitwise (`cosine=1`, `rel_l2=0`, finite).
+- **Phase result:** route/W13/activation/W2 =
+  `4.064/207.840/6.848/110.144 us`, sum `328.896 us`.
+- **Analysis:** This is about 3.36 us (1.01%) below Iteration 234's selected
+  bound-8 relaxed-poll phase sum.  The improvement is large enough to screen
+  end-to-end, but not large enough to expose small M to bound-9 register
+  pressure.
+- **Decision:** Retain for a distributed M128 paired screen.  If it survives,
+  add a token-specialized launch bound so M<=64 remains bound/requested 8 and
+  only the Tokens=128 instantiation requests 9 CTAs/SM.
+- **Artifact:**
+  `bench/results/iter245_bound9_relaxed_m128_compute_smoke_20260904.log`.
