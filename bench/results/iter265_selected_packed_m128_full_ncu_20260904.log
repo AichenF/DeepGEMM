@@ -1,0 +1,12 @@
+==PROF== Connected to process 477577 (/usr/bin/python3.12)
+==PROF== Connected to process 477713 (/usr/bin/python3.12)
+==PROF== Connected to process 477715 (/usr/bin/python3.12)
+==PROF== Disconnected from process 477715
+==PROF== Disconnected from process 477713
+==WARNING== Unable to access the following 6 metrics: ctc__rx_bytes_data_user.sum, ctc__rx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__rx_bytes_data_user.sum.per_second, ctc__tx_bytes_data_user.sum, ctc__tx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__tx_bytes_data_user.sum.per_second.
+
+
+==PROF== Profiling "tp4_megamoe_single_launch_kernel": 0%....50%....100% - 38 passes
+SINGLE_COMPUTE_PROFILE {"accepted": true, "down_check": {"cosine": 1.0, "finite": true, "rel_l2": 0.0}, "input_contract": "prequantized FP8-E4M3 X plus FP32 group128 scale", "l2_policy": "cold 256MiB clear outside profiled kernel", "m": 128, "packed_generation_words_after": [2048, 2048, 2048, 2048], "packed_generation_wrap_ok": true, "packed_generation_wrap_requested": false, "padded_rows": 1992, "phase_stamps": false, "phase_us": null, "route_pattern": "random", "sm_count": 78, "tp_collective_executed": false, "w13_split_k": 2}
+==PROF== Disconnected from process 477577
+==PROF== Report: /lustre/raplab/client/xutingz/fac/DeepGEMM_tp/results/iter265_selected_packed_m128_full.ncu-rep

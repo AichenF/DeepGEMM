@@ -7576,3 +7576,40 @@ maximum rank latency of a full CUDA-Graph replay.
   W13 placement, or improve the current flat GEMM bodies directly.
 - **Artifact:**
   `bench/results/iter264_cluster_dsm_w13_act_m8_m128_compute_smoke_20260904.log`.
+
+## Iteration 265 — fresh packed-barrier profile confirms bandwidth and phase-tail loss
+
+- **Purpose:** Re-profile the currently selected flat-grid one-launch compute
+  body after the packed-generation barrier change, rather than relying on the
+  older pre-change Iteration 228 report.  The rejected N64-tail and DSM-cluster
+  experiments were both disabled.
+- **Protocol:** H20 GPU 0, TP4/M128 random routes, prequantized FP8-E4M3 X plus
+  FP32 group-128 scales, TP collective disabled to isolate the compute body,
+  Nsight Compute full set (38 replay passes) with profiler cache control set to
+  `all`.  The harness also issues its separate 256 MiB L2 clear immediately
+  before the captured launch.  Phase stamps were disabled so the profile is of
+  the selected production code shape.
+- **Correctness:** PASS bitwise against the independent multi-kernel local
+  reference (`cosine=1`, `rel_l2=0`, all finite).  The four packed barrier
+  generation/count words advanced to `2048` with zero residual count.
+- **Result:** Kernel duration `364.192 us`; DRAM read/write
+  `830.978/4.560 MB`; aggregate DRAM throughput `2.294 TB/s` and read
+  throughput `2.282 TB/s`.  The launch uses 63 registers/thread (64 allocated),
+  reaches `49.98%` occupancy, and reports zero local-memory spill requests.
+  SM throughput is `62.22%`, DRAM throughput `47.68%`, and scheduler
+  no-eligible time `37.57%`.
+- **Stall evidence:** Of 7,124 not-issued PC-sampling observations, barrier is
+  4,248 (`59.63%`), long scoreboard 1,120 (`15.72%`), wait 560 (`7.86%`),
+  and math throttle 357 (`5.01%`).  The largest barrier sites are the
+  activation-worker loop guard at source line 4147 (1,603 samples) and the
+  disabled-collective exit path at source line 4210 (1,199); the two largest
+  long-scoreboard sites are packed global-barrier polling loads (342 and 251).
+- **Interpretation:** The packed counter reduced barrier bookkeeping but did
+  not remove phase-tail idling.  With the same roughly 831 MB cold weight read
+  volume, the fused body sustains only about 2.28 TB/s versus the previously
+  measured standalone W13/W2 bodies' roughly 2.6-2.8 TB/s.  The next change
+  should target phase-wide liveness/scheduling overhead or the GEMM issue path;
+  external activation quantization is not part of this kernel or this timing.
+- **Artifacts:**
+  `bench/results/iter265_selected_packed_m128_full_ncu_20260904.log` and
+  `results/iter265_selected_packed_m128_full.ncu-rep`.
