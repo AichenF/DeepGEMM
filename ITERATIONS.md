@@ -6682,6 +6682,18 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Latency:** control/native medians `0.071216/0.128800 ms`; native is `1.809x` slower. The two native batch medians are `0.128688/0.128912 ms`, reproducing Iteration 216 and proving the Iteration-222 regression is removed.
 - **Conclusion:** Keep native only as a correctness/reference implementation. Its measured gap is much larger than the TP-specialized single-launch candidate, so optimization returns to the latter.
 - **Artifact:** `bench/results/iter223_restore_native_interleaved_tp4_m8_cold_screen_20260904.log`.
+## Iteration 228 — full NCU profile of the TP-specialized single-launch compute body
+
+- Date: 2026-09-04
+- Scope: H20 GPU 0, TP4-local I=512, random M128 routes, prequantized FP8-E4M3 X/group-128 FP32 scale, same-source compute-only single-launch entry. One cold launch was captured with NCU full set (38 kernel-replay passes); TP communication was deliberately disabled only for replay safety.
+- Correctness: PASS and bitwise equal W2 route tensor versus the selected independent multi-kernel compute path (`cosine=1.0`, `rel_l2=0`). Padded rows=1992, split-K=2.
+- Device phases: route 4.224 us, W13 220.672 us, activation/requant 6.400 us, W2 115.680 us. NCU total is 349.89 us.
+- Launch/resources: 624x128 threads, exactly one resident-grid wave, 64 registers/thread, 18.43 KiB dynamic plus 3.07 KiB static shared memory, eight-block register/shared-memory limits, theoretical/achieved occupancy 50.00/49.98%, no local spills.
+- Throughput: 831.102 MB DRAM reads and 4.763 MB writes; 2.39 TB/s, 49.65% DRAM throughput, 59.59% SM throughput, 112.91M executed instructions. The older selected standalone NCU report has approximately the same combined bytes (W13 2.8219 TB/s x 196.032 us plus W2 2.6175 TB/s x 105.728 us, about 829.9 MB) but completes both kernels in 301.76 us. Thus the fused deficit is utilization/scheduling, not extra weight traffic.
+- Scheduler/stalls: no-eligible is 40.20% versus 25-26% for standalone W13/W2. Of 7,818 not-issued PC samples, barrier contributes 4,491 (57.44%), long scoreboard 1,349 (17.26%), wait 648 (8.29%), math 358 (4.58%), and short scoreboard 218 (2.79%). The two hottest barrier sites alone contribute 1,683 and 921 samples; grid-phase waiting and persistent-task synchronization are the primary lead.
+- Decision: stop targeting external X quantization or isolated communication for the compute gap. Next test higher persistent residency and/or remove redundant per-task CTA synchronization while preserving exact task ordering; retain cold-L2 distributed timing as the selection gate.
+- Artifacts: `results/iter228_tp_single_compute_m128_full.ncu-rep` and `bench/results/iter228_tp_single_compute_m128_{full_details,selected_metrics,hotspots,hot_address_context}_20260904.*`.
+
 ## Iteration 227 — same-source compute-only profiling entry
 
 - Date: 2026-09-04
