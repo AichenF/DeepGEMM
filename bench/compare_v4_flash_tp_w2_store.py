@@ -65,9 +65,10 @@ if COMPARE_FLAG != "V4_EXACT_ROUTE_CAPACITY":
     os.environ[COMPARE_FLAG] = "0"
 import v4_flash_tp_wgmma as control_kernel  # noqa: E402
 import v4_flash_tp_wgmma_graph as bench  # noqa: E402
-from sglang.kernels.ops.communication.mp import (  # noqa: E402
-    register_comm_cleanup,
-)
+try:  # noqa: E402
+    from sglang.jit_kernel.mp import register_comm_cleanup
+except ImportError:  # pragma: no cover - compatibility with newer SGLang
+    from sglang.kernels.ops.communication.mp import register_comm_cleanup
 from sglang.srt.distributed.device_communicators.custom_all_reduce_v2 import (  # noqa: E402
     CustomAllReduceV2,
 )

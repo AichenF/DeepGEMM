@@ -8497,3 +8497,31 @@ maximum rank latency of a full CUDA-Graph replay.
   utilization, not more GMMA wait micro-tuning.
 - **Artifact:**
   `bench/results/iter308_native_rs_k128_batch_tp4_m8_m128_cold_screen_20260904.log`.
+
+## Iteration 309 — current single-launch W13 merged-group recheck is noise-sized
+
+- **Input/measurement contract:** TP4 GPUs 0-3, M128 random precomputed routes,
+  caller-provided FP8-E4M3 activation plus FP32 group-128 scales, and MXFP4
+  weights/scales.  External X quantization is outside both captured graphs and
+  timing.  The selected packed-barrier one-launch body is compared in-process
+  with only `V4_W13_MERGED_WGMMA_GROUP=1` changed.  Four AB/BA windows x 50
+  samples use rank-max latency; every replay has its own excluded 256 MiB L2
+  clear.
+- **Harness compatibility:** Added the same old/new SGLang import fallback
+  already used by the primary graph harness, so this paired compile-time-flag
+  harness can find `register_comm_cleanup` in the current container.  This does
+  not change either graph, collective, input, or timing boundary.
+- **Correctness:** PASS and bitwise identical on all ranks; cross-arm cosine is
+  `1.0000001192`, relative L2 and max absolute difference are both zero.
+- **Timing:** all-sample control/candidate medians are
+  `0.359712/0.358000 ms` (reported control/candidate `1.00478x`).  This apparent
+  0.48% is not robust: control batch medians are
+  `[0.352256, 0.354032, 0.374112, 0.372016] ms` and candidate medians are
+  `[0.352992, 0.353856, 0.373968, 0.371760] ms`; paired-window central medians
+  differ by only about `0.216 us` (`0.06%`) amid a roughly `20 us` temporal
+  shift, and the first window favors control.
+- **Decision:** Reject as noise-sized and leave W13 merged grouping disabled.
+  It cannot materially close the selected one-launch versus multi-kernel gap;
+  do not spend a five-shape formal run on it.
+- **Artifact:**
+  `bench/results/iter309_single_launch_w13_merged_group_tp4_m128_cold_paired_20260904.log`.
