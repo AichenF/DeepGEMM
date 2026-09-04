@@ -6567,3 +6567,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** Weighted reference cosine `0.9996428552`, rel-L2 `0.02710524`. The unweighted rel-L2 remains `0.95220`, exactly explained by route-0 weight `1/21`. Workspace shrank from 34,403,584 to 29,684,992 bytes after the corrected L2-SF capacity.
 - **Conclusion:** Native FC1, SwiGLU, route-weight fold, FP8 requantization, and scale output are numerically correct against the real Marlin MXFP4 contract. The old paired control receives a logically different packed-weight ordering, so its near-zero comparison is invalid. Next make one canonical logical weight tensor and explicitly adapt it to each implementation's physical layout, then validate native FC2/final against Torch.
 - **Artifact:** `bench/results/iter209_native_fc1_weighted_torch_reference_m8_20260904.log`.
+
+## Iteration 210 — Revalidate the multi-kernel baseline with canonical Marlin MXFP4
+
+- **Change:** Corrected the standalone multi-kernel Torch reference to decode checkpoint/OCP Marlin K8 packing (high nibble K0..K3, low nibble K4..K7) instead of treating the input bytes as the old core's already-braided logical layout. Kernel code was unchanged.
+- **Test:** H20 GPU 0, M=8 balanced, TP4 per-rank I=512 shape, full multi-kernel W13/SwiGLU/W2/local-k6 against direct Torch MXFP4 math.
+- **Result:** The prior multi-kernel path fails the canonical contract at the first GEMM: W13 cosine `0.00199911`, rel-L2 `1.41787384`; activation cosine `0.00061316`; final W2 cosine `-0.01320975`. Its internal tiled-k6 reducer still equals SGLang exactly, showing the failure is weight layout rather than reduction.
+- **Conclusion:** The frozen control's old correctness test was validating a legacy physical packing against itself, not the requested Humming/OCP MXFP4 logical weights. Native FC1 is correct against canonical Marlin (Iteration 209); the baseline operand adapter must be fixed before any performance/correctness claim is apples-to-apples. Do not use earlier native-vs-control cosine failures as kernel evidence.
+- **Artifact:** `bench/results/iter210_multikernel_marlin_correctness_m8_20260904.log`.
