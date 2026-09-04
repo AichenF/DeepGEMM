@@ -25,6 +25,9 @@ MAX_TOKENS = 128
 BLOCK_M = 8
 MAX_POOL_TOKENS = 3072
 PADDED_SF_POOL_TOKENS = (MAX_POOL_TOKENS // BLOCK_M) * 128
+NATIVE_REGISTER_DEQUANT = (
+    os.environ.get("V4_NATIVE_REGISTER_DEQUANT", "0") == "1"
+)
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
@@ -290,6 +293,10 @@ _CUDA = r"""
 
 #define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1
 #include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused.cuh>
+
+#ifndef K_NATIVE_REGISTER_DEQUANT
+#define K_NATIVE_REGISTER_DEQUANT 0
+#endif
 
 using namespace deep_gemm;
 
@@ -740,10 +747,13 @@ void run_native_tp4(
         reinterpret_cast<int64_t>(workspace.data_ptr<uint8_t>())};
     const layout::SymBuffer<1> sym_buffer(ptrs, 0);
     auto kernel = v4_flash_tp4_native_megamoe_impl<512>;
+    constexpr int kDynamicSmemBytes =
+        K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448;
     C10_CUDA_CHECK(cudaFuncSetAttribute(
-        kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, 232448));
+        kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+        kDynamicSmemBytes));
     const auto stream = at::cuda::getCurrentCUDAStream();
-    kernel<<<78, 384, 232448, stream>>>(
+    kernel<<<78, 384, kDynamicSmemBytes, stream>>>(
         local_output.data_ptr(), nullptr, static_cast<uint32_t>(tokens),
         sym_buffer,
         tensor_map_l1_acts, tensor_map_l1_acts_sf,
@@ -792,9 +802,14 @@ void run_native_tp4(
     bool enable_tp);
 """
 
-_SOURCE_HASH = hashlib.sha1((_CPP + _CUDA).encode()).hexdigest()[:20]
+_SOURCE_HASH = hashlib.sha1(
+    (_CPP + _CUDA + str(int(NATIVE_REGISTER_DEQUANT))).encode()
+).hexdigest()[:20]
 _ext = load_inline(
-    name=f"v4tp_native_megamoe_{_SOURCE_HASH}",
+    name=(
+        f"v4tp_native_megamoe_rd{int(NATIVE_REGISTER_DEQUANT)}_"
+        f"{_SOURCE_HASH}"
+    ),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
     functions=["run_native_tp4"],
@@ -807,6 +822,7 @@ _ext = load_inline(
         "arch=compute_90a,code=sm_90a",
         "-std=c++20",
         "-lineinfo",
+        f"-DK_NATIVE_REGISTER_DEQUANT={int(NATIVE_REGISTER_DEQUANT)}",
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",
     ],

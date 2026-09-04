@@ -139,8 +139,14 @@
     // BM128 split-M alternates two decoded-B slots. This lets one WG begin
     // decoding K+1 after its K WGMMA completes without overwriting the slot
     // that the paired WG may still be consuming.
-    constexpr uint32_t kNumDecodedBStages =
-        kSplitMDecodedWeightReuse ? 2u : kNumStages;
+    constexpr bool kRegisterDequant = K_NATIVE_REGISTER_DEQUANT;
+    DG_STATIC_ASSERT(!kRegisterDequant ||
+                     (BLOCK_M == 8 && BLOCK_N == 256 &&
+                      kSwapABRequested && kUseMode2RowDecoder &&
+                      !kSplitMDecodedWeightReuse),
+                     "register dequant currently supports BM8/BN256 swap-AB");
+    constexpr uint32_t kNumDecodedBStages = kRegisterDequant ? 0u :
+        (kSplitMDecodedWeightReuse ? 2u : kNumStages);
     constexpr uint32_t B_LOAD_BYTES_PER_ROW = 80u;
     constexpr uint32_t SMEM_PACKED_B_SIZE_PER_STAGE =
         LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW * sizeof(b_dtype_t);
@@ -247,6 +253,8 @@
         kInterleavedSchedulerSMEMBytes;
     DG_STATIC_ASSERT(!kUseInterleavedScheduler || kInterleavedSMEMEnd <= 232448,
                      "Interleaved scheduler exceeds the SM90 shared-memory capacity");
+    DG_STATIC_ASSERT(!kRegisterDequant || kInterleavedSMEMEnd <= 102400,
+                     "register-dequant shared-memory budget exceeded");
 
     // =====================================================================
     // Initialization
@@ -902,7 +910,8 @@
                     if (k_block_idx == 0)
                         interleaved_scheduler.release_task_info(lane_idx);
                 }
-                decode_b_stage(stage_idx);
+                if constexpr (!kRegisterDequant)
+                    decode_b_stage(stage_idx);
 
                 // Read SF (must precede warpgroup_arrive)
                 const float scale_a_0_lo =
@@ -918,11 +927,123 @@
                         smem_sfa[stage_idx] + kL2SFAHalfStride + row_offset_r1);
                 }
 
-                // MXFP4 E8M0 weight scales are applied during FP4 -> FP8 smem
-                // expansion, so the WGMMA accumulator only needs activation SF.
+                // MXFP4 E8M0 weight scales are folded into the FP8 operand
+                // either by the legacy shared-memory expansion or directly
+                // in registers.  The accumulator therefore only needs the
+                // activation scale after each K128 block.
+
+                const auto run_register_dequant_swap_ab = [&]() {
+                    DG_STATIC_ASSERT(BLOCK_M == 8 && BLOCK_N == 256,
+                                     "RS dequant path is specialized for BM8/BN256");
+                    using RSWGMMA = cute::SM90::GMMA::
+                        MMA_64x8x32_F32E4M3E4M3_RS_TN<>;
+                    constexpr uint32_t kRSAccum = 4;
+                    float swap_accum[kSwapABWeightHalves][kRSAccum] = {};
+                    const uint32_t packed_k_offset = col_idx * sizeof(uint32_t);
+
+                    #pragma unroll
+                    for (uint32_t k = 0; k < BLOCK_K / 32; ++ k) {
+                        #pragma unroll
+                        for (uint32_t half = 0;
+                             half < kSwapABWeightHalves; ++ half) {
+                            #pragma unroll
+                            for (uint32_t i = 0; i < kRSAccum; ++ i)
+                                ptx::warpgroup_fence_operand(
+                                    swap_accum[half][i]);
+                        }
+                        ptx::warpgroup_arrive();
+
+                        const auto activation_desc =
+                            mma::sm90::make_smem_desc(
+                                smem_a[stage_idx] + k * 32, 1);
+                        #pragma unroll
+                        for (uint32_t half = 0;
+                             half < kSwapABWeightHalves; ++ half) {
+                            const uint32_t packed_row0 =
+                                wg_n_idx + half * 64u + r_0;
+                            const uint32_t packed_row1 =
+                                wg_n_idx + half * 64u + r_1;
+                            const uint8_t* row_ptr0 =
+                                reinterpret_cast<const uint8_t*>(
+                                    smem_packed_b[stage_idx])
+                                + packed_row0 * B_LOAD_BYTES_PER_ROW;
+                            const uint8_t* row_ptr1 =
+                                reinterpret_cast<const uint8_t*>(
+                                    smem_packed_b[stage_idx])
+                                + packed_row1 * B_LOAD_BYTES_PER_ROW;
+                            const uint32_t packed0 =
+                                *reinterpret_cast<const uint32_t*>(
+                                    row_ptr0 + k * 16u + packed_k_offset);
+                            const uint32_t packed1 =
+                                *reinterpret_cast<const uint32_t*>(
+                                    row_ptr1 + k * 16u + packed_k_offset);
+                            const uint32_t exponent0 =
+                                row_ptr0[64u + k * 2u];
+                            const uint32_t exponent1 =
+                                row_ptr1[64u + k * 2u];
+                            const uint2 lut0 = smem_mxfp4_lut[
+                                deep_gemm::mxfp4::e8m0_lut_index(
+                                    exponent0)];
+                            const uint2 lut1 = smem_mxfp4_lut[
+                                deep_gemm::mxfp4::e8m0_lut_index(
+                                    exponent1)];
+                            const uint2 fp8_0 = deep_gemm::mxfp4::
+                                dequant_mode2_nibble_word(packed0, lut0);
+                            const uint2 fp8_1 = deep_gemm::mxfp4::
+                                dequant_mode2_nibble_word(packed1, lut1);
+                            RSWGMMA::fma(
+                                fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
+                                activation_desc,
+                                swap_accum[half][0],
+                                swap_accum[half][1],
+                                swap_accum[half][2],
+                                swap_accum[half][3],
+                                cute::SM90::GMMA::ScaleOut::One);
+                        }
+                        ptx::warpgroup_commit_batch();
+                        #pragma unroll
+                        for (uint32_t half = 0;
+                             half < kSwapABWeightHalves; ++ half) {
+                            #pragma unroll
+                            for (uint32_t i = 0; i < kRSAccum; ++ i)
+                                ptx::warpgroup_fence_operand(
+                                    swap_accum[half][i]);
+                        }
+                        ptx::warpgroup_wait<0>();
+                    }
+
+                    #pragma unroll
+                    for (uint32_t half = 0;
+                         half < kSwapABWeightHalves; ++ half) {
+                        const uint32_t accum_offset =
+                            half * kSwapABHalfAccumPerThread;
+                        const uint32_t token_0 = col_idx * 2;
+                        const uint32_t token_1 = token_0 + 1;
+                        if (token_0 < valid_m) {
+                            const float scale_0 = ptx::ld_shared(
+                                smem_sfa[stage_idx] + token_0);
+                            final_accum[accum_offset + 0] +=
+                                scale_0 * swap_accum[half][0];
+                            final_accum[accum_offset + 2] +=
+                                scale_0 * swap_accum[half][2];
+                        }
+                        if (token_1 < valid_m) {
+                            const float scale_1 = ptx::ld_shared(
+                                smem_sfa[stage_idx] + token_1);
+                            final_accum[accum_offset + 1] +=
+                                scale_1 * swap_accum[half][1];
+                            final_accum[accum_offset + 3] +=
+                                scale_1 * swap_accum[half][3];
+                        }
+                    }
+                    arrive_empty_barrier(stage_idx);
+                };
 
                 if constexpr (!kBlockIsL2) {
                     if constexpr (kSwapABRequested) {
+                        if constexpr (kRegisterDequant) {
+                            run_register_dequant_swap_ab();
+                        } else {
                         auto run_swap_ab_l1 = [&]<uint32_t N_SWAP>() {
                             using SwapWGMMA = typename mma::sm90::FP8MMASelector<N_SWAP>::type;
                             constexpr uint32_t kSwapAccum = SwapWGMMA::kNumAccum;
@@ -988,6 +1109,7 @@
                                 run_swap_ab_l1.template operator()<24>();
                             }
                         }
+                        }
                     } else {
                         float accum[kAccumPerThread];
                         // Single per-128 K-block WGMMA group
@@ -1027,6 +1149,9 @@
                     if constexpr (kSwapABRequested) {
                         DG_STATIC_ASSERT(kL2ActsSFGranK == 128,
                                          "L2 swap-AB requires per-128 activation scales");
+                        if constexpr (kRegisterDequant) {
+                            run_register_dequant_swap_ab();
+                        } else {
                         auto run_swap_ab_l2 = [&]<uint32_t N_SWAP>() {
                             using SwapWGMMA = typename mma::sm90::FP8MMASelector<N_SWAP>::type;
                             constexpr uint32_t kSwapAccum = SwapWGMMA::kNumAccum;
@@ -1097,6 +1222,7 @@
                             } else {
                                 run_swap_ab_l2.template operator()<24>();
                             }
+                        }
                         }
                     } else {
                         float accum[kAccumPerThread];
