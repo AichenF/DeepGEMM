@@ -6100,3 +6100,36 @@ maximum rank latency of a full CUDA-Graph replay.
   revisit fusion through a CTA-internal W13 epilogue that needs no cross-CTA
   last-arriver work.
 - **Evidence:** `results/iter165_tp4_static_readiness_m8_screen_20260904.log`.
+
+## Iteration 166 — schedule-0 acq_rel barriers and actual task bounds
+
+- **Change under test:** restore schedule 0 as the default.  Replace its
+  all-lane device-fence grid publication with a CTA barrier followed by one
+  lane-0 acq_rel arrival chain; waiting lanes use `__nanosleep(64)`.  Bound
+  W13 and W2 loops by the device-produced actual padded mblock count instead
+  of the capacity of `expert_ids`, removing immediately-returning tail tasks.
+- **Protocol:** TP4 physical GPUs 4-7, random routes, M8 and M128, schedule 0,
+  five requested CTAs/SM, same-process paired CUDA Graphs, two outer batches x
+  twenty replays, four cold warmups, rank-max timing.  Each replay has an
+  immediately preceding separate 256 MiB Triton clear excluded from events.
+- **Correctness:** PASS for control/candidate at both M values.  Candidate
+  minimum cosine is `0.9999955807`, maximum relative L2 `0.0029729925`, all
+  ranks are finite, and route padding matches the control (344 rows at M8,
+  1992 at M128).
+- **Cold-L2 timing (control / candidate / control-over-candidate):**
+  - M8: `0.071648 / 0.095776 ms / 0.74808x`; candidate min/max
+    `0.094592/0.101984 ms`.
+  - M128: `0.308352 / 0.439904 ms / 0.70095x`; candidate min/max
+    `0.437408/0.499712 ms`.
+  - Two-point geometric mean: `0.148636 / 0.205261 ms`, or `0.72413x`.
+- **Analysis:** neither reduced spin pressure nor capacity-tail removal yields
+  a measurable win.  Against iteration 160, M8 changes `0.095968 -> 0.095776`
+  (-0.20%) while M128 changes `0.436240 -> 0.439904` (+0.84%).  The no-op
+  task tails were cheap uniform early returns; full-phase synchronization is
+  not the 30-42% deficit by itself.
+- **Decision:** do not claim/select a speedup from this change.  Keep schedule
+  0 as the working base for correctness, but the next material direction must
+  reduce core W13/W2 work or combine a CTA-local epilogue, rather than further
+  tuning grid barrier mechanics.
+- **Evidence:**
+  `results/iter166_tp4_barrier_acqrel_actual_bounds_m8_m128_screen_20260904.log`.

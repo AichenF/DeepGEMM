@@ -229,7 +229,7 @@ _single_launch_schedule_default = (
     if _legacy_single_launch_interleaved == "1"
     else "0"
     if _legacy_single_launch_interleaved == "0"
-    else "3"
+    else "0"
 )
 SINGLE_LAUNCH_SCHEDULE = int(
     os.environ.get(
@@ -3187,24 +3187,19 @@ __device__ __forceinline__ void fused_k6_nvls_pull_tp4_task(
         uint8_t* __restrict__ sem_mc,
         int tokens, int linear_block_idx, int linear_grid_dim);
 
-// Reusable local-rank grid barrier.  Every CTA first publishes all lanes'
-// writes, then one lane contributes to a generation-counted barrier.  Each
-// phase owns a separate count/epoch pair, so CUDA-graph replays need no memset
-// node and an epoch can advance indefinitely with the stable graph storage.
+// Reusable local-rank grid barrier.  The CTA barrier makes every lane's prior
+// writes happen-before lane 0; an acq_rel arrival chain transfers them through
+// the last CTA's release epoch.  Each phase owns a count/epoch pair, so graph
+// replays need no memset node.
 __device__ __forceinline__ void single_launch_grid_barrier(
         int32_t* __restrict__ state, int phase, int expected_blocks) {
     __shared__ int observed_epoch;
-    // A fence is per CUDA thread.  Every lane that produced ordinary global
-    // stores must publish its own writes before lane 0 announces CTA arrival.
-    // The old lane-0-only fence was sufficient in practice for the staged
-    // bring-up, but was not a valid publication primitive for a task DAG.
-    __threadfence();
     __syncthreads();
     if (threadIdx.x == 0) {
         int32_t* count = state + phase * 2;
         int32_t* epoch = count + 1;
         observed_epoch = load_acquire_gpu_i32(epoch);
-        const int arrival = atomicAdd(count, 1);
+        const int arrival = atomic_add_acq_rel_gpu_i32(count, 1);
         if (arrival == expected_blocks - 1) {
             atomicExch(count, 0);
             store_release_gpu_i32(epoch, observed_epoch + 1);
@@ -3678,7 +3673,8 @@ __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
 
         single_launch_grid_barrier(barrier_state, 3, ctas);
     } else {
-        const int w13_tasks = max_mblocks * kW13NTiles * SplitK;
+        const int num_mblocks = __ldg(num_tokens_padded) / kTok;
+        const int w13_tasks = num_mblocks * kW13NTiles * SplitK;
         for (int task = cta; task < w13_tasks; task += ctas) {
             route_gemm_task<4096, 1024, SplitK, true>(
                 &w13_tma_weight, &w13_tma_weight_scale,
@@ -3698,7 +3694,7 @@ __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
         }
         single_launch_grid_barrier(barrier_state, 2, ctas);
 
-        const int w2_tasks = max_mblocks * kW2NTiles;
+        const int w2_tasks = num_mblocks * kW2NTiles;
         for (int task = cta; task < w2_tasks; task += ctas) {
             route_gemm_task<512, 4096, 1, false>(
                 &w2_tma_weight, &w2_tma_weight_scale,
@@ -5447,9 +5443,9 @@ _EXTENSION_CONFIG = (
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
           f"slsch{SINGLE_LAUNCH_SCHEDULE}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v165sr")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v166b0")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v165sr"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v166b0"
 )
 
 _ext = load_inline(
