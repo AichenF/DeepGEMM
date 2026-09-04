@@ -7777,3 +7777,29 @@ maximum rank latency of a full CUDA-Graph replay.
   M8/M128 cold-L2 screen used to reject schedule 4.
 - **Artifact:**
   `bench/results/iter272_sharded_turnover_m8_compute_smoke_20260904.log`.
+
+## Iteration 273 — sharding disproves global task-counter contention as the main loss
+
+- **Protocol:** TP4 GPUs 0-3, M={8,128} random routes, two balanced AB/BA
+  batches x 20 independently cold-L2 CUDA-Graph replays per implementation,
+  four warmups, rank-max timing, and a separate excluded 256 MiB clear before
+  every replay.  Both paths consume the same caller-provided FP8-E4M3 X and
+  FP32 group-128 scales.
+- **Correctness:** PASS on all ranks at both points; candidate cosine is at
+  least `0.9999955977`, relative L2 at most `0.0029672595`, outputs are finite,
+  and the embedded multicast-push/NVLS-pull collectives both pass.
+- **Cold-L2 result:** Multi/candidate medians are M8
+  `0.071392/0.090656 ms` (`26.98%` slower) and M128
+  `0.306000/0.392416 ms` (`28.24%` slower).  Endpoint geometric means are
+  `0.147804/0.188613 ms`, making schedule 5 `27.61%` slower.
+- **Comparison/interpretation:** Sharding is 1.52 us slower at M8 and 2.96 us
+  slower at M128 than schedule 4 in Iteration 271.  Therefore the single
+  global per-tile counter was not the dominant turnover loss.  The persistent
+  schedule-0 path is still materially faster; monolithic resource allocation,
+  fresh-CTA setup/TMA state, and phase publication dominate this design.
+- **Decision:** Reject schedule 5 and leave schedule 0 selected.  Close the
+  oversubscribed-turnover direction; the next useful work must reduce the
+  GEMM bodies' deterministic cost or build a genuinely role-specialized
+  persistent dataflow rather than rescheduling identical monolithic CTAs.
+- **Artifact:**
+  `bench/results/iter273_sharded_turnover_tp4_m8_m128_cold_screen_20260904.log`.
