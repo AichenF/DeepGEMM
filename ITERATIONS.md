@@ -6559,3 +6559,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** Native local output equals the BF16 sum of its own six combine-buffer routes exactly (cosine `1.0`, rel-L2 `0.0`), proving native L2 scatter and combine reduction agree. However native weighted FC1 intermediate and per-route FC2 remain uncorrelated with the old multi-kernel control (cosines `-0.00452` and `-0.02281`).
 - **Conclusion:** The route-weight fold is intentional and combine itself is correct. Together with the bitwise-correct native decoder and the prior expert-0 Torch direction match, the remaining discrepancy increasingly indicates that the paired harness feeds one packed tensor under two incompatible logical weight contracts. Run the corrected Marlin Torch weighted reference directly next, then make baseline/native operands represent the same logical weights.
 - **Artifact:** `bench/results/iter208_native_weighted_stage_audit_tp4_m8_20260904.log`.
+
+## Iteration 209 — Validate native weighted FC1 against true Marlin Torch math
+
+- **Change:** No production change; reran the Iteration 208 local diagnostic after correcting the mathematical reference to include native's intentional route-weight fold.
+- **Test:** H20 GPU 0, M=8, route 0 / expert 0, direct Torch `dequant(FP8 X) @ dequant(Marlin MXFP4 W13).T` plus BF16-rounded SwiGLU, compared with native FP8 intermediate after dequantization.
+- **Result:** Weighted reference cosine `0.9996428552`, rel-L2 `0.02710524`. The unweighted rel-L2 remains `0.95220`, exactly explained by route-0 weight `1/21`. Workspace shrank from 34,403,584 to 29,684,992 bytes after the corrected L2-SF capacity.
+- **Conclusion:** Native FC1, SwiGLU, route-weight fold, FP8 requantization, and scale output are numerically correct against the real Marlin MXFP4 contract. The old paired control receives a logically different packed-weight ordering, so its near-zero comparison is invalid. Next make one canonical logical weight tensor and explicitly adapt it to each implementation's physical layout, then validate native FC2/final against Torch.
+- **Artifact:** `bench/results/iter209_native_fc1_weighted_torch_reference_m8_20260904.log`.
