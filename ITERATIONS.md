@@ -7348,3 +7348,25 @@ maximum rank latency of a full CUDA-Graph replay.
   timing alone.
 - **Artifact:**
   `bench/results/iter256_packed_grid_barrier_tp4_allm_cold_paired_repeat_20260904.log`.
+
+## Iteration 257 — packed barrier generation wraparound passes
+
+- **Change:** Added a profiling-only `--packed-generation-wrap` gate that
+  seeds each of the four packed phase words to `0xfffffc00` (signed `-1024`):
+  generation `2^22-1`, arrival count zero.  One barrier use must therefore
+  wrap the 22-bit generation to zero while resetting the count to zero.
+- **Protocol:** H20 GPU 0, M={8,128}, random routes, packed generation
+  barrier, phase stamps off, relaxed 64 ns polling, prequantized FP8 input,
+  excluded cold-L2 clear.  The near-wrap seed was applied before both the
+  setup launch and the checked launch.  The full W2 route tensor was compared
+  against the independent multi-kernel reference.
+- **Correctness/liveness:** PASS bitwise at both shapes (`cosine=1`,
+  `rel_l2=0`, finite=true) without timeout.  After each checked kernel all
+  four packed phase words are exactly `[0,0,0,0]`, directly proving the
+  maximum-generation to zero transition works.
+- **Decision:** Wraparound gate passes.  Together with 360 distributed cold
+  graph samples per shape across Iterations 255-256, the packed protocol has
+  enough short- and boundary-generation evidence to select after a repeated
+  graph liveness stress.
+- **Artifact:**
+  `bench/results/iter257_packed_grid_barrier_generation_wrap_m8_m128_20260904.log`.

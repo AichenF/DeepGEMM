@@ -20,6 +20,11 @@ def parse_args() -> argparse.Namespace:
         "--route-pattern", choices=("random", "balanced", "skew"), default="random"
     )
     parser.add_argument("--seed", type=int, default=20260902)
+    parser.add_argument(
+        "--packed-generation-wrap",
+        action="store_true",
+        help="seed all four packed barrier words at generation 2^22-1",
+    )
     return parser.parse_args()
 
 
@@ -128,6 +133,18 @@ def main() -> None:
             enable_tp_collective=False,
         )
 
+    def seed_packed_wraparound() -> None:
+        if not args.packed_generation_wrap:
+            return
+        if not kernel.SINGLE_LAUNCH_PACKED_GRID_BARRIER:
+            raise RuntimeError(
+                "--packed-generation-wrap requires the packed grid barrier"
+            )
+        # 0xfffffc00 is generation (2^22 - 1), count zero.  Stored as the
+        # signed int32 value -1024; one complete barrier must wrap it to zero.
+        case.single_launch_barrier_state[:8:2].fill_(-1024)
+
+    seed_packed_wraparound()
     run()
     torch.cuda.synchronize(device)
     props = torch.cuda.get_device_properties(device)
@@ -136,12 +153,21 @@ def main() -> None:
         raise RuntimeError("cache-clear buffer is smaller than twice L2")
 
     torch.cuda.cudart().cudaProfilerStart()
+    seed_packed_wraparound()
     triton_runtime.driver.active.clear_cache(flush)
     run()
     torch.cuda.synchronize(device)
     torch.cuda.cudart().cudaProfilerStop()
 
     check = compare(case.down, expected_down)
+    packed_count_words = [
+        int(value)
+        for value in case.single_launch_barrier_state[:8:2].cpu().tolist()
+    ]
+    packed_wrap_ok = (
+        not args.packed_generation_wrap
+        or packed_count_words == [0, 0, 0, 0]
+    )
     phases = None
     if kernel.SINGLE_LAUNCH_PHASE_STAMPS:
         stamps = case.single_launch_barrier_state[8:18].view(torch.int64)
@@ -153,7 +179,9 @@ def main() -> None:
                 strict=True,
             )
         )
-    accepted = bool(check["finite"] and check["cosine"] >= 0.999)
+    accepted = bool(
+        check["finite"] and check["cosine"] >= 0.999 and packed_wrap_ok
+    )
     print(
         "SINGLE_COMPUTE_PROFILE "
         + json.dumps(
@@ -165,6 +193,11 @@ def main() -> None:
                 "sm_count": props.multi_processor_count,
                 "l2_policy": "cold 256MiB clear outside profiled kernel",
                 "phase_stamps": kernel.SINGLE_LAUNCH_PHASE_STAMPS,
+                "packed_generation_wrap_requested": (
+                    args.packed_generation_wrap
+                ),
+                "packed_generation_words_after": packed_count_words,
+                "packed_generation_wrap_ok": packed_wrap_ok,
                 "w13_split_k": case.w13_split_k,
                 "padded_rows": int(case.num_tokens_padded.item()),
                 "phase_us": phases,
