@@ -256,6 +256,9 @@ SINGLE_LAUNCH_PERSISTENT_GEMM_STATE = (
 SINGLE_LAUNCH_COOPERATIVE_GRID = (
     os.environ.get("V4_SINGLE_LAUNCH_COOPERATIVE_GRID", "0") == "1"
 )
+SINGLE_LAUNCH_RELAXED_GRID_POLL = (
+    os.environ.get("V4_SINGLE_LAUNCH_RELAXED_GRID_POLL", "0") == "1"
+)
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "8")
 )
@@ -457,6 +460,8 @@ static constexpr bool kSingleLaunchPersistentGemmState =
     K_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
+static constexpr bool kSingleLaunchRelaxedGridPoll =
+    K_SINGLE_LAUNCH_RELAXED_GRID_POLL;
 static constexpr int kSingleLaunchNvlsBlocks =
     K_SINGLE_LAUNCH_NVLS_BLOCKS;
 static constexpr int kSingleLaunchGroupCtas =
@@ -2653,6 +2658,15 @@ __device__ __forceinline__ int32_t load_acquire_gpu_i32(
     return static_cast<int32_t>(value);
 }
 
+__device__ __forceinline__ int32_t load_relaxed_gpu_i32(
+        const int32_t* pointer) {
+    uint32_t value;
+    asm volatile(
+        "ld.relaxed.gpu.global.u32 %0,[%1];"
+        : "=r"(value) : "l"(pointer) : "memory");
+    return static_cast<int32_t>(value);
+}
+
 __device__ __forceinline__ void store_release_gpu_i32(
         int32_t* pointer, int32_t value) {
     asm volatile(
@@ -3377,8 +3391,16 @@ __device__ __forceinline__ void single_launch_grid_barrier(
             atomicExch(count, 0);
             store_release_gpu_i32(epoch, observed_epoch + 1);
         } else {
-            while (load_acquire_gpu_i32(epoch) == observed_epoch) {
-                __nanosleep(64);
+            if constexpr (kSingleLaunchRelaxedGridPoll) {
+                while (load_relaxed_gpu_i32(epoch) == observed_epoch)
+                    __nanosleep(64);
+                // The relaxed loop only detects progress.  This single
+                // acquire imports the last arriver's release publication.
+                while (load_acquire_gpu_i32(epoch) == observed_epoch) {
+                }
+            } else {
+                while (load_acquire_gpu_i32(epoch) == observed_epoch)
+                    __nanosleep(64);
             }
         }
     }
@@ -5739,6 +5761,7 @@ _EXTENSION_CONFIG = (
           f"sldr{int(SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM)}_"
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
+          f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
@@ -5832,6 +5855,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="
             f"{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_RELAXED_GRID_POLL="
+            f"{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}"
         ),
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",

@@ -198,6 +198,9 @@ def main() -> None:
                     "single_launch_cooperative_grid": (
                         kernel.SINGLE_LAUNCH_COOPERATIVE_GRID
                     ),
+                    "single_launch_relaxed_grid_poll": (
+                        kernel.SINGLE_LAUNCH_RELAXED_GRID_POLL
+                    ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
                     ),
