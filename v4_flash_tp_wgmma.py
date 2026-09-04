@@ -5006,27 +5006,26 @@ void tp4_megamoe_single_launch_kernel(
         single_launch_grid_barrier(barrier_state, 3, ctas);
     }
 
-    // M128 exceeds CARv2's one-shot push slab.  Reuse its multicast-bound
-    // pull region and semaphore protocol there; smaller messages retain the
-    // validated 78-CTA multicast push path.  Extra compute CTAs can retire
-    // because kernel completion still waits for every communication CTA.
+    // The opt-in large-message path embeds CARv2-style P2P two-shot at
+    // M64/M128.  Otherwise M128 uses the multicast-bound NVLS pull slab and
+    // smaller messages retain the validated 78-CTA multicast push path.
+    // Extra compute CTAs can retire because kernel completion still waits for
+    // every communication CTA.
     if (enable_tp_collective) {
-        if constexpr (Tokens == 128) {
-            if constexpr (kSingleLaunchP2pTwoShot) {
-                if (cta < kSingleLaunchP2pTwoShotBlocks) {
-                    fused_k6_p2p_twoshot_tp4_task<
-                        128, kSingleLaunchP2pTwoShotBlocks, Tokens>(
-                        down, topk_weights, pull_input,
-                        push0, push1, push2, push3,
-                        pull_sem_local, rank, cta);
-                }
-            } else {
-                if (cta < kSingleLaunchNvlsBlocks) {
-                    fused_k6_nvls_pull_tp4_task<128>(
-                        down, topk_weights, pull_input, pull_input_mc, output,
-                        pull_sem_local, pull_sem_mc, tokens, cta,
-                        kSingleLaunchNvlsBlocks);
-                }
+        if constexpr (kSingleLaunchP2pTwoShot && Tokens >= 64) {
+            if (cta < kSingleLaunchP2pTwoShotBlocks) {
+                fused_k6_p2p_twoshot_tp4_task<
+                    128, kSingleLaunchP2pTwoShotBlocks, Tokens>(
+                    down, topk_weights, pull_input,
+                    push0, push1, push2, push3,
+                    pull_sem_local, rank, cta);
+            }
+        } else if constexpr (Tokens == 128) {
+            if (cta < kSingleLaunchNvlsBlocks) {
+                fused_k6_nvls_pull_tp4_task<128>(
+                    down, topk_weights, pull_input, pull_input_mc, output,
+                    pull_sem_local, pull_sem_mc, tokens, cta,
+                    kSingleLaunchNvlsBlocks);
             }
         } else {
             if (cta < 78) {

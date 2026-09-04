@@ -847,7 +847,7 @@ class CapturedCase:
             self.w13_split_k,
         )
         self.fused_k6_push_active = True
-        if kernel.SINGLE_LAUNCH_P2P_TWO_SHOT and self.m == 128:
+        if kernel.SINGLE_LAUNCH_P2P_TWO_SHOT and self.m >= 64:
             self.fused_k6_ar_mode = "single_launch_p2p_two_shot"
             self.graph_output = self.fused_pull_output
         else:

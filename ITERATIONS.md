@@ -7916,3 +7916,29 @@ maximum rank latency of a full CUDA-Graph replay.
   it default.
 - **Artifact:**
   `bench/results/iter277_embedded_p2p_twoshot_b64_m128_cold_paired_20260904.log`.
+
+## Iteration 278 — embedded P2P two-shot runs correctly at M64
+
+- **Change:** Extended the opt-in embedded two-shot branch from M128 to M64.
+  The same 64-CTA mapping remains exact: M64's rank quarter is one
+  64x128-thread vector wave, so each CTA release-publishes exactly the local
+  k6 values consumed by its peer-matched reduce-scatter lane.  M<=32 remains
+  on the selected multicast one-shot push path.
+- **Protocol:** TP4 GPUs 0-3, M64 random routes, two balanced batches x 20
+  separately cold-L2 CUDA-Graph replays per arm, four warmups, rank-max, and
+  an excluded 256 MiB clear before every replay.  Inputs are identical
+  prequantized FP8 X plus group-128 scales.
+- **Correctness:** PASS exactly against the multi-kernel control
+  (`cosine=0.9999956225`, `rel_l2=0.0029589234`, finite and all-reduce OK).
+- **Cold-L2 smoke:** Control/candidate medians are
+  `0.246880/0.283984 ms`; candidate is `15.03%` slower.  Candidate batch
+  medians are stable at `0.284256/0.283920 ms`.
+- **Interpretation:** Absolute candidate latency is about 11 us below the
+  Iteration-262 selected-path value, but the paired control is also about
+  11.5 us faster; the relative gap moves from 14.25% to 15.03%.  This short
+  cross-build comparison therefore does not establish an M64 win.
+- **Decision:** Retain M64 support for an all-M same-window check, but select
+  the new tail provisionally only at M128.  Revert the M64 dispatch if the
+  longer paired ratio remains worse.
+- **Artifact:**
+  `bench/results/iter278_embedded_p2p_twoshot_m64_cold_screen_20260904.log`.
