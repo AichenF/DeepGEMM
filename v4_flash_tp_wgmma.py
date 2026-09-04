@@ -163,6 +163,9 @@ SINGLE_LAUNCH_W13_COMPLETION_ACT = (
 SINGLE_LAUNCH_W13_N64_TAIL = (
     os.environ.get("V4_SINGLE_LAUNCH_W13_N64_TAIL", "0") == "1"
 )
+SINGLE_LAUNCH_W13_TAIL_SPLIT4 = (
+    os.environ.get("V4_SINGLE_LAUNCH_W13_TAIL_SPLIT4", "0") == "1"
+)
 SINGLE_LAUNCH_CLUSTER_W13_ACT = (
     os.environ.get("V4_SINGLE_LAUNCH_CLUSTER_W13_ACT", "0") == "1"
 )
@@ -193,7 +196,10 @@ if SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT and not SINGLE_LAUNCH_DUAL_WG_PHASES:
         "V4_SINGLE_LAUNCH_DUAL_WG_PHASES=1"
     )
 W2_NEEDS_ROUTE_MAP = (
-    W2_SORTED_ACT or W2_MBLOCK_SCALE or SINGLE_LAUNCH_TAIL_OVERLAP
+    W2_SORTED_ACT
+    or W2_MBLOCK_SCALE
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
 )
 W2_FOLD_GLOBAL_SCALE = (
     os.environ.get("V4_W2_FOLD_GLOBAL_SCALE", "0") == "1"
@@ -309,6 +315,15 @@ if SINGLE_LAUNCH_W13_N64_TAIL and (
 ):
     raise ValueError(
         "V4_SINGLE_LAUNCH_W13_N64_TAIL requires schedule 0, WOUT128, "
+        "and compact interleaved weights"
+    )
+if SINGLE_LAUNCH_W13_TAIL_SPLIT4 and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or WOUT != 128
+    or not COMPACT_INTERLEAVED_SCALE
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W13_TAIL_SPLIT4 requires schedule 0, WOUT128, "
         "and compact interleaved weights"
     )
 if SINGLE_LAUNCH_CLUSTER_W13_ACT and (
@@ -581,11 +596,36 @@ if SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH and (
         "V4_SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH requires the isolated "
         "two-stage compact-interleaved one-WG schedule-0 path"
     )
+if SINGLE_LAUNCH_W13_TAIL_SPLIT4 and (
+    SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_M128_BOUND9
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W13_TAIL_SPLIT4 requires the isolated "
+        "bound-8 inline schedule-0 path"
+    )
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "8")
 )
 if SINGLE_LAUNCH_CTAS_PER_SM not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
     raise ValueError("V4_SINGLE_LAUNCH_CTAS_PER_SM must be in [1,10]")
+if SINGLE_LAUNCH_W13_TAIL_SPLIT4 and SINGLE_LAUNCH_CTAS_PER_SM != 8:
+    raise ValueError("V4_SINGLE_LAUNCH_W13_TAIL_SPLIT4 requires 8 CTAs/SM")
 if SINGLE_LAUNCH_CLUSTER_W13_ACT and SINGLE_LAUNCH_CTAS_PER_SM != 8:
     raise ValueError("V4_SINGLE_LAUNCH_CLUSTER_W13_ACT requires 8 CTAs/SM")
 SINGLE_LAUNCH_GROUP_CTAS = int(
@@ -840,6 +880,8 @@ static constexpr bool kSingleLaunchW13CompletionAct =
     K_SINGLE_LAUNCH_W13_COMPLETION_ACT;
 static constexpr bool kSingleLaunchW13N64Tail =
     K_SINGLE_LAUNCH_W13_N64_TAIL;
+static constexpr bool kSingleLaunchW13TailSplit4 =
+    K_SINGLE_LAUNCH_W13_TAIL_SPLIT4;
 static constexpr bool kSingleLaunchClusterW13Act =
     K_SINGLE_LAUNCH_CLUSTER_W13_ACT;
 static constexpr bool kSingleLaunchDualWgPhases =
@@ -2912,7 +2954,8 @@ __global__ void reduce_swiglu_kernel(
     output[index] = __float2bfloat16(silu * up);
 }
 
-template <int Intermediate, int SplitK, bool DualWg = false>
+template <int Intermediate, int SplitK, bool DualWg = false,
+          bool HybridTailSplit4 = false>
 __device__ __forceinline__ void reduce_swiglu_quant_task(
         const float* __restrict__ partials,
         __nv_bfloat16* __restrict__ activation,
@@ -2922,8 +2965,10 @@ __device__ __forceinline__ void reduce_swiglu_quant_task(
         const int32_t* __restrict__ topk_ids,
         const float* __restrict__ w2_global_scale,
         int routes,
-        int group) {
+        int group,
+        int tail_mblock_begin = -1) {
     static_assert(Intermediate % 128 == 0);
+    static_assert(!HybridTailSplit4 || SplitK == 2);
     constexpr int kGroupsPerRoute = Intermediate / 128;
     constexpr int kWorkers = DualWg ? 2 : 1;
     const int worker = DualWg ? threadIdx.x >> 7 : 0;
@@ -2936,12 +2981,28 @@ __device__ __forceinline__ void reduce_swiglu_quant_task(
 
     float gate = 0.0f;
     float up = 0.0f;
-    #pragma unroll
-    for (int split = 0; split < SplitK; ++split) {
-        const int64_t base =
-            (static_cast<int64_t>(split) * routes + route) * N;
-        gate += partials[base + column];
-        up += partials[base + Intermediate + column];
+    int hybrid_sorted_position = 0;
+    if constexpr (HybridTailSplit4)
+        hybrid_sorted_position = __ldg(route_to_sorted + route);
+    if constexpr (HybridTailSplit4) {
+        #pragma unroll
+        for (int split = 0; split < 4; ++split) {
+            if (split < SplitK
+                    || (hybrid_sorted_position >> 3) >= tail_mblock_begin) {
+                const int64_t base =
+                    (static_cast<int64_t>(split) * routes + route) * N;
+                gate += partials[base + column];
+                up += partials[base + Intermediate + column];
+            }
+        }
+    } else {
+        #pragma unroll
+        for (int split = 0; split < SplitK; ++split) {
+            const int64_t base =
+                (static_cast<int64_t>(split) * routes + route) * N;
+            gate += partials[base + column];
+            up += partials[base + Intermediate + column];
+        }
     }
     // Preserve the exact public pipeline semantics: W13 and SwiGLU each emit
     // BF16 before the group-128 FP8 quantizer observes the activation.
@@ -2953,7 +3014,9 @@ __device__ __forceinline__ void reduce_swiglu_quant_task(
     const int index = route * Intermediate + column;
     if (activation != nullptr)
         activation[index] = activation_bf16;
-    const int sorted_position = (kW2SortedAct || kW2MblockScale)
+    const int sorted_position = HybridTailSplit4
+        ? hybrid_sorted_position
+        : (kW2SortedAct || kW2MblockScale)
         ? __ldg(route_to_sorted + route)
         : route;
     const int quantized_row = kW2SortedAct ? sorted_position : route;
@@ -3132,7 +3195,8 @@ __global__ __launch_bounds__(256) void fused_route_quant_kernel(
                 const int position = atomicAdd(cursors + expert, 1);
                 sorted_ids[position] = route;
                 if constexpr (kW2SortedAct || kW2MblockScale
-                              || kSingleLaunchTailOverlap)
+                              || kSingleLaunchTailOverlap
+                              || kSingleLaunchW13TailSplit4)
                     route_to_sorted[route] = position;
             }
         }
@@ -4955,6 +5019,7 @@ void tp4_megamoe_single_launch_kernel(
         const int w13_tasks = num_mblocks * kW13TasksPerMblock;
         int tail_overlap_mblocks = 0;
         int tail_activation_safe_mblocks = 0;
+        int tail_split4_mblock_begin = num_mblocks;
         if constexpr (kSingleLaunchClusterW13Act) {
             static_assert(SplitK == 2 || SplitK == 4);
             constexpr int kActivationGroupsPerRoute = kIntermediate / kWout;
@@ -5327,7 +5392,53 @@ void tp4_megamoe_single_launch_kernel(
 
             if (tail_overlap_mblocks == 0
                     && !kSingleLaunchTailActOnly) {
-                if constexpr (kSingleLaunchW13N64Tail
+                if constexpr (kSingleLaunchW13TailSplit4
+                              && Tokens >= 64) {
+                    static_assert(SplitK == 2);
+                    static_assert(kPhaseMathWgs == 1);
+                    constexpr int kTailSplitK = 4;
+                    const int mblocks_per_full_round =
+                        ctas / kW13TasksPerMblock;
+                    const int full_mblock_rounds =
+                        num_mblocks / mblocks_per_full_round;
+                    tail_split4_mblock_begin =
+                        full_mblock_rounds * mblocks_per_full_round;
+                    const int full_tasks =
+                        tail_split4_mblock_begin * kW13TasksPerMblock;
+
+                    // Preserve every full split-K2/N128 W13 wave.  Only the
+                    // final complete expert mblocks switch to split-K4, so
+                    // the last wave has twice as many CTAs and each performs
+                    // half as many K128 iterations.  Slots 2/3 of the
+                    // existing four-split workspace are used only by these
+                    // tail routes.
+                    for (int task = cta; task < full_tasks; task += ctas) {
+                        route_gemm_task<4096, 1024, SplitK, true>(
+                            &w13_tma_weight, &w13_tma_weight_scale,
+                            w13, s13, g13, qx, x_scale,
+                            sorted_ids, expert_ids, num_tokens_padded,
+                            topk_weights, partials, lut, nullptr,
+                            routes, 0, task);
+                        __syncthreads();
+                    }
+                    const int tail_tasks =
+                        (num_mblocks - tail_split4_mblock_begin)
+                        * kW13NTiles * kTailSplitK;
+                    const int tail_task_base =
+                        tail_split4_mblock_begin
+                        * kW13NTiles * kTailSplitK;
+                    for (int tail_task = cta; tail_task < tail_tasks;
+                         tail_task += ctas) {
+                        route_gemm_task<
+                            4096, 1024, kTailSplitK, true>(
+                            &w13_tma_weight, &w13_tma_weight_scale,
+                            w13, s13, g13, qx, x_scale,
+                            sorted_ids, expert_ids, num_tokens_padded,
+                            topk_weights, partials, lut, nullptr,
+                            routes, 0, tail_task_base + tail_task);
+                        __syncthreads();
+                    }
+                } else if constexpr (kSingleLaunchW13N64Tail
                               && Tokens == 128 && SplitK == 2) {
                     // Preserve the high-bandwidth N128 task for every full
                     // grid round.  Split only the underfilled final round
@@ -5478,9 +5589,11 @@ void tp4_megamoe_single_launch_kernel(
                                 < tail_overlap_mblocks)
                         continue;
                     reduce_swiglu_quant_task<
-                        kIntermediate, SplitK, kSingleLaunchDualWgPhases>(
+                        kIntermediate, SplitK, kSingleLaunchDualWgPhases,
+                        kSingleLaunchW13TailSplit4 && Tokens >= 64>(
                         partials, activation, qactivation, activation_scale,
-                        route_to_sorted, topk_ids, g2, routes, group);
+                        route_to_sorted, topk_ids, g2, routes, group,
+                        tail_split4_mblock_begin);
                     if constexpr (!kSingleLaunchSkipFinalCtaSync) {
                         __syncthreads();
                     } else if (group + ctas < activation_groups) {
@@ -7745,6 +7858,7 @@ _EXTENSION_CONFIG = (
           f"slaw{int(SINGLE_LAUNCH_ACT_W2_COHORT)}_"
           f"slca{int(SINGLE_LAUNCH_W13_COMPLETION_ACT)}_"
           f"sln64{int(SINGLE_LAUNCH_W13_N64_TAIL)}_"
+          f"slts4{int(SINGLE_LAUNCH_W13_TAIL_SPLIT4)}_"
           f"slcl{int(SINGLE_LAUNCH_CLUSTER_W13_ACT)}_"
           f"sldwg{int(SINGLE_LAUNCH_DUAL_WG_PHASES)}_"
           f"sldwgc{SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM}_"
@@ -7907,6 +8021,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W13_N64_TAIL="
             f"{int(SINGLE_LAUNCH_W13_N64_TAIL)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W13_TAIL_SPLIT4="
+            f"{int(SINGLE_LAUNCH_W13_TAIL_SPLIT4)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_CLUSTER_W13_ACT="

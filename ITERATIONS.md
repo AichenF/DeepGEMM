@@ -8666,3 +8666,12 @@ maximum rank latency of a full CUDA-Graph replay.
   - Two-shape geometric-mean candidate/control ratio: on `1.127214`, off `1.112986`; `+1.28%` regression.
 - Artifact: `bench/results/iter318_w2_prefetch_on_off_tp4_cold_screen_20260904.log`.
 - Decision: reject W2 cross-task TMA prefetch. It is slower at both endpoints and also adds 16 bytes/thread of stack plus one scalar spill/reload pair. Leave the experiment opt-in and disabled by default.
+
+## Iteration 319 — W13 tail split-K4 compile gate (2026-09-04)
+
+- Change: added an isolated schedule-0 hybrid for TP4 M64/M128. Full 624-CTA W13 waves remain split-K2/N128; only complete expert mblocks in the underfilled tail switch to split-K4/N128. The activation reducer selects two or four partial slots from `route_to_sorted`.
+- Input/timing contract: MegaMoE receives prequantized FP8 E4M3 `qx` plus FP32 group-128 `x_scale` and MXFP4 weights/scales. External BF16-to-FP8 input quantization remains outside all graphs; only FC1-to-FC2 internal requantization is in-kernel.
+- Test: single-GPU compute-only correctness compile for random-route M64 then M128, `V4_SINGLE_LAUNCH_TP4=1 V4_SINGLE_LAUNCH_W13_TAIL_SPLIT4=1`, H20 GPU0.
+- Result: rejected at the compile gate before executing GPU work. NVCC instantiated the single-launch kernel for both `SplitK=2` and `SplitK=4`; the new `if constexpr (kSingleLaunchW13TailSplit4 && Tokens >= 64)` branch and activation template therefore hit `static_assert(SplitK == 2)` for the unused `SplitK=4` instantiations. No correctness or performance claim is drawn from this run.
+- Next: make the hybrid compile-time branch conditional on `SplitK == 2`, leaving the ordinary split-K4 instantiation on the unchanged path, then rerun the same correctness gate.
+- Artifact: `bench/results/iter319_w13_tail_split4_m64_m128_compute_correctness_20260904.log`.
