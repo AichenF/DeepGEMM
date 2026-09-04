@@ -9124,3 +9124,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Conclusion:** P2P two-shot and cross-rank synchronization are exonerated.  Combined with Iteration 365's exact standalone 624-CTA proof, the leading integration-specific suspect is reusing the WGMMA/TMA weight staging allocation as the async bulk source before all hardware-visible staging lifetime conditions are satisfied.
 - **Next isolation:** Move the eight pitch-132 FP32 rows to an independent aligned static shared slab (accepting a temporary occupancy change) and rerun compute-only.  If it still hangs, reduce to one bulk operation per W2 CTA and instrument W2/grid phase completion.
 - **Artifact:** `bench/results/iter366_bulk_reduce_compute_only_m128_20260905.log`.
+
+## Iteration 367 — independent bulk shared slab still hangs (2026-09-05)
+
+- **Hypothesis:** Reusing `weight_smem` for FP32 bulk source rows may race a TMA/WGMMA staging lifetime not captured by the apparent warpgroup waits and CTA barriers.
+- **Change:** Reserved an independent, 1024-aligned dynamic-shared slab immediately after the activation tile: `8×132` FP32 values (4,224 bytes).  The bulk source no longer aliases weight, scale, activation, or optional coalesced-output storage.  The experimental dynamic shared-memory launch size increased by exactly this slab; the flag remains default-off.
+- **Setup:** Single rank/GPU 0, compute-only M128 random routes, seed 20260904, no TP collective, 240-second hard timeout.  A live native stack sample found the process in the first `run()` synchronization at `profile_v4_flash_tp_single_compute.py:156`.
+- **Result:** **TIMEOUT with identical nonprogress.**  No correctness record and no valid timing were produced.
+- **Conclusion:** Simple WGMMA/TMA shared-storage aliasing is disproven.  Since the standalone microprobe supports eight requests per group and six-way destination contention, the next smallest integration delta is the number/address pattern of reductions issued by each W2 CTA.  Test one valid route-slot reduction per W2 task; if that progresses, grow 1→2→4→8 and inspect destination mapping rather than proxy fences.
+- **Decision:** Retain the independent slab only inside the rejected experimental flag while isolating; selected source path remains unaffected.
+- **Artifact:** `bench/results/iter367_bulk_reduce_independent_smem_compute_m128_20260905.log`.

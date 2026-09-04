@@ -1096,8 +1096,12 @@ static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
 static constexpr int kBlockK = 128;
 static constexpr int kStages = K_WEIGHT_STAGES;
+static constexpr int kBulkReduceStageBytes =
+    K_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+    ? kTok * 132 * static_cast<int>(sizeof(float)) : 0;
 static constexpr int kRouteTaskDynamicBytes =
-    kStages * kWout * ((kBlockK / 2) + 4) + kTok * kBlockK;
+    kStages * kWout * ((kBlockK / 2) + 4) + kTok * kBlockK
+    + kBulkReduceStageBytes;
 static_assert(kStages == 2 || kStages == 3 || kStages == 4);
 static_assert(!kInterleavedBulkCopy
               || (kBulkWeightCopy && kTiledWeightLayout
@@ -2456,7 +2460,8 @@ __device__ __forceinline__ void route_gemm_task(
     if constexpr (BulkReduceW2)
         __syncthreads();
     constexpr int kBulkReducePitch = 132;
-    float* bulk_reduce_smem = reinterpret_cast<float*>(weight_smem);
+    float* bulk_reduce_smem = reinterpret_cast<float*>(
+        activation_smem_base + kActivationCopies * kTok * kBlockK);
     const int route0 = route_ids[metadata_slot][column_base];
     const int route1 = route_ids[metadata_slot][column_base + 1];
     #pragma unroll
