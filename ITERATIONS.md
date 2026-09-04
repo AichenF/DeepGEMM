@@ -8525,3 +8525,30 @@ maximum rank latency of a full CUDA-Graph replay.
   do not spend a five-shape formal run on it.
 - **Artifact:**
   `bench/results/iter309_single_launch_w13_merged_group_tp4_m128_cold_paired_20260904.log`.
+
+## Iteration 310 — ten resident CTAs worsen the one-launch gap
+
+- **Hypothesis:** Compile the selected 128-thread packed-barrier body with
+  `__launch_bounds__(128,10)` and launch 780 CTAs so the approximately
+  51-register ceiling can expose ten resident WGMMA warp-groups per SM.  This
+  setting had not been measured for the single-launch path; all algorithmic
+  stages and the communication choice remain unchanged.
+- **Protocol:** TP4 GPUs 0-3, random M={8,128}, selected multi-kernel control
+  versus the bound-10 one-launch candidate in CUDA Graphs, two batches x 20
+  individually cold-L2 samples and four cold warmups.  Timing is rank-max and
+  each replay receives an excluded 256 MiB L2 clear.  Both arms consume the
+  same caller-provided FP8-E4M3 X/group-128 scales and MXFP4 weights; external
+  X quantization is excluded.
+- **Correctness:** PASS at both shapes.  Candidate/control numerical metrics
+  match: minimum cosine is `0.9999955977`, maximum relative L2 is
+  `0.0029672640`, outputs are finite and TP all-reduce checks pass.
+- **Cold-L2 result (multi / bound-10 one-launch):** M8
+  `0.071552/0.081648 ms` (candidate `14.11%` slower), M128
+  `0.305872/0.365872 ms` (`19.62%` slower).  Candidate batch medians are tight:
+  `[0.081744,0.081568]` and `[0.366208,0.365664] ms`.
+- **Decision:** Reject bound 10.  Relative to the contemporaneous control it
+  is materially worse than the selected bound-8 gaps (Iteration 279: 6.29%
+  at M8 and 14.49% at M128).  Extra residency does not repay the tighter
+  register schedule; retain 624 CTAs / eight per SM.
+- **Artifact:**
+  `bench/results/iter310_single_launch_bound10_tp4_m8_m128_cold_screen_20260904.log`.
