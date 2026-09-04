@@ -6954,3 +6954,33 @@ maximum rank latency of a full CUDA-Graph replay.
   liveness check before selecting it as default.
 - **Artifact:**
   `bench/results/iter241_hierarchical_grid_barrier_m8_m128_compute_smoke_20260904.log`.
+
+## Iteration 242 — hierarchical barrier loses in distributed cold-L2 timing
+
+- **Protocol:** Same formal TP4 prequantized-input comparison as Iteration 240:
+  GPUs 0-3, random M={8,16,32,64,128}, six AB/BA outer batches x 30 cold-L2
+  replays, 256 MiB excluded cache clear, shared `qx/x_scale`, internal FC2
+  requant and TP collective timed.  Candidate differs only by enabling the
+  Iteration 241 hierarchical per-SM barrier with relaxed polling.
+- **Correctness/liveness:** PASS for both implementations at every M; all 900
+  timed candidate replays complete, minimum cosine exceeds 0.9999955 and
+  maximum relative L2 is below 0.002982.
+- **Cold-L2 median latency (Humming / hierarchical custom, ratio):** M8
+  `0.088560/0.083440 ms, 1.06136x`; M16
+  `0.144384/0.134048 ms, 1.07711x`; M32
+  `0.222992/0.210576 ms, 1.05896x`; M64
+  `0.311872/0.292336 ms, 1.06683x`; M128
+  `0.379584/0.368304 ms, 1.03063x`.
+- **Aggregate:** Humming/custom geometric means are `0.202146/0.190909 ms`,
+  only `1.05886x`.  Relative to Iteration 240's ordinary relaxed-poll custom,
+  hierarchical custom regresses by 5.71/5.84/5.68/4.75/1.49 us at
+  M=8/16/32/64/128 and worsens geometric mean by 3.32%.
+- **Analysis:** Reducing the one global arrival counter helps a single
+  compute-only M8 timestamp, but the added per-SM acquire/release stage and
+  wake-up fanout are paid at every phase and survive into distributed graph
+  timing.  The local smoke did not predict end-to-end rank-max latency.
+- **Decision:** Reject as the default path and leave the flag disabled.  The
+  experiment is numerically and replay safe, but the original one-level
+  relaxed barrier remains faster.  Do not spend NCU time on this variant.
+- **Artifact:**
+  `bench/results/iter242_hierarchical_grid_tp4_allm_cold_paired_20260904.log`.
