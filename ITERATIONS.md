@@ -8850,3 +8850,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Packed barrier gate: all four cases seeded generation at `2^22-1`; after one complete replay all four packed words were exactly zero and the wrap check passed.
 - Result: PASS. The specialized task-bound proof holds for sparse/random and highly concentrated routing at both endpoint M values. TP4 collective correctness and cold-L2 performance remain to be tested.
 - Artifact: `bench/results/iter339_assume_valid_tasks_compute_correctness_20260904.log`.
+
+## Iteration 340 — assume-valid task TP4 all-shape paired cold-L2 screen
+
+- Setup: TP4 on GPUs 0-3, CUDA Graph, random routes, M={8,16,32,64,128}, release-arrival barrier fixed ON. Ran process-level order OFF_A -> ON_A -> ON_B -> OFF_B. Every run used 4 outer batches x 20 replay-interleaved samples per implementation; each implementation replay received its own 256 MiB L2 clear immediately beforehand, outside the timed events. Thus each flag state has 160 cold samples per M and the comparison uses the candidate/control ratio to normalize drift.
+- Correctness: all 20 shape/variant checks reported finite output, `allreduce_ok=true`, and accepted cosine/rel-L2. Worst observed candidate comparison was cosine 0.99999546 and rel-L2 0.003012; compute-only Iter339 remained exactly equal to the independent reference.
+- Candidate/control ratios OFF_A / ON_A / ON_B / OFF_B: M8 1.059156 / 1.057391 / 1.055012 / 1.062378; M16 1.085319 / 1.077693 / 1.075538 / 1.081549; M32 1.132200 / 1.128003 / 1.127734 / 1.132760; M64 1.140443 / 1.134424 / 1.134566 / 1.142754; M128 1.149128 / 1.145782 / 1.146063 / 1.155012.
+- Batch-bracketed normalized improvement from removing the two proven-redundant guards: M8 +0.43%, M16 +0.63%, M32 +0.41%, M64 +0.62%, M128 +0.53%; all-shape geometric ratio improves from approximately 1.11350 to 1.10766, or +0.52%.
+- Representative ON medians across its two runs were approximately M8 0.0777 ms, M16 0.1223 ms, M32 0.1970 ms, M64 0.2776 ms, M128 0.3461 ms. The stronger selected multi-kernel control remains faster: the optimized single kernel is still about 5.6%, 7.7%, 12.8%, 13.4%, and 14.6% slower respectively under this seed/route realization.
+- Result: PASS as a small, directionally consistent instruction-path optimization; it does not close the structural gap. Keep opt-in pending a combined long graph-replay stress with release arrivals.
+- Artifact: `bench/results/iter340_assume_valid_off_on_on_off_tp4_allm_cold_screen_20260904.log`.
