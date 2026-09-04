@@ -6306,3 +6306,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - M8/M128 geometric mean: control 0.148177 ms, candidate 0.176422 ms, speedup 0.839904x.
 - Decision: keep the parallel scan. M8 is now only 7.9% slower than the frozen multi-kernel path, while M128 remains 31.3% slower. The phase stamps leave roughly 9 us after W2 at M8 and 58.5 us at M128; next audit/parallelize the in-kernel M128 k6+NVLS-pull collective tail, while separately verifying that route-order-dependent quantization error stays within the intended numerical contract.
 - Evidence: `results/iter174_tp4_single_launch_parallel_route_scan_m8_m128_20260904.log`.
+
+## Iteration 175 — 32-CTA in-kernel M128 k6+NVLS pull (TP4, cold L2)
+
+- Date: 2026-09-04
+- Change under test: make the single-launch M128 fused k6+NVLS-pull CTA count a compile-time tuning parameter and increase it from 16×128 threads to 32×128. Route scan and all compute phases remain unchanged; the input ABI is still prequantized FP8 `X` plus FP32 group-128 scale.
+- Protocol: paired same-process CUDA Graphs on TP4 GPUs 4–7, random M128 routes, two outer batches × 20 separately cold-L2 replays per implementation, four warmups, rank-max timing; excluded 256 MiB clear before every graph replay.
+- Correctness: PASS; candidate minimum cosine 0.9999955807, relative L2 0.002972993, finite and allreduce OK, matching the 16-CTA numerical result.
+- Timing: control/candidate 0.305248/0.380704 ms, speedup 0.801799x. Candidate route/W13/activation/W2 = 4.384/217.984/6.624/113.856 us, leaving about 37.856 us after the W2 phase stamp.
+- Analysis: versus Iteration 174's 16-CTA candidate, end-to-end improves 5.47% and the post-W2 tail falls from about 58.464 to 37.856 us (35.2%). The remaining gap versus control is 24.72%, so the tail is still material but no longer the only deficit.
+- Decision: keep the parameterization and test 64 CTAs. Select by paired cold-L2 latency, not by isolated transport intuition.
+- Evidence: `results/iter175_tp4_single_launch_nvls32_m128_20260904.log`.

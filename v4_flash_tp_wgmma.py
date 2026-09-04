@@ -436,6 +436,8 @@ static constexpr bool kSingleLaunchInterleaved =
     kSingleLaunchSchedule != 0;
 static constexpr bool kSingleLaunchNoInlineGemm =
     K_SINGLE_LAUNCH_NOINLINE_GEMM;
+static constexpr int kSingleLaunchNvlsBlocks =
+    K_SINGLE_LAUNCH_NVLS_BLOCKS;
 
 #if K_MIN_BLOCKS_PER_SM > 0
 #define ROUTE_LAUNCH_BOUNDS(IS_W13, DUAL) \
@@ -3823,10 +3825,11 @@ void tp4_megamoe_single_launch_kernel(
     // pull region and semaphore protocol there; smaller messages retain the
     // validated 78-CTA multicast push path.  Extra compute CTAs can retire
     // because kernel completion still waits for every communication CTA.
-    if (tokens == 128 && cta < 16) {
+    if (tokens == 128 && cta < kSingleLaunchNvlsBlocks) {
         fused_k6_nvls_pull_tp4_task<128>(
             down, topk_weights, pull_input, pull_input_mc, output,
-            pull_sem_local, pull_sem_mc, tokens, cta, 16);
+            pull_sem_local, pull_sem_mc, tokens, cta,
+            kSingleLaunchNvlsBlocks);
     } else if (tokens != 128 && cta < 78) {
         fused_k6_push_ar_tp4_task<128, true>(
             down, topk_weights, output, push_counter,
@@ -4869,7 +4872,8 @@ void run_tp4_megamoe_single_launch(
                 "single-launch pull input must match output [M,4096]");
     TORCH_CHECK(pull_sem_local.scalar_type() == torch::kUInt8
                     && pull_sem_local.is_cuda()
-                    && pull_sem_local.numel() >= 16 * 128,
+                    && pull_sem_local.numel()
+                        >= kSingleLaunchNvlsBlocks * 128,
                 "single-launch pull semaphore slab is too small");
     TORCH_CHECK(pull_input_mc_ptr != 0 && pull_sem_mc_ptr != 0,
                 "single-launch TP4 requires multicast pull/semaphore VAs");
@@ -5557,10 +5561,11 @@ _EXTENSION_CONFIG = (
           f"slsch{SINGLE_LAUNCH_SCHEDULE}_"
           f"slnig{int(SINGLE_LAUNCH_NOINLINE_GEMM)}_"
           f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
+          f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v173rscan")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v175nvls")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v173rscan"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v175nvls"
 )
 
 _ext = load_inline(
@@ -5637,6 +5642,7 @@ _ext = load_inline(
             f"{int(SINGLE_LAUNCH_NOINLINE_GEMM)}"
         ),
         f"-DK_SINGLE_LAUNCH_MIN_BLOCKS={SINGLE_LAUNCH_MIN_BLOCKS}",
+        f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         f"-DK_W13_LAUNCH_BOUND_10={int(W13_LAUNCH_BOUND_10)}",
         f"-DK_W13_MAX_SMEM_CARVEOUT={int(W13_MAX_SMEM_CARVEOUT)}",
