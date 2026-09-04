@@ -154,6 +154,9 @@ if SINGLE_LAUNCH_TAIL_GROUP_CTAS not in (16, 32):
 SINGLE_LAUNCH_GROUPED_W13_ACT = (
     os.environ.get("V4_SINGLE_LAUNCH_GROUPED_W13_ACT", "0") == "1"
 )
+SINGLE_LAUNCH_ACT_W2_COHORT = (
+    os.environ.get("V4_SINGLE_LAUNCH_ACT_W2_COHORT", "0") == "1"
+)
 SINGLE_LAUNCH_W13_COMPLETION_ACT = (
     os.environ.get("V4_SINGLE_LAUNCH_W13_COMPLETION_ACT", "0") == "1"
 )
@@ -399,6 +402,27 @@ if SINGLE_LAUNCH_TAIL_ACT_ONLY and (
 ):
     raise ValueError(
         "V4_SINGLE_LAUNCH_TAIL_ACT_ONLY requires the isolated bound-8 "
+        "schedule-0 path"
+    )
+if SINGLE_LAUNCH_ACT_W2_COHORT and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or SINGLE_LAUNCH_M128_BOUND9
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_ACT_W2_COHORT requires the isolated bound-8 "
         "schedule-0 path"
     )
 if SINGLE_LAUNCH_GROUPED_W13_ACT and (
@@ -735,6 +759,8 @@ static constexpr bool kSingleLaunchTailActOnly =
     K_SINGLE_LAUNCH_TAIL_ACT_ONLY;
 static constexpr bool kSingleLaunchGroupedW13Act =
     K_SINGLE_LAUNCH_GROUPED_W13_ACT;
+static constexpr bool kSingleLaunchActW2Cohort =
+    K_SINGLE_LAUNCH_ACT_W2_COHORT;
 static constexpr bool kSingleLaunchW13CompletionAct =
     K_SINGLE_LAUNCH_W13_COMPLETION_ACT;
 static constexpr bool kSingleLaunchW13N64Tail =
@@ -4404,7 +4430,8 @@ void tp4_megamoe_single_launch_kernel(
         for (int word = cta * blockDim.x + threadIdx.x;
              word < scheduler_words; word += ctas * blockDim.x)
             scheduler[word] = 0;
-    } else if constexpr (kSingleLaunchGroupedW13Act) {
+    } else if constexpr (kSingleLaunchGroupedW13Act
+                         || kSingleLaunchActW2Cohort) {
         for (int word = cta * blockDim.x + threadIdx.x;
              word < kSingleLaunchGroupedStateWords;
              word += ctas * blockDim.x)
@@ -5248,7 +5275,15 @@ void tp4_megamoe_single_launch_kernel(
             }
             single_launch_grid_barrier(barrier_state, 1, ctas);
 
-            if constexpr (kSingleLaunchTailActOnly) {
+            if constexpr (kSingleLaunchActW2Cohort) {
+                if constexpr (kSingleLaunchRecordPhaseStamps) {
+                    if (cta == 0 && threadIdx.x == 0) {
+                        uint64_t* stamps = reinterpret_cast<uint64_t*>(
+                            barrier_state + kSingleLaunchBarrierWords);
+                        stamps[3] = stamps[2];
+                    }
+                }
+            } else if constexpr (kSingleLaunchTailActOnly) {
                 constexpr int kActivationGroupsPerRoute =
                     kIntermediate / 128;
                 constexpr int kActivationTasksPerMblock =
@@ -5310,47 +5345,103 @@ void tp4_megamoe_single_launch_kernel(
                     }
                 }
             }
-            single_launch_grid_barrier(barrier_state, 2, ctas);
+            if constexpr (!kSingleLaunchActW2Cohort)
+                single_launch_grid_barrier(barrier_state, 2, ctas);
         }
 
-        const int w2_tasks =
-            num_mblocks * kW2NTiles / kPhaseMathWgs;
-        const int w2_rounds = (w2_tasks + ctas - 1) / ctas;
-        const int w2_workers =
-            kSingleLaunchBalancedWorkers && Tokens >= 64
-            ? (w2_tasks + w2_rounds - 1) / w2_rounds
-            : ctas;
-        int w2_sequence = 0;
-        for (int task = cta; cta < w2_workers && task < w2_tasks;
-             task += w2_workers, ++w2_sequence) {
-            if (tail_overlap_mblocks > 0
-                    && task / kW2NTiles < tail_overlap_mblocks)
-                continue;
-            if constexpr (kSingleLaunchNoInlineGemm) {
-                single_launch_w2_gemm_task(
-                    &w2_tma_weight, &w2_tma_weight_scale,
-                    w2, s2, g2, qactivation, activation_scale,
-                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-                    down, lut, routes, task);
-            } else {
-                route_gemm_task<
-                    512, 4096, 1, false, 0, false,
-                    kSingleLaunchDualWgPhases,
-                    kSingleLaunchPersistentGemmState, -1, false,
-                    (kSingleLaunchW2Unroll2Bound9 && Tokens == 128)
-                        ? 2 : 0>(
-                    &w2_tma_weight, &w2_tma_weight_scale,
-                    w2, s2, g2, qactivation, activation_scale,
-                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-                    reinterpret_cast<float*>(down), lut, nullptr,
-                    routes, 0, task, w2_sequence);
+        if constexpr (kSingleLaunchActW2Cohort) {
+            constexpr int kCohortCtas = 16;
+            constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
+            constexpr int kActivationTasksPerMblock =
+                kTok * kActivationGroupsPerRoute;
+            static_assert(kActivationTasksPerMblock == kW2NTiles);
+            const int cohorts = ctas / kCohortCtas;
+            const int cohort_ctas = cohorts * kCohortCtas;
+            if (cta < cohort_ctas) {
+                const int cohort = cta / kCohortCtas;
+                const int cohort_rank = cta - cohort * kCohortCtas;
+                for (int mblock = cohort; mblock < num_mblocks;
+                     mblock += cohorts) {
+                    // Each CTA prepares two of the mblock's 32 independent
+                    // route/N128 activation groups.  The cohort publication
+                    // then releases the complete FP8 K512 tile to all 32 W2
+                    // N128 tasks, two per CTA.  A faster CTA may begin the
+                    // next mblock's requant while peers finish the preceding
+                    // W2 tiles; cold W13 traffic has already ended.
+                    for (int local_task = cohort_rank;
+                         local_task < kActivationTasksPerMblock;
+                         local_task += kCohortCtas) {
+                        const int route_slot =
+                            local_task / kActivationGroupsPerRoute;
+                        const int group_in_route = local_task
+                            - route_slot * kActivationGroupsPerRoute;
+                        const int route = __ldg(
+                            sorted_ids + mblock * kTok + route_slot);
+                        if (route >= 0 && route < routes) {
+                            reduce_swiglu_quant_task<kIntermediate, SplitK>(
+                                partials, activation, qactivation,
+                                activation_scale, route_to_sorted, topk_ids,
+                                g2, routes,
+                                route * kActivationGroupsPerRoute
+                                    + group_in_route);
+                            __syncthreads();
+                        }
+                    }
+                    single_launch_group_barrier(
+                        scheduler, cohort, kCohortCtas);
+                    for (int n_tile = cohort_rank; n_tile < kW2NTiles;
+                         n_tile += kCohortCtas) {
+                        const int task = mblock * kW2NTiles + n_tile;
+                        route_gemm_task<512, 4096, 1, false>(
+                            &w2_tma_weight, &w2_tma_weight_scale,
+                            w2, s2, g2, qactivation, activation_scale,
+                            sorted_ids, expert_ids, num_tokens_padded,
+                            topk_weights, reinterpret_cast<float*>(down),
+                            lut, nullptr, routes, 0, task);
+                        __syncthreads();
+                    }
+                }
             }
-            if constexpr (kSingleLaunchNoInlineGemm
-                          || !kSingleLaunchPersistentGemmState) {
-                if constexpr (!kSingleLaunchSkipFinalCtaSync) {
-                    __syncthreads();
-                } else if (task + ctas < w2_tasks) {
-                    __syncthreads();
+        } else {
+            const int w2_tasks =
+                num_mblocks * kW2NTiles / kPhaseMathWgs;
+            const int w2_rounds = (w2_tasks + ctas - 1) / ctas;
+            const int w2_workers =
+                kSingleLaunchBalancedWorkers && Tokens >= 64
+                ? (w2_tasks + w2_rounds - 1) / w2_rounds
+                : ctas;
+            int w2_sequence = 0;
+            for (int task = cta; cta < w2_workers && task < w2_tasks;
+                 task += w2_workers, ++w2_sequence) {
+                if (tail_overlap_mblocks > 0
+                        && task / kW2NTiles < tail_overlap_mblocks)
+                    continue;
+                if constexpr (kSingleLaunchNoInlineGemm) {
+                    single_launch_w2_gemm_task(
+                        &w2_tma_weight, &w2_tma_weight_scale,
+                        w2, s2, g2, qactivation, activation_scale,
+                        sorted_ids, expert_ids, num_tokens_padded,
+                        topk_weights, down, lut, routes, task);
+                } else {
+                    route_gemm_task<
+                        512, 4096, 1, false, 0, false,
+                        kSingleLaunchDualWgPhases,
+                        kSingleLaunchPersistentGemmState, -1, false,
+                        (kSingleLaunchW2Unroll2Bound9 && Tokens == 128)
+                            ? 2 : 0>(
+                        &w2_tma_weight, &w2_tma_weight_scale,
+                        w2, s2, g2, qactivation, activation_scale,
+                        sorted_ids, expert_ids, num_tokens_padded,
+                        topk_weights, reinterpret_cast<float*>(down), lut,
+                        nullptr, routes, 0, task, w2_sequence);
+                }
+                if constexpr (kSingleLaunchNoInlineGemm
+                              || !kSingleLaunchPersistentGemmState) {
+                    if constexpr (!kSingleLaunchSkipFinalCtaSync) {
+                        __syncthreads();
+                    } else if (task + ctas < w2_tasks) {
+                        __syncthreads();
+                    }
                 }
             }
         }
@@ -6485,7 +6576,8 @@ void launch_tp4_megamoe_single(
         properties.multiProcessorCount * selected_ctas_per_sm;
     if constexpr (kSingleLaunchSchedule == 2)
         resident_grid = (resident_grid / 16) * 16;
-    if constexpr (kSingleLaunchGroupedW13Act) {
+    if constexpr (kSingleLaunchGroupedW13Act
+                  || kSingleLaunchActW2Cohort) {
         TORCH_CHECK(resident_grid % SplitK == 0
                         && resident_grid / SplitK
                             <= kSingleLaunchGroupedMaxGroups,
@@ -6681,7 +6773,7 @@ void run_tp4_megamoe_single_launch(
             + oversubscribed_grid
         : kSingleLaunchInterleaved
         ? kSchedulerHeaderWords + 3LL * expert_ids.numel()
-        : kSingleLaunchGroupedW13Act
+        : (kSingleLaunchGroupedW13Act || kSingleLaunchActW2Cohort)
             ? kSingleLaunchGroupedStateWords
             : kSingleLaunchW13CompletionAct
                 ? 4LL * expert_ids.numel()
@@ -7498,6 +7590,7 @@ _EXTENSION_CONFIG = (
           f"slta{int(SINGLE_LAUNCH_TAIL_ACT_ONLY)}_"
           f"sltg{SINGLE_LAUNCH_TAIL_GROUP_CTAS}_"
           f"slga{int(SINGLE_LAUNCH_GROUPED_W13_ACT)}_"
+          f"slaw{int(SINGLE_LAUNCH_ACT_W2_COHORT)}_"
           f"slca{int(SINGLE_LAUNCH_W13_COMPLETION_ACT)}_"
           f"sln64{int(SINGLE_LAUNCH_W13_N64_TAIL)}_"
           f"slcl{int(SINGLE_LAUNCH_CLUSTER_W13_ACT)}_"
@@ -7641,6 +7734,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_GROUPED_W13_ACT="
             f"{int(SINGLE_LAUNCH_GROUPED_W13_ACT)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_ACT_W2_COHORT="
+            f"{int(SINGLE_LAUNCH_ACT_W2_COHORT)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W13_COMPLETION_ACT="

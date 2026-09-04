@@ -234,6 +234,9 @@ def main() -> None:
                     "single_launch_grouped_w13_act": (
                         kernel.SINGLE_LAUNCH_GROUPED_W13_ACT
                     ),
+                    "single_launch_act_w2_cohort": (
+                        kernel.SINGLE_LAUNCH_ACT_W2_COHORT
+                    ),
                     "single_launch_w13_completion_act": (
                         kernel.SINGLE_LAUNCH_W13_COMPLETION_ACT
                     ),

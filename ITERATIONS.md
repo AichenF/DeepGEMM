@@ -8239,3 +8239,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Decision:** Keep disabled and close this retest.
 - **Artifact:**
   `bench/results/iter291_persistent_state_current_twoshot_m128_screen_20260904.log`.
+
+## Iteration 292: activation-to-W2 cohort pipeline (rejected)
+
+- Hypothesis: keep the high-bandwidth flat-grid W13 phase, then fuse the separate activation-requant wave and its global barrier into 16-CTA expert cohorts.  Each cohort processes one mblock at a time: its 16 CTAs produce the 32 N128 requant tasks, synchronize through the existing global scheduler slab, and immediately execute the 32 W2 N128 tasks.  This should expose W2 work as soon as one expert mblock is ready without overlapping W2 cold-weight traffic with W13.
+- Source change: added opt-in `V4_SINGLE_LAUNCH_ACT_W2_COHORT=1`, compile/config metadata, in-kernel scheduler initialization, and the cohort activation/W2 path.  Default remains disabled.  External input quantization remains out of scope: the kernel consumes prequantized FP8 E4M3 `qx`, FP32 group-128 `x_scale`, and MXFP4 weights.
+- Test: TP4 on GPUs 0-3, M=128 random input, two balanced batches, 10 individually cold-L2 CUDA Graph replays per arm and batch after 3 warmups, 256 MiB L2 clear immediately before each replay and outside CUDA-event timing, rank-max latency.  Candidate is exactly one business kernel; baseline is the selected multi-kernel path.  Phase stamps enabled.
+- Artifact: `bench/results/iter292_activation_w2_cohort_m128_smoke_20260904.log`.
+- Correctness: PASS for final output and control state; finite; all-reduce check passed; cosine `0.9999955976741226`, relative L2 `0.0029672639980990933`.
+- Performance: multi/control median `0.3031359911 ms`; candidate median `0.3585919887 ms` (min `0.3565120101`, max `0.3838720024`); control/candidate speedup `0.8453507068x`, so candidate is `18.294%` slower.  Candidate batch medians were `0.3585919887/0.3583679944 ms`.
+- Phase medians: route `4.864 us`, W13 `208.832 us`, standalone activation-requant `0 us`, combined activation+cohort barriers+W2 `121.984 us`; active experts `248`, padded rows `1992`.
+- Conclusion: reject and keep disabled.  Although W13 remained fast, the combined tail is about `4.896 us` slower than the selected separated activation+W2 phases (`6.304 + 110.784 = 117.088 us` in Iteration 283).  Eliminating one full-grid activation barrier did not offset seven per-cohort readiness barriers and the constrained W2 task mapping.  Do not expand this variant to the other M values.
