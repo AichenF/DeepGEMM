@@ -6328,3 +6328,15 @@ maximum rank latency of a full CUDA-Graph replay.
 - Analysis: versus 32 CTAs, candidate improves 2.25% and the post-W2 tail falls 35.6% (37.856→24.368 us); versus the original 16-CTA Iteration 174, end-to-end improves 7.60% and the tail falls 58.3%. The compute phases drifted upward by about 5 us in this window, so use a paired all-M follow-up before freezing 64.
 - Decision: 64 is the best measured M128 communication geometry and advances provisionally. The remaining 21.43% deficit is now dominated by single-kernel compute scheduling/global phase costs rather than the communication tail alone.
 - Evidence: `results/iter176_tp4_single_launch_nvls64_m128_20260904.log`.
+
+## Iteration 177 — current single-launch all-M screen after route/NVLS tuning
+
+- Date: 2026-09-04
+- Configuration: schedule 0, eight-block launch bound/eight requested CTAs per SM, parallel 128-thread route scan, M128 64-CTA fused k6+NVLS pull, multicast fused k6+push below M128. Caller supplies FP8 E4M3 `X` and FP32 group-128 scales; input quantization is excluded from both paths.
+- Protocol: TP4 GPUs 4–7, random routing, M={8,16,32,64,128}, paired same-process CUDA Graphs, two outer batches × 20 separately cold-L2 replays per implementation/M, four warmups, rank-max timing.
+- Correctness: every candidate/control point is finite and allreduce OK; minimum candidate cosine across the sweep is 0.9999955800 and maximum relative L2 is 0.00297322. In this repeat M8 candidate/control numerical metrics match exactly.
+- Cold-L2 control/candidate ms and speedup: M8 0.072432/0.077600 (0.933402x); M16 0.114528/0.128624 (0.890409x); M32 0.176560/0.208720 (0.845918x); M64 0.250288/0.294704 (0.849286x); M128 0.307360/0.373216 (0.823545x).
+- Five-point geometric mean: control 0.162317 ms, candidate 0.187076 ms, control/candidate 0.867652x; candidate is 15.25% slower, not 10% faster.
+- Candidate route/W13/activation/W2 us: M8 2.528/41.728/2.880/21.888; M16 2.336/76.384/3.392/38.784; M32 3.136/126.688/4.128/64.512; M64 3.904/176.224/4.928/91.264; M128 4.544/219.840/6.720/112.768.
+- Decision: route and M128 tail optimizations are retained, but the formal speed gate remains far away. The next high-value target is removal/overlap of schedule-0's whole-grid W13→activation→W2 phase boundaries without returning to the high-atomic-overhead dynamic DAG.
+- Evidence: `results/iter177_tp4_single_launch_parallel_route_nvls64_allm_20260904.log`.
