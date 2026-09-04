@@ -8607,3 +8607,18 @@ maximum rank latency of a full CUDA-Graph replay.
 - Candidate batch medians were stable: M=8 `0.076304/0.076048 ms`; M=128 `0.353536/0.353280 ms`.
 - Artifact: `bench/results/iter313_w13_next_task_prefetch_tp4_cold_screen_20260904.log`.
 - Decision: this establishes a valid cold distributed point but does not isolate the prefetch delta, because the compile-time off-path was not alternated in the same run. Do not claim an optimization from this result. Run an adjacent off-path control under the same harness and normalize both candidates to their selected multi-kernel control before deciding.
+
+## Iteration 314 — Adjacent cold control rejects W13 cross-task prefetch
+
+- Configuration: immediately repeated Iteration 313 with `V4_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH=0`; otherwise identical TP4 GPUs 0–3, random routes, CUDA Graph, and 2 × 20 individually cold replays per implementation. Input remains prequantized FP8-E4M3 X + FP32 group-128 scales; external activation quantization is excluded.
+- Correctness: single-launch candidate and selected multi-kernel control passed final-output and allreduce checks for both shapes.
+- Prefetch-off medians, max rank:
+  - M=8: multi `0.071264 ms`; single-launch `0.076000 ms`; candidate is `6.65%` slower.
+  - M=128: multi `0.306768 ms`; single-launch `0.352480 ms`; candidate is `14.90%` slower.
+  - Two-shape geometric mean candidate/control ratio: `1.106965`.
+- Adjacent normalized comparison against Iteration 313 prefetch-on:
+  - M=8 candidate/control ratio: on `1.069136`, off `1.066457`; prefetch regresses `0.25%`.
+  - M=128 candidate/control ratio: on `1.153268`, off `1.149012`; prefetch regresses `0.37%`.
+  - Geometric-mean ratio: on `1.110405`, off `1.106965`; prefetch regresses `0.31%`.
+- Artifact: `bench/results/iter314_w13_prefetch_off_tp4_cold_adjacent_control_20260904.log`.
+- Decision: reject W13 cross-task TMA prefetch. It produces no measurable saving, is slightly slower after same-run baseline normalization, and consumes the final register headroom (`REG64`). Keep the opt-in experiment for reproducibility but leave it disabled by default.
