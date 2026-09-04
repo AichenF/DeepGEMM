@@ -169,6 +169,21 @@ SINGLE_LAUNCH_CLUSTER_W13_ACT = (
 SINGLE_LAUNCH_DUAL_WG_PHASES = (
     os.environ.get("V4_SINGLE_LAUNCH_DUAL_WG_PHASES", "0") == "1"
 )
+SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM = int(
+    os.environ.get("V4_SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM", "4")
+)
+if SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM not in (4, 5):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM must be 4 or 5"
+    )
+if (
+    SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM != 4
+    and not SINGLE_LAUNCH_DUAL_WG_PHASES
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM!=4 requires "
+        "V4_SINGLE_LAUNCH_DUAL_WG_PHASES=1"
+    )
 SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT = (
     os.environ.get("V4_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT", "0") == "1"
 )
@@ -769,6 +784,8 @@ static constexpr bool kSingleLaunchClusterW13Act =
     K_SINGLE_LAUNCH_CLUSTER_W13_ACT;
 static constexpr bool kSingleLaunchDualWgPhases =
     K_SINGLE_LAUNCH_DUAL_WG_PHASES;
+static constexpr int kSingleLaunchDualWgCtasPerSm =
+    K_SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM;
 static constexpr bool kSingleLaunchDualWgPrivateAct =
     K_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT;
 static constexpr bool kSingleLaunchP2pTwoShot =
@@ -4115,7 +4132,7 @@ template <int Tokens>
 struct SingleLaunchMinBlocks {
     static constexpr int value =
         kSingleLaunchDualWgPhases
-        ? 4
+        ? kSingleLaunchDualWgCtasPerSm
         : kSingleLaunchM128Bound9 && Tokens == 128
         ? 9 : K_SINGLE_LAUNCH_MIN_BLOCKS;
 };
@@ -6555,7 +6572,7 @@ void launch_tp4_megamoe_single(
                 "requested single-launch CTAs/SM must be positive");
     const int effective_requested_ctas_per_sm =
         kSingleLaunchDualWgPhases
-        ? 4
+        ? kSingleLaunchDualWgCtasPerSm
         : kSingleLaunchM128Bound9 && Tokens == 128
         ? 9 : requested_ctas_per_sm;
     const int selected_ctas_per_sm = std::min(
@@ -6565,8 +6582,9 @@ void launch_tp4_megamoe_single(
                     "M128 specialization requires exactly 9 CTAs/SM");
     }
     if constexpr (kSingleLaunchDualWgPhases) {
-        TORCH_CHECK(selected_ctas_per_sm == 4,
-                    "dual-WG phases require exactly 4 CTAs/SM");
+        TORCH_CHECK(
+            selected_ctas_per_sm == kSingleLaunchDualWgCtasPerSm,
+            "dual-WG phases require the configured CTAs/SM");
     }
     if constexpr (kSingleLaunchTailOverlap) {
         TORCH_CHECK(selected_ctas_per_sm == 8,
@@ -7595,6 +7613,7 @@ _EXTENSION_CONFIG = (
           f"sln64{int(SINGLE_LAUNCH_W13_N64_TAIL)}_"
           f"slcl{int(SINGLE_LAUNCH_CLUSTER_W13_ACT)}_"
           f"sldwg{int(SINGLE_LAUNCH_DUAL_WG_PHASES)}_"
+          f"sldwgc{SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM}_"
           f"sldwgpa{int(SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
@@ -7754,6 +7773,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_DUAL_WG_PHASES="
             f"{int(SINGLE_LAUNCH_DUAL_WG_PHASES)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM="
+            f"{SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM}"
         ),
         (
             "-DK_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT="

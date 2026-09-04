@@ -8552,3 +8552,35 @@ maximum rank latency of a full CUDA-Graph replay.
   register schedule; retain 624 CTAs / eight per SM.
 - **Artifact:**
   `bench/results/iter310_single_launch_bound10_tp4_m8_m128_cold_screen_20260904.log`.
+
+## Iteration 311 — five-CTA dual-WG residency does not recover throughput
+
+- **Hypothesis/change:** Added an opt-in
+  `V4_SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM={4,5}` knob, defaulting to the
+  historical four.  The experimental value five compiles the 256-thread,
+  two-math-warpgroup CTA with a five-block launch bound and launches 390
+  persistent CTAs.  This raises the requested math-WG residency from eight to
+  ten per SM while leaving route, W13/SwiGLU/FP8-requant, W2, combine and the
+  embedded two-shot TP collective unchanged.  The benchmark now records this
+  effective dual-WG residency explicitly.
+- **Protocol:** TP4 GPUs 0-3, M128 random routes, selected multi-kernel versus
+  dual-WG/five-CTA one-launch CUDA Graphs, two balanced batches x 10
+  individually cold-L2 samples and three warmups, rank-max timing.  Every
+  replay has an excluded 256 MiB L2 clear.  Inputs are caller-provided
+  FP8-E4M3 X/group-128 FP32 scales and MXFP4 weights; external X quantization
+  is absent from both graphs.
+- **Correctness/admission:** PASS.  The runtime occupancy assertion confirms
+  five resident CTAs/SM are admitted.  Candidate/control output metrics match:
+  cosine `0.9999955977`, relative L2 `0.0029672640`, finite on every rank, and
+  the embedded all-reduce oracle passes.
+- **Cold-L2 result:** multi/candidate medians are
+  `0.302608/0.375504 ms`; the candidate is `24.09%` slower.  Candidate batch
+  medians are stable at `0.375424/0.375504 ms`.  This is effectively the same
+  gap as the historical four-CTA dual-WG screen (Iteration 288: `24.33%`
+  slower), so the 25% increase in resident math WGs does not remove shared-
+  activation handshakes or the tighter-register schedule cost.
+- **Decision:** Reject five-CTA dual-WG as a performance direction and retain
+  the one-WG/128-thread, eight-CTA/SM default.  Keep the new knob default-off
+  only as an auditable specialization; do not spend an M8 or all-shape sweep.
+- **Artifact:**
+  `bench/results/iter311_dual_wg_bound5_tp4_m128_cold_screen_20260904.log`.

@@ -255,6 +255,9 @@ def main() -> None:
                     "single_launch_dual_wg_phases": (
                         kernel.SINGLE_LAUNCH_DUAL_WG_PHASES
                     ),
+                    "single_launch_dual_wg_ctas_per_sm": (
+                        kernel.SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM
+                    ),
                     "single_launch_dual_wg_private_act": (
                         kernel.SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT
                     ),
