@@ -8736,3 +8736,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - CALL audit: the candidate main function contains three total CALL instructions (`0x24e0`, `0x2b90`, `0x2fd0`), with the latter two sharing a target. This first command did not count/default-resolve existing communication helper calls, so it does not yet prove which one is W13; a symbol/call-target audit is required before timing.
 - Decision: pass the resource-pressure portion of the gate. No register, stack, local-memory, or static-shared regression; total code size decreased. Resolve the one-added-call invariant, then run cold-L2 timing if satisfied.
 - Artifact: `bench/results/iter326_w13_phase_noinline_cubin_resource_gate_20260904.log`.
+
+## Iteration 327 — W13 phase-level noinline callsite audit (2026-09-04)
+
+- Test: compared selected M128 split-K2 main-kernel SASS CALL instructions and resolved candidate ELF function symbols/addresses.
+- Default main kernel has two existing CALL instructions, both targeting `0x10e90`.
+- Candidate main kernel has three CALL instructions. The one added site is at main SASS `0x24e0` and targets `0xb280`; ELF resolves `0xb280` to the scoped `single_launch_w13_gemm_phase<2>` clone, size `0x5ce0`. The other two CALLs both target `0x10f60`, matching the default's two-call structure after layout relocation.
+- The ELF metadata reports a `0x20`-byte frame for outlined W13 helper clones. Iteration 326 already showed no callee `LDL/STL` and no change to the main kernel's stack/local-op counts.
+- Decision: one-added-call invariant is satisfied: one W13 phase call per CTA, not one call per task. Proceed to a short paired cold-L2 performance screen.
+- Artifact: `bench/results/iter327_w13_phase_noinline_callsite_audit_20260904.log`.
