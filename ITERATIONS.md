@@ -6788,3 +6788,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Analysis: M8 remains mixed/noise-sized. Against Iteration 228's source-profile phases, M128 W13/W2 fall by 9.824/5.920 us and the four-phase sum falls by about 14.0 us. This is directionally consistent with eliminating repeated acquire-triggered cache invalidation, but one local launch is not a performance verdict.
 - Decision: retain opt-in for a same-process distributed TP4 cold-L2 M8/M128 screen. If selected, collect focused NCU counters to confirm the `CCTL.IVALL`/long-scoreboard reduction and run a long replay liveness test.
 - Artifact: `bench/results/iter234_relaxed_grid_poll_m8_m128_compute_smoke_20260904.log`.
+## Iteration 235 — relaxed grid polling gives a small distributed M128 gain
+
+- Configuration/protocol: unchanged Iteration 234 candidate, TP4 GPUs 0-3, random M={8,128}, same-process CUDA Graph control/candidate, two outer batches x forty separately cold-L2 replays and six warmups. Rank-max timing; caller-provided FP8 X/group-128 scale; persistent/cooperative experiments disabled.
+- Correctness: PASS at both sizes. Candidate cosine is 0.999995792/0.999995598, rel-L2 0.00290117/0.00296726, finite and all-reduce OK.
+- M8: control/candidate median `0.071376/0.077360 ms`, control-over-candidate `0.92265x`; candidate min/median/max `0.076320/0.077360/0.102784 ms`; phases `2.272/40.576/3.360/21.728 us`.
+- M128: candidate median `0.364976 ms` (min/max `0.362656/0.375360`) with phases `4.576/217.472/6.944/113.280 us`. Its two batch medians are stable at `0.364816/0.365808 ms`. The control batches drift from `0.306208` to `0.313888 ms`, so the printed pooled `0.312128 ms` and 16.93% overhead are not a clean paired denominator.
+- Analysis: M8 remains effectively unchanged/slightly slower. The stable M128 candidate is about 6.05 us (1.63%) faster than Iteration 224's 0.371024 ms and 6.70 us faster than Iteration 232's persistent-state result; the gain is useful but far smaller than the remaining gap. The contaminated M128 control batch forbids a fresh relative-speedup claim from this run.
+- Decision: keep relaxed polling opt-in and validate all M in a clean window; before default selection, collect focused NCU proof and a long CUDA-Graph replay liveness test. Do not claim the 10% target.
+- Artifact: `bench/results/iter235_relaxed_grid_poll_tp4_m8_m128_cold_screen_20260904.log`.
