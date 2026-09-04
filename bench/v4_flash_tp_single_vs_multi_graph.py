@@ -243,6 +243,9 @@ def main() -> None:
                     "single_launch_dual_wg_phases": (
                         kernel.SINGLE_LAUNCH_DUAL_WG_PHASES
                     ),
+                    "single_launch_dual_wg_private_act": (
+                        kernel.SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT
+                    ),
                     "single_launch_w2_unroll2_bound9": (
                         kernel.SINGLE_LAUNCH_W2_UNROLL2_BOUND9
                     ),

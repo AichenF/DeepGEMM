@@ -8155,3 +8155,33 @@ maximum rank latency of a full CUDA-Graph replay.
   selected path remains one 128-thread math WG per CTA.
 - **Artifact:**
   `bench/results/iter288_dual_wg_phases_m128_smoke_20260904.log`.
+
+## Iteration 289 — private dual-WG activation stages regress further
+
+- **Change:** Added opt-in
+  `V4_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT=1` on top of the 256-thread
+  dual-WG phase prototype.  Each math warpgroup owns its own 8x128 FP8
+  activation tile and scale row, duplicates the global activation loads, and
+  uses a private 128-thread named barrier.  This removes the cross-WG empty
+  mbarrier handshake while preserving the current split-K task geometry,
+  312-CTA resident grid, internal requant, and embedded collective.
+- **Protocol:** TP4 GPUs 0-3, random M128, two balanced batches x 10
+  independently cold-L2 CUDA-Graph replays per arm, three warmups, rank-max,
+  excluded 256 MiB clears, and device phase stamps.  The public input remains
+  prequantized FP8 E4M3 X with FP32 group-128 scales and MXFP4 weights; the
+  external input quantizer is outside both timed graphs.
+- **Correctness:** PASS exactly against the selected multi-kernel path at the
+  final tensor; output is finite and the embedded P2P two-shot all-reduce
+  oracle passes.
+- **Cold-L2 result:** Multi/candidate medians are
+  `0.303968/0.392032 ms`; candidate is `28.97%` slower.  Candidate phases are
+  route/W13/requant/W2 = `4.128/233.344/5.824/126.528 us`.
+- **Interpretation:** Removing the explicit WG-to-WG handshake does not repair
+  dual-WG throughput.  Duplicated activation traffic and independent named
+  barriers make W13 about `10.2 us` and W2 about `4.8 us` slower than the
+  shared-stage dual-WG result from Iteration 288, while the grid population is
+  unchanged.
+- **Decision:** Reject and keep disabled.  Do not expand this topology to the
+  other M values; selected code remains the one-WG/CTA implementation.
+- **Artifact:**
+  `bench/results/iter289_dual_wg_private_activation_m128_smoke_20260904.log`.

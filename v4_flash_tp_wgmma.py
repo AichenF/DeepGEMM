@@ -163,6 +163,14 @@ SINGLE_LAUNCH_CLUSTER_W13_ACT = (
 SINGLE_LAUNCH_DUAL_WG_PHASES = (
     os.environ.get("V4_SINGLE_LAUNCH_DUAL_WG_PHASES", "0") == "1"
 )
+SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT = (
+    os.environ.get("V4_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT", "0") == "1"
+)
+if SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT and not SINGLE_LAUNCH_DUAL_WG_PHASES:
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT requires "
+        "V4_SINGLE_LAUNCH_DUAL_WG_PHASES=1"
+    )
 W2_NEEDS_ROUTE_MAP = (
     W2_SORTED_ACT or W2_MBLOCK_SCALE or SINGLE_LAUNCH_TAIL_OVERLAP
 )
@@ -710,6 +718,8 @@ static constexpr bool kSingleLaunchClusterW13Act =
     K_SINGLE_LAUNCH_CLUSTER_W13_ACT;
 static constexpr bool kSingleLaunchDualWgPhases =
     K_SINGLE_LAUNCH_DUAL_WG_PHASES;
+static constexpr bool kSingleLaunchDualWgPrivateAct =
+    K_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT;
 static constexpr bool kSingleLaunchP2pTwoShot =
     K_SINGLE_LAUNCH_P2P_TWO_SHOT;
 static constexpr int kSingleLaunchP2pTwoShotBlocks =
@@ -1046,6 +1056,9 @@ __device__ __forceinline__ void route_gemm_task(
     constexpr int kOutputGroupBase =
         kHalfWgmma ? WgmmaHalf : 0;
     constexpr int kMathWGs = DualWgW13 ? 2 : 1;
+    constexpr bool kPrivateDualActivation =
+        DualWgW13 && kSingleLaunchDualWgPrivateAct;
+    constexpr int kActivationCopies = kPrivateDualActivation ? 2 : 1;
     constexpr int kMetadataSlots = PersistentState ? 2 : 1;
     static_assert(!PersistentState || !DualWgW13,
                   "persistent task state supports one WGMMA warpgroup");
@@ -1095,12 +1108,12 @@ __device__ __forceinline__ void route_gemm_task(
         weight_smem + (kInterleavedScale
             ? kWeightStageBytes
             : kStages * kWeightStageBytes);
-    uint8_t* activation_smem =
-        kInterleavedScale
-        ? dynamic_smem + kMathWGs * kWeightWGBytes
-        : dynamic_smem + kMathWGs * kWeightWGBytes;
+    uint8_t* activation_smem_base =
+        dynamic_smem + kMathWGs * kWeightWGBytes;
+    uint8_t* activation_smem = activation_smem_base
+        + (kPrivateDualActivation ? math_wg * kTok * kBlockK : 0);
     __nv_bfloat16* w2_output_smem = reinterpret_cast<__nv_bfloat16*>(
-        activation_smem + kTok * kBlockK);
+        activation_smem_base + kActivationCopies * kTok * kBlockK);
     const uint32_t weight_smem_addr =
         static_cast<uint32_t>(__cvta_generic_to_shared(weight_smem));
     const uint32_t weight_scale_smem_addr =
@@ -1117,7 +1130,9 @@ __device__ __forceinline__ void route_gemm_task(
         (kNormalizedWeightScale && kNormalizedSharedLut) ? 13 :
         (kNormalizedWeightScale || kDequantSynthLut
          || (!IsW13 && kW2GlobalLut)) ? 1 : kLutRows];
-    __shared__ float activation_scale_smem[kTok];
+    __shared__ float activation_scale_storage[kActivationCopies][kTok];
+    float* activation_scale_smem = activation_scale_storage[
+        kPrivateDualActivation ? math_wg : 0];
     __shared__ float expert_weight_scale[kMetadataSlots];
     __shared__ int32_t route_ids[kMetadataSlots][kTok];
     __shared__ int32_t activation_rows[kMetadataSlots][kTok];
@@ -1189,7 +1204,7 @@ __device__ __forceinline__ void route_gemm_task(
     const uint32_t activation_empty_barrier_addr = static_cast<uint32_t>(
         __cvta_generic_to_shared(&activation_empty_barrier));
     if (!PersistentState || task_sequence == 0) {
-        if constexpr (DualWgW13) {
+        if constexpr (DualWgW13 && !kPrivateDualActivation) {
             if (tid == 0)
                 mbar_init(activation_empty_barrier_addr);
         }
@@ -1468,7 +1483,7 @@ __device__ __forceinline__ void route_gemm_task(
         const int scale_k_base =
             kCompactInterleavedScale ? 0 : (global_kt & 3) * 4;
 
-        if constexpr (DualWgW13) {
+        if constexpr (DualWgW13 && !kPrivateDualActivation) {
             if (local_kt > 0 && math_wg == 0) {
                 if (mtid == 0) {
                     mbar_wait(
@@ -1483,7 +1498,7 @@ __device__ __forceinline__ void route_gemm_task(
         }
 
         // One uint2 per thread covers the complete 8x128 activation tile.
-        if (!DualWgW13 || math_wg == 0) {
+        if (!DualWgW13 || kPrivateDualActivation || math_wg == 0) {
             const int token_slot = mtid / 16;
             const int k8 = (mtid % 16) * 8;
             uint2 value = make_uint2(0, 0);
@@ -1507,7 +1522,7 @@ __device__ __forceinline__ void route_gemm_task(
         }
 
         int scale_slot = -1;
-        if (!DualWgW13 || math_wg == 0) {
+        if (!DualWgW13 || kPrivateDualActivation || math_wg == 0) {
             if constexpr (kDistributedPrep) {
                 const int warp_lane = mtid & 31;
                 if (warp_lane < 2)
@@ -1599,7 +1614,14 @@ __device__ __forceinline__ void route_gemm_task(
                 }
             }
         }
-        asm volatile("bar.sync 0;" ::: "memory");
+        if constexpr (kPrivateDualActivation) {
+            if (math_wg == 0)
+                asm volatile("bar.sync 1,128;" ::: "memory");
+            else
+                asm volatile("bar.sync 2,128;" ::: "memory");
+        } else {
+            asm volatile("bar.sync 0;" ::: "memory");
+        }
 
         float tile[kActiveWgmmaGroups][4] = {};
         uint32_t next_packed0[kActiveWgmmaGroups];
@@ -1843,7 +1865,7 @@ __device__ __forceinline__ void route_gemm_task(
             }
             ptx::warpgroup_wait<0>();
         }
-        if constexpr (DualWgW13) {
+        if constexpr (DualWgW13 && !kPrivateDualActivation) {
             if (math_wg == 1 && mtid == 0)
                 mbar_arrive(activation_empty_barrier_addr);
         }
@@ -6262,7 +6284,8 @@ void launch_tp4_megamoe_single(
         int requested_ctas_per_sm, bool enable_tp_collective) {
     constexpr int kPhaseThreads = SingleLaunchThreads<Tokens>::value;
     constexpr int kDualRouteTaskDynamicBytes =
-        2 * kStages * kWout * ((kBlockK / 2) + 4) + kTok * kBlockK;
+        2 * kStages * kWout * ((kBlockK / 2) + 4)
+        + (kSingleLaunchDualWgPrivateAct ? 2 : 1) * kTok * kBlockK;
     constexpr int dynamic_smem_bytes =
         (kSingleLaunchDualWgPhases
             ? kDualRouteTaskDynamicBytes : kRouteTaskDynamicBytes)
@@ -7334,6 +7357,7 @@ _EXTENSION_CONFIG = (
           f"sln64{int(SINGLE_LAUNCH_W13_N64_TAIL)}_"
           f"slcl{int(SINGLE_LAUNCH_CLUSTER_W13_ACT)}_"
           f"sldwg{int(SINGLE_LAUNCH_DUAL_WG_PHASES)}_"
+          f"sldwgpa{int(SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"slp2p2{int(SINGLE_LAUNCH_P2P_TWO_SHOT)}_"
@@ -7487,6 +7511,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_DUAL_WG_PHASES="
             f"{int(SINGLE_LAUNCH_DUAL_WG_PHASES)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT="
+            f"{int(SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT)}"
         ),
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",
