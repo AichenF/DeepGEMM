@@ -6001,3 +6001,34 @@ maximum rank latency of a full CUDA-Graph replay.
   scheduling with a much coarser/static wavefront or fuse W13 epilogue
   requantization directly, keeping the known-good barrier path selectable.
 - **Evidence:** `results/iter162_tp4_interleaved_dag_m8_smoke_20260904.log`.
+
+## Iteration 163 — replace all-lane task fences with CTA release publication
+
+- **Change under test:** remove 128 per-lane `__threadfence()` operations from
+  each completed W13 claim and activation mblock.  After a CTA barrier, lane 0
+  now increments W13 readiness with a GPU-scope release atomic or publishes
+  the activation queue with a GPU-scope release store.  The all-lane fence is
+  retained only in the compute-to-communication grid barrier.
+- **Protocol:** TP4 physical GPUs 4-7, random M8 routes, five requested
+  CTAs/SM, same-process paired CUDA Graphs, two outer batches x ten replays,
+  four cold warmups, rank-max timing.  Every sample has an excluded 256 MiB
+  Triton L2 clear immediately before graph replay.
+- **Correctness:** PASS for both paths on every rank.  Candidate minimum
+  cosine is `0.9999956066`, maximum relative L2 `0.0029643002`, output is
+  finite, and candidate/control both report 344 padded rows / 43 active
+  experts.  The CTA-release publication is therefore sufficient for the
+  tested DAG dependencies.
+- **Cold-L2 timing:** control median `0.071696 ms` (min/max
+  `0.071040/0.207104`; one control outlier), candidate median `0.578048 ms`
+  (min/max `0.575072/0.586592`).  Control/candidate is `0.12403x`; candidate
+  is `8.0625x` slower than control and statistically unchanged/slightly worse
+  than iteration 162's `0.570512 ms` four-sample median.
+- **Analysis:** the redundant fences were not the dominant 0.5 ms cost.  The
+  fine-grained global task dispatcher and the much larger fused control flow
+  remain prime suspects; iteration 162's cubin already showed 115 registers
+  per thread versus 85 for the barrier implementation, reducing actual
+  residency from five to four CTAs/SM.
+- **Decision:** do not continue micro-tuning this queue.  Profile/inspect one
+  replay, then move to a static coarse wavefront and/or direct W13 epilogue
+  fusion that avoids per-tile atomics and shrinks live state.
+- **Evidence:** `results/iter163_tp4_interleaved_release_m8_screen_20260904.log`.

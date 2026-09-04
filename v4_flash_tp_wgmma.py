@@ -2495,6 +2495,17 @@ __device__ __forceinline__ void store_release_gpu_i32(
         : : "l"(pointer), "r"(static_cast<uint32_t>(value)) : "memory");
 }
 
+__device__ __forceinline__ int32_t atomic_add_release_gpu_i32(
+        int32_t* pointer, int32_t value) {
+    uint32_t old;
+    asm volatile(
+        "atom.release.gpu.global.add.u32 %0,[%1],%2;"
+        : "=r"(old)
+        : "l"(pointer), "r"(static_cast<uint32_t>(value))
+        : "memory");
+    return static_cast<int32_t>(old);
+}
+
 // Scheduler-only correctness probe for the TP-local interleaved design.
 // One lane per persistent CTA claims dynamically bounded W13 tasks.  The last
 // W13 tile for an M block publishes that block into a ready queue; W2 tasks
@@ -3381,13 +3392,13 @@ __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
                     __syncthreads();
                 }
 
-                // Every output lane publishes its partials before lane 0
-                // increments this mblock's completion count.
-                __threadfence();
-                __syncthreads();
+                // The final CTA barrier after the paired GEMM calls strongly
+                // happens-before lane 0's GPU-scope release atomic.  One
+                // release therefore publishes every lane's ordinary global
+                // partial store without 128 redundant device-wide fences.
                 if (threadIdx.x == 0) {
-                    const int done =
-                        atomicAdd(w13_done + scheduled_mblock, 1) + 1;
+                    const int done = atomic_add_release_gpu_i32(
+                        w13_done + scheduled_mblock, 1) + 1;
                     atomicAdd(scheduler + kSchedulerDoneW13, 1);
                     if (done == kW13GroupsPerMblock) {
                         const int queue_slot = atomicAdd(
@@ -3418,7 +3429,8 @@ __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
                     }
                 }
 
-                __threadfence();
+                // Publish all quantized values/scales with one CTA release,
+                // mirroring the W13 readiness protocol above.
                 __syncthreads();
                 if (threadIdx.x == 0) {
                     atomicAdd(scheduler + kSchedulerDoneActivation, 1);
@@ -5215,9 +5227,9 @@ _EXTENSION_CONFIG = (
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
           f"sidag{int(SINGLE_LAUNCH_INTERLEAVED)}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v161dag")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v163rel")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v161dag"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v163rel"
 )
 
 _ext = load_inline(
