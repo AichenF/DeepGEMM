@@ -8649,3 +8649,20 @@ maximum rank latency of a full CUDA-Graph replay.
 - Outcome: no benchmark samples were collected. The harness rejected `--outer 3` before CUDA Graph timing because batch pairing requires an even outer count; both on and off invocations exited with code 2.
 - Artifact: `bench/results/iter317_w2_prefetch_on_off_tp4_cold_screen_20260904.log`.
 - Decision: invalid/non-evidence. Repeat with an even outer count; do not use this iteration in any performance conclusion.
+
+## Iteration 318 — Cold TP4 on/off rejects W2 cross-task prefetch
+
+- Configuration: adjacent separate-process W2-prefetch on/off runs; TP4 GPUs 0–3; random routing; CUDA Graph; 4 outer batches × 20 individually cold replays per implementation and shape. Each replay was preceded by an excluded 256 MiB L2 clear. Both runs use prequantized FP8-E4M3 X + FP32 group-128 scales; external input quantization is excluded.
+- Correctness: candidate and selected multi-kernel control passed final-output/allreduce checks for M=8 and M=128 in both runs.
+- Prefetch on, median of 80 cold samples at max rank:
+  - M=8: multi `0.071056 ms`, candidate `0.077136 ms`, candidate/control `1.085566`.
+  - M=128: multi `0.306560 ms`, candidate `0.358816 ms`, candidate/control `1.170459`.
+- Prefetch off, median of 80 cold samples at max rank:
+  - M=8: multi `0.071392 ms`, candidate `0.076112 ms`, candidate/control `1.066114`.
+  - M=128: multi `0.306720 ms`, candidate `0.356384 ms`, candidate/control `1.161920`.
+- Same-run-baseline normalized effect of prefetch on versus off:
+  - M=8: `+1.82%` latency regression.
+  - M=128: `+0.73%` latency regression.
+  - Two-shape geometric-mean candidate/control ratio: on `1.127214`, off `1.112986`; `+1.28%` regression.
+- Artifact: `bench/results/iter318_w2_prefetch_on_off_tp4_cold_screen_20260904.log`.
+- Decision: reject W2 cross-task TMA prefetch. It is slower at both endpoints and also adds 16 bytes/thread of stack plus one scalar spill/reload pair. Leave the experiment opt-in and disabled by default.
