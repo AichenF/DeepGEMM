@@ -671,7 +671,10 @@
         comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
                              kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
             workspace, sym_buffer, sm_idx, thread_idx,
-            [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
+            // Warp 0 performs serialized cleanup while warp 1 can arrive here first.
+            // The grid-sync leader also diverges while polling, so use the
+            // divergence-safe barrier form for both scope synchronizations.
+            [=]() { ptx::sync_unaligned(kNumDispatchThreads, kDispatchBarrierIdx); },
             true, false);
     } else if (warp_idx == kNumDispatchWarps) {
         // =====================================================================

@@ -6446,3 +6446,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Test: one H20 GPU, M=8 local-only body, CUDA_LAUNCH_BLOCKING=1.
 - Result: **still failed with `cudaErrorIllegalInstruction`**; evidence is `bench/results/iter190_native_warp0_cleanup_m8_20260904.log`.
 - Decision: the error has likely moved. Preserve the single-warp cleanup (it removes the proven multi-iteration hazard) and collect a new sanitizer PC before deciding whether this repair is sufficient.
+
+## Iteration 191/192 — final cleanup grid-barrier diagnosis and first validation attempt
+
+- Diagnosis: a fresh compute-sanitizer run after Iteration 190 moved the illegal-instruction PC away from `cleanup_workspace` to the final post-cleanup grid synchronization: `ptx::sync_aligned(64, barrier 0)` at `v4_flash_tp_native_body.inl:674`, reached through `comm::grid_sync<78,0>` inside `comm::nvlink_barrier<1,...>`. Thread 32 in block 36 is the first reported offender; 2,498 reports were emitted. Evidence: `bench/results/iter191_native_warp0_cleanup_compute_sanitizer_20260904.log`.
+- Change: replace only that final callback with `ptx::sync_unaligned(64, barrier 0)`. Warp 0 performs serialized workspace cleanup while warp 1 can reach the barrier first, and grid-sync lane 0 separately polls the grid counter; `barrier.sync` supports these divergent arrivals while preserving the same 64-thread participant count and barrier slot.
+- Test: attempted the one-GPU M8 local-body smoke with `CUDA_LAUNCH_BLOCKING=1` in the weekly container.
+- Result: **infrastructure FAIL before extension import, compilation, CUDA initialization, or kernel execution**. Invoking the script by `bench/...py` without `PYTHONPATH=.` made Python search the bench directory only, raising `ModuleNotFoundError: v4_flash_tp_native_megamoe`.
+- Decision: no correctness or barrier conclusion can be drawn. Commit the exact failed attempt, then rerun the unchanged source with `PYTHONPATH=.`.
+- Evidence: `bench/results/iter192_native_unaligned_final_cleanup_sync_m8_20260904.log`.
