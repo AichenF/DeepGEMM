@@ -247,6 +247,9 @@ SINGLE_LAUNCH_MIN_BLOCKS = int(
 )
 if SINGLE_LAUNCH_MIN_BLOCKS not in (4, 5, 6, 7, 8, 9):
     raise ValueError("V4_SINGLE_LAUNCH_MIN_BLOCKS must be in [4,9]")
+SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM = (
+    os.environ.get("V4_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM", "0") == "1"
+)
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "8")
 )
@@ -441,6 +444,8 @@ static constexpr bool kSingleLaunchInterleaved =
     kSingleLaunchSchedule != 0;
 static constexpr bool kSingleLaunchNoInlineGemm =
     K_SINGLE_LAUNCH_NOINLINE_GEMM;
+static constexpr bool kSingleLaunchRouteDynamicSmem =
+    K_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM;
 static constexpr int kSingleLaunchNvlsBlocks =
     K_SINGLE_LAUNCH_NVLS_BLOCKS;
 static constexpr int kSingleLaunchGroupCtas =
@@ -2518,10 +2523,28 @@ __device__ __forceinline__ void single_launch_route_task(
     constexpr int kExperts = 256;
     constexpr int kExpertsPerThread = 2;
     using ExpertScan = cub::BlockScan<int, 128>;
-    __shared__ int counts[kExperts];
-    __shared__ int cursors[kExperts];
-    __shared__ int total_padded;
-    __shared__ typename ExpertScan::TempStorage scan_storage;
+    #if K_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM
+    extern __shared__ __align__(1024) uint8_t dynamic_smem[];
+    int* counts = reinterpret_cast<int*>(dynamic_smem);
+    int* cursors = counts + kExperts;
+    int* total_padded = cursors + kExperts;
+    constexpr int kScanAlignment =
+        alignof(typename ExpertScan::TempStorage);
+    const uintptr_t scan_address =
+        (reinterpret_cast<uintptr_t>(total_padded + 1)
+         + kScanAlignment - 1) & ~(kScanAlignment - 1);
+    auto* scan_storage = reinterpret_cast<
+        typename ExpertScan::TempStorage*>(scan_address);
+    #else
+    __shared__ int counts_storage[kExperts];
+    __shared__ int cursors_storage[kExperts];
+    __shared__ int total_padded_storage;
+    __shared__ typename ExpertScan::TempStorage scan_storage_storage;
+    int* counts = counts_storage;
+    int* cursors = cursors_storage;
+    int* total_padded = &total_padded_storage;
+    auto* scan_storage = &scan_storage_storage;
+    #endif
 
     const int tid = threadIdx.x;
     const int routes = tokens * kTopK;
@@ -2545,12 +2568,12 @@ __device__ __forceinline__ void single_launch_route_task(
         };
         int offsets[kExpertsPerThread];
         int block_aggregate;
-        ExpertScan(scan_storage).ExclusiveSum(
+        ExpertScan(*scan_storage).ExclusiveSum(
             padded_counts, offsets, block_aggregate);
         cursors[expert0] = offsets[0];
         cursors[expert1] = offsets[1];
         if (tid == 0) {
-            total_padded = block_aggregate;
+            *total_padded = block_aggregate;
             *num_tokens_padded = block_aggregate;
         }
         for (int position = offsets[0];
@@ -2561,7 +2584,7 @@ __device__ __forceinline__ void single_launch_route_task(
             expert_ids[position >> 3] = expert1;
         __syncthreads();
 
-        for (int position = tid; position < total_padded; position += 128)
+        for (int position = tid; position < *total_padded; position += 128)
             sorted_ids[position] = routes;
         __syncthreads();
 
@@ -5628,6 +5651,7 @@ _EXTENSION_CONFIG = (
           f"slsch{SINGLE_LAUNCH_SCHEDULE}_"
           f"slnig{int(SINGLE_LAUNCH_NOINLINE_GEMM)}_"
           f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
+          f"sldr{int(SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
@@ -5710,6 +5734,10 @@ _ext = load_inline(
             f"{int(SINGLE_LAUNCH_NOINLINE_GEMM)}"
         ),
         f"-DK_SINGLE_LAUNCH_MIN_BLOCKS={SINGLE_LAUNCH_MIN_BLOCKS}",
+        (
+            "-DK_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM="
+            f"{int(SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM)}"
+        ),
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",

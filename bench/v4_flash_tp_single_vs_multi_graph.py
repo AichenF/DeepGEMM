@@ -189,6 +189,9 @@ def main() -> None:
                     "single_launch_min_blocks": (
                         kernel.SINGLE_LAUNCH_MIN_BLOCKS
                     ),
+                    "single_launch_route_dynamic_smem": (
+                        kernel.SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM
+                    ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
                     ),
@@ -455,6 +458,22 @@ def main() -> None:
         control_median = statistics.median(control_samples)
         candidate_median = statistics.median(candidate_samples)
         phase_us: dict[str, float] = {}
+        if not use_native:
+            phase_stamps = candidate_case.single_launch_barrier_state[
+                8:18
+            ].view(torch.int64)
+            phase_durations_ns = phase_stamps[1:] - phase_stamps[:-1]
+            dist.all_reduce(
+                phase_durations_ns, op=dist.ReduceOp.MAX, group=nccl_group
+            )
+            phase_us = {
+                name: float(value) / 1000.0
+                for name, value in zip(
+                    ("route", "w13", "activation_requant", "w2"),
+                    phase_durations_ns.cpu().tolist(),
+                    strict=True,
+                )
+            }
         record: dict[str, Any] = {
             "m": m,
             "active_experts": candidate_case.active_experts,

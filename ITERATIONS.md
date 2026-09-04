@@ -6736,3 +6736,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Communication: candidate multicast push for M<=64 and NVLS pull for M128; control multicast push for M<=32 and stock CARv2 for M>=64.
 - Verdict: semantically valid but not a performance win. Keep this TP-specialized path as the performance mainline and profile its fused-stage overhead next; the native scheduler remains a correctness/reference implementation.
 - Artifact: `bench/results/iter224_tp_specialized_single_launch_allm_cold_screen_20260904.log`.
+## Iteration 229 — reuse route shared memory for residency
+
+- Hypothesis/change: alias route counts, cursors, and scan scratch onto the later GEMM dynamic shared allocation so H20 can admit 9 x 128-thread CTAs/SM. Added opt-in `V4_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM=1`, restored TP-candidate phase timestamps, and tested with min-blocks/CTAs-per-SM 9; defaults remain unchanged.
+- Protocol: prequantized FP8 E4M3 X plus group-128 scale and MXFP4 weights/scales; external X quant excluded. M128 compute-only smoke, then TP4 CUDA-Graph cold-L2 paired control versus single-launch on GPUs 0-3 for M={8,128}, 2 x 20 iterations.
+- Correctness: compute-only M128 matched the independent multi-kernel local reference bitwise (cosine 1, rel-L2 0). Distributed M8/M128 passed with candidate cosine 0.999995792/0.999995598 and rel-L2 0.00290117/0.00296726.
+- Results: compute-only M128 route/W13/act/W2 = 4.928/210.592/6.624/113.120 us versus Iteration 228 bound-8 4.224/220.672/6.400/115.680 us. TP4 M8 control/candidate median = 0.071200/0.080192 ms (candidate 12.63% slower); M128 = 0.305776/0.367936 ms (candidate 20.33% slower). Candidate phase times were 2.464/43.648/2.944/22.496 us and 4.704/213.568/6.592/113.024 us, respectively.
+- Analysis/decision: the ninth CTA improves M128 by only 3.088 us (0.83%) relative to Iteration 224, mainly in W13, but hurts M8 by about 3.1 us due to the tighter register cap. Keep dynamic route shared memory opt-in, reject a global 9-CTA default, and next attack fused-schedule/barrier overhead.
+- Artifacts: `bench/results/iter229_route_dynamic_smem_bound9_m128_compute_smoke_20260904.log`, `bench/results/iter229_route_dynamic_smem_bound9_tp4_m8_m128_cold_screen_20260904.log`.
