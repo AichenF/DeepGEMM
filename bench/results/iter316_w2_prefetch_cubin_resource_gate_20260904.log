@@ -1,0 +1,20 @@
+W2_PREFETCH_CANDIDATE=/tmp/torch_ext_v4_tp/v4tp_2f579f70f5dba043616a_v178mspec/v4tp_2f579f70f5dba043616a_v178mspec.so
+ Function _Z32tp4_megamoe_single_launch_kernelILi2ELi128EEv14CUtensorMap_stS0_S0_S0_PKhS2_PKfS2_S2_S4_S2_S4_PKiS4_PiS7_S7_PfP13__nv_bfloat16PhS8_SA_PK5uint2S7_S7_SA_PjSB_SB_SB_SB_SB_SA_S2_SB_SB_iilb:
+  REG:64 STACK:48 SHARED:4096 LOCAL:0 CONSTANT[0]:1425 TEXTURE:0 SURFACE:0 SAMPLER:0
+        /*9100*/                   STL [R1+0x20], R9 ;                                                  /* 0x0000200901007387 */
+        /*e510*/                   LDL R16, [R1+0x20] ;                                                 /* 0x0000200001107983 */
+        /*f6a0*/                   STL.128 [R1], R4 ;                                                   /* 0x0000000401007387 */
+        /*f6c0*/                   STL.128 [R1+0x10], R8 ;                                              /* 0x0000100801007387 */
+        /*f6d0*/                   LDL.64 R2, [R16] ;                                                   /* 0x0000000010027983 */
+        /*f750*/                   LDL.64 R4, [R60] ;                                                   /* 0x000000003c047983 */
+        /*10ea0*/                   LDL.64 R2, [R60] ;                                                  /* 0x000000003c027983 */
+W2_PREFETCH_SELECTED_LOCAL_OPS=7
+DEFAULT_CONTROL=/tmp/torch_ext_v4_tp/v4tp_03ee575dffbde755b3a2_v178mspec/v4tp_03ee575dffbde755b3a2_v178mspec.so
+ Function _Z32tp4_megamoe_single_launch_kernelILi2ELi128EEv14CUtensorMap_stS0_S0_S0_PKhS2_PKfS2_S2_S4_S2_S4_PKiS4_PiS7_S7_PfP13__nv_bfloat16PhS8_SA_PK5uint2S7_S7_SA_PjSB_SB_SB_SB_SB_SA_S2_SB_SB_iilb:
+  REG:64 STACK:32 SHARED:4096 LOCAL:0 CONSTANT[0]:1425 TEXTURE:0 SURFACE:0 SAMPLER:0
+        /*ef20*/                   STL.128 [R1], R8 ;                                                   /* 0x0000000801007387 */
+        /*ef40*/                   STL.128 [R1+0x10], R12 ;                                             /* 0x0000100c01007387 */
+        /*ef50*/                   LDL.64 R6, [R17] ;                                                   /* 0x0000000011067983 */
+        /*efc0*/                   LDL.64 R8, [R46] ;                                                   /* 0x000000002e087983 */
+        /*106e0*/                   LDL.64 R6, [R46] ;                                                  /* 0x000000002e067983 */
+DEFAULT_SELECTED_LOCAL_OPS=5

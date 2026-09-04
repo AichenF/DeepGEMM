@@ -8633,3 +8633,12 @@ maximum rank latency of a full CUDA-Graph replay.
   - M=128: accepted; cosine=1.0, relative L2=0.0, finite=true; packed-generation check passed.
 - Artifact: `bench/results/iter315_w2_next_task_prefetch_m8_m128_compute_correctness_20260904.log`.
 - Decision: correctness accepted. Before performance testing, inspect the generated cubin for a register/local-memory regression; the selected 8-CTA kernel has no register headroom.
+
+## Iteration 316 — W2 prefetch cubin resource gate
+
+- Compared the generated M=128/split-K=2 single-launch function for W2-prefetch-on against the adjacent default cubin.
+- W2 prefetch: `REG64 STACK48 SHARED4096 LOCAL0`; selected-function SASS contains 7 `LDL/STL` instructions.
+- Default: `REG64 STACK32 SHARED4096 LOCAL0`; selected-function SASS contains 5 `LDL/STL` instructions.
+- Delta: occupancy remains register-compatible with 8 CTAs/SM and ptxas reports no fixed local allocation, but the candidate grows the stack by 16 bytes/thread and adds one scalar `STL`/`LDL` pair. The other five local-stack instructions already exist in the default path.
+- Artifact: `bench/results/iter316_w2_prefetch_cubin_resource_gate_20260904.log`.
+- Decision: the strict no-added-stack-traffic gate is not met. Because the added pair appears once across the inlined phase rather than once per W2 K tile, permit only a short cold-L2 TP4 on/off screen; reject immediately unless normalized timing shows a clear benefit.
