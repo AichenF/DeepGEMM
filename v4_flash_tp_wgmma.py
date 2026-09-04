@@ -126,7 +126,11 @@ if COMPACT_INTERLEAVED_SCALE and not INTERLEAVED_BULK_COPY:
     )
 MODE2_BRAID = os.environ.get("V4_MODE2_BRAID", "1") == "1"
 FUSED_ACT_QUANT = os.environ.get("V4_FUSED_ACT_QUANT", "1") == "1"
+# The serving MegaMoE contract starts from prequantized FP8 X.  Keep the old
+# fused BF16 route+quant entry available for diagnostic scripts, but the
+# production graph uses a route-only device preparation kernel.
 FUSED_ROUTE_QUANT = os.environ.get("V4_FUSED_ROUTE_QUANT", "1") == "1"
+FUSED_ROUTE_ALIGN = os.environ.get("V4_FUSED_ROUTE_ALIGN", "1") == "1"
 W13_PAIRED_WG = os.environ.get("V4_W13_PAIRED_WG", "0") == "1"
 if COMPACT_INTERLEAVED_SCALE and W13_PAIRED_WG:
     raise ValueError(
@@ -147,7 +151,7 @@ if W2_COALESCED_STORE and (not W2_ROUTE_OUTPUT or WOUT != 128):
         "V4_W2_COALESCED_STORE=1 requires route output and V4_WOUT=128"
     )
 if W2_NEEDS_ROUTE_MAP and (
-    not FUSED_ROUTE_QUANT or not FUSED_ACT_QUANT or W13_PAIRED_WG
+    not FUSED_ROUTE_ALIGN or not FUSED_ACT_QUANT or W13_PAIRED_WG
 ):
     raise ValueError(
         "sorted W2 activation/scale layouts require fused route/activation "
@@ -216,6 +220,11 @@ FUSED_K6_NVLS_PULL_AR = (
     os.environ.get("V4_FUSED_K6_NVLS_PULL_AR", "0") == "1"
 )
 SINGLE_LAUNCH_TP4 = os.environ.get("V4_SINGLE_LAUNCH_TP4", "0") == "1"
+SINGLE_LAUNCH_CTAS_PER_SM = int(
+    os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "4")
+)
+if SINGLE_LAUNCH_CTAS_PER_SM not in (1, 2, 3, 4, 5, 6, 7, 8):
+    raise ValueError("V4_SINGLE_LAUNCH_CTAS_PER_SM must be in [1,8]")
 K6_NVLS_PULL_BLOCKS = int(os.environ.get("V4_K6_NVLS_PULL_BLOCKS", "16"))
 if K6_NVLS_PULL_BLOCKS not in (1, 2, 4, 8, 16, 32, 64):
     raise ValueError("V4_K6_NVLS_PULL_BLOCKS must be 1,2,4,8,16,32,64")
@@ -2249,10 +2258,65 @@ __global__ __launch_bounds__(128) void reduce_swiglu_quant_kernel(
         static_cast<int>(blockIdx.x));
 }
 
-// Fixed DeepSeek-V4-Flash TP preparation.  Route alignment and input
-// quantization are independent, so place them in one launch: CTA 0 performs
-// the E=256/top-k=6/block-M=8 alignment, while every 256-thread CTA quantizes
-// two H=4096 group-128 slices.
+// Route-only preparation for the serving ABI, where X and its group-128
+// scales are already FP8 inputs.  One CTA constructs the exact
+// E=256/top-k=6/block-M=8 layout consumed by both routed GEMMs.
+__global__ __launch_bounds__(256) void route_align_kernel(
+        const int32_t* __restrict__ topk_ids,
+        int32_t* __restrict__ sorted_ids,
+        int32_t* __restrict__ expert_ids,
+        int32_t* __restrict__ num_tokens_padded,
+        int32_t* __restrict__ route_to_sorted,
+        int routes) {
+    constexpr int kExperts = 256;
+    using ExpertScan = cub::BlockScan<int, 256>;
+    __shared__ int counts[kExperts];
+    __shared__ int cursors[kExperts];
+    __shared__ int total_padded;
+    __shared__ typename ExpertScan::TempStorage scan_storage;
+
+    const int tid = threadIdx.x;
+    counts[tid] = 0;
+    __syncthreads();
+
+    for (int route = tid; route < routes; route += blockDim.x) {
+        const int expert = __ldg(topk_ids + route);
+        if (static_cast<unsigned>(expert) < kExperts)
+            atomicAdd(counts + expert, 1);
+    }
+    __syncthreads();
+
+    const int padded_count = (counts[tid] + 7) & ~7;
+    int offset;
+    ExpertScan(scan_storage).ExclusiveSum(padded_count, offset);
+    cursors[tid] = offset;
+    if (tid == kExperts - 1) {
+        total_padded = offset + padded_count;
+        *num_tokens_padded = offset + padded_count;
+    }
+    __syncthreads();
+
+    const int end = offset + padded_count;
+    for (int position = offset; position < end; position += 8)
+        expert_ids[position >> 3] = tid;
+    for (int position = tid; position < total_padded;
+         position += blockDim.x)
+        sorted_ids[position] = routes;
+    __syncthreads();
+
+    for (int route = tid; route < routes; route += blockDim.x) {
+        const int expert = __ldg(topk_ids + route);
+        if (static_cast<unsigned>(expert) < kExperts) {
+            const int position = atomicAdd(cursors + expert, 1);
+            sorted_ids[position] = route;
+            if constexpr (kW2SortedAct || kW2MblockScale)
+                route_to_sorted[route] = position;
+        }
+    }
+}
+
+// Legacy diagnostic entry that combines route alignment and BF16 input
+// quantization.  It is intentionally not used by the serving benchmark.
 __global__ __launch_bounds__(256) void fused_route_quant_kernel(
         const int32_t* __restrict__ topk_ids,
         const __nv_bfloat16* __restrict__ input,
@@ -2347,27 +2411,21 @@ __global__ __launch_bounds__(256) void fused_route_quant_kernel(
         __nv_fp8_e4m3(value / group_scale[quant_subgroup]).__x;
 }
 
-// 128-thread preparation body for the resident single-launch kernel.  CTA 0
-// builds the exact E=256/block-M=8 route pool while all resident CTAs split
-// BF16 -> FP8 group-128 quantization.  The following grid barrier publishes
-// both products to the W13 phase.
-__device__ __forceinline__ void single_launch_route_quant_task(
+// 128-thread route preparation body for the resident single-launch kernel.
+// CTA 0 builds the exact E=256/block-M=8 route pool.  X and X scales are
+// caller-owned FP8 inputs, so the following grid barrier only publishes route
+// metadata to the W13 phase.
+__device__ __forceinline__ void single_launch_route_task(
         const int32_t* __restrict__ topk_ids,
-        const __nv_bfloat16* __restrict__ input,
         int32_t* __restrict__ sorted_ids,
         int32_t* __restrict__ expert_ids,
         int32_t* __restrict__ num_tokens_padded,
-        uint8_t* __restrict__ quantized,
-        float* __restrict__ scale,
         int32_t* __restrict__ route_to_sorted,
-        int tokens, int linear_block_idx, int linear_grid_dim) {
+        int tokens, int linear_block_idx) {
     constexpr int kExperts = 256;
-    constexpr int kGroup = 128;
     __shared__ int counts[kExperts];
     __shared__ int cursors[kExperts];
     __shared__ int total_padded;
-    __shared__ float warp_max[4];
-    __shared__ float group_scale;
 
     const int tid = threadIdx.x;
     const int routes = tokens * kTopK;
@@ -2411,39 +2469,6 @@ __device__ __forceinline__ void single_launch_route_quant_task(
                     route_to_sorted[route] = position;
             }
         }
-        __syncthreads();
-    }
-
-    const int quant_groups = tokens * (4096 / kGroup);
-    for (int group = linear_block_idx; group < quant_groups;
-         group += linear_grid_dim) {
-        const float value = __bfloat162float(
-            input[static_cast<int64_t>(group) * kGroup + tid]);
-        float absmax = fabsf(value);
-        #pragma unroll
-        for (int delta = 16; delta > 0; delta >>= 1)
-            absmax = fmaxf(
-                absmax, __shfl_down_sync(0xffffffffu, absmax, delta));
-
-        const int lane = tid & 31;
-        const int warp = tid >> 5;
-        if (lane == 0)
-            warp_max[warp] = absmax;
-        __syncthreads();
-        if (warp == 0) {
-            absmax = lane < 4 ? warp_max[lane] : 0.0f;
-            #pragma unroll
-            for (int delta = 16; delta > 0; delta >>= 1)
-                absmax = fmaxf(
-                    absmax, __shfl_down_sync(0xffffffffu, absmax, delta));
-            if (lane == 0) {
-                group_scale = fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
-                scale[group] = group_scale;
-            }
-        }
-        __syncthreads();
-        quantized[static_cast<int64_t>(group) * kGroup + tid] =
-            __nv_fp8_e4m3(value / group_scale).__x;
         __syncthreads();
     }
 }
@@ -3145,8 +3170,9 @@ __device__ __forceinline__ void single_launch_grid_barrier(
 // First complete bring-up of the real one-launch TP4 path.  It intentionally
 // keeps phase barriers between the already validated kernels before the next
 // optimization step introduces the MegaMoE task DAG and W13/W2 overlap.  The
-// one global launch nevertheless owns route preparation, both quantizers,
-// both MXFP4 GEMMs, SwiGLU, fixed-k6 reduction and multicast all-reduce.
+// one global launch nevertheless owns route preparation, intermediate
+// requantization, both MXFP4 GEMMs, SwiGLU, fixed-k6 reduction and multicast
+// all-reduce.  Input X is already FP8 at this API boundary.
 template <int SplitK>
 __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
         const __grid_constant__ CUtensorMap w13_tma_weight,
@@ -3159,14 +3185,13 @@ __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
         const uint8_t* __restrict__ w2,
         const uint8_t* __restrict__ s2,
         const float* __restrict__ g2,
-        const __nv_bfloat16* __restrict__ input,
+        const uint8_t* __restrict__ qx,
+        const float* __restrict__ x_scale,
         const int32_t* __restrict__ topk_ids,
         const float* __restrict__ topk_weights,
         int32_t* __restrict__ sorted_ids,
         int32_t* __restrict__ expert_ids,
         int32_t* __restrict__ num_tokens_padded,
-        uint8_t* __restrict__ qx,
-        float* __restrict__ x_scale,
         float* __restrict__ partials,
         __nv_bfloat16* __restrict__ activation,
         uint8_t* __restrict__ qactivation,
@@ -3191,9 +3216,9 @@ __global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
     const int ctas = static_cast<int>(gridDim.x);
     const int routes = tokens * kTopK;
 
-    single_launch_route_quant_task(
-        topk_ids, input, sorted_ids, expert_ids, num_tokens_padded,
-        qx, x_scale, route_to_sorted, tokens, cta, ctas);
+    single_launch_route_task(
+        topk_ids, sorted_ids, expert_ids, num_tokens_padded,
+        route_to_sorted, tokens, cta);
     single_launch_grid_barrier(barrier_state, 0, ctas);
 
     const int w13_tasks = max_mblocks * kW13NTiles * SplitK;
@@ -4096,10 +4121,10 @@ void launch_tp4_megamoe_single(
         const CUtensorMap& w2_descriptor,
         torch::Tensor w13, torch::Tensor s13, torch::Tensor g13,
         torch::Tensor w2, torch::Tensor s2, torch::Tensor g2,
-        torch::Tensor input, torch::Tensor topk_ids,
+        torch::Tensor qx, torch::Tensor x_scale, torch::Tensor topk_ids,
         torch::Tensor topk_weights, torch::Tensor sorted_ids,
         torch::Tensor expert_ids, torch::Tensor num_tokens_padded,
-        torch::Tensor qx, torch::Tensor x_scale, torch::Tensor partials,
+        torch::Tensor partials,
         torch::Tensor activation, torch::Tensor qactivation,
         torch::Tensor activation_scale, torch::Tensor down,
         torch::Tensor lut, torch::Tensor barrier_state,
@@ -4108,7 +4133,8 @@ void launch_tp4_megamoe_single(
         torch::Tensor push1, torch::Tensor push2, torch::Tensor push3,
         torch::Tensor pull_input, torch::Tensor pull_sem_local,
         int rank, int64_t push_stride, int64_t push_mc_ptr,
-        int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr) {
+        int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr,
+        int requested_ctas_per_sm) {
     constexpr int dynamic_smem_bytes =
         kStages * kWout * ((kBlockK / 2) + 4) + kTok * kBlockK;
     const cudaError_t attr_result = cudaFuncSetAttribute(
@@ -4133,9 +4159,12 @@ void launch_tp4_megamoe_single(
     C10_CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
     TORCH_CHECK(properties.multiProcessorCount == 78,
                 "single-launch TP4 push protocol currently requires 78-SM H20");
-    const int resident_grid = std::min(
-        properties.multiProcessorCount * 4,
-        properties.multiProcessorCount * active_per_sm);
+    TORCH_CHECK(requested_ctas_per_sm > 0,
+                "requested single-launch CTAs/SM must be positive");
+    const int selected_ctas_per_sm = std::min(
+        requested_ctas_per_sm, active_per_sm);
+    const int resident_grid =
+        properties.multiProcessorCount * selected_ctas_per_sm;
     TORCH_CHECK(resident_grid >= 78,
                 "single-launch kernel cannot keep the 78 communication CTAs resident");
 
@@ -4146,11 +4175,10 @@ void launch_tp4_megamoe_single(
         w13.data_ptr<uint8_t>(), s13.data_ptr<uint8_t>(),
         g13.data_ptr<float>(),
         w2.data_ptr<uint8_t>(), s2.data_ptr<uint8_t>(), g2.data_ptr<float>(),
-        reinterpret_cast<const __nv_bfloat16*>(input.data_ptr()),
+        qx.data_ptr<uint8_t>(), x_scale.data_ptr<float>(),
         topk_ids.data_ptr<int32_t>(), topk_weights.data_ptr<float>(),
         sorted_ids.data_ptr<int32_t>(), expert_ids.data_ptr<int32_t>(),
-        num_tokens_padded.data_ptr<int32_t>(), qx.data_ptr<uint8_t>(),
-        x_scale.data_ptr<float>(), partials.data_ptr<float>(),
+        num_tokens_padded.data_ptr<int32_t>(), partials.data_ptr<float>(),
         activation.numel()
             ? reinterpret_cast<__nv_bfloat16*>(activation.data_ptr())
             : nullptr,
@@ -4177,10 +4205,10 @@ void launch_tp4_megamoe_single(
 void run_tp4_megamoe_single_launch(
         torch::Tensor w13, torch::Tensor s13, torch::Tensor g13,
         torch::Tensor w2, torch::Tensor s2, torch::Tensor g2,
-        torch::Tensor input, torch::Tensor topk_ids,
+        torch::Tensor qx, torch::Tensor x_scale, torch::Tensor topk_ids,
         torch::Tensor topk_weights, torch::Tensor sorted_ids,
         torch::Tensor expert_ids, torch::Tensor num_tokens_padded,
-        torch::Tensor qx, torch::Tensor x_scale, torch::Tensor partials,
+        torch::Tensor partials,
         torch::Tensor activation, torch::Tensor qactivation,
         torch::Tensor activation_scale, torch::Tensor down,
         torch::Tensor lut, torch::Tensor barrier_state,
@@ -4189,7 +4217,8 @@ void run_tp4_megamoe_single_launch(
         torch::Tensor push1, torch::Tensor push2, torch::Tensor push3,
         torch::Tensor pull_input, torch::Tensor pull_sem_local,
         int rank, int64_t push_stride, int64_t push_mc_ptr,
-        int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr, int split_k) {
+        int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr,
+        int split_k, int requested_ctas_per_sm) {
     TORCH_CHECK(kWout == 128 && kTiledWeightLayout && kBulkWeightCopy
                     && kInterleavedBulkCopy && kCompactInterleavedScale
                     && kMode2Braid && kNormalizedWeightScale
@@ -4198,11 +4227,11 @@ void run_tp4_megamoe_single_launch(
                 "single-launch TP4 currently requires the selected default layout");
     TORCH_CHECK(split_k == 2 || split_k == 4,
                 "single-launch TP4 split-K must be 2 or 4");
-    TORCH_CHECK(input.scalar_type() == torch::kBFloat16
-                    && input.is_cuda() && input.is_contiguous()
-                    && input.dim() == 2 && input.size(1) == 4096,
-                "single-launch input must be contiguous CUDA BF16 [M,4096]");
-    const int tokens = input.size(0);
+    TORCH_CHECK(qx.scalar_type() == torch::kUInt8
+                    && qx.is_cuda() && qx.is_contiguous()
+                    && qx.dim() == 2 && qx.size(1) == 4096,
+                "single-launch X must be contiguous FP8 storage [M,4096]");
+    const int tokens = qx.size(0);
     TORCH_CHECK(tokens == 8 || tokens == 16 || tokens == 32
                     || tokens == 64 || tokens == 128,
                 "single-launch TP4 supports M=8,16,32,64,128");
@@ -4221,11 +4250,10 @@ void run_tp4_megamoe_single_launch(
     TORCH_CHECK(g13.scalar_type() == torch::kFloat32 && g13.numel() == 256
                     && g2.scalar_type() == torch::kFloat32 && g2.numel() == 256,
                 "single-launch normalized expert scales must have 256 entries");
-    TORCH_CHECK(qx.scalar_type() == torch::kUInt8
-                    && qx.numel() == tokens * 4096
-                    && x_scale.scalar_type() == torch::kFloat32
+    TORCH_CHECK(x_scale.scalar_type() == torch::kFloat32
+                    && x_scale.is_cuda() && x_scale.is_contiguous()
                     && x_scale.numel() == tokens * 32,
-                "single-launch X quantization workspace shape mismatch");
+                "single-launch X scale must be contiguous FP32 [M,32]");
     TORCH_CHECK(partials.scalar_type() == torch::kFloat32
                     && partials.numel() >= 4LL * routes * 1024,
                 "single-launch W13 partial workspace is too small");
@@ -4288,23 +4316,23 @@ void run_tp4_megamoe_single_launch(
     if (split_k == 4) {
         launch_tp4_megamoe_single<4>(
             w13_descriptor, w2_descriptor,
-            w13, s13, g13, w2, s2, g2, input, topk_ids, topk_weights,
-            sorted_ids, expert_ids, num_tokens_padded, qx, x_scale, partials,
+            w13, s13, g13, w2, s2, g2, qx, x_scale, topk_ids, topk_weights,
+            sorted_ids, expert_ids, num_tokens_padded, partials,
             activation, qactivation, activation_scale, down, lut,
             barrier_state, route_to_sorted, output, push_counter,
             push0, push1, push2, push3, pull_input, pull_sem_local,
             rank, push_stride, push_mc_ptr,
-            pull_input_mc_ptr, pull_sem_mc_ptr);
+            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm);
     } else {
         launch_tp4_megamoe_single<2>(
             w13_descriptor, w2_descriptor,
-            w13, s13, g13, w2, s2, g2, input, topk_ids, topk_weights,
-            sorted_ids, expert_ids, num_tokens_padded, qx, x_scale, partials,
+            w13, s13, g13, w2, s2, g2, qx, x_scale, topk_ids, topk_weights,
+            sorted_ids, expert_ids, num_tokens_padded, partials,
             activation, qactivation, activation_scale, down, lut,
             barrier_state, route_to_sorted, output, push_counter,
             push0, push1, push2, push3, pull_input, pull_sem_local,
             rank, push_stride, push_mc_ptr,
-            pull_input_mc_ptr, pull_sem_mc_ptr);
+            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm);
     }
 }
 
@@ -4668,6 +4696,37 @@ void fused_k6_nvls_pull_tp4(
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+void route_align(
+        torch::Tensor topk_ids, torch::Tensor sorted_ids,
+        torch::Tensor expert_ids, torch::Tensor num_tokens_padded,
+        torch::Tensor route_to_sorted) {
+    TORCH_CHECK(topk_ids.scalar_type() == torch::kInt32
+                    && topk_ids.is_cuda() && topk_ids.is_contiguous()
+                    && topk_ids.dim() == 2 && topk_ids.size(1) == 6,
+                "topk_ids must be contiguous CUDA int32 [M,6]");
+    TORCH_CHECK(sorted_ids.scalar_type() == torch::kInt32
+                    && sorted_ids.is_cuda() && sorted_ids.is_contiguous(),
+                "sorted_ids must be contiguous CUDA int32");
+    TORCH_CHECK(expert_ids.scalar_type() == torch::kInt32
+                    && expert_ids.is_cuda() && expert_ids.is_contiguous(),
+                "expert_ids must be contiguous CUDA int32");
+    TORCH_CHECK(num_tokens_padded.scalar_type() == torch::kInt32
+                    && num_tokens_padded.is_cuda()
+                    && num_tokens_padded.numel() == 1,
+                "num_tokens_padded must be one CUDA int32");
+    const int routes = topk_ids.numel();
+    TORCH_CHECK(!(kW2SortedAct || kW2MblockScale)
+                    || route_to_sorted.numel() == routes,
+                "sorted W2 activation/scale requires one position per route");
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    route_align_kernel<<<1, 256, 0, stream>>>(
+        topk_ids.data_ptr<int32_t>(), sorted_ids.data_ptr<int32_t>(),
+        expert_ids.data_ptr<int32_t>(), num_tokens_padded.data_ptr<int32_t>(),
+        route_to_sorted.numel() ? route_to_sorted.data_ptr<int32_t>() : nullptr,
+        routes);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void fused_route_quant(
         torch::Tensor topk_ids, torch::Tensor input,
         torch::Tensor sorted_ids, torch::Tensor expert_ids,
@@ -4818,10 +4877,10 @@ void tiled_k6_reduce(torch::Tensor input, torch::Tensor topk_weights,
 void run_tp4_megamoe_single_launch(
     torch::Tensor w13, torch::Tensor s13, torch::Tensor g13,
     torch::Tensor w2, torch::Tensor s2, torch::Tensor g2,
-    torch::Tensor input, torch::Tensor topk_ids,
+    torch::Tensor qx, torch::Tensor x_scale, torch::Tensor topk_ids,
     torch::Tensor topk_weights, torch::Tensor sorted_ids,
     torch::Tensor expert_ids, torch::Tensor num_tokens_padded,
-    torch::Tensor qx, torch::Tensor x_scale, torch::Tensor partials,
+    torch::Tensor partials,
     torch::Tensor activation, torch::Tensor qactivation,
     torch::Tensor activation_scale, torch::Tensor down,
     torch::Tensor lut, torch::Tensor barrier_state,
@@ -4830,7 +4889,8 @@ void run_tp4_megamoe_single_launch(
     torch::Tensor push1, torch::Tensor push2, torch::Tensor push3,
     torch::Tensor pull_input, torch::Tensor pull_sem_local,
     int rank, int64_t push_stride, int64_t push_mc_ptr,
-    int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr, int split_k);
+    int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr,
+    int split_k, int requested_ctas_per_sm);
 void fused_k6_push_ar_tp4(
     torch::Tensor input, torch::Tensor topk_weights,
     torch::Tensor output, torch::Tensor push_counter,
@@ -4865,6 +4925,10 @@ void fused_k6_nvls_pull_tp4(
     torch::Tensor symm_input, torch::Tensor output,
     torch::Tensor sem_local, int64_t symm_input_mc_ptr,
     int64_t sem_mc_ptr, int active_blocks);
+void route_align(torch::Tensor topk_ids, torch::Tensor sorted_ids,
+                 torch::Tensor expert_ids,
+                 torch::Tensor num_tokens_padded,
+                 torch::Tensor route_to_sorted);
 void fused_route_quant(torch::Tensor topk_ids, torch::Tensor input,
                        torch::Tensor sorted_ids, torch::Tensor expert_ids,
                        torch::Tensor num_tokens_padded,
@@ -4917,9 +4981,9 @@ _EXTENSION_CONFIG = (
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v155slp")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v160fp8")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v155slp"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v160fp8"
 )
 
 _ext = load_inline(
@@ -4939,6 +5003,7 @@ _ext = load_inline(
         "progress_mc_push_finish_tp4",
         "fused_rank_route_mc_pull_tp4",
         "fused_k6_nvls_pull_tp4",
+        "route_align",
         "fused_route_quant",
         "interleaved_scheduler_probe",
         "braid_mode2",
@@ -5465,14 +5530,13 @@ def run_tp4_megamoe_single_launch(
     w2: torch.Tensor,
     s2: torch.Tensor,
     g2: torch.Tensor,
-    input: torch.Tensor,
+    qx: torch.Tensor,
+    x_scale: torch.Tensor,
     topk_ids: torch.Tensor,
     topk_weights: torch.Tensor,
     sorted_ids: torch.Tensor,
     expert_ids: torch.Tensor,
     num_tokens_padded: torch.Tensor,
-    qx: torch.Tensor,
-    x_scale: torch.Tensor,
     partials: torch.Tensor,
     activation: torch.Tensor,
     qactivation: torch.Tensor,
@@ -5493,7 +5557,7 @@ def run_tp4_megamoe_single_launch(
     pull_sem_mc_ptr: int,
     split_k: int,
 ) -> None:
-    """Run the complete TP4 MoE and multicast all-reduce in one launch."""
+    """Run FP8-input TP4 MoE and multicast all-reduce in one launch."""
     _ext.run_tp4_megamoe_single_launch(
         w13,
         s13,
@@ -5501,14 +5565,13 @@ def run_tp4_megamoe_single_launch(
         w2,
         s2,
         g2,
-        input,
+        qx.view(torch.uint8),
+        x_scale,
         topk_ids,
         topk_weights,
         sorted_ids,
         expert_ids,
         num_tokens_padded,
-        qx.view(torch.uint8),
-        x_scale,
         partials,
         activation,
         qactivation.view(torch.uint8),
@@ -5531,6 +5594,7 @@ def run_tp4_megamoe_single_launch(
         pull_input_mc_ptr,
         pull_sem_mc_ptr,
         split_k,
+        SINGLE_LAUNCH_CTAS_PER_SM,
     )
 
 
@@ -5679,6 +5743,31 @@ def fused_k6_nvls_pull_tp4(
         symm_input_mc_ptr,
         sem_mc_ptr,
         active_blocks,
+    )
+
+
+def route_align(
+    topk_ids: torch.Tensor,
+    sorted_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_padded: torch.Tensor,
+    route_to_sorted: torch.Tensor | None = None,
+) -> None:
+    """Build routed-MoE block metadata without quantizing the FP8 input."""
+    if route_to_sorted is None:
+        if W2_NEEDS_ROUTE_MAP:
+            raise ValueError(
+                "sorted W2 activation/scale requires route_to_sorted"
+            )
+        route_to_sorted = torch.empty(
+            0, dtype=torch.int32, device=topk_ids.device
+        )
+    _ext.route_align(
+        topk_ids,
+        sorted_ids,
+        expert_ids,
+        num_tokens_padded,
+        route_to_sorted,
     )
 
 

@@ -114,6 +114,32 @@ def make_routes(
     return ids.to(device), weights.to(device)
 
 
+def make_fp8_input(
+    m: int, device: torch.device, seed: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Create replicated TP input and quantize it before the timed graph."""
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed + m)
+    x_bf16 = (
+        torch.randn((m, HIDDEN), dtype=torch.float32, generator=generator)
+        .mul_(0.1)
+        .to(torch.bfloat16)
+        .to(device)
+    )
+    qx = torch.empty(
+        (m, HIDDEN), dtype=torch.float8_e4m3fn, device=device
+    )
+    qx, x_scale = humming_ops.quant_input(
+        inputs=x_bf16,
+        outputs=qx,
+        dtype="float8e4m3",
+        group_size=128,
+        m_major_scale=False,
+        scale_dtype="float32",
+    )
+    return qx, x_scale
+
+
 def make_weights(
     intermediate_per_rank: int, device: torch.device
 ) -> tuple[
@@ -172,7 +198,8 @@ def make_weights(
 @dataclass
 class CapturedCase:
     m: int
-    x: torch.Tensor
+    qx: torch.Tensor
+    x_scale: torch.Tensor
     topk_ids: torch.Tensor
     topk_weights: torch.Tensor
     w13: torch.Tensor
@@ -185,7 +212,17 @@ class CapturedCase:
     intermediate_per_rank: int
 
     def __post_init__(self) -> None:
-        device = self.x.device
+        device = self.qx.device
+        if self.qx.dtype != torch.float8_e4m3fn or self.qx.shape != (
+            self.m,
+            HIDDEN,
+        ):
+            raise ValueError("qx must be FP8-E4M3 [M,4096]")
+        if self.x_scale.dtype != torch.float32 or self.x_scale.shape != (
+            self.m,
+            HIDDEN // 128,
+        ):
+            raise ValueError("x_scale must be FP32 [M,32]")
         routes = self.m * TOP_K
         n13 = 2 * self.intermediate_per_rank
         max_padded = (
@@ -195,9 +232,6 @@ class CapturedCase:
         )
         max_mblocks = (max_padded + 7) // 8
         w2_activation_rows = max_mblocks * 8 if kernel.W2_SORTED_ACT else routes
-        self.qx = torch.empty(
-            (self.m, HIDDEN), dtype=torch.float8_e4m3fn, device=device
-        )
         self.partials = torch.empty(
             (kernel.W13_MAX_SPLITS, routes, n13),
             dtype=torch.float32,
@@ -278,9 +312,6 @@ class CapturedCase:
         self.num_tokens_padded = torch.empty(
             (1,), dtype=torch.int32, device=device
         )
-        self.x_scale = torch.empty(
-            (self.m, HIDDEN // 128), dtype=torch.float32, device=device
-        )
         self.activation_scale: torch.Tensor | None = (
             torch.empty(
                 (
@@ -310,15 +341,12 @@ class CapturedCase:
         return self.m * TOP_K
 
     def run_before_w2(self) -> None:
-        if kernel.FUSED_ROUTE_QUANT:
-            kernel.fused_route_quant(
+        if kernel.FUSED_ROUTE_ALIGN:
+            kernel.route_align(
                 self.topk_ids,
-                self.x,
                 self.sorted_ids,
                 self.expert_ids,
                 self.num_tokens_padded,
-                self.qx.view(torch.uint8),
-                self.x_scale,
                 self.route_to_sorted,
             )
         else:
@@ -331,14 +359,6 @@ class CapturedCase:
                 block_size=8,
                 num_experts=NUM_EXPERTS,
                 ignore_invalid_expert=True,
-            )
-            self.qx, self.x_scale = humming_ops.quant_input(
-                inputs=self.x,
-                outputs=self.qx,
-                dtype="float8e4m3",
-                group_size=128,
-                m_major_scale=False,
-                scale_dtype="float32",
             )
         if kernel.W13_PAIRED_WG:
             assert self.activation_scale is not None
@@ -481,7 +501,7 @@ class CapturedCase:
             raise RuntimeError("pipelined W2 requires multicast symmetric memory")
 
         self.run_before_w2()
-        main_stream = torch.cuda.current_stream(self.x.device)
+        main_stream = torch.cuda.current_stream(self.qx.device)
         self.pipeline_start_event.record(main_stream)
         with torch.cuda.stream(self.pipeline_stream):
             self.pipeline_stream.wait_event(self.pipeline_start_event)
@@ -541,7 +561,7 @@ class CapturedCase:
 
         self.run_before_w2()
         self.w2_progress_state.zero_()
-        main_stream = torch.cuda.current_stream(self.x.device)
+        main_stream = torch.cuda.current_stream(self.qx.device)
         self.pipeline_start_event.record(main_stream)
         kernel.run_w2_progress(
             self.w2,
@@ -746,14 +766,13 @@ class CapturedCase:
             self.w2,
             self.s2,
             self.g2,
-            self.x,
+            self.qx,
+            self.x_scale,
             self.topk_ids,
             self.topk_weights,
             self.sorted_ids,
             self.expert_ids,
             self.num_tokens_padded,
-            self.qx,
-            self.x_scale,
             self.partials,
             self.activation,
             self.qactivation,
@@ -883,7 +902,8 @@ class CapturedCase:
     def make_reference_case(self) -> "CapturedCase":
         return CapturedCase(
             m=self.m,
-            x=self.x,
+            qx=self.qx,
+            x_scale=self.x_scale,
             topk_ids=self.topk_ids,
             topk_weights=self.topk_weights,
             w13=self.w13,
@@ -1085,7 +1105,8 @@ def main() -> None:
                     ),
                     "mode2_braid": kernel.MODE2_BRAID,
                     "fused_activation_quant": kernel.FUSED_ACT_QUANT,
-                    "fused_route_quant": kernel.FUSED_ROUTE_QUANT,
+                    "input_contract": "FP8-E4M3 group128; input quant untimed",
+                    "fused_route_align": kernel.FUSED_ROUTE_ALIGN,
                     "w2_sorted_activation": kernel.W2_SORTED_ACT,
                     "w2_mblock_scale": kernel.W2_MBLOCK_SCALE,
                     "w2_fold_global_scale": kernel.W2_FOLD_GLOBAL_SCALE,
@@ -1126,6 +1147,9 @@ def main() -> None:
                     "rank_route_pull_blocks": kernel.RANK_ROUTE_PULL_BLOCKS,
                     "fused_k6_nvls_pull_ar": kernel.FUSED_K6_NVLS_PULL_AR,
                     "single_launch_tp4": kernel.SINGLE_LAUNCH_TP4,
+                    "single_launch_ctas_per_sm": (
+                        kernel.SINGLE_LAUNCH_CTAS_PER_SM
+                    ),
                     "k6_nvls_pull_blocks": kernel.K6_NVLS_PULL_BLOCKS,
                     "mc_pull_blocks": kernel.MC_PULL_BLOCKS or "default",
                     "mc_pull_unroll": kernel.MC_PULL_UNROLL or "default",
@@ -1179,10 +1203,11 @@ def main() -> None:
         topk_ids, topk_weights = make_routes(
             m, args.route_pattern, device, args.seed
         )
-        x = torch.randn((m, HIDDEN), dtype=torch.bfloat16, device=device) * 0.1
+        qx, x_scale = make_fp8_input(m, device, args.seed)
         case = CapturedCase(
             m=m,
-            x=x,
+            qx=qx,
+            x_scale=x_scale,
             topk_ids=topk_ids,
             topk_weights=topk_weights,
             w13=w13,

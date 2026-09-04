@@ -49,7 +49,8 @@ def parse_args() -> argparse.Namespace:
 
 def make_case(
     m: int,
-    x: torch.Tensor,
+    qx: torch.Tensor,
+    x_scale: torch.Tensor,
     topk_ids: torch.Tensor,
     topk_weights: torch.Tensor,
     weights: tuple[torch.Tensor, ...],
@@ -59,7 +60,8 @@ def make_case(
     w13, s13, g13, w2, s2, g2 = weights
     return custom.CapturedCase(
         m=m,
-        x=x,
+        qx=qx,
+        x_scale=x_scale,
         topk_ids=topk_ids,
         topk_weights=topk_weights,
         w13=w13,
@@ -116,6 +118,10 @@ def main() -> None:
                         "cold; separate 256MiB Triton clear immediately before "
                         "every implementation replay, clear excluded from events"
                     ),
+                    "input_contract": (
+                        "shared FP8-E4M3 X + FP32 group128 scale; "
+                        "BF16-to-FP8 quantization outside timed graphs"
+                    ),
                     "control": "selected multi-kernel path from the same source",
                     "candidate": "one tp4_megamoe_single_launch_kernel graph node",
                 },
@@ -131,12 +137,26 @@ def main() -> None:
         topk_ids, topk_weights = custom.make_routes(
             m, args.route_pattern, device, args.seed
         )
-        x = torch.randn((m, custom.HIDDEN), dtype=torch.bfloat16, device=device) * 0.1
+        qx, x_scale = custom.make_fp8_input(m, device, args.seed)
         control_case = make_case(
-            m, x, topk_ids, topk_weights, weights, lut, intermediate_per_rank
+            m,
+            qx,
+            x_scale,
+            topk_ids,
+            topk_weights,
+            weights,
+            lut,
+            intermediate_per_rank,
         )
         candidate_case = make_case(
-            m, x, topk_ids, topk_weights, weights, lut, intermediate_per_rank
+            m,
+            qx,
+            x_scale,
+            topk_ids,
+            topk_weights,
+            weights,
+            lut,
+            intermediate_per_rank,
         )
 
         kernel.SINGLE_LAUNCH_TP4 = False

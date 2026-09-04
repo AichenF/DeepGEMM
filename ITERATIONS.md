@@ -5874,3 +5874,43 @@ maximum rank latency of a full CUDA-Graph replay.
   still needs readiness-based W13/W2 overlap rather than retaining this
   barrier-separated scheduler.
 - Artifact: `results/iter158_tp4_single_vs_multi_allm_cold_pair_screen_20260904.log`.
+
+## Iteration 159 — correct MegaMoE input contract to prequantized FP8
+
+- **Change under test:** changed the timed MegaMoE ABI from BF16 X to
+  caller-provided FP8-E4M3 X plus FP32 group-128 scales.  Added a route-only
+  device kernel for the multi-kernel control, removed BF16-to-FP8 work from the
+  TP4 single-launch prologue, made both graphs share the exact same qx/x_scale,
+  and made TP inputs identical across ranks.  Also exposed the resident
+  CTA-per-SM cap; this run retained the previous value of four.
+- **Command:** TP4 on physical GPUs 4-7,
+  `V4_SINGLE_LAUNCH_CTAS_PER_SM=4 torchrun --standalone --nproc-per-node=4
+  bench/v4_flash_tp_single_vs_multi_graph.py --ms 8,16,32,64,128
+  --route-pattern random --outer 2 --replays 20 --warmup-replays 4
+  --pair-granularity batch`.
+- **Protocol:** same-process paired CUDA Graphs, identical MXFP4 weights,
+  FP8 X/scales and routes, separate 256 MiB Triton L2 clear immediately before
+  every implementation replay with the clear excluded from CUDA events, and
+  TP rank-max samples.
+- **Correctness:** PASS for both implementations at every M.  Minimum
+  candidate cosine was 0.9999955800, maximum candidate relative L2 was
+  0.0029732163, outputs were finite on all ranks, and padded-row counts matched
+  exactly between control and candidate.
+- **Cold-L2 medians (control multi-kernel / candidate one-launch / speedup):**
+  - M8: 0.071552 / 0.103392 ms / 0.6920x.
+  - M16: 0.114768 / 0.159648 ms / 0.7189x.
+  - M32: 0.178288 / 0.250112 ms / 0.7128x.
+  - M64: 0.251520 / 0.350608 ms / 0.7174x.
+  - M128: 0.307472 / 0.470688 ms / 0.6532x.
+  - Equal-weight geometric mean: 0.162476 / 0.232631 ms; control/candidate
+    0.6984x, so the candidate remains 43.18% slower in latency.
+- **Analysis:** excluding input quantization is the correct serving boundary
+  but does not remove the dominant loss.  Relative to iteration 158, candidate
+  latency changed by roughly -0.3%, -0.7%, -0.6%, -0.3%, and -2.3% across
+  ascending M; the strict global W13/activation/W2 phase barriers remain the
+  primary structural problem.
+- **Decision:** accept the FP8-input API and fair FP8-input control as the new
+  benchmark contract.  Do not claim a performance win.  Next measure the
+  already-plumbed resident-CTA count, then replace phase serialization with
+  per-mblock readiness/interleaving.
+- **Evidence:** `results/iter159_tp4_fp8_input_pair_screen_20260904.log`.
