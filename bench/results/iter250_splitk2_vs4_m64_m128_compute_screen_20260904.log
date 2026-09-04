@@ -1,0 +1,116 @@
+SINGLE_COMPUTE_PROFILE {"accepted": true, "down_check": {"cosine": 1.0, "finite": true, "rel_l2": 0.0}, "input_contract": "prequantized FP8-E4M3 X plus FP32 group128 scale", "l2_policy": "cold 256MiB clear outside profiled kernel", "m": 64, "padded_rows": 1624, "phase_us": {"activation_requant": 4.96, "route": 4.256, "w13": 170.048, "w2": 89.184}, "route_pattern": "random", "sm_count": 78, "tp_collective_executed": false, "w13_split_k": 2}
+SINGLE_COMPUTE_PROFILE {"accepted": true, "down_check": {"cosine": 1.0, "finite": true, "rel_l2": 0.0}, "input_contract": "prequantized FP8-E4M3 X plus FP32 group128 scale", "l2_policy": "cold 256MiB clear outside profiled kernel", "m": 64, "padded_rows": 1624, "phase_us": {"activation_requant": 5.12, "route": 4.0, "w13": 170.368, "w2": 89.408}, "route_pattern": "random", "sm_count": 78, "tp_collective_executed": false, "w13_split_k": 2}
+SINGLE_COMPUTE_PROFILE {"accepted": true, "down_check": {"cosine": 1.0, "finite": true, "rel_l2": 0.0}, "input_contract": "prequantized FP8-E4M3 X plus FP32 group128 scale", "l2_policy": "cold 256MiB clear outside profiled kernel", "m": 64, "padded_rows": 1624, "phase_us": {"activation_requant": 5.024, "route": 3.712, "w13": 169.472, "w2": 88.896}, "route_pattern": "random", "sm_count": 78, "tp_collective_executed": false, "w13_split_k": 2}
+SINGLE_COMPUTE_PROFILE {"accepted": true, "down_check": {"cosine": 1.0, "finite": true, "rel_l2": 0.0}, "input_contract": "prequantized FP8-E4M3 X plus FP32 group128 scale", "l2_policy": "cold 256MiB clear outside profiled kernel", "m": 64, "padded_rows": 1624, "phase_us": {"activation_requant": 4.96, "route": 4.096, "w13": 171.904, "w2": 89.12}, "route_pattern": "random", "sm_count": 78, "tp_collective_executed": false, "w13_split_k": 2}
+SINGLE_COMPUTE_PROFILE {"accepted": true, "down_check": {"cosine": 1.0, "finite": true, "rel_l2": 0.0}, "input_contract": "prequantized FP8-E4M3 X plus FP32 group128 scale", "l2_policy": "cold 256MiB clear outside profiled kernel", "m": 64, "padded_rows": 1624, "phase_us": {"activation_requant": 5.088, "route": 4.0, "w13": 171.36, "w2": 88.288}, "route_pattern": "random", "sm_count": 78, "tp_collective_executed": false, "w13_split_k": 2}
+SINGLE_COMPUTE_PROFILE {"accepted": true, "down_check": {"cosine": 1.0, "finite": true, "rel_l2": 0.0}, "input_contract": "prequantized FP8-E4M3 X plus FP32 group128 scale", "l2_policy": "cold 256MiB clear outside profiled kernel", "m": 128, "padded_rows": 1992, "phase_us": {"activation_requant": 6.816, "route": 4.352, "w13": 212.096, "w2": 109.92}, "route_pattern": "random", "sm_count": 78, "tp_collective_executed": false, "w13_split_k": 2}
+SINGLE_COMPUTE_PROFILE {"accepted": true, "down_check": {"cosine": 1.0, "finite": true, "rel_l2": 0.0}, "input_contract": "prequantized FP8-E4M3 X plus FP32 group128 scale", "l2_policy": "cold 256MiB clear outside profiled kernel", "m": 128, "padded_rows": 1992, "phase_us": {"activation_requant": 6.72, "route": 4.128, "w13": 211.488, "w2": 110.4}, "route_pattern": "random", "sm_count": 78, "tp_collective_executed": false, "w13_split_k": 2}
+SINGLE_COMPUTE_PROFILE {"accepted": true, "down_check": {"cosine": 1.0, "finite": true, "rel_l2": 0.0}, "input_contract": "prequantized FP8-E4M3 X plus FP32 group128 scale", "l2_policy": "cold 256MiB clear outside profiled kernel", "m": 128, "padded_rows": 1992, "phase_us": {"activation_requant": 6.656, "route": 4.16, "w13": 211.712, "w2": 111.872}, "route_pattern": "random", "sm_count": 78, "tp_collective_executed": false, "w13_split_k": 2}
+SINGLE_COMPUTE_PROFILE {"accepted": true, "down_check": {"cosine": 1.0, "finite": true, "rel_l2": 0.0}, "input_contract": "prequantized FP8-E4M3 X plus FP32 group128 scale", "l2_policy": "cold 256MiB clear outside profiled kernel", "m": 128, "padded_rows": 1992, "phase_us": {"activation_requant": 6.784, "route": 4.256, "w13": 210.72, "w2": 109.888}, "route_pattern": "random", "sm_count": 78, "tp_collective_executed": false, "w13_split_k": 2}
+SINGLE_COMPUTE_PROFILE {"accepted": true, "down_check": {"cosine": 1.0, "finite": true, "rel_l2": 0.0}, "input_contract": "prequantized FP8-E4M3 X plus FP32 group128 scale", "l2_policy": "cold 256MiB clear outside profiled kernel", "m": 128, "padded_rows": 1992, "phase_us": {"activation_requant": 6.592, "route": 4.512, "w13": 211.328, "w2": 108.992}, "route_pattern": "random", "sm_count": 78, "tp_collective_executed": false, "w13_split_k": 2}
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 180, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 131, in main
+    run()
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 95, in run
+    kernel.run_tp4_megamoe_single_launch(
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 6817, in run_tp4_megamoe_single_launch
+    _ext.run_tp4_megamoe_single_launch(
+RuntimeError: M64 single-launch requires split-K 2
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 180, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 131, in main
+    run()
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 95, in run
+    kernel.run_tp4_megamoe_single_launch(
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 6817, in run_tp4_megamoe_single_launch
+    _ext.run_tp4_megamoe_single_launch(
+RuntimeError: M64 single-launch requires split-K 2
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 180, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 131, in main
+    run()
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 95, in run
+    kernel.run_tp4_megamoe_single_launch(
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 6817, in run_tp4_megamoe_single_launch
+    _ext.run_tp4_megamoe_single_launch(
+RuntimeError: M64 single-launch requires split-K 2
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 180, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 131, in main
+    run()
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 95, in run
+    kernel.run_tp4_megamoe_single_launch(
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 6817, in run_tp4_megamoe_single_launch
+    _ext.run_tp4_megamoe_single_launch(
+RuntimeError: M64 single-launch requires split-K 2
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 180, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 131, in main
+    run()
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 95, in run
+    kernel.run_tp4_megamoe_single_launch(
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 6817, in run_tp4_megamoe_single_launch
+    _ext.run_tp4_megamoe_single_launch(
+RuntimeError: M64 single-launch requires split-K 2
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 180, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 131, in main
+    run()
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 95, in run
+    kernel.run_tp4_megamoe_single_launch(
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 6817, in run_tp4_megamoe_single_launch
+    _ext.run_tp4_megamoe_single_launch(
+RuntimeError: M128 single-launch requires split-K 2
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 180, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 131, in main
+    run()
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 95, in run
+    kernel.run_tp4_megamoe_single_launch(
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 6817, in run_tp4_megamoe_single_launch
+    _ext.run_tp4_megamoe_single_launch(
+RuntimeError: M128 single-launch requires split-K 2
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 180, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 131, in main
+    run()
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 95, in run
+    kernel.run_tp4_megamoe_single_launch(
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 6817, in run_tp4_megamoe_single_launch
+    qx: torch.Tensor,
+RuntimeError: M128 single-launch requires split-K 2
+SINGLE_COMPUTE_PROFILE {"accepted": true, "down_check": {"cosine": 1.0, "finite": true, "rel_l2": 0.0}, "input_contract": "prequantized FP8-E4M3 X plus FP32 group128 scale", "l2_policy": "cold 256MiB clear outside profiled kernel", "m": 128, "padded_rows": 1992, "phase_us": {"activation_requant": 7.2, "route": 4.576, "w13": 217.312, "w2": 109.44}, "route_pattern": "random", "sm_count": 78, "tp_collective_executed": false, "w13_split_k": 4}
+SINGLE_COMPUTE_PROFILE {"accepted": true, "down_check": {"cosine": 1.0, "finite": true, "rel_l2": 0.0}, "input_contract": "prequantized FP8-E4M3 X plus FP32 group128 scale", "l2_policy": "cold 256MiB clear outside profiled kernel", "m": 128, "padded_rows": 1992, "phase_us": {"activation_requant": 7.296, "route": 4.192, "w13": 217.024, "w2": 109.568}, "route_pattern": "random", "sm_count": 78, "tp_collective_executed": false, "w13_split_k": 4}

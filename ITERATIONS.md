@@ -7156,3 +7156,33 @@ maximum rank latency of a full CUDA-Graph replay.
   selected-path CTA sync.  Do not run distributed timing.
 - **Artifact:**
   `bench/results/iter249_skip_final_cta_sync_m8_m128_compute_smoke_20260904.log`.
+
+## Iteration 250 — large-M W13 split-K 4 is correct but slower
+
+- **Hypothesis/change:** Extended the TP4 single-launch dispatcher so M64 and
+  M128 can opt into W13 split-K 4 through the existing
+  `V4_W13_SPLIT_K=4` control.  The automatic policy remains split-K 2 at
+  these shapes, so this adds a directly testable specialization without
+  changing the selected production path.
+- **Protocol:** H20 GPU 0, random routes, 624 resident CTAs, ordinary relaxed
+  grid polling at 64 ns, prequantized FP8-E4M3 X plus FP32 group-128 scales,
+  MXFP4 weights, and an excluded 256 MiB cold-L2 clear.  The split-K 2
+  control was sampled five times per shape; the new split-K 4 dispatcher was
+  smoke-tested once per shape after JIT compilation.  The complete W2 route
+  tensor was compared against the independent multi-kernel local reference.
+- **Correctness:** PASS bitwise for split-K 4 at both M64 and M128
+  (`cosine=1`, `rel_l2=0`, finite=true).
+- **Result:** Split-K 2 median W13 time was `170.368 us` at M64 and
+  `211.488 us` at M128.  Split-K 4 measured `173.664 us` and `216.768 us`,
+  regressions of `3.296 us` and `5.280 us`.  Total measured compute phase
+  sums were `272.224 us` at M64 and `337.376 us` at M128 for split-K 4.
+- **Interpretation:** The improved arithmetic tail occupancy does not repay
+  the doubled split-partial/TMA task overhead on this kernel.  The result is
+  already opposite the required 5-7 us gain at both shapes, so a distributed
+  TP4 screen is not justified.
+- **Decision:** Reject split-K 4 for M64/M128; retain automatic split-K 2.
+  Keep the dispatcher support only as an opt-in diagnostic.
+- **Artifacts:**
+  `bench/results/iter250_splitk2_vs4_m64_m128_compute_screen_20260904.log`
+  and
+  `bench/results/iter250_allow_splitk4_m64_m128_compute_smoke_20260904.log`.
