@@ -5656,3 +5656,28 @@ maximum rank latency of a full CUDA-Graph replay.
   bodies are now device-callable while their multi-kernel baseline wrappers
   remain behaviorally identical.
 - Artifact: `results/iter149_swiglu_quant_device_task_refactor_correctness_20260904.log`.
+
+## Iteration 150 — extract fused k6 plus TP4 push all-reduce into a reusable device task
+
+- Date: 2026-09-04.
+- Change: refactor the selected fixed-k6 weighted reduction plus TP4 push
+  all-reduce body into `fused_k6_push_ar_tp4_task`, with explicit logical CTA
+  and logical-grid IDs.  The existing standalone kernel remains a thin
+  wrapper and passes its physical `blockIdx.x/gridDim.x`, preserving the
+  communicator-owned 78-entry phase-counter protocol exactly.  The explicit
+  IDs let the forthcoming resident MegaMoE kernel invoke the same validated
+  multicast/P2P communication body without a child launch.
+- Scope: single-rank TP4-shape full-reference correctness on physical GPU 6,
+  `M=8`, balanced routes, `Is=512`, split-K 4.  This validates compilation and
+  confirms that the unchanged standalone compute path remains correct; it is
+  not a communication or latency measurement.
+- Result: route preparation and quantization passed; fixed-k6 reduction is
+  bitwise equal to SGLang (`exact=True`, `max_abs=0`).  W13 cosine/rel-L2 is
+  `0.999999998/0.000076187`, activation is
+  `0.999999759/0.000694956`, and W2 is
+  `0.999997256/0.002342691`, finite true; the test emitted `V4_WGMMA_OK`.
+- Decision: retain.  All selected compute stages and the TP4 small-M
+  communication tail now have device-callable seams.  Next add the actual
+  single global entry, resident-grid synchronization, and in-kernel phase
+  orchestration; this refactor alone is not performance eligible.
+- Artifact: `results/iter150_k6_push_ar_device_task_refactor_correctness_20260904.log`.

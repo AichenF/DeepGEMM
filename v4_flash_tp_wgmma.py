@@ -2830,7 +2830,7 @@ __global__ __launch_bounds__(Threads) void progress_mc_push_finish_tp4_kernel(
 // CustomAllReduceV2 communicator, so stock Humming and this kernel can safely
 // alternate on the same communicator and inside separately captured graphs.
 template <int Threads, bool UseMulticast, bool Chunked = false>
-__global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
+__device__ __forceinline__ void fused_k6_push_ar_tp4_task(
         const __nv_bfloat16* __restrict__ input,
         const float* __restrict__ topk_weights,
         __nv_bfloat16* __restrict__ output,
@@ -2838,7 +2838,8 @@ __global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
         uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
         uint8_t* push_mc,
         int tokens, int rank, int64_t push_stride,
-        int hidden_offset, int hidden_size) {
+        int hidden_offset, int hidden_size,
+        int linear_block_idx, int linear_grid_dim) {
     constexpr int kWorld = 4;
     constexpr int kHidden = 4096;
     constexpr int kPairsPerToken = kHidden / 2;
@@ -2847,9 +2848,9 @@ __global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
     const int vecs_per_token =
         Chunked ? hidden_size / 8 : kVecsPerToken;
     const int num_vecs = tokens * vecs_per_token;
-    const int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
-    const int global_threads = gridDim.x * blockDim.x;
-    const int phase = push_counter[blockIdx.x] & 1u;
+    const int global_tid = linear_block_idx * Threads + threadIdx.x;
+    const int global_threads = linear_grid_dim * Threads;
+    const int phase = push_counter[linear_block_idx] & 1u;
     uint8_t* peer_base[kWorld] = {push0, push1, push2, push3};
     const int64_t phase_offset =
         static_cast<int64_t>(phase) * push_stride * kWorld;
@@ -2978,7 +2979,28 @@ __global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
 
     __syncthreads();
     if (threadIdx.x == 0)
-        atomicAdd(push_counter + blockIdx.x, 1u);
+        atomicAdd(push_counter + linear_block_idx, 1u);
+}
+
+// Keep the selected standalone launch as a thin wrapper around the same
+// device body used by the forthcoming persistent TP MegaMoE kernel.  Passing
+// the logical grid explicitly avoids child launches and lets a resident grid
+// reuse the exact validated CustomAllReduceV2 phase-counter protocol.
+template <int Threads, bool UseMulticast, bool Chunked = false>
+__global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
+        const __nv_bfloat16* __restrict__ input,
+        const float* __restrict__ topk_weights,
+        __nv_bfloat16* __restrict__ output,
+        uint32_t* __restrict__ push_counter,
+        uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
+        uint8_t* push_mc,
+        int tokens, int rank, int64_t push_stride,
+        int hidden_offset, int hidden_size) {
+    fused_k6_push_ar_tp4_task<Threads, UseMulticast, Chunked>(
+        input, topk_weights, output, push_counter,
+        push0, push1, push2, push3, push_mc,
+        tokens, rank, push_stride, hidden_offset, hidden_size,
+        static_cast<int>(blockIdx.x), static_cast<int>(gridDim.x));
 }
 
 __device__ __forceinline__ uint4 load_multimem_reduce_bf16_16b(
