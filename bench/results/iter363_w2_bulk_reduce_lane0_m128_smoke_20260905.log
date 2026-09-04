@@ -1,0 +1,38 @@
+W0904 23:30:36.086000 533477 torch/distributed/run.py:851] 
+W0904 23:30:36.086000 533477 torch/distributed/run.py:851] *****************************************
+W0904 23:30:36.086000 533477 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0904 23:30:36.086000 533477 torch/distributed/run.py:851] *****************************************
+SINGLE_MULTI_ENV {"benchmark": "v4_flash_tp_single_vs_multi_cuda_graph", "candidate": "TP-specialized MegaMoE single kernel", "control": "selected multi-kernel path from the same source", "gpu": "NVIDIA H20-3e", "input_contract": "shared FP8-E4M3 X + FP32 group128 scale; BF16-to-FP8 quantization outside timed graphs", "l2_policy": "cold; separate 256MiB Triton clear immediately before every implementation replay, clear excluded from events", "m_values": [128], "native_megamoe": false, "native_register_dequant": false, "outer": 1, "pair_granularity": "replay", "replays_per_outer_per_impl": 1, "route_pattern": "random", "single_launch_act_w2_cohort": false, "single_launch_assume_valid_gemm_tasks": true, "single_launch_balanced_workers": false, "single_launch_cluster_w13_act": false, "single_launch_cooperative_grid": false, "single_launch_ctas_per_sm": 8, "single_launch_dual_wg_ctas_per_sm": 4, "single_launch_dual_wg_phases": false, "single_launch_dual_wg_private_act": false, "single_launch_grid_poll_sleep_ns": 64, "single_launch_grouped_w13_act": false, "single_launch_hierarchical_grid": false, "single_launch_interleaved": false, "single_launch_m128_bound9": false, "single_launch_min_blocks": 8, "single_launch_noinline_gemm": false, "single_launch_p2p_two_shot": true, "single_launch_p2p_two_shot_blocks": 64, "single_launch_packed_grid_barrier": true, "single_launch_persistent_gemm_state": false, "single_launch_phase_stamps": false, "single_launch_relaxed_grid_poll": true, "single_launch_release_grid_arrival": true, "single_launch_route_dynamic_smem": false, "single_launch_schedule": 0, "single_launch_skip_final_cta_sync": false, "single_launch_tail_act_only": false, "single_launch_tail_group_ctas": 16, "single_launch_tail_overlap": false, "single_launch_w13_completion_act": false, "single_launch_w13_n64_tail": false, "single_launch_w13_next_task_prefetch": false, "single_launch_w13_phase_noinline": false, "single_launch_w13_tail_split4": false, "single_launch_w2_bulk_reduce_combine": true, "single_launch_w2_chunk_ar_dedicated": false, "single_launch_w2_chunk_ar_helper_stage": 3, "single_launch_w2_chunk_ar_l2_load": false, "single_launch_w2_chunk_ar_overlap": false, "single_launch_w2_chunk_ar_post": false, "single_launch_w2_chunk_ar_post_concurrent": false, "single_launch_w2_chunk_ar_strong_producer_fence": false, "single_launch_w2_chunk_ar_wait_only": false, "single_launch_w2_chunk_major": false, "single_launch_w2_next_task_prefetch": false, "single_launch_w2_unroll2_bound9": false, "sm_count": 78, "warmup_replays": 1, "world_size": 4}
+W0904 23:35:34.899000 533477 torch/distributed/elastic/agent/server/api.py:739] Received 15 death signal, shutting down workers
+W0904 23:35:34.900000 533477 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 533545 closing signal SIGTERM
+W0904 23:35:34.901000 533477 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 533546 closing signal SIGTERM
+W0904 23:35:34.902000 533477 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 533547 closing signal SIGTERM
+W0904 23:35:34.904000 533477 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 533548 closing signal SIGTERM
+Traceback (most recent call last):
+  File "/usr/local/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 308, in launch_agent
+    result = agent.run()
+             ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/metrics/api.py", line 134, in wrapper
+    result = f(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/agent/server/api.py", line 731, in run
+    result = self._invoke_run(role)
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/agent/server/api.py", line 908, in _invoke_run
+    time.sleep(monitor_interval)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/api.py", line 86, in _terminate_process_handler
+    raise SignalException(f"Process {os.getpid()} got signal: {sigval}", sigval=sigval)
+torch.distributed.elastic.multiprocessing.api.SignalException: Process 533477 got signal: 15

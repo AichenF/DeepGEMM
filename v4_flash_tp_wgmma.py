@@ -2587,20 +2587,24 @@ __device__ __forceinline__ void route_gemm_task(
     }
     if constexpr (BulkReduceW2) {
         __syncthreads();
-        if (tid < kTok) {
+        if (tid == 0) {
             asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
-            const int route = route_ids[metadata_slot][tid];
-            if (static_cast<unsigned>(route)
-                    < static_cast<unsigned>(max_routes)) {
-                const int token = route / kTopK;
-                bulk_reduce_add_f32(
-                    output + static_cast<int64_t>(token) * N
-                        + n_block_idx * kWout,
-                    bulk_reduce_smem + tid * kBulkReducePitch,
-                    kWout * sizeof(float));
-                bulk_reduce_commit_group();
-                bulk_reduce_wait_group_0();
+            #pragma unroll
+            for (int route_slot = 0; route_slot < kTok; ++route_slot) {
+                const int route = route_ids[metadata_slot][route_slot];
+                if (static_cast<unsigned>(route)
+                        < static_cast<unsigned>(max_routes)) {
+                    const int token = route / kTopK;
+                    bulk_reduce_add_f32(
+                        output + static_cast<int64_t>(token) * N
+                            + n_block_idx * kWout,
+                        bulk_reduce_smem
+                            + route_slot * kBulkReducePitch,
+                        kWout * sizeof(float));
+                }
             }
+            bulk_reduce_commit_group();
+            bulk_reduce_wait_group_0();
         }
     } else if constexpr (!IsW13 && kW2RouteOutput
                          && kW2CoalescedStore) {
@@ -5180,7 +5184,7 @@ void tp4_megamoe_single_launch_kernel(
         route_to_sorted, tokens, cta);
     single_launch_grid_barrier(barrier_state, 0, ctas);
     if constexpr (kSingleLaunchW2BulkReduceCombine) {
-        if (threadIdx.x < kTok)
+        if (threadIdx.x == 0)
             asm volatile("fence.proxy.async.global;" ::: "memory");
     }
     bool chunk_ar_overlap_active = false;

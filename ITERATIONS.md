@@ -9087,3 +9087,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Inference:** The first parallel-issuer protocol is not forward-progress safe as written.  The leading isolation is to serialize all eight reductions through lane 0 (one per-thread bulk group, matching the audited minimal PTX protocol); if that also hangs, isolate a single route and then a standalone non-MegaMoE bulk-reduce kernel before changing any collective logic.
 - **Decision:** Do not benchmark or select this variant.  Preserve it as a failed opt-in and next test the lane-0 serialized issuer.
 - **Artifact:** `bench/results/iter362_w2_bulk_reduce_m128_smoke_20260905.log`.
+
+## Iteration 363 — serialized bulk-group issuer still hangs (2026-09-05)
+
+- **Purpose:** Isolate whether Iteration 362 lost forward progress because eight lanes issued independent bulk groups concurrently from every W2 CTA.
+- **Change:** Serialized all valid route reductions through lane 0: up to eight 512-byte `cp.reduce.async.bulk.global.shared::cta.bulk_group.add.f32` operations are issued into that lane's single group, followed by one commit and full `wait_group 0`.  The global async-proxy fence was likewise reduced to lane 0.  All local-sum layout, W2 math, grid barriers, and P2P two-shot collective code remained unchanged.
+- **Setup:** TP4 GPUs 0–3, M128 random routes, seed 20260904, one candidate warm-up, with a 300-second process timeout and 10-second forced-cleanup grace.  Public X was already FP8-E4M3 with FP32 group-128 scales; no external activation quantization entered the graph.
+- **Result:** **FAIL with the same device-side nonprogress.**  A live `py-spy --native` sample showed every rank blocked in `cudaDeviceSynchronize` at candidate `capture_graph(...):69`, exactly as in Iteration 362.  The job emitted no correctness or timing record and exited 124 under the hard timeout.  The timeout cleaned up all workers rather than leaving persistent GPU clients.
+- **Inference:** Concurrent per-lane bulk groups are disproven as the cause.  The remaining fault is either the bulk-reduce instruction/proxy protocol itself in this execution context or a residency/progress interaction created by making every resident W2 CTA synchronously wait for shared-to-global reductions.
+- **Decision:** Stop full-MegaMoE trials of this mechanism until a standalone one-CTA/one-route `cp.reduce.async.bulk` microkernel proves instruction semantics and completion on H20.  Keep the bulk-combine flag default-off; no performance claim is made.
+- **Artifact:** `bench/results/iter363_w2_bulk_reduce_lane0_m128_smoke_20260905.log`.
