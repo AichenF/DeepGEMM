@@ -6411,3 +6411,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Test: imported the new JIT module on H20 GPU 0 with verbose build.
 - Result: **CUDA compile and shared-library link passed** (`nvcc` plus final `.so` link both completed). The shell-only diagnostic print then raised `NameError` because nested SSH quoting removed the string quotes; this occurred after the module import and does not affect the extension.
 - Decision: proceed to a TP4 M=8 distributed correctness smoke; compilation is no longer the blocker.
+
+## Iteration 185 — first TP4 M8 native execution
+
+- Change under test: Iteration 184 native 78-CTA/384-thread MegaMoE body plus same-launch TP4 multicast communication, with prequantized FP8 input.
+- Test: TP4 GPUs 0-3, M=8 random routing, CUDA Graph paired harness, 2x2 cold-L2 timing configuration (correctness precedes timing).
+- Result: **runtime failed before correctness/timing**. All four ranks reached candidate execution and reported `cudaErrorIllegalInstruction` at the first post-warmup synchronization.
+- Evidence: `bench/results/iter185_native_tp4_m8_smoke_20260904.log` on the remote branch.
+- Interpretation: the symmetric four-rank failure is consistent with a device trap/assert or an unsupported body invariant, not a single-peer communication timeout. The next run must isolate the local MegaMoE body from the appended TP communication and enable explicit stage markers/launch blocking.
+- Decision: keep this build as a recorded failed bring-up; add a local-only diagnostic mode before changing scheduling or performance policy.
