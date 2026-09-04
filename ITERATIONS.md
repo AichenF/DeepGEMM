@@ -6770,3 +6770,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Analysis: versus Iteration 224, M8 is numerically identical at 0.077120 ms and M128 regresses slightly from 0.371024 to 0.371680 ms. The single-GPU phase gain does not survive the distributed end-to-end gate. Source-correlated NCU review independently locates most barrier samples after whole-grid phase barriers rather than at caller-side per-task barriers.
 - Decision: reject persistent GEMM state as a performance direction and keep it disabled. Target whole-grid tail imbalance/static task striping next; no speedup claim.
 - Artifact: `bench/results/iter232_persistent_gemm_state_tp4_m8_m128_cold_screen_20260904.log`.
+## Iteration 233 — CUDA cooperative grid barriers are correct but slower
+
+- Hypothesis/change: add opt-in `V4_SINGLE_LAUNCH_COOPERATIVE_GRID=1`, launch the resident kernel with the CUDA cooperative attribute through `cudaLaunchKernelEx`, and replace the custom generation-counted global atomic/poll barrier with `cooperative_groups::this_grid().sync()`. Default remains the custom barrier.
+- Protocol: H20 GPU 0, schedule 0, bound/requested residency 8, persistent-GEMM experiment disabled, M={8,128} random routes, prequantized FP8 X/group-128 scale and MXFP4 weights. Compute-only launches follow excluded 256 MiB L2 clears and compare the full W2 route tensor bitwise with the independent multi-kernel local path.
+- Correctness: PASS at M8/M128 (`cosine=1`, `rel_l2=0`, finite=true), proving cooperative graph-compatible launch and all four grid barriers are functionally valid in local mode.
+- Phase result (route/W13/activation/W2 us): M8 `2.560/56.352/2.400/28.480`; M128 `4.352/241.280/5.632/117.664`.
+- Analysis: relative to the custom-barrier compute profiles, cooperative synchronization adds roughly 15.5 us to M8 W13 and 7.3 us to W2, and about 20.6/2.0 us to M128 W13/W2. CUDA's generic cooperative-grid barrier cost exceeds any reduction in polling interference at this 624-CTA geometry.
+- Decision: reject without distributed timing and leave disabled. Retain the custom barrier; next target static tail work or remove redundant non-grid synchronization only if source-correlated evidence supports it.
+- Artifact: `bench/results/iter233_cooperative_grid_m8_m128_compute_smoke_20260904.log`.

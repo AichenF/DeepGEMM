@@ -195,6 +195,9 @@ def main() -> None:
                     "single_launch_persistent_gemm_state": (
                         kernel.SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
                     ),
+                    "single_launch_cooperative_grid": (
+                        kernel.SINGLE_LAUNCH_COOPERATIVE_GRID
+                    ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
                     ),

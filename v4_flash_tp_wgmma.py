@@ -253,6 +253,9 @@ SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM = (
 SINGLE_LAUNCH_PERSISTENT_GEMM_STATE = (
     os.environ.get("V4_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE", "0") == "1"
 )
+SINGLE_LAUNCH_COOPERATIVE_GRID = (
+    os.environ.get("V4_SINGLE_LAUNCH_COOPERATIVE_GRID", "0") == "1"
+)
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "8")
 )
@@ -357,6 +360,7 @@ _CUDA = r"""
 #include <cuda.h>
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
+#include <cooperative_groups.h>
 #include <cub/block/block_scan.cuh>
 
 #include <cutlass/arch/barrier.h>
@@ -451,6 +455,8 @@ static constexpr bool kSingleLaunchRouteDynamicSmem =
     K_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM;
 static constexpr bool kSingleLaunchPersistentGemmState =
     K_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE;
+static constexpr bool kSingleLaunchCooperativeGrid =
+    K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr int kSingleLaunchNvlsBlocks =
     K_SINGLE_LAUNCH_NVLS_BLOCKS;
 static constexpr int kSingleLaunchGroupCtas =
@@ -3348,6 +3354,15 @@ static constexpr int kSingleLaunchStatePrefixWords =
 
 __device__ __forceinline__ void single_launch_grid_barrier(
         int32_t* __restrict__ state, int phase, int expected_blocks) {
+    if constexpr (kSingleLaunchCooperativeGrid) {
+        cooperative_groups::this_grid().sync();
+        if (blockIdx.x == 0 && threadIdx.x == 0) {
+            reinterpret_cast<uint64_t*>(
+                state + kSingleLaunchBarrierWords)[phase + 1] =
+                    read_globaltimer();
+        }
+        return;
+    }
     __shared__ int observed_epoch;
     __syncthreads();
     if (threadIdx.x == 0) {
@@ -4831,8 +4846,26 @@ void launch_tp4_megamoe_single(
                 "single-launch kernel cannot keep the 78 communication CTAs resident");
 
     const auto stream = at::cuda::getCurrentCUDAStream();
-    tp4_megamoe_single_launch_kernel<SplitK, Tokens><<<
-        resident_grid, 128, dynamic_smem_bytes, stream>>>(
+    cudaLaunchConfig_t launch_config{};
+    launch_config.gridDim = dim3(resident_grid);
+    launch_config.blockDim = dim3(128);
+    launch_config.dynamicSmemBytes = dynamic_smem_bytes;
+    launch_config.stream = stream;
+    cudaLaunchAttribute launch_attribute{};
+    if constexpr (kSingleLaunchCooperativeGrid) {
+        int cooperative_supported = 0;
+        C10_CUDA_CHECK(cudaDeviceGetAttribute(
+            &cooperative_supported, cudaDevAttrCooperativeLaunch, device));
+        TORCH_CHECK(cooperative_supported != 0,
+                    "device does not support cooperative launch");
+        launch_attribute.id = cudaLaunchAttributeCooperative;
+        launch_attribute.val.cooperative = 1;
+        launch_config.attrs = &launch_attribute;
+        launch_config.numAttrs = 1;
+    }
+    const cudaError_t launch_result = cudaLaunchKernelEx(
+        &launch_config,
+        tp4_megamoe_single_launch_kernel<SplitK, Tokens>,
         w13_descriptor, w13_descriptor, w2_descriptor, w2_descriptor,
         w13.data_ptr<uint8_t>(), s13.data_ptr<uint8_t>(),
         g13.data_ptr<float>(),
@@ -4861,6 +4894,9 @@ void launch_tp4_megamoe_single(
         pull_sem_local.data_ptr<uint8_t>(),
         reinterpret_cast<uint8_t*>(pull_sem_mc_ptr),
         expert_ids.numel(), rank, push_stride, enable_tp_collective);
+    TORCH_CHECK(launch_result == cudaSuccess,
+                "failed to launch TP MegaMoE kernel: ",
+                cudaGetErrorString(launch_result));
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -5702,6 +5738,7 @@ _EXTENSION_CONFIG = (
           f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
           f"sldr{int(SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM)}_"
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
+          f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
@@ -5791,6 +5828,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE="
             f"{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="
+            f"{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}"
         ),
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",
