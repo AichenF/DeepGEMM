@@ -242,6 +242,11 @@ SINGLE_LAUNCH_INTERLEAVED = SINGLE_LAUNCH_SCHEDULE != 0
 SINGLE_LAUNCH_NOINLINE_GEMM = (
     os.environ.get("V4_SINGLE_LAUNCH_NOINLINE_GEMM", "0") == "1"
 )
+SINGLE_LAUNCH_MIN_BLOCKS = int(
+    os.environ.get("V4_SINGLE_LAUNCH_MIN_BLOCKS", "4")
+)
+if SINGLE_LAUNCH_MIN_BLOCKS not in (4, 5, 6, 7, 8):
+    raise ValueError("V4_SINGLE_LAUNCH_MIN_BLOCKS must be in [4,8]")
 SINGLE_LAUNCH_CTAS_PER_SM = int(
     os.environ.get("V4_SINGLE_LAUNCH_CTAS_PER_SM", "5")
 )
@@ -3327,7 +3332,8 @@ __device__ __forceinline__ void single_launch_group_barrier(
 // both MXFP4 GEMMs, internal SwiGLU/FP8 requantization, fixed-k6 reduction and
 // TP all-reduce.  Input X is already FP8 at this API boundary.
 template <int SplitK>
-__global__ __launch_bounds__(128, 4) void tp4_megamoe_single_launch_kernel(
+__global__ __launch_bounds__(128, K_SINGLE_LAUNCH_MIN_BLOCKS)
+void tp4_megamoe_single_launch_kernel(
         const __grid_constant__ CUtensorMap w13_tma_weight,
         const __grid_constant__ CUtensorMap w13_tma_weight_scale,
         const __grid_constant__ CUtensorMap w2_tma_weight,
@@ -5538,10 +5544,11 @@ _EXTENSION_CONFIG = (
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
           f"slsch{SINGLE_LAUNCH_SCHEDULE}_"
           f"slnig{int(SINGLE_LAUNCH_NOINLINE_GEMM)}_"
+          f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
-          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v169ph")
+          f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v170lb")
 _EXTENSION_NAME = (
-    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v169ph"
+    f"v4tp_{hashlib.sha1(_EXTENSION_CONFIG.encode()).hexdigest()[:20]}_v170lb"
 )
 
 _ext = load_inline(
@@ -5617,6 +5624,7 @@ _ext = load_inline(
             "-DK_SINGLE_LAUNCH_NOINLINE_GEMM="
             f"{int(SINGLE_LAUNCH_NOINLINE_GEMM)}"
         ),
+        f"-DK_SINGLE_LAUNCH_MIN_BLOCKS={SINGLE_LAUNCH_MIN_BLOCKS}",
         f"-DK_MIN_BLOCKS_PER_SM={MIN_BLOCKS_PER_SM}",
         f"-DK_W13_LAUNCH_BOUND_10={int(W13_LAUNCH_BOUND_10)}",
         f"-DK_W13_MAX_SMEM_CARVEOUT={int(W13_MAX_SMEM_CARVEOUT)}",

@@ -6226,3 +6226,36 @@ maximum rank latency of a full CUDA-Graph replay.
   stage alone.  Next force an eight-CTA launch bound and inspect spill versus
   phase-time tradeoff, since standalone W13/W2 require at most 47/61 registers.
 - **Evidence:** `results/iter169_tp4_single_phase_clock_m8_m128_20260904.log`.
+
+## Iteration 170 — eight-block launch bound and eight CTAs/SM
+
+- **Change under test:** make the single-launch minimum-block launch bound
+  configurable, compile schedule 0 with `__launch_bounds__(128,8)`, and
+  request eight resident CTAs/SM.  Standalone control kernels retain their
+  original launch bounds.  The compiler must trade the fused entry's former
+  85-register footprint for at most 64 registers plus any spill traffic.
+- **Protocol:** TP4 physical GPUs 4-7, random M8/M128 routes, inline schedule
+  0, launch-bound/requested residency 8, same-process paired CUDA Graphs, two
+  outer batches x twenty replays, four cold warmups, rank-max timing.  Every
+  replay receives a separate excluded 256 MiB Triton L2 clear immediately
+  before execution.
+- **Correctness:** PASS for candidate/control at both M values.  Candidate
+  minimum cosine is `0.9999955807`, maximum relative L2 `0.0029729925`, all
+  outputs are finite, and route padding agrees exactly.
+- **Cold-L2 timing:** M8 control/candidate `0.071520/0.091040 ms`
+  (`0.78559x`), candidate min `0.089600 ms`; M128
+  `0.305632/0.426560 ms` (`0.71650x`), candidate min `0.424128 ms`.
+  Both arms saw one correlated 2.5-2.8 ms system outlier, so maxima are not
+  representative; batch medians remain close.
+- **Device phase deltas (us):** M8 route/W13/activation/W2
+  `16.096/41.440/2.976/21.760`; M128
+  `28.256/222.400/6.752/113.280`.
+- **Analysis:** this is a real gain.  Against iteration 169, candidate median
+  improves 5.73% at M8 and 2.86% at M128.  M8 W13 and W2 improve 7.76% and
+  9.33%; M128 improves 2.18% and 1.97%.  Route cost is unchanged, isolating
+  the gain to greater compute-phase residency.  The remaining deficit is
+  still 27.3% at M8 and 39.6% at M128 versus control.
+- **Decision:** advance launch-bound 8 for broader screening, but first audit
+  cubin registers/local spills.  Then optimize the unchanged 16-28 us route
+  phase and M128 post-W2 collective tail; do not claim the 10% objective.
+- **Evidence:** `results/iter170_tp4_single_lb8_m8_m128_screen_20260904.log`.
