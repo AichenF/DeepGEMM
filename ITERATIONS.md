@@ -8987,3 +8987,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Isolation result: peer reads/writes, two-shot reduction, and CARv2 semaphore ordering are not required to trigger the bug. The trigger is narrowed to the helper's local read/combine/write path or an unexpected alias/address/lifetime interaction between `down`, the symmetric output, and later W2 execution.
 - Decision: do not spend time on stage 2 until pointer/range aliasing and the C++ launch ABI are audited. Keep staged diagnostics and overlap default-off.
 - Artifact: `bench/results/iter352_w2_chunk_helper_stage1_production_smoke_20260904.log`.
+
+## Iteration 353 — audit candidate pointer ranges (2026-09-04)
+
+- Hypothesis: stage-1 local production might accidentally overwrite `down` through a tensor alias or overlapping symmetric-workspace slice.
+- Instrumentation: `--diagnose-output` now prints byte-exact device ranges for candidate `down`, symmetric pull output, and pull semaphore storage before replay.
+- Setup: TP4, M128 random routes, seed 20260904, helper stage 1, four diagnostic replays and one cold-L2 smoke.
+- Address evidence on rank 0: `down=[140723185778688,140723192070144)` (6,291,456 bytes), pull output `[140723235061760,140723236110336)` (1,048,576 bytes), and pull semaphores `[140723251838976,140723251847168)` (8,192 bytes). The ranges are disjoint with large gaps.
+- Correctness: stage 1 still corrupted final `down` nondeterministically, with repeat-versus-first max-absolute differences up to 99,328.
+- Inference: ordinary local pointer-range aliasing is ruled out. The remaining local-production suspects are read/write overlap semantics with unfinished W2 stores, shared/TMA state disturbed by executing the helper body, or an out-of-range access not explained by the intended index formulas.
+- Decision: keep overlap rejected. Next run a write-only symmetric-buffer stage and a read-only/local-combine stage separately, then use sanitizer/task ownership evidence if needed.
+- Artifact: `bench/results/iter353_w2_chunk_pointer_range_audit_20260904.log`.

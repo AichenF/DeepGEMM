@@ -362,6 +362,32 @@ def main() -> None:
         candidate_graph = capture_graph(candidate_case, comm, cpu_group, device)
 
         if args.diagnose_output:
+            assert candidate_case.down is not None
+            assert candidate_case.fused_pull_output is not None
+            assert candidate_case.fused_pull_sem_local is not None
+            if rank == 0:
+                def tensor_range(tensor: torch.Tensor) -> dict[str, int]:
+                    begin = int(tensor.data_ptr())
+                    nbytes = int(tensor.numel() * tensor.element_size())
+                    return {"begin": begin, "end": begin + nbytes,
+                            "bytes": nbytes}
+
+                print(
+                    "SINGLE_MULTI_POINTER_DIAG "
+                    + json.dumps(
+                        {
+                            "down": tensor_range(candidate_case.down),
+                            "pull_output": tensor_range(
+                                candidate_case.fused_pull_output
+                            ),
+                            "pull_sem": tensor_range(
+                                candidate_case.fused_pull_sem_local
+                            ),
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
             control_graph.replay()
             torch.cuda.synchronize(device)
             assert control_case.down is not None
