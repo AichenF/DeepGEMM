@@ -36,7 +36,10 @@ from triton import runtime as triton_runtime
 
 import sglang.srt.distributed.parallel_state as ps
 from sglang.kernels.ops.communication.all_reduce import AllReduceAlgo
-from sglang.kernels.ops.communication.mp import register_comm_cleanup
+try:
+    from sglang.jit_kernel.mp import register_comm_cleanup
+except ImportError:  # Compatibility with the older benchmark checkout.
+    from sglang.kernels.ops.communication.mp import register_comm_cleanup
 from sglang.kernels.ops.kimi_k3.all_reduce import (
     all_reduce_pull_res,
     all_reduce_push_res,

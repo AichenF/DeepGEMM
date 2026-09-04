@@ -6649,3 +6649,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** Infrastructure FAIL before communicator construction, graph capture, CUDA kernel execution, correctness, or timing. The paired helper imports `bench/v4_flash_tp_humming_graph.py`, which contained one additional legacy-only cleanup import and raised the same `ModuleNotFoundError` on every rank.
 - **Conclusion:** The selected SGLang checkout and replacement API are correct, but the import closure was incomplete. Search all modules loaded by this benchmark, update the remaining compatibility import, and rerun unchanged; no task-lookup performance conclusion is possible from this attempt.
 - **Artifact:** `bench/results/iter219_native_task_lookup_tp4_allm_cold_smoke_20260904.log`.
+
+## Iteration 220 — Complete cleanup-import compatibility across benchmark entries
+
+- **Change:** Added the same current-first `sglang.jit_kernel.mp` cleanup import to every tracked TP benchmark entry that still depended exclusively on the removed legacy module. Kernel code and graph contents remain unchanged.
+- **Test:** Retried the TP4 random-route all-M paired cold-L2 screen (`outer=2`, `replays=20`, four cold warmups) with `/workspace/sglang/python` first in the runtime path.
+- **Result:** The harness initialized distributed state and reached native candidate graph preparation, then failed before candidate kernel execution because `prepare_fused_pull` imports another removed API, `sglang.kernels.ops.kimi_k3.all_reduce.register_comm`. Thus correctness and latency remain unmeasured.
+- **Conclusion:** Cleanup-helper compatibility is fixed, but this SGLang checkout also moved the CUDA-graph symmetric-memory registration helper. Inspect the installed CARv2/Communicator implementation and use its authoritative current API rather than guessing another module path.
+- **Artifact:** `bench/results/iter220_native_task_lookup_tp4_allm_cold_screen_20260904.log`.
