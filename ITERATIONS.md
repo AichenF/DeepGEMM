@@ -7755,3 +7755,25 @@ maximum rank latency of a full CUDA-Graph replay.
   allocation, so direct GEMM/body specialization has higher priority.
 - **Artifact:**
   `bench/results/iter271_oversubscribed_turnover_tp4_m8_m128_cold_screen_20260904.log`.
+
+## Iteration 272 — 78-way sharded turnover is bitwise correct at M8
+
+- **Hypothesis/change:** Added opt-in schedule 5.  It preserves schedule 4's
+  one-useful-task-per-CTA turnover, but replaces each phase's single global
+  claim/done counter with 78 logical block-index stripes.  Task completion is
+  chained locally within a stripe, and only the last task of each stripe
+  contributes to the phase-global completion counter.  This reduces global
+  RMW traffic from one per tile to at most 78 per phase without assuming
+  physical `%smid` values are contiguous.
+- **Protocol:** H20 GPU 0, TP4-shape M8 random routes, compute-only single
+  entry, prequantized FP8-E4M3 X plus FP32 group-128 scale, independent
+  multi-kernel local reference, and a separate excluded 256 MiB cold-L2 clear
+  immediately before the candidate launch.
+- **Correctness:** PASS bitwise for the full routed W2 tensor
+  (`cosine=1.0`, `rel_l2=0.0`, all finite), with 344 padded rows and SplitK4.
+  This validates the sharded claim mapping and two-level release chain through
+  route, W13, internal SwiGLU/FP8 requant and W2.
+- **Decision:** Keep schedule 5 opt-in and run the same short distributed
+  M8/M128 cold-L2 screen used to reject schedule 4.
+- **Artifact:**
+  `bench/results/iter272_sharded_turnover_m8_compute_smoke_20260904.log`.

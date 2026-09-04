@@ -323,7 +323,8 @@ class CapturedCase:
             + (64 if self.m == 128 else 78)
         )
         scheduler_words = (
-            16 + oversubscribed_grid
+            (484 if kernel.SINGLE_LAUNCH_SHARDED_TURNOVER else 16)
+            + oversubscribed_grid
             if kernel.SINGLE_LAUNCH_OVERSUBSCRIBED
             else 8 + 3 * max_mblocks
             if kernel.SINGLE_LAUNCH_INTERLEAVED

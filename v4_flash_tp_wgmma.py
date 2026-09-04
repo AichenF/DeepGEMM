@@ -255,8 +255,10 @@ SINGLE_LAUNCH_SCHEDULE = int(
         "V4_SINGLE_LAUNCH_SCHEDULE", _single_launch_schedule_default
     )
 )
-if SINGLE_LAUNCH_SCHEDULE not in (0, 1, 2, 3, 4):
-    raise ValueError("V4_SINGLE_LAUNCH_SCHEDULE must be 0, 1, 2, 3, or 4")
+if SINGLE_LAUNCH_SCHEDULE not in (0, 1, 2, 3, 4, 5):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_SCHEDULE must be 0, 1, 2, 3, 4, or 5"
+    )
 if SINGLE_LAUNCH_TAIL_OVERLAP and SINGLE_LAUNCH_SCHEDULE != 0:
     raise ValueError("V4_SINGLE_LAUNCH_TAIL_OVERLAP requires schedule 0")
 if SINGLE_LAUNCH_GROUPED_W13_ACT and SINGLE_LAUNCH_SCHEDULE != 0:
@@ -280,7 +282,8 @@ if SINGLE_LAUNCH_CLUSTER_W13_ACT and (
         "and compact interleaved weights"
     )
 SINGLE_LAUNCH_INTERLEAVED = SINGLE_LAUNCH_SCHEDULE in (1, 2, 3)
-SINGLE_LAUNCH_OVERSUBSCRIBED = SINGLE_LAUNCH_SCHEDULE == 4
+SINGLE_LAUNCH_OVERSUBSCRIBED = SINGLE_LAUNCH_SCHEDULE in (4, 5)
+SINGLE_LAUNCH_SHARDED_TURNOVER = SINGLE_LAUNCH_SCHEDULE == 5
 SINGLE_LAUNCH_NOINLINE_GEMM = (
     os.environ.get("V4_SINGLE_LAUNCH_NOINLINE_GEMM", "0") == "1"
 )
@@ -595,7 +598,7 @@ static constexpr bool kW2MblockScale = K_W2_MBLOCK_SCALE || kW2SortedAct;
 static constexpr bool kW2CoalescedStore = K_W2_COALESCED_STORE;
 static constexpr bool kW2FoldGlobalScale = K_W2_FOLD_GLOBAL_SCALE;
 static constexpr int kSingleLaunchSchedule = K_SINGLE_LAUNCH_SCHEDULE;
-static_assert(kSingleLaunchSchedule >= 0 && kSingleLaunchSchedule <= 4);
+static_assert(kSingleLaunchSchedule >= 0 && kSingleLaunchSchedule <= 5);
 static constexpr bool kSingleLaunchInterleaved =
     kSingleLaunchSchedule >= 1 && kSingleLaunchSchedule <= 3;
 static constexpr bool kSingleLaunchNoInlineGemm =
@@ -3869,6 +3872,22 @@ enum SingleLaunchOversubscribedOffset : int {
     kOversubscribedHeaderWords = 16,
 };
 
+enum SingleLaunchShardedTurnoverOffset : int {
+    kShardedGeneration = 0,
+    kShardedPhase = 1,
+    kShardedDoneSmsW13 = 2,
+    kShardedDoneSmsActivation = 3,
+    kShardedDoneSmsW2 = 4,
+    kShardedNextW13 = 16,
+    kShardedDoneW13 = kShardedNextW13 + kSingleLaunchH20Sms,
+    kShardedNextActivation = kShardedDoneW13 + kSingleLaunchH20Sms,
+    kShardedDoneActivation =
+        kShardedNextActivation + kSingleLaunchH20Sms,
+    kShardedNextW2 = kShardedDoneActivation + kSingleLaunchH20Sms,
+    kShardedDoneW2 = kShardedNextW2 + kSingleLaunchH20Sms,
+    kShardedHeaderWords = kShardedDoneW2 + kSingleLaunchH20Sms,
+};
+
 // Reusable barrier for a fixed contiguous CTA cohort.  A CTA barrier makes
 // all member lanes' stores happen-before lane 0.  The acq_rel arrival chain
 // then transfers those stores through the last arriver's release epoch to all
@@ -3897,7 +3916,8 @@ __device__ __forceinline__ void single_launch_group_barrier(
 // bring-up, schedule 1 is the fine-grained diagnostic DAG, schedule 2 is the
 // fixed-cohort experiment, schedule 3 is a static readiness wave, and
 // schedule 4 uses hardware CTA turnover without a resident whole-grid
-// barrier.  Every schedule owns route preparation,
+// barrier, and schedule 5 shards that turnover queue across 78 logical
+// stripes.  Every schedule owns route preparation,
 // both MXFP4 GEMMs, internal SwiGLU/FP8 requantization, fixed-k6 reduction and
 // TP all-reduce.  Input X is already FP8 at this API boundary.
 template <int Tokens>
@@ -3966,7 +3986,9 @@ void tp4_megamoe_single_launch_kernel(
     // count and two release-published queues per possible routed M block.
     int32_t* scheduler =
         barrier_state + kSingleLaunchStatePrefixWords;
-    if constexpr (kSingleLaunchSchedule == 4) {
+    if constexpr (kSingleLaunchSchedule == 4
+                  || kSingleLaunchSchedule == 5) {
+        constexpr bool kShardedTurnover = kSingleLaunchSchedule == 5;
         constexpr uint32_t kGenerationBusy = 0x80000000u;
         constexpr uint32_t kGenerationMask = 0x7fffffffu;
         constexpr int kPhaseW13 = 1;
@@ -3976,12 +3998,19 @@ void tp4_megamoe_single_launch_kernel(
         constexpr int kW13TasksPerMblock = kW13NTiles * SplitK;
         constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
         constexpr int kCommunicationBlocks = Tokens == 128 ? 64 : 78;
+        constexpr int kTurnoverHeaderWords = kShardedTurnover
+            ? kShardedHeaderWords : kOversubscribedHeaderWords;
+        constexpr int kTurnoverGeneration = kShardedTurnover
+            ? kShardedGeneration : kOversubscribedGeneration;
+        constexpr int kTurnoverPhase = kShardedTurnover
+            ? kShardedPhase : kOversubscribedPhase;
         int32_t* const joined_generation =
-            scheduler + kOversubscribedHeaderWords;
+            scheduler + kTurnoverHeaderWords;
         __shared__ int initialize_generation;
         __shared__ int ready_generation;
         __shared__ int scheduled_kind;
         __shared__ int scheduled_index;
+        __shared__ int scheduled_smid;
 
         // A graph replay cannot depend on block 0 being scheduled before an
         // oversubscribed set of waiters.  The first block whose persistent
@@ -3992,7 +4021,7 @@ void tp4_megamoe_single_launch_kernel(
             initialize_generation = 0;
             while (true) {
                 const int generation =
-                    load_acquire_gpu_i32(scheduler + kOversubscribedGeneration);
+                    load_acquire_gpu_i32(scheduler + kTurnoverGeneration);
                 if ((static_cast<uint32_t>(generation) & kGenerationBusy) != 0) {
                     __nanosleep(64);
                     continue;
@@ -4004,7 +4033,7 @@ void tp4_megamoe_single_launch_kernel(
                 const int busy_generation = static_cast<int>(
                     static_cast<uint32_t>(generation) | kGenerationBusy);
                 if (atomicCAS(
-                        scheduler + kOversubscribedGeneration,
+                        scheduler + kTurnoverGeneration,
                         generation, busy_generation) == generation) {
                     ready_generation = generation;
                     initialize_generation = 1;
@@ -4016,7 +4045,7 @@ void tp4_megamoe_single_launch_kernel(
 
         if (initialize_generation != 0) {
             for (int word = 1 + threadIdx.x;
-                 word < kOversubscribedHeaderWords; word += blockDim.x)
+                 word < kTurnoverHeaderWords; word += blockDim.x)
                 scheduler[word] = 0;
             __syncthreads();
             single_launch_route_task(
@@ -4025,12 +4054,12 @@ void tp4_megamoe_single_launch_kernel(
             __syncthreads();
             if (threadIdx.x == 0) {
                 store_release_gpu_i32(
-                    scheduler + kOversubscribedPhase, kPhaseW13);
+                    scheduler + kTurnoverPhase, kPhaseW13);
                 const int next_generation = static_cast<int>(
                     (static_cast<uint32_t>(ready_generation) + 1u)
                     & kGenerationMask);
                 store_release_gpu_i32(
-                    scheduler + kOversubscribedGeneration, next_generation);
+                    scheduler + kTurnoverGeneration, next_generation);
                 store_release_gpu_i32(
                     joined_generation + cta, next_generation);
                 ready_generation = next_generation;
@@ -4051,9 +4080,10 @@ void tp4_megamoe_single_launch_kernel(
         // into the next phase.  A block exits immediately after one useful
         // task, freeing its slot exactly as a standalone GEMM grid would.
         if (threadIdx.x == 0) {
+            const int shard = cta % kSingleLaunchH20Sms;
             while (true) {
                 const int phase = load_acquire_gpu_i32(
-                    scheduler + kOversubscribedPhase);
+                    scheduler + kTurnoverPhase);
                 int task = -1;
                 int task_count = 0;
                 int kind = 0;
@@ -4061,26 +4091,43 @@ void tp4_megamoe_single_launch_kernel(
                 if (phase == kPhaseW13) {
                     kind = 1;
                     task_count = total_w13_tasks;
-                    next = scheduler + kOversubscribedNextW13;
+                    next = scheduler + (kShardedTurnover
+                        ? kShardedNextW13 : kOversubscribedNextW13);
                 } else if (phase == kPhaseActivation) {
                     kind = 2;
                     task_count = total_activation_tasks;
-                    next = scheduler + kOversubscribedNextActivation;
+                    next = scheduler + (kShardedTurnover
+                        ? kShardedNextActivation
+                        : kOversubscribedNextActivation);
                 } else if (phase == kPhaseW2) {
                     kind = 3;
                     task_count = total_w2_tasks;
-                    next = scheduler + kOversubscribedNextW2;
+                    next = scheduler + (kShardedTurnover
+                        ? kShardedNextW2 : kOversubscribedNextW2);
                 } else if (phase == kPhaseCommunication) {
                     kind = 4;
                     task_count = enable_tp_collective
                         ? kCommunicationBlocks : 0;
                     next = scheduler + kOversubscribedNextCommunication;
                 }
-                if (next != nullptr)
-                    task = atomicAdd(next, 1);
+                if (next != nullptr) {
+                    if constexpr (kShardedTurnover) {
+                        if (phase != kPhaseCommunication) {
+                            const int local_task =
+                                atomicAdd(next + shard, 1);
+                            task = shard
+                                + local_task * kSingleLaunchH20Sms;
+                        } else {
+                            task = atomicAdd(next, 1);
+                        }
+                    } else {
+                        task = atomicAdd(next, 1);
+                    }
+                }
                 if (task >= 0 && task < task_count) {
                     scheduled_kind = kind;
                     scheduled_index = task;
+                    scheduled_smid = shard;
                     break;
                 }
                 if (phase == kPhaseCommunication) {
@@ -4089,7 +4136,7 @@ void tp4_megamoe_single_launch_kernel(
                     break;
                 }
                 while (load_acquire_gpu_i32(
-                           scheduler + kOversubscribedPhase) == phase)
+                           scheduler + kTurnoverPhase) == phase)
                     __nanosleep(64);
             }
         }
@@ -4098,6 +4145,7 @@ void tp4_megamoe_single_launch_kernel(
         const int kind = scheduled_kind;
         const int task = scheduled_index;
         int32_t* done = nullptr;
+        int32_t* done_sms = nullptr;
         int expected_done = 0;
         int next_phase = 0;
         if (kind == 1) {
@@ -4106,14 +4154,19 @@ void tp4_megamoe_single_launch_kernel(
                 w13, s13, g13, qx, x_scale,
                 sorted_ids, expert_ids, num_tokens_padded, topk_weights,
                 partials, lut, nullptr, routes, 0, task);
-            done = scheduler + kOversubscribedDoneW13;
+            done = scheduler + (kShardedTurnover
+                ? kShardedDoneW13 : kOversubscribedDoneW13);
+            done_sms = scheduler + kShardedDoneSmsW13;
             expected_done = total_w13_tasks;
             next_phase = kPhaseActivation;
         } else if (kind == 2) {
             reduce_swiglu_quant_task<kIntermediate, SplitK>(
                 partials, activation, qactivation, activation_scale,
                 route_to_sorted, topk_ids, g2, routes, task);
-            done = scheduler + kOversubscribedDoneActivation;
+            done = scheduler + (kShardedTurnover
+                ? kShardedDoneActivation
+                : kOversubscribedDoneActivation);
+            done_sms = scheduler + kShardedDoneSmsActivation;
             expected_done = total_activation_tasks;
             next_phase = kPhaseW2;
         } else if (kind == 3) {
@@ -4123,7 +4176,9 @@ void tp4_megamoe_single_launch_kernel(
                 sorted_ids, expert_ids, num_tokens_padded, topk_weights,
                 reinterpret_cast<float*>(down), lut, nullptr,
                 routes, 0, task);
-            done = scheduler + kOversubscribedDoneW2;
+            done = scheduler + (kShardedTurnover
+                ? kShardedDoneW2 : kOversubscribedDoneW2);
+            done_sms = scheduler + kShardedDoneSmsW2;
             expected_done = total_w2_tasks;
             next_phase = kPhaseCommunication;
         } else if (kind == 4) {
@@ -4144,11 +4199,30 @@ void tp4_megamoe_single_launch_kernel(
         if (kind >= 1 && kind <= 3) {
             __syncthreads();
             if (threadIdx.x == 0) {
-                const int completed =
-                    atomic_add_acq_rel_gpu_i32(done, 1) + 1;
-                if (completed == expected_done)
-                    store_release_gpu_i32(
-                        scheduler + kOversubscribedPhase, next_phase);
+                if constexpr (kShardedTurnover) {
+                    const int smid = scheduled_smid;
+                    const int completed = atomic_add_acq_rel_gpu_i32(
+                        done + smid, 1) + 1;
+                    const int expected_on_sm =
+                        (expected_done + kSingleLaunchH20Sms - 1 - smid)
+                        / kSingleLaunchH20Sms;
+                    if (completed == expected_on_sm) {
+                        const int completed_sms =
+                            atomic_add_acq_rel_gpu_i32(done_sms, 1) + 1;
+                        const int active_sms = expected_done
+                            < kSingleLaunchH20Sms
+                            ? expected_done : kSingleLaunchH20Sms;
+                        if (completed_sms == active_sms)
+                            store_release_gpu_i32(
+                                scheduler + kTurnoverPhase, next_phase);
+                    }
+                } else {
+                    const int completed =
+                        atomic_add_acq_rel_gpu_i32(done, 1) + 1;
+                    if (completed == expected_done)
+                        store_release_gpu_i32(
+                            scheduler + kTurnoverPhase, next_phase);
+                }
             }
         }
         return;
@@ -5861,7 +5935,8 @@ void launch_tp4_megamoe_single(
                 "single-launch kernel cannot keep the 78 communication CTAs resident");
 
     int launch_grid = resident_grid;
-    if constexpr (kSingleLaunchSchedule == 4) {
+    if constexpr (kSingleLaunchSchedule == 4
+                  || kSingleLaunchSchedule == 5) {
         constexpr int kW13NTiles = 8;
         constexpr int kActivationGroupsPerRoute = 4;
         constexpr int kW2NTiles = 32;
@@ -6033,8 +6108,11 @@ void run_tp4_megamoe_single_launch(
         expert_ids.numel() * (8LL * split_k + 32LL)
         + static_cast<int64_t>(routes) * 4
         + (tokens == 128 ? 64 : 78);
-    const int64_t scheduler_words = kSingleLaunchSchedule == 4
-        ? kOversubscribedHeaderWords + oversubscribed_grid
+    const int64_t scheduler_words =
+        (kSingleLaunchSchedule == 4 || kSingleLaunchSchedule == 5)
+        ? (kSingleLaunchSchedule == 5
+            ? kShardedHeaderWords : kOversubscribedHeaderWords)
+            + oversubscribed_grid
         : kSingleLaunchInterleaved
         ? kSchedulerHeaderWords + 3LL * expert_ids.numel()
         : kSingleLaunchGroupedW13Act
