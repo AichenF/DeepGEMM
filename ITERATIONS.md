@@ -8390,3 +8390,19 @@ maximum rank latency of a full CUDA-Graph replay.
   Any further native experiment must target at least two resident CTAs/SM by
   reducing both the 208-register consumer allocation and shared combine/GEMM
   footprint; otherwise return to the selected 128-thread high-occupancy path.
+
+## Iteration 304 — capture cold native RS source-stall report
+
+- **Purpose:** Resolve the clean Iteration-303 scheduler starvation into source
+  locations before changing the 384-thread role topology.
+- **Protocol:** H20 GPU 0, local M128 register-dequant native body, caller-owned
+  FP8-E4M3 activation plus group-128 FP32 scales and MXFP4 weights; external X
+  quantization excluded.  Nsight Compute captured only the target kernel with
+  profiler cache control `all`, `SourceCounters` and `WarpStateStats` over 12
+  replay passes, using the Iteration-302 profile-only exit.
+- **Result:** PASS capture.  All 12 passes completed, synchronization marker
+  printed, and the application exited 0.  Source-level counter interpretation
+  is intentionally deferred until a read-only report import.
+- **Artifacts:**
+  `bench/results/iter304_native_register_dequant_m128_source_ncu_20260904.log`
+  and `results/iter304_native_register_dequant_m128_source.ncu-rep`.
