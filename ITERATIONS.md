@@ -6527,3 +6527,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** Metrics are bit-for-bit identical to the interleaved run: native FC1/SwiGLU dequant cosine `-0.00349220`, rel-L2 `1.01721447`; scale cosine `0.75738467`; native final cosine `-0.01416015`. Control remains correct.
 - **Conclusion:** Task publication/consumption is not the root cause. Also, the Iteration 200 experts-per-wave change only affected this static path; static wave16 still reproduces the same error, so both scheduler families and wave width are now excluded. Focus next on the FC1 decoded B layout/WGMMA output pairing and scale semantics.
 - **Artifact:** `bench/results/iter203_native_static_scheduler_tp4_m8_20260904.log`.
+
+## Iteration 204 — Cross-route FC1 intermediate matching
+
+- **Change:** Extended the balanced M=8 stage probe with a 48x48 cosine matrix between native and control FC1+SwiGLU dequantized route vectors. This tests whether native uses a systematically wrong expert while preserving each vector's column layout.
+- **Test:** TP4 H20 GPUs 0-3, balanced M=8, static native scheduler, paired cold-L2 CUDA Graph correctness.
+- **Result (rank 0):** Diagonal cosine mean `-0.00108`; best control-route cosine per native row averages only `0.10145` and peaks at `0.17593`; only 1/48 argmax routes is diagonal. The best-route indices are irregular rather than a fixed expert permutation.
+- **Conclusion:** Native is not merely selecting another active expert's weight. The corruption is inside decoded-B/WGMMA column/K interpretation or FC1 epilogue pairing. Expert index and task mapping are deprioritized.
+- **Artifact:** `bench/results/iter204_native_l2_cross_route_tp4_m8_20260904.log`.

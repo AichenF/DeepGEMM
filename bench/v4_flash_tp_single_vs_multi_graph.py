@@ -247,6 +247,7 @@ def main() -> None:
         native_l2_check = None
         native_l2_scale_check = None
         native_l2_byte_mismatches = None
+        native_l2_cross_route_rank0 = None
         if args.route_pattern == "balanced" and m * custom.TOP_K <= custom.NUM_EXPERTS:
             assert candidate_case.native_workspace is not None
             assert control_case.activation_scale is not None
@@ -286,6 +287,27 @@ def main() -> None:
             native_l2_byte_mismatches = custom.reduce_rank_metric(
                 byte_mismatches, dist.ReduceOp.MAX, device, nccl_group
             )
+            if rank == 0:
+                native_rows = torch.nn.functional.normalize(
+                    native_l2.double(), dim=1
+                )
+                control_rows = torch.nn.functional.normalize(
+                    control_l2.double(), dim=1
+                )
+                route_cosine = native_rows @ control_rows.T
+                best_cosine, best_route = route_cosine.max(dim=1)
+                native_l2_cross_route_rank0 = {
+                    "diagonal_cosine_mean": float(
+                        route_cosine.diagonal().mean().item()
+                    ),
+                    "best_cosine_mean": float(best_cosine.mean().item()),
+                    "best_cosine_max": float(best_cosine.max().item()),
+                    "best_cosine_min": float(best_cosine.min().item()),
+                    "best_route_is_diagonal_fraction": float(
+                        (best_route == route_indices).double().mean().item()
+                    ),
+                    "best_route_first_16": best_route[:16].tolist(),
+                }
         if rank == 0:
             print(
                 "SINGLE_MULTI_CORRECTNESS "
@@ -300,6 +322,9 @@ def main() -> None:
                         "candidate_l2_scale": native_l2_scale_check,
                         "candidate_l2_fp8_byte_mismatches_max_rank": (
                             native_l2_byte_mismatches
+                        ),
+                        "candidate_l2_cross_route_rank0": (
+                            native_l2_cross_route_rank0
                         ),
                     },
                     sort_keys=True,
