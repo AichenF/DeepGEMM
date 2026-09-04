@@ -6317,3 +6317,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Analysis: versus Iteration 174's 16-CTA candidate, end-to-end improves 5.47% and the post-W2 tail falls from about 58.464 to 37.856 us (35.2%). The remaining gap versus control is 24.72%, so the tail is still material but no longer the only deficit.
 - Decision: keep the parameterization and test 64 CTAs. Select by paired cold-L2 latency, not by isolated transport intuition.
 - Evidence: `results/iter175_tp4_single_launch_nvls32_m128_20260904.log`.
+
+## Iteration 176 — 64-CTA in-kernel M128 k6+NVLS pull (TP4, cold L2)
+
+- Date: 2026-09-04
+- Change under test: reuse Iteration 175's compile-time worker parameter with 64×128 threads for the M128 fused local-k6 plus NVLS one-shot pull tail. No source or input-contract change; FP8 `X/x_scale` remains supplied by the caller.
+- Protocol: paired same-process CUDA Graphs on TP4 GPUs 4–7, random M128 routes, two outer batches × 20 cold-L2 replays per implementation and four warmups; excluded 256 MiB clear before every replay; rank-max timing.
+- Correctness: PASS and numerically identical to the 16/32-CTA candidate metrics: cosine 0.9999955807, relative L2 0.002972993, finite and allreduce OK.
+- Timing: control/candidate 0.306464/0.372144 ms, speedup 0.823509x. Candidate route/W13/activation/W2 = 4.512/223.104/6.688/113.472 us, leaving about 24.368 us after the W2 phase stamp.
+- Analysis: versus 32 CTAs, candidate improves 2.25% and the post-W2 tail falls 35.6% (37.856→24.368 us); versus the original 16-CTA Iteration 174, end-to-end improves 7.60% and the tail falls 58.3%. The compute phases drifted upward by about 5 us in this window, so use a paired all-M follow-up before freezing 64.
+- Decision: 64 is the best measured M128 communication geometry and advances provisionally. The remaining 21.43% deficit is now dominated by single-kernel compute scheduling/global phase costs rather than the communication tail alone.
+- Evidence: `results/iter176_tp4_single_launch_nvls64_m128_20260904.log`.
