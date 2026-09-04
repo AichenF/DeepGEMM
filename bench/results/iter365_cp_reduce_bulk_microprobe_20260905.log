@@ -1,0 +1,9 @@
+PROBE_ENV gpu=NVIDIA H20-3e sm=9.0 sms=78
+PROBE_START blocks=1 operations=1 destinations=1
+PROBE_RESULT blocks=1 operations=1 destinations=1 expected=1.0 max_error=0 pass=true
+PROBE_START blocks=1 operations=8 destinations=1
+PROBE_RESULT blocks=1 operations=8 destinations=1 expected=1.0 max_error=0 pass=true
+PROBE_START blocks=624 operations=8 destinations=624
+PROBE_RESULT blocks=624 operations=8 destinations=624 expected=1.0 max_error=0 pass=true
+PROBE_START blocks=624 operations=8 destinations=104
+PROBE_RESULT blocks=624 operations=8 destinations=104 expected=6.0 max_error=0 pass=true

@@ -9105,3 +9105,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** **COMPILE FAIL; no GPU instruction executed.**  `nvcc` rejected three uses of `uint32_t` because the standalone translation unit omitted `<cstdint>`.  This is a probe-only header defect and provides no evidence for or against `cp.reduce.async.bulk` semantics.
 - **Decision:** Add the missing standard header and rerun the identical probe.  No MegaMoE source or selected performance path changed.
 - **Artifact:** `bench/results/iter364_cp_reduce_bulk_microprobe_20260905.log`.
+
+## Iteration 365 — standalone Hopper bulk-reduce forward-progress proof (2026-09-05)
+
+- **Change from Iteration 364:** Added the missing `<cstdint>` include only; the PTX sequence and four probe cases were unchanged.
+- **Setup:** Native `nvcc -O3 -arch=sm_90a`, GPU 0 in the container, H20-3e with 78 SMs.  Every destination was zeroed before launch, every source row contained FP32 one, and every case performed full device synchronization under a 60-second hard timeout.
+- **Results:** **PASS exactly for every case.**  One CTA × one operation produced 1.0; one CTA × eight 512-byte operations produced 1.0; 624 CTAs × eight disjoint operations produced 1.0; and 624 CTAs grouped six-to-one onto each destination produced exactly 6.0.  Every reported maximum absolute error was zero.
+- **Conclusion:** H20 supports the instruction and audited commit/wait/proxy sequence, a full 624-CTA resident grid can synchronously wait for it, and six-producer destination contention itself does not hang.  The full MegaMoE nonprogress must therefore come from integration-specific shared-memory lifetime/layout or scheduling state, not from `cp.reduce.async.bulk` availability or generic engine progress.
+- **Next isolation:** Run the single-launch kernel with the same bulk epilogue but collective disabled, and/or add phase stamps around W2 to distinguish a W2 bulk wait from the terminal communication barrier.  Do not alter the selected default path.
+- **Artifact:** `bench/results/iter365_cp_reduce_bulk_microprobe_20260905.log`.
