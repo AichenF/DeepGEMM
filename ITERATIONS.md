@@ -5567,3 +5567,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Finding: the AR-only result robustly establishes the algorithm crossover: 2-shot is modestly better at 512 KiB and decisively better at 1 MiB.  It also isolates NVLS: multicast does not make full-vector 1-shot competitive at 1 MiB, while direct-symmetric NVLS 2-shot has a small repeatable transport-only lead there.  The noisy full path needs focused pairwise confirmation before changing production.
 - Next: pair only the plausible finalists (`NVLS push vs P2P 2-shot` at M64; `NVLS 2-shot vs P2P 2-shot` at M128) with replay-granularity AB/BA and a separate batch-granularity repeat, then reject any order-sensitive result.
 - Artifact: `results/iter143_ar_transport_matrix_tp4_m64_m128_formal_cold2000_20260904.log`.
+
+## Iteration 144a — focused M128 replay-pair launch-path failure
+
+- Added replay-granularity AB/BA scheduling to `bench/v4_flash_tp_ar_transport_matrix.py` so each cold replay can alternate the two candidate graphs instead of timing a whole graph batch at once.
+- The first focused M128 launch exited before distributed initialization, CUDA Graph capture, or any GPU timing because `torchrun` prepended the benchmark directory to `sys.path` while the explicit `PYTHONPATH` omitted the repository root; all ranks raised `ModuleNotFoundError: v4_flash_tp_wgmma`.
+- No correctness or performance sample was produced.  Retry with both the repository root and the SGLang worktree on `PYTHONPATH`; keep the failed log as execution evidence.
+- Artifact: `results/iter144_ar_transport_focus_tp4_m128_replay_cold2000_20260904.log`.

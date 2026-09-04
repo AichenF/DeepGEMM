@@ -102,6 +102,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outer", type=int, default=10)
     parser.add_argument("--replays", type=int, default=200)
     parser.add_argument("--warmup-replays", type=int, default=10)
+    parser.add_argument(
+        "--pair-granularity", choices=("batch", "replay"), default="batch"
+    )
     parser.add_argument("--p2p-pull-blocks", type=int, default=64)
     parser.add_argument("--nvls-pull-blocks", type=int, default=16)
     parser.add_argument("--nvls-pull-unroll", type=int, choices=(2, 4, 8, 16), default=8)
@@ -367,6 +370,7 @@ def time_graph_matrix(
     nccl_group: dist.ProcessGroup,
     device: torch.device,
     l2_flush_buffer: torch.Tensor,
+    pair_granularity: str,
 ) -> tuple[dict[str, list[float]], dict[str, list[float]], list[list[str]]]:
     samples = {name: [] for name in names}
     batch_medians = {name: [] for name in names}
@@ -384,16 +388,25 @@ def time_graph_matrix(
                 [torch.cuda.Event(enable_timing=True) for _ in range(replays)],
             )
 
-        for name in order:
+        def replay_one(name: str, replay_idx: int) -> None:
             starts, ends = events[name]
             reset = resets[name]
+            if reset is not None:
+                reset()
+            driver.clear_cache(l2_flush_buffer)
+            starts[replay_idx].record()
+            graphs[name].replay()
+            ends[replay_idx].record()
+
+        if pair_granularity == "replay":
             for replay_idx in range(replays):
-                if reset is not None:
-                    reset()
-                driver.clear_cache(l2_flush_buffer)
-                starts[replay_idx].record()
-                graphs[name].replay()
-                ends[replay_idx].record()
+                replay_order = order if replay_idx % 2 == 0 else tuple(reversed(order))
+                for name in replay_order:
+                    replay_one(name, replay_idx)
+        else:
+            for name in order:
+                for replay_idx in range(replays):
+                    replay_one(name, replay_idx)
         torch.cuda.synchronize(device)
 
         for name in names:
@@ -548,6 +561,7 @@ def main() -> None:
                     "p2p_pull_blocks": args.p2p_pull_blocks,
                     "nvls_pull_blocks": args.nvls_pull_blocks,
                     "nvls_pull_unroll": args.nvls_pull_unroll,
+                    "pair_granularity": args.pair_granularity,
                     "max_push_bytes": comm.max_push_size,
                     "max_pull_bytes": comm.max_pull_size,
                     "multicast_ptr_nonzero": bool(comm.mc_base_ptr),
@@ -648,6 +662,7 @@ def main() -> None:
                 nccl_group,
                 device,
                 l2_flush_buffer,
+                args.pair_granularity,
             )
             ar_control_batches = ar_batches["p2p_2shot_pull"]
             ar_records = {
@@ -763,6 +778,7 @@ def main() -> None:
                 nccl_group,
                 device,
                 l2_flush_buffer,
+                args.pair_granularity,
             )
             full_control_batches = full_batches["p2p_2shot_pull"]
             full_records = {
