@@ -6464,3 +6464,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: **PASS**. The kernel returned normally for the first time; output is finite and nonzero (`max_abs=50176`, random stress weights), workspace size 34,403,584 bytes. This is a runtime smoke only, not yet a numerical-reference proof.
 - Decision: keep the warp-0-only cleanup/grid rendezvous. Next strengthen the local test to replay the same workspace repeatedly and compare the full output against the selected multi-kernel MXFP4 path before enabling TP communication.
 - Evidence: `bench/results/iter195_native_warp0_grid_cleanup_m8_20260904.log`.
+
+## Iteration 196/197 — split native local-compute from TP-tail correctness
+
+- Initial result: the first TP4 M8 CUDA-Graph smoke completed the native launch and collective but failed the final correctness gate. The existing harness raised before printing metrics, so Iteration 196 established only that the failure was numerical, not a crash or deadlock. Evidence: `bench/results/iter196_native_tp4_m8_graph_smoke_20260904.log`.
+- Harness change: always print control-final and candidate-final metrics before the gate, and additionally compare the native body’s retained rank-local BF16 output against the same rank’s selected multi-kernel local reference both raw and after the tail’s required `1.5` routed scaling. These checks are outside timing and do not change either graph.
+- Protocol: TP4 GPUs 0–3, random M8 routes, identical prequantized FP8 activation/scales and MXFP4 logical weights, paired CUDA Graph setup with the minimal 2×2 cold-L2 replay configuration. Correctness runs before timing.
+- Result: control final PASS (`cos=0.99999561`, `rel_l2=0.0029643`). Native final FAIL (`cos=0.0026182`, `rel_l2=1.40345`) and, critically, native local compute already fails before TP communication: raw local `cos=-0.0088418`, `rel_l2=1.21089`; scaled-1.5 local `cos=-0.0088447`, `rel_l2=1.43091`. All tensors are finite.
+- Conclusion: the same-launch multicast all-reduce is not the primary source of this mismatch. The native local W13/SwiGLU-requant/W2 path or its input/weight layout is numerically wrong despite returning normally; scaling policy cannot explain near-zero cosine.
+- Decision: retain the diagnostic output. Isolate W13 first with deterministic sparse/identity-like packed MXFP4 data and compare native intermediate buffers against the existing WGMMA path before further TP or performance work.
+- Evidence: `bench/results/iter197_native_tp4_m8_correctness_split_20260904.log`.

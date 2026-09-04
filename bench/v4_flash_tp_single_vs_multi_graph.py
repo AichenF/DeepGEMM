@@ -79,6 +79,46 @@ def make_case(
     )
 
 
+def tensor_comparison_metrics(
+    actual: torch.Tensor,
+    reference: torch.Tensor,
+    nccl_group: dist.ProcessGroup,
+    device: torch.device,
+) -> dict[str, float | bool]:
+    """Compare rank-local tensors while reporting the worst TP rank."""
+    actual_f = actual.double()
+    reference_f = reference.double()
+    diff = actual_f - reference_f
+    cosine = float(
+        torch.nn.functional.cosine_similarity(
+            actual_f.flatten(), reference_f.flatten(), dim=0
+        ).item()
+    )
+    rel_l2 = float(
+        (
+            torch.linalg.vector_norm(diff)
+            / torch.linalg.vector_norm(reference_f).clamp_min(1e-40)
+        ).item()
+    )
+    finite = float(
+        bool(torch.isfinite(actual).all())
+        and bool(torch.isfinite(reference).all())
+    )
+    return {
+        "cosine_min_rank": custom.reduce_rank_metric(
+            cosine, dist.ReduceOp.MIN, device, nccl_group
+        ),
+        "rel_l2_max_rank": custom.reduce_rank_metric(
+            rel_l2, dist.ReduceOp.MAX, device, nccl_group
+        ),
+        "finite_all_ranks": bool(
+            custom.reduce_rank_metric(
+                finite, dist.ReduceOp.MIN, device, nccl_group
+            )
+        ),
+    }
+
+
 @torch.inference_mode()
 def main() -> None:
     args = parse_args()
@@ -191,6 +231,34 @@ def main() -> None:
         candidate_check = custom.correctness_metrics(
             candidate_case, candidate_graph, nccl_group, device
         )
+        assert candidate_case.native_local_output is not None
+        native_local_raw = candidate_case.native_local_output.clone()
+        native_local_scaled = (
+            native_local_raw.float() * custom.ROUTED_SCALING_FACTOR
+        ).to(torch.bfloat16)
+        local_reference = candidate_case.make_reference_case().run_local().clone()
+        torch.cuda.synchronize(device)
+        native_local_raw_check = tensor_comparison_metrics(
+            native_local_raw, local_reference, nccl_group, device
+        )
+        native_local_scaled_check = tensor_comparison_metrics(
+            native_local_scaled, local_reference, nccl_group, device
+        )
+        if rank == 0:
+            print(
+                "SINGLE_MULTI_CORRECTNESS "
+                + json.dumps(
+                    {
+                        "m": m,
+                        "control_final": control_check,
+                        "candidate_final": candidate_check,
+                        "candidate_local_raw": native_local_raw_check,
+                        "candidate_local_scaled_1p5": native_local_scaled_check,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
         if not control_check["allreduce_ok"] or not candidate_check["allreduce_ok"]:
             raise RuntimeError(f"correctness failure at M={m}")
 
