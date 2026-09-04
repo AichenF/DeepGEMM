@@ -179,10 +179,18 @@
     constexpr uint32_t SMEM_CD_SIZE = math::constexpr_align(
         SMEM_CD_OUTPUT_UNALIGNED_SIZE, kSharedMemoryAlignment);
 
-    constexpr uint32_t SMEM_BEFORE_BARRIER_SIZE =
+    constexpr uint32_t SMEM_GEMM_STORAGE_SIZE =
         SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE + SMEM_MXFP4_LUT_SIZE + SMEM_CD_SIZE +
         kNumStages * (SMEM_A_SIZE_PER_STAGE + SMEM_PACKED_B_SIZE_PER_STAGE) +
         kNumDecodedBStages * SMEM_B_SIZE_PER_STAGE;
+    // The post-GEMM top-k combine reuses the prefix as three buffers over two
+    // hidden chunks.  Decoded-B used to make that prefix large implicitly;
+    // keep the alias contract explicit when register dequant removes it.
+    constexpr uint32_t SMEM_COMBINE_ALIAS_SIZE =
+        3u * kNumEpilogueWarps * kHidden * sizeof(nv_bfloat16) / 2u;
+    constexpr uint32_t SMEM_BEFORE_BARRIER_SIZE =
+        SMEM_GEMM_STORAGE_SIZE > SMEM_COMBINE_ALIAS_SIZE
+        ? SMEM_GEMM_STORAGE_SIZE : SMEM_COMBINE_ALIAS_SIZE;
 
     // SMEM pointers
     auto smem_expert_count = reinterpret_cast<uint32_t*>(smem_buffer);
@@ -219,9 +227,8 @@
             kNumDecodedBStages * SMEM_B_SIZE_PER_STAGE +
             i * SMEM_PACKED_B_SIZE_PER_STAGE);
     });
-    auto sf_start_ptr = math::advance_ptr<uint8_t>(smem_gemm_base,
-        SMEM_CD_SIZE + kNumStages * (SMEM_A_SIZE_PER_STAGE + SMEM_PACKED_B_SIZE_PER_STAGE) +
-        kNumDecodedBStages * SMEM_B_SIZE_PER_STAGE);
+    auto sf_start_ptr = math::advance_ptr<uint8_t>(
+        smem_buffer, SMEM_BEFORE_BARRIER_SIZE);
     auto smem_sfa = utils::PatternVisitor([=](const uint32_t& i) {
         return reinterpret_cast<float*>(sf_start_ptr + i * SMEM_SFA_SIZE_PER_STAGE);
     });
