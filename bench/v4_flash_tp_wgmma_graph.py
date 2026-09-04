@@ -296,6 +296,15 @@ class CapturedCase:
             torch.cuda.Event() for _ in range(8)
         )
         self.pipeline_done_event = torch.cuda.Event()
+        # Routes are fixed benchmark inputs.  Inspect them once before graph
+        # capture; this synchronization and split-K policy selection are not
+        # timed.  Schedule-4 state sizing also needs the selected split here.
+        self.active_experts = int(torch.unique(self.topk_ids).numel())
+        self.w13_split_k = (
+            1
+            if kernel.W13_PAIRED_WG
+            else kernel.select_w13_split_k(routes, self.active_experts)
+        )
         # One allocation is reset by a single captured memset.  Layout is
         # one direct marker per route/N128 tile, followed by task-done and
         # worker-done diagnostic scalars.
@@ -376,14 +385,6 @@ class CapturedCase:
             self.native_local_output = torch.empty(
                 (self.m, HIDDEN), dtype=torch.bfloat16, device=device
             )
-        # Routes are fixed benchmark inputs.  Inspect them once before graph
-        # capture; this synchronization and policy selection are not timed.
-        self.active_experts = int(torch.unique(self.topk_ids).numel())
-        self.w13_split_k = (
-            1
-            if kernel.W13_PAIRED_WG
-            else kernel.select_w13_split_k(routes, self.active_experts)
-        )
         self.tiled_k6_reduce_mode = kernel.select_tiled_k6_reduce_mode(self.m)
 
     @property

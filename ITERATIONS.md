@@ -7704,3 +7704,25 @@ maximum rank latency of a full CUDA-Graph replay.
   fix the ordering and rerun before evaluating the CUDA scheduler.
 - **Artifact:**
   `bench/results/iter269_oversubscribed_turnover_m8_compute_smoke_20260904.log`.
+
+## Iteration 270 — oversubscribed CTA turnover is bitwise correct at M8
+
+- **Change:** Moved fixed-route active-expert inspection and W13 split-K
+  selection ahead of schedule-state allocation, so the new schedule-4
+  generation slab is sized from the same policy used at launch.
+- **Protocol:** H20 GPU 0, TP4-shape M8 random routes, compute-only single
+  entry, prequantized FP8-E4M3 X plus FP32 group-128 scale.  The harness ran
+  the independent multi-kernel local reference, then issued a separate
+  excluded 256 MiB L2 clear immediately before the candidate launch.
+- **Correctness:** PASS bitwise for the full routed W2 output
+  (`cosine=1.0`, `rel_l2=0.0`, all finite), with 344 padded routed rows and
+  SplitK4.  The collective was intentionally disabled in this first device
+  smoke; no external input quantization ran.
+- **Interpretation:** The replay-safe any-CTA initializer, route publication,
+  W13 completion chain, internal SwiGLU/FP8 requant phase, and W2 completion
+  chain all execute correctly for an oversubscribed 3,342-block single
+  launch.  Distributed correctness and paired latency remain untested.
+- **Decision:** Keep schedule 4 opt-in and proceed to a short TP4 M8/M128
+  cold-L2 CUDA-Graph screen before deciding whether broader tuning is useful.
+- **Artifact:**
+  `bench/results/iter270_oversubscribed_turnover_m8_compute_smoke_20260904.log`.
