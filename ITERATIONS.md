@@ -6682,6 +6682,16 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Latency:** control/native medians `0.071216/0.128800 ms`; native is `1.809x` slower. The two native batch medians are `0.128688/0.128912 ms`, reproducing Iteration 216 and proving the Iteration-222 regression is removed.
 - **Conclusion:** Keep native only as a correctness/reference implementation. Its measured gap is much larger than the TP-specialized single-launch candidate, so optimization returns to the latter.
 - **Artifact:** `bench/results/iter223_restore_native_interleaved_tp4_m8_cold_screen_20260904.log`.
+## Iteration 226 — distributed NCU application replay also hangs embedded TP synchronization
+
+- Date: 2026-09-04
+- Goal: preserve four-rank synchronization by collecting only five basic metrics with NCU application replay instead of kernel replay.
+- Method: TP4 M128, one matching single-launch kernel per rank, metrics for duration, DRAM/SM throughput, active warps and issue activity; CUDA Graph harness otherwise unchanged.
+- Result: NCU attached to all ranks and entered application replay pass 1, then made no progress for over 60 seconds and emitted its long-workload warning. The run was terminated before any metric/result was produced.
+- Cleanup: SSH cancellation left the profiler process tree alive. Exact PIDs 434794/434805/434806/434822/434826/434830/434901-434904 were terminated with SIGTERM; follow-up `ps` and `nvidia-smi` showed no survivor from this run and no remaining GPU allocation from those ranks.
+- Decision: distributed NCU replay, both kernel and application modes, is invalid for this embedded collective. Do not retry. Use a compute-only same-source instantiation for counters, while distributed performance/correctness stays on cold-L2 CUDA Graph plus device phase clocks.
+- Artifact: `bench/results/iter226_tp_single_m128_app_replay_ncu_20260904.log`.
+
 ## Iteration 225 — distributed NCU kernel replay is incompatible with embedded TP synchronization
 
 - Date: 2026-09-04
