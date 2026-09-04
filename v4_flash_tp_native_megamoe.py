@@ -261,6 +261,21 @@ def _braid_mode2_signs(fused_weight: torch.Tensor) -> torch.Tensor:
     return fused_rows.view(experts, rows, storage_k).contiguous()
 
 
+def _marlin_to_legacy_mxfp4(weight: torch.Tensor) -> torch.Tensor:
+    """Repack canonical Marlin K8 codes for the proven RS operand mapping."""
+    *leading, half_k = weight.shape
+    if half_k % 16:
+        raise ValueError("MXFP4 packed K must contain complete K32 groups")
+    chunks = weight.view(*leading, half_k // 4, 4)
+    logical = torch.cat((chunks >> 4, chunks & 0x0F), dim=-1).reshape(
+        *leading, half_k * 2
+    )
+    groups = logical.view(*leading, half_k // 16, 32)
+    return (
+        groups[..., :16] | (groups[..., 16:] << 4)
+    ).reshape_as(weight).contiguous()
+
+
 def transform_weights(
     w13: torch.Tensor,
     s13: torch.Tensor,
@@ -272,8 +287,12 @@ def transform_weights(
         raise TypeError("native MXFP4 weights/scales must be rank-three uint8")
     w13_il = _interleave_l1(w13)
     s13_il = _interleave_l1(s13)
+    if NATIVE_REGISTER_DEQUANT:
+        w13_il = _marlin_to_legacy_mxfp4(w13_il)
+        w2 = _marlin_to_legacy_mxfp4(w2.contiguous())
     # Match DeepGEMM's SM90 Mode2 contract: braid the packed sign nibbles
-    # offline, then decode the resulting rows with kUseMode2RowDecoder.
+    # offline.  The legacy SS path restores canonical row-major FP8 in shared
+    # memory; the RS path consumes its model-load K32 representation directly.
     native_w13 = _braid_mode2_signs(
         _fuse_packed_and_scale(w13_il, _scale_to_tile_major(s13_il))
     )
