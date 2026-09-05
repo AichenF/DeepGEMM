@@ -9527,3 +9527,36 @@ maximum rank latency of a full CUDA-Graph replay.
   one-shot and P2P two-shot collectives before spending an all-M window.
 - Evidence:
   `results/iter385_78cta_8wg_compute_m8_m128_20260905.log`.
+
+## Iteration 386 — 78-CTA/eight-WG TP4 cold-L2 endpoint screen
+
+- Date: 2026-09-05
+- Configuration: Iteration 382 78x1024 one-CTA/SM candidate with release
+  grid arrivals and valid-task elision enabled.  The control is the selected
+  same-source 5/6-kernel path.  Both consume identical prequantized FP8 X and
+  MXFP4 weights.  M8 embeds multicast one-shot push; M128 embeds the selected
+  ordinary-P2P two-shot collective.
+- Protocol: H20 GPUs 0-3, random routes, seed 20260904, same process, CUDA
+  Graph, replay-interleaved ordering, two outer batches x 10 samples per arm,
+  two warmups, TP-rank-max timing.  Every individual replay had a separate
+  excluded 256 MiB L2 clear.
+- Correctness: PASS at both endpoints on all four ranks.  Candidate and
+  control numerical metrics match: M8 cosine `0.9999956134`, rel-L2
+  `0.0029619922`; M128 cosine `0.9999956090`, rel-L2 `0.0029634544`; all
+  outputs are finite and both embedded all-reduce checks pass.
+- Cold-L2 result (control / 78-CTA candidate median): M8
+  `0.073552/0.109120 ms` (candidate `48.36%` slower), M128
+  `0.300800/0.397456 ms` (`32.13%` slower).  Candidate batch medians are
+  `0.108992/0.109472 ms` and `0.396816/0.398336 ms`; the regression is far
+  outside noise.  Endpoint geometric-mean candidate/control is `1.4001`.
+- Interpretation: reducing whole-grid arrivals from 624 to 78 does not repay
+  the throughput loss of packing eight concurrent WGMMA/TMA streams into one
+  CTA.  Compared with the recent 624-CTA single-launch medians, the new shape
+  loses roughly 31 us at M8 and 54 us at M128, so the issue is compute/task
+  execution rather than launch count or the small communication tail.
+- Decision: reject this direct eight-independent-WG packing as selected code,
+  but retain it default-off because the final 78-CTA requirement remains.
+  Profile phase stamps/NCU before changing topology; do not run an all-M
+  formal window on this version.
+- Evidence:
+  `bench/results/iter386_78cta_8wg_tp4_m8_m128_cold_screen_20260905.log`.
