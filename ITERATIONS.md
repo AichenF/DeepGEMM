@@ -10731,3 +10731,33 @@ maximum rank latency of a full CUDA-Graph replay.
   `results/iter433_batched_activation_m128_ncu_details_20260905.log`; binary
   report `results/iter433_batched_activation_m128_compute_full.ncu-rep`
   remains outside git due to size.
+
+## Iteration 434 — source counters identify mailbox and terminal convergence
+
+- Date: 2026-09-05
+- Method: NCU SourceCounters on the same correct compute-only M128 split-K2
+  binary, idle physical GPU1, exact kernel filter, five kernel-replay passes,
+  imported CUDA/SASS correlation, application-managed excluded 256 MiB
+  cold-L2 clear, and NCU cache/clock control disabled.
+- Correctness: PASS bitwise after replay (`cosine=1`, rel-L2 `0`, finite),
+  1,944 padded rows and `[2048,0,0,2048]` generation words.
+- Result: of 8,825 barrier-stall samples, 2,095 (`23.74%`) land on the
+  terminal phase-3 CTA synchronization in `single_launch_grid_barrier`.
+  Another 1,567 (`17.76%`) land on the first `wg_task_kind` shared load after
+  the per-task named-barrier mailbox handoff.  Four large GEMM/control-flow
+  `BSSY` sites contribute 510/456/452/444 samples together (`21.10%`).
+- Interpretation: the generic NCU barrier rule was not primarily reporting
+  the removed per-row scale barriers.  The two largest actionable sites are
+  final W2 load imbalance and the dynamic scheduler's one-mailbox-per-task
+  protocol.
+- Decision: next replace the dynamic mailbox loop with deterministic static
+  per-WG W13→activation→W2 loops.  All lanes derive identical task indices
+  directly and acquire-wait on static upstream flags, so there is no task
+  mailbox.  This deliberately restores phase-local cold weight streaming;
+  only the terminal CTA/grid barrier remains.  If this cannot approach the
+  mapped phase candidate, proceed to true Hopper loader/math role
+  specialization rather than more activation tuning.
+- Evidence:
+  `results/iter434_batched_activation_m128_source_counter_details_20260905.log`;
+  binary report `results/iter434_batched_activation_m128_source_counters.ncu-rep`
+  remains outside git due to size.
