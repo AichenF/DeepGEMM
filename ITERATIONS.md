@@ -13913,3 +13913,34 @@ maximum rank latency of a full CUDA-Graph replay.
 - TP8 resources: production M8/M16 multicast-push entries are `REG62 STACK64 SHARED2048 LOCAL0`; M32/M64/M128 NVLS-pull entries are `REG60 STACK0 SHARED2048 LOCAL0`. All retain eight-CTA admission and no fixed local allocation.
 - Qualification: this gate proves resolved defaults, compilation and static resources only. No business kernel launched and no correctness/latency is claimed. The default-entry TP4/TP8 runtime gates remain required.
 - Evidence: `evidence/iter607_compact_bundle_default_jit_resources.txt`.
+## Iteration 608 — selected-bundle default-entry TP4/TP8 cold-L2 runtime gate
+
+- Change under test: run the production benchmark entry with only
+  `V4_SINGLE_LAUNCH_TP4=1`; explicitly unset the bundle and its component
+  overrides.  This verifies that the selected compact W13 bundle resolves by
+  default and that TP4/TP8 still execute the whole MoE plus all-reduce as one
+  business kernel.
+- Protocol: random DeepSeek-V4-Flash routes, CUDA graph replay, 5 warmups,
+  2 outer batches x 20 timed replays, maximum rank latency, and an excluded
+  256 MiB Triton clear before every replay (cold L2).
+- Resolved flags: compact bundle=true, W13 compact ABI=true, W13 phase
+  noinline=true, dynamic route shared memory=true, M128 bound9=true.
+  `single_launch_assume_valid_gemm_tasks` and
+  `single_launch_release_grid_arrival` still resolved false; this is a default
+  wiring gap, not a correctness failure, and must be fixed before the final
+  performance rerun.
+- TP4 (GPUs 0,5,6,7), median ms for M=8/16/32/64/128:
+  `0.075872 / 0.125824 / 0.202976 / 0.286592 / 0.355456`;
+  geometric mean `0.181579961` ms.  Minimum-rank cosine was >0.9999955,
+  relative L2 <0.002969, finite and custom-all-reduce checks passed at every
+  shape.  M<=32 used embedded multicast push; M>=64 used embedded P2P
+  two-shot.
+- TP8 (all eight GPUs), median ms for M=8/16/32/64/128:
+  `0.055104 / 0.078720 / 0.123328 / 0.171312 / 0.219504`;
+  geometric mean `0.115003756` ms.  Minimum-rank cosine was >0.9999919,
+  relative L2 <0.004011, finite and custom-all-reduce checks passed at every
+  shape.  M<=16 used embedded multicast push; M>=32 used embedded NVLS pull.
+- Decision: correctness/runtime gate passes for both TP4 and TP8, but do not
+  call these final selected-performance numbers until the two already-selected
+  fast-path defaults above are wired into the production bundle and rerun.
+- Evidence: `evidence/iter608_default_entry_tp4_tp8_cold_l2.md`.
