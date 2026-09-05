@@ -11151,3 +11151,42 @@ maximum rank latency of a full CUDA-Graph replay.
   endpoint timing screen; do not run all five M values unless both endpoints
   materially improve.
 - **Evidence:** `bench/evidence/iter452_native_two_cta_m128_correctness.txt`.
+
+## Iteration 453 — Hopper-native two-CTA residency helps M128 but remains behind
+
+- **Reference and change under test:** this is the Hopper/SM90
+  `megamoe_nvfp4_dev_m` role pipeline, not a Blackwell/B200 design.  It keeps
+  the 384-thread dispatch/A-loader/B-producer/two-math-WG organization, TMA
+  barriers and interleaved L1/L2 mailbox.  The candidate uses the validated
+  register-dequant and K128 issue batching paths, a 156-CTA cooperative grid
+  on the 78-SM H20, and the CTA-local-safe 88-register math allocation.
+- **Protocol:** TP4 on physical GPUs 0-3, random precomputed routes at
+  M={8,128}, caller-provided FP8-E4M3 X plus FP32 group-128 scales and MXFP4
+  weights.  Candidate and selected multi-kernel + SGLang
+  CustomAllReduceV2 control are captured in the same process.  Two balanced
+  batches x 10 rank-max samples per arm use an independently excluded 256 MiB
+  L2 clear immediately before every replay; three cold warmups precede timing.
+- **Correctness/admission:** **PASS** at both endpoints.  The cooperative
+  156-CTA kernel captures and replays without deadlock.  Final cosine is
+  `0.9993737802/0.9993696394`, relative L2 is
+  `0.0353911190/0.0355026359`, every rank is finite, and embedded communication
+  versus the candidate's local output reduced by NCCL has cosine at least
+  `0.9999916325` and relative L2 at most `0.0040909062`.
+- **Cold-L2 result (multi / two-CTA Hopper-native median):** M8
+  `0.073968/0.113632 ms`, so the candidate is `1.5362x` slower; M128
+  `0.300784/0.395056 ms`, so it is `1.3134x` slower.  Endpoint geometric means
+  are `0.149159/0.211875 ms`, or `1.4205x` slower overall.  Candidate batch
+  medians are stable at `0.113936/0.113600 ms` and
+  `0.394992/0.395232 ms`.
+- **Comparison with the one-CTA Hopper-native Iteration 308:** M8 improves
+  from `0.117184` to `0.113632 ms` (`3.03%`), while M128 improves from
+  `0.495280` to `0.395056 ms` (`20.24%`).  Two-CTA residency therefore removes
+  a real large-M occupancy bottleneck, but it does not close the gap to the
+  existing multi-kernel control, especially at small M.
+- **Caveat:** `candidate_padded_rows` is not valid after the native body resets
+  and reuses its workspace metadata; it is excluded from all conclusions.
+- **Decision:** keep the two-CTA Hopper-native result as a valid structural
+  improvement and profile M128 once to identify its remaining 31% gap.  Do not
+  spend a five-shape formal run yet, and do not transplant Blackwell-specific
+  scheduling or memory mechanisms.
+- **Evidence:** `bench/evidence/iter453_native_two_cta_tp4_cold_screen.txt`.
