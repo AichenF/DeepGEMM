@@ -12475,3 +12475,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - Change: allow `V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE=1` and `V4_SINGLE_LAUNCH_W2_PHASE_NOINLINE=1` together with the M128 bound-9/dynamic-route-smem specialization and `V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS=1`. Template the W13 phase helper on the proven valid-mblock invariant so both outlined GEMM loops retain the selected guard deletion. All defaults remain unchanged.
 - Static verification: `python3 -m py_compile v4_flash_tp_wgmma.py` passed.
 - Decision: proceed to a fresh JIT/cubin resource gate. Reject before performance testing unless the M128 entry admits exactly 9 CTAs/SM without fixed local allocation or a material spill/stack increase.
+## Iteration 506 — dual-phase outline JIT passes, resource filter misses symbols (2026-09-05)
+
+- Configuration: both whole-GEMM phase outlines, assume-valid tasks, release-arrival, dynamic route scratch, and the token-specialized M128 bound-9 path enabled.
+- Result: JIT compilation succeeded and produced `/tmp/torch_ext_v4_tp/v4tp_6a4afb4180127dda471c_v178mspec/v4tp_6a4afb4180127dda471c_v178mspec.so`. The command exited 1 only because the demangled `cuobjdump` grep patterns matched no resource records; it emitted no register/stack/shared-memory lines.
+- Decision: this is a compile PASS but an incomplete resource gate, not performance evidence. Inspect the exact cubin symbol spelling and rerun resource extraction before launching the kernel.
+- Evidence: `results/iter506_dual_phase_outline_resource_20260905.log`.
