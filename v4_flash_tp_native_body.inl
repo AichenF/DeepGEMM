@@ -841,7 +841,8 @@
                         // plane, avoiding the split candidate's second TMA.
                         tma::copy<128, 136, 0, uint8_t>(
                             tensor_map_b_ptr, full_barriers[stage_idx],
-                            smem_packed_b[stage_idx],
+                            reinterpret_cast<uint8_t*>(
+                                smem_packed_b[stage_idx]),
                             0, tile_idx * 136u, 1);
                     } else {
                         const uint32_t k_idx =

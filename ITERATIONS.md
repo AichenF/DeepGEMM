@@ -11934,3 +11934,24 @@ maximum rank latency of a full CUDA-Graph replay.
   identical M8 compile/correctness gate.
 - **Evidence:**
   `bench/evidence/iter481_tile_weight_scale_tma_compile_failure.txt`.
+
+## Iteration 482 — one-transaction tile TMA passes local M8 bitwise gate
+
+- **Change:** add only the explicit `uint8_t*` reinterpret cast required by
+  `tma::copy<128,136,0,uint8_t>` for the existing shared packed-B allocation.
+  Tile layout, descriptor coordinates, transaction size, barriers and RS
+  consumer mapping are unchanged from Iteration 481.
+- **Protocol:** physical H20 GPU1, deterministic local M8 with
+  `V4_NATIVE_TILE_WEIGHT_SCALE_TMA=1`, selected normalized/register-dequant/
+  K128/two-CTA defaults, and all rejected options disabled.
+- **Result:** **PASS and bitwise identical** to the selected 80-byte native
+  control.  Output is finite, maximum magnitude is `55,040`, complete BF16
+  SHA-256 is
+  `6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5`,
+  and weighted FC1 cosine/relative-L2 are
+  `0.9996428552/0.0271052359`; all M8 intermediate diagnostics are exact.
+- **Decision:** admit the single-transaction tile layout through M8.  Keep it
+  default-off and run the separately committed M128 full-output hash gate
+  before TP4 communication or latency testing.
+- **Evidence:**
+  `bench/evidence/iter482_tile_weight_scale_tma_m8_local_gate.txt`.
