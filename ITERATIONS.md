@@ -14133,3 +14133,22 @@ maximum rank latency of a full CUDA-Graph replay.
   reducing cold-weight concurrency loses much more bandwidth than it saves in
   the tail.  Gate resources/correctness, then use a bracketed cold-L2 A/B.
 - Evidence: `evidence/iter615_current_default_m128_ncu_analysis.md`.
+## Iteration 616 — isolate activation-only balanced-worker experiment
+
+- Change: add default-off
+  `V4_SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS`.  For schedule-0 M>=64 it
+  preserves the existing number of activation rounds but reduces only the
+  activation worker set to `ceil(tasks/rounds)`.  W13 and W2 retain the full
+  persistent grid and therefore retain their selected cold-weight concurrency.
+- Isolation: reject composition with the older all-phase balanced-worker mode
+  and with alternate overlap/cohort/78-CTA activation schedules.  The option
+  remains compatible with the selected compact-W13, dynamic-route-smem,
+  M128-bound9, release-arrival and assume-valid-task bundle.
+- Reproducibility: include the switch in the JIT cache key, compiler defines,
+  and all three relevant benchmark metadata records.
+- Static gate: `python3 -m py_compile` passed for the kernel module and the
+  single-vs-multi, paired-Humming and WGMMA graph benchmarks.
+- Decision: implementation is syntactically valid but remains default-off.
+  Next require a fresh remote JIT/resource/correctness gate before measuring
+  any performance effect.
+- Evidence: `evidence/iter616_balanced_activation_workers_static_gate.md`.

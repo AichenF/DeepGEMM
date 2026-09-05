@@ -534,6 +534,15 @@ if SINGLE_LAUNCH_ADAPTIVE_GRID_POLL and (
 SINGLE_LAUNCH_BALANCED_WORKERS = (
     os.environ.get("V4_SINGLE_LAUNCH_BALANCED_WORKERS", "0") == "1"
 )
+# Isolated tail-balancing experiment for the activation phase.  Unlike the
+# older BALANCED_WORKERS switch, this deliberately leaves W13 and W2 on the
+# full persistent grid so their weight-streaming parallelism is unchanged.
+SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS = (
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS", "0"
+    )
+    == "1"
+)
 SINGLE_LAUNCH_GRID_POLL_SLEEP_NS = int(
     os.environ.get("V4_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS", "64")
 )
@@ -737,6 +746,25 @@ if SINGLE_LAUNCH_BALANCED_WORKERS and (
 ):
     raise ValueError(
         "V4_SINGLE_LAUNCH_BALANCED_WORKERS requires isolated schedule 0"
+    )
+if SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_78CTA_WG_DAG
+    or SINGLE_LAUNCH_78CTA_LOCAL_W13
+    or SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS requires the isolated "
+        "schedule-0 activation phase"
     )
 SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH = (
     os.environ.get("V4_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH", "0") == "1"
@@ -1572,6 +1600,8 @@ static constexpr bool kSingleLaunchReleaseGridArrival =
     K_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL;
 static constexpr bool kSingleLaunchBalancedWorkers =
     K_SINGLE_LAUNCH_BALANCED_WORKERS;
+static constexpr bool kSingleLaunchBalancedActivationWorkers =
+    K_SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS;
 static constexpr int kSingleLaunchGridPollSleepNs =
     K_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS;
 static constexpr bool kSingleLaunchSkipFinalCtaSync =
@@ -8058,7 +8088,9 @@ void tp4_megamoe_single_launch_kernel(
                 const int activation_rounds =
                     (activation_groups + ctas - 1) / ctas;
                 const int activation_workers =
-                    kSingleLaunchBalancedWorkers && Tokens >= 64
+                    (kSingleLaunchBalancedWorkers
+                         || kSingleLaunchBalancedActivationWorkers)
+                            && Tokens >= 64
                     ? (activation_groups + activation_rounds - 1)
                         / activation_rounds
                     : ctas;
@@ -11313,6 +11345,7 @@ _EXTENSION_CONFIG = (
           f"slpb{int(SINGLE_LAUNCH_PACKED_GRID_BARRIER)}_"
           f"slra{int(SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL)}_"
           f"slbw{int(SINGLE_LAUNCH_BALANCED_WORKERS)}_"
+          f"slbaw{int(SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS)}_"
           f"slpsn{SINGLE_LAUNCH_GRID_POLL_SLEEP_NS}_"
           f"slfs{int(SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC)}_"
           f"slgbne{int(SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC)}_"
@@ -11542,6 +11575,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_BALANCED_WORKERS="
             f"{int(SINGLE_LAUNCH_BALANCED_WORKERS)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS="
+            f"{int(SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS="

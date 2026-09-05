@@ -1474,6 +1474,9 @@ def main() -> None:
                     "single_launch_balanced_workers": (
                         kernel.SINGLE_LAUNCH_BALANCED_WORKERS
                     ),
+                    "single_launch_balanced_activation_workers": (
+                        kernel.SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS
+                    ),
                     "single_launch_w13_completion_act": (
                         kernel.SINGLE_LAUNCH_W13_COMPLETION_ACT
                     ),
