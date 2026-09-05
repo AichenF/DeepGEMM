@@ -13660,3 +13660,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Interpretation: route and activation together are only 5.5 us at M8 and 10.6 us at M128. W13+W2 consume 91.8% and 96.7% of the stamped body respectively, so another route/barrier micro-optimization cannot close the 6.8–13.5% end-to-end gap. Optimization must improve GEMM residency/task throughput or eliminate the phased GEMM penalty.
 - Raw log: `bench/results/iter576_flat_phase_stamps_m8_m128_cold_20260905.log`
 - Evidence: `bench/evidence/iter576_flat_phase_stamps_m8_m128_cold.txt`
+## Iteration 577 — direct flat one-kernel vs exact Humming+CARv2 TP4 all-M cold-L2 long run (2026-09-05)
+
+- Purpose: measure the user-specified baseline directly. Iteration 575 intentionally used the stronger same-source custom multi-kernel control; this run instead pairs the selected flat one-kernel MegaMoE against exact Humming MXFP4 indexed W13+W2 followed by the same SGLang `CustomAllReduceV2` communicator/protocol.
+- Configuration: H20 TP4 physical GPUs 0,5,6,7; random precomputed top-k6 routes; M=8,16,32,64,128; one shared prequantized FP8-E4M3 X plus FP32 group-128 scale; CUDA Graphs; 6 outer x 50 replays = 300 samples/implementation/M; replay-level AB/BA pairing. Every replay has an independent 256 MiB L2 clear immediately before the timed graph, excluded from events. Candidate fast paths are release-arrival and assume-valid GEMM tasks.
+- Correctness: both implementations pass reference and all-reduce checks for every M and all ranks. Candidate minimum cosine is 0.9999955955 and maximum rel-L2 is 0.0029680026; Humming minimum cosine is 0.9999955571; all outputs are finite.
+- Humming / one-kernel median latency (ms), Humming divided by one-kernel: M8 0.088640 / 0.075712 = 1.17075x; M16 0.144480 / 0.124144 = 1.16381x; M32 0.223456 / 0.199104 = 1.12231x; M64 0.316816 / 0.284592 = 1.11323x; M128 0.395552 / 0.361120 = 1.09535x.
+- Five-M geometric mean: Humming 0.204611 ms, one-kernel 0.180638 ms, Humming/one-kernel 1.13271x. Equivalently, the one-kernel latency is 11.72% lower.
+- Interpretation: the requested “one complete MegaMoE kernel beats Humming MXFP4 GEMMs + CARv2” statement is directly reproduced at every tested M under cold L2. The margin is robust for M8-M64 and narrows to 9.53% at M128. The stronger same-source custom multi-kernel control still wins by 10.96% geometrically (Iteration 575), so fusion is beneficial versus Humming but not versus the best unfused implementation.
+- Raw log: `bench/results/iter577_flat_single_vs_exact_humming_tp4_allm_cold_long_20260905.log`
+- Evidence: `bench/evidence/iter577_flat_single_vs_exact_humming_tp4_allm_cold_long.txt`
