@@ -13759,3 +13759,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Decision: TP8 functional and one-launch deliverables are now independently established. Return focus to TP4 performance and first verify the added TP8 symbols did not regress the selected TP4 cold-L2 binary/path.
 - Profile: `bench/results/iter588_tp8_m32_single_launch_node_profile.nsys-rep`.
 - Evidence: `bench/evidence/iter588_tp8_one_business_kernel_nsys.txt`.
+## Iteration 589 — post-TP8 TP4 regression vs exact Humming+CARv2 (2026-09-05)
+
+- Configuration: exact Iteration-577 methodology after adding TP8: TP4 physical GPUs 0,5,6,7; random routes; M=8,16,32,64,128; exact Humming MXFP4 indexed W13+W2 plus the same SGLang CARv2 versus the flat one-kernel path; CUDA Graph; replay-level balanced AB/BA; 6 outer × 50 = 300 samples/implementation/M; separate excluded 256 MiB cold-L2 clear before every replay.
+- Correctness: **PASS** both arms at all five M values. Custom minimum cosine is `0.9999955955`, maximum relative L2 `0.0029680026`; all outputs are finite and all-reduce checks pass.
+- Humming/custom median latency (ms) and Humming/custom speedup: M8 `0.088448/0.075616 = 1.16970x`; M16 `0.144192/0.124144 = 1.16149x`; M32 `0.223392/0.198880 = 1.12325x`; M64 `0.317120/0.285040 = 1.11255x`; M128 `0.390416/0.358368 = 1.08943x`.
+- Aggregate: Humming geometric mean `0.203934 ms`, custom `0.180332 ms`, speedup `1.13088x`; custom latency is 11.57% lower. Versus Iteration 577, custom geometric mean improves slightly from `0.180638` to `0.180332 ms` (0.17%), so the TP8 additions cause no measurable TP4 regression.
+- Decision: keep TP8 support. The requested TP4 claim remains reproduced at every M, while the stronger same-source multi-kernel control remains the optimization target from Iteration 575.
+- Raw log: `bench/results/iter589_tp4_single_vs_exact_humming_post_tp8_cold_long_20260905.log`.
+- Evidence: `bench/evidence/iter589_tp4_humming_regression_post_tp8.txt`.

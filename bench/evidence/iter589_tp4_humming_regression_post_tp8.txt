@@ -1,0 +1,37 @@
+Iteration 589: post-TP8 TP4 regression versus exact Humming+CARv2
+Date: 2026-09-05
+
+Protocol
+--------
+TP4 physical GPUs 0,5,6,7; random routes; M=8,16,32,64,128
+Exact Humming MXFP4 indexed W13+W2 + SGLang CustomAllReduceV2
+versus flat one-kernel MegaMoE
+CUDA Graph; replay-level balanced AB/BA; 6 x 50 samples per arm per M
+Separate excluded 256 MiB cold-L2 clear before every replay
+
+Results
+-------
+M    Humming ms  one-kernel ms  Humming / one-kernel
+8    0.088448    0.075616       1.16970x
+16   0.144192    0.124144       1.16149x
+32   0.223392    0.198880       1.12325x
+64   0.317120    0.285040       1.11255x
+128  0.390416    0.358368       1.08943x
+
+Geometric mean
+--------------
+Humming:    0.203933983 ms
+one-kernel: 0.180332131 ms
+speedup:    1.130879905x
+latency reduction: 11.5733%
+
+Correctness
+-----------
+Both arms pass every M. Custom cosine_min >= 0.9999955955,
+rel_l2_max <= 0.0029680026, all ranks finite, allreduce_ok=true.
+
+Regression assessment
+---------------------
+Iteration 577 pre-TP8 custom geometric mean: 0.180637923 ms.
+Current custom geometric mean:               0.180332131 ms.
+Difference: -0.169% (noise-sized improvement), hence no TP4 regression.
