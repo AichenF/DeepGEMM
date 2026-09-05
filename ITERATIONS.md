@@ -15175,3 +15175,33 @@ maximum rank latency of a full CUDA-Graph replay.
   repeatable signal.  Production source is byte-identical to Iteration 657.
 - **Evidence:** `evidence/iter658_w13_start_stagger_rejection.md`; raw
   `bench/results/iter658_w13_stagger*_20260906.log`.
+
+## Iteration 659 — rotating complete W13 waves gives a small M128 gain
+
+- **Hypothesis/change:** retain each complete wave's contiguous 702-task set,
+  but rotate physical CTA ownership by 13 slots per wave in the selected M128
+  compact W13 loop.  Iteration 653b's measured placement shows this assigns
+  successive complete waves to different SMs.  The 474-task residual wave is
+  unchanged, as are arithmetic, split-K, barriers, W2 and communication.
+- **Resources/correctness:** M128 split-K2/4 remains
+  `REG56 STACK32 SHARED2048 LOCAL0`, retaining nine CTAs/SM.  Random-route
+  M128 is bitwise equal to the same-source multi local result (`cosine=1`,
+  `rel_l2=0`, finite), with 1,992 padded rows and packed generation wrap
+  exactly `[0,0,0,0]`.
+- **Local cold-L2 screen:** eight independent GPU1 process samples ordered
+  OFF/ON/ON/OFF/OFF/ON/ON/OFF, each with an excluded 256 MiB clear.  Every ON
+  W13 beats every OFF: median `214.704 -> 210.992 us` (1.73%) and mean
+  `215.064 -> 210.936 us` (1.92%).  Complete local phase-sum median improves
+  0.94% and mean 1.07%.
+- **TP4 cold-L2:** GPUs 0/5/6/7, CUDA Graph, four warmups, two outer batches x
+  20 replay-interleaved cold samples in each of four independent processes.
+  All outputs/allreduces pass identically.  OFF single/multi ratios are
+  `1.159208/1.159199`; ON ratios are `1.153664/1.151337`.  Their averages
+  improve 0.58%.  Direct single averages improve from `0.354336` to
+  `0.351448 ms`, or 0.82%.
+- **Decision:** retain as a default-off positive M128 option.  Test the same
+  complete-wave ownership mechanism independently in W2 before selecting a
+  default or spending an all-M run; this isolated gain is far below the final
+  target.
+- **Evidence:** `evidence/iter659_w13_wave_rotation_gain.md`; raw
+  `bench/results/iter659_w13_wave_rotate*_20260906.log`.

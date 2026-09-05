@@ -506,6 +506,24 @@ SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS = (
     )
     == "1"
 )
+# M128 persistent-grid ownership probe. Keep each complete wave's contiguous
+# logical task set unchanged, but rotate which physical CTA/SM owns it. The
+# residual wave remains on the measured count-optimal production mapping.
+SINGLE_LAUNCH_W13_WAVE_ROTATE = int(
+    os.environ.get("V4_SINGLE_LAUNCH_W13_WAVE_ROTATE", "0")
+)
+if SINGLE_LAUNCH_W13_WAVE_ROTATE not in (0, 13):
+    raise ValueError("V4_SINGLE_LAUNCH_W13_WAVE_ROTATE must be 0 or 13")
+if SINGLE_LAUNCH_W13_WAVE_ROTATE and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or not SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or not SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+    or not SINGLE_LAUNCH_M128_BOUND9
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W13_WAVE_ROTATE requires the selected "
+        "compact-ABI M128-bound9 schedule-0 path"
+    )
 SINGLE_LAUNCH_COOPERATIVE_GRID = (
     os.environ.get("V4_SINGLE_LAUNCH_COOPERATIVE_GRID", "0") == "1"
 )
@@ -1897,6 +1915,8 @@ static constexpr bool kSingleLaunchW13CompactPersistentState =
     K_SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE;
 static constexpr bool kSingleLaunchW13CompactSplitMajorTasks =
     K_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS;
+static constexpr int kSingleLaunchW13WaveRotate =
+    K_SINGLE_LAUNCH_W13_WAVE_ROTATE;
 static constexpr bool kSingleLaunchW13NextTaskPrefetch =
     K_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH;
 static constexpr bool kSingleLaunchW2NextTaskPrefetch =
@@ -3853,10 +3873,24 @@ __device__ __noinline__ void single_launch_w13_gemm_phase_compact(
     for (int task = cta; task < tasks;
          task += ctas, ++task_sequence) {
         int logical_task = task;
+        if constexpr (Tokens == 128 && kSingleLaunchW13WaveRotate > 0) {
+            // Rotate only the five complete 702-task waves.  Across the
+            // measured CTA placement shift 13 assigns every wave to a
+            // different physical SM while retaining the exact global set
+            // and contiguous cold-weight order.  Leave the residual wave
+            // untouched so no task is duplicated or dropped.
+            if (task_sequence < tasks / ctas) {
+                int rotated_cta =
+                    cta + task_sequence * kSingleLaunchW13WaveRotate;
+                if (rotated_cta >= ctas)
+                    rotated_cta -= ctas;
+                logical_task = task_sequence * ctas + rotated_cta;
+            }
+        }
         if constexpr (kSingleLaunchW13CompactSplitMajorTasks) {
             constexpr int kTasksPerMblock = kW13NTiles * SplitK;
-            const int mblock = task / kTasksPerMblock;
-            const int inner = task - mblock * kTasksPerMblock;
+            const int mblock = logical_task / kTasksPerMblock;
+            const int inner = logical_task - mblock * kTasksPerMblock;
             const int split = inner / kW13NTiles;
             const int n_tile = inner - split * kW13NTiles;
             logical_task =
@@ -11770,6 +11804,7 @@ _EXTENSION_CONFIG = (
           f"slw2ps{int(SINGLE_LAUNCH_W2_PERSISTENT_STATE)}_"
           f"slw13cps{int(SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE)}_"
           f"slw13csm{int(SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS)}_"
+          f"slw13wr{SINGLE_LAUNCH_W13_WAVE_ROTATE}_"
           f"slw13np{int(SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH)}_"
           f"slw2np{int(SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH)}_"
           f"slavgt{int(SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS)}_"
@@ -11947,6 +11982,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS="
             f"{int(SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W13_WAVE_ROTATE="
+            f"{SINGLE_LAUNCH_W13_WAVE_ROTATE}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH="

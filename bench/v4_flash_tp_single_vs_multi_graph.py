@@ -262,6 +262,9 @@ def main() -> None:
                     "single_launch_w13_phase_compact_abi": (
                         kernel.SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
                     ),
+                    "single_launch_w13_wave_rotate": (
+                        kernel.SINGLE_LAUNCH_W13_WAVE_ROTATE
+                    ),
                     "single_launch_w2_phase_noinline": (
                         kernel.SINGLE_LAUNCH_W2_PHASE_NOINLINE
                     ),
