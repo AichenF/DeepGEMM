@@ -3985,7 +3985,7 @@ __device__ __noinline__ void single_launch_wg_dag_w13_task(
 }
 
 template <int SplitK>
-__device__ __forceinline__ void single_launch_wg_dag_activation_task(
+__device__ __noinline__ void single_launch_wg_dag_activation_task(
         float* __restrict__ partials,
         __nv_bfloat16* __restrict__ activation,
         uint8_t* __restrict__ qactivation,
@@ -4150,145 +4150,6 @@ __device__ __noinline__ void single_launch_wg_dag_w2_task(
         reinterpret_cast<float*>(down), lut, nullptr,
         routes, 0, task - independent_wg);
     independent_wg_sync<kIndependentTaskWGs>(independent_wg);
-}
-
-// One call per complete static WG stripe keeps cross-phase state out of the
-// monolithic entry without paying the rejected per-tile outline boundary.
-// W13/W2 task bodies stay inline inside their phase loops.
-__device__ __forceinline__ int32_t load_acquire_gpu_i32(
-        const int32_t* pointer);
-__device__ __forceinline__ void store_release_gpu_i32(
-        int32_t* pointer, int32_t value);
-__device__ __forceinline__ int32_t atomic_add_acq_rel_gpu_i32(
-        int32_t* pointer, int32_t value);
-
-template <int SplitK>
-__device__ __noinline__ void single_launch_wg_dag_w13_phase(
-        const CUtensorMap* w13_tma_weight,
-        const CUtensorMap* w13_tma_weight_scale,
-        const uint8_t* __restrict__ w13,
-        const uint8_t* __restrict__ s13,
-        const float* __restrict__ g13,
-        const uint8_t* __restrict__ qx,
-        const float* __restrict__ x_scale,
-        const int32_t* __restrict__ sorted_ids,
-        const int32_t* __restrict__ expert_ids,
-        const int32_t* __restrict__ num_tokens_padded,
-        const float* __restrict__ topk_weights,
-        float* __restrict__ partials,
-        const uint2* __restrict__ lut,
-        int32_t* __restrict__ w13_group_done,
-        int32_t* __restrict__ w13_group_ready,
-        int routes, int total_w13_tasks,
-        int logical_worker, int independent_wg) {
-    constexpr int kIndependentTaskWGs = 8;
-    constexpr int kLogicalWorkers = 78 * kIndependentTaskWGs;
-    constexpr int kW13NTiles = 8;
-    constexpr int kActivationGroupsPerRoute = 4;
-    const int wg_lane = threadIdx.x & 127;
-    for (int task = logical_worker; task < total_w13_tasks;
-         task += kLogicalWorkers) {
-        route_gemm_task<
-            4096, 1024, SplitK, true, 0, false, false, false,
-            -1, false, 0, true, false, false, kIndependentTaskWGs>(
-            w13_tma_weight, w13_tma_weight_scale,
-            w13, s13, g13, qx, x_scale,
-            sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-            partials, lut, nullptr, routes, 0,
-            task - independent_wg);
-        independent_wg_sync<kIndependentTaskWGs>(independent_wg);
-
-        if (wg_lane == 0) {
-            const int task_idx = task / SplitK;
-            const int mblock = task_idx / kW13NTiles;
-            const int n_tile = task_idx - mblock * kW13NTiles;
-            const int activation_group = n_tile & 3;
-            const int group_key =
-                mblock * kActivationGroupsPerRoute + activation_group;
-            const int done = atomic_add_acq_rel_gpu_i32(
-                w13_group_done + group_key, 1) + 1;
-            if (done == 2 * SplitK)
-                store_release_gpu_i32(w13_group_ready + group_key, 1);
-        }
-    }
-}
-
-template <int SplitK>
-__device__ __noinline__ void single_launch_wg_dag_activation_phase(
-        float* __restrict__ partials,
-        __nv_bfloat16* __restrict__ activation,
-        uint8_t* __restrict__ qactivation,
-        float* __restrict__ activation_scale,
-        const int32_t* __restrict__ sorted_ids,
-        const int32_t* __restrict__ route_to_sorted,
-        const int32_t* __restrict__ topk_ids,
-        const float* __restrict__ g2,
-        int32_t* __restrict__ w13_group_ready,
-        int32_t* __restrict__ activation_groups_done,
-        int32_t* __restrict__ w2_mblock_ready,
-        int routes, int total_activation_groups,
-        int logical_worker, int independent_wg) {
-    constexpr int kIndependentTaskWGs = 8;
-    constexpr int kLogicalWorkers = 78 * kIndependentTaskWGs;
-    constexpr int kActivationGroupsPerRoute = 4;
-    const int wg_lane = threadIdx.x & 127;
-    for (int group_key = logical_worker;
-         group_key < total_activation_groups;
-         group_key += kLogicalWorkers) {
-        while (load_acquire_gpu_i32(w13_group_ready + group_key) == 0)
-            __nanosleep(64);
-        const int mblock = group_key / kActivationGroupsPerRoute;
-        const int activation_group =
-            group_key - mblock * kActivationGroupsPerRoute;
-        single_launch_wg_dag_activation_task<SplitK>(
-            partials, activation, qactivation,
-            activation_scale, sorted_ids, route_to_sorted,
-            topk_ids, g2, routes, mblock,
-            activation_group, independent_wg);
-        if (wg_lane == 0) {
-            const int done = atomic_add_acq_rel_gpu_i32(
-                activation_groups_done + mblock, 1) + 1;
-            if (done == kActivationGroupsPerRoute)
-                store_release_gpu_i32(w2_mblock_ready + mblock, 1);
-        }
-    }
-}
-
-__device__ __noinline__ void single_launch_wg_dag_w2_phase(
-        const CUtensorMap* w2_tma_weight,
-        const CUtensorMap* w2_tma_weight_scale,
-        const uint8_t* __restrict__ w2,
-        const uint8_t* __restrict__ s2,
-        const float* __restrict__ g2,
-        const uint8_t* __restrict__ qactivation,
-        const float* __restrict__ activation_scale,
-        const int32_t* __restrict__ sorted_ids,
-        const int32_t* __restrict__ expert_ids,
-        const int32_t* __restrict__ num_tokens_padded,
-        const float* __restrict__ topk_weights,
-        __nv_bfloat16* __restrict__ down,
-        const uint2* __restrict__ lut,
-        int32_t* __restrict__ w2_mblock_ready,
-        int routes, int total_w2_tasks,
-        int logical_worker, int independent_wg) {
-    constexpr int kIndependentTaskWGs = 8;
-    constexpr int kLogicalWorkers = 78 * kIndependentTaskWGs;
-    constexpr int kW2NTiles = 32;
-    for (int task = logical_worker; task < total_w2_tasks;
-         task += kLogicalWorkers) {
-        const int mblock = task / kW2NTiles;
-        while (load_acquire_gpu_i32(w2_mblock_ready + mblock) == 0)
-            __nanosleep(64);
-        route_gemm_task<
-            512, 4096, 1, false, 0, false, false, false,
-            -1, false, 0, true, false, false, kIndependentTaskWGs>(
-            w2_tma_weight, w2_tma_weight_scale,
-            w2, s2, g2, qactivation, activation_scale,
-            sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-            reinterpret_cast<float*>(down), lut, nullptr,
-            routes, 0, task - independent_wg);
-        independent_wg_sync<kIndependentTaskWGs>(independent_wg);
-    }
 }
 
 template <int Intermediate, int SplitK>
@@ -6505,12 +6366,13 @@ void tp4_megamoe_single_launch_kernel(
 
         single_launch_grid_barrier(barrier_state, 3, ctas);
     } else if constexpr (kSingleLaunch78CtaWgDag) {
-        // Hopper MegaMoE-inspired producer-release/consumer-acquire DAG with
-        // no CTA-wide intermediate phase barrier.  Every WG keeps static W13,
-        // activation-group and W2 stripes, but Iteration 434's costly
-        // per-task scheduler mailbox is removed.  The statically assigned
-        // activation WG acquires its group flag and owns the eight-row
-        // epilogue; W2 similarly acquires one coarse mblock flag.
+        // Hopper MegaMoE-inspired persistent L1/L2 interleave without the
+        // CTA-wide task barriers rejected by Iteration 417.  Every WG keeps a
+        // static W13, activation-group, and W2 stripe.  W13 completions are
+        // distributed across per-group counters and release-publish a flag;
+        // the statically assigned activation WG acquires that flag and owns
+        // the eight-row epilogue.  This removes the extra post-W13 WG barrier
+        // and random final-completer imbalance measured in Iteration 421.
         constexpr int kIndependentTaskWGs = 8;
         constexpr int kLogicalWorkers =
             kSingleLaunchH20Sms * kIndependentTaskWGs;
@@ -6525,6 +6387,7 @@ void tp4_megamoe_single_launch_kernel(
             num_mblocks * kActivationGroupsPerRoute;
         const int total_w2_tasks = num_mblocks * kW2NTiles;
         const int independent_wg = threadIdx.x >> 7;
+        const int wg_lane = threadIdx.x & 127;
         const int logical_worker =
 #if K_SINGLE_LAUNCH_78CTA_SMID_MAP
             h20_selected_logical_worker(independent_wg);
@@ -6540,34 +6403,184 @@ void tp4_megamoe_single_launch_kernel(
         int32_t* w2_mblock_ready =
             activation_groups_done + max_mblocks;
 
-        // Static local phases remove the per-task lane-0/shared-memory
-        // mailbox identified by Iteration 434 source counters.  A single
-        // noinline boundary per complete stripe limits cross-phase register
-        // liveness without paying a call/stack penalty on every GEMM tile.
-        single_launch_wg_dag_w13_phase<SplitK>(
-            &w13_tma_weight, &w13_tma_weight_scale,
-            w13, s13, g13, qx, x_scale,
-            sorted_ids, expert_ids, num_tokens_padded,
-            topk_weights, partials, lut,
-            w13_group_done, w13_group_ready,
-            routes, total_w13_tasks,
-            logical_worker, independent_wg);
+        __shared__ int wg_logical_worker[kIndependentTaskWGs];
+        __shared__ int wg_next_w13_task[kIndependentTaskWGs];
+        __shared__ int wg_num_activation_groups[kIndependentTaskWGs];
+        __shared__ int wg_num_w2_tasks[kIndependentTaskWGs];
+        __shared__ uint32_t wg_activation_done_mask[kIndependentTaskWGs];
+        __shared__ uint32_t wg_w2_done_mask[kIndependentTaskWGs];
+        __shared__ int wg_prefer_downstream[kIndependentTaskWGs];
+        __shared__ int wg_task_kind[kIndependentTaskWGs];
+        __shared__ int wg_task_index[kIndependentTaskWGs];
+        if (wg_lane == 0) {
+            wg_logical_worker[independent_wg] = logical_worker;
+            wg_next_w13_task[independent_wg] = logical_worker;
+            wg_num_activation_groups[independent_wg] =
+                logical_worker < total_activation_groups
+                    ? 1 + (total_activation_groups - 1 - logical_worker)
+                        / kLogicalWorkers
+                    : 0;
+            wg_num_w2_tasks[independent_wg] =
+                logical_worker < total_w2_tasks
+                    ? 1 + (total_w2_tasks - 1 - logical_worker)
+                        / kLogicalWorkers
+                    : 0;
+            wg_activation_done_mask[independent_wg] = 0u;
+            wg_w2_done_mask[independent_wg] = 0u;
+            wg_prefer_downstream[independent_wg] = 0;
+        }
+        independent_wg_sync<kIndependentTaskWGs>(independent_wg);
 
-        single_launch_wg_dag_activation_phase<SplitK>(
-            partials, activation, qactivation,
-            activation_scale, sorted_ids, route_to_sorted,
-            topk_ids, g2, w13_group_ready,
-            activation_groups_done, w2_mblock_ready,
-            routes, total_activation_groups,
-            logical_worker, independent_wg);
+        while (true) {
+            if (wg_lane == 0) {
+                int kind = -1;
+                int task = -1;
+                const int worker = wg_logical_worker[independent_wg];
+                const int num_owned_activation_groups =
+                    wg_num_activation_groups[independent_wg];
+                const int num_owned_w2_tasks =
+                    wg_num_w2_tasks[independent_wg];
+                uint32_t activation_done_mask =
+                    wg_activation_done_mask[independent_wg];
+                uint32_t w2_done_mask =
+                    wg_w2_done_mask[independent_wg];
+                int next_w13_task =
+                    wg_next_w13_task[independent_wg];
+                const int prefer_downstream =
+                    wg_prefer_downstream[independent_wg];
 
-        single_launch_wg_dag_w2_phase(
-            &w2_tma_weight, &w2_tma_weight_scale,
-            w2, s2, g2, qactivation, activation_scale,
-            sorted_ids, expert_ids, num_tokens_padded,
-            topk_weights, down, lut, w2_mblock_ready,
-            routes, total_w2_tasks,
-            logical_worker, independent_wg);
+                if (prefer_downstream
+                        || next_w13_task >= total_w13_tasks) {
+                    #pragma unroll 1
+                    for (int owned = 0;
+                         owned < num_owned_activation_groups; ++owned) {
+                        const uint32_t bit = 1u << owned;
+                        if ((activation_done_mask & bit) == 0u) {
+                            const int candidate_group =
+                                worker + owned * kLogicalWorkers;
+                            if (load_acquire_gpu_i32(
+                                    w13_group_ready + candidate_group)
+                                    != 0) {
+                                kind = 2;
+                                task = candidate_group;
+                                activation_done_mask |= bit;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (kind < 0 && (prefer_downstream
+                        || next_w13_task >= total_w13_tasks)) {
+                    #pragma unroll 1
+                    for (int owned = 0; owned < num_owned_w2_tasks;
+                         ++owned) {
+                        const uint32_t bit = 1u << owned;
+                        if ((w2_done_mask & bit) == 0u) {
+                            const int candidate_task =
+                                worker + owned * kLogicalWorkers;
+                            const int candidate_mblock =
+                                candidate_task / kW2NTiles;
+                            if (load_acquire_gpu_i32(
+                                    w2_mblock_ready + candidate_mblock)
+                                    != 0) {
+                                kind = 3;
+                                task = candidate_task;
+                                w2_done_mask |= bit;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (kind < 0 && next_w13_task < total_w13_tasks) {
+                    kind = 1;
+                    task = next_w13_task;
+                    next_w13_task += kLogicalWorkers;
+                }
+
+                const uint32_t all_activation_done_mask =
+                    num_owned_activation_groups == 0 ? 0u
+                    : (1u << num_owned_activation_groups) - 1u;
+                const uint32_t all_w2_done_mask =
+                    num_owned_w2_tasks == 0 ? 0u
+                    : num_owned_w2_tasks >= 32 ? 0xffffffffu
+                    : (1u << num_owned_w2_tasks) - 1u;
+                if (kind < 0 && next_w13_task >= total_w13_tasks
+                        && activation_done_mask
+                            == all_activation_done_mask
+                        && w2_done_mask == all_w2_done_mask)
+                    kind = 0;
+
+                wg_next_w13_task[independent_wg] = next_w13_task;
+                wg_activation_done_mask[independent_wg] =
+                    activation_done_mask;
+                wg_w2_done_mask[independent_wg] = w2_done_mask;
+                wg_prefer_downstream[independent_wg] =
+                    kind == 1 ? 1 : 0;
+
+                wg_task_kind[independent_wg] = kind;
+                wg_task_index[independent_wg] = task;
+            }
+            independent_wg_sync<kIndependentTaskWGs>(independent_wg);
+
+            const int kind = wg_task_kind[independent_wg];
+            const int task = wg_task_index[independent_wg];
+            if (kind == 0)
+                break;
+            if (kind < 0) {
+                __nanosleep(64);
+                continue;
+            }
+
+            if (kind == 1) {
+                single_launch_wg_dag_w13_task<SplitK>(
+                    &w13_tma_weight, &w13_tma_weight_scale,
+                    w13, s13, g13, qx, x_scale,
+                    sorted_ids, expert_ids, num_tokens_padded,
+                    topk_weights, partials, lut, routes,
+                    task, independent_wg);
+
+                if (wg_lane == 0) {
+                    const int task_idx = task / SplitK;
+                    const int mblock = task_idx / kW13NTiles;
+                    const int n_tile = task_idx - mblock * kW13NTiles;
+                    const int activation_group = n_tile & 3;
+                    const int group_key =
+                        mblock * kActivationGroupsPerRoute
+                            + activation_group;
+                    const int done = atomic_add_acq_rel_gpu_i32(
+                        w13_group_done + group_key, 1) + 1;
+                    if (done == 2 * SplitK)
+                        store_release_gpu_i32(
+                            w13_group_ready + group_key, 1);
+                }
+            } else if (kind == 2) {
+                const int mblock = task / kActivationGroupsPerRoute;
+                const int activation_group =
+                    task - mblock * kActivationGroupsPerRoute;
+                single_launch_wg_dag_activation_task<SplitK>(
+                    partials, activation, qactivation,
+                    activation_scale, sorted_ids, route_to_sorted,
+                    topk_ids, g2, routes, mblock,
+                    activation_group, independent_wg);
+                if (wg_lane == 0) {
+                    const int done = atomic_add_acq_rel_gpu_i32(
+                        activation_groups_done + mblock, 1) + 1;
+                    if (done == kActivationGroupsPerRoute) {
+                        store_release_gpu_i32(
+                            w2_mblock_ready + mblock, 1);
+                    }
+                }
+            } else if (kind == 3) {
+                single_launch_wg_dag_w2_task(
+                    &w2_tma_weight, &w2_tma_weight_scale,
+                    w2, s2, g2, qactivation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded,
+                    topk_weights, down, lut, routes,
+                    task, independent_wg);
+            }
+        }
 
         __syncthreads();
         single_launch_grid_barrier(barrier_state, 3, ctas);

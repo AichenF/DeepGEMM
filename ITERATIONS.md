@@ -10873,3 +10873,23 @@ maximum rank latency of a full CUDA-Graph replay.
   the L1 epilogue publishes L2 readiness.  Revert this full-stripe schedule
   before continuing.
 - **Evidence:** `bench/evidence/iter441_full_stripe_synccheck.txt`.
+
+## Iteration 442 — restore the last all-route-correct WG-DAG checkpoint
+
+- **Hypothesis:** restoring the exact Iteration 433 source should remove the
+  full-stripe progress cycle while preserving the spill-free batched
+  activation epilogue.
+- **Change:** restored only `v4_flash_tp_wgmma.py` from commit `28893e3`.
+  Logs, evidence, design documents, and the Hopper-reference directive were
+  retained.
+- **Test:** physical GPU 1 random all-route correctness at M8/SplitK=4 and
+  M128/SplitK=2 with the selected 78-CTA/8-WG flags.
+- **Result:** **PASS**.  M8: cosine `0.9999999999999999`, relative L2 `0.0`,
+  finite, 360 padded rows.  M128: cosine `1.0`, relative L2 `0.0`, finite,
+  1944 padded rows.  Replay-generation wrap checks passed at both endpoints.
+- **Analysis:** the deadlock was introduced by the all-W13/all-activation/all-W2
+  static phase ownership, not by the batched activation arithmetic.  This is
+  again the trustworthy base.  The next scheduler must follow the Hopper
+  reference's genuinely interleaved fixed-role producer/consumer model rather
+  than wrapping three bulk phases.
+- **Evidence:** `bench/evidence/iter442_restore_dynamic_mailbox_correctness.txt`.

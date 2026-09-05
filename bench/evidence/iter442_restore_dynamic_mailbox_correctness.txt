@@ -1,0 +1,41 @@
+Iteration 442: restore last correct dynamic-mailbox WG-DAG source
+Date: 2026-09-05
+Target: TP4 H20 single-launch compute correctness
+
+Source operation
+----------------
+Restored only v4_flash_tp_wgmma.py exactly from commit 28893e3 (Iteration 433).
+All newer ITERATIONS.md entries, evidence, design notes, and Hopper-reference
+directives remain in branch history/current tree.
+
+Environment
+-----------
+CUDA_VISIBLE_DEVICES=1
+TORCH_CUDA_ARCH_LIST=9.0a
+V4_SINGLE_LAUNCH_78CTA_8WG=1
+V4_SINGLE_LAUNCH_78CTA_SMID_MAP=1
+V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+route-pattern=random, seed=20260904
+
+Results
+-------
+M8, SplitK=4:
+- accepted: true
+- cosine: 0.9999999999999999
+- relative L2: 0.0
+- finite: true
+- padded rows: 360
+- packed replay generation wrap: true
+
+M128, SplitK=2:
+- accepted: true
+- cosine: 1.0
+- relative L2: 0.0
+- finite: true
+- padded rows: 1944
+- packed replay generation wrap: true
+
+Both tests use the prequantized FP8-E4M3 X + FP32 group128 scale contract and
+validate all route rows.  This single-GPU gate intentionally does not execute
+the TP collective.  The restored source is the safe base for the next Hopper
+role-specialized scheduler change.
