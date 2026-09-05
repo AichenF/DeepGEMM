@@ -13332,3 +13332,31 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter556_native_phase_stamps_m8_cold_20260905.log` and
   `bench/evidence/iter556_native_phase_stamps_m8_cold.txt`.
+
+## Iteration 557 — cold-L2 M128 phase stamps show sustained GEMM deficit
+
+- **Protocol:** same diagnostic-only physical H20 GPU1 protocol as Iteration
+  556, now M128, with a separate excluded 256 MiB L2 clear and the already
+  compiled selected phase-stamp cubin.
+- **Measured timestamps:** route publication `4.352 us`; last W13 task
+  `262.656 us`; last W2 task `348.992 us`; all-GEMM barrier `349.888 us`;
+  combine plus final TMA/grid drain `5.888 us`; total stamped local body
+  `355.776 us`.  All 156 CTA slots report both W13 and W2 work.
+- **Correctness qualification:** final output is finite and its SHA256
+  `2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5`
+  matches the previously accepted no-override M128 run.  The harness's
+  route-row positional audit reports mismatches at M128 because every expert
+  occurs three times and global atomic slot assignment is nondeterministic;
+  that positional host reconstruction is not a valid correctness verdict for
+  repeated experts.  This run is used for timing, not as a new correctness
+  proof.
+- **Interpretation/decision:** route plus combine is only about `10.24 us`.
+  W2-last is again just `0.896 us` ahead of the all-GEMM barrier, while work
+  continues `86.34 us` after the last W13 completion.  The performance gap is
+  therefore not merely M8 launch/tail overhead: the native interleaved W13/W2
+  task stream is also too slow at saturated M128.  Prioritize the Hopper
+  reference scheduler/task topology and weight-dequant pipeline comparison;
+  do not spend another iteration on route/combine.
+- **Evidence:**
+  `bench/results/iter557_native_phase_stamps_m128_cold_20260905.log` and
+  `bench/evidence/iter557_native_phase_stamps_m128_cold.txt`.
