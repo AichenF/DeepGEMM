@@ -12771,3 +12771,21 @@ maximum rank latency of a full CUDA-Graph replay.
   reduction.
 - **Evidence:**
   `bench/results/iter529_native_tp_local_barriers_tp4_long_20260905.log`.
+## Iteration 530 — native barrier default gate blocked by missing Humming path
+
+- **Change:** make the retained
+  `V4_NATIVE_TP_LOCAL_BARRIER_FASTPATH` resolve to enabled when the environment
+  variable is absent.  Explicit `0` remains available for the measured
+  control.
+- **Intended test:** physical H20 GPU1, deterministic local M8 followed by
+  M128 with the flag explicitly unset, validating the no-override default
+  entry and complete output hashes.
+- **Result:** **infrastructure FAIL before weight transform, kernel launch or
+  correctness.**  The command supplied only the TP repository on
+  `PYTHONPATH`; normalized MXFP4 preprocessing imports `humming.ops` and both
+  M8/M128 processes raised `ModuleNotFoundError: humming`.
+- **Decision:** no conclusion about the default change.  Rerun the unchanged
+  source with the already established Humming source directory appended to
+  `PYTHONPATH`.
+- **Evidence:**
+  `bench/results/iter530_native_tp_local_barriers_default_m8_m128_20260905.log`.

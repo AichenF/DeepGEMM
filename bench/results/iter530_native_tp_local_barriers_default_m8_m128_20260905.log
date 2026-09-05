@@ -1,0 +1,22 @@
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_native_local.py", line 218, in <module>
+    main()
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_native_local.py", line 81, in main
+    native.transform_weights(w13, s13, w2, s2)
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_native_megamoe.py", line 468, in transform_weights
+    s13_il, native_g13 = _normalize_mxfp4_weight_scales_(w13_il, s13_il)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_native_megamoe.py", line 432, in _normalize_mxfp4_weight_scales_
+    from humming import ops as humming_ops
+ModuleNotFoundError: No module named 'humming'
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_native_local.py", line 218, in <module>
+    main()
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/test_v4_flash_tp_native_local.py", line 81, in main
+    native.transform_weights(w13, s13, w2, s2)
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_native_megamoe.py", line 468, in transform_weights
+    s13_il, native_g13 = _normalize_mxfp4_weight_scales_(w13_il, s13_il)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_native_megamoe.py", line 432, in _normalize_mxfp4_weight_scales_
+    from humming import ops as humming_ops
+ModuleNotFoundError: No module named 'humming'

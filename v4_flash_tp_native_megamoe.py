@@ -59,7 +59,7 @@ NATIVE_DUAL_ACTIVE_DISPATCH = (
     os.environ.get("V4_NATIVE_DUAL_ACTIVE_DISPATCH", "0") == "1"
 )
 NATIVE_TP_LOCAL_BARRIER_FASTPATH = (
-    os.environ.get("V4_NATIVE_TP_LOCAL_BARRIER_FASTPATH", "0") == "1"
+    os.environ.get("V4_NATIVE_TP_LOCAL_BARRIER_FASTPATH", "1") == "1"
 )
 if NATIVE_TWO_CTA_PER_SM and not NATIVE_REGISTER_DEQUANT:
     raise ValueError(
