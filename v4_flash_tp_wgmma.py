@@ -4102,9 +4102,9 @@ __device__ __forceinline__ void single_launch_route_task(
 }
 
 // Route preparation for the one-CTA-per-SM prototype.  All 1024 lanes join
-// every CTA barrier, while lane 0 performs the tiny 256-expert padded prefix.
-// This avoids instantiating a 1024-lane CUB scan for only 256 counters and is
-// outside the GEMM-dominated region.
+// every CTA barrier, while warp 0 performs an ordered 256-expert prefix with
+// eight consecutive experts per lane.  The warp scan preserves expert order
+// without instantiating a 1024-lane CUB scan for only 256 counters.
 __device__ __forceinline__ void single_launch_route_task_1024(
         const int32_t* __restrict__ topk_ids,
         int32_t* __restrict__ sorted_ids,
@@ -4133,19 +4133,43 @@ __device__ __forceinline__ void single_launch_route_task_1024(
     }
     __syncthreads();
 
-    if (tid == 0) {
-        int total = 0;
-        #pragma unroll 4
-        for (int expert = 0; expert < kExperts; ++expert) {
+    if (tid < 32) {
+        constexpr int kExpertsPerLane = kExperts / 32;
+        int padded_counts[kExpertsPerLane];
+        int local_offsets[kExpertsPerLane];
+        int lane_total = 0;
+        #pragma unroll
+        for (int item = 0; item < kExpertsPerLane; ++item) {
+            const int expert = tid * kExpertsPerLane + item;
             const int padded = (counts[expert] + 7) & ~7;
-            cursors[expert] = total;
-            for (int position = total; position < total + padded;
-                 position += kTok)
-                expert_ids[position / kTok] = expert;
-            total += padded;
+            padded_counts[item] = padded;
+            local_offsets[item] = lane_total;
+            lane_total += padded;
         }
-        *total_padded = total;
-        *num_tokens_padded = total;
+
+        int inclusive = lane_total;
+        #pragma unroll
+        for (int delta = 1; delta < 32; delta <<= 1) {
+            const int previous = __shfl_up_sync(
+                0xffffffffu, inclusive, delta);
+            if (tid >= delta)
+                inclusive += previous;
+        }
+        const int lane_base = inclusive - lane_total;
+        #pragma unroll
+        for (int item = 0; item < kExpertsPerLane; ++item) {
+            const int expert = tid * kExpertsPerLane + item;
+            const int offset = lane_base + local_offsets[item];
+            cursors[expert] = offset;
+            #pragma unroll
+            for (int position = 0;
+                 position < padded_counts[item]; position += kTok)
+                expert_ids[(offset + position) / kTok] = expert;
+        }
+        if (tid == 31) {
+            *total_padded = inclusive;
+            *num_tokens_padded = inclusive;
+        }
     }
     __syncthreads();
 
@@ -4162,7 +4186,8 @@ __device__ __forceinline__ void single_launch_route_task_1024(
                 route_to_sorted[route] = position;
         }
     }
-    __syncthreads();
+    // The immediately following whole-grid barrier begins with a full-CTA
+    // sync, which publishes these route writes without a duplicate barrier.
 }
 
 __device__ __forceinline__ int32_t load_acquire_gpu_i32(

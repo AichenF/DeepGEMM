@@ -9654,3 +9654,32 @@ maximum rank latency of a full CUDA-Graph replay.
   arithmetic or cache policy.
 - Evidence:
   `results/iter390_78cta_8wg_m128_ncu_details_20260905.log`.
+
+## Iteration 391 — warp-parallel 78-CTA route prefix
+
+- Date: 2026-09-05
+- Change: replace the 78-CTA prototype's lane-0 serial scan of 256 expert
+  counts with warp0 processing eight consecutive experts/lane plus a
+  five-step warp exclusive prefix.  Expert ordering and block-M8 padding are
+  unchanged.  All 1,024 lanes still initialize/count/fill routes, and the
+  helper omits its final CTA sync because the immediately following packed
+  whole-grid barrier begins with the required CTA sync.
+- Protocol: H20 GPU0, random routes, seed 20260904, release arrivals,
+  valid-task elision and phase stamps enabled, TP collective disabled.  M8
+  and M128 each used one measured launch after an excluded 256 MiB L2 clear
+  and the independent multi-kernel route-row reference.  Public activation
+  is prequantized FP8; no input quantizer is present.
+- Correctness: PASS bitwise at both endpoints (`rel_l2=0`, finite, cosine 1
+  within print precision), with unchanged padded-row counts 360/1,944 and
+  clean packed barrier generations.
+- Device phases (route / W13 / requant / W2): M8
+  `2.624 / 52.992 / 3.680 / 31.360 us`; M128
+  `3.776 / 232.192 / 6.112 / 113.056 us`.  Versus Iteration 387, route falls
+  from 12.128 to 2.624 us at M8 (-78.4%) and 21.280 to 3.776 us at M128
+  (-82.3%).  Total stamped compute falls by roughly 6.5/24.2 us despite
+  single-sample noise in the other phases.
+- Decision: select this route implementation inside the still-default-off
+  78-CTA mode.  Re-screen complete TP4 M8/M128 before addressing the
+  remaining GEMM no-eligible gap.
+- Evidence:
+  `results/iter391_78cta_parallel_route_phase_m8_m128_20260905.log`.
