@@ -9487,3 +9487,18 @@ maximum rank latency of a full CUDA-Graph replay.
   unproven.
 - Evidence:
   `results/iter383_78cta_8wg_compute_m8_m128_20260905.log`.
+
+## Iteration 384 — second 78-CTA execution blocked by Humming import path
+
+- Date: 2026-09-05
+- Intended test: unchanged Iteration 382 78-CTA/eight-WG compute-only M8 and
+  M128 run after adding the repository root to `PYTHONPATH`.
+- Result: the custom module became visible, but the imported graph/reference
+  helper also imports Humming.  The process stopped before any GPU work with
+  `ModuleNotFoundError: humming` because the pinned Humming checkout was not
+  included in `PYTHONPATH`.  No correctness or latency evidence was produced.
+- Decision: launcher-only failure.  Keep source unchanged and rerun with both
+  the repository root and pinned `humming-v0.1.12` source root on
+  `PYTHONPATH`.
+- Evidence:
+  `results/iter384_78cta_8wg_compute_m8_m128_20260905.log`.
