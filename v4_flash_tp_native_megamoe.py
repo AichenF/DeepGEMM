@@ -1,4 +1,4 @@
-"""Native one-CTA-per-SM MXFP4 MegaMoE kernel for V4 Flash TP.
+"""Native Hopper MXFP4 MegaMoE kernel for V4 Flash TP.
 
 The timed kernel starts from caller-provided FP8-E4M3 activations and FP32
 group-128 activation scales.  Input quantization and router computation are
@@ -26,13 +26,13 @@ BLOCK_M = 8
 MAX_POOL_TOKENS = 3072
 PADDED_SF_POOL_TOKENS = (MAX_POOL_TOKENS // BLOCK_M) * 128
 NATIVE_REGISTER_DEQUANT = (
-    os.environ.get("V4_NATIVE_REGISTER_DEQUANT", "0") == "1"
+    os.environ.get("V4_NATIVE_REGISTER_DEQUANT", "1") == "1"
 )
 NATIVE_RS_K128_BATCH = (
-    os.environ.get("V4_NATIVE_RS_K128_BATCH", "0") == "1"
+    os.environ.get("V4_NATIVE_RS_K128_BATCH", "1") == "1"
 )
 NATIVE_TWO_CTA_PER_SM = (
-    os.environ.get("V4_NATIVE_TWO_CTA_PER_SM", "0") == "1"
+    os.environ.get("V4_NATIVE_TWO_CTA_PER_SM", "1") == "1"
 )
 NATIVE_SKIP_CLEANUP_GRID_SYNC = (
     os.environ.get("V4_NATIVE_SKIP_CLEANUP_GRID_SYNC", "0") == "1"

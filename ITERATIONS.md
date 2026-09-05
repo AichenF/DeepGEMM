@@ -11646,3 +11646,28 @@ maximum rank latency of a full CUDA-Graph replay.
   command.
 - **Evidence:**
   `bench/evidence/iter470_native_default_formal_entry_failure.txt`.
+
+## Iteration 471 — make the complete selected native configuration default
+
+- **Change:** make register dequant, RS K128 batching and two-CTA-per-SM
+  default-on alongside the already-default normalized weight scale.  These are
+  the jointly selected Iteration-460 configuration; every switch remains
+  explicitly overridable.  Also remove the stale one-CTA claim from the module
+  docstring.
+- **Protocol:** physical H20 GPU1, deterministic local M8 with
+  `V4_NATIVE_REGISTER_DEQUANT`, `V4_NATIVE_RS_K128_BATCH`,
+  `V4_NATIVE_TWO_CTA_PER_SM` and `V4_NATIVE_NORMALIZED_WEIGHT_SCALE` all
+  explicitly absent from the environment.  Rejected scale-word cache and half
+  prefetch remain default-off.
+- **Result:** **PASS and bitwise identical** to the admitted Iteration-469
+  output.  The result is finite, maximum magnitude is `55,040`, full BF16
+  SHA-256 is
+  `6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5`,
+  and weighted FC1 cosine/relative-L2 are
+  `0.9996428552/0.0271052359`.
+- **Decision:** accept the consistent default set.  The no-override formal
+  entry now selects the measured winner rather than rejecting import or
+  silently falling back to an unselected native configuration.  Retry the
+  exact Iteration-470 five-M formal command next.
+- **Evidence:**
+  `bench/evidence/iter471_native_selected_defaults_local_gate.txt`.
