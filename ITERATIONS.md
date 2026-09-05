@@ -10702,3 +10702,32 @@ maximum rank latency of a full CUDA-Graph replay.
   phase path for a different overlap boundary.
 - Evidence:
   `bench/results/iter432_batched_activation_tp4_m8_m128_cold_screen_20260905.log`.
+
+## Iteration 433 — activation batching removes spills, not dominant barriers
+
+- Date: 2026-09-05
+- Method: NCU 2025.3.1 on the exact Iteration 430 compute-only M128
+  split-K2 kernel on idle physical GPU1, profiler-start delimited, exact
+  monolithic-kernel filter, 20 kernel-replay passes, application-managed
+  excluded 256 MiB cold-L2 clear, and NCU cache/clock control disabled.
+- Correctness/resource: bitwise PASS, 1,944 padded rows and generation words
+  `[2048,0,0,2048]`; 78x1024, 64 registers/thread, 147.46 KiB dynamic plus
+  4.10 KiB static shared, 50.05% achieved occupancy.
+- Result: duration `371.07 us`, compute `59.61%`, DRAM `45.46%`
+  (`2.19 TB/s`), no-eligible `40.16%`, 0.60 issued and 1.48 eligible
+  warps/scheduler.  Local spilling requests fall 57,100→0, but barrier wait
+  remains 4.8 of 13.36 cycles/issue (`35.6%`).
+- Comparison to Iteration 425: duration improves only 1.04%, no-eligible only
+  0.20 points and bandwidth 2.16→2.19 TB/s despite eliminating all spills
+  and reducing the static activation barrier count roughly 6x.  Instructions
+  rise 0.36%.
+- Diagnosis/decision: per-row activation scale barriers were not the dominant
+  sampled barrier source.  The remaining cost comes from the self-contained
+  route-GEMM pipeline barriers, task-mailbox handoffs and inter-WG load
+  imbalance.  Do not tune activation chunk size.  Preserve this zero-spill
+  checkpoint, but move the next experiment to GEMM task organization or the
+  Hopper reference's producer/math role specialization.
+- Evidence:
+  `results/iter433_batched_activation_m128_ncu_details_20260905.log`; binary
+  report `results/iter433_batched_activation_m128_compute_full.ncu-rep`
+  remains outside git due to size.
