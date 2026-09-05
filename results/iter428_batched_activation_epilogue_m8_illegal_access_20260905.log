@@ -1,0 +1,18 @@
+ITER428_BATCHED_ACTIVATION_EPILOGUE_M8_ILLEGAL_ACCESS
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+physical_gpu=1
+source_commit=600afbb
+candidate_flag=V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+protocol=TP-disabled all-route M8 random-route correctness; seed 20260904; first untimed single-kernel execution before profiler-start timing
+m=8
+w13_split_k=4
+result=FAIL_CUDA_ILLEGAL_MEMORY_ACCESS
+failure_site=host torch.cuda.synchronize immediately after the first candidate run at profile_v4_flash_tp_single_compute.py:176
+python_exception=torch.AcceleratorError CUDA error an illegal memory access was encountered
+m128=NOT_RUN_DUE_TO_M8_FAILURE
+correctness=FAIL
+performance=NOT_TESTED
+decision=commit exact failing checkpoint before repair; use CUDA_LAUNCH_BLOCKING and compute-sanitizer or explicit batched-helper bounds audit; do not benchmark this binary
+ITER428_BATCHED_ACTIVATION_EPILOGUE_M8_ILLEGAL_ACCESS_FAIL

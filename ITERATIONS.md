@@ -10608,3 +10608,19 @@ maximum rank latency of a full CUDA-Graph replay.
   bitwise all-route correctness at M8/M128 before any performance claim.
 - Evidence:
   `results/iter427_batched_activation_epilogue_jit_resource_20260905.log`.
+
+## Iteration 428 — batched activation epilogue illegal access
+
+- Date: 2026-09-05
+- Protocol: exact Iteration 427 source on idle H20 GPU1, TP disabled, M8
+  random routes with seed 20260904.  Execute the first untimed candidate call
+  used by the all-route correctness harness before profiler-start timing.
+- Result: FAIL with `CUDA error: an illegal memory access was encountered` at
+  the immediate host `torch.cuda.synchronize` after the candidate call.
+  M128 is not run and no performance result is collected.
+- Decision: reject the implementation as written, but preserve the exact
+  buildable failing checkpoint before repair.  Use launch-blocking plus
+  compute-sanitizer or an explicit activation-helper bounds audit to locate
+  the invalid access; no timing is valid until bitwise M8/M128 passes again.
+- Evidence:
+  `results/iter428_batched_activation_epilogue_m8_illegal_access_20260905.log`.
