@@ -207,6 +207,9 @@ SINGLE_LAUNCH_78CTA_SMID_MAP = (
 SINGLE_LAUNCH_78CTA_WG_DAG = (
     os.environ.get("V4_SINGLE_LAUNCH_78CTA_WG_DAG", "0") == "1"
 )
+SINGLE_LAUNCH_78CTA_LOCAL_W13 = (
+    os.environ.get("V4_SINGLE_LAUNCH_78CTA_LOCAL_W13", "0") == "1"
+)
 if SINGLE_LAUNCH_78CTA_SMID_MAP and not SINGLE_LAUNCH_78CTA_8WG:
     raise ValueError(
         "V4_SINGLE_LAUNCH_78CTA_SMID_MAP requires "
@@ -216,6 +219,16 @@ if SINGLE_LAUNCH_78CTA_WG_DAG and not SINGLE_LAUNCH_78CTA_8WG:
     raise ValueError(
         "V4_SINGLE_LAUNCH_78CTA_WG_DAG requires "
         "V4_SINGLE_LAUNCH_78CTA_8WG=1"
+    )
+if SINGLE_LAUNCH_78CTA_LOCAL_W13 and (
+    not SINGLE_LAUNCH_78CTA_8WG
+    or not SINGLE_LAUNCH_78CTA_SMID_MAP
+    or SINGLE_LAUNCH_78CTA_WG_DAG
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_78CTA_LOCAL_W13 requires "
+        "V4_SINGLE_LAUNCH_78CTA_8WG=1, "
+        "V4_SINGLE_LAUNCH_78CTA_SMID_MAP=1, and WG-DAG disabled"
     )
 W2_NEEDS_ROUTE_MAP = (
     W2_SORTED_ACT
@@ -429,6 +442,10 @@ if SINGLE_LAUNCH_78CTA_WG_DAG and (
     raise ValueError(
         "V4_SINGLE_LAUNCH_78CTA_WG_DAG requires schedule 0 and phase "
         "stamps disabled"
+    )
+if SINGLE_LAUNCH_78CTA_LOCAL_W13 and SINGLE_LAUNCH_PHASE_STAMPS:
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_78CTA_LOCAL_W13 requires phase stamps disabled"
     )
 SINGLE_LAUNCH_PACKED_GRID_BARRIER = (
     os.environ.get("V4_SINGLE_LAUNCH_PACKED_GRID_BARRIER", "1") == "1"
@@ -1425,6 +1442,8 @@ static constexpr bool kSingleLaunch78CtaSmidMap =
     K_SINGLE_LAUNCH_78CTA_SMID_MAP;
 static constexpr bool kSingleLaunch78CtaWgDag =
     K_SINGLE_LAUNCH_78CTA_WG_DAG;
+static constexpr bool kSingleLaunch78CtaLocalW13 =
+    K_SINGLE_LAUNCH_78CTA_LOCAL_W13;
 static constexpr bool kSingleLaunchP2pTwoShot =
     K_SINGLE_LAUNCH_P2P_TWO_SHOT;
 static constexpr int kSingleLaunchP2pTwoShotBlocks =
@@ -10035,6 +10054,7 @@ _EXTENSION_CONFIG = (
           f"sltracesm{int(SINGLE_LAUNCH_TRACE_SMID)}_"
           f"sl78smap{int(SINGLE_LAUNCH_78CTA_SMID_MAP)}_"
           f"sl78wgd{int(SINGLE_LAUNCH_78CTA_WG_DAG)}_"
+          f"sl78lw13{int(SINGLE_LAUNCH_78CTA_LOCAL_W13)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"slp2p2{int(SINGLE_LAUNCH_P2P_TWO_SHOT)}_"
@@ -10309,6 +10329,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_78CTA_WG_DAG="
             f"{int(SINGLE_LAUNCH_78CTA_WG_DAG)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_78CTA_LOCAL_W13="
+            f"{int(SINGLE_LAUNCH_78CTA_LOCAL_W13)}"
         ),
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",

@@ -12221,3 +12221,19 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/evidence/iter492_native_single_l1_warmup_tp4_long.txt` and raw log
   `bench/results/iter492_native_single_l1_warmup_tp4_long_20260905.log`.
+
+## Iteration 493 — wire an isolated CTA-local W13 experiment flag
+
+- **Change:** add the default-off `V4_SINGLE_LAUNCH_78CTA_LOCAL_W13`
+  experiment selector to the Python configuration, CUDA compile definition,
+  extension cache key, and all single-launch benchmark metadata.  Reject the
+  selector unless the proven 78-CTA/8-WG path and measured H20 SM mapping are
+  enabled; reject coexistence with WG-DAG and profiling phase stamps.
+- **Test:** container-side `python -m py_compile` over
+  `v4_flash_tp_wgmma.py`, both graph drivers, and the selected-vs-multi graph
+  driver.
+- **Result:** **PASS** with exit code 0 and no diagnostics.  This is only the
+  auditable control-plane/JIT-key gate; it does not yet select a changed CUDA
+  schedule and therefore has no performance claim.
+- **Decision:** retain the flag wiring and next implement the shared-partial
+  cohort body behind it before any GPU correctness or timing run.

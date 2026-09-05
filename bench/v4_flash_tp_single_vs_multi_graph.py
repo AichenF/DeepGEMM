@@ -382,6 +382,9 @@ def main() -> None:
                     "single_launch_78cta_wg_dag": (
                         kernel.SINGLE_LAUNCH_78CTA_WG_DAG
                     ),
+                    "single_launch_78cta_local_w13": (
+                        kernel.SINGLE_LAUNCH_78CTA_LOCAL_W13
+                    ),
                     "single_launch_dual_wg_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM
                     ),
