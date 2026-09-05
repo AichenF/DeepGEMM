@@ -153,6 +153,10 @@ def main() -> None:
     torch.manual_seed(args.seed + rank)
     torch.cuda.manual_seed(args.seed + rank)
     use_native = args.candidate == "native"
+    native_kernel = None
+    if use_native:
+        import v4_flash_tp_native_megamoe as native_kernel
+
     weights = custom.make_weights(
         intermediate_per_rank, device, include_native=use_native
     )
@@ -190,45 +194,32 @@ def main() -> None:
                     ),
                     "native_megamoe": use_native,
                     "native_register_dequant": bool(
-                        use_native
-                        and os.environ.get("V4_NATIVE_REGISTER_DEQUANT", "0")
-                        == "1"
+                        native_kernel
+                        and native_kernel.NATIVE_REGISTER_DEQUANT
                     ),
                     "native_rs_k128_batch": bool(
-                        use_native
-                        and os.environ.get("V4_NATIVE_RS_K128_BATCH", "0")
-                        == "1"
+                        native_kernel
+                        and native_kernel.NATIVE_RS_K128_BATCH
                     ),
                     "native_two_cta_per_sm": bool(
-                        use_native
-                        and os.environ.get("V4_NATIVE_TWO_CTA_PER_SM", "0")
-                        == "1"
+                        native_kernel
+                        and native_kernel.NATIVE_TWO_CTA_PER_SM
                     ),
                     "native_skip_cleanup_grid_sync": bool(
-                        use_native
-                        and os.environ.get(
-                            "V4_NATIVE_SKIP_CLEANUP_GRID_SYNC", "0"
-                        )
-                        == "1"
+                        native_kernel
+                        and native_kernel.NATIVE_SKIP_CLEANUP_GRID_SYNC
                     ),
                     "native_rs_half_prefetch": bool(
-                        use_native
-                        and os.environ.get("V4_NATIVE_RS_HALF_PREFETCH", "0")
-                        == "1"
+                        native_kernel
+                        and native_kernel.NATIVE_RS_HALF_PREFETCH
                     ),
                     "native_normalized_weight_scale": bool(
-                        use_native
-                        and os.environ.get(
-                            "V4_NATIVE_NORMALIZED_WEIGHT_SCALE", "1"
-                        )
-                        == "1"
+                        native_kernel
+                        and native_kernel.NATIVE_NORMALIZED_WEIGHT_SCALE
                     ),
                     "native_rs_scale_word_cache": bool(
-                        use_native
-                        and os.environ.get(
-                            "V4_NATIVE_RS_SCALE_WORD_CACHE", "0"
-                        )
-                        == "1"
+                        native_kernel
+                        and native_kernel.NATIVE_RS_SCALE_WORD_CACHE
                     ),
                     "single_launch_interleaved": (
                         kernel.SINGLE_LAUNCH_INTERLEAVED

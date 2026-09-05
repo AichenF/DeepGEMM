@@ -1,0 +1,26 @@
+ITERATION 473 — resolved native metadata graph smoke
+
+Configuration:
+  TP4 GPUs 0,1,2,3; random M8; CUDA Graph; outer=2; replays=2; warmups=2;
+  V4_NATIVE_REGISTER_DEQUANT, V4_NATIVE_RS_K128_BATCH,
+  V4_NATIVE_TWO_CTA_PER_SM and V4_NATIVE_NORMALIZED_WEIGHT_SCALE absent.
+
+Resolved SINGLE_MULTI_ENV fields:
+  native_megamoe=true
+  native_register_dequant=true
+  native_rs_k128_batch=true
+  native_two_cta_per_sm=true
+  native_normalized_weight_scale=true
+  native_rs_half_prefetch=false
+  native_rs_scale_word_cache=false
+  native_skip_cleanup_grid_sync=false
+
+Correctness:
+  candidate_accept=true
+  finite_all_ranks=true
+  final_cosine_min_rank=0.9993588000366143
+  embedded_comm_vs_nccl_cosine_min_rank=0.9999917759916745
+  embedded_comm_vs_nccl_rel_l2_max_rank=0.004055621719535723
+
+Verdict: PASS metadata/correctness smoke.  Four latency samples are not a
+performance verdict.

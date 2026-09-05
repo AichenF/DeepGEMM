@@ -11711,3 +11711,26 @@ maximum rank latency of a full CUDA-Graph replay.
   iteration; launch removal alone remains insufficient.
 - **Evidence:**
   `bench/evidence/iter472_native_selected_defaults_tp4_allm_formal.txt`.
+
+## Iteration 473 — report resolved native configuration in benchmark metadata
+
+- **Change:** when `--candidate native` is selected, import the native module
+  before weight construction and report its resolved configuration constants
+  in `SINGLE_MULTI_ENV`.  Stop independently parsing absent raw environment
+  strings with stale fallback values.  Kernel code, graph capture and timing
+  are unchanged.
+- **Protocol:** TP4 GPUs 0–3, random-route M8 graph smoke, two balanced outer
+  batches x two cold samples per arm and two warmups.  Explicitly remove the
+  register-dequant, K128-batch, two-CTA and normalized-scale variables from the
+  launch environment.
+- **Result:** **PASS.**  Metadata now truthfully reports
+  `native_register_dequant=true`, `native_rs_k128_batch=true`,
+  `native_two_cta_per_sm=true` and
+  `native_normalized_weight_scale=true`; rejected scale-word cache and half
+  prefetch remain false.  Correctness is unchanged: every rank is finite,
+  end-to-end cosine is `0.9993588000`, and embedded communication versus NCCL
+  cosine/relative-L2 are `0.9999917760/0.0040556217`.
+- **Decision:** accept the reporting fix.  The four-sample latency is only a
+  smoke test and is not used to replace the formal Iteration-472 verdict.
+- **Evidence:**
+  `bench/evidence/iter473_native_resolved_metadata_graph_smoke.txt`.
