@@ -221,6 +221,10 @@ def main() -> None:
         trace_ctas = 78 * (
             1
             if kernel.SINGLE_LAUNCH_78CTA_8WG
+            else 2
+            if kernel.SINGLE_LAUNCH_156CTA_4WG
+            else 9
+            if kernel.SINGLE_LAUNCH_M128_BOUND9 and args.m == 128
             else kernel.SINGLE_LAUNCH_CTAS_PER_SM
         )
         trace_values = (

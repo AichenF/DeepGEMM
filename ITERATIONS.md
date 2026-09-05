@@ -14379,3 +14379,33 @@ maximum rank latency of a full CUDA-Graph replay.
   regions without changing producer granularity.
 - Evidence: `evidence/iter625_w2_n64_tail_short_rejection.md` and four raw
   logs under `bench/results/iter625_*_20260905.log`.
+
+## Iteration 626 — isolate a 156-CTA/four-independent-WG topology
+
+- Hypothesis/change: add default-off `V4_SINGLE_LAUNCH_156CTA_4WG=1`.
+  Two 512-thread CTAs are intended to reside on each of H20's 78 SMs, with
+  four independent 128-thread WGMMA/TMA workers per CTA.  The device therefore
+  retains the selected eight logical GEMM workers/SM and 624 logical workers
+  overall, while reducing whole-grid barrier participants from 624 to 156.
+  This is the untested midpoint between the selected 624x128 topology and the
+  rejected 78x1024/eight-WG topology, whose single-CTA TMA/barrier coupling was
+  measured to be excessive.
+- Implementation isolation: generalized packed route construction and the
+  independent-WG task body to four or eight WGs, sized dynamic shared memory
+  as `packed_wgs * route_task_bytes`, and added an explicit two-CTA/SM
+  occupancy requirement.  The 156x4 mode is mutually exclusive with the
+  78x8 topology, compact-W13 call/bound-9 bundle, alternate schedulers,
+  overlap/combine experiments, and all other task-layout variants.  Existing
+  production defaults and TP8 code are unchanged.
+- Reproducibility: the new flag participates in the JIT extension identity
+  and compiler defines, and is reported by the compute and distributed graph
+  harnesses.  The SMID trace fixture now also sizes M128's selected 702-CTA
+  trace correctly instead of assuming the generic eight-CTA setting.
+- Static gate: `python3 -m py_compile` passes for the kernel module, compute
+  profiler, same-source paired benchmark, and distributed WGMMA graph driver.
+  No remote JIT, CUDA launch, resource result, correctness, or latency is
+  claimed yet.
+- Decision: keep default-off.  Next perform a fresh SM90a JIT/cubin occupancy
+  gate; require exactly two 512-thread CTAs/SM and no fixed local allocation
+  before executing M8/M128 compute correctness.
+- Evidence: `evidence/iter626_156cta_4wg_static_gate.md`.

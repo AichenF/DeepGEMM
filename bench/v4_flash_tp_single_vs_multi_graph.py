@@ -409,6 +409,9 @@ def main() -> None:
                     "single_launch_78cta_8wg": (
                         kernel.SINGLE_LAUNCH_78CTA_8WG
                     ),
+                    "single_launch_156cta_4wg": (
+                        kernel.SINGLE_LAUNCH_156CTA_4WG
+                    ),
                     "single_launch_78cta_wg_dag": (
                         kernel.SINGLE_LAUNCH_78CTA_WG_DAG
                     ),

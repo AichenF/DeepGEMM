@@ -204,6 +204,17 @@ if SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT and not SINGLE_LAUNCH_DUAL_WG_PHASES:
 SINGLE_LAUNCH_78CTA_8WG = (
     os.environ.get("V4_SINGLE_LAUNCH_78CTA_8WG", "0") == "1"
 )
+SINGLE_LAUNCH_156CTA_4WG = (
+    os.environ.get("V4_SINGLE_LAUNCH_156CTA_4WG", "0") == "1"
+)
+if SINGLE_LAUNCH_78CTA_8WG and SINGLE_LAUNCH_156CTA_4WG:
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_78CTA_8WG and "
+        "V4_SINGLE_LAUNCH_156CTA_4WG are exclusive"
+    )
+SINGLE_LAUNCH_PACKED_MULTI_WG = (
+    SINGLE_LAUNCH_78CTA_8WG or SINGLE_LAUNCH_156CTA_4WG
+)
 SINGLE_LAUNCH_TRACE_SMID = (
     os.environ.get("V4_SINGLE_LAUNCH_TRACE_SMID", "0") == "1"
 )
@@ -1431,6 +1442,55 @@ if SINGLE_LAUNCH_78CTA_8WG and (
         "V4_SINGLE_LAUNCH_78CTA_8WG requires the isolated inline WOUT128 "
         "two-stage schedule-0 path and selected 64-block P2P two-shot"
     )
+if SINGLE_LAUNCH_156CTA_4WG and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_78CTA_8WG
+    or SINGLE_LAUNCH_78CTA_SMID_MAP
+    or SINGLE_LAUNCH_78CTA_WG_DAG
+    or SINGLE_LAUNCH_78CTA_LOCAL_W13
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_W2_N64_TAIL
+    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS
+    or SINGLE_LAUNCH_BALANCED_W2_WORKERS
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC
+    or SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or SINGLE_LAUNCH_M128_BOUND9
+    or SINGLE_LAUNCH_W2_UNROLL2_BOUND9
+    or SINGLE_LAUNCH_W2_CHUNK_MAJOR
+    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+    or SINGLE_LAUNCH_W2_CHUNK_AR_POST
+    or SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+    or SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+    or W2_COALESCED_STORE
+    or WOUT != 128
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+    or not SINGLE_LAUNCH_P2P_TWO_SHOT
+    or SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS != 64
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_156CTA_4WG requires the isolated inline WOUT128 "
+        "two-stage schedule-0 path and selected 64-block P2P two-shot"
+    )
 MC_PULL_BLOCKS = int(os.environ.get("V4_MC_PULL_BLOCKS", "0"))
 MC_PULL_UNROLL = int(os.environ.get("V4_MC_PULL_UNROLL", "0"))
 if MC_PULL_BLOCKS < 0:
@@ -1722,6 +1782,12 @@ static constexpr bool kSingleLaunchDualWgPrivateAct =
     K_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT;
 static constexpr bool kSingleLaunch78Cta8Wg =
     K_SINGLE_LAUNCH_78CTA_8WG;
+static constexpr bool kSingleLaunch156Cta4Wg =
+    K_SINGLE_LAUNCH_156CTA_4WG;
+static constexpr int kSingleLaunchPackedWgs =
+    kSingleLaunch78Cta8Wg ? 8 : kSingleLaunch156Cta4Wg ? 4 : 1;
+static constexpr bool kSingleLaunchPackedMultiWg =
+    kSingleLaunchPackedWgs > 1;
 static constexpr bool kSingleLaunchTraceSmid =
     K_SINGLE_LAUNCH_TRACE_SMID;
 static constexpr bool kSingleLaunch78CtaSmidMap =
@@ -2137,12 +2203,14 @@ __device__ __forceinline__ void bulk_reduce_wait_group_0() {
     asm volatile("cp.async.bulk.wait_group 0;" ::: "memory");
 }
 
-// One physical 1024-thread CTA can host eight independent 128-thread WGMMA
-// task groups.  Reserve named barriers 1..8 for those groups; barrier 0 stays
-// available for compiler-generated full-CTA synchronization at phase edges.
+// One physical packed CTA can host four or eight independent 128-thread
+// WGMMA task groups.  Reserve named barriers 1..8 for those groups; barrier
+// 0 stays available for compiler-generated full-CTA synchronization at phase
+// edges.
 template <int IndependentTaskWGs>
 __device__ __forceinline__ void independent_wg_sync(int independent_wg) {
-    static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 8);
+    static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 4
+                  || IndependentTaskWGs == 8);
     if constexpr (IndependentTaskWGs == 1) {
         __syncthreads();
     } else {
@@ -2248,7 +2316,8 @@ __device__ __forceinline__ void route_gemm_task(
             || (!IsW13 && kSingleLaunchW2NextTaskPrefetch));
     static_assert(!PersistentState || !DualWgW13,
                   "persistent task state supports one WGMMA warpgroup");
-    static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 8);
+    static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 4
+                  || IndependentTaskWGs == 8);
     static_assert(IndependentTaskWGs == 1
                   || (!DualWgW13 && !PersistentState && !kHalfWgmma
                       && !PublishW2Progress
@@ -4969,11 +5038,12 @@ __device__ __forceinline__ void single_launch_route_task(
     }
 }
 
-// Route preparation for the one-CTA-per-SM prototype.  All 1024 lanes join
-// every CTA barrier, while warp 0 performs an ordered 256-expert prefix with
-// eight consecutive experts per lane.  The warp scan preserves expert order
-// without instantiating a 1024-lane CUB scan for only 256 counters.
-__device__ __forceinline__ void single_launch_route_task_1024(
+// Route preparation for the packed multi-WG prototypes.  All lanes join every
+// CTA barrier, while warp 0 performs an ordered 256-expert prefix with eight
+// consecutive experts per lane.  The warp scan preserves expert order without
+// instantiating a 512/1024-lane CUB scan for only 256 counters.
+template <int Threads>
+__device__ __forceinline__ void single_launch_route_task_packed(
         const int32_t* __restrict__ topk_ids,
         int32_t* __restrict__ sorted_ids,
         int32_t* __restrict__ expert_ids,
@@ -4981,6 +5051,7 @@ __device__ __forceinline__ void single_launch_route_task_1024(
         int32_t* __restrict__ route_to_sorted,
         int tokens, int linear_block_idx) {
     constexpr int kExperts = 256;
+    static_assert(Threads == 512 || Threads == 1024);
     extern __shared__ __align__(1024) uint8_t dynamic_smem[];
     int* counts = reinterpret_cast<int*>(dynamic_smem);
     int* cursors = counts + kExperts;
@@ -4994,7 +5065,7 @@ __device__ __forceinline__ void single_launch_route_task_1024(
         counts[tid] = 0;
     __syncthreads();
 
-    for (int route = tid; route < routes; route += 1024) {
+    for (int route = tid; route < routes; route += Threads) {
         const int expert = __ldg(topk_ids + route);
         if (static_cast<unsigned>(expert) < kExperts)
             atomicAdd(counts + expert, 1);
@@ -5041,11 +5112,11 @@ __device__ __forceinline__ void single_launch_route_task_1024(
     }
     __syncthreads();
 
-    for (int position = tid; position < *total_padded; position += 1024)
+    for (int position = tid; position < *total_padded; position += Threads)
         sorted_ids[position] = routes;
     __syncthreads();
 
-    for (int route = tid; route < routes; route += 1024) {
+    for (int route = tid; route < routes; route += Threads) {
         const int expert = __ldg(topk_ids + route);
         if (static_cast<unsigned>(expert) < kExperts) {
             const int position = atomicAdd(cursors + expert, 1);
@@ -6331,6 +6402,7 @@ template <int Tokens>
 struct SingleLaunchThreads {
     static constexpr int value =
         kSingleLaunch78Cta8Wg ? 1024
+        : kSingleLaunch156Cta4Wg ? 512
         : kSingleLaunchDualWgPhases ? 256 : 128;
 };
 
@@ -6338,6 +6410,7 @@ template <int Tokens>
 struct SingleLaunchMinBlocks {
     static constexpr int value =
         kSingleLaunch78Cta8Wg ? 1
+        : kSingleLaunch156Cta4Wg ? 2
         : kSingleLaunchDualWgPhases
         ? kSingleLaunchDualWgCtasPerSm
         : kSingleLaunchM128Bound9 && Tokens == 128
@@ -6698,8 +6771,8 @@ void tp4_megamoe_single_launch_kernel(
         if constexpr (kSingleLaunchW2BulkReduceCombine)
             asm volatile("fence.proxy.async.global;" ::: "memory");
     }
-    if constexpr (kSingleLaunch78Cta8Wg) {
-        single_launch_route_task_1024(
+    if constexpr (kSingleLaunchPackedMultiWg) {
+        single_launch_route_task_packed<kSingleLaunchThreads>(
             topk_ids, sorted_ids, expert_ids, num_tokens_padded,
             route_to_sorted, tokens, cta);
     } else {
@@ -7410,15 +7483,15 @@ void tp4_megamoe_single_launch_kernel(
         }
         __syncthreads();
         single_launch_grid_barrier(barrier_state, 3, ctas);
-    } else if constexpr (kSingleLaunch78Cta8Wg) {
-        // Exactly one resident physical CTA per H20 SM.  Its eight independent
-        // 128-thread WGMMA groups retain the selected task body and together
-        // reproduce the former 8-CTA/SM logical worker population without
-        // cross-WG activation sharing or handshakes.
-        constexpr int kIndependentTaskWGs = 8;
+    } else if constexpr (kSingleLaunchPackedMultiWg) {
+        // Either one eight-WG CTA or two four-WG CTAs reside on each H20 SM.
+        // Both retain exactly eight independent 128-thread WGMMA workers/SM
+        // while changing only the number of physical CTA barrier participants.
+        constexpr int kIndependentTaskWGs = kSingleLaunchPackedWgs;
         constexpr int kLogicalWorkersPerWave =
-            kSingleLaunchH20Sms * kIndependentTaskWGs;
-        static_assert(kSingleLaunchThreads == 1024);
+            kSingleLaunchH20Sms * 8;
+        static_assert(kSingleLaunchThreads
+                      == kIndependentTaskWGs * 128);
         const int num_mblocks = __ldg(num_tokens_padded) / kTok;
         const int independent_wg = threadIdx.x >> 7;
 
@@ -10035,8 +10108,8 @@ void launch_tp4_megamoe_single(
         2 * kStages * kWout * ((kBlockK / 2) + 4)
         + (kSingleLaunchDualWgPrivateAct ? 2 : 1) * kTok * kBlockK;
     constexpr int dynamic_smem_bytes =
-        (kSingleLaunch78Cta8Wg
-            ? 8 * kRouteTaskDynamicBytes
+        (kSingleLaunchPackedMultiWg
+            ? kSingleLaunchPackedWgs * kRouteTaskDynamicBytes
             : kSingleLaunchDualWgPhases
             ? kDualRouteTaskDynamicBytes : kRouteTaskDynamicBytes)
         + (kSingleLaunchClusterW13Act
@@ -10082,6 +10155,7 @@ void launch_tp4_megamoe_single(
                 "requested single-launch CTAs/SM must be positive");
     const int effective_requested_ctas_per_sm =
         kSingleLaunch78Cta8Wg ? 1
+        : kSingleLaunch156Cta4Wg ? 2
         : kSingleLaunchDualWgPhases
         ? kSingleLaunchDualWgCtasPerSm
         : kSingleLaunchM128Bound9 && Tokens == 128
@@ -10100,6 +10174,10 @@ void launch_tp4_megamoe_single(
     if constexpr (kSingleLaunch78Cta8Wg) {
         TORCH_CHECK(selected_ctas_per_sm == 1,
                     "78-CTA/8-WG path requires exactly one CTA/SM");
+    }
+    if constexpr (kSingleLaunch156Cta4Wg) {
+        TORCH_CHECK(selected_ctas_per_sm == 2,
+                    "156-CTA/4-WG path requires exactly two CTAs/SM");
     }
     if constexpr (kSingleLaunchTailOverlap) {
         TORCH_CHECK(selected_ctas_per_sm == 8,
@@ -11511,6 +11589,7 @@ _EXTENSION_CONFIG = (
           f"sldwgc{SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM}_"
           f"sldwgpa{int(SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT)}_"
           f"sl78x8{int(SINGLE_LAUNCH_78CTA_8WG)}_"
+          f"sl156x4{int(SINGLE_LAUNCH_156CTA_4WG)}_"
           f"sltracesm{int(SINGLE_LAUNCH_TRACE_SMID)}_"
           f"sl78smap{int(SINGLE_LAUNCH_78CTA_SMID_MAP)}_"
           f"slsmstripe{int(SINGLE_LAUNCH_SM_STRIPED_TASKS)}_"
@@ -11800,6 +11879,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_78CTA_8WG="
             f"{int(SINGLE_LAUNCH_78CTA_8WG)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_156CTA_4WG="
+            f"{int(SINGLE_LAUNCH_156CTA_4WG)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_TRACE_SMID="
