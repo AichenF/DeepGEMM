@@ -13716,3 +13716,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Decision: preserve the passing M8/M16 implementation; implement a sequential hidden-dimension chunk protocol inside the same kernel for TP8 M>=32, keeping one launch and the same symmetric allocation.
 - Raw log: `bench/results/iter583_tp8_single_launch_allm_cold_validation_20260905.log`.
 - Evidence: `bench/evidence/iter583_tp8_allm_push_stride_failure.txt`.
+## Iteration 584 — TP8 large-message NVLS-pull rebuild/resource gate (2026-09-05)
+
+- Hypothesis/change: avoid CARv2's 128 KiB push-stride ceiling without adding a launch. M8/M16 retain the validated eight-rank multicast push; M32/M64/M128 now materialize the local top-k6 sum in CARv2's larger symmetric pull slab, synchronize inside the same kernel with multicast semaphores, and issue NVLS `multimem.ld_reduce` loads into the final BF16 output. A noinline TP8 wrapper isolates collective register state; the underlying TP4 helper remains default-specialized for world size 4.
+- Build result: **PASS.** The SM90a extension rebuilds and loads successfully.
+- Resource result: **PASS.** M32/M64/M128 specializations are `REG:60 STACK:0 SHARED:4096 LOCAL:0`; retained M8/M16 push specializations remain `REG:62 STACK:64 SHARED:4096 LOCAL:0`. All fit eight 128-thread CTAs/SM with no local-memory spill.
+- Qualification: this gate proves buildability and static residency only. The eight-rank NVLS semaphore protocol and numerical result are not accepted until a real M32 launch completes.
+- Decision: run M32 alone first to isolate the new collective protocol, then repeat the full five-M validation if it passes.
+- Evidence: `bench/evidence/iter584_tp8_nvls_pull_build_resources.txt`.

@@ -5715,7 +5715,7 @@ __global__ __launch_bounds__(Threads) void fused_k6_push_ar_tp4_kernel(
         static_cast<int>(blockIdx.x), static_cast<int>(gridDim.x));
 }
 
-template <int Threads>
+template <int Threads, int World = 4>
 __device__ __forceinline__ void fused_k6_nvls_pull_tp4_task(
         const __nv_bfloat16* __restrict__ route_input,
         const float* __restrict__ topk_weights,
@@ -5725,6 +5725,17 @@ __device__ __forceinline__ void fused_k6_nvls_pull_tp4_task(
         uint8_t* __restrict__ sem_local,
         uint8_t* __restrict__ sem_mc,
         int tokens, int linear_block_idx, int linear_grid_dim);
+
+template <int Tokens>
+__device__ __noinline__ void fused_k6_nvls_pull_tp8_task(
+        const __nv_bfloat16* __restrict__ route_input,
+        const float* __restrict__ topk_weights,
+        __nv_bfloat16* __restrict__ symm_input,
+        const uint8_t* __restrict__ symm_input_mc,
+        __nv_bfloat16* __restrict__ output,
+        uint8_t* __restrict__ sem_local,
+        uint8_t* __restrict__ sem_mc,
+        int linear_block_idx, int linear_grid_dim);
 
 template <int Threads, int Blocks, int Tokens, bool LocalSumFp32 = false>
 __device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
@@ -8302,6 +8313,10 @@ void tp8_megamoe_single_launch_kernel(
         uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
         uint8_t* push4, uint8_t* push5, uint8_t* push6, uint8_t* push7,
         uint8_t* push_mc,
+        __nv_bfloat16* __restrict__ pull_input,
+        const uint8_t* __restrict__ pull_input_mc,
+        uint8_t* __restrict__ pull_sem_local,
+        uint8_t* __restrict__ pull_sem_mc,
         int max_mblocks, int rank, int64_t push_stride,
         bool enable_tp_collective) {
     constexpr int kIntermediate = 256;
@@ -8363,12 +8378,23 @@ void tp8_megamoe_single_launch_kernel(
     }
     single_launch_grid_barrier(barrier_state, 3, ctas);
 
-    if (enable_tp_collective && cta < 78) {
-        fused_k6_multicast_push_ar_tp8_task<Tokens>(
-            down, topk_weights, output, push_counter,
-            push0, push1, push2, push3,
-            push4, push5, push6, push7, push_mc,
-            rank, push_stride, cta, 78);
+    if (enable_tp_collective) {
+        if constexpr (Tokens <= 16) {
+            if (cta < 78) {
+                fused_k6_multicast_push_ar_tp8_task<Tokens>(
+                    down, topk_weights, output, push_counter,
+                    push0, push1, push2, push3,
+                    push4, push5, push6, push7, push_mc,
+                    rank, push_stride, cta, 78);
+            }
+        } else {
+            if (cta < kSingleLaunchNvlsBlocks) {
+                fused_k6_nvls_pull_tp8_task<Tokens>(
+                    down, topk_weights, pull_input, pull_input_mc, output,
+                    pull_sem_local, pull_sem_mc, cta,
+                    kSingleLaunchNvlsBlocks);
+            }
+        }
     }
 }
 
@@ -8928,9 +8954,10 @@ __global__ __launch_bounds__(Threads) void fused_rank_route_mc_pull_tp4_kernel(
 
 // Block-cooperative one-shot NVLS pull.  Each CTA materializes its disjoint
 // local k6 vectors once into the symmetric input, publishes them with a
-// release multicast semaphore arrival, then every rank obtains the TP4 sum
-// with one multimem reduction load per vector.
-template <int Threads>
+// release multicast semaphore arrival, then every rank obtains the TP sum
+// with one multimem reduction load per vector. World defaults to four so the
+// selected TP4 code generation remains unchanged.
+template <int Threads, int World>
 __device__ __forceinline__ void fused_k6_nvls_pull_tp4_task(
         const __nv_bfloat16* __restrict__ route_input,
         const float* __restrict__ topk_weights,
@@ -8940,7 +8967,7 @@ __device__ __forceinline__ void fused_k6_nvls_pull_tp4_task(
         uint8_t* __restrict__ sem_local,
         uint8_t* __restrict__ sem_mc,
         int tokens, int linear_block_idx, int linear_grid_dim) {
-    constexpr int kWorld = 4;
+    constexpr int kWorld = World;
     constexpr int kHidden = 4096;
     constexpr int kPairsPerToken = kHidden / 2;
     constexpr int kVecBytes = 16;
@@ -9023,6 +9050,26 @@ __device__ __forceinline__ void fused_k6_nvls_pull_tp4_task(
         while (load_acquire_sys_u32(flag) - barrier_current < kWorld) {
         }
     }
+}
+
+// Keep the eight-rank multicast-reduce state out of the flat GEMM kernel's
+// register allocation.  The generic body is force-inlined into this device
+// callee, while TP4 continues to inline its independently tuned specialization
+// exactly as before.
+template <int Tokens>
+__device__ __noinline__ void fused_k6_nvls_pull_tp8_task(
+        const __nv_bfloat16* __restrict__ route_input,
+        const float* __restrict__ topk_weights,
+        __nv_bfloat16* __restrict__ symm_input,
+        const uint8_t* __restrict__ symm_input_mc,
+        __nv_bfloat16* __restrict__ output,
+        uint8_t* __restrict__ sem_local,
+        uint8_t* __restrict__ sem_mc,
+        int linear_block_idx, int linear_grid_dim) {
+    static_assert(Tokens == 32 || Tokens == 64 || Tokens == 128);
+    fused_k6_nvls_pull_tp4_task<128, 8>(
+        route_input, topk_weights, symm_input, symm_input_mc, output,
+        sem_local, sem_mc, Tokens, linear_block_idx, linear_grid_dim);
 }
 
 template <int Threads>
@@ -9866,7 +9913,9 @@ void launch_tp8_megamoe_single(
         torch::Tensor push1, torch::Tensor push2, torch::Tensor push3,
         torch::Tensor push4, torch::Tensor push5,
         torch::Tensor push6, torch::Tensor push7,
+        torch::Tensor pull_input, torch::Tensor pull_sem_local,
         int rank, int64_t push_stride, int64_t push_mc_ptr,
+        int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr,
         bool enable_tp_collective) {
     constexpr int kThreads = 128;
     constexpr int kCtasPerSm = 8;
@@ -9936,6 +9985,10 @@ void launch_tp8_megamoe_single(
         push4.data_ptr<uint8_t>(), push5.data_ptr<uint8_t>(),
         push6.data_ptr<uint8_t>(), push7.data_ptr<uint8_t>(),
         reinterpret_cast<uint8_t*>(push_mc_ptr),
+        reinterpret_cast<__nv_bfloat16*>(pull_input.data_ptr()),
+        reinterpret_cast<const uint8_t*>(pull_input_mc_ptr),
+        pull_sem_local.data_ptr<uint8_t>(),
+        reinterpret_cast<uint8_t*>(pull_sem_mc_ptr),
         expert_ids.numel(), rank, push_stride, enable_tp_collective);
     TORCH_CHECK(launch_result == cudaSuccess,
                 "failed to launch TP8 MegaMoE kernel: ",
@@ -10243,7 +10296,9 @@ void run_tp8_megamoe_single_launch(
         torch::Tensor push1, torch::Tensor push2, torch::Tensor push3,
         torch::Tensor push4, torch::Tensor push5,
         torch::Tensor push6, torch::Tensor push7,
+        torch::Tensor pull_input, torch::Tensor pull_sem_local,
         int rank, int64_t push_stride, int64_t push_mc_ptr,
+        int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr,
         int split_k, bool enable_tp_collective) {
     constexpr int kIntermediate = 256;
     TORCH_CHECK(kWout == 128 && kTiledWeightLayout && kBulkWeightCopy
@@ -10320,9 +10375,25 @@ void run_tp8_megamoe_single_launch(
     if (enable_tp_collective) {
         TORCH_CHECK(rank >= 0 && rank < 8 && push_mc_ptr != 0,
                     "TP8 single-launch requires rank and multicast symmetric VA");
-        TORCH_CHECK(push_stride
-                        >= output.numel() * output.element_size(),
-                    "TP8 push workspace stride is too small");
+        if (tokens <= 16) {
+            TORCH_CHECK(push_stride
+                            >= output.numel() * output.element_size(),
+                        "TP8 push workspace stride is too small");
+        } else {
+            TORCH_CHECK(pull_input.scalar_type() == torch::kBFloat16
+                            && pull_input.is_cuda()
+                            && pull_input.is_contiguous()
+                            && pull_input.numel() >= output.numel(),
+                        "TP8 NVLS pull workspace is too small");
+            TORCH_CHECK(pull_sem_local.scalar_type() == torch::kUInt8
+                            && pull_sem_local.is_cuda()
+                            && pull_sem_local.is_contiguous()
+                            && pull_sem_local.numel()
+                                >= 128LL * kSingleLaunchNvlsBlocks,
+                        "TP8 NVLS semaphore workspace is too small");
+            TORCH_CHECK(pull_input_mc_ptr != 0 && pull_sem_mc_ptr != 0,
+                        "TP8 large-message path requires NVLS pull pointers");
+        }
     } else {
         TORCH_CHECK(rank == -1,
                     "TP8 compute-only profiling requires sentinel rank -1");
@@ -10353,7 +10424,10 @@ void run_tp8_megamoe_single_launch(
                 activation_scale, down, lut, barrier_state, route_to_sorted,
                 output, push_counter, push0, push1, push2, push3,
                 push4, push5, push6, push7,
-                rank, push_stride, push_mc_ptr, enable_tp_collective);
+                pull_input, pull_sem_local,
+                rank, push_stride, push_mc_ptr,
+                pull_input_mc_ptr, pull_sem_mc_ptr,
+                enable_tp_collective);
         } else {
             launch_tp8_megamoe_single<4, kTokens>(
                 w13_descriptor, w2_descriptor,
@@ -10363,7 +10437,10 @@ void run_tp8_megamoe_single_launch(
                 activation_scale, down, lut, barrier_state, route_to_sorted,
                 output, push_counter, push0, push1, push2, push3,
                 push4, push5, push6, push7,
-                rank, push_stride, push_mc_ptr, enable_tp_collective);
+                pull_input, pull_sem_local,
+                rank, push_stride, push_mc_ptr,
+                pull_input_mc_ptr, pull_sem_mc_ptr,
+                enable_tp_collective);
         }
     };
     switch (tokens) {
@@ -10958,7 +11035,9 @@ void run_tp8_megamoe_single_launch(
     torch::Tensor push1, torch::Tensor push2, torch::Tensor push3,
     torch::Tensor push4, torch::Tensor push5,
     torch::Tensor push6, torch::Tensor push7,
+    torch::Tensor pull_input, torch::Tensor pull_sem_local,
     int rank, int64_t push_stride, int64_t push_mc_ptr,
+    int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr,
     int split_k, bool enable_tp_collective);
 void fused_k6_push_ar_tp4(
     torch::Tensor input, torch::Tensor topk_weights,
@@ -12009,6 +12088,10 @@ def run_tp8_megamoe_single_launch(
     rank: int,
     push_stride: int,
     push_mc_ptr: int,
+    pull_input: torch.Tensor,
+    pull_sem_local: torch.Tensor,
+    pull_input_mc_ptr: int,
+    pull_sem_mc_ptr: int,
     split_k: int,
     enable_tp_collective: bool = True,
 ) -> None:
@@ -12047,9 +12130,13 @@ def run_tp8_megamoe_single_launch(
         push_workspaces[5],
         push_workspaces[6],
         push_workspaces[7],
+        pull_input,
+        pull_sem_local,
         rank,
         push_stride,
         push_mc_ptr,
+        pull_input_mc_ptr,
+        pull_sem_mc_ptr,
         split_k,
         enable_tp_collective,
     )

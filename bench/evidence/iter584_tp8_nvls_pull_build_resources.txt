@@ -1,0 +1,29 @@
+Iteration 584: TP8 large-message NVLS-pull build/resource gate
+Date: 2026-09-05
+
+Change
+------
+- M8/M16: retain eight-rank multicast push in the one MegaMoE kernel.
+- M32/M64/M128: local k6 combine -> symmetric pull workspace -> multicast
+  semaphore -> NVLS multimem BF16 reduction -> final output, all in the same
+  kernel launch.
+- Generalized the existing TP4 NVLS helper with a compile-time world size;
+  TP4 defaults to world=4 and its call sites are unchanged.
+- Added a noinline TP8 device wrapper to isolate collective state from GEMM.
+
+Build
+-----
+PASS: torch load_inline rebuilt and loaded the SM90a shared object.
+
+cuobjdump resource results
+--------------------------
+M32/M64/M128, split-K2 and split-K4:
+  REG:60 STACK:0 SHARED:4096 LOCAL:0
+M8/M16, split-K2 and split-K4:
+  REG:62 STACK:64 SHARED:4096 LOCAL:0
+
+Conclusion
+----------
+All ten specializations preserve the eight-CTA/SM resource budget and have
+no local-memory spill allocation. Runtime correctness remains unproven for
+the newly selected M32+ NVLS path.
