@@ -382,6 +382,16 @@ SINGLE_LAUNCH_COOPERATIVE_GRID = (
 SINGLE_LAUNCH_RELAXED_GRID_POLL = (
     os.environ.get("V4_SINGLE_LAUNCH_RELAXED_GRID_POLL", "1") == "1"
 )
+SINGLE_LAUNCH_ADAPTIVE_GRID_POLL = (
+    os.environ.get("V4_SINGLE_LAUNCH_ADAPTIVE_GRID_POLL", "0") == "1"
+)
+SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS = int(
+    os.environ.get("V4_SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS", "512")
+)
+if SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS not in (128, 256, 512, 1024):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS must be 128,256,512,1024"
+    )
 # Production builds omit profiling-only globaltimer stores and use one packed
 # count/generation word per whole-grid phase.  Both legacy controls remain
 # explicitly selectable for diagnostics.
@@ -406,6 +416,14 @@ if (
         "V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL requires the packed grid "
         "barrier"
     )
+if SINGLE_LAUNCH_ADAPTIVE_GRID_POLL and (
+    not SINGLE_LAUNCH_RELAXED_GRID_POLL
+    or not SINGLE_LAUNCH_PACKED_GRID_BARRIER
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+):
+    raise ValueError(
+        "adaptive grid polling requires the ordinary relaxed packed barrier"
+    )
 SINGLE_LAUNCH_BALANCED_WORKERS = (
     os.environ.get("V4_SINGLE_LAUNCH_BALANCED_WORKERS", "0") == "1"
 )
@@ -415,6 +433,15 @@ SINGLE_LAUNCH_GRID_POLL_SLEEP_NS = int(
 if SINGLE_LAUNCH_GRID_POLL_SLEEP_NS not in (32, 64, 128, 256, 512, 1024):
     raise ValueError(
         "V4_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS must be 32,64,128,256,512,1024"
+    )
+if (
+    SINGLE_LAUNCH_ADAPTIVE_GRID_POLL
+    and SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS
+    < SINGLE_LAUNCH_GRID_POLL_SLEEP_NS
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS must be at least "
+        "V4_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS"
     )
 SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC = (
     os.environ.get("V4_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC", "0") == "1"
@@ -1187,6 +1214,10 @@ static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
     K_SINGLE_LAUNCH_RELAXED_GRID_POLL;
+static constexpr bool kSingleLaunchAdaptiveGridPoll =
+    K_SINGLE_LAUNCH_ADAPTIVE_GRID_POLL;
+static constexpr int kSingleLaunchAdaptiveGridPollMaxNs =
+    K_SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS;
 static constexpr bool kSingleLaunchRecordPhaseStamps =
     K_SINGLE_LAUNCH_PHASE_STAMPS;
 static constexpr bool kSingleLaunchPackedGridBarrier =
@@ -4747,9 +4778,18 @@ __device__ __forceinline__ void single_launch_grid_barrier(
                 const uint32_t next = (generation + 1u) << kCountBits;
                 store_release_gpu_i32(count, static_cast<int32_t>(next));
             } else if constexpr (kSingleLaunchRelaxedGridPoll) {
+                int poll_sleep_ns = kSingleLaunchGridPollSleepNs;
                 while ((static_cast<uint32_t>(load_relaxed_gpu_i32(count))
-                        >> kCountBits) == generation)
-                    __nanosleep(kSingleLaunchGridPollSleepNs);
+                        >> kCountBits) == generation) {
+                    __nanosleep(poll_sleep_ns);
+                    if constexpr (kSingleLaunchAdaptiveGridPoll) {
+                        const int next_sleep_ns = poll_sleep_ns << 1;
+                        poll_sleep_ns = next_sleep_ns
+                                < kSingleLaunchAdaptiveGridPollMaxNs
+                            ? next_sleep_ns
+                            : kSingleLaunchAdaptiveGridPollMaxNs;
+                    }
+                }
                 while ((static_cast<uint32_t>(load_acquire_gpu_i32(count))
                         >> kCountBits) == generation) {
                 }
@@ -8920,6 +8960,8 @@ _EXTENSION_CONFIG = (
           f"slw2pac{int(SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
+          f"slagp{int(SINGLE_LAUNCH_ADAPTIVE_GRID_POLL)}_"
+          f"slagpm{SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS}_"
           f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
           f"slpb{int(SINGLE_LAUNCH_PACKED_GRID_BARRIER)}_"
           f"slra{int(SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL)}_"
@@ -9110,6 +9152,14 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_RELAXED_GRID_POLL="
             f"{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_ADAPTIVE_GRID_POLL="
+            f"{int(SINGLE_LAUNCH_ADAPTIVE_GRID_POLL)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS="
+            f"{SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS}"
         ),
         (
             "-DK_SINGLE_LAUNCH_PHASE_STAMPS="

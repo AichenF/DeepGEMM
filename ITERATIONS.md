@@ -9182,3 +9182,28 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Bracket result:** At M8 the atomic path is effectively tied/slightly faster: OFF average `77.664 us`, ON `77.528 us` (about `0.18%` gain, below robust-selection margin).  At M128 it is decisively slower: OFF average `343.016 us`, ON `346.208 us`, a `0.93%` regression.  Candidate/control ratios agree: OFF/ON average about `1.0559/1.0543` at M8 and `1.1413/1.1522` at M128.
 - **Conclusion:** Removing the terminal six-route reread cannot repay producer atomic contention at large M, while the small-M difference is noise-scale.  **Reject as a global implementation and keep default-off.**  This independently confirms the earlier scalar-atomic direction is not the missing 10% optimization.
 - **Artifact:** `bench/results/iter372_atomic_producer_combine_bracket_m8_m128_cold_20260905.log`.
+## Iteration 373 — adaptive packed-grid poll compute-only screen (2026-09-05)
+
+- **Hypothesis:** Exponentially backing off the ordinary relaxed packed-grid
+  barrier poll from 64 ns to a bounded 512 ns can reduce idle-CTA polling
+  traffic during the long W13/W2 final waves without paying the full latency
+  penalty of a constant long sleep.
+- **Change:** Added opt-in
+  `V4_SINGLE_LAUNCH_ADAPTIVE_GRID_POLL=1` and
+  `V4_SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS=512`. Each non-last CTA starts
+  at the selected 64 ns sleep and doubles after every unchanged generation,
+  capped at 512 ns. The public input contract remains prequantized FP8-E4M3
+  X plus FP32 group-128 scales; external activation quantization is excluded.
+- **Method:** H20 GPU0, one rank, release-arrival and assume-valid task guards
+  enabled, phase stamps enabled. Each profiled launch individually clears a
+  256 MiB buffer (cold L2); route pattern random, seed 20260904.
+- **Correctness:** PASS for M=8 and M=128. Both outputs were bit-identical to
+  the existing pre-collective reference (`cosine >= 0.9999999999999999`,
+  `rel_l2=0`, finite); all four packed barrier words advanced to 2048.
+- **Measured phases:** M=8 route/W13/requant/W2 =
+  2.208/40.576/4.288/22.784 us (sum 69.856 us). M=128 =
+  3.904/206.816/6.656/102.784 us (sum 320.160 us).
+- **Decision:** Keep only as an experimental opt-in pending an order-balanced,
+  individually cold-L2 TP4 OFF/ON benchmark; this screen is not sufficient to
+  claim a speedup.
+- **Artifact:** `bench/results/iter373_adaptive_poll_phase_m8_m128_20260905.log`.

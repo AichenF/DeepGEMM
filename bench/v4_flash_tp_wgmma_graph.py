@@ -1343,6 +1343,12 @@ def main() -> None:
                     "single_launch_grid_poll_sleep_ns": (
                         kernel.SINGLE_LAUNCH_GRID_POLL_SLEEP_NS
                     ),
+                    "single_launch_adaptive_grid_poll": (
+                        kernel.SINGLE_LAUNCH_ADAPTIVE_GRID_POLL
+                    ),
+                    "single_launch_adaptive_grid_poll_max_ns": (
+                        kernel.SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS
+                    ),
                     "single_launch_phase_stamps": (
                         kernel.SINGLE_LAUNCH_PHASE_STAMPS
                     ),
