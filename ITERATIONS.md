@@ -13848,3 +13848,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Aggregate: mean normalized ratio OFF=1.1501637422x, ON=1.1438289350x; ON/OFF=0.99449226, a provisional 0.5508% normalized improvement. Direct candidate-window means improve from 0.3438160047 to 0.3417760059 ms (0.5933%); both ON windows beat both OFF windows.
 - Decision: promising but below 1%; retain behind the default-off flag and run a longer cold-L2 confirmation before selecting it. The one-kernel candidate remains about 14.38% slower than the same-source multi-kernel control at M128 in the ON windows.
 - Evidence: `evidence/iter599_compact_w13_m128_short_bracket.md` and `evidence/iter599_compact_w13_m128_short_bracket_results.txt`.
+## Iteration 600 — M128 compact-ABI W13 long cold-L2 confirmation
+
+- Purpose: resolve the sub-1% Iter599 screen with a six-outer, 300-sample-per-window bracket while cancelling process drift against the same-source multi-kernel control.
+- Protocol: TP4 on physical GPUs 0,5,6,7; M=128; random routing with 248 active experts and 1,992 padded rows; CUDA Graph; separate excluded 256 MiB L2 clear immediately before every implementation replay; replay-level AB/BA; process order OFF_A -> ON_A -> ON_B -> OFF_B. Each process used 6 outer batches x 50 cold samples per implementation after 10 warmups, for 600 cold candidate samples per flag state.
+- Correctness: all four windows passed identically for candidate and control: cosine_min=0.9999955976741226, rel_l2_max=0.0029672639980990933, finite=true, allreduce_ok=true.
+- Results (candidate/control): OFF_A 0.3738399893/0.3280640095 ms = 1.1395336837x; ON_A 0.3675680012/0.3238240033 ms = 1.1350857174x; ON_B 0.3668799996/0.3228960037 ms = 1.1362172198x; OFF_B 0.3766559958/0.3303840011 ms = 1.1400551920x.
+- Aggregate: mean normalized ratio OFF=1.1397944379x, ON=1.1356514686x; ON/OFF=0.9963651610, a 0.3635% normalized improvement. Direct candidate means show 0.3752479926 -> 0.3672240004 ms, but most of that 2.14% shift is process drift also visible in the controls; only the normalized 0.36% is credited.
+- Decision: pass as a reproducible but small M128-only candidate because both ON windows beat both OFF windows here and in Iter599, with lower registers and no local spill. Do not yet change the public default: first encode the bundle cleanly, rerun all M values to prove small-M neutrality, and rerun TP8 correctness/one-launch audit.
+- Evidence: `evidence/iter600_compact_w13_m128_long_bracket.md` and `evidence/iter600_compact_w13_m128_long_bracket_results.txt`.
