@@ -11859,3 +11859,25 @@ maximum rank latency of a full CUDA-Graph replay.
   immutable snapshots instead.
 - **Evidence:**
   `bench/evidence/iter478_split_tma_m128_control_hash_audit.txt`.
+
+## Iteration 479 — split TMA passes TP4 endpoint graph/communication smoke
+
+- **Protocol:** physical H20 GPUs 0–3, TP4 random routes at M8 and M128,
+  `V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA=1`, same-process selected multi-kernel
+  control, CUDA Graph, two balanced batches x two independently cold samples
+  per arm and M, two warmups, rank-max latency.  The clear is the standard
+  excluded 256 MiB operation immediately before every replay.
+- **Correctness:** **PASS** at both endpoints.  Every rank is finite;
+  end-to-end cosine/relative-L2 are `0.9993588000/0.0358438506` at M8 and
+  `0.9993604309/0.0357634397` at M128.  Embedded communication versus the
+  candidate-local NCCL oracle has minimum cosine `0.9999916227` and maximum
+  relative-L2 `0.0040933250`.  M8 selects in-kernel multicast push and M128
+  selects in-kernel NVLS pull.
+- **Smoke timing:** four samples per arm give native medians
+  `0.104912/0.378976 ms` at M8/M128.  These are only launch/communication
+  smoke numbers and are not a performance verdict.
+- **Decision:** admit the split candidate through TP4 graph correctness.  Run
+  a balanced endpoint cold-L2 screen with at least 20 samples per arm before
+  deciding whether the second TMA issue repays its 15% byte reduction.
+- **Evidence:**
+  `bench/evidence/iter479_split_tma_tp4_endpoint_graph_smoke.txt`.

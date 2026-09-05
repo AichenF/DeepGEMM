@@ -1,0 +1,21 @@
+ITERATION 479 — split TMA TP4 endpoint graph smoke
+
+Protocol:
+  GPUs=0,1,2,3; TP4 random routes; M=8,128
+  V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA=1
+  CUDA Graph; outer=2; replays=2; warmups=2; rank-max
+  independent excluded 256 MiB L2 clear before every replay
+
+Correctness:
+  M8 final cosine/rel-L2=0.9993588000366143/0.03584385057682129
+  M8 embedded comm cosine/rel-L2=0.9999917759916745/0.004055621719535723
+  M128 final cosine/rel-L2=0.9993604308884658/0.03576343973544478
+  M128 embedded comm cosine/rel-L2=0.9999916227171722/0.004093324960556197
+  finite_all_ranks=true
+
+Four-sample smoke medians only:
+  M8 multi/native=0.0717599988/0.1049120016 ms
+  M128 multi/native=0.3069919944/0.3789760023 ms
+
+Verdict: PASS graph and embedded-communication correctness.  Timing sample
+count is insufficient for selection.
