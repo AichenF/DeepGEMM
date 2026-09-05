@@ -14673,3 +14673,26 @@ maximum rank latency of a full CUDA-Graph replay.
   unclaimed.
 - **Evidence:** `bench/results/iter641_w13_compact_split_major_resource.log`
   and `evidence/iter641_w13_compact_split_major_resource.md`.
+
+## Iteration 642 — compact-W13 split-major M128 compute correctness
+
+- **Protocol:** H20 physical GPU1, TP4 M128 random routes with seed 20260902,
+  selected compact W13/M128-bound9 production bundle plus only
+  `V4_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS=1`.  The launch used
+  SplitK2 and 1,992 padded route rows.  TP communication was disabled only
+  for this local state-machine check.  A separate 256 MiB L2 clear preceded
+  the measured launch and was excluded.
+- **Correctness:** PASS bitwise for the complete routed W2 tensor against the
+  independent same-source multi-kernel local reference: cosine `1.0`,
+  relative L2 `0.0`, finite output.  This proves that the split-major ordinal
+  map neither drops nor duplicates a W13 task and retains every output
+  coordinate.
+- **Replay-state result:** all four packed whole-grid barrier words were
+  seeded at generation `2^22-1` and wrapped cleanly to `[0,0,0,0]` after the
+  launch.  No barrier or task-liveness failure occurred.
+- **Decision:** correctness/liveness gate passes.  Proceed unchanged to the
+  decisive five-batch TP4 M128 production-control/candidate CUDA-Graph
+  cold-L2 comparison.  No performance claim is made here.
+- **Evidence:**
+  `bench/results/iter642_w13_compact_split_major_m128_compute.log` and
+  `evidence/iter642_w13_compact_split_major_m128_compute.md`.
