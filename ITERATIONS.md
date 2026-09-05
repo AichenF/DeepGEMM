@@ -12522,3 +12522,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: FAIL. Both independent processes reached the first candidate synchronization and reported `cudaErrorIllegalAddress`; neither emitted a correctness record. JIT/resource admission had already passed, so this is a runtime address/order defect in the new handoff path rather than a compile failure.
 - Decision: performance testing remains blocked. Reproduce M8 under compute-sanitizer/CUDA launch blocking, verify the route-to-sorted counter index and scheduler allocation, then repair or reject. Do not use this candidate for any speed claim.
 - Evidence: `results/iter512_w13_act_tail_pipe_compute_correctness_20260905.log`.
+## Iteration 513 — W13→activation tail pipeline memcheck (M8)
+
+- Date: 2026-09-05
+- Candidate: `V4_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE=1`, with assume-valid GEMM tasks and release-grid-arrival.
+- Test: single-GPU compute-only M8, random routing seed 20260905, under Compute Sanitizer memcheck.
+- Result: failed; `cudaErrorLaunchFailure` / unspecified launch failure at synchronization.
+- Evidence: `results/iter513_w13_act_tail_pipe_memcheck_m8_20260905.log` (6721 lines), memcheck reported 206 errors, 106 suppressed by its print limit.
+- Decision: candidate is not benchmarkable until the first device-side access fault is identified and fixed; current flat kernel remains the retained best.
