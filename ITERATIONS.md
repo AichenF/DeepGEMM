@@ -13685,3 +13685,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - Compiler observation: ptxas emitted existing-style C7519/C7520 warnings about compiler-injected warpgroup arrival and possible WGMMA serialization in divergent paths, including TP8 specializations. There were no compile errors or resource-overflow diagnostics. Runtime occupancy is not yet proven because this gate imported rather than launched the kernel.
 - Decision: retain the implementation and inspect the linked cubin's TP8 kernel resource usage next; require <=64 registers/thread and no local-memory spill before attempting the 624-CTA persistent launch.
 - Evidence: `bench/evidence/iter579_tp8_single_launch_jit.txt`.
+## Iteration 580 — TP8 cubin resource-audit launcher failure (2026-09-05)
+
+- Intended check: dump the linked extension's CUDA resource table and isolate every `tp8_megamoe_single_launch_kernel` specialization before launching the persistent 624-CTA grid.
+- Result: **INVALID TOOLING FAILURE.** `cuobjdump` was invoked through an `rg` filter, but the remote container does not provide `rg`; bash exited 127 before a filtered resource report was produced. This run provides no register, spill, occupancy, correctness, or performance evidence.
+- Decision: retry the unchanged cubin using the available `grep` fallback and record the full TP8 resource entries.
+- Evidence: `bench/evidence/iter580_tp8_resource_audit_rg_missing.txt`.

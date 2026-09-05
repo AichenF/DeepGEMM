@@ -1,0 +1,18 @@
+Iteration 580: TP8 cubin resource-audit launcher failure
+Date: 2026-09-05
+
+Intended command
+----------------
+cuobjdump --dump-resource-usage <extension.so> |
+  rg -A3 -B1 tp8_megamoe_single_launch_kernel
+
+Observed result
+---------------
+bash: line 1: rg: command not found
+exit status: 127
+
+Classification
+--------------
+INVALID tooling failure. No filtered cuobjdump result was produced and this
+attempt carries no kernel resource, launch, correctness, or timing evidence.
+The next attempt will use grep, which is present in the container.
