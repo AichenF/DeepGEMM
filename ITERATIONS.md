@@ -12653,3 +12653,24 @@ maximum rank latency of a full CUDA-Graph replay.
   independent harness dependency.
 - **Evidence:**
   `bench/results/iter524_native_dual_dispatch_tp4_smoke_20260905.log`.
+## Iteration 525 — repair default-off SM-striped compile scope
+
+- **Root cause/change:** Iteration 520 declared the SM-striped helper and
+  shared worker only under `#if K_SINGLE_LAUNCH_SM_STRIPED_TASKS`, but used
+  them in C++ `if constexpr`/ternary expressions outside that preprocessor
+  scope.  C++ still requires discarded identifiers to parse.  Guard the
+  assignment and all three W13/activation/W2 worker selections with the same
+  preprocessor condition; the default path now lexically contains only
+  `cta`, while the opt-in path is unchanged.
+- **Test:** physical H20 GPU1, default `v4_flash_tp_wgmma` import/JIT from a
+  fresh source hash.  The command then attempted to print an explicit marker.
+- **Build result:** **PASS nvcc/JIT/import.**  Compilation and dynamic module
+  import completed; execution reached the marker statement, proving the five
+  undefined-identifier errors are gone.
+- **Harness result:** the outer command exits nonzero because nested shell
+  quoting stripped the marker's Python string quotes, producing a post-import
+  `NameError`.  No GPU kernel, correctness or latency benchmark ran.  This
+  does not invalidate the completed default JIT gate, but the next native A/B
+  should be used as the runtime gate.
+- **Evidence:**
+  `bench/results/iter525_flat_default_jit_repair_20260905.log`.

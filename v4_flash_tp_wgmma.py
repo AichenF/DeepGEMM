@@ -6317,10 +6317,10 @@ void tp4_megamoe_single_launch_kernel(
             topk_ids, sorted_ids, expert_ids, num_tokens_padded,
             route_to_sorted, tokens, cta);
     }
-    if constexpr (kSingleLaunchSmStripedTasks) {
-        if (threadIdx.x == 0)
-            sm_striped_worker = h20_sm_striped_logical_worker(scheduler);
-    }
+#if K_SINGLE_LAUNCH_SM_STRIPED_TASKS
+    if (threadIdx.x == 0)
+        sm_striped_worker = h20_sm_striped_logical_worker(scheduler);
+#endif
     single_launch_grid_barrier(barrier_state, 0, ctas);
     if constexpr (kSingleLaunchW2BulkReduceCombine) {
         if (threadIdx.x == 0)
@@ -7660,8 +7660,11 @@ void tp4_megamoe_single_launch_kernel(
                         ? (w13_tasks + w13_rounds - 1) / w13_rounds
                         : ctas;
                     const int w13_worker_rank =
-                        kSingleLaunchSmStripedTasks
-                        ? sm_striped_worker : cta;
+#if K_SINGLE_LAUNCH_SM_STRIPED_TASKS
+                        sm_striped_worker;
+#else
+                        cta;
+#endif
                     int w13_sequence = 0;
                     constexpr bool kW13PersistentState =
                         kSingleLaunchPersistentGemmState
@@ -7755,8 +7758,11 @@ void tp4_megamoe_single_launch_kernel(
                         / activation_rounds
                     : ctas;
                 const int activation_worker_rank =
-                    kSingleLaunchSmStripedTasks
-                    ? sm_striped_worker : cta;
+#if K_SINGLE_LAUNCH_SM_STRIPED_TASKS
+                    sm_striped_worker;
+#else
+                    cta;
+#endif
                 for (int group = activation_worker_rank;
                      activation_worker_rank < activation_workers
                          && group < activation_groups;
@@ -7855,8 +7861,11 @@ void tp4_megamoe_single_launch_kernel(
                 ? (w2_tasks + w2_rounds - 1) / w2_rounds
                 : ctas;
             const int w2_worker_rank =
-                kSingleLaunchSmStripedTasks
-                ? sm_striped_worker : cta;
+#if K_SINGLE_LAUNCH_SM_STRIPED_TASKS
+                sm_striped_worker;
+#else
+                cta;
+#endif
             int w2_sequence = 0;
             constexpr bool kW2PersistentState =
                 kSingleLaunchPersistentGemmState
