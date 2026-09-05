@@ -12910,3 +12910,36 @@ maximum rank latency of a full CUDA-Graph replay.
   `results/iter536_native_tp_local_barrier_m8_profile.ncu-rep`,
   `bench/results/iter536_native_tp_local_barrier_m8_ncu_capture_20260905.log`,
   and `bench/evidence/iter536_native_tp_local_barrier_m8_ncu_capture.txt`.
+## Iteration 537 — retained native M8 profile points to TP-local route counters
+
+- **Evidence source:** read-only Python import of the committed Iteration-536
+  NCU report, compared with the older EP-barrier Iteration-465 M8 report.  No
+  CUDA kernel was launched and no source changed.
+- **Top-level current result:** duration `89.38 us`, memory throughput
+  `2.16 TB/s`, DRAM/L2 throughput `44.91%/59.00%`, compute throughput
+  `44.07%`, 22,170,541 executed instructions, 80 registers/thread, zero
+  spills, 102.4 KiB dynamic shared memory/CTA and 37.49% achieved occupancy.
+  Scheduler issue remains weak at `0.89` eligible warps/scheduler and
+  `55.22%` no-eligible cycles.
+- **Clock caveat/comparison:** SM clock differs materially from Iteration 465
+  (`1.81` versus `1.67 GHz`), so the NCU duration change
+  `100.00 -> 89.38 us` is not a clean speedup.  Elapsed cycles change only
+  `167,644 -> 162,193` (`-3.25%`), while graph-level paired cold-L2 testing in
+  Iteration 529 remains the authoritative 8.47% M8 result.
+- **Source attribution:** remaining barrier samples cluster at dispatch
+  cleanup observing the tail (body 803: 247), the post-body rendezvous (225),
+  the local combine token tail (body 2156: 222) and grid sync (173).  Long
+  scoreboard is dominated by pipeline mbarriers, but the route-build global
+  expert atomic at body 540 alone accounts for at least 81 correlated samples.
+- **Structural finding:** the generic EP count protocol executes one 64-bit
+  global atomic for every `(CTA, expert)`: `156*256 = 39,936` atomics even at
+  M8's 48 routes.  Pure TP needs only one 32-bit slot claim per real route,
+  followed by CTA0 publication of the 256 finalized counts.  That reduces
+  route-build atomics to 48/768 at M8/M128 without changing pool ordering or
+  the Hopper TMA pull.
+- **Decision:** implement this route-counter specialization next.  Keep the
+  selected TMA transport and barrier fast path; do not retry direct copy or
+  rank-loop micro-tuning.  If it fails the 3% endpoint gate, the next profile-
+  justified target is the local k6 combine tail rather than more route code.
+- **Evidence:**
+  `bench/evidence/iter537_native_tp_local_barrier_m8_ncu_analysis.txt`.

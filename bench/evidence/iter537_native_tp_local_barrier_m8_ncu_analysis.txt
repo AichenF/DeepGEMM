@@ -1,0 +1,25 @@
+Iteration 537 analysis of Iteration-536 retained-native M8 NCU report
+
+Current TP-local barrier fast path:
+- duration 89.38 us at 1.81 GHz; elapsed cycles 162,193
+- memory throughput 2.16 TB/s; DRAM 44.91%; L2 59.00%
+- compute throughput 44.07%; executed instructions 22,170,541
+- registers 80; dynamic shared 102.4 KiB; occupancy 37.49%; spills 0
+- eligible warps/scheduler 0.89; no eligible 55.22%
+
+Older Iteration-465 EP barrier control:
+- duration 100.00 us at 1.67 GHz; elapsed cycles 167,644
+- no eligible 56.35%; executed instructions 22,349,968
+
+Selected current source-correlated not-issued samples:
+- barrier: body 803 cleanup observer 247
+- barrier: generated post-body rendezvous 225
+- barrier: body 2156 combine token tail 222
+- barrier: comm/barrier.cuh grid sync 173
+- long scoreboard: body 540 route expert atomic, at least 81 across PCs
+- long scoreboard: body 842 L1 arrival 64
+- long scoreboard: scheduler expert-ready poll 47
+
+Next experiment: replace 39,936 generic `(156 CTAs x 256 experts)` 64-bit
+arrival/count atomics with one 32-bit slot claim per actual TP-local route plus
+one CTA0 finalized count publication per expert.  Preserve TMA pool transport.
