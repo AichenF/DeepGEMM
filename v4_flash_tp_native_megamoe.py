@@ -888,14 +888,14 @@ void run_native_tp4(
                     "split native W2 must be uint8 [256,4096,256]");
         TORCH_CHECK(w13_scale.scalar_type() == torch::kUInt8
                         && w13_scale.is_contiguous()
-                        && w13_scale.sizes() ==
-                           torch::IntArrayRef({2097152, 16}),
-                    "split native W13 scales must be uint8 [2097152,16]");
+                        && w13_scale.numel() == 33554432,
+                    "split native W13 scales must be contiguous uint8 with "
+                    "33554432 elements");
         TORCH_CHECK(w2_scale.scalar_type() == torch::kUInt8
                         && w2_scale.is_contiguous()
-                        && w2_scale.sizes() ==
-                           torch::IntArrayRef({1048576, 16}),
-                    "split native W2 scales must be uint8 [1048576,16]");
+                        && w2_scale.numel() == 16777216,
+                    "split native W2 scales must be contiguous uint8 with "
+                    "16777216 elements");
     } else {
         TORCH_CHECK(w13.scalar_type() == torch::kUInt8 && w13.is_contiguous()
                         && w13.sizes() == torch::IntArrayRef({256, 1024, 2560}),

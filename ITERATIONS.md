@@ -11763,3 +11763,25 @@ maximum rank latency of a full CUDA-Graph replay.
   repeat the same M8 gate before any other change.
 - **Evidence:**
   `bench/evidence/iter474_split_weight_scale_tma_shape_gate_failure.txt`.
+
+## Iteration 475 — repair split-scale contract and pass local M8 bitwise gate
+
+- **Change:** keep the Iteration-474 split layout and kernel untouched, but
+  validate each split scale tensor as contiguous uint8 storage with its exact
+  element count instead of requiring an unnecessary flattened 2D view.
+  W13 requires `33,554,432` bytes and W2 `16,777,216` bytes.
+- **Protocol:** physical H20 GPU1, deterministic local M8 with
+  `V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA=1`; selected normalized-scale,
+  register-dequant, K128-batch and two-CTA defaults; rejected scale-word cache
+  and half prefetch disabled.
+- **Result:** **PASS and bitwise identical** to the selected 80-byte native
+  control.  Output is finite, maximum magnitude is `55,040`, full BF16 SHA-256
+  is `6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5`,
+  and weighted FC1 cosine/relative-L2 are
+  `0.9996428552/0.0271052359`.  Activation bytes/scales and weighted FC1
+  diagnostics also match exactly.
+- **Decision:** admit the split layout through the local M8 gate.  Keep it
+  default-off pending a separately committed deterministic M128 gate and TP4
+  graph validation.
+- **Evidence:**
+  `bench/evidence/iter475_split_weight_scale_tma_m8_local_gate.txt`.
