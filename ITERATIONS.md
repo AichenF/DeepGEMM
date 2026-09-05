@@ -9881,3 +9881,35 @@ maximum rank latency of a full CUDA-Graph replay.
   collective-stability gates.
 - Evidence:
   `results/iter399_78cta_real_smid_map_correctness_20260905.log`.
+
+## Iteration 400 — mapped 78-CTA TP4 endpoint cold-L2 screen
+
+- Date: 2026-09-05
+- Configuration/protocol: Iteration 399 real-H20 SMID mapping, release grid
+  arrivals, relaxed packed polling and valid-task elision; selected
+  multi-kernel control.  TP4 GPUs 0-3, random routes, seed 20260904,
+  same-process replay-interleaved CUDA Graph timing, two batches x 10
+  samples/arm, two warmups, rank-max.  Every replay had its own separate
+  excluded 256 MiB L2 clear.  Both arms consumed the same prequantized FP8 X
+  and MXFP4 weights.
+- Correctness: PASS at both endpoints.  M8 is identical to control
+  (`cosine=0.9999956134`, rel-L2 `0.0029619922`, max-abs 1024).  Crucially,
+  M128 now also matches the control's full metric tuple exactly
+  (`cosine=0.9999956090`, rel-L2 `0.0029634544`, max-abs 1024), eliminating
+  Iteration 392's 6,336-max-abs embedded-two-shot replay instability.
+- Cold-L2 result (control/candidate rank-max median): M8
+  `0.074176/0.088160 ms`, candidate 18.85% slower; M128
+  `0.302000/0.349344 ms`, candidate 15.68% slower.  Endpoint geometric mean
+  is `0.149670/0.175494 ms`, candidate 17.25% slower.  Per-batch candidate
+  medians are 88.224/88.096 us and 349.136/350.032 us.  Both arms saw one
+  common multi-ms outlier, so maxima are not used for selection.
+- Improvement versus Iteration 392's unmapped candidate: M8 falls from
+  100.784 to 88.160 us (-12.624 us, -12.5%); M128 falls from 377.600 to
+  349.344 us (-28.256 us, -7.5%).  The endpoint deficit shrinks materially
+  but remains 13.984/47.344 us, far from the required 1.10x win.
+- Decision: select the real-SMID mapping inside the default-off 78-CTA
+  experiment because it improves both endpoints and numerical stability.
+  Do not run the all-M formal gate.  Re-profile mapped M128 to distinguish
+  remaining compute scheduler starvation from the embedded collective tail.
+- Evidence:
+  `bench/results/iter400_78cta_smid_map_tp4_m8_m128_cold_20260905.log`.
