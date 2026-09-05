@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 12, in <module>
+    import v4_flash_tp_wgmma as kernel
+ModuleNotFoundError: No module named 'v4_flash_tp_wgmma'

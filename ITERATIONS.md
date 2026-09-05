@@ -9471,3 +9471,19 @@ maximum rank latency of a full CUDA-Graph replay.
   named-barrier behavior remain unproven until an actual launch succeeds.
 - Evidence:
   `results/iter382_78cta_8wg_compile_resource_20260905.log`.
+
+## Iteration 383 — first 78-CTA execution blocked by benchmark import path
+
+- Date: 2026-09-05
+- Intended test: compute-only M8 then M128 on H20 GPU0 using the unchanged
+  Iteration 382 binary configuration, random routes, seed 20260904, and the
+  benchmark's excluded 256 MiB cold-L2 clear.
+- Result: no extension import, GPU launch, correctness check, or timing ran.
+  Invoking `python bench/profile_v4_flash_tp_single_compute.py` made Python
+  search the `bench/` directory but not the repository root, so it failed
+  immediately with `ModuleNotFoundError: v4_flash_tp_wgmma`.
+- Decision: launcher-only failure.  Keep the source unchanged and rerun with
+  `PYTHONPATH=.` explicitly set; runtime occupancy and correctness remain
+  unproven.
+- Evidence:
+  `results/iter383_78cta_8wg_compute_m8_m128_20260905.log`.
