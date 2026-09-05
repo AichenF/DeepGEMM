@@ -10219,3 +10219,36 @@ maximum rank latency of a full CUDA-Graph replay.
   two-shot (M128) collectives before accepting any latency result.
 - Evidence:
   `results/iter412_hopper_wg_dag_compute_correctness_20260905.log`.
+
+## Iteration 413 — reject globally contended per-WG task DAG
+
+- Date: 2026-09-05
+- Protocol: Iteration 408 candidate versus the selected same-source
+  multi-kernel plus SGLang CustomAllReduceV2 control, TP4 GPUs 0-3, random
+  routes, seed 20260904, two replay-interleaved batches x ten samples/arm,
+  two warmups and rank-max reduction.  Every replay receives its own separate
+  excluded 256 MiB L2 clear.  Both arms consume identical prequantized FP8 X,
+  scale, route metadata and MXFP4 weights.
+- Correctness: PASS and identical to control at M8 and M128, including the
+  embedded multicast/push and P2P two-shot collectives.  M8 cosine/rel-L2 are
+  `0.9999956134/0.0029619922`; M128 are
+  `0.9999956090/0.0029634544`; both are finite with max-abs 1,024.
+- Performance: catastrophic regression.  M8 control/candidate medians are
+  `73.824/3442.128 us` (candidate 46.63x slower).  M128 medians are
+  `302.160/12562.112 us` (41.57x slower).  Endpoint candidate/control
+  geometric ratio is 44.03x.  Candidate batch medians are unstable at M8
+  (2.426/3.442 ms) but both are orders of magnitude outside the gate.
+- Root cause: this adaptation preserved Hopper's logical L1/L2 readiness but
+  discarded the mechanism that makes it affordable.  Hopper has one weight
+  producer warp per 384-thread CTA claim a task and fan it through a shared
+  two-stage mailbox to two math warpgroups.  The rejected path instead has
+  all 624 H20 warpgroups contend on global W13/activation/W2 atomics for very
+  short N128 tasks, producing roughly 19,440 fine-task scheduling events at
+  M128.  The global scheduler dominates compute.
+- Decision: reject `V4_SINGLE_LAUNCH_78CTA_WG_DAG=1` as a performance path;
+  retain it default-off as a correct diagnostic checkpoint.  The next design
+  must reproduce Hopper's CTA-local task fanout or use static per-SM work
+  ownership, with global readiness only at coarse mblock boundaries—not one
+  global claim per warpgroup task.
+- Evidence:
+  `bench/results/iter413_hopper_wg_dag_tp4_m8_m128_cold_screen_20260905.log`.

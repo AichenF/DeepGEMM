@@ -1,0 +1,59 @@
+ITER413_HOPPER_WG_DAG_TP4_COLD_SCREEN
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+gpus=0,1,2,3
+world_size=4
+source_commit=6703b58
+route_pattern=random
+seed=20260904
+outer=2
+replays_per_outer_per_impl=10
+warmup_replays=2
+pair_granularity=replay
+l2_policy=separate 256MiB clear before every replay, clear excluded
+input_contract=shared prequantized FP8-E4M3 X plus FP32 group128 scale
+candidate=single-kernel 78x1024 eight-WG Hopper-inspired global readiness DAG plus embedded allreduce
+control=selected same-source multi-kernel plus SGLang CustomAllReduceV2
+
+m8.active_experts=45
+m8.padded_rows=360
+m8.split_k=4
+m8.control_ar=multicast_push
+m8.candidate_ar=single_launch_multicast_push
+m8.control_batch_medians_ms=[0.07404800131917,0.07382400333881378]
+m8.candidate_batch_medians_ms=[2.4257280230522156,3.44212806224823]
+m8.control_min_median_max_ms=[0.07276800274848938,0.07382400333881378,2.5106239318847656]
+m8.candidate_min_median_max_ms=[1.2047040462493896,3.44212806224823,3.6472959518432617]
+m8.candidate_over_control=46.62613657580519
+m8.speedup_control_over_candidate=0.021447198362107293
+m8.correctness_identical_to_control=true
+m8.allreduce_ok=true
+m8.cosine=0.9999956134440106
+m8.rel_l2=0.002961992178802094
+m8.max_abs=1024.0
+
+m128.active_experts=240
+m128.padded_rows=1944
+m128.split_k=2
+m128.control_ar=stock
+m128.candidate_ar=single_launch_p2p_two_shot
+m128.control_batch_medians_ms=[0.3046080023050308,0.3018079996109009]
+m128.candidate_batch_medians_ms=[11.35312032699585,12.563584327697754]
+m128.control_min_median_max_ms=[0.2984960079193115,0.30215999484062195,2.7440319061279297]
+m128.candidate_min_median_max_ms=[10.128992080688477,12.56211233139038,12.597248077392578]
+m128.candidate_over_control=41.574373000689334
+m128.speedup_control_over_candidate=0.02405327916751551
+m128.correctness_identical_to_control=true
+m128.allreduce_ok=true
+m128.cosine=0.999995608996884
+m128.rel_l2=0.0029634544238714383
+m128.max_abs=1024.0
+
+endpoint.control_geomean_ms=0.14935414446198012
+endpoint.candidate_geomean_ms=6.575743256620758
+endpoint.candidate_over_control=44.027859289132024
+endpoint.speedup_control_over_candidate=0.02271289170415885
+decision=REJECT_global_per_task_atomic_DAG
+interpretation=correctness and embedded communication pass, but roughly 624 independently contending warpgroup schedulers issue one or more global atomics per fine task; scheduler cost overwhelms the short N128 task bodies and is fundamentally unlike Hopper's one producer warp feeding two math WGs through a shared mailbox
+ITER413_HOPPER_WG_DAG_TP4_COLD_SCREEN_REJECTED
