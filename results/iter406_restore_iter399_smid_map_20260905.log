@@ -1,0 +1,21 @@
+ITER406_RESTORE_ITER399_SMID_MAP
+date=2026-09-05
+source_commit=437f29d
+source_cmp_exact=true
+device=NVIDIA H20-3e
+m=8
+route_pattern=random
+seed=20260904
+collective=false
+l2_policy=separate_256MiB_clear_before_profiled_launch_clear_excluded
+input_contract=prequantized_FP8_E4M3_X_plus_FP32_group128_scale
+correct=true
+cosine=0.9999999999999999
+rel_l2=0
+finite=true
+padded_rows=360
+packed_generations=[2048,2048,2048,2048]
+phase_us.route_w13_requant_w2=[2.624,46.432,3.840,24.896]
+selected_tp4_iter400_m8_ms=0.08816000074148178
+selected_tp4_iter400_m128_ms=0.34934400022029877
+ITER406_RESTORE_ITER399_SMID_MAP_OK

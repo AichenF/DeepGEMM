@@ -10055,3 +10055,25 @@ maximum rank latency of a full CUDA-Graph replay.
   state and invalid final-wave calls rather than optimizing either alone.
 - Evidence:
   `bench/results/iter405_internal_smid_map_tp4_m8_m128_cold_20260905.log`.
+
+## Iteration 406 — restore exact Iteration 399 mapped scheduler
+
+- Date: 2026-09-05
+- Change: restore `v4_flash_tp_wgmma.py` byte-for-byte from Iteration 399
+  commit `437f29d`, removing the rejected task-internal lookup/guard changes
+  while retaining the real-H20 SMID table, default-off flag, trace support
+  and caller-level per-WG mapped loops.
+- Verification: repository-side `cmp` against
+  `git show 437f29d:v4_flash_tp_wgmma.py` passes exactly.  H20 GPU0 M8 random
+  compute-only replay after an excluded 256 MiB L2 clear remains bitwise
+  correct (`cosine=1` within print precision, `rel_l2=0`, finite), with 360
+  padded rows and four clean barrier generations at 2048.
+- Phase sanity (route/W13/requant/W2):
+  `2.624/46.432/3.840/24.896 us`, consistent with Iteration 399's selected
+  `2.592/46.368/3.296/25.120 us` single sample.
+- Decision: this is again the selected implementation inside the
+  experimental/default-off 78-CTA mode.  Continue from its measured
+  88.160/349.344-us TP4 endpoint medians; do not use rejected Iteration 404
+  resource numbers as the active source state.
+- Evidence:
+  `results/iter406_restore_iter399_smid_map_20260905.log`.

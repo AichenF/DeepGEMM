@@ -1810,8 +1810,7 @@ template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool PersistentState = false, int WgmmaHalf = -1,
           bool SharedPartial = false, int ForcedKUnroll = 0,
           bool AssumeValidMblock = false, bool BulkReduceW2 = false,
-          bool AtomicCombineW2 = false, int IndependentTaskWGs = 1,
-          bool H20SmidTaskMap = false>
+          bool AtomicCombineW2 = false, int IndependentTaskWGs = 1>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -1919,8 +1918,6 @@ __device__ __forceinline__ void route_gemm_task(
                       && !SharedPartial),
                   "cross-task prefetch requires full compact two-stage tasks");
     static_assert(kLaunchNTiles % kMathWGs == 0);
-    static_assert(!H20SmidTaskMap || IndependentTaskWGs == 8);
-    static_assert(!H20SmidTaskMap || kSingleLaunch78CtaSmidMap);
     static_assert(!DualWgW13 || (kWout == 128
                   && LaunchNTiles == 0 && kInterleavedScale),
                   "dual-WG route GEMM requires selected N128 interleaving");
@@ -1944,16 +1941,8 @@ __device__ __forceinline__ void route_gemm_task(
     const int math_wg = DualWgW13 ? tid >> 7 : 0;
     const int mtid = DualWgW13 ? tid & 127 : tid;
     const int storage_wg = independent_wg * kMathWGs + math_wg;
-    const int logical_worker_offset =
-#if K_SINGLE_LAUNCH_78CTA_SMID_MAP
-        H20SmidTaskMap
-        ? h20_selected_logical_worker(independent_wg)
-        : independent_wg;
-#else
-        independent_wg;
-#endif
     const int effective_linear_block_idx =
-        linear_block_idx + logical_worker_offset;
+        linear_block_idx + independent_wg;
     const int split_idx = effective_linear_block_idx % SplitK;
     const int task_idx = effective_linear_block_idx / SplitK;
     const int m_block_idx = task_idx / kTaskNTiles;
@@ -3826,8 +3815,7 @@ __global__ void reduce_swiglu_kernel(
 }
 
 template <int Intermediate, int SplitK, bool DualWg = false,
-          bool HybridTailSplit4 = false, int IndependentTaskWGs = 1,
-          bool H20SmidTaskMap = false>
+          bool HybridTailSplit4 = false, int IndependentTaskWGs = 1>
 __device__ __forceinline__ void reduce_swiglu_quant_task(
         const float* __restrict__ partials,
         __nv_bfloat16* __restrict__ activation,
@@ -3843,8 +3831,6 @@ __device__ __forceinline__ void reduce_swiglu_quant_task(
     static_assert(!HybridTailSplit4 || SplitK == 2);
     static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 8);
     static_assert(IndependentTaskWGs == 1 || !DualWg);
-    static_assert(!H20SmidTaskMap || IndependentTaskWGs == 8);
-    static_assert(!H20SmidTaskMap || kSingleLaunch78CtaSmidMap);
     constexpr int kGroupsPerRoute = Intermediate / 128;
     constexpr int kWorkers = DualWg ? 2 : 1;
     const int physical_tid = threadIdx.x;
@@ -3854,20 +3840,8 @@ __device__ __forceinline__ void reduce_swiglu_quant_task(
         ? physical_tid : physical_tid & 127;
     const int worker = DualWg ? task_tid >> 7 : 0;
     const int local_tid = DualWg ? task_tid & 127 : task_tid;
-    const int logical_worker_offset =
-#if K_SINGLE_LAUNCH_78CTA_SMID_MAP
-        H20SmidTaskMap
-        ? h20_selected_logical_worker(independent_wg)
-        : independent_wg;
-#else
-        independent_wg;
-#endif
     const int worker_group =
-        (group + logical_worker_offset) * kWorkers + worker;
-    if constexpr (H20SmidTaskMap) {
-        if (worker_group >= routes * kGroupsPerRoute)
-            return;
-    }
+        (group + independent_wg) * kWorkers + worker;
     const int route = worker_group / kGroupsPerRoute;
     const int group_in_route = worker_group - route * kGroupsPerRoute;
     const int column = group_in_route * 128 + local_tid;
@@ -6154,95 +6128,75 @@ void tp4_megamoe_single_launch_kernel(
         const int independent_wg = threadIdx.x >> 7;
 
         const int w13_tasks = num_mblocks * kW13NTiles * SplitK;
+        {
+            const int logical_worker =
 #if K_SINGLE_LAUNCH_78CTA_SMID_MAP
-        for (int task_wave = 0; task_wave < w13_tasks;
-             task_wave += kLogicalWorkersPerWave) {
-            route_gemm_task<
-                4096, 1024, SplitK, true, 0, false, false, false,
-                -1, false, 0, false, false, false,
-                kIndependentTaskWGs, true>(
-                &w13_tma_weight, &w13_tma_weight_scale,
-                w13, s13, g13, qx, x_scale,
-                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-                partials, lut, nullptr, routes, 0, task_wave);
-            independent_wg_sync<kIndependentTaskWGs>(independent_wg);
-        }
+                h20_selected_logical_worker(independent_wg);
 #else
-        for (int task_base = cta * kIndependentTaskWGs;
-             task_base < w13_tasks;
-             task_base += kLogicalWorkersPerWave) {
-            route_gemm_task<
-                4096, 1024, SplitK, true, 0, false, false, false,
-                -1, false, 0, kSingleLaunchAssumeValidGemmTasks,
-                false, false, kIndependentTaskWGs>(
-                &w13_tma_weight, &w13_tma_weight_scale,
-                w13, s13, g13, qx, x_scale,
-                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-                partials, lut, nullptr, routes, 0, task_base);
-            independent_wg_sync<kIndependentTaskWGs>(independent_wg);
-        }
+                cta * kIndependentTaskWGs + independent_wg;
 #endif
+            for (int task = logical_worker; task < w13_tasks;
+                 task += kLogicalWorkersPerWave) {
+                route_gemm_task<
+                    4096, 1024, SplitK, true, 0, false, false, false,
+                    -1, false, 0, kSingleLaunchAssumeValidGemmTasks,
+                    false, false, kIndependentTaskWGs>(
+                    &w13_tma_weight, &w13_tma_weight_scale,
+                    w13, s13, g13, qx, x_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                    partials, lut, nullptr, routes, 0,
+                    task - independent_wg);
+                independent_wg_sync<kIndependentTaskWGs>(independent_wg);
+            }
+        }
         __syncthreads();
         single_launch_grid_barrier(barrier_state, 1, ctas);
 
         constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
         const int activation_groups = routes * kActivationGroupsPerRoute;
+        {
+            const int logical_worker =
 #if K_SINGLE_LAUNCH_78CTA_SMID_MAP
-        for (int group_wave = 0; group_wave < activation_groups;
-             group_wave += kLogicalWorkersPerWave) {
-            reduce_swiglu_quant_task<
-                kIntermediate, SplitK, false, false,
-                kIndependentTaskWGs, true>(
-                partials, activation, qactivation, activation_scale,
-                route_to_sorted, topk_ids, g2, routes, group_wave);
-            independent_wg_sync<kIndependentTaskWGs>(independent_wg);
-        }
+                h20_selected_logical_worker(independent_wg);
 #else
-        for (int group_base = cta * kIndependentTaskWGs;
-             group_base < activation_groups;
-             group_base += kLogicalWorkersPerWave) {
-            reduce_swiglu_quant_task<
-                kIntermediate, SplitK, false, false,
-                kIndependentTaskWGs>(
-                partials, activation, qactivation, activation_scale,
-                route_to_sorted, topk_ids, g2, routes, group_base);
-            independent_wg_sync<kIndependentTaskWGs>(independent_wg);
-        }
+                cta * kIndependentTaskWGs + independent_wg;
 #endif
+            for (int group = logical_worker; group < activation_groups;
+                 group += kLogicalWorkersPerWave) {
+                reduce_swiglu_quant_task<
+                    kIntermediate, SplitK, false, false,
+                    kIndependentTaskWGs>(
+                    partials, activation, qactivation, activation_scale,
+                    route_to_sorted, topk_ids, g2, routes,
+                    group - independent_wg);
+                independent_wg_sync<kIndependentTaskWGs>(independent_wg);
+            }
+        }
         __syncthreads();
         single_launch_grid_barrier(barrier_state, 2, ctas);
 
         const int w2_tasks = num_mblocks * kW2NTiles;
+        {
+            const int logical_worker =
 #if K_SINGLE_LAUNCH_78CTA_SMID_MAP
-        for (int task_wave = 0; task_wave < w2_tasks;
-             task_wave += kLogicalWorkersPerWave) {
-            route_gemm_task<
-                512, 4096, 1, false, 0, false, false, false,
-                -1, false, 0, false, false, false,
-                kIndependentTaskWGs, true>(
-                &w2_tma_weight, &w2_tma_weight_scale,
-                w2, s2, g2, qactivation, activation_scale,
-                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-                reinterpret_cast<float*>(down), lut, nullptr,
-                routes, 0, task_wave);
-            independent_wg_sync<kIndependentTaskWGs>(independent_wg);
-        }
+                h20_selected_logical_worker(independent_wg);
 #else
-        for (int task_base = cta * kIndependentTaskWGs;
-             task_base < w2_tasks;
-             task_base += kLogicalWorkersPerWave) {
-            route_gemm_task<
-                512, 4096, 1, false, 0, false, false, false,
-                -1, false, 0, kSingleLaunchAssumeValidGemmTasks,
-                false, false, kIndependentTaskWGs>(
-                &w2_tma_weight, &w2_tma_weight_scale,
-                w2, s2, g2, qactivation, activation_scale,
-                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-                reinterpret_cast<float*>(down), lut, nullptr,
-                routes, 0, task_base);
-            independent_wg_sync<kIndependentTaskWGs>(independent_wg);
-        }
+                cta * kIndependentTaskWGs + independent_wg;
 #endif
+            for (int task = logical_worker; task < w2_tasks;
+                 task += kLogicalWorkersPerWave) {
+                route_gemm_task<
+                    512, 4096, 1, false, 0, false, false, false,
+                    -1, false, 0, kSingleLaunchAssumeValidGemmTasks,
+                    false, false, kIndependentTaskWGs>(
+                    &w2_tma_weight, &w2_tma_weight_scale,
+                    w2, s2, g2, qactivation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                    reinterpret_cast<float*>(down), lut, nullptr,
+                    routes, 0, task - independent_wg);
+                independent_wg_sync<kIndependentTaskWGs>(independent_wg);
+            }
+        }
         __syncthreads();
         single_launch_grid_barrier(barrier_state, 3, ctas);
     } else {
