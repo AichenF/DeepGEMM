@@ -77,6 +77,42 @@ so they are not kept live through the large noinline GEMM helpers.  Each WG
 scans only its own small activation/W2 stripe, avoiding both a global claim
 and head-of-line waiting on an unready mblock.
 
+Iteration 425 shows that this ownership change halves dynamic spill requests,
+but the per-row activation helper still leaves 35.7% of the issue interval at
+barriers.  One activation-group task currently invokes the 128-thread helper
+eight times.  Each row performs two internal reduction/scale barriers plus a
+terminal task barrier, in addition to the scheduler mailbox barrier.  This is
+about 25 named-barrier encounters for one ready group.
+
+#### Eight-row activation epilogue (selected after Iteration 425)
+
+Match the Hopper L1 epilogue's tile-level behavior more closely: one WG task
+consumes all eight sorted rows of an `(mblock, activation_group)` together.
+
+1. Every lane computes one group-128 column for each valid row, applies the
+   exact BF16 rounding/SwiGLU/BF16 rounding contract, stores BF16 activation,
+   and contributes eight per-warp maxima to shared memory.
+2. After one named barrier, warp 0 maps its 32 lanes to exactly eight
+   `(row, source_warp)` values, performs eight independent width-4 max
+   reductions, and publishes the eight FP8 scales.
+3. After a second named barrier, all lanes reload the just-written BF16
+   activation, quantize all valid rows, and store FP8 bytes.  A terminal named
+   barrier publishes completion before lane 0 updates mblock readiness.
+
+Including the existing task-mailbox handoff, this reduces synchronization
+from about 25 to four named barriers per activation group.  It adds at most
+2 KiB of coalesced BF16 reads per group, negligible beside cold expert-weight
+traffic, and deliberately avoids keeping eight gate/up pairs live across a
+barrier.  The public activation workspace remains populated exactly as in the
+control path.
+
+Two fallbacks are intentionally narrower.  A two- or four-row helper lowers
+register risk but retains two to four times as many barriers.  Staging all
+eight rows in per-WG shared memory avoids the BF16 reload but consumes another
+16 KiB per CTA and can create shared-bank pressure.  Use those only if the
+eight-row/global-reload binary exceeds 64 registers, increases dynamic local
+spills, or fails correctness/performance gates.
+
 ### 2. Static two-CTA mblock cohorts
 
 Two physical CTAs own each mblock, complete W13 and matching requant groups,
@@ -173,6 +209,15 @@ The path reuses the existing real-SMID table for both static W13 and W2
 stripes.  Its additional readiness checks and epilogue-owner imbalance must
 still be profiled independently rather than claiming the Iteration 399
 mapping benefit carries over.
+
+For the eight-row helper, reject immediately if cubin resources exceed 64
+registers/thread or one-CTA-per-SM residency.  A passing binary must be
+bitwise-equal on all routed rows at M8/M128, improve both endpoints over
+Iteration 424 under replay-interleaved cold-L2 TP4 timing, and reduce NCU
+barrier stalls without increasing local spill requests.  The final project
+gate remains at least 1.10x over the multi-kernel plus CustomAllReduceV2
+baseline across M={8,16,32,64,128}; an overlap micro-improvement alone is not
+completion.
 
 ## Validation
 
