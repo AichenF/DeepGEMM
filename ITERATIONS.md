@@ -10196,3 +10196,26 @@ maximum rank latency of a full CUDA-Graph replay.
   existing `humming-v0.1.12` checkout to `PYTHONPATH` for the next run.
 - Evidence:
   `results/iter411_hopper_wg_dag_compute_humming_import_failure_20260905.log`.
+
+## Iteration 412 — Hopper WG-DAG TP-disabled endpoint correctness
+
+- Date: 2026-09-05
+- Protocol: unchanged Iteration 408 source on H20 GPU0, random routes with
+  seed 20260904, prequantized FP8-E4M3 X plus FP32 group-128 scale, TP
+  collective disabled.  Compare the complete routed W2 `down` workspace
+  against the selected multi-kernel local pipeline after one separate
+  excluded 256 MiB L2 clear.  This covers all routed rows/tiles, not a block-0
+  sample.
+- M8 result: split-K4, 360 padded rows; candidate and reference are bitwise
+  equal (`cosine=0.9999999999999999`, rel-L2 `0`, finite).  M128 result:
+  split-K2, 1,944 padded rows; also bitwise equal (`cosine=1`, rel-L2 `0`,
+  finite).
+- Barrier evidence: both shapes finish with packed words
+  `[2048,0,0,2048]`, proving the new path executes only the route phase-0 and
+  terminal-W2 phase-3 whole-grid barriers; the old whole-grid W13/requant
+  phase-1/2 barriers are absent.
+- Decision: compute correctness/liveness gate PASS at both endpoints.  Next
+  run repeated TP4 correctness through the embedded multicast (M8) and P2P
+  two-shot (M128) collectives before accepting any latency result.
+- Evidence:
+  `results/iter412_hopper_wg_dag_compute_correctness_20260905.log`.
