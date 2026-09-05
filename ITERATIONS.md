@@ -12020,3 +12020,31 @@ maximum rank latency of a full CUDA-Graph replay.
   selection; do not run a five-M formal verdict yet.
 - **Evidence:**
   `bench/evidence/iter485_tile_tma_tp4_endpoint_cold_screen.txt`.
+
+## Iteration 486 — long ABBA tile/control confirmation is inconclusive
+
+- **Protocol:** four fresh TP4 processes in balanced native-layout order
+  `tile -> 80-byte -> 80-byte -> tile` on physical GPUs 0–3.  Each process
+  compares its native variant to the same selected multi-kernel control at
+  random M8/M128 with two batches x fifty independently cold rank-max samples
+  per arm and M, five warmups, CUDA Graph, and excluded 256 MiB clears.  Thus
+  each native layout has 200 samples per endpoint.
+- **Correctness:** **PASS** in all four processes and both M values.
+- **Per-process candidate/control ratios (M8, M128, endpoint GM):** tile-A1
+  `(1.46004, 1.22716, 1.33855)`, 80B-B1
+  `(1.44675, 1.16271, 1.29698)`, 80B-B2
+  `(1.44962, 1.20533, 1.32184)`, tile-A2
+  `(1.45257, 1.23382, 1.33874)`.
+- **Drift evidence:** M128 multi medians are `0.307232/0.339344/0.332816/
+  0.308544 ms` in run order.  Native medians move with that system regime:
+  tile `0.377024/0.380688 ms`, 80B `0.394560/0.401152 ms`.  Cross-process
+  absolute native latency favors tile, while per-process normalization favors
+  80B; the two interpretations conflict because the variants never coexist in
+  one process.
+- **Decision:** **do not select** the sub-percent candidate from this evidence;
+  leave tile TMA default-off.  Build a same-process native-vs-native CUDA Graph
+  harness with alternating independently cold replays so both layouts see the
+  same communicator, clock regime, inputs and ordering.  No five-M claim is
+  justified yet.
+- **Evidence:**
+  `bench/evidence/iter486_tile_tma_native_layout_abba_long_window.txt`.

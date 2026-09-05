@@ -1,0 +1,30 @@
+ITERATION 486 — cross-process tile/80B ABBA long window
+
+Common protocol per process:
+  TP4 GPUs 0,1,2,3; random M=8,128
+  CUDA Graph; outer=2; replays=50; warmups=5; rank-max
+  independently cold L2, clear excluded
+
+Run order and medians (multi_ms, native_ms, native/multi):
+  tile A1:
+    M8   0.071263999 / 0.104048003 / 1.460035984
+    M128 0.307231992 / 0.377023995 / 1.227163851
+    endpoint ratio GM 1.338545248
+  80B B1:
+    M8   0.071664002 / 0.103680000 / 1.446751467
+    M128 0.339343995 / 0.394559994 / 1.162713943
+    endpoint ratio GM 1.296980379
+  80B B2:
+    M8   0.071456000 / 0.103583999 / 1.449619328
+    M128 0.332816005 / 0.401152000 / 1.205326649
+    endpoint ratio GM 1.321841445
+  tile A2:
+    M8   0.071520001 / 0.103888001 / 1.452572711
+    M128 0.308543995 / 0.380687997 / 1.233820793
+    endpoint ratio GM 1.338736126
+
+All correctness gates pass.  M128 control drift is large enough that absolute
+native latency and control-normalized ratios disagree on the winner.
+
+Verdict: INCONCLUSIVE and not selected.  Require same-process native-vs-native
+alternation; tile flag remains default-off.
