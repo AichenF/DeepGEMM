@@ -9937,3 +9937,33 @@ maximum rank latency of a full CUDA-Graph replay.
   `results/iter401_78cta_smid_map_m128_ncu_capture_20260905.log`; binary report
   `results/iter401_78cta_smid_map_m128_compute_full.ncu-rep` remains outside
   git because of its size.
+
+## Iteration 402 — analyze mapped M128 NCU bottleneck
+
+- Date: 2026-09-05
+- Method: import the exact Iteration 401 report and print all captured
+  per-kernel detail sections.  No new GPU launch or source change occurred.
+- Launch/resource evidence: the kernel remains exactly 78x1024 with one
+  wave/SM, 64 registers/thread, 147.46 KiB dynamic plus 2.05 KiB static
+  shared memory, 32 theoretical active warps/SM and 50.43% achieved
+  occupancy.  Thus the mapping did not reduce residency.
+- Performance result: duration is `334.21 us`, compute throughput `63.78%`,
+  DRAM throughput `51.19%`, memory bandwidth `2.46 TB/s`, and L2 hit rate
+  `5.57%`.  Schedulers have eligible work on `64.26%` of cycles, issue 0.64
+  warp/scheduler/cycle, and have `35.74%` no-eligible cycles.
+- Comparison: versus unmapped Iteration 390, duration falls from 377.44 us
+  (-11.5%), no-eligible falls from 43.12% to 35.74%, compute rises from
+  56.18% to 63.78%, and DRAM rises from 44.66% to 51.19%.  The mapped
+  scheduler now slightly exceeds the selected 624-CTA profile's 62.22% SM,
+  47.68% DRAM and 37.57% no-eligible metrics, confirming that physical task
+  striping—not arithmetic or occupancy—caused most packed-CTA starvation.
+- New bottleneck: NCU reports 33,600 local-memory spilling requests despite
+  the unchanged 64-register allocation; the unmapped profile reported zero.
+  The per-WG mapped loop state therefore crosses the 1024-thread kernel's
+  hard register ceiling and spills around the giant inlined GEMM body.
+- Decision: keep the mapping, locate local load/store instructions and
+  remove cross-inline loop-state liveness (for example by passing a mapped
+  worker offset directly into the task body or storing phase-local IDs in
+  shared memory) before another endpoint screen.
+- Evidence:
+  `results/iter402_78cta_smid_map_m128_ncu_details_20260905.log`.
