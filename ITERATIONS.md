@@ -15275,3 +15275,33 @@ maximum rank latency of a full CUDA-Graph replay.
   returns byte-identical to Iteration 661.
 - **Evidence:** `evidence/iter662_compact_w2_phase_rejection.md`; raw
   `bench/results/iter662_compact_w2_phase*_20260906.log`.
+
+## Iteration 663 — select M128 W13 wave rotation and rebaseline
+
+- **Change:** the TP4 compact bundle now defaults
+  `V4_SINGLE_LAUNCH_W13_WAVE_ROTATE=13`; explicit zero remains rollback.  The
+  device branch is compile-time restricted to TP4 M128, leaving M<=64 and the
+  separate TP8 kernel unchanged.
+- **Basis:** Iteration 659's order-balanced local and TP4 OFF/ON windows prove
+  a 1.73% W13-phase and 0.58% normalized M128 endpoint gain.  Iterations
+  660--662 reject transferring it to W2, lower M, or a compact W2 outline.
+- **Formal TP4 protocol:** GPUs 0/5/6/7, random seed 20260902, CUDA Graph,
+  10 warmups plus 6x50 replay-interleaved samples/implementation/M, and a
+  separate excluded 256 MiB L2 clear before every replay.
+- **Formal medians, multi/one ms:** M8 `0.071104/0.075696`; M16
+  `0.114608/0.124144`; M32 `0.179440/0.200752`; M64
+  `0.262496/0.295024`; M128 `0.326576/0.372384`.  One-kernel overhead is
+  6.46%, 8.32%, 11.88%, 12.39% and 14.03% respectively.
+- **Aggregate/verdict:** geometric means are
+  `0.165816228/0.183358642 ms`; one remains 10.58% slower.  A 1.10x win over
+  multi still requires a further 17.79% one-kernel reduction.  All five
+  shapes pass all-rank reference and all-reduce gates.
+- **TP8 gate:** all eight GPUs and all five M values pass CUDA-Graph liveness,
+  finite/reference and embedded-allreduce checks under cold L2.  Medians are
+  `0.054720/0.079040/0.122784/0.169248/0.216640 ms`; this five-sample run is
+  correctness evidence only.
+- **Decision:** select the small M128 win, but do not claim the objective.
+  Remaining work must change persistent GEMM execution rather than copy more
+  multi-kernel body code.
+- **Evidence:** `evidence/iter663_select_m128_w13_wave_rotation.md`; raw
+  `bench/results/iter663_w13_wave_rotate_default*_20260906.log`.

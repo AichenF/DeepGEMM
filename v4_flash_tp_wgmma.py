@@ -510,7 +510,10 @@ SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS = (
 # logical task set unchanged, but rotate which physical CTA/SM owns it. The
 # residual wave remains on the measured count-optimal production mapping.
 SINGLE_LAUNCH_W13_WAVE_ROTATE = int(
-    os.environ.get("V4_SINGLE_LAUNCH_W13_WAVE_ROTATE", "0")
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_W13_WAVE_ROTATE",
+        "13" if SINGLE_LAUNCH_COMPACT_W13_BUNDLE else "0",
+    )
 )
 if SINGLE_LAUNCH_W13_WAVE_ROTATE not in (0, 13):
     raise ValueError("V4_SINGLE_LAUNCH_W13_WAVE_ROTATE must be 0 or 13")
