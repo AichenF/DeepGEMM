@@ -14845,3 +14845,38 @@ maximum rank latency of a full CUDA-Graph replay.
   Keep nonpersistent K-loop parity and disable cross-task weight prefetch.
   This requires design approval before code changes.
 - **Evidence:** `evidence/iter648_w13_task_boundary_sass_audit.md`.
+
+## Iteration 649 — multi-kernel transfer recheck and barrier correction
+
+- **Scope:** Git/source/SASS/history audit only.  No CUDA kernel was launched
+  and no new latency claim is made.
+- **Git/body result:** at current head `ca0abcc`, the multi baseline tip
+  `071abc2` remains the exact ancestor and `git rev-list --left-right --count`
+  is `0 505`; there are no multi-only commits.  Standalone and one-kernel
+  GEMMs already instantiate the same `route_gemm_task`, and the selected
+  CARv2-derived multicast/P2P transport policy is already embedded.
+- **Phase evidence:** matching local cold-L2 M128 diagnostics put multi versus
+  one-kernel W13 at `187.584/203.056 us` and W2 at
+  `98.240/107.200 us`.  The one-kernel route plus requant stages save 4.448 us,
+  while its persistent GEMMs lose 24.432 us.  W13 is about 63% of the positive
+  GEMM penalty.
+- **Historical transfer verdict:** oversubscribed fresh-CTA turnover,
+  sharded turnover, ten-CTA launch bounds, whole-W2 outlining, and W13
+  cross-task prefetch were all already rejected.  The only successful direct
+  adaptation is the selected compact-W13 ABI, whose long all-M normalized
+  gain is 0.3575%.
+- **Correction:** supersede Iteration 648's proposed double-mbarrier-bank
+  experiment before implementation.  Hopper initializes a full/empty barrier
+  ring once and makes it useful with dedicated loader/math roles and a task
+  mailbox; it does not alternate whole barrier banks.  The existing compact
+  persistent-state path already removed the task-tail sync and advanced
+  parity, yet lost 1.48% in every paired cold-L2 batch.
+- **Scale of target:** Iteration-612 geometric means are
+  `0.165906740/0.183687688 ms` for multi/one.  A real 1.10x win over multi
+  requires a further 17.89% reduction from the current one-kernel geometric
+  mean, so no copied snippet can satisfy the goal.
+- **Decision:** no production direct cherry-pick exists.  Selective
+  register-shadowing of the compact W13 shared record is the only bounded
+  unmeasured direct adaptation, with an expected sub-2% ceiling; any larger
+  pursuit needs an approved overlapping execution design.
+- **Evidence:** `evidence/iter649_multikernel_transfer_recheck.md`.
