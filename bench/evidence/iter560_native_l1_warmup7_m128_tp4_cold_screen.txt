@@ -1,0 +1,15 @@
+Iteration 560: automatic versus all-W13 seven warmup waves
+Date: 2026-09-05
+GPU: TP4 physical H20 GPUs 0/5/6/7
+M: 128, random routes
+Protocol: CUDA Graph, 2x20 samples/arm, 5 warmups, rank-max latency
+Cold-L2: separate excluded 256 MiB clear before every replay
+
+Correctness: cosine=1.0, rel_l2=0.0, mismatches=0, finite=true
+Control automatic median: 0.36631999909877777 ms
+Candidate seven-wave median: 0.3684479892253876 ms
+Control/candidate: 0.9942244490705904x
+Control batch medians: [0.36561600863933563, 0.3824959993362427]
+Candidate batch medians: [0.3684159964323044, 0.3684479892253876]
+
+Result: correctness PASS; performance REGRESSION. Candidate remains off.

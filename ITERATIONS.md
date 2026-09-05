@@ -13403,3 +13403,26 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter559_native_l1_warmup3_m128_tp4_cold_screen_20260905.log`
   and `bench/evidence/iter559_native_l1_warmup3_m128_tp4_cold_screen.txt`.
+
+## Iteration 560 — all-W13 warmup regresses M128
+
+- **Protocol:** same selected-native same-process TP4 cold-L2 A/B as
+  Iteration 559, now comparing automatic two-wave interleave with an explicit
+  seven-wave candidate that issues all M128 W13 tasks before W2.  Physical
+  GPUs 0/5/6/7, random M128, two balanced batches x twenty rank-max samples,
+  five warmups, CUDA Graph, and an excluded 256 MiB clear per replay.
+- **Correctness:** **PASS bitwise** on every rank: cosine `1.0`, relative-L2
+  `0.0`, zero BF16 mismatches and all outputs finite.
+- **Cold-L2 result (auto / seven-wave median):**
+  `0.366320 / 0.368448 ms`; seven-wave is `0.58%` slower
+  (`control/candidate=0.99422x`).  Candidate batches are tightly grouped at
+  `0.368416/0.368448 ms`, while the pooled control median is lower despite
+  its second-batch system-drift outliers.
+- **Decision:** reject seven-wave and, together with the neutral three-wave
+  result and the previously rejected one-wave result, close the W13-warmup
+  scheduling direction.  Keep `V4_NATIVE_L1_WARMUP_WAVES` default zero only
+  as reproducible evidence.  The next candidate must reduce per-tile
+  MXFP4-to-RS-WGMMA dependency cost while retaining two CTAs/SM.
+- **Evidence:**
+  `bench/results/iter560_native_l1_warmup7_m128_tp4_cold_screen_20260905.log`
+  and `bench/evidence/iter560_native_l1_warmup7_m128_tp4_cold_screen.txt`.
