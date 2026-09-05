@@ -10674,3 +10674,31 @@ maximum rank latency of a full CUDA-Graph replay.
   replay-interleaved cold-L2 endpoint screen with embedded communication.
 - Evidence:
   `results/iter431_batched_activation_partial_scratch_correctness_20260905.log`.
+
+## Iteration 432 — eight-row batching is neutral-to-negative end to end
+
+- Date: 2026-09-05
+- Environment cleanup: terminate the same-container, same-repository orphan
+  `python -` process left on physical GPU0 since 09:43; all GPUs 0-3 report
+  zero utilization immediately before measurement.  This removes the
+  confound disclosed in Iterations 424-425.
+- Protocol: exact Iteration 430/431 candidate versus selected same-source
+  multi-kernel plus SGLang CustomAllReduceV2 control, TP4 GPUs 0-3, random
+  routes, seed 20260904, two replay-interleaved batches x ten individually
+  cold-L2 samples/arm, two warmups and rank-max reduction.
+- Correctness: PASS and identical to control with embedded multicast at M8
+  and P2P two-shot at M128.
+- M8 control/candidate medians are `73.472/101.056 us`, so candidate is
+  1.375x slower.  M128 medians are `300.400/393.168 us`, candidate 1.309x
+  slower.  Batches are stable: candidate 101.600/100.800 and
+  393.424/392.400 us; control 73.600/73.440 and 300.400/300.416 us.
+- Comparison to Iteration 424: M128 improves 396.272→393.168 us (-0.78%),
+  while M8 regresses 99.984→101.056 us (+1.07%).  The 8-row helper therefore
+  does not convert its large static barrier-count reduction into useful
+  endpoint speedup; partial-scratch traffic and serial loop work offset it.
+- Decision: reject Iteration 430 for selection.  Profile compute-only M128 to
+  check whether barrier stalls fell but memory/long-scoreboard rose, then
+  decide between a smaller row chunk and returning to the selected mapped
+  phase path for a different overlap boundary.
+- Evidence:
+  `bench/results/iter432_batched_activation_tp4_m8_m128_cold_screen_20260905.log`.

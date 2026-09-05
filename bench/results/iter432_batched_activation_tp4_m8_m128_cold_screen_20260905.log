@@ -1,0 +1,38 @@
+ITER432_BATCHED_ACTIVATION_TP4_M8_M128_COLD_SCREEN
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+gpus=0,1,2,3
+source_commit=ce49fb3
+orphan_cleanup=terminated same-container same-repo CUDA_VISIBLE_DEVICES=0 python- process pid_in_container_549659 before benchmark; all four GPUs reported zero utilization immediately before run
+protocol=TP4 CUDA Graph; candidate one business kernel versus same-source selected multi-kernel plus SGLang CustomAllReduceV2 control; random routes seed 20260904; two replay-interleaved batches; ten timed samples per arm per batch; two warmups; rank-max; independent excluded 256MiB cold-L2 clear immediately before every replay
+m8.active_experts=45
+m8.padded_rows=360
+m8.w13_split_k=4
+m8.candidate_ar=single_launch_multicast_push
+m8.control_ar=multicast_push
+m8.candidate_batch_medians_us=[101.600,100.800]
+m8.control_batch_medians_us=[73.600,73.440]
+m8.candidate_median_us=101.056
+m8.control_median_us=73.472
+m8.candidate_over_control=1.375436
+m8.correctness=PASS_IDENTICAL_TO_CONTROL
+m128.active_experts=240
+m128.padded_rows=1944
+m128.w13_split_k=2
+m128.candidate_ar=single_launch_p2p_two_shot
+m128.control_ar=stock_custom_all_reduce_v2
+m128.candidate_batch_medians_us=[393.424,392.400]
+m128.control_batch_medians_us=[300.400,300.416]
+m128.candidate_median_us=393.168
+m128.control_median_us=300.400
+m128.candidate_over_control=1.308815
+m128.correctness=PASS_IDENTICAL_TO_CONTROL
+endpoint_candidate_geomean_us=199.328840
+endpoint_control_geomean_us=148.563082
+endpoint_candidate_over_control=1.341712
+comparison_iter424_m8_us=99.984_to_101.056_plus1.07pct
+comparison_iter424_m128_us=396.272_to_393.168_minus0.78pct
+result=CORRECT_BUT_REJECT_FOR_SELECTION
+interpretation=reducing activation-group named barriers does not materially improve the full pipeline; reclaimed-partial traffic and serialized eight-row loop offset the synchronization reduction, with a small M128 gain and M8 regression; NCU must determine whether barrier stalls moved to memory/long-scoreboard before choosing a smaller chunk or abandoning fine overlap
+ITER432_BATCHED_ACTIVATION_TP4_M8_M128_COLD_SCREEN_OK
