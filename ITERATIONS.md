@@ -12459,3 +12459,13 @@ maximum rank latency of a full CUDA-Graph replay.
   mainline.  Leave it default-off for reproducibility; return to the mapped
   independent phase kernel and avoid any next design that makes a complete
   gate/up group a per-CTA rendezvous.
+## Iteration 504 — flat 624x128 current-best TP4 cold-L2 short audit (2026-09-05)
+
+- Hypothesis: the previously positive `release_grid_arrival` and `assume_valid_gemm_tasks` flags may narrow the latest flat one-kernel gap enough to justify using this combination as the optimization base.
+- Configuration: H20 TP4 on physical GPUs 0/5/6/7; random top-k6 routes; M={8,16,32,64,128}; CUDA graphs; paired at replay granularity; 2 outer batches x 20 replays; independent 256 MiB L2 clear immediately before every implementation replay and excluded from CUDA-event timing. Candidate is the 624x128 single business kernel with embedded multicast push at M<=32 and embedded P2P two-shot at M>=64. Control is the selected multi-kernel path with SGLang CustomAllReduceV2/stock mode.
+- Flags: `V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL=1`, `V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS=1`, CTA-local/78CTA experiments disabled.
+- Correctness: candidate and control accepted at every M; candidate worst-rank cosine 0.9999955--0.9999956, rel-L2 0.002964--0.002998, all-reduce check true.
+- Median latency (control -> candidate, candidate overhead): M8 0.074656 -> 0.079504 ms (+6.49%); M16 0.116192 -> 0.126432 ms (+8.81%); M32 0.174000 -> 0.197696 ms (+13.62%); M64 0.254160 -> 0.284560 ms (+11.96%); M128 0.308672 -> 0.352272 ms (+14.13%). Five-M geometric mean 0.163938 -> 0.181911 ms (+10.96%).
+- Stability: the two per-batch medians agree within 0.5% for every M. Per-replay maxima contain isolated interference outliers and are not used to infer speedup.
+- Decision: reject the flag pair as a path to the 10% win. It preserves the current flat-kernel regime but remains slower at all five M. Continue from the flat kernel and target cold-weight issue/synchronization rather than CTA-local W13 rendezvous.
+- Evidence: `results/iter504_flat_best_tp4_allm_short_20260905.log`.
