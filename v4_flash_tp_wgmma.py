@@ -6245,11 +6245,11 @@ void tp4_megamoe_single_launch_kernel(
     } else if constexpr (kSingleLaunch78CtaWgDag) {
         // Hopper MegaMoE-inspired persistent L1/L2 interleave without the
         // CTA-wide task barriers rejected by Iteration 417.  Every WG keeps a
-        // static W13 and W2 stripe.  W13 completions are distributed across
-        // per-(mblock, activation-group) counters; the final WG performs that
-        // group's small epilogue and release-publishes coarse mblock readiness.
-        // W2 stripes acquire-scan only their own at-most-14 tasks, so there is
-        // no global task claim and no head-of-line wait on an unready mblock.
+        // static W13, activation-group, and W2 stripe.  W13 completions are
+        // distributed across per-group counters and release-publish a flag;
+        // the statically assigned activation WG acquires that flag and owns
+        // the eight-row epilogue.  This removes the extra post-W13 WG barrier
+        // and random final-completer imbalance measured in Iteration 421.
         constexpr int kIndependentTaskWGs = 8;
         constexpr int kLogicalWorkers =
             kSingleLaunchH20Sms * kIndependentTaskWGs;
@@ -6260,6 +6260,8 @@ void tp4_megamoe_single_launch_kernel(
 
         const int num_mblocks = __ldg(num_tokens_padded) / kTok;
         const int total_w13_tasks = num_mblocks * kW13NTiles * SplitK;
+        const int total_activation_groups =
+            num_mblocks * kActivationGroupsPerRoute;
         const int total_w2_tasks = num_mblocks * kW2NTiles;
         const int independent_wg = threadIdx.x >> 7;
         const int wg_lane = threadIdx.x & 127;
@@ -6271,48 +6273,97 @@ void tp4_megamoe_single_launch_kernel(
 #endif
 
         int32_t* w13_group_done = scheduler + kWgDagHeaderWords;
-        int32_t* activation_groups_done =
+        int32_t* w13_group_ready =
             w13_group_done + 4 * max_mblocks;
+        int32_t* activation_groups_done =
+            w13_group_ready + 4 * max_mblocks;
         int32_t* w2_mblock_ready =
             activation_groups_done + max_mblocks;
 
+        __shared__ int wg_logical_worker[kIndependentTaskWGs];
+        __shared__ int wg_next_w13_task[kIndependentTaskWGs];
+        __shared__ int wg_num_activation_groups[kIndependentTaskWGs];
+        __shared__ int wg_num_w2_tasks[kIndependentTaskWGs];
+        __shared__ uint32_t wg_activation_done_mask[kIndependentTaskWGs];
+        __shared__ uint32_t wg_w2_done_mask[kIndependentTaskWGs];
+        __shared__ int wg_prefer_downstream[kIndependentTaskWGs];
         __shared__ int wg_task_kind[kIndependentTaskWGs];
         __shared__ int wg_task_index[kIndependentTaskWGs];
-        __shared__ int wg_ready_group[kIndependentTaskWGs];
-        int next_w13_task = logical_worker;
-        const int num_owned_w2_tasks =
-            logical_worker < total_w2_tasks
-                ? 1 + (total_w2_tasks - 1 - logical_worker)
-                    / kLogicalWorkers
-                : 0;
-        const uint32_t all_w2_done_mask = num_owned_w2_tasks == 0
-            ? 0u : num_owned_w2_tasks >= 32
-            ? 0xffffffffu : (1u << num_owned_w2_tasks) - 1u;
-        uint32_t w2_done_mask = 0u;
-        int prefer_w2 = 0;
+        if (wg_lane == 0) {
+            wg_logical_worker[independent_wg] = logical_worker;
+            wg_next_w13_task[independent_wg] = logical_worker;
+            wg_num_activation_groups[independent_wg] =
+                logical_worker < total_activation_groups
+                    ? 1 + (total_activation_groups - 1 - logical_worker)
+                        / kLogicalWorkers
+                    : 0;
+            wg_num_w2_tasks[independent_wg] =
+                logical_worker < total_w2_tasks
+                    ? 1 + (total_w2_tasks - 1 - logical_worker)
+                        / kLogicalWorkers
+                    : 0;
+            wg_activation_done_mask[independent_wg] = 0u;
+            wg_w2_done_mask[independent_wg] = 0u;
+            wg_prefer_downstream[independent_wg] = 0;
+        }
+        independent_wg_sync<kIndependentTaskWGs>(independent_wg);
 
         while (true) {
             if (wg_lane == 0) {
                 int kind = -1;
                 int task = -1;
+                const int worker = wg_logical_worker[independent_wg];
+                const int num_owned_activation_groups =
+                    wg_num_activation_groups[independent_wg];
+                const int num_owned_w2_tasks =
+                    wg_num_w2_tasks[independent_wg];
+                uint32_t activation_done_mask =
+                    wg_activation_done_mask[independent_wg];
+                uint32_t w2_done_mask =
+                    wg_w2_done_mask[independent_wg];
+                int next_w13_task =
+                    wg_next_w13_task[independent_wg];
+                const int prefer_downstream =
+                    wg_prefer_downstream[independent_wg];
 
-                if (prefer_w2 || next_w13_task >= total_w13_tasks) {
+                if (prefer_downstream
+                        || next_w13_task >= total_w13_tasks) {
+                    #pragma unroll 1
+                    for (int owned = 0;
+                         owned < num_owned_activation_groups; ++owned) {
+                        const uint32_t bit = 1u << owned;
+                        if ((activation_done_mask & bit) == 0u) {
+                            const int candidate_group =
+                                worker + owned * kLogicalWorkers;
+                            if (load_acquire_gpu_i32(
+                                    w13_group_ready + candidate_group)
+                                    != 0) {
+                                kind = 2;
+                                task = candidate_group;
+                                activation_done_mask |= bit;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (kind < 0 && (prefer_downstream
+                        || next_w13_task >= total_w13_tasks)) {
                     #pragma unroll 1
                     for (int owned = 0; owned < num_owned_w2_tasks;
                          ++owned) {
                         const uint32_t bit = 1u << owned;
                         if ((w2_done_mask & bit) == 0u) {
                             const int candidate_task =
-                                logical_worker + owned * kLogicalWorkers;
+                                worker + owned * kLogicalWorkers;
                             const int candidate_mblock =
                                 candidate_task / kW2NTiles;
                             if (load_acquire_gpu_i32(
                                     w2_mblock_ready + candidate_mblock)
                                     != 0) {
-                                kind = 2;
+                                kind = 3;
                                 task = candidate_task;
                                 w2_done_mask |= bit;
-                                prefer_w2 = 0;
                                 break;
                             }
                         }
@@ -6323,11 +6374,27 @@ void tp4_megamoe_single_launch_kernel(
                     kind = 1;
                     task = next_w13_task;
                     next_w13_task += kLogicalWorkers;
-                    prefer_w2 = 1;
                 }
 
-                if (kind < 0 && w2_done_mask == all_w2_done_mask)
+                const uint32_t all_activation_done_mask =
+                    num_owned_activation_groups == 0 ? 0u
+                    : (1u << num_owned_activation_groups) - 1u;
+                const uint32_t all_w2_done_mask =
+                    num_owned_w2_tasks == 0 ? 0u
+                    : num_owned_w2_tasks >= 32 ? 0xffffffffu
+                    : (1u << num_owned_w2_tasks) - 1u;
+                if (kind < 0 && next_w13_task >= total_w13_tasks
+                        && activation_done_mask
+                            == all_activation_done_mask
+                        && w2_done_mask == all_w2_done_mask)
                     kind = 0;
+
+                wg_next_w13_task[independent_wg] = next_w13_task;
+                wg_activation_done_mask[independent_wg] =
+                    activation_done_mask;
+                wg_w2_done_mask[independent_wg] = w2_done_mask;
+                wg_prefer_downstream[independent_wg] =
+                    kind == 1 ? 1 : 0;
 
                 wg_task_kind[independent_wg] = kind;
                 wg_task_index[independent_wg] = task;
@@ -6361,48 +6428,42 @@ void tp4_megamoe_single_launch_kernel(
                             + activation_group;
                     const int done = atomic_add_acq_rel_gpu_i32(
                         w13_group_done + group_key, 1) + 1;
-                    wg_ready_group[independent_wg] =
-                        done == 2 * SplitK ? group_key : -1;
+                    if (done == 2 * SplitK)
+                        store_release_gpu_i32(
+                            w13_group_ready + group_key, 1);
                 }
-                independent_wg_sync<kIndependentTaskWGs>(independent_wg);
-
-                const int ready_group =
-                    wg_ready_group[independent_wg];
-                if (ready_group >= 0) {
-                    const int mblock =
-                        ready_group / kActivationGroupsPerRoute;
-                    const int activation_group =
-                        ready_group
-                            - mblock * kActivationGroupsPerRoute;
-                    #pragma unroll
-                    for (int route_slot = 0; route_slot < kTok;
-                         ++route_slot) {
-                        const int route = __ldg(
-                            sorted_ids + mblock * kTok + route_slot);
-                        if (static_cast<unsigned>(route)
-                                < static_cast<unsigned>(routes)) {
-                            single_launch_wg_dag_activation_task<SplitK>(
-                                partials, activation, qactivation,
-                                activation_scale, route_to_sorted,
-                                topk_ids, g2, routes,
-                                route * kActivationGroupsPerRoute
-                                    + activation_group,
-                                independent_wg);
-                        } else {
-                            independent_wg_sync<kIndependentTaskWGs>(
-                                independent_wg);
-                        }
-                    }
-                    if (wg_lane == 0) {
-                        const int done = atomic_add_acq_rel_gpu_i32(
-                            activation_groups_done + mblock, 1) + 1;
-                        if (done == kActivationGroupsPerRoute) {
-                            store_release_gpu_i32(
-                                w2_mblock_ready + mblock, 1);
-                        }
+            } else if (kind == 2) {
+                const int mblock = task / kActivationGroupsPerRoute;
+                const int activation_group =
+                    task - mblock * kActivationGroupsPerRoute;
+                #pragma unroll
+                for (int route_slot = 0; route_slot < kTok;
+                     ++route_slot) {
+                    const int route = __ldg(
+                        sorted_ids + mblock * kTok + route_slot);
+                    if (static_cast<unsigned>(route)
+                            < static_cast<unsigned>(routes)) {
+                        single_launch_wg_dag_activation_task<SplitK>(
+                            partials, activation, qactivation,
+                            activation_scale, route_to_sorted,
+                            topk_ids, g2, routes,
+                            route * kActivationGroupsPerRoute
+                                + activation_group,
+                            independent_wg);
+                    } else {
+                        independent_wg_sync<kIndependentTaskWGs>(
+                            independent_wg);
                     }
                 }
-            } else {
+                if (wg_lane == 0) {
+                    const int done = atomic_add_acq_rel_gpu_i32(
+                        activation_groups_done + mblock, 1) + 1;
+                    if (done == kActivationGroupsPerRoute) {
+                        store_release_gpu_i32(
+                            w2_mblock_ready + mblock, 1);
+                    }
+                }
+            } else if (kind == 3) {
                 single_launch_wg_dag_w2_task(
                     &w2_tma_weight, &w2_tma_weight_scale,
                     w2, s2, g2, qactivation, activation_scale,

@@ -1,0 +1,30 @@
+ITER422_STATIC_ACTIVATION_WG_JIT_RESOURCE
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+gpu=0
+base_commit=8b03f1a
+reference_branch=megamoe_nvfp4_dev_m
+reference_arch=Hopper_SM90
+candidate_flag=V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+change=retain real-SMID static W13/activation/W2 stripes; make final W13 split only release-publish its activation-group flag; assign the eight-row SwiGLU/FP8 epilogue to a deterministic activation WG; store scheduler cursors/masks in per-WG shared memory
+global_task_claims=0
+cta_task_loop_barriers=0
+post_w13_epilogue_barrier=0
+python_compile=PASS
+jit_compile=PASS
+extension=v4tp_bc05d855d2d59fe099f9_v178mspec
+m8_split4.regs_per_thread=64
+m8_split4.stack_bytes=48
+m8_split4.static_shared_bytes=4096
+m8_split4.local_bytes=0
+m128_split2.regs_per_thread=64
+m128_split2.stack_bytes=48
+m128_split2.static_shared_bytes=4096
+m128_split2.local_bytes=0
+dynamic_shared_bytes=147456
+resource_gate=CONDITIONAL_PASS
+interpretation=the deterministic activation owner and shared scheduler state fit in the pre-existing 4096-byte static shared allocation and preserve one 1024-thread CTA per H20 SM; static cubin declarations do not prove that Iteration421 dynamic local spill requests are fixed, so correctness and NCU remain mandatory
+correctness=NOT_TESTED
+performance=NOT_TESTED
+ITER422_STATIC_ACTIVATION_WG_JIT_RESOURCE_OK

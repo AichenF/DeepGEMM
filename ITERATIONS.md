@@ -10466,3 +10466,28 @@ maximum rank latency of a full CUDA-Graph replay.
   `results/iter421_static_wg_readiness_m128_ncu_details_20260905.log`; binary
   report `results/iter421_static_wg_readiness_m128_compute_full.ncu-rep`
   remains outside git due to size.
+
+## Iteration 422 — deterministic activation-WG JIT/resource gate
+
+- Date: 2026-09-05
+- Reference correction: the scheduling reference is the Hopper SM90 branch
+  `megamoe_nvfp4_dev_m`, not the B200 EP implementation.  Preserve its
+  producer-release/consumer-acquire L1→L2 contract while retaining this
+  kernel's H20 MXFP4 task body and TP collective semantics.
+- Change: keep real-SMID static stripes for W13, activation groups and W2.
+  The last W13 split no longer executes the eight-row activation epilogue or
+  crosses a second named barrier; it only release-publishes a group flag.
+  One deterministic activation WG acquire-observes that flag, processes all
+  eight routed rows, and publishes the coarse mblock W2 flag.  Per-WG cursors
+  and completion masks move to shared memory so they need not remain live
+  through the noinline GEMM/activation helpers.
+- Verification: Python and CUDA JIT compile PASS.  Both M8 split-K4 and M128
+  split-K2 entry points remain at 64 registers/thread, 48-byte stack, 4,096
+  static shared bytes and zero declared local bytes, plus 147,456 dynamic
+  shared bytes.  One 1024-thread CTA per H20 SM remains feasible.
+- Decision: conditional resource PASS.  Cubin declarations are unchanged and
+  cannot determine whether Iteration 421's 107,201 dynamic local spill
+  requests are reduced.  Commit this exact buildable checkpoint, then require
+  TP-disabled all-route M8/M128 correctness before timing or NCU.
+- Evidence:
+  `results/iter422_static_activation_wg_jit_resource_20260905.log`.

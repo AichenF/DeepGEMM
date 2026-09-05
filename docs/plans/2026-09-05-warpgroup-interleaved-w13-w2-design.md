@@ -54,23 +54,27 @@ This design must not repeat these measured failures:
 
 ## Alternatives
 
-### 1. Static-WG stripes with coarse readiness (selected after Iteration 417)
+### 1. Static-WG stripes with coarse readiness (revised after Iteration 421)
 
-Each resident warpgroup retains the selected real-SMID static stripe for both
-W13 and W2.  There is no global task claim and no CTA-wide task-loop barrier.
-W13 tasks release-increment a distributed counter for their exact
-`(mblock, activation_group)`.  The final gate/up split completion owns that
-group's eight-row SwiGLU/requant epilogue and then release-increments the
-mblock's four-group counter.  The final group publishes one coarse
-W2-ready flag for the mblock.
+Each resident warpgroup retains a real-SMID static stripe for W13,
+activation groups and W2.  There is no global task claim and no CTA-wide
+task-loop barrier.  W13 tasks release-increment a distributed counter for
+their exact `(mblock, activation_group)`.  The final gate/up split completion
+only release-publishes that group.  Its statically assigned activation
+warpgroup acquire-observes the flag, executes the group's eight routed-row
+SwiGLU/requant operations, and then release-increments the mblock's
+four-group counter.  The final group publishes one coarse W2-ready flag for
+the mblock.
 
 This is the closest adaptation of the Hopper reference that preserves the
 already faster H20 MXFP4 task body.  The reference dedicates loader warps and
 two math warpgroups inside a 384-thread CTA; our current task body instead
 combines loading, register dequantization and math in one self-contained
 128-thread warpgroup.  Each WG therefore owns a small named-barrier mailbox
-and alternates its static W13 stripe with acquire-visible W2 work.  A bounded
-bitmask scans only that WG's at-most-14 W2 tasks, avoiding both a global claim
+and alternates its static W13 stripe with acquire-visible activation and W2
+work.  Scheduler cursors and bounded completion masks live in shared memory,
+so they are not kept live through the large noinline GEMM helpers.  Each WG
+scans only its own small activation/W2 stripe, avoiding both a global claim
 and head-of-line waiting on an unready mblock.
 
 ### 2. Static two-CTA mblock cohorts
@@ -101,8 +105,9 @@ For each `(mblock, activation_group)`:
 2. Every split-K slice of those two tiles must finish, so the readiness count
    is `2 * SplitK`.
 3. The final split completion acquires the distributed counter's release
-   chain and becomes the group epilogue owner.
-4. That warpgroup executes eight requant tasks, one per routed BM8 row.
+   chain and release-publishes the group-ready flag.
+4. The statically assigned activation warpgroup acquire-tests that flag and
+   executes eight requant tasks, one per routed BM8 row.
 5. Its lane 0 release-increments the mblock's ready-group count by one.
 6. When all four groups are complete, one W2-ready flag is release-published;
    every statically assigned W2 task acquire-tests this flag.
@@ -115,11 +120,11 @@ numerical order.
 
 The replay-local scheduler contains:
 
-- one static W13 and W2 cursor/bitmask per warpgroup, requiring no global
-  task claim;
+- one static W13 cursor plus activation-group and W2 completion masks per
+  warpgroup, stored in shared memory and requiring no global task claim;
 - four W13 split-completion counters per possible mblock;
-- one completed-activation-group counter and one W2-ready flag per possible
-  mblock.
+- four W13 group-ready flags, one completed-activation-group counter and one
+  W2-ready flag per possible mblock.
 
 The route-preparation phase clears the scheduler slab and the existing phase-0
 whole-grid barrier publishes both route metadata and zeroed scheduler state.
@@ -129,11 +134,11 @@ L1-warmup/alternation policy, adapted so a WG never claims unavailable
 downstream work:
 
 1. issue one statically owned W13 task;
-2. scan the WG's bounded W2 bitmask for an acquire-ready mblock;
-3. alternate W13 and W2 while both exist;
-4. after exhausting local W13, drain its ready W2 tasks;
-5. only nanosleep when local W13 is exhausted and all remaining W2 mblocks
-   are not yet published.
+2. scan the WG's bounded activation and W2 masks for acquire-ready work;
+3. alternate W13 and downstream work while both exist;
+4. after exhausting local W13, drain its ready activation and W2 tasks;
+5. only nanosleep when local W13 is exhausted and all remaining downstream
+   work is not yet published.
 
 No CTA claims an unpublished task and waits on it, avoiding the
 producer-consumer cycle that requires a larger warm-up in the reference
@@ -143,11 +148,12 @@ implementation.
 
 All task-body lanes finish their ordinary global stores before the
 warpgroup's named barrier.  Lane 0 performs a GPU-scope release atomic or
-release store to publish readiness, and a second named barrier transfers the
-final counter's acquire observation to the epilogue lanes.  W2 scheduler
-lane 0 acquire-loads the mblock flag and publishes the chosen static task
-through its named-barrier mailbox.  No CTA barrier occurs inside the task
-loop.
+release store to publish readiness.  The separately assigned activation WG
+acquire-loads its group flag; its task-mailbox named barrier transfers that
+observation to all epilogue lanes without an extra post-W13 barrier.  W2
+scheduler lane 0 similarly acquire-loads the mblock flag and publishes the
+chosen static task through its named-barrier mailbox.  No CTA barrier occurs
+inside the task loop.
 
 There is no global barrier between W13, requant and W2.  The existing packed
 whole-grid phase-3 barrier remains after the terminal W2 count so all `down`
