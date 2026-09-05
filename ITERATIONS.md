@@ -9172,3 +9172,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Smoke timing:** Candidate M8 median `0.077312 ms`; the two-sample multi control was unusably noisy (`0.074528–0.188192 ms`, median `0.131360 ms`).  Candidate M128 median `0.345984 ms` versus control `0.305168 ms`, ratio `1.13375`; relative to the recent non-atomic single-kernel bracket near `0.3424 ms`, this is an initial roughly 1% regression signal.
 - **Decision:** Correctness advances, but do not select from two samples.  Run an order-balanced OFF/ON bracket in separate processes at M8/M128 with at least 40 individually cold samples per arm; reject if the direct single-kernel regression repeats.
 - **Artifact:** `bench/results/iter371_atomic_producer_combine_tp4_m8_m128_smoke_20260905.log`.
+
+## Iteration 372 — scalar producer-combine cold-L2 bracket rejection (2026-09-05)
+
+- **Purpose:** Measure producer-side scalar combine directly against the selected route-output single kernel while cancelling process/order drift.
+- **Method:** TP4 GPUs 0–3, M={8,128}, random routes, seed 20260904, process order OFF_A → ON_A → ON_B → OFF_B.  Every process used two outer batches × 20 replay-interleaved CUDA Graph samples per implementation, four warmups, and a separate excluded 256 MiB L2 clear immediately before every timed replay.  Release-arrival and assume-valid-task opt-ins were common.  OFF used BF16 route output plus terminal ordered k6 FMA; ON used producer FP32 scalar atomics plus direct local-sum packing.  Both retained exactly one global candidate kernel/rank and the same TP transport.
+- **Correctness:** All eight size/process checks passed on all ranks.  Atomic results were finite and cross-rank equal; M8 candidate cosine stayed at least `0.9999955216`, M128 at least `0.9999955292`.
+- **Direct candidate medians OFF_A / ON_A / ON_B / OFF_B:** M8 `77.680 / 77.520 / 77.536 / 77.648 us`; M128 `342.336 / 345.808 / 346.608 / 343.696 us`.
+- **Bracket result:** At M8 the atomic path is effectively tied/slightly faster: OFF average `77.664 us`, ON `77.528 us` (about `0.18%` gain, below robust-selection margin).  At M128 it is decisively slower: OFF average `343.016 us`, ON `346.208 us`, a `0.93%` regression.  Candidate/control ratios agree: OFF/ON average about `1.0559/1.0543` at M8 and `1.1413/1.1522` at M128.
+- **Conclusion:** Removing the terminal six-route reread cannot repay producer atomic contention at large M, while the small-M difference is noise-scale.  **Reject as a global implementation and keep default-off.**  This independently confirms the earlier scalar-atomic direction is not the missing 10% optimization.
+- **Artifact:** `bench/results/iter372_atomic_producer_combine_bracket_m8_m128_cold_20260905.log`.
