@@ -1,0 +1,33 @@
+Iteration 582: first TP8 M8 single-launch graph smoke
+Date: 2026-09-05
+Hardware: 8 x NVIDIA H20-3e, 78 SM each
+
+Configuration
+-------------
+M=8, H=4096, global I=2048, rank-local I=256, E=256, top-k=6
+Random routes; 43 active experts; 48 routed rows; 344 padded rows
+W13 split-K=4
+Prequantized FP8-E4M3 group-128 X; OCP MXFP4 E2M1/E8M0 weights
+CUDA Graph; 1 warmup replay; 2 measured replays
+Separate excluded 256 MiB L2 clear before every replay
+
+Result
+------
+PASS
+fused_k6_ar_mode: single_launch_tp8_multicast_push
+allreduce_ok: true
+cosine_min_rank: 0.9999921603205477
+rel_l2_max_rank: 0.003959751888606578
+finite_all_ranks: true
+
+Cold timing (smoke only)
+------------------------
+min / median / max: 0.055072 / 0.142832 / 0.230592 ms
+samples: 2
+The extreme spread makes this unsuitable for a performance claim.
+
+Interpretation
+--------------
+The runtime eight-CTA occupancy gate, the 624-CTA grid, TP8 NVLS multicast
+push protocol, CUDA Graph capture, and repeated phase-counter reuse all made
+forward progress and matched the independent local-compute plus NCCL oracle.

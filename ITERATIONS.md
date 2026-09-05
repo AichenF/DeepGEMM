@@ -13698,3 +13698,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Qualification: the 64-byte call stack is expected from the deliberately noinline TP8 communication tail and is not reported as local spill storage. The runtime occupancy query and actual persistent-grid forward progress still require a launch.
 - Decision: resource gate passes; proceed to an eight-rank graph correctness smoke test, beginning with M8 to expose collective protocol errors quickly.
 - Evidence: `bench/evidence/iter581_tp8_single_launch_cubin_resources.txt`.
+## Iteration 582 — first TP8 M8 single-launch graph smoke passes (2026-09-05)
+
+- Configuration: all eight H20 GPUs; random top-k6 routes; DeepSeek-V4-Flash H4096/I2048/E256 with TP8 rank-local I=256; prequantized FP8 activation and MXFP4 weights; selected release-arrival/assume-valid fast paths. CUDA Graph used one captured business path. The two timing samples were independently cold-L2 via an excluded 256 MiB clear.
+- Result: **PASS runtime occupancy, forward progress, graph replay, and all-rank correctness.** The host occupancy check admitted the 624-CTA grid, repeated eager/captured launches completed, and the result reports `fused_k6_ar_mode=single_launch_tp8_multicast_push`, `allreduce_ok=true`, minimum rank cosine `0.9999921603`, maximum relative L2 `0.0039597519`, and finite output on all ranks.
+- Shape/routing evidence: M8 has 48 routed rows, 43 active experts, 344 padded rows, split-K4. The fixture reports 285,212,672 W13 bytes plus scale and 142,606,336 W2 bytes plus scale per rank.
+- Timing qualification: the two-sample cold median `0.142832 ms` spans `0.055072–0.230592 ms` and is deliberately **not** a performance result; this run was only a protocol smoke test.
+- Decision: the first true TP8 one-launch execution is viable. Run all five M values with enough graph replays to validate both split-K4/split-K2 and repeated collective phase reuse.
+- Raw log: `bench/results/iter582_tp8_single_launch_m8_smoke_20260905.log`.
+- Evidence: `bench/evidence/iter582_tp8_single_launch_m8_smoke.txt`.
