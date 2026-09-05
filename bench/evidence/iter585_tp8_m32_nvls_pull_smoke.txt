@@ -1,0 +1,31 @@
+Iteration 585: TP8 M32 in-kernel NVLS-pull smoke
+Date: 2026-09-05
+
+Configuration
+-------------
+8 x H20; M32; H4096; global I2048; TP8 rank-local I256; E256; top-k6
+Random routes: 140 active experts, 192 rows, 1120 padded rows
+W13 split-K4
+One CUDA-Graph business kernel; 2 warmups; 5 measured replays
+Independent excluded 256 MiB cold-L2 clear before every measured replay
+
+Correctness/result
+------------------
+PASS
+embedded mode: single_launch_tp8_nvls_pull
+allreduce_ok: true
+cosine_min_rank: 0.9999919616896925
+rel_l2_max_rank: 0.004009581047731545
+finite_all_ranks: true
+
+Cold timing (smoke only)
+------------------------
+min / median / max: 0.121184 / 0.121600 / 0.270304 ms
+samples: 5
+
+Interpretation
+--------------
+The one-launch TP8 large-message path now crosses the former 128 KiB push
+stride boundary. Its local-combine, symmetric-pull, multicast-semaphore and
+multimem-reduce phases all make forward progress and match the independent
+local-compute plus NCCL oracle.

@@ -13724,3 +13724,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Qualification: this gate proves buildability and static residency only. The eight-rank NVLS semaphore protocol and numerical result are not accepted until a real M32 launch completes.
 - Decision: run M32 alone first to isolate the new collective protocol, then repeat the full five-M validation if it passes.
 - Evidence: `bench/evidence/iter584_tp8_nvls_pull_build_resources.txt`.
+## Iteration 585 — TP8 M32 in-kernel NVLS-pull smoke passes (2026-09-05)
+
+- Configuration: eight H20 ranks; M32/H4096/global-I2048/rank-I256/E256/top-k6; random routes; prequantized FP8 X and MXFP4 weights; one captured MegaMoE kernel; two graph warmups and five independently cold-L2 measured replays.
+- Result: **PASS.** The new large-message path completes eager execution, graph capture, repeated semaphore generations and timed replay. It reports `single_launch_tp8_nvls_pull`, `allreduce_ok=true`, minimum rank cosine `0.9999919617`, maximum relative L2 `0.0040095810`, and finite output on every rank.
+- Shape evidence: 192 routed rows, 140 active experts, 1,120 padded rows, split-K4. SGLang's comparator heuristic labels this 256 KiB payload `TWO_SHOT_PULL/GRAPH`; our embedded implementation is the explicitly reported one-shot NVLS pull.
+- Timing qualification: five-sample cold median is `0.121600 ms` with four tightly clustered samples near 0.121 ms and one 0.270304 ms outlier. This is a smoke result, not a stable baseline comparison.
+- Decision: the stride-limit replacement works at M32. Proceed to a full M8–M128 validation to cover the M64/M128 multicast range and split-K2.
+- Raw log: `bench/results/iter585_tp8_single_launch_m32_nvls_smoke_20260905.log`.
+- Evidence: `bench/evidence/iter585_tp8_m32_nvls_pull_smoke.txt`.
