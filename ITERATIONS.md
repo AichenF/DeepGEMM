@@ -10976,3 +10976,37 @@ maximum rank latency of a full CUDA-Graph replay.
   work must target the actual Hopper producer/TMA-consumer pipeline rather
   than another software replacement for the named barrier.
 - **Evidence:** `bench/evidence/iter446_restore_named_barrier_mailbox_correctness.txt`.
+
+## Iteration 447 — audit the actual Hopper native path before another rewrite
+
+- **Reference correction:** `megamoe_nvfp4_dev_m` is the Hopper SM90/H200
+  MegaMoE reference.  Direct diff against its
+  `sm90_nvfp4_mega_moe_h200_fused_body.inl` confirms that the owned
+  `v4_flash_tp_native_body.inl` already preserves the fixed two-dispatch,
+  A-loader, B-loader, and two-math-WG roles, the full/empty TMA mbarriers, and
+  the two-stage interleaved L1/L2 task mailbox.  It is not a Blackwell port.
+- **Nonportable shape assumptions:** the reference is 132-SM H200, EP8,
+  48 experts/rank, H6144/I2048/topk8 and selects BM8/16/24/64/128 by M.  TP4
+  on H20 is 78 SMs, all 256 experts/rank, H4096/I512/topk6.  Average local
+  routes/expert are only `6*M/256`; therefore the reference's large-M BM
+  choices would increase TP padding and are not copied.
+- **Current native delta:** TP-local routing uses `kNumRanks=1`, final EP
+  return is replaced by a TP collective tail, NVFP4 global scales are removed,
+  and MXFP4 E8M0 dequant is either shared-memory or register based.  The
+  experimental native path still folds route weight before W2, uses the
+  reference power-of-two intermediate quantizer, and only instantiates TP4;
+  it is not yet the exact selected operator boundary.
+- **Existing evidence:** the best native register-dequant/K128-batch TP4
+  screen is 117.184 us at M8 and 495.280 us at M128 versus 71.376/305.968 us
+  for the same-process multi-kernel control.  M128 NCU reports 168 allocated
+  registers/thread, 100 KiB shared, one 384-thread CTA/SM, only two math
+  WGs/SM, 18.78% achieved occupancy, and 55.94% no-eligible cycles.
+- **Next bounded experiment:** retain the real Hopper task pipeline and
+  BM8/BN256/BK128 register-dequant path, but opt in to 156 CTAs and lower the
+  consumer `setmaxnreg` target from 208 to 96.  The role-weighted budget is
+  31,744 registers/CTA and two 100-KiB allocations fit the H20 SM.  Compile,
+  resource, and two-block occupancy are hard gates before correctness or
+  timing.  Reject immediately on static local memory, material spills, or
+  fewer than two resident CTAs/SM.
+- **Evidence/design:**
+  `docs/plans/2026-09-05-warpgroup-interleaved-w13-w2-design.md`.

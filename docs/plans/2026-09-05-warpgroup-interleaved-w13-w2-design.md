@@ -309,3 +309,46 @@ split TMA A/B loading away from the math WGs, does not reuse a decoded weight
 tile across multiple token consumers, and does not import EP dispatch/scatter
 or NVFP4 arithmetic.  Those larger changes are justified only if the mailbox
 transport passes resource, correctness, cold-L2, and NCU gates.
+
+## 2026-09-05 direct Hopper-native audit after Iteration 446
+
+The read-only `megamoe_nvfp4_dev_m` reference is the Hopper SM90/H200 path,
+not a Blackwell implementation.  The owned experimental files
+`v4_flash_tp_native_megamoe.py` and `v4_flash_tp_native_body.inl` already
+retain its main structure nearly verbatim: two dispatch warps, separate A and
+B TMA-loader warps, two math/epilogue warpgroups, full/empty stage mbarriers,
+and a two-stage interleaved L1/L2 task mailbox.  It is therefore the correct
+place to test Hopper role specialization; recreating that topology inside the
+self-contained eight-WG path before exhausting the native resource knobs
+would duplicate known code.
+
+The direct port is not otherwise shape-equivalent.  The reference is H200
+with 132 SMs, EP8, 48 experts per rank, H=6144, I=2048, topk8, and an M-based
+BM8/16/24/64/128 heuristic.  V4 Flash TP4 runs on 78-SM H20, has all 256
+experts resident on every rank, H=4096, I/rank=512, and topk6.  Its expected
+routes per expert are only `6*M/256`, so copying the EP large-M block-M
+heuristic would substantially increase padding.  The TP adaptation also
+replaces remote expert ownership/return with local bucket formation plus one
+final TP all-reduce, removes NVFP4 global scales, and must eventually keep the
+selected route-weight-after-W2 numerical boundary.  The current native
+experiment instead folds route weight before W2, uses a power-of-two internal
+quantizer, and supports TP4 only; it is a performance/reference branch, not a
+drop-in final implementation.
+
+Measured native register-dequant resources explain the large gap: 78x384,
+168 allocated registers/thread, 100 KiB dynamic shared, one CTA/SM, two math
+WGs/SM, 18.78% achieved occupancy, and 55.94% no-eligible cycles at M128.  Its
+best screened cold-L2 result remains 117.184 us at M8 and 495.280 us at M128,
+versus the same-process multi-kernel control at 71.376 and 305.968 us.
+
+The next bounded native experiment keeps BM8/BN256/BK128, register MXFP4
+dequantization, and the exact Hopper task pipeline, but asks whether resource
+pressure rather than the framework itself is the limiting factor.  Under an
+opt-in two-CTA specialization, reduce the math-role `setmaxnreg` target from
+208 to 96 and launch 156 persistent CTAs.  The weighted register budget is
+`(2*48 + 2*64 + 8*96)*32 = 31,744` registers/CTA, or 63,488 for two CTAs,
+while two 100 KiB shared allocations fit H20's 233,472-byte SM capacity.
+Compilation must prove two-block residency and report no static local memory;
+M8/M128 full-output correctness and runtime follow only if that resource gate
+passes.  Any material dynamic spill or failure to retain two CTAs/SM rejects
+the experiment before distributed timing.
