@@ -12853,3 +12853,19 @@ maximum rank latency of a full CUDA-Graph replay.
   Hopper TMA staging and bypass only the rank-1 round-robin arithmetic.
 - **Evidence:**
   `bench/results/iter533_native_tp_local_dispatch_tp4_smoke_20260905.log`.
+## Iteration 534 — isolate rank-1 arithmetic from rejected direct copy
+
+- **Change:** split Iteration 532's combined dispatch experiment into two
+  default-off controls.  `V4_NATIVE_TP_LOCAL_DISPATCH_FASTPATH` now bypasses
+  only generic EP rank-round-robin selection; new
+  `V4_NATIVE_TP_LOCAL_DIRECT_COPY` owns the rejected synchronous `uint4`
+  pool copy and requires the first flag.  The TMA path remains selected when
+  only rank fast path is enabled.
+- **Harness:** preserve the exact failed direct-copy experiment under
+  `tp_local_dispatch` and add `tp_local_rank`, where both arms use the selected
+  barrier fast path and differ only in rank-selection arithmetic.
+- **Test/result:** local Python bytecode compilation and exact flag/macro/body/
+  JIT/A-B wiring audit **PASS**.  No CUDA build, correctness or timing is
+  claimed yet.
+- **Evidence:**
+  `bench/evidence/iter534_native_tp_local_rank_static.txt`.

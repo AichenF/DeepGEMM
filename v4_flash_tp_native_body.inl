@@ -710,7 +710,7 @@
                 const uint32_t pool_token_idx =
                     expert_pool_block_offset * BLOCK_M + token_idx_in_expert;
 
-                if constexpr (K_NATIVE_TP_LOCAL_DISPATCH_FASTPATH) {
+                if constexpr (K_NATIVE_TP_LOCAL_DIRECT_COPY) {
                     constexpr uint32_t kTokenVecs = kHidden / sizeof(uint4);
                     const auto src = input_token_buffer
                         .get_data_buffer(src_token_idx)
@@ -763,7 +763,7 @@
                               current_rank_in_expert_idx);
                     *l1_topk_weights_buffer.get_data_buffer(pool_token_idx).get_base_ptr<float>() = weight;
 
-                    if constexpr (!K_NATIVE_TP_LOCAL_DISPATCH_FASTPATH) {
+                    if constexpr (!K_NATIVE_TP_LOCAL_DIRECT_COPY) {
                         ptx::mbarrier_arrive_and_set_tx(
                             pull_mbarrier, kHidden);
                         ptx::mbarrier_wait_and_flip_phase(
@@ -780,7 +780,7 @@
                     *workspace.get_token_src_metadata_ptr(pool_token_idx) =
                         {current_rank_in_expert_idx, src_token_idx, src_topk_idx};
 
-                    if constexpr (!K_NATIVE_TP_LOCAL_DISPATCH_FASTPATH) {
+                    if constexpr (!K_NATIVE_TP_LOCAL_DIRECT_COPY) {
                         cute::tma_store_arrive();
                         ptx::tma_store_wait<0>();
                     }
