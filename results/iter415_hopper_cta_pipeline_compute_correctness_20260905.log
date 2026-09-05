@@ -1,0 +1,29 @@
+ITER415_HOPPER_CTA_PIPELINE_COMPUTE_CORRECTNESS
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+gpu=0
+source_commit=b9ccfae
+candidate=CTA-local coarse L1/requant/W2 pipeline
+route_pattern=random
+seed=20260904
+input_contract=prequantized FP8-E4M3 X plus FP32 group128 scale
+tp_collective_executed=false
+l2_policy=separate 256MiB clear before profiled launch, excluded
+reference=selected multi-kernel local down workspace
+m8.split_k=4
+m8.padded_rows=360
+m8.down_cosine=0.9999999999999999
+m8.down_rel_l2=0.0
+m8.down_finite=true
+m8.packed_generation_words_after=[2048,0,0,2048]
+m8.accepted=true
+m128.split_k=2
+m128.padded_rows=1944
+m128.down_cosine=1.0
+m128.down_rel_l2=0.0
+m128.down_finite=true
+m128.packed_generation_words_after=[2048,0,0,2048]
+m128.accepted=true
+performance=NOT_MEASURED
+ITER415_HOPPER_CTA_PIPELINE_COMPUTE_CORRECTNESS_OK

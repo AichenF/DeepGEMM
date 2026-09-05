@@ -10277,3 +10277,22 @@ maximum rank latency of a full CUDA-Graph replay.
   performance claim.  Run TP-disabled endpoint correctness next.
 - Evidence:
   `results/iter414_hopper_cta_pipeline_jit_resource_20260905.log`.
+
+## Iteration 415 — CTA-pipeline TP-disabled endpoint correctness
+
+- Date: 2026-09-05
+- Protocol: unchanged Iteration 414 binary on H20 GPU0, random routes, seed
+  20260904, prequantized FP8-E4M3 X plus FP32 group-128 scales, and TP
+  collective disabled.  After a separate excluded 256 MiB L2 clear, compare
+  every routed W2 output row against the selected multi-kernel local
+  pipeline.
+- Result: PASS bitwise at both endpoints.  M8 split-K4 has 360 padded rows,
+  cosine `0.9999999999999999`, rel-L2 `0`, finite.  M128 split-K2 has 1,944
+  padded rows, cosine `1`, rel-L2 `0`, finite.  Both finish with packed grid
+  words `[2048,0,0,2048]`, so only route phase 0 and terminal W2 phase 3 are
+  crossed globally.
+- Decision: numerical dependency mapping for CTA-batched gate/up splits,
+  fused requant and coarse W2 publication is correct.  Proceed to the same
+  TP4 M8/M128 embedded-collective cold screen used to reject Iteration 413.
+- Evidence:
+  `results/iter415_hopper_cta_pipeline_compute_correctness_20260905.log`.
