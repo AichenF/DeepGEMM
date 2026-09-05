@@ -978,6 +978,35 @@
                     constexpr uint32_t kRSAccum = 4;
                     float swap_accum[kSwapABWeightHalves][kRSAccum] = {};
                     const uint32_t packed_k_offset = col_idx * sizeof(uint32_t);
+                    uint2 cached_scale_words0[kSwapABWeightHalves];
+                    uint2 cached_scale_words1[kSwapABWeightHalves];
+
+                    if constexpr (K_NATIVE_RS_SCALE_WORD_CACHE) {
+                        // Each fused 80-byte row carries four E8M0 codes,
+                        // duplicated as [e0,e0,e1,e1,e2,e2,e3,e3].  Load the
+                        // full K128 record once instead of issuing two byte
+                        // loads for every K32 step.
+                        #pragma unroll
+                        for (uint32_t half = 0;
+                             half < kSwapABWeightHalves; ++ half) {
+                            const uint32_t packed_row0 =
+                                wg_n_idx + half * 64u + r_0;
+                            const uint32_t packed_row1 =
+                                wg_n_idx + half * 64u + r_1;
+                            const uint8_t* row_ptr0 =
+                                reinterpret_cast<const uint8_t*>(
+                                    smem_packed_b[stage_idx])
+                                + packed_row0 * B_LOAD_BYTES_PER_ROW;
+                            const uint8_t* row_ptr1 =
+                                reinterpret_cast<const uint8_t*>(
+                                    smem_packed_b[stage_idx])
+                                + packed_row1 * B_LOAD_BYTES_PER_ROW;
+                            cached_scale_words0[half] =
+                                *reinterpret_cast<const uint2*>(row_ptr0 + 64u);
+                            cached_scale_words1[half] =
+                                *reinterpret_cast<const uint2*>(row_ptr1 + 64u);
+                        }
+                    }
 
                     // The legacy decoder's named barrier also converged all
                     // four consumer warps after their independent mbarrier
@@ -1099,10 +1128,25 @@
                                 const uint32_t packed1 =
                                     *reinterpret_cast<const uint32_t*>(
                                         row_ptr1 + k * 16u + packed_k_offset);
-                                const uint32_t exponent0 =
-                                    row_ptr0[64u + k * 2u];
-                                const uint32_t exponent1 =
-                                    row_ptr1[64u + k * 2u];
+                                uint32_t exponent0;
+                                uint32_t exponent1;
+                                if constexpr (K_NATIVE_RS_SCALE_WORD_CACHE) {
+                                    const uint32_t scale_word0 = k < 2
+                                        ? cached_scale_words0[half].x
+                                        : cached_scale_words0[half].y;
+                                    const uint32_t scale_word1 = k < 2
+                                        ? cached_scale_words1[half].x
+                                        : cached_scale_words1[half].y;
+                                    exponent0 =
+                                        (scale_word0 >> ((k & 1u) * 16u))
+                                        & 0xffu;
+                                    exponent1 =
+                                        (scale_word1 >> ((k & 1u) * 16u))
+                                        & 0xffu;
+                                } else {
+                                    exponent0 = row_ptr0[64u + k * 2u];
+                                    exponent1 = row_ptr1[64u + k * 2u];
+                                }
                                 const uint2 lut0 = native_load_mxfp4_lut(
                                     exponent0, smem_mxfp4_lut);
                                 const uint2 lut1 = native_load_mxfp4_lut(

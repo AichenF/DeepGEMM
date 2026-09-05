@@ -11455,3 +11455,33 @@ maximum rank latency of a full CUDA-Graph replay.
   cleanup waiting as removable work.
 - **Evidence:**
   `bench/evidence/iter462_native_normalized_m128_ncu_analysis.txt`.
+
+## Iteration 463 — cache each fused row's complete K128 scale record
+
+- **Hypothesis/change:** every native fused-weight row already stores the four
+  K32 E8M0 codes as eight bytes
+  `[e0,e0,e1,e1,e2,e2,e3,e3]`.  Add opt-in
+  `V4_NATIVE_RS_SCALE_WORD_CACHE=1` to load one aligned `uint2` per row before
+  the four-step K128 RS loop and extract each exponent in registers.  Across
+  two 64-column halves and two RS rows this replaces sixteen byte shared loads
+  with four 8-byte loads, directly targeting Iteration-462 line 1105.  It is
+  mutually exclusive with the rejected half-tile prefetch and requires the
+  register-dequant/K128-batch path.
+- **Protocol:** physical H20 GPU1, deterministic local M={8,128}, retained
+  normalized-scale candidate with a 156x384 cooperative launch and two CTA/SM.
+  This is a correctness/resource gate only; no latency was measured.
+- **Result:** **PASS and bitwise identical**.  M8 and M128 full BF16 output
+  hashes remain respectively
+  `6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5`
+  and
+  `2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5`,
+  exactly matching Iteration 459.  Maximum magnitudes remain `55,040` and
+  `296,960`; M8 weighted FC1 cosine/relative-L2 are unchanged.  The launcher's
+  occupancy assertion also confirms at least two CTAs/SM remain admissible.
+- **Caveat:** the M128 pool-row order diagnostic is still invalid under
+  concurrent same-expert assignment and is excluded from acceptance.
+- **Decision:** numerical and coarse residency gates pass.  Submit the
+  scale-word cache to the same-process TP4 M8/M128 independently cold-L2
+  screen; inspect registers/spills only if latency is competitive.
+- **Evidence:**
+  `bench/evidence/iter463_native_rs_scale_word_cache_local_gate.txt`.

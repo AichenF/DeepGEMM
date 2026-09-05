@@ -43,6 +43,9 @@ NATIVE_RS_HALF_PREFETCH = (
 NATIVE_NORMALIZED_WEIGHT_SCALE = (
     os.environ.get("V4_NATIVE_NORMALIZED_WEIGHT_SCALE", "0") == "1"
 )
+NATIVE_RS_SCALE_WORD_CACHE = (
+    os.environ.get("V4_NATIVE_RS_SCALE_WORD_CACHE", "0") == "1"
+)
 if NATIVE_TWO_CTA_PER_SM and not NATIVE_REGISTER_DEQUANT:
     raise ValueError(
         "V4_NATIVE_TWO_CTA_PER_SM requires V4_NATIVE_REGISTER_DEQUANT=1"
@@ -56,6 +59,16 @@ if NATIVE_RS_HALF_PREFETCH and not (
 if NATIVE_NORMALIZED_WEIGHT_SCALE and not NATIVE_REGISTER_DEQUANT:
     raise ValueError(
         "V4_NATIVE_NORMALIZED_WEIGHT_SCALE requires register dequant"
+    )
+if NATIVE_RS_SCALE_WORD_CACHE and not (
+    NATIVE_REGISTER_DEQUANT and NATIVE_RS_K128_BATCH
+):
+    raise ValueError(
+        "V4_NATIVE_RS_SCALE_WORD_CACHE requires register dequant and K128 batching"
+    )
+if NATIVE_RS_SCALE_WORD_CACHE and NATIVE_RS_HALF_PREFETCH:
+    raise ValueError(
+        "V4_NATIVE_RS_SCALE_WORD_CACHE and half prefetch are exclusive"
     )
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
@@ -398,6 +411,9 @@ _CUDA = r"""
 #endif
 #ifndef K_NATIVE_NORMALIZED_WEIGHT_SCALE
 #define K_NATIVE_NORMALIZED_WEIGHT_SCALE 0
+#endif
+#ifndef K_NATIVE_RS_SCALE_WORD_CACHE
+#define K_NATIVE_RS_SCALE_WORD_CACHE 0
 #endif
 
 using namespace deep_gemm;
@@ -995,6 +1011,7 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_SKIP_CLEANUP_GRID_SYNC))
         + str(int(NATIVE_RS_HALF_PREFETCH))
         + str(int(NATIVE_NORMALIZED_WEIGHT_SCALE))
+        + str(int(NATIVE_RS_SCALE_WORD_CACHE))
     ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
@@ -1005,6 +1022,7 @@ _ext = load_inline(
         f"scg{int(NATIVE_SKIP_CLEANUP_GRID_SYNC)}_"
         f"hp{int(NATIVE_RS_HALF_PREFETCH)}_"
         f"nws{int(NATIVE_NORMALIZED_WEIGHT_SCALE)}_"
+        f"swc{int(NATIVE_RS_SCALE_WORD_CACHE)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
@@ -1031,6 +1049,7 @@ _ext = load_inline(
             "-DK_NATIVE_NORMALIZED_WEIGHT_SCALE="
             f"{int(NATIVE_NORMALIZED_WEIGHT_SCALE)}"
         ),
+        f"-DK_NATIVE_RS_SCALE_WORD_CACHE={int(NATIVE_RS_SCALE_WORD_CACHE)}",
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",
     ],

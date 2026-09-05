@@ -1,0 +1,19 @@
+Iteration 463 native RS K128 scale-word cache local correctness gate
+
+Configuration:
+- physical H20 GPU1; deterministic local M={8,128}
+- 156x384 cooperative Hopper-native kernel, two CTA/SM
+- register dequant=1, K128 batch=1, normalized weight scale=1
+- scale-word cache=1; half prefetch=0
+
+Observed output:
+NATIVE_LOCAL_RESULT {"finite": true, "l1_sf_max_abs": 0.0, "l1_weight_max_abs": 0.0, "l1_x_mismatch_bytes": 0, "m": 8, "max_abs": 55040.0, "native_l2_vs_torch_bf16": {"cosine": 0.9996428552071429, "rel_l2": 0.9522001225543986}, "native_l2_vs_torch_fp32": {"cosine": 0.9996459543840734, "rel_l2": 0.9522021639766441}, "native_l2_vs_torch_weighted_bf16": {"cosine": 0.9996428551534735, "rel_l2": 0.027105235872160963}, "output_sha256": "6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5", "workspace_bytes": 29684992}
+NATIVE_LOCAL_RESULT {"finite": true, "l1_sf_max_abs": 0.8600002527236938, "l1_weight_max_abs": 0.1904762089252472, "l1_x_mismatch_bytes": 2106894, "m": 128, "max_abs": 296960.0, "native_l2_vs_torch_bf16": {"cosine": -0.01198882084924741, "rel_l2": 1.1224458216379787}, "native_l2_vs_torch_fp32": {"cosine": -0.012009140712214058, "rel_l2": 1.1224444379174203}, "native_l2_vs_torch_weighted_bf16": {"cosine": -0.011988821713672312, "rel_l2": 10.51639407880019}, "output_sha256": "2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5", "workspace_bytes": 29684992}
+
+Acceptance:
+- M8 and M128 full BF16 hashes are bitwise identical to the admitted
+  normalized candidate from Iteration 459.
+- The launcher's active-block assertion passed, so the specialization still
+  admits at least two 384-thread CTAs per H20 SM.
+- M128 pool-row diagnostics remain excluded because concurrent same-expert
+  slot ordering is nondeterministic.
