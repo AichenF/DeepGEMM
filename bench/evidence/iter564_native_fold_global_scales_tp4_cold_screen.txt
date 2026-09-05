@@ -1,0 +1,24 @@
+Iteration 564: selected native versus folded global scales
+Date: 2026-09-05
+GPU: TP4 physical H20 GPUs 0/5/6/7
+Protocol: CUDA Graph, random routes, 2x20 samples/arm/M, 5 warmups
+Cold-L2: separate excluded 256 MiB clear before every replay
+
+M8:
+  correctness: bitwise equal, finite
+  control median: 0.09190399944782257 ms
+  candidate median: 0.09136000275611877 ms
+  control/candidate: 1.0059544294581073x
+  control batches: [0.09196799993515015, 0.09174399822950363]
+  candidate batches: [0.09166399762034416, 0.0910400003194809]
+
+M128:
+  correctness: bitwise equal, finite
+  control median: 0.3699200004339218 ms
+  candidate median: 0.36614400148391724 ms
+  control/candidate: 1.0103128794537153x
+  control batches: [0.3672640025615692, 0.3712159991264343]
+  candidate batches: [0.36537599563598633, 0.36873599886894226]
+
+Endpoint geometric speedup: 1.0081312990999929x
+Result: PASS and promising; long confirmation required.

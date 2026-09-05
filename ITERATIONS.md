@@ -13493,3 +13493,28 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter563_native_fold_global_scales_m128_local_20260905.log`
   and `bench/evidence/iter563_native_fold_global_scales_m128_local.txt`.
+
+## Iteration 564 — global-scale folding improves both TP4 endpoints
+
+- **Protocol:** selected native control versus folded-scale candidate in one
+  TP4 process on physical H20 GPUs 0/5/6/7; random M8/M128, two balanced AB/BA
+  batches x twenty rank-max samples, five alternating warmups, CUDA Graph, and
+  a separate excluded 256 MiB L2 clear immediately before every replay.  Both
+  arms include the same selected in-kernel TP communication and differ only
+  in global-scale placement.
+- **Correctness:** **PASS bitwise** at both endpoints on every rank: cosine
+  `1.0`, relative-L2 `0.0`, zero BF16 mismatches and all outputs finite.
+- **Cold-L2 result (control / folded median):** M8
+  `0.091904 / 0.091360 ms`, **0.59% lower / 1.00595x**; M128
+  `0.369920 / 0.366144 ms`, **1.02% lower / 1.01031x**.  Endpoint geometric
+  mean improves `0.184383 -> 0.182896 ms`, or `1.00813x`.
+- **Stability:** both candidate batch medians beat their corresponding control
+  regime at both M values.  One isolated M8 candidate maximum is `2.84 ms`,
+  so maxima are not used; pooled and per-batch medians retain the positive
+  direction.
+- **Decision:** promising but below the selection gate.  Run a 4x50
+  same-process confirmation (200 cold samples/arm/endpoint); select only if
+  the per-batch direction remains consistently positive.
+- **Evidence:**
+  `bench/results/iter564_native_fold_global_scales_tp4_cold_screen_20260905.log`
+  and `bench/evidence/iter564_native_fold_global_scales_tp4_cold_screen.txt`.
