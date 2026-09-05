@@ -15205,3 +15205,27 @@ maximum rank latency of a full CUDA-Graph replay.
   target.
 - **Evidence:** `evidence/iter659_w13_wave_rotation_gain.md`; raw
   `bench/results/iter659_w13_wave_rotate*_20260906.log`.
+
+## Iteration 660 — W2 complete-wave rotation is noise-scale
+
+- **Hypothesis/change:** independently apply Iteration 659's shift-13 complete-
+  wave ownership mapping to M128 W2.  The residual wave, W13, arithmetic,
+  barriers and communication were unchanged.
+- **Resource/correctness:** M128 split-K2/4 stayed at
+  `REG56 STACK32 SHARED2048 LOCAL0`, retaining nine CTAs/SM.  Random-route
+  M128 was bitwise equal to same-source multi locally (`cosine=1`, `rel_l2=0`,
+  finite), with 1,992 padded rows and packed generation wrap `[0,0,0,0]`.
+- **Cold-L2 phase protocol:** physical GPU1, seed 20260902, eight independent
+  process samples ordered OFF/ON/ON/OFF/OFF/ON/ON/OFF, each with a separate
+  excluded 256 MiB L2 clear.  W2 OFF values were
+  `104.960,106.208,106.560,106.240 us`; ON values were
+  `107.136,105.504,105.696,105.888 us`.
+- **Result:** median improves only `106.224 -> 105.792 us` (0.41%), below the
+  predeclared 1% gate, while mean reverses direction:
+  `105.992 -> 106.056 us` (ON 0.06% slower).  Aggregate phase-sum movement is
+  explained by unrelated W13 variation and is not evidence for the W2 change.
+- **Decision:** reject before TP4 and remove the complete experiment.  Source
+  returns byte-identical to Iteration 659, retaining only the independently
+  proven default-off W13 rotation.
+- **Evidence:** `evidence/iter660_w2_wave_rotation_rejection.md`; raw
+  `bench/results/iter660_w2_wave_rotate*_20260906.log`.
