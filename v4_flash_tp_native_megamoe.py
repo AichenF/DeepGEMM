@@ -80,13 +80,19 @@ NATIVE_PHASE_STAMPS = os.environ.get("V4_NATIVE_PHASE_STAMPS", "0") == "1"
 NATIVE_FOLD_GLOBAL_SCALES = (
     os.environ.get("V4_NATIVE_FOLD_GLOBAL_SCALES", "0") == "1"
 )
+NATIVE_FOLD_W13_GLOBAL_SCALE = NATIVE_FOLD_GLOBAL_SCALES or (
+    os.environ.get("V4_NATIVE_FOLD_W13_GLOBAL_SCALE", "0") == "1"
+)
+NATIVE_FOLD_W2_GLOBAL_SCALE = NATIVE_FOLD_GLOBAL_SCALES or (
+    os.environ.get("V4_NATIVE_FOLD_W2_GLOBAL_SCALE", "0") == "1"
+)
 if not 0 <= NATIVE_L1_WARMUP_WAVES <= 8:
     raise ValueError("V4_NATIVE_L1_WARMUP_WAVES must be in [0,8]")
 if NATIVE_SINGLE_L1_WARMUP_WAVE and NATIVE_L1_WARMUP_WAVES:
     raise ValueError(
         "single-wave and explicit L1 warmup controls are mutually exclusive"
     )
-if NATIVE_FOLD_GLOBAL_SCALES and not (
+if (NATIVE_FOLD_W13_GLOBAL_SCALE or NATIVE_FOLD_W2_GLOBAL_SCALE) and not (
     NATIVE_NORMALIZED_WEIGHT_SCALE and NATIVE_REGISTER_DEQUANT
 ):
     raise ValueError(
@@ -603,6 +609,12 @@ _CUDA = r"""
 #endif
 #ifndef K_NATIVE_FOLD_GLOBAL_SCALES
 #define K_NATIVE_FOLD_GLOBAL_SCALES 0
+#endif
+#ifndef K_NATIVE_FOLD_W13_GLOBAL_SCALE
+#define K_NATIVE_FOLD_W13_GLOBAL_SCALE K_NATIVE_FOLD_GLOBAL_SCALES
+#endif
+#ifndef K_NATIVE_FOLD_W2_GLOBAL_SCALE
+#define K_NATIVE_FOLD_W2_GLOBAL_SCALE K_NATIVE_FOLD_GLOBAL_SCALES
 #endif
 
 using namespace deep_gemm;
@@ -1324,6 +1336,8 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS))
         + str(int(NATIVE_PHASE_STAMPS))
         + str(int(NATIVE_FOLD_GLOBAL_SCALES))
+        + str(int(NATIVE_FOLD_W13_GLOBAL_SCALE))
+        + str(int(NATIVE_FOLD_W2_GLOBAL_SCALE))
     ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
@@ -1347,6 +1361,8 @@ _ext = load_inline(
         f"tlp{int(NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS)}_"
         f"pst{int(NATIVE_PHASE_STAMPS)}_"
         f"fgs{int(NATIVE_FOLD_GLOBAL_SCALES)}_"
+        f"fw13{int(NATIVE_FOLD_W13_GLOBAL_SCALE)}_"
+        f"fw2{int(NATIVE_FOLD_W2_GLOBAL_SCALE)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
@@ -1407,6 +1423,14 @@ _ext = load_inline(
         ),
         f"-DK_NATIVE_PHASE_STAMPS={int(NATIVE_PHASE_STAMPS)}",
         f"-DK_NATIVE_FOLD_GLOBAL_SCALES={int(NATIVE_FOLD_GLOBAL_SCALES)}",
+        (
+            "-DK_NATIVE_FOLD_W13_GLOBAL_SCALE="
+            f"{int(NATIVE_FOLD_W13_GLOBAL_SCALE)}"
+        ),
+        (
+            "-DK_NATIVE_FOLD_W2_GLOBAL_SCALE="
+            f"{int(NATIVE_FOLD_W2_GLOBAL_SCALE)}"
+        ),
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",
     ],

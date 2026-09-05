@@ -809,7 +809,7 @@
                     current_rank_in_expert_idx);
                 const auto local_sf_ptr  = l1_sf_buffer.get_base_ptr<float>();
                 float route_weight_global_scale = 1.0f;
-                if constexpr (K_NATIVE_FOLD_GLOBAL_SCALES) {
+                if constexpr (K_NATIVE_FOLD_W13_GLOBAL_SCALE) {
                     if (lane_idx == 0) {
                         route_weight_global_scale =
                             __ldg(w13_global_scale + current_expert_idx);
@@ -1089,7 +1089,8 @@
             constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
             float task_weight_global_scale = 1.0f;
             if constexpr (K_NATIVE_NORMALIZED_WEIGHT_SCALE &&
-                          !K_NATIVE_FOLD_GLOBAL_SCALES) {
+                          ((kBlockIsL2 && !K_NATIVE_FOLD_W2_GLOBAL_SCALE) ||
+                           (!kBlockIsL2 && !K_NATIVE_FOLD_W13_GLOBAL_SCALE))) {
                 if (lane_idx == 0) {
                     const float* global_scale =
                         kBlockIsL2 ? w2_global_scale : w13_global_scale;
@@ -1100,7 +1101,7 @@
                     0xffffffffu, task_weight_global_scale, 0);
             }
             float output_weight_global_scale = 1.0f;
-            if constexpr (K_NATIVE_FOLD_GLOBAL_SCALES && !kBlockIsL2) {
+            if constexpr (K_NATIVE_FOLD_W2_GLOBAL_SCALE && !kBlockIsL2) {
                 if (epilogue_warp_idx == 0 && lane_idx == 0) {
                     output_weight_global_scale =
                         __ldg(w2_global_scale + local_expert_idx);

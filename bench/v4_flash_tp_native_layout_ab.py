@@ -46,6 +46,8 @@ def parse_args() -> argparse.Namespace:
             "single_l1_warmup",
             "l1_warmup",
             "fold_global_scales",
+            "fold_w13_scale",
+            "fold_w2_scale",
             "dual_dispatch",
             "tp_local_barriers",
             "tp_local_dispatch",
@@ -80,6 +82,8 @@ def load_native_variant(
     single_l1_warmup_wave: bool = False,
     l1_warmup_waves: int = 0,
     fold_global_scales: bool = False,
+    fold_w13_scale: bool = False,
+    fold_w2_scale: bool = False,
     dual_active_dispatch: bool = False,
     tp_local_barrier_fastpath: bool = False,
     tp_local_dispatch_fastpath: bool = False,
@@ -96,6 +100,8 @@ def load_native_variant(
             "V4_NATIVE_SINGLE_L1_WARMUP_WAVE",
             "V4_NATIVE_L1_WARMUP_WAVES",
             "V4_NATIVE_FOLD_GLOBAL_SCALES",
+            "V4_NATIVE_FOLD_W13_GLOBAL_SCALE",
+            "V4_NATIVE_FOLD_W2_GLOBAL_SCALE",
             "V4_NATIVE_DUAL_ACTIVE_DISPATCH",
             "V4_NATIVE_TP_LOCAL_BARRIER_FASTPATH",
             "V4_NATIVE_TP_LOCAL_DISPATCH_FASTPATH",
@@ -113,6 +119,12 @@ def load_native_variant(
         os.environ["V4_NATIVE_L1_WARMUP_WAVES"] = str(l1_warmup_waves)
         os.environ["V4_NATIVE_FOLD_GLOBAL_SCALES"] = str(
             int(fold_global_scales)
+        )
+        os.environ["V4_NATIVE_FOLD_W13_GLOBAL_SCALE"] = str(
+            int(fold_w13_scale)
+        )
+        os.environ["V4_NATIVE_FOLD_W2_GLOBAL_SCALE"] = str(
+            int(fold_w2_scale)
         )
         os.environ["V4_NATIVE_DUAL_ACTIVE_DISPATCH"] = str(
             int(dual_active_dispatch)
@@ -225,7 +237,11 @@ def main() -> None:
         "tp_local_route_combine",
     )
     warmup_experiment = args.experiment == "l1_warmup"
-    scale_fold_experiment = args.experiment == "fold_global_scales"
+    scale_fold_experiment = args.experiment in (
+        "fold_global_scales",
+        "fold_w13_scale",
+        "fold_w2_scale",
+    )
     control_module = load_native_variant(
         "v4_native_variant_control",
         tile_tma=False,
@@ -242,7 +258,26 @@ def main() -> None:
             warmup_experiment or scale_fold_experiment
         ),
     )
-    if args.experiment == "fold_global_scales":
+    if args.experiment in ("fold_w13_scale", "fold_w2_scale"):
+        fold_w13 = args.experiment == "fold_w13_scale"
+        fold_w2 = args.experiment == "fold_w2_scale"
+        candidate_module = load_native_variant(
+            f"v4_native_variant_{args.experiment}",
+            tile_tma=False,
+            single_l1_warmup_wave=False,
+            l1_warmup_waves=0,
+            fold_global_scales=False,
+            fold_w13_scale=fold_w13,
+            fold_w2_scale=fold_w2,
+            dual_active_dispatch=False,
+            tp_local_barrier_fastpath=True,
+            tp_local_dispatch_fastpath=False,
+            tp_local_direct_copy=False,
+            tp_local_route_build=True,
+            tp_local_parallel_combine_chunks=True,
+        )
+        benchmark_name = f"native_task_vs_{args.experiment}"
+    elif args.experiment == "fold_global_scales":
         candidate_module = load_native_variant(
             "v4_native_variant_fold_global_scales",
             tile_tma=False,
@@ -446,6 +481,18 @@ def main() -> None:
                     ),
                     "candidate_fold_global_scales": (
                         candidate_module.NATIVE_FOLD_GLOBAL_SCALES
+                    ),
+                    "control_fold_w13_global_scale": (
+                        control_module.NATIVE_FOLD_W13_GLOBAL_SCALE
+                    ),
+                    "candidate_fold_w13_global_scale": (
+                        candidate_module.NATIVE_FOLD_W13_GLOBAL_SCALE
+                    ),
+                    "control_fold_w2_global_scale": (
+                        control_module.NATIVE_FOLD_W2_GLOBAL_SCALE
+                    ),
+                    "candidate_fold_w2_global_scale": (
+                        candidate_module.NATIVE_FOLD_W2_GLOBAL_SCALE
                     ),
                     "control_dual_active_dispatch": (
                         control_module.NATIVE_DUAL_ACTIVE_DISPATCH

@@ -13541,3 +13541,22 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter565_native_fold_global_scales_tp4_cold_long_20260905.log`
   and `bench/evidence/iter565_native_fold_global_scales_tp4_cold_long.txt`.
+
+## Iteration 566 — split W13 and W2 global-scale fold experiments
+
+- **Change:** retain the combined `V4_NATIVE_FOLD_GLOBAL_SCALES` evidence flag
+  and add independent default-off `V4_NATIVE_FOLD_W13_GLOBAL_SCALE` and
+  `V4_NATIVE_FOLD_W2_GLOBAL_SCALE` controls.  Device conditions now remove
+  only the corresponding phase's task-level scale load/multiply, while the
+  other phase remains byte-for-byte on the selected path.
+- **Harness:** add same-process `fold_w13_scale` and `fold_w2_scale`
+  experiments.  Control and candidate share selected route/barrier/combine,
+  automatic two-wave scheduling, identical weights/data and embedded TP
+  collective.  Metadata exposes both resolved component flags.
+- **Static result:** **PASS.**  Python bytecode/AST checks pass for the native
+  launcher, A/B harness and local checker; all component environment, macro,
+  JIT hash/name/cflag, phase condition and metadata sites are present.  No GPU
+  launch or performance conclusion is made.
+- **Decision:** test W13-only first at M8/M128.  Run W2-only only if needed to
+  attribute the combined candidate's mixed M128 result.
+- **Evidence:** `bench/evidence/iter566_native_split_scale_fold_static.txt`.

@@ -1,0 +1,18 @@
+Iteration 566: independent native W13/W2 scale-fold static verification
+Date: 2026-09-05
+
+Controls:
+- V4_NATIVE_FOLD_GLOBAL_SCALES=1: legacy experiment, enables both components.
+- V4_NATIVE_FOLD_W13_GLOBAL_SCALE=1: route-side W13 fold only.
+- V4_NATIVE_FOLD_W2_GLOBAL_SCALE=1: W13-epilogue W2 fold only.
+
+Checks:
+  python3 -m py_compile v4_flash_tp_native_megamoe.py \
+    bench/v4_flash_tp_native_layout_ab.py \
+    bench/test_v4_flash_tp_native_local.py
+  ast.parse on all three Python files
+  exact grep of component configuration, device phase predicates, JIT
+  identity, local expected-scale condition, A/B choices and metadata
+
+Result: PASS
+GPU launches: none
