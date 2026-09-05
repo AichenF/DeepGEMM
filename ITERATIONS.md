@@ -11401,3 +11401,23 @@ maximum rank latency of a full CUDA-Graph replay.
   the formal all-five-M/TP8 budget yet.
 - **Evidence:**
   `bench/evidence/iter460_native_normalized_weight_scale_tp4_cold_screen.txt`.
+
+## Iteration 461 — capture the retained normalized-native M128 profile
+
+- **Purpose/source:** no kernel change after the selected Iteration-460 gain.
+  Capture the normalized-scale/arithmetic-LUT Hopper-native body at local M128
+  so its stalls can be compared directly with the unnormalized two-CTA report
+  from Iteration 455.
+- **Protocol:** physical H20 GPU1, M128, caller-provided FP8-E4M3 X plus FP32
+  group-128 scales, register dequant, K128 batching and 156x384 cooperative
+  launch.  Nsight Compute targets only
+  `v4_flash_tp4_native_megamoe_impl`, applies cache control `all`, and collects
+  SpeedOfLight, memory, scheduler, warp-state, occupancy, launch, instruction
+  and source-counter sections over 21 replay passes.
+- **Result:** **PASS capture**.  The synchronized profile-only marker printed,
+  all passes completed, and NCU wrote the report normally.  No performance or
+  bottleneck claim is made in this capture iteration; import it read-only and
+  commit a separate analysis before changing source.
+- **Evidence:**
+  `bench/evidence/iter461_native_normalized_two_cta_m128_ncu_capture.txt` and
+  `results/iter461_native_normalized_two_cta_m128_profile.ncu-rep`.

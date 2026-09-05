@@ -1,0 +1,18 @@
+==PROF== Connected to process 574351 (/usr/bin/python3.12)
+==PROF== Profiling "void deep_gemm::v4_flash_tp4_native_megamoe_impl<(int)512>(void *, int *, unsigned int, deep_gemm::layout::SymBuffer<(unsigned int)1>, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, const float *, const float *, __nv_bfloat16 *, unsigned int *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, __nv_bfloat16 *, const unsigned char *, unsigned char *, unsigned char *, int, long, bool)": 0%....50%....100% - 21 passes
+==PROF== Connected to process 574427 (/usr/bin/python3.12)
+==PROF== Connected to process 574425 (/usr/bin/python3.12)
+NATIVE_LOCAL_PROFILE_ONLY {"m": 128, "synchronized": true}
+==PROF== Disconnected from process 574351
+==PROF== Disconnected from process 574425
+==PROF== Disconnected from process 574427
+==PROF== Report: /lustre/raplab/client/xutingz/fac/DeepGEMM_tp/results/iter461_native_normalized_two_cta_m128_profile.ncu-rep
+
+ITER461_CAPTURE_SUMMARY
+- Target: retained Iteration-460 normalized-scale Hopper-native kernel, local
+  M128 on physical H20 GPU1.
+- NCU cache control: all.
+- Sections: SpeedOfLight, MemoryWorkloadAnalysis, SchedulerStats,
+  WarpStateStats, Occupancy, LaunchStats, InstructionStats, SourceCounters.
+- Result: target kernel captured successfully over 21 passes; defer all metric
+  and causal conclusions until a read-only report import.
