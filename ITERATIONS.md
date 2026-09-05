@@ -14621,3 +14621,31 @@ maximum rank latency of a full CUDA-Graph replay.
   pending timing.
 - **Evidence:** `evidence/iter639_w13_compact_persistent_m128_compute.md`;
   raw log `bench/results/iter639_w13_compact_persistent_m128_compute.log`.
+
+## Iteration 640 — paired TP4 M128 rejects compact-W13 persistent state
+
+- **Protocol:** selected production one-launch control versus the otherwise
+  identical compact-W13 persistent candidate in one TP4 process on physical
+  GPUs 0/5/6/7.  Random M128 routes, three batches x fifty samples per arm
+  after six alternating warmups, CUDA Graph, per-sample A/B then B/A order,
+  rank-max timing and an independent excluded 256 MiB L2 clear before every
+  replay.  Both timed graphs include the complete one-kernel MegaMoE and
+  embedded P2P two-shot TP all-reduce.
+- **Correctness:** **PASS bitwise on all ranks**: relative L2 `0.0`, maximum
+  absolute difference `0.0`, all finite.
+- **Cold-L2 latency (control / candidate):** control
+  `0.344064 / 0.355696 / 0.539520 ms`; candidate
+  `0.348864 / 0.360960 / 0.368640 ms` min/median/max.  The candidate is
+  **1.48% slower** by pooled median (`control/candidate = 0.985417x`).
+- **Stability:** every candidate batch loses by several microseconds:
+  `0.351456 > 0.346800`, `0.361488 > 0.356784`, and
+  `0.363488 > 0.357504 ms`.  The control maximum has an isolated outlier,
+  which does not influence the pooled median or any paired-batch direction.
+- **Interpretation/decision:** preserving the compact call and nine-CTA
+  admission does not rescue task-state reuse.  Alternating metadata and
+  mbarrier generation bookkeeping cost more than repeated per-task
+  initialization even across five to six long-K W13 tasks per CTA.
+  **Reject and keep default-off.**  This closes persistent-state reuse for
+  both individually isolated W13 and W2 as well as the older joint path.
+- **Evidence:** `evidence/iter640_w13_compact_persistent_tp4_m128_paired_cold.md`;
+  raw log `bench/results/iter640_w13_compact_persistent_tp4_m128_paired_cold.log`.
