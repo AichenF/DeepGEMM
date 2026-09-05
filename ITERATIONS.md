@@ -12469,3 +12469,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - Stability: the two per-batch medians agree within 0.5% for every M. Per-replay maxima contain isolated interference outliers and are not used to infer speedup.
 - Decision: reject the flag pair as a path to the 10% win. It preserves the current flat-kernel regime but remains slower at all five M. Continue from the flat kernel and target cold-weight issue/synchronization rather than CTA-local W13 rendezvous.
 - Evidence: `results/iter504_flat_best_tp4_allm_short_20260905.log`.
+## Iteration 505 — compose whole-W13 and whole-W2 phase outlines (2026-09-05)
+
+- Hypothesis: outlining both complete GEMM phases together can shorten the monolithic entry's cross-phase register lifetime enough to admit the standalone-like 9-CTA/SM M128 occupancy; each outline is called once per CTA, so this tests a composition that the prior one-phase experiments did not cover.
+- Change: allow `V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE=1` and `V4_SINGLE_LAUNCH_W2_PHASE_NOINLINE=1` together with the M128 bound-9/dynamic-route-smem specialization and `V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS=1`. Template the W13 phase helper on the proven valid-mblock invariant so both outlined GEMM loops retain the selected guard deletion. All defaults remain unchanged.
+- Static verification: `python3 -m py_compile v4_flash_tp_wgmma.py` passed.
+- Decision: proceed to a fresh JIT/cubin resource gate. Reject before performance testing unless the M128 entry admits exactly 9 CTAs/SM without fixed local allocation or a material spill/stack increase.

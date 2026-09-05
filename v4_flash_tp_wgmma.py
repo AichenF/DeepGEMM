@@ -382,6 +382,9 @@ SINGLE_LAUNCH_W13_PHASE_NOINLINE = (
 SINGLE_LAUNCH_W2_PHASE_NOINLINE = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PHASE_NOINLINE", "0") == "1"
 )
+SINGLE_LAUNCH_GEMM_PHASES_NOINLINE = (
+    SINGLE_LAUNCH_W13_PHASE_NOINLINE and SINGLE_LAUNCH_W2_PHASE_NOINLINE
+)
 SINGLE_LAUNCH_MIN_BLOCKS = int(
     os.environ.get("V4_SINGLE_LAUNCH_MIN_BLOCKS", "8")
 )
@@ -747,7 +750,10 @@ SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS = (
 if SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS and (
     SINGLE_LAUNCH_SCHEDULE != 0
     or SINGLE_LAUNCH_NOINLINE_GEMM
-    or SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or (
+        SINGLE_LAUNCH_W13_PHASE_NOINLINE
+        and not SINGLE_LAUNCH_GEMM_PHASES_NOINLINE
+    )
     or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
     or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
     or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
@@ -764,7 +770,10 @@ if SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS and (
     or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
     or SINGLE_LAUNCH_HIERARCHICAL_GRID
     or SINGLE_LAUNCH_COOPERATIVE_GRID
-    or SINGLE_LAUNCH_M128_BOUND9
+    or (
+        SINGLE_LAUNCH_M128_BOUND9
+        and not SINGLE_LAUNCH_GEMM_PHASES_NOINLINE
+    )
 ):
     raise ValueError(
         "V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS requires the isolated "
@@ -842,7 +851,10 @@ if SINGLE_LAUNCH_W13_PHASE_NOINLINE and (
     or SINGLE_LAUNCH_CLUSTER_W13_ACT
     or SINGLE_LAUNCH_ACT_W2_COHORT
     or SINGLE_LAUNCH_BALANCED_WORKERS
-    or SINGLE_LAUNCH_M128_BOUND9
+    or (
+        SINGLE_LAUNCH_M128_BOUND9
+        and not SINGLE_LAUNCH_GEMM_PHASES_NOINLINE
+    )
     or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
     or SINGLE_LAUNCH_COOPERATIVE_GRID
     or SINGLE_LAUNCH_HIERARCHICAL_GRID
@@ -850,7 +862,10 @@ if SINGLE_LAUNCH_W13_PHASE_NOINLINE and (
     or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
     or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
     or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
-    or SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM
+    or (
+        SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM
+        and not SINGLE_LAUNCH_GEMM_PHASES_NOINLINE
+    )
     or SINGLE_LAUNCH_MIN_BLOCKS != 8
     or WOUT != 128
     or not COMPACT_INTERLEAVED_SCALE
@@ -1077,7 +1092,6 @@ if SINGLE_LAUNCH_W2_PHASE_NOINLINE and (
     or SINGLE_LAUNCH_MIN_BLOCKS != 8
     or SINGLE_LAUNCH_CTAS_PER_SM != 8
     or SINGLE_LAUNCH_NOINLINE_GEMM
-    or SINGLE_LAUNCH_W13_PHASE_NOINLINE
     or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
     or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
     or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
@@ -3205,7 +3219,7 @@ __device__ __noinline__ void single_launch_w13_gemm_task(
 // per CTA for the entire W13 phase.  Keeping the grid-stride loop and the
 // route GEMM body together lets ptxas optimize the hot task-to-task path while
 // shortening the monolithic kernel's cross-phase live ranges.
-template <int SplitK>
+template <int SplitK, bool AssumeValidMblock>
 __device__ __noinline__ void single_launch_w13_gemm_phase(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -3222,7 +3236,9 @@ __device__ __noinline__ void single_launch_w13_gemm_phase(
         const uint2* __restrict__ global_lut,
         int max_routes, int cta, int ctas, int tasks) {
     for (int task = cta; task < tasks; task += ctas) {
-        route_gemm_task<4096, 1024, SplitK, true>(
+        route_gemm_task<
+            4096, 1024, SplitK, true, 0, false, false, false, -1,
+            false, 0, AssumeValidMblock>(
             tma_weight, tma_weight_scale,
             weight, weight_scale, weight_global_scale,
             activation, activation_scale,
@@ -7441,7 +7457,8 @@ void tp4_megamoe_single_launch_kernel(
                         __syncthreads();
                     }
                 } else if constexpr (kSingleLaunchW13PhaseNoInline) {
-                    single_launch_w13_gemm_phase<SplitK>(
+                    single_launch_w13_gemm_phase<
+                        SplitK, kSingleLaunchAssumeValidGemmTasks>(
                         &w13_tma_weight, &w13_tma_weight_scale,
                         w13, s13, g13, qx, x_scale,
                         sorted_ids, expert_ids, num_tokens_padded,
