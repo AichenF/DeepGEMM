@@ -14793,3 +14793,30 @@ maximum rank latency of a full CUDA-Graph replay.
   route seed before attributing the structural gap.
 - **Evidence:** `bench/results/iter646_multi_m128_stage_cold.log` and
   `evidence/iter646_multi_m128_stage_cold.md`.
+
+## Iteration 647 — production one-kernel M128 cold-L2 phase profile
+
+- **Protocol:** H20 physical GPU1, production TP4 one-kernel defaults plus
+  diagnostic device phase stamps, M128 random routes/seed 20260902, 1,992
+  padded rows and split-K2.  Communication was disabled only for local phase
+  isolation.  Twelve independent measured launches each received a separate
+  excluded 256 MiB L2 clear.
+- **Correctness:** all twelve complete routed W2 outputs were bitwise equal to
+  the independent same-source multi-kernel reference: cosine 1.0, relative
+  L2 0.0 and finite output.
+- **One-kernel phase min/median/max:** route
+  `3.904/4.416/4.576 us`; W13 `202.048/203.056/205.856 us`;
+  activation/requant `6.304/6.464/6.624 us`; W2
+  `106.432/107.200/108.448 us`.  Per-sample four-phase sums are
+  `319.488/321.440/323.744 us`.
+- **Same-GPU diagnostic versus Iteration 646:** one-kernel saves 2.816 us in
+  route and 1.632 us in requant, but loses 15.472 us in W13 and 8.960 us in
+  W2.  Thus the persistent GEMM phases add 24.432 us and dominate the net
+  roughly 20 us local deficit; W13 is about 63% of that positive GEMM
+  penalty.  This is phase localization, not a same-process distributed
+  latency verdict.
+- **Decision:** focus the next structural design on persistent W13 execution;
+  route/requant tuning cannot plausibly deliver the requested 10%.  Keep
+  paired TP4 cold-L2 CUDA Graph timing as the selection gate.
+- **Evidence:** `bench/results/iter647_one_m128_phase_cold.log` and
+  `evidence/iter647_one_m128_phase_cold.md`.
