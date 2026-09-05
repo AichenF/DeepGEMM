@@ -14713,3 +14713,31 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter643_w13_compact_split_major_tp4_m128_paired_cold.log`
   and `evidence/iter643_w13_compact_split_major_harness_failure.md`.
+
+## Iteration 644 — compact-W13 split-major loses TP4 M128 cold-L2 gate
+
+- **Protocol:** TP4 physical H20 GPUs 0,5,6,7; random-route M128 with seed
+  20260902; selected production one-launch control versus the same kernel
+  with only `V4_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS=1`.  Five outer
+  batches x thirty samples give 150 samples per arm after six alternating
+  warmups.  Every A/B then B/A CUDA-Graph replay receives its own separate
+  excluded 256 MiB L2 clear, and timing is the maximum across ranks.  Each
+  graph includes the complete MegaMoE business kernel and embedded P2P
+  two-shot TP all-reduce.
+- **Correctness:** PASS bitwise on every rank.  Cross-arm relative L2 and
+  maximum absolute difference are both zero; output is finite.
+- **Latency:** production control min/median/max is
+  `0.344640/0.359328/0.493248 ms`; split-major candidate is
+  `0.344992/0.361888/0.375776 ms`.  Control/candidate is `0.992926x`, so the
+  candidate is 0.71% slower by pooled median.
+- **Stability:** control batch medians are
+  `[0.346560,0.346656,0.367264,0.368000,0.367424] ms`; candidate medians are
+  `[0.347744,0.348016,0.367248,0.369104,0.367808] ms`.  Candidate loses four
+  batches; its only nominal win is 0.016 microseconds and is timer noise.
+- **Decision:** reject and retain the option default-off.  This also confirms
+  the historical standalone result: split-major activation locality does not
+  repay its remap/order effects in the selected persistent M128 grid.  Do not
+  expand it to other M values.
+- **Evidence:**
+  `bench/results/iter644_w13_compact_split_major_tp4_m128_paired_cold.log`
+  and `evidence/iter644_w13_compact_split_major_tp4_m128_paired_cold.md`.
