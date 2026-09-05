@@ -11785,3 +11785,27 @@ maximum rank latency of a full CUDA-Graph replay.
   graph validation.
 - **Evidence:**
   `bench/evidence/iter475_split_weight_scale_tma_m8_local_gate.txt`.
+
+## Iteration 476 — split TMA fails the deterministic M128 numerical gate
+
+- **Candidate/protocol:** unchanged committed Iteration-475 split-weight/scale
+  candidate on physical H20 GPU1, deterministic local M128, with normalized
+  scale, register dequant, K128 batching and two CTA/SM.  This extends the
+  bitwise M8 gate across all 256 experts and many scheduler waves before any
+  TP communication or latency test.
+- **Result:** **FAIL correctness.**  The kernel completes and the output is
+  finite, but weighted FC1 cosine is `-0.0094879890`, relative-L2 is
+  `11.90208237`, maximum output magnitude is `296,960`, intermediate FP8 has
+  `1,501,062` mismatched bytes, activation-scale maximum absolute error is
+  `0.86000025`, and the full output hash differs from the selected control.
+- **Interpretation:** the split source mapping is not proven beyond the M8
+  route subset.  M8's deterministic routes touch only the first 48 experts;
+  M128 spans all experts and enough task waves to expose either a scale outer
+  index/layout error or a two-TMA stage-reuse synchronization error.  This is
+  not admissible as numerical noise.
+- **Decision:** reject performance testing and keep the candidate default-off.
+  Preserve the exact failure, then localize by expert/range and compare the
+  transformed scale records against their canonical source before changing
+  CUDA synchronization.
+- **Evidence:**
+  `bench/evidence/iter476_split_weight_scale_tma_m128_local_failure.txt`.

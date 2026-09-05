@@ -1,0 +1,18 @@
+ITERATION 476 — split weight/scale TMA local M128 correctness failure
+
+Configuration:
+  physical H20 GPU1; deterministic local M128
+  V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA=1
+  normalized scale + register dequant + K128 batch + two CTA/SM
+
+Observed NATIVE_LOCAL_RESULT:
+  finite=true
+  max_abs=296960.0
+  l1_x_mismatch_bytes=1501062
+  l1_sf_max_abs=0.8600002527236938
+  l1_weight_max_abs=0.1904762089252472
+  weighted_fc1_cosine=-0.009487988973632976
+  weighted_fc1_rel_l2=11.902082372226797
+  output_sha256=2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5
+
+Verdict: FAIL.  Do not benchmark latency; candidate remains default-off.
