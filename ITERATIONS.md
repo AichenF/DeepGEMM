@@ -12674,3 +12674,27 @@ maximum rank latency of a full CUDA-Graph replay.
   should be used as the runtime gate.
 - **Evidence:**
   `bench/results/iter525_flat_default_jit_repair_20260905.log`.
+## Iteration 526 — dual active dispatch is bitwise-correct but neutral
+
+- **Candidate/protocol:** selected Hopper-native two-CTA kernel versus the
+  otherwise identical `V4_NATIVE_DUAL_ACTIVE_DISPATCH=1` module in one TP4
+  process on physical GPUs 0/5/6/7.  Random M8/M128, two balanced whole-batch
+  AB/BA rounds x two rank-max samples, two alternating warmups, CUDA Graph,
+  and a separate excluded 256 MiB L2 clear before every replay.
+- **Correctness:** **PASS bitwise** at both endpoints across all TP ranks:
+  minimum cosine is at least `0.9999999999999998`, maximum relative L2 is
+  `0.0`, BF16 mismatches are zero and all outputs are finite.
+- **Smoke latency (one-warp control / two-warp candidate median):** M8
+  `0.107568/0.107744 ms`, candidate `0.16%` slower; M128
+  `0.384736/0.382688 ms`, candidate `0.53%` faster.  Endpoint geometric mean
+  changes `0.203434 -> 0.203057 ms`, only `0.19%` nominal gain.  Four-sample
+  batch medians drift and are not selection-quality evidence.
+- **Interpretation/decision:** reject/default-off without a long window.  The
+  reference-derived second dispatch warp changes route-pull parallelism but
+  misses the predeclared ~3% endpoint gate by an order of magnitude and does
+  not improve both endpoints.  This rules out dispatch-warp count as the
+  material native gap.  Proceed to the structural TP-local change: remove the
+  inherited rank-1 EP self-pull and slot-scatter/combine while retaining the
+  persistent W13/W2 pipeline.
+- **Evidence:**
+  `bench/results/iter526_native_dual_dispatch_tp4_smoke_20260905.log`.
