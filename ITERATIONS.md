@@ -10144,3 +10144,24 @@ maximum rank latency of a full CUDA-Graph replay.
   followed by TP-disabled all-route correctness at M8/M128.
 - Evidence:
   `results/iter408_hopper_wg_dag_jit_compile_20260905.log`.
+
+## Iteration 409 — Hopper warpgroup-DAG cubin resource gate
+
+- Date: 2026-09-05
+- Method: inspect the exact Iteration 408 extension with
+  `cuobjdump --dump-resource-usage`; no source change or kernel launch occurs
+  in this iteration.  Audit every instantiated single-launch token/split-K
+  specialization, including the selected M8 split-K4 and M128 split-K2
+  endpoints.
+- Result: all seven single-launch specializations use 64 registers/thread,
+  a 32-byte stack, 4,096 bytes static shared memory and zero declared local
+  bytes.  Dynamic shared memory remains 147,456 bytes for eight private
+  route-task slabs.  The scheduler therefore stays at the hard 64-register
+  ceiling but does not recreate Iteration 399's 48-byte entry stack.
+- Decision: resource gate PASS.  The no-inline W13/requant/W2 wrappers achieve
+  their intended liveness isolation, and static plus dynamic shared memory
+  remains compatible with the required one 1024-thread CTA per H20 SM.
+  Runtime occupancy and numerical correctness are still unproven; launch
+  TP-disabled M8/M128 next before any timing.
+- Evidence:
+  `results/iter409_hopper_wg_dag_resource_audit_20260905.log`.
