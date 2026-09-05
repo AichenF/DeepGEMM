@@ -12263,3 +12263,21 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Decision:** retain for immediate cubin resource inspection; reject before
   execution if the main specializations exceed 64 registers, declare local
   memory/material spills, or lose one-CTA-per-SM residency.
+
+## Iteration 495 — CTA-local W13 cubin passes the static resource gate
+
+- **Artifact:** JIT module
+  `v4tp_5af574d261d377b314df_v178mspec.so` from Iteration 494.
+- **Inspection:** `cuobjdump -res-usage`, demangled and restricted to
+  `tp4_megamoe_single_launch_kernel` specializations.
+- **Selected specializations:** split-K=4 M8/M16/M32 each use **64 registers,
+  48-byte stack, 3072-byte static shared memory, and 0 local memory**;
+  split-K=2 M64/M128 each use **64 registers, 48-byte stack, 4096-byte static
+  shared memory, and 0 local memory**.  The unused alternate M64/M128
+  instantiations have the same respective split-K resource envelopes.
+- **Result:** **PASS** the declared gate: no register increase beyond 64 and
+  no local-memory allocation/spill slab.  Dynamic shared memory remains the
+  existing eight 18,432-byte WG slabs (147,456 bytes); the launcher's runtime
+  occupancy assertion still has to prove exactly one resident CTA/SM.
+- **Decision:** admit the candidate to the smallest single-GPU progress,
+  occupancy, and full-output correctness checks before any TP4 launch.
