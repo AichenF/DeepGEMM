@@ -1941,7 +1941,7 @@ __device__ __forceinline__ void route_gemm_task(
     static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 8);
     static_assert(IndependentTaskWGs == 1
                   || (!DualWgW13 && !PersistentState && !kHalfWgmma
-                      && !SharedPartial && !PublishW2Progress
+                      && !PublishW2Progress
                       && !BulkReduceW2 && !AtomicCombineW2
                       && !kW2CoalescedStore),
                   "independent WGs require isolated full-N route tasks");
@@ -3976,6 +3976,169 @@ __device__ __forceinline__ void reduce_swiglu_quant_task(
 // bodies.  The Hopper EP MegaMoE uses role-specialized loops for the same
 // purpose; this H20 path instead gives each of the eight 128-thread groups a
 // private task body and named barrier.
+// Named barriers 1..8 remain private to the independent WGMMA warpgroups.
+// Barrier 9 joins either all eight warpgroups (split-K=4) or cohort 0's four
+// warpgroups (split-K=2); barrier 10 independently joins split-K=2 cohort 1.
+// Use the non-aligned PTX form because the two split-K=2 cohorts execute in
+// distinct, WG-uniform control-flow regions.
+template <int SplitK>
+__device__ __forceinline__ void cta_local_w13_cohort_sync(int cohort) {
+    static_assert(SplitK == 2 || SplitK == 4);
+    if constexpr (SplitK == 4) {
+        asm volatile("barrier.sync 9, 1024;" ::: "memory");
+    } else {
+        const int barrier_id = 9 + cohort;
+        asm volatile(
+            "barrier.sync %0, 512;" :: "r"(barrier_id) : "memory");
+    }
+}
+
+// Reduce the 2*SplitK per-WG 8x128 W13 partial tiles directly from the CTA's
+// dynamic-smem slabs.  Only the first WG of a cohort calls this helper.  Its
+// completed gate split is dead, so it doubles as activation scratch across
+// the two private WG barriers needed for group-scale reduction and FP8 write.
+template <int SplitK>
+__device__ __noinline__ void single_launch_cta_local_activation_task(
+        uint8_t* dynamic_smem,
+        __nv_bfloat16* __restrict__ activation,
+        uint8_t* __restrict__ qactivation,
+        float* __restrict__ activation_scale,
+        const int32_t* __restrict__ sorted_ids,
+        const int32_t* __restrict__ route_to_sorted,
+        const int32_t* __restrict__ topk_ids,
+        const float* __restrict__ g2,
+        int routes, int mblock, int activation_group, int cohort) {
+    static_assert(SplitK == 2 || SplitK == 4);
+    constexpr int kIndependentTaskWGs = 8;
+    constexpr int kIntermediate = 512;
+    constexpr int kGroupsPerRoute = kIntermediate / 128;
+    constexpr int kRoutesPerMblock = 8;
+    constexpr int kWGsPerCohort = 2 * SplitK;
+    constexpr int kCohorts = kIndependentTaskWGs / kWGsPerCohort;
+    static_assert(kIndependentTaskWGs % kWGsPerCohort == 0);
+
+    const int leader_wg = cohort * kWGsPerCohort;
+    const int local_tid = threadIdx.x & 127;
+    const int warp = local_tid >> 5;
+    const int lane = local_tid & 31;
+    const int column = activation_group * 128 + local_tid;
+    float* scratch = reinterpret_cast<float*>(
+        dynamic_smem + leader_wg * kRouteTaskDynamicBytes);
+
+    __shared__ float warp_max_storage[kCohorts][kRoutesPerMblock][4];
+    __shared__ float group_scale_storage[kCohorts][kRoutesPerMblock];
+    float (*warp_max)[4] = warp_max_storage[cohort];
+    float* group_scale = group_scale_storage[cohort];
+
+    #pragma unroll 1
+    for (int route_slot = 0; route_slot < kRoutesPerMblock;
+         ++route_slot) {
+        const int route = __ldg(
+            sorted_ids + mblock * kRoutesPerMblock + route_slot);
+        const bool valid = static_cast<unsigned>(route)
+            < static_cast<unsigned>(routes);
+        float gate = 0.0f;
+        float up = 0.0f;
+        #pragma unroll
+        for (int split = 0; split < SplitK; ++split) {
+            const float* gate_partial = reinterpret_cast<const float*>(
+                dynamic_smem
+                + (leader_wg + split) * kRouteTaskDynamicBytes);
+            const float* up_partial = reinterpret_cast<const float*>(
+                dynamic_smem
+                + (leader_wg + SplitK + split)
+                    * kRouteTaskDynamicBytes);
+            const int partial_index = route_slot * 128 + local_tid;
+            gate += gate_partial[partial_index];
+            up += up_partial[partial_index];
+        }
+        gate = __bfloat162float(__float2bfloat16(gate));
+        up = __bfloat162float(__float2bfloat16(up));
+        const float silu = gate / (1.0f + __expf(-gate));
+        const __nv_bfloat16 activation_bf16 =
+            __float2bfloat16(silu * up);
+        const float value = valid
+            ? __bfloat162float(activation_bf16) : 0.0f;
+        scratch[route_slot * 128 + local_tid] = value;
+        if (valid && activation != nullptr) {
+            activation[static_cast<int64_t>(route) * kIntermediate
+                       + column] = activation_bf16;
+        }
+
+        float absmax = fabsf(value);
+        #pragma unroll
+        for (int delta = 16; delta > 0; delta >>= 1) {
+            absmax = fmaxf(
+                absmax,
+                __shfl_down_sync(0xffffffffu, absmax, delta));
+        }
+        if (lane == 0)
+            warp_max[route_slot][warp] = absmax;
+    }
+    independent_wg_sync<kIndependentTaskWGs>(leader_wg);
+
+    if (warp == 0) {
+        const int route_slot = lane >> 2;
+        const int source_warp = lane & 3;
+        float absmax = warp_max[route_slot][source_warp];
+        absmax = fmaxf(
+            absmax, __shfl_down_sync(0xffffffffu, absmax, 2, 4));
+        absmax = fmaxf(
+            absmax, __shfl_down_sync(0xffffffffu, absmax, 1, 4));
+        if (source_warp == 0) {
+            const int route = __ldg(
+                sorted_ids + mblock * kRoutesPerMblock + route_slot);
+            const float base_scale =
+                fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
+            group_scale[route_slot] = base_scale;
+            if (static_cast<unsigned>(route)
+                    < static_cast<unsigned>(routes)) {
+                float output_scale = base_scale;
+                if constexpr (kW2FoldGlobalScale) {
+                    const int expert = __ldg(topk_ids + route);
+                    output_scale *= __ldg(g2 + expert);
+                }
+                if constexpr (kW2MblockScale) {
+                    const int sorted_position =
+                        __ldg(route_to_sorted + route);
+                    const int sorted_mblock = sorted_position >> 3;
+                    const int sorted_slot = sorted_position & 7;
+                    activation_scale[
+                        (sorted_mblock * kGroupsPerRoute
+                         + activation_group) * kRoutesPerMblock
+                        + sorted_slot] = output_scale;
+                } else {
+                    activation_scale[
+                        route * kGroupsPerRoute + activation_group] =
+                            output_scale;
+                }
+            }
+        }
+    }
+    independent_wg_sync<kIndependentTaskWGs>(leader_wg);
+
+    #pragma unroll 1
+    for (int route_slot = 0; route_slot < kRoutesPerMblock;
+         ++route_slot) {
+        const int route = __ldg(
+            sorted_ids + mblock * kRoutesPerMblock + route_slot);
+        if (static_cast<unsigned>(route)
+                < static_cast<unsigned>(routes)) {
+            const int sorted_position =
+                (kW2SortedAct || kW2MblockScale)
+                ? __ldg(route_to_sorted + route) : route;
+            const int quantized_row =
+                kW2SortedAct ? sorted_position : route;
+            const float value = scratch[route_slot * 128 + local_tid];
+            qactivation[
+                static_cast<int64_t>(quantized_row) * kIntermediate
+                + column] =
+                    __nv_fp8_e4m3(value / group_scale[route_slot]).__x;
+        }
+    }
+    independent_wg_sync<kIndependentTaskWGs>(leader_wg);
+}
+
 template <int SplitK>
 __device__ __noinline__ void single_launch_wg_dag_w13_task(
         const CUtensorMap* w13_tma_weight,
@@ -6601,6 +6764,101 @@ void tp4_megamoe_single_launch_kernel(
             }
         }
 
+        __syncthreads();
+        single_launch_grid_barrier(barrier_state, 3, ctas);
+    } else if constexpr (kSingleLaunch78CtaLocalW13) {
+        // One physical CTA owns a complete gate/up activation group.  At
+        // split-K=4 all eight WGs form one cohort.  At split-K=2 two disjoint
+        // four-WG cohorts advance independently.  W13 partials never reach
+        // global memory and the activation phase needs no whole-grid barrier.
+        constexpr int kIndependentTaskWGs = 8;
+        constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
+        constexpr int kWGsPerCohort = 2 * SplitK;
+        constexpr int kCohorts =
+            kIndependentTaskWGs / kWGsPerCohort;
+        constexpr int kLogicalWorkersPerWave =
+            kSingleLaunchH20Sms * kIndependentTaskWGs;
+        static_assert(kSingleLaunchThreads == 1024);
+        static_assert(SplitK == 2 || SplitK == 4);
+        static_assert(kIndependentTaskWGs % kWGsPerCohort == 0);
+
+        const int num_mblocks = __ldg(num_tokens_padded) / kTok;
+        const int total_groups =
+            num_mblocks * kActivationGroupsPerRoute;
+        const int cohort = (threadIdx.x >> 7) / kWGsPerCohort;
+        const int cohort_rank =
+            (threadIdx.x >> 7) - cohort * kWGsPerCohort;
+        const int independent_wg = threadIdx.x >> 7;
+        const int groups_per_round = ctas * kCohorts;
+        const int rounds =
+            (total_groups + groups_per_round - 1) / groups_per_round;
+        extern __shared__ __align__(1024)
+            uint8_t single_launch_dynamic_smem[];
+
+        #pragma unroll 1
+        for (int round = 0; round < rounds; ++round) {
+            const int unit =
+                cta * kCohorts + cohort + round * groups_per_round;
+            const bool valid = unit < total_groups;
+            const int mblock = unit / kActivationGroupsPerRoute;
+            const int activation_group =
+                unit - mblock * kActivationGroupsPerRoute;
+            const int split = cohort_rank % SplitK;
+            const int is_up = cohort_rank / SplitK;
+            const int n_tile = activation_group
+                + is_up * kActivationGroupsPerRoute;
+            const int task =
+                (mblock * kW13NTiles + n_tile) * SplitK + split;
+
+            if (valid) {
+                float* shared_partial = reinterpret_cast<float*>(
+                    single_launch_dynamic_smem
+                    + independent_wg * kRouteTaskDynamicBytes);
+                route_gemm_task<
+                    4096, 1024, SplitK, true, 0, false, false, false,
+                    -1, true, 0, kSingleLaunchAssumeValidGemmTasks,
+                    false, false, kIndependentTaskWGs>(
+                    &w13_tma_weight, &w13_tma_weight_scale,
+                    w13, s13, g13, qx, x_scale,
+                    sorted_ids, expert_ids, num_tokens_padded,
+                    topk_weights, partials, lut, nullptr, routes, 0,
+                    task - independent_wg, 0, shared_partial);
+            }
+            cta_local_w13_cohort_sync<SplitK>(cohort);
+            if (valid && cohort_rank == 0) {
+                single_launch_cta_local_activation_task<SplitK>(
+                    single_launch_dynamic_smem,
+                    activation, qactivation, activation_scale,
+                    sorted_ids, route_to_sorted, topk_ids, g2,
+                    routes, mblock, activation_group, cohort);
+            }
+            cta_local_w13_cohort_sync<SplitK>(cohort);
+        }
+        __syncthreads();
+        single_launch_grid_barrier(barrier_state, 1, ctas);
+
+        const int w2_tasks = num_mblocks * kW2NTiles;
+        {
+            const int logical_worker =
+#if K_SINGLE_LAUNCH_78CTA_SMID_MAP
+                h20_selected_logical_worker(independent_wg);
+#else
+                cta * kIndependentTaskWGs + independent_wg;
+#endif
+            for (int task = logical_worker; task < w2_tasks;
+                 task += kLogicalWorkersPerWave) {
+                route_gemm_task<
+                    512, 4096, 1, false, 0, false, false, false,
+                    -1, false, 0, kSingleLaunchAssumeValidGemmTasks,
+                    false, false, kIndependentTaskWGs>(
+                    &w2_tma_weight, &w2_tma_weight_scale,
+                    w2, s2, g2, qactivation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                    reinterpret_cast<float*>(down), lut, nullptr,
+                    routes, 0, task - independent_wg);
+                independent_wg_sync<kIndependentTaskWGs>(independent_wg);
+            }
+        }
         __syncthreads();
         single_launch_grid_barrier(barrier_state, 3, ctas);
     } else if constexpr (kSingleLaunch78Cta8Wg) {

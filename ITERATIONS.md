@@ -12237,3 +12237,29 @@ maximum rank latency of a full CUDA-Graph replay.
   schedule and therefore has no performance claim.
 - **Decision:** retain the flag wiring and next implement the shared-partial
   cohort body behind it before any GPU correctness or timing run.
+
+## Iteration 494 — CTA-local split-K W13 fusion compiles
+
+- **Change:** allow the existing full-N W13 GEMM task to emit an 8x128 FP32
+  tile into each independent WG's dead dynamic-smem slab.  Add non-aligned
+  named cohort barriers: one 1024-thread cohort for split-K=4, or two disjoint
+  512-thread cohorts for split-K=2.  The cohort leader reduces gate/up splits
+  from shared memory, preserves the selected BF16 SwiGLU and group-128 FP8
+  quantization boundaries, and publishes the existing sorted activation/scale
+  layout.  The new branch then performs one whole-grid barrier, the unchanged
+  measured-SM mapped W2 phase, its terminal barrier, and the existing embedded
+  TP collective.
+- **Build configuration:** H20 GPU 1,
+  `V4_SINGLE_LAUNCH_78CTA_8WG=1`,
+  `V4_SINGLE_LAUNCH_78CTA_SMID_MAP=1`,
+  `V4_SINGLE_LAUNCH_78CTA_LOCAL_W13=1`, and
+  `V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS=1`.
+- **Test/result:** **PASS** for nvcc JIT, link, and Python extension import.
+  The distinct built module is
+  `v4tp_5af574d261d377b314df_v178mspec`.
+- **Limit:** this iteration proves only CUDA syntax/template instantiation and
+  linkability.  Resource usage, progress, numerical correctness, TP4
+  communication, and cold-L2 latency remain untested.
+- **Decision:** retain for immediate cubin resource inspection; reject before
+  execution if the main specializations exceed 64 registers, declare local
+  memory/material spills, or lose one-CTA-per-SM residency.
