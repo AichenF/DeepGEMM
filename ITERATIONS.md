@@ -14329,3 +14329,23 @@ maximum rank latency of a full CUDA-Graph replay.
 - Decision: proceed to fresh JIT/resource plus M64/M128 exact compute gates;
   do not time the candidate until both half selections are verified.
 - Evidence: `evidence/iter623_w2_n64_tail_static_gate.md`.
+## Iteration 624 — W2 N64 residual wave passes CUDA/resource/correctness gates
+
+- Configuration: H20 GPU1, selected TP4 production bundle plus
+  `V4_SINGLE_LAUNCH_W2_N64_TAIL=1`; M64 and M128 random routes with seed
+  20260902.  Collective is disabled only for exact local route-output checks;
+  each measured launch follows the excluded 256 MiB clear and packed barriers
+  start at generation `2^22-1`.
+- Build/resources: extension `v4tp_3cf360f93d0ea77f0518_v178mspec` compiles
+  and loads.  M64 split-K2/4 remain `REG64 STACK32 SHARED2048 LOCAL0`; M128
+  split-K2/4 remain `REG56 STACK32 SHARED2048 LOCAL0`.  The half-task branches
+  add no occupancy or spill regression.
+- Correctness: both shapes pass bitwise against independently launched
+  same-source full-N128 local references (`cosine=1`, `rel_l2=0`, finite).
+  M64/M128 padded rows are 1,624/1,992, exercising 512/492 half tasks.  All
+  four packed barrier words wrap cleanly to zero in both runs.
+- Decision: half-weight/scale addressing and disjoint output mapping are
+  validated.  Advance to a four-process M64/M128 distributed cold-L2 bracket
+  with the embedded P2P two-shot collective enabled.
+- Evidence: `evidence/iter624_w2_n64_tail_m64_m128_gate.md` and
+  `bench/results/iter624_w2_n64_tail_m64_m128_gate_20260905.log`.
