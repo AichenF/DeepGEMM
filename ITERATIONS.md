@@ -10792,3 +10792,26 @@ maximum rank latency of a full CUDA-Graph replay.
   monolithic caller.
 - Evidence:
   `results/iter436_mailbox_free_static_phases_resource_reject_20260905.log`.
+## Iteration 438 — full-stripe outline hits declaration-order compile failure
+
+- **Hypothesis:** outline each complete static W13, activation, and W2 stripe
+  once so phase-local GEMM state does not remain live across the monolithic
+  kernel, while avoiding the per-tile call/stack cost rejected in Iteration
+  436.  This follows the Hopper MegaMoE phase structure from
+  `megamoe_nvfp4_dev_m`; it does not use a B200 implementation.
+- **Change:** added three noinline full-stripe helpers, force-inlined the
+  batched activation body within its phase, and switched the WG-DAG entry to
+  one call per phase.  Also persisted the user's Hopper-reference correction
+  in `HINTS.md`.
+- **Test:** JIT compile on physical GPU 1 with the selected 78-CTA/8-WG,
+  SMID-map, WG-DAG flags, followed by a planned `cuobjdump -res-usage` gate.
+- **Result:** **compile failed** before resource inspection.  nvcc reports the
+  acquire/release helpers undefined at the new phase helper definition sites:
+  `atomic_add_acq_rel_gpu_i32`, `store_release_gpu_i32`, and
+  `load_acquire_gpu_i32`.
+- **Analysis:** this is a translation-unit declaration-order regression.  The
+  operations previously lived in the later kernel body, after the primitive
+  definitions; the new helpers are earlier.  No correctness or latency claim
+  is possible.  Repair with forward declarations or relocation, keeping the
+  outlined algorithm unchanged.
+- **Evidence:** `bench/evidence/iter438_full_stripe_outline_compile.txt`.

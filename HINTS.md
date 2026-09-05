@@ -65,3 +65,7 @@
 - The MegaMoE input is already-quantized FP8-E4M3 activation plus its group-128 scale, together with precomputed `topk_idx/topk_weights` and MXFP4 weights/scales. BF16-to-FP8 input quantization belongs to the upstream runtime and is outside both the kernel and the timed graph.
 - The single-launch kernel must still perform device route-metadata preparation, W13, SwiGLU plus intermediate FP8 requantization, W2, ordered weighted k=6 reduction, TP all-reduce, and replay-state cleanup.
 - Rebuild the multi-kernel comparison baseline around the identical prequantized FP8 activation and scale. Do not compare a quantization-free candidate against a baseline that still times input quantization.
+
+## 2026-09-05 Hopper reference correction (from the user's latest directive)
+- `megamoe_nvfp4_dev_m` is itself the Hopper/SM90 MegaMoE reference.  Base the fused TP scheduler and W13/SwiGLU/W2 overlap on that branch's Hopper implementation (`mega_moe.cuh` and `sm90_nvfp4_mega_moe_h200_fused_body.inl`), not on a B200/Blackwell MegaMoE implementation.
+- Reuse the Hopper framework selectively; adapt NVFP4 to MXFP4 and EP communication/ownership to replicated-route TP plus one final all-reduce.  Do not import Blackwell-only tcgen05/TMEM assumptions.

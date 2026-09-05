@@ -1,0 +1,39 @@
+Iteration 438: full-stripe outline compile/resource gate
+Date: 2026-09-05
+Target: TP4 H20 single-launch WG-DAG specialization
+
+Change under test
+-----------------
+- Replaced the three direct WG-DAG loops in the monolithic entry with one
+  noinline call per complete W13, activation, and W2 static stripe.
+- Kept the W13/W2 GEMM task body inline inside each phase helper.
+- Made the batched eight-row activation helper forceinline inside its phase.
+- Persisted the user correction that branch megamoe_nvfp4_dev_m is the
+  Hopper/SM90 reference, not a B200 reference.
+
+Build command
+-------------
+CUDA_VISIBLE_DEVICES=1 TORCH_CUDA_ARCH_LIST=9.0a \
+V4_SINGLE_LAUNCH_78CTA_8WG=1 \
+V4_SINGLE_LAUNCH_78CTA_SMID_MAP=1 \
+V4_SINGLE_LAUNCH_78CTA_WG_DAG=1 \
+python -c "import v4_flash_tp_wgmma as v; print(v._EXTENSION_NAME)"
+
+Result
+------
+FAILED at nvcc compile; no binary, correctness, or performance run.
+
+Errors in generated cuda.cu:
+- atomic_add_acq_rel_gpu_i32 is undefined at the W13 phase completion update.
+- store_release_gpu_i32 is undefined at W13-ready and W2-ready publication.
+- load_acquire_gpu_i32 is undefined at activation and W2 readiness waits.
+
+Diagnosis
+---------
+The new phase helpers are defined earlier in the translation unit than the
+existing acquire/release helper definitions.  The former in-entry loops were
+located after those definitions, so moving the same operations into an earlier
+device function exposed a C++ declaration-order dependency.  This checkpoint
+does not provide resource-usage or latency evidence.  Next repair: add minimal
+device forward declarations (or move the phase helpers) without changing the
+algorithm.
