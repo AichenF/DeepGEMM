@@ -1,0 +1,16 @@
+Iteration 562: native global-scale folding local M8 gate
+Date: 2026-09-05
+GPU: physical H20 GPU1
+Mode: local body, TP communication disabled, no timing
+
+finite=true
+max_abs=55040.0
+l1_x_mismatch_bytes=0
+l1_sf_max_abs=0.0
+l1_weight_max_abs=0.0
+intermediate_cosine=0.9996428551534735
+output_sha256=6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5
+
+Result: PASS bitwise against selected final output.
+The intermediate magnitude metric is excluded because its stored scale now
+intentionally includes the W2 expert-global factor.

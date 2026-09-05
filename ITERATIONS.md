@@ -13448,3 +13448,26 @@ maximum rank latency of a full CUDA-Graph replay.
   A/B metadata sites are all present.  CUDA compilation and bitwise endpoint
   validation are deferred to the next iteration.
 - **Evidence:** `bench/evidence/iter561_native_fold_global_scales_static.txt`.
+
+## Iteration 562 — native global-scale folding is bitwise-correct at M8
+
+- **Protocol:** physical H20 GPU1, deterministic local M8, selected native
+  configuration plus `V4_NATIVE_FOLD_GLOBAL_SCALES=1`; TP communication is
+  disabled for this numerical gate.  No latency is measured.
+- **Result:** **PASS bitwise.**  Kernel compiles and completes; output is
+  finite with maximum magnitude `55,040`, and full BF16 SHA256 is exactly the
+  selected-control value
+  `6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5`.
+  Routed FP8 bytes, folded FP32 W13 scales and route weights all match their
+  adjusted host expectations exactly (zero byte mismatches and zero max
+  errors).
+- **Diagnostic qualification:** the old intermediate Torch metric now reads
+  the intentionally W2-global-scaled L2 scale tensor but compares it with an
+  unscaled pre-W2 reference, so its relative-L2 is no longer an admissible
+  candidate metric.  Its cosine remains `0.9996428552`; acceptance rests on
+  exact folded-scale staging plus the bitwise final hash.
+- **Decision:** admit M8 correctness and run the separately recorded M128
+  full-output hash gate before any TP4 timing.
+- **Evidence:**
+  `bench/results/iter562_native_fold_global_scales_m8_local_20260905.log` and
+  `bench/evidence/iter562_native_fold_global_scales_m8_local.txt`.
