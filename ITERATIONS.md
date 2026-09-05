@@ -9913,3 +9913,27 @@ maximum rank latency of a full CUDA-Graph replay.
   remaining compute scheduler starvation from the embedded collective tail.
 - Evidence:
   `bench/results/iter400_78cta_smid_map_tp4_m8_m128_cold_20260905.log`.
+
+## Iteration 401 — capture mapped 78-CTA M128 NCU report
+
+- Date: 2026-09-05
+- Configuration: unchanged Iteration 399 real-H20 SMID mapping, 78x1024
+  compute-only kernel, M128 split-K2, random routes, seed 20260904, release
+  arrivals, relaxed polling and valid-task elision; public X is prequantized
+  FP8-E4M3 with FP32 group-128 scale.
+- Method: NCU 2025.3.1, profiler-start delimited cold launch, exact
+  monolithic-kernel name filter, one kernel-replay capture with 18 passes,
+  application-provided excluded 256 MiB L2 clear, NCU cache and clock control
+  disabled.  Sections match Iteration 389: speed of light, memory, scheduler,
+  warp state, occupancy, launch and instruction statistics.
+- Result: capture PASS.  Post-replay output remains bitwise correct
+  (`cosine=1`, `rel_l2=0`, finite), padded rows are 1,944 and all four packed
+  barrier generations are clean at 2048.  The report was written
+  successfully; this iteration does not infer bottlenecks because `-o`
+  suppresses the metric table.
+- Decision: import this exact report next and compare mapped metrics against
+  unmapped Iteration 390 and selected 624-CTA Iteration 265.
+- Evidence:
+  `results/iter401_78cta_smid_map_m128_ncu_capture_20260905.log`; binary report
+  `results/iter401_78cta_smid_map_m128_compute_full.ncu-rep` remains outside
+  git because of its size.
