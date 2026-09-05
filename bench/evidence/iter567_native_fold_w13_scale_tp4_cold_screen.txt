@@ -1,0 +1,16 @@
+Iteration 567: native W13-only global-scale fold screen
+Date: 2026-09-05
+GPU: TP4 physical H20 GPUs 0/5/6/7
+Protocol: random routes, CUDA Graph, 2x20 samples/arm/M, 5 warmups
+Cold-L2: separate excluded 256 MiB clear before every replay
+
+Correctness: bitwise equal at M8 and M128 on every rank
+M8 control/candidate: 0.09150399640202522 / 0.09167999774217606 ms
+M8 speedup: 0.9980802645671328x
+M8 candidate batches: [0.09159999713301659, 0.09185599908232689]
+M128 control/candidate: 0.36798399686813354 / 0.36686399579048157 ms
+M128 speedup: 1.0030529054104607x
+M128 candidate batches: [0.36684800684452057, 0.36687999963760376]
+Endpoint geometric speedup: 1.0005634958396712x
+
+Result: correctness PASS; performance NEUTRAL. Candidate remains off.

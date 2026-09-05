@@ -13560,3 +13560,22 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Decision:** test W13-only first at M8/M128.  Run W2-only only if needed to
   attribute the combined candidate's mixed M128 result.
 - **Evidence:** `bench/evidence/iter566_native_split_scale_fold_static.txt`.
+
+## Iteration 567 — W13-only scale folding is neutral
+
+- **Protocol:** selected native versus W13-input-scale-fold-only candidate in
+  one TP4 process on physical H20 GPUs 0/5/6/7; random M8/M128, two balanced
+  AB/BA batches x twenty rank-max samples, five warmups, CUDA Graph, and an
+  excluded 256 MiB L2 clear before every replay.  W2 scale handling and every
+  other compute/communication path are identical.
+- **Correctness:** **PASS bitwise** for both endpoints and all ranks.
+- **Cold-L2 result (control / W13-fold median):** M8
+  `0.091504 / 0.091680 ms`, `0.19%` slower (`0.99808x`); M128
+  `0.367984 / 0.366864 ms`, `0.30%` faster (`1.00305x`).  Endpoint geometric
+  speedup is only `1.00056x`, with mixed M8 batch direction.
+- **Decision:** W13-only is noise-sized and not selected.  The combined
+  candidate's stable M8 gain did not come from this component alone; run the
+  already-wired W2-only experiment to complete attribution.
+- **Evidence:**
+  `bench/results/iter567_native_fold_w13_scale_tp4_cold_screen_20260905.log`
+  and `bench/evidence/iter567_native_fold_w13_scale_tp4_cold_screen.txt`.
