@@ -14548,3 +14548,33 @@ maximum rank latency of a full CUDA-Graph replay.
   screen**, where fewer consecutive tasks offer still less amortization.
 - **Evidence:** `evidence/iter636_w2_persistent_tp4_m128_paired_cold.md`; raw
   log `bench/results/iter636_w2_persistent_tp4_m128_paired_cold.log`.
+
+## Iteration 637 — compact-W13 persistent-state resource gate inspects stale cubin
+
+- **Reassessment/change:** direct comparison with Hopper
+  `megamoe_nvfp4_dev_m` confirms that loader/math role pipelining has already
+  been represented by the slower native implementation.  The remaining
+  untested composition is therefore narrower: add default-off
+  `V4_SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE=1`, retaining the selected
+  compact W13 phase call and M128 nine-CTA residency while reusing only W13's
+  LUT/mbarriers and alternating metadata across that callee's grid-stride
+  tasks.  W2 and the collective are unchanged.
+- **Isolation/reproducibility:** require the compact-ABI M128-bound9
+  schedule-0 path and reject all alternate schedulers, packed-WG layouts,
+  tail subdivision, cross-task prefetch, W2-persistent/overlap/combine and
+  grid-barrier experiments.  Wire the flag through C++, the JIT identity and
+  the same-process paired comparator.
+- **Attempt/result:** the new extension
+  `v4tp_7babc76b617baae01065_v178mspec` compiled without a Python/NVCC error,
+  but the post-build shell selected `tail -1` from an unordered `find -mmin`
+  result and passed the prior W2 candidate
+  `v4tp_f72712dd95f6ccb3ff4e_v178mspec.so` to `cuobjdump`.  The printed
+  `REG56 STACK32 SHARED2048 LOCAL0` M128 result therefore belongs to the
+  wrong cubin and is **not a valid resource gate** for this candidate.
+- **Correctness/performance:** no CUDA kernel was launched and no latency was
+  measured.  The candidate remains unqualified and default-off.
+- **Decision:** retain the source checkpoint, address the exact path printed
+  by the new extension identity directly, and repeat cubin inspection as a
+  separate iteration before any launch.
+- **Evidence:** `evidence/iter637_w13_compact_persistent_resource_harness_failure.md`;
+  raw log `bench/results/iter637_w13_compact_persistent_resource.log`.
