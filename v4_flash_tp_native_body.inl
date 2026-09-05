@@ -351,10 +351,12 @@
     constexpr uint32_t kNumNonEpilogueRegisters =
         kUseInterleavedScheduler ? 64 : 40;
     // Register-dequant reduces shared memory enough for two resident CTAs.
-    // 96 registers per math lane keeps the role-weighted CTA budget below
-    // half of the H20 register file; the default reference retains 208.
+    // 88 registers per math lane also stays below the cubin's 80-reg/thread
+    // initial CTA allocation after producer warps deallocate; requesting 96
+    // would need 1,024 registers from outside the CTA and can deadlock.
+    // The default reference retains 208.
     constexpr uint32_t kNumEpilogueRegisters =
-        K_NATIVE_TWO_CTA_PER_SM ? 96 : 208;
+        K_NATIVE_TWO_CTA_PER_SM ? 88 : 208;
     DG_STATIC_ASSERT(kNumDispatchRegisters * kNumDispatchThreads +
                      kNumNonEpilogueRegisters * kNumNonEpilogueThreads +
                      kNumEpilogueRegisters * kNumEpilogueThreads <= 64512,

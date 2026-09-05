@@ -11096,3 +11096,32 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `bench/evidence/iter450_native_two_cta_cooperative_m8.txt`
   (empty because the process never passed the first synchronized launch) and
   `bench/evidence/iter450_native_two_cta_cooperative_diagnosis.txt`.
+
+## Iteration 451 — CTA-local register budget repairs two-CTA progress
+
+- **Root-cause hypothesis/change:** the Iteration-448 cubin initially assigns
+  80 registers/thread, or 30,720 registers to one 384-thread CTA.  After the
+  producer roles deallocate, a 96-register math target requires 31,744 total
+  registers.  `setmaxnreg.inc` cannot borrow the missing 1,024 registers from
+  another CTA's allocation, explaining why both ordinary and cooperative
+  launches waited forever.  Lower the opt-in math target to the legal
+  88-register step; the final role-weighted demand becomes 29,696, below the
+  CTA's own initial allocation.  Cooperative launch and all math/scheduler
+  code are otherwise unchanged.
+- **JIT correctness repair:** include the SHA-1 of
+  `v4_flash_tp_native_body.inl` in the extension cache key.  Previously an
+  include-only body edit could incorrectly reuse a stale `.so`; this change
+  affects build invalidation only, not timed work.
+- **Test:** physical GPU1, deterministic local M8, 156x384 cooperative grid,
+  register dequant, K128 batching, and a 180-second outer timeout.
+- **Result:** **PASS**.  The kernel returns normally.  Route-pool X bytes,
+  scales and weights have zero mismatch.  Weighted FC1 intermediate cosine
+  and rel-L2 are `0.9996428552` and `0.0271052359`.  Most importantly, the
+  complete BF16 `[8,4096]` output SHA-256 is
+  `6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5`,
+  bitwise identical to Iteration 449's 78-CTA control.
+- **Decision:** the register-allocation explanation is experimentally
+  supported and M8 correctness passes.  Commit before repairing the separate
+  M128 pool-row diagnostic and testing the large endpoint.  No performance
+  claim is made yet.
+- **Evidence:** `bench/evidence/iter451_native_two_cta_reg88_m8.txt`.

@@ -890,6 +890,9 @@ _SOURCE_HASH = hashlib.sha1(
     (
         _CPP
         + _CUDA
+        + hashlib.sha1(
+            (REPO_INCLUDE / "v4_flash_tp_native_body.inl").read_bytes()
+        ).hexdigest()
         + str(int(NATIVE_REGISTER_DEQUANT))
         + str(int(NATIVE_RS_K128_BATCH))
         + str(int(NATIVE_TWO_CTA_PER_SM))
