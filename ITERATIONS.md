@@ -15305,3 +15305,22 @@ maximum rank latency of a full CUDA-Graph replay.
   multi-kernel body code.
 - **Evidence:** `evidence/iter663_select_m128_w13_wave_rotation.md`; raw
   `bench/results/iter663_w13_wave_rotate_default*_20260906.log`.
+
+## Iteration 664 — trace-selected W13 shifts do not beat 13
+
+- **Selection method:** enumerate physical ownership from the measured 702-
+  CTA/78-SM trace.  Shifts 5 and 82 give five distinct owners for every
+  logical slot; shift 82 maximizes average cyclic SM-ID separation and shift
+  5 has the strongest minimum separation among high-average candidates.
+- **Cold-L2 protocol:** physical GPU1, M128 random seed 20260902, six
+  independent phase-stamped processes in 13/5/82/82/5/13 order, each with a
+  separate excluded 256 MiB L2 clear.  Every output stayed bitwise equal to
+  same-source multi locally.
+- **Result:** W13 mean/median is `210.368 us` for shift 13, `210.992 us` for
+  shift 5 (0.30% slower), and `211.280 us` for shift 82 (0.43% slower).
+  Shift 82's two samples also reverse direction around the control.
+- **Decision:** reject before TP4 and do not expand a noise-sized sweep.
+  Restore the allowed values to `{0,13}`; production source is byte-identical
+  to Iteration 663.
+- **Evidence:** `evidence/iter664_w13_wave_shift_sweep_rejection.md`; raw
+  `bench/results/iter664_w13_wave_shift5_82_m128_phase_screen_20260906.log`.
