@@ -207,6 +207,9 @@ SINGLE_LAUNCH_TRACE_SMID = (
 SINGLE_LAUNCH_78CTA_SMID_MAP = (
     os.environ.get("V4_SINGLE_LAUNCH_78CTA_SMID_MAP", "0") == "1"
 )
+SINGLE_LAUNCH_SM_STRIPED_TASKS = (
+    os.environ.get("V4_SINGLE_LAUNCH_SM_STRIPED_TASKS", "0") == "1"
+)
 SINGLE_LAUNCH_78CTA_WG_DAG = (
     os.environ.get("V4_SINGLE_LAUNCH_78CTA_WG_DAG", "0") == "1"
 )
@@ -1162,6 +1165,48 @@ if SINGLE_LAUNCH_W13_ACT_TAIL_PIPE and (
         "V4_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE requires the isolated inline "
         "8-CTA/SM schedule-0 path"
     )
+if SINGLE_LAUNCH_SM_STRIPED_TASKS and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_78CTA_8WG
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC
+    or SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or SINGLE_LAUNCH_M128_BOUND9
+    or SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM
+    or SINGLE_LAUNCH_W2_CHUNK_MAJOR
+    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+    or SINGLE_LAUNCH_W2_CHUNK_AR_POST
+    or SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+    or SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+    or SINGLE_LAUNCH_MIN_BLOCKS != 8
+    or SINGLE_LAUNCH_CTAS_PER_SM != 8
+    or WOUT != 128
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_SM_STRIPED_TASKS requires the isolated inline "
+        "624x128, 8-CTA/SM schedule-0 path"
+    )
 if SINGLE_LAUNCH_DUAL_WG_PHASES and (
     not SINGLE_LAUNCH_P2P_TWO_SHOT
     or SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS != 64
@@ -1497,6 +1542,8 @@ static constexpr bool kSingleLaunchTraceSmid =
     K_SINGLE_LAUNCH_TRACE_SMID;
 static constexpr bool kSingleLaunch78CtaSmidMap =
     K_SINGLE_LAUNCH_78CTA_SMID_MAP;
+static constexpr bool kSingleLaunchSmStripedTasks =
+    K_SINGLE_LAUNCH_SM_STRIPED_TASKS;
 static constexpr bool kSingleLaunch78CtaWgDag =
     K_SINGLE_LAUNCH_78CTA_WG_DAG;
 static constexpr bool kSingleLaunch78CtaLocalW13 =
@@ -1510,7 +1557,7 @@ static constexpr int kSingleLaunchNvlsBlocks =
 static constexpr int kSingleLaunchGroupCtas =
     K_SINGLE_LAUNCH_GROUP_CTAS;
 
-#if K_SINGLE_LAUNCH_78CTA_SMID_MAP
+#if K_SINGLE_LAUNCH_78CTA_SMID_MAP || K_SINGLE_LAUNCH_SM_STRIPED_TASKS
 // Iteration 398's real 624x128 production-kernel placement on the 78-SM
 // H20.  A 78x1024 CTA uses its physical SM ID and independent-WG index to
 // recover the exact eight logical worker streams that were resident on the
@@ -1596,6 +1643,7 @@ __device__ __constant__ uint16_t kH20LogicalWorkerBySm[78][8] = {
     {3,65,135,205,271,339,407,477},
 };
 
+#if K_SINGLE_LAUNCH_78CTA_SMID_MAP
 __device__ __forceinline__ int h20_selected_logical_worker(
         int independent_wg) {
     uint32_t smid;
@@ -1603,6 +1651,29 @@ __device__ __forceinline__ int h20_selected_logical_worker(
     return static_cast<int>(
         kH20LogicalWorkerBySm[static_cast<int>(smid)][independent_wg]);
 }
+#endif
+
+#if K_SINGLE_LAUNCH_SM_STRIPED_TASKS
+// The selected 624-block grid is a single eight-CTA/SM resident wave, but
+// block IDs are irregularly distributed across physical SMs.  Recover each
+// block's local slot from the measured production mapping, then enumerate
+// logical tasks as slot-major x SM.  Every partial final wave is therefore
+// spread across SMs without reducing the 624-worker full-wave concurrency.
+__device__ __forceinline__ int h20_sm_striped_logical_worker(int cta) {
+    uint32_t smid;
+    asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
+    int local_slot = -1;
+    #pragma unroll
+    for (int slot = 0; slot < 8; ++slot) {
+        if (static_cast<int>(
+                kH20LogicalWorkerBySm[static_cast<int>(smid)][slot]) == cta)
+            local_slot = slot;
+    }
+    if (local_slot < 0)
+        asm volatile("trap;");
+    return local_slot * kSingleLaunchH20Sms + static_cast<int>(smid);
+}
+#endif
 #endif
 
 #if K_MIN_BLOCKS_PER_SM > 0
@@ -5938,6 +6009,9 @@ void tp4_megamoe_single_launch_kernel(
     const int cta = static_cast<int>(blockIdx.x);
     const int ctas = static_cast<int>(gridDim.x);
     const int routes = tokens * kTopK;
+#if K_SINGLE_LAUNCH_SM_STRIPED_TASKS
+    __shared__ int sm_striped_worker;
+#endif
     if constexpr (kSingleLaunchRecordPhaseStamps) {
         if (cta == 0 && threadIdx.x == 0) {
             reinterpret_cast<uint64_t*>(
@@ -6244,6 +6318,10 @@ void tp4_megamoe_single_launch_kernel(
         single_launch_route_task<kSingleLaunchThreads>(
             topk_ids, sorted_ids, expert_ids, num_tokens_padded,
             route_to_sorted, tokens, cta);
+    }
+    if constexpr (kSingleLaunchSmStripedTasks) {
+        if (threadIdx.x == 0)
+            sm_striped_worker = h20_sm_striped_logical_worker(cta);
     }
     single_launch_grid_barrier(barrier_state, 0, ctas);
     if constexpr (kSingleLaunchW2BulkReduceCombine) {
@@ -7583,12 +7661,15 @@ void tp4_megamoe_single_launch_kernel(
                         kSingleLaunchBalancedWorkers && Tokens >= 64
                         ? (w13_tasks + w13_rounds - 1) / w13_rounds
                         : ctas;
+                    const int w13_worker_rank =
+                        kSingleLaunchSmStripedTasks
+                        ? sm_striped_worker : cta;
                     int w13_sequence = 0;
                     constexpr bool kW13PersistentState =
                         kSingleLaunchPersistentGemmState
                         || kSingleLaunchW13NextTaskPrefetch;
-                    for (int task = cta;
-                         cta < w13_workers && task < w13_tasks;
+                    for (int task = w13_worker_rank;
+                         w13_worker_rank < w13_workers && task < w13_tasks;
                          task += w13_workers, ++w13_sequence) {
                         if constexpr (kSingleLaunchNoInlineGemm) {
                             single_launch_w13_gemm_task<SplitK>(
@@ -7675,8 +7756,12 @@ void tp4_megamoe_single_launch_kernel(
                     ? (activation_groups + activation_rounds - 1)
                         / activation_rounds
                     : ctas;
-                for (int group = cta;
-                     cta < activation_workers && group < activation_groups;
+                const int activation_worker_rank =
+                    kSingleLaunchSmStripedTasks
+                    ? sm_striped_worker : cta;
+                for (int group = activation_worker_rank;
+                     activation_worker_rank < activation_workers
+                         && group < activation_groups;
                      group += activation_workers) {
                     const int route = group / (kIntermediate / 128);
                     if (tail_overlap_mblocks > 0
@@ -7771,6 +7856,9 @@ void tp4_megamoe_single_launch_kernel(
                 : kSingleLaunchBalancedWorkers && Tokens >= 64
                 ? (w2_tasks + w2_rounds - 1) / w2_rounds
                 : ctas;
+            const int w2_worker_rank =
+                kSingleLaunchSmStripedTasks
+                ? sm_striped_worker : cta;
             int w2_sequence = 0;
             constexpr bool kW2PersistentState =
                 kSingleLaunchPersistentGemmState
@@ -7787,8 +7875,9 @@ void tp4_megamoe_single_launch_kernel(
                     sorted_ids, expert_ids, num_tokens_padded,
                     topk_weights, down, lut, routes,
                     cta, ctas, w2_tasks);
-            } else for (int logical_task = cta;
-                        cta < w2_workers && logical_task < w2_tasks;
+            } else for (int logical_task = w2_worker_rank;
+                        w2_worker_rank < w2_workers
+                            && logical_task < w2_tasks;
                         logical_task += w2_workers, ++w2_sequence) {
                 int task = logical_task;
                 int chunk = 0;
@@ -10484,6 +10573,7 @@ _EXTENSION_CONFIG = (
           f"sl78x8{int(SINGLE_LAUNCH_78CTA_8WG)}_"
           f"sltracesm{int(SINGLE_LAUNCH_TRACE_SMID)}_"
           f"sl78smap{int(SINGLE_LAUNCH_78CTA_SMID_MAP)}_"
+          f"slsmstripe{int(SINGLE_LAUNCH_SM_STRIPED_TASKS)}_"
           f"sl78wgd{int(SINGLE_LAUNCH_78CTA_WG_DAG)}_"
           f"sl78lw13{int(SINGLE_LAUNCH_78CTA_LOCAL_W13)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
@@ -10760,6 +10850,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_78CTA_SMID_MAP="
             f"{int(SINGLE_LAUNCH_78CTA_SMID_MAP)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_SM_STRIPED_TASKS="
+            f"{int(SINGLE_LAUNCH_SM_STRIPED_TASKS)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_78CTA_WG_DAG="

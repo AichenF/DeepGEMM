@@ -1399,6 +1399,9 @@ def main() -> None:
                     "single_launch_78cta_smid_map": (
                         kernel.SINGLE_LAUNCH_78CTA_SMID_MAP
                     ),
+                    "single_launch_sm_striped_tasks": (
+                        kernel.SINGLE_LAUNCH_SM_STRIPED_TASKS
+                    ),
                     "single_launch_78cta_wg_dag": (
                         kernel.SINGLE_LAUNCH_78CTA_WG_DAG
                     ),

@@ -12558,3 +12558,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Stability: candidate batch medians are 0.078464/0.078672 ms at M8 and 0.358432/0.358864 ms at M128.
 - Decision: reject the tail-pipeline candidate. The small-M tail hiding is real but too small; per-group counter/mapping overhead makes large M materially worse. Keep the flat selected kernel as current best.
 - Evidence: `results/iter516_w13_act_tail_pipe_tp4_m8_m128_short_20260905.log`.
+## Iteration 517 — implement physical-SM-striped flat task ordinals
+
+- Date: 2026-09-05
+- Hypothesis: the selected 624x128 grid already has eight resident CTAs on every H20 SM, but its irregular block-ID placement gives some SMs up to two more final-wave tasks than the ideal distribution. Reindexing only the task ordinal can balance partial W13/activation/W2 waves without reducing full-wave concurrency or adding per-task atomics.
+- Change: add default-off `V4_SINGLE_LAUNCH_SM_STRIPED_TASKS=1`. Using Iteration 398's measured production 78x8 block-to-SM table and runtime `%smid`, each resident CTA recovers its local slot and uses `slot*78+smid` as its phase worker. The lookup runs once before the existing route grid barrier; the three flat phase loops retain their task bodies, strides, counts, barriers, and communication path.
+- Safety: trap if the measured block-to-SM placement is not reproduced, rather than silently executing duplicate/missing tasks. Restrict the experiment to the inline 624x128, eight-CTA/SM schedule-0 specialization; release-arrival, assume-valid tasks, phase stamps, and SMID tracing remain composable.
+- Static gate: remote `py_compile` passes for the kernel plus both graph helpers and the single-vs-multi benchmark.
+- Decision: proceed to a fresh JIT/resource/placement gate before correctness or latency timing.
