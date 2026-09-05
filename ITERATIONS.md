@@ -15324,3 +15324,35 @@ maximum rank latency of a full CUDA-Graph replay.
   to Iteration 663.
 - **Evidence:** `evidence/iter664_w13_wave_shift_sweep_rejection.md`; raw
   `bench/results/iter664_w13_wave_shift5_82_m128_phase_screen_20260906.log`.
+
+## Iteration 665 — select M128 W2 complete-wave rotation 82
+
+- **Change:** transfer the standalone W2 fresh-CTA ownership property into
+  TP4 M128 by rotating only the eleven complete persistent-grid waves by 82
+  workers.  Tasks, residual wave, math, barriers and communication are
+  unchanged; explicit `V4_SINGLE_LAUNCH_W2_WAVE_ROTATE=0` is rollback.
+- **Resource/correctness:** shift 0 and 82 both remain
+  `REG56 STACK32 SHARED2048 LOCAL0`, preserving nine CTAs/SM.  Random-route
+  M128 is bitwise equal to same-source multi locally and packed generations
+  finish at `[2048,2048,2048,2048]`.
+- **Local cold-L2 ABBA:** eight independent processes in
+  `0/82/82/0/0/82/82/0` order, with a separate excluded 256 MiB clear per
+  sample.  W2 median improves `107.360 -> 106.080 us` (1.19%) and mean
+  `107.736 -> 106.192 us` (1.43%).
+- **TP4 endpoint bracket:** four independent OFF/ON/ON/OFF CUDA-Graph runs
+  on GPUs 0/5/6/7, 40 cold samples per implementation/run.  Average M128
+  one latency improves `0.351576 -> 0.349384 ms` (0.62%); the paired one/multi
+  ratio improves `1.152015 -> 1.145852` (0.54%).
+- **Formal TP4 medians, multi/one ms:** M8 `0.071040/0.075504`; M16
+  `0.114144/0.123680`; M32 `0.177152/0.198256`; M64
+  `0.260624/0.292720`; M128 `0.332992/0.377408`.  Geometric means are
+  `0.165634214/0.182873954 ms`; one remains 10.41% slower and needs another
+  17.66% reduction to become 1.10x faster.
+- **TP8 gate:** the separate TP8 kernel passes all five shapes under cold L2;
+  medians are `0.055296/0.078144/0.122112/0.168576/0.216320 ms`.  This
+  five-sample run is runtime evidence only.
+- **Decision:** retain the small TP4 M128 win, but do not claim material gap
+  closure.  This is a scheduling-property adaptation; there is no literal
+  multi-only commit to cherry-pick.
+- **Evidence:** `evidence/iter665_w2_wave_rotation82_gain.md`; raw
+  `bench/results/iter665_w2_wave_rotate*_20260906.log`.

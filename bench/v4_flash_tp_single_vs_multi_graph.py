@@ -265,6 +265,9 @@ def main() -> None:
                     "single_launch_w13_wave_rotate": (
                         kernel.SINGLE_LAUNCH_W13_WAVE_ROTATE
                     ),
+                    "single_launch_w2_wave_rotate": (
+                        kernel.SINGLE_LAUNCH_W2_WAVE_ROTATE
+                    ),
                     "single_launch_w2_phase_noinline": (
                         kernel.SINGLE_LAUNCH_W2_PHASE_NOINLINE
                     ),

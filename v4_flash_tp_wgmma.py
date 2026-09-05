@@ -527,6 +527,29 @@ if SINGLE_LAUNCH_W13_WAVE_ROTATE and (
         "V4_SINGLE_LAUNCH_W13_WAVE_ROTATE requires the selected "
         "compact-ABI M128-bound9 schedule-0 path"
     )
+# M128 W2 counterpart to the W13 ownership mapping.  Rotate only complete
+# persistent-grid waves while leaving the residual wave and every logical
+# task unchanged; explicit zero remains the rollback control.
+SINGLE_LAUNCH_W2_WAVE_ROTATE = int(
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_W2_WAVE_ROTATE",
+        "82" if SINGLE_LAUNCH_COMPACT_W13_BUNDLE else "0",
+    )
+)
+if SINGLE_LAUNCH_W2_WAVE_ROTATE not in (0, 82):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_WAVE_ROTATE must be 0 or 82"
+    )
+if SINGLE_LAUNCH_W2_WAVE_ROTATE and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or not SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or not SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+    or not SINGLE_LAUNCH_M128_BOUND9
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_WAVE_ROTATE requires the selected "
+        "compact-ABI M128-bound9 schedule-0 path"
+    )
 SINGLE_LAUNCH_COOPERATIVE_GRID = (
     os.environ.get("V4_SINGLE_LAUNCH_COOPERATIVE_GRID", "0") == "1"
 )
@@ -1920,6 +1943,8 @@ static constexpr bool kSingleLaunchW13CompactSplitMajorTasks =
     K_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS;
 static constexpr int kSingleLaunchW13WaveRotate =
     K_SINGLE_LAUNCH_W13_WAVE_ROTATE;
+static constexpr int kSingleLaunchW2WaveRotate =
+    K_SINGLE_LAUNCH_W2_WAVE_ROTATE;
 static constexpr bool kSingleLaunchW13NextTaskPrefetch =
     K_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH;
 static constexpr bool kSingleLaunchW2NextTaskPrefetch =
@@ -8701,6 +8726,22 @@ void tp4_megamoe_single_launch_kernel(
                             && logical_task < w2_tasks;
                         logical_task += w2_workers, ++w2_sequence) {
                 int task = logical_task;
+                if constexpr (Tokens == 128
+                              && kSingleLaunchW2WaveRotate > 0) {
+                    // Emulate fresh standalone-CTA ownership without a task
+                    // queue: rotate only the eleven complete M128 waves.
+                    // Two bounded subtracts cover the largest supported
+                    // shift (82 * 10 + 701 < 3 * 702).
+                    if (w2_sequence < w2_tasks / w2_workers) {
+                        int rotated_worker = w2_worker_rank
+                            + w2_sequence * kSingleLaunchW2WaveRotate;
+                        if (rotated_worker >= w2_workers)
+                            rotated_worker -= w2_workers;
+                        if (rotated_worker >= w2_workers)
+                            rotated_worker -= w2_workers;
+                        task = w2_sequence * w2_workers + rotated_worker;
+                    }
+                }
                 int chunk = 0;
                 if (use_chunk_order) {
                     static_assert(kW2NTiles == 32);
@@ -11808,6 +11849,7 @@ _EXTENSION_CONFIG = (
           f"slw13cps{int(SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE)}_"
           f"slw13csm{int(SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS)}_"
           f"slw13wr{SINGLE_LAUNCH_W13_WAVE_ROTATE}_"
+          f"slw2wr{SINGLE_LAUNCH_W2_WAVE_ROTATE}_"
           f"slw13np{int(SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH)}_"
           f"slw2np{int(SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH)}_"
           f"slavgt{int(SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS)}_"
@@ -11989,6 +12031,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W13_WAVE_ROTATE="
             f"{SINGLE_LAUNCH_W13_WAVE_ROTATE}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_WAVE_ROTATE="
+            f"{SINGLE_LAUNCH_W2_WAVE_ROTATE}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH="
