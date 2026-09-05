@@ -9234,3 +9234,26 @@ maximum rank latency of a full CUDA-Graph replay.
   frequency but adds generation-observation latency; it does not close the
   multi-kernel gap.
 - **Artifact:** `bench/results/iter374_adaptive_poll_bracket_m8_m128_cold_20260905.log`.
+
+## Iteration 375 — whole-W2-phase outline bound-9 resource gate (2026-09-05)
+
+- **Hypothesis/change:** Added opt-in
+  `V4_SINGLE_LAUNCH_W2_PHASE_NOINLINE=1`. Unlike the rejected per-tile
+  outline, each CTA pays one device-call boundary around its complete static
+  W2 grid-stride loop. The goal is to isolate W2's four-way K unroll from the
+  monolithic entry and recover register headroom for nine resident CTAs/SM.
+- **Scope:** Compile-only same-source OFF/ON comparison of the TP4 M=128,
+  split-K2 specialization with dynamic route scratch, release-arrival and
+  `__launch_bounds__(128,9)`. No GPU timing or correctness claim is made.
+  The public input interface remains prequantized FP8-E4M3 X plus FP32
+  group-128 scales and MXFP4 weights.
+- **Resource result:** Both OFF and ON main kernels report
+  `REG:56 STACK:48 SHARED:2048 LOCAL:0`. Thus the outline introduces no
+  occupancy cliff or fixed local allocation, but the forced bound-9 main
+  resource record alone does not prove that W2 caller spills were removed.
+  The initial resource grep did not surface the device callee record.
+- **Decision:** Pass only the coarse resource gate. Before any performance
+  test, resolve the added CALL/callee symbol and compare main-kernel local
+  load/store counts; then run compute correctness if the intended boundary is
+  present.
+- **Artifact:** `bench/results/iter375_w2_phase_noinline_bound9_resource_20260905.log`.
