@@ -14696,3 +14696,20 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter642_w13_compact_split_major_m128_compute.log` and
   `evidence/iter642_w13_compact_split_major_m128_compute.md`.
+
+## Iteration 643 — split-major TP4 timing harness invocation failure
+
+- **Intended protocol:** TP4 physical GPUs 0,5,6,7, M128 random routes,
+  production control versus only
+  `V4_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS=1`, five outer batches x
+  thirty independently cold-L2 CUDA-Graph replays per arm.
+- **Result:** FAIL before Python benchmark startup or any GPU kernel launch.
+  This container's `torchrun` parser consumed the benchmark's `--m 128`
+  option and rejected it as ambiguous with torchrun options because the
+  training-script separator was omitted.  There is no correctness or latency
+  evidence in this iteration.
+- **Decision:** preserve and commit the failed invocation, then repeat the
+  identical protocol with `--` between the training script and its arguments.
+- **Evidence:**
+  `bench/results/iter643_w13_compact_split_major_tp4_m128_paired_cold.log`
+  and `evidence/iter643_w13_compact_split_major_harness_failure.md`.

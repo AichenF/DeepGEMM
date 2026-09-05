@@ -1,0 +1,18 @@
+usage: torchrun [-h] [--nnodes NNODES] [--nproc-per-node NPROC_PER_NODE]
+                [--rdzv-backend RDZV_BACKEND] [--rdzv-endpoint RDZV_ENDPOINT]
+                [--rdzv-id RDZV_ID] [--rdzv-conf RDZV_CONF] [--standalone]
+                [--max-restarts MAX_RESTARTS]
+                [--monitor-interval MONITOR_INTERVAL]
+                [--start-method {spawn,fork,forkserver}]
+                [--event-log-handler EVENT_LOG_HANDLER] [--role ROLE] [-m]
+                [--no-python] [--run-path] [--log-dir LOG_DIR] [-r REDIRECTS]
+                [-t TEE] [--local-ranks-filter LOCAL_RANKS_FILTER]
+                [--duplicate-stdout-filters DUPLICATE_STDOUT_FILTERS]
+                [--duplicate-stderr-filters DUPLICATE_STDERR_FILTERS]
+                [--node-rank NODE_RANK] [--master-addr MASTER_ADDR]
+                [--master-port MASTER_PORT] [--local-addr LOCAL_ADDR]
+                [--logs-specs LOGS_SPECS]
+                [--numa-binding {node,socket,exclusive,core-complex}]
+                [--signals-to-handle SIGNALS_TO_HANDLE] [--virtual-local-rank]
+                training_script ...
+torchrun: error: ambiguous option: --m could match --max-restarts, --max_restarts, --monitor-interval, --monitor_interval, --module, --master-addr, --master_addr, --master-port, --master_port
