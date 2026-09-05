@@ -340,6 +340,9 @@ def main() -> None:
                     "single_launch_grid_poll_sleep_ns": (
                         kernel.SINGLE_LAUNCH_GRID_POLL_SLEEP_NS
                     ),
+                    "single_launch_grid_barrier_poll_warp": (
+                        kernel.SINGLE_LAUNCH_GRID_BARRIER_POLL_WARP
+                    ),
                     "single_launch_adaptive_grid_poll": (
                         kernel.SINGLE_LAUNCH_ADAPTIVE_GRID_POLL
                     ),

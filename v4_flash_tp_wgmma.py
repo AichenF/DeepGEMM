@@ -595,6 +595,19 @@ if SINGLE_LAUNCH_GRID_POLL_SLEEP_NS not in (32, 64, 128, 256, 512, 1024):
     raise ValueError(
         "V4_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS must be 32,64,128,256,512,1024"
     )
+# Diagnostic scheduler-contention probe.  The ordinary grid barrier used to
+# make warp 0 lane 0 perform every arrival and generation poll.  WGMMA/TMA
+# task issue is also concentrated in warp 0, so an early CTA's polling warp
+# can compete with a peer CTA that is still executing the residual GEMM wave
+# on the same SM.  Rotate only the barrier leader; task ownership, ordering,
+# memory semantics, and the default production path remain unchanged.
+SINGLE_LAUNCH_GRID_BARRIER_POLL_WARP = int(
+    os.environ.get("V4_SINGLE_LAUNCH_GRID_BARRIER_POLL_WARP", "0")
+)
+if SINGLE_LAUNCH_GRID_BARRIER_POLL_WARP not in (0, 1, 2, 3):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_GRID_BARRIER_POLL_WARP must be 0,1,2,3"
+    )
 if (
     SINGLE_LAUNCH_ADAPTIVE_GRID_POLL
     and SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS
@@ -629,6 +642,12 @@ SINGLE_LAUNCH_HIERARCHICAL_GRID = (
 if SINGLE_LAUNCH_HIERARCHICAL_GRID and SINGLE_LAUNCH_COOPERATIVE_GRID:
     raise ValueError(
         "V4_SINGLE_LAUNCH_HIERARCHICAL_GRID and cooperative grid are exclusive"
+    )
+if SINGLE_LAUNCH_GRID_BARRIER_POLL_WARP and (
+    SINGLE_LAUNCH_COOPERATIVE_GRID or SINGLE_LAUNCH_HIERARCHICAL_GRID
+):
+    raise ValueError(
+        "grid-barrier poll-warp rotation requires the ordinary grid barrier"
     )
 if SINGLE_LAUNCH_TAIL_OVERLAP and (
     SINGLE_LAUNCH_NOINLINE_GEMM or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
@@ -1930,6 +1949,8 @@ static constexpr bool kSingleLaunchBalancedW2Workers =
     K_SINGLE_LAUNCH_BALANCED_W2_WORKERS;
 static constexpr int kSingleLaunchGridPollSleepNs =
     K_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS;
+static constexpr int kSingleLaunchGridBarrierPollWarp =
+    K_SINGLE_LAUNCH_GRID_BARRIER_POLL_WARP;
 static constexpr bool kSingleLaunchSkipFinalCtaSync =
     K_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC;
 static constexpr bool kSingleLaunchGridBarrierNoEntrySync =
@@ -6370,7 +6391,9 @@ __device__ __forceinline__ void single_launch_grid_barrier(
     __shared__ int observed_epoch;
     if constexpr (!kSingleLaunchGridBarrierNoEntrySync)
         __syncthreads();
-    if (threadIdx.x == 0) {
+    constexpr int kPollLeaderThread =
+        kSingleLaunchGridBarrierPollWarp * 32;
+    if (threadIdx.x == kPollLeaderThread) {
         int32_t* count = state + phase * 2;
         if constexpr (kSingleLaunchPackedGridBarrier) {
             // Pack a 10-bit arrival count and a 22-bit generation into the
@@ -11773,6 +11796,7 @@ _EXTENSION_CONFIG = (
           f"slbaw{int(SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS)}_"
           f"slbw2{int(SINGLE_LAUNCH_BALANCED_W2_WORKERS)}_"
           f"slpsn{SINGLE_LAUNCH_GRID_POLL_SLEEP_NS}_"
+          f"slgbpw{SINGLE_LAUNCH_GRID_BARRIER_POLL_WARP}_"
           f"slfs{int(SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC)}_"
           f"slgbne{int(SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC)}_"
           f"slats{int(SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC)}_"
@@ -12027,6 +12051,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS="
             f"{SINGLE_LAUNCH_GRID_POLL_SLEEP_NS}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_GRID_BARRIER_POLL_WARP="
+            f"{SINGLE_LAUNCH_GRID_BARRIER_POLL_WARP}"
         ),
         (
             "-DK_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC="

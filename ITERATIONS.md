@@ -15061,3 +15061,35 @@ maximum rank latency of a full CUDA-Graph replay.
   the next credible experiment must alter coarse fused dataflow without
   reducing the selected one-WG cold-weight issue rate.
 - **Evidence:** `evidence/iter654_multikernel_cherrypick_audit.md`.
+
+## Iteration 655 — grid-barrier poll-warp rotation is noise-scale
+
+- **Hypothesis/change:** the ordinary packed whole-grid barrier previously
+  assigned arrival and generation polling to warp 0 lane 0.  Because the
+  selected WGMMA/TMA issue path is also concentrated in warp 0, add a
+  default-off `V4_SINGLE_LAUNCH_GRID_BARRIER_POLL_WARP={0,1,2,3}` diagnostic
+  and compare warp 3 against the production warp 0 without changing task
+  ownership, arithmetic, transport or memory ordering.
+- **Static/resource gate:** Python compilation and diff checks pass.  The
+  exact warp-0 and warp-3 cubins are resource-identical: M8/split-K4 uses 63
+  registers, 32 stack bytes and 2,048 shared bytes; M128/split-K2 uses 56,
+  32 and 2,048 respectively, with no local bytes.
+- **Correctness gate:** local cold-L2 M8 and M128 warp-3 runs are bitwise
+  identical to the independent same-source multi reference (`cosine=1`,
+  `rel_l2=0`, finite); the packed barrier generation-wrap words return to
+  `[0,0,0,0]`.  A warp-0 M8 control passes identically.
+- **TP4 cold-L2 protocol:** physical GPUs 0/5/6/7, seed 20260902, M8/M128,
+  CUDA Graph, four warmups, two outer batches x 20 replays per process, and
+  an excluded 256 MiB L2 clear before every replay.  Four independent
+  process windows used OFF-A / ON-A / ON-B / OFF-B ordering.
+- **Normalized result:** average candidate/control is 1.061929 (off) versus
+  1.061455 (warp 3) at M8, 1.154026 versus 1.152222 at M128, and geometric
+  1.107020 versus 1.105907.  That is only 0.0446%, 0.1563%, and 0.1005%
+  apparent improvement.  Direct candidate means disagree at M8: 0.075584
+  ms off versus 0.075720 ms on (-0.180%); M128 is 0.354960 versus 0.354608
+  ms (+0.099%).
+- **Decision:** reject as noise-scale and do not sweep warp 1/2 or all M.
+  Production remains warp 0.  Keep the flag default-off only to make the
+  negative scheduler-contention probe reproducible.
+- **Evidence:** `evidence/iter655_grid_barrier_poll_warp3_rejection.md` and
+  raw `bench/results/iter655h_pollwarp_{off_a,on_a,on_b,off_b}_tp4_m8_m128_cold_20260906.log`.
