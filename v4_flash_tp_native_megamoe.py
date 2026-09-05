@@ -77,11 +77,20 @@ NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS = (
     os.environ.get("V4_NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS", "1") == "1"
 )
 NATIVE_PHASE_STAMPS = os.environ.get("V4_NATIVE_PHASE_STAMPS", "0") == "1"
+NATIVE_FOLD_GLOBAL_SCALES = (
+    os.environ.get("V4_NATIVE_FOLD_GLOBAL_SCALES", "0") == "1"
+)
 if not 0 <= NATIVE_L1_WARMUP_WAVES <= 8:
     raise ValueError("V4_NATIVE_L1_WARMUP_WAVES must be in [0,8]")
 if NATIVE_SINGLE_L1_WARMUP_WAVE and NATIVE_L1_WARMUP_WAVES:
     raise ValueError(
         "single-wave and explicit L1 warmup controls are mutually exclusive"
+    )
+if NATIVE_FOLD_GLOBAL_SCALES and not (
+    NATIVE_NORMALIZED_WEIGHT_SCALE and NATIVE_REGISTER_DEQUANT
+):
+    raise ValueError(
+        "V4_NATIVE_FOLD_GLOBAL_SCALES requires normalized register dequant"
     )
 if NATIVE_TP_LOCAL_DIRECT_COPY and not NATIVE_TP_LOCAL_DISPATCH_FASTPATH:
     raise ValueError(
@@ -591,6 +600,9 @@ _CUDA = r"""
 #endif
 #ifndef K_NATIVE_PHASE_STAMPS
 #define K_NATIVE_PHASE_STAMPS 0
+#endif
+#ifndef K_NATIVE_FOLD_GLOBAL_SCALES
+#define K_NATIVE_FOLD_GLOBAL_SCALES 0
 #endif
 
 using namespace deep_gemm;
@@ -1311,6 +1323,7 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_TP_LOCAL_ROUTE_BUILD))
         + str(int(NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS))
         + str(int(NATIVE_PHASE_STAMPS))
+        + str(int(NATIVE_FOLD_GLOBAL_SCALES))
     ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
@@ -1333,6 +1346,7 @@ _ext = load_inline(
         f"tlr{int(NATIVE_TP_LOCAL_ROUTE_BUILD)}_"
         f"tlp{int(NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS)}_"
         f"pst{int(NATIVE_PHASE_STAMPS)}_"
+        f"fgs{int(NATIVE_FOLD_GLOBAL_SCALES)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
@@ -1392,6 +1406,7 @@ _ext = load_inline(
             f"{int(NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS)}"
         ),
         f"-DK_NATIVE_PHASE_STAMPS={int(NATIVE_PHASE_STAMPS)}",
+        f"-DK_NATIVE_FOLD_GLOBAL_SCALES={int(NATIVE_FOLD_GLOBAL_SCALES)}",
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",
     ],

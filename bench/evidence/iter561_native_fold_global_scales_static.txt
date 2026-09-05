@@ -1,0 +1,22 @@
+Iteration 561: native normalized global-scale folding static verification
+Date: 2026-09-05
+
+Candidate dataflow:
+  W13: routed_fp32_scale := input_fp32_scale * w13_expert_global_scale
+  W2:  emitted_fp8_scale := quant_scale * w2_expert_global_scale
+  GEMM task promotion: no expert-global multiplication
+
+This is algebraically identical because each expert-global scale is positive
+and constant over the corresponding linear GEMM.  The W2 fold occurs after
+SwiGLU and route-weight application, so no nonlinear reassociation is made.
+
+Checks:
+  python3 -m py_compile v4_flash_tp_native_megamoe.py \
+    bench/v4_flash_tp_native_layout_ab.py \
+    bench/test_v4_flash_tp_native_local.py
+  ast.parse on all three Python files
+  exact grep of macro/config, both fold sites, task-scale exclusion, local
+  expected-scale update, and selected-tail A/B isolation
+
+Result: PASS
+GPU launches: none

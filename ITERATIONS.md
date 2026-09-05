@@ -13426,3 +13426,25 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter560_native_l1_warmup7_m128_tp4_cold_screen_20260905.log`
   and `bench/evidence/iter560_native_l1_warmup7_m128_tp4_cold_screen.txt`.
+
+## Iteration 561 — wire native W13/W2 global-scale folding
+
+- **Hypothesis/change:** normalized native tasks currently load one expert
+  global scale per warp/task and multiply it into activation scales at every
+  K128 accumulator promotion.  Add default-off
+  `V4_NATIVE_FOLD_GLOBAL_SCALES=1`: the dispatch warp multiplies W13's expert
+  scale into each routed FP32 input-scale vector once, and the W13 epilogue
+  multiplies W2's expert scale into each emitted FP8 group scale once.  W13
+  and W2 task bodies then compile out their repeated global load/multiply.
+  FP8 activation bytes, MXFP4 weights, route weights, quantization divisor,
+  GEMM order, task schedule and TP collective are unchanged.
+- **Isolation/harness:** add `fold_global_scales` to the same-process native
+  A/B harness.  Both arms retain the selected TP-local barrier, route build,
+  parallel combine and automatic scheduler; only scale placement differs.
+  The local diagnostic adjusts its expected routed scale for the candidate.
+- **Static result:** **PASS.**  Python bytecode and AST checks pass for all
+  three modified launch/test modules; environment validation, JIT hash/name/
+  compile definition, route fold, W2-output-scale fold, task-scale removal and
+  A/B metadata sites are all present.  CUDA compilation and bitwise endpoint
+  validation are deferred to the next iteration.
+- **Evidence:** `bench/evidence/iter561_native_fold_global_scales_static.txt`.

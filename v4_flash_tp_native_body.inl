@@ -808,11 +808,21 @@
                     input_sf_buffer.get_data_buffer(src_token_idx).get_base_ptr<float>(),
                     current_rank_in_expert_idx);
                 const auto local_sf_ptr  = l1_sf_buffer.get_base_ptr<float>();
+                float route_weight_global_scale = 1.0f;
+                if constexpr (K_NATIVE_FOLD_GLOBAL_SCALES) {
+                    if (lane_idx == 0) {
+                        route_weight_global_scale =
+                            __ldg(w13_global_scale + current_expert_idx);
+                    }
+                    route_weight_global_scale = __shfl_sync(
+                        0xffffffffu, route_weight_global_scale, 0);
+                }
                 #pragma unroll
                 for (uint32_t i = 0; i < math::constexpr_ceil_div(kNumSFFloats, 32u); ++ i) {
                     const uint32_t j = i * 32 + lane_idx;
                     if (j < kNumSFFloats)
-                        local_sf_ptr[j * kNumPaddedSFPoolTokens + pool_token_idx] = remote_sf_ptr[j];
+                        local_sf_ptr[j * kNumPaddedSFPoolTokens + pool_token_idx] =
+                            remote_sf_ptr[j] * route_weight_global_scale;
                 }
                 __syncwarp();
 
@@ -1078,7 +1088,8 @@
             using BlockPhaseTag = std::remove_cv_t<std::remove_reference_t<decltype(block_phase)>>;
             constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
             float task_weight_global_scale = 1.0f;
-            if constexpr (K_NATIVE_NORMALIZED_WEIGHT_SCALE) {
+            if constexpr (K_NATIVE_NORMALIZED_WEIGHT_SCALE &&
+                          !K_NATIVE_FOLD_GLOBAL_SCALES) {
                 if (lane_idx == 0) {
                     const float* global_scale =
                         kBlockIsL2 ? w2_global_scale : w13_global_scale;
@@ -1087,6 +1098,15 @@
                 }
                 task_weight_global_scale = __shfl_sync(
                     0xffffffffu, task_weight_global_scale, 0);
+            }
+            float output_weight_global_scale = 1.0f;
+            if constexpr (K_NATIVE_FOLD_GLOBAL_SCALES && !kBlockIsL2) {
+                if (epilogue_warp_idx == 0 && lane_idx == 0) {
+                    output_weight_global_scale =
+                        __ldg(w2_global_scale + local_expert_idx);
+                }
+                output_weight_global_scale = __shfl_sync(
+                    0xffffffffu, output_weight_global_scale, 0);
             }
             const auto cast_l2_scaled_bf16_pair = [&](float x, float y) -> uint32_t {
                 return math::cast_into_bf16_and_pack(x, y);
@@ -1795,7 +1815,7 @@
                         auto sf_base_ptr = l2_sf_buffer.get_base_ptr<float>();
                         const uint32_t token_idx = m_idx + token;
                         sf_base_ptr[sf_base_k_idx * kNumPaddedSFPoolTokens + token_idx] =
-                            sf_pair.x;
+                            sf_pair.x * output_weight_global_scale;
                         smem_cd_l1_shared_sf[token * kNumEpilogueWarps + reduce_warp_start] = sf_inv_pair.x;
                     }
 
@@ -2003,9 +2023,11 @@
                         for (uint32_t g = 0; g < kNumSFGroups; ++ g) {
                             const uint32_t sf_k_idx = base_k_sf_idx + g;
                             if ((kSplitMDecodedWeightReuse || epilogue_wg_idx == 0) && valid_r0)
-                                sf_base_ptr[sf_k_idx * kNumPaddedSFPoolTokens + token_r0] = sf_r0[g];
+                                sf_base_ptr[sf_k_idx * kNumPaddedSFPoolTokens + token_r0] =
+                                    sf_r0[g] * output_weight_global_scale;
                             if ((kSplitMDecodedWeightReuse || epilogue_wg_idx == 0) && valid_r1)
-                                sf_base_ptr[sf_k_idx * kNumPaddedSFPoolTokens + token_r1] = sf_r1[g];
+                                sf_base_ptr[sf_k_idx * kNumPaddedSFPoolTokens + token_r1] =
+                                    sf_r1[g] * output_weight_global_scale;
                         }
                     }
 

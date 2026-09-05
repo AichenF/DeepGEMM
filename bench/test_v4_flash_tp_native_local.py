@@ -209,6 +209,10 @@ def main() -> None:
     expected_x = qx.index_select(0, src_tokens)
     pooled_sf = workspace.l1_acts_sf[:, pool_rows].T.contiguous()
     expected_sf = x_scale.index_select(0, src_tokens)
+    if native.NATIVE_FOLD_GLOBAL_SCALES:
+        expected_sf = expected_sf * native_g13.index_select(
+            0, flat_experts
+        )[:, None]
     pooled_weights = workspace.l1_topk_weights.index_select(0, pool_rows)
     expected_weights = topk_weights[src_tokens, src_topk]
     x_mismatch_bytes = int(
