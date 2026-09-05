@@ -13380,3 +13380,26 @@ maximum rank latency of a full CUDA-Graph replay.
   and harness wiring sites are present.  No CUDA launch or performance claim
   is made here.
 - **Evidence:** `bench/evidence/iter558_l1_warmup_ab_static.txt`.
+
+## Iteration 559 — three W13 warmup waves are performance-neutral at M128
+
+- **Protocol:** selected automatic two-wave native control versus explicit
+  three-wave candidate in one TP4 process on physical H20 GPUs 0/5/6/7;
+  random M128 routes, two balanced AB/BA batches x twenty rank-max samples,
+  five alternating warmups, CUDA Graph, and a separate excluded 256 MiB L2
+  clear immediately before every replay.  Both arms use identical selected
+  TP-local route, barrier, combine and communication paths.
+- **Correctness:** **PASS bitwise** across all ranks: cosine `1.0`, relative-L2
+  `0.0`, zero BF16 mismatches and all outputs finite.
+- **Cold-L2 result (auto / three-wave median):**
+  `0.367376 / 0.367024 ms`; nominal control-over-candidate speedup
+  `1.00096x` (`0.096%`).  Candidate batch medians are
+  `0.366944/0.367072 ms`; control batches are `0.366432/0.371808 ms`, so the
+  pooled sub-microsecond difference is entirely inside run noise/drift.
+- **Decision:** three waves provide no material gain and are not selected.
+  One bounded all-W13 (7-wave) screen remains useful because it tests phase
+  locality rather than a one-wave interleave shift; skip the intermediate
+  four-wave point unless seven-wave is positive.
+- **Evidence:**
+  `bench/results/iter559_native_l1_warmup3_m128_tp4_cold_screen_20260905.log`
+  and `bench/evidence/iter559_native_l1_warmup3_m128_tp4_cold_screen.txt`.

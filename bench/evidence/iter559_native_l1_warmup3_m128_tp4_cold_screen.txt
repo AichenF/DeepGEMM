@@ -1,0 +1,15 @@
+Iteration 559: automatic versus three W13 warmup waves
+Date: 2026-09-05
+GPU: TP4 physical H20 GPUs 0/5/6/7
+M: 128, random routes
+Protocol: CUDA Graph, 2x20 samples/arm, 5 warmups, rank-max latency
+Cold-L2: separate excluded 256 MiB clear before every replay
+
+Correctness: cosine=1.0, rel_l2=0.0, mismatches=0, finite=true
+Control automatic median: 0.3673759996891022 ms
+Candidate three-wave median: 0.3670240044593811 ms
+Control/candidate: 1.0009590523383873x
+Control batch medians: [0.3664320111274719, 0.3718079924583435]
+Candidate batch medians: [0.36694400012493134, 0.3670720010995865]
+
+Result: correctness PASS; performance NEUTRAL. Candidate remains default-off.
