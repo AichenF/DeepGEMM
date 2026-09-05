@@ -13830,3 +13830,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Interpretation: source specialization now isolates the experimental call and register cap to M128 while retaining the selected inline register/stack shape elsewhere. The common 2 KiB static-shared result comes from the required dynamic-route configuration and remains below the residency limit.
 - Decision: advance to an M128 compute-only launch with exact routed-W2 comparison, packed-barrier generation check, and runtime requirement that nine CTAs/SM are admitted. No performance claim yet.
 - Evidence: `bench/evidence/iter597_tp4_w13_compact_m128_resources.txt`.
+
+## Iteration 598 — compact W13 M128 passes exact compute and barrier-wrap gate (2026-09-05)
+
+- Protocol: physical H20 GPU1, M128 random routes, split-K2, compact W13 phase ABI plus dynamic-route bound-9, release-arrival and assume-valid tasks. TP communication was disabled only for this local state-machine check. The measured launch followed an excluded 256 MiB L2 clear, and all four packed barriers were seeded at generation `2^22-1`.
+- Result: **PASS.** The host launch guard admitted exactly nine 128-thread CTAs/SM; eager and cold launches completed. The complete routed W2 tensor is bitwise equal to the independently launched multi-kernel local reference (`cosine=1.0`, `rel_l2=0.0`, finite). M128 produced 1,944 padded rows, and all packed barrier words wrapped cleanly to `[0,0,0,0]`.
+- Interpretation: storing grid-constant descriptor pointers in the CTA-shared compact record is valid across all threads and repeated task iterations; the new call boundary does not alter arithmetic or barrier generations.
+- Decision: advance to a short, replay-interleaved TP4 M128 cold-L2 A/B against the selected inline single-launch path. Require exact output equivalence and a stable gain before a longer/all-M run.
+- Evidence: `bench/evidence/iter598_tp4_w13_compact_m128_correctness.txt`.

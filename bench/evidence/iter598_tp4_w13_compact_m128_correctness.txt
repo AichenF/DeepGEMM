@@ -1,0 +1,23 @@
+Iteration 598: compact W13 M128 compute-only correctness
+Date: 2026-09-05
+
+Configuration:
+  H20 physical GPU 1, 78 SM
+  M=128, random routes, seed=20260904, W13 split-K2
+  compact W13 phase ABI + dynamic-route M128 bound-9
+  release-arrival + assume-valid tasks
+  TP collective disabled only for local comparison
+  separate excluded 256 MiB L2 clear
+  packed barriers seeded at generation 2^22-1
+
+Result:
+  accepted=true
+  padded_rows=1944
+  routed-W2 cosine=1.0
+  routed-W2 relative L2=0.0
+  finite=true
+  packed generation words after=[0,0,0,0]
+  packed wrap ok=true
+
+The M128 host specialization requires exactly nine admitted CTAs/SM, so the
+successful launch is also the runtime occupancy-admission proof.
