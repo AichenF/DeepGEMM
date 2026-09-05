@@ -9297,3 +9297,29 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Decision:** Advance to an order-balanced TP4 cold-L2 OFF/ON bracket at
   M={8,128}. Keep default-off until an end-to-end normalized gain survives.
 - **Artifact:** `bench/results/iter377_w2_phase_noinline_bound9_compute_m8_m128_20260905.log`.
+
+## Iteration 378 — reject whole-W2-phase outline after cold TP4 bracket (2026-09-05)
+
+- **Method:** TP4 GPUs 0–3, dynamic-route M128 bound-9 specialization,
+  release-arrival, random routes and seed 20260904. Process order was
+  OFF_A → ON_A → ON_B → OFF_B. Each process used two outer batches × 20
+  replay-interleaved CUDA Graph samples per implementation, four warmups and
+  rank-max timing. Every replay had its own excluded 256 MiB L2 clear. X was
+  already FP8-E4M3 with FP32 group-128 scales; no external input quantization
+  was captured or timed.
+- **Latency medians OFF_A / ON_A / ON_B / OFF_B:** M=8
+  `77.824 / 77.760 / 77.744 / 78.240 us`; M=128
+  `346.368 / 346.032 / 346.656 / 347.120 us`. OFF versus ON averages are
+  `78.032/77.752 us` at M8 (ON only `0.36%` faster) and
+  `346.744/346.344 us` at M128 (ON only `0.12%` faster). Both deltas are
+  noise-sized and far below a selection margin.
+- **Correctness:** M8 stayed identical to control. Both M128 ON processes
+  developed replay-window numerical deviations that the harness's loose
+  acceptance gate allowed but the stricter kernel gate rejects: cosine fell
+  to `0.9999786885` and `0.9999710227`, relative L2 rose to `0.00653` and
+  `0.00761`, and max absolute error reached `25,088` and `33,280`. Both OFF
+  processes retained the selected `0.9999956090` / `0.00296345` envelope.
+- **Conclusion:** **Reject and keep default-off.** One phase-level device call
+  gives no material speedup and is not replay-stable at M128. The earlier
+  two-launch bitwise smoke was insufficient to expose this failure.
+- **Artifact:** `bench/results/iter378_w2_phase_noinline_bound9_bracket_m8_m128_cold_20260905.log`.
