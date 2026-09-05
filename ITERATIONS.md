@@ -10296,3 +10296,33 @@ maximum rank latency of a full CUDA-Graph replay.
   TP4 M8/M128 embedded-collective cold screen used to reject Iteration 413.
 - Evidence:
   `results/iter415_hopper_cta_pipeline_compute_correctness_20260905.log`.
+
+## Iteration 416 — CTA batching fixes atomic collapse but remains 2x slow
+
+- Date: 2026-09-05
+- Protocol: Iteration 414 candidate versus selected multi-kernel plus SGLang
+  CustomAllReduceV2 control, TP4 GPUs 0-3, random routes, seed 20260904, two
+  replay-interleaved batches x ten cold samples/arm, two warmups and rank-max
+  reduction.  Every graph replay has a distinct excluded 256 MiB L2 clear;
+  both arms share FP8 X/scales, routes and MXFP4 weights.
+- Correctness: PASS and identical to control at M8/M128, including embedded
+  multicast push and P2P two-shot.  The metric tuples remain exactly those
+  of Iterations 412/413.
+- M8: control/candidate medians are `73.920/142.400 us`, so candidate is
+  1.926x slower.  Candidate batch medians are stable at 140.816/143.712 us.
+  M128: medians are `302.176/653.648 us`, 2.163x slower.  A shared-system
+  disturbance affects one M128 batch on each arm in different replay slots,
+  but the clean minima (`300.768/645.888 us`) show the same large deficit.
+- Comparison: CTA batching cuts M8 from 3,442.128 to 142.400 us (-95.9%) and
+  M128 from 12,562.112 to 653.648 us (-94.8%) versus Iteration 413.  This
+  confirms fine global atomic claims were the prior dominant failure.
+  However CTA-level macro barriers and assigning an eight-tile W2 chunk to a
+  single CTA still serialize/underfill work enough to roughly double the
+  selected control latency; endpoint candidate/control geometric ratio is
+  2.041x.
+- Decision: reject the current CTA macro/chunk assignment as a performance
+  candidate while retaining its correctness checkpoint.  Before another
+  rewrite, profile compute-only M128 to separate CTA barrier/scheduler stalls
+  from lost W2 concurrency and cold W13/W2 bandwidth contention.
+- Evidence:
+  `bench/results/iter416_hopper_cta_pipeline_tp4_m8_m128_cold_screen_20260905.log`.

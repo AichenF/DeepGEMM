@@ -1,0 +1,61 @@
+ITER416_HOPPER_CTA_PIPELINE_TP4_COLD_SCREEN
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+gpus=0,1,2,3
+world_size=4
+source_commit=5152106
+route_pattern=random
+seed=20260904
+outer=2
+replays_per_outer_per_impl=10
+warmup_replays=2
+pair_granularity=replay
+l2_policy=separate 256MiB clear before every replay, clear excluded
+input_contract=shared prequantized FP8-E4M3 X plus FP32 group128 scale
+candidate=single-kernel Hopper-inspired CTA-local coarse L1/requant/W2 pipeline plus embedded allreduce
+control=selected same-source multi-kernel plus SGLang CustomAllReduceV2
+
+m8.active_experts=45
+m8.padded_rows=360
+m8.split_k=4
+m8.control_ar=multicast_push
+m8.candidate_ar=single_launch_multicast_push
+m8.control_batch_medians_ms=[0.07391999661922455,0.07388800010085106]
+m8.candidate_batch_medians_ms=[0.14081600308418274,0.14371199905872345]
+m8.control_min_median_max_ms=[0.07292799651622772,0.07391999661922455,2.507807970046997]
+m8.candidate_min_median_max_ms=[0.13942399621009827,0.14240000396966934,2.5704638957977295]
+m8.candidate_over_control=1.9264070682145438
+m8.speedup_control_over_candidate=0.5191010853831803
+m8.correctness_identical_to_control=true
+m8.allreduce_ok=true
+m8.cosine=0.9999956134440106
+m8.rel_l2=0.002961992178802094
+
+m128.active_experts=240
+m128.padded_rows=1944
+m128.split_k=2
+m128.control_ar=stock
+m128.candidate_ar=single_launch_p2p_two_shot
+m128.control_batch_medians_ms=[1.3843999803066254,0.3015519976615906]
+m128.candidate_batch_medians_ms=[0.6534400284290314,2.9398720264434814]
+m128.control_min_median_max_ms=[0.3007679879665375,0.30217599868774414,2.7577600479125977]
+m128.candidate_min_median_max_ms=[0.6458879709243774,0.6536480188369751,3.101855993270874]
+m128.candidate_over_control=2.163136786758591
+m128.speedup_control_over_candidate=0.4622916156395621
+m128.correctness_identical_to_control=true
+m128.allreduce_ok=true
+m128.cosine=0.999995608996884
+m128.rel_l2=0.0029634544238714383
+
+endpoint.control_geomean_ms=0.14945517321728558
+endpoint.candidate_geomean_ms=0.30508929918493
+endpoint.candidate_over_control=2.0413431841624883
+endpoint.speedup_control_over_candidate=0.48987353413104556
+comparison.iter413_fine_dag_m8_ms=3.44212806224823
+comparison.iter416_cta_pipeline_m8_ms=0.14240000396966934
+comparison.iter413_fine_dag_m128_ms=12.56211233139038
+comparison.iter416_cta_pipeline_m128_ms=0.6536480188369751
+decision=REJECT_current_CTA_macro_and_W2_chunk_assignment
+interpretation=CTA batching removes 95-96 percent of the rejected fine-DAG latency, confirming global per-WG claims were the dominant Iteration-413 failure, but CTA macro barriers and forcing each eight-WG CTA to own a full W2 chunk still roughly double endpoint latency versus control
+ITER416_HOPPER_CTA_PIPELINE_TP4_COLD_SCREEN_REJECTED
