@@ -10433,3 +10433,36 @@ maximum rank latency of a full CUDA-Graph replay.
   granularity rather than returning to global claims.
 - Evidence:
   `bench/results/iter420_static_wg_readiness_tp4_m8_m128_cold_screen_20260905.log`.
+
+## Iteration 421 — static-WG NCU localizes spill and named-barrier deficit
+
+- Date: 2026-09-05
+- Method: NCU 2025.3.1 on unchanged Iteration 418 compute-only M128
+  split-K2, exact monolithic-kernel filter, 18 kernel-replay passes, profiler
+  API delimiters, NCU cache/clock controls disabled, and application-provided
+  excluded 256 MiB L2 clear.  Correctness remains bitwise (`cosine=1`, rel-L2
+  `0`, finite), with 1,944 padded rows and `[2048,0,0,2048]` barrier words.
+- Result: duration `386.53 us`, compute `56.91%`, DRAM `44.29%`
+  (`2.13 TB/s`), no-eligible `43.20%`, 0.57 issued warp/scheduler/cycle,
+  1.41 eligible warps/scheduler and 50.01% achieved occupancy.  NCU still
+  attributes 5.3 of 14.08 cycles/issue (`37.57%`) to barriers; these are now
+  WG named barriers plus route/final grid synchronization rather than CTA
+  task-macro barriers.
+- Comparison: versus Iteration 417's CTA pipeline, duration improves
+  623.33→386.53 us and no-eligible 63.25→43.20%.  Versus Iteration 402's
+  mapped phase kernel, however, duration is 52.32 us higher, compute falls
+  63.78→56.91%, DRAM falls 51.19→44.29%, and no-eligible rises
+  35.74→43.20%.  Executed instructions grow only 3.6% (117.98M→122.25M),
+  but local spilling requests jump 33,600→107,201 (3.19x).
+- Diagnosis: the barrier-free static assignment is structurally much closer,
+  but per-WG scheduler/bitmask state remains live across calls, adds a 48-byte
+  stack, and the final-WG eight-route epilogue adds named-barrier imbalance.
+  Cold fine-grained W13/W2 mixing also lowers delivered bandwidth from 2.46
+  to 2.13 TB/s.  Removing global task atomics alone is insufficient.
+- Decision: next isolate loop-state liveness in shared memory and reduce
+  readiness polling/barrier frequency without changing static task ownership.
+  Retain phase scheduling as selected fallback.
+- Evidence:
+  `results/iter421_static_wg_readiness_m128_ncu_details_20260905.log`; binary
+  report `results/iter421_static_wg_readiness_m128_compute_full.ncu-rep`
+  remains outside git due to size.
