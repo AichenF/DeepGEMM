@@ -9782,3 +9782,25 @@ maximum rank latency of a full CUDA-Graph replay.
   `%smid` to the measured eight-task set or derive the hardware stripe.
 - Evidence:
   `results/iter395_cta_smid_nonblocking_mapping_20260905.log`.
+
+## Iteration 396 — add real-kernel SMID trace; launcher import failure
+
+- Date: 2026-09-05
+- Change: add compile-time `V4_SINGLE_LAUNCH_TRACE_SMID`.  After the existing
+  phase-3 W2 barrier, lane zero of each CTA writes `%smid` into the no-longer
+  live W13 `partials` scratch.  The compute-only profiler conditionally emits
+  the resulting per-SM block sets.  The flag participates in the JIT cache
+  key and defaults off, so production code generation is unchanged.
+- Intended protocol: GPU0, M8 random routes, seed 20260904, release grid
+  arrivals, valid-task elision and phase stamps; run both the real 624x128
+  and 78x1024 kernels with communication disabled and one excluded 256 MiB
+  cold-L2 clear.
+- Result: LAUNCHER FAIL before module import, JIT, or GPU work.  Invoking the
+  script by its `bench/` path omitted the repository root from `sys.path`,
+  producing `ModuleNotFoundError: No module named 'v4_flash_tp_wgmma'`.
+  There is no mapping, correctness, resource, or timing evidence yet.
+- Decision: retain the default-off trace implementation and repeat the exact
+  diagnostic with `PYTHONPATH=.`.  Do not alter kernel code for this launcher
+  failure.
+- Evidence:
+  `results/iter396_real_kernel_smid_trace_import_failure_20260905.log`.

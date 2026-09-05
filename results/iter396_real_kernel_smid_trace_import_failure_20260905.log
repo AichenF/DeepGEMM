@@ -1,0 +1,20 @@
+ITER396_REAL_KERNEL_SMID_TRACE
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+device=CUDA_VISIBLE_DEVICES=0
+source_change=default_off_compile_time_real_kernel_smid_trace
+input_contract=prequantized_FP8_E4M3_X_plus_FP32_group128_scale
+
+requested_modes=624x128,78x1024
+requested_m=8
+requested_route=random
+requested_seed=20260904
+compile=NOT_REACHED
+gpu_launch=NONE
+result=LAUNCHER_IMPORT_FAILURE
+error=ModuleNotFoundError: No module named 'v4_flash_tp_wgmma'
+cause=repository_root_missing_from_sys.path_when_invoked_as_bench_script
+fix=PYTHONPATH=.
+valid_mapping_evidence=false
+ITER396_REAL_KERNEL_SMID_TRACE_IMPORT_FAIL

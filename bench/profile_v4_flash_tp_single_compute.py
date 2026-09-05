@@ -216,6 +216,25 @@ def main() -> None:
                 strict=True,
             )
         )
+    smid_trace = None
+    if kernel.SINGLE_LAUNCH_TRACE_SMID:
+        trace_ctas = 78 * (
+            1
+            if kernel.SINGLE_LAUNCH_78CTA_8WG
+            else kernel.SINGLE_LAUNCH_CTAS_PER_SM
+        )
+        trace_values = (
+            case.partials.view(torch.int32).flatten()[:trace_ctas].cpu().tolist()
+        )
+        by_sm: dict[str, list[int]] = {}
+        for block, smid in enumerate(trace_values):
+            by_sm.setdefault(str(smid), []).append(block)
+        smid_trace = {
+            "ctas": trace_ctas,
+            "unique_sms": len(by_sm),
+            "counts": sorted(len(blocks) for blocks in by_sm.values()),
+            "by_sm": by_sm,
+        }
     accepted = bool(
         check["finite"] and check["cosine"] >= 0.999 and packed_wrap_ok
     )
@@ -230,6 +249,7 @@ def main() -> None:
                 "sm_count": props.multi_processor_count,
                 "l2_policy": "cold 256MiB clear outside profiled kernel",
                 "phase_stamps": kernel.SINGLE_LAUNCH_PHASE_STAMPS,
+                "smid_trace": smid_trace,
                 "bulk_reduce_routes_per_w2_task": (
                     kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES
                     if kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE

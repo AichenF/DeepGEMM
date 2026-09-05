@@ -198,6 +198,9 @@ if SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT and not SINGLE_LAUNCH_DUAL_WG_PHASES:
 SINGLE_LAUNCH_78CTA_8WG = (
     os.environ.get("V4_SINGLE_LAUNCH_78CTA_8WG", "0") == "1"
 )
+SINGLE_LAUNCH_TRACE_SMID = (
+    os.environ.get("V4_SINGLE_LAUNCH_TRACE_SMID", "0") == "1"
+)
 W2_NEEDS_ROUTE_MAP = (
     W2_SORTED_ACT
     or W2_MBLOCK_SCALE
@@ -1393,6 +1396,8 @@ static constexpr bool kSingleLaunchDualWgPrivateAct =
     K_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT;
 static constexpr bool kSingleLaunch78Cta8Wg =
     K_SINGLE_LAUNCH_78CTA_8WG;
+static constexpr bool kSingleLaunchTraceSmid =
+    K_SINGLE_LAUNCH_TRACE_SMID;
 static constexpr bool kSingleLaunchP2pTwoShot =
     K_SINGLE_LAUNCH_P2P_TWO_SHOT;
 static constexpr int kSingleLaunchP2pTwoShotBlocks =
@@ -6931,6 +6936,18 @@ void tp4_megamoe_single_launch_kernel(
         }
     }
 
+    // Diagnostic-only mapping trace.  The phase-3 barrier has retired every
+    // W2 reader of the W13 partial workspace, so it is safe to reuse its first
+    // gridDim.x int32 words without changing the public ABI or output.
+    if constexpr (kSingleLaunchTraceSmid) {
+        if (threadIdx.x == 0) {
+            uint32_t smid;
+            asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
+            reinterpret_cast<int32_t*>(partials)[cta] =
+                static_cast<int32_t>(smid);
+        }
+    }
+
     // The opt-in large-message path embeds CARv2-style P2P two-shot at
     // M64/M128.  Otherwise M128 uses the multicast-bound NVLS pull slab and
     // smaller messages retain the validated 78-CTA multicast push path.
@@ -9413,6 +9430,7 @@ _EXTENSION_CONFIG = (
           f"sldwgc{SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM}_"
           f"sldwgpa{int(SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT)}_"
           f"sl78x8{int(SINGLE_LAUNCH_78CTA_8WG)}_"
+          f"sltracesm{int(SINGLE_LAUNCH_TRACE_SMID)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"slp2p2{int(SINGLE_LAUNCH_P2P_TWO_SHOT)}_"
@@ -9675,6 +9693,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_78CTA_8WG="
             f"{int(SINGLE_LAUNCH_78CTA_8WG)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_TRACE_SMID="
+            f"{int(SINGLE_LAUNCH_TRACE_SMID)}"
         ),
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",
