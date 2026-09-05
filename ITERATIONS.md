@@ -13750,3 +13750,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Decision: retain the `.nsys-rep` as negative tooling evidence and repeat with `--cuda-graph-trace=node`; filter out the independently identified fill kernels and require exactly one `tp8_megamoe_single_launch_kernel` instance per rank.
 - Artifact: `bench/results/iter587_tp8_m32_single_launch_profile.nsys-rep`.
 - Evidence: `bench/evidence/iter587_tp8_launch_count_missing_graph_nodes.txt`.
+## Iteration 588 — Nsight proves one TP8 business kernel per rank (2026-09-05)
+
+- Method: repeat the eight-rank M32 profiler-range replay with Nsight Systems `--cuda-graph-trace=node:host-only`, then inspect `cuda_gpu_kern_sum`. The range intentionally contains one excluded cold-L2 clear immediately before one captured business-graph replay.
+- Result: **PASS one-launch requirement.** The trace contains exactly eight `tp8_megamoe_single_launch_kernel<4,32>` instances—one on each of eight ranks—and exactly eight `FillFunctor<int>` instances—the separately identified one-per-rank 256 MiB L2 clears. No route, GEMM, activation, local-combine, or standalone all-reduce kernel appears.
+- Interpretation: after excluding the benchmark-only clear, the entire per-rank TP8 MegaMoE path is one CUDA kernel node: route preparation + W13 + SwiGLU/FP8 requant + W2 + local top-k6 combine + NVLS all-reduce.
+- Timing qualification: profiler durations are instrumentation-perturbed and rank-skewed (`119.5–716.9 us`) and are not used as performance data.
+- Decision: TP8 functional and one-launch deliverables are now independently established. Return focus to TP4 performance and first verify the added TP8 symbols did not regress the selected TP4 cold-L2 binary/path.
+- Profile: `bench/results/iter588_tp8_m32_single_launch_node_profile.nsys-rep`.
+- Evidence: `bench/evidence/iter588_tp8_one_business_kernel_nsys.txt`.

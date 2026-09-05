@@ -1,0 +1,29 @@
+Iteration 588: TP8 one-business-kernel Nsight proof
+Date: 2026-09-05
+Tool: NVIDIA Nsight Systems 2026.3.1
+
+Profile configuration
+---------------------
+8 x H20, M32, split-K4, TP8 rank-local I256
+cudaProfilerApi capture range
+--cuda-graph-trace=node:host-only
+Range contents: one separate 256 MiB L2 clear, then one graph replay
+
+cuda_gpu_kern_sum
+-----------------
+Instances  Name
+8          tp8_megamoe_single_launch_kernel<4,32>
+8          at::native::vectorized_elementwise_kernel<...FillFunctor<int>...>
+
+No other GPU kernel name appears in the capture range.
+
+Conclusion
+----------
+There is exactly one TP8 business-kernel instance per rank. The eight fill
+kernels are the independently issued benchmark cold-L2 clears and are not
+part of the timed/business graph. Therefore route prep, W13, activation and
+requantization, W2, local k6 combine, and TP all-reduce execute in one CUDA
+kernel node on each TP8 rank.
+
+Profiler timing is excluded from performance claims because node tracing
+causes large cross-rank instrumentation skew.
