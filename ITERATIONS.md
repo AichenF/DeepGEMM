@@ -12743,3 +12743,31 @@ maximum rank latency of a full CUDA-Graph replay.
   flat/current baseline, so further TP-local route-pool work is still needed.
 - **Evidence:**
   `bench/results/iter528_native_tp_local_barriers_tp4_smoke_20260905.log`.
+## Iteration 529 — long A/B confirms TP-local barrier fixed-cost gain
+
+- **Protocol:** unchanged selected native versus TP-local barrier fast path in
+  one TP4 process on physical GPUs 0/5/6/7; random M8/M128, four balanced
+  whole-batch AB/BA rounds x fifty rank-max samples, five alternating
+  warmups, CUDA Graph, and a separate excluded 256 MiB L2 clear immediately
+  before every replay.  This provides 200 cold samples per variant/endpoint.
+- **Correctness:** **PASS bitwise** again at both endpoints across all ranks:
+  zero BF16 mismatches, relative L2 `0.0`, cosine at least
+  `0.9999999999999998`, all finite.
+- **Cold-L2 result (EP-barrier control / TP-local candidate median):** M8
+  `0.105776 -> 0.097520 ms`, **7.80% lower / 1.0847x**; M128
+  `0.417552 -> 0.410160 ms`, **1.77% lower / 1.0180x**.  Endpoint geometric
+  mean improves `0.210159 -> 0.199997 ms`, **4.84% lower / 1.0508x**.
+- **Stability:** M8 is unambiguous: every candidate batch median
+  (`0.097408–0.097664 ms`) is below every control batch median
+  (`0.105696–0.105920 ms`).  M128 drifts with shared system state and one of
+  four paired batches is adverse, so its 1.8% pooled gain is considered weak
+  alone; it does not offset or undermine the repeatable M8 fixed-cost win.
+- **Decision:** retain the exact fast path as the new native configuration and
+  make it the module default in a separately validated change.  It remains a
+  structural stepping stone, not the project winner: even the improved native
+  is still around 20 us slower than the current flat one-kernel at M8 and
+  roughly 58 us slower than the selected multi-kernel baseline.  Next remove
+  the TP-local rank-1 route self-pull overhead while preserving this barrier
+  reduction.
+- **Evidence:**
+  `bench/results/iter529_native_tp_local_barriers_tp4_long_20260905.log`.
