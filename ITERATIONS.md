@@ -13124,3 +13124,14 @@ maximum rank latency of a full CUDA-Graph replay.
   run all M values against the authoritative multi-kernel baseline.
 - **Evidence:**
   `bench/results/iter546_native_tp_local_route_combine_tp4_long_20260905.log`.
+
+## Iteration 547 — select combined TP-local tails as native defaults
+
+- **Change:** absent explicit environment overrides,
+  `V4_NATIVE_TP_LOCAL_ROUTE_BUILD` and
+  `V4_NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS` now resolve to enabled.  Both
+  retain explicit `0` controls for regression A/B.  The previously selected
+  TP-local barrier default remains enabled.
+- **Static result:** module AST parsing and exact default/override audit
+  **PASS**.  No default-entry CUDA correctness or timing is claimed yet.
+- **Evidence:** `bench/evidence/iter547_native_tp_local_defaults_static.txt`.

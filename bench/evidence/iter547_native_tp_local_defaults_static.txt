@@ -1,0 +1,9 @@
+Iteration 547 static audit: select TP-local route and combine defaults
+
+AST_PASS v4_flash_tp_native_megamoe.py
+route_default_on=True
+parallel_combine_default_on=True
+explicit_override_retained=True
+STATIC_DEFAULT_AUDIT_PASS
+
+No CUDA correctness or performance result is claimed here.
