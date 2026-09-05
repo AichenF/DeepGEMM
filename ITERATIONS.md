@@ -12590,3 +12590,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - State: allocate 78 persistent int32 counters only for this default-off experiment; there are no per-task atomics or additional grid barriers.
 - Static gate: local Python bytecode compilation passes for the kernel and both graph fixtures; preprocessor nesting and host scheduler sizing were inspected.
 - Decision: rebuild, verify resource usage and M8/M128 exact output, then time only if both pass.
+## Iteration 521 — runtime SM-striped resource and endpoint correctness gate
+
+- Date: 2026-09-05
+- Candidate: runtime per-SM modulo-eight slot assignment with assume-valid tasks and release-grid-arrival; production-shaped phase stamps/SMID trace disabled.
+- JIT/resource: PASS, extension `v4tp_c3f186643b0d89197242_v178mspec`. M64/M128 entries remain 64 registers, 32-byte stack, 4096-byte static shared memory and zero fixed local allocation; M8/M16/M32 use 61 registers with the same stack/shared/local footprint. Eight-CTA/SM admission is preserved.
+- Correctness: exact compute-only reference PASS at M8/split-K4 and M128/split-K2. M8 cosine 1.0, rel-L2 0.0, finite, padded rows 368. M128 cosine 1.0000000000000002, rel-L2 0.0, finite, padded rows 2008. All four packed phase words advance cleanly.
+- L2 policy: each candidate check follows the fixture's separate excluded 256 MiB cold-L2 clear.
+- Decision: resource and endpoint gates pass; run a short replay-interleaved TP4 cold-L2 M8/M128 screen next.
+- Evidence: `results/iter521_sm_striped_resource_correctness_m8_m128_20260905.log`.
