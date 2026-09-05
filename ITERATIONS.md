@@ -11213,3 +11213,34 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/evidence/iter454_native_two_cta_m128_ncu_capture.txt` and
   `results/iter454_native_two_cta_m128_profile.ncu-rep`.
+
+## Iteration 455 — two-CTA profile confirms remaining Hopper role stalls
+
+- **Evidence source:** read-only import of the committed Iteration-454 NCU
+  report; no GPU kernel was launched.  The target report used profiler cache
+  control `all` and the same prequantized input contract as the accepted
+  candidate.
+- **Top-level result:** local M128 duration is `407.36 us`, memory throughput
+  `2.54 TB/s`, compute throughput `61.58%`, L2 hit rate `57.45%`, and executed
+  instructions `122,937,311` with zero local spills.  The 156x384 launch uses
+  80 initial registers/thread and 102.40 KiB dynamic shared memory/CTA.
+- **Residency/scheduler result:** achieved occupancy is exactly `37.50%`
+  (`24.00` warps/SM), eligible warps/scheduler are `1.19`, and no-eligible is
+  still `40.19%`.  Versus the identically profiled one-CTA body, occupancy
+  effectively doubles, duration falls `25.08%`, bandwidth rises `33.68%`, and
+  no-eligible falls `15.75` percentage points while instruction count changes
+  only `0.11%`.  This independently supports the graph-level large-M gain.
+- **Source correlation:** the largest native-body not-issued row is the
+  dispatch cleanup/grid-sync scope at line 695 (`1,174` samples).  The packed
+  exponent/LUT/word dependency rows at 1010-1022 contribute the next major
+  cluster (`1,278` samples across the listed rows), followed by the batched
+  K128 GMMA wait at 1061 (`142`), the producer empty barrier at 736 (`95`),
+  and L1-arrival polling at 727 (`78`).
+- **Interpretation/decision:** two CTA residency is a valid Hopper-native
+  improvement but leaves substantial scheduler starvation.  The next bounded
+  experiment should reduce the final cleanup/grid rendezvous scope or overlap
+  packed-MXFP4 operand preparation.  Do not apply Blackwell TMEM/tcgen05
+  assumptions, and do not run the all-shape formal gate yet.
+- **Evidence:**
+  `bench/evidence/iter455_native_two_cta_m128_ncu_details.txt` and
+  `bench/evidence/iter455_native_two_cta_m128_ncu_analysis.txt`.

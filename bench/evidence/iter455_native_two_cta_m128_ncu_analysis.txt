@@ -1,0 +1,62 @@
+Iteration 455 read-only analysis of:
+  results/iter454_native_two_cta_m128_profile.ncu-rep
+
+Target:
+  Hopper/SM90 native MegaMoE, local M128, 156x384 cooperative grid,
+  V4_NATIVE_REGISTER_DEQUANT=1, V4_NATIVE_RS_K128_BATCH=1,
+  V4_NATIVE_TWO_CTA_PER_SM=1, NCU cache-control=all.
+
+Top-level metrics:
+  duration_us=407.36
+  memory_throughput_TBps=2.54
+  memory_throughput_pct=70.59
+  dram_throughput_pct=52.82
+  compute_throughput_pct=61.58
+  l2_hit_rate_pct=57.45
+  registers_per_thread=80
+  dynamic_smem_KB_per_CTA=102.40
+  theoretical_occupancy_pct=37.50
+  achieved_occupancy_pct=37.50
+  active_warps_per_SM=24.00
+  eligible_warps_per_scheduler=1.19
+  issued_warps_per_scheduler=0.60
+  no_eligible_pct=40.19
+  executed_instructions=122937311
+  local_spill_requests=0
+
+Comparison with the one-CTA report from Iteration 303:
+  duration: 543.74 -> 407.36 us (-25.08%)
+  memory throughput: 1.90 -> 2.54 TB/s (+33.68%)
+  compute throughput: 45.54 -> 61.58% (+16.04 percentage points)
+  achieved occupancy: 18.78 -> 37.50% (+18.72 points, effectively doubled)
+  no eligible: 55.94 -> 40.19% (-15.75 points)
+  executed instructions: 122800200 -> 122937311 (+0.11%, effectively unchanged)
+  L2 hit rate: 57.45 -> 57.45% (unchanged)
+
+Largest source-correlated not-issued sample rows in
+v4_flash_tp_native_body.inl (3610 total source-row samples):
+  line 695  dispatch cleanup/grid-sync scope                 1174
+  line 1015 packed-row exponent load                          408
+  line 1022 second E8M0 LUT lookup                             255
+  line 1019 first E8M0 LUT lookup                              244
+  line 1061 batched K128 warpgroup_wait                        142
+  line 1010 first packed-word load                             138
+  line 1013 second packed-word load                            120
+  line 1017 second exponent load                               113
+  line 736  producer empty-barrier wait                         95
+  line 727  L1 arrival polling                                 78
+
+Interpretation:
+  Two resident CTAs remove a real occupancy/starvation limit without changing
+  useful instruction work, explaining the 20.24% M128 CUDA-Graph improvement.
+  It is not saturated: 40.19% of scheduler cycles still have no eligible warp.
+  The remaining sampled pressure is split between the final dispatch cleanup
+  rendezvous and the serial packed-MXFP4/exponent/LUT dependency chain feeding
+  RS-WGMMA.  The next bounded experiment should target the Hopper cleanup/grid
+  synchronization scope or overlap the packed-row operand preparation; it
+  should not introduce Blackwell-specific TMEM/tcgen05 machinery.
+
+Caveat:
+  NCU sampling duration is not substituted for the same-process TP4 graph
+  latency.  Only relative counters versus the identically profiled one-CTA
+  body are used here.  The committed .ncu-rep remains the full source of truth.
