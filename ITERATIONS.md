@@ -13650,3 +13650,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Decision: retain the flat kernel as the fastest single-launch optimization base, but do not claim a win. This long run disproves the earlier hope that merely reverting from the native Hopper topology closes the baseline gap; the remaining deficit grows with M and is primarily in the fused GEMM schedule.
 - Raw log: `bench/results/iter575_flat_best_tp4_allm_cold_long_20260905.log`
 - Evidence: `bench/evidence/iter575_flat_best_tp4_allm_cold_long.txt`
+## Iteration 576 — flat single-launch compute phase stamps, M8/M128 cold-L2 (2026-09-05)
+
+- Purpose: locate the remaining loss inside the faster flat one-kernel path without conflating it with TP communication. The same selected release-arrival and valid-task fast paths were used, and every profiled launch was preceded by the separate 256 MiB cold-L2 clear.
+- Configuration: physical GPU 1, TP-local intermediate=512, random routes, five fresh-process samples per endpoint, collective disabled only for this phase diagnostic. The kernel still performs route construction, W13, SwiGLU/requant, and W2 in one launch.
+- Correctness: all 10 runs accepted; output versus the selected local multi-kernel reference is bit-exact (`cosine=1.0`, `rel_l2=0.0`).
+- M8 (`padded_rows=344`, split-K4) median phase times: route 2.272 us, W13 40.576 us, activation/requant 3.232 us, W2 21.280 us; stamped compute-body sum 67.360 us.
+- M128 (`padded_rows=1992`, split-K2) median phase times: route 4.064 us, W13 208.096 us, activation/requant 6.496 us, W2 104.736 us; stamped compute-body sum 323.392 us.
+- Interpretation: route and activation together are only 5.5 us at M8 and 10.6 us at M128. W13+W2 consume 91.8% and 96.7% of the stamped body respectively, so another route/barrier micro-optimization cannot close the 6.8–13.5% end-to-end gap. Optimization must improve GEMM residency/task throughput or eliminate the phased GEMM penalty.
+- Raw log: `bench/results/iter576_flat_phase_stamps_m8_m128_cold_20260905.log`
+- Evidence: `bench/evidence/iter576_flat_phase_stamps_m8_m128_cold.txt`
