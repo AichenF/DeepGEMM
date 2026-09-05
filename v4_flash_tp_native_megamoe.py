@@ -55,6 +55,9 @@ NATIVE_TILE_WEIGHT_SCALE_TMA = (
 NATIVE_SINGLE_L1_WARMUP_WAVE = (
     os.environ.get("V4_NATIVE_SINGLE_L1_WARMUP_WAVE", "0") == "1"
 )
+NATIVE_DUAL_ACTIVE_DISPATCH = (
+    os.environ.get("V4_NATIVE_DUAL_ACTIVE_DISPATCH", "0") == "1"
+)
 if NATIVE_TWO_CTA_PER_SM and not NATIVE_REGISTER_DEQUANT:
     raise ValueError(
         "V4_NATIVE_TWO_CTA_PER_SM requires V4_NATIVE_REGISTER_DEQUANT=1"
@@ -536,6 +539,9 @@ _CUDA = r"""
 #ifndef K_NATIVE_SINGLE_L1_WARMUP_WAVE
 #define K_NATIVE_SINGLE_L1_WARMUP_WAVE 0
 #endif
+#ifndef K_NATIVE_DUAL_ACTIVE_DISPATCH
+#define K_NATIVE_DUAL_ACTIVE_DISPATCH 0
+#endif
 
 using namespace deep_gemm;
 
@@ -824,7 +830,10 @@ v4_flash_tp4_native_megamoe_impl(
     constexpr float kActivationClamp = cute::numeric_limits<float>::infinity();
     constexpr bool kFastMath = true;
     constexpr bool kSwapABRequested = true;
-    constexpr bool kSingleActiveDispatchWarp = true;
+    // The Hopper reference selects both dispatch warps for some larger-M
+    // plans.  Keep the TP-local default unchanged while allowing an isolated
+    // A/B of the otherwise idle second warp.
+    constexpr bool kSingleActiveDispatchWarp = !K_NATIVE_DUAL_ACTIVE_DISPATCH;
     constexpr bool kUseMode2RowDecoder = true;
     constexpr bool kUseInterleavedScheduler = true;
     constexpr uint32_t kHidden = 4096;
@@ -1215,6 +1224,7 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_SPLIT_WEIGHT_SCALE_TMA))
         + str(int(NATIVE_TILE_WEIGHT_SCALE_TMA))
         + str(int(NATIVE_SINGLE_L1_WARMUP_WAVE))
+        + str(int(NATIVE_DUAL_ACTIVE_DISPATCH))
     ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
@@ -1229,6 +1239,7 @@ _ext = load_inline(
         f"swt{int(NATIVE_SPLIT_WEIGHT_SCALE_TMA)}_"
         f"twt{int(NATIVE_TILE_WEIGHT_SCALE_TMA)}_"
         f"l1w1{int(NATIVE_SINGLE_L1_WARMUP_WAVE)}_"
+        f"dad{int(NATIVE_DUAL_ACTIVE_DISPATCH)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
@@ -1267,6 +1278,10 @@ _ext = load_inline(
         (
             "-DK_NATIVE_SINGLE_L1_WARMUP_WAVE="
             f"{int(NATIVE_SINGLE_L1_WARMUP_WAVE)}"
+        ),
+        (
+            "-DK_NATIVE_DUAL_ACTIVE_DISPATCH="
+            f"{int(NATIVE_DUAL_ACTIVE_DISPATCH)}"
         ),
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",

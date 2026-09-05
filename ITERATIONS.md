@@ -12610,3 +12610,26 @@ maximum rank latency of a full CUDA-Graph replay.
 - Comparison: versus Iteration 504's retained flat candidate, remapping regresses absolute latency by 6.08% at M8 (0.079504 to 0.084336 ms) and 2.93% at M128 (0.352272 to 0.362608 ms).
 - Interpretation/decision: balancing the ordinal remainder does not improve the critical tail; the one-time atomics plus changed per-SM weight-task mix reduce throughput more than any tail-balance gain. Reject and keep default-off. Current best remains the unremapped flat schedule.
 - Evidence: `results/iter522_sm_striped_tp4_m8_m128_short_20260905.log`.
+## Iteration 523 — wire Hopper-reference dual active dispatch diagnostic
+
+- **Hypothesis/change:** the Hopper SM90 heuristic selects both dispatch warps
+  for some M32/M128 plans, while the current TP-local native specialization
+  hard-codes one active warp and leaves the second as barrier/alignment-only.
+  Add default-off `V4_NATIVE_DUAL_ACTIVE_DISPATCH=1` and a same-process native
+  variant A/B.  The flag changes only `kSingleActiveDispatchWarp`; W13/W2
+  math, scheduler, numerical epilogues, communication and default behavior
+  remain unchanged.
+- **Design boundary:** this is a bounded diagnostic, not the proposed final TP
+  route design.  If it does not improve both M8/M128 materially, stop tuning
+  dispatch-warp count and replace the inherited rank-1 EP self-pull/combine
+  path with TP-local direct route fill/reduction.
+- **Test:** local Python bytecode compilation for
+  `v4_flash_tp_native_megamoe.py` and
+  `bench/v4_flash_tp_native_layout_ab.py`, followed by an exact grep audit of
+  the Python flag, C++ macro, JIT identity/cflag and A/B metadata wiring.
+- **Result:** **PASS static gate.**  Both files compile; the control explicitly
+  forces one active dispatch warp and the `dual_dispatch` candidate forces
+  two under distinct JIT module identities.  No CUDA build, correctness or
+  latency result is claimed yet.
+- **Evidence:**
+  `bench/evidence/iter523_native_dual_dispatch_static.txt`.

@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=20260902)
     parser.add_argument(
         "--experiment",
-        choices=("tile_tma", "single_l1_warmup"),
+        choices=("tile_tma", "single_l1_warmup", "dual_dispatch"),
         default="tile_tma",
     )
     args = parser.parse_args()
@@ -60,6 +60,7 @@ def load_native_variant(
     *,
     tile_tma: bool = False,
     single_l1_warmup_wave: bool = False,
+    dual_active_dispatch: bool = False,
 ) -> ModuleType:
     source = Path(__file__).resolve().parents[1] / "v4_flash_tp_native_megamoe.py"
     saved = {
@@ -68,6 +69,7 @@ def load_native_variant(
             "V4_NATIVE_TILE_WEIGHT_SCALE_TMA",
             "V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA",
             "V4_NATIVE_SINGLE_L1_WARMUP_WAVE",
+            "V4_NATIVE_DUAL_ACTIVE_DISPATCH",
         )
     }
     try:
@@ -75,6 +77,9 @@ def load_native_variant(
         os.environ["V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA"] = "0"
         os.environ["V4_NATIVE_SINGLE_L1_WARMUP_WAVE"] = str(
             int(single_l1_warmup_wave)
+        )
+        os.environ["V4_NATIVE_DUAL_ACTIVE_DISPATCH"] = str(
+            int(dual_active_dispatch)
         )
         spec = importlib.util.spec_from_file_location(alias, source)
         if spec is None or spec.loader is None:
@@ -165,21 +170,32 @@ def main() -> None:
         "v4_native_variant_control",
         tile_tma=False,
         single_l1_warmup_wave=False,
+        dual_active_dispatch=False,
     )
     if args.experiment == "tile_tma":
         candidate_module = load_native_variant(
             "v4_native_variant_tile_tma",
             tile_tma=True,
             single_l1_warmup_wave=False,
+            dual_active_dispatch=False,
         )
         benchmark_name = "native_80b_vs_single_tile_tma"
-    else:
+    elif args.experiment == "single_l1_warmup":
         candidate_module = load_native_variant(
             "v4_native_variant_single_l1_warmup",
             tile_tma=False,
             single_l1_warmup_wave=True,
+            dual_active_dispatch=False,
         )
         benchmark_name = "native_two_vs_one_l1_warmup_wave"
+    else:
+        candidate_module = load_native_variant(
+            "v4_native_variant_dual_dispatch",
+            tile_tma=False,
+            single_l1_warmup_wave=False,
+            dual_active_dispatch=True,
+        )
+        benchmark_name = "native_single_vs_dual_active_dispatch"
     control_weights = make_variant_weights(
         control_module, intermediate_per_rank, device, args.seed, rank
     )
@@ -223,6 +239,12 @@ def main() -> None:
                     ),
                     "candidate_single_l1_warmup_wave": (
                         candidate_module.NATIVE_SINGLE_L1_WARMUP_WAVE
+                    ),
+                    "control_dual_active_dispatch": (
+                        control_module.NATIVE_DUAL_ACTIVE_DISPATCH
+                    ),
+                    "candidate_dual_active_dispatch": (
+                        candidate_module.NATIVE_DUAL_ACTIVE_DISPATCH
                     ),
                 },
                 sort_keys=True,

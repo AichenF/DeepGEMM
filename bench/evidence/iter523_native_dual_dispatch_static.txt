@@ -1,0 +1,14 @@
+Iteration 523 static wiring gate (2026-09-05)
+
+Command:
+  python3 -m py_compile v4_flash_tp_native_megamoe.py bench/v4_flash_tp_native_layout_ab.py
+  rg -n "DUAL_ACTIVE_DISPATCH|dual_dispatch|dad" v4_flash_tp_native_megamoe.py bench/v4_flash_tp_native_layout_ab.py
+
+Result: PASS (exit 0)
+
+Verified wiring:
+- V4_NATIVE_DUAL_ACTIVE_DISPATCH defaults to 0.
+- K_NATIVE_DUAL_ACTIVE_DISPATCH is present in CUDA fallback definitions.
+- kSingleActiveDispatchWarp is the compile-time inverse of the diagnostic.
+- The flag participates in the source hash, extension name, and nvcc cflags.
+- The same-process A/B control forces 0 and dual_dispatch candidate forces 1.
