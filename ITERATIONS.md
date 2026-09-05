@@ -10853,3 +10853,23 @@ maximum rank latency of a full CUDA-Graph replay.
   a runtime deadlock.  Reject this candidate and localize the phase-call
   interaction before any cold-L2 timing.
 - **Evidence:** `bench/evidence/iter440_full_stripe_correctness_timeout.txt`.
+
+## Iteration 441 — synccheck finds no malformed barrier before deadlock
+
+- **Hypothesis:** if the outlined device calls changed named-barrier
+  participation, Compute Sanitizer synccheck should report a divergent or
+  invalid barrier on the first target launch.
+- **Change:** no source change; diagnostic profile of the rejected Iteration
+  439/440 binary.  Static preprocessing also verified that the H20 SMID map is
+  a complete permutation of all 624 logical WG workers.
+- **Test:** synccheck on only the mangled TP4 single-launch kernel, one checked
+  launch, force-blocking, M8 random all-route input, outer timeout 120 seconds.
+- **Result:** **timeout 124**.  Sanitizer printed only its startup banner and no
+  divergent-barrier, invalid-barrier, or WGMMA error.
+- **Analysis:** evidence favors a legal synchronization wait that cannot make
+  forward progress (a program-level dependency cycle), not a malformed named
+  barrier or a hole in the SMID mapping.  The Hopper reference avoids this
+  model: fixed CTA roles consume a common interleaved two-stage task stream and
+  the L1 epilogue publishes L2 readiness.  Revert this full-stripe schedule
+  before continuing.
+- **Evidence:** `bench/evidence/iter441_full_stripe_synccheck.txt`.

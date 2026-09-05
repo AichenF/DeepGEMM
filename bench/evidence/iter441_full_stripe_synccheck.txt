@@ -1,0 +1,45 @@
+Iteration 441: synccheck diagnosis of full-stripe runtime deadlock
+Date: 2026-09-05
+Target: TP4 H20 single-launch WG-DAG M8
+
+Static checks before the run
+----------------------------
+- Parsed kH20LogicalWorkerBySm from the source: 624 entries, 624 unique,
+  minimum 0, maximum 623, no missing values and no duplicates.
+- SASS for the M8 SplitK=4 main specialization contains three real
+  CALL.REL.NOINC instructions for the outlined W13, activation, and W2 phases.
+
+Sanitizer command
+-----------------
+timeout 120s compute-sanitizer \
+  --tool synccheck \
+  --kernel-name kns=_Z32tp4_megamoe_single_launch_kernel \
+  --launch-count 1 \
+  --force-blocking-launches \
+  python bench/profile_v4_flash_tp_single_compute.py \
+    --m 8 --route-pattern random --seed 20260904
+
+Selected environment
+--------------------
+CUDA_VISIBLE_DEVICES=1
+TORCH_CUDA_ARCH_LIST=9.0a
+V4_SINGLE_LAUNCH_78CTA_8WG=1
+V4_SINGLE_LAUNCH_78CTA_SMID_MAP=1
+V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+
+Result
+------
+FAIL/TIMEOUT: exit status 124 after 120 seconds.  The only sanitizer output was
+the COMPUTE-SANITIZER startup banner.  No divergent-barrier, invalid-barrier,
+or warpgroup-MMA error was emitted before timeout.
+
+Interpretation
+--------------
+The logical-worker table is a complete permutation, and synccheck did not
+identify malformed named-barrier participation.  Evidence therefore favors a
+program-level cyclic readiness wait / progress failure in the all-W13 then
+all-activation then all-W2 static ownership model.  This differs materially
+from the Hopper megamoe_nvfp4_dev_m design, whose CTA has fixed producer,
+A-loader, B-loader, and math/epilogue roles consuming one interleaved two-stage
+mailbox, with L1 epilogues publishing L2 readiness.  The full-stripe candidate
+remains rejected.
