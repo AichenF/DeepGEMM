@@ -1,0 +1,27 @@
+ITERATION 470 — native default formal-entry failure
+
+Date: 2026-09-05
+Host/container: H20-GPU-06 / dpskv4_h20_weekly_gap_20260727
+Branch/HEAD: tpmegamoe_single_launch / e303a44
+Physical GPUs: 0,1,2,3
+
+Command:
+  CUDA_VISIBLE_DEVICES=0,1,2,3 TORCH_CUDA_ARCH_LIST=9.0a \
+  DG_JIT_CACHE_DIR=/tmp/dg_jit_h20 PYTHONUNBUFFERED=1 \
+  PYTHONPATH=<repo>:<humming> \
+  torchrun --standalone --nproc-per-node=4 \
+    bench/v4_flash_tp_single_vs_multi_graph.py \
+    --candidate native --ms 8,16,32,64,128 \
+    --route-pattern random --outer 10 --replays 200 \
+    --warmup-replays 20 --pair-granularity batch
+
+No V4_NATIVE_* environment override was supplied.
+
+Observed on every rank before extension compilation or CUDA graph capture:
+  ValueError: V4_NATIVE_NORMALIZED_WEIGHT_SCALE requires register dequant
+
+Cause:
+  V4_NATIVE_NORMALIZED_WEIGHT_SCALE default = 1
+  V4_NATIVE_REGISTER_DEQUANT default = 0
+
+Verdict: FAIL; zero correctness or latency samples were produced.

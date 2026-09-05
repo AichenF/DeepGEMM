@@ -11623,3 +11623,26 @@ maximum rank latency of a full CUDA-Graph replay.
   on a benchmark-only environment override.
 - **Evidence:**
   `bench/evidence/iter469_native_normalized_default_m8_gate.txt`.
+
+## Iteration 470 — formal all-M entry exposes inconsistent native defaults
+
+- **Purpose/protocol:** attempt the required TP4 formal current-HEAD comparison
+  on physical GPUs 0–3 with random routes and M=`8,16,32,64,128`: same-process
+  native single-launch versus selected multi-kernel control, CUDA Graph,
+  `10x200` rank-max samples, twenty warmups, and an excluded 256 MiB L2 clear
+  immediately before every timed replay.  No native feature environment
+  overrides were supplied, so this also audits the Iteration-469 public
+  defaults.
+- **Result:** **FAIL before compilation, CUDA graph capture, correctness, or
+  timing.**  All four ranks raise `ValueError: V4_NATIVE_NORMALIZED_WEIGHT_SCALE
+  requires register dequant` while importing `v4_flash_tp_native_megamoe.py`.
+- **Root cause:** Iteration 469 made normalized weight scale default-on, while
+  `V4_NATIVE_REGISTER_DEQUANT` still defaults off.  The selected native path is
+  therefore internally valid when prior test commands explicitly enable
+  register dequant, but the default benchmark entry is not runnable.
+- **Decision:** record the failed attempt without a performance claim.  The
+  next iteration must make the selected dependency pair internally consistent,
+  validate the no-override local entry, and only then retry the exact formal
+  command.
+- **Evidence:**
+  `bench/evidence/iter470_native_default_formal_entry_failure.txt`.
