@@ -13603,3 +13603,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Decision: reject as a global default. The small-M win is repeatable, but large-M is unstable and predominantly regressive. Retain only as a possible M-specific specialization.
 - Evidence: `bench/evidence/iter569_native_fold_w2_scale_tp4_cold_long.txt`
 - Raw log: `bench/results/iter569_native_fold_w2_scale_tp4_cold_long_20260905.log`
+## Iteration 570 — add native two-K64 RS commit-group experiment
+
+- **Hypothesis/change:** the selected native register-dequant loop prepares four K32 operand fragments for two N64 halves and places all eight RS-WGMMA operations in one K128 commit group.  Add default-off `V4_NATIVE_RS_K64_COMMIT_GROUPS=1` to commit after each pair of K32 steps, producing two four-instruction K64 groups.  Accumulator registers remain owned by the async proxy and unread until the same final `wait_group 0`; weights, scale math, K128 promotion, task schedule, CTA geometry and TP tail are unchanged.
+- **Isolation/harness:** add same-process `--experiment rs_k64_commit`.  Control is the selected K128 grouping and candidate changes only group boundaries; both retain selected TP-local barriers, route build, parallel combine, identical seeded data and independently cold CUDA-graph replay.
+- **Static result:** **PASS.** Python bytecode compilation succeeds for the launcher and A/B harness. Environment validation, macro, source hash/name/cflag, two device commit sites, experiment selection and metadata wiring are all present.
+- **Decision:** no CUDA or timing claim yet. Run deterministic local M8/M128 full-output hash gates before a TP4 screen.
+- **Evidence:** `bench/evidence/iter570_native_rs_k64_commit_static.txt`.

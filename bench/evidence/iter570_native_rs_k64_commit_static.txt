@@ -1,0 +1,19 @@
+Iteration 570 — native RS two-K64 commit-group experiment, static gate
+
+Date: 2026-09-05
+
+Hypothesis
+- The selected register-dequant path issues eight RS-WGMMA instructions for one K128 tile and commits them only after all four K32 operand-dequant chains have run.
+- Splitting this into two four-instruction K64 commit groups may let the first group enter the asynchronous GMMA queue while the second K64 operands are prepared, without changing tile bytes, accumulator ownership, activation-scale application, task order, CTA geometry, or communication.
+
+Change
+- Added default-off `V4_NATIVE_RS_K64_COMMIT_GROUPS=1`, valid only with register dequant and the selected K128 batching.
+- Candidate executes one `warpgroup_commit_batch()` after K32 indices 0–1 and another after indices 2–3, then performs the same final operand fence and `wait_group 0` before reading accumulators.
+- Added same-process `rs_k64_commit` TP4 A/B experiment. Both arms retain selected TP-local barriers, route build, parallel combine, weights, routes, CUDA-graph path, and cold-L2 protocol.
+
+Static verification
+- `python3 -m py_compile v4_flash_tp_native_megamoe.py bench/v4_flash_tp_native_layout_ab.py`: PASS.
+- Environment validation, CUDA macro default, source hash, extension identity, compile definition, device commit sites, experiment choice, selected-control wiring, candidate wiring, and metadata fields are present.
+
+Decision
+- Static gate passes. No CUDA compilation, numerical claim, or performance claim yet. Next run deterministic local M=8 and M=128 output-hash gates before distributed timing.

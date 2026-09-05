@@ -31,6 +31,9 @@ NATIVE_REGISTER_DEQUANT = (
 NATIVE_RS_K128_BATCH = (
     os.environ.get("V4_NATIVE_RS_K128_BATCH", "1") == "1"
 )
+NATIVE_RS_K64_COMMIT_GROUPS = (
+    os.environ.get("V4_NATIVE_RS_K64_COMMIT_GROUPS", "0") == "1"
+)
 NATIVE_TWO_CTA_PER_SM = (
     os.environ.get("V4_NATIVE_TWO_CTA_PER_SM", "1") == "1"
 )
@@ -111,6 +114,12 @@ if NATIVE_RS_HALF_PREFETCH and not (
 ):
     raise ValueError(
         "V4_NATIVE_RS_HALF_PREFETCH requires register dequant and K128 batching"
+    )
+if NATIVE_RS_K64_COMMIT_GROUPS and not (
+    NATIVE_REGISTER_DEQUANT and NATIVE_RS_K128_BATCH
+):
+    raise ValueError(
+        "V4_NATIVE_RS_K64_COMMIT_GROUPS requires register dequant and K128 batching"
     )
 if NATIVE_NORMALIZED_WEIGHT_SCALE and not NATIVE_REGISTER_DEQUANT:
     raise ValueError(
@@ -558,6 +567,9 @@ _CUDA = r"""
 #endif
 #ifndef K_NATIVE_RS_K128_BATCH
 #define K_NATIVE_RS_K128_BATCH 0
+#endif
+#ifndef K_NATIVE_RS_K64_COMMIT_GROUPS
+#define K_NATIVE_RS_K64_COMMIT_GROUPS 0
 #endif
 #ifndef K_NATIVE_TWO_CTA_PER_SM
 #define K_NATIVE_TWO_CTA_PER_SM 0
@@ -1319,6 +1331,7 @@ _SOURCE_HASH = hashlib.sha1(
         ).hexdigest()
         + str(int(NATIVE_REGISTER_DEQUANT))
         + str(int(NATIVE_RS_K128_BATCH))
+        + str(int(NATIVE_RS_K64_COMMIT_GROUPS))
         + str(int(NATIVE_TWO_CTA_PER_SM))
         + str(int(NATIVE_SKIP_CLEANUP_GRID_SYNC))
         + str(int(NATIVE_RS_HALF_PREFETCH))
@@ -1344,6 +1357,7 @@ _ext = load_inline(
     name=(
         f"v4tp_native_megamoe_rd{int(NATIVE_REGISTER_DEQUANT)}_"
         f"kb{int(NATIVE_RS_K128_BATCH)}_"
+        f"k64cg{int(NATIVE_RS_K64_COMMIT_GROUPS)}_"
         f"cta2{int(NATIVE_TWO_CTA_PER_SM)}_"
         f"scg{int(NATIVE_SKIP_CLEANUP_GRID_SYNC)}_"
         f"hp{int(NATIVE_RS_HALF_PREFETCH)}_"
@@ -1379,6 +1393,10 @@ _ext = load_inline(
         "-lineinfo",
         f"-DK_NATIVE_REGISTER_DEQUANT={int(NATIVE_REGISTER_DEQUANT)}",
         f"-DK_NATIVE_RS_K128_BATCH={int(NATIVE_RS_K128_BATCH)}",
+        (
+            "-DK_NATIVE_RS_K64_COMMIT_GROUPS="
+            f"{int(NATIVE_RS_K64_COMMIT_GROUPS)}"
+        ),
         f"-DK_NATIVE_TWO_CTA_PER_SM={int(NATIVE_TWO_CTA_PER_SM)}",
         (
             "-DK_NATIVE_SKIP_CLEANUP_GRID_SYNC="

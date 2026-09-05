@@ -1397,6 +1397,15 @@
                                     cute::SM90::GMMA::ScaleOut::One);
                             }
                         }
+                        // Commit the first K64 half while the consumer lanes
+                        // prepare the second half's packed MXFP4 operands.
+                        // Both groups keep the same accumulator registers and
+                        // remain unread until the final wait below.
+                        if constexpr (K_NATIVE_RS_K128_BATCH &&
+                                      K_NATIVE_RS_K64_COMMIT_GROUPS) {
+                            if ((k & 1u) == 1u)
+                                ptx::warpgroup_commit_batch();
+                        }
                         if constexpr (!K_NATIVE_RS_K128_BATCH) {
                             ptx::warpgroup_commit_batch();
                             #pragma unroll
@@ -1412,7 +1421,8 @@
                     }
 
                     if constexpr (K_NATIVE_RS_K128_BATCH) {
-                        ptx::warpgroup_commit_batch();
+                        if constexpr (!K_NATIVE_RS_K64_COMMIT_GROUPS)
+                            ptx::warpgroup_commit_batch();
                         #pragma unroll
                         for (uint32_t half = 0;
                              half < kSwapABWeightHalves; ++ half) {

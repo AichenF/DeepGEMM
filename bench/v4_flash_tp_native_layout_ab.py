@@ -48,6 +48,7 @@ def parse_args() -> argparse.Namespace:
             "fold_global_scales",
             "fold_w13_scale",
             "fold_w2_scale",
+            "rs_k64_commit",
             "dual_dispatch",
             "tp_local_barriers",
             "tp_local_dispatch",
@@ -84,6 +85,7 @@ def load_native_variant(
     fold_global_scales: bool = False,
     fold_w13_scale: bool = False,
     fold_w2_scale: bool = False,
+    rs_k64_commit_groups: bool = False,
     dual_active_dispatch: bool = False,
     tp_local_barrier_fastpath: bool = False,
     tp_local_dispatch_fastpath: bool = False,
@@ -102,6 +104,7 @@ def load_native_variant(
             "V4_NATIVE_FOLD_GLOBAL_SCALES",
             "V4_NATIVE_FOLD_W13_GLOBAL_SCALE",
             "V4_NATIVE_FOLD_W2_GLOBAL_SCALE",
+            "V4_NATIVE_RS_K64_COMMIT_GROUPS",
             "V4_NATIVE_DUAL_ACTIVE_DISPATCH",
             "V4_NATIVE_TP_LOCAL_BARRIER_FASTPATH",
             "V4_NATIVE_TP_LOCAL_DISPATCH_FASTPATH",
@@ -125,6 +128,9 @@ def load_native_variant(
         )
         os.environ["V4_NATIVE_FOLD_W2_GLOBAL_SCALE"] = str(
             int(fold_w2_scale)
+        )
+        os.environ["V4_NATIVE_RS_K64_COMMIT_GROUPS"] = str(
+            int(rs_k64_commit_groups)
         )
         os.environ["V4_NATIVE_DUAL_ACTIVE_DISPATCH"] = str(
             int(dual_active_dispatch)
@@ -242,6 +248,7 @@ def main() -> None:
         "fold_w13_scale",
         "fold_w2_scale",
     )
+    gemm_experiment = args.experiment == "rs_k64_commit"
     control_module = load_native_variant(
         "v4_native_variant_control",
         tile_tma=False,
@@ -250,15 +257,33 @@ def main() -> None:
         dual_active_dispatch=False,
         tp_local_barrier_fastpath=(
             dispatch_experiment or warmup_experiment or scale_fold_experiment
+            or gemm_experiment
         ),
         tp_local_dispatch_fastpath=False,
         tp_local_direct_copy=False,
-        tp_local_route_build=warmup_experiment or scale_fold_experiment,
+        tp_local_route_build=(
+            warmup_experiment or scale_fold_experiment or gemm_experiment
+        ),
         tp_local_parallel_combine_chunks=(
-            warmup_experiment or scale_fold_experiment
+            warmup_experiment or scale_fold_experiment or gemm_experiment
         ),
     )
-    if args.experiment in ("fold_w13_scale", "fold_w2_scale"):
+    if args.experiment == "rs_k64_commit":
+        candidate_module = load_native_variant(
+            "v4_native_variant_rs_k64_commit",
+            tile_tma=False,
+            single_l1_warmup_wave=False,
+            l1_warmup_waves=0,
+            rs_k64_commit_groups=True,
+            dual_active_dispatch=False,
+            tp_local_barrier_fastpath=True,
+            tp_local_dispatch_fastpath=False,
+            tp_local_direct_copy=False,
+            tp_local_route_build=True,
+            tp_local_parallel_combine_chunks=True,
+        )
+        benchmark_name = "native_k128_vs_two_k64_commit_groups"
+    elif args.experiment in ("fold_w13_scale", "fold_w2_scale"):
         fold_w13 = args.experiment == "fold_w13_scale"
         fold_w2 = args.experiment == "fold_w2_scale"
         candidate_module = load_native_variant(
@@ -493,6 +518,12 @@ def main() -> None:
                     ),
                     "candidate_fold_w2_global_scale": (
                         candidate_module.NATIVE_FOLD_W2_GLOBAL_SCALE
+                    ),
+                    "control_rs_k64_commit_groups": (
+                        control_module.NATIVE_RS_K64_COMMIT_GROUPS
+                    ),
+                    "candidate_rs_k64_commit_groups": (
+                        candidate_module.NATIVE_RS_K64_COMMIT_GROUPS
                     ),
                     "control_dual_active_dispatch": (
                         control_module.NATIVE_DUAL_ACTIVE_DISPATCH
