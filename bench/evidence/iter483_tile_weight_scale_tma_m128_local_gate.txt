@@ -1,0 +1,17 @@
+ITERATION 483 — one-transaction tile TMA local M128 gate
+
+Configuration:
+  physical H20 GPU1; deterministic local M128
+  V4_NATIVE_TILE_WEIGHT_SCALE_TMA=1
+
+Observed:
+  finite=true
+  max_abs=296960.0
+  weighted_fc1_cosine=0.9996428551534735
+  weighted_fc1_rel_l2=0.027105235872160963
+  output_sha256=2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5
+
+Selected 80-byte M128 control hash (Iteration 478):
+  2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5
+
+Verdict: PASS full-output bitwise equality at M128.

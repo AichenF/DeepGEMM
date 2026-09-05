@@ -11955,3 +11955,21 @@ maximum rank latency of a full CUDA-Graph replay.
   before TP4 communication or latency testing.
 - **Evidence:**
   `bench/evidence/iter482_tile_weight_scale_tma_m8_local_gate.txt`.
+
+## Iteration 483 — one-transaction tile TMA passes local M128 hash gate
+
+- **Candidate/protocol:** unchanged committed Iteration-482 tile-TMA source on
+  physical H20 GPU1, deterministic local M128, with the tile switch enabled
+  and selected normalized/register-dequant/K128/two-CTA defaults.
+- **Result:** **PASS full-output bitwise equality.**  Output is finite,
+  maximum magnitude is `296,960`, and complete BF16 SHA-256 is exactly the
+  selected 80-byte control value
+  `2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5`.
+  The run also reports weighted FC1 cosine/relative-L2
+  `0.9996428552/0.0271052359`; mutable intermediate-pool fields remain
+  explicitly excluded by the Iterations 476–478 audit.
+- **Decision:** combined with Iteration 482, accept local bitwise correctness
+  at both endpoints.  Keep the candidate default-off and proceed to TP4 graph
+  plus embedded-communication validation before timing.
+- **Evidence:**
+  `bench/evidence/iter483_tile_weight_scale_tma_m128_local_gate.txt`.
