@@ -10491,3 +10491,25 @@ maximum rank latency of a full CUDA-Graph replay.
   TP-disabled all-route M8/M128 correctness before timing or NCU.
 - Evidence:
   `results/iter422_static_activation_wg_jit_resource_20260905.log`.
+
+## Iteration 423 — deterministic activation-WG dependency correctness
+
+- Date: 2026-09-05
+- Protocol: unchanged Iteration 422 binary on H20 GPU0, random routes with
+  seed 20260904, TP disabled, and an independent excluded 256 MiB cold-L2
+  clear.  Compare all routed W2 rows against the selected local multi-kernel
+  pipeline rather than sampling block zero.
+- Result: PASS bitwise at M8 split-K4 (360 padded rows, cosine
+  `0.9999999999999999`, rel-L2 `0`, finite) and M128 split-K2 (1,944 padded
+  rows, cosine `1`, rel-L2 `0`, finite).  Packed generation words remain
+  `[2048,0,0,2048]` at both endpoints.
+- Interpretation: W13 release-published group flags, deterministic activation
+  WG acquire, serialized eight-row SwiGLU/FP8 work, four-group mblock
+  publication and W2 acquire preserve exact selected semantics.  The zero
+  phase-1/2 words confirm that correctness did not come from restoring a
+  whole-grid barrier between the two GEMMs.
+- Decision: correctness gate PASS.  Commit the evidence, then run the TP4
+  replay-interleaved M8/M128 cold-L2 screen with the embedded multicast and
+  P2P two-shot paths.
+- Evidence:
+  `results/iter423_static_activation_wg_compute_correctness_20260905.log`.
