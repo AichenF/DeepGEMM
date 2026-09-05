@@ -12943,3 +12943,20 @@ maximum rank latency of a full CUDA-Graph replay.
   justified target is the local k6 combine tail rather than more route code.
 - **Evidence:**
   `bench/evidence/iter537_native_tp_local_barrier_m8_ncu_analysis.txt`.
+
+## Iteration 538 — add isolated TP-local route-build experiment
+
+- **Change:** added default-off `V4_NATIVE_TP_LOCAL_ROUTE_BUILD`.  In the
+  candidate path each real route claims its final expert slot with one 32-bit
+  global atomic and writes the source token/top-k index directly.  After the
+  existing local grid publication, CTA0 writes the finalized per-expert count
+  and scheduler arrival tag.  The selected TP-local barrier fast path, Hopper
+  TMA token/SF pull, GEMMs, combine and TP all-reduce are unchanged.
+- **Control:** retained generic EP route construction, including the
+  per-CTA/per-expert 64-bit arrival/count atomics.  The same-process harness
+  adds `--experiment tp_local_route_build`; both arms enable the already
+  selected local barriers and differ only in route construction.
+- **Static result:** Python AST parsing and exact env/macro/JIT/body/harness
+  wiring checks **PASS**.  CUDA compilation, correctness and timing are not
+  claimed yet.
+- **Evidence:** `bench/evidence/iter538_tp_local_route_build_static.txt`.

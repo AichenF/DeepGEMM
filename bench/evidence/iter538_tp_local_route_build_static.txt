@@ -1,0 +1,15 @@
+Iteration 538 static audit: TP-local route-build experiment
+
+AST_PASS v4_flash_tp_native_megamoe.py
+AST_PASS bench/v4_flash_tp_native_layout_ab.py
+env_flag=True
+cuda_macro=True
+jit_hash_name_cflag=True
+per_route_atomic=True
+generic_control_retained=True
+finalized_count_publish=True
+ab_choice=True
+ab_candidate_only=True
+STATIC_AUDIT_PASS
+
+No CUDA compilation, correctness, or performance result is claimed here.

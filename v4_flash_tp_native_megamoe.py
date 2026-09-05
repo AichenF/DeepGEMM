@@ -67,6 +67,9 @@ NATIVE_TP_LOCAL_DISPATCH_FASTPATH = (
 NATIVE_TP_LOCAL_DIRECT_COPY = (
     os.environ.get("V4_NATIVE_TP_LOCAL_DIRECT_COPY", "0") == "1"
 )
+NATIVE_TP_LOCAL_ROUTE_BUILD = (
+    os.environ.get("V4_NATIVE_TP_LOCAL_ROUTE_BUILD", "0") == "1"
+)
 if NATIVE_TP_LOCAL_DIRECT_COPY and not NATIVE_TP_LOCAL_DISPATCH_FASTPATH:
     raise ValueError(
         "V4_NATIVE_TP_LOCAL_DIRECT_COPY requires the TP-local dispatch fast path"
@@ -563,6 +566,9 @@ _CUDA = r"""
 #endif
 #ifndef K_NATIVE_TP_LOCAL_DIRECT_COPY
 #define K_NATIVE_TP_LOCAL_DIRECT_COPY 0
+#endif
+#ifndef K_NATIVE_TP_LOCAL_ROUTE_BUILD
+#define K_NATIVE_TP_LOCAL_ROUTE_BUILD 0
 #endif
 
 using namespace deep_gemm;
@@ -1250,6 +1256,7 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_TP_LOCAL_BARRIER_FASTPATH))
         + str(int(NATIVE_TP_LOCAL_DISPATCH_FASTPATH))
         + str(int(NATIVE_TP_LOCAL_DIRECT_COPY))
+        + str(int(NATIVE_TP_LOCAL_ROUTE_BUILD))
     ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
@@ -1268,6 +1275,7 @@ _ext = load_inline(
         f"tlb{int(NATIVE_TP_LOCAL_BARRIER_FASTPATH)}_"
         f"tld{int(NATIVE_TP_LOCAL_DISPATCH_FASTPATH)}_"
         f"tlc{int(NATIVE_TP_LOCAL_DIRECT_COPY)}_"
+        f"tlr{int(NATIVE_TP_LOCAL_ROUTE_BUILD)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
@@ -1320,6 +1328,7 @@ _ext = load_inline(
             f"{int(NATIVE_TP_LOCAL_DISPATCH_FASTPATH)}"
         ),
         f"-DK_NATIVE_TP_LOCAL_DIRECT_COPY={int(NATIVE_TP_LOCAL_DIRECT_COPY)}",
+        f"-DK_NATIVE_TP_LOCAL_ROUTE_BUILD={int(NATIVE_TP_LOCAL_ROUTE_BUILD)}",
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",
     ],

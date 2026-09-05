@@ -527,29 +527,51 @@
             }
         };
 
-        // Count tokens per expert
-        read_topk_idx([&](const uint32_t& token_topk_idx, const int& expert_idx) {
-            atomicAdd_block(smem_expert_count + expert_idx, 1);
-        });
-        ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
+        if constexpr (K_NATIVE_TP_LOCAL_ROUTE_BUILD) {
+            // Pure TP has one logical routing rank.  Claim the final local
+            // expert slot directly for each real route.  This replaces the
+            // generic EP protocol's one 64-bit global atomic for every
+            // (persistent CTA, expert) pair with one 32-bit atomic per route.
+            read_topk_idx([&](const uint32_t& token_topk_idx,
+                              const int& expert_idx) {
+                auto* slot_count = reinterpret_cast<uint32_t*>(
+                    workspace.get_expert_send_count_ptr(expert_idx));
+                const uint32_t dst_slot_idx = atomicAdd(slot_count, 1u);
+                *workspace.get_src_token_topk_idx_ptr(
+                    expert_idx, 0, dst_slot_idx) = token_topk_idx;
+            });
+        } else {
+            // Count tokens per expert
+            read_topk_idx([&](const uint32_t& token_topk_idx,
+                              const int& expert_idx) {
+                atomicAdd_block(smem_expert_count + expert_idx, 1);
+            });
+            ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
 
-        // Stake out per-expert SM offsets via global atomic
-        #pragma unroll
-        for (uint32_t i = thread_idx; i < kNumExperts; i += kNumDispatchThreads) {
-            const uint64_t send_value = (1ull << 32) | static_cast<uint64_t>(smem_expert_count[i]);
-            smem_expert_count[i] = static_cast<uint32_t>(
-                ptx::atomic_add(workspace.get_expert_send_count_ptr(i), send_value));
+            // Stake out per-expert SM offsets via global atomic
+            #pragma unroll
+            for (uint32_t i = thread_idx; i < kNumExperts;
+                 i += kNumDispatchThreads) {
+                const uint64_t send_value =
+                    (1ull << 32) |
+                    static_cast<uint64_t>(smem_expert_count[i]);
+                smem_expert_count[i] = static_cast<uint32_t>(ptx::atomic_add(
+                    workspace.get_expert_send_count_ptr(i), send_value));
+            }
+            ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
+
+            // Write source token-topk indices to remote ranks
+            read_topk_idx([&](const uint32_t& token_topk_idx,
+                              const int& expert_idx) {
+                const auto dst_rank_idx = expert_idx / kNumExpertsPerRank;
+                const auto dst_slot_idx =
+                    atomicAdd_block(smem_expert_count + expert_idx, 1);
+                const auto dst_ptr = workspace.get_src_token_topk_idx_ptr(
+                    expert_idx % kNumExpertsPerRank, sym_buffer.rank_idx,
+                    dst_slot_idx);
+                *sym_buffer.map(dst_ptr, dst_rank_idx) = token_topk_idx;
+            });
         }
-        ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
-
-        // Write source token-topk indices to remote ranks
-        read_topk_idx([&](const uint32_t& token_topk_idx, const int& expert_idx) {
-            const auto dst_rank_idx = expert_idx / kNumExpertsPerRank;
-            const auto dst_slot_idx = atomicAdd_block(smem_expert_count + expert_idx, 1);
-            const auto dst_ptr = workspace.get_src_token_topk_idx_ptr(
-                expert_idx % kNumExpertsPerRank, sym_buffer.rank_idx, dst_slot_idx);
-            *sym_buffer.map(dst_ptr, dst_rank_idx) = token_topk_idx;
-        });
 
         comm::grid_sync<kNumSMs, kDispatchGridSyncIndex>(
             workspace, sm_idx, thread_idx,
@@ -561,13 +583,30 @@
             for (uint32_t i = thread_idx; i < kNumExperts; i += kNumActiveDispatchThreads) {
                 const auto dst_rank_idx = i / kNumExpertsPerRank;
                 const auto dst_local_expert_idx = i % kNumExpertsPerRank;
-                const auto expert_status = *workspace.get_expert_send_count_ptr(i);
-                *sym_buffer.map(
-                    workspace.get_expert_recv_count_ptr(sym_buffer.rank_idx, dst_local_expert_idx),
-                    dst_rank_idx) = expert_status & 0xffffffff;
-                ptx::atomic_add_sys(
-                    sym_buffer.map(workspace.get_expert_recv_count_sum_ptr(dst_local_expert_idx), dst_rank_idx),
-                    expert_status);
+                if constexpr (K_NATIVE_TP_LOCAL_ROUTE_BUILD) {
+                    const uint32_t expert_count =
+                        *reinterpret_cast<const uint32_t*>(
+                            workspace.get_expert_send_count_ptr(i));
+                    *workspace.get_expert_recv_count_ptr(
+                        0, dst_local_expert_idx) = expert_count;
+                    *workspace.get_expert_recv_count_sum_ptr(
+                        dst_local_expert_idx) =
+                        (static_cast<uint64_t>(kNumSMs) << 32) |
+                        expert_count;
+                } else {
+                    const auto expert_status =
+                        *workspace.get_expert_send_count_ptr(i);
+                    *sym_buffer.map(
+                        workspace.get_expert_recv_count_ptr(
+                            sym_buffer.rank_idx, dst_local_expert_idx),
+                        dst_rank_idx) = expert_status & 0xffffffff;
+                    ptx::atomic_add_sys(
+                        sym_buffer.map(
+                            workspace.get_expert_recv_count_sum_ptr(
+                                dst_local_expert_idx),
+                            dst_rank_idx),
+                        expert_status);
+                }
             }
         }
         ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
