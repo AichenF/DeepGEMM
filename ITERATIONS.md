@@ -9257,3 +9257,21 @@ maximum rank latency of a full CUDA-Graph replay.
   load/store counts; then run compute correctness if the intended boundary is
   present.
 - **Artifact:** `bench/results/iter375_w2_phase_noinline_bound9_resource_20260905.log`.
+
+## Iteration 376 — whole-W2-phase outline call/local-op audit (2026-09-05)
+
+- **Purpose:** Verify that Iteration 375 emitted one phase-level device call
+  rather than silently inlining it or reintroducing the rejected per-tile ABI
+  boundary.
+- **Method:** Disassembled the exact M=128/split-K2 bound-9 main kernel from
+  the OFF and ON cubins and counted main-function instructions, calls and
+  local-memory opcodes.
+- **Result:** OFF has 4,472 instructions, two pre-existing calls to the same
+  `0x11050` communication helper, four LDL and three STL. ON has 4,496
+  instructions, the same four LDL/three STL counts, two relocated existing
+  calls to `0x11200`, and exactly one added call at PC `0x9100` to `0xc030`.
+  There is no per-W2-tile call and no added main-function local load/store.
+- **Decision:** The intended one-call-per-CTA phase boundary and strict
+  no-added-local-op gate both pass. Advance to cold-L2 compute-only M=8/M=128
+  correctness and phase timing before distributed timing.
+- **Artifact:** `bench/results/iter376_w2_phase_noinline_call_audit_20260905.log`.

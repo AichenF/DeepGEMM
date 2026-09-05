@@ -1,0 +1,9 @@
+W2_PHASE_CALL_AUDIT tag=6de438c1bf2f09a040c1 so=/tmp/torch_ext_v4_tp/v4tp_6de438c1bf2f09a040c1_v178mspec/v4tp_6de438c1bf2f09a040c1_v178mspec.so
+instructions=4472 calls=2 ldl=4 stl=3
+        /*8810*/                   CALL.REL.NOINC 0x11050 ;                                             /* 0x00000088000c7944 */
+        /*8c50*/                   CALL.REL.NOINC 0x11050 ;                                             /* 0x0000008000fc7944 */
+W2_PHASE_CALL_AUDIT tag=c959450d9b20c50c6867 so=/tmp/torch_ext_v4_tp/v4tp_c959450d9b20c50c6867_v178mspec/v4tp_c959450d9b20c50c6867_v178mspec.so
+instructions=4496 calls=3 ldl=4 stl=3
+        /*88a0*/                   CALL.REL.NOINC 0x11200 ;                                             /* 0x0000008800547944 */
+        /*8ce0*/                   CALL.REL.NOINC 0x11200 ;                                             /* 0x0000008400447944 */
+        /*9100*/                   CALL.REL.NOINC 0xc030 ;                                              /* 0x0000002c00c87944 */
