@@ -436,6 +436,17 @@
 
     const auto produce_interleaved_blocks = [&](auto&& func) {
         interleaved_scheduler.fetch_expert_recv_count();
+        // TP4 has four L1 N tasks and sixteen L2 N tasks per BM8 pool
+        // block.  One 156-CTA L1 claim wave therefore completes the first
+        // 39 pool blocks, while the following L2 wave can touch only the
+        // first ten.  One L1-only wave is consequently sufficient to avoid
+        // a producer/consumer claim cycle and allows W2 to overlap the
+        // residual W13 tail.  Keep TP8 and the default path unchanged.
+        if constexpr (K_NATIVE_SINGLE_L1_WARMUP_WAVE &&
+                      kIntermediateHidden == 512) {
+            interleaved_scheduler.num_l1_warmup_waves = cute::min(
+                interleaved_scheduler.num_l1_warmup_waves, 1u);
+        }
         while (true) {
             interleaved_scheduler.wait_task_slot_empty();
             const auto task_info = interleaved_scheduler.claim_next_task();

@@ -12103,3 +12103,35 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/evidence/iter488_native_layout_same_process_long.txt` and raw log
   `bench/results/iter488_native_layout_same_process_long_20260905.log`.
+
+## Iteration 489 — one-wave W13 warmup passes M8 output but probe exits nonzero
+
+- **Hypothesis/change:** add default-off
+  `V4_NATIVE_SINGLE_L1_WARMUP_WAVE=1`.  In the selected TP4 Hopper mailbox
+  scheduler, clamp the B-producer's generic two-wave L1-only warmup to one
+  wave.  One 156-task W13 wave completes 39 BM8 pool blocks, whereas the next
+  156-task W2 wave touches at most the first ten, so W2 can overlap the
+  residual W13 tail without a task-claim dependency cycle.  TP8 and all task
+  bodies, TMA stages, numerical epilogues, communication and cleanup are
+  unchanged.  The new flag is included in JIT identity and graph metadata.
+- **Protocol:** physical H20 GPU1, deterministic local M8, selected
+  normalized/register-dequant/K128/two-CTA configuration plus the new flag,
+  with a 360-second outer timeout.  Static Python compilation, the full local
+  output gate, and an appended occupancy query were executed in one command.
+- **Kernel result:** **PASS progress and bitwise output.**  The launch returns
+  normally, all routing-input diagnostics are exact, output is finite with
+  maximum magnitude `55,040`, and full BF16 SHA-256 is the selected value
+  `6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5`.
+  Weighted FC1 cosine/relative-L2 remain
+  `0.9996428552/0.0271052359`.
+- **Harness failure:** the final `python -c` occupancy print lost the string
+  quotes through nested shell escaping and raised `NameError` before reporting
+  active blocks.  The overall command therefore exits nonzero even though the
+  kernel correctness gate passed.  M128, TP4 graph and performance were not
+  run.
+- **Decision:** preserve the exact partial-pass source.  Next run a corrected
+  standalone occupancy/resource query, then extend correctness to M128 before
+  any timing.
+- **Evidence:**
+  `bench/evidence/iter489_native_single_l1_warmup_m8_local.txt` and raw log
+  `bench/results/iter489_native_single_l1_warmup_m8_local_20260905.log`.

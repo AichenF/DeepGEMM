@@ -233,6 +233,10 @@ def main() -> None:
                         native_kernel
                         and native_kernel.NATIVE_TILE_WEIGHT_SCALE_TMA
                     ),
+                    "native_single_l1_warmup_wave": bool(
+                        native_kernel
+                        and native_kernel.NATIVE_SINGLE_L1_WARMUP_WAVE
+                    ),
                     "single_launch_interleaved": (
                         kernel.SINGLE_LAUNCH_INTERLEAVED
                     ),

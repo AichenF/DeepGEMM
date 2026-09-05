@@ -52,6 +52,9 @@ NATIVE_SPLIT_WEIGHT_SCALE_TMA = (
 NATIVE_TILE_WEIGHT_SCALE_TMA = (
     os.environ.get("V4_NATIVE_TILE_WEIGHT_SCALE_TMA", "0") == "1"
 )
+NATIVE_SINGLE_L1_WARMUP_WAVE = (
+    os.environ.get("V4_NATIVE_SINGLE_L1_WARMUP_WAVE", "0") == "1"
+)
 if NATIVE_TWO_CTA_PER_SM and not NATIVE_REGISTER_DEQUANT:
     raise ValueError(
         "V4_NATIVE_TWO_CTA_PER_SM requires V4_NATIVE_REGISTER_DEQUANT=1"
@@ -529,6 +532,9 @@ _CUDA = r"""
 #endif
 #ifndef K_NATIVE_TILE_WEIGHT_SCALE_TMA
 #define K_NATIVE_TILE_WEIGHT_SCALE_TMA 0
+#endif
+#ifndef K_NATIVE_SINGLE_L1_WARMUP_WAVE
+#define K_NATIVE_SINGLE_L1_WARMUP_WAVE 0
 #endif
 
 using namespace deep_gemm;
@@ -1208,6 +1214,7 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_RS_SCALE_WORD_CACHE))
         + str(int(NATIVE_SPLIT_WEIGHT_SCALE_TMA))
         + str(int(NATIVE_TILE_WEIGHT_SCALE_TMA))
+        + str(int(NATIVE_SINGLE_L1_WARMUP_WAVE))
     ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
@@ -1221,6 +1228,7 @@ _ext = load_inline(
         f"swc{int(NATIVE_RS_SCALE_WORD_CACHE)}_"
         f"swt{int(NATIVE_SPLIT_WEIGHT_SCALE_TMA)}_"
         f"twt{int(NATIVE_TILE_WEIGHT_SCALE_TMA)}_"
+        f"l1w1{int(NATIVE_SINGLE_L1_WARMUP_WAVE)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
@@ -1255,6 +1263,10 @@ _ext = load_inline(
         (
             "-DK_NATIVE_TILE_WEIGHT_SCALE_TMA="
             f"{int(NATIVE_TILE_WEIGHT_SCALE_TMA)}"
+        ),
+        (
+            "-DK_NATIVE_SINGLE_L1_WARMUP_WAVE="
+            f"{int(NATIVE_SINGLE_L1_WARMUP_WAVE)}"
         ),
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",

@@ -1,0 +1,32 @@
+ITERATION 489 — one-wave native scheduler M8 local gate
+
+Change:
+  Add default-off V4_NATIVE_SINGLE_L1_WARMUP_WAVE.  TP4 clamps the generic
+  Hopper interleaved scheduler from two L1-only claim waves to the proven-safe
+  minimum of one, allowing W2 tasks for already-complete pool blocks to
+  overlap the remaining W13 claims.
+
+Protocol:
+  Physical H20 GPU1; deterministic local M8; 360-second timeout
+  normalized scale, register dequant, K128 batching, 156x384 two-CTA launch
+
+Kernel correctness result:
+  finite=true
+  max_abs=55040.0
+  l1_x_mismatch_bytes=0
+  l1_sf_max_abs=0.0
+  l1_weight_max_abs=0.0
+  weighted_fc1_cosine=0.9996428551534735
+  weighted_fc1_rel_l2=0.027105235872160963
+  output_sha256=6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5
+
+Harness result:
+  The kernel completed and its full output is bitwise identical to control.
+  The appended occupancy print then failed with:
+    NameError: name 'NATIVE_ACTIVE_BLOCKS_PER_SM' is not defined
+  Nested shell quoting removed the intended Python string quotes.  Therefore
+  this iteration is recorded as a partial pass/nonzero command, with no
+  occupancy, M128, distributed correctness, or performance claim.
+
+Verdict:
+  Preserve source; repair only the resource query in the next committed gate.
