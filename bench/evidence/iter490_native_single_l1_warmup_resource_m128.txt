@@ -1,0 +1,28 @@
+ITERATION 490 — one-wave scheduler resource and M128 gate
+
+Candidate:
+  Unchanged Iteration-489 V4_NATIVE_SINGLE_L1_WARMUP_WAVE=1 source with
+  normalized scale, register dequant, K128 batching and 156x384 two-CTA grid.
+
+Protocol:
+  Physical H20 GPU1
+  corrected native_tp4_active_blocks_per_sm query
+  deterministic local M128 with 360-second timeout
+
+Resource result:
+  active_blocks_per_sm=2
+
+Authoritative M128 result:
+  finite=true
+  max_abs=296960.0
+  output_sha256=2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5
+
+Diagnostic exclusion:
+  Post-launch mutable pool fields report l1_x_mismatch_bytes=2074450 and
+  weighted_fc1_cosine=-0.0119888217.  Iterations 476–478 proved that this host
+  reconstruction is invalid at M128 even on the selected control.  It is not
+  a correctness oracle; the immutable complete output matches bitwise.
+
+Verdict:
+  PASS two-CTA residency and local endpoint correctness.  Proceed to TP4
+  same-process graph/communication validation before latency selection.

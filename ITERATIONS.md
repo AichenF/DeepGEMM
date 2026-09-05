@@ -12135,3 +12135,30 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/evidence/iter489_native_single_l1_warmup_m8_local.txt` and raw log
   `bench/results/iter489_native_single_l1_warmup_m8_local_20260905.log`.
+
+## Iteration 490 — one-wave scheduler retains two-CTA residency and M128 bits
+
+- **Candidate/protocol:** unchanged committed Iteration-489 source on physical
+  H20 GPU1 with `V4_NATIVE_SINGLE_L1_WARMUP_WAVE=1` and all selected native
+  defaults.  Run the corrected occupancy API query, then deterministic local
+  M128 under a 360-second timeout.  No performance timing or TP communication
+  is included.
+- **Resource result:** **PASS.**
+  `native_tp4_active_blocks_per_sm()` returns `2`, proving the candidate keeps
+  the required two cooperative CTAs per H20 SM with its 384-thread/102.4-KiB
+  launch.
+- **Correctness/progress:** **PASS authoritative full output.**  M128 returns
+  normally, is finite with maximum magnitude `296,960`, and complete BF16
+  SHA-256 is exactly the selected-control value
+  `2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5`.
+- **Diagnostic caveat:** the mutable post-kernel route-pool reconstruction
+  again reports changing mismatches and negative intermediate cosine.  The
+  Iterations 476–478 audit proved these fields invalid at M128 even for the
+  bitwise selected control, so they are excluded; the immutable complete
+  output hash is the gate.
+- **Decision:** admit local M8/M128 correctness and residency.  Next add/use a
+  same-process selected-native versus one-wave-native TP4 graph harness, first
+  for exact output and embedded communication, then cold-L2 latency.
+- **Evidence:**
+  `bench/evidence/iter490_native_single_l1_warmup_resource_m128.txt` and raw
+  log `bench/results/iter490_native_single_l1_warmup_resource_m128_20260905.log`.
