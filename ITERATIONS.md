@@ -13631,3 +13631,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Stability:** both paired batches favor K64 at both M values. M8 paired gains are only `0.160/0.384 us`; M128 gains are `1.248/7.184 us`, with the latter clearly affected by timing-regime drift.
 - **Decision:** promising but not selected. Run a 4x50 same-process confirmation; the expected effect is small and the M128 pooled gain may be inflated by drift.
 - **Evidence:** `bench/evidence/iter573_native_rs_k64_commit_tp4_cold_screen.txt` and `bench/results/iter573_native_rs_k64_commit_tp4_cold_screen_20260905.log`.
+## Iteration 574 — long TP4 window rejects two-K64 RS groups
+
+- **Protocol:** unchanged selected K128-group versus two-K64-group same-process TP4 A/B on physical GPUs 0,5,6,7; random M8/M128; four balanced AB/BA batches x fifty rank-max samples; five warmups; CUDA Graph; independent excluded 256 MiB cold-L2 clear before every replay.
+- **Correctness:** **PASS bitwise** again at both endpoints and all ranks.
+- **M8:** control `0.091536 ms`, candidate `0.091392 ms`, nominal `1.00158x` (+0.158%). Paired candidate-minus-control deltas are `+0.032/-0.544/-0.112/-0.048 us`, so the effect is noise-sized.
+- **M128:** control `0.396592 ms`, candidate `0.403600 ms`, candidate **1.736% slower** (`0.98264x`). Every paired batch regresses, by `14.608/5.872/10.208/6.128 us`.
+- **Aggregate/decision:** endpoint geometric mean regresses `0.190532 -> 0.192057 ms` (`-0.794%`). **Reject** and keep `V4_NATIVE_RS_K64_COMMIT_GROUPS=0`; the short-screen M128 gain did not reproduce. Retain one K128 commit group as selected.
+- **Evidence:** `bench/evidence/iter574_native_rs_k64_commit_tp4_cold_long.txt` and `bench/results/iter574_native_rs_k64_commit_tp4_cold_long_20260905.log`.

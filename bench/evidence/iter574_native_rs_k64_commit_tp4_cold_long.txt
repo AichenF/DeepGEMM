@@ -1,0 +1,32 @@
+Iteration 574 — native RS two-K64 commit groups, TP4 cold-L2 long confirmation
+
+Date: 2026-09-05
+GPUs: physical 0,5,6,7 (TP4)
+Protocol: same-process balanced CUDA-graph A/B, random M=8,128, 4 outer batches × 50 measured replays, 5 warmup replays
+Cache: separate excluded 256 MiB cold-L2 clear immediately before every measured replay
+Raw log: bench/results/iter574_native_rs_k64_commit_tp4_cold_long_20260905.log
+
+Correctness
+- M=8 and M=128: cosine=1, relative L2=0, BF16 mismatches=0, all ranks finite.
+
+M=8 (rank-max ms)
+- candidate batch medians: 0.09142400324344635, 0.0912960022687912, 0.09148800000548363, 0.09139200299978256
+- candidate min/median/max: 0.08905600011348724 / 0.09139200299978256 / 0.11795199662446976
+- control batch medians: 0.09139200299978256, 0.091839998960495, 0.09159999713301659, 0.09144000336527824
+- control min/median/max: 0.0896959975361824 / 0.09153599664568901 / 0.16870400309562683
+- speedup=1.0015755606746772 (+0.158%). Candidate-minus-control paired deltas: +0.032, -0.544, -0.112, -0.048 us. This is noise-sized.
+
+M=128 (rank-max ms)
+- candidate batch medians: 0.3816159963607788, 0.40352000296115875, 0.4029120057821274, 0.41579200327396393
+- candidate min/median/max: 0.3652159869670868 / 0.4036000072956085 / 0.4193919897079468
+- control batch medians: 0.3670080006122589, 0.39764800667762756, 0.3927040100097656, 0.40966400504112244
+- control min/median/max: 0.36508798599243164 / 0.39659200608730316 / 0.4121600091457367
+- speedup=0.9826362708582101 (-1.736%). Candidate is slower in all four paired batches by 14.608, 5.872, 10.208, and 6.128 us.
+
+Endpoint geometric mean
+- control=0.19053200397548561 ms
+- candidate=0.19205679648862345 ms
+- speedup=0.9920607208856149 (-0.794%)
+
+Decision
+- Reject and keep the K64 flag default-off. The short M128 win did not reproduce; the long window shows a consistent large-M regression, while M8 is effectively tied. One K128 group remains selected.
