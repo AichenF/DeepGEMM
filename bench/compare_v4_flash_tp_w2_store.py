@@ -48,6 +48,7 @@ if COMPARE_FLAG not in {
     "V4_W13_K_UNROLL16_SPLIT2",
     "V4_PREDICATED_PADDED_ACTIVATION",
     "V4_EXACT_ROUTE_CAPACITY",
+    "V4_SINGLE_LAUNCH_156CTA_4WG",
 }:
     raise ValueError(f"unsupported V4_COMPARE_FLAG={COMPARE_FLAG}")
 LAYOUT_CHANGING_FLAGS = {"V4_COMPACT_INTERLEAVED_SCALE"}
@@ -63,6 +64,12 @@ TOLERANCE_QUALIFIED_FLAGS = {
 }
 if COMPARE_FLAG != "V4_EXACT_ROUTE_CAPACITY":
     os.environ[COMPARE_FLAG] = "0"
+if COMPARE_FLAG == "V4_SINGLE_LAUNCH_156CTA_4WG":
+    # Control is the selected 624x128 production bundle.  The packed
+    # candidate is intentionally isolated from bundle components that were
+    # tuned for a one-WG CTA, while retaining the independently selected
+    # release-arrival and valid-task invariants.
+    os.environ["V4_SINGLE_LAUNCH_COMPACT_W13_BUNDLE"] = "1"
 import v4_flash_tp_wgmma as control_kernel  # noqa: E402
 import v4_flash_tp_wgmma_graph as bench  # noqa: E402
 try:  # noqa: E402
@@ -91,7 +98,21 @@ def parse_args() -> argparse.Namespace:
 def load_candidate() -> ModuleType:
     if COMPARE_FLAG == "V4_EXACT_ROUTE_CAPACITY":
         return control_kernel
-    os.environ[COMPARE_FLAG] = "1"
+    saved_environment: dict[str, str | None] = {}
+
+    def set_candidate_environment(name: str, value: str) -> None:
+        saved_environment.setdefault(name, os.environ.get(name))
+        os.environ[name] = value
+
+    set_candidate_environment(COMPARE_FLAG, "1")
+    if COMPARE_FLAG == "V4_SINGLE_LAUNCH_156CTA_4WG":
+        set_candidate_environment("V4_SINGLE_LAUNCH_COMPACT_W13_BUNDLE", "0")
+        set_candidate_environment("V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE", "0")
+        set_candidate_environment("V4_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI", "0")
+        set_candidate_environment("V4_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM", "0")
+        set_candidate_environment("V4_SINGLE_LAUNCH_M128_BOUND9", "0")
+        set_candidate_environment("V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL", "1")
+        set_candidate_environment("V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS", "1")
     source = Path(control_kernel.__file__).resolve()
     name = "v4_flash_tp_wgmma_candidate_" + COMPARE_FLAG.lower()
     spec = importlib.util.spec_from_file_location(name, source)
@@ -99,8 +120,14 @@ def load_candidate() -> ModuleType:
         raise RuntimeError(f"cannot load candidate module from {source}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    spec.loader.exec_module(module)
-    os.environ[COMPARE_FLAG] = "0"
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        for environment_name, previous_value in saved_environment.items():
+            if previous_value is None:
+                os.environ.pop(environment_name, None)
+            else:
+                os.environ[environment_name] = previous_value
     return module
 
 
@@ -347,6 +374,14 @@ def main() -> None:
         "samples_per_variant": len(control_samples),
         "l2_policy": "cold; separate 256MiB clear immediately before every graph replay; clear excluded from events",
         "order_policy": "per-sample alternating A/B then B/A",
+        "topology_settings": (
+            {
+                "control": "selected 624 CTA x 128 thread production bundle",
+                "candidate": "156 CTA x 512 thread, 4 independent WGs/CTA",
+            }
+            if COMPARE_FLAG == "V4_SINGLE_LAUNCH_156CTA_4WG"
+            else None
+        ),
         "control": {
             "flag_value": 0,
             "min_ms": min(control_samples),

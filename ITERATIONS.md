@@ -14448,3 +14448,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Scope:** TP collective disabled; this is not end-to-end timing.
 - **Decision:** topology is now eligible for a paired, randomized, cold-L2 TP4 benchmark against the selected 624×128 production kernel. Production defaults remain unchanged pending that A/B.
 - **Evidence:** `evidence/iter631_156cta_4wg_m128_compute.md`; raw log `bench/results/iter631_156cta_4wg_m128_compute.log`.
+## Iteration 632 — 156 CTA × 4 WG TP4 M8 paired cold-L2 screen (reject at M8)
+
+- **Harness change:** extended the existing in-process paired CUDA-Graph comparator to load the selected 624×128 production bundle as control and the isolated 156×512/4-WG module as candidate; both reuse identical weights/routes and SGLang CustomAllReduceV2 state.
+- **Protocol:** TP4 on GPUs 0,5,6,7; random routes; 150 cold samples/arm; separate excluded 256 MiB L2 clear before every replay; per-sample A/B then B/A alternation; rank-max latency.
+- **Correctness:** exact on all four ranks, cosine `1.0`, relative L2 `0.0`, max absolute difference `0.0`.
+- **Latency:** control `0.074048 / 0.075552 / 0.229952 ms` min/median/max; candidate `0.085952 / 0.087696 / 0.089888 ms`. Candidate is **16.07% slower** by median (`control/candidate = 0.861522×`), and loses all three batch medians.
+- **Decision:** reject 156×4 for small-M production use. Run one M128 endpoint screen only to determine whether reduced global-barrier participation helps the large-M regime; do not alter defaults.
+- **Evidence:** `evidence/iter632_156cta_4wg_tp4_m8_paired_cold.md`; raw log `bench/results/iter632_156cta_4wg_tp4_m8_paired_cold.log`.
