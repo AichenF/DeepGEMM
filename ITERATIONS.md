@@ -12981,3 +12981,27 @@ maximum rank latency of a full CUDA-Graph replay.
   from this smoke result.
 - **Evidence:**
   `bench/results/iter539_native_tp_local_route_build_tp4_screen_20260905.log`.
+
+## Iteration 540 — long route-build A/B confirms a small M8-only gain
+
+- **Protocol:** unchanged same-process TP4 A/B on physical GPUs 0/5/6/7;
+  random M8/M128, four balanced whole-batch AB/BA rounds x fifty rank-max
+  samples, five alternating warmups, CUDA Graph, and a separate excluded
+  256 MiB L2 clear immediately before every replay.  This yields 200 cold-L2
+  samples per arm and endpoint.
+- **Correctness:** **PASS bitwise** again at both endpoints across all ranks:
+  relative L2 `0.0`, zero BF16 mismatches, cosine `1.0`, all finite.
+- **Cold-L2 result (generic EP route build / TP-local candidate median):** M8
+  `0.095744 -> 0.093184 ms`, **2.67% lower / 1.0275x**; M128
+  `0.410256 -> 0.407328 ms`, **0.71% lower / 1.0072x**.  Endpoint geometric
+  mean improves `0.198191 -> 0.194824 ms`, **1.70% lower / 1.0173x**.
+- **Stability:** all four M8 candidate batch medians (`0.092944–0.093520 ms`)
+  are below every M8 control batch median (`0.095696–0.095904 ms`).  M128 has
+  large shared-state drift (`0.374–0.412 ms`) and the first paired batch is
+  adverse, while the pooled direction remains slightly positive.
+- **Decision:** preserve but leave default-off.  The M8 reduction is real yet
+  misses the 3% materiality gate, and M128 is immaterial.  Per the NCU-driven
+  plan, stop route micro-tuning and next target the local fixed-k6 combine
+  tail, which has the largest remaining non-pipeline barrier attribution.
+- **Evidence:**
+  `bench/results/iter540_native_tp_local_route_build_tp4_long_20260905.log`.
