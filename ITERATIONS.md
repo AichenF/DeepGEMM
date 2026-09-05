@@ -13733,3 +13733,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Decision: the stride-limit replacement works at M32. Proceed to a full M8–M128 validation to cover the M64/M128 multicast range and split-K2.
 - Raw log: `bench/results/iter585_tp8_single_launch_m32_nvls_smoke_20260905.log`.
 - Evidence: `bench/evidence/iter585_tp8_m32_nvls_pull_smoke.txt`.
+## Iteration 586 — TP8 single-launch passes all five M values under cold L2 (2026-09-05)
+
+- Configuration: eight H20s; random top-k6 routes; H4096/global-I2048/rank-I256/E256; prequantized FP8 X and MXFP4 weights; CUDA Graph; 2 outer × 30 measured replays per M after five warmups. Every measured replay is preceded by an independent excluded 256 MiB L2 clear; latency is max across all eight ranks.
+- Correctness: **PASS at M=8,16,32,64,128.** Every output is finite and `allreduce_ok=true`. Minimum rank cosine stays in `[0.9999919587, 0.9999921603]`; maximum relative L2 stays in `[0.0039597519, 0.0040103522]`. The run covers split-K4 at M8/16/32 and split-K2 at M64/128.
+- Embedded collective: M8/M16 use TP8 multicast push; M32/M64/M128 use TP8 NVLS pull. Both modes survive eager setup, graph capture, warmups, correctness replay and 60 measured replay generations per M.
+- Cold-L2 median latency (ms): M8 `0.054336`; M16 `0.078368`; M32 `0.121712`; M64 `0.168960`; M128 `0.217584`. Five-M geometric mean is `0.113761 ms`. These are implementation measurements, not a TP8 baseline speedup claim.
+- Stability: paired batch medians differ by 0.112/0.512/0.432/0.288/0.272 us for M8 through M128 respectively. Isolated max outliers remain, so medians are the meaningful statistic.
+- Decision: TP8 functionality requirement is met across all requested shapes. Verify the captured business graph contains exactly one kernel node, then return optimization focus to TP4 and run a post-change cold-L2 regression against exact Humming+CARv2.
+- Raw log: `bench/results/iter586_tp8_single_launch_allm_cold_validation_20260905.log`.
+- Evidence: `bench/evidence/iter586_tp8_allm_cold_validation.txt`.

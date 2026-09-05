@@ -1,0 +1,38 @@
+Iteration 586: TP8 all-M cold-L2 validation
+Date: 2026-09-05
+
+Protocol
+--------
+8 x NVIDIA H20-3e, 78 SM each
+H=4096, global I=2048, TP8 rank-local I=256, E=256, top-k=6
+Random routes; prequantized FP8-E4M3 group-128 X; OCP MXFP4 weights
+CUDA Graph; 5 warmups; 2 outer x 30 measured replays per M
+Independent excluded 256 MiB L2 clear before every measured replay
+Reported latency is maximum across eight ranks
+
+Results
+-------
+M    split-K  embedded collective        median ms  cosine_min   rel-L2_max
+8    4        TP8 multicast push         0.054336   0.999992160  0.003959752
+16   4        TP8 multicast push         0.078368   0.999991959  0.004010319
+32   4        TP8 NVLS pull              0.121712   0.999991962  0.004009581
+64   2        TP8 NVLS pull              0.168960   0.999992037  0.003990814
+128  2        TP8 NVLS pull              0.217584   0.999991959  0.004010352
+
+All rows: allreduce_ok=true and finite_all_ranks=true.
+Five-M geometric-mean median: 0.113761193 ms.
+
+Batch-median stability (ms)
+---------------------------
+M8:   0.054288 / 0.054400
+M16:  0.078016 / 0.078528
+M32:  0.121488 / 0.121920
+M64:  0.168784 / 0.169072
+M128: 0.217728 / 0.217456
+
+Conclusion
+----------
+PASS: TP8 runs all requested M values in the integrated one-entry path and
+matches the independent local-MoE plus NCCL oracle. This file does not yet
+claim a TP8 speedup versus a separately measured baseline or independently
+prove graph node count.
