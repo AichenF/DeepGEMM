@@ -1,0 +1,36 @@
+Iteration 569 — native W2 global-scale folding, TP4 cold-L2 long confirmation
+
+Date: 2026-09-05
+GPUs: physical 0,5,6,7 (TP4)
+Benchmark: same-process CUDA-graph A/B, random M=8,128, 4 outer batches × 50 replays, 5 warmup replays per arm
+Cache policy: independent excluded 256 MiB cold-L2 clear before every measured replay
+Experiment: fold_w2_scale only; selected communication tails unchanged
+Raw log: bench/results/iter569_native_fold_w2_scale_tp4_cold_long_20260905.log
+
+Correctness
+- M=8: cosine=1, relative L2=0, mismatches=0, finite=true
+- M=128: cosine=1, relative L2=0, mismatches=0, finite=true
+
+M=8 (rank-max latency, ms)
+- candidate batch medians: 0.09137600287795067, 0.09171199798583984, 0.09158399701118469, 0.09153599664568901
+- candidate pooled: min 0.08924800157546997, median 0.09153599664568901, max 0.1584320068359375
+- control batch medians: 0.09224000200629234, 0.09212800115346909, 0.09230400249361992, 0.09196799993515015
+- control pooled: min 0.08991999924182892, median 0.0920960009098053, max 0.1987839937210083
+- candidate/control=0.9939193422235051; speedup=1.0061178583796264 (+0.612%)
+- all four paired batches favored candidate; paired gains were 0.864, 0.416, 0.720, and 0.432 us.
+
+M=128 (rank-max latency, ms)
+- candidate batch medians: 0.3683039993047714, 0.41120000183582306, 0.4042560011148453, 0.4102240055799484
+- candidate pooled: min 0.3651520013809204, median 0.4099520146846771, max 0.4143039882183075
+- control batch medians: 0.36692799627780914, 0.39480000734329224, 0.4132000058889389, 0.4058240056037903
+- control pooled: min 0.36480000615119934, median 0.3994879871606827, max 0.41657599806785583
+- candidate/control=1.026193597455499; speedup=0.9744749942696511 (-2.553%)
+- three of four paired batches favored control. Candidate-minus-control deltas were +1.376, +16.400, -8.944, and +4.400 us; the timing regimes are unstable, but direction is not robustly favorable.
+
+Endpoint geometric mean
+- control=0.1918104429612906 ms
+- candidate=0.1937146515911227 ms
+- speedup=0.9901700330140678 (-0.983%)
+
+Decision
+- Reject W2 folding as a global default. M=8 shows a repeatable ~0.6% gain, but M=128 regresses in three of four paired batches and the endpoint geometric mean regresses ~1.0%. A future M-specific specialization may reuse it for small M only, but it is not selected here.

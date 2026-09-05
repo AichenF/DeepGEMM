@@ -13591,3 +13591,15 @@ maximum rank latency of a full CUDA-Graph replay.
 - Decision: promising, not selected. Require 4×50 cold-L2 confirmation because the expected effect is sub-percent and the M=128 pooled median is mixture-sensitive.
 - Evidence: `bench/evidence/iter568_native_fold_w2_scale_tp4_cold_screen.txt`
 - Raw log: `bench/results/iter568_native_fold_w2_scale_tp4_cold_screen_20260905.log`
+## Iteration 569 — W2 global-scale fold TP4 cold-L2 long confirmation (rejected globally)
+
+- Date: 2026-09-05
+- Change under test: `V4_NATIVE_FOLD_W2_GLOBAL_SCALE=1` only; W13 folding disabled and selected communication tails unchanged.
+- Method: TP4 on physical GPUs 0,5,6,7; same-process balanced AB/BA CUDA-graph A/B; M={8,128}; 4 outer batches × 50 measured replays; 5 warmup replays; independent excluded 256 MiB cold-L2 clear before every replay; latency is rank max.
+- Correctness: bitwise identical at both M values (cosine 1, relative L2 0, zero mismatches, all finite).
+- M=8: control 0.092096 ms, candidate 0.091536 ms, 1.00612x (+0.612%). All four paired batches favored candidate by 0.416–0.864 us.
+- M=128: control 0.399488 ms, candidate 0.409952 ms, 0.97447x (-2.553%). Three of four paired batches favored control; candidate-minus-control paired deltas were +1.376, +16.400, -8.944, and +4.400 us.
+- Endpoint geometric mean: control 0.191810 ms, candidate 0.193715 ms, 0.99017x (-0.983%).
+- Decision: reject as a global default. The small-M win is repeatable, but large-M is unstable and predominantly regressive. Retain only as a possible M-specific specialization.
+- Evidence: `bench/evidence/iter569_native_fold_w2_scale_tp4_cold_long.txt`
+- Raw log: `bench/results/iter569_native_fold_w2_scale_tp4_cold_long_20260905.log`
