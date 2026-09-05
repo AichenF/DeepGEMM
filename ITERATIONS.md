@@ -13306,3 +13306,29 @@ maximum rank latency of a full CUDA-Graph replay.
   body-marker, and host-decode sites are present.  CUDA compilation and the
   measured phase breakdown are intentionally deferred to the next iteration.
 - **Evidence:** `bench/evidence/iter555_native_phase_stamps_static.txt`.
+
+## Iteration 556 — cold-L2 M8 phase stamps identify the W2 tail
+
+- **Protocol:** physical H20 GPU1, local-body M8, selected route/parallel-combine
+  defaults, `V4_NATIVE_PHASE_STAMPS=1`.  A separate 256 MiB allocation is
+  zeroed immediately before the one business-kernel launch to evict L2; the
+  clear is outside the in-kernel timestamps.  This is diagnostic-only and TP
+  communication is disabled.
+- **Correctness:** **PASS.**  Output is finite; route copies are exact
+  (`l1_x_mismatch_bytes=0`, both SF and route-weight max error zero); weighted
+  intermediate cosine is `0.9996428552`, rel-L2 `0.02710524`; output SHA256 is
+  the previously accepted M8 hash
+  `6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5`.
+- **Measured timestamps:** route publication `5.440 us`; last W13 task
+  `72.544 us`; last W2 task `80.800 us`; all-GEMM barrier `81.760 us`;
+  combine plus final TMA/grid drain `4.224 us`; total stamped local body
+  `85.984 us`.  All 156 CTA slots report both W13 and W2 work.
+- **Interpretation/decision:** route and combine together account for only
+  about `9.7 us`; the scheduler's W13/W2 stream is the critical path, with
+  W2-last just `0.96 us` before the all-GEMM barrier.  The next optimization
+  must improve GEMM task granularity/scheduling or its dequant pipeline, not
+  another combine or route micro-tweak.  Capture M128 next to distinguish
+  small-M tail imbalance from a general per-tile throughput problem.
+- **Evidence:**
+  `bench/results/iter556_native_phase_stamps_m8_cold_20260905.log` and
+  `bench/evidence/iter556_native_phase_stamps_m8_cold.txt`.

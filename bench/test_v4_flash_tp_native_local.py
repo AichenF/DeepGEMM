@@ -112,6 +112,12 @@ def main() -> None:
     output = torch.empty(
         (args.m, 4096), dtype=torch.bfloat16, device=device
     )
+    cold_l2 = None
+    if args.phase_stamps:
+        # The diagnostic is a timing measurement too: evict the H20 L2 with a
+        # separate allocation excluded from the stamped business kernel.
+        cold_l2 = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=device)
+        cold_l2.zero_()
     phase_storage = native.run_local(
         workspace,
         native_w13,
