@@ -11528,3 +11528,32 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/evidence/iter465_native_normalized_two_cta_m8_ncu_capture.txt` and
   `results/iter465_native_normalized_two_cta_m8_profile.ncu-rep`.
+
+## Iteration 466 — M8 is role-latency-bound, not bandwidth-bound
+
+- **Evidence source:** read-only import of the committed Iteration-465 M8 NCU
+  report.  No CUDA launch or source change occurred.
+- **Top-level result:** local M8 duration is `100.00 us`, memory throughput
+  `1.93 TB/s`, memory/compute utilization `53.12%/43.01%`, DRAM throughput
+  `40.17%`, L2 throughput/hit rate `53.34%/57.95%`, and Instruction
+  Statistics executed instructions `22,349,968`.  The launch remains at 80
+  registers/thread, 102.40 KiB dynamic shared memory, zero spills, 37.50%
+  occupancy and 24 warps/SM.
+- **Scheduler result:** only `0.87` warps/scheduler are eligible and
+  no-eligible is `56.35%`, substantially worse than normalized M128's
+  `1.18/40.37%`.  M8 is therefore latency/role-bound rather than saturating
+  H20 bandwidth.
+- **Source attribution:** cleanup line 698 has `391` barrier samples but is the
+  already-proven observer of the tail.  Meaningful waits include L1 arrival
+  line 737 (`74`), expert-count load line 506 (`62`), L2 arrival line 742
+  (`32`), L1-ready/role barriers lines 1631/846 (`30/30`), A/B empty barriers
+  (`10/11`), and a modest RS exponent/WGMMA cluster.
+- **Interpretation/decision:** the TP-local kernel declares two inherited EP
+  dispatch warps while `kSingleActiveDispatchWarp=true`; the second warp does
+  no route work but still participates in launch and barriers.  A bounded
+  352-thread specialization with one dispatch warp, the same two producer
+  warps and eight math warps is justified.  Keep the 156-CTA grid, compute
+  tiles, scheduler and collective unchanged, and require both endpoints not
+  to regress.
+- **Evidence:**
+  `bench/evidence/iter466_native_normalized_m8_ncu_analysis.txt`.

@@ -1,0 +1,35 @@
+Iteration 466 read-only analysis of Iteration-465 M8 NCU report
+
+Retained normalized Hopper-native, local M8:
+- duration: 100.00 us
+- memory throughput: 1.93 TB/s; memory utilization 53.12%
+- DRAM throughput: 40.17%; L2 throughput 53.34%; L2 hit rate 57.95%
+- compute throughput: 43.01%
+- Instruction Statistics executed instructions: 22,349,968
+- registers/thread: 80; dynamic shared memory/CTA: 102.40 KiB
+- achieved occupancy: 37.50%, 24 warps/SM; zero spills
+- eligible warps/scheduler: 0.87; no eligible: 56.35%
+- warp cycles per issued instruction: 13.74
+
+Selected current-source not-issued samples:
+- line 698 dispatch cleanup observing the tail: 391 barrier (symptom)
+- line 737 L1 arrival poll: 74 long-scoreboard
+- line 506 expert-count load: 62 long-scoreboard
+- current RS exponent/WGMMA region: 46 + 40 + 10 + 7 + 6 + 5
+- line 742 L2 arrival poll: 32 long-scoreboard
+- lines 1631/846 L1-ready publish/role boundary: 30 + 30 barrier
+- lines 805/746 B/A empty-barrier waits: 11 + 10 long-scoreboard
+
+Comparison with retained normalized M128:
+- M8 uses only 1.93 versus 2.78 TB/s and 43.01 versus 59.37% compute.
+- M8 no-eligible is 56.35 versus 40.37%, and eligible warps/scheduler is
+  only 0.87 versus 1.18.
+- The launch still carries 156 CTAs x 384 threads.  The TP-local body has
+  kSingleActiveDispatchWarp=true, so one of its two inherited EP dispatch
+  warps performs no routing work but still consumes launch/synchronization
+  participation.
+
+Decision: test a bounded 352-thread TP specialization with exactly one
+dispatch warp, two loader/producer warps and the unchanged eight math warps.
+Keep grid size, two-CTA residency, compute tile, scheduler, numerical boundary
+and collective algorithm unchanged.  Reject if either endpoint regresses.
