@@ -1,0 +1,38 @@
+Iteration 440: full-stripe outline all-route correctness gate
+Date: 2026-09-05
+Target: TP4 H20 single-launch WG-DAG specialization
+
+Committed source under test
+---------------------------
+d4f8acf [iter 439] repair full-stripe phase declarations
+
+Environment
+-----------
+CUDA_VISIBLE_DEVICES=1
+TORCH_CUDA_ARCH_LIST=9.0a
+V4_SINGLE_LAUNCH_78CTA_8WG=1
+V4_SINGLE_LAUNCH_78CTA_SMID_MAP=1
+V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+PYTHONPATH=.:<humming-v0.1.12>
+
+Commands
+--------
+timeout 300s python bench/profile_v4_flash_tp_single_compute.py \
+  --m 8 --route-pattern random --seed 20260904
+timeout 300s python bench/profile_v4_flash_tp_single_compute.py \
+  --m 128 --route-pattern random --seed 20260904
+
+Result
+------
+FAIL: the M8 command produced no output and exited with timeout status 124.
+Because the shell used set -e, the M128 command was not started.  There is no
+cosine, bitwise, or latency result for this checkpoint.
+
+Assessment
+----------
+The Iteration 439 resource gate was necessary but not sufficient: the outlined
+binary has REG 64 / STACK 48 / LOCAL 0 yet does not complete.  The failure is
+consistent with a runtime WG/barrier deadlock introduced by outlining a full
+phase around code containing independent named-barrier synchronization.  It
+must not be benchmarked or selected.  Next work is a controlled localization
+or a Hopper-reference-compatible phase ownership repair.

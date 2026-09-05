@@ -10835,3 +10835,21 @@ maximum rank latency of a full CUDA-Graph replay.
   resource regression from Iteration 436 (`STACK=112/96`) and is safe to move
   to correctness testing.  This checkpoint contains no latency result.
 - **Evidence:** `bench/evidence/iter439_full_stripe_outline_resource.txt`.
+
+## Iteration 440 — outlined WG phases deadlock at M8
+
+- **Hypothesis:** after the resource gate passed, one noinline call per full
+  static stripe would preserve the all-route result while reducing main-entry
+  cross-phase liveness.
+- **Change:** no source change from committed Iteration 439; this is its first
+  runtime correctness gate.
+- **Test:** physical GPU 1, random all-route M8 followed by M128, each protected
+  by `timeout 300s`, using the selected 78-CTA/8-WG WG-DAG flags.
+- **Result:** **FAIL**.  M8 produced no output and exited with status 124 at the
+  300-second timeout.  `set -e` prevented M128 from starting.  No correctness
+  or performance number exists.
+- **Analysis:** a low-stack, zero-local-memory binary can still be invalid.
+  Full-phase outlining around the independent-WG named-barrier body introduced
+  a runtime deadlock.  Reject this candidate and localize the phase-call
+  interaction before any cold-L2 timing.
+- **Evidence:** `bench/evidence/iter440_full_stripe_correctness_timeout.txt`.
