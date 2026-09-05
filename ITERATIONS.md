@@ -15381,3 +15381,32 @@ maximum rank latency of a full CUDA-Graph replay.
   and benchmark return byte-identical to commit `b2c3e9d`.
 - **Evidence:** `evidence/iter666_terminal_arrive_drop_rejection.md`; raw
   `bench/results/iter666_terminal*_20260906.log`.
+
+## Iteration 667 — isolate bulk-reduce failure to the cross-phase CTA lifetime
+
+- **Purpose:** decide whether the multi-kernel W2 epilogue can safely transfer
+  a producer-side Hopper bulk FP32 combine into the complete one-kernel path.
+- **SASS/probe gates:** the integrated PTX lowers to `UBLKRED` with a dynamic
+  `R2UR` destination.  Expanded 624-CTA probes cover dynamically loaded
+  destinations, reverse/crossing destination order, and same-kernel generic
+  destination clear plus writer proxy fences and a software grid barrier.
+  Every case passes exactly (`max_error=0`).
+- **Exact W2 isolation:** a fresh standalone W2 task and a 624-CTA
+  grid-stride persistent W2 task both complete after the real TMA, MXFP4
+  decode and WGMMA body.  The fresh-task result matches its fixed-k6
+  reference at cosine `0.999999999999997`, relative L2 `8.36e-8`; the
+  persistent form is finite and returns with relative L2 `7.07e-4`, with the
+  difference attributable to inter-CTA FP32 reduction order.  Both target
+  runs use a separate excluded 256 MiB L2 clear.
+- **Complete-entry controls:** restricting the full M8 MegaMoE entry to a
+  single CTA0 bulk issuer still hangs.  Explicitly invalidating every
+  completed W2 TMA mbarrier before that issuer also hangs.  These runs are
+  forward-progress failures and have no valid latency/correctness result.
+- **Verdict:** failure requires the earlier W13/cross-phase lifetime in the
+  same resident CTA.  Multi's kernel-exit/relaunch async-state boundary is
+  real and cannot be reproduced by the tested source-level barriers, proxy
+  fences, mbarrier invalidation, address ordering, or fresh W2 state.  Reject
+  producer bulk combine, retain only the stronger microprobe, and restore the
+  production CUDA/Python source byte-identical to HEAD.
+- **Evidence:** `evidence/iter667_bulk_reduce_phase_boundary_isolation.md`;
+  raw `bench/results/iter667*.log`.
