@@ -14152,3 +14152,29 @@ maximum rank latency of a full CUDA-Graph replay.
   Next require a fresh remote JIT/resource/correctness gate before measuring
   any performance effect.
 - Evidence: `evidence/iter616_balanced_activation_workers_static_gate.md`.
+## Iteration 617 — activation-only balance JIT/resource/correctness gate
+
+- Configuration: physical H20 GPU1, TP4 M128/split-K2 compute-only, selected
+  production bundle plus
+  `V4_SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS=1`.  Collective was disabled
+  only for the local state-machine check; the launch followed the excluded
+  256 MiB L2 clear and all packed barriers were seeded at generation 2^22-1.
+- Resolution/build: extension `v4tp_d1173cd481ac0e15d647_v178mspec` compiled
+  and loaded with bundle/release-arrival/assume-valid/bound9 all true, isolated
+  activation balance true, and legacy all-phase balance false.
+- Resources: M128 split-K2 and split-K4 remain
+  `REG56 STACK32 SHARED2048 LOCAL0`; M64 remains
+  `REG64 STACK32 SHARED2048 LOCAL0`.  The candidate therefore preserves the
+  selected nine-CTA M128 and eight-CTA M64 admission with no fixed spill.
+- Correctness: PASS.  The complete routed W2 tensor is bitwise equal to the
+  independently launched same-source local reference (`cosine=1`,
+  `rel_l2=0`, finite), with 1,992 padded rows.  All four packed barrier words
+  wrap cleanly to zero.
+- Harness qualification: the outer SSH pipeline exits 1 because its host-side
+  `tee` target was root-owned and rejected the raw log.  The inner JIT,
+  resource audit, cold launch and correctness process all completed and their
+  stdout is preserved verbatim in the evidence file.  Repair log-directory
+  ownership before timing so future raw logs live under `/home/xutingz/fac`.
+- Decision: runtime/resource gate passes; proceed to process-bracketed M64 and
+  M128 cold-L2 OFF/ON timing after repairing result capture.
+- Evidence: `evidence/iter617_balanced_activation_workers_m128_gate.md`.
