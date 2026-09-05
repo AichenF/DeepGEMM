@@ -11190,3 +11190,26 @@ maximum rank latency of a full CUDA-Graph replay.
   spend a five-shape formal run yet, and do not transplant Blackwell-specific
   scheduling or memory mechanisms.
 - **Evidence:** `bench/evidence/iter453_native_two_cta_tp4_cold_screen.txt`.
+
+## Iteration 454 — capture cold Hopper-native two-CTA M128 profile
+
+- **Purpose:** profile the Iteration-453 Hopper/SM90 two-CTA candidate at local
+  M128 so the remaining TP4 performance gap can be attributed without
+  changing the kernel or its prequantized input contract.
+- **Harness repair:** restored `--profile-only` in the native local harness.
+  Nsight Compute kernel replay restores mutable routing workspace after its
+  last pass, so this mode synchronizes and exits immediately after the target
+  launch instead of running post-launch pool diagnostics.  Normal correctness
+  mode is unchanged.
+- **Protocol:** physical H20 GPU1, M128, register dequant, K128 issue batching,
+  156x384 cooperative grid with the 88-register math target.  Nsight Compute
+  targets only `v4_flash_tp4_native_megamoe_impl`, applies profiler cache
+  control `all`, and captures SpeedOfLight, memory, scheduler, warp-state,
+  occupancy, launch, instruction and source-counter sections over 21 replay
+  passes.  X is caller-provided FP8-E4M3 plus FP32 group-128 scales.
+- **Result:** **PASS capture**.  All 21 passes completed, the synchronized
+  profile-only marker printed, and the process exited normally.  No timing or
+  bottleneck conclusion is accepted until the report is imported read-only.
+- **Evidence:**
+  `bench/evidence/iter454_native_two_cta_m128_ncu_capture.txt` and
+  `results/iter454_native_two_cta_m128_profile.ncu-rep`.
