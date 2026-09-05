@@ -14496,3 +14496,27 @@ maximum rank latency of a full CUDA-Graph replay.
   correctness gate passes.
 - **Evidence:** `evidence/iter634_w2_persistent_resource_gate.md`; raw log
   `bench/results/iter634_w2_persistent_resource.log`.
+
+## Iteration 635 — W2 persistent state passes M128 exact-compute gate
+
+- **Configuration:** physical H20 GPU1, TP4 M128 random routes, W13 split-K2,
+  selected production bundle plus
+  `V4_SINGLE_LAUNCH_W2_PERSISTENT_STATE=1`.  The single compute launch was
+  preceded by the mandatory excluded 256 MiB L2 clear; TP collective was
+  disabled only for this local state-machine gate.
+- **Correctness:** **PASS bitwise** against the independently launched
+  same-source route-output reference: full `down` cosine `1.0`, relative L2
+  `0.0`, all finite, with 1,992 padded route rows.  This exercises eleven or
+  twelve consecutive W2 tasks on each active CTA rather than only a single
+  task.
+- **Barrier-state check:** all four packed phase words were seeded at
+  generation `2^22-1` and returned to zero.  The persistent W2 mbarrier
+  generations, alternating metadata slots, final-task publication and
+  following whole-grid barrier therefore complete without deadlock or stale
+  output at the target endpoint.
+- **Decision:** runtime/resource and exact-output gates pass.  Advance to a
+  same-process TP4 M128 CUDA-Graph A/B against the selected production kernel,
+  with the embedded P2P two-shot collective enabled and an independent
+  excluded cold-L2 clear before every replay.  Keep the option default-off.
+- **Evidence:** `evidence/iter635_w2_persistent_m128_compute.md`; raw log
+  `bench/results/iter635_w2_persistent_m128_compute.log`.
