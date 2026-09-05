@@ -31,6 +31,13 @@ NATIVE_REGISTER_DEQUANT = (
 NATIVE_RS_K128_BATCH = (
     os.environ.get("V4_NATIVE_RS_K128_BATCH", "0") == "1"
 )
+NATIVE_TWO_CTA_PER_SM = (
+    os.environ.get("V4_NATIVE_TWO_CTA_PER_SM", "0") == "1"
+)
+if NATIVE_TWO_CTA_PER_SM and not NATIVE_REGISTER_DEQUANT:
+    raise ValueError(
+        "V4_NATIVE_TWO_CTA_PER_SM requires V4_NATIVE_REGISTER_DEQUANT=1"
+    )
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
@@ -322,6 +329,9 @@ _CUDA = r"""
 #ifndef K_NATIVE_RS_K128_BATCH
 #define K_NATIVE_RS_K128_BATCH 0
 #endif
+#ifndef K_NATIVE_TWO_CTA_PER_SM
+#define K_NATIVE_TWO_CTA_PER_SM 0
+#endif
 
 using namespace deep_gemm;
 
@@ -555,7 +565,7 @@ __device__ __forceinline__ void native_tp4_nvls_pull(
 }
 
 template <int kIntermediate>
-CUTLASS_GLOBAL __launch_bounds__(384, 1) void
+CUTLASS_GLOBAL __launch_bounds__(384, K_NATIVE_TWO_CTA_PER_SM ? 2 : 1) void
 v4_flash_tp4_native_megamoe_impl(
         void* y,
         int* cumulative_local_expert_recv_stats,
@@ -581,7 +591,9 @@ v4_flash_tp4_native_megamoe_impl(
         const bool enable_tp) {
     constexpr uint32_t kNumMaxTokensPerRank = 128;
     constexpr uint32_t kNumExpertsPerWave = 16;
-    constexpr uint32_t kNumSMs = 78;
+    // `kNumSMs` is the inherited scheduler's persistent-CTA population.
+    // The opt-in resource experiment places two CTAs on each of 78 H20 SMs.
+    constexpr uint32_t kNumSMs = K_NATIVE_TWO_CTA_PER_SM ? 156 : 78;
     constexpr uint32_t kNumRanks = 1;
     constexpr uint32_t kNumExperts = 256;
     constexpr uint32_t BLOCK_M = 8;
@@ -633,11 +645,16 @@ v4_flash_tp4_native_megamoe_impl(
                 static_cast<int>(sm_idx), kPullBlocks);
         }
     } else {
-        native_tp4_multicast_push<384>(
-            local_output, output, push_counter,
-            push0, push1, push2, push3, push_mc,
-            num_tokens, rank, push_stride,
-            static_cast<int>(sm_idx), static_cast<int>(kNumSMs));
+        // CARv2's graph-stable counter slab is provisioned for the selected
+        // 78-CTA push.  Extra compute CTAs leave after the local grid drain.
+        constexpr int kPushBlocks = 78;
+        if (sm_idx < kPushBlocks) {
+            native_tp4_multicast_push<384>(
+                local_output, output, push_counter,
+                push0, push1, push2, push3, push_mc,
+                num_tokens, rank, push_stride,
+                static_cast<int>(sm_idx), kPushBlocks);
+        }
     }
 #endif
 }
@@ -777,8 +794,17 @@ void run_native_tp4(
     C10_CUDA_CHECK(cudaFuncSetAttribute(
         kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
         kDynamicSmemBytes));
+    if constexpr (K_NATIVE_TWO_CTA_PER_SM) {
+        int active_blocks = 0;
+        C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &active_blocks, kernel, 384, kDynamicSmemBytes));
+        TORCH_CHECK(active_blocks >= 2,
+                    "native two-CTA specialization requires >=2 CTAs/SM, got ",
+                    active_blocks);
+    }
     const auto stream = at::cuda::getCurrentCUDAStream();
-    kernel<<<78, 384, kDynamicSmemBytes, stream>>>(
+    constexpr int kGrid = K_NATIVE_TWO_CTA_PER_SM ? 156 : 78;
+    kernel<<<kGrid, 384, kDynamicSmemBytes, stream>>>(
         local_output.data_ptr(), nullptr, static_cast<uint32_t>(tokens),
         sym_buffer,
         tensor_map_l1_acts, tensor_map_l1_acts_sf,
@@ -796,6 +822,19 @@ void run_native_tp4(
         reinterpret_cast<uint8_t*>(pull_sem_mc_ptr),
         rank, push_stride, enable_tp);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+int native_tp4_active_blocks_per_sm() {
+    auto kernel = v4_flash_tp4_native_megamoe_impl<512>;
+    constexpr int kDynamicSmemBytes =
+        K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448;
+    C10_CUDA_CHECK(cudaFuncSetAttribute(
+        kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+        kDynamicSmemBytes));
+    int active_blocks = 0;
+    C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        &active_blocks, kernel, 384, kDynamicSmemBytes));
+    return active_blocks;
 }
 """
 
@@ -825,6 +864,7 @@ void run_native_tp4(
     int tokens,
     int intermediate,
     bool enable_tp);
+int native_tp4_active_blocks_per_sm();
 """
 
 _SOURCE_HASH = hashlib.sha1(
@@ -833,17 +873,19 @@ _SOURCE_HASH = hashlib.sha1(
         + _CUDA
         + str(int(NATIVE_REGISTER_DEQUANT))
         + str(int(NATIVE_RS_K128_BATCH))
+        + str(int(NATIVE_TWO_CTA_PER_SM))
     ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
     name=(
         f"v4tp_native_megamoe_rd{int(NATIVE_REGISTER_DEQUANT)}_"
         f"kb{int(NATIVE_RS_K128_BATCH)}_"
+        f"cta2{int(NATIVE_TWO_CTA_PER_SM)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
-    functions=["run_native_tp4"],
+    functions=["run_native_tp4", "native_tp4_active_blocks_per_sm"],
     extra_cflags=["-O3", "-std=c++17"],
     extra_cuda_cflags=[
         "-O3",
@@ -855,6 +897,7 @@ _ext = load_inline(
         "-lineinfo",
         f"-DK_NATIVE_REGISTER_DEQUANT={int(NATIVE_REGISTER_DEQUANT)}",
         f"-DK_NATIVE_RS_K128_BATCH={int(NATIVE_RS_K128_BATCH)}",
+        f"-DK_NATIVE_TWO_CTA_PER_SM={int(NATIVE_TWO_CTA_PER_SM)}",
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",
     ],

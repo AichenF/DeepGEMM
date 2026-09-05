@@ -11010,3 +11010,27 @@ maximum rank latency of a full CUDA-Graph replay.
   fewer than two resident CTAs/SM.
 - **Evidence/design:**
   `docs/plans/2026-09-05-warpgroup-interleaved-w13-w2-design.md`.
+
+## Iteration 448 — Hopper-native two-CTA resource gate passes
+
+- **Hypothesis/change:** preserve the direct Hopper fixed-role/interleaved
+  pipeline and the correct register-dequant/K128-batch math, but add an
+  opt-in `V4_NATIVE_TWO_CTA_PER_SM=1` specialization.  It lowers only the
+  eight math-warps' `setmaxnreg` target from 208 to 96, uses
+  `__launch_bounds__(384,2)`, and changes the persistent scheduler population
+  from 78 to 156 CTAs.  The default native and selected TP kernels are
+  unchanged.  Only the first 78/64 CTAs enter the existing multicast/NVLS
+  tails after a 156-CTA local drain, preserving CARv2 counter bounds.
+- **Test:** H20 physical GPU1, CUDA JIT/import with register dequant and K128
+  batching enabled, exact cubin resource dump, and CUDA occupancy API query.
+  No GEMM, correctness run, or performance timing was executed.
+- **Result:** **PASS**.  The target kernel compiles as `REG=80, STACK=32,
+  SHARED=1024, LOCAL=0` plus 102,400 bytes dynamic shared memory.  CUDA's
+  `cudaOccupancyMaxActiveBlocksPerMultiprocessor` returns exactly `2`, so two
+  384-thread CTAs and four math WGs/SM are genuinely resident on H20.  The
+  compiler allocation is materially below the predicted 96-register ceiling
+  and introduces no declared local memory.
+- **Decision:** resource gate passes.  Commit this exact binary/source
+  checkpoint before running M8/M128 local all-output correctness.  Runtime
+  dynamic spills and scheduler progress remain unproven until execution/NCU.
+- **Evidence:** `bench/evidence/iter448_native_two_cta_resource.txt`.
