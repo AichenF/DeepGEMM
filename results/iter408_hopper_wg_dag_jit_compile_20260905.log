@@ -1,0 +1,25 @@
+ITER408_HOPPER_WG_DAG_JIT_COMPILE
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+gpu=0
+branch=tpmegamoe_single_launch
+base_commit=4e1ae98
+reference_branch=megamoe_nvfp4_dev_m
+reference_scheduler=deep_gemm/include/deep_gemm/scheduler/mega_moe.cuh:InterleavedMegaMoEScheduler
+reference_body=deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_h200_fused_body.inl
+candidate_flag=V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+required_flags=V4_SINGLE_LAUNCH_78CTA_8WG=1,V4_SINGLE_LAUNCH_78CTA_SMID_MAP=1
+torch_cuda_arch_list=9.0a
+python_compile=PASS
+root_bench_graph_cmp=PASS
+jit_compile=PASS
+extension=v4tp_bc05d855d2d59fe099f9_v178mspec
+extension_path=/tmp/torch_ext_v4_tp/v4tp_bc05d855d2d59fe099f9_v178mspec/v4tp_bc05d855d2d59fe099f9_v178mspec.so
+change=default-off 78x1024 eight-warpgroup readiness DAG with bounded W13 claims, per-activation-group completion and ready queue, per-mblock W2 ready queue, GPU release/acquire publication, and no CTA-wide task-loop barrier
+numerical_dependency=W13 gate tile g and up tile g+4 across all SplitK slices publish activation group g; 32 completed route/group requant tasks publish the mblock's 32 W2 tiles
+test_scope=static Python syntax plus CUDA JIT only
+correctness=NOT_TESTED
+performance=NOT_TESTED
+resource_audit=NOT_TESTED
+ITER408_HOPPER_WG_DAG_JIT_COMPILE_OK

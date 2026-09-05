@@ -326,6 +326,8 @@ class CapturedCase:
             (484 if kernel.SINGLE_LAUNCH_SHARDED_TURNOVER else 16)
             + oversubscribed_grid
             if kernel.SINGLE_LAUNCH_OVERSUBSCRIBED
+            else 8 + 10 * max_mblocks
+            if kernel.SINGLE_LAUNCH_78CTA_WG_DAG
             else 8 + 3 * max_mblocks
             if kernel.SINGLE_LAUNCH_INTERLEAVED
             else 624
@@ -1375,6 +1377,9 @@ def main() -> None:
                     ),
                     "single_launch_78cta_smid_map": (
                         kernel.SINGLE_LAUNCH_78CTA_SMID_MAP
+                    ),
+                    "single_launch_78cta_wg_dag": (
+                        kernel.SINGLE_LAUNCH_78CTA_WG_DAG
                     ),
                     "single_launch_skip_final_cta_sync": (
                         kernel.SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC

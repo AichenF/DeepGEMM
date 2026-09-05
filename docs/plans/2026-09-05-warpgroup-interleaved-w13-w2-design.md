@@ -1,4 +1,4 @@
-# Warpgroup-interleaved W13/requant/W2 design
+# Hopper-EP-inspired warpgroup-interleaved W13/requant/W2 design
 
 ## Context
 
@@ -15,14 +15,19 @@ M128.  W13 plus W2 dominates: the stamped compute intervals are 79.104 and
 only about 9.120 and 18.160 us.  Communication-only work cannot reach the
 required 1.10x win over the selected multi-kernel baseline.
 
-The B200 EP MegaMoE reference does not execute all Linear1 work, cross a
-global boundary, and then execute all Linear2 work.  It schedules persistent
-`BlockPhase::Linear1` and `BlockPhase::Linear2` tasks, publishes Linear1
-epilogue readiness per pool block, and permits Linear2 only after the required
-Linear1 fragments are release-published.  Its SM90 evolution uses a
-two-stage task mailbox and an L1-only warm-up before alternating L2 and L1.
-EP dispatch/combine and Blackwell tensor-memory details are not part of this
-port; only its dependency and scheduling principles apply.
+The primary reference is the Hopper implementation on branch
+`megamoe_nvfp4_dev_m`, specifically
+`sm90_nvfp4_mega_moe_h200_fused_body.inl` and
+`InterleavedMegaMoEScheduler` in `scheduler/mega_moe.cuh`.  It does not
+execute all Linear1 work, cross a global boundary, and then execute all
+Linear2 work.  A weight-loader warp dynamically claims persistent
+`BlockPhase::Linear1` and `BlockPhase::Linear2` tasks, publishes each task
+through a two-stage shared-memory mailbox, performs a minimal L1-only warm-up,
+and then alternates L2/L1.  The L1 epilogue release-ORs a per-pool-block
+readiness mask after its SwiGLU/FP8 TMA store; the L2 activation loader waits
+on that mask with an acquire load.  EP dispatch/combine and the reference's
+NVFP4 layout are not part of this port, but this Hopper scheduling and
+readiness contract is the model for the TP implementation.
 
 ## Prior rejected designs
 
@@ -49,10 +54,14 @@ with warp shuffles.  Task execution uses the existing private shared-memory
 slab and named barrier for that warpgroup.  No CTA-wide mailbox or task-loop
 `__syncthreads()` is allowed.
 
-This is the closest H20 adaptation of the reference scheduler because a
-128-thread WGMMA warpgroup is already a self-contained loader/math execution
-unit.  It also permits W13 and W2 warpgroups to coexist on the same SM, which
-can fill the 35.7% no-eligible cycles observed in Iteration 402.
+This is the closest adaptation of the Hopper reference that preserves the
+already faster H20 MXFP4 task body.  The reference dedicates loader warps and
+two math warpgroups inside a 384-thread CTA; our current task body instead
+combines loading, register dequantization and math in one self-contained
+128-thread warpgroup.  Therefore each warpgroup claims its own payload rather
+than sharing the reference's CTA-wide mailbox.  It still permits W13 and W2
+warpgroups to coexist on the same SM, which can fill the 35.7% no-eligible
+cycles observed in Iteration 402.
 
 ### 2. Static two-CTA mblock cohorts
 
@@ -61,12 +70,14 @@ cross one cohort barrier, then execute W2.  This has fewer atomics but tends
 to move all cohorts in lockstep and cannot deliberately mix W13/W2 warpgroups
 on one SM.  It is a fallback if scheduler overhead dominates.
 
-### 3. Full role-specialized MegaMoE port
+### 3. Full Hopper role-specialized MegaMoE port
 
-Port the reference's producer, activation loader, weight loader and math roles
-into a new H20 kernel.  This offers the highest architectural freedom but is
-a substantially larger rewrite and repeats unresolved native MXFP4
-register-dequant issues.  It is not the first experiment.
+Port the Hopper reference's dispatch-role slots, activation loader, weight
+loader and two math warpgroups into a new H20 kernel, replacing its dispatch
+work with TP-local route preparation/communication.  This offers the highest
+architectural freedom but is a substantially larger rewrite and repeats
+unresolved native MXFP4 register-dequant issues.  It is not the first
+experiment.
 
 ## Dependency granularity
 
@@ -106,7 +117,9 @@ Queue entries use zero as unpublished and store the encoded index plus one.
 The route-preparation phase clears the scheduler slab and the existing phase-0
 whole-grid barrier publishes both route metadata and zeroed scheduler state.
 
-Each warpgroup scheduling iteration follows a B200-like bounded policy:
+Each warpgroup scheduling iteration follows the Hopper scheduler's bounded
+L1-warmup/alternation policy, adapted so a warpgroup never blocks after
+claiming unavailable downstream work:
 
 1. immediately service a ready activation group;
 2. service a ready W2 tile unless the warpgroup owes an upstream turn;

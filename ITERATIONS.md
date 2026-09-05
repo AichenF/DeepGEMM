@@ -10109,3 +10109,38 @@ maximum rank latency of a full CUDA-Graph replay.
   the collective.
 - Evidence:
   `results/iter407_mapped_phase_tail_tp4_m8_m128_20260905.log`.
+
+## Iteration 408 — Hopper warpgroup-DAG first JIT gate
+
+- Date: 2026-09-05
+- Reference correction: use the Hopper implementation on branch
+  `megamoe_nvfp4_dev_m`, specifically its
+  `sm90_nvfp4_mega_moe_h200_fused_body.inl` and
+  `InterleavedMegaMoEScheduler`; do not treat the SM100/B200 implementation
+  as the porting target.  The design document now records the Hopper
+  L1-only warmup, L1/L2 interleave, two-stage mailbox and release/acquire
+  readiness contract.
+- Change: add a default-off `V4_SINGLE_LAUNCH_78CTA_WG_DAG=1` path to the
+  existing 78x1024 one-CTA-per-H20-SM kernel.  Its eight independent
+  128-thread WGMMA groups dynamically claim bounded work.  Each W13 tile
+  release-increments the exact activation group (`g` depends on W13 N tiles
+  `g` and `g+4` across all split-K slices); ready groups publish eight
+  route-row requant tasks; the 32nd requant task for an mblock publishes its
+  32 W2 tiles.  Consumers use acquire loads and no CTA-wide barrier appears
+  in the persistent task loop.
+- Resource-control structure: W13, requant and W2 calls are isolated behind
+  device no-inline wrappers so scheduler state need not remain live through
+  the giant inlined GEMM bodies.  The existing named barriers 1..8 remain
+  private to their warpgroups.  Scheduler storage is `8 + 10*max_mblocks`
+  int32 words and both root/bench graph allocators use the same bound.
+- Verification: root and benchmark graph sources compare byte-identical;
+  all four Python sources pass `py_compile`; the CUDA extension builds and
+  imports successfully on H20 GPU0 as
+  `v4tp_bc05d855d2d59fe099f9_v178mspec`.  This iteration is a compile gate
+  only: correctness, resource usage and performance are not yet claimed.
+- Decision: commit this exact buildable checkpoint before inspecting the
+  cubin or launching the modified kernel, as required by the optimization
+  iteration protocol.  Next gate is register/stack/shared-memory residency,
+  followed by TP-disabled all-route correctness at M8/M128.
+- Evidence:
+  `results/iter408_hopper_wg_dag_jit_compile_20260905.log`.
