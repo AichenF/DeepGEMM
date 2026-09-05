@@ -9207,3 +9207,30 @@ maximum rank latency of a full CUDA-Graph replay.
   individually cold-L2 TP4 OFF/ON benchmark; this screen is not sufficient to
   claim a speedup.
 - **Artifact:** `bench/results/iter373_adaptive_poll_phase_m8_m128_20260905.log`.
+
+## Iteration 374 — adaptive packed-grid poll cold-L2 rejection (2026-09-05)
+
+- **Purpose:** Directly test whether exponential 64→128→256→512 ns
+  non-last-CTA polling improves the complete one-kernel TP4 MegaMoE path.
+- **Method:** H20 GPUs 0–3, random routes, seed 20260904, process order
+  OFF_A → ON_A → ON_B → OFF_B. Each process measured M={8,128} with two
+  outer batches × 20 replay-interleaved CUDA Graph samples per implementation
+  and four warmups. A separate excluded 256 MiB clear immediately preceded
+  every timed replay, so all 320 candidate samples were individually cold-L2.
+  Release-arrival and assume-valid-task opt-ins were common to both arms.
+  Public X was already FP8-E4M3 with FP32 group-128 scales; external input
+  quantization was absent from both graphs.
+- **Correctness:** PASS in all eight size/process checks on all four ranks;
+  outputs were finite, cross-rank allreduce checks passed, and candidate cosine
+  was at least 0.9999956089.
+- **Candidate medians OFF_A / ON_A / ON_B / OFF_B:** M=8
+  `78.096 / 78.944 / 79.024 / 77.456 us`; M=128
+  `342.352 / 343.120 / 343.696 / 342.832 us`.
+- **Bracket result:** M=8 OFF average `77.776 us` versus ON `78.984 us`, a
+  `1.55%` regression. M=128 OFF average `342.592 us` versus ON `343.408 us`,
+  a `0.24%` regression. The apparent low phase sum in Iteration 373 was a
+  single-sample/order effect, not an end-to-end improvement.
+- **Decision:** **Reject and keep default-off.** Adaptive backoff reduces poll
+  frequency but adds generation-observation latency; it does not close the
+  multi-kernel gap.
+- **Artifact:** `bench/results/iter374_adaptive_poll_bracket_m8_m128_cold_20260905.log`.
