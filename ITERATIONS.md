@@ -15027,3 +15027,37 @@ maximum rank latency of a full CUDA-Graph replay.
   a different coarse fused dataflow.
 - **Evidence:** `evidence/iter653b_production_tail_placement.md`; raw record
   `bench/results/iter653_production_m128_smid_trace.log`.
+
+## Iteration 654 — multi-kernel cherry-pick audit finds no missing winner
+
+- **Scope:** read-only Git/source/history and byte-accounting audit.  No CUDA
+  behavior changed, no GPU kernel ran, and no new timing claim is made.
+- **Git result:** frozen multi head `071abc2` is the exact merge base and
+  ancestor of audited one-kernel head `4fe5bb2`; left/right count is `0/513`.
+  There is no multi-only commit to cherry-pick.
+- **Already transferred:** standalone and fused paths instantiate the same
+  `route_gemm_task`, so compact MXFP4 layout/decode, TMA/cache policy, S2R,
+  Mode-2/WGMMA, split-K arithmetic, epilogues and selected CARv2-derived
+  multicast/P2P transports are already shared.  External X quantization is
+  absent from both paths.
+- **Non-transferable advantage:** standalone launches get hardware task
+  scheduling, kernel-exit phase completion and phase-specific resources.
+  Saved M128 NCU reports measure standalone W13 at 47 registers and 0.74
+  issued warps/scheduler/cycle versus the fixed one-kernel entry's 56 and
+  0.63.  These are launch/compiler properties, not a missing source fragment.
+- **History closure:** full-K/paired/dual-WG W13, Hopper-style CTA pipelines,
+  phase outlines, persistent state, next-task prefetch, turnover and tail
+  redistribution have all failed cold-L2 gates.  They are not candidate
+  cherry-picks.
+- **New narrow idea audit:** a single WG interleaving two adjacent N128 tiles
+  appears untested, but perfect activation reuse saves only 5.4098% of GEMM
+  stream bytes.  Applied for free to measured M128 W13/W2 it could save at
+  most 16.784 us, moving `0.375088` only to about `0.358304 ms`; that remains
+  7.95% slower than multi and 18.75% above the 10%-win target.  Two live
+  accumulator sets also risk raising 56 registers to the 64-register/eight-
+  CTA regime.
+- **Decision:** do not spend a compile/benchmark cycle on the adjacent-N
+  pair.  No literal or already-proven multi-kernel winner remains to import;
+  the next credible experiment must alter coarse fused dataflow without
+  reducing the selected one-WG cold-weight issue rate.
+- **Evidence:** `evidence/iter654_multikernel_cherrypick_audit.md`.
