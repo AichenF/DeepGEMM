@@ -11582,3 +11582,23 @@ maximum rank latency of a full CUDA-Graph replay.
   that this bounded test does not authorize on its own.
 - **Evidence:**
   `bench/evidence/iter467_native_one_dispatch_warp_local_gate.txt`.
+
+## Iteration 468 — remove unsafe 352-thread opt-in and restore alignment
+
+- **Change:** remove `V4_NATIVE_ONE_DISPATCH_WARP_CTA`, its compile macro,
+  352-thread launch/resource plumbing and benchmark metadata.  Restore the
+  fixed 384-thread CTA with two dispatch/alignment warps, two producer warps
+  and two math warpgroups beginning at hardware-aligned warp indices 4 and 8.
+- **Protocol:** physical H20 GPU1, deterministic local M8, retained normalized
+  weight scale, arithmetic LUT, register dequant, K128 batching and two CTA/SM;
+  rejected scale-word cache disabled.
+- **Result:** **PASS**.  The kernel completes, output is finite with maximum
+  magnitude `55,040`, and full BF16 SHA-256 is exactly the admitted value
+  `6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5`.
+  Route-0 weighted FC1 cosine/relative-L2 also remain
+  `0.9996428552/0.0271052359`.
+- **Decision:** the source is back to the safe selected 384-thread layout.
+  Treat the second dispatch slot as required padding unless a future design
+  fully reorders roles around WGMMA alignment; do not retry thread-count-only
+  removal.
+- **Evidence:** `bench/evidence/iter468_restore_aligned_native_m8_gate.txt`.
