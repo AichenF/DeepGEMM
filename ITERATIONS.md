@@ -10181,3 +10181,18 @@ maximum rank latency of a full CUDA-Graph replay.
   same committed binary with `PYTHONPATH=.`.
 - Evidence:
   `results/iter410_hopper_wg_dag_compute_launch_import_failure_20260905.log`.
+
+## Iteration 411 — compute-only fixture blocked by Humming import path
+
+- Date: 2026-09-05
+- Attempt: rerun the unchanged Hopper WG-DAG M8 compute-only check with the
+  repository root added as `PYTHONPATH=.`.
+- Result: import advances to `v4_flash_tp_wgmma_graph.py` but exits before a
+  GPU launch because that shared fixture imports Humming and the Humming
+  checkout is not yet on `PYTHONPATH`: `ModuleNotFoundError: No module named
+  'humming'`.  M128 is not attempted.  No kernel correctness inference is
+  possible.
+- Decision: retain the exact source and add both the repository root and the
+  existing `humming-v0.1.12` checkout to `PYTHONPATH` for the next run.
+- Evidence:
+  `results/iter411_hopper_wg_dag_compute_humming_import_failure_20260905.log`.

@@ -1,0 +1,17 @@
+ITER411_HOPPER_WG_DAG_COMPUTE_HUMMING_IMPORT_FAILURE
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+gpu=0
+source_commit=e2ee370
+command=PYTHONPATH=. python bench/profile_v4_flash_tp_single_compute.py --m 8 --route-pattern random --seed 20260904
+candidate_flag=V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+result=FAIL_BEFORE_GPU_LAUNCH
+exception=ModuleNotFoundError: No module named 'humming'
+root_cause=the compute-only harness imports graph fixture code which imports Humming; repository root alone is insufficient
+gpu_kernel_launched=false
+m128_attempted=false
+correctness=NOT_TESTED
+performance=NOT_TESTED
+repair=rerun unchanged source with repository root and humming-v0.1.12 both in PYTHONPATH
+ITER411_HOPPER_WG_DAG_COMPUTE_HUMMING_IMPORT_FAILURE_RECORDED
