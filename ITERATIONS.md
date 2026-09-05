@@ -15093,3 +15093,32 @@ maximum rank latency of a full CUDA-Graph replay.
   negative scheduler-contention probe reproducible.
 - **Evidence:** `evidence/iter655_grid_barrier_poll_warp3_rejection.md` and
   raw `bench/results/iter655h_pollwarp_{off_a,on_a,on_b,off_b}_tp4_m8_m128_cold_20260906.log`.
+
+## Iteration 656 — sequential adjacent-N W13 pairs lose cold-weight locality
+
+- **Hypothesis:** unlike the rejected 256-thread dual-task CTA, keep one
+  128-thread WGMMA task and one accumulator set, but let each M128 resident
+  CTA execute two adjacent N128 tiles for the same mblock and K split before
+  advancing to its next grid-stride pair.  This preserves 702 CTAs, six
+  critical task slots, task count and arithmetic while attempting to reuse
+  the just-read 16 KiB activation slice in L1.
+- **Resource/correctness:** the opt-in binary retained M128 split-K2/4 at
+  `REG56 STACK32 SHARED2048 LOCAL0`.  Random-route M128/split-K2 was bitwise
+  equal to the independent same-source multi result (`cosine=1`, `rel_l2=0`,
+  finite), with 1,992 padded rows and packed generation-wrap words exactly
+  `[0,0,0,0]`.
+- **Cold-L2 phase screen:** physical H20 GPU0, seed 20260902, eight separate
+  processes in OFF/ON/ON/OFF/OFF/ON/ON/OFF order.  Each measured launch had
+  an excluded 256 MiB L2 clear and device phase stamps.  W13 OFF min/median/
+  max/mean was `211.936/213.600/214.464/213.400 us`; ON was
+  `227.040/227.424/229.920/227.952 us`.  The pair mapping regressed median
+  W13 by 6.47% and mean by 6.82%; every ON sample was slower than every OFF.
+- **Interpretation:** preserving cross-CTA contiguous logical task waves and
+  their cold-weight/TMA request order is more valuable than same-CTA
+  activation locality.  The result also experimentally strengthens
+  Iteration 654's byte-ceiling rejection without paying a distributed run.
+- **Decision:** reject before TP4 timing and remove the experimental source
+  path rather than retain another dead option.  Production source and
+  defaults are unchanged.
+- **Evidence:** `evidence/iter656_w13_adjacent_pair_rejection.md`; raw logs
+  `bench/results/iter656*_w13_adjacent_pairs*_20260906.log`.
