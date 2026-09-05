@@ -1,0 +1,27 @@
+ITER414_HOPPER_CTA_PIPELINE_JIT_RESOURCE
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+gpu=0
+base_commit=3825cfa
+reference_branch=megamoe_nvfp4_dev_m
+candidate_flag=V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+change=replace rejected per-WG global task claims with one CTA-local coarse mailbox driving all eight WGs; statically stripe L1 macros, fuse matching requant, publish four eight-tile W2 chunks per ready mblock, and alternate L1/W2 at CTA granularity
+estimated_m128_global_scheduling_events_before=19440
+estimated_m128_global_scheduling_events_after=1458
+python_compile=PASS
+jit_compile=PASS
+extension=v4tp_bc05d855d2d59fe099f9_v178mspec
+m8_split4.regs_per_thread=64
+m8_split4.stack_bytes=32
+m8_split4.static_shared_bytes=3072
+m8_split4.local_bytes=0
+m128_split2.regs_per_thread=64
+m128_split2.stack_bytes=32
+m128_split2.static_shared_bytes=3072
+m128_split2.local_bytes=0
+dynamic_shared_bytes=147456
+resource_gate=PASS
+correctness=NOT_TESTED
+performance=NOT_TESTED
+ITER414_HOPPER_CTA_PIPELINE_JIT_RESOURCE_OK

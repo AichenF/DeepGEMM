@@ -6243,140 +6243,86 @@ void tp4_megamoe_single_launch_kernel(
 
         single_launch_grid_barrier(barrier_state, 3, ctas);
     } else if constexpr (kSingleLaunch78CtaWgDag) {
-        // Hopper MegaMoE-inspired persistent L1/L2 interleave.  The reference
-        // uses one CTA-level producer and a two-stage mailbox because its A/B
-        // loaders and math warpgroups are separate roles.  Here every 128-
-        // thread group is a self-contained loader/dequant/math worker, so it
-        // claims only already-ready downstream work and publishes completion
-        // with GPU-scope release/acquire operations.  No CTA-wide barrier is
-        // used inside the task loop.
+        // Hopper MegaMoE-inspired persistent L1/L2 interleave.  One CTA-local
+        // mailbox now fans a coarse task out to all eight self-contained
+        // loader/dequant/math WGs.  This preserves the reference's essential
+        // one-producer-to-many-consumers structure and avoids Iteration 413's
+        // globally contended atomic claim for every short N128 WG task.
         constexpr int kIndependentTaskWGs = 8;
         constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
         static_assert(kSingleLaunchThreads == 1024);
         static_assert(kActivationGroupsPerRoute == 4);
+        static_assert(SplitK == 2 || SplitK == 4);
 
         const int num_mblocks = __ldg(num_tokens_padded) / kTok;
-        const int total_w13_tasks =
-            num_mblocks * kW13NTiles * SplitK;
-        const int total_activation_tasks =
-            num_mblocks * kTok * kActivationGroupsPerRoute;
-        const int total_w2_tasks = num_mblocks * kW2NTiles;
+        constexpr int kActivationGroupsPerL1Macro =
+            SplitK == 4 ? 1 : 2;
+        constexpr int kL1MacrosPerMblock =
+            kActivationGroupsPerRoute / kActivationGroupsPerL1Macro;
+        constexpr int kW2ChunksPerMblock = 4;
+        constexpr int kW2TilesPerChunk =
+            kW2NTiles / kW2ChunksPerMblock;
+        static_assert(kW2TilesPerChunk == kIndependentTaskWGs);
+        const int total_l1_macros = num_mblocks * kL1MacrosPerMblock;
+        const int total_w2_chunks = num_mblocks * kW2ChunksPerMblock;
         const int independent_wg = threadIdx.x >> 7;
-        const int wg_lane = threadIdx.x & 127;
 
-        int32_t* w13_group_done = scheduler + kWgDagHeaderWords;
-        int32_t* activation_queue =
-            w13_group_done + 4 * max_mblocks;
-        int32_t* activation_mblock_done =
-            activation_queue + 4 * max_mblocks;
-        int32_t* w2_queue = activation_mblock_done + max_mblocks;
+        // Reuse the larger Iteration-408 diagnostic slab while reducing the
+        // active state to one L1-group counter per mblock and four published
+        // W2 chunks per mblock.
+        int32_t* l1_groups_done = scheduler + kWgDagHeaderWords;
+        int32_t* w2_ready_queue = l1_groups_done + 4 * max_mblocks;
 
-        __shared__ int wg_task_kind[kIndependentTaskWGs];
-        __shared__ int wg_task_index[kIndependentTaskWGs];
-        __shared__ int wg_task_key[kIndependentTaskWGs];
-        int owe_w13 = 0;
+        __shared__ int cta_task_kind;
+        __shared__ int cta_task_payload;
+        int next_l1_macro = cta;
+        int prefer_w2 = 0;
 
         while (true) {
-            if (wg_lane == 0) {
+            if (threadIdx.x == 0) {
                 int kind = -1;
-                int index = -1;
-                int key = -1;
+                int payload = -1;
 
                 if (load_acquire_gpu_i32(
-                        scheduler + kWgDagDoneW2) >= total_w2_tasks) {
+                        scheduler + kWgDagDoneW2) >= total_w2_chunks) {
                     kind = 0;
                 }
 
-                // As in Hopper's L1-warmup/alternation policy, a worker that
-                // just consumed downstream work first owes one upstream L1
-                // attempt.  Claims are bounded, so a worker never occupies a
-                // resident warpgroup while waiting for an unpublished task.
-                if (kind < 0 && owe_w13) {
-                    index = try_claim_bounded_i32(
-                        scheduler + kWgDagNextW13, total_w13_tasks);
-                    if (index >= 0) {
-                        kind = 1;
-                        owe_w13 = 0;
-                    }
-                }
-
-                if (kind < 0) {
+                // After each L1 macro, try one ready L2 chunk before issuing
+                // the next static L1 macro.  The ready entry is acquire-read
+                // before its single CTA-level CAS claim.
+                if (kind < 0
+                        && (prefer_w2 || next_l1_macro >= total_l1_macros)) {
                     const int next = load_relaxed_gpu_i32(
-                        scheduler + kWgDagNextActivation);
-                    if (next < total_activation_tasks) {
-                        const int queue_slot = next >> 3;
+                        scheduler + kWgDagNextW2);
+                    if (next < total_w2_chunks) {
                         const int encoded = load_acquire_gpu_i32(
-                            activation_queue + queue_slot);
+                            w2_ready_queue + next);
                         if (encoded != 0
                                 && atomicCAS(
-                                    scheduler + kWgDagNextActivation,
+                                    scheduler + kWgDagNextW2,
                                     next, next + 1) == next) {
                             kind = 2;
-                            index = next;
-                            key = encoded - 1;
-                            owe_w13 = 1;
+                            payload = encoded - 1;
+                            prefer_w2 = 0;
                         }
                     }
                 }
 
-                if (kind < 0 && !owe_w13) {
-                    const int next = load_relaxed_gpu_i32(
-                        scheduler + kWgDagNextW2);
-                    if (next < total_w2_tasks) {
-                        const int queue_slot = next >> 5;
-                        const int encoded = load_acquire_gpu_i32(
-                            w2_queue + queue_slot);
-                        if (encoded != 0
-                                && atomicCAS(
-                                    scheduler + kWgDagNextW2,
-                                    next, next + 1) == next) {
-                            kind = 3;
-                            index = next;
-                            key = encoded - 1;
-                            owe_w13 = 1;
-                        }
-                    }
+                if (kind < 0 && next_l1_macro < total_l1_macros) {
+                    kind = 1;
+                    payload = next_l1_macro;
+                    next_l1_macro += ctas;
+                    prefer_w2 = 1;
                 }
 
-                if (kind < 0) {
-                    index = try_claim_bounded_i32(
-                        scheduler + kWgDagNextW13, total_w13_tasks);
-                    if (index >= 0) {
-                        kind = 1;
-                        owe_w13 = 0;
-                    }
-                }
-
-                // Once every W13 task is issued, an outstanding upstream turn
-                // must not suppress already-ready W2 work.
-                if (kind < 0) {
-                    const int next = load_relaxed_gpu_i32(
-                        scheduler + kWgDagNextW2);
-                    if (next < total_w2_tasks) {
-                        const int queue_slot = next >> 5;
-                        const int encoded = load_acquire_gpu_i32(
-                            w2_queue + queue_slot);
-                        if (encoded != 0
-                                && atomicCAS(
-                                    scheduler + kWgDagNextW2,
-                                    next, next + 1) == next) {
-                            kind = 3;
-                            index = next;
-                            key = encoded - 1;
-                            owe_w13 = 1;
-                        }
-                    }
-                }
-
-                wg_task_kind[independent_wg] = kind;
-                wg_task_index[independent_wg] = index;
-                wg_task_key[independent_wg] = key;
+                cta_task_kind = kind;
+                cta_task_payload = payload;
             }
-            independent_wg_sync<kIndependentTaskWGs>(independent_wg);
+            __syncthreads();
 
-            const int kind = wg_task_kind[independent_wg];
-            const int index = wg_task_index[independent_wg];
-            const int key = wg_task_key[independent_wg];
+            const int kind = cta_task_kind;
+            const int payload = cta_task_payload;
             if (kind == 0)
                 break;
             if (kind < 0) {
@@ -6385,68 +6331,93 @@ void tp4_megamoe_single_launch_kernel(
             }
 
             if (kind == 1) {
+                const int mblock = payload / kL1MacrosPerMblock;
+                const int macro_in_mblock =
+                    payload - mblock * kL1MacrosPerMblock;
+                int activation_group;
+                int tile_half;
+                int split;
+                if constexpr (SplitK == 4) {
+                    activation_group = macro_in_mblock;
+                    tile_half = independent_wg >> 2;
+                    split = independent_wg & 3;
+                } else {
+                    activation_group =
+                        macro_in_mblock * 2 + (independent_wg >> 2);
+                    const int task_in_group = independent_wg & 3;
+                    tile_half = task_in_group >> 1;
+                    split = task_in_group & 1;
+                }
+                const int n_tile = activation_group + tile_half * 4;
+                const int w13_task =
+                    (mblock * kW13NTiles + n_tile) * SplitK + split;
                 single_launch_wg_dag_w13_task<SplitK>(
                     &w13_tma_weight, &w13_tma_weight_scale,
                     w13, s13, g13, qx, x_scale,
                     sorted_ids, expert_ids, num_tokens_padded,
                     topk_weights, partials, lut, routes,
-                    index, independent_wg);
-                if (wg_lane == 0) {
-                    const int task_idx = index / SplitK;
-                    const int mblock = task_idx / kW13NTiles;
-                    const int n_tile = task_idx - mblock * kW13NTiles;
-                    // W13 stores gate in N[0:512] and up in N[512:1024].
-                    // Thus group g depends on N128 tiles g and g+4.
-                    const int activation_group = n_tile & 3;
-                    const int group_key = mblock * 4 + activation_group;
-                    const int done = atomic_add_acq_rel_gpu_i32(
-                        w13_group_done + group_key, 1) + 1;
-                    if (done == 2 * SplitK) {
-                        const int queue_slot = atomicAdd(
-                            scheduler + kWgDagActivationQueueTail, 1);
-                        store_release_gpu_i32(
-                            activation_queue + queue_slot, group_key + 1);
+                    w13_task, independent_wg);
+
+                // The Hopper L1 task owns its SwiGLU/quant epilogue.  Match
+                // that here after all gate/up split tasks in this CTA macro
+                // have completed, then publish only a coarse mblock count.
+                __syncthreads();
+                #pragma unroll
+                for (int group_in_macro = 0;
+                     group_in_macro < kActivationGroupsPerL1Macro;
+                     ++group_in_macro) {
+                    const int ready_group =
+                        macro_in_mblock * kActivationGroupsPerL1Macro
+                            + group_in_macro;
+                    const int route = __ldg(
+                        sorted_ids + mblock * kTok + independent_wg);
+                    if (static_cast<unsigned>(route)
+                            < static_cast<unsigned>(routes)) {
+                        single_launch_wg_dag_activation_task<SplitK>(
+                            partials, activation, qactivation,
+                            activation_scale, route_to_sorted, topk_ids, g2,
+                            routes,
+                            route * kActivationGroupsPerRoute + ready_group,
+                            independent_wg);
+                    } else {
+                        independent_wg_sync<kIndependentTaskWGs>(
+                            independent_wg);
                     }
                 }
-            } else if (kind == 2) {
-                const int mblock = key >> 2;
-                const int activation_group = key & 3;
-                const int route_slot = index & 7;
-                const int route = __ldg(
-                    sorted_ids + mblock * kTok + route_slot);
-                if (static_cast<unsigned>(route)
-                        < static_cast<unsigned>(routes)) {
-                    single_launch_wg_dag_activation_task<SplitK>(
-                        partials, activation, qactivation,
-                        activation_scale, route_to_sorted, topk_ids, g2,
-                        routes,
-                        route * kActivationGroupsPerRoute
-                            + activation_group,
-                        independent_wg);
-                } else {
-                    independent_wg_sync<kIndependentTaskWGs>(
-                        independent_wg);
-                }
-                if (wg_lane == 0) {
+                __syncthreads();
+                if (threadIdx.x == 0) {
                     const int done = atomic_add_acq_rel_gpu_i32(
-                        activation_mblock_done + mblock, 1) + 1;
-                    if (done == kTok * kActivationGroupsPerRoute) {
+                        l1_groups_done + mblock,
+                        kActivationGroupsPerL1Macro)
+                        + kActivationGroupsPerL1Macro;
+                    if (done == kActivationGroupsPerRoute) {
                         const int queue_slot = atomicAdd(
-                            scheduler + kWgDagW2QueueTail, 1);
-                        store_release_gpu_i32(
-                            w2_queue + queue_slot, mblock + 1);
+                            scheduler + kWgDagW2QueueTail,
+                            kW2ChunksPerMblock);
+                        #pragma unroll
+                        for (int chunk = 0;
+                             chunk < kW2ChunksPerMblock; ++chunk) {
+                            store_release_gpu_i32(
+                                w2_ready_queue + queue_slot + chunk,
+                                mblock * kW2ChunksPerMblock + chunk + 1);
+                        }
                     }
                 }
             } else {
-                const int n_tile = index & (kW2NTiles - 1);
-                const int task = key * kW2NTiles + n_tile;
+                const int mblock = payload / kW2ChunksPerMblock;
+                const int chunk =
+                    payload - mblock * kW2ChunksPerMblock;
+                const int task =
+                    mblock * kW2NTiles
+                        + chunk * kW2TilesPerChunk + independent_wg;
                 single_launch_wg_dag_w2_task(
                     &w2_tma_weight, &w2_tma_weight_scale,
                     w2, s2, g2, qactivation, activation_scale,
                     sorted_ids, expert_ids, num_tokens_padded,
                     topk_weights, down, lut, routes,
                     task, independent_wg);
-                if (wg_lane == 0)
+                __syncthreads();
+                if (threadIdx.x == 0)
                     atomic_add_acq_rel_gpu_i32(
                         scheduler + kWgDagDoneW2, 1);
             }

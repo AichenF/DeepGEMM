@@ -10252,3 +10252,28 @@ maximum rank latency of a full CUDA-Graph replay.
   global claim per warpgroup task.
 - Evidence:
   `bench/results/iter413_hopper_wg_dag_tp4_m8_m128_cold_screen_20260905.log`.
+
+## Iteration 414 — replace fine global DAG with Hopper-style CTA pipeline
+
+- Date: 2026-09-05
+- Change: preserve the default-off experimental flag but replace Iteration
+  413's one-global-claim-per-WG-task scheduler with one CTA-local mailbox that
+  drives all eight 128-thread WGs.  A split-K4 L1 macro executes the four gate
+  and four up split tasks for one activation group; split-K2 executes two
+  groups per macro.  The same CTA immediately performs the matching eight-row
+  SwiGLU/requant epilogue.  L1 macros are statically striped across 78 CTAs,
+  requiring no global claim.
+- Coarse L2 publication: the last L1 macro for an mblock release-publishes
+  four W2 chunks.  Each chunk fans eight adjacent N128 tiles to the eight WGs;
+  a CTA alternates a ready W2 chunk with its next L1 macro.  At M128 this
+  reduces estimated global scheduling events from roughly 19,440 fine events
+  to about 1,458 coarse macro/chunk events, while retaining W13/W2 overlap.
+- Verification: Python compilation and CUDA JIT pass.  Both M8 split-K4 and
+  M128 split-K2 entries use 64 registers/thread, a 32-byte stack, 3,072 bytes
+  static shared memory and zero declared local bytes; dynamic shared remains
+  147,456 bytes.  Static shared is 1 KiB lower than the rejected fine-DAG
+  binary because the eight per-WG mailbox arrays are gone.
+- Decision: JIT/resource gate PASS.  This iteration makes no correctness or
+  performance claim.  Run TP-disabled endpoint correctness next.
+- Evidence:
+  `results/iter414_hopper_cta_pipeline_jit_resource_20260905.log`.
