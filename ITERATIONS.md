@@ -14440,3 +14440,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Scope:** TP collective was intentionally disabled in this compute gate; no end-to-end latency is claimed here.
 - **Decision:** proceed to the M128 cold-L2 launch/correctness gate before benchmarking. Production defaults remain unchanged.
 - **Evidence:** `evidence/iter630_156cta_4wg_m8_compute.md`; raw log `bench/results/iter630_156cta_4wg_m8_compute.log`.
+## Iteration 631 — 156 CTA × 4 WG M128 cold-L2 launch/correctness gate (pass)
+
+- **Test:** same isolated compute-only cold-L2 harness as Iteration 630 at random-route M128.
+- **Residency:** the 156-CTA launch again passed the exact two-CTA-per-SM host occupancy requirement on all 78 SMs.
+- **Correctness:** **PASS**, full `down` versus same-source multi-kernel reference: cosine `1.0`, relative L2 `0.0`, finite true. The case used W13 SplitK=2 and 1,992 padded route rows.
+- **Scope:** TP collective disabled; this is not end-to-end timing.
+- **Decision:** topology is now eligible for a paired, randomized, cold-L2 TP4 benchmark against the selected 624×128 production kernel. Production defaults remain unchanged pending that A/B.
+- **Evidence:** `evidence/iter631_156cta_4wg_m128_compute.md`; raw log `bench/results/iter631_156cta_4wg_m128_compute.log`.
