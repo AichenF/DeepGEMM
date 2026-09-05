@@ -15122,3 +15122,30 @@ maximum rank latency of a full CUDA-Graph replay.
   defaults are unchanged.
 - **Evidence:** `evidence/iter656_w13_adjacent_pair_rejection.md`; raw logs
   `bench/results/iter656*_w13_adjacent_pairs*_20260906.log`.
+
+## Iteration 657 — cluster-aggregated grid barriers are slower
+
+- **Multi-kernel transfer:** preserve the selected flat 128-thread CTA/task
+  mapping, but aggregate each phase's packed global arrivals through Hopper
+  hardware thread-block-cluster barriers.  Every producer still participates;
+  only cluster rank zero performs a global release arrival.  A residual-CTA-
+  only scheme was rejected before implementation because it cannot prove that
+  a slower non-residual CTA has completed and published its prior full wave.
+- **Resource/residency gates:** native CuTe/PTX cluster barriers preserve the
+  selected M128 `REG56 STACK32 SHARED2048 LOCAL0` and M8 `REG63 STACK32
+  SHARED2048 LOCAL0` cubin contracts.  Cluster size three nevertheless admits
+  only 504 blocks versus the required M128 702, so the host rejected it before
+  kernel execution.  Cluster size two admits the complete M8 624-block grid.
+- **Correctness:** cluster-2 random-route M8 is bitwise equal to the independent
+  same-source multi result (`cosine=1`, `rel_l2=0`, finite), and packed barrier
+  generation wrap returns exactly `[0,0,0,0]`.
+- **Cold-L2 local screen:** physical GPU1, seed 20260902, four separate
+  process samples in OFF/ON/ON/OFF order, with an excluded 256 MiB clear before
+  every measured launch.  Ordinary total phase samples are 65.632/66.432 us;
+  cluster-2 samples are 69.312/69.088 us.  Candidate mean 69.200 us is 4.80%
+  slower than control mean 66.032 us, and both ON samples lose to both OFF.
+- **Decision:** reject before TP4 and remove the prototype.  Production source
+  is byte-identical to Iteration 656.  Multi-kernel's hardware phase completion
+  is a structural advantage, not a profitable barrier-code cherry-pick.
+- **Evidence:** `evidence/iter657_multikernel_barrier_transfer_rejection.md`;
+  raw `bench/results/iter657*_cluster*_20260906.log`.
