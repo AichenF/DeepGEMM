@@ -1,0 +1,31 @@
+Iteration 595: compact-ABI W13 M128 cubin resource gate
+Date: 2026-09-05
+
+Extension:
+  /tmp/torch_ext_v4_tp/v4tp_3730e629ffde63bcb606_v178mspec/
+  v4tp_3730e629ffde63bcb606_v178mspec.so
+
+Configuration:
+  V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL=1
+  V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS=1
+  V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE=1
+  V4_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI=1
+  V4_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM=1
+  V4_SINGLE_LAUNCH_M128_BOUND9=1
+
+Resource summary:
+  tp4_megamoe_single_launch_kernel<2,128>:
+    REG:56 STACK:32 SHARED:2048 LOCAL:0
+  tp4_megamoe_single_launch_kernel<4,128>:
+    REG:56 STACK:32 SHARED:2048 LOCAL:0
+  Tokens 8/16/32/64 entries:
+    REG:64 STACK:48 SHARED:2048 LOCAL:0
+
+Selected M128 main SASS CALL count: 3
+  Expected composition: one compact W13 phase call and two existing
+  communication-helper call sites.
+
+Conclusion:
+M128 passes the nine-CTA static resource gate with no fixed local allocation.
+Before runtime testing, restrict the compact outline to Tokens==128 so smaller
+shapes retain their selected inline machine path.

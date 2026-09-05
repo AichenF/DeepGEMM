@@ -13807,3 +13807,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Static result: **PASS.** `python3 -m py_compile v4_flash_tp_wgmma.py` exits 0 with no diagnostics.
 - Qualification: this validates syntax and the intended validator expression only. CUDA compilation/resource evidence remains pending in the exact Iteration-593 configuration.
 - Evidence: `bench/evidence/iter594_tp4_w13_compact_validator_repair.txt`.
+
+## Iteration 595 — compact W13 ABI reaches the M128 nine-CTA resource target (2026-09-05)
+
+- Configuration: H20 GPU1 SM90a JIT with compact W13 phase ABI, dynamic route shared memory, M128 bound-9, release-arrival and assume-valid tasks. Exact extension: `v4tp_3730e629ffde63bcb606_v178mspec`.
+- M128 resource result: **PASS.** Split-K2 and split-K4 main entries are both `REG:56 STACK:32 SHARED:2048 LOCAL:0`, admitting nine 128-thread CTAs/SM without fixed local allocation. The selected split-K2 main has three SASS `CALL` sites: one W13 phase call plus the two pre-existing terminal communication calls. Compared with the prior dual-phase bound-9 experiment (`STACK:48`), the compact W13-only caller frame is 16 bytes smaller.
+- Other shapes: because the initial flag applies the outline globally, M8/M16/M32/M64 entries are `REG:64 STACK:48 SHARED:2048 LOCAL:0`; they receive no residency gain and should not be exposed to the known call overhead.
+- Decision: resource gate passes for M128, but specialize the compact call to `Tokens==128` and leave M<=64 on the selected inline path before correctness/performance testing. Then require exact local output and runtime nine-CTA admission at M128.
+- Evidence: `bench/evidence/iter595_tp4_w13_compact_abi_resources.txt`.
