@@ -13857,3 +13857,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Aggregate: mean normalized ratio OFF=1.1397944379x, ON=1.1356514686x; ON/OFF=0.9963651610, a 0.3635% normalized improvement. Direct candidate means show 0.3752479926 -> 0.3672240004 ms, but most of that 2.14% shift is process drift also visible in the controls; only the normalized 0.36% is credited.
 - Decision: pass as a reproducible but small M128-only candidate because both ON windows beat both OFF windows here and in Iter599, with lower registers and no local spill. Do not yet change the public default: first encode the bundle cleanly, rerun all M values to prove small-M neutrality, and rerun TP8 correctness/one-launch audit.
 - Evidence: `evidence/iter600_compact_w13_m128_long_bracket.md` and `evidence/iter600_compact_w13_m128_long_bracket_results.txt`.
+## Iteration 601 — compact-W13 plus split2-unroll8 resource launcher quoting failure
+
+- Intended gate: compile the M128 compact-ABI W13 outline together with `V4_W13_K_UNROLL8_SPLIT2=1`, then inspect its TP4 M128 cubin resources before any kernel launch or distributed benchmark.
+- Failure: the nested SSH/container command passed literal `\\x27` sequences into Python's `-c` source. Python raised `SyntaxError: unexpected character after line continuation character` at the print statement.
+- Qualification: failure occurred before importing `v4_flash_tp_wgmma`, JIT compilation, CUDA initialization, kernel launch, resource extraction, correctness, or timing. It contains no evidence for or against the candidate.
+- Decision: retry unchanged with ordinary shell-safe double/single quoting, then apply the original register/no-spill gate.
+- Evidence: `evidence/iter601_compact_w13_unroll8_launcher_failure.txt`.
