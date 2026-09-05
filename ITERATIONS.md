@@ -9752,3 +9752,33 @@ maximum rank latency of a full CUDA-Graph replay.
   property to `int64_t` and rerun the same nonblocking probe.
 - Evidence:
   `results/iter394_cta_smid_nonblocking_compile_failure_20260905.log`.
+
+## Iteration 395 — measure deterministic H20 CTA-to-SM mapping
+
+- Date: 2026-09-05
+- Purpose/method: rerun the nonblocking `%smid/%globaltimer` residency probe
+  after fixing Iteration 394's host-type cast.  The 624x128 shape used 28,000
+  dynamic shared bytes to force exactly eight resident CTAs/SM; the 78x1024
+  shape used the candidate's 147,456 bytes to force one CTA/SM.  Every CTA
+  held its allocation for 5 ms without a device-wide barrier.  This was a
+  scheduling diagnostic, not a latency benchmark.
+- Resource result: H20 reports 78 SMs and 233,472 shared bytes/SM.  CUDA's
+  occupancy API reports 8 old-shape and 1 new-shape resident blocks/SM.
+  All 624/78 entries began within 0.224/0.128 us, with exactly eight/one
+  records on every SM, confirming a single concurrent residency wave.
+- Mapping result: all three trials are byte-identical (signature
+  `ae0e18b78bc9d620`), but the selected-shape CTAs per SM are neither eight
+  consecutive block IDs nor a simple stride-78 sequence.  Representative
+  SM0 is `[14,106,198,276,354,432,496,560]`; SM4 is
+  `[44,136,214,292,370,448,512,576]`; SM74 is
+  `[0,30,70,114,184,250,318,386]`.  A 78-block launch also does not always
+  place its block on the same SM as that SM's lowest old block (for example,
+  new block 30 occupies SM4 while the old set begins at 44).
+- Interpretation/decision: the experimental `cta*8+wg` mapping does not
+  reproduce how the selected 624 independent CTAs are physically striped
+  over this 78-SM H20.  Do not replace it with the also-wrong `cta+78*wg`
+  guess.  Before a production change, confirm the real 624-CTA kernel's
+  mapping with optional instrumentation; then map each 78-CTA block's
+  `%smid` to the measured eight-task set or derive the hardware stripe.
+- Evidence:
+  `results/iter395_cta_smid_nonblocking_mapping_20260905.log`.
