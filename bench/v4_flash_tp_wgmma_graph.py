@@ -570,8 +570,10 @@ class CapturedCase:
             symm.get_buffer(peer, [total_bytes], torch.uint8)
             for peer in range(comm.world_size)
         )
-        if len(workspaces) != 4:
-            raise RuntimeError("fused k6 push all-reduce requires TP4")
+        if len(workspaces) not in (4, 8) or len(workspaces) != comm.world_size:
+            raise RuntimeError(
+                "fused k6 push all-reduce requires TP4 or TP8 symmetric memory"
+            )
         self.fused_push_symm = symm
         self.fused_push_workspaces = workspaces
         self.fused_push_counter = comm._push_counter
@@ -973,9 +975,61 @@ class CapturedCase:
         self.graph_output = self.fused_graph_output
         return self.graph_output
 
+    def run_tp8_single_launch(self, comm: CustomAllReduceV2) -> torch.Tensor:
+        """Run the complete TP8 MoE and multicast all-reduce in one kernel."""
+        self.prepare_fused_push(comm)
+        assert self.down is not None
+        assert self.activation_scale is not None
+        assert self.fused_push_workspaces is not None
+        assert self.fused_push_counter is not None
+        if comm.world_size != 8 or not self.fused_push_mc_ptr:
+            raise RuntimeError(
+                "TP8 single-launch bring-up requires TP8 NVLS multicast memory"
+            )
+        kernel.run_tp8_megamoe_single_launch(
+            self.w13,
+            self.s13,
+            self.g13,
+            self.w2,
+            self.s2,
+            self.g2,
+            self.qx,
+            self.x_scale,
+            self.topk_ids,
+            self.topk_weights,
+            self.sorted_ids,
+            self.expert_ids,
+            self.num_tokens_padded,
+            self.partials,
+            self.activation,
+            self.qactivation,
+            self.activation_scale,
+            self.down,
+            self.lut,
+            self.single_launch_barrier_state,
+            self.route_to_sorted,
+            self.fused_graph_output,
+            self.fused_push_counter,
+            self.fused_push_workspaces,
+            self.fused_push_rank,
+            self.fused_push_stride,
+            self.fused_push_mc_ptr,
+            self.w13_split_k,
+        )
+        self.fused_k6_push_active = True
+        self.fused_k6_ar_mode = "single_launch_tp8_multicast_push"
+        self.graph_output = self.fused_graph_output
+        return self.graph_output
+
     def run_full(self, comm: CustomAllReduceV2) -> torch.Tensor:
         if kernel.SINGLE_LAUNCH_TP4:
-            return self.run_tp4_single_launch(comm)
+            if comm.world_size == 4:
+                return self.run_tp4_single_launch(comm)
+            if comm.world_size == 8:
+                return self.run_tp8_single_launch(comm)
+            raise RuntimeError(
+                f"single-launch MegaMoE requires TP4 or TP8, got TP{comm.world_size}"
+            )
         use_w2_progress = (
             kernel.W2_PROGRESS_MC_PUSH_AR
             and comm.world_size == 4

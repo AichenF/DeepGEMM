@@ -1344,6 +1344,7 @@ _CUDA = r"""
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
 #include <algorithm>
+#include <type_traits>
 #include <cuda.h>
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
@@ -5552,6 +5553,147 @@ __device__ __forceinline__ void fused_k6_push_ar_tp4_task(
         atomicAdd(push_counter + linear_block_idx, 1u);
 }
 
+// TP8 correctness/run-through tail for the flat one-launch kernel.  Keep the
+// eight-rank receive set out of the GEMM entry's register allocation by using
+// a noinline helper.  Readiness and accumulation are deliberately separate:
+// each rank owns and clears only its local destination slab, so values cannot
+// disappear between the two passes.  This avoids retaining eight uint4
+// payloads per lane while preserving CARv2's two-phase multicast-push layout.
+template <int Tokens>
+__device__ __noinline__ void fused_k6_multicast_push_ar_tp8_task(
+        const __nv_bfloat16* __restrict__ input,
+        const float* __restrict__ topk_weights,
+        __nv_bfloat16* __restrict__ output,
+        uint32_t* __restrict__ push_counter,
+        uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
+        uint8_t* push4, uint8_t* push5, uint8_t* push6, uint8_t* push7,
+        uint8_t* push_mc,
+        int rank, int64_t push_stride, int linear_block_idx,
+        int linear_grid_dim) {
+    constexpr int kWorld = 8;
+    constexpr int kHidden = 4096;
+    constexpr int kPairsPerToken = kHidden / 2;
+    constexpr int kPairsPerVec = 4;
+    constexpr int kVecsPerToken = kHidden / 8;
+    uint8_t* peer_base[kWorld] = {
+        push0, push1, push2, push3, push4, push5, push6, push7};
+    const int phase = push_counter[linear_block_idx] & 1u;
+    const int64_t phase_offset =
+        static_cast<int64_t>(phase) * push_stride * kWorld;
+    const int num_vecs = Tokens * kVecsPerToken;
+    const int global_tid =
+        linear_block_idx * blockDim.x + threadIdx.x;
+    const int global_threads = linear_grid_dim * blockDim.x;
+
+    for (int vec = global_tid; vec < num_vecs; vec += global_threads) {
+        const int token = vec / kVecsPerToken;
+        const int vec_in_token = vec - token * kVecsPerToken;
+        const int pair0 = vec_in_token * kPairsPerVec;
+        float2 local_accum[kPairsPerVec];
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair)
+            local_accum[pair] = make_float2(0.0f, 0.0f);
+
+        const auto* input2 =
+            reinterpret_cast<const __nv_bfloat162*>(input);
+        #pragma unroll
+        for (int route = 0; route < kTopK; ++route) {
+            const float route_weight =
+                __ldg(topk_weights + token * kTopK + route)
+                * kRoutedScale;
+            const int64_t route_base =
+                (static_cast<int64_t>(token) * kTopK + route)
+                * kPairsPerToken;
+            #pragma unroll
+            for (int pair = 0; pair < kPairsPerVec; ++pair) {
+                const float2 value = __bfloat1622float2(
+                    input2[route_base + pair0 + pair]);
+                local_accum[pair].x = fmaf(
+                    value.x, route_weight, local_accum[pair].x);
+                local_accum[pair].y = fmaf(
+                    value.y, route_weight, local_accum[pair].y);
+            }
+        }
+
+        uint4 local_vec;
+        uint32_t* local_words = reinterpret_cast<uint32_t*>(&local_vec);
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair) {
+            const __nv_bfloat162 value = __floats2bfloat162_rn(
+                local_accum[pair].x, local_accum[pair].y);
+            const uint32_t word =
+                *reinterpret_cast<const uint32_t*>(&value);
+            local_words[pair] = word == 0u ? 0x00008000u : word;
+        }
+
+        const int64_t source_offset =
+            static_cast<int64_t>(rank) * push_stride + phase_offset
+            + static_cast<int64_t>(vec) * 16;
+        store_multimem_16b(push_mc + source_offset, local_vec);
+
+        const int64_t poll_offset =
+            phase_offset + static_cast<int64_t>(vec) * 16;
+        while (true) {
+            bool ready = true;
+            #pragma unroll
+            for (int source = 0; source < kWorld; ++source) {
+                const uint4 value = load_relaxed_sys_16b(
+                    peer_base[rank] + source * push_stride + poll_offset);
+                const uint32_t* words =
+                    reinterpret_cast<const uint32_t*>(&value);
+                #pragma unroll
+                for (int pair = 0; pair < kPairsPerVec; ++pair)
+                    ready &= words[pair] != 0u;
+            }
+            if (ready)
+                break;
+        }
+
+        float2 sum[kPairsPerVec];
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair)
+            sum[pair] = make_float2(0.0f, 0.0f);
+        #pragma unroll
+        for (int source = 0; source < kWorld; ++source) {
+            const uint4 value = load_relaxed_sys_16b(
+                peer_base[rank] + source * push_stride + poll_offset);
+            const uint32_t* words =
+                reinterpret_cast<const uint32_t*>(&value);
+            #pragma unroll
+            for (int pair = 0; pair < kPairsPerVec; ++pair) {
+                const __nv_bfloat162 pair_value =
+                    *reinterpret_cast<const __nv_bfloat162*>(&words[pair]);
+                const float2 pair_f32 = __bfloat1622float2(pair_value);
+                sum[pair].x += pair_f32.x;
+                sum[pair].y += pair_f32.y;
+            }
+        }
+
+        uint4 result;
+        uint32_t* result_words = reinterpret_cast<uint32_t*>(&result);
+        #pragma unroll
+        for (int pair = 0; pair < kPairsPerVec; ++pair) {
+            const __nv_bfloat162 value =
+                __floats2bfloat162_rn(sum[pair].x, sum[pair].y);
+            result_words[pair] =
+                *reinterpret_cast<const uint32_t*>(&value);
+        }
+        reinterpret_cast<uint4*>(output)[vec] = result;
+
+        const uint4 empty = make_uint4(0u, 0u, 0u, 0u);
+        #pragma unroll
+        for (int source = 0; source < kWorld; ++source) {
+            reinterpret_cast<uint4*>(
+                peer_base[rank] + source * push_stride + phase_offset)[vec]
+                = empty;
+        }
+    }
+
+    __syncthreads();
+    if (threadIdx.x == 0)
+        atomicAdd(push_counter + linear_block_idx, 1u);
+}
+
 // Keep the selected standalone launch as a thin wrapper around the same
 // device body used by the forthcoming persistent TP MegaMoE kernel.  Passing
 // the logical grid explicitly avoids child launches and lets a resident grid
@@ -8122,6 +8264,114 @@ void tp4_megamoe_single_launch_kernel(
     }
 }
 
+// TP8 run-through specialization of the selected flat schedule.  TP4 keeps
+// its independently tuned kernel above; this path deliberately reuses the
+// same route/GEMM/epilogue task bodies while changing only the rank-local
+// intermediate width and final collective width.  No EP dispatch/combine or
+// external activation quantization is introduced.
+template <int SplitK, int Tokens>
+__global__ __launch_bounds__(128, 8)
+void tp8_megamoe_single_launch_kernel(
+        const __grid_constant__ CUtensorMap w13_tma_weight,
+        const __grid_constant__ CUtensorMap w13_tma_weight_scale,
+        const __grid_constant__ CUtensorMap w2_tma_weight,
+        const __grid_constant__ CUtensorMap w2_tma_weight_scale,
+        const uint8_t* __restrict__ w13,
+        const uint8_t* __restrict__ s13,
+        const float* __restrict__ g13,
+        const uint8_t* __restrict__ w2,
+        const uint8_t* __restrict__ s2,
+        const float* __restrict__ g2,
+        const uint8_t* __restrict__ qx,
+        const float* __restrict__ x_scale,
+        const int32_t* __restrict__ topk_ids,
+        const float* __restrict__ topk_weights,
+        int32_t* __restrict__ sorted_ids,
+        int32_t* __restrict__ expert_ids,
+        int32_t* __restrict__ num_tokens_padded,
+        float* __restrict__ partials,
+        __nv_bfloat16* __restrict__ activation,
+        uint8_t* __restrict__ qactivation,
+        float* __restrict__ activation_scale,
+        __nv_bfloat16* __restrict__ down,
+        const uint2* __restrict__ lut,
+        int32_t* __restrict__ barrier_state,
+        int32_t* __restrict__ route_to_sorted,
+        __nv_bfloat16* __restrict__ output,
+        uint32_t* __restrict__ push_counter,
+        uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
+        uint8_t* push4, uint8_t* push5, uint8_t* push6, uint8_t* push7,
+        uint8_t* push_mc,
+        int max_mblocks, int rank, int64_t push_stride,
+        bool enable_tp_collective) {
+    constexpr int kIntermediate = 256;
+    constexpr int kW13N = 2 * kIntermediate;
+    constexpr int kW13NTiles = kW13N / kWout;
+    constexpr int kW2NTiles = 4096 / kWout;
+    constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
+    const int cta = static_cast<int>(blockIdx.x);
+    const int ctas = static_cast<int>(gridDim.x);
+    const int routes = Tokens * kTopK;
+
+    if constexpr (kSingleLaunchRecordPhaseStamps) {
+        if (cta == 0 && threadIdx.x == 0) {
+            reinterpret_cast<uint64_t*>(
+                barrier_state + kSingleLaunchBarrierWords)[0] =
+                    read_globaltimer();
+        }
+    }
+
+    single_launch_route_task<128>(
+        topk_ids, sorted_ids, expert_ids, num_tokens_padded,
+        route_to_sorted, Tokens, cta);
+    single_launch_grid_barrier(barrier_state, 0, ctas);
+
+    const int num_mblocks = __ldg(num_tokens_padded) / kTok;
+    const int w13_tasks = num_mblocks * kW13NTiles * SplitK;
+    for (int task = cta; task < w13_tasks; task += ctas) {
+        route_gemm_task<
+            4096, kW13N, SplitK, true, 0, false, false, false,
+            -1, false, 0, kSingleLaunchAssumeValidGemmTasks>(
+            &w13_tma_weight, &w13_tma_weight_scale,
+            w13, s13, g13, qx, x_scale,
+            sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+            partials, lut, nullptr, routes, 0, task);
+        __syncthreads();
+    }
+    single_launch_grid_barrier(barrier_state, 1, ctas);
+
+    const int activation_groups = routes * kActivationGroupsPerRoute;
+    for (int group = cta; group < activation_groups; group += ctas) {
+        reduce_swiglu_quant_task<kIntermediate, SplitK>(
+            partials, activation, qactivation, activation_scale,
+            route_to_sorted, topk_ids, g2, routes, group);
+        __syncthreads();
+    }
+    single_launch_grid_barrier(barrier_state, 2, ctas);
+
+    const int w2_tasks = num_mblocks * kW2NTiles;
+    for (int task = cta; task < w2_tasks; task += ctas) {
+        route_gemm_task<
+            kIntermediate, 4096, 1, false, 0, false, false, false,
+            -1, false, 0, kSingleLaunchAssumeValidGemmTasks>(
+            &w2_tma_weight, &w2_tma_weight_scale,
+            w2, s2, g2, qactivation, activation_scale,
+            sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+            reinterpret_cast<float*>(down), lut, nullptr,
+            routes, 0, task);
+        __syncthreads();
+    }
+    single_launch_grid_barrier(barrier_state, 3, ctas);
+
+    if (enable_tp_collective && cta < 78) {
+        fused_k6_multicast_push_ar_tp8_task<Tokens>(
+            down, topk_weights, output, push_counter,
+            push0, push1, push2, push3,
+            push4, push5, push6, push7, push_mc,
+            rank, push_stride, cta, 78);
+    }
+}
+
 __device__ __forceinline__ uint4 load_multimem_reduce_bf16_16b(
         const void* pointer) {
     uint4 value;
@@ -9598,6 +9848,101 @@ void launch_tp4_megamoe_single(
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+template <int SplitK, int Tokens>
+void launch_tp8_megamoe_single(
+        const CUtensorMap& w13_descriptor,
+        const CUtensorMap& w2_descriptor,
+        torch::Tensor w13, torch::Tensor s13, torch::Tensor g13,
+        torch::Tensor w2, torch::Tensor s2, torch::Tensor g2,
+        torch::Tensor qx, torch::Tensor x_scale, torch::Tensor topk_ids,
+        torch::Tensor topk_weights, torch::Tensor sorted_ids,
+        torch::Tensor expert_ids, torch::Tensor num_tokens_padded,
+        torch::Tensor partials,
+        torch::Tensor activation, torch::Tensor qactivation,
+        torch::Tensor activation_scale, torch::Tensor down,
+        torch::Tensor lut, torch::Tensor barrier_state,
+        torch::Tensor route_to_sorted, torch::Tensor output,
+        torch::Tensor push_counter, torch::Tensor push0,
+        torch::Tensor push1, torch::Tensor push2, torch::Tensor push3,
+        torch::Tensor push4, torch::Tensor push5,
+        torch::Tensor push6, torch::Tensor push7,
+        int rank, int64_t push_stride, int64_t push_mc_ptr,
+        bool enable_tp_collective) {
+    constexpr int kThreads = 128;
+    constexpr int kCtasPerSm = 8;
+    constexpr int dynamic_smem_bytes = kRouteTaskDynamicBytes;
+    TORCH_CHECK(output.size(0) == Tokens,
+                "TP8 single-launch token specialization mismatch");
+
+    const cudaError_t attr_result = cudaFuncSetAttribute(
+        tp8_megamoe_single_launch_kernel<SplitK, Tokens>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        dynamic_smem_bytes);
+    TORCH_CHECK(attr_result == cudaSuccess,
+                "failed to set TP8 single-launch dynamic shared memory: ",
+                cudaGetErrorString(attr_result));
+
+    int active_per_sm = 0;
+    const cudaError_t occupancy_result =
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &active_per_sm,
+            tp8_megamoe_single_launch_kernel<SplitK, Tokens>,
+            kThreads, dynamic_smem_bytes);
+    TORCH_CHECK(occupancy_result == cudaSuccess,
+                "TP8 single-launch occupancy query failed: ",
+                cudaGetErrorString(occupancy_result));
+    TORCH_CHECK(active_per_sm >= kCtasPerSm,
+                "TP8 single-launch requires eight resident CTAs/SM, got ",
+                active_per_sm);
+
+    int device = -1;
+    cudaDeviceProp properties{};
+    C10_CUDA_CHECK(cudaGetDevice(&device));
+    C10_CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
+    TORCH_CHECK(properties.multiProcessorCount == 78,
+                "TP8 single-launch currently requires 78-SM H20");
+
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    cudaLaunchConfig_t launch_config{};
+    launch_config.gridDim = dim3(properties.multiProcessorCount * kCtasPerSm);
+    launch_config.blockDim = dim3(kThreads);
+    launch_config.dynamicSmemBytes = dynamic_smem_bytes;
+    launch_config.stream = stream;
+    const cudaError_t launch_result = cudaLaunchKernelEx(
+        &launch_config,
+        tp8_megamoe_single_launch_kernel<SplitK, Tokens>,
+        w13_descriptor, w13_descriptor, w2_descriptor, w2_descriptor,
+        w13.data_ptr<uint8_t>(), s13.data_ptr<uint8_t>(),
+        g13.data_ptr<float>(),
+        w2.data_ptr<uint8_t>(), s2.data_ptr<uint8_t>(), g2.data_ptr<float>(),
+        qx.data_ptr<uint8_t>(), x_scale.data_ptr<float>(),
+        topk_ids.data_ptr<int32_t>(), topk_weights.data_ptr<float>(),
+        sorted_ids.data_ptr<int32_t>(), expert_ids.data_ptr<int32_t>(),
+        num_tokens_padded.data_ptr<int32_t>(), partials.data_ptr<float>(),
+        activation.numel()
+            ? reinterpret_cast<__nv_bfloat16*>(activation.data_ptr())
+            : nullptr,
+        qactivation.data_ptr<uint8_t>(), activation_scale.data_ptr<float>(),
+        reinterpret_cast<__nv_bfloat16*>(down.data_ptr()),
+        reinterpret_cast<const uint2*>(lut.data_ptr<uint8_t>()),
+        barrier_state.data_ptr<int32_t>(),
+        route_to_sorted.numel()
+            ? route_to_sorted.data_ptr<int32_t>()
+            : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        reinterpret_cast<uint32_t*>(push_counter.data_ptr()),
+        push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
+        push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
+        push4.data_ptr<uint8_t>(), push5.data_ptr<uint8_t>(),
+        push6.data_ptr<uint8_t>(), push7.data_ptr<uint8_t>(),
+        reinterpret_cast<uint8_t*>(push_mc_ptr),
+        expert_ids.numel(), rank, push_stride, enable_tp_collective);
+    TORCH_CHECK(launch_result == cudaSuccess,
+                "failed to launch TP8 MegaMoE kernel: ",
+                cudaGetErrorString(launch_result));
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void run_tp4_megamoe_single_launch(
         torch::Tensor w13, torch::Tensor s13, torch::Tensor g13,
         torch::Tensor w2, torch::Tensor s2, torch::Tensor g2,
@@ -9880,6 +10225,165 @@ void run_tp4_megamoe_single_launch(
                 pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
                 enable_tp_collective);
         }
+    }
+}
+
+void run_tp8_megamoe_single_launch(
+        torch::Tensor w13, torch::Tensor s13, torch::Tensor g13,
+        torch::Tensor w2, torch::Tensor s2, torch::Tensor g2,
+        torch::Tensor qx, torch::Tensor x_scale, torch::Tensor topk_ids,
+        torch::Tensor topk_weights, torch::Tensor sorted_ids,
+        torch::Tensor expert_ids, torch::Tensor num_tokens_padded,
+        torch::Tensor partials,
+        torch::Tensor activation, torch::Tensor qactivation,
+        torch::Tensor activation_scale, torch::Tensor down,
+        torch::Tensor lut, torch::Tensor barrier_state,
+        torch::Tensor route_to_sorted, torch::Tensor output,
+        torch::Tensor push_counter, torch::Tensor push0,
+        torch::Tensor push1, torch::Tensor push2, torch::Tensor push3,
+        torch::Tensor push4, torch::Tensor push5,
+        torch::Tensor push6, torch::Tensor push7,
+        int rank, int64_t push_stride, int64_t push_mc_ptr,
+        int split_k, bool enable_tp_collective) {
+    constexpr int kIntermediate = 256;
+    TORCH_CHECK(kWout == 128 && kTiledWeightLayout && kBulkWeightCopy
+                    && kInterleavedBulkCopy && kCompactInterleavedScale
+                    && kMode2Braid && kNormalizedWeightScale
+                    && kW2RouteOutput && !kW2SortedAct && !kW2MblockScale
+                    && !kW2FoldGlobalScale && !kW2CoalescedStore
+                    && kSingleLaunchPackedGridBarrier,
+                "TP8 single-launch requires the selected flat layout/barrier");
+    TORCH_CHECK(split_k == 2 || split_k == 4,
+                "TP8 single-launch split-K must be 2 or 4");
+    TORCH_CHECK(qx.scalar_type() == torch::kUInt8
+                    && qx.is_cuda() && qx.is_contiguous()
+                    && qx.dim() == 2 && qx.size(1) == 4096,
+                "TP8 single-launch X must be contiguous FP8 storage [M,4096]");
+    const int tokens = qx.size(0);
+    TORCH_CHECK(tokens == 8 || tokens == 16 || tokens == 32
+                    || tokens == 64 || tokens == 128,
+                "TP8 single-launch supports M=8,16,32,64,128");
+    const int routes = tokens * kTopK;
+    TORCH_CHECK(topk_ids.scalar_type() == torch::kInt32
+                    && topk_ids.numel() == routes,
+                "TP8 single-launch topk_ids must be int32 [M,6]");
+    TORCH_CHECK(topk_weights.scalar_type() == torch::kFloat32
+                    && topk_weights.numel() == routes,
+                "TP8 single-launch topk_weights must be float32 [M,6]");
+    TORCH_CHECK(w13.scalar_type() == torch::kUInt8
+                    && s13.scalar_type() == torch::kUInt8
+                    && w2.scalar_type() == torch::kUInt8
+                    && s2.scalar_type() == torch::kUInt8,
+                "TP8 single-launch weights/scales must use packed uint8 storage");
+    TORCH_CHECK(g13.scalar_type() == torch::kFloat32 && g13.numel() == 256
+                    && g2.scalar_type() == torch::kFloat32
+                    && g2.numel() == 256,
+                "TP8 normalized expert scales must have 256 entries");
+    TORCH_CHECK(x_scale.scalar_type() == torch::kFloat32
+                    && x_scale.is_cuda() && x_scale.is_contiguous()
+                    && x_scale.numel() == tokens * 32,
+                "TP8 X scale must be contiguous FP32 [M,32]");
+    TORCH_CHECK(partials.scalar_type() == torch::kFloat32
+                    && partials.numel()
+                        >= 4LL * routes * (2 * kIntermediate),
+                "TP8 W13 partial workspace is too small");
+    TORCH_CHECK(qactivation.scalar_type() == torch::kUInt8
+                    && qactivation.numel() == routes * kIntermediate
+                    && activation_scale.scalar_type() == torch::kFloat32
+                    && activation_scale.numel() == routes * 2,
+                "TP8 activation quantization workspace mismatch");
+    TORCH_CHECK(down.scalar_type() == torch::kBFloat16
+                    && down.numel() == static_cast<int64_t>(routes) * 4096,
+                "TP8 W2 route workspace shape mismatch");
+    TORCH_CHECK(output.scalar_type() == torch::kBFloat16
+                    && output.numel()
+                        == static_cast<int64_t>(tokens) * 4096,
+                "TP8 single-launch output shape mismatch");
+    TORCH_CHECK(sorted_ids.scalar_type() == torch::kInt32
+                    && expert_ids.scalar_type() == torch::kInt32
+                    && num_tokens_padded.scalar_type() == torch::kInt32
+                    && num_tokens_padded.numel() == 1,
+                "TP8 single-launch route workspaces must be int32");
+    TORCH_CHECK(barrier_state.scalar_type() == torch::kInt32
+                    && barrier_state.is_cuda()
+                    && barrier_state.numel() >= kSingleLaunchStatePrefixWords,
+                "TP8 single-launch barrier state is too small");
+    TORCH_CHECK(push_counter.is_cuda() && push_counter.element_size() == 4
+                    && push_counter.numel() == 78,
+                "TP8 single-launch requires 78 CARv2 push counters");
+    for (const auto& workspace : {
+             push0, push1, push2, push3, push4, push5, push6, push7}) {
+        TORCH_CHECK(workspace.scalar_type() == torch::kUInt8
+                        && workspace.is_cuda() && workspace.is_contiguous(),
+                    "TP8 push workspaces must be contiguous CUDA uint8");
+    }
+    if (enable_tp_collective) {
+        TORCH_CHECK(rank >= 0 && rank < 8 && push_mc_ptr != 0,
+                    "TP8 single-launch requires rank and multicast symmetric VA");
+        TORCH_CHECK(push_stride
+                        >= output.numel() * output.element_size(),
+                    "TP8 push workspace stride is too small");
+    } else {
+        TORCH_CHECK(rank == -1,
+                    "TP8 compute-only profiling requires sentinel rank -1");
+    }
+
+    static CUtensorMap w13_descriptor;
+    static CUtensorMap w2_descriptor;
+    static void* last_w13 = nullptr;
+    static void* last_w2 = nullptr;
+    if (last_w13 != w13.data_ptr()) {
+        w13_descriptor = make_weight_desc(w13.data_ptr(), 4096, w13.numel());
+        last_w13 = w13.data_ptr();
+    }
+    if (last_w2 != w2.data_ptr()) {
+        w2_descriptor = make_weight_desc(
+            w2.data_ptr(), kIntermediate, w2.numel());
+        last_w2 = w2.data_ptr();
+    }
+
+    auto launch = [&](auto token_tag) {
+        constexpr int kTokens = decltype(token_tag)::value;
+        if (split_k == 2) {
+            launch_tp8_megamoe_single<2, kTokens>(
+                w13_descriptor, w2_descriptor,
+                w13, s13, g13, w2, s2, g2, qx, x_scale,
+                topk_ids, topk_weights, sorted_ids, expert_ids,
+                num_tokens_padded, partials, activation, qactivation,
+                activation_scale, down, lut, barrier_state, route_to_sorted,
+                output, push_counter, push0, push1, push2, push3,
+                push4, push5, push6, push7,
+                rank, push_stride, push_mc_ptr, enable_tp_collective);
+        } else {
+            launch_tp8_megamoe_single<4, kTokens>(
+                w13_descriptor, w2_descriptor,
+                w13, s13, g13, w2, s2, g2, qx, x_scale,
+                topk_ids, topk_weights, sorted_ids, expert_ids,
+                num_tokens_padded, partials, activation, qactivation,
+                activation_scale, down, lut, barrier_state, route_to_sorted,
+                output, push_counter, push0, push1, push2, push3,
+                push4, push5, push6, push7,
+                rank, push_stride, push_mc_ptr, enable_tp_collective);
+        }
+    };
+    switch (tokens) {
+        case 8:
+            launch(std::integral_constant<int, 8>{});
+            break;
+        case 16:
+            launch(std::integral_constant<int, 16>{});
+            break;
+        case 32:
+            launch(std::integral_constant<int, 32>{});
+            break;
+        case 64:
+            launch(std::integral_constant<int, 64>{});
+            break;
+        case 128:
+            launch(std::integral_constant<int, 128>{});
+            break;
+        default:
+            TORCH_CHECK(false, "invalid TP8 single-launch token count");
     }
 }
 
@@ -10439,6 +10943,23 @@ void run_tp4_megamoe_single_launch(
     int64_t pull_input_mc_ptr, int64_t pull_sem_mc_ptr,
     int split_k, int requested_ctas_per_sm,
     bool enable_tp_collective);
+void run_tp8_megamoe_single_launch(
+    torch::Tensor w13, torch::Tensor s13, torch::Tensor g13,
+    torch::Tensor w2, torch::Tensor s2, torch::Tensor g2,
+    torch::Tensor qx, torch::Tensor x_scale, torch::Tensor topk_ids,
+    torch::Tensor topk_weights, torch::Tensor sorted_ids,
+    torch::Tensor expert_ids, torch::Tensor num_tokens_padded,
+    torch::Tensor partials,
+    torch::Tensor activation, torch::Tensor qactivation,
+    torch::Tensor activation_scale, torch::Tensor down,
+    torch::Tensor lut, torch::Tensor barrier_state,
+    torch::Tensor route_to_sorted, torch::Tensor output,
+    torch::Tensor push_counter, torch::Tensor push0,
+    torch::Tensor push1, torch::Tensor push2, torch::Tensor push3,
+    torch::Tensor push4, torch::Tensor push5,
+    torch::Tensor push6, torch::Tensor push7,
+    int rank, int64_t push_stride, int64_t push_mc_ptr,
+    int split_k, bool enable_tp_collective);
 void fused_k6_push_ar_tp4(
     torch::Tensor input, torch::Tensor topk_weights,
     torch::Tensor output, torch::Tensor push_counter,
@@ -10605,6 +11126,7 @@ _ext = load_inline(
         "cast_bf16",
         "tiled_k6_reduce",
         "run_tp4_megamoe_single_launch",
+        "run_tp8_megamoe_single_launch",
         "fused_k6_push_ar_tp4",
         "fused_k6_push_ar_tp4_chunk",
         "progress_k6_mc_push_tp4",
@@ -11446,6 +11968,89 @@ def run_tp4_megamoe_single_launch(
         pull_sem_mc_ptr,
         split_k,
         SINGLE_LAUNCH_CTAS_PER_SM,
+        enable_tp_collective,
+    )
+
+
+def run_tp8_megamoe_single_launch(
+    w13: torch.Tensor,
+    s13: torch.Tensor,
+    g13: torch.Tensor,
+    w2: torch.Tensor,
+    s2: torch.Tensor,
+    g2: torch.Tensor,
+    qx: torch.Tensor,
+    x_scale: torch.Tensor,
+    topk_ids: torch.Tensor,
+    topk_weights: torch.Tensor,
+    sorted_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_padded: torch.Tensor,
+    partials: torch.Tensor,
+    activation: torch.Tensor,
+    qactivation: torch.Tensor,
+    activation_scale: torch.Tensor,
+    down: torch.Tensor,
+    lut: torch.Tensor,
+    barrier_state: torch.Tensor,
+    route_to_sorted: torch.Tensor,
+    output: torch.Tensor,
+    push_counter: torch.Tensor,
+    push_workspaces: tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ],
+    rank: int,
+    push_stride: int,
+    push_mc_ptr: int,
+    split_k: int,
+    enable_tp_collective: bool = True,
+) -> None:
+    """Run FP8-input TP8 MoE and multicast all-reduce in one launch."""
+    if len(push_workspaces) != 8:
+        raise ValueError("TP8 single launch requires eight symmetric workspaces")
+    _ext.run_tp8_megamoe_single_launch(
+        w13,
+        s13,
+        g13,
+        w2,
+        s2,
+        g2,
+        qx.view(torch.uint8),
+        x_scale,
+        topk_ids,
+        topk_weights,
+        sorted_ids,
+        expert_ids,
+        num_tokens_padded,
+        partials,
+        activation,
+        qactivation.view(torch.uint8),
+        activation_scale,
+        down,
+        lut,
+        barrier_state,
+        route_to_sorted,
+        output,
+        push_counter,
+        push_workspaces[0],
+        push_workspaces[1],
+        push_workspaces[2],
+        push_workspaces[3],
+        push_workspaces[4],
+        push_workspaces[5],
+        push_workspaces[6],
+        push_workspaces[7],
+        rank,
+        push_stride,
+        push_mc_ptr,
+        split_k,
         enable_tp_collective,
     )
 

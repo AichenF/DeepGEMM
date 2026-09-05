@@ -1,0 +1,26 @@
+Iteration 578: TP8 flat single-launch static gate
+Date: 2026-09-05
+
+Change under test
+-----------------
+- Added a TP8 specialization of the selected 128-thread, 624-CTA flat kernel.
+- Rank-local intermediate width is 256 (DeepSeek-V4-Flash TP8).
+- One kernel contains route preparation, W13, SwiGLU plus FP8 requantization,
+  W2, local top-k6 weighted combine, and TP8 all-reduce.
+- The TP8 collective is an eight-rank NVLS multicast push using SGLang
+  CustomAllReduceV2's symmetric workspace and 78 persistent phase counters.
+- Updated the CUDA-Graph fixture to accept four or eight peer workspaces and
+  select the TP8 entry when WORLD_SIZE=8.
+
+Command
+-------
+python3 -m py_compile v4_flash_tp_wgmma.py bench/v4_flash_tp_wgmma_graph.py
+
+Result
+------
+PASS: exit status 0, stdout/stderr empty.
+
+Scope
+-----
+Static Python/source wiring only. This result makes no CUDA compilation,
+occupancy, correctness, graph-safety, launch-count, or latency claim.

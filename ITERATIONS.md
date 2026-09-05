@@ -13670,3 +13670,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Interpretation: the requested “one complete MegaMoE kernel beats Humming MXFP4 GEMMs + CARv2” statement is directly reproduced at every tested M under cold L2. The margin is robust for M8-M64 and narrows to 9.53% at M128. The stronger same-source custom multi-kernel control still wins by 10.96% geometrically (Iteration 575), so fusion is beneficial versus Humming but not versus the best unfused implementation.
 - Raw log: `bench/results/iter577_flat_single_vs_exact_humming_tp4_allm_cold_long_20260905.log`
 - Evidence: `bench/evidence/iter577_flat_single_vs_exact_humming_tp4_allm_cold_long.txt`
+## Iteration 578 — TP8 flat single-launch source and graph static gate (2026-09-05)
+
+- Hypothesis/change: extend the selected 128-thread flat MegaMoE kernel from TP4 to TP8 without adding a launch. The new TP8 specialization uses rank-local intermediate 256, retains in-kernel route construction, W13, SwiGLU/requant and W2, then performs local top-k6 combine plus eight-rank NVLS multicast push in the same 624-CTA kernel. The graph fixture now accepts TP4/TP8 symmetric workspaces and dispatches world size 8 to this entry.
+- Isolation: TP4 code and dispatch remain unchanged; TP8 has a separate kernel/host wrapper. The activation remains prequantized FP8 and router outputs remain precomputed benchmark inputs, so no external X quantization or router kernel was added.
+- Static result: **PASS.** `python3 -m py_compile v4_flash_tp_wgmma.py bench/v4_flash_tp_wgmma_graph.py` exited 0 with no diagnostics.
+- Qualification: this establishes Python/source wiring only. CUDA compilation, launch resources, TP8 numerical correctness, graph replay safety, and one-node verification remain unproven.
+- Decision: proceed to remote H20 JIT/resource gate, then an eight-rank all-M correctness run before any TP4 performance regression measurement.
+- Evidence: `bench/evidence/iter578_tp8_single_launch_static.txt`.
