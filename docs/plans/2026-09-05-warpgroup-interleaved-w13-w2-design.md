@@ -47,28 +47,31 @@ This design must not repeat these measured failures:
   requant and W2 tasks through global atomics.  It was numerically correct but
   41-47x slower than control because roughly 19,440 short-task scheduling
   events at M128 contended on a handful of global counters.
+- Iterations 414-417 reduced those claims with a CTA-wide macro mailbox and
+  recovered 95% of the collapse, but remained about 2x slower.  NCU measured
+  48.03% of the issue interval stalled at CTA barriers, 63.25% no-eligible
+  cycles and only 27.44% DRAM throughput.
 
 ## Alternatives
 
-### 1. CTA-local coarse readiness pipeline (selected after Iteration 413)
+### 1. Static-WG stripes with coarse readiness (selected after Iteration 417)
 
-Thread 0 of each resident CTA chooses one coarse L1 macro or ready L2 chunk
-and broadcasts that payload once to all eight warpgroups.  A split-K4 L1
-macro assigns the four gate and four up split tasks for one activation group
-to the eight warpgroups.  A split-K2 macro assigns two activation groups at
-once.  The same CTA immediately performs the matching eight-row
-SwiGLU/requant epilogue, mirroring Hopper's ownership of the L1 epilogue.
-Only a coarse per-mblock completion is globally published.
+Each resident warpgroup retains the selected real-SMID static stripe for both
+W13 and W2.  There is no global task claim and no CTA-wide task-loop barrier.
+W13 tasks release-increment a distributed counter for their exact
+`(mblock, activation_group)`.  The final gate/up split completion owns that
+group's eight-row SwiGLU/requant epilogue and then release-increments the
+mblock's four-group counter.  The final group publishes one coarse
+W2-ready flag for the mblock.
 
 This is the closest adaptation of the Hopper reference that preserves the
 already faster H20 MXFP4 task body.  The reference dedicates loader warps and
 two math warpgroups inside a 384-thread CTA; our current task body instead
 combines loading, register dequantization and math in one self-contained
-128-thread warpgroup.  Therefore one mailbox fans a macro payload to eight
-self-contained consumers rather than separate A/B-loader and math roles.
-Once an mblock's four activation groups are ready, four W2 chunks are
-published; one CTA consumes a chunk with one N128 tile per warpgroup.  The
-CTA alternates one ready W2 chunk with its statically owned L1 macros.
+128-thread warpgroup.  Each WG therefore owns a small named-barrier mailbox
+and alternates its static W13 stripe with acquire-visible W2 work.  A bounded
+bitmask scans only that WG's at-most-14 W2 tasks, avoiding both a global claim
+and head-of-line waiting on an unready mblock.
 
 ### 2. Static two-CTA mblock cohorts
 
@@ -97,13 +100,12 @@ For each `(mblock, activation_group)`:
 1. Two W13 N128 tiles provide the gate/up pair.
 2. Every split-K slice of those two tiles must finish, so the readiness count
    is `2 * SplitK`.
-3. Those split tasks are assigned together to one CTA macro, so a CTA barrier
-   directly establishes readiness without a global fragment counter.
-4. The same eight warpgroups execute one requant task per routed BM8 row.
-5. CTA thread 0 release-increments the mblock's ready-group count by one
-   (split-K4) or two (split-K2).
-6. When all four groups are complete, four W2 chunks are release-published;
-   each chunk contains eight N128 tasks, one per warpgroup.
+3. The final split completion acquires the distributed counter's release
+   chain and becomes the group epilogue owner.
+4. That warpgroup executes eight requant tasks, one per routed BM8 row.
+5. Its lane 0 release-increments the mblock's ready-group count by one.
+6. When all four groups are complete, one W2-ready flag is release-published;
+   every statically assigned W2 task acquire-tests this flag.
 
 Thus requant can overlap later W13 groups.  W2 starts only after the full K512
 activation for an mblock is ready, preserving the existing W2 task body and
@@ -113,25 +115,25 @@ numerical order.
 
 The replay-local scheduler contains:
 
-- static per-CTA L1 macro cursors, requiring no global L1 claim;
-- one completed-activation-group counter per possible mblock;
-- a W2-ready chunk queue plus head/tail;
-- a terminal W2-chunk count used only for loop exit.
+- one static W13 and W2 cursor/bitmask per warpgroup, requiring no global
+  task claim;
+- four W13 split-completion counters per possible mblock;
+- one completed-activation-group counter and one W2-ready flag per possible
+  mblock.
 
-Queue entries use zero as unpublished and store the encoded index plus one.
 The route-preparation phase clears the scheduler slab and the existing phase-0
 whole-grid barrier publishes both route metadata and zeroed scheduler state.
 
-Each CTA scheduling iteration follows the Hopper scheduler's bounded
-L1-warmup/alternation policy, adapted so a CTA never claims unavailable
+Each warpgroup scheduling iteration follows the Hopper scheduler's bounded
+L1-warmup/alternation policy, adapted so a WG never claims unavailable
 downstream work:
 
-1. issue one statically owned L1 macro;
-2. try one acquire-visible W2 chunk;
-3. alternate L1 and W2 while both exist;
-4. after exhausting local L1 macros, drain published W2 chunks;
-5. only nanosleep when local L1 is exhausted and the next W2 queue entry is
-   not yet published.
+1. issue one statically owned W13 task;
+2. scan the WG's bounded W2 bitmask for an acquire-ready mblock;
+3. alternate W13 and W2 while both exist;
+4. after exhausting local W13, drain its ready W2 tasks;
+5. only nanosleep when local W13 is exhausted and all remaining W2 mblocks
+   are not yet published.
 
 No CTA claims an unpublished task and waits on it, avoiding the
 producer-consumer cycle that requires a larger warm-up in the reference
@@ -139,13 +141,13 @@ implementation.
 
 ## Memory ordering
 
-All task-body lanes finish their ordinary global stores before their
-warpgroup's named barrier, then a CTA barrier joins all eight consumers.
-CTA thread 0 performs a GPU-scope release atomic or release store to publish
-readiness.  W2 consumers use GPU-scope acquire loads before reading
-qactivation.  This follows the CTA-release pattern already validated in
-Iteration 163, but publishes once per coarse macro/chunk rather than once per
-N128 task.
+All task-body lanes finish their ordinary global stores before the
+warpgroup's named barrier.  Lane 0 performs a GPU-scope release atomic or
+release store to publish readiness, and a second named barrier transfers the
+final counter's acquire observation to the epilogue lanes.  W2 scheduler
+lane 0 acquire-loads the mblock flag and publishes the chosen static task
+through its named-barrier mailbox.  No CTA barrier occurs inside the task
+loop.
 
 There is no global barrier between W13, requant and W2.  The existing packed
 whole-grid phase-3 barrier remains after the terminal W2 count so all `down`
@@ -161,10 +163,10 @@ calls will use narrowly scoped wrappers if needed; the first gate rejects a
 binary that exceeds 64 registers/thread, grows the selected stack materially,
 or cannot retain one 1024-thread CTA per SM.
 
-The existing real-SMID table remains available for the phase control.  The
-coarse path uses static CTA-strided L1 ownership plus a dynamic W2-chunk
-queue, so its placement must be profiled independently rather than claiming
-the Iteration 399 mapping benefit carries over.
+The path reuses the existing real-SMID table for both static W13 and W2
+stripes.  Its additional readiness checks and epilogue-owner imbalance must
+still be profiled independently rather than claiming the Iteration 399
+mapping benefit carries over.
 
 ## Validation
 

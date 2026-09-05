@@ -10358,3 +10358,31 @@ maximum rank latency of a full CUDA-Graph replay.
   `results/iter417_hopper_cta_pipeline_m128_ncu_details_20260905.log`; binary
   report `results/iter417_hopper_cta_pipeline_m128_compute_full.ncu-rep`
   remains outside git due to size.
+
+## Iteration 418 — static-WG readiness pipeline JIT/resource gate
+
+- Date: 2026-09-05
+- Change: remove every CTA-wide barrier from the W13/requant/W2 task loop and
+  remove all global task claims.  Each of the 624 resident warpgroups reuses
+  the Iteration-399 real-SMID static stripe for both W13 and W2.  W13 lane 0
+  release-increments a distributed `(mblock, activation_group)` counter; the
+  final gate/up split owner performs that group's eight route requant tasks
+  and release-publishes one coarse mblock W2-ready flag after all four groups.
+- W2 policy: each WG owns at most 14 static W2 tasks at the target shapes and
+  tracks them in a register bitmask.  It alternates W13 with acquire-ready W2
+  work and scans past unready mblocks, eliminating both global claims and
+  queue head-of-line blocking.  Scheduler payloads use only each WG's named
+  barrier; the sole CTA barrier is after every WG has independently exited,
+  immediately before the existing phase-3 grid barrier.
+- Verification: Python and CUDA JIT compile successfully.  M8 split-K4 and
+  M128 split-K2 both use 64 registers/thread, a 48-byte stack, 4,096 static
+  shared bytes and zero declared local bytes, with 147,456 dynamic shared.
+  The 48-byte stack regresses from the CTA-macro binary's 32 bytes but matches
+  the selected Iteration-399 caller-mapped entry; residency remains one CTA
+  per SM.  Treat resource gate as conditional rather than rejecting before a
+  correctness launch and NCU spill measurement.
+- Decision: commit the exact buildable checkpoint, then run TP-disabled
+  endpoint correctness.  Any dependency or named-barrier error is rejected
+  before TP communication/timing.
+- Evidence:
+  `results/iter418_static_wg_readiness_jit_resource_20260905.log`.

@@ -1,0 +1,28 @@
+ITER418_STATIC_WG_READINESS_JIT_RESOURCE
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+gpu=0
+base_commit=c2de1ce
+reference_branch=megamoe_nvfp4_dev_m
+candidate_flag=V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+change=replace CTA macro mailbox/barriers with independent named-barrier WGs; restore real-SMID static W13/W2 stripes; use distributed W13 group counters, final-WG eight-row requant epilogue, coarse per-mblock W2-ready flags, and bounded per-WG W2 bitmask scans
+global_task_claims=0
+cta_task_loop_barriers=0
+python_compile=PASS
+jit_compile=PASS
+extension=v4tp_bc05d855d2d59fe099f9_v178mspec
+m8_split4.regs_per_thread=64
+m8_split4.stack_bytes=48
+m8_split4.static_shared_bytes=4096
+m8_split4.local_bytes=0
+m128_split2.regs_per_thread=64
+m128_split2.stack_bytes=48
+m128_split2.static_shared_bytes=4096
+m128_split2.local_bytes=0
+dynamic_shared_bytes=147456
+resource_gate=CONDITIONAL_PASS
+interpretation=one-CTA-per-SM remains feasible at 64 registers and 151552 total explicit shared bytes; 48-byte stack is larger than Iteration 414 but matches the selected Iteration-399 caller-mapped entry, so correctness and NCU spill counters must decide rather than rejecting statically
+correctness=NOT_TESTED
+performance=NOT_TESTED
+ITER418_STATIC_WG_READINESS_JIT_RESOURCE_OK
