@@ -195,6 +195,9 @@ if SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT and not SINGLE_LAUNCH_DUAL_WG_PHASES:
         "V4_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT requires "
         "V4_SINGLE_LAUNCH_DUAL_WG_PHASES=1"
     )
+SINGLE_LAUNCH_78CTA_8WG = (
+    os.environ.get("V4_SINGLE_LAUNCH_78CTA_8WG", "0") == "1"
+)
 W2_NEEDS_ROUTE_MAP = (
     W2_SORTED_ACT
     or W2_MBLOCK_SCALE
@@ -1069,6 +1072,47 @@ if SINGLE_LAUNCH_DUAL_WG_PHASES and (
         "V4_SINGLE_LAUNCH_DUAL_WG_PHASES requires the selected 64-block "
         "P2P two-shot transport"
     )
+if SINGLE_LAUNCH_78CTA_8WG and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC
+    or SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or SINGLE_LAUNCH_M128_BOUND9
+    or SINGLE_LAUNCH_W2_UNROLL2_BOUND9
+    or SINGLE_LAUNCH_W2_CHUNK_MAJOR
+    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+    or SINGLE_LAUNCH_W2_CHUNK_AR_POST
+    or SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+    or SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+    or W2_COALESCED_STORE
+    or WOUT != 128
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+    or not SINGLE_LAUNCH_P2P_TWO_SHOT
+    or SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS != 64
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_78CTA_8WG requires the isolated inline WOUT128 "
+        "two-stage schedule-0 path and selected 64-block P2P two-shot"
+    )
 MC_PULL_BLOCKS = int(os.environ.get("V4_MC_PULL_BLOCKS", "0"))
 MC_PULL_UNROLL = int(os.environ.get("V4_MC_PULL_UNROLL", "0"))
 if MC_PULL_BLOCKS < 0:
@@ -1347,6 +1391,8 @@ static constexpr int kSingleLaunchDualWgCtasPerSm =
     K_SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM;
 static constexpr bool kSingleLaunchDualWgPrivateAct =
     K_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT;
+static constexpr bool kSingleLaunch78Cta8Wg =
+    K_SINGLE_LAUNCH_78CTA_8WG;
 static constexpr bool kSingleLaunchP2pTwoShot =
     K_SINGLE_LAUNCH_P2P_TWO_SHOT;
 static constexpr int kSingleLaunchP2pTwoShotBlocks =
@@ -1635,12 +1681,26 @@ __device__ __forceinline__ void bulk_reduce_wait_group_0() {
     asm volatile("cp.async.bulk.wait_group 0;" ::: "memory");
 }
 
+// One physical 1024-thread CTA can host eight independent 128-thread WGMMA
+// task groups.  Reserve named barriers 1..8 for those groups; barrier 0 stays
+// available for compiler-generated full-CTA synchronization at phase edges.
+template <int IndependentTaskWGs>
+__device__ __forceinline__ void independent_wg_sync(int independent_wg) {
+    static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 8);
+    if constexpr (IndependentTaskWGs == 1) {
+        __syncthreads();
+    } else {
+        const int barrier_id = independent_wg + 1;
+        asm volatile("bar.sync %0, 128;" :: "r"(barrier_id) : "memory");
+    }
+}
+
 template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool PublishW2Progress = false, bool DualWgW13 = false,
           bool PersistentState = false, int WgmmaHalf = -1,
           bool SharedPartial = false, int ForcedKUnroll = 0,
           bool AssumeValidMblock = false, bool BulkReduceW2 = false,
-          bool AtomicCombineW2 = false>
+          bool AtomicCombineW2 = false, int IndependentTaskWGs = 1>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -1720,6 +1780,8 @@ __device__ __forceinline__ void route_gemm_task(
     constexpr int kOutputGroupBase =
         kHalfWgmma ? WgmmaHalf : 0;
     constexpr int kMathWGs = DualWgW13 ? 2 : 1;
+    constexpr int kStorageWGs = IndependentTaskWGs * kMathWGs;
+    constexpr int kTaskThreads = DualWgW13 ? 256 : 128;
     constexpr bool kPrivateDualActivation =
         DualWgW13 && kSingleLaunchDualWgPrivateAct;
     constexpr int kActivationCopies = kPrivateDualActivation ? 2 : 1;
@@ -1730,6 +1792,13 @@ __device__ __forceinline__ void route_gemm_task(
             || (!IsW13 && kSingleLaunchW2NextTaskPrefetch));
     static_assert(!PersistentState || !DualWgW13,
                   "persistent task state supports one WGMMA warpgroup");
+    static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 8);
+    static_assert(IndependentTaskWGs == 1
+                  || (!DualWgW13 && !PersistentState && !kHalfWgmma
+                      && !SharedPartial && !PublishW2Progress
+                      && !BulkReduceW2 && !AtomicCombineW2
+                      && !kW2CoalescedStore),
+                  "independent WGs require isolated full-N route tasks");
     static_assert(!kCrossTaskWeightPrefetch
                   || (kCompactInterleavedScale && kInterleavedScale
                       && kStages == 2 && kScaleBuffers == 2
@@ -1754,11 +1823,18 @@ __device__ __forceinline__ void route_gemm_task(
     constexpr int kTmaIssuerTid =
         kDistributedPrep ? 32 : 0;
 
-    const int tid = threadIdx.x;
+    const int physical_tid = threadIdx.x;
+    const int independent_wg = IndependentTaskWGs == 1
+        ? 0 : physical_tid >> 7;
+    const int tid = IndependentTaskWGs == 1
+        ? physical_tid : physical_tid & 127;
     const int math_wg = DualWgW13 ? tid >> 7 : 0;
     const int mtid = DualWgW13 ? tid & 127 : tid;
-    const int split_idx = linear_block_idx % SplitK;
-    const int task_idx = linear_block_idx / SplitK;
+    const int storage_wg = independent_wg * kMathWGs + math_wg;
+    const int effective_linear_block_idx =
+        linear_block_idx + independent_wg;
+    const int split_idx = effective_linear_block_idx % SplitK;
+    const int task_idx = effective_linear_block_idx / SplitK;
     const int m_block_idx = task_idx / kTaskNTiles;
     const int local_n_task_idx = task_idx % kTaskNTiles;
     const int local_n_block_idx = local_n_task_idx * kMathWGs + math_wg;
@@ -1783,13 +1859,17 @@ __device__ __forceinline__ void route_gemm_task(
         : kStages * kWeightStageBytes
             + kEffectiveScaleBuffers * kScaleStageBytes;
     extern __shared__ __align__(1024) uint8_t dynamic_smem[];
-    uint8_t* weight_smem = dynamic_smem + math_wg * kWeightWGBytes;
+    uint8_t* task_dynamic_smem = IndependentTaskWGs == 1
+        ? dynamic_smem
+        : dynamic_smem + independent_wg * kRouteTaskDynamicBytes;
+    uint8_t* weight_smem =
+        task_dynamic_smem + math_wg * kWeightWGBytes;
     uint8_t* weight_scale_smem =
         weight_smem + (kInterleavedScale
             ? kWeightStageBytes
             : kStages * kWeightStageBytes);
     uint8_t* activation_smem_base =
-        dynamic_smem + kMathWGs * kWeightWGBytes;
+        task_dynamic_smem + kMathWGs * kWeightWGBytes;
     uint8_t* activation_smem = activation_smem_base
         + (kPrivateDualActivation ? math_wg * kTok * kBlockK : 0);
     __nv_bfloat16* w2_output_smem = reinterpret_cast<__nv_bfloat16*>(
@@ -1803,19 +1883,32 @@ __device__ __forceinline__ void route_gemm_task(
     const int weight_swizzle_row_offset =
         kWeightSwizzle == 64 ? ((weight_smem_addr >> 7) & 3) : 0;
 
-    __shared__ __align__(8) uint64_t full_barriers[kMathWGs][kStages];
-    __shared__ __align__(8) uint64_t scale_barriers[kMathWGs];
-    __shared__ __align__(8) uint64_t activation_empty_barrier;
-    __shared__ uint2 lut_smem[
+    __shared__ __align__(8)
+        uint64_t full_barriers[kStorageWGs][kStages];
+    __shared__ __align__(8) uint64_t scale_barriers[kStorageWGs];
+    __shared__ __align__(8)
+        uint64_t activation_empty_barrier_storage[IndependentTaskWGs];
+    constexpr int kLutEntries =
         (kNormalizedWeightScale && kNormalizedSharedLut) ? 13 :
         (kNormalizedWeightScale || kDequantSynthLut
-         || (!IsW13 && kW2GlobalLut)) ? 1 : kLutRows];
-    __shared__ float activation_scale_storage[kActivationCopies][kTok];
-    float* activation_scale_smem = activation_scale_storage[
+         || (!IsW13 && kW2GlobalLut)) ? 1 : kLutRows;
+    __shared__ uint2 lut_smem_storage[IndependentTaskWGs][kLutEntries];
+    uint2* lut_smem = lut_smem_storage[independent_wg];
+    __shared__ float activation_scale_storage[
+        IndependentTaskWGs][kActivationCopies][kTok];
+    float* activation_scale_smem = activation_scale_storage[independent_wg][
         kPrivateDualActivation ? math_wg : 0];
-    __shared__ float expert_weight_scale[kMetadataSlots];
-    __shared__ int32_t route_ids[kMetadataSlots][kTok];
-    __shared__ int32_t activation_rows[kMetadataSlots][kTok];
+    __shared__ float expert_weight_scale_storage[
+        IndependentTaskWGs][kMetadataSlots];
+    float* expert_weight_scale =
+        expert_weight_scale_storage[independent_wg];
+    __shared__ int32_t route_ids_storage[
+        IndependentTaskWGs][kMetadataSlots][kTok];
+    int32_t (*route_ids)[kTok] = route_ids_storage[independent_wg];
+    __shared__ int32_t activation_rows_storage[
+        IndependentTaskWGs][kMetadataSlots][kTok];
+    int32_t (*activation_rows)[kTok] =
+        activation_rows_storage[independent_wg];
 
     uint64_t weight_cache_policy = 0;
     if constexpr (kUseWeightEvictFirst && kWeightPolicyHoist) {
@@ -1850,13 +1943,13 @@ __device__ __forceinline__ void route_gemm_task(
     }
     if constexpr (kNormalizedWeightScale && kNormalizedSharedLut) {
         if (!PersistentState || task_sequence == 0) {
-            for (int i = tid; i < 13; i += blockDim.x)
+            for (int i = tid; i < 13; i += kTaskThreads)
                 lut_smem[i] = synth_normalized_e2m1_lut(i);
         }
     } else if constexpr (!kNormalizedWeightScale && !kDequantSynthLut
                          && (IsW13 || !kW2GlobalLut)) {
         if (!PersistentState || task_sequence == 0) {
-            for (int i = tid; i < kLutRows; i += blockDim.x) {
+            for (int i = tid; i < kLutRows; i += kTaskThreads) {
                 constexpr int kGlobalLutOffset =
                     kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
                 lut_smem[i] = global_lut[kGlobalLutOffset + i];
@@ -1865,13 +1958,13 @@ __device__ __forceinline__ void route_gemm_task(
     }
 
     const uint32_t barrier_base_addr = static_cast<uint32_t>(
-        __cvta_generic_to_shared(&full_barriers[math_wg][0]));
+        __cvta_generic_to_shared(&full_barriers[storage_wg][0]));
     uint32_t barrier_addr[kDirectBarrierAddr ? 1 : kStages];
     if constexpr (!kDirectBarrierAddr) {
         #pragma unroll
         for (int stage = 0; stage < kStages; ++stage)
             barrier_addr[stage] = static_cast<uint32_t>(
-                __cvta_generic_to_shared(&full_barriers[math_wg][stage]));
+                __cvta_generic_to_shared(&full_barriers[storage_wg][stage]));
     }
     const auto weight_barrier_addr = [&](int stage) {
         if constexpr (kDirectBarrierAddr)
@@ -1880,9 +1973,10 @@ __device__ __forceinline__ void route_gemm_task(
             return barrier_addr[stage];
     };
     const uint32_t scale_barrier_addr = static_cast<uint32_t>(
-        __cvta_generic_to_shared(&scale_barriers[math_wg]));
+        __cvta_generic_to_shared(&scale_barriers[storage_wg]));
     const uint32_t activation_empty_barrier_addr = static_cast<uint32_t>(
-        __cvta_generic_to_shared(&activation_empty_barrier));
+        __cvta_generic_to_shared(
+            &activation_empty_barrier_storage[independent_wg]));
     if (!PersistentState || task_sequence == 0) {
         if constexpr (DualWgW13 && !kPrivateDualActivation) {
             if (tid == 0)
@@ -1902,7 +1996,7 @@ __device__ __forceinline__ void route_gemm_task(
     // task before its dynamic stages are reused and publishes the next task's
     // double-buffered metadata.  The legacy caller retains its post-task
     // barrier, so the nonpersistent path is unchanged.
-    __syncthreads();
+    independent_wg_sync<IndependentTaskWGs>(independent_wg);
 
     const auto load_weight_stage = [&](int local_kt, int stage) {
         if (mtid == kTmaIssuerTid) {
@@ -2295,7 +2389,7 @@ __device__ __forceinline__ void route_gemm_task(
             }
         }
         if constexpr (!kUseTmaScale) {
-            for (int i = tid; i < kWout * 4; i += blockDim.x) {
+            for (int i = tid; i < kWout * 4; i += kTaskThreads) {
                 const int local_n = i >> 2;
                 const int k_group = i & 3;
                 weight_scale_smem[stage * kScaleStageBytes
@@ -2342,7 +2436,7 @@ __device__ __forceinline__ void route_gemm_task(
             else
                 asm volatile("bar.sync 2,128;" ::: "memory");
         } else {
-            asm volatile("bar.sync 0;" ::: "memory");
+            independent_wg_sync<IndependentTaskWGs>(independent_wg);
         }
 
         float tile[kActiveWgmmaGroups][4] = {};
@@ -2616,7 +2710,7 @@ __device__ __forceinline__ void route_gemm_task(
     }
 
     if constexpr (BulkReduceW2)
-        __syncthreads();
+        independent_wg_sync<IndependentTaskWGs>(independent_wg);
     constexpr int kBulkReducePitch = 132;
     float* bulk_reduce_smem = reinterpret_cast<float*>(
         activation_smem_base + kActivationCopies * kTok * kBlockK);
@@ -2781,7 +2875,7 @@ __device__ __forceinline__ void route_gemm_task(
         }
     }
     if constexpr (BulkReduceW2) {
-        __syncthreads();
+        independent_wg_sync<IndependentTaskWGs>(independent_wg);
         if (tid == 0) {
             asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
             #pragma unroll
@@ -2840,7 +2934,7 @@ __device__ __forceinline__ void route_gemm_task(
         // resumes.  Each route lane's following device-scope release store
         // therefore publishes every CTA lane's ordinary global output stores
         // to the worker's matching device-scope acquire load.
-        __syncthreads();
+        independent_wg_sync<IndependentTaskWGs>(independent_wg);
         if (tid < kTok) {
             const int route = route_ids[metadata_slot][tid];
             if (route < max_routes)
@@ -3611,7 +3705,7 @@ __global__ void reduce_swiglu_kernel(
 }
 
 template <int Intermediate, int SplitK, bool DualWg = false,
-          bool HybridTailSplit4 = false>
+          bool HybridTailSplit4 = false, int IndependentTaskWGs = 1>
 __device__ __forceinline__ void reduce_swiglu_quant_task(
         const float* __restrict__ partials,
         __nv_bfloat16* __restrict__ activation,
@@ -3625,11 +3719,19 @@ __device__ __forceinline__ void reduce_swiglu_quant_task(
         int tail_mblock_begin = -1) {
     static_assert(Intermediate % 128 == 0);
     static_assert(!HybridTailSplit4 || SplitK == 2);
+    static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 8);
+    static_assert(IndependentTaskWGs == 1 || !DualWg);
     constexpr int kGroupsPerRoute = Intermediate / 128;
     constexpr int kWorkers = DualWg ? 2 : 1;
-    const int worker = DualWg ? threadIdx.x >> 7 : 0;
-    const int local_tid = DualWg ? threadIdx.x & 127 : threadIdx.x;
-    const int worker_group = group * kWorkers + worker;
+    const int physical_tid = threadIdx.x;
+    const int independent_wg = IndependentTaskWGs == 1
+        ? 0 : physical_tid >> 7;
+    const int task_tid = IndependentTaskWGs == 1
+        ? physical_tid : physical_tid & 127;
+    const int worker = DualWg ? task_tid >> 7 : 0;
+    const int local_tid = DualWg ? task_tid & 127 : task_tid;
+    const int worker_group =
+        (group + independent_wg) * kWorkers + worker;
     const int route = worker_group / kGroupsPerRoute;
     const int group_in_route = worker_group - route * kGroupsPerRoute;
     const int column = group_in_route * 128 + local_tid;
@@ -3683,13 +3785,17 @@ __device__ __forceinline__ void reduce_swiglu_quant_task(
     for (int delta = 16; delta > 0; delta >>= 1)
         absmax = fmaxf(absmax, __shfl_down_sync(0xffffffffu, absmax, delta));
 
-    __shared__ float warp_max[4 * kWorkers];
-    __shared__ float group_scale[kWorkers];
+    __shared__ float warp_max_storage[
+        IndependentTaskWGs][4 * kWorkers];
+    __shared__ float group_scale_storage[
+        IndependentTaskWGs][kWorkers];
+    float* warp_max = warp_max_storage[independent_wg];
+    float* group_scale = group_scale_storage[independent_wg];
     const int lane = local_tid & 31;
     const int warp = local_tid >> 5;
     if (lane == 0)
         warp_max[worker * 4 + warp] = absmax;
-    __syncthreads();
+    independent_wg_sync<IndependentTaskWGs>(independent_wg);
 
     if (warp == 0) {
         absmax = lane < 4 ? warp_max[worker * 4 + lane] : 0.0f;
@@ -3715,7 +3821,7 @@ __device__ __forceinline__ void reduce_swiglu_quant_task(
             }
         }
     }
-    __syncthreads();
+    independent_wg_sync<IndependentTaskWGs>(independent_wg);
     quantized[quantized_index] =
         __nv_fp8_e4m3(value / group_scale[worker]).__x;
 }
@@ -3993,6 +4099,70 @@ __device__ __forceinline__ void single_launch_route_task(
         if constexpr (!kSingleLaunchSkipFinalCtaSync)
             __syncthreads();
     }
+}
+
+// Route preparation for the one-CTA-per-SM prototype.  All 1024 lanes join
+// every CTA barrier, while lane 0 performs the tiny 256-expert padded prefix.
+// This avoids instantiating a 1024-lane CUB scan for only 256 counters and is
+// outside the GEMM-dominated region.
+__device__ __forceinline__ void single_launch_route_task_1024(
+        const int32_t* __restrict__ topk_ids,
+        int32_t* __restrict__ sorted_ids,
+        int32_t* __restrict__ expert_ids,
+        int32_t* __restrict__ num_tokens_padded,
+        int32_t* __restrict__ route_to_sorted,
+        int tokens, int linear_block_idx) {
+    constexpr int kExperts = 256;
+    extern __shared__ __align__(1024) uint8_t dynamic_smem[];
+    int* counts = reinterpret_cast<int*>(dynamic_smem);
+    int* cursors = counts + kExperts;
+    int* total_padded = cursors + kExperts;
+    const int tid = threadIdx.x;
+    const int routes = tokens * kTopK;
+    if (linear_block_idx != 0)
+        return;
+
+    if (tid < kExperts)
+        counts[tid] = 0;
+    __syncthreads();
+
+    for (int route = tid; route < routes; route += 1024) {
+        const int expert = __ldg(topk_ids + route);
+        if (static_cast<unsigned>(expert) < kExperts)
+            atomicAdd(counts + expert, 1);
+    }
+    __syncthreads();
+
+    if (tid == 0) {
+        int total = 0;
+        #pragma unroll 4
+        for (int expert = 0; expert < kExperts; ++expert) {
+            const int padded = (counts[expert] + 7) & ~7;
+            cursors[expert] = total;
+            for (int position = total; position < total + padded;
+                 position += kTok)
+                expert_ids[position / kTok] = expert;
+            total += padded;
+        }
+        *total_padded = total;
+        *num_tokens_padded = total;
+    }
+    __syncthreads();
+
+    for (int position = tid; position < *total_padded; position += 1024)
+        sorted_ids[position] = routes;
+    __syncthreads();
+
+    for (int route = tid; route < routes; route += 1024) {
+        const int expert = __ldg(topk_ids + route);
+        if (static_cast<unsigned>(expert) < kExperts) {
+            const int position = atomicAdd(cursors + expert, 1);
+            sorted_ids[position] = route;
+            if constexpr (kW2SortedAct || kW2MblockScale)
+                route_to_sorted[route] = position;
+        }
+    }
+    __syncthreads();
 }
 
 __device__ __forceinline__ int32_t load_acquire_gpu_i32(
@@ -4544,11 +4714,18 @@ __device__ __forceinline__ void fused_k6_push_ar_tp4_task(
     constexpr int kPairsPerToken = kHidden / 2;
     constexpr int kPairsPerVec = 8 / 2;
     constexpr int kVecsPerToken = kHidden / 8;
+    constexpr int kLogicalThreads = 128;
+    constexpr int kThreadGroups = Threads / kLogicalThreads;
+    static_assert(Threads % kLogicalThreads == 0);
     const int vecs_per_token =
         Chunked ? hidden_size / 8 : kVecsPerToken;
     const int num_vecs = tokens * vecs_per_token;
-    const int global_tid = linear_block_idx * Threads + threadIdx.x;
-    const int global_threads = linear_grid_dim * Threads;
+    const int thread_group = threadIdx.x / kLogicalThreads;
+    const int logical_lane = threadIdx.x % kLogicalThreads;
+    const int logical_global_threads = linear_grid_dim * kLogicalThreads;
+    const int global_tid = linear_block_idx * kLogicalThreads + logical_lane
+        + thread_group * logical_global_threads;
+    const int global_threads = logical_global_threads * kThreadGroups;
     const int phase = push_counter[linear_block_idx] & 1u;
     uint8_t* peer_base[kWorld] = {push0, push1, push2, push3};
     const int64_t phase_offset =
@@ -5073,13 +5250,15 @@ __device__ __forceinline__ void single_launch_group_barrier(
 template <int Tokens>
 struct SingleLaunchThreads {
     static constexpr int value =
-        kSingleLaunchDualWgPhases ? 256 : 128;
+        kSingleLaunch78Cta8Wg ? 1024
+        : kSingleLaunchDualWgPhases ? 256 : 128;
 };
 
 template <int Tokens>
 struct SingleLaunchMinBlocks {
     static constexpr int value =
-        kSingleLaunchDualWgPhases
+        kSingleLaunch78Cta8Wg ? 1
+        : kSingleLaunchDualWgPhases
         ? kSingleLaunchDualWgCtasPerSm
         : kSingleLaunchM128Bound9 && Tokens == 128
         ? 9 : K_SINGLE_LAUNCH_MIN_BLOCKS;
@@ -5426,9 +5605,15 @@ void tp4_megamoe_single_launch_kernel(
         if constexpr (kSingleLaunchW2BulkReduceCombine)
             asm volatile("fence.proxy.async.global;" ::: "memory");
     }
-    single_launch_route_task<kSingleLaunchThreads>(
-        topk_ids, sorted_ids, expert_ids, num_tokens_padded,
-        route_to_sorted, tokens, cta);
+    if constexpr (kSingleLaunch78Cta8Wg) {
+        single_launch_route_task_1024(
+            topk_ids, sorted_ids, expert_ids, num_tokens_padded,
+            route_to_sorted, tokens, cta);
+    } else {
+        single_launch_route_task<kSingleLaunchThreads>(
+            topk_ids, sorted_ids, expert_ids, num_tokens_padded,
+            route_to_sorted, tokens, cta);
+    }
     single_launch_grid_barrier(barrier_state, 0, ctas);
     if constexpr (kSingleLaunchW2BulkReduceCombine) {
         if (threadIdx.x == 0)
@@ -5794,6 +5979,66 @@ void tp4_megamoe_single_launch_kernel(
             __syncthreads();
         }
 
+        single_launch_grid_barrier(barrier_state, 3, ctas);
+    } else if constexpr (kSingleLaunch78Cta8Wg) {
+        // Exactly one resident physical CTA per H20 SM.  Its eight independent
+        // 128-thread WGMMA groups retain the selected task body and together
+        // reproduce the former 8-CTA/SM logical worker population without
+        // cross-WG activation sharing or handshakes.
+        constexpr int kIndependentTaskWGs = 8;
+        constexpr int kLogicalWorkersPerWave =
+            kSingleLaunchH20Sms * kIndependentTaskWGs;
+        static_assert(kSingleLaunchThreads == 1024);
+        const int num_mblocks = __ldg(num_tokens_padded) / kTok;
+
+        const int w13_tasks = num_mblocks * kW13NTiles * SplitK;
+        for (int task_base = cta * kIndependentTaskWGs;
+             task_base < w13_tasks;
+             task_base += kLogicalWorkersPerWave) {
+            route_gemm_task<
+                4096, 1024, SplitK, true, 0, false, false, false,
+                -1, false, 0, kSingleLaunchAssumeValidGemmTasks,
+                false, false, kIndependentTaskWGs>(
+                &w13_tma_weight, &w13_tma_weight_scale,
+                w13, s13, g13, qx, x_scale,
+                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                partials, lut, nullptr, routes, 0, task_base);
+            independent_wg_sync<kIndependentTaskWGs>(threadIdx.x >> 7);
+        }
+        __syncthreads();
+        single_launch_grid_barrier(barrier_state, 1, ctas);
+
+        constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
+        const int activation_groups = routes * kActivationGroupsPerRoute;
+        for (int group_base = cta * kIndependentTaskWGs;
+             group_base < activation_groups;
+             group_base += kLogicalWorkersPerWave) {
+            reduce_swiglu_quant_task<
+                kIntermediate, SplitK, false, false,
+                kIndependentTaskWGs>(
+                partials, activation, qactivation, activation_scale,
+                route_to_sorted, topk_ids, g2, routes, group_base);
+            independent_wg_sync<kIndependentTaskWGs>(threadIdx.x >> 7);
+        }
+        __syncthreads();
+        single_launch_grid_barrier(barrier_state, 2, ctas);
+
+        const int w2_tasks = num_mblocks * kW2NTiles;
+        for (int task_base = cta * kIndependentTaskWGs;
+             task_base < w2_tasks;
+             task_base += kLogicalWorkersPerWave) {
+            route_gemm_task<
+                512, 4096, 1, false, 0, false, false, false,
+                -1, false, 0, kSingleLaunchAssumeValidGemmTasks,
+                false, false, kIndependentTaskWGs>(
+                &w2_tma_weight, &w2_tma_weight_scale,
+                w2, s2, g2, qactivation, activation_scale,
+                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                reinterpret_cast<float*>(down), lut, nullptr,
+                routes, 0, task_base);
+            independent_wg_sync<kIndependentTaskWGs>(threadIdx.x >> 7);
+        }
+        __syncthreads();
         single_launch_grid_barrier(barrier_state, 3, ctas);
     } else {
         const int num_mblocks = __ldg(num_tokens_padded) / kTok;
@@ -6816,13 +7061,22 @@ __device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
         kHidden * sizeof(__nv_bfloat16) / kVecBytes;
     constexpr int kTotalVecs = Tokens * kVecsPerToken;
     constexpr int kLocalVecs = kTotalVecs / kWorld;
-    constexpr int kGlobalThreads = Blocks * Threads;
+    constexpr int kLogicalThreads = 128;
+    constexpr int kThreadGroups = Threads / kLogicalThreads;
+    constexpr int kGlobalThreads = Blocks * kLogicalThreads;
     constexpr int kSemaphoreBytes = 128;
     static_assert(Tokens == 64 || Tokens == 128);
+    static_assert(Threads % kLogicalThreads == 0);
     static_assert(kLocalVecs % kGlobalThreads == 0);
 
-    const int global_tid = linear_block_idx * Threads + threadIdx.x;
-    for (int vec = global_tid; vec < kTotalVecs; vec += kGlobalThreads) {
+    const int thread_group = threadIdx.x / kLogicalThreads;
+    const int logical_lane = threadIdx.x % kLogicalThreads;
+    const int global_tid = linear_block_idx * kLogicalThreads + logical_lane
+        + thread_group * kGlobalThreads;
+    constexpr int kPhysicalGlobalThreads =
+        kGlobalThreads * kThreadGroups;
+    for (int vec = global_tid; vec < kTotalVecs;
+         vec += kPhysicalGlobalThreads) {
         const int token = vec / kVecsPerToken;
         const int vec_in_token = vec - token * kVecsPerToken;
         uint4 local_value;
@@ -6936,7 +7190,7 @@ __device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
     // reduced BF16 vector into the identical position on every peer.
     const int local_bias = rank * kLocalVecs;
     for (int local_vec = global_tid; local_vec < kLocalVecs;
-         local_vec += kGlobalThreads) {
+         local_vec += kPhysicalGlobalThreads) {
         const int vec = local_bias + local_vec;
         uint4 rank_value[kWorld];
         #pragma unroll
@@ -8014,7 +8268,9 @@ void launch_tp4_megamoe_single(
         2 * kStages * kWout * ((kBlockK / 2) + 4)
         + (kSingleLaunchDualWgPrivateAct ? 2 : 1) * kTok * kBlockK;
     constexpr int dynamic_smem_bytes =
-        (kSingleLaunchDualWgPhases
+        (kSingleLaunch78Cta8Wg
+            ? 8 * kRouteTaskDynamicBytes
+            : kSingleLaunchDualWgPhases
             ? kDualRouteTaskDynamicBytes : kRouteTaskDynamicBytes)
         + (kSingleLaunchClusterW13Act
            ? kTok * kWout * static_cast<int>(sizeof(float)) : 0);
@@ -8058,7 +8314,8 @@ void launch_tp4_megamoe_single(
     TORCH_CHECK(requested_ctas_per_sm > 0,
                 "requested single-launch CTAs/SM must be positive");
     const int effective_requested_ctas_per_sm =
-        kSingleLaunchDualWgPhases
+        kSingleLaunch78Cta8Wg ? 1
+        : kSingleLaunchDualWgPhases
         ? kSingleLaunchDualWgCtasPerSm
         : kSingleLaunchM128Bound9 && Tokens == 128
         ? 9 : requested_ctas_per_sm;
@@ -8072,6 +8329,10 @@ void launch_tp4_megamoe_single(
         TORCH_CHECK(
             selected_ctas_per_sm == kSingleLaunchDualWgCtasPerSm,
             "dual-WG phases require the configured CTAs/SM");
+    }
+    if constexpr (kSingleLaunch78Cta8Wg) {
+        TORCH_CHECK(selected_ctas_per_sm == 1,
+                    "78-CTA/8-WG path requires exactly one CTA/SM");
     }
     if constexpr (kSingleLaunchTailOverlap) {
         TORCH_CHECK(selected_ctas_per_sm == 8,
@@ -9126,6 +9387,7 @@ _EXTENSION_CONFIG = (
           f"sldwg{int(SINGLE_LAUNCH_DUAL_WG_PHASES)}_"
           f"sldwgc{SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM}_"
           f"sldwgpa{int(SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT)}_"
+          f"sl78x8{int(SINGLE_LAUNCH_78CTA_8WG)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"slp2p2{int(SINGLE_LAUNCH_P2P_TWO_SHOT)}_"
@@ -9384,6 +9646,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT="
             f"{int(SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_78CTA_8WG="
+            f"{int(SINGLE_LAUNCH_78CTA_8WG)}"
         ),
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",

@@ -1370,6 +1370,9 @@ def main() -> None:
                     "single_launch_dual_wg_phases": (
                         kernel.SINGLE_LAUNCH_DUAL_WG_PHASES
                     ),
+                    "single_launch_78cta_8wg": (
+                        kernel.SINGLE_LAUNCH_78CTA_8WG
+                    ),
                     "single_launch_skip_final_cta_sync": (
                         kernel.SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
                     ),

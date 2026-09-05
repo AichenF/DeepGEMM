@@ -9433,3 +9433,41 @@ maximum rank latency of a full CUDA-Graph replay.
   roughly 5.6% at M8 and 14.1% at M128 in the surrounding OFF arms.
 - Evidence:
   `bench/results/iter381_skip_activation_task_sync_bracket_m8_m128_cold_20260905.log`.
+
+## Iteration 382 — 78-CTA/eight-independent-WG compile and resource gate
+
+- Date: 2026-09-05
+- Contract: the one-launch entry still consumes caller-provided FP8-E4M3
+  `qx` plus FP32 group-128 `x_scale`, precomputed routes, and MXFP4
+  weights/scales.  External BF16-to-FP8 input quantization is absent; the
+  fused activation quantizer is only the required FC1/SwiGLU-to-FC2
+  intermediate requantization.
+- Hypothesis/change: add default-off `V4_SINGLE_LAUNCH_78CTA_8WG=1`.
+  Launch exactly 78 physical CTAs x 1024 threads, one CTA per H20 SM.  Each
+  CTA contains eight independent 128-thread WGMMA task groups with private
+  dynamic activation/weight stages, mbarriers, LUT/metadata scratch, and
+  named barriers 1..8.  The logical worker population remains 624, matching
+  the selected eight 128-thread CTAs/SM, while the four whole-grid barriers
+  shrink from 624 to 78 arrivals.  This is not the rejected dual-WG split-N
+  topology from Iterations 287-289/311: no task, activation stage, or
+  cross-WG handshake is shared.
+- Communication adaptation: retain CARv2's 128-lane logical stripe per CTA.
+  Extra physical warpgroups split the original loop iterations, so the
+  per-CTA semaphore continues to publish exactly the data stripe consumed by
+  its matching peer CTA.  This applies to the multicast one-shot helper and
+  M64/M128 ordinary-P2P two-shot helper.
+- Method: import/JIT only in the H20 container with TP4 single-launch and the
+  new flag enabled, then run `cuobjdump --dump-resource-usage` on the exact
+  generated extension.  No CUDA correctness or latency claim is made.
+- Result: PASS.  All M specializations compile.  The M8/M16/M32 split-K4 and
+  M64/M128 split-K2 monolithic kernels each report `REG:64 STACK:32
+  SHARED:3072 LOCAL:0`.  The launch requests 147,456 bytes dynamic shared
+  memory (eight 18,432-byte private task slabs), so the intended one-block/SM
+  resource shape is feasible with no static local-memory allocation.  The
+  exact extension is
+  `/tmp/torch_ext_v4_tp/v4tp_38e876171ac66dfeb2b3_v178mspec/`.
+- Decision: pass the compile/resource gate only.  Advance unchanged to
+  compute-only cold-L2 correctness at M8 and M128; runtime occupancy and
+  named-barrier behavior remain unproven until an actual launch succeeds.
+- Evidence:
+  `results/iter382_78cta_8wg_compile_resource_20260905.log`.

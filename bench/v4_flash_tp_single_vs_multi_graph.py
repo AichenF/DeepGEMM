@@ -329,6 +329,9 @@ def main() -> None:
                     "single_launch_dual_wg_phases": (
                         kernel.SINGLE_LAUNCH_DUAL_WG_PHASES
                     ),
+                    "single_launch_78cta_8wg": (
+                        kernel.SINGLE_LAUNCH_78CTA_8WG
+                    ),
                     "single_launch_dual_wg_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM
                     ),
