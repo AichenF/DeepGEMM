@@ -12599,3 +12599,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - L2 policy: each candidate check follows the fixture's separate excluded 256 MiB cold-L2 clear.
 - Decision: resource and endpoint gates pass; run a short replay-interleaved TP4 cold-L2 M8/M128 screen next.
 - Evidence: `results/iter521_sm_striped_resource_correctness_m8_m128_20260905.log`.
+## Iteration 522 — runtime SM-striped TP4 endpoint screen rejects remapping
+
+- Date: 2026-09-05
+- Protocol: TP4 physical GPUs 0/5/6/7, random seed 20260905, M={8,128}, replay-interleaved CUDA graphs, 2 x 20 measured replays plus 4 warmups. Every implementation replay has its own separate excluded 256 MiB L2 clear.
+- Correctness: PASS on all ranks at both M; candidate/control metric tuples are identical and all-reduce checks pass.
+- M8: control 0.074528 ms, candidate 0.084336 ms, candidate +13.16% slower. Candidate batch medians 0.084240/0.084464 ms are stable.
+- M128: control 0.308256 ms, candidate 0.362608 ms, candidate +17.63% slower. Candidate batch medians 0.361664/0.363344 ms.
+- Two-point geometric mean: control 0.151571 ms, candidate 0.174874 ms, candidate +15.37% slower.
+- Comparison: versus Iteration 504's retained flat candidate, remapping regresses absolute latency by 6.08% at M8 (0.079504 to 0.084336 ms) and 2.93% at M128 (0.352272 to 0.362608 ms).
+- Interpretation/decision: balancing the ordinal remainder does not improve the critical tail; the one-time atomics plus changed per-SM weight-task mix reduce throughput more than any tail-balance gain. Reject and keep default-off. Current best remains the unremapped flat schedule.
+- Evidence: `results/iter522_sm_striped_tp4_m8_m128_short_20260905.log`.
