@@ -9163,3 +9163,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Correctness:** **PASS.**  Output was finite, cosine `0.9999999999999969`, relative L2 `8.50e-8`; the harness accepted the result.  All four packed grid-barrier count words were zero (`2048` encodes generation 2 with zero count after two runs).
 - **Conclusion:** Producer local-sum layout, zeroing, grid publication, BF16 numerical boundary, and scalar atomic accumulation are correct and forward-progress safe.  Advance to full TP4 correctness and cold-L2 performance; keep default-off until measured.
 - **Artifact:** `bench/results/iter370_atomic_producer_combine_compute_m8_20260905.log`.
+
+## Iteration 371 — full TP4 scalar producer-combine smoke (2026-09-05)
+
+- **Purpose:** Gate both selected embedded transports and obtain the first cold-L2 performance signal for the scalar producer local-sum path.
+- **Setup:** TP4 GPUs 0–3, random routes, seed 20260904, M={8,128}; one CUDA graph/global kernel per rank; M8 used multicast one-shot push and M128 used 64-CTA P2P two-shot.  Each implementation received an excluded 256 MiB L2 clear immediately before each of two timed replays.  Public X was FP8-E4M3 with FP32 group-128 scales; external quantization was absent.
+- **Correctness:** **PASS on all ranks at both sizes.**  M8 candidate cosine `0.9999955250`, rel-L2 `0.0029916537`; M128 cosine `0.9999955285`, rel-L2 `0.0029904955`.  Outputs were finite and cross-rank allreduce checks passed.  The small numerical shift versus control is consistent with nondeterministic FP32 producer-add order after the preserved per-route BF16 rounding.
+- **Smoke timing:** Candidate M8 median `0.077312 ms`; the two-sample multi control was unusably noisy (`0.074528–0.188192 ms`, median `0.131360 ms`).  Candidate M128 median `0.345984 ms` versus control `0.305168 ms`, ratio `1.13375`; relative to the recent non-atomic single-kernel bracket near `0.3424 ms`, this is an initial roughly 1% regression signal.
+- **Decision:** Correctness advances, but do not select from two samples.  Run an order-balanced OFF/ON bracket in separate processes at M8/M128 with at least 40 individually cold samples per arm; reject if the direct single-kernel regression repeats.
+- **Artifact:** `bench/results/iter371_atomic_producer_combine_tp4_m8_m128_smoke_20260905.log`.
