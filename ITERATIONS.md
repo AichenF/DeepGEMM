@@ -15229,3 +15229,27 @@ maximum rank latency of a full CUDA-Graph replay.
   proven default-off W13 rotation.
 - **Evidence:** `evidence/iter660_w2_wave_rotation_rejection.md`; raw
   `bench/results/iter660_w2_wave_rotate*_20260906.log`.
+
+## Iteration 661 — M128 W13 wave rotation regresses M32/M64
+
+- **Hypothesis/change:** transfer Iteration 659's shift-13 complete-wave CTA
+  ownership mapping into the production inline W13 loop for M32 and M64.
+  Residual waves, task sets, arithmetic, split-K, barriers, W2 and collective
+  were unchanged.
+- **Resource/correctness:** M32 split-K4 remained
+  `REG63 STACK32 SHARED2048 LOCAL0`; M64 split-K2 remained
+  `REG64 STACK32 SHARED2048 LOCAL0`, retaining eight CTAs/SM.  Both random-
+  route shapes were bitwise equal to same-source multi locally and passed
+  packed-generation wrap exactly.
+- **Cold-L2 phase protocol:** physical GPU1, seed 20260902, eight independent
+  process samples per shape ordered OFF/ON/ON/OFF/OFF/ON/ON/OFF, each with a
+  separate excluded 256 MiB clear.
+- **Result:** M32 W13 median/mean regress by 2.66%/2.34%
+  (`121.104 -> 124.320 us`, `121.232 -> 124.064 us`).  M64 regresses by
+  0.89%/0.90% (`171.328 -> 172.848 us`, `171.248 -> 172.784 us`).
+- **Decision:** reject before TP4 and remove the lower-M mapping.  The M128
+  gain depends on its distinct 702-CTA, nine-CTA/SM wave geometry; retain only
+  that independently validated default-off specialization.
+- **Evidence:**
+  `evidence/iter661_w13_wave_rotation_m32_m64_rejection.md`; raw
+  `bench/results/iter661_w13_wave_rotate_m32_m64*_20260906.log`.
