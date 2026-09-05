@@ -11034,3 +11034,36 @@ maximum rank latency of a full CUDA-Graph replay.
   checkpoint before running M8/M128 local all-output correctness.  Runtime
   dynamic spills and scheduler progress remain unproven until execution/NCU.
 - **Evidence:** `bench/evidence/iter448_native_two_cta_resource.txt`.
+
+## Iteration 449 — two-CTA native runtime deadlocks despite occupancy estimate
+
+- **Harness change:** add a SHA-256 digest of the complete local BF16
+  `[M,4096]` output to the native diagnostic so future topology comparisons
+  can require bitwise full-output equality, rather than checking only route 0
+  or a scalar maximum.
+- **Test:** physical GPU1, deterministic M8/M128, first the retained 78-CTA
+  register-dequant/K128-batch control and then the 156-CTA/two-resident-CTA
+  candidate.  Each process had a 300-second outer timeout.  GPU utilization
+  was zero before the run.
+- **Control result:** M8 completes and reports exact route-pool copies, the
+  accepted weighted-FC1 cosine `0.9996428552`/relative-L2 `0.02710524`, and
+  full-output SHA-256 `6860e09b...75f5d5`.  The M128 kernel also returns, but
+  its post-kernel diagnostic fails: the test's legacy `pool_row=route*8`
+  formula assumes one route per expert and indexes beyond the 3072-row pool
+  once 768 routes wrap over 256 experts.  This is a harness-only failure after
+  synchronization, not a control-kernel failure.
+- **Candidate result:** **FAIL/deadlock at M8**.  The 156-CTA kernel remains at
+  100% GPU utilization without returning for more than 60 seconds and is
+  manually terminated before M128.  A normal native launch is sub-millisecond.
+  Thus `cudaOccupancyMaxActiveBlocksPerMultiprocessor == 2` is insufficient
+  proof that a non-cooperative 156-block launch can safely execute this
+  software whole-grid barrier.  CUDA scheduling need not place exactly two
+  blocks on every one of 78 SMs before admitting a later block.
+- **Decision:** do not time this binary.  Preserve the failure and repair the
+  residency mechanism before changing math: use an explicit cooperative
+  launch if 156x384 is admitted, or reject two-CTA native residency.  Repair
+  the M128 pool-row diagnostic independently by reconstructing expert-local
+  prefix offsets; it did not cause the candidate M8 hang.
+- **Evidence:**
+  `bench/evidence/iter449_native_two_cta_local_correctness.txt` and
+  `bench/evidence/iter449_native_two_cta_diagnosis.txt`.
