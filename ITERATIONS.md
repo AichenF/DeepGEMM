@@ -10541,3 +10541,37 @@ maximum rank latency of a full CUDA-Graph replay.
   serialization or reduced cold W13/W2 bandwidth.
 - Evidence:
   `bench/results/iter424_static_activation_wg_tp4_m8_m128_cold_screen_20260905.log`.
+
+## Iteration 425 — shared scheduler state halves spills; barriers still dominate
+
+- Date: 2026-09-05
+- Method: NCU 2025.3.1 on Iteration 422's compute-only M128 split-K2
+  kernel, profiler-start delimited, exact monolithic-kernel filter, 20
+  kernel-replay passes, NCU cache/clock controls disabled, and an
+  application-provided excluded 256 MiB cold-L2 clear.  This run uses idle
+  physical GPU1 because GPU0 currently has an unrelated persistent process
+  consuming 99% SM; cross-GPU NCU deltas are diagnostic, while Iteration 424
+  supplies paired same-run performance evidence.
+- Correctness/resource: PASS bitwise (`cosine=1`, rel-L2 `0`, finite), 1,944
+  padded rows and `[2048,0,0,2048]` generation words.  Launch remains
+  78x1024, 64 registers/thread, 147.46 KiB dynamic plus 3.07 KiB static
+  shared, and 49.85% achieved occupancy.
+- Result: duration `374.98 us`, compute `58.99%`, DRAM `44.99%`
+  (`2.16 TB/s`), no-eligible `40.36%`, 0.60 issued
+  warp/scheduler/cycle and 1.48 eligible warps/scheduler.  NCU reports 4.8 of
+  13.44 cycles/issue (`35.7%`) waiting for sibling warps at barriers.
+- Comparison to Iteration 421: local spill requests fall
+  107,201→57,100 (-46.7%), no-eligible falls 43.20→40.36%, barrier wait falls
+  5.3→4.8 cycles, and duration falls 386.53→374.98 us.  Executed
+  instructions rise only 0.53%.  Iteration 424's paired TP4 result confirms a
+  smaller but same-direction 2.38% M128 latency gain.
+- Diagnosis/decision: moving loop state to shared and assigning activation
+  work deterministically worked, but the kernel still spends 35.7% of its
+  issue interval at barriers and delivers 2.16 TB/s versus Iteration 402's
+  mapped phase kernel at 2.46 TB/s.  The next experiment must reduce
+  activation/W2 mailbox frequency or use coarser producer-ready batches; do
+  not add another fine global scheduler.
+- Evidence:
+  `results/iter425_static_activation_wg_m128_ncu_details_20260905.log`;
+  binary report `results/iter425_static_activation_wg_m128_compute_full.ncu-rep`
+  remains outside git due to size.
