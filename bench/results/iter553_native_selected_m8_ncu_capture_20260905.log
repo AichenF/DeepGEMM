@@ -1,0 +1,10 @@
+==WARNING== Note: Running with unmodified GPU clocks. If not controlled otherwise, profiling results may be inconsistent.
+==PROF== Connected to process 602201 (/usr/bin/python3.12)
+==PROF== Profiling "void deep_gemm::v4_flash_tp4_native_megamoe_impl<(int)512>(void *, int *, unsigned int, deep_gemm::layout::SymBuffer<(unsigned int)1>, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, const float *, const float *, __nv_bfloat16 *, unsigned int *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, __nv_bfloat16 *, const unsigned char *, unsigned char *, unsigned char *, int, long, bool)": 0%....50%....100% - 21 passes
+==PROF== Connected to process 602275 (/usr/bin/python3.12)
+NATIVE_LOCAL_PROFILE_ONLY {"m": 8, "synchronized": true}
+==PROF== Connected to process 602277 (/usr/bin/python3.12)
+==PROF== Disconnected from process 602201
+==PROF== Disconnected from process 602275
+==PROF== Disconnected from process 602277
+==PROF== Report: /lustre/raplab/client/xutingz/fac/DeepGEMM_tp/results/iter553_native_selected_m8_profile.ncu-rep

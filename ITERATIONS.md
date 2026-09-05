@@ -13244,3 +13244,17 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/evidence/iter552_multi_local_stage_profile_summary.txt` and
   `bench/results/iter552_multi_local_stage_profile_tp4_m8_m32_m128_cold_20260905.log`.
+
+## Iteration 553 — capture selected native M8 profile after tail changes
+
+- **Purpose/protocol:** physical H20 GPU1, local M8, selected default native
+  configuration (TP-local barrier, route build and parallel combine chunks),
+  TP communication disabled.  Nsight Compute targeted exactly one business
+  kernel with kernel replay, cache control `all`, unmodified clocks, line
+  information, and the same eight section groups as Iteration 536.
+- **Result:** **PASS capture.**  All 21 replay passes completed and the
+  synchronized profile-only marker printed.  The report is committed before
+  metric import; no bottleneck or speedup conclusion is made here.
+- **Evidence:** `results/iter553_native_selected_m8_profile.ncu-rep`,
+  `bench/results/iter553_native_selected_m8_ncu_capture_20260905.log`, and
+  `bench/evidence/iter553_native_selected_m8_ncu_capture.txt`.
