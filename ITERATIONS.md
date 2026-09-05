@@ -12516,3 +12516,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - Resources: M64/M128 entries remain `REG=64, STACK=32, SHARED=4096, LOCAL=0`; M8/M16/M32 fall to 60--61 registers with the same 32-byte stack, 4096-byte static shared allocation, and no fixed local allocation. The path therefore preserves the selected eight-CTA admission and introduces no spill/resource cliff.
 - Decision: resource gate PASS. Run exact compute-only M8/M128 correctness next; phase-2 packed word is intentionally unused because W13 and activation now share one publication.
 - Evidence: `results/iter511_w13_act_tail_pipe_resource_20260905.log`.
+## Iteration 512 — first W13-tail activation runtime fails with illegal access (2026-09-05)
+
+- Protocol: exact Iteration-511 candidate on H20 GPU0, random M8 then M128 compute-only endpoint checks, with the standard excluded 256 MiB cold-L2 clear and 90-second per-process timeout. TP communication was disabled; no latency was measured.
+- Result: FAIL. Both independent processes reached the first candidate synchronization and reported `cudaErrorIllegalAddress`; neither emitted a correctness record. JIT/resource admission had already passed, so this is a runtime address/order defect in the new handoff path rather than a compile failure.
+- Decision: performance testing remains blocked. Reproduce M8 under compute-sanitizer/CUDA launch blocking, verify the route-to-sorted counter index and scheduler allocation, then repair or reject. Do not use this candidate for any speed claim.
+- Evidence: `results/iter512_w13_act_tail_pipe_compute_correctness_20260905.log`.

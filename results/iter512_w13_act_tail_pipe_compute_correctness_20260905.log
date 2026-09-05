@@ -1,0 +1,34 @@
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 281, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 176, in main
+    torch.cuda.synchronize(device)
+  File "/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py", line 1162, in synchronize
+    return torch._C._cuda_synchronize()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: an illegal memory access was encountered
+Search for `cudaErrorIllegalAddress' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 281, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 176, in main
+    torch.cuda.synchronize(device)
+  File "/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py", line 1162, in synchronize
+    return torch._C._cuda_synchronize()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: an illegal memory access was encountered
+Search for `cudaErrorIllegalAddress' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
