@@ -11973,3 +11973,23 @@ maximum rank latency of a full CUDA-Graph replay.
   plus embedded-communication validation before timing.
 - **Evidence:**
   `bench/evidence/iter483_tile_weight_scale_tma_m128_local_gate.txt`.
+
+## Iteration 484 — one-transaction tile TMA passes TP4 graph/comm smoke
+
+- **Protocol:** physical H20 GPUs 0–3, TP4 random M8/M128, tile-TMA candidate
+  versus selected multi-kernel control in one process, CUDA Graph, two
+  balanced batches x two independently cold rank-max samples per arm and M,
+  two warmups, and the excluded 256 MiB L2 clear.
+- **Correctness:** **PASS** at both endpoints.  Every rank is finite;
+  end-to-end cosine is at least `0.9993588000`; embedded communication versus
+  candidate-local NCCL has minimum cosine `0.9999916227` and maximum
+  relative-L2 `0.0040933250`.  M8 multicast-push and M128 NVLS-pull tails both
+  complete normally.
+- **Smoke timing:** native medians are `0.103616 ms` at M8 and
+  `0.377792 ms` at M128.  Both are directionally below the retained
+  Iteration-460 `0.104160/0.380128 ms`, but four samples are insufficient for
+  selection.
+- **Decision:** admit TP4 graph correctness and proceed to the matched
+  20-sample endpoint cold-L2 screen.  Keep the candidate default-off.
+- **Evidence:**
+  `bench/evidence/iter484_tile_tma_tp4_endpoint_graph_smoke.txt`.

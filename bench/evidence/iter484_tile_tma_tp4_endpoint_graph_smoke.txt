@@ -1,0 +1,18 @@
+ITERATION 484 — one-transaction tile TMA TP4 graph smoke
+
+Protocol:
+  TP4 GPUs 0,1,2,3; random M=8,128
+  V4_NATIVE_TILE_WEIGHT_SCALE_TMA=1
+  CUDA Graph; outer=2; replays=2; warmups=2; independently cold L2
+
+Correctness:
+  finite_all_ranks=true
+  final_cosine_min=0.9993588000366143
+  embedded_comm_vs_nccl_cosine_min=0.9999916227171722
+  embedded_comm_vs_nccl_rel_l2_max=0.004093324960556197
+
+Four-sample smoke medians only:
+  M8 multi/native=0.0726559982/0.1036160029 ms
+  M128 multi/native=0.3080160022/0.3777920008 ms
+
+Verdict: PASS correctness/communication; timing is directional only.
