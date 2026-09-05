@@ -201,6 +201,14 @@ SINGLE_LAUNCH_78CTA_8WG = (
 SINGLE_LAUNCH_TRACE_SMID = (
     os.environ.get("V4_SINGLE_LAUNCH_TRACE_SMID", "0") == "1"
 )
+SINGLE_LAUNCH_78CTA_SMID_MAP = (
+    os.environ.get("V4_SINGLE_LAUNCH_78CTA_SMID_MAP", "0") == "1"
+)
+if SINGLE_LAUNCH_78CTA_SMID_MAP and not SINGLE_LAUNCH_78CTA_8WG:
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_78CTA_SMID_MAP requires "
+        "V4_SINGLE_LAUNCH_78CTA_8WG=1"
+    )
 W2_NEEDS_ROUTE_MAP = (
     W2_SORTED_ACT
     or W2_MBLOCK_SCALE
@@ -1398,6 +1406,8 @@ static constexpr bool kSingleLaunch78Cta8Wg =
     K_SINGLE_LAUNCH_78CTA_8WG;
 static constexpr bool kSingleLaunchTraceSmid =
     K_SINGLE_LAUNCH_TRACE_SMID;
+static constexpr bool kSingleLaunch78CtaSmidMap =
+    K_SINGLE_LAUNCH_78CTA_SMID_MAP;
 static constexpr bool kSingleLaunchP2pTwoShot =
     K_SINGLE_LAUNCH_P2P_TWO_SHOT;
 static constexpr int kSingleLaunchP2pTwoShotBlocks =
@@ -1406,6 +1416,101 @@ static constexpr int kSingleLaunchNvlsBlocks =
     K_SINGLE_LAUNCH_NVLS_BLOCKS;
 static constexpr int kSingleLaunchGroupCtas =
     K_SINGLE_LAUNCH_GROUP_CTAS;
+
+#if K_SINGLE_LAUNCH_78CTA_SMID_MAP
+// Iteration 398's real 624x128 production-kernel placement on the 78-SM
+// H20.  A 78x1024 CTA uses its physical SM ID and independent-WG index to
+// recover the exact eight logical worker streams that were resident on the
+// same SM in the selected path.
+__device__ __constant__ uint16_t kH20LogicalWorkerBySm[78][8] = {
+    {46,124,216,294,372,450,528,592},
+    {47,125,217,295,373,451,529,593},
+    {54,146,224,302,380,458,536,600},
+    {55,147,225,303,381,459,537,601},
+    {76,154,232,310,388,466,544,608},
+    {77,155,233,311,389,467,545,609},
+    {84,162,240,318,396,488,552,616},
+    {85,163,241,319,397,489,553,617},
+    {14,92,170,248,326,418,496,560},
+    {15,93,171,249,327,419,497,561},
+    {24,102,180,258,350,428,506,570},
+    {25,103,181,259,351,429,507,571},
+    {34,112,190,282,360,438,516,580},
+    {35,113,191,283,361,439,517,581},
+    {48,126,218,296,374,452,530,594},
+    {49,127,219,297,375,453,531,595},
+    {56,148,226,304,382,460,538,602},
+    {57,149,227,305,383,461,539,603},
+    {78,156,234,312,390,468,546,610},
+    {79,157,235,313,391,469,547,611},
+    {86,164,242,320,398,490,554,618},
+    {87,165,243,321,399,491,555,619},
+    {16,94,172,250,328,420,498,562},
+    {17,95,173,251,329,421,499,563},
+    {26,104,182,260,352,430,508,572},
+    {27,105,183,261,353,431,509,573},
+    {36,114,192,284,362,440,518,582},
+    {37,115,193,285,363,441,519,583},
+    {50,128,220,298,376,454,532,596},
+    {51,129,221,299,377,455,533,597},
+    {58,150,228,306,384,462,540,604},
+    {59,151,229,307,385,463,541,605},
+    {80,158,236,314,392,470,548,612},
+    {81,159,237,315,393,471,549,613},
+    {88,166,244,322,400,492,556,620},
+    {89,167,245,323,401,493,557,621},
+    {18,96,174,252,330,422,500,564},
+    {19,97,175,253,331,423,501,565},
+    {28,106,184,262,354,432,510,574},
+    {29,107,185,263,355,433,511,575},
+    {38,116,194,286,364,442,520,584},
+    {39,117,195,287,365,443,521,585},
+    {52,130,222,300,378,456,534,598},
+    {53,131,223,301,379,457,535,599},
+    {60,152,230,308,386,464,542,606},
+    {61,153,231,309,387,465,543,607},
+    {82,160,238,316,394,472,550,614},
+    {83,161,239,317,395,473,551,615},
+    {90,168,246,324,402,494,558,622},
+    {91,169,247,325,403,495,559,623},
+    {20,98,176,254,332,424,502,566},
+    {21,99,177,255,333,425,503,567},
+    {30,108,186,264,356,434,512,576},
+    {31,109,187,265,357,435,513,577},
+    {40,118,196,288,366,444,522,586},
+    {41,119,197,289,367,445,523,587},
+    {22,100,178,256,334,426,504,568},
+    {23,101,179,257,335,427,505,569},
+    {32,110,188,266,358,436,514,578},
+    {33,111,189,267,359,437,515,579},
+    {42,120,198,290,368,446,524,588},
+    {43,121,199,291,369,447,525,589},
+    {44,122,200,292,370,448,526,590},
+    {45,123,201,293,371,449,527,591},
+    {4,66,136,206,272,340,408,478},
+    {5,67,137,207,273,341,409,479},
+    {6,68,138,208,274,342,410,480},
+    {7,69,139,209,275,343,411,481},
+    {8,70,140,210,276,344,412,482},
+    {9,71,141,211,277,345,413,483},
+    {10,72,142,212,278,346,414,484},
+    {11,73,143,213,279,347,415,485},
+    {12,74,144,214,280,348,416,486},
+    {13,75,145,215,281,349,417,487},
+    {0,62,132,202,268,336,404,474},
+    {1,63,133,203,269,337,405,475},
+    {2,64,134,204,270,338,406,476},
+    {3,65,135,205,271,339,407,477},
+};
+
+__device__ __forceinline__ int h20_selected_logical_worker(
+        int independent_wg) {
+    uint32_t smid;
+    asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
+    return static_cast<int>(
+        kH20LogicalWorkerBySm[static_cast<int>(smid)][independent_wg]);
+}
+#endif
 
 #if K_MIN_BLOCKS_PER_SM > 0
 #define ROUTE_LAUNCH_BOUNDS(IS_W13, DUAL) \
@@ -6020,53 +6125,77 @@ void tp4_megamoe_single_launch_kernel(
             kSingleLaunchH20Sms * kIndependentTaskWGs;
         static_assert(kSingleLaunchThreads == 1024);
         const int num_mblocks = __ldg(num_tokens_padded) / kTok;
+        const int independent_wg = threadIdx.x >> 7;
 
         const int w13_tasks = num_mblocks * kW13NTiles * SplitK;
-        for (int task_base = cta * kIndependentTaskWGs;
-             task_base < w13_tasks;
-             task_base += kLogicalWorkersPerWave) {
-            route_gemm_task<
-                4096, 1024, SplitK, true, 0, false, false, false,
-                -1, false, 0, kSingleLaunchAssumeValidGemmTasks,
-                false, false, kIndependentTaskWGs>(
-                &w13_tma_weight, &w13_tma_weight_scale,
-                w13, s13, g13, qx, x_scale,
-                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-                partials, lut, nullptr, routes, 0, task_base);
-            independent_wg_sync<kIndependentTaskWGs>(threadIdx.x >> 7);
+        {
+            const int logical_worker =
+#if K_SINGLE_LAUNCH_78CTA_SMID_MAP
+                h20_selected_logical_worker(independent_wg);
+#else
+                cta * kIndependentTaskWGs + independent_wg;
+#endif
+            for (int task = logical_worker; task < w13_tasks;
+                 task += kLogicalWorkersPerWave) {
+                route_gemm_task<
+                    4096, 1024, SplitK, true, 0, false, false, false,
+                    -1, false, 0, kSingleLaunchAssumeValidGemmTasks,
+                    false, false, kIndependentTaskWGs>(
+                    &w13_tma_weight, &w13_tma_weight_scale,
+                    w13, s13, g13, qx, x_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                    partials, lut, nullptr, routes, 0,
+                    task - independent_wg);
+                independent_wg_sync<kIndependentTaskWGs>(independent_wg);
+            }
         }
         __syncthreads();
         single_launch_grid_barrier(barrier_state, 1, ctas);
 
         constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
         const int activation_groups = routes * kActivationGroupsPerRoute;
-        for (int group_base = cta * kIndependentTaskWGs;
-             group_base < activation_groups;
-             group_base += kLogicalWorkersPerWave) {
-            reduce_swiglu_quant_task<
-                kIntermediate, SplitK, false, false,
-                kIndependentTaskWGs>(
-                partials, activation, qactivation, activation_scale,
-                route_to_sorted, topk_ids, g2, routes, group_base);
-            independent_wg_sync<kIndependentTaskWGs>(threadIdx.x >> 7);
+        {
+            const int logical_worker =
+#if K_SINGLE_LAUNCH_78CTA_SMID_MAP
+                h20_selected_logical_worker(independent_wg);
+#else
+                cta * kIndependentTaskWGs + independent_wg;
+#endif
+            for (int group = logical_worker; group < activation_groups;
+                 group += kLogicalWorkersPerWave) {
+                reduce_swiglu_quant_task<
+                    kIntermediate, SplitK, false, false,
+                    kIndependentTaskWGs>(
+                    partials, activation, qactivation, activation_scale,
+                    route_to_sorted, topk_ids, g2, routes,
+                    group - independent_wg);
+                independent_wg_sync<kIndependentTaskWGs>(independent_wg);
+            }
         }
         __syncthreads();
         single_launch_grid_barrier(barrier_state, 2, ctas);
 
         const int w2_tasks = num_mblocks * kW2NTiles;
-        for (int task_base = cta * kIndependentTaskWGs;
-             task_base < w2_tasks;
-             task_base += kLogicalWorkersPerWave) {
-            route_gemm_task<
-                512, 4096, 1, false, 0, false, false, false,
-                -1, false, 0, kSingleLaunchAssumeValidGemmTasks,
-                false, false, kIndependentTaskWGs>(
-                &w2_tma_weight, &w2_tma_weight_scale,
-                w2, s2, g2, qactivation, activation_scale,
-                sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-                reinterpret_cast<float*>(down), lut, nullptr,
-                routes, 0, task_base);
-            independent_wg_sync<kIndependentTaskWGs>(threadIdx.x >> 7);
+        {
+            const int logical_worker =
+#if K_SINGLE_LAUNCH_78CTA_SMID_MAP
+                h20_selected_logical_worker(independent_wg);
+#else
+                cta * kIndependentTaskWGs + independent_wg;
+#endif
+            for (int task = logical_worker; task < w2_tasks;
+                 task += kLogicalWorkersPerWave) {
+                route_gemm_task<
+                    512, 4096, 1, false, 0, false, false, false,
+                    -1, false, 0, kSingleLaunchAssumeValidGemmTasks,
+                    false, false, kIndependentTaskWGs>(
+                    &w2_tma_weight, &w2_tma_weight_scale,
+                    w2, s2, g2, qactivation, activation_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                    reinterpret_cast<float*>(down), lut, nullptr,
+                    routes, 0, task - independent_wg);
+                independent_wg_sync<kIndependentTaskWGs>(independent_wg);
+            }
         }
         __syncthreads();
         single_launch_grid_barrier(barrier_state, 3, ctas);
@@ -9431,6 +9560,7 @@ _EXTENSION_CONFIG = (
           f"sldwgpa{int(SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT)}_"
           f"sl78x8{int(SINGLE_LAUNCH_78CTA_8WG)}_"
           f"sltracesm{int(SINGLE_LAUNCH_TRACE_SMID)}_"
+          f"sl78smap{int(SINGLE_LAUNCH_78CTA_SMID_MAP)}_"
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"slp2p2{int(SINGLE_LAUNCH_P2P_TWO_SHOT)}_"
@@ -9697,6 +9827,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_TRACE_SMID="
             f"{int(SINGLE_LAUNCH_TRACE_SMID)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_78CTA_SMID_MAP="
+            f"{int(SINGLE_LAUNCH_78CTA_SMID_MAP)}"
         ),
         f"-DK_SINGLE_LAUNCH_GROUP_CTAS={SINGLE_LAUNCH_GROUP_CTAS}",
         f"-DK_SINGLE_LAUNCH_NVLS_BLOCKS={K6_NVLS_PULL_BLOCKS}",

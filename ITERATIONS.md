@@ -9849,3 +9849,35 @@ maximum rank latency of a full CUDA-Graph replay.
   waves; gate correctness and cold-L2 endpoint latency before retaining it.
 - Evidence:
   `results/iter398_real_kernel_smid_mapping_m8_20260905.log`.
+
+## Iteration 399 — apply real H20 SMID task mapping
+
+- Date: 2026-09-05
+- Change: add default-off `V4_SINGLE_LAUNCH_78CTA_SMID_MAP`, valid only with
+  the 78-CTA/eight-WG specialization.  A 78x8 `uint16_t` constant table from
+  Iteration 398 maps runtime `%smid` and WG index to the selected path's
+  logical CTA.  W13, activation requant and W2 now enumerate
+  `logical_worker + wave*624`; the existing task bodies, numerical order
+  within a task, phase barriers and collective are unchanged.  The flag is
+  included in the JIT cache key and benchmark metadata.
+- Static gate: PASS.  The table has exactly 78 rows x 8 entries and is a
+  strict permutation of logical workers 0..623.  Both benchmark entry files
+  remain byte-identical and all edited Python files compile.
+- Protocol: H20 GPU0, random routes, seed 20260904, release grid arrivals,
+  valid-task elision and phase stamps, TP collective disabled.  M8 and M128
+  each ran once and then once after a separate excluded 256 MiB L2 clear.
+  Public X remained prequantized FP8-E4M3 with FP32 group-128 scale.
+- Correctness: PASS bitwise at both endpoints (`rel_l2=0`, finite, cosine 1
+  within print precision); padded rows are 360/1,944 and all packed barrier
+  generations finish at 2048.
+- Phase result (route/W13/requant/W2): M8
+  `2.592/46.368/3.296/25.120 us`; M128
+  `3.904/210.272/6.528/107.712 us`.  Versus Iteration 398's unmapped M8
+  trace, W13 improves 6.976 us and W2 6.240 us.  Versus Iteration 391's
+  unmapped M128 phase sample, W13 improves 21.920 us and W2 5.344 us.
+- Decision: retain this mapping inside the still-experimental/default-off
+  78-CTA mode and run a same-process TP4 M8/M128 full-pipeline cold-L2
+  screen.  It has not yet passed the multi-kernel performance or M128
+  collective-stability gates.
+- Evidence:
+  `results/iter399_78cta_real_smid_map_correctness_20260905.log`.

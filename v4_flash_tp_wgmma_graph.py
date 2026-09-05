@@ -1373,6 +1373,9 @@ def main() -> None:
                     "single_launch_78cta_8wg": (
                         kernel.SINGLE_LAUNCH_78CTA_8WG
                     ),
+                    "single_launch_78cta_smid_map": (
+                        kernel.SINGLE_LAUNCH_78CTA_SMID_MAP
+                    ),
                     "single_launch_skip_final_cta_sync": (
                         kernel.SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
                     ),
