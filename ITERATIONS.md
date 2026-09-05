@@ -14578,3 +14578,23 @@ maximum rank latency of a full CUDA-Graph replay.
   separate iteration before any launch.
 - **Evidence:** `evidence/iter637_w13_compact_persistent_resource_harness_failure.md`;
   raw log `bench/results/iter637_w13_compact_persistent_resource.log`.
+
+## Iteration 638 — exact compact-W13 persistent cubin passes resource gate
+
+- **Test:** inspect the explicitly named candidate artifact
+  `v4tp_7babc76b617baae01065_v178mspec.so` with
+  `cuobjdump --dump-resource-usage`, eliminating Iteration 637's unordered
+  recent-file selection.  No rebuild ambiguity and no CUDA kernel launch are
+  involved.
+- **Resource result:** **PASS.** M128 split-K2 and split-K4 both remain
+  `REG56 STACK32 SHARED2048 LOCAL0`; M64 remains
+  `REG64 STACK32 SHARED2048 LOCAL0`, and M8/M16/M32 remain at 61 registers,
+  32-byte stack and zero fixed local allocation.  Thus the composition keeps
+  the selected 702x128 nine-CTA/SM M128 admission and does not add a caller
+  stack or spill penalty.
+- **Decision:** resource gate passes.  Proceed to the M128 cold-L2
+  compute-only launch with full bitwise `down` comparison and packed barrier
+  generation wrap; do not perform distributed timing until that state-machine
+  check succeeds.
+- **Evidence:** `evidence/iter638_w13_compact_persistent_exact_resource.md`;
+  raw log `bench/results/iter638_w13_compact_persistent_exact_resource.log`.
