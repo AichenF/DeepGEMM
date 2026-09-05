@@ -1,0 +1,28 @@
+ITER436_MAILBOX_FREE_STATIC_PHASES_RESOURCE_REJECT
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+physical_gpu=1
+base_commit=190b458
+candidate_flag=V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+change=replace per-task dynamic scheduler mailbox with direct static W13 then activation then W2 WG loops
+python_compile=PASS
+jit_compile=PASS
+extension=v4tp_bc05d855d2d59fe099f9_v178mspec
+m8_split4.regs_per_thread=64
+m8_split4.stack_bytes=112
+m8_split4.static_shared_bytes=5120
+m8_split4.local_bytes=0
+m128_split2.regs_per_thread=64
+m128_split2.stack_bytes=96
+m128_split2.static_shared_bytes=5120
+m128_split2.local_bytes=0
+dynamic_shared_bytes=147456
+comparison_iter430.m8_stack_bytes=48_to_112
+comparison_iter430.m128_stack_bytes=32_to_96
+resource_gate=FAIL_STACK_GROWTH
+correctness=NOT_RUN
+performance=NOT_RUN
+diagnosis=placing three static loops directly in the monolithic entry keeps phase loop state and pointer payloads live across large noinline task calls; static mailbox deletion alone increases the caller frame by 64 bytes at both endpoints
+decision=commit exact rejected checkpoint before repair; outline each complete W13 activation and W2 stripe once per WG so no per-task call is added beyond existing task helpers and the monolithic caller does not retain cross-phase state
+ITER436_MAILBOX_FREE_STATIC_PHASES_RESOURCE_REJECT_FAIL

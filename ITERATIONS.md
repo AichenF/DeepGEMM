@@ -10761,3 +10761,34 @@ maximum rank latency of a full CUDA-Graph replay.
   `results/iter434_batched_activation_m128_source_counter_details_20260905.log`;
   binary report `results/iter434_batched_activation_m128_source_counters.ncu-rep`
   remains outside git due to size.
+
+## Iteration 435 — design mailbox-free static local phases
+
+- Date: 2026-09-05
+- Design: each real-SMID WG completes its static W13 stripe, then its static
+  acquire-gated activation stripe, then its static acquire-gated W2 stripe.
+  All lanes derive task indices directly, removing lane-0 selection, shared
+  task payloads and the per-task mailbox named barrier.  No WG waits while it
+  still owns upstream work, so forward progress is preserved without
+  intermediate CTA/grid barriers.
+- Evidence/design:
+  `docs/plans/2026-09-05-warpgroup-interleaved-w13-w2-design.md`.
+
+## Iteration 436 — direct static loops fail caller-stack resource gate
+
+- Date: 2026-09-05
+- Change: implement Iteration 435 directly inside the monolithic kernel entry;
+  remove all shared per-WG scheduler cursors, masks, task kind/index payloads
+  and task-loop mailbox barriers.
+- Verification: Python and CUDA JIT compile PASS, with registers fixed at 64,
+  static shared 5,120 bytes, dynamic shared 147,456 bytes and zero declared
+  local bytes.  However M8 split-K4 stack grows 48→112 bytes and M128
+  split-K2 grows 32→96 bytes versus Iteration 430.
+- Decision: FAIL the explicit caller-frame resource gate and do not run
+  correctness/performance on this binary.  Preserve the exact checkpoint,
+  then outline each complete W13, activation and W2 stripe once per WG.  This
+  keeps the no-mailbox design without adding a call per tile beyond the
+  already existing task helpers and should end cross-phase liveness in the
+  monolithic caller.
+- Evidence:
+  `results/iter436_mailbox_free_static_phases_resource_reject_20260905.log`.
