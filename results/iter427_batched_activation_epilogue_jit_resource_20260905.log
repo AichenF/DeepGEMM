@@ -1,0 +1,32 @@
+ITER427_BATCHED_ACTIVATION_EPILOGUE_JIT_RESOURCE
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+physical_gpu=1
+base_commit=077bd7e
+reference_branch=megamoe_nvfp4_dev_m
+reference_arch=Hopper_SM90
+candidate_flag=V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+change=replace eight per-row activation helper calls with one Hopper-style BM8 activation-group helper; compute/store eight BF16 rows, reduce eight scales in one warp, reload/quantize eight rows, then publish completion
+named_barriers_per_activation_group_before_approximately=25
+named_barriers_per_activation_group_after=4
+python_compile=PASS
+jit_compile=PASS
+extension=v4tp_bc05d855d2d59fe099f9_v178mspec
+m8_split4.regs_per_thread=64
+m8_split4.stack_bytes=32
+m8_split4.static_shared_bytes=5120
+m8_split4.local_bytes=0
+m128_split2.regs_per_thread=64
+m128_split2.stack_bytes=32
+m128_split2.static_shared_bytes=5120
+m128_split2.local_bytes=0
+dynamic_shared_bytes=147456
+total_explicit_shared_bytes=152576
+comparison_iter422.stack_bytes=48_to_32
+comparison_iter422.static_shared_bytes=4096_to_5120
+resource_gate=PASS
+interpretation=the batched helper keeps register allocation at the 64-register occupancy boundary, reduces declared stack by one third, and adds only 1KiB static shared memory; one 1024-thread CTA per H20 SM remains feasible
+correctness=NOT_TESTED
+performance=NOT_TESTED
+ITER427_BATCHED_ACTIVATION_EPILOGUE_JIT_RESOURCE_OK

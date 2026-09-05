@@ -3990,15 +3990,135 @@ __device__ __noinline__ void single_launch_wg_dag_activation_task(
         __nv_bfloat16* __restrict__ activation,
         uint8_t* __restrict__ qactivation,
         float* __restrict__ activation_scale,
+        const int32_t* __restrict__ sorted_ids,
         const int32_t* __restrict__ route_to_sorted,
         const int32_t* __restrict__ topk_ids,
         const float* __restrict__ g2,
-        int routes, int group, int independent_wg) {
+        int routes, int mblock, int activation_group,
+        int independent_wg) {
     constexpr int kIndependentTaskWGs = 8;
-    reduce_swiglu_quant_task<512, SplitK, false, false,
-                             kIndependentTaskWGs>(
-        partials, activation, qactivation, activation_scale,
-        route_to_sorted, topk_ids, g2, routes, group - independent_wg);
+
+    // The Hopper MegaMoE L1 epilogue quantizes a complete output tile before
+    // publishing L2 readiness.  Do the same for this BM8 route block instead
+    // of invoking the row helper eight times (three named barriers per row).
+    // Values are deliberately reloaded from the public BF16 activation
+    // workspace after scale reduction so eight gate/up pairs do not stay live
+    // across the barrier.
+    constexpr int kIntermediate = 512;
+    constexpr int kGroupsPerRoute = kIntermediate / 128;
+    constexpr int kRoutesPerMblock = 8;
+    constexpr int kN = 2 * kIntermediate;
+    const int local_tid = threadIdx.x & 127;
+    const int warp = local_tid >> 5;
+    const int lane = local_tid & 31;
+    const int column = activation_group * 128 + local_tid;
+
+    __shared__ float warp_max_storage[
+        kIndependentTaskWGs][kRoutesPerMblock][4];
+    __shared__ float group_scale_storage[
+        kIndependentTaskWGs][kRoutesPerMblock];
+    float (*warp_max)[4] = warp_max_storage[independent_wg];
+    float* group_scale = group_scale_storage[independent_wg];
+
+    #pragma unroll 1
+    for (int route_slot = 0; route_slot < kRoutesPerMblock;
+         ++route_slot) {
+        const int route = __ldg(
+            sorted_ids + mblock * kRoutesPerMblock + route_slot);
+        const bool valid = static_cast<unsigned>(route)
+            < static_cast<unsigned>(routes);
+        float value = 0.0f;
+        if (valid) {
+            float gate = 0.0f;
+            float up = 0.0f;
+            #pragma unroll
+            for (int split = 0; split < SplitK; ++split) {
+                const int64_t base =
+                    (static_cast<int64_t>(split) * routes + route) * kN;
+                gate += partials[base + column];
+                up += partials[base + kIntermediate + column];
+            }
+            gate = __bfloat162float(__float2bfloat16(gate));
+            up = __bfloat162float(__float2bfloat16(up));
+            const float silu = gate / (1.0f + __expf(-gate));
+            const __nv_bfloat16 activation_bf16 =
+                __float2bfloat16(silu * up);
+            value = __bfloat162float(activation_bf16);
+            activation[route * kIntermediate + column] = activation_bf16;
+        }
+
+        float absmax = fabsf(value);
+        #pragma unroll
+        for (int delta = 16; delta > 0; delta >>= 1)
+            absmax = fmaxf(
+                absmax,
+                __shfl_down_sync(0xffffffffu, absmax, delta));
+        if (lane == 0)
+            warp_max[route_slot][warp] = absmax;
+    }
+    independent_wg_sync<kIndependentTaskWGs>(independent_wg);
+
+    if (warp == 0) {
+        const int route_slot = lane >> 2;
+        const int source_warp = lane & 3;
+        float absmax = warp_max[route_slot][source_warp];
+        absmax = fmaxf(
+            absmax,
+            __shfl_down_sync(0xffffffffu, absmax, 2, 4));
+        absmax = fmaxf(
+            absmax,
+            __shfl_down_sync(0xffffffffu, absmax, 1, 4));
+        if (source_warp == 0) {
+            const int route = __ldg(
+                sorted_ids + mblock * kRoutesPerMblock + route_slot);
+            const float base_scale =
+                fmaxf(absmax, 1.0e-30f) * (1.0f / 448.0f);
+            group_scale[route_slot] = base_scale;
+            if (static_cast<unsigned>(route)
+                    < static_cast<unsigned>(routes)) {
+                float output_scale = base_scale;
+                if constexpr (kW2FoldGlobalScale) {
+                    const int expert = __ldg(topk_ids + route);
+                    output_scale *= __ldg(g2 + expert);
+                }
+                if constexpr (kW2MblockScale) {
+                    const int sorted_position =
+                        __ldg(route_to_sorted + route);
+                    const int sorted_mblock = sorted_position >> 3;
+                    const int sorted_slot = sorted_position & 7;
+                    activation_scale[
+                        (sorted_mblock * kGroupsPerRoute
+                         + activation_group) * kRoutesPerMblock
+                        + sorted_slot] = output_scale;
+                } else {
+                    activation_scale[
+                        route * kGroupsPerRoute + activation_group] =
+                        output_scale;
+                }
+            }
+        }
+    }
+    independent_wg_sync<kIndependentTaskWGs>(independent_wg);
+
+    #pragma unroll 1
+    for (int route_slot = 0; route_slot < kRoutesPerMblock;
+         ++route_slot) {
+        const int route = __ldg(
+            sorted_ids + mblock * kRoutesPerMblock + route_slot);
+        if (static_cast<unsigned>(route)
+                < static_cast<unsigned>(routes)) {
+            const int sorted_position =
+                (kW2SortedAct || kW2MblockScale)
+                ? __ldg(route_to_sorted + route) : route;
+            const int quantized_row =
+                kW2SortedAct ? sorted_position : route;
+            const float value = __bfloat162float(
+                activation[route * kIntermediate + column]);
+            qactivation[
+                quantized_row * kIntermediate + column] =
+                __nv_fp8_e4m3(value / group_scale[route_slot]).__x;
+        }
+    }
     independent_wg_sync<kIndependentTaskWGs>(independent_wg);
 }
 
@@ -6436,25 +6556,11 @@ void tp4_megamoe_single_launch_kernel(
                 const int mblock = task / kActivationGroupsPerRoute;
                 const int activation_group =
                     task - mblock * kActivationGroupsPerRoute;
-                #pragma unroll
-                for (int route_slot = 0; route_slot < kTok;
-                     ++route_slot) {
-                    const int route = __ldg(
-                        sorted_ids + mblock * kTok + route_slot);
-                    if (static_cast<unsigned>(route)
-                            < static_cast<unsigned>(routes)) {
-                        single_launch_wg_dag_activation_task<SplitK>(
-                            partials, activation, qactivation,
-                            activation_scale, route_to_sorted,
-                            topk_ids, g2, routes,
-                            route * kActivationGroupsPerRoute
-                                + activation_group,
-                            independent_wg);
-                    } else {
-                        independent_wg_sync<kIndependentTaskWGs>(
-                            independent_wg);
-                    }
-                }
+                single_launch_wg_dag_activation_task<SplitK>(
+                    partials, activation, qactivation,
+                    activation_scale, sorted_ids, route_to_sorted,
+                    topk_ids, g2, routes, mblock,
+                    activation_group, independent_wg);
                 if (wg_lane == 0) {
                     const int done = atomic_add_acq_rel_gpu_i32(
                         activation_groups_done + mblock, 1) + 1;

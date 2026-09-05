@@ -10575,3 +10575,36 @@ maximum rank latency of a full CUDA-Graph replay.
   `results/iter425_static_activation_wg_m128_ncu_details_20260905.log`;
   binary report `results/iter425_static_activation_wg_m128_compute_full.ncu-rep`
   remains outside git due to size.
+
+## Iteration 426 — select Hopper-style eight-row activation epilogue
+
+- Date: 2026-09-05
+- Design: follow the Hopper `megamoe_nvfp4_dev_m` L1 epilogue at tile
+  granularity.  One activation WG consumes all eight sorted rows of an
+  `(mblock, activation_group)`, performs one shared maxima publication and
+  one scale publication, then quantizes all rows before release-publishing
+  W2 readiness.  This replaces roughly 25 named barriers per group with four.
+- Trade-off: reload at most 2 KiB of just-written BF16 activation per group to
+  avoid retaining eight gate/up pairs across barriers.  Two/four-row chunks
+  and per-WG shared activation staging remain fallbacks only if registers,
+  spills, correctness or timing reject the primary design.
+- Evidence/design:
+  `docs/plans/2026-09-05-warpgroup-interleaved-w13-w2-design.md`.
+
+## Iteration 427 — batched activation epilogue JIT/resource gate
+
+- Date: 2026-09-05
+- Change: replace eight sequential per-row activation helpers with one BM8
+  activation-group helper.  All 128 lanes compute/store eight BF16 rows,
+  warp 0 performs eight independent width-4 maxima reductions, then all lanes
+  reload and FP8-quantize the rows before one terminal named barrier.
+- Verification: Python and CUDA JIT compilation PASS.  M8 split-K4 and M128
+  split-K2 both remain at 64 registers/thread and zero declared local bytes.
+  Stack falls 48→32 bytes; static shared grows only 4,096→5,120 bytes, with
+  dynamic shared unchanged at 147,456 bytes.  Total explicit shared is
+  152,576 bytes, preserving one 1024-thread CTA per H20 SM.
+- Decision: resource gate PASS and materially better than Iteration 422's
+  caller frame.  Commit the exact buildable source, then require TP-disabled
+  bitwise all-route correctness at M8/M128 before any performance claim.
+- Evidence:
+  `results/iter427_batched_activation_epilogue_jit_resource_20260905.log`.
