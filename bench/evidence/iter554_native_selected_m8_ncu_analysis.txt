@@ -1,0 +1,33 @@
+Iteration 554 selected-tail M8 NCU comparison
+
+                         Iter536 barrier-only   Iter553 selected tails
+duration_us                    89.38                    85.73
+elapsed_cycles               162193                   153377
+sm_frequency_ghz               1.81                     1.78
+memory_TBps                     2.16                     2.25
+dram_pct                       44.91                    46.88
+l2_pct                         59.00                    61.34
+compute_pct                    44.07                    46.65
+eligible_warps_per_sched        0.89                     0.95
+no_eligible_pct                55.22                    53.29
+executed_instructions       22170541                 22138730
+branch_instructions           551201                   535566
+theoretical_global_L2_sectors 200705                   160622
+registers                         80                       80
+dynamic_smem_KiB               102.4                    102.4
+achieved_occupancy_pct         37.49                    37.48
+local_spill_requests               0                        0
+
+Selected current source-correlated samples:
+- long scoreboard: cutlass barrier.h:424 = 696
+- long scoreboard: barrier.cuh:31 = 80
+- long scoreboard: scheduler mega_moe.cuh:384 = 47
+- barrier: combine-loop/tail attribution = 191
+- barrier: cleanup/tail attribution = 189
+- barrier: utils convergence = 114
+- barrier: post-body drain = 98
+- barrier: L1 readiness publication = 83
+
+The prior body:540 route atomic cluster (81 long-scoreboard samples) is absent.
+The 5.44% cycle reduction is frequency-independent and agrees with the paired
+cold-L2 graph result.  Next: local-only phase timestamps; no new route tuning.

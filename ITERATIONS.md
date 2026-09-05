@@ -13258,3 +13258,33 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `results/iter553_native_selected_m8_profile.ncu-rep`,
   `bench/results/iter553_native_selected_m8_ncu_capture_20260905.log`, and
   `bench/evidence/iter553_native_selected_m8_ncu_capture.txt`.
+
+## Iteration 554 — selected-tail NCU confirms real cycle and traffic removal
+
+- **Source:** read-only import of committed Iteration-553 and Iteration-536
+  reports; no CUDA launch or source mutation in the measurement comparison.
+- **Top-level change:** local M8 duration `89.38 -> 85.73 us`; elapsed cycles
+  `162,193 -> 153,377` (**-5.44%**) despite an adverse SM clock change
+  `1.81 -> 1.78 GHz`.  Memory throughput rises `2.16 -> 2.25 TB/s`, DRAM/L2
+  peak utilization `44.91/59.00 -> 46.88/61.34%`, compute throughput
+  `44.07 -> 46.65%`, eligible warps/scheduler `0.89 -> 0.95`, and no-eligible
+  cycles fall `55.22 -> 53.29%`.  Registers, shared memory, occupancy and
+  spills remain `80`, `102.4 KiB`, `37.5%`, and zero.
+- **Traffic/instruction evidence:** executed instructions change only
+  `22,170,541 -> 22,138,730` (-0.14%), while theoretical global L2 sectors
+  fall `200,705 -> 160,622` (-19.97%) and branch instructions fall
+  `551,201 -> 535,566`.  The old route-atomic long-scoreboard row (81 samples)
+  disappears, directly validating the intended route-counter mechanism.
+- **Remaining stalls:** long scoreboard is now led by transaction-barrier
+  waits (`barrier.h:424`, 696 samples) plus grid publication polling
+  (`barrier.cuh:31`, 80).  Barrier sampling remains at the combine tail
+  (191), dispatch cleanup/tail (189), generic schedule/helper convergence
+  (114), post-body drain (98), and L1 output readiness publication (83).
+- **Interpretation/decision:** the selected route/combine work is a measured
+  structural improvement, but the remaining formal gap cannot be closed by
+  another route micro-optimization.  Add a default-off, local-only globaltimer
+  diagnostic to locate W13-last, W2-last, all-GEMM and combine critical-path
+  timestamps before changing BN256 or the interleaved scheduler.  IKET was
+  considered per its instrumentation workflow but its device header is absent
+  from the container, so use self-contained stamps without adding a dependency.
+- **Evidence:** `bench/evidence/iter554_native_selected_m8_ncu_analysis.txt`.
