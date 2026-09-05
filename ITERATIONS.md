@@ -14257,3 +14257,22 @@ maximum rank latency of a full CUDA-Graph replay.
   fresh resource/correctness gate, followed by the same M64/M128 cold-L2
   bracket used to reject activation-only balancing.
 - Evidence: `evidence/iter620_balanced_w2_workers_static_gate.md`.
+## Iteration 621 — W2-only balance resource and exact-compute gate
+
+- Configuration: H20 GPU1, TP4 M128/split-K2 compute-only, selected production
+  bundle plus `V4_SINGLE_LAUNCH_BALANCED_W2_WORKERS=1`; legacy all-phase and
+  activation-only balance flags resolve false.  The launch follows the
+  excluded 256 MiB L2 clear and seeds all packed barriers at generation
+  `2^22-1`.
+- Build/resources: extension `v4tp_05e8202bb68fd087b718_v178mspec` builds and
+  loads.  M128 split-K2/4 remain `REG56 STACK32 SHARED2048 LOCAL0`; M64
+  split-K2/4 remain `REG64 STACK32 SHARED2048 LOCAL0`.  Thus selected physical
+  CTA residency and spill behavior are unchanged.
+- Correctness: PASS bitwise against the independently launched same-source
+  local route output (`cosine=1`, `rel_l2=0`, finite), with 1,992 padded rows.
+  All four packed barrier words wrap to zero.  TP collective is intentionally
+  disabled only for this local gate.
+- Decision: the resource/state-machine gate passes.  Advance to a bracketed
+  TP4 M64/M128 distributed cold-L2 screen with embedded P2P two-shot enabled.
+- Evidence: `evidence/iter621_balanced_w2_workers_m128_gate.md` and
+  `bench/results/iter621_balanced_w2_workers_m128_gate_20260905.log`.
