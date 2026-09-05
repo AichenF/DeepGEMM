@@ -1557,7 +1557,7 @@ static constexpr int kSingleLaunchNvlsBlocks =
 static constexpr int kSingleLaunchGroupCtas =
     K_SINGLE_LAUNCH_GROUP_CTAS;
 
-#if K_SINGLE_LAUNCH_78CTA_SMID_MAP || K_SINGLE_LAUNCH_SM_STRIPED_TASKS
+#if K_SINGLE_LAUNCH_78CTA_SMID_MAP
 // Iteration 398's real 624x128 production-kernel placement on the 78-SM
 // H20.  A 78x1024 CTA uses its physical SM ID and independent-WG index to
 // recover the exact eight logical worker streams that were resident on the
@@ -1653,27 +1653,25 @@ __device__ __forceinline__ int h20_selected_logical_worker(
 }
 #endif
 
+#endif
+
 #if K_SINGLE_LAUNCH_SM_STRIPED_TASKS
-// The selected 624-block grid is a single eight-CTA/SM resident wave, but
-// block IDs are irregularly distributed across physical SMs.  Recover each
-// block's local slot from the measured production mapping, then enumerate
-// logical tasks as slot-major x SM.  Every partial final wave is therefore
-// spread across SMs without reducing the 624-worker full-wave concurrency.
-__device__ __forceinline__ int h20_sm_striped_logical_worker(int cta) {
+// The resident grid guarantees exactly eight simultaneously live CTAs per
+// H20 SM.  Assign those CTAs replay-local slots with one eight-way per-SM
+// atomic chain, then enumerate tasks slot-major x SM.  Each completed launch
+// advances a counter by exactly eight, so low three bits form the next
+// replay's 0..7 permutation without a reset or another kernel.
+__device__ __forceinline__ int h20_sm_striped_logical_worker(
+        int32_t* __restrict__ per_sm_counters) {
     uint32_t smid;
     asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
-    int local_slot = -1;
-    #pragma unroll
-    for (int slot = 0; slot < 8; ++slot) {
-        if (static_cast<int>(
-                kH20LogicalWorkerBySm[static_cast<int>(smid)][slot]) == cta)
-            local_slot = slot;
-    }
-    if (local_slot < 0)
-        asm volatile("trap;");
-    return local_slot * 78 + static_cast<int>(smid);
+    const uint32_t arrival = atomicAdd(
+        reinterpret_cast<uint32_t*>(per_sm_counters)
+            + static_cast<int>(smid),
+        1u);
+    return static_cast<int>(arrival & 7u) * 78
+        + static_cast<int>(smid);
 }
-#endif
 #endif
 
 #if K_MIN_BLOCKS_PER_SM > 0
@@ -6321,7 +6319,7 @@ void tp4_megamoe_single_launch_kernel(
     }
     if constexpr (kSingleLaunchSmStripedTasks) {
         if (threadIdx.x == 0)
-            sm_striped_worker = h20_sm_striped_logical_worker(cta);
+            sm_striped_worker = h20_sm_striped_logical_worker(scheduler);
     }
     single_launch_grid_barrier(barrier_state, 0, ctas);
     if constexpr (kSingleLaunchW2BulkReduceCombine) {
@@ -9683,6 +9681,7 @@ void run_tp4_megamoe_single_launch(
             : (kSingleLaunchW13CompletionAct
                || kSingleLaunchW13ActTailPipe)
                 ? 4LL * expert_ids.numel()
+            : kSingleLaunchSmStripedTasks ? kSingleLaunchH20Sms
             : kSingleLaunchTailOverlap ? kSingleLaunchTailStateWords : 0;
     TORCH_CHECK(barrier_state.scalar_type() == torch::kInt32
                     && barrier_state.is_cuda()

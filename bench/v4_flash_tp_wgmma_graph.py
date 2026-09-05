@@ -346,6 +346,8 @@ class CapturedCase:
                 or kernel.SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
             )
             else 78
+            if kernel.SINGLE_LAUNCH_SM_STRIPED_TASKS
+            else 78
             if kernel.SINGLE_LAUNCH_TAIL_OVERLAP
             else 0
         )

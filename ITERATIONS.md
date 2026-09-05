@@ -12582,3 +12582,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Runtime: FAIL at the intentional placement trap before a correctness record. At least one block no longer resides on the SM recorded by Iteration 398's older instrumented binary, so hard-coding that 78x8 table is not a safe production mechanism.
 - Decision: do not weaken the trap or benchmark an invalid permutation. Replace the stale table dependency with replay-stable runtime per-SM slot assignment, or reject if its one-time launch overhead exceeds the tail benefit. No latency conclusion.
 - Evidence: `results/iter519_sm_striped_jit_resource_placement_m8_20260905.log`.
+## Iteration 520 — replace stale SM map with runtime per-SM slot assignment
+
+- Date: 2026-09-05
+- Change: remove the SM-striped path's dependency on Iteration 398's compile-specific CTA placement. Lane 0 of each resident CTA performs one atomic increment on its physical SM's counter and uses the old value modulo eight as a unique replay-local slot; worker ordinal is `slot*78+smid` for all three flat phases.
+- Replay invariant: exactly eight resident CTAs reach the existing whole-grid barrier on every SM, so every completed graph replay advances each counter by eight. Modulo-eight slots remain a complete 0..7 permutation across 32-bit wrap without a reset node.
+- State: allocate 78 persistent int32 counters only for this default-off experiment; there are no per-task atomics or additional grid barriers.
+- Static gate: local Python bytecode compilation passes for the kernel and both graph fixtures; preprocessor nesting and host scheduler sizing were inspected.
+- Decision: rebuild, verify resource usage and M8/M128 exact output, then time only if both pass.
