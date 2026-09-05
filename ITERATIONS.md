@@ -13967,3 +13967,34 @@ maximum rank latency of a full CUDA-Graph replay.
   correctness gate, followed by the final cold-L2 comparison.  The single
   bundle remains an exact rollback path for diagnosis.
 - Evidence: `evidence/iter609_complete_selected_bundle_defaults.md`.
+## Iteration 610 — complete default bundle passes TP4/TP8 runtime gate
+
+- Configuration: production graph benchmark launched with only
+  `V4_SINGLE_LAUNCH_TP4=1`; bundle plus all six component overrides were
+  explicitly unset.  TP4 used physical GPUs 0,5,6,7 and TP8 used all eight
+  H20 GPUs.  Inputs were caller-provided FP8-E4M3 plus group-128 scales and
+  MXFP4 weights; random DeepSeek-V4-Flash top-k6 routes were prepared outside
+  the timed graph.
+- Default-resolution result: PASS.  Both runs report compact bundle=true,
+  release-grid-arrival=true, assume-valid-GEMM-tasks=true, compact W13 ABI,
+  dynamic route shared memory and M128 bound9.  No component was supplied on
+  the command line.
+- Protocol: CUDA Graph, 2 warmup replays and 1 outer x 5 timed replays per M;
+  a separate 256 MiB Triton clear immediately precedes every replay and is
+  excluded from CUDA events.  This is a runtime/correctness gate, not the
+  final low-noise performance result.
+- TP4 median ms for M=8/16/32/64/128:
+  `0.075808 / 0.125216 / 0.198976 / 0.281984 / 0.346560`;
+  geometric mean `0.179157792` ms.  Every shape is finite, passes the
+  all-reduce check, and has cosine >=0.9999955955 and rel-L2 <=0.00296801.
+  M<=32 uses embedded multicast push; M>=64 uses embedded P2P two-shot.
+- TP8 median ms for M=8/16/32/64/128:
+  `0.054496 / 0.078880 / 0.121888 / 0.169664 / 0.219072`;
+  geometric mean `0.114259891` ms.  Every shape is finite, passes the
+  all-reduce check, and has cosine >=0.9999919587 and rel-L2 <=0.00401036.
+  M<=16 uses embedded multicast push; M>=32 uses embedded NVLS pull.
+- Decision: PASS the default-entry TP4/TP8 correctness and liveness gate.
+  Proceed to a long, balanced, cold-L2 comparison against exact Humming
+  MXFP4+CARv2 and the stronger same-source multi-kernel control.  Do not use
+  the five-sample medians as final speedup evidence.
+- Evidence: `evidence/iter610_complete_bundle_tp4_tp8_runtime_gate.md`.
