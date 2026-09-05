@@ -9502,3 +9502,28 @@ maximum rank latency of a full CUDA-Graph replay.
   `PYTHONPATH`.
 - Evidence:
   `results/iter384_78cta_8wg_compute_m8_m128_20260905.log`.
+
+## Iteration 385 — 78-CTA/eight-independent-WG compute launch correctness
+
+- Date: 2026-09-05
+- Configuration: unchanged Iteration 382 prototype, exactly 78 physical
+  1024-thread CTAs requested, eight private 128-thread WGMMA task groups per
+  CTA, schedule 0, TP collective disabled.  M8 uses split-K4 and M128 uses
+  split-K2.  Inputs are caller-provided FP8-E4M3 `qx`/FP32 group-128 scales;
+  no external X quantization is present.
+- Protocol: H20 GPU0, random routes, seed 20260904.  For each endpoint the
+  script first ran one launch, then ran a second launch after a separate
+  excluded 256 MiB L2 clear.  The independent multi-kernel local path
+  supplied the expected BF16 route rows.
+- Result: PASS bitwise at both endpoints.  M8 reports cosine
+  `0.9999999999999999`, relative L2 `0`, finite output, 360 padded rows, and
+  all four packed barrier words at 2048.  M128 reports cosine `1.0`, relative
+  L2 `0`, finite output, 1,944 padded rows, and the same clean barrier
+  generations.  Neither watchdog timed out, proving the 8 named-barrier
+  groups and one-CTA/SM whole-grid barriers execute without deadlock for
+  these route pools.
+- Decision: pass the compute correctness/runtime-residency gate.  Next run a
+  same-process TP4 cold-L2 comparison at M8/M128 with the embedded multicast
+  one-shot and P2P two-shot collectives before spending an all-M window.
+- Evidence:
+  `results/iter385_78cta_8wg_compute_m8_m128_20260905.log`.
