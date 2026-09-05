@@ -34,6 +34,9 @@ NATIVE_RS_K128_BATCH = (
 NATIVE_TWO_CTA_PER_SM = (
     os.environ.get("V4_NATIVE_TWO_CTA_PER_SM", "0") == "1"
 )
+NATIVE_SKIP_CLEANUP_GRID_SYNC = (
+    os.environ.get("V4_NATIVE_SKIP_CLEANUP_GRID_SYNC", "0") == "1"
+)
 if NATIVE_TWO_CTA_PER_SM and not NATIVE_REGISTER_DEQUANT:
     raise ValueError(
         "V4_NATIVE_TWO_CTA_PER_SM requires V4_NATIVE_REGISTER_DEQUANT=1"
@@ -331,6 +334,9 @@ _CUDA = r"""
 #endif
 #ifndef K_NATIVE_TWO_CTA_PER_SM
 #define K_NATIVE_TWO_CTA_PER_SM 0
+#endif
+#ifndef K_NATIVE_SKIP_CLEANUP_GRID_SYNC
+#define K_NATIVE_SKIP_CLEANUP_GRID_SYNC 0
 #endif
 
 using namespace deep_gemm;
@@ -896,6 +902,7 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_REGISTER_DEQUANT))
         + str(int(NATIVE_RS_K128_BATCH))
         + str(int(NATIVE_TWO_CTA_PER_SM))
+        + str(int(NATIVE_SKIP_CLEANUP_GRID_SYNC))
     ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
@@ -903,6 +910,7 @@ _ext = load_inline(
         f"v4tp_native_megamoe_rd{int(NATIVE_REGISTER_DEQUANT)}_"
         f"kb{int(NATIVE_RS_K128_BATCH)}_"
         f"cta2{int(NATIVE_TWO_CTA_PER_SM)}_"
+        f"scg{int(NATIVE_SKIP_CLEANUP_GRID_SYNC)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
@@ -920,6 +928,10 @@ _ext = load_inline(
         f"-DK_NATIVE_REGISTER_DEQUANT={int(NATIVE_REGISTER_DEQUANT)}",
         f"-DK_NATIVE_RS_K128_BATCH={int(NATIVE_RS_K128_BATCH)}",
         f"-DK_NATIVE_TWO_CTA_PER_SM={int(NATIVE_TWO_CTA_PER_SM)}",
+        (
+            "-DK_NATIVE_SKIP_CLEANUP_GRID_SYNC="
+            f"{int(NATIVE_SKIP_CLEANUP_GRID_SYNC)}"
+        ),
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",
     ],

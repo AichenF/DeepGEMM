@@ -694,8 +694,15 @@
         // dispatch/epilogue rendezvous above.
         if (warp_idx == 0) {
             cleanup_workspace();
-            comm::grid_sync<kNumSMs, kDispatchGridSyncIndex>(
-                workspace, sm_idx, thread_idx, [=]() { __syncwarp(); });
+            // The TP wrapper has a stronger all-thread/all-CTA drain after
+            // the body, once the final combine TMA store is complete.  The
+            // original Hopper EP body needs an after-cleanup NVLink barrier;
+            // TP-local does not.  Allow the redundant local rendezvous to be
+            // removed while keeping the conservative default available.
+            if constexpr (!K_NATIVE_SKIP_CLEANUP_GRID_SYNC) {
+                comm::grid_sync<kNumSMs, kDispatchGridSyncIndex>(
+                    workspace, sm_idx, thread_idx, [=]() { __syncwarp(); });
+            }
         }
     } else if (warp_idx == kNumDispatchWarps) {
         // =====================================================================

@@ -11244,3 +11244,35 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/evidence/iter455_native_two_cta_m128_ncu_details.txt` and
   `bench/evidence/iter455_native_two_cta_m128_ncu_analysis.txt`.
+
+## Iteration 456 — redundant cleanup grid-sync is off the critical path
+
+- **Hypothesis/change:** the original Hopper EP body needs an after-cleanup
+  cross-rank barrier, while this TP wrapper already performs a stronger
+  all-thread/all-CTA drain after the final combine TMA store and before the TP
+  collective.  Add opt-in `V4_NATIVE_SKIP_CLEANUP_GRID_SYNC=1` to skip only
+  the earlier warp-0 local grid rendezvous.  Workspace cleanup itself and the
+  final grid drain remain unchanged.  Benchmark metadata now records all
+  native Hopper flags and no longer mislabels the candidate as one CTA/SM.
+- **Protocol:** TP4 GPUs 0-3, random M={8,128}, same-process selected
+  multi-kernel + SGLang CustomAllReduceV2 control versus the Hopper-native
+  two-CTA candidate.  Two balanced batches x 10 independently cold-L2,
+  rank-max CUDA-Graph samples per arm, three warmups, excluded 256 MiB clear
+  before every replay, caller-provided FP8-E4M3 X plus FP32 group-128 scales.
+- **Correctness:** **PASS** at both shapes and through repeated graph replay.
+  Final cosine/relative-L2 are unchanged at
+  `0.9993737802/0.0353911190` for M8 and
+  `0.9993696394/0.0355026359` for M128.  Embedded communication versus the
+  candidate-local NCCL oracle also remains within the accepted envelope.
+- **Cold-L2 result (multi / candidate median):** M8
+  `0.073904/0.113648 ms` (`1.5378x` slower), M128
+  `0.301840/0.395072 ms` (`1.3089x` slower).  Relative to Iteration 453's
+  candidate medians, the changes are only `+0.016 us` and `+0.016 us`
+  (`+0.014%/+0.004%`).
+- **Interpretation/decision:** **reject as zero benefit** and leave the flag
+  default-off.  The line-695 source samples represent early dispatch warps
+  waiting for the real CTA tail, not latency that can be removed.  Focus next
+  on the packed MXFP4 exponent/LUT/RS-WGMMA dependency cluster rather than
+  weakening more Hopper synchronization.
+- **Evidence:**
+  `bench/evidence/iter456_native_skip_cleanup_sync_tp4_cold_screen.txt`.

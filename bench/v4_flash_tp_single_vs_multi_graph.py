@@ -190,6 +190,23 @@ def main() -> None:
                         and os.environ.get("V4_NATIVE_REGISTER_DEQUANT", "0")
                         == "1"
                     ),
+                    "native_rs_k128_batch": bool(
+                        use_native
+                        and os.environ.get("V4_NATIVE_RS_K128_BATCH", "0")
+                        == "1"
+                    ),
+                    "native_two_cta_per_sm": bool(
+                        use_native
+                        and os.environ.get("V4_NATIVE_TWO_CTA_PER_SM", "0")
+                        == "1"
+                    ),
+                    "native_skip_cleanup_grid_sync": bool(
+                        use_native
+                        and os.environ.get(
+                            "V4_NATIVE_SKIP_CLEANUP_GRID_SYNC", "0"
+                        )
+                        == "1"
+                    ),
                     "single_launch_interleaved": (
                         kernel.SINGLE_LAUNCH_INTERLEAVED
                     ),
@@ -355,7 +372,7 @@ def main() -> None:
                     ),
                     "control": "selected multi-kernel path from the same source",
                     "candidate": (
-                        "native one-CTA-per-SM MegaMoE kernel"
+                        "native Hopper MegaMoE kernel"
                         if use_native
                         else "TP-specialized MegaMoE single kernel"
                     ),
