@@ -9587,3 +9587,19 @@ maximum rank latency of a full CUDA-Graph replay.
   attribute the loss to all-reduce.
 - Evidence:
   `results/iter387_78cta_8wg_phase_m8_m128_20260905.log`.
+
+## Iteration 388 — 78-CTA M128 NCU launcher rejection
+
+- Date: 2026-09-05
+- Intended profile: unchanged Iteration 382 78-CTA/eight-WG M128
+  compute-only kernel with selected scheduler, occupancy, warp-state,
+  instruction, memory, and speed-of-light sections.
+- Result: NCU rejected the command before starting Python because the target
+  was supplied as a script path rather than an executable interpreter:
+  `The target application is not an executable binary`.  No import, GPU
+  kernel, counter pass, or performance evidence was produced.
+- Decision: launcher-only failure.  Keep source unchanged and repeat with
+  `/usr/bin/python3` (resolved container interpreter) explicitly preceding
+  the benchmark script.
+- Evidence:
+  `results/iter388_78cta_8wg_m128_ncu_20260905.log`.
