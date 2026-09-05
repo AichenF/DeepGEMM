@@ -1,0 +1,9 @@
+Iteration 536 retained native M8 NCU capture (2026-09-05)
+
+- Physical GPU: H20 GPU1
+- Candidate: selected TP-local barrier fast path, generic TMA route pull
+- NCU: kernel replay, cache-control all, clock-control none, one target launch
+- Sections: SpeedOfLight, MemoryWorkloadAnalysis, SchedulerStats,
+  WarpStateStats, Occupancy, LaunchStats, InstructionStats, SourceCounters
+- Result: PASS, 21 passes, synchronized profile-only exit
+- Report: results/iter536_native_tp_local_barrier_m8_profile.ncu-rep

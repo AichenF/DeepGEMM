@@ -1,0 +1,10 @@
+==WARNING== Note: Running with unmodified GPU clocks. If not controlled otherwise, profiling results may be inconsistent.
+==PROF== Connected to process 597600 (/usr/bin/python3.12)
+==PROF== Profiling "v4_flash_tp4_native_megamoe_impl": 0%....50%....100% - 21 passes
+==PROF== Connected to process 597674 (/usr/bin/python3.12)
+==PROF== Connected to process 597676 (/usr/bin/python3.12)
+NATIVE_LOCAL_PROFILE_ONLY {"m": 8, "synchronized": true}
+==PROF== Disconnected from process 597600
+==PROF== Disconnected from process 597674
+==PROF== Disconnected from process 597676
+==PROF== Report: /lustre/raplab/client/xutingz/fac/DeepGEMM_tp/results/iter536_native_tp_local_barrier_m8_profile.ncu-rep

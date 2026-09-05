@@ -12892,3 +12892,21 @@ maximum rank latency of a full CUDA-Graph replay.
   path or return to the faster flat kernel's weight issue structure.
 - **Evidence:**
   `bench/results/iter535_native_tp_local_rank_tp4_screen_20260905.log`.
+## Iteration 536 — capture retained TP-local-barrier native M8 profile
+
+- **Purpose:** after the barrier win and two rejected route micro-optimizations,
+  re-profile the retained native default instead of extrapolating from the
+  older EP-barrier Iteration-465 report.
+- **Protocol:** physical H20 GPU1, local M8, caller-provided FP8 X/scales,
+  normalized/register-dequant/K128/two-CTA native configuration, selected
+  TP-local barrier fast path, generic TMA route pull, and TP communication
+  disabled.  Nsight Compute kernel replay targeted exactly one business
+  kernel, used cache control `all`, unmodified clocks, source import and the
+  same eight section groups as the prior native profiles.
+- **Result:** **PASS capture.**  All 21 replay passes completed and the
+  synchronized profile-only marker printed.  The report is committed before
+  importing metrics; no bottleneck conclusion is made in this iteration.
+- **Evidence:**
+  `results/iter536_native_tp_local_barrier_m8_profile.ncu-rep`,
+  `bench/results/iter536_native_tp_local_barrier_m8_ncu_capture_20260905.log`,
+  and `bench/evidence/iter536_native_tp_local_barrier_m8_ncu_capture.txt`.
