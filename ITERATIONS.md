@@ -13099,3 +13099,28 @@ maximum rank latency of a full CUDA-Graph replay.
   keep both flags default-off until that completes.
 - **Evidence:**
   `bench/results/iter545_native_tp_local_route_combine_tp4_screen_20260905.log`.
+
+## Iteration 546 — long A/B confirms combined TP-local tail win
+
+- **Protocol:** unchanged same-process TP4 A/B on physical GPUs 0/5/6/7;
+  random M8/M128, four balanced whole-batch AB/BA rounds x fifty rank-max
+  samples, five alternating warmups, CUDA Graph, and a separate excluded
+  256 MiB L2 clear immediately before every replay.  This yields 200 cold-L2
+  samples per arm and endpoint.
+- **Correctness:** **PASS bitwise** again at both endpoints across all ranks:
+  relative L2 `0.0`, zero BF16 mismatches, cosine `1.0`, all finite.
+- **Cold-L2 result (barrier-only / route+parallel-combine median):** M8
+  `0.095712 -> 0.091312 ms`, **4.60% lower / 1.0482x**; M128
+  `0.412448 -> 0.394112 ms`, **4.45% lower / 1.0465x**.  Endpoint geometric
+  mean improves `0.198686 -> 0.189703 ms`, **4.52% lower / 1.0474x**.
+- **Stability:** M8 is unequivocal: all four candidate batch medians
+  (`0.091072–0.091696 ms`) beat every control batch
+  (`0.095344–0.096032 ms`).  M128 still tracks shared-system drift and its
+  first paired batch is adverse, but the following three are favorable and
+  the 200-sample pooled difference is 18.34 us.
+- **Decision:** retain both TP-local transformations as one selected native
+  configuration; the combination clears the 3% gate in both endpoints and
+  geometric mean.  Make both defaults in a separately validated change, then
+  run all M values against the authoritative multi-kernel baseline.
+- **Evidence:**
+  `bench/results/iter546_native_tp_local_route_combine_tp4_long_20260905.log`.
