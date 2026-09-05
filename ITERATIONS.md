@@ -9967,3 +9967,30 @@ maximum rank latency of a full CUDA-Graph replay.
   shared memory) before another endpoint screen.
 - Evidence:
   `results/iter402_78cta_smid_map_m128_ncu_details_20260905.log`.
+
+## Iteration 403 — local-spill SASS localization
+
+- Date: 2026-09-05
+- Method: resolve the exact current mapped and unmapped JIT shared objects,
+  use `cuobjdump --dump-resource-usage`, isolate the M128 split-K2 monolithic
+  function from `--dump-sass`, and enumerate every `LDL/STL` instruction.
+  No source change or timed GPU run occurred.
+- Result: both current-source variants compile to 64 registers/thread,
+  48-byte stack frames, zero declared local arrays and the same eight local
+  instruction sites.  The sites include three 32-bit stack accesses at
+  `[R1+0x20]`, two 128-bit stack stores at `[R1]`/`[R1+0x10]`, and three
+  64-bit local loads.  Iteration 390's pre-mapping binary had a 32-byte stack
+  and NCU observed zero local spilling requests.
+- Interpretation: the 33,600 requests are not caused specifically by reading
+  the 1.25-KiB constant LUT; even `SMID_MAP=0` inherits them.  They were
+  introduced by the common per-WG caller-loop rewrite, whose divergent
+  logical-worker/induction state stays live across the enormous inlined
+  route-GEMM body and expands the stack frame from 32 to 48 bytes.
+- Decision: restore the original unmapped caller loop byte-for-byte.  For the
+  mapped specialization, use CTA-uniform 624-task waves and compute the
+  mapped effective worker inside `route_gemm_task` and
+  `reduce_swiglu_quant_task`, where it replaces the existing effective index
+  rather than adding cross-inline caller state.  Use the existing mblock
+  validity guard for incomplete final waves.
+- Evidence:
+  `results/iter403_78cta_smid_map_local_sass_20260905.log`.
