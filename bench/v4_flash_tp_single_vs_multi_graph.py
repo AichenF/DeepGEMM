@@ -237,6 +237,18 @@ def main() -> None:
                         native_kernel
                         and native_kernel.NATIVE_SINGLE_L1_WARMUP_WAVE
                     ),
+                    "native_tp_local_barrier_fastpath": bool(
+                        native_kernel
+                        and native_kernel.NATIVE_TP_LOCAL_BARRIER_FASTPATH
+                    ),
+                    "native_tp_local_route_build": bool(
+                        native_kernel
+                        and native_kernel.NATIVE_TP_LOCAL_ROUTE_BUILD
+                    ),
+                    "native_tp_local_parallel_combine_chunks": bool(
+                        native_kernel
+                        and native_kernel.NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS
+                    ),
                     "single_launch_interleaved": (
                         kernel.SINGLE_LAUNCH_INTERLEAVED
                     ),

@@ -13158,3 +13158,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Decision:** default correctness gate passes.  Proceed to the all-M cold-L2
   baseline comparison.
 - **Evidence:** `bench/evidence/iter548_native_combined_defaults_local.txt`.
+
+## Iteration 549 — expose selected TP-local defaults in formal benchmark
+
+- **Change:** the authoritative native-versus-multi CUDA Graph harness now
+  prints the resolved local barrier, route-build and parallel-combine flags in
+  `SINGLE_MULTI_ENV`.  This prevents an all-M result from being attributed to
+  a configuration that cannot be reconstructed from its log.
+- **Static result:** harness AST parsing and unique metadata-key audit
+  **PASS**.  No GPU benchmark was launched.
+- **Evidence:** `bench/evidence/iter549_native_formal_metadata_static.txt`.

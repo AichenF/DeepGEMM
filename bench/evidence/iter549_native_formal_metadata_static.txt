@@ -1,0 +1,9 @@
+Iteration 549 formal benchmark metadata static audit
+
+AST_PASS bench/v4_flash_tp_single_vs_multi_graph.py
+native_tp_local_barrier_fastpath=True
+native_tp_local_route_build=True
+native_tp_local_parallel_combine_chunks=True
+STATIC_METADATA_AUDIT_PASS
+
+No GPU correctness or timing is claimed here.
