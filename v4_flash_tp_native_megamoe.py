@@ -58,6 +58,9 @@ NATIVE_SINGLE_L1_WARMUP_WAVE = (
 NATIVE_DUAL_ACTIVE_DISPATCH = (
     os.environ.get("V4_NATIVE_DUAL_ACTIVE_DISPATCH", "0") == "1"
 )
+NATIVE_TP_LOCAL_BARRIER_FASTPATH = (
+    os.environ.get("V4_NATIVE_TP_LOCAL_BARRIER_FASTPATH", "0") == "1"
+)
 if NATIVE_TWO_CTA_PER_SM and not NATIVE_REGISTER_DEQUANT:
     raise ValueError(
         "V4_NATIVE_TWO_CTA_PER_SM requires V4_NATIVE_REGISTER_DEQUANT=1"
@@ -541,6 +544,9 @@ _CUDA = r"""
 #endif
 #ifndef K_NATIVE_DUAL_ACTIVE_DISPATCH
 #define K_NATIVE_DUAL_ACTIVE_DISPATCH 0
+#endif
+#ifndef K_NATIVE_TP_LOCAL_BARRIER_FASTPATH
+#define K_NATIVE_TP_LOCAL_BARRIER_FASTPATH 0
 #endif
 
 using namespace deep_gemm;
@@ -1225,6 +1231,7 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_TILE_WEIGHT_SCALE_TMA))
         + str(int(NATIVE_SINGLE_L1_WARMUP_WAVE))
         + str(int(NATIVE_DUAL_ACTIVE_DISPATCH))
+        + str(int(NATIVE_TP_LOCAL_BARRIER_FASTPATH))
     ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
@@ -1240,6 +1247,7 @@ _ext = load_inline(
         f"twt{int(NATIVE_TILE_WEIGHT_SCALE_TMA)}_"
         f"l1w1{int(NATIVE_SINGLE_L1_WARMUP_WAVE)}_"
         f"dad{int(NATIVE_DUAL_ACTIVE_DISPATCH)}_"
+        f"tlb{int(NATIVE_TP_LOCAL_BARRIER_FASTPATH)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
@@ -1282,6 +1290,10 @@ _ext = load_inline(
         (
             "-DK_NATIVE_DUAL_ACTIVE_DISPATCH="
             f"{int(NATIVE_DUAL_ACTIVE_DISPATCH)}"
+        ),
+        (
+            "-DK_NATIVE_TP_LOCAL_BARRIER_FASTPATH="
+            f"{int(NATIVE_TP_LOCAL_BARRIER_FASTPATH)}"
         ),
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",

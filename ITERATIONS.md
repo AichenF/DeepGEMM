@@ -12698,3 +12698,23 @@ maximum rank latency of a full CUDA-Graph replay.
   persistent W13/W2 pipeline.
 - **Evidence:**
   `bench/results/iter526_native_dual_dispatch_tp4_smoke_20260905.log`.
+## Iteration 527 — wire TP-local rank-1 barrier fast path
+
+- **Hypothesis/change:** the inherited EP barrier at route publication sends a
+  system-scope NVLink signal to rank 0 even though `kNumRanks=1`; the W2-to-
+  combine barrier additionally performs two whole-grid rendezvous around the
+  same self-signal.  Add default-off
+  `V4_NATIVE_TP_LOCAL_BARRIER_FASTPATH=1`: replace the first operation with
+  the same single local grid publication, and replace the second with one
+  local grid publication before ordered k6 reduction.  Math, route layout,
+  output order, cleanup and the real final TP all-reduce are unchanged.
+- **Harness:** extend the same-process native variant driver with
+  `--experiment tp_local_barriers`, explicitly forcing the selected control
+  off and candidate on under distinct JIT identities.
+- **Test:** local Python bytecode compilation plus an exact wiring audit of
+  the environment flag, CUDA macro, both body sites, JIT hash/name/cflag and
+  A/B metadata.
+- **Result:** **PASS static gate.**  No CUDA build, correctness or latency is
+  claimed yet.
+- **Evidence:**
+  `bench/evidence/iter527_native_tp_local_barriers_static.txt`.
