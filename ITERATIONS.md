@@ -11993,3 +11993,30 @@ maximum rank latency of a full CUDA-Graph replay.
   20-sample endpoint cold-L2 screen.  Keep the candidate default-off.
 - **Evidence:**
   `bench/evidence/iter484_tile_tma_tp4_endpoint_graph_smoke.txt`.
+
+## Iteration 485 — one-transaction tile TMA gives a small endpoint gain
+
+- **Protocol:** unchanged tile-TMA candidate versus selected multi-kernel
+  control, same TP4 process on physical H20 GPUs 0–3, random M8/M128, two
+  balanced batches x ten rank-max samples per arm and M, three warmups, CUDA
+  Graph, and the excluded 256 MiB L2 clear before every independently timed
+  replay.  This matches the retained Iteration-460 80-byte-native screen.
+- **Correctness:** **PASS** with the established endpoint metrics and every
+  rank finite.
+- **Cold-L2 result (multi / tile-native median):** M8
+  `0.071824/0.103728 ms`, tile native `1.44420x` slower; M128
+  `0.306160/0.375600 ms`, tile native `1.22681x` slower.  Endpoint geometric
+  means are `0.148289/0.197383 ms`.
+- **Comparison to retained 80-byte native (Iteration 460):** M8 improves
+  `0.104160 -> 0.103728 ms` (`0.41%`), M128 improves
+  `0.380128 -> 0.375600 ms` (`1.19%`), and endpoint geometric mean improves
+  `0.198983 -> 0.197383 ms` (`0.80%`).  Normalizing through each run's paired
+  multi control improves candidate/control geometric ratio from `1.343748x`
+  to `1.331073x`, about `0.95%`.
+- **Interpretation/decision:** one contiguous TMA removes the rejected split
+  path's transaction penalty and both endpoints move in the desired direction,
+  but the gain is below the known percent-level noise envelope.  Retain the
+  candidate default-off and require a longer confirmation window before
+  selection; do not run a five-M formal verdict yet.
+- **Evidence:**
+  `bench/evidence/iter485_tile_tma_tp4_endpoint_cold_screen.txt`.

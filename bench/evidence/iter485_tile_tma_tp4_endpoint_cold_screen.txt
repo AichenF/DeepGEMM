@@ -1,0 +1,32 @@
+ITERATION 485 — one-transaction tile TMA endpoint cold-L2 screen
+
+Protocol:
+  TP4 GPUs 0,1,2,3; random M=8,128
+  V4_NATIVE_TILE_WEIGHT_SCALE_TMA=1
+  same-process selected multi-kernel control
+  CUDA Graph; outer=2; replays=10; warmups=3; rank-max
+  independent excluded 256 MiB L2 clear before every replay
+
+M8:
+  multi min/median/max=0.0708160028/0.0718240030/0.0967999995 ms
+  tile min/median/max=0.1028160006/0.1037280001/0.1235200018 ms
+  tile/multi=1.4441968663
+
+M128:
+  multi min/median/max=0.3050239980/0.3061600029/0.3217920065 ms
+  tile min/median/max=0.3745599985/0.3756000102/0.3831680119 ms
+  tile/multi=1.2268095327
+
+Endpoint geometric means:
+  multi=0.1482890319 ms
+  tile=0.1973834793 ms
+  tile/multi=1.3310726812
+
+Versus retained Iteration-460 80-byte native:
+  M8 0.1041600034 -> 0.1037280001 ms (-0.41%)
+  M128 0.3801280111 -> 0.3756000102 ms (-1.19%)
+  endpoint GM 0.1989827503 -> 0.1973834793 ms (-0.80%)
+  control-normalized ratio improvement=about 0.95%
+
+Verdict: promising but below robust selection magnitude.  Retain default-off
+and confirm over a longer balanced cold-L2 window.
