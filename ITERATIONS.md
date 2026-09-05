@@ -13768,3 +13768,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Decision: keep TP8 support. The requested TP4 claim remains reproduced at every M, while the stronger same-source multi-kernel control remains the optimization target from Iteration 575.
 - Raw log: `bench/results/iter589_tp4_single_vs_exact_humming_post_tp8_cold_long_20260905.log`.
 - Evidence: `bench/evidence/iter589_tp4_humming_regression_post_tp8.txt`.
+
+## Iteration 590 — isolate the terminal TP4 P2P tail behind a compile-time call boundary (2026-09-05)
+
+- Hypothesis/change: the selected M64/M128 flat kernel inlines the complete k6 combine plus CARv2-style P2P two-shot tail into the same entry that owns W13/W2. Move only that already-terminal helper behind an opt-in `__noinline__` boundary while keeping route preparation, W13, activation/requant and W2 inline. A single call after the phase-3 barrier may shorten main-kernel live ranges without disrupting the cold-weight GEMM scheduler.
+- Isolation: added default-off `V4_SINGLE_LAUNCH_P2P_NOINLINE=1`; it is valid only with the existing P2P two-shot path and participates in the JIT cache key. The algorithm, symmetric-memory layout, CTA mapping, public FP8/MXFP4 inputs and launch count are unchanged.
+- Static result: **PASS.** `python3 -m py_compile v4_flash_tp_wgmma.py` exited 0 with no diagnostics.
+- Qualification: no CUDA compilation or timing has occurred. This candidate advances only to a ptxas resource gate; require a material main-entry register reduction, ideally to at most 56 registers/thread for 9 CTA/SM, before spending a TP4 benchmark run.
+- Evidence: `bench/evidence/iter590_tp4_p2p_noinline_static.txt`.

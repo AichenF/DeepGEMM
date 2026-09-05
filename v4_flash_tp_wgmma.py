@@ -908,6 +908,9 @@ if K6_NVLS_PULL_BLOCKS not in (1, 2, 4, 8, 16, 32, 64):
 SINGLE_LAUNCH_P2P_TWO_SHOT = (
     os.environ.get("V4_SINGLE_LAUNCH_P2P_TWO_SHOT", "1") == "1"
 )
+SINGLE_LAUNCH_P2P_NOINLINE = (
+    os.environ.get("V4_SINGLE_LAUNCH_P2P_NOINLINE", "0") == "1"
+)
 SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS = int(
     os.environ.get("V4_SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS", "64")
 )
@@ -917,6 +920,10 @@ if SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS not in (16, 32, 64):
     )
 if SINGLE_LAUNCH_P2P_TWO_SHOT and SINGLE_LAUNCH_SCHEDULE != 0:
     raise ValueError("V4_SINGLE_LAUNCH_P2P_TWO_SHOT requires schedule 0")
+if SINGLE_LAUNCH_P2P_NOINLINE and not SINGLE_LAUNCH_P2P_TWO_SHOT:
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_P2P_NOINLINE requires the TP4 P2P two-shot tail"
+    )
 SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP", "0") == "1"
 )
@@ -5737,8 +5744,14 @@ __device__ __noinline__ void fused_k6_nvls_pull_tp8_task(
         uint8_t* __restrict__ sem_mc,
         int linear_block_idx, int linear_grid_dim);
 
+#if K_SINGLE_LAUNCH_P2P_NOINLINE
+#define V4_TP4_P2P_INLINE __noinline__
+#else
+#define V4_TP4_P2P_INLINE __forceinline__
+#endif
+
 template <int Threads, int Blocks, int Tokens, bool LocalSumFp32 = false>
-__device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
+__device__ V4_TP4_P2P_INLINE void fused_k6_p2p_twoshot_tp4_task(
         const __nv_bfloat16* __restrict__ route_input,
         const float* __restrict__ topk_weights,
         __nv_bfloat16* __restrict__ symm_input,
@@ -8463,7 +8476,7 @@ __device__ __forceinline__ void multimem_red_add_release_u32(
 // rank's reduce-scatter quarter, so its per-block semaphore publication is
 // sufficient: no additional whole-grid barrier is needed between the two.
 template <int Threads, int Blocks, int Tokens, bool LocalSumFp32>
-__device__ __forceinline__ void fused_k6_p2p_twoshot_tp4_task(
+__device__ V4_TP4_P2P_INLINE void fused_k6_p2p_twoshot_tp4_task(
         const __nv_bfloat16* __restrict__ route_input,
         const float* __restrict__ topk_weights,
         __nv_bfloat16* __restrict__ symm_input,
@@ -11187,6 +11200,7 @@ _EXTENSION_CONFIG = (
           f"slgc{SINGLE_LAUNCH_GROUP_CTAS}_"
           f"slnvls{K6_NVLS_PULL_BLOCKS}_"
           f"slp2p2{int(SINGLE_LAUNCH_P2P_TWO_SHOT)}_"
+          f"slp2pni{int(SINGLE_LAUNCH_P2P_NOINLINE)}_"
           f"slp2pb{SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS}_"
           f"mb{MIN_BLOCKS_PER_SM}_w13lb10{int(W13_LAUNCH_BOUND_10)}_"
           f"w13msc{int(W13_MAX_SMEM_CARVEOUT)}_v178mspec")
@@ -11477,6 +11491,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_P2P_TWO_SHOT="
             f"{int(SINGLE_LAUNCH_P2P_TWO_SHOT)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_P2P_NOINLINE="
+            f"{int(SINGLE_LAUNCH_P2P_NOINLINE)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS="

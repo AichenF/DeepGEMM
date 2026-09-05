@@ -1,0 +1,18 @@
+Iteration 590: TP4 terminal P2P two-shot noinline static gate
+Date: 2026-09-05
+
+Change:
+- Added default-off V4_SINGLE_LAUNCH_P2P_NOINLINE.
+- The flag changes only fused_k6_p2p_twoshot_tp4_task from forceinline to
+  noinline and is included in the extension cache key and nvcc definitions.
+- It requires the selected P2P two-shot collective path.
+
+Command:
+  python3 -m py_compile v4_flash_tp_wgmma.py
+
+Exit code: 0
+Diagnostics: none
+
+Conclusion:
+Static Python/source wiring passes. No runtime or performance claim is made;
+the next gate is linked-cubin resource usage for M128.
