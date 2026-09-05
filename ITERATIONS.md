@@ -13838,3 +13838,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Interpretation: storing grid-constant descriptor pointers in the CTA-shared compact record is valid across all threads and repeated task iterations; the new call boundary does not alter arithmetic or barrier generations.
 - Decision: advance to a short, replay-interleaved TP4 M128 cold-L2 A/B against the selected inline single-launch path. Require exact output equivalence and a stable gain before a longer/all-M run.
 - Evidence: `bench/evidence/iter598_tp4_w13_compact_m128_correctness.txt`.
+## Iteration 599 — M128 compact-ABI W13 short cold-L2 bracket
+
+- Hypothesis: outlining only the M128 W13 phase through a CTA-shared 104-byte argument record can lower the parent-kernel register footprint from 64 to 56 registers and admit 9 CTA/SM without paying back the gain in call/stack overhead.
+- Change under test: `V4_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI=1`, `V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE=1`, `V4_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM=1`, and `V4_SINGLE_LAUNCH_M128_BOUND9=1`; OFF keeps all four flags disabled. Both use release-grid-arrival and assume-valid GEMM tasks.
+- Protocol: TP4 on physical GPUs 0,5,6,7; M=128; random routing; CUDA graph; separate excluded 256 MiB L2 clear before every replay; replay-level interleaving; OFF_A -> ON_A -> ON_B -> OFF_B; 2 outer batches x 20 cold samples per implementation/window after 4 warmups. Every candidate is normalized by its same-window selected multi-kernel control.
+- Correctness: all four windows passed; candidate and control each had cosine_min=0.999995608996884, rel_l2_max=0.0029634544238714383, finite=true, allreduce_ok=true, padded_rows=1944.
+- Results (candidate/control): OFF_A 0.3434560001/0.2985279858 ms = 1.1504985007x; ON_A 0.3412960023/0.2983359993 ms = 1.1439987233x; ON_B 0.3422560096/0.2992639989 ms = 1.1436591467x; OFF_B 0.3441760093/0.2993279994 ms = 1.1498289837x.
+- Aggregate: mean normalized ratio OFF=1.1501637422x, ON=1.1438289350x; ON/OFF=0.99449226, a provisional 0.5508% normalized improvement. Direct candidate-window means improve from 0.3438160047 to 0.3417760059 ms (0.5933%); both ON windows beat both OFF windows.
+- Decision: promising but below 1%; retain behind the default-off flag and run a longer cold-L2 confirmation before selecting it. The one-kernel candidate remains about 14.38% slower than the same-source multi-kernel control at M128 in the ON windows.
+- Evidence: `evidence/iter599_compact_w13_m128_short_bracket.md` and `evidence/iter599_compact_w13_m128_short_bracket_results.txt`.
