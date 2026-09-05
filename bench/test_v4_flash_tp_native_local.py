@@ -58,9 +58,16 @@ def main() -> None:
         action="store_true",
         help="synchronize and exit immediately after the captured native launch",
     )
+    parser.add_argument(
+        "--phase-stamps",
+        action="store_true",
+        help="print local-body globaltimer stamps (requires V4_NATIVE_PHASE_STAMPS=1)",
+    )
     args = parser.parse_args()
     if args.m not in (8, 16, 32, 64, 128):
         parser.error("--m must be one of 8,16,32,64,128")
+    if args.phase_stamps and not native.NATIVE_PHASE_STAMPS:
+        parser.error("--phase-stamps requires V4_NATIVE_PHASE_STAMPS=1")
 
     torch.cuda.set_device(0)
     device = torch.device("cuda:0")
@@ -105,7 +112,7 @@ def main() -> None:
     output = torch.empty(
         (args.m, 4096), dtype=torch.bfloat16, device=device
     )
-    native.run_local(
+    phase_storage = native.run_local(
         workspace,
         native_w13,
         native_w2,
@@ -117,6 +124,49 @@ def main() -> None:
         args.m,
     )
     torch.cuda.synchronize()
+
+    if args.phase_stamps:
+        num_ctas = 156 if native.NATIVE_TWO_CTA_PER_SM else 78
+        stamps = phase_storage.view(torch.int64)[: 4 + 2 * num_ctas].cpu()
+        entry = int(stamps[0])
+        route = int(stamps[1])
+        all_gemm = int(stamps[2])
+        combine = int(stamps[3])
+        w13_stamps = stamps[4 : 4 + num_ctas]
+        w2_stamps = stamps[4 + num_ctas : 4 + 2 * num_ctas]
+        w13_nonzero = w13_stamps[w13_stamps != 0]
+        w2_nonzero = w2_stamps[w2_stamps != 0]
+        if not entry or not route or not all_gemm or not combine:
+            raise RuntimeError(f"missing phase boundary stamp: {stamps[:4].tolist()}")
+        if not w13_nonzero.numel() or not w2_nonzero.numel():
+            raise RuntimeError("missing per-CTA W13/W2 completion stamps")
+        w13_last = int(w13_nonzero.max())
+        w2_last = int(w2_nonzero.max())
+        if not (entry <= route <= all_gemm <= combine):
+            raise RuntimeError(
+                "phase boundary stamps are not monotonic: "
+                f"{[entry, route, all_gemm, combine]}"
+            )
+        to_us = lambda end: (end - entry) / 1000.0
+        print(
+            "NATIVE_PHASE_STAMPS "
+            + json.dumps(
+                {
+                    "m": args.m,
+                    "num_ctas": num_ctas,
+                    "route_publish_us": to_us(route),
+                    "w13_last_us": to_us(w13_last),
+                    "w2_last_us": to_us(w2_last),
+                    "all_gemm_us": to_us(all_gemm),
+                    "combine_only_us": (combine - all_gemm) / 1000.0,
+                    "local_body_us": to_us(combine),
+                    "w13_ctas": int(w13_nonzero.numel()),
+                    "w2_ctas": int(w2_nonzero.numel()),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
 
     # Nsight Compute kernel replay restores mutable workspace allocations to
     # their pre-launch contents after the final pass.  The detailed numerical

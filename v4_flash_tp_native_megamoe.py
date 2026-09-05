@@ -73,6 +73,7 @@ NATIVE_TP_LOCAL_ROUTE_BUILD = (
 NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS = (
     os.environ.get("V4_NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS", "1") == "1"
 )
+NATIVE_PHASE_STAMPS = os.environ.get("V4_NATIVE_PHASE_STAMPS", "0") == "1"
 if NATIVE_TP_LOCAL_DIRECT_COPY and not NATIVE_TP_LOCAL_DISPATCH_FASTPATH:
     raise ValueError(
         "V4_NATIVE_TP_LOCAL_DIRECT_COPY requires the TP-local dispatch fast path"
@@ -576,10 +577,24 @@ _CUDA = r"""
 #ifndef K_NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS
 #define K_NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS 0
 #endif
+#ifndef K_NATIVE_PHASE_STAMPS
+#define K_NATIVE_PHASE_STAMPS 0
+#endif
 
 using namespace deep_gemm;
 
 namespace deep_gemm {
+
+__device__ __forceinline__ uint64_t native_read_globaltimer() {
+    uint64_t value;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(value));
+    return value;
+}
+
+__device__ __forceinline__ void native_write_phase_stamp(
+        int* storage, const uint32_t index) {
+    reinterpret_cast<uint64_t*>(storage)[index] = native_read_globaltimer();
+}
 
 __device__ __forceinline__ uint2 native_load_mxfp4_lut(
         const uint32_t exponent, const uint2* smem_lut) {
@@ -894,6 +909,12 @@ v4_flash_tp4_native_megamoe_impl(
     ptx::tma_store_wait<0>();
     comm::grid_sync<kNumSMs, 2>(
         workspace, sm_idx, thread_idx, []() { __syncthreads(); });
+    if constexpr (K_NATIVE_PHASE_STAMPS) {
+        if (cumulative_local_expert_recv_stats != nullptr &&
+                sm_idx == 0 && thread_idx == 0) {
+            native_write_phase_stamp(cumulative_local_expert_recv_stats, 3);
+        }
+    }
     if (!enable_tp)
         return;
 
@@ -1152,6 +1173,17 @@ void run_native_tp4(
     }
     const auto stream = at::cuda::getCurrentCUDAStream();
     constexpr int kGrid = K_NATIVE_TWO_CTA_PER_SM ? 156 : 78;
+    int* native_phase_stamps = nullptr;
+    if constexpr (K_NATIVE_PHASE_STAMPS) {
+        if (!enable_tp) {
+            constexpr int64_t kPhaseStampInt32 = 2 * (4 + 2 * kGrid);
+            TORCH_CHECK(push_counter.numel() >= kPhaseStampInt32,
+                        "native phase stamps require at least ",
+                        kPhaseStampInt32, " int32 words");
+            native_phase_stamps =
+                reinterpret_cast<int*>(push_counter.data_ptr());
+        }
+    }
     cudaLaunchConfig_t launch_config{};
     launch_config.gridDim = dim3(kGrid);
     launch_config.blockDim = dim3(384);
@@ -1172,7 +1204,8 @@ void run_native_tp4(
     }
     const cudaError_t launch_result = cudaLaunchKernelEx(
         &launch_config, kernel,
-        local_output.data_ptr(), nullptr, static_cast<uint32_t>(tokens),
+        local_output.data_ptr(), native_phase_stamps,
+        static_cast<uint32_t>(tokens),
         sym_buffer,
         tensor_map_l1_acts, tensor_map_l1_acts_sf,
         tensor_map_l1_weights, tensor_map_l1_weight_scales,
@@ -1264,6 +1297,7 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_TP_LOCAL_DIRECT_COPY))
         + str(int(NATIVE_TP_LOCAL_ROUTE_BUILD))
         + str(int(NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS))
+        + str(int(NATIVE_PHASE_STAMPS))
     ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
@@ -1284,6 +1318,7 @@ _ext = load_inline(
         f"tlc{int(NATIVE_TP_LOCAL_DIRECT_COPY)}_"
         f"tlr{int(NATIVE_TP_LOCAL_ROUTE_BUILD)}_"
         f"tlp{int(NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS)}_"
+        f"pst{int(NATIVE_PHASE_STAMPS)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
@@ -1341,6 +1376,7 @@ _ext = load_inline(
             "-DK_NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS="
             f"{int(NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS)}"
         ),
+        f"-DK_NATIVE_PHASE_STAMPS={int(NATIVE_PHASE_STAMPS)}",
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",
     ],
@@ -1412,10 +1448,12 @@ def run_local(
     native_g2: torch.Tensor,
     local_output: torch.Tensor,
     tokens: int,
-) -> None:
+) -> torch.Tensor:
     """Diagnostic entry that executes the same body but skips the TP tail."""
     device = local_output.device
-    dummy_counter = torch.zeros((78,), dtype=torch.int32, device=device)
+    # In the default build this remains an ordinary unused local counter slab.
+    # The explicit phase-stamp build reinterprets its first 316 int64 entries.
+    dummy_counter = torch.zeros((640,), dtype=torch.int32, device=device)
     dummy_bytes = workspace.storage[:128]
     _ext.run_native_tp4(
         workspace.storage,
@@ -1447,3 +1485,4 @@ def run_local(
         512,
         False,
     )
+    return dummy_counter

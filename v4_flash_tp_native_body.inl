@@ -26,6 +26,13 @@
     const uint32_t warp_idx   = cutlass::canonical_warp_idx_sync();
     const uint32_t lane_idx   = ptx::get_lane_idx();
 
+    if constexpr (K_NATIVE_PHASE_STAMPS) {
+        if (cumulative_local_expert_recv_stats != nullptr &&
+                sm_idx == 0 && thread_idx == 0) {
+            native_write_phase_stamp(cumulative_local_expert_recv_stats, 0);
+        }
+    }
+
     if (warp_idx == 0 and cute::elect_one_sync()) {
         cute::prefetch_tma_descriptor(&tensor_map_l1_acts);
         cute::prefetch_tma_descriptor(&tensor_map_l1_acts_sf);
@@ -631,6 +638,14 @@
                         kNumDispatchThreads, kDispatchBarrierIdx);
                 },
                 false, true);
+        }
+
+        if constexpr (K_NATIVE_PHASE_STAMPS) {
+            if (cumulative_local_expert_recv_stats != nullptr &&
+                    sm_idx == 0 && thread_idx == 0) {
+                native_write_phase_stamp(
+                    cumulative_local_expert_recv_stats, 1);
+            }
         }
 
         // Sync with epilogue warps before pulling tokens
@@ -2127,6 +2142,16 @@
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 }
             }
+
+            if constexpr (K_NATIVE_PHASE_STAMPS) {
+                if (cumulative_local_expert_recv_stats != nullptr &&
+                        epilogue_thread_idx == 0) {
+                    const uint32_t phase_offset = kBlockIsL2 ? kNumSMs : 0;
+                    native_write_phase_stamp(
+                        cumulative_local_expert_recv_stats,
+                        4 + phase_offset + sm_idx);
+                }
+            }
         };
         if constexpr (kUseInterleavedScheduler)
             for_each_published_block(run_math_task);
@@ -2155,6 +2180,14 @@
                     ptx::sync_aligned(
                         kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 });
+        }
+
+        if constexpr (K_NATIVE_PHASE_STAMPS) {
+            if (cumulative_local_expert_recv_stats != nullptr &&
+                    sm_idx == 0 && epilogue_thread_idx == 0) {
+                native_write_phase_stamp(
+                    cumulative_local_expert_recv_stats, 2);
+            }
         }
 
         // Sync with dispatch (paired with dispatch's pre-cleanup sync) so that

@@ -13288,3 +13288,21 @@ maximum rank latency of a full CUDA-Graph replay.
   considered per its instrumentation workflow but its device header is absent
   from the container, so use self-contained stamps without adding a dependency.
 - **Evidence:** `bench/evidence/iter554_native_selected_m8_ncu_analysis.txt`.
+
+## Iteration 555 — add default-off local phase-stamp diagnostic
+
+- **Change:** add `V4_NATIVE_PHASE_STAMPS=1`, a compile-time diagnostic that
+  records `%globaltimer` at CTA0 entry, route publication, the last W13 and W2
+  task completed by every persistent CTA, the all-GEMM grid barrier, and the
+  post-combine TMA drain.  The storage reuses the otherwise-unused local
+  counter argument only when TP communication is disabled; TP launches pass a
+  null stamp pointer.  The default remains zero, so production and benchmark
+  cubins execute no stamp instructions.
+- **Harness:** `bench/test_v4_flash_tp_native_local.py --phase-stamps` decodes
+  the 316 int64 records, verifies boundary monotonicity/non-empty W13 and W2
+  populations, and reports stage deltas in microseconds.
+- **Static result:** **PASS.**  `python3 -m py_compile` succeeds for the native
+  launcher and diagnostic harness; all macro, hash/name/cflag, launch-pointer,
+  body-marker, and host-decode sites are present.  CUDA compilation and the
+  measured phase breakdown are intentionally deferred to the next iteration.
+- **Evidence:** `bench/evidence/iter555_native_phase_stamps_static.txt`.

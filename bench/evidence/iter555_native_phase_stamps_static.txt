@@ -1,0 +1,27 @@
+Iteration 555: default-off native phase-stamp static verification
+Date: 2026-09-05
+
+Files changed:
+- v4_flash_tp_native_megamoe.py
+- v4_flash_tp_native_body.inl
+- bench/test_v4_flash_tp_native_local.py
+
+Diagnostic contract:
+- V4_NATIVE_PHASE_STAMPS defaults to 0 and participates in the JIT source hash,
+  extension name, and CUDA compile definitions.
+- In local-only mode, the unused counter slab is reinterpreted as 316 uint64
+  records: four boundaries, 156 W13 CTA-last stamps, and 156 W2 CTA-last stamps.
+- TP-enabled launches keep the diagnostic pointer null.
+- Marker 0: CTA0 entry.
+- Marker 1: TP-local route-count publication barrier complete.
+- Marker 2: all W13/W2 task work and scatter complete.
+- Marker 3: combine TMA stores drained and post-body grid barrier complete.
+- Per-CTA task markers are overwritten only by epilogue thread zero after a
+  task's CTA-wide output/scatter completion barrier.
+
+Checks run:
+  python3 -m py_compile v4_flash_tp_native_megamoe.py \
+    bench/test_v4_flash_tp_native_local.py
+
+Result: PASS
+No GPU launch or timing measurement was performed in this iteration.
