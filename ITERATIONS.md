@@ -9994,3 +9994,35 @@ maximum rank latency of a full CUDA-Graph replay.
   validity guard for incomplete final waves.
 - Evidence:
   `results/iter403_78cta_smid_map_local_sass_20260905.log`.
+
+## Iteration 404 — move SMID lookup inside task bodies
+
+- Date: 2026-09-05
+- Change: restore the original caller-loop form for `SMID_MAP=0`.  For the
+  mapped build, make all 1,024 threads enumerate CTA-uniform 624-task waves
+  and compute `%smid`/WG logical-worker offsets inside `route_gemm_task` and
+  `reduce_swiglu_quant_task`.  Incomplete final waves use the existing GEMM
+  mblock guard plus a matching activation-group guard.  This removes
+  divergent per-WG induction state across the inlined WGMMA body while
+  preserving the Iteration 398 permutation.
+- Protocol: H20 GPU0, random routes, seed 20260904, release arrivals,
+  relaxed polling, phase stamps, TP collective disabled.  M8/M128 each ran
+  once and then once after an excluded 256 MiB L2 clear; the exact mapped
+  JIT object was inspected with `cuobjdump`.
+- Correctness: PASS bitwise at both endpoints (`rel_l2=0`, finite, cosine 1
+  within print precision), padded rows 360/1,944, and all packed barrier
+  generations clean at 2048.
+- Resource result: M128 stays at 64 registers/thread and 3,072 static shared
+  bytes, but its stack frame falls from 48 to 32 bytes and local SASS sites
+  fall from eight to five.  Thus the caller-liveness spill identified in
+  Iteration 403 is eliminated structurally.
+- Phase result (route/W13/requant/W2): M8
+  `2.624/47.200/3.648/26.368 us`; M128
+  `3.616/211.808/6.432/111.008 us`.  These single samples are 2.08/4.83 us
+  slower across W13+W2 than Iteration 399, plausibly from final-wave guards
+  or ordinary noise; resource improvement alone is not a selection signal.
+- Decision: run the full TP4 M8/M128 same-process cold-L2 paired screen.
+  Retain this implementation only if end-to-end medians improve; otherwise
+  restore Iteration 399 and pursue a guard-free mapped-tail formulation.
+- Evidence:
+  `results/iter404_78cta_internal_smid_map_correctness_resource_20260905.log`.
