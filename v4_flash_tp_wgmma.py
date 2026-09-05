@@ -3986,7 +3986,7 @@ __device__ __noinline__ void single_launch_wg_dag_w13_task(
 
 template <int SplitK>
 __device__ __noinline__ void single_launch_wg_dag_activation_task(
-        const float* __restrict__ partials,
+        float* __restrict__ partials,
         __nv_bfloat16* __restrict__ activation,
         uint8_t* __restrict__ qactivation,
         float* __restrict__ activation_scale,
@@ -4001,9 +4001,10 @@ __device__ __noinline__ void single_launch_wg_dag_activation_task(
     // The Hopper MegaMoE L1 epilogue quantizes a complete output tile before
     // publishing L2 readiness.  Do the same for this BM8 route block instead
     // of invoking the row helper eight times (three named barriers per row).
-    // Values are deliberately reloaded from the public BF16 activation
-    // workspace after scale reduction so eight gate/up pairs do not stay live
-    // across the barrier.
+    // Values are deliberately reloaded after scale reduction so eight
+    // gate/up pairs do not stay live across the barrier.  Fused activation
+    // quantization supplies a zero-sized public BF16 activation tensor, so
+    // reclaim the completed group's split-0 gate partial as scratch.
     constexpr int kIntermediate = 512;
     constexpr int kGroupsPerRoute = kIntermediate / 128;
     constexpr int kRoutesPerMblock = 8;
@@ -4044,7 +4045,10 @@ __device__ __noinline__ void single_launch_wg_dag_activation_task(
             const __nv_bfloat16 activation_bf16 =
                 __float2bfloat16(silu * up);
             value = __bfloat162float(activation_bf16);
-            activation[route * kIntermediate + column] = activation_bf16;
+            partials[route * kN + column] = value;
+            if (activation != nullptr)
+                activation[route * kIntermediate + column] =
+                    activation_bf16;
         }
 
         float absmax = fabsf(value);
@@ -4112,8 +4116,7 @@ __device__ __noinline__ void single_launch_wg_dag_activation_task(
                 ? __ldg(route_to_sorted + route) : route;
             const int quantized_row =
                 kW2SortedAct ? sorted_position : route;
-            const float value = __bfloat162float(
-                activation[route * kIntermediate + column]);
+            const float value = partials[route * kN + column];
             qactivation[
                 quantized_row * kIntermediate + column] =
                 __nv_fp8_e4m3(value / group_scale[route_slot]).__x;

@@ -1,0 +1,26 @@
+ITER430_PARTIAL_SCRATCH_REPAIR_JIT_RESOURCE
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+physical_gpu=1
+base_commit=5c3ed40
+candidate_flag=V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+root_cause_candidate=the default fused-quant path passes nullptr for its zero-sized public BF16 activation workspace; Iter427 unconditionally wrote/read that pointer
+repair=store the exact BF16-rounded float in the now-dead split-0 gate partial; guard optional public activation store; reload partial scratch for FP8 quantization
+python_compile=PASS
+jit_compile=PASS
+extension=v4tp_bc05d855d2d59fe099f9_v178mspec
+m8_split4.regs_per_thread=64
+m8_split4.stack_bytes=48
+m8_split4.static_shared_bytes=5120
+m8_split4.local_bytes=0
+m128_split2.regs_per_thread=64
+m128_split2.stack_bytes=32
+m128_split2.static_shared_bytes=5120
+m128_split2.local_bytes=0
+dynamic_shared_bytes=147456
+total_explicit_shared_bytes=152576
+resource_gate=PASS
+correctness=NOT_RETESTED
+decision=commit exact buildable repair before rerunning M8/M128 all-route correctness; do not time until illegal-access and bitwise gates both pass
+ITER430_PARTIAL_SCRATCH_REPAIR_JIT_RESOURCE_OK

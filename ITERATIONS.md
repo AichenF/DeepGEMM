@@ -10624,3 +10624,33 @@ maximum rank latency of a full CUDA-Graph replay.
   the invalid access; no timing is valid until bitwise M8/M128 passes again.
 - Evidence:
   `results/iter428_batched_activation_epilogue_m8_illegal_access_20260905.log`.
+
+## Iteration 429 — reclaim completed W13 partials as activation scratch
+
+- Date: 2026-09-05
+- Root cause/design repair: the default fused-quant case intentionally passes
+  `nullptr` for its zero-sized public BF16 activation workspace, whereas the
+  Iteration 427 helper unconditionally used that pointer as scratch.  Once a
+  W13 group flag is acquired, all `2 * SplitK` gate/up producers are complete
+  and the group's split-0 gate partial has no later consumer.  Reclaim that
+  slot for the exact BF16-rounded float, then reload it after scale reduction.
+- Safety: different activation groups own disjoint columns; W2 reads only the
+  FP8 activation and scales; the optional public BF16 activation store remains
+  guarded.  No new allocation or kernel launch is introduced.
+- Evidence/design:
+  `docs/plans/2026-09-05-warpgroup-interleaved-w13-w2-design.md`.
+
+## Iteration 430 — partial-scratch repair JIT/resource gate
+
+- Date: 2026-09-05
+- Change: implement Iteration 429's partial-slot scratch and restore the null
+  guard for the optional BF16 activation output.
+- Verification: Python and CUDA JIT compile PASS.  Both endpoint kernels stay
+  at 64 registers/thread, 5,120 static plus 147,456 dynamic shared bytes, and
+  zero declared local bytes.  M128 split-K2 retains a 32-byte stack; M8
+  split-K4 returns to 48 bytes, still preserving one CTA/SM.
+- Decision: resource gate PASS.  Commit the exact buildable repair and rerun
+  all-route M8/M128 correctness; no performance test is valid until the
+  illegal-access failure and bitwise result are both closed.
+- Evidence:
+  `results/iter430_partial_scratch_repair_jit_resource_20260905.log`.
