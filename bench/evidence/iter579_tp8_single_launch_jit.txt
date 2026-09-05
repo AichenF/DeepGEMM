@@ -1,0 +1,36 @@
+Iteration 579: TP8 CUDA JIT compilation gate
+Date: 2026-09-05
+Hardware: NVIDIA H20-3e, physical GPU 1
+
+Environment
+-----------
+CUDA_VISIBLE_DEVICES=1
+TORCH_CUDA_ARCH_LIST=9.0a
+MAX_JOBS=8
+V4_VERBOSE_BUILD=1
+V4_SINGLE_LAUNCH_TP4=1
+V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL=1
+V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS=1
+
+Operation
+---------
+Imported v4_flash_tp_wgmma, forcing torch load_inline to rebuild and load the
+new source containing all TP8 token/split-K specializations.
+
+Result
+------
+PASS: all three ninja steps completed (host compile, nvcc/ptxas, shared-object
+link), Python loaded the extension, and CUDA reported NVIDIA H20-3e.
+
+Extension
+---------
+name: v4tp_8686e885e9a4694f795f_v178mspec
+path: /tmp/torch_ext_v4_tp/v4tp_8686e885e9a4694f795f_v178mspec/v4tp_8686e885e9a4694f795f_v178mspec.so
+
+Diagnostics
+-----------
+ptxas emitted C7519 warpgroup-arrive injection and C7520 possible WGMMA
+serialization warnings for the TP8 specializations. These are performance
+warnings, not correctness or launch-resource failures. The build emitted no
+error and no register/local-memory totals, so a cubin resource audit remains
+mandatory before launch.

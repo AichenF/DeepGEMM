@@ -13678,3 +13678,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Qualification: this establishes Python/source wiring only. CUDA compilation, launch resources, TP8 numerical correctness, graph replay safety, and one-node verification remain unproven.
 - Decision: proceed to remote H20 JIT/resource gate, then an eight-rank all-M correctness run before any TP4 performance regression measurement.
 - Evidence: `bench/evidence/iter578_tp8_single_launch_static.txt`.
+## Iteration 579 — TP8 CUDA JIT compilation gate (2026-09-05)
+
+- Configuration: H20 physical GPU 1; SM90a build; selected flat one-launch flags plus release-arrival and assume-valid task fast paths; eight build workers; verbose JIT output.
+- Result: **PASS.** nvcc, ptxas, host link, extension load, and CUDA device discovery all completed successfully. The generated module is `v4tp_8686e885e9a4694f795f_v178mspec` at `/tmp/torch_ext_v4_tp/v4tp_8686e885e9a4694f795f_v178mspec/v4tp_8686e885e9a4694f795f_v178mspec.so`.
+- Compiler observation: ptxas emitted existing-style C7519/C7520 warnings about compiler-injected warpgroup arrival and possible WGMMA serialization in divergent paths, including TP8 specializations. There were no compile errors or resource-overflow diagnostics. Runtime occupancy is not yet proven because this gate imported rather than launched the kernel.
+- Decision: retain the implementation and inspect the linked cubin's TP8 kernel resource usage next; require <=64 registers/thread and no local-memory spill before attempting the 624-CTA persistent launch.
+- Evidence: `bench/evidence/iter579_tp8_single_launch_jit.txt`.
