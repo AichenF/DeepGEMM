@@ -14456,3 +14456,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Latency:** control `0.074048 / 0.075552 / 0.229952 ms` min/median/max; candidate `0.085952 / 0.087696 / 0.089888 ms`. Candidate is **16.07% slower** by median (`control/candidate = 0.861522×`), and loses all three batch medians.
 - **Decision:** reject 156×4 for small-M production use. Run one M128 endpoint screen only to determine whether reduced global-barrier participation helps the large-M regime; do not alter defaults.
 - **Evidence:** `evidence/iter632_156cta_4wg_tp4_m8_paired_cold.md`; raw log `bench/results/iter632_156cta_4wg_tp4_m8_paired_cold.log`.
+## Iteration 633 — 156 CTA × 4 WG TP4 M128 paired cold-L2 endpoint (reject topology)
+
+- **Protocol:** same exact-output, 150-sample/arm, per-replay alternating, rank-max TP4 cold-L2 CUDA-Graph comparison as Iteration 632, now at random-route M128.
+- **Correctness:** exact on all ranks; relative L2 `0.0`, max absolute difference `0.0`.
+- **Latency:** selected 624×128 control `0.343296 / 0.347712 / 0.467712 ms` min/median/max; 156×512 candidate `0.382720 / 0.399008 / 0.411648 ms`. Candidate is **14.75% slower** by median (`control/candidate = 0.871441×`) and loses all three batch medians.
+- **Conclusion:** there is no large-M crossover. Reducing grid-barrier participants 4× does not recover the cost of 512-thread CTA coupling and of dropping the production compact-W13/dynamic-route/M128-bound9 bundle. Reject 156×4 for every production M; keep it default-off as diagnostic code.
+- **Evidence:** `evidence/iter633_156cta_4wg_tp4_m128_paired_cold.md`; raw log `bench/results/iter633_156cta_4wg_tp4_m128_paired_cold.log`.
