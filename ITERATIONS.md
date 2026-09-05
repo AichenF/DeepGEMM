@@ -14770,3 +14770,26 @@ maximum rank latency of a full CUDA-Graph replay.
   0.12% noise-sized M128 gain and replay instability, so it is explicitly low
   priority and remains default-off unless separately approved.
 - **Evidence:** `evidence/iter645_multi_to_single_transfer_audit.md`.
+
+## Iteration 646 — same-source multi-kernel M128 cold-L2 stage profile
+
+- **Protocol:** H20 physical GPU1, one local TP4 rank, M128 random routes with
+  seed 20260902, prequantized FP8-E4M3 activation and MXFP4 weights.  The
+  selected same-source multi-kernel local pipeline ran in a CUDA Graph for
+  eight warmups and 100 samples.  Every complete replay received a separate
+  excluded 256 MiB L2 clear; dependent stages were not individually flushed.
+  Communication was omitted only to isolate compute scheduling.
+- **Stage min/median/max:** route alignment
+  `6.624/7.232/7.936 us`; W13 `185.984/187.584/190.080 us`;
+  activation/requant `7.904/8.096/9.088 us`; W2
+  `97.216/98.240/99.040 us`; local k6 reduction
+  `6.240/6.400/7.104 us`; complete local pipeline
+  `304.768/307.760/310.048 us`.
+- **Consistency:** stage medians sum to 307.552 us, only 0.208 us below the
+  independently timed total median.  W13+W2 are 285.824 us, 92.87% of local
+  pipeline time.
+- **Decision:** this closes only the multi side of the diagnostic.  Next
+  collect matching production one-kernel phase stamps on the same GPU and
+  route seed before attributing the structural gap.
+- **Evidence:** `bench/results/iter646_multi_m128_stage_cold.log` and
+  `evidence/iter646_multi_m128_stage_cold.md`.
