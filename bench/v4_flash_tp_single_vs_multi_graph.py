@@ -257,6 +257,9 @@ def main() -> None:
                     "single_launch_w2_bulk_reduce_routes": (
                         kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES
                     ),
+                    "single_launch_w2_producer_atomic_combine": (
+                        kernel.SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+                    ),
                     "single_launch_cooperative_grid": (
                         kernel.SINGLE_LAUNCH_COOPERATIVE_GRID
                     ),

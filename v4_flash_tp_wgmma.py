@@ -884,6 +884,14 @@ if (
 SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE", "0") == "1"
 )
+SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE", "0") == "1"
+)
+if (
+    SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+    and SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+):
+    raise ValueError("select only one W2 producer-side combine mechanism")
 SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES = int(
     os.environ.get("V4_SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES", "8")
 )
@@ -896,7 +904,10 @@ if (
     raise ValueError(
         "V4_SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES requires bulk combine"
     )
-if SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE and (
+if (
+    SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+    or SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+) and (
     SINGLE_LAUNCH_SCHEDULE != 0
     or WOUT != 128
     or not W2_ROUTE_OUTPUT
@@ -933,8 +944,8 @@ if SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE and (
     or WEIGHT_STAGES != 2
 ):
     raise ValueError(
-        "V4_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE requires the isolated "
-        "inline WOUT128 two-stage schedule-0 TP4 path"
+        "W2 producer-side combine requires the isolated inline WOUT128 "
+        "two-stage schedule-0 TP4 path"
     )
 if SINGLE_LAUNCH_DUAL_WG_PHASES and (
     not SINGLE_LAUNCH_P2P_TWO_SHOT
@@ -1170,6 +1181,8 @@ static constexpr bool kSingleLaunchW2BulkReduceCombine =
     K_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE;
 static constexpr int kSingleLaunchW2BulkReduceRoutes =
     K_SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES;
+static constexpr bool kSingleLaunchW2ProducerAtomicCombine =
+    K_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -1502,7 +1515,8 @@ template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool PublishW2Progress = false, bool DualWgW13 = false,
           bool PersistentState = false, int WgmmaHalf = -1,
           bool SharedPartial = false, int ForcedKUnroll = 0,
-          bool AssumeValidMblock = false, bool BulkReduceW2 = false>
+          bool AssumeValidMblock = false, bool BulkReduceW2 = false,
+          bool AtomicCombineW2 = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -1567,6 +1581,12 @@ __device__ __forceinline__ void route_gemm_task(
                       && !DualWgW13 && !PersistentState
                       && !kW2CoalescedStore),
                   "bulk W2 combine requires the flat single-WG N4096 path");
+    static_assert(!AtomicCombineW2
+                  || (!IsW13 && SplitK == 1 && N == 4096
+                      && kWout == 128 && LaunchNTiles == 0
+                      && !DualWgW13 && !PersistentState
+                      && !kW2CoalescedStore && !BulkReduceW2),
+                  "atomic W2 combine requires the flat single-WG N4096 path");
     static_assert(ForcedKUnroll == 0 || ForcedKUnroll == 1
                   || ForcedKUnroll == 2 || ForcedKUnroll == 4
                   || ForcedKUnroll == 8 || ForcedKUnroll == 16,
@@ -2543,6 +2563,38 @@ __device__ __forceinline__ void route_gemm_task(
                     (column_base + 1) * kBulkReducePitch + local_n1] =
                     __bfloat162float(__float2bfloat16(accum[group][3]))
                     * route_weight1;
+            } else if constexpr (AtomicCombineW2) {
+                // This is the proven scalar fallback for producer-side k6
+                // combine.  Match the selected route-output boundary by
+                // rounding every route value to BF16 before weighting it.
+                if (static_cast<unsigned>(route0)
+                        < static_cast<unsigned>(max_routes)) {
+                    const int token = route0 / kTopK;
+                    const float route_weight =
+                        __ldg(topk_weights + route0) * kRoutedScale;
+                    atomicAdd(
+                        output + static_cast<int64_t>(token) * N + output_n0,
+                        __bfloat162float(__float2bfloat16(accum[group][0]))
+                            * route_weight);
+                    atomicAdd(
+                        output + static_cast<int64_t>(token) * N + output_n1,
+                        __bfloat162float(__float2bfloat16(accum[group][2]))
+                            * route_weight);
+                }
+                if (static_cast<unsigned>(route1)
+                        < static_cast<unsigned>(max_routes)) {
+                    const int token = route1 / kTopK;
+                    const float route_weight =
+                        __ldg(topk_weights + route1) * kRoutedScale;
+                    atomicAdd(
+                        output + static_cast<int64_t>(token) * N + output_n0,
+                        __bfloat162float(__float2bfloat16(accum[group][1]))
+                            * route_weight);
+                    atomicAdd(
+                        output + static_cast<int64_t>(token) * N + output_n1,
+                        __bfloat162float(__float2bfloat16(accum[group][3]))
+                            * route_weight);
+                }
             } else if constexpr (kW2RouteOutput) {
                 if constexpr (kW2CoalescedStore) {
                     // Each warp owns 16 columns in each N64 accumulator
@@ -5192,7 +5244,8 @@ void tp4_megamoe_single_launch_kernel(
             scheduler[word] = 0;
     }
 
-    if constexpr (kSingleLaunchW2BulkReduceCombine) {
+    if constexpr (kSingleLaunchW2BulkReduceCombine
+                  || kSingleLaunchW2ProducerAtomicCombine) {
         auto* local_sum_zero = reinterpret_cast<uint4*>(down);
         constexpr int kLocalSumVecs = Tokens * 4096 / 4;
         for (int vec = cta * blockDim.x + threadIdx.x;
@@ -5202,7 +5255,8 @@ void tp4_megamoe_single_launch_kernel(
         // Proxy fences are thread-scoped.  Publish each writer lane's
         // generic zero stores before the grid barrier transfers completion
         // to the later shared-to-global async-reduce issuer.
-        asm volatile("fence.proxy.async.global;" ::: "memory");
+        if constexpr (kSingleLaunchW2BulkReduceCombine)
+            asm volatile("fence.proxy.async.global;" ::: "memory");
     }
     single_launch_route_task<kSingleLaunchThreads>(
         topk_ids, sorted_ids, expert_ids, num_tokens_padded,
@@ -6317,7 +6371,8 @@ void tp4_megamoe_single_launch_kernel(
                         (kSingleLaunchW2Unroll2Bound9 && Tokens == 128)
                             ? 2 : 0,
                         kSingleLaunchAssumeValidGemmTasks,
-                        kSingleLaunchW2BulkReduceCombine>(
+                        kSingleLaunchW2BulkReduceCombine,
+                        kSingleLaunchW2ProducerAtomicCombine>(
                         &w2_tma_weight, &w2_tma_weight_scale,
                         w2, s2, g2, qactivation, activation_scale,
                         sorted_ids, expert_ids, num_tokens_padded,
@@ -6470,7 +6525,8 @@ void tp4_megamoe_single_launch_kernel(
                         && cta < kTwoShotBlocks) {
                     fused_k6_p2p_twoshot_tp4_task<
                         kSingleLaunchThreads, kTwoShotBlocks, Tokens,
-                        kSingleLaunchW2BulkReduceCombine>(
+                        kSingleLaunchW2BulkReduceCombine
+                            || kSingleLaunchW2ProducerAtomicCombine>(
                         down, topk_weights, pull_input,
                         push0, push1, push2, push3,
                         pull_sem_local, rank, cta);
@@ -6487,7 +6543,8 @@ void tp4_megamoe_single_launch_kernel(
             if (cta < 78) {
                 fused_k6_push_ar_tp4_task<
                     kSingleLaunchThreads, true, false,
-                    kSingleLaunchW2BulkReduceCombine>(
+                    kSingleLaunchW2BulkReduceCombine
+                        || kSingleLaunchW2ProducerAtomicCombine>(
                     down, topk_weights, output, push_counter,
                     push0, push1, push2, push3, push_mc,
                     tokens, rank, push_stride, 0, 4096, cta, 78);
@@ -7781,7 +7838,8 @@ void launch_tp4_megamoe_single(
            ? kTok * kWout * static_cast<int>(sizeof(float)) : 0);
     TORCH_CHECK(output.size(0) == Tokens,
                 "single-launch token specialization mismatch");
-    if constexpr (kSingleLaunchW2BulkReduceCombine) {
+    if constexpr (kSingleLaunchW2BulkReduceCombine
+                  || kSingleLaunchW2ProducerAtomicCombine) {
         constexpr int64_t kLocalSumBytes =
             static_cast<int64_t>(Tokens) * 4096 * sizeof(float);
         TORCH_CHECK(
@@ -8859,6 +8917,7 @@ _EXTENSION_CONFIG = (
           f"slw2capc{int(SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT)}_"
           f"slw2brc{int(SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE)}_"
           f"slw2brr{SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES}_"
+          f"slw2pac{int(SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slts{int(SINGLE_LAUNCH_PHASE_STAMPS)}_"
@@ -9039,6 +9098,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES="
             f"{SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE="
+            f"{int(SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="

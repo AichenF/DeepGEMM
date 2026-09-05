@@ -9154,3 +9154,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Conclusion:** Cross-thread publication of generic destination initialization is not the root cause.  The full integration now differs from the exact standalone proof primarily by preceding TMA/WGMMA asynchronous operations and by compiler-generated instruction scheduling/control flow.  Before more protocol guesses, inspect the emitted SASS/PTX around the reduction and test the same bulk instruction after a minimal WGMMA/TMA sequence or move producer combination back to proven scalar atomics.
 - **Decision:** Reject writer-side fencing and keep the bulk experiment default-off.
 - **Artifact:** `bench/results/iter369_bulk_reduce_writer_proxy_fence_compute_m8_20260905.log`.
+
+## Iteration 370 — scalar producer-side combine correctness passes (2026-09-05)
+
+- **Hypothesis:** Use the already proven ordinary FP32 atomic path to eliminate the terminal six-route BF16 reread without relying on Hopper async bulk-reduce integration.
+- **Implementation:** Added isolated opt-in `V4_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE=1`, mutually exclusive with bulk combine.  The resident grid clears an aliased FP32 `M×4096` local sum before route alignment; every W2 producer rounds its route output to BF16, applies the unchanged route weight and 1.5 scaling, and issues return-value-free FP32 atomic additions directly into the token output.  The terminal communication helper consumes/quantizes this FP32 local sum while retaining the existing BF16 multicast/P2P wire protocol.  Public inputs remain FP8 activation + FP32 group-128 activation scale + MXFP4 weights.
+- **Setup:** Single rank/GPU 0, compute-only M8 random routes, seed 20260904, cold 256 MiB L2 clear for the profiled replay, no TP collective.  The independent reference sums the control's BF16 route outputs with the same weights/scaling.
+- **Correctness:** **PASS.**  Output was finite, cosine `0.9999999999999969`, relative L2 `8.50e-8`; the harness accepted the result.  All four packed grid-barrier count words were zero (`2048` encodes generation 2 with zero count after two runs).
+- **Conclusion:** Producer local-sum layout, zeroing, grid publication, BF16 numerical boundary, and scalar atomic accumulation are correct and forward-progress safe.  Advance to full TP4 correctness and cold-L2 performance; keep default-off until measured.
+- **Artifact:** `bench/results/iter370_atomic_producer_combine_compute_m8_20260905.log`.

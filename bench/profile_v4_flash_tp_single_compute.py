@@ -85,19 +85,26 @@ def main() -> None:
     assert reference.down is not None
     expected_down = reference.down.clone()
     expected_local_sum = None
-    if kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE:
+    producer_local_sum = (
+        kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+        or kernel.SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+    )
+    if producer_local_sum:
         routes = args.m * bench.TOP_K
         route_mask = torch.zeros(routes, dtype=torch.float32, device=device)
-        padded_rows = int(case.num_tokens_padded.item())
-        selected_routes = (
-            case.sorted_ids[:padded_rows]
-            .view(-1, 8)[:, : kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES]
-            .flatten()
-        )
-        selected_routes = selected_routes[
-            (selected_routes >= 0) & (selected_routes < routes)
-        ]
-        route_mask[selected_routes.long()] = 1.0
+        if kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE:
+            padded_rows = int(case.num_tokens_padded.item())
+            selected_routes = (
+                case.sorted_ids[:padded_rows]
+                .view(-1, 8)[:, : kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES]
+                .flatten()
+            )
+            selected_routes = selected_routes[
+                (selected_routes >= 0) & (selected_routes < routes)
+            ]
+            route_mask[selected_routes.long()] = 1.0
+        else:
+            route_mask.fill_(1.0)
         expected_local_sum = (
             expected_down.float()
             * topk_weights.float().flatten().unsqueeze(-1)
@@ -179,7 +186,7 @@ def main() -> None:
     torch.cuda.synchronize(device)
     torch.cuda.cudart().cudaProfilerStop()
 
-    if kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE:
+    if producer_local_sum:
         assert expected_local_sum is not None
         actual_local_sum = (
             case.down.view(torch.float32).flatten()[: args.m * bench.HIDDEN]
@@ -227,6 +234,9 @@ def main() -> None:
                     kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES
                     if kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
                     else None
+                ),
+                "producer_atomic_combine": (
+                    kernel.SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
                 ),
                 "packed_generation_wrap_requested": (
                     args.packed_generation_wrap

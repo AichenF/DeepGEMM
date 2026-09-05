@@ -854,7 +854,9 @@ class CapturedCase:
         self.fused_k6_push_active = True
         if kernel.SINGLE_LAUNCH_P2P_TWO_SHOT and self.m >= 64:
             self.fused_k6_ar_mode = (
-                "single_launch_p2p_two_shot_bulk_local_sum"
+                "single_launch_p2p_two_shot_atomic_local_sum"
+                if kernel.SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+                else "single_launch_p2p_two_shot_bulk_local_sum"
                 if kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
                 else "single_launch_p2p_two_shot_chunk_overlap"
                 if kernel.SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
@@ -874,7 +876,9 @@ class CapturedCase:
             self.graph_output = self.fused_pull_output
         else:
             self.fused_k6_ar_mode = (
-                "single_launch_multicast_push_bulk_local_sum"
+                "single_launch_multicast_push_atomic_local_sum"
+                if kernel.SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+                else "single_launch_multicast_push_bulk_local_sum"
                 if kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
                 else "single_launch_nvls_pull"
                 if self.m == 128
@@ -1326,6 +1330,9 @@ def main() -> None:
                     ),
                     "single_launch_w2_bulk_reduce_routes": (
                         kernel.SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES
+                    ),
+                    "single_launch_w2_producer_atomic_combine": (
+                        kernel.SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
                     ),
                     "single_launch_ctas_per_sm": (
                         kernel.SINGLE_LAUNCH_CTAS_PER_SM
