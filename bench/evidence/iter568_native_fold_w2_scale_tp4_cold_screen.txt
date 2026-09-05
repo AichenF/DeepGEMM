@@ -1,0 +1,35 @@
+Iteration 568 — native W2 global-scale folding, TP4 cold-L2 screen
+
+Date: 2026-09-05
+GPUs: physical 0,5,6,7 (TP4)
+Benchmark: same-process CUDA-graph A/B, random M=8,128, 2 outer batches × 20 replays, 5 warmup replays per arm
+Cache policy: independent excluded 256 MiB cold-L2 clear before every measured replay
+Experiment: fold_w2_scale only; selected communication tails unchanged
+Raw log: bench/results/iter568_native_fold_w2_scale_tp4_cold_screen_20260905.log
+
+Correctness
+- M=8: cosine=1, relative L2=0, mismatches=0, finite=true
+- M=128: cosine=1, relative L2=0, mismatches=0, finite=true
+
+M=8 (rank-max latency, ms)
+- candidate batch medians: 0.09153600037097931, 0.09132800251245499
+- candidate pooled: min 0.08953599631786346, median 0.09137600287795067, max 0.09964799880981445
+- control batch medians: 0.0923680029809475, 0.09187199920415878
+- control pooled: min 0.09030400216579437, median 0.09198400005698204, max 0.10972800105810165
+- candidate/control=0.9933901854816628; speedup=1.0066537948682595 (+0.665%)
+
+M=128 (rank-max latency, ms)
+- candidate batch medians: 0.36555199325084686, 0.3784160017967224
+- candidate pooled: min 0.36348798871040344, median 0.36641599237918854, max 0.40092799067497253
+- control batch medians: 0.3670240044593811, 0.37932799756526947
+- control pooled: min 0.36604800820350647, median 0.3779679983854294, max 0.38207998871803284
+- pooled candidate/control=0.9694365500370727; pooled speedup=1.031527024601825
+- caution: the pooled 3.15% figure is inflated by overlapping timing regimes. Paired batch improvements are 1.472 us (0.401%) and 0.912 us (0.240%).
+
+Endpoint geometric mean
+- control=0.18645913328400604 ms
+- candidate=0.18297985893034208 ms
+- nominal speedup=1.0190145209095853
+
+Decision
+- Promising but not selected. Both M=8 and both paired M=128 batches favor W2 folding, but the effect is small and the pooled M=128 statistic is misleading. Run a 4×50 confirmation before changing the default.

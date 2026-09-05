@@ -13579,3 +13579,15 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter567_native_fold_w13_scale_tp4_cold_screen_20260905.log`
   and `bench/evidence/iter567_native_fold_w13_scale_tp4_cold_screen.txt`.
+## Iteration 568 — W2 global-scale fold TP4 cold-L2 screen (promising, not selected)
+
+- Date: 2026-09-05
+- Change under test: `V4_NATIVE_FOLD_W2_GLOBAL_SCALE=1` only. W13 folding remained disabled; communication-tail selection was unchanged.
+- Method: TP4 on physical GPUs 0,5,6,7; same-process randomized CUDA-graph A/B; M={8,128}; 2 outer batches × 20 measured replays; 5 warmup replays; independent excluded 256 MiB cold-L2 clear before every replay; latency is rank max.
+- Correctness: bitwise identical at both M values (cosine 1, relative L2 0, zero mismatches, all finite).
+- M=8: control median 0.091984 ms, candidate median 0.091376 ms, nominal speedup 1.00665x (+0.665%). Both paired batches favored candidate.
+- M=128: pooled control median 0.377968 ms, candidate 0.366416 ms. Do **not** interpret the resulting 3.15% pooled gain literally: distributions span two timing regimes. Paired batch gains were only 1.472 us (0.401%) and 0.912 us (0.240%), though both favored candidate.
+- Endpoint geometric-mean latency: control 0.186459 ms, candidate 0.182980 ms, nominal 1.01901x.
+- Decision: promising, not selected. Require 4×50 cold-L2 confirmation because the expected effect is sub-percent and the M=128 pooled median is mixture-sensitive.
+- Evidence: `bench/evidence/iter568_native_fold_w2_scale_tp4_cold_screen.txt`
+- Raw log: `bench/results/iter568_native_fold_w2_scale_tp4_cold_screen_20260905.log`
