@@ -12073,3 +12073,33 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/evidence/iter487_native_layout_same_process_smoke.txt` and raw log
   `bench/results/iter487_native_layout_same_process_smoke_20260905.log`.
+
+## Iteration 488 — same-process long A/B rejects single-tile TMA
+
+- **Candidate/protocol:** unchanged committed Iteration-487 harness and exact
+  native kernels, physical H20 GPUs 0–3, TP4 random M8/M128, four balanced
+  whole-batch AB/BA rounds x fifty rank-max samples per layout and M, five
+  alternating warmups, CUDA Graph, and a separate excluded 256 MiB L2 clear
+  immediately before every replay.  Both layouts coexist in one process and
+  use identical seeded weights, activations, routes, CARv2 communicator and
+  clock/system regime.
+- **Correctness:** **PASS and bitwise identical** at both endpoints across all
+  TP ranks: minimum cosine `1.0`, maximum relative L2 `0.0`, zero BF16
+  mismatches and all outputs finite.
+- **Cold-L2 result (80-byte control / tile TMA median):** M8
+  `0.103680/0.103968 ms`, so tile is `0.28%` slower; M128
+  `0.388624/0.418688 ms`, so tile is `7.74%` slower.  Endpoint geometric
+  means are `0.200730/0.208639 ms`; tile is `3.94%` slower overall.
+- **Stability evidence:** the four M8 batch medians are tightly grouped at
+  `0.103536–0.103856 ms` for control and `0.103792–0.104080 ms` for tile.
+  At M128 every tile batch median exceeds the corresponding-range control
+  medians; control spans `0.381136–0.392976 ms`, while tile spans
+  `0.391472–0.446624 ms`.
+- **Decision:** **reject** single-tile TMA and leave
+  `V4_NATIVE_TILE_WEIGHT_SCALE_TMA=0`.  The earlier sub-percent apparent win
+  was not reproducible after eliminating cross-process drift.  Do not spend a
+  five-M formal run on this layout; return to a structural pipeline/scheduler
+  direction using the selected 80-byte path.
+- **Evidence:**
+  `bench/evidence/iter488_native_layout_same_process_long.txt` and raw log
+  `bench/results/iter488_native_layout_same_process_long_20260905.log`.

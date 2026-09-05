@@ -1,0 +1,43 @@
+ITERATION 488 — same-process long native-layout A/B
+
+Question:
+  Does one contiguous 17 KiB tile-TMA transaction beat the selected 80-byte
+  register-dequant weight/scale path after eliminating cross-process drift?
+
+Protocol:
+  Physical H20 GPUs 0,1,2,3; TP4; random M=8,128
+  outer=4; replays=50; warmups=5; 200 rank-max samples/layout/M
+  balanced whole-batch AB/BA in one process
+  identical seeded weights, FP8 inputs, routes and CARv2 communicator
+  CUDA Graph; separate excluded 256 MiB cold-L2 clear before every replay
+
+Correctness (both M values):
+  cosine_min_rank=1.0
+  rel_l2_max_rank=0.0
+  bf16_mismatches_max_rank=0
+  finite_all_ranks=true
+
+Cold-L2 timing:
+  M8:
+    80-byte min/median/max = 0.102304 / 0.103680 / 0.375232 ms
+    tile TMA min/median/max = 0.102176 / 0.103968 / 0.120416 ms
+    tile/control median     = 1.002778x (tile 0.28% slower)
+    80-byte batch medians   = 0.103664, 0.103552, 0.103856, 0.103536 ms
+    tile batch medians      = 0.103936, 0.103984, 0.103792, 0.104080 ms
+
+  M128:
+    80-byte min/median/max = 0.379296 / 0.388624 / 0.415456 ms
+    tile TMA min/median/max = 0.373920 / 0.418688 / 0.453664 ms
+    tile/control median     = 1.077360x (tile 7.74% slower)
+    80-byte batch medians   = 0.381136, 0.383232, 0.392608, 0.392976 ms
+    tile batch medians      = 0.406640, 0.391472, 0.446624, 0.441792 ms
+
+Endpoint geometric mean:
+  80-byte = 0.200730 ms
+  tile TMA = 0.208639 ms
+  tile/control = 1.039400x (tile 3.94% slower)
+
+Verdict:
+  REJECT single-tile TMA; keep it default-off.  Same-process evidence reverses
+  the earlier sub-percent cross-process indication, proving that indication
+  was not a reliable optimization gain.
