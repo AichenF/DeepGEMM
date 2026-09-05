@@ -13898,3 +13898,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Bracket-normalized ON improvement by M: 0.19%, 0.03%, 0.81%, 0.18%, and 0.58%. No shape regresses. Five-M normalized ratio averages 1.1098876061 OFF versus 1.1059200200 ON, a 0.3575% aggregate improvement. Direct five-M candidate geometric-mean windows average 0.1841437977 -> 0.1835327888 ms (0.332% lower), consistent in sign.
 - Decision: select the compact bundle for the TP4 single-launch implementation. The gain is small but repeats in Iter599, Iter600, Iter604 and this 6x50 all-M bracket; it lowers M128 registers 64 -> 56, admits 9 CTA/SM, has no fixed local spill, and causes no small-M regression. Next encode a single coherent default with explicit zero-valued rollback overrides, then rerun default-entry TP4/TP8 correctness and launch-count gates.
 - Evidence: `evidence/iter605_compact_bundle_allm_long_bracket.md` and `evidence/iter605_compact_bundle_allm_long_bracket_results.txt`.
+## Iteration 606 — encode selected compact-W13 bundle defaults
+
+- Change: add `V4_SINGLE_LAUNCH_COMPACT_W13_BUNDLE`. When `V4_SINGLE_LAUNCH_TP4=1`, the bundle defaults on and supplies default values of one for the compact W13 phase outline, compact shared-pointer ABI, dynamic route shared memory, and M128 bound-9. Ordinary multi-kernel imports keep the bundle off. `V4_SINGLE_LAUNCH_COMPACT_W13_BUNDLE=0` is the coherent rollback, while every existing component environment variable remains an explicit override for isolated experiments.
+- Observability: the single-vs-multi, exact-Humming paired, and standalone graph harnesses now print the resolved bundle state in their environment metadata.
+- Static result: PASS. `python3 -m py_compile` succeeds for the kernel module and all three modified benchmark drivers; exact symbol/env/metadata wiring appears at the expected definition and reporting sites.
+- Qualification: no remote JIT, CUDA launch, correctness, TP8 behavior, or latency is claimed by this iteration. Next rebuild with only `V4_SINGLE_LAUNCH_TP4=1`, audit resolved flags/resources, then run TP4 and TP8 default-entry correctness.
+- Evidence: `evidence/iter606_compact_bundle_default_static.txt`.

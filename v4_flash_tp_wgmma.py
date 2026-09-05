@@ -323,6 +323,16 @@ FUSED_K6_NVLS_PULL_AR = (
     os.environ.get("V4_FUSED_K6_NVLS_PULL_AR", "0") == "1"
 )
 SINGLE_LAUNCH_TP4 = os.environ.get("V4_SINGLE_LAUNCH_TP4", "0") == "1"
+# Selected single-launch default bundle.  It leaves ordinary multi-kernel
+# imports unchanged and provides one explicit zero-valued rollback switch;
+# the existing component variables remain available for isolated A/B tests.
+SINGLE_LAUNCH_COMPACT_W13_BUNDLE = (
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_COMPACT_W13_BUNDLE",
+        "1" if SINGLE_LAUNCH_TP4 else "0",
+    )
+    == "1"
+)
 _legacy_single_launch_interleaved = os.environ.get(
     "V4_SINGLE_LAUNCH_INTERLEAVED"
 )
@@ -388,10 +398,18 @@ SINGLE_LAUNCH_NOINLINE_GEMM = (
     os.environ.get("V4_SINGLE_LAUNCH_NOINLINE_GEMM", "0") == "1"
 )
 SINGLE_LAUNCH_W13_PHASE_NOINLINE = (
-    os.environ.get("V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE", "0") == "1"
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE",
+        "1" if SINGLE_LAUNCH_COMPACT_W13_BUNDLE else "0",
+    )
+    == "1"
 )
 SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI = (
-    os.environ.get("V4_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI", "0") == "1"
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI",
+        "1" if SINGLE_LAUNCH_COMPACT_W13_BUNDLE else "0",
+    )
+    == "1"
 )
 SINGLE_LAUNCH_W2_PHASE_NOINLINE = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PHASE_NOINLINE", "0") == "1"
@@ -413,10 +431,18 @@ SINGLE_LAUNCH_MIN_BLOCKS = int(
 if SINGLE_LAUNCH_MIN_BLOCKS not in (4, 5, 6, 7, 8, 9, 10):
     raise ValueError("V4_SINGLE_LAUNCH_MIN_BLOCKS must be in [4,10]")
 SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM = (
-    os.environ.get("V4_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM", "0") == "1"
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM",
+        "1" if SINGLE_LAUNCH_COMPACT_W13_BUNDLE else "0",
+    )
+    == "1"
 )
 SINGLE_LAUNCH_M128_BOUND9 = (
-    os.environ.get("V4_SINGLE_LAUNCH_M128_BOUND9", "0") == "1"
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_M128_BOUND9",
+        "1" if SINGLE_LAUNCH_COMPACT_W13_BUNDLE else "0",
+    )
+    == "1"
 )
 if SINGLE_LAUNCH_M128_BOUND9 and not SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM:
     raise ValueError(

@@ -281,6 +281,9 @@ def main() -> None:
                     "custom_single_launch_m128_bound9": (
                         kernel.SINGLE_LAUNCH_M128_BOUND9
                     ),
+                    "custom_single_launch_compact_w13_bundle": (
+                        kernel.SINGLE_LAUNCH_COMPACT_W13_BUNDLE
+                    ),
                     "custom_single_launch_w2_phase_noinline": (
                         kernel.SINGLE_LAUNCH_W2_PHASE_NOINLINE
                     ),
