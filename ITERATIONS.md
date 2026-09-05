@@ -14207,3 +14207,33 @@ maximum rank latency of a full CUDA-Graph replay.
   stable material result rather than promoting a sub-noise delta.
 - Evidence: `evidence/iter618_balanced_activation_workers_short_bracket.md`
   and four raw logs under `bench/results/iter618_*_20260905.log`.
+## Iteration 619 — long bracket rejects activation-only balancing
+
+- Protocol: same TP4 physical GPUs, random seed/routes/weights, CUDA Graph,
+  same-source multi control and OFF_A -> ON_A -> ON_B -> OFF_B process order
+  as Iteration 618.  Each window increases to 6 outer x 50 = 300 cold-L2
+  samples per implementation/M after 10 warmups; each replay still receives a
+  separate excluded 256 MiB cache clear.
+- Correctness: every M64/M128 result in all four windows passes all-rank
+  finite/cosine/relative-L2 and embedded P2P two-shot all-reduce checks.
+- Candidate/control median ratios:
+  M64 OFF_A/ON_A/ON_B/OFF_B =
+  `1.133546/1.134421/1.132463/1.132690`;
+  M128 = `1.128247/1.125366/1.123755/1.126943`;
+  two-shape geometric means =
+  `1.130894/1.129884/1.128101/1.129812`.
+- Bracket normalization: activation-only balancing makes M64 **0.0286%
+  slower**, M128 **0.2691% faster**, and the two-shape aggregate **0.1204%
+  faster**.  The larger sample confirms only a sub-noise M128 tendency, not a
+  material or cross-shape improvement.
+- Interpretation: the NCU barrier hotspot was real, but reducing active
+  activation CTAs does not convert its full sampled stall share into latency:
+  convergence and reduced parallelism offset nearly all of the nominal tail
+  equalization.  Source-counter share alone was therefore not an attainable
+  speedup estimate.
+- Decision: **reject and keep default off**.  A 0.12% aggregate shift with an
+  M64 regression is too small to justify another production specialization.
+  Retain the switch only as reproducible negative evidence; move optimization
+  focus to the W13/W2 streaming phases and terminal convergence.
+- Evidence: `evidence/iter619_balanced_activation_workers_long_rejection.md`
+  and four raw logs under `bench/results/iter619_*_long_20260905.log`.
