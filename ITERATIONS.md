@@ -13610,3 +13610,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Static result:** **PASS.** Python bytecode compilation succeeds for the launcher and A/B harness. Environment validation, macro, source hash/name/cflag, two device commit sites, experiment selection and metadata wiring are all present.
 - **Decision:** no CUDA or timing claim yet. Run deterministic local M8/M128 full-output hash gates before a TP4 screen.
 - **Evidence:** `bench/evidence/iter570_native_rs_k64_commit_static.txt`.
+## Iteration 571 — native K64 local gate exits before CUDA import
+
+- **Intended protocol:** physical H20 GPU1, deterministic local M8 then M128, TP communication disabled, `V4_NATIVE_RS_K64_COMMIT_GROUPS=1`, and a 480-second timeout around each process.
+- **Result:** **INVALID launcher failure.** The first process exited at `import v4_flash_tp_native_megamoe` with `ModuleNotFoundError`; invoking the script by path placed `bench/` on `sys.path` and the repository root was absent.  No JIT build, CUDA launch, numerical output or timing occurred, and M128 was not reached.
+- **Decision:** this provides no evidence for or against K64 grouping. Retry unchanged with the repository and pinned Humming checkout in `PYTHONPATH`.
+- **Evidence:** `bench/evidence/iter571_native_rs_k64_commit_local_launcher_failure.txt` and `bench/results/iter571_native_rs_k64_commit_local_m8_m128_20260905.log`.

@@ -1,0 +1,14 @@
+Iteration 571 — native RS K64 local gate launcher failure
+
+Date: 2026-09-05
+Raw log: bench/results/iter571_native_rs_k64_commit_local_m8_m128_20260905.log
+
+Intended protocol
+- Physical H20 GPU1, deterministic local M=8 then M=128, TP tail disabled, `V4_NATIVE_RS_K64_COMMIT_GROUPS=1`, 480-second per-process timeout.
+
+Result
+- INVALID before CUDA import/JIT/launch. Python exited immediately at `import v4_flash_tp_native_megamoe` with `ModuleNotFoundError` because launching `bench/test_v4_flash_tp_native_local.py` puts `bench/` first on `sys.path` and the repository root was not supplied through `PYTHONPATH`.
+- No extension compilation, GPU work, correctness result, output hash, or latency measurement occurred.
+
+Decision
+- This is launcher-only evidence and says nothing about the candidate. Retry the identical M=8/M=128 gate with the repository root in `PYTHONPATH`.
