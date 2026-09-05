@@ -13217,3 +13217,30 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Static result:** AST parsing and exact native/flat conditional audit
   **PASS**.  No GPU timing is claimed.
 - **Evidence:** `bench/evidence/iter551_native_padded_rows_metadata_fix.txt`.
+
+## Iteration 552 — cold local baseline is dominated by W13 then W2
+
+- **Protocol:** physical H20 GPU1, TP4-shape random routes, custom multi-kernel
+  local pipeline only (no TP all-reduce), M8/M32/M128, 100 CUDA Graph samples
+  each after five warmups.  A separate 256 MiB L2 clear immediately precedes
+  every replay and is excluded from external CUDA events.
+- **Cold-L2 stage medians (us):** M8: align `5.696`, W13 `42.384`, activation
+  plus quant `5.888`, W2 `23.744`, local k6 reduce `5.280`, total `83.104`.
+  M32: `5.792 / 110.128 / 6.368 / 57.648 / 5.920`, total `186.048`.
+  M128: `7.328 / 187.856 / 8.128 / 98.320 / 6.496`, total `308.256`.
+- **Interpretation:** at all three shapes, W13 is the largest baseline stage
+  (51.0%/59.2%/60.9% of event-delimited total) and W2 is second
+  (28.6%/31.0%/31.9%).  Alignment, activation/requant and local reduction
+  together are only 16.86/18.08/21.95 us.  External stage events inflate the
+  absolute total relative to the formal graph, so use these numbers for
+  attribution, not for an absolute native-versus-baseline subtraction.
+- **Artifact caveat:** shell precedence sent only the final M128 command to
+  the repository `tee`; the complete tool-captured M8/M32/M128 summaries are
+  therefore duplicated in a committed evidence file.
+- **Decision:** native's remaining gap must be attacked primarily in the
+  combined W13/W2 issue schedule rather than expecting route/combine overhead
+  alone to close it.  Compare the newly selected native NCU profile with its
+  previous report before changing the GEMM pipeline.
+- **Evidence:**
+  `bench/evidence/iter552_multi_local_stage_profile_summary.txt` and
+  `bench/results/iter552_multi_local_stage_profile_tp4_m8_m32_m128_cold_20260905.log`.

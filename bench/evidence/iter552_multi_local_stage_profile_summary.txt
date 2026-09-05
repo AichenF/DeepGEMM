@@ -1,0 +1,35 @@
+Iteration 552 cold-L2 custom multi-kernel local stage profile
+
+Protocol: H20 GPU1, random routes, TP4 shapes, CUDA Graph, 100 samples after
+five warmups, separate excluded 256 MiB L2 clear before every replay.
+
+M8 medians (us):
+- align 5.6960000657
+- w13 42.3839986324
+- activation_quant 5.8880001307
+- w2 23.7440001220
+- local_reduce 5.2800001577
+- total 83.1039994955
+
+M32 medians (us):
+- align 5.7919998653
+- w13 110.1279966533
+- activation_quant 6.3680000603
+- w2 57.6479993761
+- local_reduce 5.9199999087
+- total 186.0480010509
+
+M128 medians (us):
+- align 7.3279999197
+- w13 187.8559961915
+- activation_quant 8.1280004233
+- w2 98.3200035989
+- local_reduce 6.4960001037
+- total 308.2560002804
+
+All reported policies: tiled weights on, WOUT=128, bulk/interleaved bulk copy
+on, fused route quant on, leader mbarrier wait on, W13 split auto.  Tiled k6
+reduce mode is 4 at M8 and 0 at M32/M128.
+
+External per-stage CUDA events add overhead; stage attribution is valid but
+the total is not directly interchangeable with the minimal formal graph.
