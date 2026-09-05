@@ -13518,3 +13518,26 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter564_native_fold_global_scales_tp4_cold_screen_20260905.log`
   and `bench/evidence/iter564_native_fold_global_scales_tp4_cold_screen.txt`.
+
+## Iteration 565 — long scale-fold A/B retains M8 gain but reverses M128
+
+- **Protocol:** unchanged selected-native versus combined W13+W2 scale-fold
+  A/B in one TP4 process on physical H20 GPUs 0/5/6/7; random M8/M128, four
+  balanced AB/BA batches x fifty rank-max samples (200/arm/endpoint), five
+  warmups, CUDA Graph, and an excluded 256 MiB L2 clear before every replay.
+- **Correctness:** **PASS bitwise** again at both endpoints and every rank.
+- **Cold-L2 result (control / folded median):** M8
+  `0.091872 / 0.091104 ms`, **0.84% lower / 1.00843x**; M128
+  `0.407120 / 0.408416 ms`, **0.32% slower / 0.99683x**.  Endpoint geometric
+  mean changes `0.193398 -> 0.192895 ms`, only `1.00261x` nominally positive.
+- **Stability:** all four M8 candidate batch medians (`0.090976–0.091264 ms`)
+  are below all control batches (`0.091712–0.092096 ms`), so the small-M gain
+  is real.  M128 follows large shared-system drift and has mixed per-batch
+  direction; the pooled reversal invalidates selecting the combined flag.
+- **Decision:** keep combined folding default-off.  Because two independent
+  algebraic moves were bundled, isolate W13-input-scale folding from
+  W2-output-scale folding.  Preserve the consistently positive M8 signal, but
+  require a component to avoid M128 regression before selection.
+- **Evidence:**
+  `bench/results/iter565_native_fold_global_scales_tp4_cold_long_20260905.log`
+  and `bench/evidence/iter565_native_fold_global_scales_tp4_cold_long.txt`.

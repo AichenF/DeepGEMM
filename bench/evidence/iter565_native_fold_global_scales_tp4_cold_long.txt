@@ -1,0 +1,24 @@
+Iteration 565: long selected-native versus combined global-scale fold
+Date: 2026-09-05
+GPU: TP4 physical H20 GPUs 0/5/6/7
+Protocol: random routes, CUDA Graph, 4x50 cold samples/arm/M, 5 warmups
+Cold-L2: separate excluded 256 MiB clear before every replay
+
+M8:
+  correctness: bitwise equal, finite
+  control median: 0.09187199920415878 ms
+  candidate median: 0.09110400080680847 ms
+  control/candidate: 1.0084299085720605x
+  control batches: [0.09190399944782257, 0.09172799810767174, 0.0920960009098053, 0.09171199798583984]
+  candidate batches: [0.09126400202512741, 0.09097599983215332, 0.09097599983215332, 0.09116800129413605]
+
+M128:
+  correctness: bitwise equal, finite
+  control median: 0.4071200042963028 ms
+  candidate median: 0.4084160029888153 ms
+  control/candidate: 0.9968267680917782x
+  control batches: [0.36713600158691406, 0.41441600024700165, 0.40692800283432007, 0.4074559956789017]
+  candidate batches: [0.3750079870223999, 0.4129759967327118, 0.40670400857925415, 0.4108479917049408]
+
+Endpoint geometric speedup: 1.0026115531994308x
+Result: correctness PASS; combined candidate not selected.
