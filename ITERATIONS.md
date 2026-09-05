@@ -14930,3 +14930,21 @@ maximum rank latency of a full CUDA-Graph replay.
   delimited local pipeline is W13, before the later W2 launch.
 - **Evidence:** `evidence/iter651a_standalone_ncu_filter_failure.md`; raw log
   `bench/results/iter651_standalone_w13_m128_cold_sourcecounters.log`.
+
+## Iteration 651b — standalone W13 M128 cold-L2 NCU collection
+
+- **Protocol:** current same-source multi local path on physical H20 GPU 1,
+  TP4 M128/random seed 20260902, automatic split-K2, prequantized FP8-E4M3 X
+  plus FP32 group-128 scale.  The application issued its excluded 256 MiB L2
+  clear immediately before the local pipeline.  NCU cache/clock control was
+  disabled and short-name filter `route_gemm` plus launch-count one isolated
+  the first matching W13 launch from the later W2 launch.
+- **Collection:** PASS.  NCU completed 21 replay passes with the same six
+  sections used for the Iteration-650b one-kernel report.  The helper confirms
+  Mode-2 braid, W13 S2R prefetch, two weight stages and compact scales.
+- **Qualification:** the helper emits no tensor-comparison metric, so this is
+  collection evidence only; no new correctness or formal latency claim is
+  made.  Detailed comparison is deferred to the next static report audit.
+- **Evidence:** `evidence/iter651b_standalone_w13_ncu_collection.md`, raw log
+  `bench/results/iter651b_standalone_w13_m128_cold_sourcecounters.log`, binary
+  report `results/iter651b_standalone_w13_m128_cold_sourcecounters.ncu-rep`.
