@@ -14983,3 +14983,21 @@ maximum rank latency of a full CUDA-Graph replay.
   default-off, then require cubin/resource, bitwise, and paired TP4 cold-L2
   gates before considering M64 or W2.
 - **Evidence:** `evidence/iter652_multikernel_ncu_transfer_verdict.md`.
+
+## Iteration 653a — M128 SMID-trace client session loses completion
+
+- **Intent:** use the existing default-off SMID trace on physical H20 GPU 1
+  with the selected TP4 M128 production kernel, random seed 20260902 and the
+  fixture's excluded 256 MiB cold-L2 clear.  The intended non-performance
+  gate was bitwise local output plus 78-SM x 9-CTA placement, followed by a
+  count of the 474 static W13-tail holders per physical SM.
+- **Result:** the remote command entered JIT in unified session `89648`, but
+  client polling returned no stdout and then `Unknown process id`.  No exit
+  code, correctness JSON, SMID mapping, or tail statistic was delivered.
+- **Qualification:** the command was configured to tee a remote raw log, but
+  that file has not yet been inspected.  This iteration therefore makes no
+  CUDA correctness, placement, or performance claim.
+- **Decision:** inspect the remote log read-only.  If complete, derive the
+  mapping in a separately recorded iteration; if incomplete, rerun with a
+  stable outer timeout and log-first retrieval.
+- **Evidence:** `evidence/iter653a_smid_trace_session_loss.md`.
