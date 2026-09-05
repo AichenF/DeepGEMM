@@ -12869,3 +12869,26 @@ maximum rank latency of a full CUDA-Graph replay.
   claimed yet.
 - **Evidence:**
   `bench/evidence/iter534_native_tp_local_rank_static.txt`.
+## Iteration 535 — rank-1 arithmetic bypass is correct but immaterial
+
+- **Candidate/protocol:** selected TP-local-barrier native control versus
+  rank-only fast path, both retaining identical Hopper TMA route-pool
+  transport, in one TP4 process on physical GPUs 0/5/6/7.  Random M8/M128,
+  two balanced whole-batch AB/BA rounds x ten rank-max samples, three
+  alternating warmups, CUDA Graph, and a separate excluded 256 MiB L2 clear
+  before every replay.
+- **Correctness:** **PASS bitwise** at both endpoints across all ranks:
+  relative L2 `0.0`, zero BF16 mismatches, cosine at least
+  `0.9999999999999998`, all finite.
+- **Cold-L2 result (generic rank selection / rank-1 bypass median):** M8
+  `0.097872 -> 0.097632 ms`, candidate **0.25% faster**; M128
+  `0.376304 -> 0.375392 ms`, **0.24% faster**.  Endpoint geometric mean gain
+  is `0.24%`; candidate batches are internally stable.
+- **Interpretation/decision:** reject/default-off without a long window.  The
+  generic rank-round-robin is measurable but far below the 3% materiality
+  gate.  Together with Iteration 533, this shows the retained TMA self-pull is
+  efficient and the main native gap is no longer route-rank arithmetic.  Do
+  not continue micro-tuning this loop; target the local k6 output/reduction
+  path or return to the faster flat kernel's weight issue structure.
+- **Evidence:**
+  `bench/results/iter535_native_tp_local_rank_tp4_screen_20260905.log`.
