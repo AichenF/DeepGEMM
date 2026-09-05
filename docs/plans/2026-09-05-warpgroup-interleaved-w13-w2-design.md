@@ -118,6 +118,35 @@ eight rows in per-WG shared memory avoids the BF16 reload but consumes another
 eight-row/global-reload binary exceeds 64 registers, increases dynamic local
 spills, or fails correctness/performance gates.
 
+#### Static local phases without a task mailbox (selected after Iteration 434)
+
+Source counters show that the first load after the per-task mailbox accounts
+for 17.76% of all barrier-stall samples, while the terminal W2 convergence is
+another 23.74%.  The dynamic alternation also lowers cold delivered bandwidth
+relative to the mapped phase implementation.  Replace the scheduler loop with
+three deterministic real-SMID stripes:
+
+1. every WG completes all of its `worker + n * 624` W13 tasks and publishes
+   group counters;
+2. every WG walks its statically owned activation groups, acquire-waits on
+   each exact group flag, runs the eight-row epilogue, and publishes mblock
+   readiness;
+3. every WG walks its statically owned W2 tasks, acquire-waits on the owning
+   mblock flag, and runs W2.
+
+All 128 lanes derive the same task indices directly, so there is no lane-0
+task selection, shared task payload, or named-barrier mailbox.  The acquire
+loops may reconverge at the first existing task-body synchronization.  The
+ordering cannot deadlock: no WG waits for activation until it has exhausted
+its own W13 work, and no WG waits for W2 until it has exhausted its own
+activation work.  Producers on other WGs therefore always remain runnable.
+
+This sacrifices fine L1/L2 alternation, which has already reduced cold
+bandwidth without an endpoint win, but it is not a return to three globally
+barriered kernels.  Faster WGs may enter downstream work while slower WGs
+finish their producer stripe; the only CTA-wide and whole-grid convergence is
+the terminal W2 boundary required by ordered k6 reduction and TP communication.
+
 ### 2. Static two-CTA mblock cohorts
 
 Two physical CTAs own each mblock, complete W13 and matching requant groups,
