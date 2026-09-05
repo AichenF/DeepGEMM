@@ -1,0 +1,16 @@
+ITER397_REAL_KERNEL_SMID_TRACE
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+device=CUDA_VISIBLE_DEVICES=0
+production_source_changed=false
+PYTHONPATH=.
+requested_modes=624x128,78x1024
+compile=NOT_REACHED
+gpu_launch=NONE
+result=LAUNCHER_IMPORT_FAILURE
+error=ModuleNotFoundError: No module named 'humming'
+cause=Humming_checkout_missing_from_PYTHONPATH
+next=recover_exact_path_from_existing_successful_command_and_rerun
+valid_mapping_evidence=false
+ITER397_REAL_KERNEL_SMID_TRACE_HUMMING_IMPORT_FAIL

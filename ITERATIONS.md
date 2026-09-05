@@ -9804,3 +9804,19 @@ maximum rank latency of a full CUDA-Graph replay.
   failure.
 - Evidence:
   `results/iter396_real_kernel_smid_trace_import_failure_20260905.log`.
+
+## Iteration 397 — real-kernel trace missing Humming import path
+
+- Date: 2026-09-05
+- Configuration: unchanged Iteration 396 default-off trace source; M8 random
+  routes, seed 20260904, GPU0, release arrivals, valid-task elision and phase
+  stamps.  `PYTHONPATH=.` repaired the prior root-module import.
+- Result: LAUNCHER FAIL before JIT/GPU execution.  Importing the benchmark
+  module then failed at `from humming import ops as humming_ops` because the
+  Humming checkout was not on `PYTHONPATH`.  Neither real kernel ran, so no
+  mapping or performance conclusion is valid.
+- Decision: keep sources unchanged.  Recover the exact Humming path from an
+  existing successful repository command/log, append it to `PYTHONPATH`, and
+  repeat both trace modes.
+- Evidence:
+  `results/iter397_real_kernel_smid_trace_humming_import_failure_20260905.log`.
