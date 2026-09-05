@@ -12537,3 +12537,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Rationale: Iteration 513 showed the first invalid read at generated `cuda.cu:5900`, exactly the new `__ldg(route_to_sorted + route)` with a null tensor data pointer.
 - Gate: remote `py_compile` passed for the kernel and all three graph/benchmark fixtures.
 - Next: rebuild the extension and rerun exact M8/M128 compute correctness before any timing.
+## Iteration 515 — repaired tail-pipeline compute correctness
+
+- Date: 2026-09-05
+- Candidate: W13→activation tail pipeline with allocated/populated route inverse map, assume-valid GEMM tasks, and release-grid-arrival.
+- Test: fresh JIT, single-GPU compute-only exact reference, random routing seed 20260905, M8 and M128.
+- M8: accepted; cosine 1.0, relative L2 0.0, finite; 368 padded rows; split-K=4.
+- M128: accepted; cosine 1.0000000000000002, relative L2 0.0, finite; 2008 padded rows; split-K=2.
+- L2 policy reported by fixture: cold 256 MiB clear outside the profiled kernel.
+- Evidence: `results/iter515_w13_act_tail_pipe_correctness_m8_m128_20260905.log`.
+- Decision: correctness gate passed; proceed to a short TP4 cold-L2 candidate/control screen.
