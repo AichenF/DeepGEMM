@@ -9820,3 +9820,32 @@ maximum rank latency of a full CUDA-Graph replay.
   repeat both trace modes.
 - Evidence:
   `results/iter397_real_kernel_smid_trace_humming_import_failure_20260905.log`.
+
+## Iteration 398 — trace real 624-CTA and 78-CTA kernel placement
+
+- Date: 2026-09-05
+- Configuration/protocol: unchanged Iteration 396 trace implementation,
+  H20 GPU0, M8 random routes, seed 20260904, release grid arrivals,
+  valid-task elision and phase stamps.  Both compute-only modes ran once,
+  then once after an excluded 256 MiB L2 clear.  Public X was prequantized
+  FP8-E4M3 plus FP32 group-128 scale; TP communication was disabled.
+- Correctness/result: PASS bitwise for both real kernels (`rel_l2=0`, finite,
+  cosine 1 within print precision), 360 padded rows, and four clean packed
+  barrier words at generation 2048.  The selected 624x128 launch records
+  exactly eight CTAs on every one of 78 SMs; the experimental 78x1024 launch
+  records exactly one CTA on every SM.
+- Phase evidence (route/W13/requant/W2): 624x128
+  `2.208/40.960/3.232/22.368 us`; 78x1024
+  `2.816/53.344/3.744/31.360 us`.  The packed path therefore loses 12.384 us
+  in W13 and 8.992 us in W2 at M8 even before the collective.
+- Mapping evidence: the real 624-CTA placement differs materially from the
+  synthetic Iteration 395 probe, so that probe's table is rejected.  For
+  example, real SM0 owns `[46,124,216,294,372,450,528,592]`, SM4 owns
+  `[76,154,232,310,388,466,544,608]`, and SM74 owns
+  `[0,62,132,202,268,336,404,474]`.  The full authoritative table and the
+  78-grid block-to-SM inverse are preserved in the evidence artifact.
+- Decision: proceed with a default-off H20 `%smid` lookup using only this real
+  78x8 table.  Apply it consistently to W13, activation requant and W2 task
+  waves; gate correctness and cold-L2 endpoint latency before retaining it.
+- Evidence:
+  `results/iter398_real_kernel_smid_mapping_m8_20260905.log`.
