@@ -14065,3 +14065,18 @@ maximum rank latency of a full CUDA-Graph replay.
   remains a phased W13/W2 scheduling/residency issue, not primarily an
   all-reduce launch-overhead issue.
 - Evidence: `evidence/iter612_final_default_tp4_vs_same_source_multi.md`.
+## Iteration 613 — current-default M128 NCU launcher rejects script target
+
+- Intended profile: current production-bundle TP4 M128 compute-only kernel,
+  with the embedded collective disabled solely for safe NCU kernel replay;
+  application-managed excluded 256 MiB cold-L2 clear and the standard
+  SpeedOfLight/memory/scheduler/warp/source-counter sections.
+- Result: invalid before Python or CUDA.  NCU exited 1 with
+  `The target application is not an executable binary` because the command
+  supplied the Python script directly instead of prefixing the interpreter.
+  No extension import, kernel launch, cache clear, correctness result, metric
+  or report was produced.
+- Decision: repeat the unchanged profile with `/usr/bin/python3` (or the
+  resolved container Python executable) before the script path.  This failed
+  attempt carries no performance evidence.
+- Evidence: `evidence/iter613_ncu_script_launcher_failure.md`.
