@@ -13639,3 +13639,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - **M128:** control `0.396592 ms`, candidate `0.403600 ms`, candidate **1.736% slower** (`0.98264x`). Every paired batch regresses, by `14.608/5.872/10.208/6.128 us`.
 - **Aggregate/decision:** endpoint geometric mean regresses `0.190532 -> 0.192057 ms` (`-0.794%`). **Reject** and keep `V4_NATIVE_RS_K64_COMMIT_GROUPS=0`; the short-screen M128 gain did not reproduce. Retain one K128 commit group as selected.
 - **Evidence:** `bench/evidence/iter574_native_rs_k64_commit_tp4_cold_long.txt` and `bench/results/iter574_native_rs_k64_commit_tp4_cold_long_20260905.log`.
+## Iteration 575 — authoritative flat single-launch vs multi-kernel TP4, all-M cold-L2 long run (2026-09-05)
+
+- Hypothesis: the faster 128-thread flat single-launch kernel, with the already stress-tested release-arrival and valid-task fast paths enabled, is a better optimization base than the 384-thread Hopper-role native port.
+- Configuration: H20 TP4 on physical GPUs 0,5,6,7; random routes; M=8,16,32,64,128; CUDA Graphs; 6 outer batches x 50 replays = 300 samples/implementation/M; replay-granularity pairing; separate 256 MiB L2 clear immediately before every timed replay, clear excluded from CUDA events. Inputs are pre-quantized FP8 activations and MXFP4 weights. `V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL=1`, `V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS=1`.
+- Correctness: accepted for every M on all four ranks; `allreduce_ok=true`; minimum cosine by M = 0.9999957922, 0.9999955955, 0.9999956213, 0.9999956225, 0.9999955977.
+- Median latency, control multi-kernel / flat one-kernel (ms), and one-kernel overhead: M8 0.071280 / 0.076096 (+6.76%); M16 0.114112 / 0.124256 (+8.89%); M32 0.178464 / 0.201824 (+13.09%); M64 0.261040 / 0.294320 (+12.75%); M128 0.329216 / 0.373616 (+13.49%).
+- Five-M geometric mean: control 0.165656 ms, candidate 0.183814 ms; control/candidate speedup 0.9012x, so the one-kernel candidate is 10.96% slower.
+- Collective modes: both paths use multicast push at M=8/16/32; control reports stock CustomAllReduceV2 and candidate uses embedded P2P two-shot at M=64/128.
+- Decision: retain the flat kernel as the fastest single-launch optimization base, but do not claim a win. This long run disproves the earlier hope that merely reverting from the native Hopper topology closes the baseline gap; the remaining deficit grows with M and is primarily in the fused GEMM schedule.
+- Raw log: `bench/results/iter575_flat_best_tp4_allm_cold_long_20260905.log`
+- Evidence: `bench/evidence/iter575_flat_best_tp4_allm_cold_long.txt`
