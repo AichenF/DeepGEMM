@@ -14032,3 +14032,36 @@ maximum rank latency of a full CUDA-Graph replay.
   to be rerun with this final default before claiming the optimization is
   complete.
 - Evidence: `evidence/iter611_final_default_tp4_vs_humming_cold_l2.md`.
+## Iteration 612 — final-default TP4 versus same-source multi-kernel control
+
+- Control contract: selected route-align, MXFP4 W13, SwiGLU/FP8 requant,
+  MXFP4 W2, local top-k6 combine and SGLang CARv2 path from the same source,
+  executed as multiple graph nodes.  Candidate performs the same work plus
+  collective in one business kernel.  Both share prequantized FP8/group-128
+  activation, MXFP4 weights and the exact same random routes/weights.
+- Configuration/protocol: physical H20 GPUs 0,5,6,7; only
+  `V4_SINGLE_LAUNCH_TP4=1`, bundle/component overrides unset; seed 20260902;
+  CUDA Graph; replay-level alternating AB/BA; 6 outer x 50 = 300 cold samples
+  per implementation/M after 10 warmups.  Every replay receives its own
+  excluded 256 MiB L2 clear.
+- Default metadata: bundle=true, compact W13 ABI=true, dynamic route shared
+  memory=true, M128 bound9=true, release-grid-arrival=true and
+  assume-valid-GEMM-tasks=true.
+- Correctness: candidate and control metrics are identical for every M; all
+  ranks are finite and all-reduce checks pass.  Candidate cosine
+  >=0.9999955955 and rel-L2 <=0.00296801.
+- Multi / one-kernel median ms and one-kernel overhead:
+  M8 `0.070976 / 0.075872`, +6.90%;
+  M16 `0.114048 / 0.124192`, +8.89%;
+  M32 `0.178624 / 0.200512`, +12.25%;
+  M64 `0.261920 / 0.295088`, +12.66%;
+  M128 `0.331904 / 0.375088`, +13.01%.
+- Aggregate: multi geometric mean `0.165906737` ms versus one-kernel
+  `0.183687685` ms.  Candidate/control=`1.107174x`; the required one-launch
+  implementation remains 10.72% slower than this stronger multi-kernel
+  control even though it is 11.85% faster than exact Humming in Iteration 611.
+- Decision: retain the selected bundle, but do not claim that fusion beats the
+  best same-source multi-kernel path.  The remaining gap increases with M and
+  remains a phased W13/W2 scheduling/residency issue, not primarily an
+  all-reduce launch-overhead issue.
+- Evidence: `evidence/iter612_final_default_tp4_vs_same_source_multi.md`.
