@@ -1,0 +1,21 @@
+ITERATION 477 — unchanged split-TMA M128 repeat
+
+Candidate output:
+  finite=true
+  max_abs=296960.0
+  output_sha256=2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5
+
+Repeated diagnostics:
+  weighted_fc1_cosine=0.9996428551534735
+  weighted_fc1_rel_l2=0.027105235872160963
+  l1_x_mismatch_bytes=1694986
+  l1_sf_max_abs=0.8600002527236938
+  l1_weight_max_abs=0.1904762089252472
+
+Iteration-476 comparison:
+  candidate output hash and max_abs: identical
+  weighted_fc1_cosine: -0.009487988973632976 -> 0.9996428551534735
+  l1_x_mismatch_bytes: 1501062 -> 1694986
+
+Verdict: diagnostics are unstable while output bits are stable.  Candidate
+remains unadmitted pending a test-lifetime audit; no latency was measured.

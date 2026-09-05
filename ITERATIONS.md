@@ -11809,3 +11809,28 @@ maximum rank latency of a full CUDA-Graph replay.
   CUDA synchronization.
 - **Evidence:**
   `bench/evidence/iter476_split_weight_scale_tma_m128_local_failure.txt`.
+
+## Iteration 477 — repeated M128 isolates unstable diagnostics from output bits
+
+- **Protocol:** repeat the unchanged committed Iteration-475 split candidate's
+  deterministic local M128 test on physical H20 GPU1.  No source, input seed,
+  environment flag or launch configuration changed from Iteration 476.
+- **Result:** the full candidate BF16 output SHA-256 is again exactly
+  `2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5`
+  and maximum magnitude again `296,960`, so candidate output bits are
+  repeatable.  This time the weighted FC1 cosine/relative-L2 report
+  `0.9996428552/0.0271052359` instead of Iteration 476's
+  `-0.0094879890/11.90208237`.  Intermediate diagnostics remain inconsistent:
+  FP8 mismatch count changes from `1,501,062` to `1,694,986`, while scale and
+  weight max errors remain `0.86000025/0.19047621`.
+- **Interpretation:** a deterministic candidate output paired with changing
+  post-launch reference/intermediate metrics implicates the diagnostic's
+  workspace/input lifetime or readback ordering, not yet a proven TMA source
+  mapping failure.  The candidate is still unadmitted because the M128 gate is
+  internally contradictory.
+- **Decision:** do not alter kernel addressing yet and do not benchmark
+  latency.  Inspect the committed test's post-launch reference construction,
+  in-place normalized-weight mutation and workspace alias lifetime; establish
+  an immutable-control hash before rerunning numerical admission.
+- **Evidence:**
+  `bench/evidence/iter477_split_tma_m128_repeat_diagnostic_instability.txt`.
