@@ -1,0 +1,54 @@
+Iteration 445: TP4 cold-L2 screen of warp-leader epoch mailbox
+Date: 2026-09-05
+Candidate source: 335a49f / correctness aee5938
+Hardware: 4 x NVIDIA H20-3e, 78 SM per rank
+
+Protocol
+--------
+- Same-process CUDA Graph control/candidate capture.
+- Control: selected 5-kernel (M8) / 6-kernel (M128) implementation from the
+  same source, ending in SGLang CustomAllReduceV2.
+- Candidate: one TP-specialized MegaMoE kernel with embedded collective.
+- Shared prequantized FP8-E4M3 X + FP32 group128 scale and identical routes.
+- Before every individually timed replay: separate 256 MiB Triton L2 clear on
+  the same stream; clear excluded from CUDA events.
+- replay-interleaved pair order, outer=2, replays=10, warmup=2.
+- GPUs 0-3 reported 0% utilization before launch (memory 885/62/4/4 MiB).
+
+Correctness
+-----------
+M8: accepted, allreduce_ok, min-rank cosine 0.9999956134,
+    max-rank relative L2 0.0029619922.
+M128: accepted, allreduce_ok, min-rank cosine 0.9999956090,
+      max-rank relative L2 0.0029634544.
+
+Cold-L2 max-rank latency
+------------------------
+M8, 20 samples per implementation:
+- multi-kernel control min/median/max: 72.608 / 73.984 / 197.632 us
+- single candidate min/median/max:     117.120 / 119.616 / 141.088 us
+- candidate/control median: 1.6168 (candidate 61.7% slower)
+- control/candidate speedup: 0.6185x
+- paired batch medians candidate: 119.600, 119.616 us
+- paired batch medians control: 73.824, 74.048 us
+
+M128, 20 samples per implementation:
+- multi-kernel control min/median/max: 299.200 / 301.232 / 322.240 us
+- single candidate min/median/max:     413.472 / 418.048 / 446.688 us
+- candidate/control median: 1.3878 (candidate 38.8% slower)
+- control/candidate speedup: 0.7206x
+- paired batch medians candidate: 417.568, 420.112 us
+- paired batch medians control: 301.344, 301.168 us
+
+Endpoint geometric mean: candidate 223.618 us, control 149.286 us;
+candidate/control 1.4979, control/candidate 0.6676x.
+
+Comparison and decision
+-----------------------
+The control is stable versus Iteration 432 (73.472 us M8, 300.400 us M128),
+so this is not explained by a faster baseline.  Iteration 432's dynamic
+named-barrier candidate was 101.056 us M8 and 393.168 us M128.  The epoch
+mailbox therefore regresses candidate latency by approximately 18.4% at M8
+and 6.3% at M128.  Four warp-leader polling paths, block fences, volatile epoch
+traffic, and shuffle broadcast cost more than the removed pre-task named
+barrier.  Reject the epoch transport; do not run a five-M formal verdict.

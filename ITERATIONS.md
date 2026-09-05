@@ -10932,3 +10932,29 @@ maximum rank latency of a full CUDA-Graph replay.
   same-process independently cold-L2 endpoint screening; no speed claim is
   made by this correctness-only run.
 - **Evidence:** `bench/evidence/iter444_warp_leader_epoch_mailbox_correctness.txt`.
+
+## Iteration 445 — warp-leader epoch mailbox is substantially slower
+
+- **Hypothesis:** removing the named WG barrier and 128 duplicate shared loads
+  before each useful task would reduce the scheduler stall identified by
+  Iteration 434.
+- **Change:** no source change from Iteration 443/444; first TP4 performance
+  gate for the correct epoch-mailbox candidate.
+- **Test:** same-process TP4 CUDA Graph A/B at M8/M128, replay-interleaved,
+  outer 2 x 10 samples per arm, with an independent 256 MiB cold-L2 clear
+  immediately before every replay and outside the timed events.  GPUs 0-3 were
+  at 0% utilization before launch.
+- **Result:** **REJECT**.  M8 candidate `117.120/119.616/141.088 us` versus
+  control `72.608/73.984/197.632 us` (median candidate/control `1.6168`).
+  M128 candidate `413.472/418.048/446.688 us` versus control
+  `299.200/301.232/322.240 us` (median candidate/control `1.3878`).  Both arms
+  pass distributed correctness.  Endpoint geometric-mean candidate/control is
+  `1.4979`.
+- **Analysis:** the control matches Iteration 432, while the candidate regresses
+  from approximately `101.056` to `119.616 us` at M8 and `393.168` to
+  `418.048 us` at M128.  Per-warp epoch polling, block fences, volatile shared
+  traffic and shuffles are more expensive than the removed named barrier.
+  A source-counter hotspot is not removable in isolation when its replacement
+  destroys the hardware barrier's efficient collective behavior.  Do not run
+  the full five-M gate for this candidate.
+- **Evidence:** `bench/evidence/iter445_warp_leader_epoch_mailbox_tp4_cold_screen.txt`.
