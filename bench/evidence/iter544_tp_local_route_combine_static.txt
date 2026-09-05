@@ -1,0 +1,11 @@
+Iteration 544 static audit: combined route build and parallel combine
+
+AST_PASS bench/v4_flash_tp_native_layout_ab.py
+choice=True
+control_barrier=True
+candidate_route=True
+candidate_combine=True
+combined_alias=True
+STATIC_AUDIT_PASS
+
+No CUDA compilation, correctness, or performance result is claimed here.

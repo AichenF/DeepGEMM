@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
             "tp_local_rank",
             "tp_local_route_build",
             "tp_local_combine_chunks",
+            "tp_local_route_combine",
         ),
         default="tile_tma",
     )
@@ -205,6 +206,7 @@ def main() -> None:
         "tp_local_rank",
         "tp_local_route_build",
         "tp_local_combine_chunks",
+        "tp_local_route_combine",
     )
     control_module = load_native_variant(
         "v4_native_variant_control",
@@ -308,7 +310,7 @@ def main() -> None:
             tp_local_parallel_combine_chunks=False,
         )
         benchmark_name = "native_ep_vs_tp_local_route_build"
-    else:
+    elif args.experiment == "tp_local_combine_chunks":
         candidate_module = load_native_variant(
             "v4_native_variant_tp_local_combine_chunks",
             tile_tma=False,
@@ -321,6 +323,19 @@ def main() -> None:
             tp_local_parallel_combine_chunks=True,
         )
         benchmark_name = "native_serial_vs_parallel_combine_chunks"
+    else:
+        candidate_module = load_native_variant(
+            "v4_native_variant_tp_local_route_combine",
+            tile_tma=False,
+            single_l1_warmup_wave=False,
+            dual_active_dispatch=False,
+            tp_local_barrier_fastpath=True,
+            tp_local_dispatch_fastpath=False,
+            tp_local_direct_copy=False,
+            tp_local_route_build=True,
+            tp_local_parallel_combine_chunks=True,
+        )
+        benchmark_name = "native_barrier_vs_route_parallel_combine"
     control_weights = make_variant_weights(
         control_module, intermediate_per_rank, device, args.seed, rank
     )

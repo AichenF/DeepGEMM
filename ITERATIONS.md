@@ -13067,3 +13067,16 @@ maximum rank latency of a full CUDA-Graph replay.
   the selected barrier-only control before discarding either.
 - **Evidence:**
   `bench/results/iter543_native_tp_local_parallel_combine_chunks_tp4_long_20260905.log`.
+
+## Iteration 544 — wire combined route-build plus parallel-combine A/B
+
+- **Change:** add `--experiment tp_local_route_combine` to the same-process
+  native harness.  The control is the selected TP-local-barrier-only native
+  kernel; the candidate jointly enables the independently measured route
+  counter specialization and parallel hidden-chunk combine.  Rank arithmetic,
+  TMA route transport, GEMM schedule and TP collective remain identical.
+- **Static result:** harness AST parsing and exact choice/control/candidate
+  flag wiring checks **PASS**.  No CUDA build, correctness or timing is
+  claimed yet.
+- **Evidence:**
+  `bench/evidence/iter544_tp_local_route_combine_static.txt`.
