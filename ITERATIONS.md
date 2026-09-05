@@ -13044,3 +13044,26 @@ maximum rank latency of a full CUDA-Graph replay.
   whether to retain it.  Do not enable by default from this 20-sample screen.
 - **Evidence:**
   `bench/results/iter542_native_tp_local_parallel_combine_chunks_tp4_screen_20260905.log`.
+
+## Iteration 543 — long combine-chunk A/B confirms modest endpoint gains
+
+- **Protocol:** unchanged same-process TP4 A/B on physical GPUs 0/5/6/7;
+  random M8/M128, four balanced whole-batch AB/BA rounds x fifty rank-max
+  samples, five alternating warmups, CUDA Graph, and a separate excluded
+  256 MiB L2 clear immediately before every replay.  This yields 200 cold-L2
+  samples per arm and endpoint.
+- **Correctness:** **PASS bitwise** again at both endpoints across all ranks:
+  relative L2 `0.0`, zero BF16 mismatches, cosine `1.0`, all finite.
+- **Cold-L2 result (serial / parallel median):** M8
+  `0.095744 -> 0.093408 ms`, **2.44% lower / 1.0250x**; M128
+  `0.405776 -> 0.399520 ms`, **1.54% lower / 1.0157x**.  Endpoint geometric
+  mean improves `0.197106 -> 0.193180 ms`, **1.99% lower / 1.0203x**.
+- **Stability/decision:** all four M8 candidate batch medians
+  (`0.093200–0.093488 ms`) beat all controls (`0.095568–0.095840 ms`).  M128
+  again drifts strongly but its pooled direction is positive.  Preserve the
+  feature default-off because it misses the standalone 3% gate.  Since this
+  change and Iteration 540's route-counter change remove independent serial
+  tails and are both repeatably positive, test their combined effect against
+  the selected barrier-only control before discarding either.
+- **Evidence:**
+  `bench/results/iter543_native_tp_local_parallel_combine_chunks_tp4_long_20260905.log`.
