@@ -12296,3 +12296,21 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Decision:** keep the source unchanged and rerun the identical command with
   the repository root plus the Humming checkout explicitly prepended to
   `PYTHONPATH`.
+
+## Iteration 497 — CTA-local split-K=4 M8 compute correctness passes
+
+- **Candidate/protocol:** unchanged Iteration-494 module on H20 GPU 1, random
+  M8 routes with seed 20260904, prequantized FP8-E4M3 X plus FP32 group-128
+  scales.  The compute-only driver runs one warm launch and one launch after a
+  separate excluded 256-MiB L2 clear; TP communication is intentionally off.
+- **Progress/residency:** **PASS.**  The 78-CTA/1024-thread launch returns
+  normally under the 360-second timeout on the 78-SM GPU, including the
+  launcher's one-CTA-per-SM occupancy check.  Packed grid-barrier words finish
+  as `[2048, 2048, 0, 2048]`: route, fused-W13/activation, and W2 phases each
+  retire once, while the deliberately removed standalone activation phase
+  remains untouched.
+- **Correctness:** **PASS exact** against the selected multi-kernel local W2
+  output: cosine `0.9999999999999999`, relative L2 `0.0`, and all values
+  finite.  Route alignment produced 360 padded rows and exercised split-K=4.
+- **Decision:** admit split-K=4 and run the M128/split-K=2 endpoint before any
+  four-rank communication test or latency claim.
