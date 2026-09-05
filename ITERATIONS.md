@@ -13864,3 +13864,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Qualification: failure occurred before importing `v4_flash_tp_wgmma`, JIT compilation, CUDA initialization, kernel launch, resource extraction, correctness, or timing. It contains no evidence for or against the candidate.
 - Decision: retry unchanged with ordinary shell-safe double/single quoting, then apply the original register/no-spill gate.
 - Evidence: `evidence/iter601_compact_w13_unroll8_launcher_failure.txt`.
+## Iteration 602 — compact W13 plus split2-unroll8 preserves nine-CTA residency
+
+- Configuration: H20 GPU1 SM90a JIT with release-arrival, assume-valid tasks, compact W13 phase ABI, dynamic route shared memory, M128 bound-9, and `V4_W13_K_UNROLL8_SPLIT2=1`. No CUDA kernel was launched and no latency was measured.
+- Result: extension `v4tp_f90d0e2f19d3308409a9_v178mspec` compiled and loaded. TP4 M128 split-K2 is `REG:56 STACK:64 SHARED:2048 LOCAL:0`; split-K4 is `REG:56 STACK:32 SHARED:2048 LOCAL:0`. The production M128 split-K2 path therefore retains nine-CTA/SM register admission and has no fixed local spill, but its call frame grows by 32 bytes versus compact-only Iter597.
+- Scope observation: the global W13 split2-unroll flag also changes inline M64 split-K2 to `REG:64 STACK:64`; M<=32 split-K4 remains on the four-way body. Therefore any timing must first target M128 and use an invariant external baseline for drift normalization; the same-source multi control would itself be modified by this global flag.
+- Decision: resource gate passes narrowly. Advance to a short process-bracketed M128 cold-L2 comparison of compact-only versus compact+unroll8, normalized against exact Humming+CARv2 rather than the affected same-source multi control.
+- Evidence: `evidence/iter602_compact_w13_unroll8_resources.txt`.
