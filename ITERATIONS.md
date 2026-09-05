@@ -12830,3 +12830,26 @@ maximum rank latency of a full CUDA-Graph replay.
   or performance claim is made yet.
 - **Evidence:**
   `bench/evidence/iter532_native_tp_local_dispatch_static.txt`.
+## Iteration 533 — direct local route copy loses to Hopper TMA self-pull
+
+- **Candidate/protocol:** selected TP-local-barrier native control versus the
+  otherwise identical direct route-pool copy in one TP4 process on physical
+  GPUs 0/5/6/7.  Random M8/M128, two balanced whole-batch AB/BA rounds x four
+  rank-max samples, two alternating warmups, CUDA Graph, and a separate
+  excluded 256 MiB L2 clear before every replay.
+- **Correctness:** **PASS bitwise** at both endpoints across all ranks:
+  relative L2 `0.0`, zero BF16 mismatches, cosine at least
+  `0.9999999999999998`, all finite.  The warp-copy publication ordering is
+  therefore valid under repeated graph replay.
+- **Cold-L2 smoke (TMA self-pull control / direct-copy candidate median):**
+  M8 `0.097824 -> 0.100624 ms`, candidate **2.86% slower**; M128
+  `0.377008 -> 0.378272 ms`, **0.34% slower**.  Endpoint geometric mean
+  regresses `0.192043 -> 0.195098 ms`, **1.59%**.
+- **Interpretation/decision:** reject/default-off without a long window.  The
+  direct `uint4` load/store loop replaces two asynchronous TMA operations
+  with eight synchronous vector copy rounds per lane; removing rank-1
+  selection work does not repay that issue/scoreboard cost.  Preserve the
+  failed path as evidence, but split the next diagnostic: retain the faster
+  Hopper TMA staging and bypass only the rank-1 round-robin arithmetic.
+- **Evidence:**
+  `bench/results/iter533_native_tp_local_dispatch_tp4_smoke_20260905.log`.
