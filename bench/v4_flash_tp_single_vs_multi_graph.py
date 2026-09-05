@@ -230,6 +230,13 @@ def main() -> None:
                         )
                         == "1"
                     ),
+                    "native_one_dispatch_warp_cta": bool(
+                        use_native
+                        and os.environ.get(
+                            "V4_NATIVE_ONE_DISPATCH_WARP_CTA", "0"
+                        )
+                        == "1"
+                    ),
                     "single_launch_interleaved": (
                         kernel.SINGLE_LAUNCH_INTERLEAVED
                     ),

@@ -11557,3 +11557,28 @@ maximum rank latency of a full CUDA-Graph replay.
   to regress.
 - **Evidence:**
   `bench/evidence/iter466_native_normalized_m8_ncu_analysis.txt`.
+
+## Iteration 467 — 352-thread role layout violates WGMMA alignment
+
+- **Hypothesis/change:** add opt-in
+  `V4_NATIVE_ONE_DISPATCH_WARP_CTA=1`, reduce dispatch threads from 64 to 32,
+  and launch 352 threads while retaining the two producer warps and eight math
+  warps.  Grid size, shared memory, scheduler, compute tiles and collective are
+  otherwise unchanged.
+- **Protocol:** physical H20 GPU1, retained normalized/register-dequant/K128
+  two-CTA candidate, deterministic local M8 followed by M128 only if M8 passes.
+- **Result:** **FAIL on the first M8 launch** with CUDA
+  `misaligned address`; M128 and latency were not run.
+- **Root cause:** the role ordering places dispatch and producer warps before
+  math.  With two dispatch plus two producer warps, WGMMA groups begin at
+  hardware warpgroup-aligned warp indices 4 and 8.  Removing one dispatch warp
+  starts math at warp 3/thread 96, which is not a 128-thread WGMMA group
+  boundary.  The inactive TP dispatch warp is therefore also a required
+  alignment slot in the current role order, not freely removable overhead.
+- **Decision:** reject the 352-thread layout and do not benchmark it.  Preserve
+  the failed source/evidence atomically, then remove the unsafe opt-in.  Any
+  future one-dispatch design would have to reorder all eight math warps to
+  threads 0..255 and move support roles after them, a materially larger change
+  that this bounded test does not authorize on its own.
+- **Evidence:**
+  `bench/evidence/iter467_native_one_dispatch_warp_local_gate.txt`.

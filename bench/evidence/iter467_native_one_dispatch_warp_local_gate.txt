@@ -1,0 +1,22 @@
+Iteration 467 one-dispatch-warp 352-thread native local gate
+
+Configuration:
+- physical H20 GPU1, first deterministic M8 local launch
+- retained normalized/register-dequant/K128/two-CTA configuration
+- V4_NATIVE_ONE_DISPATCH_WARP_CTA=1, block size 352
+
+Observed failure:
+Traceback (most recent call last):
+  File "bench/test_v4_flash_tp_native_local.py", line 117, in main
+    torch.cuda.synchronize()
+torch.AcceleratorError: CUDA error: misaligned address
+
+M128 was not launched after the M8 failure.  No correctness or timing result
+is admitted.
+
+Root cause: with one dispatch warp plus two producer warps, math begins at warp
+3/thread 96.  Hopper WGMMA warpgroup instructions require their participating
+128-thread groups to begin on warpgroup-aligned thread boundaries.  The
+original two dispatch plus two producer roles occupy exactly four warps, so
+math starts correctly at warp 4 and warp 8.  The apparently inactive second
+dispatch warp is therefore also an alignment slot in this role ordering.

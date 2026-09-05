@@ -46,6 +46,9 @@ NATIVE_NORMALIZED_WEIGHT_SCALE = (
 NATIVE_RS_SCALE_WORD_CACHE = (
     os.environ.get("V4_NATIVE_RS_SCALE_WORD_CACHE", "0") == "1"
 )
+NATIVE_ONE_DISPATCH_WARP_CTA = (
+    os.environ.get("V4_NATIVE_ONE_DISPATCH_WARP_CTA", "0") == "1"
+)
 if NATIVE_TWO_CTA_PER_SM and not NATIVE_REGISTER_DEQUANT:
     raise ValueError(
         "V4_NATIVE_TWO_CTA_PER_SM requires V4_NATIVE_REGISTER_DEQUANT=1"
@@ -415,6 +418,9 @@ _CUDA = r"""
 #ifndef K_NATIVE_RS_SCALE_WORD_CACHE
 #define K_NATIVE_RS_SCALE_WORD_CACHE 0
 #endif
+#ifndef K_NATIVE_ONE_DISPATCH_WARP_CTA
+#define K_NATIVE_ONE_DISPATCH_WARP_CTA 0
+#endif
 
 using namespace deep_gemm;
 
@@ -659,7 +665,9 @@ __device__ __forceinline__ void native_tp4_nvls_pull(
 }
 
 template <int kIntermediate>
-CUTLASS_GLOBAL __launch_bounds__(384, K_NATIVE_TWO_CTA_PER_SM ? 2 : 1) void
+CUTLASS_GLOBAL __launch_bounds__(
+    K_NATIVE_ONE_DISPATCH_WARP_CTA ? 352 : 384,
+    K_NATIVE_TWO_CTA_PER_SM ? 2 : 1) void
 v4_flash_tp4_native_megamoe_impl(
         void* y,
         int* cumulative_local_expert_recv_stats,
@@ -707,9 +715,12 @@ v4_flash_tp4_native_megamoe_impl(
     constexpr uint32_t kHidden = 4096;
     constexpr uint32_t kIntermediateHidden = kIntermediate;
     constexpr uint32_t kNumTopk = 6;
-    constexpr uint32_t kNumDispatchThreads = 64;
+    constexpr uint32_t kNumDispatchThreads =
+        K_NATIVE_ONE_DISPATCH_WARP_CTA ? 32 : 64;
     constexpr uint32_t kNumNonEpilogueThreads = 64;
     constexpr uint32_t kNumEpilogueThreads = 256;
+    constexpr uint32_t kBlockThreads =
+        kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads;
     constexpr uint32_t L1_SHAPE_N = kIntermediateHidden * 2;
     constexpr uint32_t L1_SHAPE_K = kHidden;
     constexpr uint32_t L2_SHAPE_N = kHidden;
@@ -735,7 +746,7 @@ v4_flash_tp4_native_megamoe_impl(
     if (num_tokens == 128) {
         constexpr int kPullBlocks = 64;
         if (sm_idx < kPullBlocks) {
-            native_tp4_nvls_pull<384>(
+            native_tp4_nvls_pull<kBlockThreads>(
                 local_output, pull_input, pull_input_mc, output,
                 pull_sem_local, pull_sem_mc, num_tokens,
                 static_cast<int>(sm_idx), kPullBlocks);
@@ -745,7 +756,7 @@ v4_flash_tp4_native_megamoe_impl(
         // 78-CTA push.  Extra compute CTAs leave after the local grid drain.
         constexpr int kPushBlocks = 78;
         if (sm_idx < kPushBlocks) {
-            native_tp4_multicast_push<384>(
+            native_tp4_multicast_push<kBlockThreads>(
                 local_output, output, push_counter,
                 push0, push1, push2, push3, push_mc,
                 num_tokens, rank, push_stride,
@@ -897,6 +908,8 @@ void run_native_tp4(
         reinterpret_cast<int64_t>(workspace.data_ptr<uint8_t>())};
     const layout::SymBuffer<1> sym_buffer(ptrs, 0);
     auto kernel = v4_flash_tp4_native_megamoe_impl<512>;
+    constexpr int kBlockThreads =
+        K_NATIVE_ONE_DISPATCH_WARP_CTA ? 352 : 384;
     constexpr int kDynamicSmemBytes =
         K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448;
     C10_CUDA_CHECK(cudaFuncSetAttribute(
@@ -905,7 +918,7 @@ void run_native_tp4(
     if constexpr (K_NATIVE_TWO_CTA_PER_SM) {
         int active_blocks = 0;
         C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-            &active_blocks, kernel, 384, kDynamicSmemBytes));
+            &active_blocks, kernel, kBlockThreads, kDynamicSmemBytes));
         TORCH_CHECK(active_blocks >= 2,
                     "native two-CTA specialization requires >=2 CTAs/SM, got ",
                     active_blocks);
@@ -914,7 +927,7 @@ void run_native_tp4(
     constexpr int kGrid = K_NATIVE_TWO_CTA_PER_SM ? 156 : 78;
     cudaLaunchConfig_t launch_config{};
     launch_config.gridDim = dim3(kGrid);
-    launch_config.blockDim = dim3(384);
+    launch_config.blockDim = dim3(kBlockThreads);
     launch_config.dynamicSmemBytes = kDynamicSmemBytes;
     launch_config.stream = stream;
     cudaLaunchAttribute launch_attribute{};
@@ -955,6 +968,8 @@ void run_native_tp4(
 
 int native_tp4_active_blocks_per_sm() {
     auto kernel = v4_flash_tp4_native_megamoe_impl<512>;
+    constexpr int kBlockThreads =
+        K_NATIVE_ONE_DISPATCH_WARP_CTA ? 352 : 384;
     constexpr int kDynamicSmemBytes =
         K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448;
     C10_CUDA_CHECK(cudaFuncSetAttribute(
@@ -962,7 +977,7 @@ int native_tp4_active_blocks_per_sm() {
         kDynamicSmemBytes));
     int active_blocks = 0;
     C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-        &active_blocks, kernel, 384, kDynamicSmemBytes));
+        &active_blocks, kernel, kBlockThreads, kDynamicSmemBytes));
     return active_blocks;
 }
 """
@@ -1012,6 +1027,7 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_RS_HALF_PREFETCH))
         + str(int(NATIVE_NORMALIZED_WEIGHT_SCALE))
         + str(int(NATIVE_RS_SCALE_WORD_CACHE))
+        + str(int(NATIVE_ONE_DISPATCH_WARP_CTA))
     ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
@@ -1023,6 +1039,7 @@ _ext = load_inline(
         f"hp{int(NATIVE_RS_HALF_PREFETCH)}_"
         f"nws{int(NATIVE_NORMALIZED_WEIGHT_SCALE)}_"
         f"swc{int(NATIVE_RS_SCALE_WORD_CACHE)}_"
+        f"d1{int(NATIVE_ONE_DISPATCH_WARP_CTA)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
@@ -1050,6 +1067,10 @@ _ext = load_inline(
             f"{int(NATIVE_NORMALIZED_WEIGHT_SCALE)}"
         ),
         f"-DK_NATIVE_RS_SCALE_WORD_CACHE={int(NATIVE_RS_SCALE_WORD_CACHE)}",
+        (
+            "-DK_NATIVE_ONE_DISPATCH_WARP_CTA="
+            f"{int(NATIVE_ONE_DISPATCH_WARP_CTA)}"
+        ),
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",
     ],
