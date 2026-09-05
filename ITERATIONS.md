@@ -11067,3 +11067,32 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/evidence/iter449_native_two_cta_local_correctness.txt` and
   `bench/evidence/iter449_native_two_cta_diagnosis.txt`.
+
+## Iteration 450 — cooperative launch does not repair two-CTA progress
+
+- **Hypothesis/change:** retain the exact Iteration-448 math, roles, 156-CTA
+  scheduler and resource allocation, but replace the ordinary launch with a
+  `cudaLaunchKernelEx` cooperative launch.  CUDA device support and the
+  two-block occupancy query are checked before launch.  The 78-CTA default
+  path uses the same launch API without the cooperative attribute.
+- **Test:** physical GPU1, deterministic local M8, register-dequant and K128
+  batching, 180-second outer timeout.  This run intentionally stops at M8 and
+  does not execute the known-broken M128 post-audit.
+- **Result:** **FAIL/deadlock**.  The cooperative kernel enters 100% GPU
+  utilization and emits no result for more than 60 seconds; it is manually
+  terminated and GPU1 returns to 0% utilization/62 MiB.  The launch API did
+  not return an admission error, so the 156-block grid was accepted, but the
+  body itself did not make progress.
+- **Interpretation:** the inherited Hopper body has an additional one-CTA/SM
+  invariant beyond host occupancy admission, plausibly in dynamic
+  `setmaxnreg`, its fixed-role progress chain, or persistent grid/workspace
+  protocol.  Establishing two-CTA safety would now require sanitizer/stage
+  instrumentation and is no longer a bounded performance knob.  It also
+  cannot be timed.
+- **Decision:** reject two-CTA native residency and restore the safe 78-CTA
+  execution default for further work.  The useful conclusion is structural:
+  reuse the Hopper producer/TMA-consumer protocol, but do not assume its
+  one-CTA persistent body can be occupancy-scaled mechanically.
+- **Evidence:** `bench/evidence/iter450_native_two_cta_cooperative_m8.txt`
+  (empty because the process never passed the first synchronized launch) and
+  `bench/evidence/iter450_native_two_cta_cooperative_diagnosis.txt`.

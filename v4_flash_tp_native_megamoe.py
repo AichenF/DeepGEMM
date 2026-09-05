@@ -804,7 +804,26 @@ void run_native_tp4(
     }
     const auto stream = at::cuda::getCurrentCUDAStream();
     constexpr int kGrid = K_NATIVE_TWO_CTA_PER_SM ? 156 : 78;
-    kernel<<<kGrid, 384, kDynamicSmemBytes, stream>>>(
+    cudaLaunchConfig_t launch_config{};
+    launch_config.gridDim = dim3(kGrid);
+    launch_config.blockDim = dim3(384);
+    launch_config.dynamicSmemBytes = kDynamicSmemBytes;
+    launch_config.stream = stream;
+    cudaLaunchAttribute launch_attribute{};
+    if constexpr (K_NATIVE_TWO_CTA_PER_SM) {
+        int cooperative_supported = 0;
+        C10_CUDA_CHECK(cudaDeviceGetAttribute(
+            &cooperative_supported, cudaDevAttrCooperativeLaunch,
+            workspace.get_device()));
+        TORCH_CHECK(cooperative_supported != 0,
+                    "native two-CTA specialization requires cooperative launch");
+        launch_attribute.id = cudaLaunchAttributeCooperative;
+        launch_attribute.val.cooperative = 1;
+        launch_config.attrs = &launch_attribute;
+        launch_config.numAttrs = 1;
+    }
+    const cudaError_t launch_result = cudaLaunchKernelEx(
+        &launch_config, kernel,
         local_output.data_ptr(), nullptr, static_cast<uint32_t>(tokens),
         sym_buffer,
         tensor_map_l1_acts, tensor_map_l1_acts_sf,
@@ -821,7 +840,7 @@ void run_native_tp4(
         pull_sem_local.data_ptr<uint8_t>(),
         reinterpret_cast<uint8_t*>(pull_sem_mc_ptr),
         rank, push_stride, enable_tp);
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    C10_CUDA_CHECK(launch_result);
 }
 
 int native_tp4_active_blocks_per_sm() {
