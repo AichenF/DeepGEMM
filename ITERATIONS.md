@@ -12547,3 +12547,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - L2 policy reported by fixture: cold 256 MiB clear outside the profiled kernel.
 - Evidence: `results/iter515_w13_act_tail_pipe_correctness_m8_m128_20260905.log`.
 - Decision: correctness gate passed; proceed to a short TP4 cold-L2 candidate/control screen.
+## Iteration 516 — W13-tail activation pipeline TP4 cold-L2 endpoint screen
+
+- Date: 2026-09-05
+- Protocol: TP4 physical GPUs 0/5/6/7, random seed 20260905, M={8,128}, CUDA graphs, replay-granularity paired control/candidate, 2 x 20 measured replays plus 4 warmups. A separate 256 MiB L2 clear immediately precedes every graph replay and is excluded from event timing.
+- Correctness: PASS on all ranks for both M values; candidate/control have identical worst-rank cosine and relative-L2 metrics, and all-reduce checks pass.
+- M8: control 0.074640 ms, candidate 0.078624 ms, candidate +5.34% slower. Candidate improves 1.11% versus Iteration 504's 0.079504 ms, but still loses to the adjacent control.
+- M128: control 0.308704 ms, candidate 0.358720 ms, candidate +16.20% slower. Candidate regresses 1.83% versus Iteration 504's 0.352272 ms.
+- Two-point geometric mean: control 0.151795 ms, candidate 0.167940 ms, candidate +10.64% slower.
+- Stability: candidate batch medians are 0.078464/0.078672 ms at M8 and 0.358432/0.358864 ms at M128.
+- Decision: reject the tail-pipeline candidate. The small-M tail hiding is real but too small; per-group counter/mapping overhead makes large M materially worse. Keep the flat selected kernel as current best.
+- Evidence: `results/iter516_w13_act_tail_pipe_tp4_m8_m128_short_20260905.log`.
