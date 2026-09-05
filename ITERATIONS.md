@@ -15356,3 +15356,28 @@ maximum rank latency of a full CUDA-Graph replay.
   multi-only commit to cherry-pick.
 - **Evidence:** `evidence/iter665_w2_wave_rotation82_gain.md`; raw
   `bench/results/iter665_w2_wave_rotate*_20260906.log`.
+
+## Iteration 666 — terminal W2 arrive-drop is noise-scale
+
+- **Hypothesis/change:** approximate standalone W2 kernel-exit behavior while
+  retaining one launch.  Every compute CTA still performs a release arrival
+  on the terminal packed barrier, but only the 78 small-message or 64
+  large-message collective CTAs wait for the completed generation; all other
+  CTAs exit after arrival.
+- **Resource/correctness:** M128 OFF/ON both remain
+  `REG56 STACK32 SHARED2048 LOCAL0`.  Local M128 is bitwise equal to
+  same-source multi, packed generations advance exactly, and every TP4
+  OFF/ON window passes all-rank reference plus embedded-allreduce gates.
+- **Local cold-L2 ABBA:** eight independent M128 processes in
+  OFF/ON/ON/OFF/OFF/ON/ON/OFF order.  W2 median improves only
+  `106.672 -> 106.208 us` and mean `106.720 -> 106.248 us` (both 0.44%).
+- **TP4 cold-L2 bracket:** GPUs 0/5/6/7, CUDA Graph, 40 samples per
+  implementation/process and separate excluded 256 MiB clear per replay.
+  Averaged paired one/multi-ratio improvements are 0.20%, 0.08%, 0.19%,
+  0.15% and 0.15% for M8/16/32/64/128.  The five-M ratio geometric mean
+  improves only 0.15% (`1.108722 -> 1.107022`).
+- **Decision:** reject below the 1% gate and remove the experiment.  The
+  terminal polling population is not a material gap source; production source
+  and benchmark return byte-identical to commit `b2c3e9d`.
+- **Evidence:** `evidence/iter666_terminal_arrive_drop_rejection.md`; raw
+  `bench/results/iter666_terminal*_20260906.log`.
