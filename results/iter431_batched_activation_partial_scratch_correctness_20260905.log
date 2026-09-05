@@ -1,0 +1,27 @@
+ITER431_BATCHED_ACTIVATION_PARTIAL_SCRATCH_CORRECTNESS
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+physical_gpu=1
+source_commit=15c6cba
+candidate_flag=V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+protocol=TP-disabled all-route comparison against selected local multi-kernel pipeline; random routes seed 20260904; independent excluded 256MiB cold-L2 clear
+m8.accepted=true
+m8.w13_split_k=4
+m8.padded_rows=360
+m8.cosine=0.9999999999999999
+m8.rel_l2=0.0
+m8.finite=true
+m8.packed_generation_words_after=[2048,0,0,2048]
+m128.accepted=true
+m128.w13_split_k=2
+m128.padded_rows=1944
+m128.cosine=1.0
+m128.rel_l2=0.0
+m128.finite=true
+m128.packed_generation_words_after=[2048,0,0,2048]
+result=PASS_BITWISE_ALL_ROUTES
+root_cause_closed=true
+interpretation=reclaiming completed split-0 gate partials preserves exact BF16-rounded activation values and eliminates the nullptr access; batched eight-row scale reduction and FP8 quantization remain bitwise equal without phase-1/2 grid barriers
+performance=NOT_TESTED
+ITER431_BATCHED_ACTIVATION_PARTIAL_SCRATCH_CORRECTNESS_OK

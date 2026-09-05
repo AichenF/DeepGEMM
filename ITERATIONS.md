@@ -10654,3 +10654,23 @@ maximum rank latency of a full CUDA-Graph replay.
   illegal-access failure and bitwise result are both closed.
 - Evidence:
   `results/iter430_partial_scratch_repair_jit_resource_20260905.log`.
+
+## Iteration 431 — batched partial-scratch correctness closes the crash
+
+- Date: 2026-09-05
+- Protocol: exact Iteration 430 binary on idle H20 GPU1, TP disabled, random
+  routes with seed 20260904, and an independent excluded 256 MiB cold-L2
+  clear.  Compare every routed W2 row with the selected local multi-kernel
+  path.
+- Result: PASS bitwise at M8 split-K4 (360 padded rows, cosine
+  `0.9999999999999999`, rel-L2 `0`, finite) and M128 split-K2 (1,944 padded
+  rows, cosine `1`, rel-L2 `0`, finite).  Packed generation words are
+  `[2048,0,0,2048]` for both.
+- Interpretation: the Iteration 428 crash is closed.  Reclaimed split-0 gate
+  slots retain the exact BF16-rounded activation, and the eight-row maxima,
+  scale and FP8 stores preserve bitwise downstream results without restoring
+  phase-1/2 whole-grid synchronization.
+- Decision: correctness gate PASS.  Commit the evidence and run the TP4
+  replay-interleaved cold-L2 endpoint screen with embedded communication.
+- Evidence:
+  `results/iter431_batched_activation_partial_scratch_correctness_20260905.log`.
