@@ -12633,3 +12633,23 @@ maximum rank latency of a full CUDA-Graph replay.
   latency result is claimed yet.
 - **Evidence:**
   `bench/evidence/iter523_native_dual_dispatch_static.txt`.
+## Iteration 524 — dual-dispatch TP4 smoke blocked by flat-kernel JIT regression
+
+- **Intended test:** same-process selected native versus dual-active-dispatch
+  native, TP4 physical GPUs 0/5/6/7, M8/M128, CUDA Graph, two balanced outer
+  rounds x two samples, and a separate excluded 256 MiB L2 clear before every
+  timed replay.
+- **Result:** **FAIL before either native variant built or launched.**  Importing
+  the shared graph harness first rebuilt the flat `v4_flash_tp_wgmma` module
+  and nvcc rejected its default-off SM-striped path: `sm_striped_worker` and
+  `h20_sm_striped_logical_worker` are referenced outside the compile-time
+  feature scope.  The remaining ranks then failed to import the absent `.so`.
+- **Attribution:** this is a pre-existing default-build bug left by Iteration
+  520/522's rejected SM-striped experiment, not evidence for or against dual
+  dispatch.  No CUDA graph, correctness check, or latency sample ran.
+- **Decision:** close the failed attempt, repair the default-off preprocessor
+  scope in the flat module, revalidate its default JIT, then rerun the exact
+  native A/B.  Do not change the dual-dispatch candidate while repairing the
+  independent harness dependency.
+- **Evidence:**
+  `bench/results/iter524_native_dual_dispatch_tp4_smoke_20260905.log`.
