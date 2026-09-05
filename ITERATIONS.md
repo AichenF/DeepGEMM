@@ -12410,3 +12410,23 @@ maximum rank latency of a full CUDA-Graph replay.
   the default-neutral host support.  The CTA-local/DSM family has now failed
   with both legal split granularities.  Stop tuning cohort size and return to
   the independent mapped phase kernel as the one-launch performance base.
+
+## Iteration 502 — capture CTA-local M128 NCU report before analysis
+
+- **Candidate:** unchanged CTA-local split-K2 M128 specialization with real
+  H20 SM mapping, assume-valid GEMM tasks, and release-arrival packed grid
+  barriers; TP communication disabled to isolate route/W13+requant/W2.
+- **Method:** H20 GPU 1, random routes (seed 20260904), profiler-start
+  delimited exact business-kernel filter, kernel replay, 18 passes, NCU cache
+  and clock controls disabled, and the application's separate excluded
+  256-MiB L2 clear.  Sections are SpeedOfLight, MemoryWorkloadAnalysis,
+  SchedulerStats, WarpStateStats, Occupancy, LaunchStats, and
+  InstructionStats.
+- **Capture/result:** **PASS.**  NCU profiles one
+  `tp4_megamoe_single_launch_kernel` launch and writes
+  `results/iter502_cta_local_m128_compute_full.ncu-rep`.  Post-replay output
+  remains bitwise equal to the independent local reference (cosine `1.0`,
+  rel-L2 `0.0`, finite), with 1944 padded rows and packed phase words
+  `[2048, 2048, 0, 2048]`.
+- **Decision:** commit the binary report before importing any metrics or
+  interpreting the bottleneck.
