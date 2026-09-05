@@ -14649,3 +14649,27 @@ maximum rank latency of a full CUDA-Graph replay.
   both individually isolated W13 and W2 as well as the older joint path.
 - **Evidence:** `evidence/iter640_w13_compact_persistent_tp4_m128_paired_cold.md`;
   raw log `bench/results/iter640_w13_compact_persistent_tp4_m128_paired_cold.log`.
+
+## Iteration 641 — compact-W13 split-major resource gate
+
+- **Hypothesis/change:** add default-off
+  `V4_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS=1`. Only the selected
+  M128 compact W13 phase enumerates physical tasks as
+  `(mblock, split, n_tile)` and bijectively maps them back to the unchanged
+  `(mblock, n_tile, split)` route-GEMM ABI. W2, communication, grid geometry,
+  task count, and every phase barrier are unchanged.
+- **Protocol:** synchronized the exact source to both container worktrees,
+  ran Python bytecode compilation, then built a fresh SM90a extension on H20
+  GPU1 and inspected that exact cubin with cuobjdump. No CUDA kernel was
+  launched and no latency was measured.
+- **Resource result:** PASS. Extension
+  `v4tp_de18849883f1094462fd_v178mspec` keeps both M128 SplitK2 and SplitK4
+  entries at `REG=56`, `STACK=32`, `SHARED=2048`, `LOCAL=0`. M64
+  remains at 64 registers and M8/M16/M32 at 61, all with the same 32-byte
+  stack and zero fixed local allocation. The selected 702x128 nine-CTA/SM
+  M128 admission is therefore preserved.
+- **Decision:** advance unchanged to the TP-disabled M128 full-route output
+  and packed-generation-wrap correctness gate. Performance remains wholly
+  unclaimed.
+- **Evidence:** `bench/results/iter641_w13_compact_split_major_resource.log`
+  and `evidence/iter641_w13_compact_split_major_resource.md`.

@@ -497,6 +497,15 @@ SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE = (
     )
     == "1"
 )
+# M128-only compact-outline scheduling experiment.  Enumerate every N128
+# tile for one K split before advancing to the next split, then map that
+# physical ordinal back to route_gemm_task's unchanged logical ABI.
+SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS = (
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS", "0"
+    )
+    == "1"
+)
 SINGLE_LAUNCH_COOPERATIVE_GRID = (
     os.environ.get("V4_SINGLE_LAUNCH_COOPERATIVE_GRID", "0") == "1"
 )
@@ -1559,6 +1568,59 @@ if SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE and (
         "V4_SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE requires the "
         "isolated compact-ABI M128-bound9 schedule-0 path"
     )
+if SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or not SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or not SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W2_PERSISTENT_STATE
+    or SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE
+    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_78CTA_8WG
+    or SINGLE_LAUNCH_156CTA_4WG
+    or SINGLE_LAUNCH_78CTA_SMID_MAP
+    or SINGLE_LAUNCH_SM_STRIPED_TASKS
+    or SINGLE_LAUNCH_78CTA_WG_DAG
+    or SINGLE_LAUNCH_78CTA_LOCAL_W13
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_W2_N64_TAIL
+    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS
+    or SINGLE_LAUNCH_BALANCED_W2_WORKERS
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC
+    or SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or not SINGLE_LAUNCH_M128_BOUND9
+    or not SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS
+    or SINGLE_LAUNCH_W2_UNROLL2_BOUND9
+    or SINGLE_LAUNCH_W2_CHUNK_MAJOR
+    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+    or SINGLE_LAUNCH_W2_CHUNK_AR_POST
+    or SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+    or SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+    or W2_COALESCED_STORE
+    or WOUT != 128
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS requires the "
+        "isolated compact-ABI M128-bound9 valid-task schedule-0 path"
+    )
 if SINGLE_LAUNCH_W2_PERSISTENT_STATE and (
     SINGLE_LAUNCH_SCHEDULE != 0
     or SINGLE_LAUNCH_NOINLINE_GEMM
@@ -1814,6 +1876,8 @@ static constexpr bool kSingleLaunchW2PersistentState =
     K_SINGLE_LAUNCH_W2_PERSISTENT_STATE;
 static constexpr bool kSingleLaunchW13CompactPersistentState =
     K_SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE;
+static constexpr bool kSingleLaunchW13CompactSplitMajorTasks =
+    K_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS;
 static constexpr bool kSingleLaunchW13NextTaskPrefetch =
     K_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH;
 static constexpr bool kSingleLaunchW2NextTaskPrefetch =
@@ -3767,6 +3831,16 @@ __device__ __noinline__ void single_launch_w13_gemm_phase_compact(
     int task_sequence = 0;
     for (int task = cta; task < tasks;
          task += ctas, ++task_sequence) {
+        int logical_task = task;
+        if constexpr (kSingleLaunchW13CompactSplitMajorTasks) {
+            constexpr int kTasksPerMblock = kW13NTiles * SplitK;
+            const int mblock = task / kTasksPerMblock;
+            const int inner = task - mblock * kTasksPerMblock;
+            const int split = inner / kW13NTiles;
+            const int n_tile = inner - split * kW13NTiles;
+            logical_task =
+                (mblock * kW13NTiles + n_tile) * SplitK + split;
+        }
         route_gemm_task<
             4096, 1024, SplitK, true, 0, false, false,
             kSingleLaunchW13CompactPersistentState, -1,
@@ -3776,7 +3850,7 @@ __device__ __noinline__ void single_launch_w13_gemm_phase_compact(
             args->activation, args->activation_scale,
             args->sorted_ids, args->expert_ids, args->num_tokens_padded,
             args->topk_weights, args->output, args->global_lut, nullptr,
-            kMaxRoutes, 0, task, task_sequence);
+            kMaxRoutes, 0, logical_task, task_sequence);
         if constexpr (!kSingleLaunchW13CompactPersistentState)
             __syncthreads();
     }
@@ -11672,6 +11746,7 @@ _EXTENSION_CONFIG = (
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
           f"slw2ps{int(SINGLE_LAUNCH_W2_PERSISTENT_STATE)}_"
           f"slw13cps{int(SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE)}_"
+          f"slw13csm{int(SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS)}_"
           f"slw13np{int(SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH)}_"
           f"slw2np{int(SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH)}_"
           f"slavgt{int(SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS)}_"
@@ -11844,6 +11919,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE="
             f"{int(SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS="
+            f"{int(SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH="
