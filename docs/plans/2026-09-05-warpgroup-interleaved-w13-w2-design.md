@@ -147,6 +147,15 @@ barriered kernels.  Faster WGs may enter downstream work while slower WGs
 finish their producer stripe; the only CTA-wide and whole-grid convergence is
 the terminal W2 boundary required by ordered k6 reduction and TP communication.
 
+Iteration 436 shows that placing all three loops directly in the monolithic
+entry grows its per-thread caller stack by 64 bytes.  The selected repair is
+one noinline boundary per complete phase stripe, not one call per tile.  W13
+and W2 phase callees inline their route-GEMM task bodies and preserve
+task-to-task optimization; the activation phase similarly owns the full
+static group loop.  The kernel entry retains only three sequential calls, so
+cross-phase pointer/cursor state is dead at each boundary while task hot paths
+do not pay the earlier rejected per-tile ABI overhead.
+
 ### 2. Static two-CTA mblock cohorts
 
 Two physical CTAs own each mblock, complete W13 and matching requant groups,
