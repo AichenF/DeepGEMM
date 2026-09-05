@@ -147,6 +147,7 @@ def make_weights(
     intermediate_per_rank: int,
     device: torch.device,
     include_native: bool = False,
+    native_kernel_module: Any | None = None,
 ) -> tuple[torch.Tensor, ...]:
     n13 = 2 * intermediate_per_rank
     w13 = torch.randint(
@@ -179,7 +180,9 @@ def make_weights(
     )
     native_weights: tuple[torch.Tensor, ...] = ()
     if include_native:
-        import v4_flash_tp_native_megamoe as native_kernel
+        native_kernel = native_kernel_module
+        if native_kernel is None:
+            import v4_flash_tp_native_megamoe as native_kernel
 
         native_weights = native_kernel.transform_weights(w13, s13, w2, s2)
     # The checkpoint/Humming contract is canonical Marlin K8.  The inherited
@@ -221,6 +224,9 @@ class CapturedCase:
     native_w2: torch.Tensor | None = None
     native_g13: torch.Tensor | None = None
     native_g2: torch.Tensor | None = None
+    native_s13: torch.Tensor | None = None
+    native_s2: torch.Tensor | None = None
+    native_kernel_module: Any | None = None
 
     def __post_init__(self) -> None:
         device = self.qx.device
@@ -335,7 +341,10 @@ class CapturedCase:
             else 624
             if kernel.SINGLE_LAUNCH_GROUPED_W13_ACT
             else 4 * max_mblocks
-            if kernel.SINGLE_LAUNCH_W13_COMPLETION_ACT
+            if (
+                kernel.SINGLE_LAUNCH_W13_COMPLETION_ACT
+                or kernel.SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
+            )
             else 78
             if kernel.SINGLE_LAUNCH_TAIL_OVERLAP
             else 0
@@ -386,15 +395,20 @@ class CapturedCase:
             self.native_w2,
             self.native_g13,
             self.native_g2,
+            self.native_s13,
+            self.native_s2,
         )
         if any(value is None for value in native_fields) and not all(
             value is None for value in native_fields
         ):
             raise ValueError(
-                "native W13/W2 weights and global scales must be provided together"
+                "native W13/W2 weights, scales and global scales must be provided together"
             )
         if self.native_w13 is not None:
-            import v4_flash_tp_native_megamoe as native_kernel
+            native_kernel = self.native_kernel_module
+            if native_kernel is None:
+                import v4_flash_tp_native_megamoe as native_kernel
+                self.native_kernel_module = native_kernel
 
             self.native_workspace = native_kernel.allocate_workspace(
                 self.intermediate_per_rank, device
@@ -904,11 +918,14 @@ class CapturedCase:
     def run_native_tp4_single_launch(
         self, comm: CustomAllReduceV2
     ) -> torch.Tensor:
-        import v4_flash_tp_native_megamoe as native_kernel
+        native_kernel = self.native_kernel_module
+        if native_kernel is None:
+            import v4_flash_tp_native_megamoe as native_kernel
 
         self.prepare_fused_pull(comm)
         assert self.native_workspace is not None
         assert self.native_w13 is not None and self.native_w2 is not None
+        assert self.native_s13 is not None and self.native_s2 is not None
         assert self.native_g13 is not None and self.native_g2 is not None
         assert self.native_local_output is not None
         assert self.fused_push_workspaces is not None
@@ -928,6 +945,8 @@ class CapturedCase:
             self.native_workspace,
             self.native_w13,
             self.native_w2,
+            self.native_s13,
+            self.native_s2,
             self.native_g13,
             self.native_g2,
             self.native_local_output,
@@ -1383,6 +1402,9 @@ def main() -> None:
                     ),
                     "single_launch_w13_completion_act": (
                         kernel.SINGLE_LAUNCH_W13_COMPLETION_ACT
+                    ),
+                    "single_launch_w13_act_tail_pipe": (
+                        kernel.SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
                     ),
                     "single_launch_dual_wg_phases": (
                         kernel.SINGLE_LAUNCH_DUAL_WG_PHASES

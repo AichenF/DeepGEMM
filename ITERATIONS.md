@@ -12502,3 +12502,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Comparison: Iteration 504's same-route selected 8-CTA inline candidate was 0.352272 ms versus a 0.308672 ms control (+14.13%). The outlined/9-CTA path is ~0.99% slower in absolute candidate time and ~1.94 percentage points worse when normalized to its adjacent control.
 - Decision: reject. Register-lifetime isolation reaches the intended occupancy but device-call/stack/tighter scheduling cost exceeds the occupancy benefit. Keep both flags default-off and return to the inline 624x128 path.
 - Evidence: `results/iter509_dual_phase_outline_tp4_m128_short_20260905.log`.
+## Iteration 510 — implement static W13-tail activation handoff (2026-09-05)
+
+- Hypothesis: CTAs that own no W13 final-wave task can execute their unchanged static activation stripe while peers finish the last cold-weight task, eliminating the W13-to-activation whole-grid barrier without interrupting any CTA's W13 stream or introducing a global work queue.
+- Change: add default-off `V4_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE=1`. Every completed W13 gate/up split tile contributes one acq-rel arrival to a distributed `(mblock,N128-group)` counter. After a CTA exhausts its static W13 stripe it starts its ordinary static activation stripe, using one acquire wait only when that route/group is not ready. One packed grid barrier publishes the combined W13+requant phase; W2 and embedded TP communication remain unchanged. Scheduler storage is reset in-kernel and sized in both graph fixtures. JIT hash/compile define and benchmark metadata include the flag.
+- Isolation: require the selected inline 624x128, 8-CTA/SM schedule-0 path; disallow all prior tail/cohort/DAG/outline/dynamic-residency experiments. Assume-valid and release-arrival remain composable.
+- Static verification: all four edited Python/benchmark modules pass `python3 -m py_compile`.
+- Decision: proceed to JIT/resource and exact local endpoint correctness. No performance claim yet.

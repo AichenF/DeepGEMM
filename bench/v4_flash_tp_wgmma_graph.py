@@ -341,7 +341,10 @@ class CapturedCase:
             else 624
             if kernel.SINGLE_LAUNCH_GROUPED_W13_ACT
             else 4 * max_mblocks
-            if kernel.SINGLE_LAUNCH_W13_COMPLETION_ACT
+            if (
+                kernel.SINGLE_LAUNCH_W13_COMPLETION_ACT
+                or kernel.SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
+            )
             else 78
             if kernel.SINGLE_LAUNCH_TAIL_OVERLAP
             else 0
@@ -1399,6 +1402,9 @@ def main() -> None:
                     ),
                     "single_launch_w13_completion_act": (
                         kernel.SINGLE_LAUNCH_W13_COMPLETION_ACT
+                    ),
+                    "single_launch_w13_act_tail_pipe": (
+                        kernel.SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
                     ),
                     "single_launch_dual_wg_phases": (
                         kernel.SINGLE_LAUNCH_DUAL_WG_PHASES

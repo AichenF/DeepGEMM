@@ -160,6 +160,9 @@ SINGLE_LAUNCH_ACT_W2_COHORT = (
 SINGLE_LAUNCH_W13_COMPLETION_ACT = (
     os.environ.get("V4_SINGLE_LAUNCH_W13_COMPLETION_ACT", "0") == "1"
 )
+SINGLE_LAUNCH_W13_ACT_TAIL_PIPE = (
+    os.environ.get("V4_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE", "0") == "1"
+)
 SINGLE_LAUNCH_W13_N64_TAIL = (
     os.environ.get("V4_SINGLE_LAUNCH_W13_N64_TAIL", "0") == "1"
 )
@@ -342,6 +345,10 @@ if SINGLE_LAUNCH_GROUPED_W13_ACT and SINGLE_LAUNCH_SCHEDULE != 0:
 if SINGLE_LAUNCH_W13_COMPLETION_ACT and SINGLE_LAUNCH_SCHEDULE != 0:
     raise ValueError(
         "V4_SINGLE_LAUNCH_W13_COMPLETION_ACT requires schedule 0"
+    )
+if SINGLE_LAUNCH_W13_ACT_TAIL_PIPE and SINGLE_LAUNCH_SCHEDULE != 0:
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE requires schedule 0"
     )
 if SINGLE_LAUNCH_W13_N64_TAIL and (
     SINGLE_LAUNCH_SCHEDULE != 0
@@ -1121,6 +1128,39 @@ if SINGLE_LAUNCH_W2_PHASE_NOINLINE and (
         "V4_SINGLE_LAUNCH_W2_PHASE_NOINLINE requires the isolated "
         "WOUT128 two-stage schedule-0 route-output path"
     )
+if SINGLE_LAUNCH_W13_ACT_TAIL_PIPE and (
+    SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or SINGLE_LAUNCH_M128_BOUND9
+    or SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM
+    or SINGLE_LAUNCH_MIN_BLOCKS != 8
+    or SINGLE_LAUNCH_CTAS_PER_SM != 8
+    or WOUT != 128
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE requires the isolated inline "
+        "8-CTA/SM schedule-0 path"
+    )
 if SINGLE_LAUNCH_DUAL_WG_PHASES and (
     not SINGLE_LAUNCH_P2P_TWO_SHOT
     or SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS != 64
@@ -1436,6 +1476,8 @@ static constexpr bool kSingleLaunchActW2Cohort =
     K_SINGLE_LAUNCH_ACT_W2_COHORT;
 static constexpr bool kSingleLaunchW13CompletionAct =
     K_SINGLE_LAUNCH_W13_COMPLETION_ACT;
+static constexpr bool kSingleLaunchW13ActTailPipe =
+    K_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE;
 static constexpr bool kSingleLaunchW13N64Tail =
     K_SINGLE_LAUNCH_W13_N64_TAIL;
 static constexpr bool kSingleLaunchW13TailSplit4 =
@@ -6163,7 +6205,8 @@ void tp4_megamoe_single_launch_kernel(
              word < kSingleLaunchGroupedStateWords;
              word += ctas * blockDim.x)
             scheduler[word] = 0;
-    } else if constexpr (kSingleLaunchW13CompletionAct) {
+    } else if constexpr (kSingleLaunchW13CompletionAct
+                         || kSingleLaunchW13ActTailPipe) {
         for (int word = cta * blockDim.x + threadIdx.x;
              word < 4 * max_mblocks; word += ctas * blockDim.x)
             scheduler[word] = 0;
@@ -7099,6 +7142,70 @@ void tp4_megamoe_single_launch_kernel(
                 }
                 single_launch_group_barrier(scheduler, cohort, SplitK);
             }
+            single_launch_grid_barrier(barrier_state, 1, ctas);
+            if (cta == 0 && threadIdx.x == 0) {
+                uint64_t* stamps = reinterpret_cast<uint64_t*>(
+                    barrier_state + kSingleLaunchBarrierWords);
+                stamps[3] = stamps[2];
+            }
+        } else if constexpr (kSingleLaunchW13ActTailPipe) {
+            constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
+            constexpr int kArrivalsPerGroup = 2 * SplitK;
+
+            // Preserve the selected flat, uninterrupted W13 stripe.  CTAs
+            // with no final-wave task immediately consume their ordinary
+            // static activation stripe, waiting only when that route's
+            // gate/up group has not yet been release-published.  This hides
+            // requantization under the underfilled W13 tail without a global
+            // task queue or interspersing epilogue work into the weight loop.
+            for (int task = cta; task < w13_tasks; task += ctas) {
+                route_gemm_task<
+                    4096, 1024, SplitK, true, 0, false, false, false,
+                    -1, false, 0, kSingleLaunchAssumeValidGemmTasks>(
+                    &w13_tma_weight, &w13_tma_weight_scale,
+                    w13, s13, g13, qx, x_scale,
+                    sorted_ids, expert_ids, num_tokens_padded, topk_weights,
+                    partials, lut, nullptr, routes, 0, task);
+                __syncthreads();
+
+                const int tile = task / SplitK;
+                const int mblock = tile / kW13NTiles;
+                const int n_tile = tile - mblock * kW13NTiles;
+                const int activation_group =
+                    n_tile % kActivationGroupsPerRoute;
+                const int activation_unit =
+                    mblock * kActivationGroupsPerRoute + activation_group;
+                if (threadIdx.x == 0) {
+                    atomic_add_acq_rel_gpu_i32(
+                        scheduler + activation_unit, 1);
+                }
+            }
+
+            const int activation_groups =
+                routes * kActivationGroupsPerRoute;
+            for (int group = cta; group < activation_groups;
+                 group += ctas) {
+                const int route = group / kActivationGroupsPerRoute;
+                const int activation_group =
+                    group - route * kActivationGroupsPerRoute;
+                const int mblock =
+                    __ldg(route_to_sorted + route) / kTok;
+                const int activation_unit =
+                    mblock * kActivationGroupsPerRoute + activation_group;
+                if (threadIdx.x == 0) {
+                    while (load_acquire_gpu_i32(
+                               scheduler + activation_unit)
+                           != kArrivalsPerGroup) {
+                        __nanosleep(64);
+                    }
+                }
+                __syncthreads();
+                reduce_swiglu_quant_task<kIntermediate, SplitK>(
+                    partials, activation, qactivation, activation_scale,
+                    route_to_sorted, topk_ids, g2, routes, group);
+                __syncthreads();
+            }
+
             single_launch_grid_barrier(barrier_state, 1, ctas);
             if (cta == 0 && threadIdx.x == 0) {
                 uint64_t* stamps = reinterpret_cast<uint64_t*>(
@@ -9479,7 +9586,8 @@ void run_tp4_megamoe_single_launch(
         ? kSchedulerHeaderWords + 3LL * expert_ids.numel()
         : (kSingleLaunchGroupedW13Act || kSingleLaunchActW2Cohort)
             ? kSingleLaunchGroupedStateWords
-            : kSingleLaunchW13CompletionAct
+            : (kSingleLaunchW13CompletionAct
+               || kSingleLaunchW13ActTailPipe)
                 ? 4LL * expert_ids.numel()
             : kSingleLaunchTailOverlap ? kSingleLaunchTailStateWords : 0;
     TORCH_CHECK(barrier_state.scalar_type() == torch::kInt32
@@ -10361,6 +10469,7 @@ _EXTENSION_CONFIG = (
           f"slga{int(SINGLE_LAUNCH_GROUPED_W13_ACT)}_"
           f"slaw{int(SINGLE_LAUNCH_ACT_W2_COHORT)}_"
           f"slca{int(SINGLE_LAUNCH_W13_COMPLETION_ACT)}_"
+          f"slwatp{int(SINGLE_LAUNCH_W13_ACT_TAIL_PIPE)}_"
           f"sln64{int(SINGLE_LAUNCH_W13_N64_TAIL)}_"
           f"slts4{int(SINGLE_LAUNCH_W13_TAIL_SPLIT4)}_"
           f"slcl{int(SINGLE_LAUNCH_CLUSTER_W13_ACT)}_"
@@ -10606,6 +10715,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W13_COMPLETION_ACT="
             f"{int(SINGLE_LAUNCH_W13_COMPLETION_ACT)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE="
+            f"{int(SINGLE_LAUNCH_W13_ACT_TAIL_PIPE)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W13_N64_TAIL="
