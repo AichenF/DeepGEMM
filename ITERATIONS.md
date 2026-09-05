@@ -10165,3 +10165,19 @@ maximum rank latency of a full CUDA-Graph replay.
   TP-disabled M8/M128 next before any timing.
 - Evidence:
   `results/iter409_hopper_wg_dag_resource_audit_20260905.log`.
+
+## Iteration 410 — compute-only launch blocked by harness import path
+
+- Date: 2026-09-05
+- Attempt: launch the unchanged Iteration 408 Hopper WG-DAG on H20 GPU0 via
+  `bench/profile_v4_flash_tp_single_compute.py`, first at M8 and then M128,
+  with TP communication disabled.
+- Result: the M8 process exits before any GPU launch because invoking the
+  script by its `bench/` path leaves the repository root out of `sys.path`:
+  `ModuleNotFoundError: No module named 'v4_flash_tp_wgmma'`.  M128 is not
+  attempted.  This provides no correctness or performance evidence and is
+  not a kernel failure.
+- Decision: record the failed attempt without changing source, then rerun the
+  same committed binary with `PYTHONPATH=.`.
+- Evidence:
+  `results/iter410_hopper_wg_dag_compute_launch_import_failure_20260905.log`.

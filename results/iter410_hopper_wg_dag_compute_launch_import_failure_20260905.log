@@ -1,0 +1,17 @@
+ITER410_HOPPER_WG_DAG_COMPUTE_LAUNCH_IMPORT_FAILURE
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+gpu=0
+source_commit=8c3d036
+command=python bench/profile_v4_flash_tp_single_compute.py --m 8 --route-pattern random --seed 20260904
+candidate_flag=V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+result=FAIL_BEFORE_GPU_LAUNCH
+exception=ModuleNotFoundError: No module named 'v4_flash_tp_wgmma'
+root_cause=executing a script by path makes bench/ sys.path[0]; repository root was not added to PYTHONPATH
+gpu_kernel_launched=false
+m128_attempted=false
+correctness=NOT_TESTED
+performance=NOT_TESTED
+repair=rerun the unchanged committed source with PYTHONPATH=.
+ITER410_HOPPER_WG_DAG_COMPUTE_LAUNCH_IMPORT_FAILURE_RECORDED
