@@ -11881,3 +11881,33 @@ maximum rank latency of a full CUDA-Graph replay.
   deciding whether the second TMA issue repays its 15% byte reduction.
 - **Evidence:**
   `bench/evidence/iter479_split_tma_tp4_endpoint_graph_smoke.txt`.
+
+## Iteration 480 — split TMA saves bytes but not endpoint latency
+
+- **Protocol:** unchanged committed split candidate versus the selected
+  multi-kernel control in one TP4 process on physical GPUs 0–3, random M8 and
+  M128 routes, two balanced batches x ten rank-max samples per arm and M,
+  three warmups, CUDA Graph, and an excluded 256 MiB clear immediately before
+  every independently timed replay.  This matches the Iteration-460 endpoint
+  screen used to select the 80-byte normalized native control.
+- **Correctness:** **PASS** at both shapes with exactly the Iteration-479
+  metrics; every rank is finite and embedded communication remains within the
+  established NCCL envelope.
+- **Cold-L2 result (multi / split-native median):** M8
+  `0.071520/0.104816 ms`, split native `1.46555x` slower; M128
+  `0.306416/0.379680 ms`, split native `1.23910x` slower.  Endpoint geometric
+  means are `0.148037/0.199491 ms`.
+- **Direct comparison to retained 80-byte native (Iteration 460):** M8
+  `0.104160 -> 0.104816 ms` (`+0.63%` regression); M128
+  `0.380128 -> 0.379680 ms` (`0.12%` improvement); endpoint geometric mean
+  `0.198983 -> 0.199491 ms` (`0.26%` regression).  Normalizing through the
+  paired controls gives the same direction: candidate/control ratio worsens
+  from `1.343748x` to `1.347576x`.
+- **Interpretation/decision:** **reject** and leave
+  `V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA` default-off.  A 15% reduction in B bytes
+  is offset by issuing and retiring a second TMA transaction per K128 stage;
+  M128's sub-percent change is noise-sized and M8 regresses.  Retain the
+  implementation only as evidence and a possible substrate for scale packing;
+  do not select it or run a five-M formal verdict.
+- **Evidence:**
+  `bench/evidence/iter480_split_tma_tp4_endpoint_cold_screen.txt`.

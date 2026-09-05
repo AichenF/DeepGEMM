@@ -1,0 +1,31 @@
+ITERATION 480 — split weight/scale TMA endpoint cold-L2 screen
+
+Protocol:
+  TP4 GPUs 0,1,2,3; random M=8,128
+  V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA=1
+  same-process selected multi-kernel control
+  CUDA Graph; outer=2; replays=10; warmups=3; rank-max
+  independent excluded 256 MiB L2 clear before every replay
+
+M8:
+  multi min/median/max=0.0706880018/0.0715200007/0.0886719972 ms
+  split min/median/max=0.1032639965/0.1048160009/0.1110719964 ms
+  split/multi=1.4655480969
+
+M128:
+  multi min/median/max=0.3047359884/0.3064160049/0.3148480058 ms
+  split min/median/max=0.3777599931/0.3796799928/0.3944320083 ms
+  split/multi=1.2390997426
+
+Endpoint geometric means:
+  multi=0.1480367282 ms
+  split=0.1994906977 ms
+  split/multi=1.3475757009
+
+Versus retained 80-byte native Iteration 460:
+  M8 0.1041600034 -> 0.1048160009 ms (+0.63%)
+  M128 0.3801280111 -> 0.3796799928 ms (-0.12%)
+  endpoint GM 0.1989827503 -> 0.1994906977 ms (+0.26%)
+
+Verdict: REJECT.  Byte reduction does not improve endpoint geometric mean;
+keep the switch default-off and retain the 80-byte path.
