@@ -37,9 +37,18 @@ NATIVE_TWO_CTA_PER_SM = (
 NATIVE_SKIP_CLEANUP_GRID_SYNC = (
     os.environ.get("V4_NATIVE_SKIP_CLEANUP_GRID_SYNC", "0") == "1"
 )
+NATIVE_RS_HALF_PREFETCH = (
+    os.environ.get("V4_NATIVE_RS_HALF_PREFETCH", "0") == "1"
+)
 if NATIVE_TWO_CTA_PER_SM and not NATIVE_REGISTER_DEQUANT:
     raise ValueError(
         "V4_NATIVE_TWO_CTA_PER_SM requires V4_NATIVE_REGISTER_DEQUANT=1"
+    )
+if NATIVE_RS_HALF_PREFETCH and not (
+    NATIVE_REGISTER_DEQUANT and NATIVE_RS_K128_BATCH
+):
+    raise ValueError(
+        "V4_NATIVE_RS_HALF_PREFETCH requires register dequant and K128 batching"
     )
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
@@ -337,6 +346,9 @@ _CUDA = r"""
 #endif
 #ifndef K_NATIVE_SKIP_CLEANUP_GRID_SYNC
 #define K_NATIVE_SKIP_CLEANUP_GRID_SYNC 0
+#endif
+#ifndef K_NATIVE_RS_HALF_PREFETCH
+#define K_NATIVE_RS_HALF_PREFETCH 0
 #endif
 
 using namespace deep_gemm;
@@ -903,6 +915,7 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_RS_K128_BATCH))
         + str(int(NATIVE_TWO_CTA_PER_SM))
         + str(int(NATIVE_SKIP_CLEANUP_GRID_SYNC))
+        + str(int(NATIVE_RS_HALF_PREFETCH))
     ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
@@ -911,6 +924,7 @@ _ext = load_inline(
         f"kb{int(NATIVE_RS_K128_BATCH)}_"
         f"cta2{int(NATIVE_TWO_CTA_PER_SM)}_"
         f"scg{int(NATIVE_SKIP_CLEANUP_GRID_SYNC)}_"
+        f"hp{int(NATIVE_RS_HALF_PREFETCH)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
@@ -932,6 +946,7 @@ _ext = load_inline(
             "-DK_NATIVE_SKIP_CLEANUP_GRID_SYNC="
             f"{int(NATIVE_SKIP_CLEANUP_GRID_SYNC)}"
         ),
+        f"-DK_NATIVE_RS_HALF_PREFETCH={int(NATIVE_RS_HALF_PREFETCH)}",
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",
     ],

@@ -997,49 +997,115 @@
                         const auto activation_desc =
                             mma::sm90::make_smem_desc(
                                 smem_a[stage_idx] + k * 32, 1);
-                        #pragma unroll
-                        for (uint32_t half = 0;
-                             half < kSwapABWeightHalves; ++ half) {
-                            const uint32_t packed_row0 =
-                                wg_n_idx + half * 64u + r_0;
-                            const uint32_t packed_row1 =
-                                wg_n_idx + half * 64u + r_1;
-                            const uint8_t* row_ptr0 =
-                                reinterpret_cast<const uint8_t*>(
-                                    smem_packed_b[stage_idx])
-                                + packed_row0 * B_LOAD_BYTES_PER_ROW;
-                            const uint8_t* row_ptr1 =
-                                reinterpret_cast<const uint8_t*>(
-                                    smem_packed_b[stage_idx])
-                                + packed_row1 * B_LOAD_BYTES_PER_ROW;
-                            const uint32_t packed0 =
-                                *reinterpret_cast<const uint32_t*>(
-                                    row_ptr0 + k * 16u + packed_k_offset);
-                            const uint32_t packed1 =
-                                *reinterpret_cast<const uint32_t*>(
-                                    row_ptr1 + k * 16u + packed_k_offset);
-                            const uint32_t exponent0 =
-                                row_ptr0[64u + k * 2u];
-                            const uint32_t exponent1 =
-                                row_ptr1[64u + k * 2u];
-                            const uint2 lut0 = smem_mxfp4_lut[
-                                deep_gemm::mxfp4::e8m0_lut_index(
-                                    exponent0)];
-                            const uint2 lut1 = smem_mxfp4_lut[
-                                deep_gemm::mxfp4::e8m0_lut_index(
-                                    exponent1)];
-                            const uint2 fp8_0 = deep_gemm::mxfp4::
-                                dequant_mode2_nibble_word(packed0, lut0);
-                            const uint2 fp8_1 = deep_gemm::mxfp4::
-                                dequant_mode2_nibble_word(packed1, lut1);
-                            RSWGMMA::fma(
-                                fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
-                                activation_desc,
-                                swap_accum[half][0],
-                                swap_accum[half][1],
-                                swap_accum[half][2],
-                                swap_accum[half][3],
-                                cute::SM90::GMMA::ScaleOut::One);
+                        if constexpr (K_NATIVE_RS_HALF_PREFETCH) {
+                            uint32_t packed0[kSwapABWeightHalves];
+                            uint32_t packed1[kSwapABWeightHalves];
+                            uint32_t exponent0[kSwapABWeightHalves];
+                            uint32_t exponent1[kSwapABWeightHalves];
+                            uint2 lut0[kSwapABWeightHalves];
+                            uint2 lut1[kSwapABWeightHalves];
+
+                            // Make the two independent half-tile shared loads
+                            // visible before either LUT/dequant dependency
+                            // chain.  Keep the live range inside one K32 so
+                            // the two-CTA 88-register budget remains viable.
+                            #pragma unroll
+                            for (uint32_t half = 0;
+                                 half < kSwapABWeightHalves; ++ half) {
+                                const uint32_t packed_row0 =
+                                    wg_n_idx + half * 64u + r_0;
+                                const uint32_t packed_row1 =
+                                    wg_n_idx + half * 64u + r_1;
+                                const uint8_t* row_ptr0 =
+                                    reinterpret_cast<const uint8_t*>(
+                                        smem_packed_b[stage_idx])
+                                    + packed_row0 * B_LOAD_BYTES_PER_ROW;
+                                const uint8_t* row_ptr1 =
+                                    reinterpret_cast<const uint8_t*>(
+                                        smem_packed_b[stage_idx])
+                                    + packed_row1 * B_LOAD_BYTES_PER_ROW;
+                                exponent0[half] = row_ptr0[64u + k * 2u];
+                                exponent1[half] = row_ptr1[64u + k * 2u];
+                                packed0[half] =
+                                    *reinterpret_cast<const uint32_t*>(
+                                        row_ptr0 + k * 16u + packed_k_offset);
+                                packed1[half] =
+                                    *reinterpret_cast<const uint32_t*>(
+                                        row_ptr1 + k * 16u + packed_k_offset);
+                            }
+                            #pragma unroll
+                            for (uint32_t half = 0;
+                                 half < kSwapABWeightHalves; ++ half) {
+                                lut0[half] = smem_mxfp4_lut[
+                                    deep_gemm::mxfp4::e8m0_lut_index(
+                                        exponent0[half])];
+                                lut1[half] = smem_mxfp4_lut[
+                                    deep_gemm::mxfp4::e8m0_lut_index(
+                                        exponent1[half])];
+                            }
+                            #pragma unroll
+                            for (uint32_t half = 0;
+                                 half < kSwapABWeightHalves; ++ half) {
+                                const uint2 fp8_0 = deep_gemm::mxfp4::
+                                    dequant_mode2_nibble_word(
+                                        packed0[half], lut0[half]);
+                                const uint2 fp8_1 = deep_gemm::mxfp4::
+                                    dequant_mode2_nibble_word(
+                                        packed1[half], lut1[half]);
+                                RSWGMMA::fma(
+                                    fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
+                                    activation_desc,
+                                    swap_accum[half][0],
+                                    swap_accum[half][1],
+                                    swap_accum[half][2],
+                                    swap_accum[half][3],
+                                    cute::SM90::GMMA::ScaleOut::One);
+                            }
+                        } else {
+                            #pragma unroll
+                            for (uint32_t half = 0;
+                                 half < kSwapABWeightHalves; ++ half) {
+                                const uint32_t packed_row0 =
+                                    wg_n_idx + half * 64u + r_0;
+                                const uint32_t packed_row1 =
+                                    wg_n_idx + half * 64u + r_1;
+                                const uint8_t* row_ptr0 =
+                                    reinterpret_cast<const uint8_t*>(
+                                        smem_packed_b[stage_idx])
+                                    + packed_row0 * B_LOAD_BYTES_PER_ROW;
+                                const uint8_t* row_ptr1 =
+                                    reinterpret_cast<const uint8_t*>(
+                                        smem_packed_b[stage_idx])
+                                    + packed_row1 * B_LOAD_BYTES_PER_ROW;
+                                const uint32_t packed0 =
+                                    *reinterpret_cast<const uint32_t*>(
+                                        row_ptr0 + k * 16u + packed_k_offset);
+                                const uint32_t packed1 =
+                                    *reinterpret_cast<const uint32_t*>(
+                                        row_ptr1 + k * 16u + packed_k_offset);
+                                const uint32_t exponent0 =
+                                    row_ptr0[64u + k * 2u];
+                                const uint32_t exponent1 =
+                                    row_ptr1[64u + k * 2u];
+                                const uint2 lut0 = smem_mxfp4_lut[
+                                    deep_gemm::mxfp4::e8m0_lut_index(
+                                        exponent0)];
+                                const uint2 lut1 = smem_mxfp4_lut[
+                                    deep_gemm::mxfp4::e8m0_lut_index(
+                                        exponent1)];
+                                const uint2 fp8_0 = deep_gemm::mxfp4::
+                                    dequant_mode2_nibble_word(packed0, lut0);
+                                const uint2 fp8_1 = deep_gemm::mxfp4::
+                                    dequant_mode2_nibble_word(packed1, lut1);
+                                RSWGMMA::fma(
+                                    fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
+                                    activation_desc,
+                                    swap_accum[half][0],
+                                    swap_accum[half][1],
+                                    swap_accum[half][2],
+                                    swap_accum[half][3],
+                                    cute::SM90::GMMA::ScaleOut::One);
+                            }
                         }
                         if constexpr (!K_NATIVE_RS_K128_BATCH) {
                             ptx::warpgroup_commit_batch();

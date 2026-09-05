@@ -11276,3 +11276,32 @@ maximum rank latency of a full CUDA-Graph replay.
   weakening more Hopper synchronization.
 - **Evidence:**
   `bench/evidence/iter456_native_skip_cleanup_sync_tp4_cold_screen.txt`.
+
+## Iteration 457 — half-tile RS operand prefetch regresses
+
+- **Hypothesis/change:** NCU showed much more waiting on the first 64-column
+  half's exponent/LUT dependency than on the second.  Add opt-in
+  `V4_NATIVE_RS_HALF_PREFETCH=1` to issue both halves' packed-word and exponent
+  shared loads, then both LUT loads, before either half is dequantized and fed
+  to RS-WGMMA.  The live range remains within one K32; K128 batching, two CTA
+  residency, the 88-register math target and all Hopper role boundaries are
+  unchanged.
+- **Protocol:** TP4 GPUs 0-3, random M={8,128}, same-process selected
+  multi-kernel control versus the two-CTA Hopper-native candidate.  Two
+  balanced batches x 10 independently cold-L2, rank-max CUDA-Graph samples
+  per arm, three warmups, and an excluded 256 MiB clear before every replay.
+  Inputs remain caller-provided FP8-E4M3 plus FP32 group-128 scales.
+- **Correctness:** **PASS** at both endpoints with exactly the accepted native
+  envelope: final cosine is `0.9993737802/0.9993696394`, relative L2 is
+  `0.0353911190/0.0355026359`, and the embedded collective oracle passes.
+- **Cold-L2 result (multi / candidate median):** M8
+  `0.073840/0.115872 ms` (`1.5692x` slower), M128
+  `0.301536/0.396704 ms` (`1.3156x` slower).  Against Iteration 453's same
+  native control, prefetch regresses M8 by `1.97%` and M128 by `0.42%`.
+- **Interpretation/decision:** **reject** and leave the flag default-off.  The
+  larger simultaneous packed/exponent/LUT live range and longer issue region
+  cost more than the available shared-load latency overlap.  Do not extend
+  this to K128-wide prefetch, which would raise register pressure further and
+  threaten the proven two-CTA residency.
+- **Evidence:**
+  `bench/evidence/iter457_native_rs_half_prefetch_tp4_cold_screen.txt`.

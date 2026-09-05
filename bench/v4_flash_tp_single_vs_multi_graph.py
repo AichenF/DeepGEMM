@@ -207,6 +207,11 @@ def main() -> None:
                         )
                         == "1"
                     ),
+                    "native_rs_half_prefetch": bool(
+                        use_native
+                        and os.environ.get("V4_NATIVE_RS_HALF_PREFETCH", "0")
+                        == "1"
+                    ),
                     "single_launch_interleaved": (
                         kernel.SINGLE_LAUNCH_INTERLEAVED
                     ),
