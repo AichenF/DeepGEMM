@@ -5199,6 +5199,10 @@ void tp4_megamoe_single_launch_kernel(
              vec < kLocalSumVecs; vec += ctas * blockDim.x) {
             local_sum_zero[vec] = make_uint4(0u, 0u, 0u, 0u);
         }
+        // Proxy fences are thread-scoped.  Publish each writer lane's
+        // generic zero stores before the grid barrier transfers completion
+        // to the later shared-to-global async-reduce issuer.
+        asm volatile("fence.proxy.async.global;" ::: "memory");
     }
     single_launch_route_task<kSingleLaunchThreads>(
         topk_ids, sorted_ids, expert_ids, num_tokens_padded,

@@ -9144,3 +9144,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Conclusion:** Per-group request count and intra-task destination pattern are disproven.  The strongest remaining protocol discrepancy versus the exact standalone probe is ownership of the local-sum zero initialization: many lanes perform generic stores, while only the later async issuer executed the proxy fence.  Test a writer-side `fence.proxy.async.global` on every clearing lane before phase-0 publication.
 - **Decision:** Keep route-count instrumentation for isolation only and bulk combine default-off.
 - **Artifact:** `bench/results/iter368_bulk_reduce_route1_compute_m8_20260905.log`.
+
+## Iteration 369 — writer-side global async-proxy fence rejected (2026-09-05)
+
+- **Hypothesis:** The local FP32 destination was zeroed through generic global stores by many lanes, but the async-proxy fence was executed only later by the reduction issuer.  Because proxy fences are thread-scoped, publish every clearing lane's own generic stores before phase-0 grid synchronization.
+- **Change:** Added `fence.proxy.async.global` unconditionally for every thread immediately after its local-sum clear loop.  The existing issuer-side fence remained.  All other conditions were identical to the one-route compute-only Iteration 368.
+- **Setup:** Single rank/GPU 0, M8 random routes, route limit 1, no collective, seed 20260904, 240-second timeout.  Native stack sampling again located the process at the first post-kernel CUDA synchronization.
+- **Result:** **TIMEOUT with no output.**  Per-writer proxy publication did not restore device progress; no correctness or timing record exists.
+- **Conclusion:** Cross-thread publication of generic destination initialization is not the root cause.  The full integration now differs from the exact standalone proof primarily by preceding TMA/WGMMA asynchronous operations and by compiler-generated instruction scheduling/control flow.  Before more protocol guesses, inspect the emitted SASS/PTX around the reduction and test the same bulk instruction after a minimal WGMMA/TMA sequence or move producer combination back to proven scalar atomics.
+- **Decision:** Reject writer-side fencing and keep the bulk experiment default-off.
+- **Artifact:** `bench/results/iter369_bulk_reduce_writer_proxy_fence_compute_m8_20260905.log`.
