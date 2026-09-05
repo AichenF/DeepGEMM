@@ -11421,3 +11421,37 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/evidence/iter461_native_normalized_two_cta_m128_ncu_capture.txt` and
   `results/iter461_native_normalized_two_cta_m128_profile.ncu-rep`.
+
+## Iteration 462 — normalized LUT cuts work but not scheduler starvation
+
+- **Evidence source:** read-only import of the committed Iteration-461 NCU
+  report, compared with the identically configured unnormalized two-CTA
+  Iteration-454 report.  No CUDA kernel was launched and no source changed.
+- **Top-level result (old -> normalized):** local M128 duration
+  `407.36 -> 372.48 us` (`-8.56%`), memory throughput
+  `2.54 -> 2.78 TB/s` (`+9.45%`), and Instruction Statistics executed
+  instructions `122,937,311 -> 112,606,284` (`-8.40%`).  L2 throughput rises
+  `71.34 -> 77.09%`, while L2 hit rate is effectively fixed
+  (`57.45 -> 57.31%`).
+- **Residency/scheduler:** unchanged 80 registers/thread, 102.40 KiB dynamic
+  shared memory, zero spills, 37.50% occupancy and 24 warps/SM.  No-eligible
+  is also unchanged within sampling noise (`40.19 -> 40.37%`) and eligible
+  warps/scheduler moves only `1.19 -> 1.18`.  The gain is reduced dequant work,
+  not better latency hiding.
+- **Current source counters:** the largest wait is still dispatch cleanup
+  observing the actual tail at line 698 (`898` not-issued barrier samples),
+  already proven non-removable in Iteration 456.  The meaningful RS cluster is
+  now led by the second packed exponent at line 1105 (`189`), the single K128
+  warpgroup wait at 1148 (`172`), packed words at 1098/1101 (`37/38`), and the
+  arithmetic LUT at 1108 (`45`).  The new expert-scale load/multiplies account
+  for only `17/16/10` samples.  L1 arrival and producer-empty waits contribute
+  `76/57/33` at lines 737/746/805.
+- **Interpretation/decision:** arithmetic LUT successfully removes a large
+  amount of work, but the remaining `40.37%` no-eligible rate shows that the
+  next bound is still the Hopper role pipeline and RS issue dependencies.  A
+  bounded one-K32 lookahead experiment is justified, following the selected
+  main core's S2R schedule, provided it keeps 80 registers/thread, two resident
+  CTAs and zero spills.  Do not repeat the rejected two-half prefetch or treat
+  cleanup waiting as removable work.
+- **Evidence:**
+  `bench/evidence/iter462_native_normalized_m128_ncu_analysis.txt`.

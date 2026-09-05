@@ -1,0 +1,54 @@
+Iteration 462 read-only analysis of Iteration-461 NCU report
+
+Reports compared:
+- normalized selected: results/iter461_native_normalized_two_cta_m128_profile.ncu-rep
+- unnormalized control: results/iter454_native_two_cta_m128_profile.ncu-rep
+
+Top-level local M128 metrics (old -> normalized):
+- duration: 407.36 -> 372.48 us (-8.56%)
+- memory throughput: 2.54 -> 2.78 TB/s (+9.45%)
+- DRAM throughput: 52.82 -> 57.77%
+- L2 throughput: 71.34 -> 77.09%
+- L2 hit rate: 57.45 -> 57.31% (effectively unchanged)
+- compute throughput: 61.58 -> 59.37%
+- Instruction Statistics executed instructions:
+  122,937,311 -> 112,606,284 (-8.40%)
+- achieved occupancy: 37.50 -> 37.50%, 24 warps/SM
+- registers/thread: 80 -> 80; dynamic shared memory: 102.40 KiB -> 102.40 KiB
+- no eligible: 40.19 -> 40.37%; eligible warps/scheduler: 1.19 -> 1.18
+- local spills: zero in both reports
+
+Selected normalized-source not-issued PC samples (current line mapping):
+- line 698 dispatch cleanup waits for the true tail: 898 barrier
+- line 1105 packed exponent load/dependency: 189 total
+- line 1148 batched K128 warpgroup wait: 172 total
+- line 1917 final dispatch/epilogue rendezvous: 164 barrier
+- lines 1098/1101 packed words: 37/38 wait
+- line 1108 arithmetic LUT: 45 short-scoreboard
+- lines 1110/1112 dequant words: 18/8
+- line 1114 RS-WGMMA issue: 9
+- line 737 L1 arrival poll: 76 total
+- line 746 producer empty-barrier wait: 57 total
+- line 805 B-producer empty-barrier wait: 33 long-scoreboard
+- line 891 per-task expert-scale load: 17 short-scoreboard
+- lines 1161/1170 expert-scale multiply/promotion: 16/10
+
+Interpretation:
+- The 8.56% profiled duration reduction tracks the 8.40% instruction-count
+  reduction, while occupancy and scheduler starvation are unchanged.  The
+  optimization therefore removed real dequant/LUT work rather than changing
+  residency or cache warmth.
+- The normalized kernel is now more L2/DRAM-utilized, with unchanged L2 hit
+  rate, and the arithmetic LUT/global-scale overhead itself is small.
+- The old report's original source analysis attributed 1,278 not-issued
+  samples to the packed exponent/LUT/word cluster.  The current cluster is
+  much smaller; its remaining largest local events are the second exponent
+  dependency and the single batched K128 warpgroup wait.
+- Cleanup line 698 remains a symptom (dispatch warps waiting for math/combine),
+  as proven by Iteration 456.  It is not an independently removable 898-sample
+  optimization target.
+
+Decision: retain normalized scale.  A bounded next experiment may pipeline one
+next K32 packed/exponent/arithmetic-LUT operand set across RS-WGMMA issue, but
+must preserve the 80-register cubin allocation, two-CTA residency and zero
+spills.  Do not reattempt coarse cleanup-sync deletion or half-tile prefetch.
