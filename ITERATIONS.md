@@ -9627,3 +9627,30 @@ maximum rank latency of a full CUDA-Graph replay.
 - Evidence: `results/iter389_78cta_8wg_m128_ncu_20260905.log` and local report
   `results/iter389_78cta_8wg_m128_compute_full.ncu-rep` (kept outside git due
   to report size).
+
+## Iteration 390 — 78-CTA M128 NCU bottleneck extraction
+
+- Date: 2026-09-05
+- Method: imported the exact Iteration 389 report and printed per-kernel
+  details for the 78x1024 M128 compute-only monolithic launch.  This is a
+  report analysis only; no new GPU run or source change occurred.
+- Launch/resource evidence: grid 78, block 1,024, one wave/SM, 64
+  registers/thread, 147.46 KiB dynamic plus 2.05 KiB static shared memory,
+  zero local-spill requests, 32 theoretical active warps/SM and 49.57%
+  achieved occupancy.  Thus the slowdown is not an occupancy collapse or
+  local-memory spill.
+- Performance counters: duration `377.44 us`, compute throughput `56.18%`,
+  DRAM throughput `44.66%`, aggregate memory throughput `2.15 TB/s`, L2 hit
+  rate `3.53%`, and 118.66M executed instructions.  Schedulers have one or
+  more eligible warps only `56.88%` of cycles (`43.12%` no-eligible), issue
+  `0.57` warp/scheduler/cycle, and see 1.94 eligible of eight active warps.
+- Comparison/interpretation: the selected 624-CTA Iteration 265 profile had
+  the same ~50%/32-warp occupancy but `62.22%` SM and `47.68%` DRAM
+  throughput with only `37.57%` no-eligible cycles.  Packing all eight
+  WGMMA/TMA streams into one CTA therefore increases dependency/barrier
+  starvation despite equal resident warps; it does not expose a bandwidth
+  or occupancy limit.  Together with Iteration 387, optimize the expensive
+  route synchronization and reduce intra-CTA phase coupling before changing
+  arithmetic or cache policy.
+- Evidence:
+  `results/iter390_78cta_8wg_m128_ncu_details_20260905.log`.
