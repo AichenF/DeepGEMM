@@ -1,0 +1,15 @@
+ITER394_CTA_SMID_NONBLOCKING_PROBE
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+device=CUDA_VISIBLE_DEVICES=0
+production_source_changed=false
+
+method=record_%smid_and_%globaltimer_then_hold_5ms_without_grid_barrier
+compile=FAIL
+gpu_launch=NONE
+valid_mapping_evidence=false
+nvcc_error=cuda.cu:70 invalid narrowing conversion from unsigned long to signed long
+failing_field=cudaDeviceProp.sharedMemPerMultiprocessor
+fix=explicit_static_cast_int64_t
+ITER394_CTA_SMID_NONBLOCKING_PROBE_COMPILE_FAIL

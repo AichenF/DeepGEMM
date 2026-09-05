@@ -9736,3 +9736,19 @@ maximum rank latency of a full CUDA-Graph replay.
   (or instrument the real selected kernel) and record the actual mapping.
 - Evidence:
   `results/iter393_cta_smid_grid_barrier_aborted_20260905.log`.
+
+## Iteration 394 — nonblocking mapping probe compile failure
+
+- Date: 2026-09-05
+- Purpose: replace Iteration 393's unsafe grid barrier with a bounded 5-ms
+  `%globaltimer` hold.  Each block would record `%smid` and entry time, making
+  resource waves visible without requiring all blocks to be resident.
+- Result: COMPILE FAIL before any GPU launch.  NVCC rejected the occupancy
+  metadata initializer because `cudaDeviceProp::sharedMemPerMultiprocessor`
+  is unsigned long while the returned vector is `int64_t`; the implicit
+  conversion is a narrowing error in list initialization.  No mapping,
+  correctness, or timing evidence was produced.
+- Decision: production source remains unchanged.  Explicitly cast the device
+  property to `int64_t` and rerun the same nonblocking probe.
+- Evidence:
+  `results/iter394_cta_smid_nonblocking_compile_failure_20260905.log`.
