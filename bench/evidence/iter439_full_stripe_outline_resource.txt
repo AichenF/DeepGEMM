@@ -1,0 +1,36 @@
+Iteration 439: full-stripe outline declaration repair and resource gate
+Date: 2026-09-05
+Target: TP4 H20 single-launch WG-DAG specialization
+
+Change under test
+-----------------
+Added forward declarations for the existing GPU acquire/release primitives
+before the full-stripe device helpers.  No arithmetic, dependency, mapping, or
+communication behavior changed from Iteration 438.
+
+Build configuration
+-------------------
+CUDA_VISIBLE_DEVICES=1
+TORCH_CUDA_ARCH_LIST=9.0a
+V4_SINGLE_LAUNCH_78CTA_8WG=1
+V4_SINGLE_LAUNCH_78CTA_SMID_MAP=1
+V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+Extension: v4tp_bc05d855d2d59fe099f9_v178mspec
+
+Result
+------
+PASS: Python bytecode compile, nvcc JIT, link, and extension import.
+
+cuobjdump -res-usage (main TP4 single-launch specializations):
+- <SplitK=4, MaxM=8>:   REG 64, STACK 48, SHARED 5120, LOCAL 0
+- <SplitK=4, MaxM=16>:  REG 64, STACK 48, SHARED 5120, LOCAL 0
+- <SplitK=4, MaxM=32>:  REG 64, STACK 48, SHARED 5120, LOCAL 0
+- <SplitK=2, MaxM=128>: REG 64, STACK 48, SHARED 5120, LOCAL 0
+
+Gate assessment
+---------------
+PASS.  The rejected direct-static-phase build in Iteration 436 used STACK 112
+for M8 and STACK 96 for M128.  Full-stripe outlining restores both tested
+endpoints to STACK 48 with zero local memory, matching the safe main-kernel
+resource envelope seen before the direct-loop experiment.  Correctness and
+performance remain untested at this checkpoint.

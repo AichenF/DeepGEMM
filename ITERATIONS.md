@@ -10815,3 +10815,23 @@ maximum rank latency of a full CUDA-Graph replay.
   is possible.  Repair with forward declarations or relocation, keeping the
   outlined algorithm unchanged.
 - **Evidence:** `bench/evidence/iter438_full_stripe_outline_compile.txt`.
+
+## Iteration 439 — forward declarations restore a viable outlined binary
+
+- **Hypothesis:** Iteration 438 failed only because the new phase definitions
+  preceded the existing GPU acquire/release definitions; forward declarations
+  should preserve the full-stripe design and expose its true resource usage.
+- **Change:** added device prototypes for `load_acquire_gpu_i32`,
+  `store_release_gpu_i32`, and `atomic_add_acq_rel_gpu_i32` before the phase
+  helpers.  No compute, scheduling, synchronization, or communication logic
+  changed.
+- **Test:** Python compile and CUDA JIT/import on physical GPU 1 under the
+  selected 78-CTA/8-WG WG-DAG flags, then `cuobjdump -res-usage` on the built
+  extension.
+- **Result:** **PASS**.  Main TP4 single-launch resource records are
+  `REG=64, STACK=48, SHARED=5120, LOCAL=0` for both the M8 SplitK=4 and M128
+  SplitK=2 endpoint specializations (and the inspected M16/M32 variants).
+- **Analysis:** the one-boundary-per-stripe repair removes the direct-loop
+  resource regression from Iteration 436 (`STACK=112/96`) and is safe to move
+  to correctness testing.  This checkpoint contains no latency result.
+- **Evidence:** `bench/evidence/iter439_full_stripe_outline_resource.txt`.

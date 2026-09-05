@@ -4155,6 +4155,13 @@ __device__ __noinline__ void single_launch_wg_dag_w2_task(
 // One call per complete static WG stripe keeps cross-phase state out of the
 // monolithic entry without paying the rejected per-tile outline boundary.
 // W13/W2 task bodies stay inline inside their phase loops.
+__device__ __forceinline__ int32_t load_acquire_gpu_i32(
+        const int32_t* pointer);
+__device__ __forceinline__ void store_release_gpu_i32(
+        int32_t* pointer, int32_t value);
+__device__ __forceinline__ int32_t atomic_add_acq_rel_gpu_i32(
+        int32_t* pointer, int32_t value);
+
 template <int SplitK>
 __device__ __noinline__ void single_launch_wg_dag_w13_phase(
         const CUtensorMap* w13_tma_weight,
