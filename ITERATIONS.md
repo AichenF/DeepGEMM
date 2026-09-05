@@ -9560,3 +9560,30 @@ maximum rank latency of a full CUDA-Graph replay.
   formal window on this version.
 - Evidence:
   `bench/results/iter386_78cta_8wg_tp4_m8_m128_cold_screen_20260905.log`.
+
+## Iteration 387 — 78-CTA/eight-WG phase localization
+
+- Date: 2026-09-05
+- Configuration/protocol: unchanged Iteration 382 candidate with release
+  arrivals, valid-task elision, and device phase stamps enabled; H20 GPU0,
+  random routes, seed 20260904, TP communication disabled.  Each recorded
+  launch followed a separate excluded 256 MiB L2 clear and was checked
+  against the multi-kernel route-row reference.  Inputs remain prequantized
+  FP8 X/scales plus MXFP4 weights.
+- Correctness: PASS bitwise at M8 and M128 (cosine 1 within print precision,
+  relative L2 0, finite); all four barrier generations reach 2048.
+- Device phases (route / W13 / intermediate requant / W2): M8
+  `12.128 / 53.152 / 2.944 / 29.344 us`; M128
+  `21.280 / 234.336 / 6.240 / 117.728 us`.
+- Localization: relative to recent selected 624-CTA phase samples, activation
+  requant is unchanged or slightly better, while route publication grows by
+  roughly 10 us at M8 and 17 us at M128, W13 by roughly 12/30 us, and W2 by
+  roughly 7/14 us.  Thus the endpoint regression is not caused by the
+  collective mapping: it is already present in compute-only execution.  The
+  serial lane-0 256-expert prefix plus 1024-lane CTA barriers is the first
+  removable route cost; GEMM loss needs an NCU scheduler/TMA comparison.
+- Decision: optimize the 1024-thread route prefix before another distributed
+  timing and collect M128 NCU evidence for the packed-GEMM phase.  Do not
+  attribute the loss to all-reduce.
+- Evidence:
+  `results/iter387_78cta_8wg_phase_m8_m128_20260905.log`.
