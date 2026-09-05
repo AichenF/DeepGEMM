@@ -14598,3 +14598,26 @@ maximum rank latency of a full CUDA-Graph replay.
   check succeeds.
 - **Evidence:** `evidence/iter638_w13_compact_persistent_exact_resource.md`;
   raw log `bench/results/iter638_w13_compact_persistent_exact_resource.log`.
+
+## Iteration 639 — compact-W13 persistent state passes M128 exact-compute gate
+
+- **Configuration:** physical H20 GPU1, TP4 random-route M128, selected
+  compact-W13/dynamic-route/M128-bound9 bundle plus
+  `V4_SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE=1`, W13 split-K2.  The
+  compute launch follows the mandatory excluded 256 MiB L2 clear; collective
+  is disabled only for this local state-machine test.
+- **Correctness:** **PASS bitwise** against the independently launched
+  same-source route-output reference: full `down` cosine `1.0`, relative L2
+  `0.0`, and all values finite with 1,992 padded rows.  The test exercises
+  each active CTA's consecutive compact-callee W13 tasks before the ordinary
+  activation reduction and W2 phases.
+- **Barrier-state check:** all four packed phase words seeded at generation
+  `2^22-1` wrap back to zero.  Persistent W13 mbarrier parity, alternating
+  metadata, final partial publication, callee return and the following grid
+  barrier therefore make forward progress without stale output.
+- **Decision:** the resource and exact-compute gates pass.  Advance to a
+  same-process TP4 M128 cold-L2 CUDA-Graph A/B against production, including
+  the unchanged embedded P2P two-shot all-reduce.  Keep the flag default-off
+  pending timing.
+- **Evidence:** `evidence/iter639_w13_compact_persistent_m128_compute.md`;
+  raw log `bench/results/iter639_w13_compact_persistent_m128_compute.log`.
