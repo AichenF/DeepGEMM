@@ -12366,3 +12366,23 @@ maximum rank latency of a full CUDA-Graph replay.
   M128 execution to distinguish W13 cohort serialization from W2/collective
   cost, then revise scheduling only if the profile identifies a recoverable
   overhead.
+
+## Iteration 500 — enable and validate split-K2 dual cohorts at small M
+
+- **Change:** generalize the single-launch host dispatch so M8/M16/M32 accept
+  explicit split-K=2 as well as the unchanged auto-policy split-K=4.  This is
+  a runtime opt-in through the existing `V4_W13_SPLIT_K=2`; default `auto`
+  behavior is unchanged.  It lets the CTA-local branch run two independent
+  four-WG gate/up cohorts instead of one eight-WG cohort at small M.
+- **Protocol:** H20 GPU 1, M8 random routes, seed 20260904, prequantized FP8
+  X/FP32 group-128 scales, TP communication disabled, one warm launch and one
+  launch after the separate excluded 256-MiB cold-L2 clear.
+- **Build/progress:** **PASS** nvcc JIT and link for the newly reachable
+  `tp4_megamoe_single_launch_kernel<2,8>` specialization.  The 78x1024 launch
+  returns normally; packed phase state is `[2048, 2048, 0, 2048]`.
+- **Correctness:** **PASS exact** against the independently executed
+  split-K2 multi-kernel local reference: cosine `1.0`, relative L2 `0.0`, all
+  values finite, with 360 padded rows.
+- **Decision:** retain the default-neutral dispatch support and run a short
+  four-rank cold-L2 endpoint A/B to compare its absolute candidate latency
+  against both its paired split-K2 control and the prior split-K4 records.

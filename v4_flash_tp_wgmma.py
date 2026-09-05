@@ -9522,41 +9522,83 @@ void run_tp4_megamoe_single_launch(
     }
 
     if (tokens == 8) {
-        TORCH_CHECK(split_k == 4, "M8 single-launch requires split-K 4");
-        launch_tp4_megamoe_single<4, 8>(
-            w13_descriptor, w2_descriptor,
-            w13, s13, g13, w2, s2, g2, qx, x_scale, topk_ids, topk_weights,
-            sorted_ids, expert_ids, num_tokens_padded, partials,
-            activation, qactivation, activation_scale, down, lut,
-            barrier_state, route_to_sorted, output, push_counter,
-            push0, push1, push2, push3, pull_input, pull_sem_local,
-            rank, push_stride, push_mc_ptr,
-            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
-            enable_tp_collective);
+        if (split_k == 2) {
+            launch_tp4_megamoe_single<2, 8>(
+                w13_descriptor, w2_descriptor,
+                w13, s13, g13, w2, s2, g2, qx, x_scale,
+                topk_ids, topk_weights, sorted_ids, expert_ids,
+                num_tokens_padded, partials, activation, qactivation,
+                activation_scale, down, lut, barrier_state, route_to_sorted,
+                output, push_counter, push0, push1, push2, push3,
+                pull_input, pull_sem_local, rank, push_stride, push_mc_ptr,
+                pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
+                enable_tp_collective);
+        } else {
+            TORCH_CHECK(split_k == 4,
+                        "M8 single-launch requires split-K 2 or 4");
+            launch_tp4_megamoe_single<4, 8>(
+                w13_descriptor, w2_descriptor,
+                w13, s13, g13, w2, s2, g2, qx, x_scale,
+                topk_ids, topk_weights, sorted_ids, expert_ids,
+                num_tokens_padded, partials, activation, qactivation,
+                activation_scale, down, lut, barrier_state, route_to_sorted,
+                output, push_counter, push0, push1, push2, push3,
+                pull_input, pull_sem_local, rank, push_stride, push_mc_ptr,
+                pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
+                enable_tp_collective);
+        }
     } else if (tokens == 16) {
-        TORCH_CHECK(split_k == 4, "M16 single-launch requires split-K 4");
-        launch_tp4_megamoe_single<4, 16>(
-            w13_descriptor, w2_descriptor,
-            w13, s13, g13, w2, s2, g2, qx, x_scale, topk_ids, topk_weights,
-            sorted_ids, expert_ids, num_tokens_padded, partials,
-            activation, qactivation, activation_scale, down, lut,
-            barrier_state, route_to_sorted, output, push_counter,
-            push0, push1, push2, push3, pull_input, pull_sem_local,
-            rank, push_stride, push_mc_ptr,
-            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
-            enable_tp_collective);
+        if (split_k == 2) {
+            launch_tp4_megamoe_single<2, 16>(
+                w13_descriptor, w2_descriptor,
+                w13, s13, g13, w2, s2, g2, qx, x_scale,
+                topk_ids, topk_weights, sorted_ids, expert_ids,
+                num_tokens_padded, partials, activation, qactivation,
+                activation_scale, down, lut, barrier_state, route_to_sorted,
+                output, push_counter, push0, push1, push2, push3,
+                pull_input, pull_sem_local, rank, push_stride, push_mc_ptr,
+                pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
+                enable_tp_collective);
+        } else {
+            TORCH_CHECK(split_k == 4,
+                        "M16 single-launch requires split-K 2 or 4");
+            launch_tp4_megamoe_single<4, 16>(
+                w13_descriptor, w2_descriptor,
+                w13, s13, g13, w2, s2, g2, qx, x_scale,
+                topk_ids, topk_weights, sorted_ids, expert_ids,
+                num_tokens_padded, partials, activation, qactivation,
+                activation_scale, down, lut, barrier_state, route_to_sorted,
+                output, push_counter, push0, push1, push2, push3,
+                pull_input, pull_sem_local, rank, push_stride, push_mc_ptr,
+                pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
+                enable_tp_collective);
+        }
     } else if (tokens == 32) {
-        TORCH_CHECK(split_k == 4, "M32 single-launch requires split-K 4");
-        launch_tp4_megamoe_single<4, 32>(
-            w13_descriptor, w2_descriptor,
-            w13, s13, g13, w2, s2, g2, qx, x_scale, topk_ids, topk_weights,
-            sorted_ids, expert_ids, num_tokens_padded, partials,
-            activation, qactivation, activation_scale, down, lut,
-            barrier_state, route_to_sorted, output, push_counter,
-            push0, push1, push2, push3, pull_input, pull_sem_local,
-            rank, push_stride, push_mc_ptr,
-            pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
-            enable_tp_collective);
+        if (split_k == 2) {
+            launch_tp4_megamoe_single<2, 32>(
+                w13_descriptor, w2_descriptor,
+                w13, s13, g13, w2, s2, g2, qx, x_scale,
+                topk_ids, topk_weights, sorted_ids, expert_ids,
+                num_tokens_padded, partials, activation, qactivation,
+                activation_scale, down, lut, barrier_state, route_to_sorted,
+                output, push_counter, push0, push1, push2, push3,
+                pull_input, pull_sem_local, rank, push_stride, push_mc_ptr,
+                pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
+                enable_tp_collective);
+        } else {
+            TORCH_CHECK(split_k == 4,
+                        "M32 single-launch requires split-K 2 or 4");
+            launch_tp4_megamoe_single<4, 32>(
+                w13_descriptor, w2_descriptor,
+                w13, s13, g13, w2, s2, g2, qx, x_scale,
+                topk_ids, topk_weights, sorted_ids, expert_ids,
+                num_tokens_padded, partials, activation, qactivation,
+                activation_scale, down, lut, barrier_state, route_to_sorted,
+                output, push_counter, push0, push1, push2, push3,
+                pull_input, pull_sem_local, rank, push_stride, push_mc_ptr,
+                pull_input_mc_ptr, pull_sem_mc_ptr, requested_ctas_per_sm,
+                enable_tp_collective);
+        }
     } else if (tokens == 64) {
         if (split_k == 4) {
             launch_tp4_megamoe_single<4, 64>(
