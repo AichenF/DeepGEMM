@@ -14178,3 +14178,32 @@ maximum rank latency of a full CUDA-Graph replay.
 - Decision: runtime/resource gate passes; proceed to process-bracketed M64 and
   M128 cold-L2 OFF/ON timing after repairing result capture.
 - Evidence: `evidence/iter617_balanced_activation_workers_m128_gate.md`.
+## Iteration 618 — activation-only balance M64/M128 cold-L2 short bracket
+
+- Protocol: TP4 physical GPUs 0,5,6,7; random routes/weights, seed 20260902;
+  CUDA Graph; same-source multi-kernel control; process order
+  OFF_A -> ON_A -> ON_B -> OFF_B.  Each window uses two outer batches x 20
+  replay-interleaved samples per implementation/M after four warmups.  Every
+  implementation replay has its own excluded 256 MiB L2 clear.
+- Correctness: all four windows and both M values pass on every rank; embedded
+  P2P two-shot all-reduce is accepted.  Candidate and control numerical
+  metrics are identical (`cosine>=0.9999955977`,
+  `rel_l2<=0.002967264`, finite).
+- Candidate/control median ratios:
+  M64 OFF_A/ON_A/ON_B/OFF_B =
+  `1.132060/1.132306/1.132102/1.131831`;
+  M128 = `1.132051/1.130938/1.131652/1.132740`.
+- Bracket normalization: mean ON versus mean OFF changes M64 by **+0.0228%**
+  (slower), M128 by **-0.0972%** (faster), and the two-shape geometric-mean
+  ratio by **-0.0372%** (faster).  This is far below the approximately 1%
+  run-to-run noise threshold and is not selection evidence.
+- Interpretation: balancing 3,072 activation groups over 615 rather than 702
+  workers removes the NCU-identified static-loop imbalance, but the saved tail
+  is hidden by or traded for fewer participating CTAs plus whole-grid
+  convergence.  The short screen cannot establish a meaningful end-to-end
+  gain.
+- Decision: keep the option default-off.  Because the normalized aggregate is
+  weakly positive, run one long bracket before final rejection; require a
+  stable material result rather than promoting a sub-noise delta.
+- Evidence: `evidence/iter618_balanced_activation_workers_short_bracket.md`
+  and four raw logs under `bench/results/iter618_*_20260905.log`.
