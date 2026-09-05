@@ -238,6 +238,7 @@ W2_NEEDS_ROUTE_MAP = (
     or W2_MBLOCK_SCALE
     or SINGLE_LAUNCH_TAIL_OVERLAP
     or SINGLE_LAUNCH_W13_TAIL_SPLIT4
+    or SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
 )
 W2_FOLD_GLOBAL_SCALE = (
     os.environ.get("V4_W2_FOLD_GLOBAL_SCALE", "0") == "1"
@@ -4460,7 +4461,8 @@ __global__ __launch_bounds__(256) void route_align_kernel(
             const int position = atomicAdd(cursors + expert, 1);
             sorted_ids[position] = route;
             if constexpr (kW2SortedAct || kW2MblockScale
-                          || kSingleLaunchW13TailSplit4)
+                          || kSingleLaunchW13TailSplit4
+                          || kSingleLaunchW13ActTailPipe)
                 route_to_sorted[route] = position;
         }
     }
@@ -4525,7 +4527,8 @@ __global__ __launch_bounds__(256) void fused_route_quant_kernel(
                 sorted_ids[position] = route;
                 if constexpr (kW2SortedAct || kW2MblockScale
                               || kSingleLaunchTailOverlap
-                              || kSingleLaunchW13TailSplit4)
+                              || kSingleLaunchW13TailSplit4
+                              || kSingleLaunchW13ActTailPipe)
                     route_to_sorted[route] = position;
             }
         }
@@ -4658,7 +4661,8 @@ __device__ __forceinline__ void single_launch_route_task(
                 sorted_ids[position] = route;
                 if constexpr (kW2SortedAct || kW2MblockScale
                               || kSingleLaunchTailOverlap
-                              || kSingleLaunchW13TailSplit4)
+                              || kSingleLaunchW13TailSplit4
+                              || kSingleLaunchW13ActTailPipe)
                     route_to_sorted[route] = position;
             }
         }
@@ -4748,7 +4752,8 @@ __device__ __forceinline__ void single_launch_route_task_1024(
         if (static_cast<unsigned>(expert) < kExperts) {
             const int position = atomicAdd(cursors + expert, 1);
             sorted_ids[position] = route;
-            if constexpr (kW2SortedAct || kW2MblockScale)
+            if constexpr (kW2SortedAct || kW2MblockScale
+                          || kSingleLaunchW13ActTailPipe)
                 route_to_sorted[route] = position;
         }
     }

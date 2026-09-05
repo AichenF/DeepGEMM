@@ -12530,3 +12530,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: failed; `cudaErrorLaunchFailure` / unspecified launch failure at synchronization.
 - Evidence: `results/iter513_w13_act_tail_pipe_memcheck_m8_20260905.log` (6721 lines), memcheck reported 206 errors, 106 suppressed by its print limit.
 - Decision: candidate is not benchmarkable until the first device-side access fault is identified and fixed; current flat kernel remains the retained best.
+## Iteration 514 — allocate/populate route inverse map for tail pipeline
+
+- Date: 2026-09-05
+- Change: include `SINGLE_LAUNCH_W13_ACT_TAIL_PIPE` in `W2_NEEDS_ROUTE_MAP` and populate `route_to_sorted` in every route-alignment implementation used by the generated extension.
+- Rationale: Iteration 513 showed the first invalid read at generated `cuda.cu:5900`, exactly the new `__ldg(route_to_sorted + route)` with a null tensor data pointer.
+- Gate: remote `py_compile` passed for the kernel and all three graph/benchmark fixtures.
+- Next: rebuild the extension and rerun exact M8/M128 compute correctness before any timing.
