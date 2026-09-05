@@ -12481,3 +12481,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: JIT compilation succeeded and produced `/tmp/torch_ext_v4_tp/v4tp_6a4afb4180127dda471c_v178mspec/v4tp_6a4afb4180127dda471c_v178mspec.so`. The command exited 1 only because the demangled `cuobjdump` grep patterns matched no resource records; it emitted no register/stack/shared-memory lines.
 - Decision: this is a compile PASS but an incomplete resource gate, not performance evidence. Inspect the exact cubin symbol spelling and rerun resource extraction before launching the kernel.
 - Evidence: `results/iter506_dual_phase_outline_resource_20260905.log`.
+## Iteration 507 — dual-phase outline reaches the M128 9-CTA resource target (2026-09-05)
+
+- Method: reran full `cuobjdump --dump-resource-usage` on the exact Iteration-506 extension and inspected every single-launch specialization.
+- M128 result: both split-K2 and split-K4 `Tokens=128` entries are `REG=56, STACK=48, SHARED=2048, LOCAL=0`. This is the required register ceiling for 9 x 128-thread CTAs/SM and halves static shared memory relative to the selected inline entry; there is no fixed local allocation.
+- Other shapes: Tokens=64 remains `REG=64, STACK=48, SHARED=2048, LOCAL=0`; Tokens=8/16/32 remain 64 registers (32-byte stack for <=32). Thus the composition changes occupancy only at M128, as intended by the token-specialized bound-9 launch.
+- Decision: resource gate PASS for M128. Next require exact compute correctness plus runtime occupancy admission before any distributed latency screen.
+- Evidence: `results/iter507_dual_phase_outline_resource_full_20260905.log`.
