@@ -90,21 +90,26 @@ Match the Hopper L1 epilogue's tile-level behavior more closely: one WG task
 consumes all eight sorted rows of an `(mblock, activation_group)` together.
 
 1. Every lane computes one group-128 column for each valid row, applies the
-   exact BF16 rounding/SwiGLU/BF16 rounding contract, stores BF16 activation,
-   and contributes eight per-warp maxima to shared memory.
+   exact BF16 rounding/SwiGLU/BF16 rounding contract, overwrites the now-dead
+   split-0 gate partial with that exact BF16-rounded float, optionally stores
+   the public BF16 activation when its workspace is enabled, and contributes
+   eight per-warp maxima to shared memory.
 2. After one named barrier, warp 0 maps its 32 lanes to exactly eight
    `(row, source_warp)` values, performs eight independent width-4 max
    reductions, and publishes the eight FP8 scales.
-3. After a second named barrier, all lanes reload the just-written BF16
-   activation, quantize all valid rows, and store FP8 bytes.  A terminal named
-   barrier publishes completion before lane 0 updates mblock readiness.
+3. After a second named barrier, all lanes reload the reclaimed partial slot,
+   quantize all valid rows, and store FP8 bytes.  A terminal named barrier
+   publishes completion before lane 0 updates mblock readiness.
 
 Including the existing task-mailbox handoff, this reduces synchronization
 from about 25 to four named barriers per activation group.  It adds at most
-2 KiB of coalesced BF16 reads per group, negligible beside cold expert-weight
-traffic, and deliberately avoids keeping eight gate/up pairs live across a
-barrier.  The public activation workspace remains populated exactly as in the
-control path.
+4 KiB each of coalesced float stores and reloads per group, negligible beside
+cold expert-weight traffic, and deliberately avoids keeping eight gate/up
+pairs live across a barrier.  The slot is safe to reclaim only after all
+`2 * SplitK` producers for that group have release-published completion; no
+later consumer reads W13 partials after requantization.  The public activation
+workspace remains populated when enabled, while the default fused-quant path
+correctly supports its zero-sized activation tensor.
 
 Two fallbacks are intentionally narrower.  A two- or four-row helper lowers
 register risk but retains two to four times as many barriers.  Staging all
