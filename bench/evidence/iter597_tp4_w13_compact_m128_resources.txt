@@ -1,0 +1,21 @@
+Iteration 597: M128-only compact W13 cubin resources
+Date: 2026-09-05
+
+Extension:
+  /tmp/torch_ext_v4_tp/v4tp_3730e629ffde63bcb606_v178mspec/
+  v4tp_3730e629ffde63bcb606_v178mspec.so
+
+TP4 main-entry resources:
+  Tokens=128, SplitK={2,4}:
+    REG:56 STACK:32 SHARED:2048 LOCAL:0
+  Tokens=64, SplitK={2,4}:
+    REG:64 STACK:32 SHARED:2048 LOCAL:0
+  Tokens={8,16,32}, SplitK={2,4}:
+    REG:61 STACK:32 SHARED:2048 LOCAL:0
+
+Comparison with Iteration 595:
+- M128 is unchanged and remains eligible for nine CTAs/SM.
+- M<=64 no longer has the 48-byte W13 phase-call frame; it is back to the
+  selected 32-byte entry frame and inline W13 code shape.
+
+No kernel launch or latency measurement was performed.

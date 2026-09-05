@@ -13822,3 +13822,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Static result: **PASS.** `python3 -m py_compile v4_flash_tp_wgmma.py` exits 0 without diagnostics.
 - Qualification: source specialization only; the new JIT object and runtime behavior are not yet proven. Rebuild resources to confirm small-M entries return to the selected stack/register shape and M128 remains at 56 registers before launching correctness.
 - Evidence: `bench/evidence/iter596_tp4_w13_compact_m128_specialization.txt`.
+
+## Iteration 597 — M128-only compact W13 resources preserve both endpoints (2026-09-05)
+
+- Method: rebuilt the exact compact-ABI/bound-9 extension after the `Tokens==128` restriction and inspected every TP4 single-launch specialization with `cuobjdump`.
+- Result: **PASS.** M128 split-K2/4 remain `REG:56 STACK:32 SHARED:2048 LOCAL:0`, preserving nine-CTA admission. M8/M16/M32 return to `REG:61 STACK:32 SHARED:2048 LOCAL:0`; M64 returns to `REG:64 STACK:32 SHARED:2048 LOCAL:0`. The prior unwanted 48-byte small/M64 caller frame is gone, and no specialization has fixed local allocation.
+- Interpretation: source specialization now isolates the experimental call and register cap to M128 while retaining the selected inline register/stack shape elsewhere. The common 2 KiB static-shared result comes from the required dynamic-route configuration and remains below the residency limit.
+- Decision: advance to an M128 compute-only launch with exact routed-W2 comparison, packed-barrier generation check, and runtime requirement that nine CTAs/SM are admitted. No performance claim yet.
+- Evidence: `bench/evidence/iter597_tp4_w13_compact_m128_resources.txt`.
