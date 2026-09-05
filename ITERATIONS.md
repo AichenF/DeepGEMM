@@ -12386,3 +12386,27 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Decision:** retain the default-neutral dispatch support and run a short
   four-rank cold-L2 endpoint A/B to compare its absolute candidate latency
   against both its paired split-K2 control and the prior split-K4 records.
+
+## Iteration 501 — split-K2 dual cohorts regress M8 further
+
+- **Protocol:** TP4 physical GPUs 0–3, explicit `V4_W13_SPLIT_K=2`, random M8
+  routes (seed 20260904), same-process CUDA Graph control/candidate, two
+  replay-interleaved batches x ten rank-max samples, two warmups, and a
+  separate excluded 256-MiB cold-L2 clear before every replay.
+- **Correctness:** **PASS** on all ranks.  Candidate and split-K2 control have
+  identical reference metrics: cosine `0.9999956135`, rel-L2
+  `0.0029619735`, finite output, 360 padded rows; embedded multicast push
+  completes.
+- **Noise boundary:** the first control batch was externally disturbed near
+  2.98 ms, so its pooled median and reported 12.98x speedup are invalid and
+  explicitly discarded.  Candidate batches were stable at
+  `0.114064/0.114480 ms`.
+- **Result:** candidate median `0.114272 ms`, about **8.9% slower** than the
+  split-K4 CTA-local candidate's clean `0.104960 ms` batch in Iteration 499
+  and about **29.6% slower** than the earlier mapped phase candidate's
+  `0.088160 ms`.  Doubling cohort independence does not compensate for each
+  WGMMA task processing twice as many K tiles.
+- **Decision:** reject split-K2 as the CTA-local small-M policy; retain only
+  the default-neutral host support.  The CTA-local/DSM family has now failed
+  with both legal split granularities.  Stop tuning cohort size and return to
+  the independent mapped phase kernel as the one-launch performance base.
