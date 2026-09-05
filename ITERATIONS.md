@@ -12574,3 +12574,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Secondary output: the shell's newest-successful-object fallback dumped Iteration 511's old tail-pipeline cubin after the failed build; those resource lines do not describe this candidate and are excluded.
 - Decision: replace the early helper's H20 stride with the table's compile-time literal 78 (and assert the host H20 launch separately), then repeat unchanged. No correctness or performance conclusion.
 - Evidence: `results/iter518_sm_striped_jit_resource_placement_m8_20260905.log`.
+## Iteration 519 — SM-striped resource passes but static placement contract fails
+
+- Date: 2026-09-05
+- Configuration: repaired SM-striped build with SMID trace, assume-valid tasks and release-grid-arrival; M8 GPU0 placement smoke.
+- JIT/resource: PASS. Extension `v4tp_00103f0cfafff003aed7_v178mspec`; all M64/M128 entries remain 64 registers, 32-byte stack, 4096-byte static shared memory, and zero fixed local allocation. M8/M16/M32 entries use 61 registers with the same stack/shared/local footprint, preserving eight-CTA/SM admission.
+- Runtime: FAIL at the intentional placement trap before a correctness record. At least one block no longer resides on the SM recorded by Iteration 398's older instrumented binary, so hard-coding that 78x8 table is not a safe production mechanism.
+- Decision: do not weaken the trap or benchmark an invalid permutation. Replace the stale table dependency with replay-stable runtime per-SM slot assignment, or reject if its one-time launch overhead exceeds the tail benefit. No latency conclusion.
+- Evidence: `results/iter519_sm_striped_jit_resource_placement_m8_20260905.log`.

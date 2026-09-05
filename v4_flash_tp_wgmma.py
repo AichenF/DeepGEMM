@@ -1671,7 +1671,7 @@ __device__ __forceinline__ int h20_sm_striped_logical_worker(int cta) {
     }
     if (local_slot < 0)
         asm volatile("trap;");
-    return local_slot * kSingleLaunchH20Sms + static_cast<int>(smid);
+    return local_slot * 78 + static_cast<int>(smid);
 }
 #endif
 #endif
