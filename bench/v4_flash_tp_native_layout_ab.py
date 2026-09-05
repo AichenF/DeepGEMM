@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Same-process cold-L2 A/B for native 80-byte and tile-TMA layouts."""
+"""Same-process cold-L2 A/B for two native MegaMoE variants."""
 
 from __future__ import annotations
 
@@ -39,6 +39,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replays", type=int, default=50)
     parser.add_argument("--warmup-replays", type=int, default=5)
     parser.add_argument("--seed", type=int, default=20260902)
+    parser.add_argument(
+        "--experiment",
+        choices=("tile_tma", "single_l1_warmup"),
+        default="tile_tma",
+    )
     args = parser.parse_args()
     args.ms = tuple(int(value) for value in args.ms.split(",") if value)
     if not args.ms or any(value not in (8, 16, 32, 64, 128) for value in args.ms):
@@ -50,18 +55,27 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def load_native_variant(alias: str, tile_tma: bool) -> ModuleType:
+def load_native_variant(
+    alias: str,
+    *,
+    tile_tma: bool = False,
+    single_l1_warmup_wave: bool = False,
+) -> ModuleType:
     source = Path(__file__).resolve().parents[1] / "v4_flash_tp_native_megamoe.py"
     saved = {
         name: os.environ.get(name)
         for name in (
             "V4_NATIVE_TILE_WEIGHT_SCALE_TMA",
             "V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA",
+            "V4_NATIVE_SINGLE_L1_WARMUP_WAVE",
         )
     }
     try:
         os.environ["V4_NATIVE_TILE_WEIGHT_SCALE_TMA"] = str(int(tile_tma))
         os.environ["V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA"] = "0"
+        os.environ["V4_NATIVE_SINGLE_L1_WARMUP_WAVE"] = str(
+            int(single_l1_warmup_wave)
+        )
         spec = importlib.util.spec_from_file_location(alias, source)
         if spec is None or spec.loader is None:
             raise RuntimeError(f"cannot load native variant from {source}")
@@ -140,20 +154,37 @@ def main() -> None:
     args = parse_args()
     rank, world_size, device, cpu_group = custom.init_distributed()
     if world_size != 4:
-        raise RuntimeError("native-layout A/B currently requires TP4")
+        raise RuntimeError("native-variant A/B currently requires TP4")
     nccl_group = ps._WORLD.device_group
     if not isinstance(nccl_group, dist.ProcessGroup):
         raise RuntimeError("SGLang did not create the NCCL process group")
 
     props = torch.cuda.get_device_properties(device)
     intermediate_per_rank = custom.INTERMEDIATE // world_size
-    control_module = load_native_variant("v4_native_layout_control", False)
-    tile_module = load_native_variant("v4_native_layout_tile", True)
+    control_module = load_native_variant(
+        "v4_native_variant_control",
+        tile_tma=False,
+        single_l1_warmup_wave=False,
+    )
+    if args.experiment == "tile_tma":
+        candidate_module = load_native_variant(
+            "v4_native_variant_tile_tma",
+            tile_tma=True,
+            single_l1_warmup_wave=False,
+        )
+        benchmark_name = "native_80b_vs_single_tile_tma"
+    else:
+        candidate_module = load_native_variant(
+            "v4_native_variant_single_l1_warmup",
+            tile_tma=False,
+            single_l1_warmup_wave=True,
+        )
+        benchmark_name = "native_two_vs_one_l1_warmup_wave"
     control_weights = make_variant_weights(
         control_module, intermediate_per_rank, device, args.seed, rank
     )
-    tile_weights = make_variant_weights(
-        tile_module, intermediate_per_rank, device, args.seed, rank
+    candidate_weights = make_variant_weights(
+        candidate_module, intermediate_per_rank, device, args.seed, rank
     )
     lut = kernel.make_e2m1_e8m0_lut(device)
     comm = CustomAllReduceV2(cpu_group, device)
@@ -166,10 +197,11 @@ def main() -> None:
 
     if rank == 0:
         print(
-            "NATIVE_LAYOUT_ENV "
+            "NATIVE_VARIANT_ENV "
             + json.dumps(
                 {
-                    "benchmark": "native_80b_vs_single_tile_tma",
+                    "benchmark": benchmark_name,
+                    "experiment": args.experiment,
                     "gpu": props.name,
                     "sm_count": props.multi_processor_count,
                     "world_size": world_size,
@@ -183,7 +215,15 @@ def main() -> None:
                         "clear excluded from CUDA events"
                     ),
                     "control_tile_tma": control_module.NATIVE_TILE_WEIGHT_SCALE_TMA,
-                    "candidate_tile_tma": tile_module.NATIVE_TILE_WEIGHT_SCALE_TMA,
+                    "candidate_tile_tma": (
+                        candidate_module.NATIVE_TILE_WEIGHT_SCALE_TMA
+                    ),
+                    "control_single_l1_warmup_wave": (
+                        control_module.NATIVE_SINGLE_L1_WARMUP_WAVE
+                    ),
+                    "candidate_single_l1_warmup_wave": (
+                        candidate_module.NATIVE_SINGLE_L1_WARMUP_WAVE
+                    ),
                 },
                 sort_keys=True,
             ),
@@ -211,50 +251,52 @@ def main() -> None:
             use_native=True,
             native_kernel_module=control_module,
         )
-        tile_case = make_case(
+        candidate_case = make_case(
             m,
             qx,
             x_scale,
             topk_ids,
             topk_weights,
-            tile_weights,
+            candidate_weights,
             lut,
             intermediate_per_rank,
             use_native=True,
-            native_kernel_module=tile_module,
+            native_kernel_module=candidate_module,
         )
         control_graph = capture_graph(
             control_case, comm, cpu_group, device
         )
-        tile_graph = capture_graph(tile_case, comm, cpu_group, device)
+        candidate_graph = capture_graph(
+            candidate_case, comm, cpu_group, device
+        )
 
         control_graph.replay()
         torch.cuda.synchronize(device)
         assert control_case.graph_output is not None
         control_output = control_case.graph_output.clone()
-        tile_graph.replay()
+        candidate_graph.replay()
         torch.cuda.synchronize(device)
-        assert tile_case.graph_output is not None
-        tile_output = tile_case.graph_output.clone()
+        assert candidate_case.graph_output is not None
+        candidate_output = candidate_case.graph_output.clone()
         correctness = rank_metrics(
-            control_output, tile_output, nccl_group, device
+            control_output, candidate_output, nccl_group, device
         )
         if rank == 0:
             print(
-                "NATIVE_LAYOUT_CORRECTNESS "
+                "NATIVE_VARIANT_CORRECTNESS "
                 + json.dumps({"m": m, **correctness}, sort_keys=True),
                 flush=True,
             )
         if not correctness["finite_all_ranks"] or correctness[
             "bf16_mismatches_max_rank"
         ]:
-            raise RuntimeError(f"native layout mismatch at M={m}")
+            raise RuntimeError(f"native variant mismatch at M={m}")
 
         for warmup_idx in range(args.warmup_replays):
             order = (
-                (tile_graph, control_graph)
+                (candidate_graph, control_graph)
                 if warmup_idx & 1
-                else (control_graph, tile_graph)
+                else (control_graph, candidate_graph)
             )
             for graph in order:
                 driver.clear_cache(l2_flush_buffer)
@@ -263,12 +305,12 @@ def main() -> None:
 
         (
             control_samples,
-            tile_samples,
+            candidate_samples,
             control_batch_medians,
-            tile_batch_medians,
+            candidate_batch_medians,
         ) = time_graph_pair(
             control_graph,
-            tile_graph,
+            candidate_graph,
             args.outer,
             args.replays,
             cpu_group,
@@ -278,48 +320,52 @@ def main() -> None:
             "batch",
         )
         control_median = statistics.median(control_samples)
-        tile_median = statistics.median(tile_samples)
+        candidate_median = statistics.median(candidate_samples)
         record = {
             "m": m,
-            "samples_per_layout": len(control_samples),
+            "samples_per_variant": len(control_samples),
             "control_min_ms": min(control_samples),
             "control_median_ms": control_median,
             "control_max_ms": max(control_samples),
-            "tile_min_ms": min(tile_samples),
-            "tile_median_ms": tile_median,
-            "tile_max_ms": max(tile_samples),
+            "candidate_min_ms": min(candidate_samples),
+            "candidate_median_ms": candidate_median,
+            "candidate_max_ms": max(candidate_samples),
             "control_batch_medians_ms": control_batch_medians,
-            "tile_batch_medians_ms": tile_batch_medians,
-            "speedup_control_over_tile": control_median / tile_median,
-            "tile_over_control": tile_median / control_median,
+            "candidate_batch_medians_ms": candidate_batch_medians,
+            "speedup_control_over_candidate": (
+                control_median / candidate_median
+            ),
+            "candidate_over_control": candidate_median / control_median,
         }
         records.append(record)
         if rank == 0:
             print(
-                "NATIVE_LAYOUT_RESULT "
+                "NATIVE_VARIANT_RESULT "
                 + json.dumps(record, sort_keys=True),
                 flush=True,
             )
         keepalive.extend(
-            (control_case, tile_case, control_graph, tile_graph)
+            (control_case, candidate_case, control_graph, candidate_graph)
         )
 
     if rank == 0:
         control_gm = statistics.geometric_mean(
             float(record["control_median_ms"]) for record in records
         )
-        tile_gm = statistics.geometric_mean(
-            float(record["tile_median_ms"]) for record in records
+        candidate_gm = statistics.geometric_mean(
+            float(record["candidate_median_ms"]) for record in records
         )
         print(
-            "NATIVE_LAYOUT_SUMMARY "
+            "NATIVE_VARIANT_SUMMARY "
             + json.dumps(
                 {
                     "m_values": list(args.ms),
                     "control_geometric_mean_ms": control_gm,
-                    "tile_geometric_mean_ms": tile_gm,
-                    "speedup_control_over_tile": control_gm / tile_gm,
-                    "tile_over_control": tile_gm / control_gm,
+                    "candidate_geometric_mean_ms": candidate_gm,
+                    "speedup_control_over_candidate": (
+                        control_gm / candidate_gm
+                    ),
+                    "candidate_over_control": candidate_gm / control_gm,
                     "samples_per_m_per_layout": args.outer * args.replays,
                 },
                 sort_keys=True,

@@ -12162,3 +12162,32 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/evidence/iter490_native_single_l1_warmup_resource_m128.txt` and raw
   log `bench/results/iter490_native_single_l1_warmup_resource_m128_20260905.log`.
+
+## Iteration 491 — same-process one-wave TP4 graph smoke passes correctness
+
+- **Harness change:** generalize the committed native-layout A/B driver into a
+  native-variant driver while preserving its tile-TMA experiment.  Add
+  `--experiment single_l1_warmup`, which loads selected two-wave and candidate
+  one-wave modules under distinct aliases with identical seeded weights,
+  inputs and routes, independent graph/workspace state, and one shared CARv2
+  communicator/process regime.
+- **Protocol:** physical H20 GPUs 0–3, TP4 random M8/M128, two balanced
+  whole-batch AB/BA rounds x two rank-max samples per variant and M, two
+  alternating warmups, CUDA Graph, and a separate excluded 256 MiB cold-L2
+  clear immediately before every replay.
+- **Correctness:** **PASS and bitwise identical** for M8 and M128 across all
+  ranks: minimum cosine `1.0`, maximum relative L2 `0.0`, zero BF16
+  mismatches, and every output finite.  This exercises both embedded
+  multicast-push and NVLS-pull communication tails in the complete graph.
+- **Smoke timing (two-wave control / one-wave candidate median):** M8
+  `0.104416/0.108848 ms` (candidate `4.24%` slower); M128
+  `0.379200/0.380896 ms` (candidate `0.45%` slower).  Endpoint geometric
+  mean is `0.198984/0.203617 ms`, nominally `2.33%` slower.
+- **Noise caveat/decision:** the four-sample window contains large first-batch
+  outliers (`0.165248 ms` control at M8 and `0.135744 ms` candidate), so this
+  is a correctness/graph gate, not a rejection verdict.  Commit the exact
+  harness and run a separately committed 200-sample-per-endpoint same-process
+  cold-L2 A/B before selecting or rejecting the scheduler change.
+- **Evidence:**
+  `bench/evidence/iter491_native_single_l1_warmup_tp4_graph_smoke.txt` and raw
+  log `bench/results/iter491_native_single_l1_warmup_tp4_graph_smoke_20260905.log`.

@@ -1,0 +1,35 @@
+ITERATION 491 — one-wave native TP4 same-process graph smoke
+
+Harness:
+  Generalize native A/B to select tile_tma or single_l1_warmup experiments.
+  This run compares two-wave control versus one-wave candidate in one TP4
+  process with identical seeded weights, FP8 input, routes and CARv2 state.
+
+Protocol:
+  Physical H20 GPUs 0,1,2,3; random M=8,128
+  outer=2; replays=2; warmups=2; balanced whole-batch AB/BA
+  four rank-max samples/variant/M; CUDA Graph
+  separate excluded 256 MiB cold-L2 clear before every replay
+
+Correctness at both endpoints:
+  cosine_min_rank=1.0
+  rel_l2_max_rank=0.0
+  bf16_mismatches_max_rank=0
+  finite_all_ranks=true
+
+Smoke timing:
+  M8 two-wave/candidate median = 0.104416 / 0.108848 ms
+     candidate/control          = 1.042446x
+  M128 two-wave/candidate median = 0.379200 / 0.380896 ms
+       candidate/control          = 1.004473x
+  endpoint GM control/candidate = 0.198984 / 0.203617 ms
+  candidate/control GM          = 1.023283x
+
+Outliers:
+  M8 control max=0.165248 ms; candidate max=0.135744 ms.  Four samples are
+  insufficient for performance selection.
+
+Verdict:
+  PASS graph, exact-output and both embedded communication-tail gates.
+  Direction is unfavorable but requires the planned 200-sample same-process
+  cold-L2 confirmation before rejection.
