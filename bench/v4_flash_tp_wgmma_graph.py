@@ -147,6 +147,7 @@ def make_weights(
     intermediate_per_rank: int,
     device: torch.device,
     include_native: bool = False,
+    native_kernel_module: Any | None = None,
 ) -> tuple[torch.Tensor, ...]:
     n13 = 2 * intermediate_per_rank
     w13 = torch.randint(
@@ -179,7 +180,9 @@ def make_weights(
     )
     native_weights: tuple[torch.Tensor, ...] = ()
     if include_native:
-        import v4_flash_tp_native_megamoe as native_kernel
+        native_kernel = native_kernel_module
+        if native_kernel is None:
+            import v4_flash_tp_native_megamoe as native_kernel
 
         native_weights = native_kernel.transform_weights(w13, s13, w2, s2)
     # The checkpoint/Humming contract is canonical Marlin K8.  The inherited
@@ -223,6 +226,7 @@ class CapturedCase:
     native_g2: torch.Tensor | None = None
     native_s13: torch.Tensor | None = None
     native_s2: torch.Tensor | None = None
+    native_kernel_module: Any | None = None
 
     def __post_init__(self) -> None:
         device = self.qx.device
@@ -398,7 +402,10 @@ class CapturedCase:
                 "native W13/W2 weights, scales and global scales must be provided together"
             )
         if self.native_w13 is not None:
-            import v4_flash_tp_native_megamoe as native_kernel
+            native_kernel = self.native_kernel_module
+            if native_kernel is None:
+                import v4_flash_tp_native_megamoe as native_kernel
+                self.native_kernel_module = native_kernel
 
             self.native_workspace = native_kernel.allocate_workspace(
                 self.intermediate_per_rank, device
@@ -908,7 +915,9 @@ class CapturedCase:
     def run_native_tp4_single_launch(
         self, comm: CustomAllReduceV2
     ) -> torch.Tensor:
-        import v4_flash_tp_native_megamoe as native_kernel
+        native_kernel = self.native_kernel_module
+        if native_kernel is None:
+            import v4_flash_tp_native_megamoe as native_kernel
 
         self.prepare_fused_pull(comm)
         assert self.native_workspace is not None

@@ -72,6 +72,7 @@ def make_case(
     lut: torch.Tensor,
     intermediate_per_rank: int,
     use_native: bool = False,
+    native_kernel_module: Any | None = None,
 ) -> custom.CapturedCase:
     w13, s13, g13, w2, s2, g2 = weights[:6]
     native_w13, native_w2, native_g13, native_g2, native_s13, native_s2 = (
@@ -97,6 +98,7 @@ def make_case(
         native_g2=native_g2,
         native_s13=native_s13,
         native_s2=native_s2,
+        native_kernel_module=native_kernel_module,
     )
 
 

@@ -12048,3 +12048,28 @@ maximum rank latency of a full CUDA-Graph replay.
   justified yet.
 - **Evidence:**
   `bench/evidence/iter486_tile_tma_native_layout_abba_long_window.txt`.
+
+## Iteration 487 — same-process native-layout A/B harness passes TP4 smoke
+
+- **Change:** teach the graph case/weight builders to accept an explicit native
+  kernel module, then add a same-process TP4 harness which loads the selected
+  80-byte layout and single-tile-TMA candidate under distinct module names.
+  Both variants receive identically seeded canonical weights and identical
+  FP8 inputs/routes, own independent graph/workspace state, and share the same
+  CARv2 communicator and process clock regime.
+- **Protocol:** physical H20 GPUs 0–3, random M8, two balanced whole-batch
+  AB/BA rounds x two rank-max samples per layout, two alternating warmups,
+  CUDA Graph, and a separate excluded 256 MiB cache clear immediately before
+  every timed replay.
+- **Correctness:** **PASS and bitwise identical** across all TP ranks:
+  minimum cosine `1.0`, maximum relative L2 `0.0`, zero BF16 mismatches and
+  every output finite.
+- **Smoke timing:** selected 80-byte median `0.104704 ms`; tile-TMA median
+  `0.104192 ms`, nominal control-over-tile speedup `1.004914x` (`0.49%`).
+  One first-batch control outlier reached `0.315360 ms`, so the four-sample
+  smoke is only a harness gate and not selection evidence.
+- **Decision:** commit the exact passing harness and keep tile TMA default-off.
+  Proceed to a separately committed long same-process M8/M128 cold-L2 A/B.
+- **Evidence:**
+  `bench/evidence/iter487_native_layout_same_process_smoke.txt` and raw log
+  `bench/results/iter487_native_layout_same_process_smoke_20260905.log`.

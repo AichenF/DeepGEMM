@@ -1,0 +1,33 @@
+ITERATION 487 — same-process native-layout TP4 smoke
+
+Change:
+  Add explicit native-module injection to weight/case construction and a
+  same-process CUDA Graph benchmark for the selected 80-byte layout versus
+  the default-off single contiguous tile-TMA layout.
+
+Protocol:
+  Physical H20 GPUs 0,1,2,3; TP4; random M=8
+  outer=2; replays=2; warmups=2; balanced whole-batch AB/BA
+  rank-max CUDA-event latency
+  separate 256 MiB L2 clear immediately before every replay; clear excluded
+
+Environment:
+  GPU NVIDIA H20-3e; SM count 78; world size 4
+  control tile TMA false; candidate tile TMA true
+
+Correctness:
+  cosine_min_rank=1.0
+  rel_l2_max_rank=0.0
+  bf16_mismatches_max_rank=0
+  finite_all_ranks=true
+
+Cold-L2 timing (4 samples/layout):
+  80-byte control min/median/max = 0.104448 / 0.104704 / 0.315360 ms
+  tile TMA       min/median/max = 0.103936 / 0.104192 / 0.115392 ms
+  control/tile median            = 1.004914x
+
+Verdict:
+  PASS harness and exact-output gate.  The nominal 0.49% tile gain is not a
+  selection result because this is a four-sample smoke with a first-batch
+  control outlier.  Keep tile TMA default-off and run a long same-process
+  M8/M128 confirmation.
