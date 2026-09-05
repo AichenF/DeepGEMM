@@ -12281,3 +12281,18 @@ maximum rank latency of a full CUDA-Graph replay.
   occupancy assertion still has to prove exactly one resident CTA/SM.
 - **Decision:** admit the candidate to the smallest single-GPU progress,
   occupancy, and full-output correctness checks before any TP4 launch.
+
+## Iteration 496 — first local correctness invocation misses repo PYTHONPATH
+
+- **Candidate:** unchanged CTA-local W13 module from Iteration 494.
+- **Attempt:** GPU-1 compute-only M8 random-route correctness/profile driver
+  under a 360-second timeout.
+- **Result:** **infrastructure failure before CUDA execution**.  Python exits
+  immediately with `ModuleNotFoundError: No module named
+  'v4_flash_tp_wgmma'` because launching a script from `bench/` makes that
+  directory, rather than the repository root, `sys.path[0]`.
+- **Evidence boundary:** no kernel launch, occupancy result, numerical result,
+  or performance measurement occurred.
+- **Decision:** keep the source unchanged and rerun the identical command with
+  the repository root plus the Humming checkout explicitly prepended to
+  `PYTHONPATH`.
