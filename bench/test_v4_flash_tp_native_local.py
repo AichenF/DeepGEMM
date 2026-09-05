@@ -77,7 +77,7 @@ def main() -> None:
     s2 = torch.randint(
         125, 129, (256, 4096, 16), dtype=torch.uint8, device=device
     )
-    native_w13, native_w2, native_g13, native_g2 = (
+    native_w13, native_w2, native_g13, native_g2, native_s13, native_s2 = (
         native.transform_weights(w13, s13, w2, s2)
     )
 
@@ -109,6 +109,8 @@ def main() -> None:
         workspace,
         native_w13,
         native_w2,
+        native_s13,
+        native_s2,
         native_g13,
         native_g2,
         output,

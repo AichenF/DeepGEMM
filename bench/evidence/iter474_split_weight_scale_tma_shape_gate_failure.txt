@@ -1,0 +1,23 @@
+ITERATION 474 — split weight/scale TMA shape-gate failure
+
+Configuration:
+  physical H20 GPU1; deterministic local M8
+  V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA=1
+  selected register-dequant, K128-batch, two-CTA and normalized-scale defaults
+
+Pre-launch result:
+  Python py_compile: PASS
+  Hopper extension compilation: PASS
+  CUDA kernel launch: NOT REACHED
+  correctness/performance samples: NONE
+
+Observed exception:
+  RuntimeError: split native W13 scales must be uint8 [2097152,16]
+
+Cause:
+  Python emits one contiguous logical
+  [E,N/256,K/128,64,16] tensor; the host check requires an unnecessary 2D view
+  of the identical byte storage.
+
+Verdict: FAIL at validation contract.  Relax only dimensionality while keeping
+dtype, contiguity and exact numel checks, then retry M8.

@@ -11734,3 +11734,32 @@ maximum rank latency of a full CUDA-Graph replay.
   smoke test and is not used to replace the formal Iteration-472 verdict.
 - **Evidence:**
   `bench/evidence/iter473_native_resolved_metadata_graph_smoke.txt`.
+
+## Iteration 474 — split weight/scale TMA first launch rejected by shape gate
+
+- **Hypothesis/change:** add default-off
+  `V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA=1`.  Model-load layout separates each
+  64-byte packed K128 weight row from its four residual scale bytes, groups
+  four rows into legal 16-byte scale records, issues `64x256` and `16x64` TMA
+  copies against the same stage barrier, and redirects RS exponent loads to
+  the split shared scale tile.  Existing 80-byte transport remains the default
+  control.  Native benchmark plumbing carries both scale tensors and reports
+  the new flag.
+- **Protocol:** Python static compilation for all changed modules, then
+  physical H20 GPU1 deterministic local M8 with the split flag enabled and all
+  selected native defaults.  This is the first compile/launch gate; M128 and
+  latency are conditional on M8 correctness.
+- **Result:** **FAIL before kernel launch and numerical output.**  The new
+  Hopper extension compiles successfully, but `run_native_tp4` raises
+  `split native W13 scales must be uint8 [2097152,16]`.
+- **Root cause:** `_split_scale_to_tma_groups` intentionally retains the
+  descriptive contiguous 5D shape `[E,N/256,K/128,64,16]`; the host validator
+  incorrectly requires the same storage to be viewed as 2D.  The descriptor
+  consumes only its contiguous pointer/byte layout, so dimensionality is not
+  semantically required.  No CUDA correctness or performance conclusion is
+  available from this attempt.
+- **Decision:** preserve the failed candidate exactly.  Next relax only the
+  split-scale host validation to contiguous uint8 plus exact byte count, then
+  repeat the same M8 gate before any other change.
+- **Evidence:**
+  `bench/evidence/iter474_split_weight_scale_tma_shape_gate_failure.txt`.

@@ -30,10 +30,14 @@
         cute::prefetch_tma_descriptor(&tensor_map_l1_acts);
         cute::prefetch_tma_descriptor(&tensor_map_l1_acts_sf);
         cute::prefetch_tma_descriptor(&tensor_map_l1_weights);
+        if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA)
+            cute::prefetch_tma_descriptor(&tensor_map_l1_weight_scales);
         cute::prefetch_tma_descriptor(&tensor_map_l1_output);
         cute::prefetch_tma_descriptor(&tensor_map_l2_acts);
         cute::prefetch_tma_descriptor(&tensor_map_l2_acts_sf);
         cute::prefetch_tma_descriptor(&tensor_map_l2_weights);
+        if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA)
+            cute::prefetch_tma_descriptor(&tensor_map_l2_weight_scales);
     }
 
     // =====================================================================
@@ -145,11 +149,19 @@
                       kSwapABRequested && kUseMode2RowDecoder &&
                       !kSplitMDecodedWeightReuse),
                      "register dequant currently supports BM8/BN256 swap-AB");
+    DG_STATIC_ASSERT(!(K_NATIVE_SPLIT_WEIGHT_SCALE_TMA &&
+                       K_NATIVE_RS_SCALE_WORD_CACHE),
+                     "split scale TMA is incompatible with scale-word cache");
     constexpr uint32_t kNumDecodedBStages = kRegisterDequant ? 0u :
         (kSplitMDecodedWeightReuse ? 2u : kNumStages);
-    constexpr uint32_t B_LOAD_BYTES_PER_ROW = 80u;
+    constexpr uint32_t B_LOAD_BYTES_PER_ROW =
+        K_NATIVE_SPLIT_WEIGHT_SCALE_TMA ? 64u : 80u;
     constexpr uint32_t SMEM_PACKED_B_SIZE_PER_STAGE =
         LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW * sizeof(b_dtype_t);
+    constexpr uint32_t SMEM_B_SCALE_SIZE_PER_STAGE =
+        K_NATIVE_SPLIT_WEIGHT_SCALE_TMA ? LOAD_BLOCK_N * 4u : 0u;
+    constexpr uint32_t SMEM_PACKED_B_STAGE_SIZE =
+        SMEM_PACKED_B_SIZE_PER_STAGE + SMEM_B_SCALE_SIZE_PER_STAGE;
     // L1 and L2 each consume one per-128 activation scale per row and K tile.
     constexpr uint32_t kL2SFAHalfStride =
         math::constexpr_align<uint32_t>(BLOCK_M * sizeof(float), 128u) / sizeof(float);
@@ -181,7 +193,7 @@
 
     constexpr uint32_t SMEM_GEMM_STORAGE_SIZE =
         SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE + SMEM_MXFP4_LUT_SIZE + SMEM_CD_SIZE +
-        kNumStages * (SMEM_A_SIZE_PER_STAGE + SMEM_PACKED_B_SIZE_PER_STAGE) +
+        kNumStages * (SMEM_A_SIZE_PER_STAGE + SMEM_PACKED_B_STAGE_SIZE) +
         kNumDecodedBStages * SMEM_B_SIZE_PER_STAGE;
     // The post-GEMM top-k combine reuses the prefix as three buffers over two
     // hidden chunks.  Decoded-B used to make that prefix large implicitly;
@@ -225,7 +237,11 @@
         return math::advance_ptr<b_dtype_t>(
             smem_gemm_base, SMEM_CD_SIZE + kNumStages * SMEM_A_SIZE_PER_STAGE +
             kNumDecodedBStages * SMEM_B_SIZE_PER_STAGE +
-            i * SMEM_PACKED_B_SIZE_PER_STAGE);
+            i * SMEM_PACKED_B_STAGE_SIZE);
+    });
+    auto smem_b_scale = utils::PatternVisitor([=](const uint32_t& i) {
+        return math::advance_ptr<uint8_t>(
+            smem_packed_b[i], SMEM_PACKED_B_SIZE_PER_STAGE);
     });
     auto sf_start_ptr = math::advance_ptr<uint8_t>(
         smem_buffer, SMEM_BEFORE_BARRIER_SIZE);
@@ -799,23 +815,36 @@
             constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
             const auto tensor_map_b_ptr = kBlockIsL2 ?
                 &tensor_map_l2_weights : &tensor_map_l1_weights;
+            const auto tensor_map_b_scale_ptr = kBlockIsL2 ?
+                &tensor_map_l2_weight_scales : &tensor_map_l1_weight_scales;
             constexpr uint32_t shape_n = kBlockIsL2 ? L2_SHAPE_N : L1_SHAPE_N;
+            constexpr uint32_t scale_n_tiles = shape_n / LOAD_BLOCK_N;
 
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 empty_barriers[stage_idx]->wait(phase ^ 1);
 
                 const uint32_t n_idx = local_expert_idx * shape_n + n_block_idx * BLOCK_N;
-                // MXFP4 fused B+scale layout stores 64B packed FP4 + 8B
-                // E8M0 scale (4 per-32 codes duplicated x2) + 8B zero padding
-                // per BK128 row.
+                // The control layout stores an 80-byte fused record.  The
+                // split candidate loads a 64-byte packed record plus one
+                // 16x64 scale tile, whose records each hold four N rows.
                 const uint32_t k_idx = k_block_idx * B_LOAD_BYTES_PER_ROW;
                 if (cute::elect_one_sync()) {
                     tma::copy<B_LOAD_BYTES_PER_ROW, LOAD_BLOCK_N, 0, b_dtype_t>(
                         tensor_map_b_ptr, full_barriers[stage_idx],
                         smem_packed_b[stage_idx],
                         k_idx, n_idx, 1);
+                    if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
+                        const uint32_t scale_outer_idx =
+                            ((local_expert_idx * scale_n_tiles + n_block_idx)
+                                 * num_k_blocks + k_block_idx)
+                            * (LOAD_BLOCK_N / 4u);
+                        tma::copy<16, LOAD_BLOCK_N / 4u, 0, uint8_t>(
+                            tensor_map_b_scale_ptr, full_barriers[stage_idx],
+                            smem_b_scale[stage_idx],
+                            0, scale_outer_idx, 1);
+                    }
                     full_barriers[stage_idx]->arrive_and_expect_tx(
-                        SMEM_PACKED_B_SIZE_PER_STAGE);
+                        SMEM_PACKED_B_STAGE_SIZE);
                 }
                 __syncwarp();
             }
@@ -1071,8 +1100,17 @@
                                     reinterpret_cast<const uint8_t*>(
                                         smem_packed_b[stage_idx])
                                     + packed_row1 * B_LOAD_BYTES_PER_ROW;
-                                exponent0[half] = row_ptr0[64u + k * 2u];
-                                exponent1[half] = row_ptr1[64u + k * 2u];
+                                if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
+                                    exponent0[half] = smem_b_scale[stage_idx][
+                                        (packed_row0 >> 2u) * 16u
+                                        + (packed_row0 & 3u) * 4u + k];
+                                    exponent1[half] = smem_b_scale[stage_idx][
+                                        (packed_row1 >> 2u) * 16u
+                                        + (packed_row1 & 3u) * 4u + k];
+                                } else {
+                                    exponent0[half] = row_ptr0[64u + k * 2u];
+                                    exponent1[half] = row_ptr1[64u + k * 2u];
+                                }
                                 packed0[half] =
                                     *reinterpret_cast<const uint32_t*>(
                                         row_ptr0 + k * 16u + packed_k_offset);
@@ -1143,6 +1181,14 @@
                                     exponent1 =
                                         (scale_word1 >> ((k & 1u) * 16u))
                                         & 0xffu;
+                                } else if constexpr (
+                                    K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
+                                    exponent0 = smem_b_scale[stage_idx][
+                                        (packed_row0 >> 2u) * 16u
+                                        + (packed_row0 & 3u) * 4u + k];
+                                    exponent1 = smem_b_scale[stage_idx][
+                                        (packed_row1 >> 2u) * 16u
+                                        + (packed_row1 & 3u) * 4u + k];
                                 } else {
                                     exponent0 = row_ptr0[64u + k * 2u];
                                     exponent1 = row_ptr1[64u + k * 2u];

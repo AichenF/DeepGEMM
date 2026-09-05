@@ -74,8 +74,8 @@ def make_case(
     use_native: bool = False,
 ) -> custom.CapturedCase:
     w13, s13, g13, w2, s2, g2 = weights[:6]
-    native_w13, native_w2, native_g13, native_g2 = (
-        weights[6:] if use_native else (None, None, None, None)
+    native_w13, native_w2, native_g13, native_g2, native_s13, native_s2 = (
+        weights[6:] if use_native else (None, None, None, None, None, None)
     )
     return custom.CapturedCase(
         m=m,
@@ -95,6 +95,8 @@ def make_case(
         native_w2=native_w2,
         native_g13=native_g13,
         native_g2=native_g2,
+        native_s13=native_s13,
+        native_s2=native_s2,
     )
 
 
@@ -220,6 +222,10 @@ def main() -> None:
                     "native_rs_scale_word_cache": bool(
                         native_kernel
                         and native_kernel.NATIVE_RS_SCALE_WORD_CACHE
+                    ),
+                    "native_split_weight_scale_tma": bool(
+                        native_kernel
+                        and native_kernel.NATIVE_SPLIT_WEIGHT_SCALE_TMA
                     ),
                     "single_launch_interleaved": (
                         kernel.SINGLE_LAUNCH_INTERLEAVED
