@@ -1,0 +1,25 @@
+ITER393_CTA_SMID_MAPPING_PROBE
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+device=CUDA_VISIBLE_DEVICES=0
+production_source_changed=false
+
+probe_old.grid=624
+probe_old.block_threads=128
+probe_old.dynamic_smem_bytes=29184
+probe_new.grid=78
+probe_new.block_threads=1024
+probe_new.dynamic_smem_bytes=147456
+method=record_%smid_then_device_wide_arrival_spin_barrier
+
+compile=PASS
+kernel_completion=FAIL_HANG
+stdout_mapping=NONE
+action=interrupted_after_compile_and_nonreturn
+valid_mapping_evidence=false
+
+interpretation=The all-block-resident premise was not satisfied; no conclusion
+about contiguous8 versus stride78 task placement is permitted from this run.
+next=use a bounded nonblocking sampler or instrument the production kernel
+ITER393_CTA_SMID_MAPPING_PROBE_ABORTED

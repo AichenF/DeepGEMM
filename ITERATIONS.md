@@ -9712,3 +9712,27 @@ maximum rank latency of a full CUDA-Graph replay.
   21/36-us pre-communication GEMM/scheduler gap.
 - Evidence:
   `bench/results/iter392_78cta_parallel_route_tp4_m8_m128_cold_20260905.log`.
+
+## Iteration 393 — reject grid-barrier CTA-to-SM mapping probe
+
+- Date: 2026-09-05
+- Purpose: determine whether the selected 624x128 launch places eight
+  consecutive logical CTAs or eight CTAs separated by 78 on each H20 SM,
+  and align that set with the experimental 78x1024 launch.  No production
+  source was changed.
+- Method: a standalone JIT probe recorded `%smid` for a 624x128 launch and a
+  78x1024 launch.  The old-shape probe requested 29,184 dynamic shared bytes
+  per block to cap residency at eight CTAs/SM; the new-shape probe requested
+  the production candidate's 147,456 bytes.  Both variants used a device-wide
+  arrival/spin barrier so that the recorded set would represent concurrent
+  residency rather than successive waves.
+- Result: INVALID/ABORTED.  Compilation completed, but the first probe kernel
+  did not return and emitted no mapping.  It was interrupted.  The global
+  barrier depended on all 624 blocks becoming resident simultaneously; at
+  least one unmodeled launch/resource/scheduling constraint prevented that,
+  so this method can deadlock and provides no task-mapping evidence.
+- Decision: do not infer contiguous or stride-78 placement from this run.
+  Replace the global barrier with a bounded, nonblocking residency sampler
+  (or instrument the real selected kernel) and record the actual mapping.
+- Evidence:
+  `results/iter393_cta_smid_grid_barrier_aborted_20260905.log`.
