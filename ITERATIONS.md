@@ -12488,3 +12488,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - Other shapes: Tokens=64 remains `REG=64, STACK=48, SHARED=2048, LOCAL=0`; Tokens=8/16/32 remain 64 registers (32-byte stack for <=32). Thus the composition changes occupancy only at M128, as intended by the token-specialized bound-9 launch.
 - Decision: resource gate PASS for M128. Next require exact compute correctness plus runtime occupancy admission before any distributed latency screen.
 - Evidence: `results/iter507_dual_phase_outline_resource_full_20260905.log`.
+## Iteration 508 — dual-phase outline exact endpoint compute correctness (2026-09-05)
+
+- Protocol: H20 GPU0, TP4-local random routes at M8/split-K4 and M128/split-K2, prequantized FP8 input, both GEMM phase outlines, assume-valid, release-arrival, and token-specialized 9-CTA M128 enabled. Each checked candidate launch followed the harness's excluded 256 MiB L2 clear; TP communication was disabled only for this compute state-machine gate. All four packed barriers were seeded at generation `2^22-1`.
+- Result: both endpoints are bitwise equal to the independently launched multi-kernel local pipeline (`cosine=1`, `rel_l2=0`, finite). M8/M128 padded rows are 368/2008. All four packed words wrap exactly to `[0,0,0,0]`. The M128 launch passed the runtime requirement for exactly 9 admitted CTAs/SM.
+- Decision: correctness, barrier-wrap, and occupancy-admission gates PASS. Proceed to a short paired TP4 cold-L2 M128 performance screen before spending an all-M run.
+- Evidence: `results/iter508_dual_phase_outline_compute_correctness_20260905.log`.
