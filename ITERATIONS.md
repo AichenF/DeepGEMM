@@ -13207,3 +13207,13 @@ maximum rank latency of a full CUDA-Graph replay.
   much faster multi-kernel path before choosing the next kernel change.
 - **Evidence:**
   `bench/results/iter550_native_selected_vs_multi_tp4_all_m_cold_20260905.log`.
+
+## Iteration 551 — mark native padded-row metadata as not applicable
+
+- **Change:** formal comparison records now emit `candidate_padded_rows: null`
+  for the native candidate instead of reading the flat path's uninitialized
+  device scalar.  Flat candidate reporting is unchanged.  This is a logging
+  correction only and does not alter either captured graph.
+- **Static result:** AST parsing and exact native/flat conditional audit
+  **PASS**.  No GPU timing is claimed.
+- **Evidence:** `bench/evidence/iter551_native_padded_rows_metadata_fix.txt`.

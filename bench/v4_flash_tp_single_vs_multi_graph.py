@@ -1029,7 +1029,11 @@ def main() -> None:
             "active_experts": candidate_case.active_experts,
             "routed_rows": m * custom.TOP_K,
             "control_padded_rows": int(control_case.num_tokens_padded.item()),
-            "candidate_padded_rows": int(candidate_case.num_tokens_padded.item()),
+            "candidate_padded_rows": (
+                None
+                if use_native
+                else int(candidate_case.num_tokens_padded.item())
+            ),
             "w13_split_k": candidate_case.w13_split_k,
             "control_ar_mode": control_case.fused_k6_ar_mode,
             "candidate_ar_mode": candidate_case.fused_k6_ar_mode,

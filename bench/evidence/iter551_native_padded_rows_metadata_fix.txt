@@ -1,0 +1,7 @@
+Iteration 551 native padded-row metadata fix
+
+AST_PASS bench/v4_flash_tp_single_vs_multi_graph.py
+native_candidate_padded_rows_is_na=True
+STATIC_METADATA_FIX_PASS
+
+This is a logging-only change; no CUDA graph or benchmark was launched.
