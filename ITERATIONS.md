@@ -13871,3 +13871,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Scope observation: the global W13 split2-unroll flag also changes inline M64 split-K2 to `REG:64 STACK:64`; M<=32 split-K4 remains on the four-way body. Therefore any timing must first target M128 and use an invariant external baseline for drift normalization; the same-source multi control would itself be modified by this global flag.
 - Decision: resource gate passes narrowly. Advance to a short process-bracketed M128 cold-L2 comparison of compact-only versus compact+unroll8, normalized against exact Humming+CARv2 rather than the affected same-source multi control.
 - Evidence: `evidence/iter602_compact_w13_unroll8_resources.txt`.
+## Iteration 603 — split2-unroll8 regresses compact-W13 M128
+
+- Purpose: test whether the earlier standalone W13 split-K2 eight-way unroll can add to the compact-ABI/9-CTA single-kernel gain without changing the exact Humming+CARv2 baseline.
+- Protocol: TP4 GPUs 0,5,6,7; M128; 248 active experts and 1,992 padded rows; exact Humming MXFP4 W13+W2+SGLang CARv2 versus the compact one-kernel candidate; CUDA Graph; independent excluded 256 MiB cold-L2 clear before every replay; replay-level AB/BA; process order unroll4_A -> unroll8_A -> unroll8_B -> unroll4_B; 2 outer x 20 samples/implementation/window after 4 warmups.
+- Correctness: all four candidate and Humming windows pass, all outputs finite and all-reduce checks true. Candidate cosine/rel-L2 are identically 0.9999955976741226/0.0029672639980990933.
+- Results (candidate/Humming): unroll4_A 0.3483359963/0.3750559986 ms = 0.9287572992x; unroll8_A 0.3535839915/0.3744639903 = 0.9442403026x; unroll8_B 0.3532160074/0.3744319975 = 0.9433382021x; unroll4_B 0.3468319923/0.3747199923 = 0.9255764288x.
+- Aggregate: mean normalized ratio unroll4=0.9271668640x versus unroll8=0.9437892523x. Eight-way ON/OFF=1.017927, a 1.79% normalized regression; direct candidate means regress 0.3475839943 -> 0.3533999994 ms (1.67%). Both eight-way windows lose to both four-way windows despite stable Humming medians.
+- Decision: reject the composition and keep `V4_W13_K_UNROLL8_SPLIT2=0`. Its extra 32-byte split2 call frame and expanded callee do not repay their cost inside the persistent compact phase. Do not run a long confirmation.
+- Evidence: `evidence/iter603_compact_w13_unroll8_m128_short_bracket.md` and `evidence/iter603_compact_w13_unroll8_m128_short_bracket_results.txt`.
