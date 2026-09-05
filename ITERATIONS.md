@@ -9275,3 +9275,25 @@ maximum rank latency of a full CUDA-Graph replay.
   no-added-local-op gate both pass. Advance to cold-L2 compute-only M=8/M=128
   correctness and phase timing before distributed timing.
 - **Artifact:** `bench/results/iter376_w2_phase_noinline_call_audit_20260905.log`.
+
+## Iteration 377 — whole-W2-phase outline compute correctness/screen (2026-09-05)
+
+- **Configuration:** W2 phase outline enabled; M=128 uses the existing
+  dynamic-route `__launch_bounds__(128,9)` specialization while M=8 remains
+  at eight CTAs/SM. Release-arrival and device phase stamps were enabled;
+  TP collective was disabled. Inputs were caller-provided FP8-E4M3 X with
+  FP32 group-128 scale and MXFP4 weights.
+- **Protocol:** H20 GPU0, random routes, seed 20260904. Each measured launch
+  was preceded by a separate excluded 256 MiB L2 clear and compared with the
+  independent multi-kernel local reference.
+- **Correctness:** PASS bitwise at M=8 and M=128 (`cosine >=
+  0.9999999999999999`, `rel_l2=0`, finite); all four packed barrier words
+  advanced cleanly to 2048.
+- **Phase screen (route/W13/requant/W2):** M=8
+  `2.240/41.440/3.168/22.912 us` (sum `69.760 us`); M=128
+  `4.576/204.032/6.496/108.448 us` (sum `323.552 us`). The M128 signal is
+  several microseconds below earlier bound-9 phase screens, whereas M8 is
+  slightly worse; single samples are insufficient for selection.
+- **Decision:** Advance to an order-balanced TP4 cold-L2 OFF/ON bracket at
+  M={8,128}. Keep default-off until an end-to-end normalized gain survives.
+- **Artifact:** `bench/results/iter377_w2_phase_noinline_bound9_compute_m8_m128_20260905.log`.
