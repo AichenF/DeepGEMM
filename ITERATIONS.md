@@ -13998,3 +13998,37 @@ maximum rank latency of a full CUDA-Graph replay.
   MXFP4+CARv2 and the stronger same-source multi-kernel control.  Do not use
   the five-sample medians as final speedup evidence.
 - Evidence: `evidence/iter610_complete_bundle_tp4_tp8_runtime_gate.md`.
+## Iteration 611 — final-default TP4 versus exact Humming MXFP4+CARv2
+
+- Baseline contract: Humming's MXFP4 indexed W13 and W2 GEMMs followed by the
+  same SGLang `CustomAllReduceV2` instance.  Candidate is the complete default
+  one-business-kernel MegaMoE path.  Both consume the same caller-provided
+  FP8-E4M3/group-128-scaled activation, MXFP4 weights, precomputed random
+  top-k6 routes and routing weights; external input quantization is outside
+  both graphs.
+- Configuration: TP4 on physical H20 GPUs 0,5,6,7; only
+  `V4_SINGLE_LAUNCH_TP4=1`, with the production bundle and all six component
+  overrides unset.  Random-route seed 20260902, M=8/16/32/64/128.
+- Timing: CUDA Graph; replay-level alternating AB/BA; 6 outer batches x 50
+  samples = 300 samples/implementation/M after 10 warmups.  A separate 256
+  MiB Triton clear immediately precedes each implementation replay and is
+  excluded from events.
+- Correctness: both arms pass at every M; all outputs are finite and allreduce
+  checks pass.  Candidate cosine >=0.9999955955 and rel-L2 <=0.00296801;
+  Humming cosine >=0.9999955571 and rel-L2 <=0.00298122.
+- Humming / candidate median ms and speedup:
+  M8 `0.088736 / 0.075824 = 1.17029x`;
+  M16 `0.144384 / 0.124192 = 1.16259x`;
+  M32 `0.224048 / 0.198272 = 1.13000x`;
+  M64 `0.313824 / 0.282192 = 1.11209x`;
+  M128 `0.394656 / 0.359104 = 1.09900x`.
+- Aggregate: Humming geometric mean `0.204255127` ms versus candidate
+  `0.180046766` ms, `1.134456x` speedup, or 11.852% lower candidate latency.
+  M128 has monotonic process drift in both arms; replay-level pairing preserves
+  a like-for-like comparison, but the exact median should not be compared to a
+  different process without its paired control.
+- Decision: the requested exact-Humming baseline is beaten at all five M
+  values under cold L2.  The harder same-source multi-kernel control remains
+  to be rerun with this final default before claiming the optimization is
+  complete.
+- Evidence: `evidence/iter611_final_default_tp4_vs_humming_cold_l2.md`.
