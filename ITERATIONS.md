@@ -13623,3 +13623,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Qualification:** M128 positional pool diagnostics are excluded because repeated-expert atomic slot assignment is nondeterministic; the immutable complete-output hash is the valid oracle.
 - **Decision:** numerical gate passes. Run a same-process TP4 M8/M128 cold-L2 screen before any long or five-M test.
 - **Evidence:** `bench/evidence/iter572_native_rs_k64_commit_local_gate.txt` and `bench/results/iter572_native_rs_k64_commit_local_m8_m128_20260905.log`.
+## Iteration 573 — two-K64 RS grouping is positive in TP4 endpoint screen
+
+- **Protocol:** selected one-K128-group native control versus two-K64-group candidate in one TP4 process on physical GPUs 0,5,6,7; random M8/M128; two balanced AB/BA batches x twenty rank-max samples; five warmups; CUDA Graph; separate excluded 256 MiB cold-L2 clear before every replay. Both arms retain selected route/barrier/combine and communication paths.
+- **Correctness:** **PASS bitwise** at both endpoints and all ranks: cosine 1, relative-L2 0, zero BF16 mismatches and finite outputs.
+- **Cold-L2 result (K128 / K64 median):** M8 `0.091904 / 0.091664 ms`, `1.00262x` (+0.262%); M128 `0.373360 / 0.367312 ms`, `1.01647x` (+1.646%). Endpoint geometric mean improves `0.185238 -> 0.183492 ms`, `1.00952x` (+0.952%).
+- **Stability:** both paired batches favor K64 at both M values. M8 paired gains are only `0.160/0.384 us`; M128 gains are `1.248/7.184 us`, with the latter clearly affected by timing-regime drift.
+- **Decision:** promising but not selected. Run a 4x50 same-process confirmation; the expected effect is small and the M128 pooled gain may be inflated by drift.
+- **Evidence:** `bench/evidence/iter573_native_rs_k64_commit_tp4_cold_screen.txt` and `bench/results/iter573_native_rs_k64_commit_tp4_cold_screen_20260905.log`.

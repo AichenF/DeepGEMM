@@ -1,0 +1,37 @@
+Iteration 573 — native RS two-K64 commit groups, TP4 cold-L2 screen
+
+Date: 2026-09-05
+GPUs: physical 0,5,6,7 (TP4)
+Protocol: same-process balanced CUDA-graph A/B, random M=8,128, 2 outer batches × 20 measured replays, 5 warmup replays
+Cache: separate excluded 256 MiB cold-L2 clear immediately before every measured replay
+Raw log: bench/results/iter573_native_rs_k64_commit_tp4_cold_screen_20260905.log
+
+Configuration isolation
+- Control: selected one K128 RS commit group.
+- Candidate: two K64 RS commit groups.
+- Both: selected TP-local barrier, route build, parallel combine, same weights/routes, same communication tails.
+
+Correctness
+- M=8 and M=128: cosine=1, relative L2=0, BF16 mismatches=0, all ranks finite.
+
+M=8 (rank-max ms)
+- candidate batch medians: 0.09171199798583984, 0.0915519967675209
+- candidate min/median/max: 0.09014400094747543 / 0.09166399762034416 / 0.10943999886512756
+- control batch medians: 0.09187199920415878, 0.09193599969148636
+- control min/median/max: 0.09033600240945816 / 0.09190399944782257 / 0.1682559996843338
+- speedup=1.0026182779903672 (+0.262%); paired gains 0.160 and 0.384 us.
+
+M=128 (rank-max ms)
+- candidate batch medians: 0.36694400012493134, 0.36873599886894226
+- candidate min/median/max: 0.3656960129737854 / 0.3673119992017746 / 0.381087988615036
+- control batch medians: 0.36819200217723846, 0.37591999769210815
+- control min/median/max: 0.3661760091781616 / 0.3733599931001663 / 0.378495991230011
+- speedup=1.0164655494825514 (+1.646%); paired gains 1.248 and 7.184 us. The second delta is regime-sensitive and must not be treated as a stable 2% effect.
+
+Endpoint geometric mean
+- control=0.1852384317567948 ms
+- candidate=0.18349192412952495 ms
+- speedup=1.0095181716337391 (+0.952%)
+
+Decision
+- Promising but below the selection threshold. Both paired batches favor the candidate at both endpoints and correctness is bitwise. Run 4×50 same-process confirmation; do not select from this screen.
