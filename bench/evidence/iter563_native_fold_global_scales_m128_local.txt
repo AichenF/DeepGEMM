@@ -1,0 +1,13 @@
+Iteration 563: native global-scale folding local M128 gate
+Date: 2026-09-05
+GPU: physical H20 GPU1
+Mode: local body, TP communication disabled, no timing
+
+finite=true
+max_abs=296960.0
+intermediate_cosine=0.9996428551534735
+output_sha256=2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5
+
+Result: PASS full-output bitwise equality.
+Repeated-expert positional pool diagnostics are excluded by the established
+nondeterministic atomic-slot-order qualification.

@@ -13471,3 +13471,25 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter562_native_fold_global_scales_m8_local_20260905.log` and
   `bench/evidence/iter562_native_fold_global_scales_m8_local.txt`.
+
+## Iteration 563 — native global-scale folding is bitwise-correct at M128
+
+- **Protocol:** unchanged folded-scale candidate on physical H20 GPU1,
+  deterministic local M128, TP communication disabled; this is a numerical
+  gate with no timing.
+- **Result:** **PASS full-output bitwise equality.**  Output is finite,
+  maximum magnitude is `296,960`, and full BF16 SHA256 is exactly the selected
+  control value
+  `2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5`.
+  The folded intermediate cosine remains `0.9996428552`.
+- **Qualification:** M128 repeats every expert three times, so concurrent
+  route atomics permute same-expert pool slots; the harness's positional
+  route-byte/scale/weight fields are invalid here exactly as established in
+  Iterations 476–478 and 557.  They are excluded.  The immutable final hash is
+  the acceptance oracle.
+- **Decision:** endpoint local correctness is admitted.  Proceed to a
+  same-process TP4 M8/M128 cold-L2 graph screen against the selected native
+  control, requiring bitwise equality on all ranks.
+- **Evidence:**
+  `bench/results/iter563_native_fold_global_scales_m128_local_20260905.log`
+  and `bench/evidence/iter563_native_fold_global_scales_m128_local.txt`.
