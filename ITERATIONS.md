@@ -13024,3 +13024,23 @@ maximum rank latency of a full CUDA-Graph replay.
   claimed yet.
 - **Evidence:**
   `bench/evidence/iter541_tp_local_parallel_combine_chunks_static.txt`.
+
+## Iteration 542 — parallel combine chunks pass correctness and approach gate
+
+- **Protocol:** selected serial-combine native control versus the otherwise
+  identical parallel `(token, hidden-chunk)` candidate in one TP4 process on
+  physical GPUs 0/5/6/7.  Random M8/M128, two balanced whole-batch AB/BA
+  rounds x ten rank-max samples, three alternating warmups, CUDA Graph, and a
+  separate excluded 256 MiB L2 clear immediately before every replay.
+- **Correctness:** **PASS bitwise** at both endpoints across all ranks:
+  relative L2 `0.0`, zero BF16 mismatches, cosine `1.0`, all finite.  Writing
+  disjoint output chunks from separate CTAs preserves the exact result.
+- **Cold-L2 smoke (serial / parallel median):** M8
+  `0.096384 -> 0.093584 ms`, **2.91% lower / 1.0299x**; M128
+  `0.374544 -> 0.370496 ms`, **1.08% lower / 1.0109x**.  Endpoint geometric
+  mean improves `0.190000 -> 0.186206 ms`, **2.00% lower / 1.0204x**.
+- **Decision:** both batches and both endpoints are positive; M8 is at the 3%
+  materiality boundary.  Run a 4x50 same-process long window before deciding
+  whether to retain it.  Do not enable by default from this 20-sample screen.
+- **Evidence:**
+  `bench/results/iter542_native_tp_local_parallel_combine_chunks_tp4_screen_20260905.log`.
