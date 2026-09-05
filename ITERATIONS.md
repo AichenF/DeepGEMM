@@ -13905,3 +13905,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Static result: PASS. `python3 -m py_compile` succeeds for the kernel module and all three modified benchmark drivers; exact symbol/env/metadata wiring appears at the expected definition and reporting sites.
 - Qualification: no remote JIT, CUDA launch, correctness, TP8 behavior, or latency is claimed by this iteration. Next rebuild with only `V4_SINGLE_LAUNCH_TP4=1`, audit resolved flags/resources, then run TP4 and TP8 default-entry correctness.
 - Evidence: `evidence/iter606_compact_bundle_default_static.txt`.
+## Iteration 607 — selected-default JIT and TP4/TP8 resource gate
+
+- Configuration: fresh process on H20 GPU1 with only `V4_SINGLE_LAUNCH_TP4=1`; the new bundle and all four component variables were explicitly unset. SM90a extension `v4tp_6152b84db23659caf76b_v178mspec` compiled/loaded, and the linked cubin was inspected with `cuobjdump`.
+- Resolution check: PASS. Metadata printed bundle=true, W13 phase outline=true, compact ABI=true, dynamic route shared memory=true, and M128 bound-9=true without component overrides.
+- TP4 resources: M128 split2/split4 are `REG56 STACK48 SHARED2048 LOCAL0`, preserving nine-CTA register admission with no fixed local spill. M64 is `REG64 STACK32`; production split4 M8/M16/M32 entries are `REG63 STACK32`; all remain within the eight-CTA/SM ceiling.
+- TP8 resources: production M8/M16 multicast-push entries are `REG62 STACK64 SHARED2048 LOCAL0`; M32/M64/M128 NVLS-pull entries are `REG60 STACK0 SHARED2048 LOCAL0`. All retain eight-CTA admission and no fixed local allocation.
+- Qualification: this gate proves resolved defaults, compilation and static resources only. No business kernel launched and no correctness/latency is claimed. The default-entry TP4/TP8 runtime gates remain required.
+- Evidence: `evidence/iter607_compact_bundle_default_jit_resources.txt`.
