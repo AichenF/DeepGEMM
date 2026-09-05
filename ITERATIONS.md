@@ -13815,3 +13815,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Other shapes: because the initial flag applies the outline globally, M8/M16/M32/M64 entries are `REG:64 STACK:48 SHARED:2048 LOCAL:0`; they receive no residency gain and should not be exposed to the known call overhead.
 - Decision: resource gate passes for M128, but specialize the compact call to `Tokens==128` and leave M<=64 on the selected inline path before correctness/performance testing. Then require exact local output and runtime nine-CTA admission at M128.
 - Evidence: `bench/evidence/iter595_tp4_w13_compact_abi_resources.txt`.
+
+## Iteration 596 — restrict compact W13 outline to M128 (2026-09-05)
+
+- Change: when compact ABI is enabled, only the `Tokens==128` specialization publishes the shared W13 argument record and calls the outlined phase. M8/M16/M32/M64 now fall through to the unchanged inline W13 loop; the legacy non-compact outline retains its original all-token behavior for historical reproduction.
+- Static result: **PASS.** `python3 -m py_compile v4_flash_tp_wgmma.py` exits 0 without diagnostics.
+- Qualification: source specialization only; the new JIT object and runtime behavior are not yet proven. Rebuild resources to confirm small-M entries return to the selected stack/register shape and M128 remains at 56 registers before launching correctness.
+- Evidence: `bench/evidence/iter596_tp4_w13_compact_m128_specialization.txt`.

@@ -6557,20 +6557,22 @@ void tp4_megamoe_single_launch_kernel(
             route_to_sorted, tokens, cta);
     }
 #if K_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
-    if (threadIdx.x == 0) {
-        w13_phase_args.tma_weight = &w13_tma_weight;
-        w13_phase_args.tma_weight_scale = &w13_tma_weight_scale;
-        w13_phase_args.weight = w13;
-        w13_phase_args.weight_scale = s13;
-        w13_phase_args.weight_global_scale = g13;
-        w13_phase_args.activation = qx;
-        w13_phase_args.activation_scale = x_scale;
-        w13_phase_args.sorted_ids = sorted_ids;
-        w13_phase_args.expert_ids = expert_ids;
-        w13_phase_args.num_tokens_padded = num_tokens_padded;
-        w13_phase_args.topk_weights = topk_weights;
-        w13_phase_args.output = partials;
-        w13_phase_args.global_lut = lut;
+    if constexpr (Tokens == 128) {
+        if (threadIdx.x == 0) {
+            w13_phase_args.tma_weight = &w13_tma_weight;
+            w13_phase_args.tma_weight_scale = &w13_tma_weight_scale;
+            w13_phase_args.weight = w13;
+            w13_phase_args.weight_scale = s13;
+            w13_phase_args.weight_global_scale = g13;
+            w13_phase_args.activation = qx;
+            w13_phase_args.activation_scale = x_scale;
+            w13_phase_args.sorted_ids = sorted_ids;
+            w13_phase_args.expert_ids = expert_ids;
+            w13_phase_args.num_tokens_padded = num_tokens_padded;
+            w13_phase_args.topk_weights = topk_weights;
+            w13_phase_args.output = partials;
+            w13_phase_args.global_lut = lut;
+        }
     }
 #endif
 #if K_SINGLE_LAUNCH_SM_STRIPED_TASKS
@@ -7900,7 +7902,10 @@ void tp4_megamoe_single_launch_kernel(
                         }
                         __syncthreads();
                     }
-                } else if constexpr (kSingleLaunchW13PhaseNoInline) {
+                } else if constexpr (
+                        kSingleLaunchW13PhaseNoInline
+                        && (!kSingleLaunchW13PhaseCompactAbi
+                            || Tokens == 128)) {
 #if K_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
                     single_launch_w13_gemm_phase_compact<
                         SplitK, Tokens,

@@ -1,0 +1,17 @@
+Iteration 596: M128-only compact W13 phase specialization
+Date: 2026-09-05
+
+Change:
+- Tokens==128: publish compact shared argument record and call the W13 phase.
+- Tokens in {8,16,32,64}: retain the selected inline W13 loop and omit record
+  publication instructions.
+- Legacy high-argument phase-outline behavior is unchanged when compact ABI
+  is disabled.
+
+Static command:
+  python3 -m py_compile v4_flash_tp_wgmma.py
+
+Exit code: 0
+Diagnostics: none
+
+No CUDA correctness or performance claim is made.
