@@ -1,0 +1,24 @@
+ITERATION 478 — M128 selected-control hash audit
+
+Control configuration:
+  physical H20 GPU1; deterministic local M128
+  V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA=0
+  selected normalized/register-dequant/K128/two-CTA path
+
+Selected 80-byte control:
+  finite=true
+  max_abs=296960.0
+  output_sha256=2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5
+
+Split candidate from Iterations 476 and 477:
+  finite=true
+  max_abs=296960.0
+  output_sha256=2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5
+
+The control itself reports unstable invalid post-workspace fields:
+  l1_x_mismatch_bytes=1743464
+  weighted_fc1_cosine=-0.011988821713672312
+
+Verdict: PASS full-output bitwise equality at M128.  Combined with Iteration
+475, split and control are bitwise equal at both M8 and M128; mutable internal
+pool diagnostics are not an M128 oracle.

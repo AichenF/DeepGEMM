@@ -11834,3 +11834,28 @@ maximum rank latency of a full CUDA-Graph replay.
   an immutable-control hash before rerunning numerical admission.
 - **Evidence:**
   `bench/evidence/iter477_split_tma_m128_repeat_diagnostic_instability.txt`.
+
+## Iteration 478 — selected 80-byte control proves split M128 bitwise equality
+
+- **Protocol:** run the same deterministic local M128 test and seed on
+  physical H20 GPU1 with `V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA=0`, selecting the
+  committed 80-byte native control.  All other native flags and code are
+  identical to Iterations 476–477.
+- **Result:** the control's complete BF16 output SHA-256 is exactly
+  `2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5`
+  and maximum magnitude is `296,960`, both bitwise identical to the split
+  candidate in both prior M128 runs.  The control also produces invalid and
+  changing post-workspace diagnostics (`1,743,464` FP8 byte mismatches and
+  weighted FC1 cosine `-0.01198882`), confirming those fields are not a valid
+  M128 oracle for either layout.
+- **Interpretation:** together with Iteration 475's M8 hash equality, the
+  immutable full-output hash comparison admits the split transport as bitwise
+  equal to the selected control at both endpoints.  The earlier contradictory
+  M128 diagnosis came from host reconstruction of a mutable/reused internal
+  pool, not from weight/scale TMA mapping.
+- **Decision:** accept local endpoint correctness and proceed to TP4 graph
+  correctness/embedded-communication validation.  Do not use the broken
+  post-workspace M128 diagnostic as a future gate; compare complete outputs or
+  immutable snapshots instead.
+- **Evidence:**
+  `bench/evidence/iter478_split_tma_m128_control_hash_audit.txt`.
