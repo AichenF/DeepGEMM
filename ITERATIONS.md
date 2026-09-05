@@ -14820,3 +14820,28 @@ maximum rank latency of a full CUDA-Graph replay.
   paired TP4 cold-L2 CUDA Graph timing as the selection gate.
 - **Evidence:** `bench/results/iter647_one_m128_phase_cold.log` and
   `evidence/iter647_one_m128_phase_cold.md`.
+
+## Iteration 648 — W13 task-boundary SASS audit
+
+- **Scope:** static comparison only; no CUDA kernel was launched and no new
+  latency claim is made.  Exact TP4 M128 split-K2 cubins were used for
+  standalone W13, production compact-W13, and the rejected compact-W13
+  persistent-state variant.
+- **Instruction counts:** standalone is 1,472 instructions with 145 LDS, 18
+  LDC and 31 barrier/sync instructions; production compact is 1,493 with 151
+  LDS, 2 LDC and 32 syncs; persistent compact is 1,502 with 151 LDS, 2 LDC
+  and 31 syncs.  LDG.E.CONSTANT, STS and BRA counts are identical across the
+  compact pair.
+- **Finding:** production adds only 21 instructions versus standalone,
+  including repeated shared-record loads and one post-task CTA sync.  The
+  rejected persistent path removes exactly that sync but adds only nine
+  instructions and still lost 1.48% in Iteration 640.  Therefore simple sync
+  deletion or direct body copying cannot explain or close the W13 penalty;
+  immediate persistent reuse of the same mbarrier generation/state is a
+  plausible counter-cost.
+- **Next-design constraint:** retain compact ABI and M128 56-register/32-byte
+  resource contract, but use alternating metadata plus two small ping-pong
+  mbarrier sets so consecutive tasks do not reuse the same barrier objects.
+  Keep nonpersistent K-loop parity and disable cross-task weight prefetch.
+  This requires design approval before code changes.
+- **Evidence:** `evidence/iter648_w13_task_boundary_sass_audit.md`.
