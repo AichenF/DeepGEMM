@@ -14417,3 +14417,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** **FAIL at compile gate.** NVCC instantiated `reduce_swiglu_quant_task<..., IndependentTaskWGs=4>` for both M8 (`SplitK=2`) and larger-token (`SplitK=4`) kernels, but a stale `static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 8)` at generated CUDA line 2721 rejected the new topology. No cubin was emitted, so residency, correctness, and latency were not measured.
 - **Decision:** keep the experiment default-off; generalize the activation reduction helper's invariant to permit 4 independent WGs, then repeat the fresh-JIT resource gate as a new iteration. Production defaults remain unchanged.
 - **Evidence:** `evidence/iter627_156cta_4wg_resource_gate.md`; raw log `bench/results/iter627_156cta_4wg_resource_gate.log`.
+## Iteration 628 — repair 4-WG activation helper and repeat JIT gate (harness failure)
+
+- **Change:** generalized `reduce_swiglu_quant_task`'s compile-time invariant from `{1,8}` to `{1,4,8}` independent WGs; no production-default behavior changed.
+- **Configuration:** same isolated 156-CTA/4-WG SM90a build as Iteration 627, with the failed extension directory removed first.
+- **Result:** the prior NVCC static-assert failure disappeared and the import returned without a PyTorch/NVCC build exception, but the shell wrapper stripped quotes from the Python `EXT=` print expression. That post-import metadata step raised `TypeError: bad operand type for unary +: 'str'`, so the command exited before `cuobjdump` and the resource gate is still **incomplete**.
+- **Correctness/performance:** not run; no residency or latency claim is made.
+- **Decision:** retain the source repair, replace the fragile metadata print with the already deterministic extension path, and run cubin inspection as a separate new iteration. Production defaults remain unchanged.
+- **Evidence:** `evidence/iter628_156cta_4wg_jit_wrapper_failure.md`; raw log `bench/results/iter628_156cta_4wg_resource_gate.log`.

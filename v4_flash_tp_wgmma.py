@@ -4291,7 +4291,8 @@ __device__ __forceinline__ void reduce_swiglu_quant_task(
         int tail_mblock_begin = -1) {
     static_assert(Intermediate % 128 == 0);
     static_assert(!HybridTailSplit4 || SplitK == 2);
-    static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 8);
+    static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 4
+                  || IndependentTaskWGs == 8);
     static_assert(IndependentTaskWGs == 1 || !DualWg);
     constexpr int kGroupsPerRoute = Intermediate / 128;
     constexpr int kWorkers = DualWg ? 2 : 1;
