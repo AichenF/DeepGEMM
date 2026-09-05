@@ -13792,3 +13792,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Static result: **PASS.** Python bytecode compilation succeeds for `v4_flash_tp_wgmma.py` and `bench/v4_flash_tp_single_vs_multi_graph.py`; the latter reports the resolved compact-ABI flag in benchmark metadata.
 - Qualification/next gate: no CUDA build or timing claim. Rebuild the exact M128 candidate and require `REG<=56`, no fixed local allocation, the expected one compact W13 call, and a bounded stack frame before any launch.
 - Evidence: `bench/evidence/iter592_tp4_w13_compact_abi_static.txt`.
+
+## Iteration 593 — compact-ABI resource gate is blocked by a stale host validator (2026-09-05)
+
+- Intended configuration: compact one-argument W13 phase outline, M128 dynamic route shared memory and bound-9 specialization, plus the selected release-arrival and assume-valid-task paths on H20 GPU1.
+- Result: **HOST VALIDATION FAILURE before JIT/CUDA.** Import raises `ValueError: V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS requires the isolated inline bound-8 schedule-0 path`. The compact mode had been admitted through the bound-9 clauses, but an earlier blanket `SINGLE_LAUNCH_W13_PHASE_NOINLINE` exclusion in the assume-valid validator still rejects it.
+- Qualification: no extension was compiled, no GPU kernel ran, and there is no resource, correctness or timing evidence.
+- Decision: preserve this failed gate, narrow only that stale exclusion so assume-valid remains forbidden for the legacy high-argument outline but is admitted for the new compact outline, then retry the unchanged candidate.
+- Evidence: `bench/evidence/iter593_tp4_w13_compact_abi_validator_failure.txt`.

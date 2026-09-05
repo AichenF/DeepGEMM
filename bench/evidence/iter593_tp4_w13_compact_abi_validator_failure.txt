@@ -1,0 +1,17 @@
+Iteration 593: compact-ABI W13 resource-gate validator failure
+Date: 2026-09-05
+
+Requested environment included:
+  V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL=1
+  V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS=1
+  V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE=1
+  V4_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI=1
+  V4_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM=1
+  V4_SINGLE_LAUNCH_M128_BOUND9=1
+
+Observed exception:
+  ValueError: V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS requires the isolated
+  inline bound-8 schedule-0 path
+
+The process exited before torch load_inline, CUDA initialization, resource
+inspection, or a kernel launch. This is invalid as kernel evidence.
