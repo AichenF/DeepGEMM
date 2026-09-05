@@ -13691,3 +13691,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: **INVALID TOOLING FAILURE.** `cuobjdump` was invoked through an `rg` filter, but the remote container does not provide `rg`; bash exited 127 before a filtered resource report was produced. This run provides no register, spill, occupancy, correctness, or performance evidence.
 - Decision: retry the unchanged cubin using the available `grep` fallback and record the full TP8 resource entries.
 - Evidence: `bench/evidence/iter580_tp8_resource_audit_rg_missing.txt`.
+## Iteration 581 — TP8 cubin resource audit passes the persistent-grid gate (2026-09-05)
+
+- Method: `cuobjdump --dump-resource-usage` on the linked SM90a extension, filtered for all ten TP8 `{split-K 2,4} × {M 8,16,32,64,128}` specializations.
+- Result: **PASS.** Every specialization reports exactly `REG:62 STACK:64 SHARED:4096 LOCAL:0`. Thus the 128-thread CTA consumes 7,936 registers; eight CTAs consume 63,488 registers/SM, within Hopper's 65,536-register budget. Shared memory is also only 32 KiB/SM at eight CTAs. Most importantly, `LOCAL:0` confirms no local-memory spill allocation.
+- Qualification: the 64-byte call stack is expected from the deliberately noinline TP8 communication tail and is not reported as local spill storage. The runtime occupancy query and actual persistent-grid forward progress still require a launch.
+- Decision: resource gate passes; proceed to an eight-rank graph correctness smoke test, beginning with M8 to expose collective protocol errors quickly.
+- Evidence: `bench/evidence/iter581_tp8_single_launch_cubin_resources.txt`.

@@ -1,0 +1,29 @@
+Iteration 581: TP8 single-launch cubin resource audit
+Date: 2026-09-05
+
+Artifact
+--------
+/tmp/torch_ext_v4_tp/v4tp_8686e885e9a4694f795f_v178mspec/
+v4tp_8686e885e9a4694f795f_v178mspec.so
+
+Command
+-------
+cuobjdump --dump-resource-usage <extension.so> |
+  grep -A4 -B1 tp8_megamoe_single_launch_kernel
+
+Results
+-------
+All ten specializations (split-K 2 and 4 for M=8,16,32,64,128):
+  REG:62 STACK:64 SHARED:4096 LOCAL:0 CONSTANT[0]:1425
+
+Occupancy arithmetic
+--------------------
+128 threads/CTA * 62 registers/thread * 8 CTAs/SM = 63,488 registers/SM.
+This fits within the H20/Hopper 65,536-register SM budget.
+4,096 bytes/CTA * 8 CTAs/SM = 32,768 bytes/SM.
+
+Conclusion
+----------
+PASS: the static resource footprint permits the required eight resident
+CTAs/SM and has no local-memory spill allocation. Runtime occupancy and grid
+forward progress remain to be established by the first TP8 launch.
