@@ -14237,3 +14237,23 @@ maximum rank latency of a full CUDA-Graph replay.
   focus to the W13/W2 streaming phases and terminal convergence.
 - Evidence: `evidence/iter619_balanced_activation_workers_long_rejection.md`
   and four raw logs under `bench/results/iter619_*_long_20260905.log`.
+## Iteration 620 — isolate W2-only balanced-worker experiment
+
+- Hypothesis/change: add default-off
+  `V4_SINGLE_LAUNCH_BALANCED_W2_WORKERS`.  For schedule-0 M>=64 it chooses
+  `ceil(w2_tasks/ceil(w2_tasks/ctas))` logical workers only for W2; W13 and
+  activation retain every physical CTA.  At the observed M128 shape this
+  changes 7,968 tasks over 702 CTAs (246 twelve-task / 456 eleven-task) to
+  exactly 664 workers x 12 tasks.
+- Isolation: reject composition with the prior all-phase/activation-balance
+  flags and alternate W2 overlap, cohort, persistent, noinline, prefetch,
+  producer-combine, 78-CTA or striped schedules.  The selected M128 compact
+  W13/bound9 and ordinary P2P two-shot tail remain legal and unchanged.
+- Reproducibility: wire the option through the generated C++ constant, JIT
+  hash/compiler define, and all three graph benchmark metadata records.
+- Static gate: `python3 -m py_compile` passes for the kernel module and the
+  same-source, exact-Humming and WGMMA graph drivers.
+- Decision: remains default-off and has no performance claim.  Next require a
+  fresh resource/correctness gate, followed by the same M64/M128 cold-L2
+  bracket used to reject activation-only balancing.
+- Evidence: `evidence/iter620_balanced_w2_workers_static_gate.md`.

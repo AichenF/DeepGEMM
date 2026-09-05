@@ -543,6 +543,11 @@ SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS = (
     )
     == "1"
 )
+# Isolated W2-tail experiment.  Keep W13 and activation on the full grid, but
+# choose the smallest W2 worker set that preserves the original round count.
+SINGLE_LAUNCH_BALANCED_W2_WORKERS = (
+    os.environ.get("V4_SINGLE_LAUNCH_BALANCED_W2_WORKERS", "0") == "1"
+)
 SINGLE_LAUNCH_GRID_POLL_SLEEP_NS = int(
     os.environ.get("V4_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS", "64")
 )
@@ -1130,6 +1135,38 @@ SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE = (
 SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE", "0") == "1"
 )
+if SINGLE_LAUNCH_BALANCED_W2_WORKERS and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_78CTA_WG_DAG
+    or SINGLE_LAUNCH_78CTA_LOCAL_W13
+    or SINGLE_LAUNCH_78CTA_8WG
+    or SINGLE_LAUNCH_SM_STRIPED_TASKS
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_W2_UNROLL2_BOUND9
+    or SINGLE_LAUNCH_W2_CHUNK_MAJOR
+    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+    or SINGLE_LAUNCH_W2_CHUNK_AR_POST
+    or SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+    or SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_BALANCED_W2_WORKERS requires the isolated "
+        "schedule-0 W2 phase"
+    )
 if (
     SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
     and SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
@@ -1602,6 +1639,8 @@ static constexpr bool kSingleLaunchBalancedWorkers =
     K_SINGLE_LAUNCH_BALANCED_WORKERS;
 static constexpr bool kSingleLaunchBalancedActivationWorkers =
     K_SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS;
+static constexpr bool kSingleLaunchBalancedW2Workers =
+    K_SINGLE_LAUNCH_BALANCED_W2_WORKERS;
 static constexpr int kSingleLaunchGridPollSleepNs =
     K_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS;
 static constexpr bool kSingleLaunchSkipFinalCtaSync =
@@ -8194,7 +8233,8 @@ void tp4_megamoe_single_launch_kernel(
                 kSingleLaunchW2ChunkArDedicated
                     && Tokens >= 64 && chunk_ar_overlap_active
                 ? chunk_w2_workers
-                : kSingleLaunchBalancedWorkers && Tokens >= 64
+                : (kSingleLaunchBalancedWorkers
+                       || kSingleLaunchBalancedW2Workers) && Tokens >= 64
                 ? (w2_tasks + w2_rounds - 1) / w2_rounds
                 : ctas;
             const int w2_worker_rank =
@@ -11346,6 +11386,7 @@ _EXTENSION_CONFIG = (
           f"slra{int(SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL)}_"
           f"slbw{int(SINGLE_LAUNCH_BALANCED_WORKERS)}_"
           f"slbaw{int(SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS)}_"
+          f"slbw2{int(SINGLE_LAUNCH_BALANCED_W2_WORKERS)}_"
           f"slpsn{SINGLE_LAUNCH_GRID_POLL_SLEEP_NS}_"
           f"slfs{int(SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC)}_"
           f"slgbne{int(SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC)}_"
@@ -11579,6 +11620,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS="
             f"{int(SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_BALANCED_W2_WORKERS="
+            f"{int(SINGLE_LAUNCH_BALANCED_W2_WORKERS)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS="

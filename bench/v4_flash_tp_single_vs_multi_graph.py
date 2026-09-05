@@ -361,6 +361,9 @@ def main() -> None:
                     "single_launch_balanced_activation_workers": (
                         kernel.SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS
                     ),
+                    "single_launch_balanced_w2_workers": (
+                        kernel.SINGLE_LAUNCH_BALANCED_W2_WORKERS
+                    ),
                     "single_launch_skip_final_cta_sync": (
                         kernel.SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
                     ),
