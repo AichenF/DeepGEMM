@@ -14349,3 +14349,33 @@ maximum rank latency of a full CUDA-Graph replay.
   with the embedded P2P two-shot collective enabled.
 - Evidence: `evidence/iter624_w2_n64_tail_m64_m128_gate.md` and
   `bench/results/iter624_w2_n64_tail_m64_m128_gate_20260905.log`.
+## Iteration 625 — W2 N64 residual-wave subdivision is slower
+
+- Protocol: TP4 GPUs 0,5,6,7; M64/M128 random routes, seed 20260902;
+  same-source multi normalization; OFF_A -> ON_A -> ON_B -> OFF_B process
+  bracket; 2x20=40 replay-interleaved CUDA Graph samples per implementation,
+  shape and window after four warmups.  Every replay is independently cold-L2
+  via a separate excluded 256 MiB clear.
+- Correctness: all candidate/control results are finite and pass cosine,
+  relative-L2 and embedded P2P two-shot all-reduce checks.  The N64 candidate
+  retains the exact accepted numerical result in both ON windows.
+- Candidate/control ratios:
+  M64 `1.133923/1.144811/1.148330/1.132550`;
+  M128 `1.131842/1.156348/1.154554/1.131952`;
+  two-shape geometric means
+  `1.132882/1.150565/1.151438/1.132251`.
+- Normalized effect: N64 residual subdivision is **1.18% slower at M64,
+  2.08% slower at M128, and 1.63% slower geometrically**.  Both ON windows
+  agree, so no long confirmation is warranted.
+- Interpretation: two discontiguous bulk transactions per compact half record
+  plus duplicated task setup/synchronization cost more than the saved half
+  WGMMA group in this K512 tail.  As with the earlier W13 N64 experiment,
+  increasing residual CTA occupancy is not useful when it destroys the
+  efficient N128 record transaction shape.
+- Decision: **reject and keep default off**.  Full-wave concurrency and N128
+  task granularity are both now experimentally required.  The remaining W2
+  barrier samples should be treated as unavoidable drain latency unless the
+  communication consumer can begin from coarse already-complete output
+  regions without changing producer granularity.
+- Evidence: `evidence/iter625_w2_n64_tail_short_rejection.md` and four raw
+  logs under `bench/results/iter625_*_20260905.log`.
