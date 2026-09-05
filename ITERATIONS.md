@@ -12960,3 +12960,24 @@ maximum rank latency of a full CUDA-Graph replay.
   wiring checks **PASS**.  CUDA compilation, correctness and timing are not
   claimed yet.
 - **Evidence:** `bench/evidence/iter538_tp_local_route_build_static.txt`.
+
+## Iteration 539 — TP-local route build is correct; endpoint smoke is positive
+
+- **Protocol:** selected TP-local-barrier native control versus the otherwise
+  identical TP-local route-build candidate in one TP4 process on physical
+  GPUs 0/5/6/7.  Random M8/M128, two balanced whole-batch AB/BA rounds x ten
+  rank-max samples, three alternating warmups, CUDA Graph, and a separate
+  excluded 256 MiB L2 clear immediately before every replay.
+- **Correctness:** **PASS bitwise** at both endpoints across all ranks:
+  relative L2 `0.0`, zero BF16 mismatches, cosine `1.0`, all finite.
+- **Cold-L2 smoke (generic EP route build / TP-local candidate median):** M8
+  `0.095712 -> 0.093248 ms`, **2.57% lower / 1.0264x**; M128
+  `0.373552 -> 0.369792 ms`, **1.01% lower / 1.0102x**.  Endpoint geometric
+  mean improves `0.189086 -> 0.185694 ms`, **1.79% lower / 1.0183x**.
+- **Stability/decision:** both candidate batch medians beat both corresponding
+  control batches, but neither endpoint reaches the preset 3% materiality
+  gate and this screen has only 20 samples per arm.  Run the planned 4x50
+  same-process window before retaining or rejecting; do not make it default
+  from this smoke result.
+- **Evidence:**
+  `bench/results/iter539_native_tp_local_route_build_tp4_screen_20260905.log`.
