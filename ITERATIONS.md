@@ -13080,3 +13080,22 @@ maximum rank latency of a full CUDA-Graph replay.
   claimed yet.
 - **Evidence:**
   `bench/evidence/iter544_tp_local_route_combine_static.txt`.
+
+## Iteration 545 — combined TP-local tails clear the endpoint screen gate
+
+- **Protocol:** selected barrier-only native control versus jointly enabled
+  TP-local route construction plus parallel combine chunks in one TP4 process
+  on physical GPUs 0/5/6/7.  Random M8/M128, two balanced whole-batch AB/BA
+  rounds x ten rank-max samples, three alternating warmups, CUDA Graph, and a
+  separate excluded 256 MiB L2 clear immediately before every replay.
+- **Correctness:** **PASS bitwise** at both endpoints across all ranks:
+  relative L2 `0.0`, zero BF16 mismatches, cosine `1.0`, all finite.
+- **Cold-L2 smoke (barrier-only / combined candidate median):** M8
+  `0.096224 -> 0.091584 ms`, **4.82% lower / 1.0507x**; M128
+  `0.374672 -> 0.367360 ms`, **1.95% lower / 1.0199x**.  Endpoint geometric
+  mean improves `0.189875 -> 0.183424 ms`, **3.40% lower / 1.0352x**.
+- **Decision:** the combined candidate clears the 3% endpoint-GM gate with a
+  strong M8 win and no M128 regression.  Run the 4x50 confirmation window;
+  keep both flags default-off until that completes.
+- **Evidence:**
+  `bench/results/iter545_native_tp_local_route_combine_tp4_screen_20260905.log`.
