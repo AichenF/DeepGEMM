@@ -11485,3 +11485,28 @@ maximum rank latency of a full CUDA-Graph replay.
   screen; inspect registers/spills only if latency is competitive.
 - **Evidence:**
   `bench/evidence/iter463_native_rs_scale_word_cache_local_gate.txt`.
+
+## Iteration 464 — K128 scale-word cache regresses both endpoints
+
+- **Candidate/protocol:** the numerically admitted Iteration-463 scale-word
+  cache versus the retained selected multi-kernel control, in the same TP4
+  GPUs 0-3 process at random M={8,128}.  Two balanced batches x 10 rank-max
+  samples per arm, three cold warmups, and an excluded 256 MiB L2 clear before
+  every graph replay.  The candidate keeps normalized weight scales,
+  arithmetic LUT, register dequant, K128 batching and two CTA/SM.
+- **Correctness:** **PASS** at both shapes with exactly the Iteration-460
+  accepted final and embedded-communication metrics; every rank is finite.
+- **Cold-L2 result (multi / cache candidate median):** M8
+  `0.071536/0.106816 ms`, candidate `1.4932x` slower; M128
+  `0.306720/0.384640 ms`, candidate `1.2540x` slower.  Endpoint geometric
+  means are `0.148127/0.202696 ms`.
+- **Comparison to retained Iteration 460 native:** caching the full K128 scale
+  record regresses M8 from `0.104160` to `0.106816 ms` (`2.55%`) and M128 from
+  `0.380128` to `0.384640 ms` (`1.19%`); geometric mean regresses `1.87%`.
+- **Interpretation/decision:** **reject** and leave
+  `V4_NATIVE_RS_SCALE_WORD_CACHE` default-off.  Four wider shared loads save
+  byte-load instructions, but keeping eight scale words live across all four
+  K32 steps costs more than their latency.  Do not combine this with the
+  already rejected half prefetch or extend it to packed-word lookahead.
+- **Evidence:**
+  `bench/evidence/iter464_native_rs_scale_word_cache_tp4_cold_screen.txt`.
