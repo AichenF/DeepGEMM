@@ -9398,3 +9398,38 @@ maximum rank latency of a full CUDA-Graph replay.
   distributed result and repeated numerical checks pass.
 - Evidence:
   `results/iter380_skip_activation_task_sync_compute_m8_m128_20260905.log`.
+## Iteration 381 — activation-task sync removal TP4 cold-L2 rejection
+
+- Date: 2026-09-05
+- Purpose: determine whether Iteration 380's compute-only phase reduction
+  survives complete TP4 execution with embedded communication.
+- Contract/protocol: both arms consume the same prequantized FP8-E4M3
+  `qx`/FP32 group-128 `x_scale`, MXFP4 weights/scales, and precomputed routes.
+  External BF16-to-FP8 X quantization is absent from both captured graphs.
+  H20 GPUs 0–3, random routing, M={8,128}, seed 20260904, process order
+  OFF_A -> ON_A -> ON_B -> OFF_B.  Each process used two replay-interleaved
+  outer batches x 20 samples per implementation plus four warmups.  A separate
+  excluded 256 MiB clear immediately preceded every CUDA Graph replay, giving
+  160 independently cold-L2 candidate samples per shape across the bracket.
+  Release-arrival and assume-valid-task opt-ins were common to both arms;
+  phase stamps were off.
+- Correctness: PASS in all eight shape/arm checks on all four ranks.  Allreduce
+  checks pass, all values are finite, and candidate/control have identical
+  reported numerical metrics: M8 minimum-rank cosine 0.9999956134 and rel-L2
+  0.0029619922; M128 0.9999956090 and 0.0029634544.
+- Candidate medians OFF_A / ON_A / ON_B / OFF_B: M8
+  `77.472 / 78.048 / 77.984 / 77.648 us`; M128
+  `342.832 / 342.640 / 342.432 / 343.888 us`.
+- Direct bracket: M8 OFF average 77.560 us versus ON 78.016 us, a 0.59%
+  regression.  M128 OFF average 343.360 us versus ON 342.536 us, a 0.24%
+  improvement.
+- Baseline-normalized candidate/control ratios: M8 OFF average 1.055755
+  versus ON 1.060924 (about 0.49% worse); M128 OFF 1.142037 versus ON
+  1.140418 (about 0.14% better).
+- Decision: **reject and keep default-off.**  Removing the activation caller
+  sync is numerically safe under this protocol, but the endpoint effect changes
+  sign and remains noise-sized after complete cold-L2 TP4 execution.  The
+  single-launch kernel still trails the selected multi-kernel baseline by
+  roughly 5.6% at M8 and 14.1% at M128 in the surrounding OFF arms.
+- Evidence:
+  `bench/results/iter381_skip_activation_task_sync_bracket_m8_m128_cold_20260905.log`.
