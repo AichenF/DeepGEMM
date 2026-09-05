@@ -15149,3 +15149,29 @@ maximum rank latency of a full CUDA-Graph replay.
   is a structural advantage, not a profitable barrier-code cherry-pick.
 - **Evidence:** `evidence/iter657_multikernel_barrier_transfer_rejection.md`;
   raw `bench/results/iter657*_cluster*_20260906.log`.
+
+## Iteration 658 — M128 W13 launch-ramp staggering is noise-scale
+
+- **Hypothesis/change:** emulate the natural fresh-CTA ramp of standalone W13
+  without changing the fused grid or task order.  The default-off M128 compact
+  callee delayed each of the nine measured 78-block residency waves by an
+  additional 64 ns once before W13, spanning 0--512 ns per SM.
+- **Resource/correctness:** M128 split-K2/4 stayed at
+  `REG56 STACK32 SHARED2048 LOCAL0`, retaining nine CTAs/SM.  Random-route
+  M128 was bitwise equal to the same-source multi local result (`cosine=1`,
+  `rel_l2=0`, finite), with 1,992 padded rows and packed generation wrap
+  exactly `[0,0,0,0]`.
+- **Cold-L2 phase protocol:** physical GPU1, seed 20260902, eight independent
+  process samples ordered OFF/ON/ON/OFF/OFF/ON/ON/OFF, each with a separate
+  excluded 256 MiB L2 clear.  W13 OFF values were
+  `214.048,216.992,213.856,214.624 us`; ON values were
+  `215.552,214.496,214.272,214.176 us`.
+- **Result:** OFF/ON W13 medians are `214.336/214.384 us` (ON 0.02% slower),
+  while means are `214.880/214.624 us` (ON 0.12% faster).  The complete four-
+  phase median is exactly tied at `332.048 us`; direction-changing mean noise
+  is likewise 0.12%.
+- **Decision:** reject before TP4 and remove the experiment.  Do not sweep
+  other delays: a half-microsecond launch ramp already fails to create a
+  repeatable signal.  Production source is byte-identical to Iteration 657.
+- **Evidence:** `evidence/iter658_w13_start_stagger_rejection.md`; raw
+  `bench/results/iter658_w13_stagger*_20260906.log`.
