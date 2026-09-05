@@ -13743,3 +13743,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Decision: TP8 functionality requirement is met across all requested shapes. Verify the captured business graph contains exactly one kernel node, then return optimization focus to TP4 and run a post-change cold-L2 regression against exact Humming+CARv2.
 - Raw log: `bench/results/iter586_tp8_single_launch_allm_cold_validation_20260905.log`.
 - Evidence: `bench/evidence/iter586_tp8_allm_cold_validation.txt`.
+## Iteration 587 — TP8 launch-count profile misses graph-node tracing (2026-09-05)
+
+- Intended check: profile one M32 cold replay on all eight ranks between CUDA profiler start/stop and count the business kernels independently of source inspection.
+- Result: **INVALID FOR LAUNCH COUNT.** Nsight Systems captured the eight per-rank L2-clear fill kernels (`8` instances total) but `cuda_gpu_kern_sum` did not expose the CUDA-Graph child kernel because the invocation omitted explicit node-level graph tracing. The application completed and emitted the profiler replay marker, but this report cannot prove whether the graph has one or multiple business nodes.
+- Decision: retain the `.nsys-rep` as negative tooling evidence and repeat with `--cuda-graph-trace=node`; filter out the independently identified fill kernels and require exactly one `tp8_megamoe_single_launch_kernel` instance per rank.
+- Artifact: `bench/results/iter587_tp8_m32_single_launch_profile.nsys-rep`.
+- Evidence: `bench/evidence/iter587_tp8_launch_count_missing_graph_nodes.txt`.

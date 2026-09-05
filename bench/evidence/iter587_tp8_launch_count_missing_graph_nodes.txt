@@ -1,0 +1,27 @@
+Iteration 587: TP8 launch-count profile missing graph nodes
+Date: 2026-09-05
+Tool: Nsight Systems 2026.3.1
+
+Intended protocol
+-----------------
+Profile one eight-rank M32 replay in the cudaProfilerApi capture range. The
+range contains a separate 256 MiB L2 clear followed by one graph replay.
+
+Observed cuda_gpu_kern_sum
+--------------------------
+Instances: 8
+Kernel: at::native::vectorized_elementwise_kernel<...FillFunctor<int>...>
+Total: 508,511 ns
+
+Classification
+--------------
+INVALID for graph launch counting. The eight visible instances are the one
+excluded L2-clear kernel on each rank. The report did not expose child graph
+nodes because node-level CUDA Graph tracing was not requested. Application
+execution itself completed normally.
+
+Next action
+-----------
+Repeat with --cuda-graph-trace=node and require eight total instances of
+tp8_megamoe_single_launch_kernel (one per rank), with no other business
+kernel names after excluding the eight FillFunctor clear instances.
