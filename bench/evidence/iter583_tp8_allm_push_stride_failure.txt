@@ -1,0 +1,34 @@
+Iteration 583: TP8 all-M validation and push-stride failure
+Date: 2026-09-05
+
+Protocol
+--------
+8 x H20; M=8,16,32,64,128; random top-k6 routes; CUDA Graph;
+2 outer batches x 20 samples; five warmups; independent excluded 256 MiB
+cold-L2 clear before every measured replay.
+
+Passing results
+---------------
+M8:  allreduce_ok=true, cosine_min=0.9999921603205477,
+     rel_l2_max=0.003959751888606578,
+     cold median=0.054400 ms, batch medians=0.054352/0.054496 ms.
+M16: allreduce_ok=true, cosine_min=0.9999919593657673,
+     rel_l2_max=0.0040103194069039125,
+     cold median=0.078240 ms, batch medians=0.078336/0.078176 ms.
+
+Failure
+-------
+At M32, all ranks fail the host precondition before CUDA launch:
+  RuntimeError: TP8 push workspace stride is too small
+
+Capacity arithmetic
+-------------------
+Observed reusable CARv2 per-source push stride: 128 KiB.
+M16 output: 16 * 4096 * 2 bytes = 128 KiB (fits exactly).
+M32 output: 32 * 4096 * 2 bytes = 256 KiB (does not fit).
+
+Conclusion
+----------
+The one-launch compute and TP8 collective are validated through M16. M32+
+requires in-kernel chunking or a large-message two-shot/P2P ABI; the failed
+host gate makes no claim about M32+ numerical correctness or performance.

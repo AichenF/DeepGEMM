@@ -1,0 +1,224 @@
+W0905 12:33:12.592000 612653 torch/distributed/run.py:851] 
+W0905 12:33:12.592000 612653 torch/distributed/run.py:851] *****************************************
+W0905 12:33:12.592000 612653 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0905 12:33:12.592000 612653 torch/distributed/run.py:851] *****************************************
+CUSTOM_ENV {"activation_dtype": "FP8 E4M3 group128", "activation_evict_last": false, "benchmark": "v4_flash_tp_route_wgmma_cuda_graph", "bulk_weight_copy": true, "capability": "9.0", "compact_interleaved_scale": true, "dequant_dp4a_hi": true, "dequant_dp4a_lo": true, "dequant_synth_lut": false, "direct_barrier_addr": false, "fused_activation_quant": true, "fused_k6_mc_pull_ar": false, "fused_k6_mc_push_ar": true, "fused_k6_mc_push_max_m": 32, "fused_k6_nvls_pull_ar": false, "fused_k6_push_ar": false, "fused_rank_route_mc_pull_ar": false, "fused_route_align": true, "gpu": "NVIDIA H20-3e", "input_contract": "FP8-E4M3 group128; input quant untimed", "interleaved_bulk_copy": true, "k6_nvls_pull_blocks": 64, "l2_cache_bytes": 62914560, "l2_flush_bytes": 268435456, "l2_policy": "cold; 256MiB Triton clear before every replay, clear excluded from events", "leader_mbar_wait": true, "m_values": [8, 16, 32, 64, 128], "mc_pull_blocks": "default", "mc_pull_unroll": "default", "min_blocks_per_sm": 0, "mode2_braid": true, "mxfp4_lut_rows": 256, "normalized_shared_lut": false, "normalized_weight_scale": true, "outer": 2, "output_dtype": "BF16", "output_tile_channels": 128, "pipeline_ar_blocks": 8, "pipeline_chunks": 4, "pipelined_w2_mc_push_ar": false, "predicated_padded_activation": false, "rank_route_pull_blocks": 16, "replays_per_outer": 20, "route_k_unroll2": true, "route_k_unroll4": true, "route_k_unroll8": false, "route_k_unroll8_split2": false, "route_pattern": "random", "scale_buffers": 2, "scale_quad_reuse": 4, "single_launch_78cta_8wg": false, "single_launch_78cta_local_w13": false, "single_launch_78cta_smid_map": false, "single_launch_78cta_wg_dag": false, "single_launch_adaptive_grid_poll": false, "single_launch_adaptive_grid_poll_max_ns": 512, "single_launch_assume_valid_gemm_tasks": true, "single_launch_balanced_workers": false, "single_launch_ctas_per_sm": 8, "single_launch_dual_wg_phases": false, "single_launch_grid_barrier_no_entry_sync": false, "single_launch_grid_poll_sleep_ns": 64, "single_launch_hierarchical_grid": false, "single_launch_m128_bound9": false, "single_launch_min_blocks": 8, "single_launch_noinline_gemm": false, "single_launch_packed_grid_barrier": true, "single_launch_phase_stamps": false, "single_launch_release_grid_arrival": true, "single_launch_schedule": 0, "single_launch_skip_activation_task_sync": false, "single_launch_skip_final_cta_sync": false, "single_launch_sm_striped_tasks": false, "single_launch_tp4": true, "single_launch_w13_act_tail_pipe": false, "single_launch_w13_completion_act": false, "single_launch_w2_bulk_reduce_combine": false, "single_launch_w2_bulk_reduce_routes": 8, "single_launch_w2_chunk_ar_dedicated": false, "single_launch_w2_chunk_ar_helper_stage": 3, "single_launch_w2_chunk_ar_l2_load": false, "single_launch_w2_chunk_ar_overlap": false, "single_launch_w2_chunk_ar_post": false, "single_launch_w2_chunk_ar_post_concurrent": false, "single_launch_w2_chunk_ar_strong_producer_fence": false, "single_launch_w2_chunk_ar_wait_only": false, "single_launch_w2_chunk_major": false, "single_launch_w2_phase_noinline": false, "single_launch_w2_producer_atomic_combine": false, "single_launch_w2_unroll2_bound9": false, "sm_count": 78, "tiled_k6_reduce_policy": "auto", "tiled_weight_layout": true, "timed_allreduce": "sglang CustomAllReduceV2 default graph heuristic", "tma_cta_scope": false, "w13_distributed_prep": true, "w13_dual_wg_split": false, "w13_k_unroll16_split2": false, "w13_k_unroll8_split2": false, "w13_launch_bound_10": false, "w13_max_smem_carveout": false, "w13_merged_wgmma_group": false, "w13_paired_wg": false, "w13_s2r_prefetch": true, "w13_split_policy": "auto; routed_rows<=192 or active_experts<=96 -> 4, else 2; selected before capture", "w2_coalesced_store": false, "w2_distributed_prep": true, "w2_epilogue": "BF16 route output + fixed tiled CUDA k6 mode 4 at M<=16, SGLang moe_fused_mul_sum otherwise", "w2_fold_global_scale": false, "w2_global_lut": false, "w2_mblock_scale": false, "w2_no_weight_evict_first": false, "w2_s2r_prefetch": true, "w2_sorted_activation": false, "warmup_replays": 5, "weight_common_address": true, "weight_dtype": "OCP MXFP4 E2M1", "weight_evict_first": true, "weight_policy_constant": false, "weight_policy_hoist": false, "weight_scale": "E8M0 group32", "weight_stages": 2, "weight_swizzle_bytes": 64, "world_size": 8}
+CUSTOM_SHAPES {"H": 4096, "I": 2048, "I_per_rank": 256, "W13_bytes_with_scale": 285212672, "W13_per_rank": [256, 4, 278528], "W2_bytes_with_scale": 142606336, "W2_per_rank": [256, 32, 17408], "experts": 256, "top_k": 6}
+CUSTOM_RESULT {"active_experts": 43, "allreduce_algo": "ONE_SHOT_PUSH", "allreduce_bytes": 65536, "allreduce_mode": "EAGER", "allreduce_ok": true, "batch_medians_ms_max_rank": [0.05435200035572052, 0.054495999589562416], "cold_samples": 40, "cosine_min_rank": 0.9999921603205477, "finite_all_ranks": true, "fused_k6_ar_mode": "single_launch_tp8_multicast_push", "fused_k6_push_ar": true, "latency_ms_max": 0.2218559980392456, "latency_ms_median": 0.0544000007212162, "latency_ms_min": 0.0533440001308918, "m": 8, "max_abs_max_rank": 1024.0, "max_abs_over_ref_max_rank": 0.007194244604316547, "padded_rows": 344, "padding_ratio": 7.166666666666667, "rel_l2_max_rank": 0.003959751888606578, "route_pattern": "random", "routed_rows": 48, "tiled_k6_reduce_mode": 4, "w13_split_k": 4}
+CUSTOM_RESULT {"active_experts": 82, "allreduce_algo": "ONE_SHOT_PUSH", "allreduce_bytes": 131072, "allreduce_mode": "EAGER", "allreduce_ok": true, "batch_medians_ms_max_rank": [0.07833600044250488, 0.07817599922418594], "cold_samples": 40, "cosine_min_rank": 0.9999919593657673, "finite_all_ranks": true, "fused_k6_ar_mode": "single_launch_tp8_multicast_push", "fused_k6_push_ar": true, "latency_ms_max": 0.11500799655914307, "latency_ms_median": 0.07823999971151352, "latency_ms_min": 0.07760000228881836, "m": 16, "max_abs_max_rank": 1024.0, "max_abs_over_ref_max_rank": 0.0070921985815602835, "padded_rows": 656, "padding_ratio": 6.833333333333333, "rel_l2_max_rank": 0.0040103194069039125, "route_pattern": "random", "routed_rows": 96, "tiled_k6_reduce_mode": 4, "w13_split_k": 4}
+[rank3]: Traceback (most recent call last):
+[rank3]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1662, in <module>
+[rank3]:     main()
+[rank3]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank3]:     return func(*args, **kwargs)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1563, in main
+[rank3]:     case.run_full(comm)
+[rank3]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1029, in run_full
+[rank3]:     return self.run_tp8_single_launch(comm)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 989, in run_tp8_single_launch
+[rank3]:     kernel.run_tp8_megamoe_single_launch(
+[rank3]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 12018, in run_tp8_megamoe_single_launch
+[rank3]:     _ext.run_tp8_megamoe_single_launch(
+[rank3]: RuntimeError: TP8 push workspace stride is too small
+[rank5]: Traceback (most recent call last):
+[rank5]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1662, in <module>
+[rank5]:     main()
+[rank5]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank5]:     return func(*args, **kwargs)
+[rank5]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank5]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1563, in main
+[rank5]:     case.run_full(comm)
+[rank5]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1029, in run_full
+[rank5]:     return self.run_tp8_single_launch(comm)
+[rank5]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank5]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 989, in run_tp8_single_launch
+[rank5]:     kernel.run_tp8_megamoe_single_launch(
+[rank5]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 12018, in run_tp8_megamoe_single_launch
+[rank5]:     _ext.run_tp8_megamoe_single_launch(
+[rank5]: RuntimeError: TP8 push workspace stride is too small
+[rank7]: Traceback (most recent call last):
+[rank7]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1662, in <module>
+[rank7]:     main()
+[rank7]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank7]:     return func(*args, **kwargs)
+[rank7]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank7]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1563, in main
+[rank7]:     case.run_full(comm)
+[rank7]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1029, in run_full
+[rank7]:     return self.run_tp8_single_launch(comm)
+[rank7]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank7]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 989, in run_tp8_single_launch
+[rank7]:     kernel.run_tp8_megamoe_single_launch(
+[rank7]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 12018, in run_tp8_megamoe_single_launch
+[rank7]:     _ext.run_tp8_megamoe_single_launch(
+[rank7]: RuntimeError: TP8 push workspace stride is too small
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1662, in <module>
+[rank0]:     main()
+[rank0]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1563, in main
+[rank0]:     case.run_full(comm)
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1029, in run_full
+[rank0]:     return self.run_tp8_single_launch(comm)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 989, in run_tp8_single_launch
+[rank0]:     kernel.run_tp8_megamoe_single_launch(
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 12018, in run_tp8_megamoe_single_launch
+[rank0]:     _ext.run_tp8_megamoe_single_launch(
+[rank0]: RuntimeError: TP8 push workspace stride is too small
+[rank6]: Traceback (most recent call last):
+[rank6]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1662, in <module>
+[rank6]:     main()
+[rank6]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank6]:     return func(*args, **kwargs)
+[rank6]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank6]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1563, in main
+[rank6]:     case.run_full(comm)
+[rank6]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1029, in run_full
+[rank6]:     return self.run_tp8_single_launch(comm)
+[rank6]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank6]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 989, in run_tp8_single_launch
+[rank6]:     kernel.run_tp8_megamoe_single_launch(
+[rank6]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 12018, in run_tp8_megamoe_single_launch
+[rank6]:     _ext.run_tp8_megamoe_single_launch(
+[rank6]: RuntimeError: TP8 push workspace stride is too small
+[rank2]: Traceback (most recent call last):
+[rank2]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1662, in <module>
+[rank2]:     main()
+[rank2]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank2]:     return func(*args, **kwargs)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1563, in main
+[rank2]:     case.run_full(comm)
+[rank2]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1029, in run_full
+[rank2]:     return self.run_tp8_single_launch(comm)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 989, in run_tp8_single_launch
+[rank2]:     kernel.run_tp8_megamoe_single_launch(
+[rank2]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 12018, in run_tp8_megamoe_single_launch
+[rank2]:     _ext.run_tp8_megamoe_single_launch(
+[rank2]: RuntimeError: TP8 push workspace stride is too small
+[rank4]: Traceback (most recent call last):
+[rank4]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1662, in <module>
+[rank4]:     main()
+[rank4]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank4]:     return func(*args, **kwargs)
+[rank4]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank4]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1563, in main
+[rank4]:     case.run_full(comm)
+[rank4]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1029, in run_full
+[rank4]:     return self.run_tp8_single_launch(comm)
+[rank4]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank4]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 989, in run_tp8_single_launch
+[rank4]:     kernel.run_tp8_megamoe_single_launch(
+[rank4]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 12018, in run_tp8_megamoe_single_launch
+[rank4]:     _ext.run_tp8_megamoe_single_launch(
+[rank4]: RuntimeError: TP8 push workspace stride is too small
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1662, in <module>
+[rank1]:     main()
+[rank1]:   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank1]:     return func(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1563, in main
+[rank1]:     case.run_full(comm)
+[rank1]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 1029, in run_full
+[rank1]:     return self.run_tp8_single_launch(comm)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 989, in run_tp8_single_launch
+[rank1]:     kernel.run_tp8_megamoe_single_launch(
+[rank1]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 12018, in run_tp8_megamoe_single_launch
+[rank1]:     _ext.run_tp8_megamoe_single_launch(
+[rank1]: RuntimeError: TP8 push workspace stride is too small
+W0905 12:33:35.171000 612653 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 612721 closing signal SIGTERM
+W0905 12:33:35.172000 612653 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 612723 closing signal SIGTERM
+W0905 12:33:35.172000 612653 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 612724 closing signal SIGTERM
+W0905 12:33:35.172000 612653 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 612725 closing signal SIGTERM
+W0905 12:33:35.172000 612653 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 612726 closing signal SIGTERM
+W0905 12:33:35.172000 612653 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 612727 closing signal SIGTERM
+W0905 12:33:35.172000 612653 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 612728 closing signal SIGTERM
+E0905 12:33:35.757000 612653 torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 1 (pid: 612722) of binary: /usr/bin/python3
+Traceback (most recent call last):
+  File "/usr/local/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+bench/v4_flash_tp_wgmma_graph.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-09-05_12:33:35
+  host      : H20-GPU-06.cm.cluster
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 612721)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[2]:
+  time      : 2026-09-05_12:33:35
+  host      : H20-GPU-06.cm.cluster
+  rank      : 2 (local_rank: 2)
+  exitcode  : 1 (pid: 612723)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[3]:
+  time      : 2026-09-05_12:33:35
+  host      : H20-GPU-06.cm.cluster
+  rank      : 3 (local_rank: 3)
+  exitcode  : 1 (pid: 612724)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[4]:
+  time      : 2026-09-05_12:33:35
+  host      : H20-GPU-06.cm.cluster
+  rank      : 4 (local_rank: 4)
+  exitcode  : 1 (pid: 612725)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[5]:
+  time      : 2026-09-05_12:33:35
+  host      : H20-GPU-06.cm.cluster
+  rank      : 5 (local_rank: 5)
+  exitcode  : 1 (pid: 612726)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[6]:
+  time      : 2026-09-05_12:33:35
+  host      : H20-GPU-06.cm.cluster
+  rank      : 6 (local_rank: 6)
+  exitcode  : 1 (pid: 612727)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[7]:
+  time      : 2026-09-05_12:33:35
+  host      : H20-GPU-06.cm.cluster
+  rank      : 7 (local_rank: 7)
+  exitcode  : 1 (pid: 612728)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-09-05_12:33:35
+  host      : H20-GPU-06.cm.cluster
+  rank      : 1 (local_rank: 1)
+  exitcode  : 1 (pid: 612722)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

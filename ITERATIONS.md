@@ -13707,3 +13707,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Decision: the first true TP8 one-launch execution is viable. Run all five M values with enough graph replays to validate both split-K4/split-K2 and repeated collective phase reuse.
 - Raw log: `bench/results/iter582_tp8_single_launch_m8_smoke_20260905.log`.
 - Evidence: `bench/evidence/iter582_tp8_single_launch_m8_smoke.txt`.
+## Iteration 583 — TP8 all-M validation exposes CARv2 push-stride limit at M32 (2026-09-05)
+
+- Configuration: unchanged eight-H20 TP8 one-launch path; M=8,16,32,64,128; random routes; 2 outer × 20 CUDA-Graph replays; independent excluded 256 MiB cold-L2 clear before every replay.
+- Passing prefix: M8 and M16 each complete 40 measured graph replays and pass all-rank correctness. M8 reports cosine `0.9999921603`, relative L2 `0.0039597519`, median `0.054400 ms`; M16 reports cosine `0.9999919594`, relative L2 `0.0040103194`, median `0.078240 ms`. Batch medians are stable within 0.16 us at each M.
+- Failure: **M32 is invalid before CUDA launch.** Every rank rejects `push_stride < output.nbytes` with `RuntimeError: TP8 push workspace stride is too small`. The reused CARv2 symmetric slab has a 128 KiB per-source stride: sufficient for M16 (`16×4096×2 = 128 KiB`) but not M32 (`256 KiB`). M64/M128 are not reached.
+- Interpretation: this is an ABI/workspace-capacity issue, not a numerical or kernel-forward-progress failure. A single multicast push of the whole TP8 output cannot reuse CARv2's fixed stride above M16. TP8 must either chunk the output while reusing the slab, or use the large-message two-shot/P2P slab protocol.
+- Decision: preserve the passing M8/M16 implementation; implement a sequential hidden-dimension chunk protocol inside the same kernel for TP8 M>=32, keeping one launch and the same symmetric allocation.
+- Raw log: `bench/results/iter583_tp8_single_launch_allm_cold_validation_20260905.log`.
+- Evidence: `bench/evidence/iter583_tp8_allm_push_stride_failure.txt`.
