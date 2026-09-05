@@ -219,7 +219,7 @@ def main() -> None:
                     "native_normalized_weight_scale": bool(
                         use_native
                         and os.environ.get(
-                            "V4_NATIVE_NORMALIZED_WEIGHT_SCALE", "0"
+                            "V4_NATIVE_NORMALIZED_WEIGHT_SCALE", "1"
                         )
                         == "1"
                     ),

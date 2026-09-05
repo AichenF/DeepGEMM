@@ -41,7 +41,7 @@ NATIVE_RS_HALF_PREFETCH = (
     os.environ.get("V4_NATIVE_RS_HALF_PREFETCH", "0") == "1"
 )
 NATIVE_NORMALIZED_WEIGHT_SCALE = (
-    os.environ.get("V4_NATIVE_NORMALIZED_WEIGHT_SCALE", "0") == "1"
+    os.environ.get("V4_NATIVE_NORMALIZED_WEIGHT_SCALE", "1") == "1"
 )
 NATIVE_RS_SCALE_WORD_CACHE = (
     os.environ.get("V4_NATIVE_RS_SCALE_WORD_CACHE", "0") == "1"

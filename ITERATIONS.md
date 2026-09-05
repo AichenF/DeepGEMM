@@ -11602,3 +11602,24 @@ maximum rank latency of a full CUDA-Graph replay.
   fully reorders roles around WGMMA alignment; do not retry thread-count-only
   removal.
 - **Evidence:** `bench/evidence/iter468_restore_aligned_native_m8_gate.txt`.
+
+## Iteration 469 — make the retained normalized-scale path the native default
+
+- **Change:** switch `V4_NATIVE_NORMALIZED_WEIGHT_SCALE`'s fallback from off
+  to on and make benchmark metadata use the same default.  Users may still set
+  it to zero for the Iteration-453 control, but an unset environment now builds
+  the selected arithmetic-LUT/global-scale implementation from Iteration 460.
+- **Protocol:** physical H20 GPU1, deterministic local M8 with
+  `V4_NATIVE_NORMALIZED_WEIGHT_SCALE` explicitly unset.  Register dequant,
+  K128 batching and two CTA/SM are enabled; rejected scale-word cache and half
+  prefetch are disabled.
+- **Result:** **PASS and bitwise identical** to the selected candidate.  Full
+  BF16 SHA-256 is
+  `6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5`,
+  maximum magnitude is `55,040`, and weighted FC1 cosine/relative-L2 remain
+  `0.9996428552/0.0271052359`.
+- **Decision:** retain normalized scale as the native default.  The branch HEAD
+  now selects the measured 6.09% endpoint-geomean improvement without relying
+  on a benchmark-only environment override.
+- **Evidence:**
+  `bench/evidence/iter469_native_normalized_default_m8_gate.txt`.
