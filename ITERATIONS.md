@@ -14409,3 +14409,11 @@ maximum rank latency of a full CUDA-Graph replay.
   gate; require exactly two 512-thread CTAs/SM and no fixed local allocation
   before executing M8/M128 compute correctness.
 - Evidence: `evidence/iter626_156cta_4wg_static_gate.md`.
+## Iteration 627 — 156 CTA × 4 WG fresh-JIT resource gate (compile failure)
+
+- **Hypothesis:** packing four independent 128-thread workers into each 512-thread CTA can preserve 624 logical WGMMA workers while reducing global-barrier participants from 624 to 156 and still permit exactly two resident CTAs per H20 SM.
+- **Configuration:** TP4 single launch, compact production bundle/dynamic route smem/M128-bound9 disabled, `V4_SINGLE_LAUNCH_156CTA_4WG=1`, release grid arrival and valid-task invariant enabled, CUDA device 1, SM90a fresh JIT.
+- **Test:** import/JIT the isolated extension, then inspect the generated cubin with `cuobjdump --dump-resource-usage` before any runtime benchmark.
+- **Result:** **FAIL at compile gate.** NVCC instantiated `reduce_swiglu_quant_task<..., IndependentTaskWGs=4>` for both M8 (`SplitK=2`) and larger-token (`SplitK=4`) kernels, but a stale `static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 8)` at generated CUDA line 2721 rejected the new topology. No cubin was emitted, so residency, correctness, and latency were not measured.
+- **Decision:** keep the experiment default-off; generalize the activation reduction helper's invariant to permit 4 independent WGs, then repeat the fresh-JIT resource gate as a new iteration. Production defaults remain unchanged.
+- **Evidence:** `evidence/iter627_156cta_4wg_resource_gate.md`; raw log `bench/results/iter627_156cta_4wg_resource_gate.log`.
