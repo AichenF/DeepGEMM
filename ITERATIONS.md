@@ -10077,3 +10077,35 @@ maximum rank latency of a full CUDA-Graph replay.
   resource numbers as the active source state.
 - Evidence:
   `results/iter406_restore_iter399_smid_map_20260905.log`.
+
+## Iteration 407 — quantify mapped compute versus embedded-collective tail
+
+- Date: 2026-09-05
+- Configuration/protocol: unchanged Iteration 406/399 real-H20 SMID mapped
+  78x1024 one-kernel candidate with device phase stamps enabled, versus the
+  selected multi-kernel plus SGLang CustomAllReduceV2 control.  TP4 GPUs 0-3,
+  random routes, seed 20260904, two replay-interleaved batches x 10 samples
+  per arm, two warmups and rank-max reduction.  Every replay had a separate
+  excluded 256 MiB L2 clear.  Both arms consumed the same prequantized FP8 X
+  plus FP32 group-128 scale and MXFP4 weights.
+- Correctness: PASS at M8/M128 and exactly matches the control metric tuples,
+  including allreduce checks.  M8 cosine/rel-L2/max-abs are
+  `0.9999956134/0.0029619922/1024`; M128 are
+  `0.9999956090/0.0029634544/1024`.
+- M8 result: control/candidate medians are `73.472/88.224 us`.  Rank-max
+  route/W13/requant/W2 stamps are `2.656/46.688/4.256/25.504 us`, summing to
+  `79.104 us`.  The remaining embedded collective plus unstamped kernel tail
+  is therefore about `9.120 us`, only `10.34%` of candidate latency.
+- M128 result: control/candidate medians are `301.232/349.168 us`.  Phase
+  stamps are `3.776/212.064/6.560/108.608 us`, summing to `331.008 us`; the
+  remaining collective/tail is about `18.160 us`, only `5.20%`.
+- Gate implication: a 1.10x win requires at most `66.793/273.847 us` at
+  M8/M128.  Even deleting the entire measured collective/tail leaves compute
+  `12.311/57.161 us` above those limits.  The next optimization must reduce
+  W13/W2 itself; communication-only tuning cannot satisfy the target.
+- Decision: retain Iteration 406.  Next compare the packed one-kernel phase
+  against an equivalently instrumented selected 624-CTA compute path and
+  localize W13/W2's residual per-task overhead before modifying arithmetic or
+  the collective.
+- Evidence:
+  `results/iter407_mapped_phase_tail_tp4_m8_m128_20260905.log`.
