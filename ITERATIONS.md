@@ -12509,3 +12509,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Isolation: require the selected inline 624x128, 8-CTA/SM schedule-0 path; disallow all prior tail/cohort/DAG/outline/dynamic-residency experiments. Assume-valid and release-arrival remain composable.
 - Static verification: all four edited Python/benchmark modules pass `python3 -m py_compile`.
 - Decision: proceed to JIT/resource and exact local endpoint correctness. No performance claim yet.
+## Iteration 511 — W13-tail activation pipeline JIT/resource gate (2026-09-05)
+
+- Configuration: `V4_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE=1` with selected release-arrival and assume-valid task guards; all other scheduling experiments disabled.
+- JIT: PASS, extension `/tmp/torch_ext_v4_tp/v4tp_2dac143e377cca7650a2_v178mspec/v4tp_2dac143e377cca7650a2_v178mspec.so`.
+- Resources: M64/M128 entries remain `REG=64, STACK=32, SHARED=4096, LOCAL=0`; M8/M16/M32 fall to 60--61 registers with the same 32-byte stack, 4096-byte static shared allocation, and no fixed local allocation. The path therefore preserves the selected eight-CTA admission and introduces no spill/resource cliff.
+- Decision: resource gate PASS. Run exact compute-only M8/M128 correctness next; phase-2 packed word is intentionally unused because W13 and activation now share one publication.
+- Evidence: `results/iter511_w13_act_tail_pipe_resource_20260905.log`.
