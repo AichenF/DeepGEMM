@@ -2191,14 +2191,28 @@
 
         uint32_t combine_phase = 0;
         uint32_t load_stage_idx = 0;
-        for (uint32_t token_idx = sm_idx * kNumEpilogueWarps + epilogue_warp_idx;
-             token_idx < num_tokens;
-             token_idx += kNumSMs * kNumEpilogueWarps) {
+        constexpr uint32_t kCombineChunksPerWorkItem =
+            K_NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS ? 1 : kNumChunks;
+        const uint32_t num_combine_work_items =
+            K_NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS ?
+            num_tokens * kNumChunks : num_tokens;
+        for (uint32_t combine_work_idx =
+                 sm_idx * kNumEpilogueWarps + epilogue_warp_idx;
+             combine_work_idx < num_combine_work_items;
+             combine_work_idx += kNumSMs * kNumEpilogueWarps) {
+            const uint32_t token_idx =
+                K_NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS ?
+                combine_work_idx / kNumChunks : combine_work_idx;
+            const uint32_t first_chunk =
+                K_NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS ?
+                combine_work_idx % kNumChunks : 0;
             const int stored_topk_slot_idx = lane_idx < kNumTopk ?
                 static_cast<int>(__ldg(input_topk_idx_buffer.get_base_ptr<int64_t>() + token_idx * kNumTopk + lane_idx)) : -1;
             const uint32_t total_mask = __ballot_sync(0xffffffff, stored_topk_slot_idx >= 0);
 
-            for (uint32_t chunk = 0; chunk < kNumChunks; ++ chunk) {
+            #pragma unroll
+            for (uint32_t chunk = first_chunk;
+                 chunk < first_chunk + kCombineChunksPerWorkItem; ++ chunk) {
                 const uint32_t chunk_byte_offset = chunk * kNumChunkBytes;
 
                 uint32_t mask = total_mask;

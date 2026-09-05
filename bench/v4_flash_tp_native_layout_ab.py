@@ -49,6 +49,7 @@ def parse_args() -> argparse.Namespace:
             "tp_local_dispatch",
             "tp_local_rank",
             "tp_local_route_build",
+            "tp_local_combine_chunks",
         ),
         default="tile_tma",
     )
@@ -73,6 +74,7 @@ def load_native_variant(
     tp_local_dispatch_fastpath: bool = False,
     tp_local_direct_copy: bool = False,
     tp_local_route_build: bool = False,
+    tp_local_parallel_combine_chunks: bool = False,
 ) -> ModuleType:
     source = Path(__file__).resolve().parents[1] / "v4_flash_tp_native_megamoe.py"
     saved = {
@@ -86,6 +88,7 @@ def load_native_variant(
             "V4_NATIVE_TP_LOCAL_DISPATCH_FASTPATH",
             "V4_NATIVE_TP_LOCAL_DIRECT_COPY",
             "V4_NATIVE_TP_LOCAL_ROUTE_BUILD",
+            "V4_NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS",
         )
     }
     try:
@@ -108,6 +111,9 @@ def load_native_variant(
         )
         os.environ["V4_NATIVE_TP_LOCAL_ROUTE_BUILD"] = str(
             int(tp_local_route_build)
+        )
+        os.environ["V4_NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS"] = str(
+            int(tp_local_parallel_combine_chunks)
         )
         spec = importlib.util.spec_from_file_location(alias, source)
         if spec is None or spec.loader is None:
@@ -198,6 +204,7 @@ def main() -> None:
         "tp_local_dispatch",
         "tp_local_rank",
         "tp_local_route_build",
+        "tp_local_combine_chunks",
     )
     control_module = load_native_variant(
         "v4_native_variant_control",
@@ -208,6 +215,7 @@ def main() -> None:
         tp_local_dispatch_fastpath=False,
         tp_local_direct_copy=False,
         tp_local_route_build=False,
+        tp_local_parallel_combine_chunks=False,
     )
     if args.experiment == "tile_tma":
         candidate_module = load_native_variant(
@@ -219,6 +227,7 @@ def main() -> None:
             tp_local_dispatch_fastpath=False,
             tp_local_direct_copy=False,
             tp_local_route_build=False,
+            tp_local_parallel_combine_chunks=False,
         )
         benchmark_name = "native_80b_vs_single_tile_tma"
     elif args.experiment == "single_l1_warmup":
@@ -231,6 +240,7 @@ def main() -> None:
             tp_local_dispatch_fastpath=False,
             tp_local_direct_copy=False,
             tp_local_route_build=False,
+            tp_local_parallel_combine_chunks=False,
         )
         benchmark_name = "native_two_vs_one_l1_warmup_wave"
     elif args.experiment == "dual_dispatch":
@@ -243,6 +253,7 @@ def main() -> None:
             tp_local_dispatch_fastpath=False,
             tp_local_direct_copy=False,
             tp_local_route_build=False,
+            tp_local_parallel_combine_chunks=False,
         )
         benchmark_name = "native_single_vs_dual_active_dispatch"
     elif args.experiment == "tp_local_barriers":
@@ -255,6 +266,7 @@ def main() -> None:
             tp_local_dispatch_fastpath=False,
             tp_local_direct_copy=False,
             tp_local_route_build=False,
+            tp_local_parallel_combine_chunks=False,
         )
         benchmark_name = "native_ep_vs_tp_local_barriers"
     elif args.experiment == "tp_local_dispatch":
@@ -267,6 +279,7 @@ def main() -> None:
             tp_local_dispatch_fastpath=True,
             tp_local_direct_copy=True,
             tp_local_route_build=False,
+            tp_local_parallel_combine_chunks=False,
         )
         benchmark_name = "native_tp_local_dispatch_copy"
     elif args.experiment == "tp_local_rank":
@@ -279,9 +292,10 @@ def main() -> None:
             tp_local_dispatch_fastpath=True,
             tp_local_direct_copy=False,
             tp_local_route_build=False,
+            tp_local_parallel_combine_chunks=False,
         )
         benchmark_name = "native_tp_local_rank_fastpath"
-    else:
+    elif args.experiment == "tp_local_route_build":
         candidate_module = load_native_variant(
             "v4_native_variant_tp_local_route_build",
             tile_tma=False,
@@ -291,8 +305,22 @@ def main() -> None:
             tp_local_dispatch_fastpath=False,
             tp_local_direct_copy=False,
             tp_local_route_build=True,
+            tp_local_parallel_combine_chunks=False,
         )
         benchmark_name = "native_ep_vs_tp_local_route_build"
+    else:
+        candidate_module = load_native_variant(
+            "v4_native_variant_tp_local_combine_chunks",
+            tile_tma=False,
+            single_l1_warmup_wave=False,
+            dual_active_dispatch=False,
+            tp_local_barrier_fastpath=True,
+            tp_local_dispatch_fastpath=False,
+            tp_local_direct_copy=False,
+            tp_local_route_build=False,
+            tp_local_parallel_combine_chunks=True,
+        )
+        benchmark_name = "native_serial_vs_parallel_combine_chunks"
     control_weights = make_variant_weights(
         control_module, intermediate_per_rank, device, args.seed, rank
     )
@@ -366,6 +394,12 @@ def main() -> None:
                     ),
                     "candidate_tp_local_route_build": (
                         candidate_module.NATIVE_TP_LOCAL_ROUTE_BUILD
+                    ),
+                    "control_tp_local_parallel_combine_chunks": (
+                        control_module.NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS
+                    ),
+                    "candidate_tp_local_parallel_combine_chunks": (
+                        candidate_module.NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS
                     ),
                 },
                 sort_keys=True,

@@ -1,0 +1,16 @@
+Iteration 541 static audit: TP-local parallel combine chunks
+
+AST_PASS v4_flash_tp_native_megamoe.py
+AST_PASS bench/v4_flash_tp_native_layout_ab.py
+env_flag=True
+cuda_macro=True
+jit_hash_name_cflag=True
+linear_chunk_work=True
+chunk_to_token=True
+chunk_to_offset=True
+serial_control_retained=True
+ab_choice=True
+ab_candidate_only=True
+STATIC_AUDIT_PASS
+
+No CUDA compilation, correctness, or performance result is claimed here.

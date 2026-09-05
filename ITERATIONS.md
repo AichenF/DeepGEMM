@@ -13005,3 +13005,22 @@ maximum rank latency of a full CUDA-Graph replay.
   tail, which has the largest remaining non-pipeline barrier attribution.
 - **Evidence:**
   `bench/results/iter540_native_tp_local_route_build_tp4_long_20260905.log`.
+
+## Iteration 541 — add parallel hidden-chunk combine experiment
+
+- **Hypothesis/change:** the fixed-k6 combine uses two 2048-column chunks but
+  assigns both serially to one warp per token.  At M8 that activates only one
+  CTA after the W2 publication barrier.  Added default-off
+  `V4_NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS` to flatten `(token, chunk)`
+  into global epilogue-warp work, so the same two chunks may run on separate
+  warps/CTAs.  TMA load/store sizes, ordered six-slot FP32 accumulation,
+  output addresses and final all-reduce are unchanged.
+- **Isolation:** same-process `--experiment tp_local_combine_chunks` enables
+  the selected TP-local barrier path in both arms and changes only combine
+  work assignment.  The serial mapping remains compiled as control; the
+  route-build experiment stays disabled.
+- **Static result:** Python AST parsing plus exact env/macro/JIT/body/harness
+  wiring checks **PASS**.  CUDA compilation, correctness and timing are not
+  claimed yet.
+- **Evidence:**
+  `bench/evidence/iter541_tp_local_parallel_combine_chunks_static.txt`.
