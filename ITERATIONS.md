@@ -15253,3 +15253,25 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `evidence/iter661_w13_wave_rotation_m32_m64_rejection.md`; raw
   `bench/results/iter661_w13_wave_rotate_m32_m64*_20260906.log`.
+
+## Iteration 662 — compact M128 W2 phase ABI is slower
+
+- **Hypothesis/change:** reuse the selected compact-W13 CTA-shared record
+  after activation and pass one pointer to an M128-only whole-W2 device
+  callee.  This tests the only bounded unmeasured multi-to-single adaptation
+  without the rejected legacy outline's thirteen-pointer-plus-scalar ABI.
+- **Resource/correctness:** M128 split-K2/4 remained
+  `REG56 STACK32 SHARED2048 LOCAL0`, preserving nine CTAs/SM; lower-M entries
+  were unchanged.  Random-route M128 stayed bitwise equal to same-source
+  multi locally and packed generations wrapped exactly to `[0,0,0,0]`.
+- **Cold-L2 phase protocol:** physical GPU1, seed 20260902, eight independent
+  processes ordered OFF/ON/ON/OFF/OFF/ON/ON/OFF, each with a separate
+  excluded 256 MiB L2 clear.
+- **Result:** W2 median regresses `106.880 -> 108.816 us` (1.81%) and mean
+  `107.120 -> 108.848 us` (1.61%).  The complete four-phase median/mean also
+  regress by 0.81%/0.55%.
+- **Decision:** reject before TP4 and remove the prototype.  A compact ABI
+  does not repay the device-call/persistent-loop cost, and production source
+  returns byte-identical to Iteration 661.
+- **Evidence:** `evidence/iter662_compact_w2_phase_rejection.md`; raw
+  `bench/results/iter662_compact_w2_phase*_20260906.log`.
