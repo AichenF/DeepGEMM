@@ -14894,3 +14894,25 @@ maximum rank latency of a full CUDA-Graph replay.
   `/usr/bin/python3` prepended to the target command.
 - **Evidence:** `evidence/iter650a_ncu_launcher_failure.md`; raw stderr is in
   `bench/results/iter650_production_m128_cold_sourcecounters.log`.
+
+## Iteration 650b — production M128 cold-L2 NCU collection
+
+- **Protocol:** selected TP4 one-kernel defaults on physical H20 GPU 1,
+  M128/split-K2, random routes seed 20260902, prequantized FP8-E4M3 X plus
+  FP32 group-128 scale, communication disabled only for local attribution.
+  The application issued its separate excluded 256 MiB L2 clear immediately
+  before the profiled launch.  NCU cache/clock control remained disabled and
+  collected Launch/Occupancy/SpeedOfLight/Scheduler/WarpState/SourceCounters
+  in 21 kernel-replay passes.
+- **Correctness:** PASS bitwise versus the independent same-source multi local
+  route tensor: cosine 1.0, relative L2 0.0, finite, 1,992 padded rows, packed
+  generation words `[2048,2048,2048,2048]`.
+- **Device stamps:** route `3.456 us`, W13 `223.328 us`, requant `6.528 us`,
+  W2 `109.600 us`.  These replay values are diagnostic and are not formal
+  endpoint latency.
+- **Status:** the report collection succeeds.  Detailed metric and PC-sample
+  interpretation is deferred to the next static report audit; no CUDA source
+  behavior changed.
+- **Evidence:** `evidence/iter650b_production_m128_ncu_collection.md`, raw log
+  `bench/results/iter650b_production_m128_cold_sourcecounters.log`, binary
+  report `results/iter650b_production_m128_cold_sourcecounters.ncu-rep`.
