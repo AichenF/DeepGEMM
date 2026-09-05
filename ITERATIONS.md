@@ -13944,3 +13944,26 @@ maximum rank latency of a full CUDA-Graph replay.
   call these final selected-performance numbers until the two already-selected
   fast-path defaults above are wired into the production bundle and rerun.
 - Evidence: `evidence/iter608_default_entry_tp4_tp8_cold_l2.md`.
+## Iteration 609 — complete selected single-launch default-bundle wiring
+
+- Finding from Iteration 608: `V4_SINGLE_LAUNCH_TP4=1` correctly enabled the
+  compact W13/resource bundle, but left the already-selected release-arrival
+  barrier and valid-GEMM-task guard elision disabled.  Consequently the
+  production default did not reproduce the configuration used by the
+  authoritative performance runs.
+- Change: the existing `V4_SINGLE_LAUNCH_COMPACT_W13_BUNDLE` rollback switch
+  now also supplies the default for
+  `V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL` and
+  `V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS`.  Explicit component environment
+  values still take precedence.  Ordinary imports keep the bundle false, so
+  the multi-kernel path is unchanged.
+- Prior qualification carried forward: release-arrival passed exact
+  generation-wrap checks and 20,000 combined CUDA-Graph replays; valid-task
+  elision passed random/skew route correctness, SASS/resource inspection, and
+  an all-M bracketed cold-L2 A/B.  This iteration changes only default
+  resolution, not device code for either explicit flag state.
+- Static gate: `python3 -m py_compile v4_flash_tp_wgmma.py` passed.
+- Decision: proceed to a fresh default-only JIT/runtime metadata and TP4/TP8
+  correctness gate, followed by the final cold-L2 comparison.  The single
+  bundle remains an exact rollback path for diagnosis.
+- Evidence: `evidence/iter609_complete_selected_bundle_defaults.md`.

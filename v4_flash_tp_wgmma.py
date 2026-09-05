@@ -323,9 +323,12 @@ FUSED_K6_NVLS_PULL_AR = (
     os.environ.get("V4_FUSED_K6_NVLS_PULL_AR", "0") == "1"
 )
 SINGLE_LAUNCH_TP4 = os.environ.get("V4_SINGLE_LAUNCH_TP4", "0") == "1"
-# Selected single-launch default bundle.  It leaves ordinary multi-kernel
-# imports unchanged and provides one explicit zero-valued rollback switch;
-# the existing component variables remain available for isolated A/B tests.
+# Selected single-launch production bundle.  The historical environment name
+# is retained because compact W13 was the first bundled component, but the
+# switch now covers every independently validated fast path selected for the
+# flat one-launch implementation.  Ordinary multi-kernel imports remain
+# unchanged, one explicit zero disables the complete bundle, and component
+# variables remain available for isolated A/B tests.
 SINGLE_LAUNCH_COMPACT_W13_BUNDLE = (
     os.environ.get(
         "V4_SINGLE_LAUNCH_COMPACT_W13_BUNDLE",
@@ -501,12 +504,16 @@ if SINGLE_LAUNCH_78CTA_LOCAL_W13 and SINGLE_LAUNCH_PHASE_STAMPS:
 SINGLE_LAUNCH_PACKED_GRID_BARRIER = (
     os.environ.get("V4_SINGLE_LAUNCH_PACKED_GRID_BARRIER", "1") == "1"
 )
-# Experimental packed-barrier ordering: every CTA publishes its phase writes
-# with a release arrival, while only the last CTA acquires the complete atomic
-# RMW chain before publishing the next generation.  This avoids arrival-side
+# Selected packed-barrier ordering: every CTA publishes its phase writes with
+# a release arrival, while only the last CTA acquires the complete atomic RMW
+# chain before publishing the next generation.  This avoids arrival-side
 # cache invalidation on the non-last CTAs without weakening the barrier.
 SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL = (
-    os.environ.get("V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL", "0") == "1"
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL",
+        "1" if SINGLE_LAUNCH_COMPACT_W13_BUNDLE else "0",
+    )
+    == "1"
 )
 if (
     SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL
@@ -790,10 +797,14 @@ if SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH and (
 # The selected flat schedule derives every GEMM task from num_mblocks after
 # route publication.  In that one path the task index itself proves that the
 # mblock exists and route alignment proves its expert slot is initialized.
-# Keep this opt-in while the SASS/resource/correctness/performance gates run;
-# standalone and experimental schedulers retain their defensive guards.
+# The production bundle enables the proven invariant; standalone and
+# experimental schedulers retain their defensive guards.
 SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS = (
-    os.environ.get("V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS", "0") == "1"
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS",
+        "1" if SINGLE_LAUNCH_COMPACT_W13_BUNDLE else "0",
+    )
+    == "1"
 )
 if SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS and (
     SINGLE_LAUNCH_SCHEDULE != 0
