@@ -11305,3 +11305,33 @@ maximum rank latency of a full CUDA-Graph replay.
   threaten the proven two-CTA residency.
 - **Evidence:**
   `bench/evidence/iter457_native_rs_half_prefetch_tp4_cold_screen.txt`.
+
+## Iteration 458 — first native normalized-scale wiring fails correctness
+
+- **Hypothesis/change:** reuse the selected multi-kernel/Humming model-load
+  MXFP4 normalization: clamp each expert's E8M0 span to eleven exponents,
+  rewrite affected FP4 nibbles once, store offsets 1..12, synthesize the E4M3
+  dequant words arithmetically in the Hopper RS path, and restore one FP32
+  global scale per expert for W13 and W2.  This removes the shared-LUT lookup
+  dependency highlighted by Iteration 455 without widening the K-loop live
+  range.  The graph input contract and one-business-kernel launch are unchanged.
+- **Protocol:** physical H20 GPU1, deterministic local M={8,128}, 156x384
+  cooperative Hopper-native launch with register dequant, K128 batching and
+  two CTA/SM.  The same caller-provided FP8-E4M3 X, FP32 group-128 scales and
+  random E8M0 125..128 MXFP4 checkpoint data are used.  This is a correctness
+  gate only; no latency was measured.
+- **Result:** **FAIL**.  M8 remains finite and has cosine `0.9945382` against
+  the Torch FC1 boundary, but relative L2 is `0.9992885` (or `0.9850598`
+  against the weighted boundary) and final maximum magnitude is only `108.5`.
+  Thus the normalized dequant direction is mostly intact while the per-expert
+  magnitude restoration is absent or applied at the wrong task scope.  The
+  M128 pool-row diagnostic is still invalid under concurrent same-expert slot
+  assignment and is not used to localize the bug; its final output is also
+  clearly not admissible.
+- **Decision:** reject this wiring and do not time it.  Preserve the failed
+  source and raw output atomically, then inspect how the Hopper interleaved
+  scheduler distributes `local_expert_idx` across consumer lanes and move the
+  global-scale broadcast to a proven warp-uniform task-info point before the
+  next source test.
+- **Evidence:**
+  `bench/evidence/iter458_native_normalized_weight_scale_local_gate.txt`.

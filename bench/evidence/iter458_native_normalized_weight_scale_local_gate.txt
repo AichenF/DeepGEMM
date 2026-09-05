@@ -1,0 +1,24 @@
+Iteration 458 native normalized-weight-scale local correctness gate
+
+Configuration:
+- physical H20 GPU1 (CUDA_VISIBLE_DEVICES=1)
+- Hopper-native 156x384 cooperative launch, two CTAs/SM
+- register dequant=1, K128 batch=1, half prefetch=0
+- normalized weight scale=1
+- caller-provided FP8-E4M3 X and FP32 group-128 activation scales
+- deterministic random MXFP4 weights with E8M0 codes 125..128
+
+Command body:
+  for m in 8 128; do
+    python bench/test_v4_flash_tp_native_local.py --m "$m"
+  done
+
+Observed output:
+NATIVE_LOCAL_RESULT {"finite": true, "l1_sf_max_abs": 0.0, "l1_weight_max_abs": 0.0, "l1_x_mismatch_bytes": 0, "m": 8, "max_abs": 108.5, "native_l2_vs_torch_bf16": {"cosine": 0.9945382448615192, "rel_l2": 0.9992885043814688}, "native_l2_vs_torch_fp32": {"cosine": 0.9945381890706058, "rel_l2": 0.9992885371247293}, "native_l2_vs_torch_weighted_bf16": {"cosine": 0.9945382451188435, "rel_l2": 0.985059781825283}, "output_sha256": "63026007a6581d1e6e73c55a7e7834709db92afbfc1f530871e026c4d469bb71", "workspace_bytes": 29684992}
+NATIVE_LOCAL_RESULT {"finite": true, "l1_sf_max_abs": 0.8600002527236938, "l1_weight_max_abs": 0.1904762089252472, "l1_x_mismatch_bytes": 2018170, "m": 128, "max_abs": 576.0, "native_l2_vs_torch_bf16": {"cosine": -0.011976267654969192, "rel_l2": 1.0001216095765135}, "native_l2_vs_torch_fp32": {"cosine": -0.011992237829198612, "rel_l2": 1.0001217253797816}, "native_l2_vs_torch_weighted_bf16": {"cosine": -0.011976268462759319, "rel_l2": 1.014854235576789}, "output_sha256": "2425d4e62713d5d5ea570d0f33af751ee28f44368818d158713e9ee81b565d23", "workspace_bytes": 29684992}
+
+Decision: FAIL correctness; do not benchmark latency.  M8 shows that the
+normalized LUT preserves most direction but the restored per-expert magnitude
+is not reaching the actual Hopper task path.  The M128 pool-row diagnostics
+remain invalid under concurrent same-expert slot assignment and are not used
+as a separate causal claim.

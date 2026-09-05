@@ -40,6 +40,9 @@ NATIVE_SKIP_CLEANUP_GRID_SYNC = (
 NATIVE_RS_HALF_PREFETCH = (
     os.environ.get("V4_NATIVE_RS_HALF_PREFETCH", "0") == "1"
 )
+NATIVE_NORMALIZED_WEIGHT_SCALE = (
+    os.environ.get("V4_NATIVE_NORMALIZED_WEIGHT_SCALE", "0") == "1"
+)
 if NATIVE_TWO_CTA_PER_SM and not NATIVE_REGISTER_DEQUANT:
     raise ValueError(
         "V4_NATIVE_TWO_CTA_PER_SM requires V4_NATIVE_REGISTER_DEQUANT=1"
@@ -49,6 +52,10 @@ if NATIVE_RS_HALF_PREFETCH and not (
 ):
     raise ValueError(
         "V4_NATIVE_RS_HALF_PREFETCH requires register dequant and K128 batching"
+    )
+if NATIVE_NORMALIZED_WEIGHT_SCALE and not NATIVE_REGISTER_DEQUANT:
+    raise ValueError(
+        "V4_NATIVE_NORMALIZED_WEIGHT_SCALE requires register dequant"
     )
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
@@ -298,20 +305,59 @@ def _marlin_to_legacy_mxfp4(weight: torch.Tensor) -> torch.Tensor:
     ).reshape_as(weight).contiguous()
 
 
+def _normalize_mxfp4_weight_scales_(
+    weight: torch.Tensor, weight_scale: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Normalize E8M0 groups to offsets 1..12 once at model load."""
+    scale_i16 = weight_scale.to(torch.int16).view(weight_scale.shape[0], -1)
+    scale_max = scale_i16.amax(dim=1, keepdim=True)
+    scale_min = scale_i16.amin(dim=1, keepdim=True)
+    scale_base = torch.maximum(scale_min, scale_max - 11)
+    clamped = torch.maximum(scale_i16, scale_base)
+    delta = (clamped - scale_i16).to(torch.uint8).contiguous()
+
+    # This is the same loss-minimizing checkpoint transform used by Humming
+    # and by the selected multi-kernel path.  It is outside graph replay.
+    from humming import ops as humming_ops
+
+    humming_ops.process_mxfp4_w4a8_weight(
+        weight.view(torch.int32), delta, inplace=True
+    )
+    normalized = (clamped - scale_base + 1).to(torch.uint8)
+    expert_scale = torch.exp2(
+        scale_base.squeeze(1).to(torch.float32) - 122.0
+    ).contiguous()
+    return normalized.view_as(weight_scale).contiguous(), expert_scale
+
+
 def transform_weights(
     w13: torch.Tensor,
     s13: torch.Tensor,
     w2: torch.Tensor,
     s2: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Create the fused 80-byte Mode2 rows once at model-load time."""
     if any(t.dtype != torch.uint8 or t.ndim != 3 for t in (w13, s13, w2, s2)):
         raise TypeError("native MXFP4 weights/scales must be rank-three uint8")
     w13_il = _interleave_l1(w13)
     s13_il = _interleave_l1(s13)
+    w2_native = w2.contiguous()
+    s2_native = s2.contiguous()
     if NATIVE_REGISTER_DEQUANT:
         w13_il = _marlin_to_legacy_mxfp4(w13_il)
-        w2 = _marlin_to_legacy_mxfp4(w2.contiguous())
+        w2_native = _marlin_to_legacy_mxfp4(w2_native)
+    if NATIVE_NORMALIZED_WEIGHT_SCALE:
+        s13_il, native_g13 = _normalize_mxfp4_weight_scales_(w13_il, s13_il)
+        s2_native, native_g2 = _normalize_mxfp4_weight_scales_(
+            w2_native, s2_native
+        )
+    else:
+        native_g13 = torch.ones(
+            (NUM_EXPERTS,), dtype=torch.float32, device=w13.device
+        )
+        native_g2 = torch.ones(
+            (NUM_EXPERTS,), dtype=torch.float32, device=w13.device
+        )
     # Match DeepGEMM's SM90 Mode2 contract: braid the packed sign nibbles
     # offline.  The legacy SS path restores canonical row-major FP8 in shared
     # memory; the RS path consumes its model-load K32 representation directly.
@@ -319,9 +365,9 @@ def transform_weights(
         _fuse_packed_and_scale(w13_il, _scale_to_tile_major(s13_il))
     )
     native_w2 = _braid_mode2_signs(
-        _fuse_packed_and_scale(w2.contiguous(), _scale_to_tile_major(s2))
+        _fuse_packed_and_scale(w2_native, _scale_to_tile_major(s2_native))
     )
-    return native_w13, native_w2
+    return native_w13, native_w2, native_g13, native_g2
 
 
 _CUDA = r"""
@@ -350,10 +396,24 @@ _CUDA = r"""
 #ifndef K_NATIVE_RS_HALF_PREFETCH
 #define K_NATIVE_RS_HALF_PREFETCH 0
 #endif
+#ifndef K_NATIVE_NORMALIZED_WEIGHT_SCALE
+#define K_NATIVE_NORMALIZED_WEIGHT_SCALE 0
+#endif
 
 using namespace deep_gemm;
 
 namespace deep_gemm {
+
+__device__ __forceinline__ uint2 native_load_mxfp4_lut(
+        const uint32_t exponent, const uint2* smem_lut) {
+    if constexpr (K_NATIVE_NORMALIZED_WEIGHT_SCALE) {
+        return make_uint2(
+            exponent * 0x08080800u + 0x0c080000u,
+            exponent * 0x08080808u + 0x1c181410u);
+    } else {
+        return smem_lut[deep_gemm::mxfp4::e8m0_lut_index(exponent)];
+    }
+}
 
 __device__ __forceinline__ uint4 native_load_relaxed_sys_16b(
         const void* pointer) {
@@ -596,6 +656,8 @@ v4_flash_tp4_native_megamoe_impl(
         const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts,
         const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts_sf,
         const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weights,
+        const float* w13_global_scale,
+        const float* w2_global_scale,
         __nv_bfloat16* output,
         uint32_t* push_counter,
         uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
@@ -712,6 +774,8 @@ void run_native_tp4(
         torch::Tensor l2_acts_sf,
         torch::Tensor w13,
         torch::Tensor w2,
+        torch::Tensor w13_global_scale,
+        torch::Tensor w2_global_scale,
         torch::Tensor local_output,
         torch::Tensor output,
         torch::Tensor push_counter,
@@ -743,6 +807,16 @@ void run_native_tp4(
     TORCH_CHECK(w2.scalar_type() == torch::kUInt8 && w2.is_contiguous()
                     && w2.sizes() == torch::IntArrayRef({256, 4096, 320}),
                 "native W2 must be uint8 [256,4096,320]");
+    TORCH_CHECK(w13_global_scale.scalar_type() == torch::kFloat32
+                    && w13_global_scale.is_cuda()
+                    && w13_global_scale.is_contiguous()
+                    && w13_global_scale.numel() == 256,
+                "native W13 global scale must be CUDA FP32 [256]");
+    TORCH_CHECK(w2_global_scale.scalar_type() == torch::kFloat32
+                    && w2_global_scale.is_cuda()
+                    && w2_global_scale.is_contiguous()
+                    && w2_global_scale.numel() == 256,
+                "native W2 global scale must be CUDA FP32 [256]");
     TORCH_CHECK(local_output.scalar_type() == torch::kBFloat16
                     && local_output.numel() == static_cast<int64_t>(tokens) * 4096,
                 "native local output must be BF16 [M,4096]");
@@ -848,6 +922,8 @@ void run_native_tp4(
         tensor_map_l1_weights, tensor_map_l1_output,
         tensor_map_l2_acts, tensor_map_l2_acts_sf,
         tensor_map_l2_weights,
+        w13_global_scale.data_ptr<float>(),
+        w2_global_scale.data_ptr<float>(),
         reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
         reinterpret_cast<uint32_t*>(push_counter.data_ptr()),
         push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
@@ -884,6 +960,8 @@ void run_native_tp4(
     torch::Tensor l2_acts_sf,
     torch::Tensor w13,
     torch::Tensor w2,
+    torch::Tensor w13_global_scale,
+    torch::Tensor w2_global_scale,
     torch::Tensor local_output,
     torch::Tensor output,
     torch::Tensor push_counter,
@@ -916,6 +994,7 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_TWO_CTA_PER_SM))
         + str(int(NATIVE_SKIP_CLEANUP_GRID_SYNC))
         + str(int(NATIVE_RS_HALF_PREFETCH))
+        + str(int(NATIVE_NORMALIZED_WEIGHT_SCALE))
     ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
@@ -925,6 +1004,7 @@ _ext = load_inline(
         f"cta2{int(NATIVE_TWO_CTA_PER_SM)}_"
         f"scg{int(NATIVE_SKIP_CLEANUP_GRID_SYNC)}_"
         f"hp{int(NATIVE_RS_HALF_PREFETCH)}_"
+        f"nws{int(NATIVE_NORMALIZED_WEIGHT_SCALE)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
@@ -947,6 +1027,10 @@ _ext = load_inline(
             f"{int(NATIVE_SKIP_CLEANUP_GRID_SYNC)}"
         ),
         f"-DK_NATIVE_RS_HALF_PREFETCH={int(NATIVE_RS_HALF_PREFETCH)}",
+        (
+            "-DK_NATIVE_NORMALIZED_WEIGHT_SCALE="
+            f"{int(NATIVE_NORMALIZED_WEIGHT_SCALE)}"
+        ),
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",
     ],
@@ -959,6 +1043,8 @@ def run_tp4(
     workspace: NativeWorkspace,
     native_w13: torch.Tensor,
     native_w2: torch.Tensor,
+    native_g13: torch.Tensor,
+    native_g2: torch.Tensor,
     local_output: torch.Tensor,
     output: torch.Tensor,
     push_counter: torch.Tensor,
@@ -980,6 +1066,8 @@ def run_tp4(
         workspace.l2_acts_sf,
         native_w13,
         native_w2,
+        native_g13,
+        native_g2,
         local_output,
         output,
         push_counter,
@@ -1004,6 +1092,8 @@ def run_local(
     workspace: NativeWorkspace,
     native_w13: torch.Tensor,
     native_w2: torch.Tensor,
+    native_g13: torch.Tensor,
+    native_g2: torch.Tensor,
     local_output: torch.Tensor,
     tokens: int,
 ) -> None:
@@ -1019,6 +1109,8 @@ def run_local(
         workspace.l2_acts_sf,
         native_w13,
         native_w2,
+        native_g13,
+        native_g2,
         local_output,
         local_output,
         dummy_counter,

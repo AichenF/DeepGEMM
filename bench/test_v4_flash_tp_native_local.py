@@ -77,7 +77,9 @@ def main() -> None:
     s2 = torch.randint(
         125, 129, (256, 4096, 16), dtype=torch.uint8, device=device
     )
-    native_w13, native_w2 = native.transform_weights(w13, s13, w2, s2)
+    native_w13, native_w2, native_g13, native_g2 = (
+        native.transform_weights(w13, s13, w2, s2)
+    )
 
     workspace = native.allocate_workspace(512, device)
     qx = (torch.randn((args.m, 4096), device=device) * 0.1).to(
@@ -103,7 +105,15 @@ def main() -> None:
     output = torch.empty(
         (args.m, 4096), dtype=torch.bfloat16, device=device
     )
-    native.run_local(workspace, native_w13, native_w2, output, args.m)
+    native.run_local(
+        workspace,
+        native_w13,
+        native_w2,
+        native_g13,
+        native_g2,
+        output,
+        args.m,
+    )
     torch.cuda.synchronize()
 
     # Nsight Compute kernel replay restores mutable workspace allocations to

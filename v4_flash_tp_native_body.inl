@@ -268,9 +268,12 @@
     // =====================================================================
     // Build the 128-row E8M0 -> FP8 fold LUT window arithmetically (row i holds
     // the entry for E8M0 code kE8M0LutBase + i); one row per thread.
-    if (thread_idx < deep_gemm::mxfp4::kE8M0LutCount) {
-        smem_mxfp4_lut[thread_idx] =
-            deep_gemm::mxfp4::load_e2m1_e8m0_lut(thread_idx + deep_gemm::mxfp4::kE8M0LutBase);
+    if constexpr (!K_NATIVE_NORMALIZED_WEIGHT_SCALE) {
+        if (thread_idx < deep_gemm::mxfp4::kE8M0LutCount) {
+            smem_mxfp4_lut[thread_idx] =
+                deep_gemm::mxfp4::load_e2m1_e8m0_lut(
+                    thread_idx + deep_gemm::mxfp4::kE8M0LutBase);
+        }
     }
 
     if (warp_idx == 0) {
@@ -879,6 +882,17 @@
             const uint32_t row_offset_r1 = row_block_offset + r_1;
             using BlockPhaseTag = std::remove_cv_t<std::remove_reference_t<decltype(block_phase)>>;
             constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
+            float task_weight_global_scale = 1.0f;
+            if constexpr (K_NATIVE_NORMALIZED_WEIGHT_SCALE) {
+                if (lane_idx == 0) {
+                    const float* global_scale =
+                        kBlockIsL2 ? w2_global_scale : w13_global_scale;
+                    task_weight_global_scale =
+                        __ldg(global_scale + local_expert_idx);
+                }
+                task_weight_global_scale = __shfl_sync(
+                    0xffffffffu, task_weight_global_scale, 0);
+            }
             const auto cast_l2_scaled_bf16_pair = [&](float x, float y) -> uint32_t {
                 return math::cast_into_bf16_and_pack(x, y);
             };
@@ -935,16 +949,20 @@
 
                 // Read SF (must precede warpgroup_arrive)
                 const float scale_a_0_lo =
-                    ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r0);
+                    ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r0)
+                    * task_weight_global_scale;
                 const float scale_a_1_lo =
-                    ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r1);
+                    ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r1)
+                    * task_weight_global_scale;
                 float scale_a_0_hi = 0.0f;
                 float scale_a_1_hi = 0.0f;
                 if constexpr (kBlockIsL2 && kSplitMDecodedWeightReuse) {
                     scale_a_0_hi = ptx::ld_shared(
-                        smem_sfa[stage_idx] + kL2SFAHalfStride + row_offset_r0);
+                        smem_sfa[stage_idx] + kL2SFAHalfStride + row_offset_r0)
+                        * task_weight_global_scale;
                     scale_a_1_hi = ptx::ld_shared(
-                        smem_sfa[stage_idx] + kL2SFAHalfStride + row_offset_r1);
+                        smem_sfa[stage_idx] + kL2SFAHalfStride + row_offset_r1)
+                        * task_weight_global_scale;
                 }
 
                 // MXFP4 E8M0 weight scales are folded into the FP8 operand
@@ -1036,12 +1054,10 @@
                             #pragma unroll
                             for (uint32_t half = 0;
                                  half < kSwapABWeightHalves; ++ half) {
-                                lut0[half] = smem_mxfp4_lut[
-                                    deep_gemm::mxfp4::e8m0_lut_index(
-                                        exponent0[half])];
-                                lut1[half] = smem_mxfp4_lut[
-                                    deep_gemm::mxfp4::e8m0_lut_index(
-                                        exponent1[half])];
+                                lut0[half] = native_load_mxfp4_lut(
+                                    exponent0[half], smem_mxfp4_lut);
+                                lut1[half] = native_load_mxfp4_lut(
+                                    exponent1[half], smem_mxfp4_lut);
                             }
                             #pragma unroll
                             for (uint32_t half = 0;
@@ -1087,12 +1103,10 @@
                                     row_ptr0[64u + k * 2u];
                                 const uint32_t exponent1 =
                                     row_ptr1[64u + k * 2u];
-                                const uint2 lut0 = smem_mxfp4_lut[
-                                    deep_gemm::mxfp4::e8m0_lut_index(
-                                        exponent0)];
-                                const uint2 lut1 = smem_mxfp4_lut[
-                                    deep_gemm::mxfp4::e8m0_lut_index(
-                                        exponent1)];
+                                const uint2 lut0 = native_load_mxfp4_lut(
+                                    exponent0, smem_mxfp4_lut);
+                                const uint2 lut1 = native_load_mxfp4_lut(
+                                    exponent1, smem_mxfp4_lut);
                                 const uint2 fp8_0 = deep_gemm::mxfp4::
                                     dequant_mode2_nibble_word(packed0, lut0);
                                 const uint2 fp8_1 = deep_gemm::mxfp4::

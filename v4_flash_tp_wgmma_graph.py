@@ -219,6 +219,8 @@ class CapturedCase:
     intermediate_per_rank: int
     native_w13: torch.Tensor | None = None
     native_w2: torch.Tensor | None = None
+    native_g13: torch.Tensor | None = None
+    native_g2: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         device = self.qx.device
@@ -379,8 +381,18 @@ class CapturedCase:
         self.graph_output: torch.Tensor | None = None
         self.native_workspace = None
         self.native_local_output = None
-        if (self.native_w13 is None) != (self.native_w2 is None):
-            raise ValueError("native W13 and W2 must be provided together")
+        native_fields = (
+            self.native_w13,
+            self.native_w2,
+            self.native_g13,
+            self.native_g2,
+        )
+        if any(value is None for value in native_fields) and not all(
+            value is None for value in native_fields
+        ):
+            raise ValueError(
+                "native W13/W2 weights and global scales must be provided together"
+            )
         if self.native_w13 is not None:
             import v4_flash_tp_native_megamoe as native_kernel
 
@@ -897,6 +909,7 @@ class CapturedCase:
         self.prepare_fused_pull(comm)
         assert self.native_workspace is not None
         assert self.native_w13 is not None and self.native_w2 is not None
+        assert self.native_g13 is not None and self.native_g2 is not None
         assert self.native_local_output is not None
         assert self.fused_push_workspaces is not None
         assert self.fused_push_counter is not None
@@ -915,6 +928,8 @@ class CapturedCase:
             self.native_workspace,
             self.native_w13,
             self.native_w2,
+            self.native_g13,
+            self.native_g2,
             self.native_local_output,
             self.fused_graph_output,
             self.fused_push_counter,

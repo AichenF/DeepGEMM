@@ -95,7 +95,7 @@ def main() -> None:
     s2 = torch.randint(
         125, 129, (256, 4096, 16), dtype=torch.uint8, device=device
     )
-    native_w13, _ = native.transform_weights(w13, s13, w2, s2)
+    native_w13, _, _, _ = native.transform_weights(w13, s13, w2, s2)
     packed_tile = native_w13[0, :256, :80].contiguous()
 
     ext = load_inline(

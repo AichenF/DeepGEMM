@@ -74,7 +74,9 @@ def make_case(
     use_native: bool = False,
 ) -> custom.CapturedCase:
     w13, s13, g13, w2, s2, g2 = weights[:6]
-    native_w13, native_w2 = weights[6:] if use_native else (None, None)
+    native_w13, native_w2, native_g13, native_g2 = (
+        weights[6:] if use_native else (None, None, None, None)
+    )
     return custom.CapturedCase(
         m=m,
         qx=qx,
@@ -91,6 +93,8 @@ def make_case(
         intermediate_per_rank=intermediate_per_rank,
         native_w13=native_w13,
         native_w2=native_w2,
+        native_g13=native_g13,
+        native_g2=native_g2,
     )
 
 
@@ -210,6 +214,13 @@ def main() -> None:
                     "native_rs_half_prefetch": bool(
                         use_native
                         and os.environ.get("V4_NATIVE_RS_HALF_PREFETCH", "0")
+                        == "1"
+                    ),
+                    "native_normalized_weight_scale": bool(
+                        use_native
+                        and os.environ.get(
+                            "V4_NATIVE_NORMALIZED_WEIGHT_SCALE", "0"
+                        )
                         == "1"
                     ),
                     "single_launch_interleaved": (
