@@ -12718,3 +12718,28 @@ maximum rank latency of a full CUDA-Graph replay.
   claimed yet.
 - **Evidence:**
   `bench/evidence/iter527_native_tp_local_barriers_static.txt`.
+## Iteration 528 — TP-local barrier collapse gives first native fixed-cost win
+
+- **Candidate/protocol:** selected native control versus the otherwise
+  identical `V4_NATIVE_TP_LOCAL_BARRIER_FASTPATH=1` module in one TP4 process
+  on physical GPUs 0/5/6/7.  Random M8/M128, two balanced whole-batch AB/BA
+  rounds x four rank-max samples, two alternating warmups, CUDA Graph, and a
+  separate excluded 256 MiB L2 clear before every replay.
+- **Correctness:** **PASS bitwise** at both endpoints across every rank:
+  cosine at least `0.9999999999999998`, relative L2 `0.0`, zero BF16
+  mismatches and finite outputs.  Both multicast-push and NVLS-pull TP tails
+  complete after the shortened local barrier path.
+- **Cold-L2 smoke (EP-barrier control / TP-local candidate median):** M8
+  `0.106352 -> 0.098288 ms`, **7.58% lower latency / 1.0820x**; M128
+  `0.384560 -> 0.376000 ms`, **2.23% lower / 1.0228x**.  Endpoint geometric
+  mean improves `0.202234 -> 0.192240 ms`, **4.94% lower / 1.0520x**.
+  Candidate batch medians are stable at `0.097648/0.098992 ms` and
+  `0.375440/0.376080 ms`; the control contains one isolated M8 max outlier.
+- **Interpretation/decision:** this is materially different from dual
+  dispatch and validates that inherited EP synchronization, especially the
+  redundant second W2/combine grid rendezvous, is a real fixed cost.  Keep
+  the feature default-off until a 200-sample same-process endpoint A/B
+  confirms the direction.  Even if retained, native remains slower than the
+  flat/current baseline, so further TP-local route-pool work is still needed.
+- **Evidence:**
+  `bench/results/iter528_native_tp_local_barriers_tp4_smoke_20260905.log`.
