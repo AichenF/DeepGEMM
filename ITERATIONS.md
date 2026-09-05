@@ -12314,3 +12314,22 @@ maximum rank latency of a full CUDA-Graph replay.
   finite.  Route alignment produced 360 padded rows and exercised split-K=4.
 - **Decision:** admit split-K=4 and run the M128/split-K=2 endpoint before any
   four-rank communication test or latency claim.
+
+## Iteration 498 — CTA-local split-K=2 M128 compute correctness passes
+
+- **Candidate/protocol:** unchanged Iteration-494 module on H20 GPU 1, random
+  M128 routes with seed 20260904 and the same prequantized-input contract.
+  One warm execution precedes one execution after a separate excluded
+  256-MiB L2 clear; the TP collective remains disabled for this local gate.
+- **Progress/residency:** **PASS.**  Both independent 512-thread cohorts per
+  CTA complete their non-aligned named barriers and the 78-CTA launch returns
+  under timeout.  Packed whole-grid state is `[2048, 2048, 0, 2048]`, exactly
+  matching the intended route, locally fused W13+activation, skipped phase-2,
+  and W2 sequence.
+- **Correctness:** **PASS exact** against the selected multi-kernel local W2
+  output: cosine `1.0`, relative L2 `0.0`, and finite output.  Route alignment
+  generated 1944 padded rows and exercised split-K=2 with both CTA cohorts.
+- **Decision:** both split-K variants clear the single-GPU arithmetic and
+  progress gate.  Next use the same-process four-rank graph A/B harness to
+  verify embedded multicast/P2P-NVLS communication and compare complete
+  outputs at M8/M128 before measuring the five-M cold-L2 target.
