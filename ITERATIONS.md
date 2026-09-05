@@ -14102,3 +14102,34 @@ maximum rank latency of a full CUDA-Graph replay.
   then record the analysis separately.
 - Evidence: `evidence/iter614_current_default_m128_ncu_capture.md` and the
   external binary report above.
+## Iteration 615 — current-default M128 NCU counter/hotspot analysis
+
+- Source: read-only import of Iteration 614's 21-pass report; no new kernel
+  launch.  The profiled compute-only launch was independently cold-L2 and
+  bitwise correct.
+- Launch/resource: 702x128 (nine CTAs/SM on 78 SMs), 56 registers/thread,
+  18.43 KiB dynamic plus 1.02 KiB static shared memory, no local spilling,
+  one wave/SM, theoretical/achieved occupancy 56.25/56.22%.
+- Performance counters: 343.42 us, compute throughput 60.07%, DRAM throughput
+  50.73% / 2.44 TB/s, L2 hit 5.57%, 113.665M executed instructions.  Scheduler
+  issue is 0.63 warp/scheduler/cycle, 1.82 eligible warps/scheduler, and
+  no-eligible is 36.61%.  Warp-state cost is 14.19 cycles/issued instruction:
+  barrier 5.37 (37.85%), long scoreboard 1.52, wait 1.22 and math-pipe
+  throttle 1.01 cycles.
+- Versus the pre-compact Iteration-228 M128 profile: duration improves
+  349.89->343.42 us (-1.85%), achieved occupancy 49.98->56.22%, no-eligible
+  40.20->36.61%, and DRAM bandwidth 2.39->2.44 TB/s.  This validates the
+  direction of compact W13/bound9, but the kernel is still not bandwidth
+  saturated.
+- Source-counter localization: total not-issued barrier samples=4,436.
+  The static activation-loop exit owns 2,259 (50.92%); the terminal W2/grid
+  convergence mapped to the collective branch owns 905 (20.40%); WGMMA wait
+  owns 351 (7.91%).  The activation phase has 3,072 tasks over 702 CTAs, so
+  only 264 CTAs execute the fifth task while 438 reach the grid barrier one
+  task earlier.
+- Decision: add an isolated activation-only balanced-worker option that uses
+  `ceil(activation_tasks/ceil(activation_tasks/ctas)) = 615` workers at this
+  shape.  Do not alter W13/W2 workers: Iteration 260 already proved that
+  reducing cold-weight concurrency loses much more bandwidth than it saves in
+  the tail.  Gate resources/correctness, then use a bracketed cold-L2 A/B.
+- Evidence: `evidence/iter615_current_default_m128_ncu_analysis.md`.
