@@ -10326,3 +10326,35 @@ maximum rank latency of a full CUDA-Graph replay.
   from lost W2 concurrency and cold W13/W2 bandwidth contention.
 - Evidence:
   `bench/results/iter416_hopper_cta_pipeline_tp4_m8_m128_cold_screen_20260905.log`.
+
+## Iteration 417 — NCU identifies CTA barriers as coarse-pipeline bottleneck
+
+- Date: 2026-09-05
+- Method: NCU 2025.3.1 on the unchanged Iteration 414 compute-only M128
+  split-K2 kernel, profiler-start delimited, exact monolithic-kernel filter,
+  18 kernel-replay passes, NCU cache/clock control disabled, and an
+  application-provided excluded 256 MiB L2 clear.  Sections cover speed of
+  light, memory, scheduler/warp state, occupancy, launch and instructions.
+- Correctness/resource: PASS bitwise (`cosine=1`, rel-L2 `0`, finite), 1,944
+  padded rows and packed words `[2048,0,0,2048]`.  Launch remains 78x1024,
+  one wave/SM, 64 registers/thread, 147.46 KiB dynamic plus 2.05 KiB static
+  shared, 50.70% achieved occupancy and zero local spilling requests.
+- Performance: duration `623.33 us`, compute `37.07%`, DRAM `27.44%`
+  (`1.32 TB/s`), no-eligible cycles `63.25%`, only 0.37 issued
+  warp/scheduler/cycle and 1.19 eligible warps/scheduler.  NCU attributes
+  10.5 of 21.77 cycles per issued instruction to sibling-warp CTA-barrier
+  stalls, or `48.03%` of the issue interval.
+- Comparison to Iteration 402's mapped phase kernel: duration rises from
+  334.21 to 623.33 us, compute falls 63.78→37.07%, DRAM falls
+  51.19→27.44%, and no-eligible rises 35.74→63.25%.  Executed instructions
+  rise only 8.0% (117.98M→127.41M), so fine-atomic overhead has been removed;
+  the new dominant loss is synchronizing all 32 resident warps at every L1
+  macro and W2 chunk, plus the resulting load imbalance.
+- Decision: do not tune atomics further.  The next implementation must remove
+  task-loop `__syncthreads()` and return to independent named-barrier WGs,
+  while batching task assignment without a global atomic per WG task—e.g.
+  static WG stripes with coarse acquire-visible mblock readiness.
+- Evidence:
+  `results/iter417_hopper_cta_pipeline_m128_ncu_details_20260905.log`; binary
+  report `results/iter417_hopper_cta_pipeline_m128_compute_full.ncu-rep`
+  remains outside git due to size.
