@@ -101,11 +101,24 @@ def main() -> None:
     native.run_local(workspace, native_w13, native_w2, output, args.m)
     torch.cuda.synchronize()
 
-    # With one route per expert, expert e owns one padded BM8 pool block and
-    # its single valid row is e * 8.  Verify the persistent dispatch payload
-    # before attributing any error to the GEMMs or TP communication.
+    # Reconstruct the expert-major padded BM8 pool row for every route.  The
+    # old `route * BLOCK_M` shortcut was valid only while routes were unique
+    # by expert and made the M128 post-kernel diagnostic index out of bounds.
     route_indices = torch.arange(args.m * 6, device=device)
-    pool_rows = route_indices * native.BLOCK_M
+    flat_experts = topk_ids.flatten()
+    expert_counts = torch.bincount(
+        flat_experts, minlength=native.NUM_EXPERTS
+    )
+    padded_counts = (
+        (expert_counts + native.BLOCK_M - 1) // native.BLOCK_M
+    ) * native.BLOCK_M
+    expert_bases = torch.cumsum(padded_counts, dim=0) - padded_counts
+    route_order = torch.arange(flat_experts.numel(), device=device)
+    expert_ordinals = (
+        (flat_experts[:, None] == flat_experts[None, :])
+        & (route_order[None, :] < route_order[:, None])
+    ).sum(dim=1)
+    pool_rows = expert_bases[flat_experts] + expert_ordinals
     src_tokens = torch.div(route_indices, native.TOP_K, rounding_mode="floor")
     src_topk = route_indices.remainder(native.TOP_K)
     pooled_x = workspace.l1_acts.index_select(0, pool_rows)

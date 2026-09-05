@@ -11125,3 +11125,29 @@ maximum rank latency of a full CUDA-Graph replay.
   M128 pool-row diagnostic and testing the large endpoint.  No performance
   claim is made yet.
 - **Evidence:** `bench/evidence/iter451_native_two_cta_reg88_m8.txt`.
+
+## Iteration 452 — two-CTA native is bitwise-equal at M128
+
+- **Harness repair:** replace the definitely out-of-bounds
+  `pool_row=route*8` diagnostic with expert-prefix plus within-expert ordinal
+  reconstruction, allowing the M128 post-kernel audit to run to completion.
+- **Test:** physical GPU1, deterministic local M128, separate processes for
+  the retained 78-CTA control and 156-CTA cooperative candidate, both with
+  register dequant and K128 batching.
+- **Result:** **PASS for complete output**.  Both kernels return, are finite,
+  have identical maximum magnitude 296,960, and produce the same full BF16
+  `[128,4096]` SHA-256
+  `2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5`.
+  The deterministic route-0 weighted-FC1 metrics are also identical to M8.
+- **Diagnostic caveat:** the revised pool-row predictor still reports large
+  mismatches because multiple resident CTAs assign same-expert source slots
+  through atomics, so within-expert slot order is not input route order.  The
+  mismatch count also differs across launches, confirming that this is an
+  invalid ordering assumption.  It is not used for acceptance; the complete
+  final tensor is bitwise equal.  A future pool audit must read the body's
+  source-token metadata or compare same-expert rows as an unordered set.
+- **Decision:** M8 and M128 full-output correctness gates pass.  The candidate
+  is eligible for a same-process TP4, CUDA-Graph, independently cold-L2
+  endpoint timing screen; do not run all five M values unless both endpoints
+  materially improve.
+- **Evidence:** `bench/evidence/iter452_native_two_cta_m128_correctness.txt`.
