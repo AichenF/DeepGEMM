@@ -15001,3 +15001,29 @@ maximum rank latency of a full CUDA-Graph replay.
   mapping in a separately recorded iteration; if incomplete, rerun with a
   stable outer timeout and log-first retrieval.
 - **Evidence:** `evidence/iter653a_smid_trace_session_loss.md`.
+
+## Iteration 653b — measured M128 placement rejects tail tickets
+
+- **Recovery/protocol:** read-only inspection of Iteration 653a's remote tee
+  log found a complete existing-SMID-trace execution on physical H20 GPU 1.
+  It used the selected TP4 M128/split-K2 production kernel, random seed
+  20260902, collective disabled only for local attribution, and a separate
+  excluded 256 MiB L2 clear.  No latency was measured.
+- **Correctness/residency:** PASS bitwise against the independent same-source
+  multi local route tensor (`cosine=1`, `rel_l2=0`, finite), 1,992 padded
+  rows and packed words `[2048,2048,2048,2048]`.  The trace contains all 702
+  CTAs, exactly nine on each of all 78 SMs.
+- **W13 tail:** 3,984 tasks over 702 CTAs are five complete waves plus 474
+  residual tasks.  The measured residual holders are distributed as eight
+  SMs x 5, 56 x 6 and 14 x 7 CTAs.  The maximum seven already equals the
+  mathematical lower bound `ceil(474/78)=7`.
+- **W2 tail:** 7,968 tasks are eleven complete waves plus 246 residuals,
+  distributed as two SMs x 2, 62 x 3 and 14 x 4.  Its maximum four likewise
+  equals `ceil(246/78)=4`.
+- **Decision:** reject Iteration 652's residual-wave ticket before coding.
+  Dynamic claims cannot reduce the SM-level critical residual count and
+  would add 702 contended atomics plus a CTA broadcast.  This closes the last
+  credible direct multi-kernel scheduler transfer; a material gain now needs
+  a different coarse fused dataflow.
+- **Evidence:** `evidence/iter653b_production_tail_placement.md`; raw record
+  `bench/results/iter653_production_m128_smid_trace.log`.
