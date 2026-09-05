@@ -14425,3 +14425,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Correctness/performance:** not run; no residency or latency claim is made.
 - **Decision:** retain the source repair, replace the fragile metadata print with the already deterministic extension path, and run cubin inspection as a separate new iteration. Production defaults remain unchanged.
 - **Evidence:** `evidence/iter628_156cta_4wg_jit_wrapper_failure.md`; raw log `bench/results/iter628_156cta_4wg_resource_gate.log`.
+## Iteration 629 — 156 CTA × 4 WG cubin resource gate (pass)
+
+- **Test:** inspect the exact repaired extension `v4tp_63a318a5fa109f26b014_v178mspec.so` with `cuobjdump --dump-resource-usage` before launching it.
+- **Result:** all TP4 single-launch token/SplitK instantiations report `REG=64`, `STACK=48`, `SHARED=2048`, `LOCAL=0`. The packed route scratch requested by the host is 4 × 18,432 = 73,728 dynamic bytes, so one CTA uses 75,776 shared bytes total. Register pressure is the binding residency limit: 512 threads × 64 registers = 32,768 registers/CTA and exactly two CTAs consume the H20 SM's 65,536-register file.
+- **Gate:** **PASS for runtime testing.** The cubin has no fixed local allocation, and both register and shared-memory budgets admit two 512-thread CTAs/SM. Actual CUDA occupancy enforcement and deadlock/correctness remain to be proven by launch.
+- **Decision:** run cold-L2 M8 and M128 compute-harness correctness tests next; do not change production defaults.
+- **Evidence:** `evidence/iter629_156cta_4wg_cubin_resources.md`; raw log `bench/results/iter629_156cta_4wg_cubin_resources.log`.
