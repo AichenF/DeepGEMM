@@ -13776,3 +13776,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Static result: **PASS.** `python3 -m py_compile v4_flash_tp_wgmma.py` exited 0 with no diagnostics.
 - Qualification: no CUDA compilation or timing has occurred. This candidate advances only to a ptxas resource gate; require a material main-entry register reduction, ideally to at most 56 registers/thread for 9 CTA/SM, before spending a TP4 benchmark run.
 - Evidence: `bench/evidence/iter590_tp4_p2p_noinline_static.txt`.
+
+## Iteration 591 — terminal TP4 P2P call boundary fails the register gate (2026-09-05)
+
+- Configuration: H20 GPU1 SM90a JIT with the selected release-arrival and assume-valid-task fast paths plus `V4_SINGLE_LAUNCH_P2P_NOINLINE=1`; linked-cubin resources were read with `cuobjdump --dump-resource-usage`. No GPU kernel was launched and no timing was collected.
+- Build result: **PASS.** The extension rebuilt and loaded as `v4tp_aba3895863a0ea479151_v178mspec`.
+- Resource result: **FAIL optimization gate.** Both M128 specializations remain exactly `REG:64 SHARED:4096 LOCAL:0`, now with `STACK:32`; M64 is also `REG:64 STACK:32`. Thus the call boundary adds stack traffic/call overhead but does not release enough caller registers to exceed the selected eight-CTA/SM residency. Small-M entries compile at 61 registers even though their push tail is unchanged, reflecting the ABI/call-site build rather than a useful occupancy change.
+- Decision: **reject without benchmarking** and keep the switch default-off for reproducibility. The terminal collective is not what pins the M128 caller's 64-register allocation; continue with instruction/live-range analysis inside the W13/W2 phase instead of paying a device-call cost that cannot raise occupancy.
+- Evidence: `bench/evidence/iter591_tp4_p2p_noinline_resources.txt`.
