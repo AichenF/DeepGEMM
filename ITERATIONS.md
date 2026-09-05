@@ -10513,3 +10513,31 @@ maximum rank latency of a full CUDA-Graph replay.
   P2P two-shot paths.
 - Evidence:
   `results/iter423_static_activation_wg_compute_correctness_20260905.log`.
+
+## Iteration 424 — deterministic activation WGs help slightly but remain slow
+
+- Date: 2026-09-05
+- Protocol: Iteration 422 candidate versus selected same-source multi-kernel
+  plus SGLang CustomAllReduceV2 control, TP4 GPUs 0-3, random routes, seed
+  20260904, two replay-interleaved batches x ten individually cold-L2
+  samples/arm, two warmups and rank-max reduction.  Every replay has an
+  independent excluded 256 MiB L2 clear; inputs, routes and MXFP4 weights are
+  shared.
+- Correctness: PASS and identical to control at M8/M128, including embedded
+  multicast push and P2P two-shot communication.
+- M8 control/candidate medians are `73.936/99.984 us`; candidate is 1.352x
+  slower.  Stable batch medians are 73.952/73.936 us for control and
+  99.552/100.080 us for candidate.  M128 medians are `301.536/396.272 us`,
+  candidate 1.314x slower; corresponding batches are 302.064/301.152 and
+  394.496/398.560 us.  Endpoint candidate/control geometric ratio is 1.333x.
+- Progress: relative to Iteration 420, deterministic activation ownership and
+  shared loop state improve M8 101.952→99.984 us (-1.93%) and M128
+  405.952→396.272 us (-2.38%).  They do not close the 26.048/94.736-us gaps
+  to the same-source control or the 11.824/46.928-us gaps to Iteration 400's
+  selected mapped-phase candidate.
+- Decision: reject Iteration 422 for selection while keeping the measurable
+  improvement.  Profile compute-only M128 to determine whether loop-state
+  local spills fell and whether the remaining loss is readiness/activation
+  serialization or reduced cold W13/W2 bandwidth.
+- Evidence:
+  `bench/results/iter424_static_activation_wg_tp4_m8_m128_cold_screen_20260905.log`.
