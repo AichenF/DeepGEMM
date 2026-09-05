@@ -9361,3 +9361,40 @@ maximum rank latency of a full CUDA-Graph replay.
   unlike Iteration 249's unsafe removal of that producer sync.
 - Evidence:
   `results/iter379_grid_barrier_no_entry_sync_compute_m8_m128_20260905.log`.
+## Iteration 380 — activation-task trailing CTA-sync removal screen
+
+- Date: 2026-09-05
+- Contract: both arms receive the same caller-provided FP8-E4M3 `qx` and
+  FP32 group-128 `x_scale` plus MXFP4 weights/scales.  External input
+  quantization remains outside the kernel and the timed region.  The tested
+  activation phase is only the required FC1/SwiGLU-to-FC2 internal requant.
+- Hypothesis/change: add default-off
+  `V4_SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC=1` for the isolated schedule-0
+  path.  Remove only the caller's third/trailing CTA sync after each
+  `reduce_swiglu_quant_task`; retain both internal shared-memory syncs and the
+  following ordinary packed grid barrier's entry/exit syncs.  The next task
+  cannot overwrite `group_scale` until its first internal sync, which also
+  proves every lane has consumed the previous scale.  Reject incompatible
+  tail/cohort/dual-WG/nonordinary barrier configurations.
+- Method: H20 GPU 0, random routes, seed 20260904, M={8,128}, OFF then ON,
+  one compute-only replay per arm after an excluded 256 MiB cache clear.
+  Phase stamps, release-arrival, and assume-valid-task opt-ins were enabled.
+  This is a cold-L2 correctness/phase screen, not a formal latency result.
+- Correctness: PASS bitwise for both OFF and ON at both shapes.  M8 cosine
+  prints 0.9999999999999999 and rel-L2 0; M128 cosine 1.0 and rel-L2 0;
+  every output is finite and all packed barrier generations advance cleanly.
+- M8 phases OFF versus ON (route/W13/requant/W2, us):
+  `2.208/41.824/3.328/22.304` versus
+  `2.208/40.896/3.200/21.472`; summed phases 69.664 versus 67.776 us,
+  a 2.71% lower ON sample.
+- M128 phases OFF versus ON (route/W13/requant/W2, us):
+  `4.352/204.352/6.368/104.064` versus
+  `3.872/204.128/6.400/102.528`; summed phases 319.136 versus 316.928 us,
+  a 0.69% lower ON sample.
+- Analysis/decision: unlike Iteration 379, the effect has the desired sign at
+  both endpoints and removes repeated work in the NCU-identified activation
+  barrier region.  Advance unchanged to an order-balanced TP4 OFF/ON bracket
+  with every graph replay independently cold-L2.  Keep default-off until that
+  distributed result and repeated numerical checks pass.
+- Evidence:
+  `results/iter380_skip_activation_task_sync_compute_m8_m128_20260905.log`.

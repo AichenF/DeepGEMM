@@ -459,6 +459,12 @@ SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC = (
     )
     == "1"
 )
+SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC = (
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC", "0"
+    )
+    == "1"
+)
 SINGLE_LAUNCH_HIERARCHICAL_GRID = (
     os.environ.get("V4_SINGLE_LAUNCH_HIERARCHICAL_GRID", "0") == "1"
 )
@@ -600,6 +606,25 @@ if SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC and (
     raise ValueError(
         "V4_SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC requires the ordinary "
         "packed schedule-0 barrier with producer-final CTA syncs"
+    )
+if SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or not SINGLE_LAUNCH_PACKED_GRID_BARRIER
+    or SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC requires the isolated "
+        "one-worker schedule-0 activation phase and an entry-synchronized "
+        "ordinary packed grid barrier"
     )
 if SINGLE_LAUNCH_BALANCED_WORKERS and (
     SINGLE_LAUNCH_SCHEDULE != 0
@@ -1296,6 +1321,8 @@ static constexpr bool kSingleLaunchSkipFinalCtaSync =
     K_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC;
 static constexpr bool kSingleLaunchGridBarrierNoEntrySync =
     K_SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC;
+static constexpr bool kSingleLaunchSkipActivationTaskSync =
+    K_SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC;
 static constexpr bool kSingleLaunchHierarchicalGrid =
     K_SINGLE_LAUNCH_HIERARCHICAL_GRID;
 static constexpr bool kSingleLaunchTailOverlap =
@@ -6384,9 +6411,15 @@ void tp4_megamoe_single_launch_kernel(
                         partials, activation, qactivation, activation_scale,
                         route_to_sorted, topk_ids, g2, routes, group,
                         tail_split4_mblock_begin);
-                    if constexpr (!kSingleLaunchSkipFinalCtaSync) {
+                    // The next task does not overwrite group_scale until its
+                    // first internal CTA barrier, by which time every lane
+                    // has consumed the previous scale.  The ordinary grid
+                    // barrier retains its entry CTA sync for the final task.
+                    if constexpr (!kSingleLaunchSkipActivationTaskSync
+                                  && !kSingleLaunchSkipFinalCtaSync) {
                         __syncthreads();
-                    } else if (group + ctas < activation_groups) {
+                    } else if (!kSingleLaunchSkipActivationTaskSync
+                               && group + ctas < activation_groups) {
                         __syncthreads();
                     }
                 }
@@ -9079,6 +9112,7 @@ _EXTENSION_CONFIG = (
           f"slpsn{SINGLE_LAUNCH_GRID_POLL_SLEEP_NS}_"
           f"slfs{int(SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC)}_"
           f"slgbne{int(SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC)}_"
+          f"slats{int(SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC)}_"
           f"slhg{int(SINGLE_LAUNCH_HIERARCHICAL_GRID)}_"
           f"slto{int(SINGLE_LAUNCH_TAIL_OVERLAP)}_"
           f"slta{int(SINGLE_LAUNCH_TAIL_ACT_ONLY)}_"
@@ -9303,6 +9337,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC="
             f"{int(SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC="
+            f"{int(SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_HIERARCHICAL_GRID="
