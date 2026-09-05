@@ -11367,3 +11367,37 @@ maximum rank latency of a full CUDA-Graph replay.
   performance screen; defer all-five-M and TP8 until it materially improves.
 - **Evidence:**
   `bench/evidence/iter459_native_normalized_weight_scale_rs_fix_local_gate.txt`.
+
+## Iteration 460 — normalized scale and arithmetic LUT produce a real TP4 gain
+
+- **Candidate:** the numerically admitted Iteration-459 Hopper/SM90 native
+  kernel: 156x384 cooperative launch, two CTA/SM, register MXFP4 dequant,
+  K128 issue batching, offline per-expert E8M0 normalization, arithmetic LUT
+  synthesis, and in-kernel TP4 collective.  Half prefetch and cleanup-sync
+  skipping remain disabled.
+- **Protocol:** TP4 physical GPUs 0-3, random routes at M={8,128}, same-process
+  selected multi-kernel + SGLang CustomAllReduceV2 control versus native
+  candidate.  Two balanced batches x 10 rank-max samples per arm, three cold
+  warmups, and a separate excluded 256 MiB L2 clear immediately before every
+  replay.  X is caller-provided FP8-E4M3 with FP32 group-128 scales.
+- **Correctness:** **PASS** at both endpoints.  Final cosine/relative-L2 are
+  `0.9993588000/0.0358438506` for M8 and
+  `0.9993604309/0.0357634397` for M128; every rank is finite.  Embedded
+  communication versus the candidate-local NCCL oracle has cosine at least
+  `0.9999916227` and relative L2 at most `0.0040933250`.
+- **Cold-L2 result (multi / native median):** M8
+  `0.071712/0.104160 ms`, so native is `1.4525x` slower; M128
+  `0.305776/0.380128 ms`, so native is `1.2432x` slower.  Endpoint geometric
+  means are `0.148080/0.198983 ms`, or native `1.3437x` slower.
+- **Real gain versus Iteration 453's unnormalized two-CTA native control:**
+  M8 improves from `0.113632` to `0.104160 ms` (`8.33%`), M128 from
+  `0.395056` to `0.380128 ms` (`3.78%`), and endpoint geometric mean from
+  `0.211875` to `0.198983 ms` (`6.09%`).  This is the first retained
+  optimization after the two-CTA residency change to improve both endpoints.
+- **Interpretation/decision:** select normalized scale plus arithmetic LUT for
+  the native branch.  It removes a real small-M fixed/dequant cost but still
+  leaves `45.25%/24.32%` latency gaps at M8/M128.  Continue bounded profiling
+  or scheduling work from this retained point; do not claim success or spend
+  the formal all-five-M/TP8 budget yet.
+- **Evidence:**
+  `bench/evidence/iter460_native_normalized_weight_scale_tp4_cold_screen.txt`.
