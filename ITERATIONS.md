@@ -12333,3 +12333,36 @@ maximum rank latency of a full CUDA-Graph replay.
   progress gate.  Next use the same-process four-rank graph A/B harness to
   verify embedded multicast/P2P-NVLS communication and compare complete
   outputs at M8/M128 before measuring the five-M cold-L2 target.
+
+## Iteration 499 — CTA-local W13 TP4 endpoint smoke is correct but slower
+
+- **Protocol:** physical H20 GPUs 0–3, one process/rank, same-process CUDA
+  Graph multi-kernel control versus the Iteration-494 one-kernel candidate,
+  random M8/M128 routes (seed 20260904), two balanced AB/BA batches x five
+  rank-max samples, two alternating warmups, and an independent excluded
+  256-MiB cold-L2 clear immediately before every replay.
+- **Correctness/communication:** **PASS** at both endpoints.  Candidate and
+  control report the same reference metrics at each M.  M8 embedded multicast
+  push has cosine `0.9999956134`, rel-L2 `0.0029619922`; M128 embedded P2P
+  two-shot has cosine `0.9999956090`, rel-L2 `0.0029634544`; all ranks are
+  finite.  Candidate/control padded-row counts match (360 and 1944).
+- **Noise:** one M8 candidate batch and one complete M128 batch were disturbed
+  at 1.47–4.43 ms, so the pooled ten-sample M128 median (`2.85 ms`) is not a
+  valid kernel estimate.  This short run is a correctness/direction screen,
+  not a formal verdict.
+- **Undisturbed batch direction (multi / candidate):** M8
+  `0.073568/0.104960 ms` (candidate about **42.7% slower**); M128
+  `0.300896/0.398592 ms` (about **32.5% slower**).  The candidate therefore
+  shows no sign of the required >=3% endpoint improvement over the previous
+  mapped one-kernel path, whose earlier representative medians were about
+  `0.08816/0.34934 ms`.
+- **Interpretation:** eliminating global partial traffic and one grid barrier
+  did not repay forcing all W13 gate/up tiles for a group through a cohort
+  critical path.  Split-K=4 loses the prior 624-worker task freedom most
+  sharply; split-K=2 also pays leader-only activation and per-round cohort
+  waits.
+- **Decision:** retain the correct default-off implementation as evidence but
+  do not run a 10x200 five-M verdict in this form.  Profile one clean M8 and
+  M128 execution to distinguish W13 cohort serialization from W2/collective
+  cost, then revise scheduling only if the profile identifies a recoverable
+  overhead.
