@@ -14432,3 +14432,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Gate:** **PASS for runtime testing.** The cubin has no fixed local allocation, and both register and shared-memory budgets admit two 512-thread CTAs/SM. Actual CUDA occupancy enforcement and deadlock/correctness remain to be proven by launch.
 - **Decision:** run cold-L2 M8 and M128 compute-harness correctness tests next; do not change production defaults.
 - **Evidence:** `evidence/iter629_156cta_4wg_cubin_resources.md`; raw log `bench/results/iter629_156cta_4wg_cubin_resources.log`.
+## Iteration 630 — 156 CTA × 4 WG M8 cold-L2 launch/correctness gate (pass)
+
+- **Test:** run the compute-only single-launch harness on physical H20 GPU 1 for random-route M8, prequantized FP8 input, with an excluded 256 MiB cold-L2 clear and the isolated 156×4 topology.
+- **Residency:** launch succeeded through the host's exact two-CTA-per-SM occupancy requirement (`156 = 78 SM × 2 CTA`).
+- **Correctness:** **PASS**, full `down` tensor versus the same-source multi-kernel reference: cosine `1.0`, relative L2 `0.0`, finite true. The run used W13 SplitK=4 and 344 padded route rows.
+- **Scope:** TP collective was intentionally disabled in this compute gate; no end-to-end latency is claimed here.
+- **Decision:** proceed to the M128 cold-L2 launch/correctness gate before benchmarking. Production defaults remain unchanged.
+- **Evidence:** `evidence/iter630_156cta_4wg_m8_compute.md`; raw log `bench/results/iter630_156cta_4wg_m8_compute.log`.
