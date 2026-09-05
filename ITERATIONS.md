@@ -13880,3 +13880,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Aggregate: mean normalized ratio unroll4=0.9271668640x versus unroll8=0.9437892523x. Eight-way ON/OFF=1.017927, a 1.79% normalized regression; direct candidate means regress 0.3475839943 -> 0.3533999994 ms (1.67%). Both eight-way windows lose to both four-way windows despite stable Humming medians.
 - Decision: reject the composition and keep `V4_W13_K_UNROLL8_SPLIT2=0`. Its extra 32-byte split2 call frame and expanded callee do not repay their cost inside the persistent compact phase. Do not run a long confirmation.
 - Evidence: `evidence/iter603_compact_w13_unroll8_m128_short_bracket.md` and `evidence/iter603_compact_w13_unroll8_m128_short_bracket_results.txt`.
+## Iteration 604 — compact-W13 bundle is small-M neutral-to-positive in short cold-L2 bracket
+
+- Purpose: test M8/16/32/64 instead of assuming neutrality from the M128-only compact-call branch; the bundle also moves route scratch to dynamic shared memory for every specialization.
+- Protocol: TP4 GPUs 0,5,6,7; random routes, fixed seed 20260902; M=8,16,32,64; same-source multi control versus one-kernel candidate; CUDA Graph; replay-level AB/BA; separate excluded 256 MiB L2 clear before every replay; process order OFF_A -> ON_A -> ON_B -> OFF_B; 2 outer x 20 samples/implementation/window after 4 warmups. OFF is the selected inline/fixed-route path; ON enables compact W13 outline, dynamic route shared memory, and M128 bound-9 (the outline itself executes only at M128).
+- Correctness: every shape/window passes identically for candidate and control, with finite outputs and `allreduce_ok=true`; candidate cosine remains >=0.9999955955 and relative L2 <=0.0029680026.
+- Candidate/control ratios OFF_A / ON_A / ON_B / OFF_B: M8 1.067416 / 1.067446 / 1.067835 / 1.071991; M16 1.088855 / 1.091354 / 1.084836 / 1.091430; M32 1.131510 / 1.125655 / 1.126957 / 1.128953; M64 1.127780 / 1.125377 / 1.124624 / 1.128916.
+- Bracket-normalized ON versus OFF: M8 about 0.19% faster, M16 0.19% faster, M32 0.35% faster, and M64 0.30% faster. Direct candidate means agree in sign: 0.076120 -> 0.076016, 0.124512 -> 0.124504, 0.199888 -> 0.199320, and 0.281464 -> 0.280800 ms.
+- Decision: no small-M regression signal, and M32/M64 are directionally separated; combine this with Iter600's long M128 +0.36%. Because all effects remain sub-0.5%, run a long all-M bracket before changing defaults.
+- Evidence: `evidence/iter604_compact_bundle_smallm_short_bracket.md` and `evidence/iter604_compact_bundle_smallm_short_bracket_results.txt`.
