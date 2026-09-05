@@ -14916,3 +14916,17 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `evidence/iter650b_production_m128_ncu_collection.md`, raw log
   `bench/results/iter650b_production_m128_cold_sourcecounters.log`, binary
   report `results/iter650b_production_m128_cold_sourcecounters.ncu-rep`.
+
+## Iteration 651a — standalone W13 NCU kernel-filter miss
+
+- **Intent:** collect matching cold-L2 SourceCounters for the current
+  standalone TP4 M128 W13 on physical GPU 1.
+- **Result:** the application ran, but NCU's demangled view exposed the short
+  name `route_gemm`; regex `route_gemm.*4096` matched no kernel.  NCU reported
+  `No kernels were profiled` and listed `route_gemm` among the available
+  names.  No replay passes or performance metrics were collected.
+- **Decision:** filter-only failure and non-evidence.  Retry with
+  `regex:^route_gemm$` plus launch-count one; the first matching launch in the
+  delimited local pipeline is W13, before the later W2 launch.
+- **Evidence:** `evidence/iter651a_standalone_ncu_filter_failure.md`; raw log
+  `bench/results/iter651_standalone_w13_m128_cold_sourcecounters.log`.

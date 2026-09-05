@@ -1,0 +1,16 @@
+==WARNING== Note: Running with uncontrolled GPU caches. Profiling results may be inconsistent.
+==WARNING== Note: Running with unmodified GPU clocks. If not controlled otherwise, profiling results may be inconsistent.
+==PROF== Connected to process 644487 (/usr/bin/python3.12)
+==PROF== Connected to process 644625 (/usr/bin/python3.12)
+==PROF== Connected to process 644627 (/usr/bin/python3.12)
+==PROF== Disconnected from process 644625
+==PROF== Disconnected from process 644627
+LOCAL_PROFILE_REPLAY {"dequant_synth_lut": false, "fused_activation_quant": true, "impl": "custom", "l2_cache_bytes": 62914560, "l2_flush_bytes": 268435456, "l2_policy": "cold; 256MiB clear immediately before pipeline", "m": 128, "min_blocks_per_sm": 0, "mode2_braid": true, "mxfp4_lut_rows": 256, "output_tile_channels": 128, "route_pattern": "random", "scale_buffers": 2, "scale_quad_reuse": 4, "tp": 4, "w13_leader_mbar_wait": true, "w13_s2r_prefetch": true, "w13_split_policy": "auto", "w2_global_lut": false, "w2_route_output": true, "w2_s2r_prefetch": true, "weight_common_address": true, "weight_stages": 2, "weight_swizzle_bytes": 64}
+==PROF== Disconnected from process 644487
+==WARNING== No kernels were profiled.
+Available Kernels:
+1. moe_fused_mul_sum_kernel
+2. reduce_swiglu_quant_kernel
+3. route_align_kernel
+4. route_gemm
+5. vectorized_elementwise_kernel
