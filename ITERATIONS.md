@@ -14080,3 +14080,25 @@ maximum rank latency of a full CUDA-Graph replay.
   resolved container Python executable) before the script path.  This failed
   attempt carries no performance evidence.
 - Evidence: `evidence/iter613_ncu_script_launcher_failure.md`.
+## Iteration 614 — current-default M128 NCU capture succeeds
+
+- Configuration: current production-bundle TP4 M128/split-K2 compute body on
+  physical H20 GPU1; collective disabled only to make NCU kernel replay safe.
+  Public input remains prequantized FP8-E4M3 plus FP32 group-128 scale and
+  MXFP4 weights.  The application performs its separate 256 MiB L2 clear
+  immediately before the profiled launch; NCU cache and clock control are
+  disabled so it does not replace that cold-L2 protocol.
+- Profile: exact demangled `tp4_megamoe_single_launch_kernel<2,128>` filter;
+  kernel replay; SpeedOfLight, MemoryWorkloadAnalysis, SchedulerStats,
+  WarpStateStats, LaunchStats, InstructionStats and SourceCounters.  NCU
+  completed 21 replay passes and wrote
+  `/home/xutingz/fac/profile_results/iter614_current_default_m128_compute.ncu-rep`.
+- Correctness: PASS bitwise against the independently launched same-source
+  multi-kernel local result (`cosine=1`, `rel_l2=0`, finite), with 1,992
+  padded rows.  All four packed barriers end at generation word 2048.
+- Qualification: this capture emitted the report path but not the metric
+  table to stdout.  No counter interpretation is made yet.  Import the saved
+  report read-only, extract the selected metrics and hottest source counters,
+  then record the analysis separately.
+- Evidence: `evidence/iter614_current_default_m128_ncu_capture.md` and the
+  external binary report above.
