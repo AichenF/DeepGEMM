@@ -13800,3 +13800,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Qualification: no extension was compiled, no GPU kernel ran, and there is no resource, correctness or timing evidence.
 - Decision: preserve this failed gate, narrow only that stale exclusion so assume-valid remains forbidden for the legacy high-argument outline but is admitted for the new compact outline, then retry the unchanged candidate.
 - Evidence: `bench/evidence/iter593_tp4_w13_compact_abi_validator_failure.txt`.
+
+## Iteration 594 — admit assume-valid tasks for the compact W13 outline only (2026-09-05)
+
+- Repair: narrowed the stale assume-valid host exclusion from every W13 phase outline to only outlines that are neither the prior dual-phase experiment nor the new compact-ABI mode. The legacy high-argument outline remains rejected in the bound-9/assume-valid combination; no selected-default condition changes.
+- Static result: **PASS.** `python3 -m py_compile v4_flash_tp_wgmma.py` exits 0 with no diagnostics.
+- Qualification: this validates syntax and the intended validator expression only. CUDA compilation/resource evidence remains pending in the exact Iteration-593 configuration.
+- Evidence: `bench/evidence/iter594_tp4_w13_compact_validator_repair.txt`.

@@ -1,0 +1,16 @@
+Iteration 594: compact-W13 assume-valid validator repair
+Date: 2026-09-05
+
+Change:
+- V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS now admits
+  V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE only when either the previously gated
+  dual-phase mode or the new compact-ABI mode is active.
+- The legacy one-phase, high-argument outline remains excluded.
+
+Static command:
+  python3 -m py_compile v4_flash_tp_wgmma.py
+
+Exit code: 0
+Diagnostics: none
+
+No CUDA build or performance claim is made.
