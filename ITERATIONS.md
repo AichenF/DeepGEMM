@@ -12494,3 +12494,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: both endpoints are bitwise equal to the independently launched multi-kernel local pipeline (`cosine=1`, `rel_l2=0`, finite). M8/M128 padded rows are 368/2008. All four packed words wrap exactly to `[0,0,0,0]`. The M128 launch passed the runtime requirement for exactly 9 admitted CTAs/SM.
 - Decision: correctness, barrier-wrap, and occupancy-admission gates PASS. Proceed to a short paired TP4 cold-L2 M128 performance screen before spending an all-M run.
 - Evidence: `results/iter508_dual_phase_outline_compute_correctness_20260905.log`.
+## Iteration 509 — dual-phase outline loses despite 9-CTA M128 occupancy (2026-09-05)
+
+- Protocol: TP4 on physical GPUs 0/5/6/7, random M128 routes, paired replay-granularity CUDA graphs, 2 outer batches x 20 replays, four warmups, rank-max timing. A separate 256 MiB L2 clear immediately precedes every implementation replay and is excluded from events. Candidate uses both phase outlines, assume-valid, release-arrival, and admitted 9 CTA/SM; control is the selected multi-kernel path with stock CustomAllReduceV2.
+- Correctness: PASS on all ranks; candidate/control metrics are identical (`cosine_min=0.9999955909`, `rel_l2_max=0.0029695592`, finite, all-reduce true).
+- Cold-L2 latency: control median 0.306496 ms, candidate 0.355760 ms, so the candidate is 16.07% slower. Candidate batch medians 0.355536/0.355840 ms and control 0.306464/0.306656 ms are stable.
+- Comparison: Iteration 504's same-route selected 8-CTA inline candidate was 0.352272 ms versus a 0.308672 ms control (+14.13%). The outlined/9-CTA path is ~0.99% slower in absolute candidate time and ~1.94 percentage points worse when normalized to its adjacent control.
+- Decision: reject. Register-lifetime isolation reaches the intended occupancy but device-call/stack/tighter scheduling cost exceeds the occupancy benefit. Keep both flags default-off and return to the inline 624x128 path.
+- Evidence: `results/iter509_dual_phase_outline_tp4_m128_short_20260905.log`.
