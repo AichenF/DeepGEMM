@@ -9603,3 +9603,27 @@ maximum rank latency of a full CUDA-Graph replay.
   the benchmark script.
 - Evidence:
   `results/iter388_78cta_8wg_m128_ncu_20260905.log`.
+
+## Iteration 389 — 78-CTA M128 NCU counter capture
+
+- Date: 2026-09-05
+- Configuration: unchanged 78-CTA/eight-independent-WG candidate, M128
+  split-K2, random routes, seed 20260904, release grid arrivals and
+  valid-task elision enabled, TP collective disabled.  Public X is already
+  FP8-E4M3 with its FP32 group-128 scale.
+- Method: NCU 2025.3.1, target kernel-name filter for the monolithic
+  `tp4_megamoe_single_launch_kernel`, one launch, 18 kernel-replay passes,
+  uncontrolled clocks and NCU cache control disabled because the application
+  performs its own excluded 256 MiB clear.  Sections captured: speed of
+  light, memory workload, scheduler, warp state, occupancy, launch, and
+  instruction statistics.
+- Result: capture PASS and post-replay correctness remains bitwise
+  (`cosine=1`, `rel_l2=0`, finite); all packed barrier generations remain
+  clean at 2048.  NCU wrote the report successfully, but `-o` suppressed the
+  metric table from this command's stdout, so no bottleneck conclusion is
+  claimed in this iteration.
+- Decision: import the saved report next and extract raw/summary metrics
+  before modifying the kernel.
+- Evidence: `results/iter389_78cta_8wg_m128_ncu_20260905.log` and local report
+  `results/iter389_78cta_8wg_m128_compute_full.ncu-rep` (kept outside git due
+  to report size).
