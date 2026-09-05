@@ -90,3 +90,24 @@ M128 NCU profiles before another source direction.  The next structural option
 is a full CTA-role reorder that places both WGMMA groups at hardware-aligned
 warps 0..7 and support roles afterward; simply deleting the inherited alignment
 warp is forbidden by Iterations 467–468.
+
+## Iteration-480 amendment: one contiguous tile transaction
+
+The first implementation validated the 15% byte reduction and bitwise output,
+but two TMA copies per K128 stage regressed the endpoint geometric mean by
+0.26%.  Keep that result rejected.  The next bounded variant retains the same
+17 KiB shared representation while removing the extra transaction.
+
+At model load, lay out each complete N256/K128 tile contiguously as 16 KiB of
+row-major packed weight followed by 1 KiB of four-row-grouped scales.  View the
+17 KiB tile as a legal two-dimensional `128 B x 136` tensor-map box.  Both box
+dimensions are at most 256, the inner dimension and global stride are 16-byte
+aligned, and one TMA copy reproduces the same shared weight and scale planes.
+The producer coordinate becomes a linear expert/N-tile/K-tile index multiplied
+by 136; the RS consumer mapping is unchanged from the validated split layout.
+
+Implement this as a separate default-off switch so Iteration 480 remains
+reproducible.  Admission gates are the same: bitwise local M8/M128, TP4 graph
+and communication correctness, then a matched endpoint cold-L2 screen against
+the retained 80-byte control.  Do not combine it with scale-word caching or the
+two-copy split flag.
