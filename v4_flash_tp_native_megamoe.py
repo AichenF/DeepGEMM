@@ -49,6 +49,9 @@ NATIVE_RS_SCALE_WORD_CACHE = (
 NATIVE_SPLIT_WEIGHT_SCALE_TMA = (
     os.environ.get("V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA", "0") == "1"
 )
+NATIVE_TILE_WEIGHT_SCALE_TMA = (
+    os.environ.get("V4_NATIVE_TILE_WEIGHT_SCALE_TMA", "0") == "1"
+)
 if NATIVE_TWO_CTA_PER_SM and not NATIVE_REGISTER_DEQUANT:
     raise ValueError(
         "V4_NATIVE_TWO_CTA_PER_SM requires V4_NATIVE_REGISTER_DEQUANT=1"
@@ -81,6 +84,16 @@ if NATIVE_SPLIT_WEIGHT_SCALE_TMA and NATIVE_RS_SCALE_WORD_CACHE:
     raise ValueError(
         "split weight/scale TMA and scale-word cache are exclusive"
     )
+if NATIVE_TILE_WEIGHT_SCALE_TMA and not NATIVE_REGISTER_DEQUANT:
+    raise ValueError(
+        "V4_NATIVE_TILE_WEIGHT_SCALE_TMA requires register dequant"
+    )
+if NATIVE_TILE_WEIGHT_SCALE_TMA and NATIVE_RS_SCALE_WORD_CACHE:
+    raise ValueError(
+        "tile weight/scale TMA and scale-word cache are exclusive"
+    )
+if NATIVE_TILE_WEIGHT_SCALE_TMA and NATIVE_SPLIT_WEIGHT_SCALE_TMA:
+    raise ValueError("tile and split weight/scale TMA modes are exclusive")
 
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
@@ -343,6 +356,42 @@ def _braid_mode2_signs(
     return stored_rows.view(experts, rows, storage_k).contiguous()
 
 
+def _tile_weight_and_scale_for_single_tma(
+    packed: torch.Tensor, scale: torch.Tensor
+) -> torch.Tensor:
+    """Lay out one N256/K128 tile as 16 KiB weight + 1 KiB scale."""
+    experts, rows, packed_k = packed.shape
+    block_n, packed_bytes_per_k_block = 256, 64
+    if rows % block_n or packed_k % packed_bytes_per_k_block:
+        raise ValueError("MXFP4 weight shape is not divisible by N256/K128")
+    k_blocks = packed_k // packed_bytes_per_k_block
+    braided = _braid_mode2_signs(packed, packed_bytes_per_k_block)
+    packed_tiles = (
+        braided.view(
+            experts,
+            rows // block_n,
+            block_n,
+            k_blocks,
+            packed_bytes_per_k_block,
+        )
+        .permute(0, 1, 3, 2, 4)
+        .contiguous()
+        .view(experts, rows // block_n, k_blocks, block_n * 64)
+    )
+    scale_tiles = _split_scale_to_tma_groups(scale).view(
+        experts, rows // block_n, k_blocks, block_n * 4
+    )
+    tiled = torch.empty(
+        (experts, rows // block_n, k_blocks, 136, 128),
+        dtype=torch.uint8,
+        device=packed.device,
+    )
+    tiled_bytes = tiled.view(experts, rows // block_n, k_blocks, 17408)
+    tiled_bytes[..., :16384] = packed_tiles
+    tiled_bytes[..., 16384:] = scale_tiles
+    return tiled
+
+
 def _marlin_to_legacy_mxfp4(weight: torch.Tensor) -> torch.Tensor:
     """Repack canonical Marlin K8 codes for the proven RS operand mapping."""
     *leading, half_k = weight.shape
@@ -421,7 +470,12 @@ def transform_weights(
     # Match DeepGEMM's SM90 Mode2 contract: braid the packed sign nibbles
     # offline.  The legacy SS path restores canonical row-major FP8 in shared
     # memory; the RS path consumes its model-load K32 representation directly.
-    if NATIVE_SPLIT_WEIGHT_SCALE_TMA:
+    if NATIVE_TILE_WEIGHT_SCALE_TMA:
+        native_w13 = _tile_weight_and_scale_for_single_tma(w13_il, s13_il)
+        native_w2 = _tile_weight_and_scale_for_single_tma(w2_native, s2_native)
+        native_s13 = torch.empty((0, 16), dtype=torch.uint8, device=w13.device)
+        native_s2 = torch.empty((0, 16), dtype=torch.uint8, device=w2.device)
+    elif NATIVE_SPLIT_WEIGHT_SCALE_TMA:
         native_w13 = _braid_mode2_signs(w13_il, 64)
         native_w2 = _braid_mode2_signs(w2_native, 64)
         native_s13 = _split_scale_to_tma_groups(s13_il)
@@ -472,6 +526,9 @@ _CUDA = r"""
 #endif
 #ifndef K_NATIVE_SPLIT_WEIGHT_SCALE_TMA
 #define K_NATIVE_SPLIT_WEIGHT_SCALE_TMA 0
+#endif
+#ifndef K_NATIVE_TILE_WEIGHT_SCALE_TMA
+#define K_NATIVE_TILE_WEIGHT_SCALE_TMA 0
 #endif
 
 using namespace deep_gemm;
@@ -879,7 +936,16 @@ void run_native_tp4(
                 "native TP4 supports M=8,16,32,64,128");
     TORCH_CHECK(intermediate == 512,
                 "native TP4 requires intermediate_per_rank=512");
-    if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
+    if constexpr (K_NATIVE_TILE_WEIGHT_SCALE_TMA) {
+        TORCH_CHECK(w13.scalar_type() == torch::kUInt8 && w13.is_contiguous()
+                        && w13.numel() == 570425344,
+                    "tile native W13 must be contiguous uint8 with "
+                    "570425344 elements");
+        TORCH_CHECK(w2.scalar_type() == torch::kUInt8 && w2.is_contiguous()
+                        && w2.numel() == 285212672,
+                    "tile native W2 must be contiguous uint8 with "
+                    "285212672 elements");
+    } else if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
         TORCH_CHECK(w13.scalar_type() == torch::kUInt8 && w13.is_contiguous()
                         && w13.sizes() == torch::IntArrayRef({256, 1024, 2048}),
                     "split native W13 must be uint8 [256,1024,2048]");
@@ -955,7 +1021,13 @@ void run_native_tp4(
             l1_acts_sf.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_FLOAT32,
             49152, 32, 8, 1, 49152 * sizeof(float),
             CU_TENSOR_MAP_SWIZZLE_NONE);
-        if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
+        if constexpr (K_NATIVE_TILE_WEIGHT_SCALE_TMA) {
+            tensor_map_l1_weights = native_make_desc(
+                w13.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
+                128, 4456448, 128, 136, 128,
+                CU_TENSOR_MAP_SWIZZLE_NONE);
+            tensor_map_l1_weight_scales = tensor_map_l1_weights;
+        } else if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
             tensor_map_l1_weights = native_make_desc(
                 w13.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
                 2048, 256 * 1024, 64, 256, 2048,
@@ -983,7 +1055,13 @@ void run_native_tp4(
             l2_acts_sf.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_FLOAT32,
             49152, 4, 8, 1, 49152 * sizeof(float),
             CU_TENSOR_MAP_SWIZZLE_NONE);
-        if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
+        if constexpr (K_NATIVE_TILE_WEIGHT_SCALE_TMA) {
+            tensor_map_l2_weights = native_make_desc(
+                w2.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
+                128, 2228224, 128, 136, 128,
+                CU_TENSOR_MAP_SWIZZLE_NONE);
+            tensor_map_l2_weight_scales = tensor_map_l2_weights;
+        } else if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
             tensor_map_l2_weights = native_make_desc(
                 w2.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
                 256, 256 * 4096, 64, 256, 256,
@@ -1129,6 +1207,7 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_NORMALIZED_WEIGHT_SCALE))
         + str(int(NATIVE_RS_SCALE_WORD_CACHE))
         + str(int(NATIVE_SPLIT_WEIGHT_SCALE_TMA))
+        + str(int(NATIVE_TILE_WEIGHT_SCALE_TMA))
     ).encode()
 ).hexdigest()[:20]
 _ext = load_inline(
@@ -1141,6 +1220,7 @@ _ext = load_inline(
         f"nws{int(NATIVE_NORMALIZED_WEIGHT_SCALE)}_"
         f"swc{int(NATIVE_RS_SCALE_WORD_CACHE)}_"
         f"swt{int(NATIVE_SPLIT_WEIGHT_SCALE_TMA)}_"
+        f"twt{int(NATIVE_TILE_WEIGHT_SCALE_TMA)}_"
         f"{_SOURCE_HASH}"
     ),
     cpp_sources=_CPP,
@@ -1171,6 +1251,10 @@ _ext = load_inline(
         (
             "-DK_NATIVE_SPLIT_WEIGHT_SCALE_TMA="
             f"{int(NATIVE_SPLIT_WEIGHT_SCALE_TMA)}"
+        ),
+        (
+            "-DK_NATIVE_TILE_WEIGHT_SCALE_TMA="
+            f"{int(NATIVE_TILE_WEIGHT_SCALE_TMA)}"
         ),
         f"-I{DEEP_GEMM_INCLUDE}",
         f"-I{REPO_INCLUDE}",

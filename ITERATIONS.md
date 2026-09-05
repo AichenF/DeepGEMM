@@ -11911,3 +11911,26 @@ maximum rank latency of a full CUDA-Graph replay.
   do not select it or run a five-M formal verdict.
 - **Evidence:**
   `bench/evidence/iter480_split_tma_tp4_endpoint_cold_screen.txt`.
+
+## Iteration 481 — one-transaction tile TMA first compile type mismatch
+
+- **Hypothesis/change:** add default-off
+  `V4_NATIVE_TILE_WEIGHT_SCALE_TMA=1`.  Model load stores every complete
+  N256/K128 tile as contiguous 16 KiB row-major packed weights plus 1 KiB
+  grouped scales, exposed as one legal `128x136` uint8 tensor-map box.  The
+  producer issues one 17 KiB TMA transaction and the validated compact RS
+  consumer mapping is reused.  The rejected two-copy split mode remains
+  independently reproducible and mutually exclusive.
+- **Protocol:** Python static compilation, then physical H20 GPU1 deterministic
+  local M8 with the tile flag and all selected native defaults.  This is the
+  first Hopper extension compile/launch gate.
+- **Result:** **FAIL CUDA compilation.**  NVCC finds no matching
+  `tma::copy<128,136,0,uint8_t>` because the destination expression has static
+  type `cutlass::float_e4m3_t*`, while this explicit copy specialization
+  requires `uint8_t*`.  No descriptor creation, kernel launch, correctness or
+  latency result was reached.
+- **Decision:** preserve the failed candidate exactly.  Next add only an
+  explicit uint8 reinterpret cast for the shared destination and repeat the
+  identical M8 compile/correctness gate.
+- **Evidence:**
+  `bench/evidence/iter481_tile_weight_scale_tma_compile_failure.txt`.

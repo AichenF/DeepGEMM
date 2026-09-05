@@ -227,6 +227,10 @@ def main() -> None:
                         native_kernel
                         and native_kernel.NATIVE_SPLIT_WEIGHT_SCALE_TMA
                     ),
+                    "native_tile_weight_scale_tma": bool(
+                        native_kernel
+                        and native_kernel.NATIVE_TILE_WEIGHT_SCALE_TMA
+                    ),
                     "single_launch_interleaved": (
                         kernel.SINGLE_LAUNCH_INTERLEAVED
                     ),

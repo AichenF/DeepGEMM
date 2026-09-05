@@ -149,17 +149,24 @@
                       kSwapABRequested && kUseMode2RowDecoder &&
                       !kSplitMDecodedWeightReuse),
                      "register dequant currently supports BM8/BN256 swap-AB");
-    DG_STATIC_ASSERT(!(K_NATIVE_SPLIT_WEIGHT_SCALE_TMA &&
+    DG_STATIC_ASSERT(!((K_NATIVE_SPLIT_WEIGHT_SCALE_TMA ||
+                        K_NATIVE_TILE_WEIGHT_SCALE_TMA) &&
                        K_NATIVE_RS_SCALE_WORD_CACHE),
-                     "split scale TMA is incompatible with scale-word cache");
+                     "compact scale TMA is incompatible with scale-word cache");
+    DG_STATIC_ASSERT(!(K_NATIVE_SPLIT_WEIGHT_SCALE_TMA &&
+                       K_NATIVE_TILE_WEIGHT_SCALE_TMA),
+                     "split and tile TMA modes are exclusive");
     constexpr uint32_t kNumDecodedBStages = kRegisterDequant ? 0u :
         (kSplitMDecodedWeightReuse ? 2u : kNumStages);
+    constexpr bool kCompactWeightScaleTma =
+        K_NATIVE_SPLIT_WEIGHT_SCALE_TMA ||
+        K_NATIVE_TILE_WEIGHT_SCALE_TMA;
     constexpr uint32_t B_LOAD_BYTES_PER_ROW =
-        K_NATIVE_SPLIT_WEIGHT_SCALE_TMA ? 64u : 80u;
+        kCompactWeightScaleTma ? 64u : 80u;
     constexpr uint32_t SMEM_PACKED_B_SIZE_PER_STAGE =
         LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW * sizeof(b_dtype_t);
     constexpr uint32_t SMEM_B_SCALE_SIZE_PER_STAGE =
-        K_NATIVE_SPLIT_WEIGHT_SCALE_TMA ? LOAD_BLOCK_N * 4u : 0u;
+        kCompactWeightScaleTma ? LOAD_BLOCK_N * 4u : 0u;
     constexpr uint32_t SMEM_PACKED_B_STAGE_SIZE =
         SMEM_PACKED_B_SIZE_PER_STAGE + SMEM_B_SCALE_SIZE_PER_STAGE;
     // L1 and L2 each consume one per-128 activation scale per row and K tile.
@@ -824,15 +831,27 @@
                 empty_barriers[stage_idx]->wait(phase ^ 1);
 
                 const uint32_t n_idx = local_expert_idx * shape_n + n_block_idx * BLOCK_N;
-                // The control layout stores an 80-byte fused record.  The
-                // split candidate loads a 64-byte packed record plus one
-                // 16x64 scale tile, whose records each hold four N rows.
-                const uint32_t k_idx = k_block_idx * B_LOAD_BYTES_PER_ROW;
                 if (cute::elect_one_sync()) {
-                    tma::copy<B_LOAD_BYTES_PER_ROW, LOAD_BLOCK_N, 0, b_dtype_t>(
-                        tensor_map_b_ptr, full_barriers[stage_idx],
-                        smem_packed_b[stage_idx],
-                        k_idx, n_idx, 1);
+                    if constexpr (K_NATIVE_TILE_WEIGHT_SCALE_TMA) {
+                        const uint32_t tile_idx =
+                            (local_expert_idx * scale_n_tiles + n_block_idx)
+                            * num_k_blocks + k_block_idx;
+                        // One contiguous 128x136 box contains a 16 KiB
+                        // row-major packed tile followed by its 1 KiB scale
+                        // plane, avoiding the split candidate's second TMA.
+                        tma::copy<128, 136, 0, uint8_t>(
+                            tensor_map_b_ptr, full_barriers[stage_idx],
+                            smem_packed_b[stage_idx],
+                            0, tile_idx * 136u, 1);
+                    } else {
+                        const uint32_t k_idx =
+                            k_block_idx * B_LOAD_BYTES_PER_ROW;
+                        tma::copy<
+                            B_LOAD_BYTES_PER_ROW, LOAD_BLOCK_N, 0, b_dtype_t>(
+                            tensor_map_b_ptr, full_barriers[stage_idx],
+                            smem_packed_b[stage_idx],
+                            k_idx, n_idx, 1);
+                    }
                     if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
                         const uint32_t scale_outer_idx =
                             ((local_expert_idx * scale_n_tiles + n_block_idx)
@@ -1100,7 +1119,7 @@
                                     reinterpret_cast<const uint8_t*>(
                                         smem_packed_b[stage_idx])
                                     + packed_row1 * B_LOAD_BYTES_PER_ROW;
-                                if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
+                                if constexpr (kCompactWeightScaleTma) {
                                     exponent0[half] = smem_b_scale[stage_idx][
                                         (packed_row0 >> 2u) * 16u
                                         + (packed_row0 & 3u) * 4u + k];
@@ -1181,8 +1200,7 @@
                                     exponent1 =
                                         (scale_word1 >> ((k & 1u) * 16u))
                                         & 0xffu;
-                                } else if constexpr (
-                                    K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
+                                } else if constexpr (kCompactWeightScaleTma) {
                                     exponent0 = smem_b_scale[stage_idx][
                                         (packed_row0 >> 2u) * 16u
                                         + (packed_row0 & 3u) * 4u + k];

@@ -1,0 +1,19 @@
+ITERATION 481 — one-transaction tile TMA compile failure
+
+Configuration:
+  physical H20 GPU1; deterministic local M8
+  V4_NATIVE_TILE_WEIGHT_SCALE_TMA=1
+
+Build result:
+  Python py_compile=PASS
+  NVCC=FAIL
+
+Primary diagnostic:
+  v4_flash_tp_native_body.inl:842
+  no instance of function template deep_gemm::tma::copy matches
+  candidate template: tma::copy<128, 136, 0, uint8_t>
+  argument 3 actual type: cutlass::float_e4m3_t*
+  required type: uint8_t*
+
+Descriptor creation, CUDA launch, correctness and latency were not reached.
+Verdict: FAIL compile; add only the explicit destination cast and retry.
