@@ -11671,3 +11671,43 @@ maximum rank latency of a full CUDA-Graph replay.
   exact Iteration-470 five-M formal command next.
 - **Evidence:**
   `bench/evidence/iter471_native_selected_defaults_local_gate.txt`.
+
+## Iteration 472 — formal current-native five-M cold-L2 verdict
+
+- **Protocol:** physical H20 GPUs 0–3, TP4 random routes, caller-provided
+  FP8-E4M3 X and FP32 group-128 scales, same-process selected multi-kernel
+  control versus the native Hopper single-launch implementation.  CUDA Graph,
+  ten balanced whole-batch AB/BA outer runs x 200 samples per arm and M,
+  twenty warmups, rank-max latency, and a separate excluded 256 MiB L2 clear
+  immediately before every replay.  This is the required 2,000 independently
+  cold samples per implementation and shape.
+- **Correctness:** **PASS within the established native numerical envelope**
+  at all five M values.  Every rank is finite; end-to-end cosine is at least
+  `0.9993588000`; embedded communication versus candidate-local NCCL has
+  cosine at least `0.9999915522` and relative-L2 at most `0.0041104796`.
+- **Cold-L2 rank-max min/median/max ms (multi / native / native-over-multi):**
+  - M8: `0.069952/0.071296/0.145408` /
+    `0.101472/0.103840/0.179968` / `1.4565x`.
+  - M16: `0.112512/0.115360/0.192512` /
+    `0.148576/0.151008/0.181856` / `1.3090x`.
+  - M32: `0.180992/0.205792/0.249888` /
+    `0.229024/0.250320/0.296416` / `1.2164x`.
+  - M64: `0.252512/0.288640/0.358432` /
+    `0.317280/0.362656/1.346240` / `1.2564x`.
+  - M128: `0.311584/0.368960/0.422848` /
+    `0.408768/0.445088/0.545024` / `1.2063x`.
+- **Primary score:** equal-weight five-M geometric means are
+  `0.1783105060 ms` multi and `0.2292768390 ms` native.  Control/native is
+  `0.777708x`; equivalently, native latency is `28.58%` higher.  The required
+  `1.10x` single-launch win is not achieved.
+- **Audit note:** the benchmark `SINGLE_MULTI_ENV` line incorrectly reports
+  the three newly default-on native flags as false because its metadata reads
+  raw absent environment variables instead of the imported native module's
+  resolved defaults.  Iteration 471 independently proves the no-override
+  module configuration and bitwise output.  Fix the metadata before the next
+  formal run; do not reinterpret this run as the legacy native path.
+- **Decision:** retain Iteration 471 for entry consistency, but make no
+  performance-win claim.  Proceed with a structural weight-transport/layout
+  iteration; launch removal alone remains insufficient.
+- **Evidence:**
+  `bench/evidence/iter472_native_selected_defaults_tp4_allm_formal.txt`.

@@ -1,0 +1,37 @@
+ITERATION 472 — selected native TP4 all-M formal cold-L2 verdict
+
+Protocol:
+  GPUs=0,1,2,3; TP4; random routes; M=8,16,32,64,128
+  same-process multi control versus native single launch
+  CUDA Graph; 10 outer x 200 replays/arm/M; 20 warmups
+  whole-batch balanced AB/BA ordering; rank-max latency
+  independent 256 MiB L2 clear before every replay, excluded from events
+
+Latency ms, rank-max across 2,000 independently cold samples per arm:
+  M    multi_min  multi_med  multi_max  native_min native_med native_max native/multi
+  8    0.069952   0.071296   0.145408   0.101472   0.103840   0.179968   1.456463
+  16   0.112512   0.115360   0.192512   0.148576   0.151008   0.181856   1.309015
+  32   0.180992   0.205792   0.249888   0.229024   0.250320   0.296416   1.216374
+  64   0.252512   0.288640   0.358432   0.317280   0.362656   1.346240   1.256430
+  128  0.311584   0.368960   0.422848   0.408768   0.445088   0.545024   1.206331
+
+Equal-weight five-M geometric mean:
+  multi_ms=0.17831050602604612
+  native_ms=0.22927683896288448
+  multi/native=0.7777083234077175
+  native/multi=1.2858291082937852
+
+Correctness across M=8,16,32,64,128:
+  finite_all_ranks=true
+  final_cosine_min=0.9993588000366143
+  embedded_comm_vs_nccl_cosine_min=0.9999915521563014
+  embedded_comm_vs_nccl_rel_l2_max=0.00411047964016572
+
+Metadata caveat:
+  SINGLE_MULTI_ENV reported the resolved-default register-dequant, K128-batch
+  and two-CTA flags as false because it inspected absent environment strings.
+  The imported module defaults and Iteration-471 bitwise gate select them.
+  Repair this reporting bug before another formal comparison.
+
+Verdict: FAIL performance goal.  Native is 28.58% slower in five-M GM; no
+10% win is claimed.
