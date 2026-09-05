@@ -1,0 +1,24 @@
+Iteration 572 — native RS two-K64 commit groups, local endpoint correctness
+
+Date: 2026-09-05
+GPU: physical H20 GPU1
+Candidate: `V4_NATIVE_RS_K64_COMMIT_GROUPS=1`
+Protocol: deterministic local-body M=8 then M=128, TP communication disabled, full synchronization, 480-second timeout per process
+Raw log: bench/results/iter572_native_rs_k64_commit_local_m8_m128_20260905.log
+
+M=8
+- launch completed; finite=true; max_abs=55040
+- complete BF16 output SHA256: 6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5
+- selected-control hash match: exact
+- routed X byte mismatches=0, scale max error=0, route-weight max error=0
+- weighted intermediate cosine=0.9996428551534735, relative L2=0.027105235872160963
+
+M=128
+- launch completed; finite=true; max_abs=296960
+- complete BF16 output SHA256: 2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5
+- selected-control hash match: exact
+- weighted intermediate cosine=0.9996428551534735, relative L2=0.027105235872160963
+- positional route-pool mismatch fields are excluded: repeated experts make concurrent atomic slot order nondeterministic, as established in Iterations 476–478 and 557.
+
+Decision
+- Correctness and forward-progress gate passes at both endpoints. Two K64 groups preserve the complete selected output bit-for-bit. Proceed to a short same-process TP4 cold-L2 A/B at M=8 and M=128 before any long or all-M run.

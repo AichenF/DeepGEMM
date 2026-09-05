@@ -13616,3 +13616,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Result:** **INVALID launcher failure.** The first process exited at `import v4_flash_tp_native_megamoe` with `ModuleNotFoundError`; invoking the script by path placed `bench/` on `sys.path` and the repository root was absent.  No JIT build, CUDA launch, numerical output or timing occurred, and M128 was not reached.
 - **Decision:** this provides no evidence for or against K64 grouping. Retry unchanged with the repository and pinned Humming checkout in `PYTHONPATH`.
 - **Evidence:** `bench/evidence/iter571_native_rs_k64_commit_local_launcher_failure.txt` and `bench/results/iter571_native_rs_k64_commit_local_m8_m128_20260905.log`.
+## Iteration 572 — native two-K64 RS groups pass local endpoint hashes
+
+- **Protocol:** physical H20 GPU1, deterministic selected-native local body with `V4_NATIVE_RS_K64_COMMIT_GROUPS=1`, M8 then M128, TP communication disabled, full synchronization and a 480-second timeout per process. The corrected repository plus pinned-Humming `PYTHONPATH` was used.
+- **Result:** **PASS bitwise and forward progress.** M8 is finite with maximum `55,040` and complete BF16 SHA256 `6860e09b...75f5d5`; M128 is finite with maximum `296,960` and SHA256 `2e225dc3...a5e5`. Both hashes exactly equal the selected K128-group control. M8 routed FP8 bytes/scales/weights are exact and weighted intermediate cosine/relative-L2 are `0.9996428552/0.0271052359`.
+- **Qualification:** M128 positional pool diagnostics are excluded because repeated-expert atomic slot assignment is nondeterministic; the immutable complete-output hash is the valid oracle.
+- **Decision:** numerical gate passes. Run a same-process TP4 M8/M128 cold-L2 screen before any long or five-M test.
+- **Evidence:** `bench/evidence/iter572_native_rs_k64_commit_local_gate.txt` and `bench/results/iter572_native_rs_k64_commit_local_m8_m128_20260905.log`.
