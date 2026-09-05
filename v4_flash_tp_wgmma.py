@@ -480,6 +480,13 @@ if SINGLE_LAUNCH_W2_UNROLL2_BOUND9 and (
 SINGLE_LAUNCH_PERSISTENT_GEMM_STATE = (
     os.environ.get("V4_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE", "0") == "1"
 )
+# Isolate the persistent route-GEMM state machine to W2.  The historical
+# switch above applies it to both W13 and W2, which also disables the selected
+# compact W13 outline and therefore cannot answer whether short-K W2 benefits
+# from retaining its LUT/mbarrier state across tasks in the current bundle.
+SINGLE_LAUNCH_W2_PERSISTENT_STATE = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_PERSISTENT_STATE", "0") == "1"
+)
 SINGLE_LAUNCH_COOPERATIVE_GRID = (
     os.environ.get("V4_SINGLE_LAUNCH_COOPERATIVE_GRID", "0") == "1"
 )
@@ -1491,6 +1498,53 @@ if SINGLE_LAUNCH_156CTA_4WG and (
         "V4_SINGLE_LAUNCH_156CTA_4WG requires the isolated inline WOUT128 "
         "two-stage schedule-0 path and selected 64-block P2P two-shot"
     )
+if SINGLE_LAUNCH_W2_PERSISTENT_STATE and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_78CTA_8WG
+    or SINGLE_LAUNCH_156CTA_4WG
+    or SINGLE_LAUNCH_78CTA_SMID_MAP
+    or SINGLE_LAUNCH_SM_STRIPED_TASKS
+    or SINGLE_LAUNCH_78CTA_WG_DAG
+    or SINGLE_LAUNCH_78CTA_LOCAL_W13
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_W2_N64_TAIL
+    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS
+    or SINGLE_LAUNCH_BALANCED_W2_WORKERS
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC
+    or SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or SINGLE_LAUNCH_W2_UNROLL2_BOUND9
+    or SINGLE_LAUNCH_W2_CHUNK_MAJOR
+    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+    or SINGLE_LAUNCH_W2_CHUNK_AR_POST
+    or SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+    or SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+    or W2_COALESCED_STORE
+    or WOUT != 128
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_PERSISTENT_STATE requires the isolated "
+        "inline WOUT128 two-stage schedule-0 W2 path"
+    )
 MC_PULL_BLOCKS = int(os.environ.get("V4_MC_PULL_BLOCKS", "0"))
 MC_PULL_UNROLL = int(os.environ.get("V4_MC_PULL_UNROLL", "0"))
 if MC_PULL_BLOCKS < 0:
@@ -1694,6 +1748,8 @@ static constexpr bool kSingleLaunchW2Unroll2Bound9 =
     K_SINGLE_LAUNCH_W2_UNROLL2_BOUND9;
 static constexpr bool kSingleLaunchPersistentGemmState =
     K_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE;
+static constexpr bool kSingleLaunchW2PersistentState =
+    K_SINGLE_LAUNCH_W2_PERSISTENT_STATE;
 static constexpr bool kSingleLaunchW13NextTaskPrefetch =
     K_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH;
 static constexpr bool kSingleLaunchW2NextTaskPrefetch =
@@ -8365,6 +8421,7 @@ void tp4_megamoe_single_launch_kernel(
             int w2_sequence = 0;
             constexpr bool kW2PersistentState =
                 kSingleLaunchPersistentGemmState
+                || kSingleLaunchW2PersistentState
                 || kSingleLaunchW2NextTaskPrefetch;
             const bool use_chunk_order =
                 kSingleLaunchW2ChunkMajor && Tokens >= 64
@@ -11545,6 +11602,7 @@ _EXTENSION_CONFIG = (
           f"slm128b9{int(SINGLE_LAUNCH_M128_BOUND9)}_"
           f"slw2u2b9{int(SINGLE_LAUNCH_W2_UNROLL2_BOUND9)}_"
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
+          f"slw2ps{int(SINGLE_LAUNCH_W2_PERSISTENT_STATE)}_"
           f"slw13np{int(SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH)}_"
           f"slw2np{int(SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH)}_"
           f"slavgt{int(SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS)}_"
@@ -11709,6 +11767,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE="
             f"{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_PERSISTENT_STATE="
+            f"{int(SINGLE_LAUNCH_W2_PERSISTENT_STATE)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH="

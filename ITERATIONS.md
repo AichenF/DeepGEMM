@@ -14463,3 +14463,36 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Latency:** selected 624×128 control `0.343296 / 0.347712 / 0.467712 ms` min/median/max; 156×512 candidate `0.382720 / 0.399008 / 0.411648 ms`. Candidate is **14.75% slower** by median (`control/candidate = 0.871441×`) and loses all three batch medians.
 - **Conclusion:** there is no large-M crossover. Reducing grid-barrier participants 4× does not recover the cost of 512-thread CTA coupling and of dropping the production compact-W13/dynamic-route/M128-bound9 bundle. Reject 156×4 for every production M; keep it default-off as diagnostic code.
 - **Evidence:** `evidence/iter633_156cta_4wg_tp4_m128_paired_cold.md`; raw log `bench/results/iter633_156cta_4wg_tp4_m128_paired_cold.log`.
+
+## Iteration 634 — isolate W2 persistent state and pass the cubin resource gate
+
+- **Hypothesis/change:** add default-off
+  `V4_SINGLE_LAUNCH_W2_PERSISTENT_STATE=1`.  Unlike the historical
+  all-GEMM switch, this preserves the selected compact W13 outline and makes
+  only the inline short-K W2 loop retain its LUT, mbarriers and alternating
+  metadata slots across consecutive tasks.  It does not enable cross-task
+  weight prefetch and does not alter route, activation, output or collective
+  arithmetic.
+- **Isolation:** the new mode composes with the selected compact-W13,
+  dynamic-route-smem, release-arrival, valid-task and M128-bound9 bundle, but
+  rejects alternate W2 granularity/schedulers, overlap/combine experiments,
+  no-entry grid barriers, packed multi-WG topologies and noninline W2.  The
+  paired graph comparator accepts the flag without changing control inputs or
+  weights.
+- **Configuration/test:** fresh SM90a JIT on physical H20 GPU1 with TP4 and
+  the production bundle enabled.  Extension
+  `v4tp_f72712dd95f6ccb3ff4e_v178mspec` was inspected with
+  `cuobjdump --dump-resource-usage`; no CUDA kernel was launched and no
+  latency was measured.
+- **Resource result:** **PASS.** M128 split-K2/4 remain
+  `REG56 STACK32 SHARED2048 LOCAL0`; M64 split-K2/4 remain
+  `REG64 STACK32 SHARED2048 LOCAL0`.  M8/M16/M32 entries use 61--62
+  registers, all with `STACK32 SHARED2048 LOCAL0`.  The candidate therefore
+  preserves the selected nine-CTA/SM M128 admission and introduces no fixed
+  local allocation.
+- **Decision:** retain default-off and advance to a cold-L2 M128 compute-only
+  state-machine launch with bitwise comparison against the independently
+  launched same-source route output.  Do not benchmark TP4 until that exact
+  correctness gate passes.
+- **Evidence:** `evidence/iter634_w2_persistent_resource_gate.md`; raw log
+  `bench/results/iter634_w2_persistent_resource.log`.
