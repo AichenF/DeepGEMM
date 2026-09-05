@@ -12430,3 +12430,32 @@ maximum rank latency of a full CUDA-Graph replay.
   `[2048, 2048, 0, 2048]`.
 - **Decision:** commit the binary report before importing any metrics or
   interpreting the bottleneck.
+
+## Iteration 503 — NCU confirms CTA-local fusion destroys cold-weight issue rate
+
+- **Source:** committed Iteration-502 report for the correct M128/split-K2
+  CTA-local candidate; no new kernel or benchmark run.
+- **Measured candidate:** duration `375.36 us`, compute throughput `59.34%`,
+  DRAM throughput `44.79%` / `2.16 TB/s`, L2 hit rate `3.45%`, no-eligible
+  scheduler cycles `40.43%`, `0.60` issued warp/scheduler/cycle, and `1.89`
+  eligible warps/scheduler.  It executes 123,995,026 instructions and records
+  62,688 local-memory spilling requests.  Achieved occupancy is `50.19%`
+  (32.12 warps/SM); launch geometry is exactly 78x1024 with one wave/SM,
+  64 registers, 147.46-KiB dynamic and 3.07-KiB static shared memory.
+- **Barrier evidence:** NCU attributes `4.4` of `13.43` cycles per issued
+  instruction (`32.49%`) to sibling-warp CTA-barrier stalls despite the two
+  split-K2 cohorts using separate named barriers.
+- **Matched prior mapped-phase comparison (Iteration 402):** duration worsens
+  `334.21 -> 375.36 us` (**+12.31%**), delivered memory bandwidth falls
+  `2.46 -> 2.16 TB/s` (**-12.20%**), DRAM peak fraction falls
+  `51.19 -> 44.79%`, no-eligible grows `35.74 -> 40.43%`, executed
+  instructions grow about `5.10%`, and spill requests grow
+  `33,600 -> 62,688` (**+86.57%**).
+- **Interpretation:** saved global partial bytes and the removed phase-2 grid
+  barrier are smaller than the loss from synchronizing gate/up producers with
+  a leader-only epilogue each group.  The regression is a lower cold-weight
+  issue rate plus barrier/load imbalance, not occupancy loss.
+- **Decision:** definitive rejection of CTA-local W13 fusion as a performance
+  mainline.  Leave it default-off for reproducibility; return to the mapped
+  independent phase kernel and avoid any next design that makes a complete
+  gate/up group a per-CTA rendezvous.
