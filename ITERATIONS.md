@@ -12789,3 +12789,23 @@ maximum rank latency of a full CUDA-Graph replay.
   `PYTHONPATH`.
 - **Evidence:**
   `bench/results/iter530_native_tp_local_barriers_default_m8_m128_20260905.log`.
+## Iteration 531 — TP-local barrier default passes both native endpoints
+
+- **Protocol:** unchanged Iteration-530 source, physical H20 GPU1, deterministic
+  local M8 and M128 with `V4_NATIVE_TP_LOCAL_BARRIER_FASTPATH` explicitly
+  absent and the complete TP/Humming Python path restored.
+- **Result:** **PASS authoritative full output.**  M8 and M128 are finite and
+  reproduce the selected native hashes exactly:
+  `6860e09b...75f5d5` and `2e225dc3...a5e5`, with maximum magnitudes
+  `55,040` and `296,960`.  M8 route-pool X/scales/weights are exact and its
+  weighted-FC1 cosine/relative-L2 remain
+  `0.9996428552/0.0271052359`.
+- **Caveat:** M128's post-kernel route-pool ordering diagnostic again reports
+  mismatches because concurrent same-expert slot assignment is nondeterministic;
+  prior iterations established that diagnostic as invalid.  The complete
+  output hash is unchanged and is the acceptance gate.
+- **Decision:** the no-override native entry now selects the measured TP-local
+  barrier win.  Continue from this default and target route-pool construction;
+  no final performance claim is made from this local correctness run.
+- **Evidence:**
+  `bench/results/iter531_native_tp_local_barriers_default_m8_m128_20260905.log`.
