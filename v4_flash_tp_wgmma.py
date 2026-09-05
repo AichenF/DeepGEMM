@@ -390,12 +390,23 @@ SINGLE_LAUNCH_NOINLINE_GEMM = (
 SINGLE_LAUNCH_W13_PHASE_NOINLINE = (
     os.environ.get("V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE", "0") == "1"
 )
+SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI = (
+    os.environ.get("V4_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI", "0") == "1"
+)
 SINGLE_LAUNCH_W2_PHASE_NOINLINE = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PHASE_NOINLINE", "0") == "1"
 )
 SINGLE_LAUNCH_GEMM_PHASES_NOINLINE = (
     SINGLE_LAUNCH_W13_PHASE_NOINLINE and SINGLE_LAUNCH_W2_PHASE_NOINLINE
 )
+if (
+    SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+    and not SINGLE_LAUNCH_W13_PHASE_NOINLINE
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI requires the W13 phase "
+        "outline"
+    )
 SINGLE_LAUNCH_MIN_BLOCKS = int(
     os.environ.get("V4_SINGLE_LAUNCH_MIN_BLOCKS", "8")
 )
@@ -783,7 +794,10 @@ if SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS and (
     or SINGLE_LAUNCH_COOPERATIVE_GRID
     or (
         SINGLE_LAUNCH_M128_BOUND9
-        and not SINGLE_LAUNCH_GEMM_PHASES_NOINLINE
+        and not (
+            SINGLE_LAUNCH_GEMM_PHASES_NOINLINE
+            or SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+        )
     )
 ):
     raise ValueError(
@@ -864,7 +878,10 @@ if SINGLE_LAUNCH_W13_PHASE_NOINLINE and (
     or SINGLE_LAUNCH_BALANCED_WORKERS
     or (
         SINGLE_LAUNCH_M128_BOUND9
-        and not SINGLE_LAUNCH_GEMM_PHASES_NOINLINE
+        and not (
+            SINGLE_LAUNCH_GEMM_PHASES_NOINLINE
+            or SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+        )
     )
     or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
     or SINGLE_LAUNCH_COOPERATIVE_GRID
@@ -875,7 +892,10 @@ if SINGLE_LAUNCH_W13_PHASE_NOINLINE and (
     or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
     or (
         SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM
-        and not SINGLE_LAUNCH_GEMM_PHASES_NOINLINE
+        and not (
+            SINGLE_LAUNCH_GEMM_PHASES_NOINLINE
+            or SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+        )
     )
     or SINGLE_LAUNCH_MIN_BLOCKS != 8
     or WOUT != 128
@@ -1454,6 +1474,8 @@ static constexpr bool kSingleLaunchNoInlineGemm =
     K_SINGLE_LAUNCH_NOINLINE_GEMM;
 static constexpr bool kSingleLaunchW13PhaseNoInline =
     K_SINGLE_LAUNCH_W13_PHASE_NOINLINE;
+static constexpr bool kSingleLaunchW13PhaseCompactAbi =
+    K_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI;
 static constexpr bool kSingleLaunchW2PhaseNoInline =
     K_SINGLE_LAUNCH_W2_PHASE_NOINLINE;
 static constexpr bool kSingleLaunchRouteDynamicSmem =
@@ -3364,6 +3386,51 @@ __device__ __noinline__ void single_launch_w13_gemm_phase(
             activation, activation_scale,
             sorted_ids, expert_ids, num_tokens_padded, topk_weights,
             output, global_lut, nullptr, max_routes, 0, task);
+        __syncthreads();
+    }
+}
+
+// Compact phase-call ABI experiment.  The legacy phase outline above moves
+// thirteen pointers plus four scalars through the device-call boundary.  The
+// monolithic caller already has a grid barrier between route construction and
+// W13, so publish those uniform values once into a CTA-shared record and pass
+// only the record address.  Tokens, task count and worker coordinates are
+// recovered in the shape-specialized callee.
+struct SingleLaunchW13PhaseArgs {
+    const CUtensorMap* tma_weight;
+    const CUtensorMap* tma_weight_scale;
+    const uint8_t* weight;
+    const uint8_t* weight_scale;
+    const float* weight_global_scale;
+    const uint8_t* activation;
+    const float* activation_scale;
+    const int32_t* sorted_ids;
+    const int32_t* expert_ids;
+    const int32_t* num_tokens_padded;
+    const float* topk_weights;
+    float* output;
+    const uint2* global_lut;
+};
+
+template <int SplitK, int Tokens, bool AssumeValidMblock>
+__device__ __noinline__ void single_launch_w13_gemm_phase_compact(
+        const SingleLaunchW13PhaseArgs* args) {
+    constexpr int kW13NTiles = 1024 / kWout;
+    constexpr int kMaxRoutes = Tokens * kTopK;
+    const int cta = static_cast<int>(blockIdx.x);
+    const int ctas = static_cast<int>(gridDim.x);
+    const int tasks =
+        (__ldg(args->num_tokens_padded) / kTok) * kW13NTiles * SplitK;
+    for (int task = cta; task < tasks; task += ctas) {
+        route_gemm_task<
+            4096, 1024, SplitK, true, 0, false, false, false, -1,
+            false, 0, AssumeValidMblock>(
+            args->tma_weight, args->tma_weight_scale,
+            args->weight, args->weight_scale, args->weight_global_scale,
+            args->activation, args->activation_scale,
+            args->sorted_ids, args->expert_ids, args->num_tokens_padded,
+            args->topk_weights, args->output, args->global_lut, nullptr,
+            kMaxRoutes, 0, task);
         __syncthreads();
     }
 }
@@ -6173,6 +6240,9 @@ void tp4_megamoe_single_launch_kernel(
     const int cta = static_cast<int>(blockIdx.x);
     const int ctas = static_cast<int>(gridDim.x);
     const int routes = tokens * kTopK;
+#if K_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+    __shared__ SingleLaunchW13PhaseArgs w13_phase_args;
+#endif
 #if K_SINGLE_LAUNCH_SM_STRIPED_TASKS
     __shared__ int sm_striped_worker;
 #endif
@@ -6483,6 +6553,23 @@ void tp4_megamoe_single_launch_kernel(
             topk_ids, sorted_ids, expert_ids, num_tokens_padded,
             route_to_sorted, tokens, cta);
     }
+#if K_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+    if (threadIdx.x == 0) {
+        w13_phase_args.tma_weight = &w13_tma_weight;
+        w13_phase_args.tma_weight_scale = &w13_tma_weight_scale;
+        w13_phase_args.weight = w13;
+        w13_phase_args.weight_scale = s13;
+        w13_phase_args.weight_global_scale = g13;
+        w13_phase_args.activation = qx;
+        w13_phase_args.activation_scale = x_scale;
+        w13_phase_args.sorted_ids = sorted_ids;
+        w13_phase_args.expert_ids = expert_ids;
+        w13_phase_args.num_tokens_padded = num_tokens_padded;
+        w13_phase_args.topk_weights = topk_weights;
+        w13_phase_args.output = partials;
+        w13_phase_args.global_lut = lut;
+    }
+#endif
 #if K_SINGLE_LAUNCH_SM_STRIPED_TASKS
     if (threadIdx.x == 0)
         sm_striped_worker = h20_sm_striped_logical_worker(scheduler);
@@ -7811,6 +7898,12 @@ void tp4_megamoe_single_launch_kernel(
                         __syncthreads();
                     }
                 } else if constexpr (kSingleLaunchW13PhaseNoInline) {
+#if K_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+                    single_launch_w13_gemm_phase_compact<
+                        SplitK, Tokens,
+                        kSingleLaunchAssumeValidGemmTasks>(
+                        &w13_phase_args);
+#else
                     single_launch_w13_gemm_phase<
                         SplitK, kSingleLaunchAssumeValidGemmTasks>(
                         &w13_tma_weight, &w13_tma_weight_scale,
@@ -7818,6 +7911,7 @@ void tp4_megamoe_single_launch_kernel(
                         sorted_ids, expert_ids, num_tokens_padded,
                         topk_weights, partials, lut,
                         routes, cta, ctas, w13_tasks);
+#endif
                 } else {
                     const int w13_rounds =
                         (w13_tasks + ctas - 1) / ctas;
@@ -11144,6 +11238,7 @@ _EXTENSION_CONFIG = (
           f"slsch{SINGLE_LAUNCH_SCHEDULE}_"
           f"slnig{int(SINGLE_LAUNCH_NOINLINE_GEMM)}_"
           f"slw13pn{int(SINGLE_LAUNCH_W13_PHASE_NOINLINE)}_"
+          f"slw13pca{int(SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI)}_"
           f"slw2pn{int(SINGLE_LAUNCH_W2_PHASE_NOINLINE)}_"
           f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
           f"sldr{int(SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM)}_"
@@ -11285,6 +11380,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W13_PHASE_NOINLINE="
             f"{int(SINGLE_LAUNCH_W13_PHASE_NOINLINE)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI="
+            f"{int(SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W2_PHASE_NOINLINE="

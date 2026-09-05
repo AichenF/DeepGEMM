@@ -1,0 +1,24 @@
+Iteration 592: shape-specialized compact-ABI W13 phase outline
+Date: 2026-09-05
+
+Candidate:
+  V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE=1
+  V4_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI=1
+
+Design:
+- Publish thirteen uniform W13 pointers into one 104-byte CTA-shared record.
+- Reuse the existing route-to-W13 whole-grid barrier as the publication edge.
+- Pass only the shared-record pointer through the device-call ABI.
+- Derive Tokens, routes, block/grid indices and task count in the templated
+  callee.
+- Permit composition with the existing M128 dynamic-route/bound-9 mode while
+  keeping W2 inline.
+
+Static command:
+  python3 -m py_compile v4_flash_tp_wgmma.py \
+    bench/v4_flash_tp_single_vs_multi_graph.py
+
+Exit code: 0
+Diagnostics: none
+
+No CUDA compilation, correctness, or performance conclusion is claimed.
