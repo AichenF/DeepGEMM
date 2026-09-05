@@ -1,0 +1,38 @@
+Iteration 444: warp-leader epoch mailbox all-route correctness
+Date: 2026-09-05
+Committed candidate: 335a49f (Iteration 443)
+
+Environment
+-----------
+CUDA_VISIBLE_DEVICES=1
+TORCH_CUDA_ARCH_LIST=9.0a
+V4_SINGLE_LAUNCH_78CTA_8WG=1
+V4_SINGLE_LAUNCH_78CTA_SMID_MAP=1
+V4_SINGLE_LAUNCH_78CTA_WG_DAG=1
+route-pattern=random, seed=20260904
+
+Results
+-------
+M8, SplitK=4:
+- accepted: true
+- cosine: 0.9999999999999999
+- relative L2: 0.0
+- finite: true
+- padded rows: 360
+- packed replay generation wrap: true
+
+M128, SplitK=2:
+- accepted: true
+- cosine: 1.0
+- relative L2: 0.0
+- finite: true
+- padded rows: 1944
+- packed replay generation wrap: true
+
+Assessment
+----------
+PASS.  The lane-0 release publication, four warp-leader acquire loads, and
+warp-shuffle payload broadcast preserve bitwise output at both endpoint
+shapes.  Unlike the rejected bulk-phase outline, both commands complete
+normally.  This single-GPU test excludes the TP collective by design; TP4
+cold-L2 end-to-end screening is the next gate.

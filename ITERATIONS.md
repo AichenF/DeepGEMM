@@ -10914,3 +10914,21 @@ maximum rank latency of a full CUDA-Graph replay.
   correct binary and can proceed to the all-route correctness gate.  There is
   no latency claim yet.
 - **Evidence:** `bench/evidence/iter443_warp_leader_epoch_mailbox_resource.txt`.
+
+## Iteration 444 — epoch mailbox is bitwise-correct at both endpoints
+
+- **Hypothesis:** release-published per-WG epochs and warp-leader acquire
+  consumption preserve one identical task payload across all four math warps,
+  including replay cleanup/wrap behavior.
+- **Change:** no source change from Iteration 443; this is its all-route runtime
+  correctness gate.
+- **Test:** physical GPU 1 random all-route reference at M8/SplitK=4 and
+  M128/SplitK=2 under the selected 78-CTA/8-WG WG-DAG flags.
+- **Result:** **PASS**.  M8 gives cosine `0.9999999999999999`, relative L2
+  `0.0`, finite, 360 padded rows.  M128 gives cosine `1.0`, relative L2 `0.0`,
+  finite, 1944 padded rows.  Packed replay-generation wrap checks pass.
+- **Analysis:** all warps consume a coherent mailbox payload and the candidate
+  avoids the static-phase progress deadlock.  It is eligible for TP4
+  same-process independently cold-L2 endpoint screening; no speed claim is
+  made by this correctness-only run.
+- **Evidence:** `bench/evidence/iter444_warp_leader_epoch_mailbox_correctness.txt`.
