@@ -13168,3 +13168,42 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Static result:** harness AST parsing and unique metadata-key audit
   **PASS**.  No GPU benchmark was launched.
 - **Evidence:** `bench/evidence/iter549_native_formal_metadata_static.txt`.
+
+## Iteration 550 — selected native all-M result remains behind multi-kernel
+
+- **Protocol:** authoritative same-process TP4 native-versus-multi harness on
+  physical GPUs 0/5/6/7 with all selected TP-local flags absent from the
+  environment and resolved on by default.  Random routes; M8/16/32/64/128;
+  four balanced whole-batch AB/BA rounds x fifty rank-max samples, five
+  alternating warmups, CUDA Graph, and a separate excluded 256 MiB L2 clear
+  immediately before every replay.  Both paths receive the same caller-
+  provided FP8-E4M3 X and FP32 group-128 scales.
+- **Correctness:** every control passes its reference/all-reduce gate.  Every
+  native candidate passes the configured numerical acceptance gate: finite,
+  final cosine at least `0.9993588`, relative L2 at most `0.03584`, and its
+  embedded TP result matches an NCCL reduction of its own local output with
+  cosine at least `0.9999915` and relative L2 at most `0.004111`.
+- **Cold-L2 medians (multi-kernel control / selected native):** M8
+  `0.071520 / 0.091712 ms` (**native 28.23% slower**); M16
+  `0.114240 / 0.137408` (**20.28% slower**); M32
+  `0.206080 / 0.227296` (**10.30% slower**); M64
+  `0.295104 / 0.304768` (**3.27% slower**); M128
+  `0.362768 / 0.388736` (**7.16% slower**).  Five-M geometric mean is
+  `0.178311 / 0.202363 ms`, so native remains **13.49% slower**
+  (`0.8811x` control-over-candidate).
+- **Communication policy:** both use multicast push through M32; at M64/M128
+  the baseline reports stock CARv2 while native uses multicast push at M64
+  and NVLS pull at M128.  The measurement includes each path's complete TP
+  communication tail.
+- **Caveats:** M32/M64/M128 show substantial shared-system drift across
+  batches, but none of their pooled medians reverses the conclusion.  The
+  printed native `candidate_padded_rows` is garbage because that metadata
+  tensor belongs to the flat path and is not initialized by native; it is not
+  used by execution, timing or acceptance and must be reported as N/A in a
+  follow-up harness fix.
+- **Decision:** the new tail work improves native materially versus its former
+  self, but it does not close the FC pipeline gap.  Do not claim a win.  Fix
+  the misleading metadata, then compare stage/resource profiles against the
+  much faster multi-kernel path before choosing the next kernel change.
+- **Evidence:**
+  `bench/results/iter550_native_selected_vs_multi_tp4_all_m_cold_20260905.log`.
