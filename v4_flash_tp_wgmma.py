@@ -449,6 +449,16 @@ if (
 SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC = (
     os.environ.get("V4_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC", "0") == "1"
 )
+# Every selected schedule-0 producer task already finishes with a CTA-wide
+# barrier before entering the whole-grid barrier.  Keep that producer-local
+# publication, but optionally omit the immediately repeated entry barrier.
+# The whole-grid barrier's exit CTA barrier remains mandatory.
+SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC = (
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC", "0"
+    )
+    == "1"
+)
 SINGLE_LAUNCH_HIERARCHICAL_GRID = (
     os.environ.get("V4_SINGLE_LAUNCH_HIERARCHICAL_GRID", "0") == "1"
 )
@@ -579,6 +589,17 @@ if SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC and (
 ):
     raise ValueError(
         "V4_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC requires isolated schedule 0"
+    )
+if SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or not SINGLE_LAUNCH_PACKED_GRID_BARRIER
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC requires the ordinary "
+        "packed schedule-0 barrier with producer-final CTA syncs"
     )
 if SINGLE_LAUNCH_BALANCED_WORKERS and (
     SINGLE_LAUNCH_SCHEDULE != 0
@@ -1273,6 +1294,8 @@ static constexpr int kSingleLaunchGridPollSleepNs =
     K_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS;
 static constexpr bool kSingleLaunchSkipFinalCtaSync =
     K_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC;
+static constexpr bool kSingleLaunchGridBarrierNoEntrySync =
+    K_SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC;
 static constexpr bool kSingleLaunchHierarchicalGrid =
     K_SINGLE_LAUNCH_HIERARCHICAL_GRID;
 static constexpr bool kSingleLaunchTailOverlap =
@@ -4819,7 +4842,8 @@ __device__ __forceinline__ void single_launch_grid_barrier(
         return;
     }
     __shared__ int observed_epoch;
-    __syncthreads();
+    if constexpr (!kSingleLaunchGridBarrierNoEntrySync)
+        __syncthreads();
     if (threadIdx.x == 0) {
         int32_t* count = state + phase * 2;
         if constexpr (kSingleLaunchPackedGridBarrier) {
@@ -9054,6 +9078,7 @@ _EXTENSION_CONFIG = (
           f"slbw{int(SINGLE_LAUNCH_BALANCED_WORKERS)}_"
           f"slpsn{SINGLE_LAUNCH_GRID_POLL_SLEEP_NS}_"
           f"slfs{int(SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC)}_"
+          f"slgbne{int(SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC)}_"
           f"slhg{int(SINGLE_LAUNCH_HIERARCHICAL_GRID)}_"
           f"slto{int(SINGLE_LAUNCH_TAIL_OVERLAP)}_"
           f"slta{int(SINGLE_LAUNCH_TAIL_ACT_ONLY)}_"
@@ -9274,6 +9299,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC="
             f"{int(SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC="
+            f"{int(SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_HIERARCHICAL_GRID="

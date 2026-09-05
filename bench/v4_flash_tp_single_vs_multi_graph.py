@@ -296,6 +296,9 @@ def main() -> None:
                     "single_launch_skip_final_cta_sync": (
                         kernel.SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
                     ),
+                    "single_launch_grid_barrier_no_entry_sync": (
+                        kernel.SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC
+                    ),
                     "single_launch_tail_overlap": (
                         kernel.SINGLE_LAUNCH_TAIL_OVERLAP
                     ),

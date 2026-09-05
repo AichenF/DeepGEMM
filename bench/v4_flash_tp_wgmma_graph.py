@@ -1373,6 +1373,9 @@ def main() -> None:
                     "single_launch_skip_final_cta_sync": (
                         kernel.SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
                     ),
+                    "single_launch_grid_barrier_no_entry_sync": (
+                        kernel.SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC
+                    ),
                     "k6_nvls_pull_blocks": kernel.K6_NVLS_PULL_BLOCKS,
                     "mc_pull_blocks": kernel.MC_PULL_BLOCKS or "default",
                     "mc_pull_unroll": kernel.MC_PULL_UNROLL or "default",

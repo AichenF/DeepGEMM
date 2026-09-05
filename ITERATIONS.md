@@ -9323,3 +9323,41 @@ maximum rank latency of a full CUDA-Graph replay.
   gives no material speedup and is not replay-stable at M128. The earlier
   two-launch bitwise smoke was insufficient to expose this failure.
 - **Artifact:** `bench/results/iter378_w2_phase_noinline_bound9_bracket_m8_m128_cold_20260905.log`.
+## Iteration 379 — omit redundant ordinary grid-barrier entry CTA sync
+
+- Date: 2026-09-05
+- Contract: the MegaMoE ABI remains caller-provided FP8-E4M3 `qx` plus
+  FP32 group-128 `x_scale`, with MXFP4 weights/scales.  External BF16-to-FP8
+  input quantization is upstream and absent from this kernel and measurement;
+  only the FC1/SwiGLU-to-FC2 internal requantization remains fused.
+- Hypothesis/change: add default-off
+  `V4_SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC=1`.  In the ordinary packed
+  schedule-0 barrier only, omit its entry `__syncthreads()` because route,
+  W13, activation-requant, and W2 producers already execute a CTA-wide final
+  sync.  Preserve those producer syncs and the grid barrier's exit sync.
+  Reject incompatible cooperative, hierarchical, unpacked, non-schedule-0,
+  and producer-final-sync-skipping configurations.
+- Method: one independently cold-L2 compute-only replay for OFF and ON at
+  M={8,128} on GPU 0, random routing, seed 20260904, 256 MiB excluded cache
+  clear, phase stamps enabled, selected release-arrival and assume-valid-task
+  opt-ins enabled.  This is a correctness/phase screen, not a formal latency
+  claim.
+- Correctness: PASS and bitwise identical to the control at both shapes.
+  M8 cosine 1.0 (printed 0.9999999999999999), rel-L2 0; M128 cosine 1.0,
+  rel-L2 0.  H20 reports 78 SMs.
+- M8 phase times OFF versus ON (route/W13/requant/W2, us):
+  `2.208/41.056/3.232/22.464` versus
+  `2.208/41.312/3.296/21.440`; summed phases 68.960 versus 68.256 us
+  (ON 1.02% lower in this single sample).
+- M128 phase times OFF versus ON (route/W13/requant/W2, us):
+  `3.968/203.392/6.432/101.760` versus
+  `4.384/204.384/6.400/102.720`; summed phases 315.552 versus 317.888 us
+  (ON 0.74% higher).
+- Analysis/decision: the effect changes sign across shapes and is below the
+  noise threshold established by paired cold-L2 brackets.  Reject it as a
+  selected optimization and keep the flag default-off; do not spend a TP4
+  formal bracket on this path.  The experiment nevertheless confirms that
+  preserving the producer-final sync is sufficient for bitwise correctness,
+  unlike Iteration 249's unsafe removal of that producer sync.
+- Evidence:
+  `results/iter379_grid_barrier_no_entry_sync_compute_m8_m128_20260905.log`.
