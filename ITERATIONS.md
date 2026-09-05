@@ -12191,3 +12191,33 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/evidence/iter491_native_single_l1_warmup_tp4_graph_smoke.txt` and raw
   log `bench/results/iter491_native_single_l1_warmup_tp4_graph_smoke_20260905.log`.
+
+## Iteration 492 — long A/B rejects earlier W13/W2 interleave
+
+- **Candidate/protocol:** unchanged committed Iteration-491 selected-native
+  versus one-L1-warmup-wave modules in one TP4 process on physical H20 GPUs
+  0–3.  Random M8/M128, four balanced whole-batch AB/BA rounds x fifty
+  rank-max samples per variant and M, five alternating warmups, CUDA Graph,
+  and a separate excluded 256 MiB L2 clear immediately before every replay.
+  Both variants use identical weights, FP8 inputs, routes and CARv2 state.
+- **Correctness:** **PASS and bitwise identical** at both endpoints across all
+  ranks: minimum cosine `1.0`, maximum relative L2 `0.0`, zero BF16
+  mismatches and all outputs finite.
+- **Cold-L2 result (two-wave control / one-wave candidate median):** M8
+  `0.103744/0.109504 ms`, candidate `5.55%` slower; M128
+  `0.404656/0.410656 ms`, candidate `1.48%` slower.  Endpoint geometric means
+  are `0.204892/0.212058 ms`, so the candidate is `3.50%` slower.
+- **Batch stability:** every M8 candidate batch median
+  (`0.109360–0.109584 ms`) exceeds every control batch median
+  (`0.103648–0.103840 ms`).  At M128 both variants drift upward together, but
+  the pooled rank-max median remains adverse and the candidate provides no
+  compensating endpoint win.
+- **Interpretation/decision:** **reject** the earlier interleave and leave
+  `V4_NATIVE_SINGLE_L1_WARMUP_WAVE=0`.  The generic two-wave warmup preserves
+  more valuable cold expert-weight locality/producer cadence than the extra
+  W13/W2 concurrency.  Do not run a five-M verdict for this candidate.  The
+  next structural direction must raise resident math issue capacity or reuse
+  data within a task rather than merely mixing L1/L2 task types sooner.
+- **Evidence:**
+  `bench/evidence/iter492_native_single_l1_warmup_tp4_long.txt` and raw log
+  `bench/results/iter492_native_single_l1_warmup_tp4_long_20260905.log`.

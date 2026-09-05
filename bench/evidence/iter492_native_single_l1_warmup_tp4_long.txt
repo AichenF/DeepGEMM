@@ -1,0 +1,39 @@
+ITERATION 492 — one-wave versus two-wave native scheduler long A/B
+
+Protocol:
+  Physical H20 GPUs 0,1,2,3; TP4; random M=8,128
+  four balanced whole-batch AB/BA rounds x 50 samples
+  200 rank-max samples/variant/M; five alternating warmups
+  same process, identical weights/input/routes/CARv2 communicator
+  CUDA Graph; separate excluded 256 MiB cold-L2 clear before every replay
+
+Correctness at M8 and M128:
+  cosine_min_rank=1.0
+  rel_l2_max_rank=0.0
+  bf16_mismatches_max_rank=0
+  finite_all_ranks=true
+
+Cold-L2 timing:
+  M8:
+    two-wave min/median/max = 0.102080 / 0.103744 / 0.398496 ms
+    one-wave min/median/max = 0.106432 / 0.109504 / 0.137056 ms
+    one-wave/two-wave       = 1.055521x (5.55% slower)
+    two-wave batch medians  = 0.103648, 0.103744, 0.103776, 0.103840 ms
+    one-wave batch medians  = 0.109360, 0.109424, 0.109584, 0.109536 ms
+
+  M128:
+    two-wave min/median/max = 0.378784 / 0.404656 / 0.434240 ms
+    one-wave min/median/max = 0.382304 / 0.410656 / 0.419200 ms
+    one-wave/two-wave       = 1.014827x (1.48% slower)
+    two-wave batch medians  = 0.380688, 0.404016, 0.405744, 0.411472 ms
+    one-wave batch medians  = 0.398160, 0.405296, 0.414768, 0.412272 ms
+
+Endpoint geometric mean:
+  two-wave=0.204892 ms
+  one-wave=0.212058 ms
+  one-wave/two-wave=1.034974x (3.50% slower)
+
+Verdict:
+  REJECT and keep V4_NATIVE_SINGLE_L1_WARMUP_WAVE=0.  Earlier W2 issue is
+  mathematically safe and bitwise correct, but reliably harms cold-L2
+  performance, especially at M8.
