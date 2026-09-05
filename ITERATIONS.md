@@ -14880,3 +14880,17 @@ maximum rank latency of a full CUDA-Graph replay.
   unmeasured direct adaptation, with an expected sub-2% ceiling; any larger
   pursuit needs an approved overlapping execution design.
 - **Evidence:** `evidence/iter649_multikernel_transfer_recheck.md`.
+
+## Iteration 650a — NCU target-script launcher failure
+
+- **Intent:** collect Launch/Occupancy/Scheduler/WarpState/SourceCounters for
+  the selected TP4 M128 one-kernel compute body on physical GPU 1, with the
+  existing application-managed excluded 256 MiB cold-L2 clear.
+- **Result:** NCU rejected the target before starting Python because the
+  command passed the script path without an interpreter: `The target
+  application is not an executable binary`.  No import, CUDA launch, L2
+  clear, correctness check, profile pass, or timing occurred.
+- **Decision:** launcher-only failure and non-evidence.  Retry unchanged with
+  `/usr/bin/python3` prepended to the target command.
+- **Evidence:** `evidence/iter650a_ncu_launcher_failure.md`; raw stderr is in
+  `bench/results/iter650_production_m128_cold_sourcecounters.log`.
