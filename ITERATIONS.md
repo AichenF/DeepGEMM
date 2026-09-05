@@ -14520,3 +14520,31 @@ maximum rank latency of a full CUDA-Graph replay.
   excluded cold-L2 clear before every replay.  Keep the option default-off.
 - **Evidence:** `evidence/iter635_w2_persistent_m128_compute.md`; raw log
   `bench/results/iter635_w2_persistent_m128_compute.log`.
+
+## Iteration 636 — paired TP4 M128 rejects W2-only persistent state
+
+- **Protocol:** selected production one-launch kernel versus the otherwise
+  identical W2-persistent candidate in one TP4 process on physical GPUs
+  0/5/6/7.  Random M128 routes, three batches x fifty samples per arm after
+  six alternating warmups, CUDA Graph, per-sample A/B then B/A order, and a
+  separate excluded 256 MiB L2 clear immediately before every graph replay.
+  Timed graphs include route preparation, W13, SwiGLU/requantization, W2,
+  ordered local k6 combine and embedded P2P two-shot TP all-reduce.
+- **Correctness:** **PASS bitwise on all four ranks**: relative L2 `0.0`,
+  maximum absolute difference `0.0`, all finite.
+- **Cold-L2 latency (control / candidate):** control
+  `0.344320 / 0.350032 / 0.504480 ms`; candidate
+  `0.346400 / 0.351568 / 0.374336 ms` min/median/max.  Persistent W2 is
+  **0.44% slower** by pooled median (`control/candidate = 0.995631x`).
+- **Stability:** every candidate batch median loses its paired control:
+  `0.349072 > 0.346288`, `0.351184 > 0.349968`, and
+  `0.369680 > 0.366320 ms`.  The control maximum contains one outlier but
+  does not affect the median or the direction of any batch.
+- **Interpretation/decision:** retaining mbarrier/LUT state removes repeated
+  initialization but adds alternating metadata state and the persistent
+  generation bookkeeping to every short-K W2 task.  At the endpoint with
+  eleven to twelve W2 tasks per active CTA, the net effect is already
+  consistently adverse.  **Reject and keep default-off; do not spend an M8
+  screen**, where fewer consecutive tasks offer still less amortization.
+- **Evidence:** `evidence/iter636_w2_persistent_tp4_m128_paired_cold.md`; raw
+  log `bench/results/iter636_w2_persistent_tp4_m128_paired_cold.log`.
