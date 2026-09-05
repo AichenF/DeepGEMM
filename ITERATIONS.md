@@ -11510,3 +11510,21 @@ maximum rank latency of a full CUDA-Graph replay.
   already rejected half prefetch or extend it to packed-word lookahead.
 - **Evidence:**
   `bench/evidence/iter464_native_rs_scale_word_cache_tp4_cold_screen.txt`.
+
+## Iteration 465 — capture retained normalized-native M8 profile
+
+- **Purpose/source:** no selected-kernel change after Iteration 460; the
+  rejected scale-word cache is disabled.  Capture local M8 to attribute the
+  still-largest `45.25%` graph-level gap without extrapolating from M128.
+- **Protocol:** physical H20 GPU1, caller-provided FP8-E4M3 X and FP32
+  group-128 scales, normalized MXFP4 weights, arithmetic LUT, register dequant,
+  K128 batching and 156x384 cooperative two-CTA launch.  Nsight Compute uses
+  cache control `all`, targets only the native business kernel, and collects
+  the same eight section groups as Iteration 461 over 21 passes.
+- **Result:** **PASS capture**.  All passes completed, the synchronized
+  profile-only marker printed, and NCU wrote the report normally.  No metric
+  claim is accepted in this capture iteration; import and analyze the report
+  separately before changing source.
+- **Evidence:**
+  `bench/evidence/iter465_native_normalized_two_cta_m8_ncu_capture.txt` and
+  `results/iter465_native_normalized_two_cta_m8_profile.ncu-rep`.

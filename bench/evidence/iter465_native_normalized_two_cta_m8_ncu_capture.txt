@@ -1,0 +1,16 @@
+==PROF== Connected to process 575851 (/usr/bin/python3.12)
+==PROF== Profiling "void deep_gemm::v4_flash_tp4_native_megamoe_impl<(int)512>(void *, int *, unsigned int, deep_gemm::layout::SymBuffer<(unsigned int)1>, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, const float *, const float *, __nv_bfloat16 *, unsigned int *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, __nv_bfloat16 *, const unsigned char *, unsigned char *, unsigned char *, int, long, bool)": 0%....50%....100% - 21 passes
+NATIVE_LOCAL_PROFILE_ONLY {"m": 8, "synchronized": true}
+==PROF== Connected to process 575955 (/usr/bin/python3.12)
+==PROF== Connected to process 575957 (/usr/bin/python3.12)
+==PROF== Disconnected from process 575851
+==PROF== Disconnected from process 575955
+==PROF== Disconnected from process 575957
+==PROF== Report: /lustre/raplab/client/xutingz/fac/DeepGEMM_tp/results/iter465_native_normalized_two_cta_m8_profile.ncu-rep
+
+ITER465_CAPTURE_SUMMARY
+- Target: retained Iteration-460 normalized-scale Hopper-native kernel, local
+  M8 on physical H20 GPU1; rejected scale-word cache disabled.
+- NCU cache control: all; 21 metric replay passes completed.
+- Result: synchronized capture succeeded.  Defer metric interpretation until
+  a read-only report import.
