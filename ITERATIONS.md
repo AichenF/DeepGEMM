@@ -11335,3 +11335,35 @@ maximum rank latency of a full CUDA-Graph replay.
   next source test.
 - **Evidence:**
   `bench/evidence/iter458_native_normalized_weight_scale_local_gate.txt`.
+
+## Iteration 459 — restore global scale at the actual RS promotion point
+
+- **Root cause/fix:** the register-dequant swap-AB specialization does not use
+  the outer `scale_a_*` values.  After each K128 RS-WGMMA group it reloads the
+  per-token activation scale directly from shared memory while promoting the
+  four-register fragment.  Iteration 458 therefore normalized both W13 and W2
+  dequant values but restored neither expert scale: for the test distribution
+  this loses approximately `8^2` through SwiGLU and another `8` through W2,
+  matching the observed roughly `512x` final magnitude loss.  Multiply the
+  warp-broadcast expert scale at these two actual RS promotion loads.
+- **Protocol:** same physical H20 GPU1 deterministic local M={8,128} gate as
+  Iteration 458, using the 156x384 cooperative Hopper-native kernel, register
+  dequant, K128 batching, two CTA/SM, normalized offsets and arithmetic LUT.
+- **Result:** **PASS and bitwise equivalent to the accepted pre-normalization
+  control**.  M8 is finite, has maximum magnitude `55,040`, and full BF16
+  output SHA-256
+  `6860e09b38dcaf073fcc1a2f0814b915b8d875ec6977f44ca33f95dbcc75f5d5`,
+  exactly matching Iteration 451.  M128 is finite, has maximum magnitude
+  `296,960`, and SHA-256
+  `2e225dc3125f734ab87be74e1dd81443da2432fc58d985d3cf6fb822844ea5e5`,
+  exactly matching both accepted controls in Iteration 452.  M8 route-0 FC1
+  weighted-boundary cosine/relative-L2 also return exactly to
+  `0.9996428552/0.0271052359`.
+- **Caveat:** M128's pool-row order diagnostic remains invalid because
+  concurrent CTAs assign same-expert slots nondeterministically.  Full-output
+  bitwise identity, not that diagnostic, is the acceptance criterion.
+- **Decision:** numerical gate passes.  The normalized/arithmetic-LUT candidate
+  is now eligible for the same-process TP4 M8/M128 independently cold-L2
+  performance screen; defer all-five-M and TP8 until it materially improves.
+- **Evidence:**
+  `bench/evidence/iter459_native_normalized_weight_scale_rs_fix_local_gate.txt`.

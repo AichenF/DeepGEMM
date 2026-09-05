@@ -1157,7 +1157,8 @@
                         const uint32_t token_1 = token_0 + 1;
                         if (token_0 < valid_m) {
                             const float scale_0 = ptx::ld_shared(
-                                smem_sfa[stage_idx] + token_0);
+                                smem_sfa[stage_idx] + token_0)
+                                * task_weight_global_scale;
                             final_accum[accum_offset + 0] +=
                                 scale_0 * swap_accum[half][0];
                             final_accum[accum_offset + 2] +=
@@ -1165,7 +1166,8 @@
                         }
                         if (token_1 < valid_m) {
                             const float scale_1 = ptx::ld_shared(
-                                smem_sfa[stage_idx] + token_1);
+                                smem_sfa[stage_idx] + token_1)
+                                * task_weight_global_scale;
                             final_accum[accum_offset + 1] +=
                                 scale_1 * swap_accum[half][1];
                             final_accum[accum_offset + 3] +=
