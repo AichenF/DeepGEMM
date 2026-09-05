@@ -14948,3 +14948,38 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `evidence/iter651b_standalone_w13_ncu_collection.md`, raw log
   `bench/results/iter651b_standalone_w13_m128_cold_sourcecounters.log`, binary
   report `results/iter651b_standalone_w13_m128_cold_sourcecounters.ncu-rep`.
+
+## Iteration 652 — NCU closes direct multi-kernel cherry-picks
+
+- **Scope:** read-only Git/source/history and saved-report analysis.  No CUDA
+  kernel was launched and no new latency claim is made.
+- **Git/body result:** at one-kernel head `83eb9b6`, the multi baseline
+  `071abc2` is still the exact ancestor; left/right commit count is `0/510`.
+  There is no multi-only commit.  Standalone and one-kernel GEMMs already use
+  the same `route_gemm_task`, including selected MXFP4/TMA/WGMMA machinery,
+  epilogues and CARv2-derived communication policy.
+- **NCU resource/issue result:** saved cold-L2 reports show the complete
+  one-kernel entry at 56 registers, 56.23% achieved occupancy, 36.64%
+  no-eligible cycles and 0.63 issued warps/scheduler/cycle; standalone W13 is
+  47 registers, 58.22%, 25.75% and 0.74 respectively.  These phase-specific
+  launch contracts cannot be copied into one fixed global entry.
+- **Hotspot result:** the branch after the W13 software grid barrier owns
+  3,422 all / 2,324 not-issued samples, all barrier-classified.  The terminal
+  W2 convergence owns 1,943/943.  By contrast, all five compact-W13 argument
+  LDS sites total only 19/2 samples and the post-task `BAR.SYNC` has zero.
+  Reject selective argument-record caching and simple task-tail sync edits.
+- **History result:** broad fresh-CTA turnover, sharded turnover, static SM
+  remapping, fine/coarse DAGs, activation handoff, worker balancing, residual
+  N64 tasks, outlining and persistent state already failed.  They are not
+  missing cherry-picks.
+- **Only untested transfer:** retain every full static W13 wave and use one
+  relaxed ticket per resident CTA only for the residual final wave.  At M128
+  this preserves five complete waves and dynamically assigns only 474 final
+  tasks across 702 CTAs.  This differs from all-task turnover and all-wave
+  SM remapping, but can recover only tail imbalance, not the monolithic
+  resource penalty.
+- **Decision:** production remains unchanged.  The residual-wave ticket path
+  requires explicit design approval; if approved, implement M128/W13 only,
+  default-off, then require cubin/resource, bitwise, and paired TP4 cold-L2
+  gates before considering M64 or W2.
+- **Evidence:** `evidence/iter652_multikernel_ncu_transfer_verdict.md`.
