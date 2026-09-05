@@ -13360,3 +13360,23 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter557_native_phase_stamps_m128_cold_20260905.log` and
   `bench/evidence/iter557_native_phase_stamps_m128_cold.txt`.
+
+## Iteration 558 — wire deeper W13-warmup scheduling A/B
+
+- **Hypothesis/change:** the selected interleaved scheduler gives every CTA
+  two W13-only claims before alternating short W2 and long W13 tasks.  M128
+  phase stamps show W2 remains on the critical path for `86.34 us` after
+  W13-last.  Add default-off integer `V4_NATIVE_L1_WARMUP_WAVES` so 3, 4, or
+  all 7 M128 W13 waves can be tested without changing task bodies, tile
+  shapes, numerical order inside a task, route/combine, or TP communication.
+  The requested count is capped by the actual number of W13 waves, so M8's
+  two-wave schedule is unchanged for candidates above two.
+- **Isolation:** add `--experiment l1_warmup` to the same-process native A/B
+  harness.  Both arms use the currently selected TP-local barrier, route-build
+  and parallel-combine defaults; the sole candidate difference is the
+  explicit warmup-wave count.  Metadata prints both resolved values.
+- **Static result:** **PASS.**  Python bytecode/AST parsing succeeds, the new
+  value participates in the JIT hash/name/compile definition, and exact body
+  and harness wiring sites are present.  No CUDA launch or performance claim
+  is made here.
+- **Evidence:** `bench/evidence/iter558_l1_warmup_ab_static.txt`.

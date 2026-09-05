@@ -1,0 +1,18 @@
+Iteration 558: deeper W13-warmup A/B static verification
+Date: 2026-09-05
+
+Hypothesis:
+M128 has seven W13 claim waves.  Moving the W13/W2 interleave point from the
+automatic two waves to 3, 4, or 7 may improve cold-weight issue locality and
+reduce the measured W2 tail.  Counts above two cap to the existing two waves
+at M8, making the first screen M128-specific by construction.
+
+Checks:
+  python3 -m py_compile v4_flash_tp_native_megamoe.py \
+    bench/v4_flash_tp_native_layout_ab.py
+  ast.parse on both Python files
+  exact grep of environment, macro, hash/name/cflag, body override, candidate
+  CLI choice, selected-tail isolation, and result metadata
+
+Result: PASS
+GPU launches: none

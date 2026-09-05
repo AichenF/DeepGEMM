@@ -454,6 +454,16 @@
             interleaved_scheduler.num_l1_warmup_waves = cute::min(
                 interleaved_scheduler.num_l1_warmup_waves, 1u);
         }
+        if constexpr (K_NATIVE_L1_WARMUP_WAVES > 0 &&
+                      kIntermediateHidden == 512) {
+            const uint32_t num_total_l1_waves = math::ceil_div(
+                interleaved_scheduler.num_total_m_blocks *
+                    kNumRoutedL1BlockNs,
+                kNumSMs);
+            interleaved_scheduler.num_l1_warmup_waves = cute::min(
+                static_cast<uint32_t>(K_NATIVE_L1_WARMUP_WAVES),
+                num_total_l1_waves);
+        }
         while (true) {
             interleaved_scheduler.wait_task_slot_empty();
             const auto task_info = interleaved_scheduler.claim_next_task();

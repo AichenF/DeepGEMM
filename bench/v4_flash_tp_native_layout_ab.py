@@ -44,6 +44,7 @@ def parse_args() -> argparse.Namespace:
         choices=(
             "tile_tma",
             "single_l1_warmup",
+            "l1_warmup",
             "dual_dispatch",
             "tp_local_barriers",
             "tp_local_dispatch",
@@ -53,6 +54,12 @@ def parse_args() -> argparse.Namespace:
             "tp_local_route_combine",
         ),
         default="tile_tma",
+    )
+    parser.add_argument(
+        "--candidate-l1-warmup-waves",
+        type=int,
+        choices=(3, 4, 7),
+        default=3,
     )
     args = parser.parse_args()
     args.ms = tuple(int(value) for value in args.ms.split(",") if value)
@@ -70,6 +77,7 @@ def load_native_variant(
     *,
     tile_tma: bool = False,
     single_l1_warmup_wave: bool = False,
+    l1_warmup_waves: int = 0,
     dual_active_dispatch: bool = False,
     tp_local_barrier_fastpath: bool = False,
     tp_local_dispatch_fastpath: bool = False,
@@ -84,6 +92,7 @@ def load_native_variant(
             "V4_NATIVE_TILE_WEIGHT_SCALE_TMA",
             "V4_NATIVE_SPLIT_WEIGHT_SCALE_TMA",
             "V4_NATIVE_SINGLE_L1_WARMUP_WAVE",
+            "V4_NATIVE_L1_WARMUP_WAVES",
             "V4_NATIVE_DUAL_ACTIVE_DISPATCH",
             "V4_NATIVE_TP_LOCAL_BARRIER_FASTPATH",
             "V4_NATIVE_TP_LOCAL_DISPATCH_FASTPATH",
@@ -98,6 +107,7 @@ def load_native_variant(
         os.environ["V4_NATIVE_SINGLE_L1_WARMUP_WAVE"] = str(
             int(single_l1_warmup_wave)
         )
+        os.environ["V4_NATIVE_L1_WARMUP_WAVES"] = str(l1_warmup_waves)
         os.environ["V4_NATIVE_DUAL_ACTIVE_DISPATCH"] = str(
             int(dual_active_dispatch)
         )
@@ -208,18 +218,37 @@ def main() -> None:
         "tp_local_combine_chunks",
         "tp_local_route_combine",
     )
+    warmup_experiment = args.experiment == "l1_warmup"
     control_module = load_native_variant(
         "v4_native_variant_control",
         tile_tma=False,
         single_l1_warmup_wave=False,
+        l1_warmup_waves=0,
         dual_active_dispatch=False,
-        tp_local_barrier_fastpath=dispatch_experiment,
+        tp_local_barrier_fastpath=dispatch_experiment or warmup_experiment,
         tp_local_dispatch_fastpath=False,
         tp_local_direct_copy=False,
-        tp_local_route_build=False,
-        tp_local_parallel_combine_chunks=False,
+        tp_local_route_build=warmup_experiment,
+        tp_local_parallel_combine_chunks=warmup_experiment,
     )
-    if args.experiment == "tile_tma":
+    if args.experiment == "l1_warmup":
+        candidate_module = load_native_variant(
+            "v4_native_variant_l1_warmup",
+            tile_tma=False,
+            single_l1_warmup_wave=False,
+            l1_warmup_waves=args.candidate_l1_warmup_waves,
+            dual_active_dispatch=False,
+            tp_local_barrier_fastpath=True,
+            tp_local_dispatch_fastpath=False,
+            tp_local_direct_copy=False,
+            tp_local_route_build=True,
+            tp_local_parallel_combine_chunks=True,
+        )
+        benchmark_name = (
+            "native_auto_vs_"
+            f"{args.candidate_l1_warmup_waves}_l1_warmup_waves"
+        )
+    elif args.experiment == "tile_tma":
         candidate_module = load_native_variant(
             "v4_native_variant_tile_tma",
             tile_tma=True,
@@ -379,6 +408,12 @@ def main() -> None:
                     ),
                     "candidate_single_l1_warmup_wave": (
                         candidate_module.NATIVE_SINGLE_L1_WARMUP_WAVE
+                    ),
+                    "control_l1_warmup_waves": (
+                        control_module.NATIVE_L1_WARMUP_WAVES
+                    ),
+                    "candidate_l1_warmup_waves": (
+                        candidate_module.NATIVE_L1_WARMUP_WAVES
                     ),
                     "control_dual_active_dispatch": (
                         control_module.NATIVE_DUAL_ACTIVE_DISPATCH

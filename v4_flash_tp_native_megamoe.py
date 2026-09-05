@@ -55,6 +55,9 @@ NATIVE_TILE_WEIGHT_SCALE_TMA = (
 NATIVE_SINGLE_L1_WARMUP_WAVE = (
     os.environ.get("V4_NATIVE_SINGLE_L1_WARMUP_WAVE", "0") == "1"
 )
+NATIVE_L1_WARMUP_WAVES = int(
+    os.environ.get("V4_NATIVE_L1_WARMUP_WAVES", "0")
+)
 NATIVE_DUAL_ACTIVE_DISPATCH = (
     os.environ.get("V4_NATIVE_DUAL_ACTIVE_DISPATCH", "0") == "1"
 )
@@ -74,6 +77,12 @@ NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS = (
     os.environ.get("V4_NATIVE_TP_LOCAL_PARALLEL_COMBINE_CHUNKS", "1") == "1"
 )
 NATIVE_PHASE_STAMPS = os.environ.get("V4_NATIVE_PHASE_STAMPS", "0") == "1"
+if not 0 <= NATIVE_L1_WARMUP_WAVES <= 8:
+    raise ValueError("V4_NATIVE_L1_WARMUP_WAVES must be in [0,8]")
+if NATIVE_SINGLE_L1_WARMUP_WAVE and NATIVE_L1_WARMUP_WAVES:
+    raise ValueError(
+        "single-wave and explicit L1 warmup controls are mutually exclusive"
+    )
 if NATIVE_TP_LOCAL_DIRECT_COPY and not NATIVE_TP_LOCAL_DISPATCH_FASTPATH:
     raise ValueError(
         "V4_NATIVE_TP_LOCAL_DIRECT_COPY requires the TP-local dispatch fast path"
@@ -558,6 +567,9 @@ _CUDA = r"""
 #endif
 #ifndef K_NATIVE_SINGLE_L1_WARMUP_WAVE
 #define K_NATIVE_SINGLE_L1_WARMUP_WAVE 0
+#endif
+#ifndef K_NATIVE_L1_WARMUP_WAVES
+#define K_NATIVE_L1_WARMUP_WAVES 0
 #endif
 #ifndef K_NATIVE_DUAL_ACTIVE_DISPATCH
 #define K_NATIVE_DUAL_ACTIVE_DISPATCH 0
@@ -1291,6 +1303,7 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_SPLIT_WEIGHT_SCALE_TMA))
         + str(int(NATIVE_TILE_WEIGHT_SCALE_TMA))
         + str(int(NATIVE_SINGLE_L1_WARMUP_WAVE))
+        + str(NATIVE_L1_WARMUP_WAVES)
         + str(int(NATIVE_DUAL_ACTIVE_DISPATCH))
         + str(int(NATIVE_TP_LOCAL_BARRIER_FASTPATH))
         + str(int(NATIVE_TP_LOCAL_DISPATCH_FASTPATH))
@@ -1312,6 +1325,7 @@ _ext = load_inline(
         f"swt{int(NATIVE_SPLIT_WEIGHT_SCALE_TMA)}_"
         f"twt{int(NATIVE_TILE_WEIGHT_SCALE_TMA)}_"
         f"l1w1{int(NATIVE_SINGLE_L1_WARMUP_WAVE)}_"
+        f"l1wn{NATIVE_L1_WARMUP_WAVES}_"
         f"dad{int(NATIVE_DUAL_ACTIVE_DISPATCH)}_"
         f"tlb{int(NATIVE_TP_LOCAL_BARRIER_FASTPATH)}_"
         f"tld{int(NATIVE_TP_LOCAL_DISPATCH_FASTPATH)}_"
@@ -1358,6 +1372,7 @@ _ext = load_inline(
             "-DK_NATIVE_SINGLE_L1_WARMUP_WAVE="
             f"{int(NATIVE_SINGLE_L1_WARMUP_WAVE)}"
         ),
+        f"-DK_NATIVE_L1_WARMUP_WAVES={NATIVE_L1_WARMUP_WAVES}",
         (
             "-DK_NATIVE_DUAL_ACTIVE_DISPATCH="
             f"{int(NATIVE_DUAL_ACTIVE_DISPATCH)}"
