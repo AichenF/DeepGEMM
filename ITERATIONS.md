@@ -10893,3 +10893,24 @@ maximum rank latency of a full CUDA-Graph replay.
   reference's genuinely interleaved fixed-role producer/consumer model rather
   than wrapping three bulk phases.
 - **Evidence:** `bench/evidence/iter442_restore_dynamic_mailbox_correctness.txt`.
+
+## Iteration 443 — warp-leader epoch mailbox passes the resource gate
+
+- **Hypothesis:** Hopper-style release publication plus one acquire consumer
+  per warp can remove the 128-thread pre-task named barrier and duplicate
+  shared task loads without changing the proven dynamic interleave.
+- **Change:** WG lane 0 release-publishes kind/index through a per-WG shared
+  epoch; four warp leaders acquire-read and shuffle-broadcast the payload.
+  Useful task bodies retain their terminal WG barrier, while an unavailable
+  retry explicitly synchronizes before republishing.  The design doc now
+  records the actual Hopper fixed-role mailbox structure and this bounded
+  migration.
+- **Test:** Python compile, selected CUDA JIT/import on physical GPU 1, and
+  `cuobjdump -res-usage` for TP4 endpoint/intermediate specializations.
+- **Result:** **PASS**.  M8/M16/M32 SplitK=4 use `REG=64, STACK=48,
+  SHARED=5120, LOCAL=0`; M128 SplitK=2 uses `REG=64, STACK=32,
+  SHARED=5120, LOCAL=0`.
+- **Analysis:** mailbox publication is resource-neutral versus the restored
+  correct binary and can proceed to the all-route correctness gate.  There is
+  no latency claim yet.
+- **Evidence:** `bench/evidence/iter443_warp_leader_epoch_mailbox_resource.txt`.

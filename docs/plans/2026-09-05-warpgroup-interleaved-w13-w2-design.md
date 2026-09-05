@@ -281,3 +281,31 @@ The implementation proceeds through these gates:
 Any correctness drift, deadlock, occupancy loss or latency regression is
 logged and committed before the next repair.  The selected phase scheduler
 remains the fallback until the new path wins the required gates.
+
+## 2026-09-05 Hopper mailbox correction after Iteration 441
+
+Direct inspection of `megamoe_nvfp4_dev_m` confirms that its SM90 kernel does
+not run eight independent GEMMs through three bulk W13/activation/W2 phases.
+One resident CTA instead assigns fixed dispatch, A-loader, B-loader, and
+math/epilogue roles.  A producer publishes an interleaved L1/L2 task stream
+through a two-stage shared-memory mailbox; each role consumes the same payload,
+and the L1 epilogue publishes the readiness consumed by L2.  The deadlocked
+Iteration 439 bulk-phase outline is therefore not a faithful Hopper port.
+
+The next bounded migration keeps the already-correct TP task bodies and eight
+math warpgroups, but changes mailbox transport before attempting a full loader
+split.  WG lane 0 remains the task producer.  It writes kind/index, performs a
+block-scope release fence, and advances a per-WG shared epoch.  One leader in
+each of the four consumer warps acquire-observes the epoch, reads the payload,
+and broadcasts it with warp shuffle.  A real task's existing terminal WG
+barrier proves that every warp consumed the payload before lane 0 can publish
+the next task.  An unavailable-task retry retains one named WG barrier to
+prevent producer overwrite; termination is followed by the existing CTA-wide
+barrier.  This removes the named barrier and 128 duplicate shared loads before
+every useful GEMM/activation task while preserving the dynamic L1/L2 order.
+
+This is deliberately an intermediate Hopper adaptation.  It does not yet
+split TMA A/B loading away from the math WGs, does not reuse a decoded weight
+tile across multiple token consumers, and does not import EP dispatch/scatter
+or NVFP4 arithmetic.  Those larger changes are justified only if the mailbox
+transport passes resource, correctness, cold-L2, and NCU gates.
