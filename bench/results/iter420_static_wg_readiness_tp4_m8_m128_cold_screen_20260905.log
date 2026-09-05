@@ -1,0 +1,63 @@
+ITER420_STATIC_WG_READINESS_TP4_COLD_SCREEN
+date=2026-09-05
+host=H20-GPU-06
+container=dpskv4_h20_weekly_gap_20260727
+gpus=0,1,2,3
+world_size=4
+source_commit=4268f76
+route_pattern=random
+seed=20260904
+outer=2
+replays_per_outer_per_impl=10
+warmup_replays=2
+pair_granularity=replay
+l2_policy=separate 256MiB clear before every replay, clear excluded
+input_contract=shared prequantized FP8-E4M3 X plus FP32 group128 scale
+candidate=single-kernel independent static-WG readiness pipeline plus embedded allreduce
+control=selected same-source multi-kernel plus SGLang CustomAllReduceV2
+
+m8.active_experts=45
+m8.padded_rows=360
+m8.split_k=4
+m8.control_ar=multicast_push
+m8.candidate_ar=single_launch_multicast_push
+m8.control_batch_medians_ms=[0.0737600028514862,0.07409599795937538]
+m8.candidate_batch_medians_ms=[0.10184000059962273,0.1021919995546341]
+m8.control_min_median_max_ms=[0.07280000299215317,0.07387199997901917,2.5177600383758545]
+m8.candidate_min_median_max_ms=[0.10025600343942642,0.10195200145244598,2.46943998336792]
+m8.candidate_over_control=1.3801169791179606
+m8.speedup_control_over_candidate=0.7245762606580674
+m8.correctness_identical_to_control=true
+m8.allreduce_ok=true
+m8.cosine=0.9999956134440106
+m8.rel_l2=0.002961992178802094
+
+m128.active_experts=240
+m128.padded_rows=1944
+m128.split_k=2
+m128.control_ar=stock
+m128.candidate_ar=single_launch_p2p_two_shot
+m128.control_batch_medians_ms=[0.3016799986362457,0.3022240102291107]
+m128.candidate_batch_medians_ms=[0.4063680022954941,0.40556800365448]
+m128.control_min_median_max_ms=[0.30031999945640564,0.30212800204753876,2.7588160037994385]
+m128.candidate_min_median_max_ms=[0.401856005191803,0.40595200657844543,2.941920042037964]
+m128.candidate_over_control=1.3436424423664324
+m128.speedup_control_over_candidate=0.7442456180818411
+m128.correctness_identical_to_control=true
+m128.allreduce_ok=true
+m128.cosine=0.999995608996884
+m128.rel_l2=0.0029634544238714383
+
+endpoint.control_geomean_ms=0.1493947782250668
+endpoint.candidate_geomean_ms=0.20343947395800316
+endpoint.candidate_over_control=1.3617575953793828
+endpoint.speedup_control_over_candidate=0.7343450871088419
+comparison.iter416_cta_pipeline_m8_ms=0.14240000396966934
+comparison.iter420_static_wg_m8_ms=0.10195200145244598
+comparison.iter416_cta_pipeline_m128_ms=0.6536480188369751
+comparison.iter420_static_wg_m128_ms=0.40595200657844543
+comparison.selected_phase_iter400_m8_ms=0.08816000074148178
+comparison.selected_phase_iter400_m128_ms=0.34934400022029877
+decision=REJECT_current_static_WG_overlap_policy
+interpretation=removing CTA barriers recovers another 28.4 percent at M8 and 37.9 percent at M128 versus Iteration416, but the overlap path remains 15.6/16.2 percent slower than the mapped phase candidate and 34-38 percent slower than control; fine-grained cold W13/W2 mixing plus final-WG serialized requant/readiness overhead is not yet beneficial
+ITER420_STATIC_WG_READINESS_TP4_COLD_SCREEN_REJECTED

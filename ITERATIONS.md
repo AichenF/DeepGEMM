@@ -10406,3 +10406,30 @@ maximum rank latency of a full CUDA-Graph replay.
   endpoint screen with embedded multicast/two-shot communication next.
 - Evidence:
   `results/iter419_static_wg_readiness_compute_correctness_20260905.log`.
+
+## Iteration 420 — static WGs recover barrier loss but overlap still regresses
+
+- Date: 2026-09-05
+- Protocol: Iteration 418 candidate versus selected multi-kernel plus SGLang
+  CustomAllReduceV2 control, TP4 GPUs 0-3, random routes, seed 20260904, two
+  replay-interleaved batches x ten individually cold-L2 samples/arm, two
+  warmups and rank-max reduction.  Inputs and MXFP4 weights are shared.
+- Correctness: PASS and identical to control at M8/M128, including embedded
+  multicast and P2P two-shot communication.
+- M8 control/candidate medians are `73.872/101.952 us`; candidate is 1.380x
+  slower.  M128 medians are `302.128/405.952 us`; candidate is 1.344x slower.
+  Candidate batches are stable in direction at 101.840/102.192 us and
+  406.368/405.568 us.  Endpoint candidate/control geometric ratio is 1.362x.
+- Progress versus rejected CTA macro: removing task-loop CTA barriers cuts
+  M8 from 142.400 to 101.952 us (-28.4%) and M128 from 653.648 to 405.952 us
+  (-37.9%).  However it is still 13.792/56.608 us slower than the mapped
+  phase candidate's 88.160/349.344-us medians, so the intended overlap has
+  not paid for the final-WG serialized requant, readiness scans/atomics and
+  cold W13/W2 traffic interference.
+- Decision: reject the current static-WG policy for selection but keep it as
+  the first barrier-free correct overlap checkpoint.  Profile M128 against
+  Iteration 402 to quantify whether remaining loss is no-eligible/spills or
+  lower DRAM throughput from fine-grained W13/W2 mixing; then tune phase
+  granularity rather than returning to global claims.
+- Evidence:
+  `bench/results/iter420_static_wg_readiness_tp4_m8_m128_cold_screen_20260905.log`.
