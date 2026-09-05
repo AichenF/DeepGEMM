@@ -10386,3 +10386,23 @@ maximum rank latency of a full CUDA-Graph replay.
   before TP communication/timing.
 - Evidence:
   `results/iter418_static_wg_readiness_jit_resource_20260905.log`.
+
+## Iteration 419 — static-WG readiness memory-order correctness
+
+- Date: 2026-09-05
+- Protocol: unchanged Iteration 418 binary on H20 GPU0, random routes with
+  seed 20260904, TP disabled, and a separate excluded 256 MiB L2 clear before
+  the profiled launch.  Compare every routed W2 row against the selected
+  multi-kernel local pipeline.
+- Result: PASS bitwise at M8 split-K4 (360 padded rows, cosine
+  `0.9999999999999999`, rel-L2 `0`, finite) and M128 split-K2 (1,944 padded
+  rows, cosine `1`, rel-L2 `0`, finite).  Packed barrier words are
+  `[2048,0,0,2048]` at both endpoints.
+- Interpretation: the distributed W13 release-counter chain, final-WG named
+  barrier handoff, serialized eight-route requant epilogue, four-group
+  mblock publication and W2 scheduler acquire load collectively preserve the
+  exact selected local result without phase-1/2 whole-grid barriers.
+- Decision: memory-order and dependency gate PASS.  Run the TP4 paired cold
+  endpoint screen with embedded multicast/two-shot communication next.
+- Evidence:
+  `results/iter419_static_wg_readiness_compute_correctness_20260905.log`.
