@@ -14741,3 +14741,32 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter644_w13_compact_split_major_tp4_m128_paired_cold.log`
   and `evidence/iter644_w13_compact_split_major_tp4_m128_paired_cold.md`.
+
+## Iteration 645 — audit multi-kernel code transferable to one launch
+
+- **Scope:** source/Git/cubin/history audit only; no CUDA kernel was launched
+  and no new latency claim is made.  The audited one-kernel tip is `67e245c`,
+  and the production cubin is from extension
+  `v4tp_db6bdbe1b363bb873f88_v178mspec`.
+- **Git result:** `tpmoe_multikernel_baseline` at `071abc2` is the exact merge
+  base and ancestor of the one-kernel branch; there are no multi-only commits
+  to cherry-pick literally.
+- **Body result:** standalone W13/W2 and the one-kernel phases already
+  instantiate the same `route_gemm_task`.  The production compact-W13 callee
+  is 23,888 text bytes versus 23,552 for standalone W13, a difference of only
+  336 bytes attributable to grid-stride/task plumbing.  The historical W2
+  phase callee is 20,944 bytes versus 21,504 for standalone W2, independently
+  ruling out an omitted standalone math body.
+- **Resource result:** standalone W13 is 47 registers/zero stack and
+  standalone W2 is 61 registers/zero stack.  The complete M128 one-kernel
+  entry has one fixed 56-register/32-byte-stack contract.  Per-phase resource
+  contracts and one-task-per-fresh-CTA hardware distribution are launch
+  properties, not snippets that can be copied into a resident cooperative
+  grid.
+- **Decision:** no production direct cherry-pick remains.  MXFP4/TMA/WGMMA
+  bodies, epilogues, assume-valid guards, and the CARv2-derived transport
+  policy are already transferred.  A compact W2 phase-call ABI is the only
+  bounded untested adaptation, but prior whole-W2 outlining produced only a
+  0.12% noise-sized M128 gain and replay instability, so it is explicitly low
+  priority and remains default-off unless separately approved.
+- **Evidence:** `evidence/iter645_multi_to_single_transfer_audit.md`.
