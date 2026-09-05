@@ -13135,3 +13135,26 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Static result:** module AST parsing and exact default/override audit
   **PASS**.  No default-entry CUDA correctness or timing is claimed yet.
 - **Evidence:** `bench/evidence/iter547_native_tp_local_defaults_static.txt`.
+
+## Iteration 548 — combined native defaults reproduce endpoint outputs
+
+- **Protocol:** physical H20 GPU1, deterministic local M8 then M128 with all
+  three selected TP-local environment variables explicitly unset, exercising
+  the no-override defaults from caller-provided FP8 activations/scales and
+  transformed MXFP4 weights.
+- **CUDA result:** both launches completed and synchronized.  M8 and M128 are
+  finite and reproduce the previously accepted full-output SHA256 values
+  exactly: `6860e09b...75f5d5` and `2e225dc3...a5e5`; maxima are `55,040`
+  and `296,960`.  M8 route-pool X/scales/weights are exact and the weighted
+  FC1 cosine/relative-L2 remain `0.9996428552/0.0271052359`.
+- **Known diagnostic caveat:** M128's post-kernel pool-order check reports
+  mismatches because concurrent same-expert atomic slot assignment is
+  nondeterministic; the full output remains bitwise identical, as it was in
+  the same-process A/B gates.
+- **Artifact caveat:** the outer host-side `tee` lacked permission to create a
+  root-owned repository log, so the shell returned 1 after both inner CUDA
+  tests passed.  Their complete captured output is preserved in the evidence
+  file; the failure is logging-only.
+- **Decision:** default correctness gate passes.  Proceed to the all-M cold-L2
+  baseline comparison.
+- **Evidence:** `bench/evidence/iter548_native_combined_defaults_local.txt`.
