@@ -9683,3 +9683,32 @@ maximum rank latency of a full CUDA-Graph replay.
   remaining GEMM no-eligible gap.
 - Evidence:
   `results/iter391_78cta_parallel_route_phase_m8_m128_20260905.log`.
+
+## Iteration 392 — parallel-route 78-CTA TP4 endpoint re-screen
+
+- Date: 2026-09-05
+- Configuration/protocol: Iteration 391 candidate with release arrivals and
+  valid-task elision, selected multi-kernel control, H20 GPUs 0-3, random
+  routes, seed 20260904.  Same-process replay-interleaved CUDA Graph timing,
+  two batches x 10 samples/arm, two warmups, rank-max; every replay had its
+  own excluded 256 MiB L2 clear.  Inputs are identical prequantized FP8 X
+  plus scales and MXFP4 weights.
+- Numerical result: M8 matches the control's accepted envelope exactly
+  (cosine `0.9999956134`, rel-L2 `0.0029619922`, finite, allreduce check
+  passes).  M128 passes the harness's loose acceptance and cross-rank check,
+  but drifts outside the selected reproducibility envelope: candidate cosine
+  `0.9999954508`, rel-L2 `0.00301636`, max absolute error 6,336 versus the
+  control's `0.9999956090`, `0.00296345`, and 1,024.  Compute-only was
+  bitwise in Iteration 391, so the replay-stability issue is in the embedded
+  1024-thread two-shot tail, not route/GEMM math.
+- Cold-L2 result (control / candidate median): M8
+  `0.073504/0.100784 ms` (candidate `37.11%` slower); M128
+  `0.299856/0.377600 ms` (`25.93%` slower).  Versus Iteration 386, the route
+  optimization recovers 8.34 us at M8 and 19.86 us at M128 end-to-end, in
+  line with the phase evidence, but the candidate remains decisively behind.
+- Decision: retain the parallel route inside the experimental 78-CTA mode,
+  but do not select the mode or run all-M.  First repair/audit the large-M
+  1024-thread two-shot ownership protocol; then address the remaining
+  21/36-us pre-communication GEMM/scheduler gap.
+- Evidence:
+  `bench/results/iter392_78cta_parallel_route_tp4_m8_m128_cold_20260905.log`.
