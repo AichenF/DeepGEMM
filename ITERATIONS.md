@@ -14303,3 +14303,29 @@ maximum rank latency of a full CUDA-Graph replay.
   concurrency and change only the residual wave or communication handoff.
 - Evidence: `evidence/iter622_balanced_w2_workers_short_rejection.md` and four
   raw logs under `bench/results/iter622_*_20260905.log`.
+## Iteration 623 — implement residual-wave W2 N64 subdivision
+
+- Hypothesis/change: add default-off `V4_SINGLE_LAUNCH_W2_N64_TAIL` for the
+  isolated compact schedule-0 route-output path.  Every complete W2 N128 grid
+  round is byte-for-byte unchanged.  If doubling the residual task count still
+  fits in one physical grid wave, only that residual round becomes two N64
+  tasks per N128 tile; otherwise it safely falls back to the ordinary N128
+  tail.
+- Target geometry: fixed random M64 has 6,240 full tasks plus 256 residual
+  N128 tasks, transformed only in the last wave to 512 N64 tasks over 624
+  CTAs.  M128 has 7,722 full plus 246 residual tasks, transformed to 492 N64
+  tasks over 702 CTAs.  Unlike Iteration 622, all full waves retain every CTA
+  and their original N128 transaction/math shape.
+- Implementation: generalize the already-correct compact-record N64 half
+  loader from W13 to W2.  Each half bulk-copies disjoint weight and scale
+  bytes into shared group zero, computes one WGMMA accumulator group, and
+  writes disjoint output columns; arithmetic accumulation order is unchanged.
+- Isolation/reproducibility: require WOUT128, compact-interleaved two-stage W2
+  route output and reject alternate W2 scheduling/overlap/combine modes.  Add
+  the switch to JIT hashing/defines and all graph benchmark metadata.
+- Static result: Python compilation passes for the kernel and three graph
+  drivers.  CUDA template compilation, resources and correctness remain
+  unproven.
+- Decision: proceed to fresh JIT/resource plus M64/M128 exact compute gates;
+  do not time the candidate until both half selections are verified.
+- Evidence: `evidence/iter623_w2_n64_tail_static_gate.md`.

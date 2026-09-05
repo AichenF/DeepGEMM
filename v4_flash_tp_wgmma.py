@@ -166,6 +166,9 @@ SINGLE_LAUNCH_W13_ACT_TAIL_PIPE = (
 SINGLE_LAUNCH_W13_N64_TAIL = (
     os.environ.get("V4_SINGLE_LAUNCH_W13_N64_TAIL", "0") == "1"
 )
+SINGLE_LAUNCH_W2_N64_TAIL = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_N64_TAIL", "0") == "1"
+)
 SINGLE_LAUNCH_W13_TAIL_SPLIT4 = (
     os.environ.get("V4_SINGLE_LAUNCH_W13_TAIL_SPLIT4", "0") == "1"
 )
@@ -1167,6 +1170,46 @@ if SINGLE_LAUNCH_BALANCED_W2_WORKERS and (
         "V4_SINGLE_LAUNCH_BALANCED_W2_WORKERS requires the isolated "
         "schedule-0 W2 phase"
     )
+if SINGLE_LAUNCH_W2_N64_TAIL and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or WOUT != 128
+    or not W2_ROUTE_OUTPUT
+    or W2_COALESCED_STORE
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS
+    or SINGLE_LAUNCH_BALANCED_W2_WORKERS
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_78CTA_WG_DAG
+    or SINGLE_LAUNCH_78CTA_LOCAL_W13
+    or SINGLE_LAUNCH_78CTA_8WG
+    or SINGLE_LAUNCH_SM_STRIPED_TASKS
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_W2_UNROLL2_BOUND9
+    or SINGLE_LAUNCH_W2_CHUNK_MAJOR
+    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+    or SINGLE_LAUNCH_W2_CHUNK_AR_POST
+    or SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+    or SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_N64_TAIL requires the isolated compact "
+        "schedule-0 W2 route-output path"
+    )
 if (
     SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
     and SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
@@ -1665,6 +1708,8 @@ static constexpr bool kSingleLaunchW13ActTailPipe =
     K_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE;
 static constexpr bool kSingleLaunchW13N64Tail =
     K_SINGLE_LAUNCH_W13_N64_TAIL;
+static constexpr bool kSingleLaunchW2N64Tail =
+    K_SINGLE_LAUNCH_W2_N64_TAIL;
 static constexpr bool kSingleLaunchW13TailSplit4 =
     K_SINGLE_LAUNCH_W13_TAIL_SPLIT4;
 static constexpr bool kSingleLaunchClusterW13Act =
@@ -2165,9 +2210,9 @@ __device__ __forceinline__ void route_gemm_task(
     static_assert(WgmmaHalf >= -1 && WgmmaHalf <= 1);
     constexpr bool kHalfWgmma = WgmmaHalf >= 0;
     static_assert(!kHalfWgmma
-                  || (IsW13 && kWout == 128 && !DualWgW13
+                  || (kWout == 128 && !DualWgW13
                       && kCompactInterleavedScale),
-                  "N64 tail tasks require compact-interleaved W13 N128");
+                  "N64 tail tasks require compact-interleaved N128");
     static_assert(!SharedPartial || (IsW13 && !kHalfWgmma && !DualWgW13),
                   "DSM partial output requires one full W13 warpgroup");
     static_assert(!BulkReduceW2
@@ -8251,7 +8296,66 @@ void tp4_megamoe_single_launch_kernel(
                 kSingleLaunchW2ChunkMajor && Tokens >= 64
                 && (!kSingleLaunchW2ChunkArOverlap
                     || chunk_ar_overlap_active);
-            if constexpr (kSingleLaunchW2PhaseNoInline) {
+            if constexpr (kSingleLaunchW2N64Tail && Tokens >= 64) {
+                // Preserve every complete N128 W2 grid round.  When the
+                // residual round can still fit after subdivision, split only
+                // that round into two N64 tasks per original tile.  The two
+                // halves copy disjoint physical weight/scale halves and write
+                // disjoint output columns, so no reduction-order changes are
+                // introduced.
+                const int full_rounds = w2_tasks / ctas;
+                const int full_tasks = full_rounds * ctas;
+                const int tail_tasks = w2_tasks - full_tasks;
+                const bool split_tail =
+                    tail_tasks > 0 && tail_tasks * 2 <= ctas;
+                const int ordinary_tasks =
+                    split_tail ? full_tasks : w2_tasks;
+                for (int task = cta; task < ordinary_tasks;
+                     task += ctas) {
+                    route_gemm_task<
+                        512, 4096, 1, false, 0, false, false, false,
+                        -1, false, 0,
+                        kSingleLaunchAssumeValidGemmTasks>(
+                        &w2_tma_weight, &w2_tma_weight_scale,
+                        w2, s2, g2, qactivation, activation_scale,
+                        sorted_ids, expert_ids, num_tokens_padded,
+                        topk_weights, reinterpret_cast<float*>(down), lut,
+                        nullptr, routes, 0, task);
+                    __syncthreads();
+                }
+                if (split_tail) {
+                    const int half_tail_tasks = tail_tasks * 2;
+                    for (int half_task = cta;
+                         half_task < half_tail_tasks;
+                         half_task += ctas) {
+                        const int task = full_tasks + (half_task >> 1);
+                        if ((half_task & 1) == 0) {
+                            route_gemm_task<
+                                512, 4096, 1, false, 0, false, false,
+                                false, 0, false, 0,
+                                kSingleLaunchAssumeValidGemmTasks>(
+                                &w2_tma_weight, &w2_tma_weight_scale,
+                                w2, s2, g2, qactivation,
+                                activation_scale, sorted_ids, expert_ids,
+                                num_tokens_padded, topk_weights,
+                                reinterpret_cast<float*>(down), lut,
+                                nullptr, routes, 0, task);
+                        } else {
+                            route_gemm_task<
+                                512, 4096, 1, false, 0, false, false,
+                                false, 1, false, 0,
+                                kSingleLaunchAssumeValidGemmTasks>(
+                                &w2_tma_weight, &w2_tma_weight_scale,
+                                w2, s2, g2, qactivation,
+                                activation_scale, sorted_ids, expert_ids,
+                                num_tokens_padded, topk_weights,
+                                reinterpret_cast<float*>(down), lut,
+                                nullptr, routes, 0, task);
+                        }
+                        __syncthreads();
+                    }
+                }
+            } else if constexpr (kSingleLaunchW2PhaseNoInline) {
                 single_launch_w2_gemm_phase<
                     kSingleLaunchAssumeValidGemmTasks>(
                     &w2_tma_weight, &w2_tma_weight_scale,
@@ -11400,6 +11504,7 @@ _EXTENSION_CONFIG = (
           f"slca{int(SINGLE_LAUNCH_W13_COMPLETION_ACT)}_"
           f"slwatp{int(SINGLE_LAUNCH_W13_ACT_TAIL_PIPE)}_"
           f"sln64{int(SINGLE_LAUNCH_W13_N64_TAIL)}_"
+          f"slw2n64{int(SINGLE_LAUNCH_W2_N64_TAIL)}_"
           f"slts4{int(SINGLE_LAUNCH_W13_TAIL_SPLIT4)}_"
           f"slcl{int(SINGLE_LAUNCH_CLUSTER_W13_ACT)}_"
           f"sldwg{int(SINGLE_LAUNCH_DUAL_WG_PHASES)}_"
@@ -11667,6 +11772,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W13_N64_TAIL="
             f"{int(SINGLE_LAUNCH_W13_N64_TAIL)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_N64_TAIL="
+            f"{int(SINGLE_LAUNCH_W2_N64_TAIL)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W13_TAIL_SPLIT4="
