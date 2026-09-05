@@ -12566,3 +12566,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Safety: trap if the measured block-to-SM placement is not reproduced, rather than silently executing duplicate/missing tasks. Restrict the experiment to the inline 624x128, eight-CTA/SM schedule-0 specialization; release-arrival, assume-valid tasks, phase stamps, and SMID tracing remain composable.
 - Static gate: remote `py_compile` passes for the kernel plus both graph helpers and the single-vs-multi benchmark.
 - Decision: proceed to a fresh JIT/resource/placement gate before correctness or latency timing.
+## Iteration 518 — first SM-striped JIT fails on constant declaration order
+
+- Date: 2026-09-05
+- Configuration: SM-striped task candidate with SMID trace, assume-valid tasks, and release-grid-arrival; intended M8 placement/resource smoke on GPU0.
+- Result: compile FAIL before GPU launch. NVCC reports `kSingleLaunchH20Sms` undefined inside the new early helper because that constant is declared later in the generated CUDA source.
+- Secondary output: the shell's newest-successful-object fallback dumped Iteration 511's old tail-pipeline cubin after the failed build; those resource lines do not describe this candidate and are excluded.
+- Decision: replace the early helper's H20 stride with the table's compile-time literal 78 (and assert the host H20 launch separately), then repeat unchanged. No correctness or performance conclusion.
+- Evidence: `results/iter518_sm_striped_jit_resource_placement_m8_20260905.log`.
