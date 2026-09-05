@@ -6412,7 +6412,6 @@ void tp4_megamoe_single_launch_kernel(
         __shared__ int wg_prefer_downstream[kIndependentTaskWGs];
         __shared__ int wg_task_kind[kIndependentTaskWGs];
         __shared__ int wg_task_index[kIndependentTaskWGs];
-        __shared__ volatile int wg_task_epoch[kIndependentTaskWGs];
         if (wg_lane == 0) {
             wg_logical_worker[independent_wg] = logical_worker;
             wg_next_w13_task[independent_wg] = logical_worker;
@@ -6429,11 +6428,9 @@ void tp4_megamoe_single_launch_kernel(
             wg_activation_done_mask[independent_wg] = 0u;
             wg_w2_done_mask[independent_wg] = 0u;
             wg_prefer_downstream[independent_wg] = 0;
-            wg_task_epoch[independent_wg] = 0;
         }
         independent_wg_sync<kIndependentTaskWGs>(independent_wg);
 
-        int observed_task_epoch = 0;
         while (true) {
             if (wg_lane == 0) {
                 int kind = -1;
@@ -6524,36 +6521,14 @@ void tp4_megamoe_single_launch_kernel(
 
                 wg_task_kind[independent_wg] = kind;
                 wg_task_index[independent_wg] = task;
-                // Hopper's SM90 scheduler release-publishes one shared task
-                // payload to all fixed roles.  Here the four warps of this
-                // math WG consume the same payload without a pre-task named
-                // barrier.  Every real task already ends in a WG barrier.
-                __threadfence_block();
-                wg_task_epoch[independent_wg] =
-                    observed_task_epoch + 1;
             }
+            independent_wg_sync<kIndependentTaskWGs>(independent_wg);
 
-            ++observed_task_epoch;
-            const int warp_lane = wg_lane & 31;
-            int kind = 0;
-            int task = 0;
-            if (warp_lane == 0) {
-                while (wg_task_epoch[independent_wg]
-                       != observed_task_epoch)
-                    __nanosleep(32);
-                __threadfence_block();
-                kind = wg_task_kind[independent_wg];
-                task = wg_task_index[independent_wg];
-            }
-            kind = __shfl_sync(0xffffffffu, kind, 0);
-            task = __shfl_sync(0xffffffffu, task, 0);
+            const int kind = wg_task_kind[independent_wg];
+            const int task = wg_task_index[independent_wg];
             if (kind == 0)
                 break;
             if (kind < 0) {
-                // No real task supplies the usual terminal WG barrier, so
-                // explicitly prevent lane 0 from overwriting this mailbox
-                // before all four warp leaders have consumed the retry.
-                independent_wg_sync<kIndependentTaskWGs>(independent_wg);
                 __nanosleep(64);
                 continue;
             }

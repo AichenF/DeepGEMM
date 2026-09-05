@@ -1,0 +1,30 @@
+Iteration 446: restore named-barrier WG mailbox after epoch regression
+Date: 2026-09-05
+
+Change
+------
+Removed the Iteration 443 per-WG volatile epoch, block fences, four warp-leader
+polls, and shuffle broadcasts.  Restored the prior lane-0 shared payload plus
+one 128-thread named barrier before task dispatch.  The corrected Hopper design
+analysis remains in the design document; only the rejected transport changed.
+
+Environment
+-----------
+Physical GPU 1; TORCH_CUDA_ARCH_LIST=9.0a;
+78-CTA/8-WG + real-SMID map + WG-DAG flags enabled;
+random routes, seed 20260904; prequantized FP8 input contract.
+
+Results
+-------
+M8 / SplitK=4: accepted, cosine 0.9999999999999999, rel-L2 0.0,
+finite, 360 padded rows, packed generation wrap passed.
+
+M128 / SplitK=2: accepted, cosine 1.0, rel-L2 0.0,
+finite, 1944 padded rows, packed generation wrap passed.
+
+Assessment
+----------
+PASS.  HEAD again uses the correct named-barrier task mailbox corresponding to
+the faster Iteration 432/433 execution path.  This correctness-only test does
+not supersede the previously measured 101.056-us M8 and 393.168-us M128 TP4
+cold medians; it establishes the safe source base for producer/math role work.

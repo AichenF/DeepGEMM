@@ -10958,3 +10958,21 @@ maximum rank latency of a full CUDA-Graph replay.
   destroys the hardware barrier's efficient collective behavior.  Do not run
   the full five-M gate for this candidate.
 - **Evidence:** `bench/evidence/iter445_warp_leader_epoch_mailbox_tp4_cold_screen.txt`.
+
+## Iteration 446 — restore faster named-barrier mailbox after rejection
+
+- **Hypothesis:** removing the epoch/fence/poll/shuffle transport should
+  restore the known-correct and materially faster Iteration 433 behavior.
+- **Change:** reverted only the Iteration 443 mailbox transport in
+  `v4_flash_tp_wgmma.py`; retained all new evidence and the corrected Hopper
+  architecture analysis.
+- **Test:** Python/JIT rebuild and physical-GPU1 random all-route correctness
+  at M8/SplitK=4 and M128/SplitK=2.
+- **Result:** **PASS**.  M8 cosine `0.9999999999999999`, relative L2 `0.0`,
+  finite, 360 padded rows; M128 cosine `1.0`, relative L2 `0.0`, finite, 1944
+  padded rows.  Packed replay-generation wrap checks pass.
+- **Analysis:** HEAD is again on the faster named-barrier implementation whose
+  TP4 medians were 101.056 us M8 and 393.168 us M128 in Iteration 432.  Future
+  work must target the actual Hopper producer/TMA-consumer pipeline rather
+  than another software replacement for the named barrier.
+- **Evidence:** `bench/evidence/iter446_restore_named_barrier_mailbox_correctness.txt`.
