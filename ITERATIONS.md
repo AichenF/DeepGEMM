@@ -10026,3 +10026,32 @@ maximum rank latency of a full CUDA-Graph replay.
   restore Iteration 399 and pursue a guard-free mapped-tail formulation.
 - Evidence:
   `results/iter404_78cta_internal_smid_map_correctness_resource_20260905.log`.
+
+## Iteration 405 — reject task-internal mapping by TP4 cold-L2 screen
+
+- Date: 2026-09-05
+- Configuration/protocol: Iteration 404 task-internal lookup, selected
+  multi-kernel control, TP4 GPUs 0-3, random routes, seed 20260904,
+  same-process replay-interleaved CUDA Graph timing, two batches x 10
+  samples/arm, two warmups and rank-max reduction.  Every replay used a
+  separate excluded 256 MiB L2 clear; both arms shared prequantized FP8 X and
+  MXFP4 weights.
+- Correctness: PASS and exactly matches control at M8/M128, including
+  all-reduce checks, cosine, rel-L2 and max-absolute error.
+- Cold-L2 result (control/candidate median): M8
+  `0.073584/0.089312 ms`, candidate 21.37% slower; M128
+  `0.301888/0.354624 ms`, candidate 17.47% slower.  Candidate batch medians
+  are 89.184/89.376 us and 355.472/353.376 us, so the regression is not a
+  single-batch direction flip.  Endpoint candidate/control geometric ratio
+  is 1.1941.
+- Comparison/interpretation: versus Iteration 400's caller-mapped winner,
+  candidate latency regresses by 1.152 us at M8 and 5.280 us at M128 despite
+  the smaller stack frame.  Uniformly invoking all eight WGs in each partial
+  final wave plus per-task validity checks costs more than the measured
+  spill traffic.
+- Decision: reject Iteration 404's task-internal mapping and restore the exact
+  Iteration 399 `v4_flash_tp_wgmma.py`, whose full-pipeline medians were
+  88.160/349.344 us.  Future mapping work must avoid both cross-inline caller
+  state and invalid final-wave calls rather than optimizing either alone.
+- Evidence:
+  `bench/results/iter405_internal_smid_map_tp4_m8_m128_cold_20260905.log`.
