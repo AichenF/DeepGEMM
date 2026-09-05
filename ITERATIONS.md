@@ -14276,3 +14276,30 @@ maximum rank latency of a full CUDA-Graph replay.
   TP4 M64/M128 distributed cold-L2 screen with embedded P2P two-shot enabled.
 - Evidence: `evidence/iter621_balanced_w2_workers_m128_gate.md` and
   `bench/results/iter621_balanced_w2_workers_m128_gate_20260905.log`.
+## Iteration 622 — W2-only balancing is decisively slower
+
+- Protocol: TP4 GPUs 0,5,6,7; M64/M128 random routes, seed 20260902;
+  same-source multi-kernel normalization; process order
+  OFF_A -> ON_A -> ON_B -> OFF_B; CUDA Graph; 2x20=40 samples per
+  implementation/M/window after four warmups.  A separate excluded 256 MiB
+  clear precedes every graph replay.
+- Correctness: all four windows pass on every rank with identical candidate
+  and control numerical metrics; embedded P2P two-shot all-reduce passes.
+- Candidate/control ratios:
+  M64 `1.132847/1.157209/1.157201/1.132357`;
+  M128 `1.130120/1.181292/1.179089/1.132480`;
+  two-shape geometric means
+  `1.131483/1.169188/1.168094/1.132419`.
+- Normalized effect: W2-only balancing is **2.17% slower at M64, 4.32%
+  slower at M128, and 3.24% slower geometrically**.  Both ON windows agree,
+  so this is not process drift and needs no long confirmation.
+- Interpretation: removing 33 M64 / 38 M128 logical W2 workers preserves the
+  arithmetic round count but reduces cold-weight/TMA concurrency throughout
+  every round.  That bandwidth loss is much larger than the sparse-tail wait
+  it removes, reproducing the mechanism seen in global Iteration 260 while
+  isolating it specifically to W2.
+- Decision: **reject; keep default off**.  Do not reduce participating W2
+  workers.  Any terminal-tail optimization must retain full-wave weight
+  concurrency and change only the residual wave or communication handoff.
+- Evidence: `evidence/iter622_balanced_w2_workers_short_rejection.md` and four
+  raw logs under `bench/results/iter622_*_20260905.log`.
