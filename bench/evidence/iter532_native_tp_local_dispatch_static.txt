@@ -1,0 +1,11 @@
+Iteration 532 TP-local direct dispatch static gate (2026-09-05)
+
+Command:
+  python3 -m py_compile v4_flash_tp_native_megamoe.py bench/v4_flash_tp_native_layout_ab.py
+  rg -n "TP_LOCAL_DISPATCH_FASTPATH|tp_local_dispatch|tld" v4_flash_tp_native_megamoe.py v4_flash_tp_native_body.inl bench/v4_flash_tp_native_layout_ab.py
+
+Result: PASS (exit 0)
+
+The candidate is default-off, has a distinct JIT identity, and is compared
+against an otherwise identical native module with the selected TP-local
+barrier fast path enabled in both arms.

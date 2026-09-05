@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
             "single_l1_warmup",
             "dual_dispatch",
             "tp_local_barriers",
+            "tp_local_dispatch",
         ),
         default="tile_tma",
     )
@@ -67,6 +68,7 @@ def load_native_variant(
     single_l1_warmup_wave: bool = False,
     dual_active_dispatch: bool = False,
     tp_local_barrier_fastpath: bool = False,
+    tp_local_dispatch_fastpath: bool = False,
 ) -> ModuleType:
     source = Path(__file__).resolve().parents[1] / "v4_flash_tp_native_megamoe.py"
     saved = {
@@ -77,6 +79,7 @@ def load_native_variant(
             "V4_NATIVE_SINGLE_L1_WARMUP_WAVE",
             "V4_NATIVE_DUAL_ACTIVE_DISPATCH",
             "V4_NATIVE_TP_LOCAL_BARRIER_FASTPATH",
+            "V4_NATIVE_TP_LOCAL_DISPATCH_FASTPATH",
         )
     }
     try:
@@ -90,6 +93,9 @@ def load_native_variant(
         )
         os.environ["V4_NATIVE_TP_LOCAL_BARRIER_FASTPATH"] = str(
             int(tp_local_barrier_fastpath)
+        )
+        os.environ["V4_NATIVE_TP_LOCAL_DISPATCH_FASTPATH"] = str(
+            int(tp_local_dispatch_fastpath)
         )
         spec = importlib.util.spec_from_file_location(alias, source)
         if spec is None or spec.loader is None:
@@ -176,12 +182,14 @@ def main() -> None:
 
     props = torch.cuda.get_device_properties(device)
     intermediate_per_rank = custom.INTERMEDIATE // world_size
+    dispatch_experiment = args.experiment == "tp_local_dispatch"
     control_module = load_native_variant(
         "v4_native_variant_control",
         tile_tma=False,
         single_l1_warmup_wave=False,
         dual_active_dispatch=False,
-        tp_local_barrier_fastpath=False,
+        tp_local_barrier_fastpath=dispatch_experiment,
+        tp_local_dispatch_fastpath=False,
     )
     if args.experiment == "tile_tma":
         candidate_module = load_native_variant(
@@ -190,6 +198,7 @@ def main() -> None:
             single_l1_warmup_wave=False,
             dual_active_dispatch=False,
             tp_local_barrier_fastpath=False,
+            tp_local_dispatch_fastpath=False,
         )
         benchmark_name = "native_80b_vs_single_tile_tma"
     elif args.experiment == "single_l1_warmup":
@@ -199,6 +208,7 @@ def main() -> None:
             single_l1_warmup_wave=True,
             dual_active_dispatch=False,
             tp_local_barrier_fastpath=False,
+            tp_local_dispatch_fastpath=False,
         )
         benchmark_name = "native_two_vs_one_l1_warmup_wave"
     elif args.experiment == "dual_dispatch":
@@ -208,17 +218,29 @@ def main() -> None:
             single_l1_warmup_wave=False,
             dual_active_dispatch=True,
             tp_local_barrier_fastpath=False,
+            tp_local_dispatch_fastpath=False,
         )
         benchmark_name = "native_single_vs_dual_active_dispatch"
-    else:
+    elif args.experiment == "tp_local_barriers":
         candidate_module = load_native_variant(
             "v4_native_variant_tp_local_barriers",
             tile_tma=False,
             single_l1_warmup_wave=False,
             dual_active_dispatch=False,
             tp_local_barrier_fastpath=True,
+            tp_local_dispatch_fastpath=False,
         )
         benchmark_name = "native_ep_vs_tp_local_barriers"
+    else:
+        candidate_module = load_native_variant(
+            "v4_native_variant_tp_local_dispatch",
+            tile_tma=False,
+            single_l1_warmup_wave=False,
+            dual_active_dispatch=False,
+            tp_local_barrier_fastpath=True,
+            tp_local_dispatch_fastpath=True,
+        )
+        benchmark_name = "native_tp_local_dispatch_copy"
     control_weights = make_variant_weights(
         control_module, intermediate_per_rank, device, args.seed, rank
     )
@@ -274,6 +296,12 @@ def main() -> None:
                     ),
                     "candidate_tp_local_barrier_fastpath": (
                         candidate_module.NATIVE_TP_LOCAL_BARRIER_FASTPATH
+                    ),
+                    "control_tp_local_dispatch_fastpath": (
+                        control_module.NATIVE_TP_LOCAL_DISPATCH_FASTPATH
+                    ),
+                    "candidate_tp_local_dispatch_fastpath": (
+                        candidate_module.NATIVE_TP_LOCAL_DISPATCH_FASTPATH
                     ),
                 },
                 sort_keys=True,

@@ -624,7 +624,8 @@
                 if (current_expert_idx >= kNumExpertsPerRank)
                     break;
 
-                if (old_expert_idx != current_expert_idx) {
+                if constexpr (!K_NATIVE_TP_LOCAL_DISPATCH_FASTPATH) {
+                  if (old_expert_idx != current_expert_idx) {
                     old_expert_idx = current_expert_idx;
                     #pragma unroll
                     for (uint32_t i = 0; i < kNumRanksPerLane; ++ i) {
@@ -632,51 +633,73 @@
                         stored_rank_count[i] = j < kNumRanks ?
                             static_cast<uint32_t>(*workspace.get_expert_recv_count_ptr(j, current_expert_idx)) : 0;
                     }
+                  }
                 }
 
-                // Round-robin rank selection (identical to SM100)
-                uint32_t current_rank_in_expert_idx;
+                // Pure TP has one local routing rank.  Keep the generic EP
+                // round-robin as the control but bypass its two warp-wide
+                // reductions per route in the TP-local fast path.
+                uint32_t current_rank_in_expert_idx = 0;
                 uint32_t remaining[kNumRanksPerLane];
-                #pragma unroll
-                for (uint32_t i = 0; i < kNumRanksPerLane; ++ i)
-                    remaining[i] = stored_rank_count[i];
-                uint32_t offset = 0;
                 uint32_t token_idx_in_expert = token_idx - expert_start_idx;
-                uint32_t slot_idx = token_idx_in_expert;
-                uint32_t token_idx_in_rank;
-                while (true) {
-                    uint32_t num_actives_in_lane = 0;
-                    uint32_t min_in_lane = 0xffffffff;
+                uint32_t token_idx_in_rank = token_idx_in_expert;
+                if constexpr (!K_NATIVE_TP_LOCAL_DISPATCH_FASTPATH) {
                     #pragma unroll
                     for (uint32_t i = 0; i < kNumRanksPerLane; ++ i) {
-                        num_actives_in_lane += remaining[i] > 0;
-                        if (remaining[i] > 0)
-                            min_in_lane = cute::min(min_in_lane, remaining[i]);
+                        remaining[i] = stored_rank_count[i];
                     }
-                    const uint32_t num_active_ranks = __reduce_add_sync(0xffffffff, num_actives_in_lane);
-                    const uint32_t length = __reduce_min_sync(0xffffffff, min_in_lane);
-
-                    const uint32_t num_round_tokens = length * num_active_ranks;
-                    if (slot_idx < num_round_tokens) {
-                        const uint32_t slot_idx_in_round = slot_idx % num_active_ranks;
-                        uint32_t num_seen_ranks = 0;
-                        current_rank_in_expert_idx = 0;
+                    uint32_t offset = 0;
+                    uint32_t slot_idx = token_idx_in_expert;
+                    while (true) {
+                        uint32_t num_actives_in_lane = 0;
+                        uint32_t min_in_lane = 0xffffffff;
                         #pragma unroll
                         for (uint32_t i = 0; i < kNumRanksPerLane; ++ i) {
-                            const uint32_t mask = __ballot_sync(0xffffffff, remaining[i] > 0);
-                            const uint32_t num_active_lanes = __popc(mask);
-                            if (slot_idx_in_round >= num_seen_ranks and slot_idx_in_round < num_seen_ranks + num_active_lanes)
-                                current_rank_in_expert_idx = i * 32 + __fns(mask, 0, slot_idx_in_round - num_seen_ranks + 1);
-                            num_seen_ranks += num_active_lanes;
+                            num_actives_in_lane += remaining[i] > 0;
+                            if (remaining[i] > 0)
+                                min_in_lane = cute::min(min_in_lane, remaining[i]);
                         }
-                        token_idx_in_rank = offset + (slot_idx / num_active_ranks);
-                        break;
+                        const uint32_t num_active_ranks =
+                            __reduce_add_sync(0xffffffff, num_actives_in_lane);
+                        const uint32_t length =
+                            __reduce_min_sync(0xffffffff, min_in_lane);
+
+                        const uint32_t num_round_tokens =
+                            length * num_active_ranks;
+                        if (slot_idx < num_round_tokens) {
+                            const uint32_t slot_idx_in_round =
+                                slot_idx % num_active_ranks;
+                            uint32_t num_seen_ranks = 0;
+                            current_rank_in_expert_idx = 0;
+                            #pragma unroll
+                            for (uint32_t i = 0;
+                                 i < kNumRanksPerLane; ++ i) {
+                                const uint32_t mask = __ballot_sync(
+                                    0xffffffff, remaining[i] > 0);
+                                const uint32_t num_active_lanes = __popc(mask);
+                                if (slot_idx_in_round >= num_seen_ranks and
+                                    slot_idx_in_round <
+                                        num_seen_ranks + num_active_lanes) {
+                                    current_rank_in_expert_idx =
+                                        i * 32 + __fns(
+                                            mask, 0,
+                                            slot_idx_in_round -
+                                                num_seen_ranks + 1);
+                                }
+                                num_seen_ranks += num_active_lanes;
+                            }
+                            token_idx_in_rank =
+                                offset + (slot_idx / num_active_ranks);
+                            break;
+                        }
+                        slot_idx -= num_round_tokens;
+                        offset += length;
+                        #pragma unroll
+                        for (uint32_t i = 0;
+                             i < kNumRanksPerLane; ++ i) {
+                            remaining[i] -= cute::min(remaining[i], length);
+                        }
                     }
-                    slot_idx -= num_round_tokens;
-                    offset += length;
-                    #pragma unroll
-                    for (uint32_t i = 0; i < kNumRanksPerLane; ++ i)
-                        remaining[i] -= cute::min(remaining[i], length);
                 }
 
                 const uint32_t src_token_topk_idx = *workspace.get_src_token_topk_idx_ptr(
@@ -684,15 +707,35 @@
                 const uint32_t src_token_idx = src_token_topk_idx / kNumTopk;
                 const uint32_t src_topk_idx  = src_token_topk_idx % kNumTopk;
 
-                // TMA pull token data into SMEM
-                if (cute::elect_one_sync()) {
-                    ptx::tma_load_1d(
-                        pull_buffer.get_base_ptr(),
-                        sym_buffer.map(input_token_buffer.get_data_buffer(src_token_idx).get_base_ptr(),
-                                       current_rank_in_expert_idx),
-                        pull_mbarrier, kHidden);
+                const uint32_t pool_token_idx =
+                    expert_pool_block_offset * BLOCK_M + token_idx_in_expert;
+
+                if constexpr (K_NATIVE_TP_LOCAL_DISPATCH_FASTPATH) {
+                    constexpr uint32_t kTokenVecs = kHidden / sizeof(uint4);
+                    const auto src = input_token_buffer
+                        .get_data_buffer(src_token_idx)
+                        .get_base_ptr<const uint4>();
+                    auto dst = l1_token_buffer
+                        .get_data_buffer(pool_token_idx)
+                        .get_base_ptr<uint4>();
+                    #pragma unroll
+                    for (uint32_t j = lane_idx; j < kTokenVecs; j += 32)
+                        dst[j] = src[j];
+                    __syncwarp();
+                } else {
+                    // Generic EP path: TMA pull token data into SMEM.
+                    if (cute::elect_one_sync()) {
+                        ptx::tma_load_1d(
+                            pull_buffer.get_base_ptr(),
+                            sym_buffer.map(
+                                input_token_buffer
+                                    .get_data_buffer(src_token_idx)
+                                    .get_base_ptr(),
+                                current_rank_in_expert_idx),
+                            pull_mbarrier, kHidden);
+                    }
+                    __syncwarp();
                 }
-                __syncwarp();
 
                 // Copy SF: per-128 K floats, written linearly (no UTCCP transpose).
                 constexpr uint32_t kNumSFFloats = kHidden / 128;
@@ -701,8 +744,6 @@
                     input_sf_buffer.get_data_buffer(src_token_idx).get_base_ptr<float>(),
                     current_rank_in_expert_idx);
                 const auto local_sf_ptr  = l1_sf_buffer.get_base_ptr<float>();
-                const uint32_t pool_token_idx =
-                    expert_pool_block_offset * BLOCK_M + token_idx_in_expert;
                 #pragma unroll
                 for (uint32_t i = 0; i < math::constexpr_ceil_div(kNumSFFloats, 32u); ++ i) {
                     const uint32_t j = i * 32 + lane_idx;
@@ -712,23 +753,37 @@
                 __syncwarp();
 
                 if (cute::elect_one_sync()) {
-                    const auto weight = *sym_buffer.map(
-                        input_topk_weights_buffer.get_base_ptr<float>() + src_token_topk_idx,
-                        current_rank_in_expert_idx);
+                    const auto weight =
+                        K_NATIVE_TP_LOCAL_DISPATCH_FASTPATH
+                        ? input_topk_weights_buffer.get_base_ptr<float>()[
+                              src_token_topk_idx]
+                        : *sym_buffer.map(
+                              input_topk_weights_buffer.get_base_ptr<float>()
+                                  + src_token_topk_idx,
+                              current_rank_in_expert_idx);
                     *l1_topk_weights_buffer.get_data_buffer(pool_token_idx).get_base_ptr<float>() = weight;
 
-                    ptx::mbarrier_arrive_and_set_tx(pull_mbarrier, kHidden);
-                    ptx::mbarrier_wait_and_flip_phase(pull_mbarrier, pull_mbarrier_phase);
+                    if constexpr (!K_NATIVE_TP_LOCAL_DISPATCH_FASTPATH) {
+                        ptx::mbarrier_arrive_and_set_tx(
+                            pull_mbarrier, kHidden);
+                        ptx::mbarrier_wait_and_flip_phase(
+                            pull_mbarrier, pull_mbarrier_phase);
 
-                    ptx::tma_store_1d(
-                        l1_token_buffer.get_data_buffer(pool_token_idx).get_base_ptr(),
-                        pull_buffer.get_base_ptr(), pull_buffer.get_num_bytes());
+                        ptx::tma_store_1d(
+                            l1_token_buffer
+                                .get_data_buffer(pool_token_idx)
+                                .get_base_ptr(),
+                            pull_buffer.get_base_ptr(),
+                            pull_buffer.get_num_bytes());
+                    }
 
                     *workspace.get_token_src_metadata_ptr(pool_token_idx) =
                         {current_rank_in_expert_idx, src_token_idx, src_topk_idx};
 
-                    cute::tma_store_arrive();
-                    ptx::tma_store_wait<0>();
+                    if constexpr (!K_NATIVE_TP_LOCAL_DISPATCH_FASTPATH) {
+                        cute::tma_store_arrive();
+                        ptx::tma_store_wait<0>();
+                    }
                     ptx::red_add_rel(
                         workspace.get_l1_arrival_count_ptr(
                             expert_pool_block_offset + token_idx_in_expert / BLOCK_M),

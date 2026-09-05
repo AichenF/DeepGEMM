@@ -12809,3 +12809,24 @@ maximum rank latency of a full CUDA-Graph replay.
   no final performance claim is made from this local correctness run.
 - **Evidence:**
   `bench/results/iter531_native_tp_local_barriers_default_m8_m128_20260905.log`.
+## Iteration 532 — wire TP-local direct route-pool copy
+
+- **Hypothesis/change:** after selecting the rank-1 barrier fast path, native
+  dispatch still runs the EP round-robin rank-selection loop for every sorted
+  route and stages each local FP8 X row through TMA global-to-shared followed
+  by TMA shared-to-global.  Add default-off
+  `V4_NATIVE_TP_LOCAL_DISPATCH_FASTPATH=1`: rank and within-rank slot reduce
+  directly to `(0, token_idx_in_expert)`, and one warp copies the 4096-byte X
+  row from the local input to the expert-major pool with coalesced `uint4`
+  loads/stores.  Existing per-route scale/weight/metadata writes and the
+  release arrival counter preserve the scheduler dependency contract.
+- **Isolation:** the same-process `tp_local_dispatch` A/B enables the retained
+  barrier fast path in both modules and changes only the dispatch/copy flag.
+  The generic EP route logic stays compiled as an explicit control and all
+  W13/W2/collective code is unchanged.
+- **Test:** local Python bytecode compilation plus exact flag/macro/JIT/body
+  and A/B wiring audit.
+- **Result:** **PASS static gate.**  No CUDA build, memory-safety, correctness
+  or performance claim is made yet.
+- **Evidence:**
+  `bench/evidence/iter532_native_tp_local_dispatch_static.txt`.
