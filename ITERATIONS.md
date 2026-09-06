@@ -17463,3 +17463,21 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter713x_selective_rdc_tp4_m128_cold_smoke_20260906.log` and
   `evidence/iter713x_selective_rdc_runtime_rejection.md`.
+
+## Iteration 713y — matched ordinary unbounded path is indistinguishable
+
+- **Matched control:** run the exact unbounded/whole-W2-phase configuration
+  entirely from the ordinary same-ABI non-RDC library on the same TP4 M128
+  cold-L2 harness.  Both paths pass the independent correctness/all-reduce
+  gate with the same metrics as Iteration 713x.
+- **Short result:** ordinary multi `0.303455994 ms`, ordinary unbounded single
+  `0.362560004 ms`, single/multi `1.194769626` over 20 cold samples/path.
+- **RDC comparison:** Iteration 713x's RDC single is `0.362591997 ms`, only
+  `0.000031993 ms` or 0.0088% slower than ordinary, hence no visible benefit.
+- **Remaining ambiguity:** both loaded libraries export same-named C++ host
+  and CUDA symbols; ELF interposition could make the second module's binding
+  resolve the first definition.  Require a uniquely renamed RDC host/kernel
+  entry for the final attribution before closing this path.
+- **Evidence:**
+  `bench/results/iter713y_nonrdc_unbounded_tp4_m128_cold_smoke_20260906.log`
+  and `evidence/iter713y_matched_nonrdc_unbounded_anchor.md`.
