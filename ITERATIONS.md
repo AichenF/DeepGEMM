@@ -16008,3 +16008,25 @@ maximum rank latency of a full CUDA-Graph replay.
   unaffected same-source multi path; cold-L2 phase timing is allowed only if
   the numerical error is acceptable.
 - **Evidence:** `evidence/iter696_w2_f16_accum_implementation.md`.
+
+## Iteration 697 — First W2 FP16-accumulator JIT exposes fence overload mismatch
+
+- **Configuration:** physical H20 GPU1, M128 random routes/seed 20260902,
+  selected TP4 bundle plus
+  `V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM=1`; extension
+  `v4tp_790c6b763a4cf8954fae_v178mspec` was built through the pinned
+  benchmark environment runner.
+- **Result:** **compile failure before CUDA launch.**  The two packed
+  accumulator registers were passed to DeepGEMM's
+  `deep_gemm::ptx::warpgroup_fence_operand`, whose local wrapper exposes only
+  a `float&` overload.  nvcc rejects both candidate call sites because a
+  `uint32_t` cannot bind to `float&`.  CuTe's included SM90 GMMA header does
+  provide the required `cute::warpgroup_fence_operand(uint32_t&)` overload;
+  the WGMMA instruction itself was accepted up to this front-end type check.
+- **Decision:** this is a bounded implementation defect, not a performance or
+  correctness result.  Keep the experiment and redirect only packed-FP16
+  accumulator fences to CuTe's uint32 overload; retain the existing
+  DeepGEMM FP32 fences unchanged.  No cache clear, kernel execution, resource
+  result, numerical comparison, or timing occurred.
+- **Evidence:** `evidence/iter697_w2_f16_accum_compile_failure.md`; raw log
+  `bench/results/iter697_w2_f16_accum_m128_correctness.log`.

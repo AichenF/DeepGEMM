@@ -1,0 +1,116 @@
+/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.3.0) or chardet (7.4.3)/charset_normalizer (3.4.1) doesn't match a supported version!
+  warnings.warn(
+Traceback (most recent call last):
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/cpp_extension.py", line 2774, in _run_ninja_build
+    subprocess.run(
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['ninja', '-v']' returned non-zero exit status 1.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 156, in <module>
+    main()
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 152, in main
+    runpy.run_path(target, run_name="__main__")
+  File "<frozen runpy>", line 287, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "bench/profile_v4_flash_tp_single_compute.py", line 12, in <module>
+    import v4_flash_tp_wgmma as kernel
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 12001, in <module>
+    _ext = load_inline(
+           ^^^^^^^^^^^^
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/cpp_extension.py", line 2174, in load_inline
+    return _jit_compile(
+           ^^^^^^^^^^^^^
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/cpp_extension.py", line 2268, in _jit_compile
+    _write_ninja_file_and_build_library(
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/cpp_extension.py", line 2429, in _write_ninja_file_and_build_library
+    _run_ninja_build(
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/cpp_extension.py", line 2791, in _run_ninja_build
+    raise RuntimeError(message) from e
+RuntimeError: Error building extension 'v4tp_790c6b763a4cf8954fae_v178mspec': [1/3] c++ -MMD -MF main.o.d -DTORCH_EXTENSION_NAME=v4tp_790c6b763a4cf8954fae_v178mspec -DTORCH_API_INCLUDE_EXTENSION_H -isystem /home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/include -isystem /home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /home/xutingz/workspace/miniforge3/include/python3.12 -fPIC -std=c++17 -c /tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/main.cpp -o main.o 
+[2/3] /usr/local/cuda/bin/nvcc -MD -MF cuda.cuda.o.d -DTORCH_EXTENSION_NAME=v4tp_790c6b763a4cf8954fae_v178mspec -DTORCH_API_INCLUDE_EXTENSION_H -isystem /home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/include -isystem /home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /home/xutingz/workspace/miniforge3/include/python3.12 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options '-fPIC' -O3 -DK_WOUT=128 -DK_LUT_ROWS=256 -DK_SCALE_QUAD_REUSE=4 -DK_SCALE_BUFFERS=2 -DK_WEIGHT_STAGES=2 -DK_WEIGHT_SWIZZLE=64 -DK_WEIGHT_COMMON_ADDRESS=1 -DK_DEQUANT_DP4A_HI=1 -DK_DEQUANT_DP4A_LO=1 -DK_DEQUANT_SYNTH_LUT=0 -DK_NORMALIZED_WEIGHT_SCALE=1 -DK_NORMALIZED_SHARED_LUT=0 -DK_ACTIVATION_EVICT_LAST=0 -DK_PREDICATED_PADDED_ACTIVATION=0 -DK_TILED_WEIGHT_LAYOUT=1 -DK_BULK_WEIGHT_COPY=1 -DK_TMA_CTA_SCOPE=0 -DK_WEIGHT_EVICT_FIRST=1 -DK_WEIGHT_POLICY_HOIST=0 -DK_WEIGHT_POLICY_CONSTANT=0 -DK_W2_NO_WEIGHT_EVICT_FIRST=0 -DK_INTERLEAVED_BULK_COPY=1 -DK_COMPACT_INTERLEAVED_SCALE=1 -DK_MODE2_BRAID=1 -DK_W2_GLOBAL_LUT=0 -DK_W2_S2R_PREFETCH=1 -DK_W13_S2R_PREFETCH=1 -DK_LEADER_MBAR_WAIT=1 -DK_DIRECT_BARRIER_ADDR=0 -DK_ROUTE_K_UNROLL2=1 -DK_ROUTE_K_UNROLL4=1 -DK_ROUTE_K_UNROLL8=0 -DK_ROUTE_K_UNROLL8_SPLIT2=0 -DK_W13_K_UNROLL8_SPLIT2=0 -DK_W13_K_UNROLL16_SPLIT2=0 -DK_W13_DISTRIBUTED_PREP=1 -DK_W13_DUAL_WG_SPLIT=0 -DK_W2_DISTRIBUTED_PREP=1 -DK_W13_MERGED_WGMMA_GROUP=0 -DK_W2_ROUTE_OUTPUT=1 -DK_W2_SORTED_ACT=0 -DK_W2_MBLOCK_SCALE=0 -DK_W2_FOLD_GLOBAL_SCALE=0 -DK_W2_COALESCED_STORE=0 -DK_SINGLE_LAUNCH_SCHEDULE=0 -DK_SINGLE_LAUNCH_NOINLINE_GEMM=0 -DK_SINGLE_LAUNCH_W13_PHASE_NOINLINE=1 -DK_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI=1 -DK_SINGLE_LAUNCH_W2_PHASE_NOINLINE=0 -DK_SINGLE_LAUNCH_MIN_BLOCKS=8 -DK_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM=1 -DK_SINGLE_LAUNCH_M128_BOUND9=1 -DK_SINGLE_LAUNCH_W2_UNROLL2_BOUND9=0 -DK_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE=0 -DK_SINGLE_LAUNCH_W2_PERSISTENT_STATE=0 -DK_SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE=0 -DK_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS=0 -DK_SINGLE_LAUNCH_W13_WAVE_ROTATE=13 -DK_SINGLE_LAUNCH_W2_WAVE_ROTATE=82 -DK_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH=0 -DK_SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH=0 -DK_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS=1 -DK_SINGLE_LAUNCH_W2_CHUNK_MAJOR=0 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP=0 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED=0 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY=0 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE=3 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE=0 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_L2_LOAD=0 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_POST=0 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT=0 -DK_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE=0 -DK_SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES=8 -DK_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE=0 -DK_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM=1 -DK_SINGLE_LAUNCH_COOPERATIVE_GRID=0 -DK_SINGLE_LAUNCH_RELAXED_GRID_POLL=1 -DK_SINGLE_LAUNCH_ADAPTIVE_GRID_POLL=0 -DK_SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS=512 -DK_SINGLE_LAUNCH_PHASE_STAMPS=0 -DK_SINGLE_LAUNCH_PACKED_GRID_BARRIER=1 -DK_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL=1 -DK_SINGLE_LAUNCH_BALANCED_WORKERS=0 -DK_SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS=0 -DK_SINGLE_LAUNCH_BALANCED_W2_WORKERS=0 -DK_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS=64 -DK_SINGLE_LAUNCH_GRID_BARRIER_POLL_WARP=0 -DK_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC=0 -DK_SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC=0 -DK_SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC=0 -DK_SINGLE_LAUNCH_HIERARCHICAL_GRID=0 -DK_SINGLE_LAUNCH_TAIL_OVERLAP=0 -DK_SINGLE_LAUNCH_TAIL_ACT_ONLY=0 -DK_SINGLE_LAUNCH_TAIL_GROUP_CTAS=16 -DK_SINGLE_LAUNCH_GROUPED_W13_ACT=0 -DK_SINGLE_LAUNCH_ACT_W2_COHORT=0 -DK_SINGLE_LAUNCH_W13_COMPLETION_ACT=0 -DK_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE=0 -DK_SINGLE_LAUNCH_W13_N64_TAIL=0 -DK_SINGLE_LAUNCH_W2_N64_TAIL=0 -DK_SINGLE_LAUNCH_W13_TAIL_SPLIT4=0 -DK_SINGLE_LAUNCH_CLUSTER_W13_ACT=0 -DK_SINGLE_LAUNCH_DUAL_WG_PHASES=0 -DK_SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM=4 -DK_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT=0 -DK_SINGLE_LAUNCH_78CTA_8WG=0 -DK_SINGLE_LAUNCH_156CTA_4WG=0 -DK_SINGLE_LAUNCH_TRACE_SMID=0 -DK_SINGLE_LAUNCH_78CTA_SMID_MAP=0 -DK_SINGLE_LAUNCH_SM_STRIPED_TASKS=0 -DK_SINGLE_LAUNCH_78CTA_WG_DAG=0 -DK_SINGLE_LAUNCH_78CTA_LOCAL_W13=0 -DK_SINGLE_LAUNCH_GROUP_CTAS=16 -DK_SINGLE_LAUNCH_NVLS_BLOCKS=64 -DK_SINGLE_LAUNCH_P2P_TWO_SHOT=1 -DK_SINGLE_LAUNCH_P2P_NOINLINE=0 -DK_SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS=64 -DK_MIN_BLOCKS_PER_SM=0 -DK_W13_LAUNCH_BOUND_10=0 -DK_W13_MAX_SMEM_CARVEOUT=0 --expt-relaxed-constexpr --expt-extended-lambda -gencode arch=compute_90a,code=sm_90a -std=c++17 -lineinfo -I/lustre/raplab/client/xutingz/fac/DeepGEMM/deep_gemm/include -c /tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu -o cuda.cuda.o 
+FAILED: cuda.cuda.o 
+/usr/local/cuda/bin/nvcc -MD -MF cuda.cuda.o.d -DTORCH_EXTENSION_NAME=v4tp_790c6b763a4cf8954fae_v178mspec -DTORCH_API_INCLUDE_EXTENSION_H -isystem /home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/include -isystem /home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /home/xutingz/workspace/miniforge3/include/python3.12 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options '-fPIC' -O3 -DK_WOUT=128 -DK_LUT_ROWS=256 -DK_SCALE_QUAD_REUSE=4 -DK_SCALE_BUFFERS=2 -DK_WEIGHT_STAGES=2 -DK_WEIGHT_SWIZZLE=64 -DK_WEIGHT_COMMON_ADDRESS=1 -DK_DEQUANT_DP4A_HI=1 -DK_DEQUANT_DP4A_LO=1 -DK_DEQUANT_SYNTH_LUT=0 -DK_NORMALIZED_WEIGHT_SCALE=1 -DK_NORMALIZED_SHARED_LUT=0 -DK_ACTIVATION_EVICT_LAST=0 -DK_PREDICATED_PADDED_ACTIVATION=0 -DK_TILED_WEIGHT_LAYOUT=1 -DK_BULK_WEIGHT_COPY=1 -DK_TMA_CTA_SCOPE=0 -DK_WEIGHT_EVICT_FIRST=1 -DK_WEIGHT_POLICY_HOIST=0 -DK_WEIGHT_POLICY_CONSTANT=0 -DK_W2_NO_WEIGHT_EVICT_FIRST=0 -DK_INTERLEAVED_BULK_COPY=1 -DK_COMPACT_INTERLEAVED_SCALE=1 -DK_MODE2_BRAID=1 -DK_W2_GLOBAL_LUT=0 -DK_W2_S2R_PREFETCH=1 -DK_W13_S2R_PREFETCH=1 -DK_LEADER_MBAR_WAIT=1 -DK_DIRECT_BARRIER_ADDR=0 -DK_ROUTE_K_UNROLL2=1 -DK_ROUTE_K_UNROLL4=1 -DK_ROUTE_K_UNROLL8=0 -DK_ROUTE_K_UNROLL8_SPLIT2=0 -DK_W13_K_UNROLL8_SPLIT2=0 -DK_W13_K_UNROLL16_SPLIT2=0 -DK_W13_DISTRIBUTED_PREP=1 -DK_W13_DUAL_WG_SPLIT=0 -DK_W2_DISTRIBUTED_PREP=1 -DK_W13_MERGED_WGMMA_GROUP=0 -DK_W2_ROUTE_OUTPUT=1 -DK_W2_SORTED_ACT=0 -DK_W2_MBLOCK_SCALE=0 -DK_W2_FOLD_GLOBAL_SCALE=0 -DK_W2_COALESCED_STORE=0 -DK_SINGLE_LAUNCH_SCHEDULE=0 -DK_SINGLE_LAUNCH_NOINLINE_GEMM=0 -DK_SINGLE_LAUNCH_W13_PHASE_NOINLINE=1 -DK_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI=1 -DK_SINGLE_LAUNCH_W2_PHASE_NOINLINE=0 -DK_SINGLE_LAUNCH_MIN_BLOCKS=8 -DK_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM=1 -DK_SINGLE_LAUNCH_M128_BOUND9=1 -DK_SINGLE_LAUNCH_W2_UNROLL2_BOUND9=0 -DK_SINGLE_LAUNCH_PERSISTENT_GEMM_STATE=0 -DK_SINGLE_LAUNCH_W2_PERSISTENT_STATE=0 -DK_SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE=0 -DK_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS=0 -DK_SINGLE_LAUNCH_W13_WAVE_ROTATE=13 -DK_SINGLE_LAUNCH_W2_WAVE_ROTATE=82 -DK_SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH=0 -DK_SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH=0 -DK_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS=1 -DK_SINGLE_LAUNCH_W2_CHUNK_MAJOR=0 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP=0 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_DEDICATED=0 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_WAIT_ONLY=0 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_HELPER_STAGE=3 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_STRONG_PRODUCER_FENCE=0 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_L2_LOAD=0 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_POST=0 -DK_SINGLE_LAUNCH_W2_CHUNK_AR_POST_CONCURRENT=0 -DK_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE=0 -DK_SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES=8 -DK_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE=0 -DK_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM=1 -DK_SINGLE_LAUNCH_COOPERATIVE_GRID=0 -DK_SINGLE_LAUNCH_RELAXED_GRID_POLL=1 -DK_SINGLE_LAUNCH_ADAPTIVE_GRID_POLL=0 -DK_SINGLE_LAUNCH_ADAPTIVE_GRID_POLL_MAX_NS=512 -DK_SINGLE_LAUNCH_PHASE_STAMPS=0 -DK_SINGLE_LAUNCH_PACKED_GRID_BARRIER=1 -DK_SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL=1 -DK_SINGLE_LAUNCH_BALANCED_WORKERS=0 -DK_SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS=0 -DK_SINGLE_LAUNCH_BALANCED_W2_WORKERS=0 -DK_SINGLE_LAUNCH_GRID_POLL_SLEEP_NS=64 -DK_SINGLE_LAUNCH_GRID_BARRIER_POLL_WARP=0 -DK_SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC=0 -DK_SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC=0 -DK_SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC=0 -DK_SINGLE_LAUNCH_HIERARCHICAL_GRID=0 -DK_SINGLE_LAUNCH_TAIL_OVERLAP=0 -DK_SINGLE_LAUNCH_TAIL_ACT_ONLY=0 -DK_SINGLE_LAUNCH_TAIL_GROUP_CTAS=16 -DK_SINGLE_LAUNCH_GROUPED_W13_ACT=0 -DK_SINGLE_LAUNCH_ACT_W2_COHORT=0 -DK_SINGLE_LAUNCH_W13_COMPLETION_ACT=0 -DK_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE=0 -DK_SINGLE_LAUNCH_W13_N64_TAIL=0 -DK_SINGLE_LAUNCH_W2_N64_TAIL=0 -DK_SINGLE_LAUNCH_W13_TAIL_SPLIT4=0 -DK_SINGLE_LAUNCH_CLUSTER_W13_ACT=0 -DK_SINGLE_LAUNCH_DUAL_WG_PHASES=0 -DK_SINGLE_LAUNCH_DUAL_WG_CTAS_PER_SM=4 -DK_SINGLE_LAUNCH_DUAL_WG_PRIVATE_ACT=0 -DK_SINGLE_LAUNCH_78CTA_8WG=0 -DK_SINGLE_LAUNCH_156CTA_4WG=0 -DK_SINGLE_LAUNCH_TRACE_SMID=0 -DK_SINGLE_LAUNCH_78CTA_SMID_MAP=0 -DK_SINGLE_LAUNCH_SM_STRIPED_TASKS=0 -DK_SINGLE_LAUNCH_78CTA_WG_DAG=0 -DK_SINGLE_LAUNCH_78CTA_LOCAL_W13=0 -DK_SINGLE_LAUNCH_GROUP_CTAS=16 -DK_SINGLE_LAUNCH_NVLS_BLOCKS=64 -DK_SINGLE_LAUNCH_P2P_TWO_SHOT=1 -DK_SINGLE_LAUNCH_P2P_NOINLINE=0 -DK_SINGLE_LAUNCH_P2P_TWO_SHOT_BLOCKS=64 -DK_MIN_BLOCKS_PER_SM=0 -DK_W13_LAUNCH_BOUND_10=0 -DK_W13_MAX_SMEM_CARVEOUT=0 --expt-relaxed-constexpr --expt-extended-lambda -gencode arch=compute_90a,code=sm_90a -std=c++17 -lineinfo -I/lustre/raplab/client/xutingz/fac/DeepGEMM/deep_gemm/include -c /tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu -o cuda.cuda.o 
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(395): warning #550-D: variable "state" was set but never used
+      uint64_t state;
+               ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(6122): warning #177-D: variable "tail_activation_safe_mblocks" was declared but never referenced
+          int tail_activation_safe_mblocks = 0;
+              ^
+          detected during instantiation of "void launch_tp4_megamoe_single<SplitK,Tokens>(const CUtensorMap &, const CUtensorMap &, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, int, int64_t, int64_t, int64_t, int64_t, int, __nv_bool) [with SplitK=2, Tokens=8]" at line 9107
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(5020): warning #177-D: variable "scheduler" was declared but never referenced
+      int32_t* scheduler =
+               ^
+          detected during instantiation of "void launch_tp4_megamoe_single<SplitK,Tokens>(const CUtensorMap &, const CUtensorMap &, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, int, int64_t, int64_t, int64_t, int64_t, int, __nv_bool) [with SplitK=2, Tokens=8]" at line 9107
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(1437): error: a reference of type "float &" (not const-qualified) cannot be initialized with a value of type "uint32_t" (aka "unsigned int")
+                              tile_f16[group][value]);
+                              ^
+          detected during:
+            instantiation of "void route_gemm_task<K,N,SplitK,IsW13,LaunchNTiles,PublishW2Progress,DualWgW13,PersistentState,WgmmaHalf,SharedPartial,ForcedKUnroll,AssumeValidMblock,BulkReduceW2,AtomicCombineW2,IndependentTaskWGs,F16WgmmaAccum>(const CUtensorMap *, const CUtensorMap *, const uint8_t *, const uint8_t *, const float *, const uint8_t *, const float *, const int32_t *, const int32_t *, const int32_t *, const float *, float *, const uint2 *, int32_t *, int, int, int, int, float *, int) [with K=512, N=4096, SplitK=1, IsW13=false, LaunchNTiles=0, PublishW2Progress=false, DualWgW13=false, PersistentState=false, WgmmaHalf=-1, SharedPartial=false, ForcedKUnroll=0, AssumeValidMblock=true, BulkReduceW2=false, AtomicCombineW2=false, IndependentTaskWGs=1, F16WgmmaAccum=true]" at line 7044
+            instantiation of "void tp4_megamoe_single_launch_kernel<SplitK,Tokens>(CUtensorMap, CUtensorMap, CUtensorMap, CUtensorMap, const uint8_t *, const uint8_t *, const float *, const uint8_t *, const uint8_t *, const float *, const uint8_t *, const float *, const int32_t *, const float *, int32_t *, int32_t *, int32_t *, float *, __nv_bfloat16 *, uint8_t *, float *, __nv_bfloat16 *, const uint2 *, int32_t *, int32_t *, __nv_bfloat16 *, uint32_t *, uint8_t *, uint8_t *, uint8_t *, uint8_t *, uint8_t *, __nv_bfloat16 *, const uint8_t *, uint8_t *, uint8_t *, int, int, int64_t, __nv_bool) [with SplitK=2, Tokens=8]" at line 8684
+            instantiation of "void launch_tp4_megamoe_single<SplitK,Tokens>(const CUtensorMap &, const CUtensorMap &, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, int, int64_t, int64_t, int64_t, int64_t, int, __nv_bool) [with SplitK=2, Tokens=8]" at line 9107
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(1660): error: a reference of type "float &" (not const-qualified) cannot be initialized with a value of type "uint32_t" (aka "unsigned int")
+                                  tile_f16[group][value]);
+                                  ^
+          detected during:
+            instantiation of "void route_gemm_task<K,N,SplitK,IsW13,LaunchNTiles,PublishW2Progress,DualWgW13,PersistentState,WgmmaHalf,SharedPartial,ForcedKUnroll,AssumeValidMblock,BulkReduceW2,AtomicCombineW2,IndependentTaskWGs,F16WgmmaAccum>(const CUtensorMap *, const CUtensorMap *, const uint8_t *, const uint8_t *, const float *, const uint8_t *, const float *, const int32_t *, const int32_t *, const int32_t *, const float *, float *, const uint2 *, int32_t *, int, int, int, int, float *, int) [with K=512, N=4096, SplitK=1, IsW13=false, LaunchNTiles=0, PublishW2Progress=false, DualWgW13=false, PersistentState=false, WgmmaHalf=-1, SharedPartial=false, ForcedKUnroll=0, AssumeValidMblock=true, BulkReduceW2=false, AtomicCombineW2=false, IndependentTaskWGs=1, F16WgmmaAccum=true]" at line 7044
+            instantiation of "void tp4_megamoe_single_launch_kernel<SplitK,Tokens>(CUtensorMap, CUtensorMap, CUtensorMap, CUtensorMap, const uint8_t *, const uint8_t *, const float *, const uint8_t *, const uint8_t *, const float *, const uint8_t *, const float *, const int32_t *, const float *, int32_t *, int32_t *, int32_t *, float *, __nv_bfloat16 *, uint8_t *, float *, __nv_bfloat16 *, const uint2 *, int32_t *, int32_t *, __nv_bfloat16 *, uint32_t *, uint8_t *, uint8_t *, uint8_t *, uint8_t *, uint8_t *, __nv_bfloat16 *, const uint8_t *, uint8_t *, uint8_t *, int, int, int64_t, __nv_bool) [with SplitK=2, Tokens=8]" at line 8684
+            instantiation of "void launch_tp4_megamoe_single<SplitK,Tokens>(const CUtensorMap &, const CUtensorMap &, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, int, int64_t, int64_t, int64_t, int64_t, int, __nv_bool) [with SplitK=2, Tokens=8]" at line 9107
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(72): warning #177-D: variable "kRouteKUnroll2" was declared but never referenced
+  static constexpr bool kRouteKUnroll2 = 1;
+                        ^
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(73): warning #177-D: variable "kRouteKUnroll4" was declared but never referenced
+  static constexpr bool kRouteKUnroll4 = 1;
+                        ^
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(74): warning #177-D: variable "kRouteKUnroll8" was declared but never referenced
+  static constexpr bool kRouteKUnroll8 = 0;
+                        ^
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(75): warning #177-D: variable "kRouteKUnroll8Split2" was declared but never referenced
+  static constexpr bool kRouteKUnroll8Split2 = 0;
+                        ^
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(76): warning #177-D: variable "kW13KUnroll8Split2" was declared but never referenced
+  static constexpr bool kW13KUnroll8Split2 = 0;
+                        ^
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(77): warning #177-D: variable "kW13KUnroll16Split2" was declared but never referenced
+  static constexpr bool kW13KUnroll16Split2 = 0;
+                        ^
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(117): warning #177-D: variable "kSingleLaunchRouteDynamicSmem" was declared but never referenced
+  static constexpr bool kSingleLaunchRouteDynamicSmem =
+                        ^
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(157): warning #177-D: variable "kSingleLaunchW2ChunkArPostConcurrent" was declared but never referenced
+  static constexpr bool kSingleLaunchW2ChunkArPostConcurrent =
+                        ^
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(235): warning #177-D: variable "kSingleLaunch78CtaSmidMap" was declared but never referenced
+  static constexpr bool kSingleLaunch78CtaSmidMap =
+                        ^
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(249): warning #177-D: variable "kSingleLaunchGroupCtas" was declared but never referenced
+  static constexpr int kSingleLaunchGroupCtas =
+                       ^
+
+/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu(4612): warning #177-D: variable "kSingleLaunchTailGroupCtas" was declared but never referenced
+  static constexpr int kSingleLaunchTailGroupCtas =
+                       ^
+
+2 errors detected in the compilation of "/tmp/torch_ext_v4_tp_base/v4tp_790c6b763a4cf8954fae_v178mspec/cuda.cu".
+ninja: build stopped: subcommand failed.
+
