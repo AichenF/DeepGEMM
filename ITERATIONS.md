@@ -17234,3 +17234,17 @@ maximum rank latency of a full CUDA-Graph replay.
   No route-alignment code is copied or replaced.
 - **Pre-CUDA gate:** Python compilation passes; default remains off.
 - **Evidence:** `evidence/iter713i_light_moe_align_export.md`.
+
+## Iteration 713j — do not namespace the distributed re-export package
+
+- **Scope:** first TP4 process smoke with the miniforge RDC library; it exits
+  during SGLang world-group construction before communicator creation,
+  graph capture or any CUDA business-kernel launch.
+- **Failure:** treating `sglang.srt.distributed` as a namespace suppressed its
+  normal `GroupCoordinator` re-export.  `dp_attention.py` imports that public
+  name and raises `ImportError` on all four ranks.
+- **Decision:** keep the required top-level/MoE import isolation, but let the
+  checkout's distributed package initializer execute normally.  No source
+  change is required; remove that one environment entry and retry.
+- **Evidence:** `bench/results/iter713j_rdc_tp4_m128_cold_smoke_20260906.log`
+  and `evidence/iter713j_distributed_namespace_rejection.md`.
