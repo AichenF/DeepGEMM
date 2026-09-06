@@ -16335,3 +16335,21 @@ maximum rank latency of a full CUDA-Graph replay.
   replacement.  The tested CUDA source, generated logical weights, route
   seed, NCU sections/filter, and cold-L2 policy remain unchanged.
 - **Evidence:** `evidence/iter709b_standalone_w2_ncu_graph_import_failure.md`.
+
+## Iteration 709c — Humming-free import stub lacks graph quant-input helper
+
+- **Retry change:** supplied a minimal `humming`/`humming.ops` module before
+  importing the custom graph helper and installed the runner's exact untimed
+  MXFP4 weight canonicalizer.  Pinned SGLang and SM90a environment setup
+  passed.
+- **Result:** **fixture failure before JIT kernel launch, L2 clear, or NCU
+  collection.**  The legacy local graph fixture also calls
+  `humming_ops.quant_input` to synthesize its public FP8 input; the narrow stub
+  intentionally did not emulate Humming math, so construction stopped with
+  `AttributeError: module 'humming.ops' has no attribute 'quant_input'`.
+- **Decision:** no kernel conclusion.  Stop extending the legacy
+  Humming-dependent profiler.  Reuse the formal same-source benchmark's
+  already qualified pure-Torch FP8/scales and route/weight constructors in a
+  narrow local profile entry, then rerun the unchanged second-`route_gemm`
+  filter and cold-L2 protocol.
+- **Evidence:** `evidence/iter709c_standalone_w2_ncu_quant_fixture_failure.md`.
