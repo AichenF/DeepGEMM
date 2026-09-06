@@ -16603,3 +16603,20 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Next:** require REG56, no local spill, nine-CTA shared/register admission,
   64 QGMMAs and dependency-barrier reduction toward 32 before launching.
 - **Evidence:** `evidence/iter709q_w2_pair_manual_spill_implementation.md`.
+
+## Iteration 709r — one-value shared spill does not form a QGMMA pair
+
+- **Build/resource:** exact spill candidate compiles as
+  `v4tp_6b38843471d1945a31a0_v178mspec`; M128/split-K2 is
+  `REG56 STACK32 SHARED2048 LOCAL0`, with 19,456-byte dynamic shared memory.
+  Its 21,504 bytes total/CTA still fits nine CTAs in 193,536 bytes.
+- **SASS result:** unchanged 64 QGMMAs / 64 dependency barriers; exact SASS
+  SHA256 is
+  `ef5ae0036d8bdf026bbdee714fbfdef2742aa6a3d988168f14c4ed2989c4e1e1`.
+  Ptxas issues a first QGMMA at `0x6670`, waits at `0x6680`, and delays the
+  second group's shared load until `0x6690`, before its QGMMA at `0x66b0`.
+- **Decision:** **REJECT before launch/timing.**  The manual spill shortened
+  the live range by scheduling the load after the first wait, so the intended
+  pair never exists in machine code.  Next force all current FP8 inputs live
+  at the issue boundary with compiler operand fences.
+- **Evidence:** `evidence/iter709r_w2_pair_spill_one_static_rejection.md`.
