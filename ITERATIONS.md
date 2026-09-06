@@ -17017,3 +17017,21 @@ maximum rank latency of a full CUDA-Graph replay.
   W13/W2 ownership, staging and overlap ideas instead.
 - **Evidence:**
   `evidence/iter711i_unbounded_w2_operand_isolation_static_rejection.md`.
+
+## Iteration 712a — add a function-specific W2 64-register contract
+
+- **Hypothesis/change:** CUDA's function-specific `__maxnreg__` attribute may
+  let an outlined W2 callee preserve standalone's 64-register, two-QGMMA-per-
+  wait schedule inside the single business entry.  Add default-off
+  `V4_SINGLE_LAUNCH_W2_FUNC_MAXNREG64` and annotate only that callee.
+- **Isolation:** require TP4 schedule 0, unbounded M128 and whole-W2 outline;
+  lower-token specializations remain inline when the probe is enabled.  TP8,
+  standalone multi-kernel entries, math, task mapping, barriers,
+  communication, ABI and defaults are unchanged.  Include the flag in JIT
+  identity/compiler defines and paired benchmark metadata.
+- **Pre-CUDA gate:** both Python sources compile.  Kernel/benchmark SHA256 are
+  `11d51354...ea5d5` and `d4b4f29f...17690`.  No JIT or launch is claimed.
+- **Next:** require exact outlined-W2 SASS of 32 QGMMAs / about 16 waits and
+  zero fixed local spill before correctness or cold-L2 timing.
+- **Evidence:**
+  `evidence/iter712a_w2_function_maxnreg64_implementation.md`.

@@ -452,6 +452,9 @@ SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI = (
 SINGLE_LAUNCH_W2_PHASE_NOINLINE = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PHASE_NOINLINE", "0") == "1"
 )
+SINGLE_LAUNCH_W2_FUNC_MAXNREG64 = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_FUNC_MAXNREG64", "0") == "1"
+)
 SINGLE_LAUNCH_W2_COMPACT_TASK_CALL = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_COMPACT_TASK_CALL", "0") == "1"
 )
@@ -499,6 +502,16 @@ SINGLE_LAUNCH_M128_UNBOUNDED = (
 if SINGLE_LAUNCH_M128_UNBOUNDED and SINGLE_LAUNCH_M128_BOUND9:
     raise ValueError(
         "V4_SINGLE_LAUNCH_M128_UNBOUNDED and M128 bound9 are exclusive"
+    )
+if SINGLE_LAUNCH_W2_FUNC_MAXNREG64 and (
+    not SINGLE_LAUNCH_TP4
+    or not SINGLE_LAUNCH_M128_UNBOUNDED
+    or not SINGLE_LAUNCH_W2_PHASE_NOINLINE
+    or SINGLE_LAUNCH_SCHEDULE != 0
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_FUNC_MAXNREG64 requires the TP4 unbounded "
+        "M128 schedule-0 path with the whole-W2 phase outline"
     )
 SINGLE_LAUNCH_W2_UNROLL2_BOUND9 = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_UNROLL2_BOUND9", "0") == "1"
@@ -2116,6 +2129,8 @@ static constexpr bool kSingleLaunchW13PhaseCompactAbi =
     K_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI;
 static constexpr bool kSingleLaunchW2PhaseNoInline =
     K_SINGLE_LAUNCH_W2_PHASE_NOINLINE;
+static constexpr bool kSingleLaunchW2FuncMaxnreg64 =
+    K_SINGLE_LAUNCH_W2_FUNC_MAXNREG64;
 static constexpr bool kSingleLaunchW2CompactTaskCall =
     K_SINGLE_LAUNCH_W2_COMPACT_TASK_CALL;
 static constexpr bool kSingleLaunchRouteDynamicSmem =
@@ -4426,8 +4441,14 @@ __device__ __noinline__ void single_launch_w2_gemm_task_compact(
 // than the rejected legacy boundary that called once per output tile. This
 // isolates W2's register-heavy four-way K unroll from the monolithic entry
 // while keeping task-to-task scheduling visible to ptxas inside the callee.
+#if K_SINGLE_LAUNCH_W2_FUNC_MAXNREG64
+#define SINGLE_LAUNCH_W2_PHASE_MAXNREG __maxnreg__(64)
+#else
+#define SINGLE_LAUNCH_W2_PHASE_MAXNREG
+#endif
 template <bool AssumeValidMblock>
-__device__ __noinline__ void single_launch_w2_gemm_phase(
+__device__ __noinline__ SINGLE_LAUNCH_W2_PHASE_MAXNREG
+void single_launch_w2_gemm_phase(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
         const uint8_t* __restrict__ weight,
@@ -4455,6 +4476,7 @@ __device__ __noinline__ void single_launch_w2_gemm_phase(
         __syncthreads();
     }
 }
+#undef SINGLE_LAUNCH_W2_PHASE_MAXNREG
 
 // Keep the selected standalone launch as a thin wrapper around the task body.
 // The same task body is also the compute building block for the single-launch
@@ -9199,7 +9221,10 @@ void tp4_megamoe_single_launch_kernel(
                         __syncthreads();
                     }
                 }
-            } else if constexpr (kSingleLaunchW2PhaseNoInline) {
+            } else if constexpr (
+                    kSingleLaunchW2PhaseNoInline
+                    && (!kSingleLaunchW2FuncMaxnreg64
+                        || Tokens == 128)) {
                 single_launch_w2_gemm_phase<
                     kSingleLaunchAssumeValidGemmTasks>(
                     &w2_tma_weight, &w2_tma_weight_scale,
@@ -12342,6 +12367,7 @@ _EXTENSION_CONFIG = (
           f"slw13pn{int(SINGLE_LAUNCH_W13_PHASE_NOINLINE)}_"
           f"slw13pca{int(SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI)}_"
           f"slw2pn{int(SINGLE_LAUNCH_W2_PHASE_NOINLINE)}_"
+          f"slw2mr64{int(SINGLE_LAUNCH_W2_FUNC_MAXNREG64)}_"
           f"slw2ctc{int(SINGLE_LAUNCH_W2_COMPACT_TASK_CALL)}_"
           f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
           f"sldr{int(SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM)}_"
@@ -12509,6 +12535,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_PHASE_NOINLINE="
             f"{int(SINGLE_LAUNCH_W2_PHASE_NOINLINE)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_FUNC_MAXNREG64="
+            f"{int(SINGLE_LAUNCH_W2_FUNC_MAXNREG64)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W2_COMPACT_TASK_CALL="
