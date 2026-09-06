@@ -17430,3 +17430,17 @@ maximum rank latency of a full CUDA-Graph replay.
   guard or compare a near-match.
 - **Evidence:** `bench/results/iter713v_miniforge_nonrdc_build_20260906.log`
   and `evidence/iter713v_nonrdc_config_validation_failure.md`.
+
+## Iteration 713w — rebuild exact non-RDC identity under miniforge ABI
+
+- **Build:** add the missing `V4_SINGLE_LAUNCH_TP4=1` selector and compile the
+  validated unbounded/whole-W2-phase configuration through ordinary
+  non-RDC `load_inline` in a fresh extension root under miniforge PyTorch
+  2.11.  The module imports successfully.
+- **Identity/artifact:** exact extension name `v4tp_49f35bd1b995105c53bc_v178mspec`;
+  `.so` SHA256 `6fb4add3...44b1b`; generated source SHA256
+  `26d10ebb...6fca`; direct CUDA object with no device-link stage.
+- **Qualification:** build and ABI gate only; no CUDA business kernel ran.
+  This artifact will own the control/helpers in the selective RDC test.
+- **Evidence:** `bench/results/iter713w_miniforge_nonrdc_build_20260906.log`
+  and `evidence/iter713w_miniforge_nonrdc_control_build.md`.
