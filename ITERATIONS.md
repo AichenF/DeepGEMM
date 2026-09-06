@@ -17418,3 +17418,15 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Decision:** retry with a plain positional `print()` expression.
 - **Evidence:** `bench/results/iter713u_miniforge_nonrdc_build_20260906.log`
   and `evidence/iter713u_nonrdc_build_command_quoting_failure.md`.
+
+## Iteration 713v — incomplete unbounded configuration is rejected
+
+- **Failure:** corrected Python syntax reaches source validation, which
+  rejects the incomplete M128-unbounded environment because it did not fully
+  select the required compact-W13 schedule-0/bound-8/rotation-off/W2 form.
+- **Qualification:** validation exits before JIT compilation or CUDA work.
+- **Decision:** derive the exact complete environment from the source
+  invariant and reproduce the original extension identity; do not bypass the
+  guard or compare a near-match.
+- **Evidence:** `bench/results/iter713v_miniforge_nonrdc_build_20260906.log`
+  and `evidence/iter713v_nonrdc_config_validation_failure.md`.

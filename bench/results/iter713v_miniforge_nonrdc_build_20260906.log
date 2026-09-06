@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 1141, in <module>
+    raise ValueError(
+ValueError: V4_SINGLE_LAUNCH_M128_UNBOUNDED requires the selected compact-W13 schedule-0 path with requested bound8, rotations disabled, and ordinary inline or whole-phase-outlined W2
