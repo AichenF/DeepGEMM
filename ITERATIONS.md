@@ -17408,3 +17408,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter713t_selective_rdc_tp4_m128_cold_smoke_20260906.log` and
   `evidence/iter713t_selective_control_abi_failure.md`.
+
+## Iteration 713u — non-RDC rebuild command fails before import
+
+- **Failure:** the first miniforge non-RDC rebuild command passes literal
+  `\\x27` quote escapes to Python's `-c` parser and exits with a syntax error.
+- **Qualification:** no module import, compilation, CUDA context or kernel
+  launch occurs.  This is only command quoting, not a build result.
+- **Decision:** retry with a plain positional `print()` expression.
+- **Evidence:** `bench/results/iter713u_miniforge_nonrdc_build_20260906.log`
+  and `evidence/iter713u_nonrdc_build_command_quoting_failure.md`.

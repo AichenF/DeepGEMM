@@ -1,0 +1,4 @@
+  File "<string>", line 1
+    import v4_flash_tp_wgmma as k; print({\x27extension\x27: k._EXTENSION_NAME, \x27source_sha\x27: k._SOURCE_SHA256})
+                                           ^
+SyntaxError: unexpected character after line continuation character
