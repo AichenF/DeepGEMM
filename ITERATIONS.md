@@ -17035,3 +17035,19 @@ maximum rank latency of a full CUDA-Graph replay.
   zero fixed local spill before correctness or cold-L2 timing.
 - **Evidence:**
   `evidence/iter712a_w2_function_maxnreg64_implementation.md`.
+
+## Iteration 712b — NVCC rejects `__maxnreg__` on the W2 device callee
+
+- **Scope:** JIT-only H20 GPU1 build of the committed Iteration-712a
+  unbounded M128 + whole-W2 outline candidate; no business kernel launch.
+- **Result:** extension `v4tp_44d9aceefaea5659a5ef_v178mspec` fails CUDA
+  compilation with `__maxnreg__ is only allowed on a __global__ function` at
+  `single_launch_w2_gemm_phase`.  There is no linked cubin, correctness result
+  or latency result.
+- **Decision:** reject the language-level function attribute and remove the
+  non-buildable probe.  Function-specific register isolation, if pursued,
+  requires a separately compiled relocatable device callee rather than a C++
+  attribute inside the monolithic CUDA translation unit.
+- **Evidence:** raw JIT log
+  `bench/results/iter712b_w2_function_maxnreg64_jit_20260906.log` and
+  `evidence/iter712b_w2_function_maxnreg64_compile_rejection.md`.
