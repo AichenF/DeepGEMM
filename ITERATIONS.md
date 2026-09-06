@@ -17710,3 +17710,20 @@ maximum rank latency of a full CUDA-Graph replay.
   is at most REG64/STACK48 with no fixed local allocation, and the exact W2
   callee retains approximately 32 QGMMAs / 16 dependency barriers.
 - **Evidence:** `evidence/iter717a_rdc_compact_w2_composition.md`.
+
+## Iteration 717b — compact RDC ABI removes stack arguments but not the register window
+
+- **Build/static result:** the unique compact-RDC source compiles and device
+  links.  Its exact M128 W2 callee retains 32 QGMMAs / 16 DEPBARs / 32
+  warpgroup arrives with no `STL` or `LDL`, but TP4 M128 split-K2 and
+  split-K4 entries are both REG198/STACK32/SHARED1616/LOCAL0.
+- **Attribution:** compared with the high-argument RDC result
+  REG195/STACK112, the one-pointer record removes 80 bytes of entry stack yet
+  does not reduce the callable WGMMA register window.  The callee starts by
+  loading its sole pointer through R192:R193, directly confirming that the
+  high register namespace is not caused by carrying seventeen call arguments.
+- **Decision:** **REJECT before CUDA launch.**  REG198 fails the committed
+  REG64 residency gate despite the favorable W2 issue schedule.  No
+  correctness or timing is claimed; production sources remain untouched.
+- **Evidence:** `evidence/iter717b_rdc_compact_w2_static_rejection.md` and
+  `bench/results/iter717a_rdc_compact_w2_static_20260906.log`.

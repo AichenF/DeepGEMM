@@ -1,0 +1,39 @@
+Iteration 717a/717b compact whole-W2 RDC static gate
+date: 2026-09-06
+container: megamoe on H20-GPU-06
+toolchain: CUDA 12.8
+CUDA business-kernel launches: 0
+host link / extension load: not run
+
+unique entry:
+tp4_megamoe_single_launch_kernel_iter717a
+compact callee:
+single_launch_w2_gemm_phase_compact_rdc_iter717a<128,true>
+
+generated artifacts:
+37dc2c2fe6b9c4ac6a50d2d07c0ad5bdd8caf719e75f3fd08218cb76e7881d4a  cuda.cu
+a9d0f1b4b506f96f939731172c91324b142847f20a1ea0e8f2696dcc7fed11c7  main.cpp
+0192a32d096ff5c54aeae56b56151722615e2a9f972afd3231530c3ef245e3a1  build.ninja
+fc2e4fbeb5dd196bfc1d32e3138b4e43275809c77e51a1532ec7cf76dc82a0e4  cuda.cuda.o
+48ff72d19eb238b382827beda053cc614515fbdb4bf8a1f090de7bca9b086c6a  dlink.o
+a21f937d5bdd49c8e14c62ec153678f62f6577eb15b6400d3b625ebc0c0076ae  exact compact W2 SASS slice
+
+cuobjdump --dump-resource-usage selected entries:
+M128 split-K2: REG:198 STACK:32 SHARED:1616 LOCAL:0 CONSTANT[0]:1361
+M128 split-K4: REG:198 STACK:32 SHARED:1616 LOCAL:0 CONSTANT[0]:1361
+
+exact compact W2 SASS slice:
+lines: 3125
+bytes: 402732
+QGMMA: 32
+DEPBAR: 16
+WARPGROUP.ARRIVE: 32
+STL: 0
+LDL: 0
+first pointer load: LDC.64 R192, c[0x0][0x208]
+
+comparison:
+high-argument RDC: REG195 STACK112
+compact RDC:       REG198 STACK32
+
+decision: REJECT before CUDA launch; REG198 fails the REG64 gate.
