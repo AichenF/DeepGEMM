@@ -16636,3 +16636,18 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Next:** require REG56/no spill/nine CTA, unchanged 64 QGMMAs, dependency
   barriers toward 32, and the spilled LDS before both QGMMAs in SASS.
 - **Evidence:** `evidence/iter709s_w2_pair_operand_fence_implementation.md`.
+
+## Iteration 709t — compiler operand fences do not constrain ptxas scheduling
+
+- **Build/resource:** exact operand-fence candidate compiles as
+  `v4tp_833ae1a52d617e1453dd_v178mspec`; M128/split-K2 remains
+  `REG56 STACK32 SHARED2048 LOCAL0` with 19,456-byte dynamic shared memory.
+- **SASS result:** still 64 QGMMAs / 64 dependency barriers.  The key order is
+  unchanged: QGMMA `0x6670`, wait `0x6680`, delayed second-group `LDS.64`
+  `0x6690`, then QGMMA `0x66b0`.  SASS SHA256 is
+  `43a59d14ee50530f69c484ef44d5c05df745c3bf40d5361e1064c49f087837f4`.
+- **Decision:** **REJECT before launch/timing.**  Empty operand constraints do
+  not restrict ptxas scheduling across separate asm statements.  Next place
+  both QGMMAs in one inline-PTX block with early-clobber accumulator outputs,
+  directly forbidding source/accumulator register overlap.
+- **Evidence:** `evidence/iter709t_w2_operand_fence_static_rejection.md`.
