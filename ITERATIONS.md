@@ -16288,3 +16288,16 @@ maximum rank latency of a full CUDA-Graph replay.
   unsuitable under the established accuracy contract.
 - **Evidence:** `evidence/iter707_w13_f16_accum_accuracy_rejection.md`; raw
   logs `bench/results/iter707_w13_f16_accum_m128_{correctness,resources}.log`.
+
+## Iteration 708 — Remove rejected W13 FP16 probe and restore W2-only source
+
+- **Change/verification:** remove the W13 environment flag, validation,
+  compile constant/key, compile definition and both one-kernel template
+  arguments. Restore the F16 task static assertion to W2-only. Python syntax
+  passes and the complete source returns byte-for-byte to the previously
+  tested W2-only SHA-256
+  `fc6cc41d86d6e77c0f4d5d54efc2dace24e457115d94e32e4de0f678387da79f`.
+- **Decision:** W13 FP16 leaves no residual production or opt-in code. The
+  independently measured W2 FP16 option remains default-off; selected FP32
+  behavior remains unchanged unless that W2 flag is explicitly enabled.
+- **Evidence:** `evidence/iter708_restore_after_w13_f16_rejection.md`.

@@ -340,9 +340,6 @@ SINGLE_LAUNCH_TP4 = os.environ.get("V4_SINGLE_LAUNCH_TP4", "0") == "1"
 SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM", "0") == "1"
 )
-SINGLE_LAUNCH_W13_F16_WGMMA_ACCUM = (
-    os.environ.get("V4_SINGLE_LAUNCH_W13_F16_WGMMA_ACCUM", "0") == "1"
-)
 # Selected single-launch production bundle.  The historical environment name
 # is retained because compact W13 was the first bundled component, but the
 # switch now covers every independently validated fast path selected for the
@@ -1756,32 +1753,6 @@ if SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM and (
         "V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM requires the isolated flat "
         "inline WOUT128 TP4 schedule-0 W2 path"
     )
-if SINGLE_LAUNCH_W13_F16_WGMMA_ACCUM and (
-    not SINGLE_LAUNCH_TP4
-    or SINGLE_LAUNCH_SCHEDULE != 0
-    or SINGLE_LAUNCH_NOINLINE_GEMM
-    or not SINGLE_LAUNCH_W13_PHASE_NOINLINE
-    or not SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
-    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
-    or SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE
-    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
-    or SINGLE_LAUNCH_DUAL_WG_PHASES
-    or SINGLE_LAUNCH_78CTA_8WG
-    or SINGLE_LAUNCH_156CTA_4WG
-    or SINGLE_LAUNCH_W13_N64_TAIL
-    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
-    or SINGLE_LAUNCH_CLUSTER_W13_ACT
-    or SINGLE_LAUNCH_TAIL_OVERLAP
-    or SINGLE_LAUNCH_TAIL_ACT_ONLY
-    or SINGLE_LAUNCH_GROUPED_W13_ACT
-    or SINGLE_LAUNCH_W13_COMPLETION_ACT
-    or SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
-    or WOUT != 128
-):
-    raise ValueError(
-        "V4_SINGLE_LAUNCH_W13_F16_WGMMA_ACCUM requires the selected flat "
-        "WOUT128 TP4 schedule-0 W13 path"
-    )
 MC_PULL_BLOCKS = int(os.environ.get("V4_MC_PULL_BLOCKS", "0"))
 MC_PULL_UNROLL = int(os.environ.get("V4_MC_PULL_UNROLL", "0"))
 if MC_PULL_BLOCKS < 0:
@@ -2028,8 +1999,6 @@ static constexpr bool kSingleLaunchW2ProducerAtomicCombine =
     K_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE;
 static constexpr bool kSingleLaunchW2F16WgmmaAccum =
     K_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM;
-static constexpr bool kSingleLaunchW13F16WgmmaAccum =
-    K_SINGLE_LAUNCH_W13_F16_WGMMA_ACCUM;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -2628,9 +2597,9 @@ __device__ __forceinline__ void route_gemm_task(
     static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 4
                   || IndependentTaskWGs == 8);
     static_assert(!F16WgmmaAccum
-                  || (!DualWgW13 && !PersistentState
+                  || (!IsW13 && !DualWgW13 && !PersistentState
                       && WgmmaHalf == -1 && IndependentTaskWGs == 1),
-                  "F16 WGMMA accumulation probe supports flat tasks only");
+                  "F16 WGMMA accumulation probe supports flat W2 only");
     static_assert(IndependentTaskWGs == 1
                   || (!DualWgW13 && !PersistentState && !kHalfWgmma
                       && !PublishW2Progress
@@ -4041,8 +4010,7 @@ __device__ __noinline__ void single_launch_w13_gemm_phase_compact(
         route_gemm_task<
             4096, 1024, SplitK, true, 0, false, false,
             kSingleLaunchW13CompactPersistentState, -1,
-            false, 0, AssumeValidMblock, false, false, 1,
-            kSingleLaunchW13F16WgmmaAccum>(
+            false, 0, AssumeValidMblock>(
             args->tma_weight, args->tma_weight_scale,
             args->weight, args->weight_scale, args->weight_global_scale,
             args->activation, args->activation_scale,
@@ -8574,9 +8542,7 @@ void tp4_megamoe_single_launch_kernel(
                                 4096, 1024, SplitK, true, 0, false,
                                 kSingleLaunchDualWgPhases,
                                 kW13PersistentState, -1, false, 0,
-                                kSingleLaunchAssumeValidGemmTasks,
-                                false, false, 1,
-                                kSingleLaunchW13F16WgmmaAccum>(
+                                kSingleLaunchAssumeValidGemmTasks>(
                                 &w13_tma_weight, &w13_tma_weight_scale,
                                 w13, s13, g13, qx, x_scale,
                                 sorted_ids, expert_ids, num_tokens_padded,
@@ -11984,7 +11950,6 @@ _EXTENSION_CONFIG = (
           f"slw2brr{SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES}_"
           f"slw2pac{int(SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE)}_"
           f"slw2f16a{int(SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM)}_"
-          f"slw13f16a{int(SINGLE_LAUNCH_W13_F16_WGMMA_ACCUM)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slagp{int(SINGLE_LAUNCH_ADAPTIVE_GRID_POLL)}_"
@@ -12219,10 +12184,6 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM="
             f"{int(SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM)}"
-        ),
-        (
-            "-DK_SINGLE_LAUNCH_W13_F16_WGMMA_ACCUM="
-            f"{int(SINGLE_LAUNCH_W13_F16_WGMMA_ACCUM)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="
