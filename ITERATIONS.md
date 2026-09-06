@@ -16319,3 +16319,19 @@ maximum rank latency of a full CUDA-Graph replay.
   Humming weight-preprocess hook.  Do not change the tested kernel, weights,
   routes, cache policy, or launch filter.
 - **Evidence:** `evidence/iter709a_standalone_w2_ncu_runner_failure.md`.
+
+## Iteration 709b — custom graph helper still imports unavailable Humming dtype
+
+- **Retry change:** bypassed only the runner's Humming preprocessing hook and
+  retained its pinned SGLang setup, then executed the unchanged custom local
+  profiler with the same second-`route_gemm` NCU filter.
+- **Result:** **second environment failure before JIT launch, cache clear, or
+  profiled CUDA work.**  `v4_flash_tp_wgmma_graph.py` itself imports
+  `humming.ops` for its untimed weight canonicalization, so the import reached
+  the same missing `torch.float8_e8m0fnu` attribute and exited with code 1.
+- **Decision:** no kernel conclusion.  In the next bootstrap, temporarily map
+  the unavailable dtype name to `torch.uint8` only so the unused dtype table
+  can import, then execute the runner's existing benchmark weight-preprocess
+  replacement.  The tested CUDA source, generated logical weights, route
+  seed, NCU sections/filter, and cold-L2 policy remain unchanged.
+- **Evidence:** `evidence/iter709b_standalone_w2_ncu_graph_import_failure.md`.
