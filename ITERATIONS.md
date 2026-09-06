@@ -15879,3 +15879,31 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `evidence/iter691_w13_complete_wave_barrier_rejection.md`;
   raw logs `bench/results/iter691{,b,c,d,e,f}_*.log`. The first two records
   are launcher-only import/PYTHONPATH failures and contain no CUDA result.
+
+## Iteration 692 — M128 full-K single-launch W13 regresses 7.98%
+
+- **Hypothesis/change:** Since standalone and fused use the same GEMM body,
+  halve the persistent M128 W13 task boundaries by adding the missing
+  `SplitK=1` host dispatch. Keep the selected 702-CTA grid, N128 tile,
+  MXFP4/TMA/S2R/WGMMA path, activation, W2 and communication unchanged.
+- **Resource/correctness:** candidate SHA-256
+  `96115e35c4f8effe56cb2117fe199bb4d1a2212b0714a596e9e7b2e4b8d36fa6`.
+  The full-K entry is `REG56 STACK48 SHARED2048 LOCAL0`, versus production
+  stack 32. Five physical-GPU0 random-M128 runs are finite and exactly equal
+  to the independent same-source split-K1 multi local output (cosine
+  effectively 1, relative L2 0). The first pre-dispatch invocation was a
+  host validation failure and launched no candidate CUDA kernel.
+- **Cold-L2 local gate:** Each valid launch received a separate excluded
+  256 MiB clear. Full-K W13 min/median/max is
+  `224.384/225.664/226.880 us`; its four-phase sum is
+  `342.784/343.360/344.000 us`. Adjacent exact-production split-K2 anchors
+  from Iteration 691 are `208.768/208.992/210.336 us` for W13 and
+  `325.472/325.952/327.488 us` for the sum. Full-K regresses median W13
+  7.98% and total local phase time 5.34%.
+- **Decision:** Reject before TP4 distributed timing and restore exact
+  selected SHA-256
+  `7ac22134c953d17c8dea9310011818ca483b5b8a96b06324381abd2c8c9c3f45`.
+  Fewer task transitions cannot repay the doubled K dependency chain,
+  reduced scheduling slack and larger stack frame. Retain M128 split-K2.
+- **Evidence:** `evidence/iter692_m128_fullk_single_rejection.md`; raw logs
+  `bench/results/iter692{,b,c,d}_*.log` plus Iteration 691f control.

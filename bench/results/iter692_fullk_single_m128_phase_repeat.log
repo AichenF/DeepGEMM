@@ -1,0 +1,110 @@
+/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.3.0) or chardet (7.4.3)/charset_normalizer (3.4.1) doesn't match a supported version!
+  warnings.warn(
+Traceback (most recent call last):
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 156, in <module>
+    main()
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 152, in main
+    runpy.run_path(target, run_name="__main__")
+  File "<frozen runpy>", line 287, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "bench/profile_v4_flash_tp_single_compute.py", line 285, in <module>
+    main()
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "bench/profile_v4_flash_tp_single_compute.py", line 175, in main
+    run()
+  File "bench/profile_v4_flash_tp_single_compute.py", line 127, in run
+    kernel.run_tp4_megamoe_single_launch(
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 12780, in run_tp4_megamoe_single_launch
+    _ext.run_tp4_megamoe_single_launch(
+RuntimeError: single-launch TP4 split-K must be 2 or 4
+/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.3.0) or chardet (7.4.3)/charset_normalizer (3.4.1) doesn't match a supported version!
+  warnings.warn(
+Traceback (most recent call last):
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 156, in <module>
+    main()
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 152, in main
+    runpy.run_path(target, run_name="__main__")
+  File "<frozen runpy>", line 287, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "bench/profile_v4_flash_tp_single_compute.py", line 285, in <module>
+    main()
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "bench/profile_v4_flash_tp_single_compute.py", line 175, in main
+    run()
+  File "bench/profile_v4_flash_tp_single_compute.py", line 127, in run
+    kernel.run_tp4_megamoe_single_launch(
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 12780, in run_tp4_megamoe_single_launch
+    _ext.run_tp4_megamoe_single_launch(
+RuntimeError: single-launch TP4 split-K must be 2 or 4
+/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.3.0) or chardet (7.4.3)/charset_normalizer (3.4.1) doesn't match a supported version!
+  warnings.warn(
+Traceback (most recent call last):
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 156, in <module>
+    main()
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 152, in main
+    runpy.run_path(target, run_name="__main__")
+  File "<frozen runpy>", line 287, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "bench/profile_v4_flash_tp_single_compute.py", line 285, in <module>
+    main()
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "bench/profile_v4_flash_tp_single_compute.py", line 175, in main
+    run()
+  File "bench/profile_v4_flash_tp_single_compute.py", line 127, in run
+    kernel.run_tp4_megamoe_single_launch(
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 12780, in run_tp4_megamoe_single_launch
+    _ext.run_tp4_megamoe_single_launch(
+RuntimeError: single-launch TP4 split-K must be 2 or 4
+/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.3.0) or chardet (7.4.3)/charset_normalizer (3.4.1) doesn't match a supported version!
+  warnings.warn(
+Traceback (most recent call last):
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 156, in <module>
+    main()
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 152, in main
+    runpy.run_path(target, run_name="__main__")
+  File "<frozen runpy>", line 287, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "bench/profile_v4_flash_tp_single_compute.py", line 285, in <module>
+    main()
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "bench/profile_v4_flash_tp_single_compute.py", line 175, in main
+    run()
+  File "bench/profile_v4_flash_tp_single_compute.py", line 127, in run
+    kernel.run_tp4_megamoe_single_launch(
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 12780, in run_tp4_megamoe_single_launch
+    _ext.run_tp4_megamoe_single_launch(
+RuntimeError: single-launch TP4 split-K must be 2 or 4
+/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.3.0) or chardet (7.4.3)/charset_normalizer (3.4.1) doesn't match a supported version!
+  warnings.warn(
+Traceback (most recent call last):
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 156, in <module>
+    main()
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 152, in main
+    runpy.run_path(target, run_name="__main__")
+  File "<frozen runpy>", line 287, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "bench/profile_v4_flash_tp_single_compute.py", line 285, in <module>
+    main()
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "bench/profile_v4_flash_tp_single_compute.py", line 175, in main
+    run()
+  File "bench/profile_v4_flash_tp_single_compute.py", line 127, in run
+    kernel.run_tp4_megamoe_single_launch(
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/v4_flash_tp_wgmma.py", line 12780, in run_tp4_megamoe_single_launch
+    _ext.run_tp4_megamoe_single_launch(
+RuntimeError: single-launch TP4 split-K must be 2 or 4
