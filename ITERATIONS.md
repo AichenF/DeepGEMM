@@ -17356,3 +17356,23 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter713q_rdc_tp4_m128_cold_smoke_20260906.log` and
   `evidence/iter713q_rdc_runtime_correctness_failure.md`.
+
+## Iteration 713r — ordinary JIT passes on the identical runtime/GPU group
+
+- **Attribution control:** rerun unchanged production source through its
+  ordinary non-RDC JIT on physical H20 GPUs 0--3, using the same SGLang/CAR
+  runtime, TP4 M128 random-route case and independent 256 MiB cold-L2 graph
+  protocol as the failed RDC run.
+- **Correctness:** both single candidate and multi control pass with minimum
+  cosine `0.9999955977`, maximum relative L2 `0.0029672640`, max absolute
+  difference `1024`, all ranks finite and `allreduce_ok=true`.
+- **Diagnostic latency:** 20 cold samples/path give multi `0.304096 ms` and
+  default single `0.351680 ms`.  This is a short attribution anchor, not a
+  formal result and not the selected optimized flag set.
+- **Decision:** the same-environment pass isolates Iteration 713q's broken
+  control/NaN candidate to whole-extension RDC composition.  Reject that
+  runtime path; any next device-link experiment must isolate the candidate
+  translation unit while retaining the ordinary non-RDC control.
+- **Evidence:**
+  `bench/results/iter713r_production_tp4_m128_cold_anchor_20260906.log` and
+  `evidence/iter713r_production_runtime_anchor.md`.
