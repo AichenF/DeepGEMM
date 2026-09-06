@@ -16237,3 +16237,27 @@ maximum rank latency of a full CUDA-Graph replay.
   tradeoff, not the default production path.
 - **Evidence:** `evidence/iter705_w2_f16_accum_tp4_allm_vs_multi.md`; raw log
   `bench/results/iter705_w2_f16_accum_tp4_allm_vs_multi_cold_graph.log`.
+
+## Iteration 706 — Isolate packed-FP16 WGMMA accumulators for one-kernel W13
+
+- **Hypothesis/change:** add default-off
+  `V4_SINGLE_LAUNCH_W13_F16_WGMMA_ACCUM=1`. Reuse the already compiled
+  packed-fragment body from the W2 probe, but pass the flag only to the
+  selected TP4 one-kernel W13 instantiations: the compact one-call-per-CTA
+  M128 phase and the selected inline M8/16/32/64 phase. Every K128 tile is
+  accumulated into two packed FP16 registers per N8 group, then promoted to
+  the unchanged FP32 cross-group accumulator before applying the caller's
+  group-128 activation scale. W2, SwiGLU/requant, communication and all
+  standalone/multi instantiations remain unchanged.
+- **Isolation:** the flag is rejected outside the selected flat WOUT128 TP4
+  schedule-0 topology and participates independently in the JIT cache key and
+  compile definitions. It excludes persistent, packed-multi-WG, dual-WG,
+  N64-tail, split-tail, cluster and overlap experiments. Existing W2 FP16 is
+  not implied and stays default-off, allowing W13-only attribution.
+- **Static result:** Python syntax validation passes. Candidate source
+  SHA-256 is
+  `37545fd28d36186241c2e1e678f561e0c3839ba4cd59a05c7dce8eaddcd3fb1e`.
+- **Qualification:** no JIT, CUDA launch, numerical result, resource count or
+  timing is claimed yet. Fresh M128 compile/resource/full-output correctness
+  is the first gate; cold-L2 timing follows only if accepted.
+- **Evidence:** `evidence/iter706_w13_f16_accum_implementation.md`.
