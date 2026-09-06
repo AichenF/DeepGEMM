@@ -1,0 +1,233 @@
+W0906 08:50:32.467000 240192 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] 
+W0906 08:50:32.467000 240192 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] *****************************************
+W0906 08:50:32.467000 240192 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0906 08:50:32.467000 240192 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] *****************************************
+/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.3.0) or chardet (7.4.3)/charset_normalizer (3.4.1) doesn't match a supported version!
+  warnings.warn(
+/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.3.0) or chardet (7.4.3)/charset_normalizer (3.4.1) doesn't match a supported version!
+  warnings.warn(
+/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.3.0) or chardet (7.4.3)/charset_normalizer (3.4.1) doesn't match a supported version!
+  warnings.warn(
+/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.3.0) or chardet (7.4.3)/charset_normalizer (3.4.1) doesn't match a supported version!
+  warnings.warn(
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py", line 310, in gpu_p2p_access_check
+[rank0]:     returned.check_returncode()
+[rank0]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/subprocess.py", line 502, in check_returncode
+[rank0]:     raise CalledProcessError(self.returncode, self.args, self.stdout,
+[rank0]: subprocess.CalledProcessError: Command '['/home/xutingz/workspace/miniforge3/bin/python', '/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py']' returned non-zero exit status 1.
+
+[rank0]: The above exception was the direct cause of the following exception:
+
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/xutingz/fac/v4_bench_env_runner.py", line 156, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/xutingz/fac/v4_bench_env_runner.py", line 152, in main
+[rank0]:     runpy.run_path(target, run_name="__main__")
+[rank0]:   File "<frozen runpy>", line 287, in run_path
+[rank0]:   File "<frozen runpy>", line 98, in _run_module_code
+[rank0]:   File "<frozen runpy>", line 88, in _run_code
+[rank0]:   File "bench/compare_v4_flash_tp_w2_store.py", line 414, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "bench/compare_v4_flash_tp_w2_store.py", line 232, in main
+[rank0]:     comm = CustomAllReduceV2(cpu_group, device)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_v2.py", line 114, in __init__
+[rank0]:     if not can_use_custom_all_reduce_v2(group=group, device=device):
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_v2.py", line 437, in can_use_custom_all_reduce_v2
+[rank0]:     full_nvlink = can_use_custom_all_reduce_with_nvlink(
+[rank0]:                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py", line 524, in can_use_custom_all_reduce_with_nvlink
+[rank0]:     if not _is_hip and not can_p2p(rank, world_size):
+[rank0]:                            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py", line 457, in can_p2p
+[rank0]:     if not gpu_p2p_access_check(rank, i):
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py", line 313, in gpu_p2p_access_check
+[rank0]:     raise RuntimeError(
+[rank0]: RuntimeError: Error happened when batch testing peer-to-peer access from (0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3) to (0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3):
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py", line 22, in <module>
+[rank0]:     from sglang.srt.distributed.device_communicators.cuda_wrapper import CudaRTLibrary
+[rank0]:   File "/lustre/raplab/client/xutingz/workspace/gitsrc/sglang_pr19290_clean/python/sglang/__init__.py", line 29, in <module>
+[rank0]:     from sglang.srt.utils.hf_transformers_patches import apply_all as _apply_hf_patches
+[rank0]:   File "/lustre/raplab/client/xutingz/workspace/gitsrc/sglang_pr19290_clean/python/sglang/srt/utils/__init__.py", line 2, in <module>
+[rank0]:     from sglang.srt.utils.common import *
+[rank0]:   File "/lustre/raplab/client/xutingz/workspace/gitsrc/sglang_pr19290_clean/python/sglang/srt/utils/common.py", line 77, in <module>
+[rank0]:     import orjson
+[rank0]: ModuleNotFoundError: No module named 'orjson'
+
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "/home/xutingz/fac/v4_bench_env_runner.py", line 156, in <module>
+[rank1]:     main()
+[rank1]:   File "/home/xutingz/fac/v4_bench_env_runner.py", line 152, in main
+[rank1]:     runpy.run_path(target, run_name="__main__")
+[rank1]:   File "<frozen runpy>", line 287, in run_path
+[rank1]:   File "<frozen runpy>", line 98, in _run_module_code
+[rank1]:   File "<frozen runpy>", line 88, in _run_code
+[rank1]:   File "bench/compare_v4_flash_tp_w2_store.py", line 414, in <module>
+[rank1]:     main()
+[rank1]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank1]:     return func(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "bench/compare_v4_flash_tp_w2_store.py", line 232, in main
+[rank1]:     comm = CustomAllReduceV2(cpu_group, device)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_v2.py", line 114, in __init__
+[rank1]:     if not can_use_custom_all_reduce_v2(group=group, device=device):
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_v2.py", line 437, in can_use_custom_all_reduce_v2
+[rank1]:     full_nvlink = can_use_custom_all_reduce_with_nvlink(
+[rank1]:                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py", line 524, in can_use_custom_all_reduce_with_nvlink
+[rank1]:     if not _is_hip and not can_p2p(rank, world_size):
+[rank1]:                            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py", line 457, in can_p2p
+[rank1]:     if not gpu_p2p_access_check(rank, i):
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py", line 325, in gpu_p2p_access_check
+[rank1]:     get_world_group().barrier()
+[rank1]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/parallel_state.py", line 1741, in barrier
+[rank1]:     torch.distributed.barrier(group=self.cpu_group)
+[rank1]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 83, in wrapper
+[rank1]:     return func(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py", line 5037, in barrier
+[rank1]:     work.wait()
+[rank1]: RuntimeError: [/pytorch/third_party/gloo/gloo/transport/tcp/pair.cc:547] Connection closed by peer [10.6.131.6]:15787
+[rank3]: Traceback (most recent call last):
+[rank3]:   File "/home/xutingz/fac/v4_bench_env_runner.py", line 156, in <module>
+[rank3]:     main()
+[rank3]:   File "/home/xutingz/fac/v4_bench_env_runner.py", line 152, in main
+[rank3]:     runpy.run_path(target, run_name="__main__")
+[rank3]:   File "<frozen runpy>", line 287, in run_path
+[rank3]:   File "<frozen runpy>", line 98, in _run_module_code
+[rank3]:   File "<frozen runpy>", line 88, in _run_code
+[rank3]:   File "bench/compare_v4_flash_tp_w2_store.py", line 414, in <module>
+[rank3]:     main()
+[rank3]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank3]:     return func(*args, **kwargs)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "bench/compare_v4_flash_tp_w2_store.py", line 232, in main
+[rank3]:     comm = CustomAllReduceV2(cpu_group, device)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_v2.py", line 114, in __init__
+[rank3]:     if not can_use_custom_all_reduce_v2(group=group, device=device):
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_v2.py", line 437, in can_use_custom_all_reduce_v2
+[rank3]:     full_nvlink = can_use_custom_all_reduce_with_nvlink(
+[rank3]:                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py", line 524, in can_use_custom_all_reduce_with_nvlink
+[rank3]:     if not _is_hip and not can_p2p(rank, world_size):
+[rank3]:                            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py", line 457, in can_p2p
+[rank3]:     if not gpu_p2p_access_check(rank, i):
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py", line 325, in gpu_p2p_access_check
+[rank3]:     get_world_group().barrier()
+[rank3]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/parallel_state.py", line 1741, in barrier
+[rank3]:     torch.distributed.barrier(group=self.cpu_group)
+[rank3]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 83, in wrapper
+[rank3]:     return func(*args, **kwargs)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py", line 5037, in barrier
+[rank3]:     work.wait()
+[rank3]: RuntimeError: [/pytorch/third_party/gloo/gloo/transport/tcp/pair.cc:547] Connection closed by peer [10.6.131.6]:6316
+[rank2]: Traceback (most recent call last):
+[rank2]:   File "/home/xutingz/fac/v4_bench_env_runner.py", line 156, in <module>
+[rank2]:     main()
+[rank2]:   File "/home/xutingz/fac/v4_bench_env_runner.py", line 152, in main
+[rank2]:     runpy.run_path(target, run_name="__main__")
+[rank2]:   File "<frozen runpy>", line 287, in run_path
+[rank2]:   File "<frozen runpy>", line 98, in _run_module_code
+[rank2]:   File "<frozen runpy>", line 88, in _run_code
+[rank2]:   File "bench/compare_v4_flash_tp_w2_store.py", line 414, in <module>
+[rank2]:     main()
+[rank2]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank2]:     return func(*args, **kwargs)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "bench/compare_v4_flash_tp_w2_store.py", line 232, in main
+[rank2]:     comm = CustomAllReduceV2(cpu_group, device)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_v2.py", line 114, in __init__
+[rank2]:     if not can_use_custom_all_reduce_v2(group=group, device=device):
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_v2.py", line 437, in can_use_custom_all_reduce_v2
+[rank2]:     full_nvlink = can_use_custom_all_reduce_with_nvlink(
+[rank2]:                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py", line 524, in can_use_custom_all_reduce_with_nvlink
+[rank2]:     if not _is_hip and not can_p2p(rank, world_size):
+[rank2]:                            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py", line 457, in can_p2p
+[rank2]:     if not gpu_p2p_access_check(rank, i):
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py", line 325, in gpu_p2p_access_check
+[rank2]:     get_world_group().barrier()
+[rank2]:   File "/home/xutingz/workspace/gitsrc/sglang_official_ab_20260802/python/sglang/srt/distributed/parallel_state.py", line 1741, in barrier
+[rank2]:     torch.distributed.barrier(group=self.cpu_group)
+[rank2]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 83, in wrapper
+[rank2]:     return func(*args, **kwargs)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py", line 5037, in barrier
+[rank2]:     work.wait()
+[rank2]: RuntimeError: [/pytorch/third_party/gloo/gloo/transport/tcp/pair.cc:547] Connection closed by peer [10.6.131.6]:15787
+W0906 08:52:42.963000 240192 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 240262 closing signal SIGTERM
+W0906 08:52:42.965000 240192 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 240263 closing signal SIGTERM
+W0906 08:52:42.967000 240192 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 240264 closing signal SIGTERM
+E0906 08:52:43.347000 240192 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 0 (pid: 240261) of binary: /home/xutingz/workspace/miniforge3/bin/python
+Traceback (most recent call last):
+  File "/home/xutingz/workspace/miniforge3/bin/torchrun", line 8, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/home/xutingz/fac/v4_bench_env_runner.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-09-06_08:52:43
+  host      : H20-GPU-06.cm.cluster
+  rank      : 1 (local_rank: 1)
+  exitcode  : -15 (pid: 240262)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 240262
+[2]:
+  time      : 2026-09-06_08:52:43
+  host      : H20-GPU-06.cm.cluster
+  rank      : 2 (local_rank: 2)
+  exitcode  : -15 (pid: 240263)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 240263
+[3]:
+  time      : 2026-09-06_08:52:43
+  host      : H20-GPU-06.cm.cluster
+  rank      : 3 (local_rank: 3)
+  exitcode  : -15 (pid: 240264)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 240264
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-09-06_08:52:42
+  host      : H20-GPU-06.cm.cluster
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 240261)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

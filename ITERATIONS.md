@@ -16121,3 +16121,24 @@ maximum rank latency of a full CUDA-Graph replay.
   benchmark-harness-only change; no kernel instruction, CUDA launch, result
   or timing is claimed yet.
 - **Evidence:** `evidence/iter701_w2_f16_accum_tp4_harness.md`.
+
+## Iteration 702 — New TP4 GPU subset triggers P2P-check subprocess environment failure
+
+- **Intended protocol:** physical H20 GPUs 1,5,6,7 (chosen to avoid two
+  dormant allocations on GPU0), M128 random routes/seed 20260902, complete
+  one-kernel MegaMoE+embedded all-reduce FP32 control versus FP16 candidate,
+  five outer batches x thirty independently cold CUDA-Graph replays.
+- **Result:** **environment failure before graph capture or benchmark kernel
+  timing.** The newly used physical-GPU subset was absent from SGLang's P2P
+  cache, so `CustomAllReduceV2` launched its standalone P2P checker. That
+  subprocess inherits environment variables but not the benchmark runner's
+  in-process `sys.path` injection; it selected another editable SGLang
+  checkout and failed to import `orjson`. Rank0 exited in
+  `gpu_p2p_access_check`, then the remaining Gloo ranks closed.
+- **Decision:** no kernel conclusion. Preserve GPUs 1,5,6,7 and retry the
+  exact protocol with the runner's pinned overlay, SGLang checkout and
+  dependency-only dflash site-packages explicitly present in `PYTHONPATH`,
+  so the child checker sees the same import environment. No benchmark
+  sample, correctness result or latency was produced.
+- **Evidence:** `evidence/iter702_w2_f16_tp4_p2p_env_failure.md`; raw log
+  `bench/results/iter702_w2_f16_accum_tp4_m128_paired_cold.log`.
