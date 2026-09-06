@@ -1302,15 +1302,8 @@ if (
 SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE", "0") == "1"
 )
-SINGLE_LAUNCH_W2_PRODUCER_VECTOR_ATOMIC_COMBINE = (
-    os.environ.get(
-        "V4_SINGLE_LAUNCH_W2_PRODUCER_VECTOR_ATOMIC_COMBINE", "0"
-    )
-    == "1"
-)
 SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE", "0") == "1"
-    or SINGLE_LAUNCH_W2_PRODUCER_VECTOR_ATOMIC_COMBINE
 )
 if SINGLE_LAUNCH_BALANCED_W2_WORKERS and (
     SINGLE_LAUNCH_SCHEDULE != 0
@@ -2242,8 +2235,6 @@ static constexpr int kSingleLaunchW2BulkReduceRoutes =
     K_SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES;
 static constexpr bool kSingleLaunchW2ProducerAtomicCombine =
     K_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE;
-static constexpr bool kSingleLaunchW2ProducerVectorAtomicCombine =
-    K_SINGLE_LAUNCH_W2_PRODUCER_VECTOR_ATOMIC_COMBINE;
 static constexpr bool kSingleLaunchW2F16WgmmaAccum =
     K_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM;
 static constexpr bool kSingleLaunchW2PredecodeS2R =
@@ -4097,73 +4088,7 @@ __device__ __forceinline__ void route_gemm_task(
                 // This is the proven scalar fallback for producer-side k6
                 // combine.  Match the selected route-output boundary by
                 // rounding every route value to BF16 before weighting it.
-                if constexpr (kSingleLaunchW2ProducerVectorAtomicCombine) {
-                    // Hopper supports element-wise float2 atomicAdd.  The
-                    // WGMMA accumulator map places adjacent N values four
-                    // lanes apart, with the same route pair in both lanes.
-                    // Shuffle the odd row into the even-row lane so half the
-                    // lanes issue two vector atomics instead of four scalar
-                    // atomics, while preserving the per-element FP32 atomic
-                    // reduction semantics.
-                    const int row_group = lane >> 2;
-                    const bool issue_pair = (row_group & 1) == 0;
-                    const float route0_n0_next = __shfl_down_sync(
-                        0xffffffffu, accum[group][0], 4);
-                    const float route0_n1_next = __shfl_down_sync(
-                        0xffffffffu, accum[group][2], 4);
-                    const float route1_n0_next = __shfl_down_sync(
-                        0xffffffffu, accum[group][1], 4);
-                    const float route1_n1_next = __shfl_down_sync(
-                        0xffffffffu, accum[group][3], 4);
-                    if (issue_pair && static_cast<unsigned>(route0)
-                            < static_cast<unsigned>(max_routes)) {
-                        const int token = route0 / kTopK;
-                        const float route_weight =
-                            __ldg(topk_weights + route0) * kRoutedScale;
-                        float* token_output = output
-                            + static_cast<int64_t>(token) * N;
-                        atomicAdd(
-                            reinterpret_cast<float2*>(
-                                token_output + output_n0),
-                            make_float2(
-                                __bfloat162float(__float2bfloat16(
-                                    accum[group][0])) * route_weight,
-                                __bfloat162float(__float2bfloat16(
-                                    route0_n0_next)) * route_weight));
-                        atomicAdd(
-                            reinterpret_cast<float2*>(
-                                token_output + output_n1),
-                            make_float2(
-                                __bfloat162float(__float2bfloat16(
-                                    accum[group][2])) * route_weight,
-                                __bfloat162float(__float2bfloat16(
-                                    route0_n1_next)) * route_weight));
-                    }
-                    if (issue_pair && static_cast<unsigned>(route1)
-                            < static_cast<unsigned>(max_routes)) {
-                        const int token = route1 / kTopK;
-                        const float route_weight =
-                            __ldg(topk_weights + route1) * kRoutedScale;
-                        float* token_output = output
-                            + static_cast<int64_t>(token) * N;
-                        atomicAdd(
-                            reinterpret_cast<float2*>(
-                                token_output + output_n0),
-                            make_float2(
-                                __bfloat162float(__float2bfloat16(
-                                    accum[group][1])) * route_weight,
-                                __bfloat162float(__float2bfloat16(
-                                    route1_n0_next)) * route_weight));
-                        atomicAdd(
-                            reinterpret_cast<float2*>(
-                                token_output + output_n1),
-                            make_float2(
-                                __bfloat162float(__float2bfloat16(
-                                    accum[group][3])) * route_weight,
-                                __bfloat162float(__float2bfloat16(
-                                    route1_n1_next)) * route_weight));
-                    }
-                } else if (static_cast<unsigned>(route0)
+                if (static_cast<unsigned>(route0)
                         < static_cast<unsigned>(max_routes)) {
                     const int token = route0 / kTopK;
                     const float route_weight =
@@ -4177,25 +4102,19 @@ __device__ __forceinline__ void route_gemm_task(
                         __bfloat162float(__float2bfloat16(accum[group][2]))
                             * route_weight);
                 }
-                if constexpr (!kSingleLaunchW2ProducerVectorAtomicCombine) {
-                    if (static_cast<unsigned>(route1)
-                            < static_cast<unsigned>(max_routes)) {
-                        const int token = route1 / kTopK;
-                        const float route_weight =
-                            __ldg(topk_weights + route1) * kRoutedScale;
-                        atomicAdd(
-                            output + static_cast<int64_t>(token) * N
-                                + output_n0,
-                            __bfloat162float(
-                                __float2bfloat16(accum[group][1]))
-                                * route_weight);
-                        atomicAdd(
-                            output + static_cast<int64_t>(token) * N
-                                + output_n1,
-                            __bfloat162float(
-                                __float2bfloat16(accum[group][3]))
-                                * route_weight);
-                    }
+                if (static_cast<unsigned>(route1)
+                        < static_cast<unsigned>(max_routes)) {
+                    const int token = route1 / kTopK;
+                    const float route_weight =
+                        __ldg(topk_weights + route1) * kRoutedScale;
+                    atomicAdd(
+                        output + static_cast<int64_t>(token) * N + output_n0,
+                        __bfloat162float(__float2bfloat16(accum[group][1]))
+                            * route_weight);
+                    atomicAdd(
+                        output + static_cast<int64_t>(token) * N + output_n1,
+                        __bfloat162float(__float2bfloat16(accum[group][3]))
+                            * route_weight);
                 }
             } else if constexpr (kW2RouteOutput) {
                 if constexpr (kW2CoalescedStore) {
@@ -12542,7 +12461,6 @@ _EXTENSION_CONFIG = (
           f"slw2brc{int(SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE)}_"
           f"slw2brr{SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES}_"
           f"slw2pac{int(SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE)}_"
-          f"slw2pvac{int(SINGLE_LAUNCH_W2_PRODUCER_VECTOR_ATOMIC_COMBINE)}_"
           f"slw2f16a{int(SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM)}_"
           f"slw2pds2r{int(SINGLE_LAUNCH_W2_PREDECODE_S2R)}_"
           f"slw2pwg{int(SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS)}_"
@@ -12792,10 +12710,6 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE="
             f"{int(SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE)}"
-        ),
-        (
-            "-DK_SINGLE_LAUNCH_W2_PRODUCER_VECTOR_ATOMIC_COMBINE="
-            f"{int(SINGLE_LAUNCH_W2_PRODUCER_VECTOR_ATOMIC_COMBINE)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM="
