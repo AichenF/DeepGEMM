@@ -16737,3 +16737,24 @@ maximum rank latency of a full CUDA-Graph replay.
   Close same-entry register-limit and operand-order probes unless a true
   phase-local code-generation boundary changes that contract.
 - **Evidence:** `evidence/iter709y_bound8_persistent_entry_sass_control.md`.
+
+## Iteration 710a — current-source W2 phase-outline JIT failure
+
+- **Intent:** audit the retained whole-W2 `__noinline__` callee before adding
+  a terminal non-returning W2+collective tail.  If the existing callee already
+  has standalone's paired-QGMMA schedule, the new design can isolate only
+  call/return and continuation overhead.
+- **Configuration:** compile-only H20 GPU1 with selected TP4 defaults plus
+  `V4_SINGLE_LAUNCH_W2_PHASE_NOINLINE=1`; intended extension
+  `v4tp_b9572d91268c0bf6a995_v178mspec`.
+- **Result:** **NVCC failure before CUDA execution.**  Instantiation ends with
+  `expected a "}"` at the single-launch function close.  Lexical brace
+  counting is balanced; the failure appears when the historical
+  `else if constexpr { phase_call; } else for (...)` branch becomes true,
+  consistent with an NVCC parser/instantiation regression after the template
+  accumulated later diagnostics.
+- **Decision:** no cubin, correctness, or latency claim.  Replace only the
+  unbraced final `else for` with an explicit `else { for (...) { ... } }`, then
+  rebuild both default and opt-in configurations before inspecting SASS.
+- **Evidence:** `evidence/iter710a_w2_phase_outline_current_jit_failure.md`;
+  raw `bench/results/iter710a_existing_w2_phase_outline_jit.log`.
