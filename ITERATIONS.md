@@ -16433,3 +16433,19 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Static gate:** megamoe
   `python3 -m py_compile bench/profile_v4_flash_tp_local.py` passes.  Another
   local TP4 M128 smoke is next.
+
+## Iteration 709i — custom-only local profiler reaches a cold target replay
+
+- **Protocol:** physical H20 GPU1, TP4 M128 random routes/seed 20260902,
+  prequantized group-128 E4M3 input from the profiling-only Torch constructor,
+  current same-source multi pipeline, two warm local runs, then one profiler
+  range containing a 256 MiB `tensor_zero` clear immediately followed by the
+  local W13/requant/W2 pipeline.
+- **Result:** **PASS for fixture liveness.**  The process exits zero and reports
+  H20 L2=60 MiB, flush=256 MiB, `l2_clear_impl=tensor_zero`, split policy
+  auto, WOUT128, two weight stages, compact scale layout, W13/W2 S2R and
+  caller-provided FP8/scales.
+- **Qualification:** this smoke does not compare output or claim latency.
+  Proceed to NCU with `route_gemm` filter, skip one matching launch and collect
+  one matching launch so only standalone W2 is replayed.
+- **Evidence:** `evidence/iter709i_custom_profile_cold_smoke.md`.
