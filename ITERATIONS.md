@@ -16449,3 +16449,26 @@ maximum rank latency of a full CUDA-Graph replay.
   Proceed to NCU with `route_gemm` filter, skip one matching launch and collect
   one matching launch so only standalone W2 is replayed.
 - **Evidence:** `evidence/iter709i_custom_profile_cold_smoke.md`.
+
+## Iteration 709j — collect standalone W2 cold-L2 source counters
+
+- **Protocol:** physical H20 GPU1, TP4 M128 random routes/seed 20260902,
+  caller-provided group-128 E4M3 input/scales and canonical packed MXFP4
+  weights.  The fixture warms twice, streams a 256 MiB `tensor_zero` clear
+  immediately before the local pipeline, and NCU uses `--cache-control none`.
+  Kernel filter `^route_gemm$`, skip one, collect one isolates standalone W2
+  after W13; 21 replay passes collect LaunchStats, Occupancy, SpeedOfLight,
+  SchedulerStats, WarpStateStats and SourceCounters.
+- **Result:** **PASS.**  Standalone W2 reports 97.70 us diagnostic duration,
+  61 registers/thread, 48.18% achieved occupancy, 16.46 waves/SM, 57.61%
+  DRAM, 72.76% L2, 74.08% SM, issue rate 0.76 and 24.02% no-eligible.  It
+  executes 1,019,904 QGMMA instructions, matching the W2 QGMMA count in the
+  saved fused M128 report.  Source counters aggregate 39,014,432 executed
+  instructions and 6,263 PC samples.
+- **Qualification:** NCU duration is diagnostic and is not used as a formal
+  CUDA-Graph endpoint latency.  The application-owned clear is greater than
+  4x the 60 MiB H20 L2 and is excluded from the target kernel filter.
+- **Decision:** isolate the fused W2 SASS interval and compare its useful
+  instruction/stall distributions to this same-shape control before choosing
+  another source experiment.
+- **Evidence:** `evidence/iter709j_standalone_w2_ncu_collection.md`.
