@@ -17658,3 +17658,21 @@ maximum rank latency of a full CUDA-Graph replay.
   transfer family; next work must alter coarse one-kernel dataflow.
 - **Evidence:** `evidence/iter715g_device_lto_toolchain_rejection.md` and
   `bench/results/iter715f_device_lto_static_20260906.log`.
+
+## Iteration 716a — compose a 64-register-capped RDC candidate
+
+- **Remaining compiler-boundary hypothesis:** natural-register RDC recovered
+  standalone W2's 32-QGMMA/16-DEPBAR schedule but inflated the entry to
+  REG195/STACK112.  Independently, standalone W2 retains 32/16 at the
+  64-register/eight-CTA tier and serializes only at 56 registers.  The
+  caller+callee 64-register composition has not been tested.
+- **Change:** add `bench/iter716_make_unique_rdc_maxrreg.py`, copying the
+  exact unique Iteration-714 RDC inputs, assigning fresh host/CUDA symbols,
+  and adding only `--maxrregcount=64` to CUDA compilation.  Production code,
+  math, tasks, barriers, transport and Python ABI are unchanged.
+- **Pre-CUDA gate:** build-recipe checkpoint only.  No JIT, CUDA launch,
+  correctness or timing is claimed.
+- **Next:** reject before launch unless device link succeeds, the M128 entry
+  avoids fixed local/material stack spill, and the W2 callee retains roughly
+  32 QGMMAs / 16 dependency barriers.
+- **Evidence:** `evidence/iter716a_rdc_maxrreg64_composition.md`.
