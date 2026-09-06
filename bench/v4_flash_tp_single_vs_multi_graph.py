@@ -280,6 +280,9 @@ def main() -> None:
                     "single_launch_m128_bound9": (
                         kernel.SINGLE_LAUNCH_M128_BOUND9
                     ),
+                    "single_launch_m128_unbounded": (
+                        kernel.SINGLE_LAUNCH_M128_UNBOUNDED
+                    ),
                     "single_launch_compact_w13_bundle": (
                         kernel.SINGLE_LAUNCH_COMPACT_W13_BUNDLE
                     ),

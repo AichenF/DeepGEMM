@@ -489,6 +489,17 @@ if SINGLE_LAUNCH_M128_BOUND9 and not SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM:
     raise ValueError(
         "V4_SINGLE_LAUNCH_M128_BOUND9 requires dynamic route shared memory"
     )
+# Compile the M128 entry without a material minimum-residency constraint and
+# let the host occupancy query choose a fully resident grid.  This is an
+# isolated register/scheduling experiment; lower-token specializations retain
+# their selected launch bounds.
+SINGLE_LAUNCH_M128_UNBOUNDED = (
+    os.environ.get("V4_SINGLE_LAUNCH_M128_UNBOUNDED", "0") == "1"
+)
+if SINGLE_LAUNCH_M128_UNBOUNDED and SINGLE_LAUNCH_M128_BOUND9:
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_M128_UNBOUNDED and M128 bound9 are exclusive"
+    )
 SINGLE_LAUNCH_W2_UNROLL2_BOUND9 = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_UNROLL2_BOUND9", "0") == "1"
 )
@@ -1111,6 +1122,28 @@ SINGLE_LAUNCH_CTAS_PER_SM = int(
 )
 if SINGLE_LAUNCH_CTAS_PER_SM not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
     raise ValueError("V4_SINGLE_LAUNCH_CTAS_PER_SM must be in [1,10]")
+if SINGLE_LAUNCH_M128_UNBOUNDED and (
+    not SINGLE_LAUNCH_TP4
+    or SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_MIN_BLOCKS != 8
+    or SINGLE_LAUNCH_CTAS_PER_SM != 8
+    or SINGLE_LAUNCH_M128_BOUND9
+    or not SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or not SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+    or not SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM
+    or SINGLE_LAUNCH_W13_WAVE_ROTATE != 0
+    or SINGLE_LAUNCH_W2_WAVE_ROTATE != 0
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
+    or SINGLE_LAUNCH_W2_COMPACT_TASK_CALL
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W2_PERSISTENT_STATE
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_M128_UNBOUNDED requires the selected compact-W13 "
+        "schedule-0 path with requested bound8, rotations disabled, and "
+        "ordinary inline W2"
+    )
 if SINGLE_LAUNCH_W13_TAIL_SPLIT4 and SINGLE_LAUNCH_CTAS_PER_SM != 8:
     raise ValueError("V4_SINGLE_LAUNCH_W13_TAIL_SPLIT4 requires 8 CTAs/SM")
 if SINGLE_LAUNCH_W13_PHASE_NOINLINE and SINGLE_LAUNCH_CTAS_PER_SM != 8:
@@ -2087,6 +2120,8 @@ static constexpr bool kSingleLaunchRouteDynamicSmem =
     K_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM;
 static constexpr bool kSingleLaunchM128Bound9 =
     K_SINGLE_LAUNCH_M128_BOUND9;
+static constexpr bool kSingleLaunchM128Unbounded =
+    K_SINGLE_LAUNCH_M128_UNBOUNDED;
 static constexpr bool kSingleLaunchW2Unroll2Bound9 =
     K_SINGLE_LAUNCH_W2_UNROLL2_BOUND9;
 static constexpr bool kSingleLaunchPersistentGemmState =
@@ -7119,6 +7154,8 @@ struct SingleLaunchMinBlocks {
         : kSingleLaunch156Cta4Wg ? 2
         : kSingleLaunchDualWgPhases
         ? kSingleLaunchDualWgCtasPerSm
+        : kSingleLaunchM128Unbounded && Tokens == 128
+        ? 1
         : kSingleLaunchM128Bound9 && Tokens == 128
         ? 9 : K_SINGLE_LAUNCH_MIN_BLOCKS;
 };
@@ -12307,6 +12344,7 @@ _EXTENSION_CONFIG = (
           f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
           f"sldr{int(SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM)}_"
           f"slm128b9{int(SINGLE_LAUNCH_M128_BOUND9)}_"
+          f"slm128ub{int(SINGLE_LAUNCH_M128_UNBOUNDED)}_"
           f"slw2u2b9{int(SINGLE_LAUNCH_W2_UNROLL2_BOUND9)}_"
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
           f"slw2ps{int(SINGLE_LAUNCH_W2_PERSISTENT_STATE)}_"
@@ -12482,6 +12520,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_M128_BOUND9="
             f"{int(SINGLE_LAUNCH_M128_BOUND9)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_M128_UNBOUNDED="
+            f"{int(SINGLE_LAUNCH_M128_UNBOUNDED)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W2_UNROLL2_BOUND9="

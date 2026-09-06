@@ -16906,3 +16906,23 @@ maximum rank latency of a full CUDA-Graph replay.
   resources/SASS, and derive the grid from actual occupancy only if 2:1 is
   restored.
 - **Evidence:** `evidence/iter711c_standalone_w2_bound8_static_control.md`.
+
+## Iteration 711d — occupancy-derived unbounded M128 implementation
+
+- **Hypothesis/change:** add default-off
+  `V4_SINGLE_LAUNCH_M128_UNBOUNDED`.  Only TP4 `Tokens==128` uses an
+  effectively unconstrained `__launch_bounds__(128,1)` contract; lower M and
+  TP8 remain unchanged.  The existing host occupancy query clamps the
+  requested eight CTAs/SM to the compiled kernel's actual active-block count,
+  preserving a fully co-resident software-barrier grid.
+- **Isolation:** require selected compact-W13/dynamic-smem schedule 0,
+  requested bound8, bound9 and both 702-grid rotations off, and ordinary
+  inline W2.  Add the flag to JIT identity/compiler defines and benchmark
+  metadata.
+- **Pre-CUDA gate:** kernel and benchmark Python compilation pass.  Source
+  SHA256 values are `28b8ac7a...93d13` and `16bb9e09...01bb` respectively.
+  No JIT or launch is claimed.
+- **Next:** require a no-local-spill M128 cubin, occupancy of at least one
+  78-CTA wave, and an exact W2 interval of 32 QGMMAs / about 16 waits before
+  correctness or cold-L2 timing.
+- **Evidence:** `evidence/iter711d_fused_m128_unbounded_implementation.md`.
