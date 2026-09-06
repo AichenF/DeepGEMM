@@ -40,4 +40,36 @@ Patched generated-source SHA256:
    fixed local spill.
 4. If the exact W2 schedule remains 32/32, reject without a GPU launch.
 
-No CUDA compilation or launch is claimed by this composition record.
+## Static result
+
+The relocatable compile and `nvcc -dlink` both succeed after the two temporary
+launch-bound relaxations.
+
+- Build log SHA256:
+  `0e73bcc28f960fd310a1ea9987041229206da5b35ffa3d709f8bb360791cee13`.
+- Device-link resource log SHA256:
+  `380fdb80f899bd6cf05595f134a183dfbe86c9b57d153954d61ea66b76b0fbc2`.
+- Linked full-SASS SHA256:
+  `750c9c2a952809a6775af68c6511534460b767c1c26de62c4ff752ddd5a347b7`.
+- Exact outlined-W2 SASS SHA256:
+  `adf4eb6fd60c7954ca7c2bec966d6dc005c160d0f78d66fbc27804daca7f418e`.
+- Exact W2 instruction counts: 32 `QGMMA`, 16 `WARPGROUP.DEPBAR`, and
+  32 `WARPGROUP.ARRIVE`.
+- TP4 M128 split-K2 entry resources:
+  `REG195 STACK112 SHARED1616 LOCAL0`.
+
+The 32/16 static acceptance gate therefore passes.  This establishes that
+RDC, unlike same-translation-unit outlining, can preserve paired W2 issue.
+It does not establish a performance win: the entry's register allocation
+increases from the prior roughly 80 registers to 195, and device calls add a
+112-byte per-thread stack frame.  Those costs can collapse occupancy and add
+local-stack traffic.
+
+## Decision
+
+Link the temporary objects into a loadable extension, then run only TP4 M128
+compute-only correctness and phase timing.  Reject before a production
+multi-translation-unit refactor unless the runtime result beats the current
+same-source fused phase despite the register and stack costs.
+
+No CUDA business kernel was launched for this static result.

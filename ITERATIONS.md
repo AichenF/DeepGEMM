@@ -17116,10 +17116,14 @@ maximum rank latency of a full CUDA-Graph replay.
   lets unrelated specializations satisfy their high-register RDC callees so
   the object can link.  Production source, defaults, math and ABI are
   untouched, and only TP4 M128 SASS will be evaluated.
-- **Pre-CUDA gate:** patched generated-source SHA256 is
-  `85dafc4cd81d0fa52599430df9da301c48d5d17f11b888da47d554521f695a9b`.
-  No JIT/device link or kernel launch is claimed yet.
-- **Static acceptance gate:** require the exact TP4 M128 split-K2 W2 phase to
-  contain 32 QGMMAs and approximately 16 dependency barriers, with no
-  prohibitive fixed local spill.  Reject before runtime otherwise.
+- **Build/static result:** the `-rdc=true` compile and `nvcc -dlink` both
+  succeed.  The exact linked W2 callee contains 32 QGMMAs / 16 dependency
+  barriers / 32 warpgroup-arrive instructions and has SHA256
+  `adf4eb6f...7f418e`.  The TP4 M128 split-K2 entry is
+  `REG195 STACK112 SHARED1616 LOCAL0`; no CUDA business kernel was launched.
+- **Decision:** the scheduling gate passes, proving RDC can recover the
+  standalone 32/16 W2 issue pattern.  The 195-register entry and 112-byte
+  per-thread stack frame are serious residency/call-overhead risks, so link a
+  temporary loadable extension and run only M128 compute-only
+  correctness/phase timing before any production refactor.
 - **Evidence:** `evidence/iter713b_m128_targeted_rdc_composition.md`.
