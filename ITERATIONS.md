@@ -17051,3 +17051,15 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** raw JIT log
   `bench/results/iter712b_w2_function_maxnreg64_jit_20260906.log` and
   `evidence/iter712b_w2_function_maxnreg64_compile_rejection.md`.
+
+## Iteration 712c — remove the rejected function attribute
+
+- **Change:** remove the non-buildable default-off device-function
+  `__maxnreg__` probe and its benchmark metadata after Iteration 712b's
+  compiler rejection.
+- **Static result:** kernel and paired benchmark are byte-identical to the
+  last buildable Iteration-711i pair, pass Python compilation, and restore
+  SHA256 values `30e6c402...c3fdbdf` and `16bb9e09...5901bb`.
+- **Qualification:** exact restoration only; no JIT, CUDA launch,
+  correctness or performance result.
+- **Evidence:** `evidence/iter712c_restore_after_maxnreg_rejection.md`.

@@ -271,9 +271,6 @@ def main() -> None:
                     "single_launch_w2_phase_noinline": (
                         kernel.SINGLE_LAUNCH_W2_PHASE_NOINLINE
                     ),
-                    "single_launch_w2_func_maxnreg64": (
-                        kernel.SINGLE_LAUNCH_W2_FUNC_MAXNREG64
-                    ),
                     "single_launch_min_blocks": (
                         kernel.SINGLE_LAUNCH_MIN_BLOCKS
                     ),
