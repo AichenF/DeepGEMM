@@ -16472,3 +16472,31 @@ maximum rank latency of a full CUDA-Graph replay.
   instruction/stall distributions to this same-shape control before choosing
   another source experiment.
 - **Evidence:** `evidence/iter709j_standalone_w2_ncu_collection.md`.
+
+## Iteration 709k — align fused and standalone W2 SASS
+
+- **Scope:** read-only import of the application-cold-L2 Iteration-650b
+  fused report and Iteration-709j standalone-W2 report.  No CUDA kernel was
+  launched and no new endpoint timing is claimed.
+- **Exact intervals:** fused persistent W2 is
+  `[0x7ffb9fe4d950,0x7ffb9fe527c0)`, including its grid-stride backedge but
+  excluding terminal whole-grid polling; standalone task is
+  `[0x7ffee1a91750,0x7ffee1a96a00)`, after the launch validity prefix.
+- **Result:** fused/standalone execute 36,758,906/38,225,312 instructions and
+  both execute exactly 1,019,904 QGMMA instructions.  Fused therefore has
+  3.84% *less* useful-body instruction traffic.  The actionable difference
+  is `WARPGROUP.DEPBAR.LE`: fused has 32 static / 1,019,904 executed, while
+  standalone has 16 / 509,952.  Fused serializes each N64 QGMMA half;
+  standalone keeps both halves of an N128 task in flight before one wait.
+- **Resource link:** the complete fused entry is capped at 56 registers for
+  nine CTAs/SM versus standalone W2's 61-register contract.  This supports,
+  but does not alone prove, register-pressure-induced accumulator
+  serialization.  Raw PC-sample totals from separate NCU replays are not
+  converted into latency.
+- **Next experiment:** in fused TP4 M128 W2 only, predecode each next S2R
+  pair before the current QGMMA and carry two FP8 `uint2`s instead of two
+  packed words plus two LUT `uint2`s.  This saves four 32-bit live registers
+  per N128 task while preserving full selected load/LUT/decode lookahead.
+  Require `REG56`, nine-CTA admission, no spill and dependency-barrier
+  reduction toward 16 before any CUDA correctness or timing run.
+- **Evidence:** `evidence/iter709k_fused_standalone_w2_sass_alignment.md`.
