@@ -15721,3 +15721,35 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `evidence/iter686_dedup_tma_descriptors_rejection.md`; raw
   logs `bench/results/iter686_dedup_tma_descriptors_m128_{jit_correctness,resources}_20260906.log`
   and `bench/results/iter686_dedup_tma_descriptors_tp4_m128_cold_short_20260906.log`.
+
+## Iteration 687 — packed-weight-only W2 S2R cannot repay lost decode overlap
+
+- **Hypothesis/change:** Import the multi-kernel W13 low-register contract into
+  the M128 monolithic launch without completely removing W2 lookahead. Keep
+  only the two next-iteration packed-weight LDS values live across each QGMMA;
+  load/decode the current E8M0 scales and LUT values in the current iteration.
+  The lower live range permits a 780-CTA, 128-thread launch at ten CTA/SM.
+- **Resource/correctness:** candidate SHA-256
+  `bfe44f6a9a657ffe04c5d5873fa4aea7baeee66e85a3755c8820a220bed86ad4`;
+  extension `v4tp_dd8a6804edd0c89d31a0_v178mspec`. M128 split-K2/4 compiles at
+  `REG48 STACK48 SHARED2048 LOCAL0`, versus selected `REG56 STACK32`, so the
+  intended ten-CTA residency is real and has no fixed local spill. Single-GPU
+  full-output validation is bitwise equal to the independent local reference.
+  TP4 correctness also passes on every rank at cosine-min
+  `0.9999955976741226`, rel-L2-max `0.0029672639980990933`, finite and
+  `allreduce_ok=true`.
+- **Cold-L2 TP4 screen:** GPUs 0/5/6/7, random seed 20260902, replay-paired
+  CUDA Graphs, 2x20 samples after four warmups, with a separate excluded
+  256 MiB clear before every arm. Multi min/median/max are
+  `0.304096/0.305472/0.332064 ms`; candidate is
+  `0.360320/0.363680/0.373600 ms`. Candidate/control is `1.190551`, or
+  19.06% slower. It is also about 4.02% slower than the adjacent selected
+  one-kernel M128 anchor (`0.349616 ms`), although it recovers part of the
+  fully-disabled-S2R Iteration-679 loss.
+- **Decision:** Reject and restore exact Iteration-665 production. The
+  occupancy/register transfer succeeds mechanically, but current-iteration
+  scale/LUT work exposed on the QGMMA critical path costs more than the tenth
+  resident CTA saves. Keep full W2 S2R overlap and nine CTA/SM.
+- **Evidence:** `evidence/iter687_bound10_w2_packed_s2r_rejection.md`; raw
+  logs `bench/results/iter687_bound10_w2_packed_s2r_m128_jit_correctness_resources_20260906.log`
+  and `bench/results/iter687_bound10_w2_packed_s2r_tp4_m128_cold_short_20260906.log`.
