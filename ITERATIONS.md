@@ -16500,3 +16500,20 @@ maximum rank latency of a full CUDA-Graph replay.
   Require `REG56`, nine-CTA admission, no spill and dependency-barrier
   reduction toward 16 before any CUDA correctness or timing run.
 - **Evidence:** `evidence/iter709k_fused_standalone_w2_sass_alignment.md`.
+
+## Iteration 709l — predecode fused W2 S2R lookahead
+
+- **Change:** add an opt-in TP4 M128 W2 path that immediately dequantizes each
+  prefetched packed MXFP4/LUT pair and carries only two FP8 `uint2`s across the
+  current QGMMA.  The intent is to reduce live lookahead state by four 32-bit
+  registers per N128 task while preserving all selected loads, LUT synthesis,
+  FP8 decode, FP32 QGMMA work, reductions and communication.
+- **Isolation:** `V4_SINGLE_LAUNCH_W2_PREDECODE_S2R=1` is accepted only for
+  the selected M128-bound9, flat inline WOUT128 TP4 schedule-0 path.  It is
+  included in the JIT identity and disabled by default; TP8 is unchanged.
+- **Pre-CUDA gate:** Python bytecode compilation passes.  Staged source SHA256
+  is `55c4cb0d114f21f129f61d23a1e284978a09fdf81585b1c16cf51b3bcb806f7a`.
+  No CUDA correctness or latency result is claimed yet.
+- **Next:** require REG56, no spill, nine-CTA admission and a static fused-W2
+  `WARPGROUP.DEPBAR.LE` reduction from 32 toward 16 before any timing run.
+- **Evidence:** `evidence/iter709l_w2_predecode_s2r_implementation.md`.

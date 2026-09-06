@@ -340,6 +340,9 @@ SINGLE_LAUNCH_TP4 = os.environ.get("V4_SINGLE_LAUNCH_TP4", "0") == "1"
 SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM", "0") == "1"
 )
+SINGLE_LAUNCH_W2_PREDECODE_S2R = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_PREDECODE_S2R", "0") == "1"
+)
 # Selected single-launch production bundle.  The historical environment name
 # is retained because compact W13 was the first bundled component, but the
 # switch now covers every independently validated fast path selected for the
@@ -1753,6 +1756,32 @@ if SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM and (
         "V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM requires the isolated flat "
         "inline WOUT128 TP4 schedule-0 W2 path"
     )
+if SINGLE_LAUNCH_W2_PREDECODE_S2R and (
+    not SINGLE_LAUNCH_TP4
+    or not SINGLE_LAUNCH_M128_BOUND9
+    or SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
+    or SINGLE_LAUNCH_W2_PERSISTENT_STATE
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_78CTA_8WG
+    or SINGLE_LAUNCH_156CTA_4WG
+    or SINGLE_LAUNCH_W2_N64_TAIL
+    or SINGLE_LAUNCH_W2_CHUNK_MAJOR
+    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+    or SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+    or SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+    or W2_COALESCED_STORE
+    or WOUT != 128
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_PREDECODE_S2R requires the isolated "
+        "M128-bound9 inline WOUT128 TP4 schedule-0 W2 path"
+    )
 MC_PULL_BLOCKS = int(os.environ.get("V4_MC_PULL_BLOCKS", "0"))
 MC_PULL_UNROLL = int(os.environ.get("V4_MC_PULL_UNROLL", "0"))
 if MC_PULL_BLOCKS < 0:
@@ -1761,6 +1790,10 @@ if MC_PULL_UNROLL not in (0, 2, 4, 8, 16):
     raise ValueError("V4_MC_PULL_UNROLL must be 0,2,4,8,16")
 W2_GLOBAL_LUT = os.environ.get("V4_W2_GLOBAL_LUT", "0") == "1"
 W2_S2R_PREFETCH = os.environ.get("V4_W2_S2R_PREFETCH", "1") == "1"
+if SINGLE_LAUNCH_W2_PREDECODE_S2R and not W2_S2R_PREFETCH:
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_PREDECODE_S2R requires V4_W2_S2R_PREFETCH=1"
+    )
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
 LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
 DIRECT_BARRIER_ADDR = os.environ.get("V4_DIRECT_BARRIER_ADDR", "0") == "1"
@@ -1999,6 +2032,8 @@ static constexpr bool kSingleLaunchW2ProducerAtomicCombine =
     K_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE;
 static constexpr bool kSingleLaunchW2F16WgmmaAccum =
     K_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM;
+static constexpr bool kSingleLaunchW2PredecodeS2R =
+    K_SINGLE_LAUNCH_W2_PREDECODE_S2R;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -2502,7 +2537,7 @@ template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool SharedPartial = false, int ForcedKUnroll = 0,
           bool AssumeValidMblock = false, bool BulkReduceW2 = false,
           bool AtomicCombineW2 = false, int IndependentTaskWGs = 1,
-          bool F16WgmmaAccum = false>
+          bool F16WgmmaAccum = false, bool PredecodeS2R = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -2621,6 +2656,12 @@ __device__ __forceinline__ void route_gemm_task(
     constexpr int kTaskNTiles = kLaunchNTiles / kMathWGs;
     constexpr bool kS2RPrefetch =
         IsW13 ? kW13S2RPrefetch : kW2S2RPrefetch;
+    static_assert(!PredecodeS2R
+                  || (!IsW13 && kS2RPrefetch && !F16WgmmaAccum
+                      && !DualWgW13 && !PersistentState
+                      && WgmmaHalf == -1 && IndependentTaskWGs == 1
+                      && kActiveWgmmaGroups == 2),
+                  "predecoded S2R lookahead requires flat FP32 W2 N128");
     constexpr bool kMergedWgmmaGroup =
         IsW13 && kW13MergedWgmmaGroup;
     constexpr bool kDistributedPrep =
@@ -3252,6 +3293,8 @@ __device__ __forceinline__ void route_gemm_task(
         uint32_t next_packed1[kActiveWgmmaGroups];
         uint2 next_weight_lut0[kActiveWgmmaGroups];
         uint2 next_weight_lut1[kActiveWgmmaGroups];
+        uint2 next_fp8_0[kActiveWgmmaGroups];
+        uint2 next_fp8_1[kActiveWgmmaGroups];
         #pragma unroll
         for (int k_step = 0; k_step < kBlockK / 32; ++k_step) {
             const uint32_t stage_base =
@@ -3337,7 +3380,7 @@ __device__ __forceinline__ void route_gemm_task(
                             weight_lut0 = lut_smem[scale_lut_index(exponent0)];
                             weight_lut1 = lut_smem[scale_lut_index(exponent1)];
                         }
-                    } else {
+                    } else if constexpr (!PredecodeS2R) {
                         packed0 = next_packed0[group];
                         packed1 = next_packed1[group];
                         weight_lut0 = next_weight_lut0[group];
@@ -3398,10 +3441,24 @@ __device__ __forceinline__ void route_gemm_task(
                         weight_lut1 = lut_smem[scale_lut_index(exponent1)];
                     }
                 }
-                const uint2 fp8_0 =
-                    dequant_weight_word<kMode2Braid>(packed0, weight_lut0);
-                const uint2 fp8_1 =
-                    dequant_weight_word<kMode2Braid>(packed1, weight_lut1);
+                uint2 fp8_0;
+                uint2 fp8_1;
+                if constexpr (PredecodeS2R) {
+                    if (k_step == 0) {
+                        fp8_0 = dequant_weight_word<kMode2Braid>(
+                            packed0, weight_lut0);
+                        fp8_1 = dequant_weight_word<kMode2Braid>(
+                            packed1, weight_lut1);
+                    } else {
+                        fp8_0 = next_fp8_0[group];
+                        fp8_1 = next_fp8_1[group];
+                    }
+                } else {
+                    fp8_0 = dequant_weight_word<kMode2Braid>(
+                        packed0, weight_lut0);
+                    fp8_1 = dequant_weight_word<kMode2Braid>(
+                        packed1, weight_lut1);
+                }
                 if constexpr (kS2RPrefetch) {
                     if (k_step + 1 < kBlockK / 32) {
                         const int next_k_step = k_step + 1;
@@ -3410,13 +3467,17 @@ __device__ __forceinline__ void route_gemm_task(
                         const uint32_t next_common_weight_address =
                             stage_base + row0 * (kBlockK / 2)
                             + next_common_weight_chunk * 16 + packed_k_offset;
+                        uint32_t prefetched_packed0;
+                        uint32_t prefetched_packed1;
+                        uint2 prefetched_weight_lut0;
+                        uint2 prefetched_weight_lut1;
                         if constexpr (kWeightCommonAddress) {
                             asm volatile("ld.shared.b32 %0,[%1];"
-                                : "=r"(next_packed0[group])
+                                : "=r"(prefetched_packed0)
                                 : "r"(next_common_weight_address
                                       + group * 64 * (kBlockK / 2)));
                             asm volatile("ld.shared.b32 %0,[%1];"
-                                : "=r"(next_packed1[group])
+                                : "=r"(prefetched_packed1)
                                 : "r"(next_common_weight_address
                                       + (group * 64 + 8) * (kBlockK / 2)));
                         } else {
@@ -3429,12 +3490,12 @@ __device__ __forceinline__ void route_gemm_task(
                                     + weight_swizzle_row_offset) & 3))
                                 : next_k_step;
                             asm volatile("ld.shared.b32 %0,[%1];"
-                                : "=r"(next_packed0[group])
+                                : "=r"(prefetched_packed0)
                                 : "r"(stage_base + group_row0 * (kBlockK / 2)
                                       + next_weight_chunk0 * 16
                                       + packed_k_offset));
                             asm volatile("ld.shared.b32 %0,[%1];"
-                                : "=r"(next_packed1[group])
+                                : "=r"(prefetched_packed1)
                                 : "r"(stage_base + group_row1 * (kBlockK / 2)
                                       + next_weight_chunk1 * 16
                                       + packed_k_offset));
@@ -3451,21 +3512,36 @@ __device__ __forceinline__ void route_gemm_task(
                                               + next_k_step];
                         if constexpr (kNormalizedWeightScale) {
                             if constexpr (kNormalizedSharedLut) {
-                                next_weight_lut0[group] =
+                                prefetched_weight_lut0 =
                                     lut_smem[next_exponent0];
-                                next_weight_lut1[group] =
+                                prefetched_weight_lut1 =
                                     lut_smem[next_exponent1];
                             } else {
-                                next_weight_lut0[group] =
+                                prefetched_weight_lut0 =
                                     synth_normalized_e2m1_lut(next_exponent0);
-                                next_weight_lut1[group] =
+                                prefetched_weight_lut1 =
                                     synth_normalized_e2m1_lut(next_exponent1);
                             }
                         } else {
-                            next_weight_lut0[group] =
+                            prefetched_weight_lut0 =
                                 lut_smem[scale_lut_index(next_exponent0)];
-                            next_weight_lut1[group] =
+                            prefetched_weight_lut1 =
                                 lut_smem[scale_lut_index(next_exponent1)];
+                        }
+                        if constexpr (PredecodeS2R) {
+                            next_fp8_0[group] =
+                                dequant_weight_word<kMode2Braid>(
+                                    prefetched_packed0,
+                                    prefetched_weight_lut0);
+                            next_fp8_1[group] =
+                                dequant_weight_word<kMode2Braid>(
+                                    prefetched_packed1,
+                                    prefetched_weight_lut1);
+                        } else {
+                            next_packed0[group] = prefetched_packed0;
+                            next_packed1[group] = prefetched_packed1;
+                            next_weight_lut0[group] = prefetched_weight_lut0;
+                            next_weight_lut1[group] = prefetched_weight_lut1;
                         }
                     }
                 }
@@ -8868,7 +8944,8 @@ void tp4_megamoe_single_launch_kernel(
                         kSingleLaunchAssumeValidGemmTasks,
                         kSingleLaunchW2BulkReduceCombine,
                         kSingleLaunchW2ProducerAtomicCombine, 1,
-                        kSingleLaunchW2F16WgmmaAccum>(
+                        kSingleLaunchW2F16WgmmaAccum,
+                        kSingleLaunchW2PredecodeS2R && Tokens == 128>(
                         &w2_tma_weight, &w2_tma_weight_scale,
                         w2, s2, g2, qactivation, activation_scale,
                         sorted_ids, expert_ids, num_tokens_padded,
@@ -11950,6 +12027,7 @@ _EXTENSION_CONFIG = (
           f"slw2brr{SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES}_"
           f"slw2pac{int(SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE)}_"
           f"slw2f16a{int(SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM)}_"
+          f"slw2pds2r{int(SINGLE_LAUNCH_W2_PREDECODE_S2R)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slagp{int(SINGLE_LAUNCH_ADAPTIVE_GRID_POLL)}_"
@@ -12184,6 +12262,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM="
             f"{int(SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_PREDECODE_S2R="
+            f"{int(SINGLE_LAUNCH_W2_PREDECODE_S2R)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="
