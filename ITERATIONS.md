@@ -17191,3 +17191,19 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Decision:** the baseline-ABI static gate passes.  Proceed to the isolated
   TP4 M128 correctness and short cold-L2 runtime screen.
 - **Evidence:** `evidence/iter713f_miniforge_rdc_composition.md`.
+
+## Iteration 713g — isolate the CAR package from SGLang frontend imports
+
+- **Environment finding:** importing the older baseline-compatible SGLang
+  checkout normally executes its top-level frontend API and fails on optional
+  `aiohttp` before reaching distributed/CAR code.  This is unrelated to the
+  benchmark or collective implementation; no CUDA business kernel launched.
+- **Runner change:** optional `V4_SGLANG_NAMESPACE_ROOT` installs only a
+  namespace package rooted at the requested checkout before executing the
+  target.  It bypasses `sglang/__init__.py` while every requested SRT/JIT/CAR
+  submodule still resolves from that exact source tree.
+- **Pre-CUDA gate:** Python compilation passes.  The option is inactive by
+  default and does not alter extension substitution, CUDA Graphs, inputs,
+  timing or kernel code.
+- **Next:** import preflight, then TP4 M128 correctness/short cold-L2 screen.
+- **Evidence:** `evidence/iter713g_sglang_namespace_runner.md`.

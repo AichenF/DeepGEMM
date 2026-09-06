@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import runpy
 import sys
+import types
 
 import torch.utils.cpp_extension as cpp_extension
 
@@ -36,6 +37,16 @@ def main() -> None:
         return original_load_inline(name, *args, **kwargs)
 
     cpp_extension.load_inline = load_inline
+
+    sglang_root_value = os.environ.get("V4_SGLANG_NAMESPACE_ROOT")
+    if sglang_root_value:
+        sglang_package_dir = Path(sglang_root_value).resolve() / "sglang"
+        if not sglang_package_dir.is_dir():
+            raise FileNotFoundError(sglang_package_dir)
+        sglang_package = types.ModuleType("sglang")
+        sglang_package.__package__ = "sglang"
+        sglang_package.__path__ = [str(sglang_package_dir)]
+        sys.modules["sglang"] = sglang_package
 
     target = sys.argv[1]
     sys.argv = sys.argv[1:]
