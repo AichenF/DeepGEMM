@@ -17481,3 +17481,20 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter713y_nonrdc_unbounded_tp4_m128_cold_smoke_20260906.log`
   and `evidence/iter713y_matched_nonrdc_unbounded_anchor.md`.
+
+## Iteration 714a — compose a uniquely named RDC host/kernel entry
+
+- **Change:** add count-checked
+  `bench/iter713_make_unique_rdc.py` to copy the exact Iteration-713f
+  generated sources/build into a fresh directory and uniquely rename only the
+  TP4 C++ host entry plus CUDA kernel template/references.
+- **Stable Python ABI:** the pybind method remains
+  `run_tp4_megamoe_single_launch`, so the existing selective runner requires
+  no benchmark change.  All math, arguments, other kernels and RDC flags stay
+  byte-identical.
+- **Purpose:** eliminate ELF/CUDA same-symbol preemption as an explanation for
+  Iterations 713x/713y's indistinguishable runtimes.
+- **Pre-build gate:** every replacement count is asserted, existing output is
+  rejected, exact hashes print, and Python compilation passes.  No composition,
+  JIT or CUDA work has run yet.
+- **Evidence:** `evidence/iter714a_unique_rdc_entry_composition.md`.
