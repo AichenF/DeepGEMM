@@ -16205,3 +16205,35 @@ maximum rank latency of a full CUDA-Graph replay.
   of FP16 accumulation quality.
 - **Evidence:** `evidence/iter704_w2_f16_accum_tp4_remaining_shapes.md`; raw
   log `bench/results/iter704_w2_f16_accum_tp4_m8_m16_m32_m64_paired_cold.log`.
+
+## Iteration 705 — Latest W2-FP16 one-kernel remains 10.10% behind multi geometrically
+
+- **Protocol:** physical H20 GPUs 1,5,6,7 with independently verified full
+  peer access; random routes/seed 20260902; M=8,16,32,64,128. The selected
+  same-source multi-kernel+SGLang-CARv2 control is paired against the TP4
+  one-kernel candidate with W2 packed-FP16 accumulation enabled. CUDA Graphs,
+  six outer batches x fifty replays = 300 cold samples per implementation/M,
+  per-replay A/B then B/A order, separate excluded 256 MiB L2 clear before
+  every graph. Public input remains FP8-E4M3 X + FP32 group-128 scales and
+  MXFP4 weights; both timed paths include route, W13, requant, W2 and TP
+  all-reduce but exclude upstream X quantization.
+- **Correctness:** both paths pass independent reference checks and
+  all-reduce checks for every M. Candidate minimum cosine across shapes is
+  `0.999994105`, maximum relative L2 is `0.00343392`, and all ranks are
+  finite. These are candidate-vs-independent-reference values, not the
+  tighter FP32-vs-FP16 paired differences from Iterations 703/704.
+- **Cold-L2 median latency (multi / W2-FP16 one / one-over-multi):**
+  - M8: `0.070960 / 0.075296 ms / 1.061105` (one slower 6.11%).
+  - M16: `0.114368 / 0.123168 ms / 1.076945` (7.69%).
+  - M32: `0.179872 / 0.200560 ms / 1.115015` (11.50%).
+  - M64: `0.260112 / 0.291424 ms / 1.120379` (12.04%).
+  - M128: `0.330672 / 0.374768 ms / 1.133353` (13.34%).
+- **Aggregate/decision:** equal-weight geometric means are
+  `0.165870/0.182625 ms`; one-kernel remains 10.101% slower
+  (`multi/one=0.908254x`). Reaching the requested 1.10x speedup from this
+  point requires a further 17.431% reduction in one-kernel geometric-mean
+  latency. The W2-FP16 option reduces the prior ~10.4% gap slightly but does
+  not change the structural verdict; retain it as a measured opt-in precision
+  tradeoff, not the default production path.
+- **Evidence:** `evidence/iter705_w2_f16_accum_tp4_allm_vs_multi.md`; raw log
+  `bench/results/iter705_w2_f16_accum_tp4_allm_vs_multi_cold_graph.log`.
