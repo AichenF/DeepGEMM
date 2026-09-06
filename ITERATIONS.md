@@ -17566,3 +17566,18 @@ maximum rank latency of a full CUDA-Graph replay.
   on `REG195/STACK112/LOCAL0` and retain approximately 32 W2 QGMMAs / 16
   dependency barriers.  Reject before launch if either static gate fails.
 - **Evidence:** `evidence/iter715a_device_lto_composition.md`.
+
+## Iteration 715b — repair the already-unique host-symbol count
+
+- **Failure:** the first composer invocation stopped before NVCC: its strict
+  assertion expected four tagged host-symbol occurrences, while Iteration
+  714's already-unique `main.cpp` correctly contains only the C++ declaration
+  and pybind function reference.  Its Python method/doc strings are already
+  canonical and contain no tag.
+- **Repair:** require exactly two tagged host-symbol occurrences and remove
+  the inapplicable canonical-string rewrite.  CUDA source/build intent and
+  production code are unchanged.  Preserve the partial Iteration-715a
+  directory and use a fresh Iteration-715b output directory.
+- **Qualification:** no NVCC compile, device link, CUDA launch, correctness
+  result or timing occurred.  Commit this repair before the next attempt.
+- **Evidence:** `evidence/iter715b_device_lto_composer_fix.md`.

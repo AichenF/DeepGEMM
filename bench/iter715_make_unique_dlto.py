@@ -67,10 +67,10 @@ def main() -> None:
 
     rewrite(cuda_source, old_cuda, new_cuda, 5)
     rewrite(cuda_source, old_host, new_host, 1)
-    rewrite(host_source, old_host, new_host, 4)
-    # Preserve the canonical Python method/doc string while isolating the C++
-    # and CUDA symbols from ELF/CUDA interposition in same-process A/B runs.
-    rewrite(host_source, f'"{new_host}"', f'"{HOST_ENTRY}"', 2)
+    # The Iteration-714 input is already unique: only the C++ declaration and
+    # function reference carry its tag, while the Python method/doc string are
+    # canonical.  Rename exactly those two C++ occurrences.
+    rewrite(host_source, old_host, new_host, 2)
     rewrite(build_file, str(source_dir), str(output_dir), 2)
 
     # CUDA device LTO must be enabled at both compile and device-link time.
