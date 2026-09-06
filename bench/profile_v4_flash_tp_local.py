@@ -125,9 +125,13 @@ def main() -> None:
     l2_flush_buffer = triton_runtime.driver.active.get_empty_cache_for_benchmark()
     if l2_flush_buffer.nbytes < 2 * props.L2_cache_size:
         raise RuntimeError("benchmark cache buffer is smaller than twice L2")
+    clear_cache = getattr(triton_runtime.driver.active, "clear_cache", None)
 
     torch.cuda.cudart().cudaProfilerStart()
-    triton_runtime.driver.active.clear_cache(l2_flush_buffer)
+    if clear_cache is None:
+        l2_flush_buffer.zero_()
+    else:
+        clear_cache(l2_flush_buffer)
     case.run_local()
     torch.cuda.synchronize(device)
     torch.cuda.cudart().cudaProfilerStop()
@@ -206,6 +210,9 @@ def main() -> None:
                 "l2_cache_bytes": props.L2_cache_size,
                 "l2_flush_bytes": l2_flush_buffer.nbytes,
                 "l2_policy": "cold; 256MiB clear immediately before pipeline",
+                "l2_clear_impl": (
+                    "triton_driver" if clear_cache is not None else "tensor_zero"
+                ),
             },
             sort_keys=True,
         ),

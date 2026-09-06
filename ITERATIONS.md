@@ -16417,3 +16417,19 @@ maximum rank latency of a full CUDA-Graph replay.
   The clear remains immediately before the target launch; NCU's
   `route_gemm` filter excludes the clear kernel from collection.
 - **Evidence:** `evidence/iter709g_profile_cache_api_failure.md`.
+
+## Iteration 709h — make the local NCU profiler cold-L2 across Triton versions
+
+- **Change:** in `bench/profile_v4_flash_tp_local.py`, retain the existing
+  Triton-driver cache clear when available and otherwise stream `zero_()` over
+  the same >=2x-L2 benchmark buffer.  Report the resolved implementation as
+  `l2_clear_impl` in the replay metadata.
+- **Ordering:** the fallback is launched on the profiler's current CUDA stream
+  immediately before `case.run_local()`.  Stream order guarantees completion
+  before W13; NCU still filters only `route_gemm`, so this 256 MiB clear is not
+  the measured target kernel.
+- **Scope:** profiler-only compatibility.  GEMM source, case construction,
+  route/weight/input values and ordinary benchmark timing paths are unchanged.
+- **Static gate:** megamoe
+  `python3 -m py_compile bench/profile_v4_flash_tp_local.py` passes.  Another
+  local TP4 M128 smoke is next.
