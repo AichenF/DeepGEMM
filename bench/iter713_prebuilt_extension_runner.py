@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import runpy
@@ -12,6 +13,34 @@ import sys
 import types
 
 import torch.utils.cpp_extension as cpp_extension
+
+
+def load_extension(extension_path: Path, extension_name: str) -> object:
+    spec = importlib.util.spec_from_file_location(extension_name, extension_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load extension spec for {extension_path}")
+    extension = importlib.util.module_from_spec(spec)
+    sys.modules[extension_name] = extension
+    spec.loader.exec_module(extension)
+    return extension
+
+
+class SelectiveExtension:
+    def __init__(
+        self,
+        control: object,
+        candidate: object,
+        candidate_symbols: frozenset[str],
+    ) -> None:
+        self._control = control
+        self._candidate = candidate
+        self._candidate_symbols = candidate_symbols
+
+    def __getattr__(self, name: str) -> object:
+        owner = (
+            self._candidate if name in self._candidate_symbols else self._control
+        )
+        return getattr(owner, name)
 
 
 def main() -> None:
@@ -23,12 +52,55 @@ def main() -> None:
         raise FileNotFoundError(extension_path)
     extension_name = extension_path.name.removesuffix(".so")
 
-    spec = importlib.util.spec_from_file_location(extension_name, extension_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load extension spec for {extension_path}")
-    extension = importlib.util.module_from_spec(spec)
-    sys.modules[extension_name] = extension
-    spec.loader.exec_module(extension)
+    control_path_value = os.environ.get("V4_PREBUILT_CONTROL_EXTENSION")
+    if control_path_value:
+        control_path = Path(control_path_value).resolve()
+        if not control_path.is_file():
+            raise FileNotFoundError(control_path)
+        if control_path.name.removesuffix(".so") != extension_name:
+            raise ValueError(
+                "candidate and control extension filenames must have the same "
+                "module name"
+            )
+        candidate_symbols = frozenset(
+            value.strip()
+            for value in os.environ.get(
+                "V4_PREBUILT_CANDIDATE_SYMBOLS", ""
+            ).split(",")
+            if value.strip()
+        )
+        if not candidate_symbols:
+            raise ValueError(
+                "V4_PREBUILT_CANDIDATE_SYMBOLS is required with a control "
+                "extension"
+            )
+        control_extension = load_extension(control_path, extension_name)
+        # Both libraries export the same CPython module initializer.  Load
+        # each from its distinct path, retain both objects, and expose a
+        # method-level dispatcher only to the intercepted load_inline call.
+        sys.modules.pop(extension_name, None)
+        candidate_extension = load_extension(extension_path, extension_name)
+        for symbol in candidate_symbols:
+            getattr(control_extension, symbol)
+            getattr(candidate_extension, symbol)
+        extension = SelectiveExtension(
+            control_extension, candidate_extension, candidate_symbols
+        )
+        if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+            print(
+                "ITER713_PREBUILT_DISPATCH "
+                + json.dumps(
+                    {
+                        "candidate": str(extension_path),
+                        "candidate_symbols": sorted(candidate_symbols),
+                        "control": str(control_path),
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+    else:
+        extension = load_extension(extension_path, extension_name)
 
     original_load_inline = cpp_extension.load_inline
 

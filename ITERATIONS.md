@@ -17376,3 +17376,20 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter713r_production_tp4_m128_cold_anchor_20260906.log` and
   `evidence/iter713r_production_runtime_anchor.md`.
+
+## Iteration 713s — isolate RDC ownership to the single business entry
+
+- **Runner change:** optional `V4_PREBUILT_CONTROL_EXTENSION` plus
+  `V4_PREBUILT_CANDIDATE_SYMBOLS` loads ordinary and RDC libraries with the
+  same extension name and returns a method-level dispatcher to the exact
+  intercepted `load_inline` call.
+- **Probe ownership:** only `run_tp4_megamoe_single_launch` will use RDC.
+  Route alignment, multi W13/SwiGLU/W2/k6, every helper and the control graph
+  remain in the already correctness-passing ordinary library.
+- **Purpose:** determine whether the RDC single entry is itself invalid,
+  without running the broken RDC multi control first or sharing its corrupted
+  intermediate/communication state.
+- **Pre-CUDA gate:** validates same module filename and selected symbols,
+  emits exact rank-zero provenance, and passes Python compilation.  Mode is
+  default-off; neither extension nor benchmark source changes.
+- **Evidence:** `evidence/iter713s_selective_rdc_dispatch_runner.md`.
