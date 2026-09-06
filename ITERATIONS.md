@@ -17641,3 +17641,20 @@ maximum rank latency of a full CUDA-Graph replay.
   math, task ownership and communication are unchanged.  Commit, then build
   in a fresh directory and apply the original resource/SASS gates.
 - **Evidence:** `evidence/iter715f_device_lto_single_image_fix.md`.
+
+## Iteration 715g — reject device LTO on CUDA 12.8
+
+- **Static result:** the final single-image LTO source compiles to an object,
+  but `nvcc -dlink -dlto -arch=sm_90a -ptx` deterministically emits PTX 8.7
+  with `.target sm_90`.  Its first `wgmma.fence` is at line 523, and ordinary
+  device link fails when ptxas rejects WGMMA/FP8 instructions on that target.
+- **Artifacts:** LTO object SHA256 `f58b533a...fbb40b`, generated PTX
+  `d756d0cf...98269`, build recipe `71207b88...25def`.  The container has
+  only CUDA 12.8 V12.8.61; no newer NVCC is available for this benchmark.
+- **Decision:** **REJECT before resource/correctness/timing gates.**  There is
+  no cubin and no CUDA business-kernel launch.  Production sources remain
+  unchanged.  Same-TU outline, natural registers, device attributes, RDC,
+  unique RDC attribution and device LTO now close the compiler-boundary
+  transfer family; next work must alter coarse one-kernel dataflow.
+- **Evidence:** `evidence/iter715g_device_lto_toolchain_rejection.md` and
+  `bench/results/iter715f_device_lto_static_20260906.log`.
