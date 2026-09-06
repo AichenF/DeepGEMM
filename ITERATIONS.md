@@ -16701,3 +16701,18 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Next:** require REG56/no spill/nine CTA, 64 QGMMAs, about 32 waits, and
   SASS order LDS -> warp barrier -> two QGMMAs before any CUDA launch.
 - **Evidence:** `evidence/iter709w_w2_pair_warp_sync_implementation.md`.
+
+## Iteration 709x — real warp sync still does not pair fused W2 QGMMAs
+
+- **Build/resource:** exact warp-sync candidate compiles as
+  `v4tp_89c670dde5203868ac7d_v178mspec`; M128/split-K2 stays
+  `REG56 STACK32 SHARED2048 LOCAL0` with 19,456-byte dynamic shared memory.
+- **SASS result:** 64 QGMMAs, 64 dependency barriers and 24 total WARPSYNC
+  instructions in the complete entry; SASS SHA256 is
+  `c7821a29f87835a6278480933fc0bb9882f00bb1780ca57bdafcca304d42f9f1`.
+  The real barrier is present but does not change the 1:1 WGMMA wait ratio.
+- **Decision:** **REJECT before launch/timing** and close same-frame REG56
+  predecode/pair/spill/fence/PTX/barrier rearrangements.  Next audit a plain
+  64-register/eight-CTA fused control to determine whether the blocker is the
+  register cliff or broader persistent-entry code generation.
+- **Evidence:** `evidence/iter709x_w2_pair_warp_sync_static_rejection.md`.
