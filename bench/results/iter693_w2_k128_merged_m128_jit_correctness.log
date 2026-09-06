@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/profile_v4_flash_tp_single_compute.py", line 13, in <module>
+    import v4_flash_tp_wgmma_graph as bench
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_wgmma_graph.py", line 19, in <module>
+    import sglang.srt.distributed.parallel_state as ps
+  File "/lustre/raplab/client/xutingz/workspace/gitsrc/sglang_pr19290_clean/python/sglang/__init__.py", line 29, in <module>
+    from sglang.srt.utils.hf_transformers_patches import apply_all as _apply_hf_patches
+  File "/lustre/raplab/client/xutingz/workspace/gitsrc/sglang_pr19290_clean/python/sglang/srt/utils/__init__.py", line 2, in <module>
+    from sglang.srt.utils.common import *
+  File "/lustre/raplab/client/xutingz/workspace/gitsrc/sglang_pr19290_clean/python/sglang/srt/utils/common.py", line 77, in <module>
+    import orjson
+ModuleNotFoundError: No module named 'orjson'

@@ -1776,6 +1776,9 @@ W2_DISTRIBUTED_PREP = (
 W13_MERGED_WGMMA_GROUP = (
     os.environ.get("V4_W13_MERGED_WGMMA_GROUP", "0") == "1"
 )
+SINGLE_LAUNCH_W2_MERGED_WGMMA_GROUP = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_MERGED_WGMMA_GROUP", "0") == "1"
+)
 if W2_S2R_PREFETCH and (DEQUANT_SYNTH_LUT or W2_GLOBAL_LUT):
     raise ValueError(
         "V4_W2_S2R_PREFETCH currently probes only the shared-LUT path"
@@ -1892,6 +1895,8 @@ static constexpr bool kW13DistributedPrep = K_W13_DISTRIBUTED_PREP;
 static constexpr bool kW13DualWgSplit = K_W13_DUAL_WG_SPLIT;
 static constexpr bool kW2DistributedPrep = K_W2_DISTRIBUTED_PREP;
 static constexpr bool kW13MergedWgmmaGroup = K_W13_MERGED_WGMMA_GROUP;
+static constexpr bool kSingleLaunchW2MergedWgmmaGroup =
+    K_SINGLE_LAUNCH_W2_MERGED_WGMMA_GROUP;
 static constexpr bool kW13MaxSmemCarveout = K_W13_MAX_SMEM_CARVEOUT;
 static constexpr int kTok = 8;
 static constexpr int kTopK = 6;
@@ -2477,7 +2482,8 @@ template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool PersistentState = false, int WgmmaHalf = -1,
           bool SharedPartial = false, int ForcedKUnroll = 0,
           bool AssumeValidMblock = false, bool BulkReduceW2 = false,
-          bool AtomicCombineW2 = false, int IndependentTaskWGs = 1>
+          bool AtomicCombineW2 = false, int IndependentTaskWGs = 1,
+          bool MergeK32Group = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -2593,7 +2599,8 @@ __device__ __forceinline__ void route_gemm_task(
     constexpr bool kS2RPrefetch =
         IsW13 ? kW13S2RPrefetch : kW2S2RPrefetch;
     constexpr bool kMergedWgmmaGroup =
-        IsW13 && kW13MergedWgmmaGroup;
+        (IsW13 && kW13MergedWgmmaGroup)
+        || (!IsW13 && MergeK32Group);
     constexpr bool kDistributedPrep =
         IsW13 ? kW13DistributedPrep : kW2DistributedPrep;
     constexpr bool kUseWeightEvictFirst =
@@ -8784,7 +8791,8 @@ void tp4_megamoe_single_launch_kernel(
                             ? 2 : 0,
                         kSingleLaunchAssumeValidGemmTasks,
                         kSingleLaunchW2BulkReduceCombine,
-                        kSingleLaunchW2ProducerAtomicCombine>(
+                        kSingleLaunchW2ProducerAtomicCombine, 1,
+                        kSingleLaunchW2MergedWgmmaGroup>(
                         &w2_tma_weight, &w2_tma_weight_scale,
                         w2, s2, g2, qactivation, activation_scale,
                         sorted_ids, expert_ids, num_tokens_padded,
@@ -11835,6 +11843,7 @@ _EXTENSION_CONFIG = (
           f"dp{int(W13_DISTRIBUTED_PREP)}_w2dp{int(W2_DISTRIBUTED_PREP)}_"
           f"dwg{int(W13_DUAL_WG_SPLIT)}_"
           f"w13mg{int(W13_MERGED_WGMMA_GROUP)}_"
+          f"slw2mg{int(SINGLE_LAUNCH_W2_MERGED_WGMMA_GROUP)}_"
           f"slsch{SINGLE_LAUNCH_SCHEDULE}_"
           f"slnig{int(SINGLE_LAUNCH_NOINLINE_GEMM)}_"
           f"slw13pn{int(SINGLE_LAUNCH_W13_PHASE_NOINLINE)}_"
@@ -11977,6 +11986,10 @@ _ext = load_inline(
         f"-DK_W13_DUAL_WG_SPLIT={int(W13_DUAL_WG_SPLIT)}",
         f"-DK_W2_DISTRIBUTED_PREP={int(W2_DISTRIBUTED_PREP)}",
         f"-DK_W13_MERGED_WGMMA_GROUP={int(W13_MERGED_WGMMA_GROUP)}",
+        (
+            "-DK_SINGLE_LAUNCH_W2_MERGED_WGMMA_GROUP="
+            f"{int(SINGLE_LAUNCH_W2_MERGED_WGMMA_GROUP)}"
+        ),
         f"-DK_W2_ROUTE_OUTPUT={int(W2_ROUTE_OUTPUT)}",
         f"-DK_W2_SORTED_ACT={int(W2_SORTED_ACT)}",
         f"-DK_W2_MBLOCK_SCALE={int(W2_MBLOCK_SCALE)}",

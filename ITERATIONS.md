@@ -15907,3 +15907,27 @@ maximum rank latency of a full CUDA-Graph replay.
   reduced scheduling slack and larger stack frame. Retain M128 split-K2.
 - **Evidence:** `evidence/iter692_m128_fullk_single_rejection.md`; raw logs
   `bench/results/iter692{,b,c,d}_*.log` plus Iteration 691f control.
+
+## Iteration 693 — W2 K128 merged-group first launcher misses benchmark environment
+
+- **Hypothesis/change:** Add default-off
+  `V4_SINGLE_LAUNCH_W2_MERGED_WGMMA_GROUP=1`.  Only the flat TP4
+  single-launch W2 instantiation batches the four K32 RS-WGMMA steps inside
+  each K128 tile into one commit/wait group.  Standalone/multi W2, W13,
+  routing, task ownership, epilogues and communication remain unchanged.
+- **Static/build result:** Python compilation and diff whitespace checks pass.
+  Candidate source SHA-256 is
+  `85c7005b63ef5c2264b13ddc6cda1dbbeb969cc04bb5ff0eb989d2b610362bf6`;
+  JIT produced candidate extension
+  `v4tp_58c93f6e47c09fccaf68_v178mspec` before benchmark-fixture import.
+- **Runtime result:** **harness failure before CUDA execution.**  Directly
+  invoking the compute profiler with the miniforge Python omitted the
+  repository's benchmark environment shim, so SGLang import stopped at
+  `ModuleNotFoundError: No module named 'orjson'`.  No cache clear, candidate
+  kernel launch, resource result, numerical result or latency measurement
+  occurred.
+- **Decision:** retain the isolated candidate and retry through
+  `/home/xutingz/fac/v4_bench_env_runner.py`, which supplies the established
+  SGLang dependency path.  Inspect the already-built cubin before the retry.
+- **Evidence:** `evidence/iter693_w2_k128_merged_launcher_failure.md`; raw log
+  `bench/results/iter693_w2_k128_merged_m128_jit_correctness.log`.
