@@ -15499,3 +15499,29 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `evidence/iter671_m128_max_smem_carveout_rejection.md`; raw
   `bench/results/iter671*.log` and
   `results/iter671b_m128_max_smem_carveout_launchstats.ncu-rep`.
+
+## Iteration 679 — M128 bound-10 with fused-W2 S2R disabled is slower
+
+- **Hypothesis/change:** Preserve the selected compact whole-W13 outline and
+  N128 arithmetic, disable S2R lookahead only in the fused M128 W2 call, and
+  impose a ten-CTA/SM launch bound.  Standalone multi-kernel W2 retains its
+  selected S2R prefetch, so this is a candidate-only resource experiment.
+- **Resource/correctness:** M128 split-K2/4 compile at
+  `REG48 STACK64 SHARED2048 LOCAL0` and CUDA admits 780 resident CTAs.
+  Random-route M128 is bitwise equal to the independent local reference
+  (cosine 1, relative L2 0, finite), with 1,992 padded rows and packed
+  generation wrap exactly `[0,0,0,0]`.
+- **Cold-L2 TP4 gate:** GPUs 0,5,6,7; random seed 20260902; replay-level
+  pairing; 2x20 samples after four warmups; separate excluded 256 MiB clear
+  before every replay.  Multi/single medians are
+  `0.305312/0.368512 ms`; candidate batch medians are
+  `0.368192/0.368640 ms`.  Candidate/control is `1.207001`, so the
+  candidate is 20.70% slower.  All-rank correctness/allreduce checks pass.
+- **Decision:** Reject and restore the exact Iteration-665 production source.
+  The 48-register target still doubles the stack frame to 64 bytes, and
+  tighter scheduling plus lost W2 S2R latency hiding outweigh ten-CTA
+  residency.  Do not expand to other M or TP8.
+- **Evidence:** `evidence/iter679_bound10_w2_nos2r_rejection.md`; raw logs
+  `bench/results/iter679_bound10_w2_nos2r_m128_jit_correctness_20260906.log`
+  and
+  `bench/results/iter679_bound10_w2_nos2r_tp4_m128_cold_short_20260906.log`.
