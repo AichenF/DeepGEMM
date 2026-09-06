@@ -17742,3 +17742,19 @@ maximum rank latency of a full CUDA-Graph replay.
   REG64 with no local spill/material stack growth, and exact W2 SASS improves
   from 32 QGMMAs / 32 DEPBARs to at most 20 DEPBARs (target 16).
 - **Evidence:** `evidence/iter718a_f16_paired_inline_w2_composition.md`.
+
+## Iteration 718b — reject paired FP16 issue because ptxas still serializes it
+
+- **Build/resources:** the fresh JIT succeeds; TP4 M128 split-K2 and split-K4
+  are both REG56/STACK32/SHARED2048/LOCAL0, so the reduced destination state
+  avoids the register and spill cliffs seen in earlier FP32/RDC probes.
+- **Exact W2 SASS:** 32 FP16 QGMMAs, 32 DEPBARs and 32 warpgroup arrives, with
+  no `STL`/`LDL` in the W2 interval.  Even the first distinct destinations
+  (`R34`, then `R24`) share only a non-overlapping source base (`R28`), yet
+  ptxas injects one arrive/wait pair around each QGMMA.
+- **Decision:** **REJECT before CUDA business-kernel launch.**  It fails the
+  predeclared at-most-20-DEPBAR gate, so no correctness or timing is claimed.
+  This closes reduced-accumulator paired issue; subsequent candidates must
+  alter coarse phase/dataflow ownership rather than WGMMA spelling.
+- **Evidence:** `evidence/iter718b_f16_paired_inline_w2_static_rejection.md`
+  and `bench/results/iter718a_f16_pair_static_20260906.log`.

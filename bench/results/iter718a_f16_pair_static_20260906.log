@@ -1,0 +1,38 @@
+Iteration 718a/718b paired FP16 inline W2 static gate
+date: 2026-09-06
+container: megamoe on H20-GPU-06
+toolchain: CUDA 12.8
+commit: daeda9c4290cb011e657ac03d01378c8917c3fd0
+CUDA business-kernel launches: 0
+
+candidate environment:
+V4_SINGLE_LAUNCH_TP4=1
+V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM=1
+V4_SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM=1
+
+extension:
+/tmp/torch_ext_v4_tp/v4tp_984391286f2ca707e950_v178mspec/v4tp_984391286f2ca707e950_v178mspec.so
+
+artifact SHA256:
+1bcaf88af595073645704b1ddc348b239ec35b2902043c52e543d275332147da  cuda.cu
+5296713eee4cb9c1f5549859c46bbd32a8069aed467f9bc64c1f6ba3b095a9c8  extension
+5d6687d098c937f7b911ab917f2a92affef47c83ac9b7d5c1589109ae0a31f7b  JIT log
+e77582b7c48d87f705755178543307c63d1cec4199f5b93220d95058c9f9938a  M128 split-K2 SASS slice
+
+cuobjdump --dump-resource-usage selected entries:
+M128 split-K2: REG:56 STACK:32 SHARED:2048 LOCAL:0 CONSTANT[0]:1361
+M128 split-K4: REG:56 STACK:32 SHARED:2048 LOCAL:0 CONSTANT[0]:1361
+
+exact M128 split-K2 W2 interval (SASS slice lines 2200-4420):
+F16_QGMMA: 32
+DEPBAR: 32
+WARPGROUP.ARRIVE: 32
+STL: 0
+LDL: 0
+
+gate target:
+REG <= 64, LOCAL=0, no material stack growth, 32 F16 QGMMA, DEPBAR <= 20
+
+decision:
+REJECT before CUDA launch; resource gate passes but 32 DEPBAR fails the
+schedule gate and is identical to the selected monolith's serialized W2 issue.
