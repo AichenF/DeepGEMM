@@ -16046,3 +16046,33 @@ maximum rank latency of a full CUDA-Graph replay.
   timing is claimed by this source repair.  Retry the same fresh M128
   resource/correctness gate.
 - **Evidence:** `evidence/iter698_w2_f16_accum_fence_repair.md`.
+
+## Iteration 699 — W2 FP16 accumulators compile and pass the M128 numerical gate
+
+- **Configuration:** repaired source
+  `fc6cc41d86d6e77c0f4d5d54efc2dace24e457115d94e32e4de0f678387da79f`,
+  extension `v4tp_790c6b763a4cf8954fae_v178mspec`, physical H20 GPU1,
+  M128 random routes/seed 20260902, split-K2 W13, production TP4 bundle and
+  `V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM=1`. Input is caller-provided
+  FP8-E4M3 plus FP32 group-128 scales and MXFP4 weights. The profiler warms
+  once and then performs its diagnostic launch after a separate excluded
+  256 MiB L2 clear; TP communication is disabled for this arithmetic gate.
+- **Correctness:** complete routed `down` versus the unaffected same-source
+  multi path has cosine `0.9999993512848424`, relative L2
+  `0.001139531250097178`, and all finite values across 1,992 padded rows.
+  Packed barrier words deliberately seeded at their final generation wrap to
+  `[0,0,0,0]`. This passes the profiler's cosine >= 0.999 acceptance gate,
+  but unlike production FP32 it is not bitwise equal and must be treated as
+  a numerical tradeoff.
+- **Resources/SASS:** exact M128/split-K2 entry remains
+  `REG56 STACK32 SHARED2048 LOCAL0 CONSTANT[0]1361`; packed accumulators do
+  not cross a new occupancy boundary. The extracted target entry contains
+  32 `QGMMA...F16` instructions (and 32 F32 QGMMA from its other instantiated
+  GEMM path), proving the candidate is not a compiler no-op. Extracted SASS
+  SHA-256 is
+  `aaa99bee6be30ecab80ed803f9852e571cb010b958c53359c7763d51fa7e3de3`.
+- **Decision:** admit only to an adjacent five-OFF/five-ON cold-L2 local W2
+  phase gate. Do not spend four GPUs on a TP4 graph unless W2 moves by more
+  than noise and the whole phase sum improves.
+- **Evidence:** `evidence/iter699_w2_f16_accum_resource_correctness.md`; raw
+  logs `bench/results/iter699_w2_f16_accum_m128_{correctness,resources,sass}.log`.
