@@ -16651,3 +16651,20 @@ maximum rank latency of a full CUDA-Graph replay.
   both QGMMAs in one inline-PTX block with early-clobber accumulator outputs,
   directly forbidding source/accumulator register overlap.
 - **Evidence:** `evidence/iter709t_w2_operand_fence_static_rejection.md`.
+
+## Iteration 709u — two W2 QGMMAs in one early-clobber PTX block
+
+- **Change:** add an opt-in path that emits both N64
+  `m64n8k32.f32.e4m3.e4m3` QGMMAs inside one volatile inline-PTX block.  All
+  eight accumulators use read/write early-clobber constraints, explicitly
+  forbidding allocation overlap with all eight FP8 register-source operands.
+- **Equivalence:** group order, shared descriptor, scale predicate, existing
+  fence/commit/wait, FP32 epilogue and all downstream work are unchanged.
+- **Isolation:** requires the full fenced/spill/predecode/pair diagnostic
+  chain, remains default-off and TP4-M128-only, and enters the JIT identity.
+- **Pre-CUDA gate:** Python compilation passes; staged SHA256 is
+  `940f76e0df36849e77769a40e18bf57f1be0a1e7e9d1f56de86bf375f47250e2`.
+  NVCC early-clobber support and CUDA resources remain unproven.
+- **Next:** require REG56/no spill/nine CTA, 64 QGMMAs and dependency barriers
+  toward 32 before any business-kernel launch.
+- **Evidence:** `evidence/iter709u_w2_paired_inline_asm_implementation.md`.
