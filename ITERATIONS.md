@@ -16668,3 +16668,19 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Next:** require REG56/no spill/nine CTA, 64 QGMMAs and dependency barriers
   toward 32 before any business-kernel launch.
 - **Evidence:** `evidence/iter709u_w2_paired_inline_asm_implementation.md`.
+
+## Iteration 709v — ptxas splits an early-clobber paired PTX block
+
+- **Build/resource:** exact inline-asm candidate compiles as
+  `v4tp_0c965391348888f4e713_v178mspec`; M128/split-K2 remains
+  `REG56 STACK32 SHARED2048 LOCAL0`, with 19,456-byte dynamic shared memory.
+- **SASS result:** unchanged 64 QGMMAs / 64 dependency barriers.  Early
+  clobber produces distinct accumulator/source bases, but ptxas still moves
+  decode/load instructions between the two PTX QGMMAs and waits after each.
+  At `0x5430/0x5440/0x5450/0x5470` the order is QGMMA, wait, spilled LDS,
+  QGMMA.  SASS SHA256 is
+  `5fdd85099b22d766bf4d8a1eb9e6b2a9c27f2d4fd7d90cb164d794cd3f1e9ad0`.
+- **Decision:** **REJECT before launch/timing.**  A volatile multi-instruction
+  PTX block is not opaque to ptxas.  Next insert a real `bar.warp.sync` after
+  operand preparation; require it to force both inputs ready and halve waits.
+- **Evidence:** `evidence/iter709v_w2_paired_inline_asm_static_rejection.md`.
