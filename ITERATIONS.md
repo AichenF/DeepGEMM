@@ -15579,3 +15579,31 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `evidence/iter681_w13_residual_rotate65_whole_loop_rejection.md`;
   raw logs `bench/results/iter681_w13_residual_rotate65_m128_{jit_correctness,resources}_20260906.log`
   and `bench/results/iter681_w13_residual_rotate65_tp4_m128_cold_short_20260906.log`.
+
+## Iteration 682 — reject low-overhead W13 base rotation 65
+
+- **Hypothesis/change:** Relabel the physical W13 CTA once at phase entry by
+  `(blockIdx.x + 65) mod 702`. This moves the 474-task residual owner set to
+  the 6--7-CTA/SM distribution measured in Iteration 681, while preserving
+  the selected 13-CTA relative delta between complete waves and leaving the
+  original grid-stride loop intact. The cost is one uniform add/compare per
+  CTA rather than control arithmetic in every wave.
+- **Resource/correctness:** Candidate SHA-256
+  `f2066b6a83d5fd7b9364eb661145603f2839c84c405d4b0630dbf9c4b0d8c9e7`;
+  extension `v4tp_07d20010183ce04a60b6_v178mspec`. M128 split-K2/4 remains
+  `REG56 STACK32 SHARED2048 LOCAL0`. Random-route M128 is bitwise equal to
+  the independent local reference, and packed generation wrap is exactly
+  `[0,0,0,0]`.
+- **Cold-L2 TP4 gate:** GPUs 0,5,6,7; random seed 20260902; replay-level
+  pairing; 2x20 samples after four warmups; separate excluded 256 MiB clear
+  before every replay. Multi/candidate medians are
+  `0.305040/0.365248 ms`; candidate batch medians are
+  `0.365088/0.365664 ms`. Candidate/control is `1.197377`, so the candidate
+  is 19.74% slower. All-rank correctness/allreduce checks pass.
+- **Decision:** Reject and restore exact Iteration-665 production. The base
+  relabel also shifts every complete wave's absolute SM-to-weight mapping;
+  a tighter residual count histogram is insufficient to offset that loss.
+  Do not select residual-owner base rotation 65.
+- **Evidence:** `evidence/iter682_w13_base_rotate65_rejection.md`; raw logs
+  `bench/results/iter682_w13_base_rotate65_m128_{jit_correctness,resources}_20260906.log`
+  and `bench/results/iter682_w13_base_rotate65_tp4_m128_cold_short_20260906.log`.
