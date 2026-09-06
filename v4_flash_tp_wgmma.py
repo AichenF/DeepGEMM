@@ -452,6 +452,9 @@ SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI = (
 SINGLE_LAUNCH_W2_PHASE_NOINLINE = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PHASE_NOINLINE", "0") == "1"
 )
+SINGLE_LAUNCH_W2_COMPACT_TASK_CALL = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_COMPACT_TASK_CALL", "0") == "1"
+)
 SINGLE_LAUNCH_GEMM_PHASES_NOINLINE = (
     SINGLE_LAUNCH_W13_PHASE_NOINLINE and SINGLE_LAUNCH_W2_PHASE_NOINLINE
 )
@@ -1428,6 +1431,54 @@ if SINGLE_LAUNCH_W2_PHASE_NOINLINE and (
         "V4_SINGLE_LAUNCH_W2_PHASE_NOINLINE requires the isolated "
         "WOUT128 two-stage schedule-0 route-output path"
     )
+if SINGLE_LAUNCH_W2_COMPACT_TASK_CALL and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or WOUT != 128
+    or not W2_ROUTE_OUTPUT
+    or W2_COALESCED_STORE
+    or not SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or not SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+    or not SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM
+    or not SINGLE_LAUNCH_M128_BOUND9
+    or not SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS
+    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W2_PERSISTENT_STATE
+    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_W2_N64_TAIL
+    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_BALANCED_W2_WORKERS
+    or SINGLE_LAUNCH_W2_UNROLL2_BOUND9
+    or SINGLE_LAUNCH_W2_CHUNK_MAJOR
+    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+    or SINGLE_LAUNCH_W2_CHUNK_AR_POST
+    or SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+    or SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+    or SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM
+    or SINGLE_LAUNCH_W2_PREDECODE_S2R
+    or SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS
+    or SINGLE_LAUNCH_W2_PAIR_SPILL_ONE
+    or SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE
+    or SINGLE_LAUNCH_W2_PAIR_INLINE_ASM
+    or SINGLE_LAUNCH_W2_PAIR_WARP_SYNC
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_COMPACT_TASK_CALL requires the selected "
+        "M128 compact-W13, bound-9, flat W2 path"
+    )
 if SINGLE_LAUNCH_W13_ACT_TAIL_PIPE and (
     SINGLE_LAUNCH_TAIL_OVERLAP
     or SINGLE_LAUNCH_TAIL_ACT_ONLY
@@ -2030,6 +2081,8 @@ static constexpr bool kSingleLaunchW13PhaseCompactAbi =
     K_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI;
 static constexpr bool kSingleLaunchW2PhaseNoInline =
     K_SINGLE_LAUNCH_W2_PHASE_NOINLINE;
+static constexpr bool kSingleLaunchW2CompactTaskCall =
+    K_SINGLE_LAUNCH_W2_COMPACT_TASK_CALL;
 static constexpr bool kSingleLaunchRouteDynamicSmem =
     K_SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM;
 static constexpr bool kSingleLaunchM128Bound9 =
@@ -4310,6 +4363,26 @@ __device__ __noinline__ void single_launch_w2_gemm_task(
         sorted_ids, expert_ids, num_tokens_padded, topk_weights,
         reinterpret_cast<float*>(output), global_lut, nullptr,
         max_routes, 0, linear_block_idx);
+}
+
+// Reuse the compact W13 CTA-shared record after activation publication and
+// pass only one pointer plus the task ordinal through the per-task call ABI.
+// Unlike the historical high-argument task outline, this gives ptxas a
+// standalone-shaped W2 body without moving thirteen uniform pointers at every
+// task boundary.
+template <int Tokens, bool AssumeValidMblock>
+__device__ __noinline__ void single_launch_w2_gemm_task_compact(
+        const SingleLaunchW13PhaseArgs* args, int linear_block_idx) {
+    constexpr int kMaxRoutes = Tokens * kTopK;
+    route_gemm_task<
+        512, 4096, 1, false, 0, false, false, false, -1, false, 0,
+        AssumeValidMblock>(
+        args->tma_weight, args->tma_weight_scale,
+        args->weight, args->weight_scale, args->weight_global_scale,
+        args->activation, args->activation_scale,
+        args->sorted_ids, args->expert_ids, args->num_tokens_padded,
+        args->topk_weights, args->output, args->global_lut, nullptr,
+        kMaxRoutes, 0, linear_block_idx);
 }
 
 // Pay one device-call boundary per CTA for the complete W2 phase, rather
@@ -7100,7 +7173,8 @@ void tp4_megamoe_single_launch_kernel(
     const int cta = static_cast<int>(blockIdx.x);
     const int ctas = static_cast<int>(gridDim.x);
     const int routes = tokens * kTopK;
-#if K_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+#if K_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI \
+    || K_SINGLE_LAUNCH_W2_COMPACT_TASK_CALL
     __shared__ SingleLaunchW13PhaseArgs w13_phase_args;
 #endif
 #if K_SINGLE_LAUNCH_SM_STRIPED_TASKS
@@ -8923,6 +8997,30 @@ void tp4_megamoe_single_launch_kernel(
                 single_launch_grid_barrier(barrier_state, 2, ctas);
         }
 
+#if K_SINGLE_LAUNCH_W2_COMPACT_TASK_CALL
+        if constexpr (Tokens == 128) {
+            // W13 is globally complete here, so its per-CTA compact argument
+            // record is dead.  Recycle the same shared bytes for W2 and keep
+            // the task-call boundary to one pointer plus one scalar.
+            if (threadIdx.x == 0) {
+                w13_phase_args.tma_weight = &w2_tma_weight;
+                w13_phase_args.tma_weight_scale = &w2_tma_weight_scale;
+                w13_phase_args.weight = w2;
+                w13_phase_args.weight_scale = s2;
+                w13_phase_args.weight_global_scale = g2;
+                w13_phase_args.activation = qactivation;
+                w13_phase_args.activation_scale = activation_scale;
+                w13_phase_args.sorted_ids = sorted_ids;
+                w13_phase_args.expert_ids = expert_ids;
+                w13_phase_args.num_tokens_padded = num_tokens_padded;
+                w13_phase_args.topk_weights = topk_weights;
+                w13_phase_args.output = reinterpret_cast<float*>(down);
+                w13_phase_args.global_lut = lut;
+            }
+            __syncthreads();
+        }
+#endif
+
         if constexpr (kSingleLaunchActW2Cohort) {
             constexpr int kCohortCtas = 16;
             constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
@@ -9119,6 +9217,13 @@ void tp4_megamoe_single_launch_kernel(
                 if (tail_overlap_mblocks > 0
                         && task / kW2NTiles < tail_overlap_mblocks)
                     continue;
+#if K_SINGLE_LAUNCH_W2_COMPACT_TASK_CALL
+                if constexpr (Tokens == 128) {
+                    single_launch_w2_gemm_task_compact<
+                        Tokens, kSingleLaunchAssumeValidGemmTasks>(
+                        &w13_phase_args, task);
+                } else
+#endif
                 if constexpr (kSingleLaunchNoInlineGemm) {
                     single_launch_w2_gemm_task(
                         &w2_tma_weight, &w2_tma_weight_scale,
@@ -12198,6 +12303,7 @@ _EXTENSION_CONFIG = (
           f"slw13pn{int(SINGLE_LAUNCH_W13_PHASE_NOINLINE)}_"
           f"slw13pca{int(SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI)}_"
           f"slw2pn{int(SINGLE_LAUNCH_W2_PHASE_NOINLINE)}_"
+          f"slw2ctc{int(SINGLE_LAUNCH_W2_COMPACT_TASK_CALL)}_"
           f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
           f"sldr{int(SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM)}_"
           f"slm128b9{int(SINGLE_LAUNCH_M128_BOUND9)}_"
@@ -12363,6 +12469,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_PHASE_NOINLINE="
             f"{int(SINGLE_LAUNCH_W2_PHASE_NOINLINE)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_COMPACT_TASK_CALL="
+            f"{int(SINGLE_LAUNCH_W2_COMPACT_TASK_CALL)}"
         ),
         f"-DK_SINGLE_LAUNCH_MIN_BLOCKS={SINGLE_LAUNCH_MIN_BLOCKS}",
         (

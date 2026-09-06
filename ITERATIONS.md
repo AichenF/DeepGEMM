@@ -16811,3 +16811,24 @@ maximum rank latency of a full CUDA-Graph replay.
   one task id—to reproduce standalone's callee shape without the rejected
   thirteen-pointer per-task ABI; require 2:1 statically before launch.
 - **Evidence:** `evidence/iter710d_w2_outline_guarded_sass_control.md`.
+
+## Iteration 710e — compact per-task W2 call implementation
+
+- **Hypothesis:** the fused entry and whole-phase outline both serialize W2 at
+  32 QGMMAs/32 waits because the grid-stride persistent task loop remains in
+  the compiled W2 body.  Outline exactly one task to reproduce standalone
+  codegen, but avoid the rejected thirteen-pointer ABI.
+- **Change:** add default-off
+  `V4_SINGLE_LAUNCH_W2_COMPACT_TASK_CALL`.  After W13 and activation are
+  globally complete, recycle the selected M128 compact-W13 CTA-shared record
+  for W2, then pass only `(record_pointer, task_id)` to a shape-specialized
+  `__noinline__` W2 task.  Existing task order, wave rotation and CTA sync are
+  unchanged; lower-M specializations remain inline.
+- **Isolation/pre-CUDA gate:** the flag requires the selected TP4 M128,
+  schedule-0, WOUT128/two-stage, compact-W13, dynamic-smem, bound-9 path and
+  excludes alternative W2 pipelines.  Python compilation passes; staged
+  source SHA256 is
+  `93236bc78b9d0585f922cb6078cfeabb9986252a15ce8e9dd9362be63c4925cc`.
+- **Next:** JIT only, then require REG56/no spill/nine CTA and a 32-QGMMA /
+  about-16-wait extracted callee before any correctness or timing launch.
+- **Evidence:** `evidence/iter710e_w2_compact_task_call_implementation.md`.
