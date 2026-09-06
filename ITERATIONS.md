@@ -17171,3 +17171,18 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Next:** TP4 M128, first correctness and short cold-L2 paired timing; reject
   before a longer run if the 195-register RDC entry is slower or unstable.
 - **Evidence:** `evidence/iter713e_prebuilt_extension_runner.md`.
+
+## Iteration 713f — compose the RDC probe with the baseline Python ABI
+
+- **Environment finding:** the `/usr` PyTorch used for the first temporary
+  link lacks `torch.float8_e8m0fnu`, so importing the unchanged Humming helper
+  path fails.  Loading that library under the baseline miniforge PyTorch also
+  fails on an undefined C10 CUDA symbol.  No CUDA business kernel launched in
+  either preflight.
+- **Build-only change:** keep the exact Iteration-713b CUDA source and RDC/PIC
+  rules, but replace only PyTorch/Python include and library paths with the
+  baseline environment at `/home/xutingz/workspace/miniforge3` (PyTorch
+  2.11.0+cu129, C++11 ABI enabled, E8M0 dtype present).
+- **Gate:** rebuild and re-audit exact W2 SASS before loading.  It must retain
+  32 QGMMAs / 16 dependency barriers and `LOCAL0`.
+- **Evidence:** `evidence/iter713f_miniforge_rdc_composition.md`.
