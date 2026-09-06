@@ -17694,3 +17694,19 @@ maximum rank latency of a full CUDA-Graph replay.
   `30e6c402...fdbdf` and `16bb9e09...01bb`.
 - **Evidence:** `evidence/iter716b_rdc_maxrreg64_static_rejection.md` and
   `bench/results/iter716a_rdc_maxrreg64_static_20260906.log`.
+
+## Iteration 717a — compose compact whole-W2 ABI with RDC
+
+- **Untried composition:** ordinary one-pointer W2 phase outlining retained
+  REG56/STACK32 but not paired QGMMA issue; RDC recovered 32-QGMMA/16-DEPBAR
+  issue only with the legacy high-argument ABI at REG195/STACK112.  The
+  compact whole-phase ABI and RDC have not previously been combined.
+- **Change:** add a count-checked generated-source composer starting from the
+  exact unique Iteration-714b RDC inputs.  M128 republishes the unchanged W2
+  pointers into the existing CTA-shared record and calls one shape-specialized
+  W2 phase with a single pointer.  Math, task order, barriers, transport,
+  lower-M paths, production source and public ABI remain unchanged.
+- **Pre-CUDA gate:** reject before launch unless device link succeeds, M128
+  is at most REG64/STACK48 with no fixed local allocation, and the exact W2
+  callee retains approximately 32 QGMMAs / 16 dependency barriers.
+- **Evidence:** `evidence/iter717a_rdc_compact_w2_composition.md`.
