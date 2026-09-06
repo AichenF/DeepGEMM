@@ -17444,3 +17444,22 @@ maximum rank latency of a full CUDA-Graph replay.
   This artifact will own the control/helpers in the selective RDC test.
 - **Evidence:** `bench/results/iter713w_miniforge_nonrdc_build_20260906.log`
   and `evidence/iter713w_miniforge_nonrdc_control_build.md`.
+
+## Iteration 713x — selective RDC single entry is correct but 19.46% behind
+
+- **Composition:** dispatch only `run_tp4_megamoe_single_launch` to the RDC
+  library; all route, helper and multi-control methods use the new same-ABI
+  ordinary library.  Exact library paths/symbol ownership print on rank zero.
+- **Correctness:** both RDC single and ordinary multi pass independently with
+  cosine `0.9999955977`, relative L2 `0.0029672640`, max absolute difference
+  `1024`, all ranks finite and `allreduce_ok=true`.
+- **Short cold-L2 result:** 20 replay-paired samples/path give ordinary multi
+  `0.303535998 ms` and RDC single `0.362591997 ms`; single/multi is
+  `1.194560116`, so the RDC candidate is 19.456% slower.
+- **Decision:** static W2 recovery to 32 QGMMAs/16 waits does not offset the
+  195-register entry, 112-byte/thread stack and device-call/residency costs.
+  Run one matched ordinary-unbounded attribution control; reject RDC without
+  a long timing run if it is no slower.
+- **Evidence:**
+  `bench/results/iter713x_selective_rdc_tp4_m128_cold_smoke_20260906.log` and
+  `evidence/iter713x_selective_rdc_runtime_rejection.md`.
