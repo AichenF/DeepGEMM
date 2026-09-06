@@ -15474,3 +15474,28 @@ maximum rank latency of a full CUDA-Graph replay.
   SHA-256 `7ac22134c953d17c8dea9310011818ca483b5b8a96b06324381abd2c8c9c3f45`.
 - **Evidence:** `evidence/iter670_standalone_w13_smid_mapping.md`; raw
   `bench/results/iter670_standalone_w13_smid_trace_20260906.log`.
+
+## Iteration 671 — standalone-like maximum shared carveout is neutral/slower
+
+- **Transfer tested:** standalone W13's saved NCU report uses a 233.472-KiB
+  shared-memory configuration versus 200.704 KiB for the selected M128
+  one-kernel entry. A temporary M128-only function attribute requested the
+  maximum carveout without changing device code, grid, tasks or arithmetic.
+- **Gates:** NCU confirmed the request actually produced 233.472 KiB with
+  the same `702x128`, one wave/SM and `REG56 STACK32 LOCAL0` contract. M128
+  random routing remained bitwise equal to same-source multi locally, and
+  packed barrier generations wrapped exactly.
+- **TP4 cold-L2:** OFF/ON/ON/OFF independent CUDA-Graph processes on GPUs
+  0/5/6/7, each two batches x 20 replay-paired samples with a separate
+  excluded 256 MiB L2 clear. OFF one/multi ratios were 1.146316 and 1.148107;
+  ON ratios were 1.151190 and 1.148397. Mean ON/OFF is 1.002250, a 0.225%
+  regression; direct one-kernel means regress 0.350680 -> 0.351064 ms.
+- **Shared-layout audit:** both reports use 20.480 KiB/block (18.432 dynamic
+  plus 1.024 reported static). The complete one-kernel report has only 120
+  excessive shared wavefronts out of 16,955,732 (0.000708%), so shared-bank
+  excess cannot explain the measured issue deficit.
+- **Decision:** reject below the 1% gate and remove the switch. Production
+  source and benchmark are byte-identical to their pre-experiment state.
+- **Evidence:** `evidence/iter671_m128_max_smem_carveout_rejection.md`; raw
+  `bench/results/iter671*.log` and
+  `results/iter671b_m128_max_smem_carveout_launchstats.ncu-rep`.
