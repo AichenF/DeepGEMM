@@ -340,6 +340,9 @@ SINGLE_LAUNCH_TP4 = os.environ.get("V4_SINGLE_LAUNCH_TP4", "0") == "1"
 SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM", "0") == "1"
 )
+SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM", "0") == "1"
+)
 SINGLE_LAUNCH_W2_PREDECODE_S2R = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PREDECODE_S2R", "0") == "1"
 )
@@ -1854,6 +1857,27 @@ if SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM and (
         "V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM requires the isolated flat "
         "inline WOUT128 TP4 schedule-0 W2 path"
     )
+if SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM and (
+    not SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM
+    or not SINGLE_LAUNCH_COMPACT_W13_BUNDLE
+    or not SINGLE_LAUNCH_M128_BOUND9
+    or not SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS
+    or SINGLE_LAUNCH_W2_PERSISTENT_STATE
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_UNROLL2_BOUND9
+    or SINGLE_LAUNCH_W2_PREDECODE_S2R
+    or SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS
+    or SINGLE_LAUNCH_W2_PAIR_SPILL_ONE
+    or SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE
+    or SINGLE_LAUNCH_W2_PAIR_INLINE_ASM
+    or SINGLE_LAUNCH_W2_PAIR_WARP_SYNC
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM requires the selected "
+        "M128-bound9 compact one-launch path and isolated FP16 W2 accum"
+    )
 if SINGLE_LAUNCH_W2_PREDECODE_S2R and (
     not SINGLE_LAUNCH_TP4
     or not (
@@ -2170,6 +2194,8 @@ static constexpr bool kSingleLaunchW2ProducerAtomicCombine =
     K_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE;
 static constexpr bool kSingleLaunchW2F16WgmmaAccum =
     K_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM;
+static constexpr bool kSingleLaunchW2F16PairInlineAsm =
+    K_SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM;
 static constexpr bool kSingleLaunchW2PredecodeS2R =
     K_SINGLE_LAUNCH_W2_PREDECODE_S2R;
 static constexpr bool kSingleLaunchW2PairWgmmaGroups =
@@ -2688,7 +2714,7 @@ template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool F16WgmmaAccum = false, bool PredecodeS2R = false,
           bool PairWgmmaGroups = false, bool PairSpillOne = false,
           bool PairOperandFence = false, bool PairInlineAsm = false,
-          bool PairWarpSync = false>
+          bool PairWarpSync = false, bool F16PairInlineAsm = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -2824,6 +2850,14 @@ __device__ __forceinline__ void route_gemm_task(
                   "paired inline WGMMA requires fenced operands");
     static_assert(!PairWarpSync || PairInlineAsm,
                   "paired WGMMA warp sync requires inline issue");
+    static_assert(!F16PairInlineAsm
+                  || (!IsW13 && F16WgmmaAccum && !PredecodeS2R
+                      && !PairWgmmaGroups && !PairSpillOne
+                      && !PairOperandFence && !PairInlineAsm
+                      && !PairWarpSync && !DualWgW13 && !PersistentState
+                      && WgmmaHalf == -1 && IndependentTaskWGs == 1
+                      && kActiveWgmmaGroups == 2),
+                  "paired FP16 inline WGMMA requires isolated flat W2 N128");
     constexpr bool kMergedWgmmaGroup =
         IsW13 && kW13MergedWgmmaGroup;
     constexpr bool kDistributedPrep =
@@ -3748,7 +3782,7 @@ __device__ __forceinline__ void route_gemm_task(
                         }
                     }
                 }
-                if constexpr (PairWgmmaGroups) {
+                if constexpr (PairWgmmaGroups || F16PairInlineAsm) {
                     current_fp8_0[group] = fp8_0;
                     current_fp8_1[group] = fp8_1;
                 } else {
@@ -3767,6 +3801,51 @@ __device__ __forceinline__ void route_gemm_task(
                             cute::SM90::GMMA::ScaleOut::One);
                     }
                 }
+            }
+            if constexpr (F16PairInlineAsm) {
+                #pragma unroll
+                for (int group = 0;
+                     group < kActiveWgmmaGroups; ++group) {
+                    cute::warpgroup_fence_operand(
+                        current_fp8_0[group].x);
+                    cute::warpgroup_fence_operand(
+                        current_fp8_0[group].y);
+                    cute::warpgroup_fence_operand(
+                        current_fp8_1[group].x);
+                    cute::warpgroup_fence_operand(
+                        current_fp8_1[group].y);
+                }
+                asm volatile(
+                "{\n"
+                  ".reg .pred p;\n"
+                  "setp.ne.b32 p, %13, 0;\n"
+                  "wgmma.mma_async.sync.aligned."
+                  "m64n8k32.f16.e4m3.e4m3 "
+                  "{%0, %1},"
+                  "{%4, %5, %6, %7},"
+                  "%12, p, %14, %15;\n"
+                  "wgmma.mma_async.sync.aligned."
+                  "m64n8k32.f16.e4m3.e4m3 "
+                  "{%2, %3},"
+                  "{%8, %9, %10, %11},"
+                  "%12, p, %14, %15;\n"
+                "}\n"
+                  : "+&r"(tile_f16[0][0]),
+                    "+&r"(tile_f16[0][1]),
+                    "+&r"(tile_f16[1][0]),
+                    "+&r"(tile_f16[1][1])
+                  : "r"(current_fp8_0[0].y),
+                    "r"(current_fp8_1[0].y),
+                    "r"(current_fp8_0[0].x),
+                    "r"(current_fp8_1[0].x),
+                    "r"(current_fp8_0[1].y),
+                    "r"(current_fp8_1[1].y),
+                    "r"(current_fp8_0[1].x),
+                    "r"(current_fp8_1[1].x),
+                    "l"(activation_desc),
+                    "r"(int32_t(cute::SM90::GMMA::ScaleOut::One)),
+                    "n"(int32_t(cute::SM90::GMMA::ScaleIn::One)),
+                    "n"(int32_t(cute::SM90::GMMA::ScaleIn::One)));
             }
             if constexpr (PairWgmmaGroups) {
                 if constexpr (PairOperandFence) {
@@ -9285,7 +9364,8 @@ void tp4_megamoe_single_launch_kernel(
                         kSingleLaunchW2PairSpillOne && Tokens == 128,
                         kSingleLaunchW2PairOperandFence && Tokens == 128,
                         kSingleLaunchW2PairInlineAsm && Tokens == 128,
-                        kSingleLaunchW2PairWarpSync && Tokens == 128>(
+                        kSingleLaunchW2PairWarpSync && Tokens == 128,
+                        kSingleLaunchW2F16PairInlineAsm && Tokens == 128>(
                         &w2_tma_weight, &w2_tma_weight_scale,
                         w2, s2, g2, qactivation, activation_scale,
                         sorted_ids, expert_ids, num_tokens_padded,
@@ -12370,6 +12450,7 @@ _EXTENSION_CONFIG = (
           f"slw2brr{SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES}_"
           f"slw2pac{int(SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE)}_"
           f"slw2f16a{int(SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM)}_"
+          f"slw2f16pia{int(SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM)}_"
           f"slw2pds2r{int(SINGLE_LAUNCH_W2_PREDECODE_S2R)}_"
           f"slw2pwg{int(SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS)}_"
           f"slw2pso{int(SINGLE_LAUNCH_W2_PAIR_SPILL_ONE)}_"
@@ -12618,6 +12699,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM="
             f"{int(SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM="
+            f"{int(SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W2_PREDECODE_S2R="

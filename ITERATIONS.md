@@ -17727,3 +17727,18 @@ maximum rank latency of a full CUDA-Graph replay.
   correctness or timing is claimed; production sources remain untouched.
 - **Evidence:** `evidence/iter717b_rdc_compact_w2_static_rejection.md` and
   `bench/results/iter717a_rdc_compact_w2_static_20260906.log`.
+
+## Iteration 718a — compose reduced-footprint paired FP16 W2 issue
+
+- **Open composition:** prior paired-inline probes used FP32 accumulators,
+  while the separately qualified FP16 W2 path halves each N64 group's WGMMA
+  destination footprint.  No prior candidate combined those two properties.
+- **Change:** add a default-off, M128-only switch that fences both groups'
+  source words and issues the two unchanged FP16 W2 QGMMAs in one
+  early-clobber asm block.  Task order, TMA pipeline, commits/waits, output
+  conversion, k6 combine and terminal collective are unchanged; the existing
+  FP16 numerical tradeoff remains explicit.
+- **Pre-CUDA gate:** reject before launch unless the M128 entry is at most
+  REG64 with no local spill/material stack growth, and exact W2 SASS improves
+  from 32 QGMMAs / 32 DEPBARs to at most 20 DEPBARs (target 16).
+- **Evidence:** `evidence/iter718a_f16_paired_inline_w2_composition.md`.
