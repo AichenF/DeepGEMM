@@ -16104,3 +16104,20 @@ maximum rank latency of a full CUDA-Graph replay.
   numerical tradeoff is explicitly accepted.
 - **Evidence:** `evidence/iter700_w2_f16_accum_m128_phase_abba.md`; raw log
   `bench/results/iter700_w2_f16_accum_m128_phase_abba.log`.
+
+## Iteration 701 — Admit W2 FP16 accumulator to paired TP4 graph harness
+
+- **Change:** extend the existing same-process compile-time-flag comparison
+  harness to accept `V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM`. The harness first
+  imports the selected FP32 one-kernel control, then imports the same source
+  with only this flag enabled, captures complete MegaMoE+embedded-collective
+  CUDA Graphs for both, and alternates every independently cold replay.
+- **Correctness policy:** add this flag to the harness's existing
+  tolerance-qualified set because Iteration 699 established that packed-FP16
+  accumulation is intentionally not bitwise. The unchanged graph gate
+  requires all ranks finite, minimum cosine >= 0.99999 and maximum relative
+  L2 <= 0.005 before timing; exact equality is still reported separately.
+- **Qualification:** Python syntax and whitespace validation pass. This is a
+  benchmark-harness-only change; no kernel instruction, CUDA launch, result
+  or timing is claimed yet.
+- **Evidence:** `evidence/iter701_w2_f16_accum_tp4_harness.md`.
