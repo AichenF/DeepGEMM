@@ -16552,3 +16552,20 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Artifact:** standalone SASS SHA256
   `d62b23aa061e2bd3a02a9ce3c35d763a4a8a590777a2aec01257adc70610a9ce`.
 - **Evidence:** `evidence/iter709n_standalone_w2_operand_lifetime_audit.md`.
+
+## Iteration 709o — explicit paired W2 QGMMA issue
+
+- **Change:** add an opt-in specialization that retains both current N64 FP8
+  operand pairs, then issues their two QGMMAs in a separate adjacent unrolled
+  loop.  It preserves the predecoded next-step S2R lookahead and leaves the
+  existing commit/fence/wait after both instructions.
+- **Isolation:** the new flag requires Iteration 709l's predecode flag and its
+  strict selected TP4 M128/bound9 flat-W2 conditions.  Both are default-off;
+  TP4 production and TP8 are unchanged, and the flag enters the JIT identity.
+- **Pre-CUDA gate:** Python compilation passes; staged SHA256 is
+  `b5a7d47f7497fdbdaabfe3af2fbf208b3633d9200a7e539f461a8a3cef261450`.
+  No CUDA result is claimed.
+- **Next:** require REG56/no spill/nine-CTA admission, unchanged 64 static
+  QGMMAs, and dependency barriers reduced from 64 toward 32 across the two
+  emitted W2 paths before correctness or timing.
+- **Evidence:** `evidence/iter709o_w2_paired_wgmma_implementation.md`.

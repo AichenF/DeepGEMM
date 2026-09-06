@@ -343,6 +343,9 @@ SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM = (
 SINGLE_LAUNCH_W2_PREDECODE_S2R = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PREDECODE_S2R", "0") == "1"
 )
+SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS", "0") == "1"
+)
 # Selected single-launch production bundle.  The historical environment name
 # is retained because compact W13 was the first bundled component, but the
 # switch now covers every independently validated fast path selected for the
@@ -1794,6 +1797,12 @@ if SINGLE_LAUNCH_W2_PREDECODE_S2R and not W2_S2R_PREFETCH:
     raise ValueError(
         "V4_SINGLE_LAUNCH_W2_PREDECODE_S2R requires V4_W2_S2R_PREFETCH=1"
     )
+if (SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS
+        and not SINGLE_LAUNCH_W2_PREDECODE_S2R):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS requires "
+        "V4_SINGLE_LAUNCH_W2_PREDECODE_S2R=1"
+    )
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
 LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
 DIRECT_BARRIER_ADDR = os.environ.get("V4_DIRECT_BARRIER_ADDR", "0") == "1"
@@ -2034,6 +2043,8 @@ static constexpr bool kSingleLaunchW2F16WgmmaAccum =
     K_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM;
 static constexpr bool kSingleLaunchW2PredecodeS2R =
     K_SINGLE_LAUNCH_W2_PREDECODE_S2R;
+static constexpr bool kSingleLaunchW2PairWgmmaGroups =
+    K_SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -2537,7 +2548,8 @@ template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool SharedPartial = false, int ForcedKUnroll = 0,
           bool AssumeValidMblock = false, bool BulkReduceW2 = false,
           bool AtomicCombineW2 = false, int IndependentTaskWGs = 1,
-          bool F16WgmmaAccum = false, bool PredecodeS2R = false>
+          bool F16WgmmaAccum = false, bool PredecodeS2R = false,
+          bool PairWgmmaGroups = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -2662,6 +2674,9 @@ __device__ __forceinline__ void route_gemm_task(
                       && WgmmaHalf == -1 && IndependentTaskWGs == 1
                       && kActiveWgmmaGroups == 2),
                   "predecoded S2R lookahead requires flat FP32 W2 N128");
+    static_assert(!PairWgmmaGroups
+                  || (PredecodeS2R && kActiveWgmmaGroups == 2),
+                  "paired WGMMA issue requires predecoded N128 W2");
     constexpr bool kMergedWgmmaGroup =
         IsW13 && kW13MergedWgmmaGroup;
     constexpr bool kDistributedPrep =
@@ -3295,6 +3310,8 @@ __device__ __forceinline__ void route_gemm_task(
         uint2 next_weight_lut1[kActiveWgmmaGroups];
         uint2 next_fp8_0[kActiveWgmmaGroups];
         uint2 next_fp8_1[kActiveWgmmaGroups];
+        uint2 current_fp8_0[kActiveWgmmaGroups];
+        uint2 current_fp8_1[kActiveWgmmaGroups];
         #pragma unroll
         for (int k_step = 0; k_step < kBlockK / 32; ++k_step) {
             const uint32_t stage_base =
@@ -3545,13 +3562,31 @@ __device__ __forceinline__ void route_gemm_task(
                         }
                     }
                 }
-                if constexpr (F16WgmmaAccum) {
-                    cute::SM90::GMMA::MMA_64x8x32_F16E4M3E4M3_RS_TN<>::fma(
-                        fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
-                        activation_desc,
-                        tile_f16[group][0], tile_f16[group][1],
-                        cute::SM90::GMMA::ScaleOut::One);
+                if constexpr (PairWgmmaGroups) {
+                    current_fp8_0[group] = fp8_0;
+                    current_fp8_1[group] = fp8_1;
                 } else {
+                    if constexpr (F16WgmmaAccum) {
+                        cute::SM90::GMMA::MMA_64x8x32_F16E4M3E4M3_RS_TN<>::fma(
+                            fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
+                            activation_desc,
+                            tile_f16[group][0], tile_f16[group][1],
+                            cute::SM90::GMMA::ScaleOut::One);
+                    } else {
+                        cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
+                            fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
+                            activation_desc,
+                            tile_f32[group][0], tile_f32[group][1],
+                            tile_f32[group][2], tile_f32[group][3],
+                            cute::SM90::GMMA::ScaleOut::One);
+                    }
+                }
+            }
+            if constexpr (PairWgmmaGroups) {
+                #pragma unroll
+                for (int group = 0; group < kActiveWgmmaGroups; ++group) {
+                    const uint2 fp8_0 = current_fp8_0[group];
+                    const uint2 fp8_1 = current_fp8_1[group];
                     cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
                         fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
                         activation_desc,
@@ -8945,7 +8980,8 @@ void tp4_megamoe_single_launch_kernel(
                         kSingleLaunchW2BulkReduceCombine,
                         kSingleLaunchW2ProducerAtomicCombine, 1,
                         kSingleLaunchW2F16WgmmaAccum,
-                        kSingleLaunchW2PredecodeS2R && Tokens == 128>(
+                        kSingleLaunchW2PredecodeS2R && Tokens == 128,
+                        kSingleLaunchW2PairWgmmaGroups && Tokens == 128>(
                         &w2_tma_weight, &w2_tma_weight_scale,
                         w2, s2, g2, qactivation, activation_scale,
                         sorted_ids, expert_ids, num_tokens_padded,
@@ -12028,6 +12064,7 @@ _EXTENSION_CONFIG = (
           f"slw2pac{int(SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE)}_"
           f"slw2f16a{int(SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM)}_"
           f"slw2pds2r{int(SINGLE_LAUNCH_W2_PREDECODE_S2R)}_"
+          f"slw2pwg{int(SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slagp{int(SINGLE_LAUNCH_ADAPTIVE_GRID_POLL)}_"
@@ -12266,6 +12303,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_PREDECODE_S2R="
             f"{int(SINGLE_LAUNCH_W2_PREDECODE_S2R)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS="
+            f"{int(SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="
