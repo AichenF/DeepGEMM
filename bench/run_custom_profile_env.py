@@ -23,6 +23,27 @@ def quant_input(
     return outputs, scales.contiguous()
 
 
+def process_mxfp4_w4a8_weight(
+    inputs: torch.Tensor,
+    delta_scale_offsets: torch.Tensor,
+    inplace: bool = False,
+) -> torch.Tensor:
+    """Canonicalize the benchmark's MXFP4 negative-zero nibbles."""
+    if not inplace:
+        inputs = inputs.clone()
+    if torch.count_nonzero(delta_scale_offsets).item() != 0:
+        raise RuntimeError(
+            "custom profile fallback requires zero MXFP4 scale delta"
+        )
+    packed = inputs.view(torch.uint8)
+    low = packed & 0x0F
+    high = packed >> 4
+    low = torch.where(low == 8, torch.zeros_like(low), low)
+    high = torch.where(high == 8, torch.zeros_like(high), high)
+    packed.copy_(low | (high << 4))
+    return inputs
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         raise SystemExit("usage: run_custom_profile_env.py TARGET [ARGS...]")
@@ -35,6 +56,7 @@ def main() -> None:
     humming = types.ModuleType("humming")
     humming_ops = types.ModuleType("humming.ops")
     humming_ops.quant_input = quant_input
+    humming_ops.process_mxfp4_w4a8_weight = process_mxfp4_w4a8_weight
     humming.ops = humming_ops
     sys.modules["humming"] = humming
     sys.modules["humming.ops"] = humming_ops

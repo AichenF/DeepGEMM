@@ -16387,3 +16387,17 @@ maximum rank latency of a full CUDA-Graph replay.
   custom-only runner, including its zero-scale-delta assertion, then repeat
   the same smoke before NCU.
 - **Evidence:** `evidence/iter709e_custom_profile_weight_stub_failure.md`.
+
+## Iteration 709f — complete the custom-only profiling fixture shim
+
+- **Repair:** add `process_mxfp4_w4a8_weight` to the profiling-only
+  `humming.ops` shim.  The body is the same untimed Torch transform already
+  used by `v4_bench_env_runner.py`: assert that all scale deltas are zero,
+  canonicalize packed FP4 nibble value 8 to positive zero, and otherwise
+  preserve every nibble.  Bind it beside the existing offline FP8 input
+  constructor before importing the graph fixture.
+- **Scope:** no CUDA kernel source or timed operation changes.  The transform
+  runs only while constructing weights before warmup/profiling.
+- **Static gate:** megamoe
+  `python3 -m py_compile bench/run_custom_profile_env.py` passes.  The
+  unchanged TP4 M128 local-profiler smoke is next.
