@@ -16869,3 +16869,21 @@ maximum rank latency of a full CUDA-Graph replay.
   disable only fused M128 bound-9 while retaining every other selected
   production optimization and require a fused 32/16 interval statically.
 - **Evidence:** `evidence/iter711a_standalone_w2_bound9_static_control.md`.
+
+## Iteration 711b — selected fused bound-8 still serializes W2
+
+- **Question/method:** retain the production TP4 compact bundle but disable
+  only M128 bound-9; set W13/W2 wave rotations to zero because their mappings
+  are specific to the 702-CTA grid.  H20 GPU1 performed JIT/SASS inspection
+  only, with no business launch.
+- **Build/resource:** extension
+  `v4tp_facd0af033b98b98562f_v178mspec`; TP4 M128/split-K2 main becomes
+  `REG64 STACK48 SHARED2048 LOCAL0`.
+- **SASS result:** the exact main entry still has 32 W2 QGMMAs and 32
+  dependency barriers.  Exact SASS SHA256 is
+  `f8264259210532eada47fb253d69192dbacff13a3c0621255d61d1f288802c38`.
+- **Decision:** **reject before correctness/timing.**  More final registers
+  are necessary but not sufficient.  Next apply explicit min-blocks 8 to the
+  standalone W2 control; if it also serializes, test an occupancy-derived
+  fused M128 entry without an explicit minimum-block launch contract.
+- **Evidence:** `evidence/iter711b_fused_bound8_selected_static_control.md`.
