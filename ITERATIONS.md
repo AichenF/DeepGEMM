@@ -16569,3 +16569,19 @@ maximum rank latency of a full CUDA-Graph replay.
   QGMMAs, and dependency barriers reduced from 64 toward 32 across the two
   emitted W2 paths before correctness or timing.
 - **Evidence:** `evidence/iter709o_w2_paired_wgmma_implementation.md`.
+
+## Iteration 709p — reject explicit paired W2 QGMMA issue
+
+- **Build/resource:** exact paired candidate compiles as
+  `v4tp_edcaefbd74668cbf0c6a_v178mspec`; M128/split-K2 remains
+  `REG56 STACK32 SHARED2048 LOCAL0`, preserving nine-CTA admission.
+- **SASS result:** the exact entry still has 64 QGMMAs and 64 dependency
+  barriers across its two emitted W2 paths.  Even with the separate adjacent
+  issue loop, ptxas aliases source/destination register bases and inserts an
+  immediate wait after every QGMMA.  SASS SHA256 is
+  `96ada2a70463cfe1282009fa83cc201e9e5a4e5a5fd96b86311c6eb427847b7a`.
+- **Decision:** **REJECT before correctness/timing.**  No business kernel ran.
+  Close same-frame S2R/issue rearrangements under REG56; next inspect whether
+  a phase-local callee contract can expose standalone's REG61 schedule without
+  importing the previously rejected whole-W2 outline overhead.
+- **Evidence:** `evidence/iter709p_w2_paired_wgmma_static_rejection.md`.
