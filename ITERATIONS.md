@@ -17248,3 +17248,19 @@ maximum rank latency of a full CUDA-Graph replay.
   change is required; remove that one environment entry and retry.
 - **Evidence:** `bench/results/iter713j_rdc_tp4_m128_cold_smoke_20260906.log`
   and `evidence/iter713j_distributed_namespace_rejection.md`.
+
+## Iteration 713k — CAR P2P subprocess bypasses the in-process namespace
+
+- **Scope:** four-rank TP4 retry after restoring the checkout's distributed
+  initializer.  World-group construction advances to CARv2's P2P capability
+  check, but no CAR communicator, graph, correctness, timing or MoE business
+  kernel is reached.
+- **Failure:** rank 0 launches `custom_all_reduce_utils.py` in a fresh Python
+  subprocess.  That process cannot inherit the runner's `sys.modules`
+  namespace and instead resolves a system `.pth` SGLang checkout whose
+  top-level frontend import lacks `aiohttp`.
+- **Decision:** add a filesystem namespace shim at the front of `PYTHONPATH`
+  so child processes also resolve the selected old CAR checkout without
+  executing its frontend initializer.
+- **Evidence:** `bench/results/iter713k_rdc_tp4_m128_cold_smoke_20260906.log`
+  and `evidence/iter713k_p2p_subprocess_namespace_failure.md`.
