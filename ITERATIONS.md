@@ -16142,3 +16142,35 @@ maximum rank latency of a full CUDA-Graph replay.
   sample, correctness result or latency was produced.
 - **Evidence:** `evidence/iter702_w2_f16_tp4_p2p_env_failure.md`; raw log
   `bench/results/iter702_w2_f16_accum_tp4_m128_paired_cold.log`.
+
+## Iteration 703 — W2 FP16 accumulator improves full TP4 M128 graph by 0.381%
+
+- **Protocol:** physical H20 GPUs 1,5,6,7, M128 random routes/seed 20260902,
+  five outer batches x thirty replays = 150 cold-L2 samples per variant.
+  The complete selected FP32 one-kernel MegaMoE+embedded two-shot P2P
+  all-reduce graph is compared in the same process to the same source with
+  only W2 packed-FP16 accumulation enabled. Every graph replay immediately
+  follows its own excluded 256 MiB clear and order alternates per sample.
+- **P2P prerequisite:** all 16 source/destination entries for the visible
+  1,5,6,7 subset were independently queried with
+  `torch.cuda.can_device_access_peer` and are true; `nvidia-smi topo -m`
+  reports NV18 for every pair. `SGLANG_SKIP_P2P_CHECK=1` bypasses only the
+  broken Python subprocess from Iteration 702, not peer access or the actual
+  CustomAllReduceV2/embedded communication execution.
+- **Correctness:** final candidate/control graph outputs are bitwise equal on
+  all four ranks (`cosine_min_rank=1`, `rel_l2_max_rank=0`,
+  `max_abs_max_rank=0`, finite). Thus the local W2 FP16 differences from
+  Iteration 699 are rounded away by the unchanged BF16 route output and TP
+  reduction for this formal seed.
+- **Latency:** FP32 control min/median/max is
+  `0.346880/0.353776/0.545664 ms`; FP16 candidate is
+  `0.346752/0.352432/0.364672 ms`. Control/candidate median speedup is
+  `1.003813x`, or 0.381% lower latency. All five paired batch medians favor
+  FP16: control/candidate are 0.349824/0.348640,
+  0.350384/0.349680, 0.354288/0.353520, 0.355296/0.354096 and
+  0.359296/0.358080 ms.
+- **Decision:** positive but too small to call globally selected from M128
+  alone. Retain opt-in and run identical paired cold-L2 graph gates at
+  M8/16/32/64 before deciding default status.
+- **Evidence:** `evidence/iter703_w2_f16_accum_tp4_m128_paired_cold.md`; raw
+  log `bench/results/iter703_w2_f16_accum_tp4_m128_paired_cold.log`.
