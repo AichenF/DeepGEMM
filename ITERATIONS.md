@@ -17498,3 +17498,18 @@ maximum rank latency of a full CUDA-Graph replay.
   rejected, exact hashes print, and Python compilation passes.  No composition,
   JIT or CUDA work has run yet.
 - **Evidence:** `evidence/iter714a_unique_rdc_entry_composition.md`.
+
+## Iteration 714b — materialize and verify the unique RDC source copy
+
+- **Composition:** generate `/tmp/iter714b_unique_rdc` from the exact
+  Iteration-713f RDC build.  All count assertions pass; internal host symbol is
+  `run_tp4_megamoe_single_launch_iter714b`, CUDA template is
+  `tp4_megamoe_single_launch_kernel_iter714b`, while the pybind method remains
+  canonical.
+- **Hashes:** CUDA `bc5623fa...747ae`, host `e4c4af59...588b5`, Ninja
+  `c4fb43ad...42843`.  Grep confirms all one-definition/four-launch sites use
+  the unique names.
+- **Qualification:** static composition only; no compile, load or CUDA work
+  has occurred in the new directory.
+- **Evidence:** `bench/results/iter714b_unique_rdc_composition_20260906.log`
+  and `evidence/iter714b_unique_rdc_static_composition.md`.
