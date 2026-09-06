@@ -16980,3 +16980,21 @@ maximum rank latency of a full CUDA-Graph replay.
   with natural registers; its prior tests were all constrained to 56 regs.
 - **Evidence:**
   `evidence/iter711g_unbounded_w2_phase_outline_static_rejection.md`.
+
+## Iteration 711h — compose natural registers with W2 operand isolation
+
+- **Hypothesis/change:** allow the retained W2 predecode/pair/spill/operand-
+  fence chain to compose with unbounded M128.  Fused SASS overlaps RS source
+  and accumulator destination registers; the chain was built to prohibit
+  that allocation, but every prior test was capped at 56 registers.
+- **Scope:** only the Python validation broadens from M128-bound9 to
+  M128-bound9-or-unbounded.  Device math, task order, barriers, communication,
+  ABI and defaults are unchanged.
+- **Pre-CUDA gate:** Python compilation passes; staged SHA256 is
+  `30e6c402b4dc220d2a4eb03099d1f1cd0f82e59b0af38747b59906d84c3fdbdf`.
+  No JIT/launch is claimed.
+- **Next:** compile the full chain and require the spilled LDS before both
+  QGMMAs, disjoint source/destination bases, about 16 waits, no local spill
+  and runtime-admissible residency before correctness/timing.
+- **Evidence:**
+  `evidence/iter711h_unbounded_w2_operand_isolation_composition.md`.

@@ -1856,7 +1856,10 @@ if SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM and (
     )
 if SINGLE_LAUNCH_W2_PREDECODE_S2R and (
     not SINGLE_LAUNCH_TP4
-    or not SINGLE_LAUNCH_M128_BOUND9
+    or not (
+        SINGLE_LAUNCH_M128_BOUND9
+        or SINGLE_LAUNCH_M128_UNBOUNDED
+    )
     or SINGLE_LAUNCH_SCHEDULE != 0
     or SINGLE_LAUNCH_NOINLINE_GEMM
     or SINGLE_LAUNCH_W2_PHASE_NOINLINE
@@ -1878,7 +1881,7 @@ if SINGLE_LAUNCH_W2_PREDECODE_S2R and (
 ):
     raise ValueError(
         "V4_SINGLE_LAUNCH_W2_PREDECODE_S2R requires the isolated "
-        "M128-bound9 inline WOUT128 TP4 schedule-0 W2 path"
+        "M128 bound9 or unbounded inline WOUT128 TP4 schedule-0 W2 path"
     )
 MC_PULL_BLOCKS = int(os.environ.get("V4_MC_PULL_BLOCKS", "0"))
 MC_PULL_UNROLL = int(os.environ.get("V4_MC_PULL_UNROLL", "0"))
