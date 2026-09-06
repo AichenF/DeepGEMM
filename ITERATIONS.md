@@ -16961,3 +16961,22 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Next:** require a no-local-spill, runtime-resident cubin and exact outlined
   W2 SASS of 32 QGMMAs / about 16 waits before correctness or timing.
 - **Evidence:** `evidence/iter711f_unbounded_w2_phase_outline_composition.md`.
+
+## Iteration 711g — unbounded W2 phase outline remains 1:1
+
+- **Scope:** compile-only H20 GPU1 combination of unbounded M128 and the
+  whole-W2 phase outline, with selected compact W13 retained and no business
+  kernel launch.
+- **Build/resource:** extension
+  `v4tp_49f35bd1b995105c53bc_v178mspec`; M128/split-K2 main is
+  `REG85 STACK32 SHARED2048 LOCAL0`, and its W2 callee is 20,544 B.
+- **SASS result:** the exact callee still has 32 QGMMAs / 32 dependency
+  barriers.  Exact SHA256 is
+  `fcf7f5365971b40dda638d9daeac09af6a7d686dc48bdeb15b368a41dac3587f`.
+- **Decision:** **reject before correctness/timing.**  Phase isolation plus
+  natural registers is insufficient.  Fused SASS still allocates overlapping
+  source/accumulator groups where standalone bound8 keeps them disjoint.
+  Next compose the existing predecode/pair/spill/operand-fence diagnostic
+  with natural registers; its prior tests were all constrained to 56 regs.
+- **Evidence:**
+  `evidence/iter711g_unbounded_w2_phase_outline_static_rejection.md`.
