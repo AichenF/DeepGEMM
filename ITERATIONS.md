@@ -16401,3 +16401,19 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Static gate:** megamoe
   `python3 -m py_compile bench/run_custom_profile_env.py` passes.  The
   unchanged TP4 M128 local-profiler smoke is next.
+
+## Iteration 709g — local-profiler smoke reaches stale Triton cache API
+
+- **Protocol/result:** the repaired custom-only runner constructed TP4 M128,
+  compiled/loaded the current kernels and completed both warm local pipelines
+  on physical H20 GPU1.  It then failed before the intended cold replay
+  because this container's Triton `CudaDriver` lacks the older
+  `clear_cache` method used by `bench/profile_v4_flash_tp_local.py`.
+- **Qualification:** warmup kernels ran, but there is no separately cold
+  target replay, correctness record, latency result, or NCU metric.  This is
+  a profiler compatibility failure, not a kernel result.
+- **Decision:** add a profiling-only fallback that streams a `zero_()` write
+  through the same >=256 MiB cache buffer when `clear_cache` is unavailable.
+  The clear remains immediately before the target launch; NCU's
+  `route_gemm` filter excludes the clear kernel from collection.
+- **Evidence:** `evidence/iter709g_profile_cache_api_failure.md`.
