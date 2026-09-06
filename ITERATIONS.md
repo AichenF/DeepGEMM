@@ -15525,3 +15525,29 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/iter679_bound10_w2_nos2r_m128_jit_correctness_20260906.log`
   and
   `bench/results/iter679_bound10_w2_nos2r_tp4_m128_cold_short_20260906.log`.
+
+## Iteration 680 — W13 early-CTA 16 us quiescence extends the critical tail
+
+- **Hypothesis/change:** M128 W13 has five complete 702-task waves plus 474
+  residual tasks.  Make the 228 leaders without a residual task execute one
+  16,384 ns `__nanosleep` before the phase-1 barrier, reducing their
+  repeated poll issue while residual WGMMA/TMA work runs.  Task ownership,
+  arithmetic, memory ordering, traffic, and the multi control are unchanged.
+- **Resource/correctness:** M128 split-K2/4 remains
+  `REG56 STACK32 SHARED2048 LOCAL0`.  Random-route M128 is bitwise equal
+  to the independent local reference (cosine 1, relative L2 0, finite), with
+  1,992 padded rows and generation wrap exactly `[0,0,0,0]`.
+- **Cold-L2 TP4 gate:** GPUs 0,5,6,7; random seed 20260902; replay-level
+  pairing; 2x20 samples after four warmups; independent excluded 256 MiB
+  clear before every replay.  Multi/candidate medians are
+  `0.305808/0.379664 ms`; candidate batch medians are
+  `0.379664/0.379680 ms`.  Candidate/control is `1.241511`, or 24.15%
+  slower.  All-rank correctness/allreduce checks pass.
+- **Decision:** Reject and restore Iteration-665 production.  No-residual
+  ownership does not guarantee early physical completion; the fixed sleep
+  turns some leaders into the last arrivals.  Combined with Iteration 374's
+  adaptive-poll result, close barrier-sleep tuning.
+- **Evidence:** `evidence/iter680_w13_early_cta_quiesce_rejection.md`; raw
+  logs `bench/results/iter680_w13_quiesce16k_m128_jit_correctness_20260906.log`
+  and
+  `bench/results/iter680_w13_quiesce16k_tp4_m128_cold_short_20260906.log`.
