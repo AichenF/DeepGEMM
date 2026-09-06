@@ -15450,3 +15450,27 @@ maximum rank latency of a full CUDA-Graph replay.
   reuse is not the standalone launch advantage.
 - **Evidence:** `evidence/iter669_w13_alt_barrier_banks_rejection.md`; raw
   `bench/results/iter669*.log`.
+
+## Iteration 670 — standalone W13 task-to-SM mapping is replay-dynamic
+
+- **Hypothesis:** record standalone W13's fresh-CTA task ownership and reuse
+  it as a static persistent-grid permutation.
+- **Protocol:** temporary lane-0 `%smid` trace on the exact standalone
+  `route_gemm<4096,1024,2,true>` path, M128 with 1,992 padded rows and 3,984
+  valid tasks. Three launches each used a separate excluded 256 MiB L2 clear.
+- **Replay result:** all trace hashes differ. Pairwise exact task-owner
+  agreement is only 2.836%, 1.054% and 1.682%; per-wave agreement is at most
+  7.977%. Every full 702-task wave nevertheless remains balanced at 8--10
+  tasks/SM, and the 474-task residual remains 5--7 tasks/SM.
+- **Decorrelation:** same-ordinal adjacent-wave ownership persists for only
+  1.14%--8.12% of standalone tasks. The selected one-kernel nonzero wave
+  rotations already reduce that measured overlap from the unrotated 100% to
+  0%. A circular fit reaches 62.1%--75.5% only on the first traced wave, then
+  collapses to about 12% and about 3% on later waves, with replay-dependent
+  best shifts.
+- **Decision:** reject a static trace lookup/permutation as replay overfit.
+  The transferable property is balanced, decorrelated waves, not a stable
+  mapping table. Remove tracing and restore production source to exact
+  SHA-256 `7ac22134c953d17c8dea9310011818ca483b5b8a96b06324381abd2c8c9c3f45`.
+- **Evidence:** `evidence/iter670_standalone_w13_smid_mapping.md`; raw
+  `bench/results/iter670_standalone_w13_smid_trace_20260906.log`.
