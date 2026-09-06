@@ -17393,3 +17393,18 @@ maximum rank latency of a full CUDA-Graph replay.
   emits exact rank-zero provenance, and passes Python compilation.  Mode is
   default-off; neither extension nor benchmark source changes.
 - **Evidence:** `evidence/iter713s_selective_rdc_dispatch_runner.md`.
+
+## Iteration 713t — cached ordinary control library is cross-ABI
+
+- **Scope:** first selective-dispatch TP4 process attempt; it exits while
+  loading the ordinary control library, before SGLang/distributed setup or any
+  CUDA business-kernel launch.
+- **Failure:** the cached non-RDC `v4tp_49...so` was built against `/usr`
+  PyTorch and lacks the C10 CUDA symbol expected by the miniforge PyTorch 2.11
+  runtime used for the RDC candidate.
+- **Decision:** this is not a kernel result.  Rebuild the exact non-RDC source
+  with the same miniforge ABI in a separate directory, then retry the
+  method-level composition.
+- **Evidence:**
+  `bench/results/iter713t_selective_rdc_tp4_m128_cold_smoke_20260906.log` and
+  `evidence/iter713t_selective_control_abi_failure.md`.

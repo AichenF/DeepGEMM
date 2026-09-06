@@ -1,0 +1,109 @@
+W0906 12:48:17.356000 266255 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] 
+W0906 12:48:17.356000 266255 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] *****************************************
+W0906 12:48:17.356000 266255 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0906 12:48:17.356000 266255 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] *****************************************
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/iter713_prebuilt_extension_runner.py", line 191, in <module>
+    main()
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/iter713_prebuilt_extension_runner.py", line 77, in main
+    control_extension = load_extension(control_path, extension_name)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/iter713_prebuilt_extension_runner.py", line 22, in load_extension
+    extension = importlib.util.module_from_spec(spec)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 813, in module_from_spec
+  File "<frozen importlib._bootstrap_external>", line 1293, in create_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+ImportError: /tmp/torch_ext_v4_tp/v4tp_49f35bd1b995105c53bc_v178mspec/v4tp_49f35bd1b995105c53bc_v178mspec.so: undefined symbol: _ZN3c104cuda29c10_cuda_check_implementationEiPKcS2_ib
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/iter713_prebuilt_extension_runner.py", line 191, in <module>
+    main()
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/iter713_prebuilt_extension_runner.py", line 77, in main
+    control_extension = load_extension(control_path, extension_name)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/iter713_prebuilt_extension_runner.py", line 22, in load_extension
+    extension = importlib.util.module_from_spec(spec)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 813, in module_from_spec
+  File "<frozen importlib._bootstrap_external>", line 1293, in create_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+ImportError: /tmp/torch_ext_v4_tp/v4tp_49f35bd1b995105c53bc_v178mspec/v4tp_49f35bd1b995105c53bc_v178mspec.so: undefined symbol: _ZN3c104cuda29c10_cuda_check_implementationEiPKcS2_ib
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/iter713_prebuilt_extension_runner.py", line 191, in <module>
+    main()
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/iter713_prebuilt_extension_runner.py", line 77, in main
+    control_extension = load_extension(control_path, extension_name)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/iter713_prebuilt_extension_runner.py", line 22, in load_extension
+    extension = importlib.util.module_from_spec(spec)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 813, in module_from_spec
+  File "<frozen importlib._bootstrap_external>", line 1293, in create_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+ImportError: /tmp/torch_ext_v4_tp/v4tp_49f35bd1b995105c53bc_v178mspec/v4tp_49f35bd1b995105c53bc_v178mspec.so: undefined symbol: _ZN3c104cuda29c10_cuda_check_implementationEiPKcS2_ib
+Traceback (most recent call last):
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/iter713_prebuilt_extension_runner.py", line 191, in <module>
+    main()
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/iter713_prebuilt_extension_runner.py", line 77, in main
+    control_extension = load_extension(control_path, extension_name)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/iter713_prebuilt_extension_runner.py", line 22, in load_extension
+    extension = importlib.util.module_from_spec(spec)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 813, in module_from_spec
+  File "<frozen importlib._bootstrap_external>", line 1293, in create_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+ImportError: /tmp/torch_ext_v4_tp/v4tp_49f35bd1b995105c53bc_v178mspec/v4tp_49f35bd1b995105c53bc_v178mspec.so: undefined symbol: _ZN3c104cuda29c10_cuda_check_implementationEiPKcS2_ib
+E0906 12:48:27.892000 266255 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 0 (pid: 266324) of binary: /home/xutingz/workspace/miniforge3/bin/python
+Traceback (most recent call last):
+  File "/home/xutingz/workspace/miniforge3/bin/torchrun", line 8, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+bench/iter713_prebuilt_extension_runner.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-09-06_12:48:27
+  host      : H20-GPU-06.cm.cluster
+  rank      : 1 (local_rank: 1)
+  exitcode  : 1 (pid: 266325)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[2]:
+  time      : 2026-09-06_12:48:27
+  host      : H20-GPU-06.cm.cluster
+  rank      : 2 (local_rank: 2)
+  exitcode  : 1 (pid: 266326)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[3]:
+  time      : 2026-09-06_12:48:27
+  host      : H20-GPU-06.cm.cluster
+  rank      : 3 (local_rank: 3)
+  exitcode  : 1 (pid: 266327)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-09-06_12:48:27
+  host      : H20-GPU-06.cm.cluster
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 266324)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
