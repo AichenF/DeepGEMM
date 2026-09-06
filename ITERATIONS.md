@@ -16371,3 +16371,19 @@ maximum rank latency of a full CUDA-Graph replay.
   passes in the megamoe container.  Rerun the second matching `route_gemm`
   launch next; no performance or correctness claim is made by this
   source-only iteration.
+
+## Iteration 709e — custom-only runner smoke finds missing weight canonicalizer
+
+- **Protocol:** executed the new runner on physical H20 GPU1 with SM90a-only
+  compilation settings and the unchanged TP4 M128 custom local profiler.  The
+  intended fixture still warms twice and performs one separately cold
+  profiler-range replay.
+- **Result:** **fixture failure before JIT kernel launch or cache clear.**
+  `normalize_mxfp4_weight_scales_` calls the second untimed Humming utility,
+  `process_mxfp4_w4a8_weight`; the new stub exposed only `quant_input`, so case
+  construction raised `AttributeError`.
+- **Decision:** no kernel conclusion.  Copy the already audited Torch
+  negative-zero-nibble canonicalizer from `v4_bench_env_runner.py` into the
+  custom-only runner, including its zero-scale-delta assertion, then repeat
+  the same smoke before NCU.
+- **Evidence:** `evidence/iter709e_custom_profile_weight_stub_failure.md`.
