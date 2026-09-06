@@ -17082,3 +17082,25 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `evidence/iter712d_unbounded_w2_pair_inline_asm_static_rejection.md` plus
   `bench/results/iter712d_unbounded_w2_pair_inline_asm_*`.
+
+## Iteration 713a — whole-extension RDC fails register-call contracts
+
+- **Scope:** compile-only feasibility probe using the exact generated
+  Iteration-711g single-translation-unit source with `-rdc=true`, followed by
+  an intended `nvcc -dlink`; no production source was changed and no CUDA
+  business kernel was launched.
+- **Result:** compilation stops before device link with 18 ptxas errors.  The
+  outlined W2 phase requires 195 registers and is called by eight TP4
+  M8/M16/M32/M64 entries capped at 64 registers.  TP8 communication callees
+  likewise require 134 registers for multicast push or 100 for NVLS pull,
+  while their callers are capped at 64.
+- **Qualification:** there is no corresponding TP4 M128 W2 diagnostic because
+  that specialization is deliberately unbounded.  Therefore this rejects a
+  drop-in RDC conversion of the all-shape extension, but does not yet decide
+  whether an M128-only RDC specialization changes W2 SASS.
+- **Decision:** reject whole-extension RDC before correctness/timing.  Perform
+  one generated-source M128-only static probe; require 32 W2 QGMMAs / about 16
+  waits before considering a production multi-translation-unit build.
+- **Evidence:** raw log
+  `bench/results/iter713a_rdc_single_tu_build_20260906.log` and
+  `evidence/iter713a_rdc_whole_extension_compile_rejection.md`.
