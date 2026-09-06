@@ -15660,3 +15660,35 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `evidence/iter684_w13_residual_tickets_neutral.md`; raw logs
   `bench/results/iter684_w13_residual_tickets_m128_{jit_correctness,resources}_20260906.log`
   and `bench/results/iter684_w13_residual_tickets_tp4_m128_cold_short_20260906.log`.
+
+## Iteration 685 — reject the 160-thread lean TMA producer transfer
+
+- **Hypothesis/change:** Transfer the multi-kernel GEMM producer/consumer
+  split into M128 single-launch without adopting the earlier 384-thread role
+  pipeline. A fifth warp exclusively issued compact two-stage weight/scale
+  TMA for W13 and W2 while the original four warps retained WGMMA math. The
+  launch used 546 160-thread CTAs at seven CTA/SM; activation and TP
+  communication kept only the first 128 threads active.
+- **Resource/correctness:** candidate SHA-256
+  `3d3a3edf1d234df6cda2d25a1fad203ce7759faa16393305bfa875a62d6acbfc`;
+  M128 split-K2/4 compiles at `REG56 STACK64 SHARED2048 LOCAL0`. Single-GPU
+  full-output validation passed at cosine `0.9999981035` and rel-L2
+  `0.0019475397`. TP4 also passed embedded-allreduce correctness on every
+  rank (minimum cosine `0.9999936035`, maximum rel-L2 `0.0035767262`, finite,
+  `allreduce_ok=true`).
+- **Cold-L2 TP4 screen:** GPUs 0/5/6/7, random seed 20260902, replay-paired
+  CUDA Graphs, 2x8 samples after two warmups, and a separate excluded 256 MiB
+  cache clear before every arm. Multi/candidate min/median/max are
+  `0.302144/0.305280/0.331968 ms` and
+  `0.378080/0.381872/0.396608 ms`. Candidate/control is `1.250891`, so the
+  candidate is 25.09% slower. Against the adjacent 0.349616-ms selected
+  single-kernel anchor, this transfer itself regresses about 9.23%.
+- **Decision:** Reject and restore exact Iteration-665 production. Adding the
+  standalone-style producer warp inside the persistent CTA loses residency,
+  doubles the stack frame, and adds stage-empty handshakes; it does not import
+  the fresh-kernel scheduling advantage. Continue only with transfers that
+  preserve the 128-thread/9-CTA resident contract.
+- **Evidence:** `evidence/iter685_lean_tma_producer_rejection.md`; raw logs
+  `bench/results/iter685_lean_tma_producer_tp4_m128_cold_screen_20260906.log`
+  (harness mismatch, no timing) and
+  `bench/results/iter685b_lean_tma_producer_tp4_m128_cold_screen_20260906.log`.
