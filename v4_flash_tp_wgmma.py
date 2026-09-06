@@ -3600,11 +3600,10 @@ __device__ __forceinline__ void route_gemm_task(
         uint2 next_fp8_1[kActiveWgmmaGroups];
         uint2 current_fp8_0[kActiveWgmmaGroups];
         uint2 current_fp8_1[kActiveWgmmaGroups];
-        if constexpr (!IsW13 && kSingleLaunchW2SharedDecoded) {
-            static_assert(kActiveWgmmaGroups == 2 && !F16WgmmaAccum
-                          && IndependentTaskWGs == 1 && !DualWgW13
-                          && WgmmaHalf == -1,
-                          "shared-decoded W2 requires flat FP32 N128 tasks");
+        if constexpr (!IsW13 && kSingleLaunchW2SharedDecoded
+                      && kActiveWgmmaGroups == 2 && !F16WgmmaAccum
+                      && IndependentTaskWGs == 1 && !DualWgW13
+                      && WgmmaHalf == -1) {
             #pragma unroll
             for (int k_step = 0; k_step < kBlockK / 32; ++k_step) {
                 const uint32_t stage_base =
