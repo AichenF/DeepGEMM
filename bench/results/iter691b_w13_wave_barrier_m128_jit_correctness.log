@@ -1,0 +1,10 @@
+/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.3.0) or chardet (7.4.3)/charset_normalizer (3.4.1) doesn't match a supported version!
+  warnings.warn(
+Traceback (most recent call last):
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 156, in <module>
+    main()
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 151, in main
+    install_benchmark_weight_preprocess()
+  File "/home/xutingz/fac/v4_bench_env_runner.py", line 119, in install_benchmark_weight_preprocess
+    from humming import ops as humming_ops
+ModuleNotFoundError: No module named 'humming'

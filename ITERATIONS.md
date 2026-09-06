@@ -15846,3 +15846,36 @@ maximum rank latency of a full CUDA-Graph replay.
   raw logs
   `bench/results/iter690_bound10_w2_shared_lut_s2r_m128_jit_correctness_resources_20260906.log`
   and `bench/results/iter690_bound10_w2_shared_lut_s2r_tp4_m128_cold_short_20260906.log`.
+
+## Iteration 691 — complete-wave W13 barriers regress 12.60%
+
+- **Multi-kernel transfer tested:** Preserve the selected 702 resident CTAs,
+  N128/split-K2 task body, complete-wave rotation 13 and residual mapping,
+  but add one reusable packed whole-grid rendezvous between each of M128's
+  first five complete W13 task waves. This tests whether lockstep wave starts
+  can recover standalone launch issue/locality without changing arithmetic,
+  task ownership, W2, communication, or the one-business-kernel contract.
+- **Resource/correctness:** candidate SHA-256
+  `4cfd66777ab01c7b75d88f42491dfe2bab3db4fce74902183eed37c87202b42a`,
+  extension `v4tp_808f72d4f858e2e559ec_v178mspec`, remains
+  `REG56 STACK32 SHARED2048 LOCAL0`. Five physical-GPU0 M128 random-route
+  runs are bitwise equal to the independent same-source multi local output
+  (`cosine=1`, `rel_l2=0`, finite, 1,992 padded rows). The phase-1 packed word
+  advances to 10,240 versus production 2,048, proving all four extra barrier
+  generations executed.
+- **Cold-L2 local gate:** Every launch received its own separate excluded
+  256 MiB clear. Candidate W13 min/median/max is
+  `231.424/235.328/235.488 us`; four-phase sum is
+  `347.264/351.040/351.680 us`. Four adjacent exact-production anchors give
+  W13 `208.768/208.992/210.336 us` and sum
+  `325.472/325.952/327.488 us`. The candidate regresses median W13 12.60%
+  and total local phase time 7.70% with unchanged resources.
+- **Decision:** Reject before distributed TP4 timing and restore exact
+  selected SHA-256
+  `7ac22134c953d17c8dea9310011818ca483b5b8a96b06324381abd2c8c9c3f45`.
+  Forced wave synchronization couples stragglers and costs far more than any
+  ordering benefit. No profitable launch-scheduling snippet remains to copy
+  from multi; a material win needs a different coarse fused dataflow.
+- **Evidence:** `evidence/iter691_w13_complete_wave_barrier_rejection.md`;
+  raw logs `bench/results/iter691{,b,c,d,e,f}_*.log`. The first two records
+  are launcher-only import/PYTHONPATH failures and contain no CUDA result.
