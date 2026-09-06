@@ -16998,3 +16998,22 @@ maximum rank latency of a full CUDA-Graph replay.
   and runtime-admissible residency before correctness/timing.
 - **Evidence:**
   `evidence/iter711h_unbounded_w2_operand_isolation_composition.md`.
+
+## Iteration 711i — natural-register operand isolation still serializes W2
+
+- **Scope:** compile-only H20 GPU1 audit of unbounded TP4 M128 with W2
+  predecode, paired issue, one-value shared spill and compiler operand fences;
+  no business kernel launched.
+- **Build/resource:** extension
+  `v4tp_3c4b796095f7e5cdca34_v178mspec`; M128/split-K2 main is
+  `REG80 STACK32 SHARED2048 LOCAL0` and its global symbol is 72,192 bytes.
+- **SASS result:** the exact main entry still has 32 W2 QGMMAs / 32
+  dependency barriers.  Exact SASS SHA256 is
+  `7b021bb546c86fc4bf21138595eb0f86be9fc75978a85587c76909fedab6a211`.
+- **Decision:** **reject before correctness/timing.**  Shared spilling and
+  compiler operand fences do not recover standalone's 32/16 schedule even
+  with natural register allocation.  Close this call/source-lifetime family
+  and inspect the faster multi-kernel implementation for reusable coarse
+  W13/W2 ownership, staging and overlap ideas instead.
+- **Evidence:**
+  `evidence/iter711i_unbounded_w2_operand_isolation_static_rejection.md`.
