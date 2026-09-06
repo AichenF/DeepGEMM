@@ -15551,3 +15551,31 @@ maximum rank latency of a full CUDA-Graph replay.
   logs `bench/results/iter680_w13_quiesce16k_m128_jit_correctness_20260906.log`
   and
   `bench/results/iter680_w13_quiesce16k_tp4_m128_cold_short_20260906.log`.
+
+## Iteration 681 — reject whole-loop W13 residual-wave rotation
+
+- **Hypothesis/change:** Continue the selected M128 W13 complete-wave shift
+  of 13 into residual wave five with shift 65.  The measured 702-CTA SM map
+  improves from 5--7 residual tasks/SM at shift 0 to 6--7 at shift 65 while
+  preserving the same optimal maximum of seven.  This first implementation
+  rewrote the whole W13 wave loop so every CTA could address the residual.
+- **Resource/correctness:** Candidate SHA-256
+  `6e147f399b2f4cd0196ad06be383f54474d73c929abe0b84f24ff29e19ad4d30`;
+  extension `v4tp_794915f3aec0a3e55110_v178mspec`.  M128 split-K2/4 remains
+  `REG56 STACK32 SHARED2048 LOCAL0`.  Random-route M128 is bitwise equal to
+  the independent local reference (cosine 1, relative L2 0, finite), with
+  1,992 padded rows and generation wrap exactly `[0,0,0,0]`.
+- **Cold-L2 TP4 gate:** GPUs 0,5,6,7; random seed 20260902; replay-level
+  pairing; 2x20 samples after four warmups; separate excluded 256 MiB clear
+  before every replay.  Multi/candidate medians are
+  `0.305328/0.364112 ms`; min/max are `0.303680/0.361120 ms` and
+  `0.361376/0.400096 ms`, respectively. Candidate/control is `1.192527`,
+  or 19.25% slower. All-rank correctness/allreduce checks pass.
+- **Decision:** Reject this implementation and restore exact Iteration-665
+  production.  It added task-wave arithmetic and a validity branch to all
+  five complete waves, so the endpoint cannot isolate residual ownership.
+  Keep only the hypothesis for a separate-tail implementation whose complete
+  wave hot path remains unchanged.
+- **Evidence:** `evidence/iter681_w13_residual_rotate65_whole_loop_rejection.md`;
+  raw logs `bench/results/iter681_w13_residual_rotate65_m128_{jit_correctness,resources}_20260906.log`
+  and `bench/results/iter681_w13_residual_rotate65_tp4_m128_cold_short_20260906.log`.
