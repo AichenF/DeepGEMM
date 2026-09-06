@@ -17547,3 +17547,22 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter714d_unique_rdc_tp4_m128_cold_smoke_20260906.log` and
   `evidence/iter714d_unique_rdc_runtime_rejection.md`.
+## Iteration 715a — compose a unique device-LTO boundary
+
+- **Hypothesis:** the unique RDC build proves that a separately optimized W2
+  phase can recover standalone's 32-QGMMA/16-DEPBAR schedule, but a retained
+  device call inflates the fused M128 entry to 195 registers and 112 bytes of
+  stack per thread.  Enable CUDA device LTO at both compile and device-link
+  stages so nvlink can inline/specialize that independently optimized IR and
+  potentially retain paired W2 issue without the device-call resource cost.
+- **Change:** add `bench/iter715_make_unique_dlto.py`.  It composes from the
+  exact Iteration-714 unique RDC inputs, assigns fresh host/CUDA symbols for
+  unambiguous same-process attribution, and adds `-dlto` to compile and
+  device-link commands.  Production CUDA/Python source, task order, math,
+  synchronization, communication and ABI are unchanged.
+- **Pre-CUDA gate:** this is a committed build-recipe checkpoint only.  No
+  JIT, business-kernel launch, correctness result or latency is claimed.
+- **Next:** require the unique TP4 M128 split-K2 entry to materially improve
+  on `REG195/STACK112/LOCAL0` and retain approximately 32 W2 QGMMAs / 16
+  dependency barriers.  Reject before launch if either static gate fails.
+- **Evidence:** `evidence/iter715a_device_lto_composition.md`.
