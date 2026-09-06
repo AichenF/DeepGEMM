@@ -17775,3 +17775,19 @@ maximum rank latency of a full CUDA-Graph replay.
   operations, and reduce the exact 32-QGMMA W2 interval to at most 20
   DEPBARs (target 16), or reject before launch.
 - **Evidence:** `evidence/iter719a_late_wgmma_arrive_composition.md`.
+
+## Iteration 719b — late arrive is byte-identical after ptxas lowering
+
+- **Build/resources:** fresh JIT succeeds; TP4 M128 split-K2/4 remain
+  REG56/STACK32/SHARED2048/LOCAL0.
+- **Conclusive SASS control:** the complete 9,237-line split-K2 entry has the
+  same SHA256 as Iteration 718 and passes bytewise `cmp`.  Its exact W2
+  interval remains 32 FP16 QGMMAs / 32 DEPBARs / 32 arrives / zero
+  `STL`/`LDL`; ptxas canonicalized both source fence placements to the same
+  machine schedule.
+- **Decision:** **REJECT before CUDA business-kernel launch.**  This closes
+  same-frame W2 pairing, including reduced FP16 destinations and correct
+  late hardware-fence placement.  Continue only with a coarse dataflow or
+  phase-ownership change.
+- **Evidence:** `evidence/iter719b_late_wgmma_arrive_static_rejection.md` and
+  `bench/results/iter719a_f16_pair_late_arrive_static_20260906.log`.

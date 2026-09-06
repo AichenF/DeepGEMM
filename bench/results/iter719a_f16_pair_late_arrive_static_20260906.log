@@ -1,0 +1,41 @@
+Iteration 719a/719b late WGMMA arrive static gate
+date: 2026-09-06
+container: megamoe on H20-GPU-06
+toolchain: CUDA 12.8
+commit: 9fa199709800c79d4d862d03f014ded8ffcf152e
+CUDA business-kernel launches: 0
+
+candidate environment:
+V4_SINGLE_LAUNCH_TP4=1
+V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM=1
+V4_SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM=1
+V4_SINGLE_LAUNCH_W2_F16_PAIR_LATE_ARRIVE=1
+
+extension:
+/tmp/torch_ext_v4_tp/v4tp_9f3fe3dbd5a01abf7dd1_v178mspec/v4tp_9f3fe3dbd5a01abf7dd1_v178mspec.so
+
+artifact SHA256:
+348cf31f7bbe091feaa4f1e0e0099457b55e217498ad3e202c58b0e112340168  cuda.cu
+9a85bd54bdd88442cc184af828c0b96de25dd0d5a0ad6c9a997dd0d51435df47  extension
+4653cf270f98aaec04d7ae2e837058b84786d25b21a736eacd7fbbe3ff1de0e9  JIT log
+e77582b7c48d87f705755178543307c63d1cec4199f5b93220d95058c9f9938a  M128 split-K2 SASS slice
+
+cuobjdump --dump-resource-usage selected entries:
+M128 split-K2: REG:56 STACK:32 SHARED:2048 LOCAL:0 CONSTANT[0]:1361
+M128 split-K4: REG:56 STACK:32 SHARED:2048 LOCAL:0 CONSTANT[0]:1361
+
+exact M128 split-K2 W2 interval (SASS slice lines 2200-4420):
+F16_QGMMA: 32
+DEPBAR: 32
+WARPGROUP.ARRIVE: 32
+STL: 0
+LDL: 0
+
+comparison with Iteration 718 early-arrive candidate:
+early SASS SHA256: e77582b7c48d87f705755178543307c63d1cec4199f5b93220d95058c9f9938a
+late  SASS SHA256: e77582b7c48d87f705755178543307c63d1cec4199f5b93220d95058c9f9938a
+bytewise cmp exit: 0
+
+decision:
+REJECT before CUDA launch; exact SASS is byte-identical and the 32-DEPBAR
+result fails the <=20 schedule gate.
