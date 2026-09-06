@@ -337,15 +337,6 @@ def main() -> None:
                     "single_launch_w2_producer_atomic_combine": (
                         kernel.SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
                     ),
-                    "single_launch_w2_f16_wgmma_accum": (
-                        kernel.SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM
-                    ),
-                    "single_launch_w2_f16_pair_inline_asm": (
-                        kernel.SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM
-                    ),
-                    "single_launch_w2_f16_pair_late_arrive": (
-                        kernel.SINGLE_LAUNCH_W2_F16_PAIR_LATE_ARRIVE
-                    ),
                     "single_launch_cooperative_grid": (
                         kernel.SINGLE_LAUNCH_COOPERATIVE_GRID
                     ),

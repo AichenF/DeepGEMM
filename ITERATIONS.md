@@ -17791,3 +17791,15 @@ maximum rank latency of a full CUDA-Graph replay.
   phase-ownership change.
 - **Evidence:** `evidence/iter719b_late_wgmma_arrive_static_rejection.md` and
   `bench/results/iter719a_f16_pair_late_arrive_static_20260906.log`.
+
+## Iteration 720 — remove both rejected FP16-pair source paths
+
+- **Cleanup:** remove the Iteration-718 paired-inline and Iteration-719
+  late-arrive switches, validation, template plumbing, PTX body, JIT identity
+  fields and benchmark metadata.  Retain the independently qualified plain
+  FP16 W2-accumulator option.
+- **Verification:** Python syntax passes and the kernel/benchmark SHA256 values
+  exactly return to the pre-probe production hashes `30e6c402...fdbdf` and
+  `16bb9e09...01bb`.  No JIT or CUDA launch is required for this exact source
+  restoration.
+- **Evidence:** `evidence/iter720_remove_rejected_f16_pair_probes.md`.
