@@ -16030,3 +16030,19 @@ maximum rank latency of a full CUDA-Graph replay.
   result, numerical comparison, or timing occurred.
 - **Evidence:** `evidence/iter697_w2_f16_accum_compile_failure.md`; raw log
   `bench/results/iter697_w2_f16_accum_m128_correctness.log`.
+
+## Iteration 698 — Repair packed-FP16 accumulator dependency fences
+
+- **Change:** redirect all three compile-time FP16 branches around WGMMA from
+  DeepGEMM's float-only `ptx::warpgroup_fence_operand` wrapper to the
+  already-included CuTe overload
+  `cute::warpgroup_fence_operand(uint32_t&)`.  FP32 branches retain the exact
+  existing DeepGEMM helper; WGMMA issue/commit/wait ordering and all dataflow
+  are unchanged.
+- **Static result:** Python compilation passes.  Repaired candidate source
+  SHA-256 is
+  `fc6cc41d86d6e77c0f4d5d54efc2dace24e457115d94e32e4de0f678387da79f`.
+- **Qualification:** no CUDA launch, numerical result, resource count or
+  timing is claimed by this source repair.  Retry the same fresh M128
+  resource/correctness gate.
+- **Evidence:** `evidence/iter698_w2_f16_accum_fence_repair.md`.

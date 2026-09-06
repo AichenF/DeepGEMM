@@ -3268,7 +3268,7 @@ __device__ __forceinline__ void route_gemm_task(
                 if constexpr (F16WgmmaAccum) {
                     #pragma unroll
                     for (int value = 0; value < 2; ++value)
-                        ptx::warpgroup_fence_operand(
+                        cute::warpgroup_fence_operand(
                             tile_f16[group][value]);
                 } else {
                     #pragma unroll
@@ -3491,7 +3491,7 @@ __device__ __forceinline__ void route_gemm_task(
                     if constexpr (F16WgmmaAccum) {
                         #pragma unroll
                         for (int value = 0; value < 2; ++value)
-                            ptx::warpgroup_fence_operand(
+                            cute::warpgroup_fence_operand(
                                 tile_f16[group][value]);
                     } else {
                         #pragma unroll
@@ -3510,7 +3510,7 @@ __device__ __forceinline__ void route_gemm_task(
                 if constexpr (F16WgmmaAccum) {
                     #pragma unroll
                     for (int value = 0; value < 2; ++value)
-                        ptx::warpgroup_fence_operand(
+                        cute::warpgroup_fence_operand(
                             tile_f16[group][value]);
                 } else {
                     #pragma unroll
