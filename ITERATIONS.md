@@ -16887,3 +16887,22 @@ maximum rank latency of a full CUDA-Graph replay.
   standalone W2 control; if it also serializes, test an occupancy-derived
   fused M128 entry without an explicit minimum-block launch contract.
 - **Evidence:** `evidence/iter711b_fused_bound8_selected_static_control.md`.
+
+## Iteration 711c — standalone bound-8 retains paired W2 issue
+
+- **Question/method:** compile unchanged source with
+  `V4_MIN_BLOCKS_PER_SM=8`, applying `__launch_bounds__(128,8)` to standalone
+  route GEMMs.  H20 GPU1 performed JIT/SASS inspection only.
+- **Build/resource:** extension
+  `v4tp_30df862a87d9edcc2371_v178mspec`; standalone W2 is
+  `REG64 STACK0 SHARED2048 LOCAL0`.
+- **SASS result:** exact standalone W2 retains 32 QGMMAs / 16 dependency
+  barriers.  Exact SASS SHA256 is
+  `991702fea4bfe729295bee7b01c3d008e0259a721539dcdb97ae4e6aacdd5ebc`.
+- **Conclusion:** explicit launch bounds are not inherently causal; the
+  standalone cliff is specifically between the 64-register/eight-CTA and
+  56-register/nine-CTA contracts.  Because fused W2 is still 1:1 at 64 regs,
+  next compile fused M128 without minimum residency, inspect its natural
+  resources/SASS, and derive the grid from actual occupancy only if 2:1 is
+  restored.
+- **Evidence:** `evidence/iter711c_standalone_w2_bound8_static_control.md`.
