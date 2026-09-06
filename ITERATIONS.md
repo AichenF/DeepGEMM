@@ -17063,3 +17063,22 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Qualification:** exact restoration only; no JIT, CUDA launch,
   correctness or performance result.
 - **Evidence:** `evidence/iter712c_restore_after_maxnreg_rejection.md`.
+
+## Iteration 712d — natural-register paired inline W2 remains 1:1
+
+- **Scope:** compile-only H20 GPU1 audit of unbounded TP4 M128 with the
+  existing W2 predecode/pair/shared-spill/operand-fence chain plus its
+  two-QGMMA inline-asm issue block; no business kernel launch.
+- **Build/resource:** extension
+  `v4tp_cac6ed3c5ead6db18c24_v178mspec`; main is
+  `REG80 STACK32 SHARED2048 LOCAL0`.
+- **SASS result:** exact main has 32 W2 QGMMAs / 32 dependency barriers and
+  SHA256 `7b021bb5...6a211`, byte-identical to Iteration 711i's ordinary CUTE
+  issue form.
+- **Decision:** reject before correctness/timing.  Ptxas canonicalizes both
+  forms to the same serialized schedule, closing the in-translation-unit
+  fence/inline-asm family.  A relocatable separately compiled W2 callee is
+  the remaining compiler-isolation test.
+- **Evidence:**
+  `evidence/iter712d_unbounded_w2_pair_inline_asm_static_rejection.md` plus
+  `bench/results/iter712d_unbounded_w2_pair_inline_asm_*`.
