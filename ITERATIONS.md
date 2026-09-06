@@ -17851,3 +17851,23 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `evidence/iter724a_terminal_noreturn_probe.md`,
   `evidence/iter724b_terminal_noreturn_probe_result.md`, and
   `bench/results/iter724b_noreturn_device_probe_20260906.{ptx,sass}`.
+
+## Iteration 724c–f — terminal W2 removes stack but remains 1:1
+
+- **Composition:** add a default-off, TP4-M128-only whole-W2 terminal callee
+  after the normal route/W13/activation phases.  It is a compile/SASS-only
+  specialization ending in device `EXIT`; collective and cleanup semantics
+  are intentionally absent, so CUDA business launch is forbidden.
+- **Resources/control flow:** fresh JIT succeeds.  M128 split-K2/4 are
+  REG64/STACK0/SHARED2048/LOCAL0, and exact W2 SASS has two `EXIT` paths with
+  no `RET`, proving the no-return ABI removed the prior STACK48 call frame.
+- **Static result:** the isolated W2 interval still contains exactly 32
+  QGMMAs and 32 dependency waits, plus zero `STL`/`LDL`.  Its SHA256 is
+  `8ff5b16dc2b29e42e301adacf8db1052901d0bb2e67bd2b77c4b7c196ef389e2`.
+- **Decision:** **REJECT before CUDA business-kernel launch** and restore
+  production source exactly.  Eliminating return continuation/state is not
+  sufficient to reproduce standalone W2's 32/16 schedule, so moving k6 and
+  TP communication into this tail has no justified upside.
+- **Evidence:** `evidence/iter724c_w2_terminal_noreturn_static_probe.md`,
+  `evidence/iter724f_w2_terminal_noreturn_static_rejection.md`, and
+  `bench/results/iter724{d,e}_w2_terminal_noreturn*20260906*`.

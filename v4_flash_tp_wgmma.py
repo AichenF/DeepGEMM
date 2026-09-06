@@ -452,12 +452,6 @@ SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI = (
 SINGLE_LAUNCH_W2_PHASE_NOINLINE = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PHASE_NOINLINE", "0") == "1"
 )
-SINGLE_LAUNCH_W2_TERMINAL_NORETURN_PROBE = (
-    os.environ.get(
-        "V4_SINGLE_LAUNCH_W2_TERMINAL_NORETURN_PROBE", "0"
-    )
-    == "1"
-)
 SINGLE_LAUNCH_W2_COMPACT_TASK_CALL = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_COMPACT_TASK_CALL", "0") == "1"
 )
@@ -1480,61 +1474,6 @@ if SINGLE_LAUNCH_W2_PHASE_NOINLINE and (
         "V4_SINGLE_LAUNCH_W2_PHASE_NOINLINE requires the isolated "
         "WOUT128 two-stage schedule-0 route-output path"
     )
-if SINGLE_LAUNCH_W2_TERMINAL_NORETURN_PROBE and (
-    not SINGLE_LAUNCH_TP4
-    or SINGLE_LAUNCH_SCHEDULE != 0
-    or WOUT != 128
-    or not W2_ROUTE_OUTPUT
-    or W2_COALESCED_STORE
-    or not SINGLE_LAUNCH_W13_PHASE_NOINLINE
-    or not SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
-    or not SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM
-    or SINGLE_LAUNCH_M128_BOUND9
-    or SINGLE_LAUNCH_M128_UNBOUNDED
-    or SINGLE_LAUNCH_MIN_BLOCKS != 8
-    or SINGLE_LAUNCH_CTAS_PER_SM != 8
-    or SINGLE_LAUNCH_W13_WAVE_ROTATE != 0
-    or SINGLE_LAUNCH_W2_WAVE_ROTATE != 0
-    or not SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS
-    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
-    or SINGLE_LAUNCH_W2_COMPACT_TASK_CALL
-    or SINGLE_LAUNCH_NOINLINE_GEMM
-    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
-    or SINGLE_LAUNCH_W2_PERSISTENT_STATE
-    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
-    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
-    or SINGLE_LAUNCH_TAIL_OVERLAP
-    or SINGLE_LAUNCH_TAIL_ACT_ONLY
-    or SINGLE_LAUNCH_GROUPED_W13_ACT
-    or SINGLE_LAUNCH_ACT_W2_COHORT
-    or SINGLE_LAUNCH_W13_COMPLETION_ACT
-    or SINGLE_LAUNCH_W13_N64_TAIL
-    or SINGLE_LAUNCH_W2_N64_TAIL
-    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
-    or SINGLE_LAUNCH_CLUSTER_W13_ACT
-    or SINGLE_LAUNCH_DUAL_WG_PHASES
-    or SINGLE_LAUNCH_BALANCED_WORKERS
-    or SINGLE_LAUNCH_BALANCED_W2_WORKERS
-    or SINGLE_LAUNCH_W2_UNROLL2_BOUND9
-    or SINGLE_LAUNCH_W2_CHUNK_MAJOR
-    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
-    or SINGLE_LAUNCH_W2_CHUNK_AR_POST
-    or SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
-    or SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
-    or SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM
-    or SINGLE_LAUNCH_W2_PREDECODE_S2R
-    or SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS
-    or SINGLE_LAUNCH_W2_PAIR_SPILL_ONE
-    or SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE
-    or SINGLE_LAUNCH_W2_PAIR_INLINE_ASM
-    or SINGLE_LAUNCH_W2_PAIR_WARP_SYNC
-    or not COMPACT_INTERLEAVED_SCALE
-    or WEIGHT_STAGES != 2
-):
-    raise ValueError(
-        "V4_SINGLE_LAUNCH_W2_TERMINAL_NORETURN_PROBE requires the "
-        "selected TP4 M128 compact-W13 bound-8 path with rotations off"
-    )
 if SINGLE_LAUNCH_W2_COMPACT_TASK_CALL and (
     SINGLE_LAUNCH_SCHEDULE != 0
     or WOUT != 128
@@ -2242,8 +2181,6 @@ static constexpr bool kSingleLaunchW13PhaseCompactAbi =
     K_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI;
 static constexpr bool kSingleLaunchW2PhaseNoInline =
     K_SINGLE_LAUNCH_W2_PHASE_NOINLINE;
-static constexpr bool kSingleLaunchW2TerminalNoreturnProbe =
-    K_SINGLE_LAUNCH_W2_TERMINAL_NORETURN_PROBE;
 static constexpr bool kSingleLaunchW2CompactTaskCall =
     K_SINGLE_LAUNCH_W2_COMPACT_TASK_CALL;
 static constexpr bool kSingleLaunchRouteDynamicSmem =
@@ -4608,45 +4545,6 @@ __device__ __noinline__ void single_launch_w2_gemm_phase(
             max_routes, 0, task);
         __syncthreads();
     }
-}
-
-// Compile/SASS-only terminal ABI probe.  Every thread exits the business
-// entry after its CTA completes the ordinary W2 grid-stride loop, so this
-// specialization must never be launched.  If `.noreturn` restores
-// standalone W2's two-QGMMA issue depth, the real follow-up will move the
-// ordered k6 collective and graph-generation cleanup into this tail before
-// enabling any runtime path.
-template <bool AssumeValidMblock>
-[[noreturn]] __device__ __noinline__ void
-single_launch_w2_gemm_phase_terminal_probe(
-        const CUtensorMap* tma_weight,
-        const CUtensorMap* tma_weight_scale,
-        const uint8_t* __restrict__ weight,
-        const uint8_t* __restrict__ weight_scale,
-        const float* __restrict__ weight_global_scale,
-        const uint8_t* __restrict__ activation,
-        const float* __restrict__ activation_scale,
-        const int32_t* __restrict__ sorted_ids,
-        const int32_t* __restrict__ expert_ids,
-        const int32_t* __restrict__ num_tokens_padded,
-        const float* __restrict__ topk_weights,
-        __nv_bfloat16* __restrict__ output,
-        const uint2* __restrict__ global_lut,
-        int max_routes, int cta, int ctas, int tasks) {
-    for (int task = cta; task < tasks; task += ctas) {
-        route_gemm_task<
-            512, 4096, 1, false, 0, false, false, false, -1, false, 0,
-            AssumeValidMblock>(
-            tma_weight, tma_weight_scale,
-            weight, weight_scale, weight_global_scale,
-            activation, activation_scale,
-            sorted_ids, expert_ids, num_tokens_padded, topk_weights,
-            reinterpret_cast<float*>(output), global_lut, nullptr,
-            max_routes, 0, task);
-        __syncthreads();
-    }
-    asm volatile("exit;" : : : "memory");
-    __builtin_unreachable();
 }
 
 // Keep the selected standalone launch as a thin wrapper around the task body.
@@ -9253,17 +9151,7 @@ void tp4_megamoe_single_launch_kernel(
         }
 #endif
 
-        if constexpr (kSingleLaunchW2TerminalNoreturnProbe
-                      && Tokens == 128) {
-            const int w2_tasks = num_mblocks * kW2NTiles;
-            single_launch_w2_gemm_phase_terminal_probe<
-                kSingleLaunchAssumeValidGemmTasks>(
-                &w2_tma_weight, &w2_tma_weight_scale,
-                w2, s2, g2, qactivation, activation_scale,
-                sorted_ids, expert_ids, num_tokens_padded,
-                topk_weights, down, lut, routes,
-                cta, ctas, w2_tasks);
-        } else if constexpr (kSingleLaunchActW2Cohort) {
+        if constexpr (kSingleLaunchActW2Cohort) {
             constexpr int kCohortCtas = 16;
             constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
             constexpr int kActivationTasksPerMblock =
@@ -12545,7 +12433,6 @@ _EXTENSION_CONFIG = (
           f"slw13pn{int(SINGLE_LAUNCH_W13_PHASE_NOINLINE)}_"
           f"slw13pca{int(SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI)}_"
           f"slw2pn{int(SINGLE_LAUNCH_W2_PHASE_NOINLINE)}_"
-          f"slw2tnr{int(SINGLE_LAUNCH_W2_TERMINAL_NORETURN_PROBE)}_"
           f"slw2ctc{int(SINGLE_LAUNCH_W2_COMPACT_TASK_CALL)}_"
           f"slmb{SINGLE_LAUNCH_MIN_BLOCKS}_"
           f"sldr{int(SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM)}_"
@@ -12714,10 +12601,6 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_PHASE_NOINLINE="
             f"{int(SINGLE_LAUNCH_W2_PHASE_NOINLINE)}"
-        ),
-        (
-            "-DK_SINGLE_LAUNCH_W2_TERMINAL_NORETURN_PROBE="
-            f"{int(SINGLE_LAUNCH_W2_TERMINAL_NORETURN_PROBE)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W2_COMPACT_TASK_CALL="
