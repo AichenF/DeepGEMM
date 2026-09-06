@@ -17339,3 +17339,20 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Pre-CUDA gate:** runner Python compilation passes; production kernel and
   benchmark sources are unchanged.
 - **Evidence:** `evidence/iter713p_pin_kernel_ops_to_checkout.md`.
+
+## Iteration 713q — RDC runtime reaches the shared gate but control is invalid
+
+- **Scope:** TP4 M128 random-route smoke, CUDA Graph entry, independent
+  256 MiB cold-L2 policy configured, 2 outer x 10 replay timing request.
+- **Reached:** reconstructed SGLang, IPC and CAR setup complete, and the shared
+  correctness gate executes.  Timing does not start because correctness fails.
+- **Result:** RDC candidate is non-finite (`cosine=NaN`); the same module's
+  multi-kernel control is also invalid (`cosine=0.9210312561`,
+  `rel_l2=0.3975496704`, `max_abs=120832`, `allreduce_ok=false`).
+- **Decision:** do not attribute this failure or any speed to the RDC W2
+  composition while its unchanged control is broken.  Recover the exact prior
+  accepted SGLang/route-helper runtime first, requiring control correctness
+  before another candidate timing attempt.
+- **Evidence:**
+  `bench/results/iter713q_rdc_tp4_m128_cold_smoke_20260906.log` and
+  `evidence/iter713q_rdc_runtime_correctness_failure.md`.
