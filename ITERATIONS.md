@@ -16353,3 +16353,21 @@ maximum rank latency of a full CUDA-Graph replay.
   narrow local profile entry, then rerun the unchanged second-`route_gemm`
   filter and cold-L2 protocol.
 - **Evidence:** `evidence/iter709c_standalone_w2_ncu_quant_fixture_failure.md`.
+
+## Iteration 709d — add a custom-only NCU profiling environment
+
+- **Change:** add `bench/run_custom_profile_env.py`.  It installs the same
+  pinned SGLang overlay as the formal benchmark, exposes only the
+  `humming.ops.quant_input` symbol required by the legacy custom graph fixture,
+  and constructs its public input with an untimed Torch group-128 E4M3
+  quantizer (`scale=max(abs(x))/448`, FP32 contiguous scales).  It does not
+  emulate or execute a Humming GEMM.
+- **Scope:** profiler-fixture only.  Kernel source, MXFP4 weights and layout,
+  random top-k6 routes, GEMM launch order, CUDA-profiler range, and the
+  application-managed excluded 256 MiB cold-L2 clear are unchanged.  The
+  generated FP8 values/scales satisfy the same public ABI; values do not alter
+  the WGMMA control path being measured.
+- **Static gate:** `python3 -m py_compile bench/run_custom_profile_env.py`
+  passes in the megamoe container.  Rerun the second matching `route_gemm`
+  launch next; no performance or correctness claim is made by this
+  source-only iteration.
