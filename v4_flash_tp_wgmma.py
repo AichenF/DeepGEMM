@@ -337,6 +337,9 @@ FUSED_K6_NVLS_PULL_AR = (
     os.environ.get("V4_FUSED_K6_NVLS_PULL_AR", "0") == "1"
 )
 SINGLE_LAUNCH_TP4 = os.environ.get("V4_SINGLE_LAUNCH_TP4", "0") == "1"
+SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM", "0") == "1"
+)
 # Selected single-launch production bundle.  The historical environment name
 # is retained because compact W13 was the first bundled component, but the
 # switch now covers every independently validated fast path selected for the
@@ -1732,6 +1735,24 @@ if SINGLE_LAUNCH_W2_PERSISTENT_STATE and (
         "V4_SINGLE_LAUNCH_W2_PERSISTENT_STATE requires the isolated "
         "inline WOUT128 two-stage schedule-0 W2 path"
     )
+if SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM and (
+    not SINGLE_LAUNCH_TP4
+    or SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_78CTA_8WG
+    or SINGLE_LAUNCH_156CTA_4WG
+    or SINGLE_LAUNCH_W2_N64_TAIL
+    or SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+    or SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+    or W2_COALESCED_STORE
+    or WOUT != 128
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM requires the isolated flat "
+        "inline WOUT128 TP4 schedule-0 W2 path"
+    )
 MC_PULL_BLOCKS = int(os.environ.get("V4_MC_PULL_BLOCKS", "0"))
 MC_PULL_UNROLL = int(os.environ.get("V4_MC_PULL_UNROLL", "0"))
 if MC_PULL_BLOCKS < 0:
@@ -1823,6 +1844,7 @@ _CUDA = r"""
 #include <type_traits>
 #include <cuda.h>
 #include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <cuda_fp8.h>
 #include <cooperative_groups.h>
 #include <cub/block/block_scan.cuh>
@@ -1975,6 +1997,8 @@ static constexpr int kSingleLaunchW2BulkReduceRoutes =
     K_SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES;
 static constexpr bool kSingleLaunchW2ProducerAtomicCombine =
     K_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE;
+static constexpr bool kSingleLaunchW2F16WgmmaAccum =
+    K_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -2477,7 +2501,8 @@ template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool PersistentState = false, int WgmmaHalf = -1,
           bool SharedPartial = false, int ForcedKUnroll = 0,
           bool AssumeValidMblock = false, bool BulkReduceW2 = false,
-          bool AtomicCombineW2 = false, int IndependentTaskWGs = 1>
+          bool AtomicCombineW2 = false, int IndependentTaskWGs = 1,
+          bool F16WgmmaAccum = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -2571,6 +2596,10 @@ __device__ __forceinline__ void route_gemm_task(
                   "persistent task state supports one WGMMA warpgroup");
     static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 4
                   || IndependentTaskWGs == 8);
+    static_assert(!F16WgmmaAccum
+                  || (!IsW13 && !DualWgW13 && !PersistentState
+                      && WgmmaHalf == -1 && IndependentTaskWGs == 1),
+                  "F16 WGMMA accumulation probe supports flat W2 only");
     static_assert(IndependentTaskWGs == 1
                   || (!DualWgW13 && !PersistentState && !kHalfWgmma
                       && !PublishW2Progress
@@ -3217,7 +3246,8 @@ __device__ __forceinline__ void route_gemm_task(
             independent_wg_sync<IndependentTaskWGs>(independent_wg);
         }
 
-        float tile[kActiveWgmmaGroups][4] = {};
+        float tile_f32[kActiveWgmmaGroups][4] = {};
+        uint32_t tile_f16[kActiveWgmmaGroups][2] = {};
         uint32_t next_packed0[kActiveWgmmaGroups];
         uint32_t next_packed1[kActiveWgmmaGroups];
         uint2 next_weight_lut0[kActiveWgmmaGroups];
@@ -3235,9 +3265,17 @@ __device__ __forceinline__ void route_gemm_task(
                 activation_smem_addr + k_step * 32);
             #pragma unroll
             for (int group = 0; group < kActiveWgmmaGroups; ++group) {
-                #pragma unroll
-                for (int value = 0; value < 4; ++value)
-                    ptx::warpgroup_fence_operand(tile[group][value]);
+                if constexpr (F16WgmmaAccum) {
+                    #pragma unroll
+                    for (int value = 0; value < 2; ++value)
+                        ptx::warpgroup_fence_operand(
+                            tile_f16[group][value]);
+                } else {
+                    #pragma unroll
+                    for (int value = 0; value < 4; ++value)
+                        ptx::warpgroup_fence_operand(
+                            tile_f32[group][value]);
+                }
             }
             ptx::warpgroup_arrive();
             #pragma unroll
@@ -3431,20 +3469,36 @@ __device__ __forceinline__ void route_gemm_task(
                         }
                     }
                 }
-                cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
-                    fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
-                    activation_desc,
-                    tile[group][0], tile[group][1],
-                    tile[group][2], tile[group][3],
-                    cute::SM90::GMMA::ScaleOut::One);
+                if constexpr (F16WgmmaAccum) {
+                    cute::SM90::GMMA::MMA_64x8x32_F16E4M3E4M3_RS_TN<>::fma(
+                        fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
+                        activation_desc,
+                        tile_f16[group][0], tile_f16[group][1],
+                        cute::SM90::GMMA::ScaleOut::One);
+                } else {
+                    cute::SM90::GMMA::MMA_64x8x32_F32E4M3E4M3_RS_TN<>::fma(
+                        fp8_0.y, fp8_1.y, fp8_0.x, fp8_1.x,
+                        activation_desc,
+                        tile_f32[group][0], tile_f32[group][1],
+                        tile_f32[group][2], tile_f32[group][3],
+                        cute::SM90::GMMA::ScaleOut::One);
+                }
             }
             if constexpr (!kMergedWgmmaGroup) {
                 ptx::warpgroup_commit_batch();
                 #pragma unroll
                 for (int group = 0; group < kActiveWgmmaGroups; ++group) {
-                    #pragma unroll
-                    for (int value = 0; value < 4; ++value)
-                        ptx::warpgroup_fence_operand(tile[group][value]);
+                    if constexpr (F16WgmmaAccum) {
+                        #pragma unroll
+                        for (int value = 0; value < 2; ++value)
+                            ptx::warpgroup_fence_operand(
+                                tile_f16[group][value]);
+                    } else {
+                        #pragma unroll
+                        for (int value = 0; value < 4; ++value)
+                            ptx::warpgroup_fence_operand(
+                                tile_f32[group][value]);
+                    }
                 }
                 ptx::warpgroup_wait<0>();
             }
@@ -3453,9 +3507,17 @@ __device__ __forceinline__ void route_gemm_task(
             ptx::warpgroup_commit_batch();
             #pragma unroll
             for (int group = 0; group < kActiveWgmmaGroups; ++group) {
-                #pragma unroll
-                for (int value = 0; value < 4; ++value)
-                    ptx::warpgroup_fence_operand(tile[group][value]);
+                if constexpr (F16WgmmaAccum) {
+                    #pragma unroll
+                    for (int value = 0; value < 2; ++value)
+                        ptx::warpgroup_fence_operand(
+                            tile_f16[group][value]);
+                } else {
+                    #pragma unroll
+                    for (int value = 0; value < 4; ++value)
+                        ptx::warpgroup_fence_operand(
+                            tile_f32[group][value]);
+                }
             }
             ptx::warpgroup_wait<0>();
         }
@@ -3465,14 +3527,35 @@ __device__ __forceinline__ void route_gemm_task(
         }
         #pragma unroll
         for (int group = 0; group < kActiveWgmmaGroups; ++group) {
-            accum[group][0] +=
-                tile[group][0] * activation_scale_smem[column_base];
-            accum[group][1] +=
-                tile[group][1] * activation_scale_smem[column_base + 1];
-            accum[group][2] +=
-                tile[group][2] * activation_scale_smem[column_base];
-            accum[group][3] +=
-                tile[group][3] * activation_scale_smem[column_base + 1];
+            if constexpr (F16WgmmaAccum) {
+                const __half2 values01 =
+                    *reinterpret_cast<const __half2*>(&tile_f16[group][0]);
+                const __half2 values23 =
+                    *reinterpret_cast<const __half2*>(&tile_f16[group][1]);
+                const float2 float01 = __half22float2(values01);
+                const float2 float23 = __half22float2(values23);
+                accum[group][0] +=
+                    float01.x * activation_scale_smem[column_base];
+                accum[group][1] +=
+                    float01.y * activation_scale_smem[column_base + 1];
+                accum[group][2] +=
+                    float23.x * activation_scale_smem[column_base];
+                accum[group][3] +=
+                    float23.y * activation_scale_smem[column_base + 1];
+            } else {
+                accum[group][0] +=
+                    tile_f32[group][0]
+                    * activation_scale_smem[column_base];
+                accum[group][1] +=
+                    tile_f32[group][1]
+                    * activation_scale_smem[column_base + 1];
+                accum[group][2] +=
+                    tile_f32[group][2]
+                    * activation_scale_smem[column_base];
+                accum[group][3] +=
+                    tile_f32[group][3]
+                    * activation_scale_smem[column_base + 1];
+            }
         }
 
         if ((local_kt & 3) == 3 && local_kt + 1 < kKTilesPerSplit)
@@ -8784,7 +8867,8 @@ void tp4_megamoe_single_launch_kernel(
                             ? 2 : 0,
                         kSingleLaunchAssumeValidGemmTasks,
                         kSingleLaunchW2BulkReduceCombine,
-                        kSingleLaunchW2ProducerAtomicCombine>(
+                        kSingleLaunchW2ProducerAtomicCombine, 1,
+                        kSingleLaunchW2F16WgmmaAccum>(
                         &w2_tma_weight, &w2_tma_weight_scale,
                         w2, s2, g2, qactivation, activation_scale,
                         sorted_ids, expert_ids, num_tokens_padded,
@@ -11865,6 +11949,7 @@ _EXTENSION_CONFIG = (
           f"slw2brc{int(SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE)}_"
           f"slw2brr{SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES}_"
           f"slw2pac{int(SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE)}_"
+          f"slw2f16a{int(SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slagp{int(SINGLE_LAUNCH_ADAPTIVE_GRID_POLL)}_"
@@ -12095,6 +12180,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE="
             f"{int(SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM="
+            f"{int(SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="

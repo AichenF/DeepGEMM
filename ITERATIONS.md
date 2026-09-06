@@ -15984,3 +15984,27 @@ maximum rank latency of a full CUDA-Graph replay.
   schedule can change the generated kernel.
 - **Evidence:** `evidence/iter695_w2_k128_merged_noop_rejection.md`; raw logs
   `bench/results/iter695_w2_k128_merged_m128_{phase_abba,sass}.log`.
+
+## Iteration 696 — Isolate packed-FP16 WGMMA accumulators for single-launch W2
+
+- **Hypothesis/change:** add default-off
+  `V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM=1`.  Only the selected flat inline
+  TP4 single-launch W2 instantiation replaces each
+  `m64n8k32.f32.e4m3.e4m3` accumulator fragment (four FP32 registers) with
+  `m64n8k32.f16.e4m3.e4m3` (two packed FP16 registers).  After each K128
+  activation-scale group, the four packed results are promoted back to FP32;
+  the existing FP32 cross-group accumulation, BF16 route output, W13,
+  routing, communication, and independently instantiated multi-kernel
+  baseline remain unchanged.
+- **Isolation:** the flag is rejected outside the flat inline WOUT128 TP4
+  schedule-0 path and is a final `route_gemm_task` template argument, so the
+  same-source standalone/multi W2 instantiation remains the production FP32
+  WGMMA body even when the candidate is enabled.  The flag participates in
+  the JIT cache key and compile definitions.  Source SHA-256 is
+  `973ba670d1b64c3c27c4e97b5f8a138617b36a48a1409f60be488a9b418541d0`.
+- **Qualification:** Python syntax and whitespace checks pass.  No JIT,
+  device launch, numerical result, resource count, or timing is claimed yet.
+  Next gate is fresh SM90a JIT plus full routed-output comparison against the
+  unaffected same-source multi path; cold-L2 phase timing is allowed only if
+  the numerical error is acceptable.
+- **Evidence:** `evidence/iter696_w2_f16_accum_implementation.md`.
