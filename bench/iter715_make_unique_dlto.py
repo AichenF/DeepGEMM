@@ -77,6 +77,28 @@ def main() -> None:
     # Keep RDC so the retained phase boundary exists in NVVM IR, then let
     # nvlink decide whether to inline it into the one business entry.
     rewrite(build_file, " -rdc=true ", " -rdc=true -dlto ", 1)
+    ninja_text = build_file.read_text()
+    ninja_lines = ninja_text.splitlines(keepends=True)
+    cuda_flag_lines = [
+        index
+        for index, line in enumerate(ninja_lines)
+        if line.startswith("cuda_cflags = ")
+    ]
+    if len(cuda_flag_lines) != 1:
+        raise RuntimeError(
+            f"{build_file}: expected one cuda_cflags line, "
+            f"got {len(cuda_flag_lines)}"
+        )
+    cuda_flag_index = cuda_flag_lines[0]
+    cuda_flag_line = ninja_lines[cuda_flag_index]
+    if cuda_flag_line.count("code=sm_90a") != 2:
+        raise RuntimeError(
+            f"{build_file}: expected two sm_90a compile targets"
+        )
+    ninja_lines[cuda_flag_index] = cuda_flag_line.replace(
+        "code=sm_90a", "code=lto_90a"
+    )
+    build_file.write_text("".join(ninja_lines))
     rewrite(build_file, " -dlink -gencode=", " -dlink -dlto -gencode=", 1)
 
     print(

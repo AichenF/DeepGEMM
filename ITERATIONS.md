@@ -17581,3 +17581,18 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Qualification:** no NVCC compile, device link, CUDA launch, correctness
   result or timing occurred.  Commit this repair before the next attempt.
 - **Evidence:** `evidence/iter715b_device_lto_composer_fix.md`.
+
+## Iteration 715c — emit LTO IR at compile and SM90a at device link
+
+- **Failure:** the repaired composer ran, but NVCC stopped the CUDA compile
+  before ptxas/device link because `-dlto` conflicts with an explicit
+  compile-time `code=sm_90a` target.  Its diagnostic requires
+  `code=lto_90a` for stored LTO IR.
+- **Repair:** change only the two targets on the generated `cuda_cflags` line
+  from `sm_90a` to `lto_90a`; keep final `sm_90a` and `-dlto` on the device
+  link.  Strict line/count checks prevent silently editing the wrong rule.
+  Production sources and kernel behavior remain untouched.
+- **Qualification:** no ptxas result, device link, CUDA business-kernel
+  launch, correctness result or timing occurred.  Preserve the partial
+  Iteration-715b directory and retry from a fresh directory after commit.
+- **Evidence:** `evidence/iter715c_device_lto_target_fix.md`.
