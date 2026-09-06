@@ -16261,3 +16261,30 @@ maximum rank latency of a full CUDA-Graph replay.
   timing is claimed yet. Fresh M128 compile/resource/full-output correctness
   is the first gate; cold-L2 timing follows only if accepted.
 - **Evidence:** `evidence/iter706_w13_f16_accum_implementation.md`.
+
+## Iteration 707 — Reject W13 FP16 accumulation on M128 numerical accuracy
+
+- **Configuration:** candidate source
+  `37545fd28d36186241c2e1e678f561e0c3839ba4cd59a05c7dce8eaddcd3fb1e`,
+  extension `v4tp_e8d69416044af98025ab_v178mspec`, physical H20 GPU1,
+  M128 random routes/seed 20260902, W13 FP16 enabled and W2 FP16 disabled.
+  The full local route+W13+SwiGLU/requant+W2 path is compared to the
+  independently instantiated same-source FP32 multi path; TP communication
+  is disabled only for this arithmetic gate. One warm launch precedes a
+  launch after a separate excluded 256 MiB L2 clear.
+- **Correctness:** output is finite and packed barrier generations wrap to
+  `[0,0,0,0]`, but complete `down` cosine falls to
+  `0.9999705045196186` and relative L2 rises to
+  `0.007681265485016974`. This exceeds the formal paired-graph relative-L2
+  limit of 0.005 and is materially worse than W2-only FP16's 0.00114 local
+  relative L2. It is therefore rejected before timing.
+- **Resources:** exact M128/split-K2 top-level entry remains
+  `REG56 STACK32 SHARED2048 LOCAL0 CONSTANT[0]1361`, so packed W13 fragments
+  do not improve the resident-grid resource tier either.
+- **Decision:** reject without cold-L2 latency or TP4 performance testing and
+  remove the W13 probe, restoring the exact W2-only source SHA-256
+  `fc6cc41d86d6e77c0f4d5d54efc2dace24e457115d94e32e4de0f678387da79f`.
+  W13's nonlinear downstream amplification makes this precision shortcut
+  unsuitable under the established accuracy contract.
+- **Evidence:** `evidence/iter707_w13_f16_accum_accuracy_rejection.md`; raw
+  logs `bench/results/iter707_w13_f16_accum_m128_{correctness,resources}.log`.
