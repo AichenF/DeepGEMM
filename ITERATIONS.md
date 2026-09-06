@@ -16945,3 +16945,19 @@ maximum rank latency of a full CUDA-Graph replay.
   whole-W2 phase outline; those two conditions have not yet been tested
   together, and must restore 32/16 statically before launch.
 - **Evidence:** `evidence/iter711e_fused_m128_unbounded_static_rejection.md`.
+
+## Iteration 711f — compose natural registers with W2 phase isolation
+
+- **Hypothesis/change:** allow the existing whole-W2 phase outline to compose
+  with `V4_SINGLE_LAUNCH_M128_UNBOUNDED=1`.  Earlier tests covered each
+  condition separately: the outlined W2 remained bound to 56 registers, and
+  natural-register W2 remained inline in the large fused entry.
+- **Isolation:** default behavior, algorithm, task order, numerical boundaries,
+  barriers and TP tail are unchanged.  The unbounded path still rejects the
+  legacy per-task call and persistent W2 state.
+- **Pre-CUDA gate:** Python compilation passes; staged source SHA256 is
+  `a43349d9ac78e6bf14f5ba79eb406f1f316206e007a1ac862c1c3d6e283995b6`.
+  No JIT/launch is claimed.
+- **Next:** require a no-local-spill, runtime-resident cubin and exact outlined
+  W2 SASS of 32 QGMMAs / about 16 waits before correctness or timing.
+- **Evidence:** `evidence/iter711f_unbounded_w2_phase_outline_composition.md`.

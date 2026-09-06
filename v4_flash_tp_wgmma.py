@@ -1134,7 +1134,6 @@ if SINGLE_LAUNCH_M128_UNBOUNDED and (
     or SINGLE_LAUNCH_W13_WAVE_ROTATE != 0
     or SINGLE_LAUNCH_W2_WAVE_ROTATE != 0
     or SINGLE_LAUNCH_NOINLINE_GEMM
-    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
     or SINGLE_LAUNCH_W2_COMPACT_TASK_CALL
     or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
     or SINGLE_LAUNCH_W2_PERSISTENT_STATE
@@ -1142,7 +1141,7 @@ if SINGLE_LAUNCH_M128_UNBOUNDED and (
     raise ValueError(
         "V4_SINGLE_LAUNCH_M128_UNBOUNDED requires the selected compact-W13 "
         "schedule-0 path with requested bound8, rotations disabled, and "
-        "ordinary inline W2"
+        "ordinary inline or whole-phase-outlined W2"
     )
 if SINGLE_LAUNCH_W13_TAIL_SPLIT4 and SINGLE_LAUNCH_CTAS_PER_SM != 8:
     raise ValueError("V4_SINGLE_LAUNCH_W13_TAIL_SPLIT4 requires 8 CTAs/SM")
