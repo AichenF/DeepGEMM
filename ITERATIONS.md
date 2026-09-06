@@ -15632,3 +15632,31 @@ maximum rank latency of a full CUDA-Graph replay.
   logs `bench/results/iter682b_production_tp4_m128_cold_anchor_20260906.log`,
   `bench/results/iter683_w13_residual_permute65_m128_{jit_correctness,resources}_20260906.log`,
   and `bench/results/iter683_w13_residual_permute65_tp4_m128_cold_short_20260906.log`.
+
+## Iteration 684 — residual-only W13 tickets are neutral
+
+- **Hypothesis/change:** Emulate standalone-kernel tail turnover without
+  dynamically scheduling the full GEMM. Every CTA retains its five selected
+  complete W13 tasks, then performs one atomic ticket allocation; the first
+  474 tickets execute the residual tasks. The cursor is reset before the
+  existing route-to-W13 grid publication, so no extra kernel or grid barrier
+  is added.
+- **Resource/correctness:** Candidate SHA-256
+  `49d6daea3151518d6295aeb48b50ae3c3fbe6d837b889991faac8dae7a5c9759`;
+  extension `v4tp_6b3e653b928821d0d829_v178mspec`. M128 split-K2/4 remains
+  `REG56 STACK32 SHARED2048 LOCAL0`. Random-route M128 is bitwise equal to
+  the independent local reference and packed generation wrap is exactly
+  `[0,0,0,0]`.
+- **Cold-L2 TP4 gate:** GPUs 0,5,6,7, random seed 20260902, 2x20 replay-level
+  pairs after four warmups, with a separate excluded 256 MiB clear per arm.
+  Multi/ticket-one medians are `0.305072/0.349808 ms`, ratio `1.146641`;
+  candidate batches are `0.349712/0.350096 ms`. The adjacent exact-production
+  anchor is `0.305008/0.349616 ms`, ratio `1.146252`. Normalized movement is
+  only +0.034% and direct one-kernel movement is +0.055%, both slightly worse
+  and far inside noise.
+- **Decision:** Reject, restore exact Iteration-665 production, and close
+  residual-only ticket stealing. The already count-optimal static residual
+  mapping leaves no gain large enough to repay 702 contended ticket atomics.
+- **Evidence:** `evidence/iter684_w13_residual_tickets_neutral.md`; raw logs
+  `bench/results/iter684_w13_residual_tickets_m128_{jit_correctness,resources}_20260906.log`
+  and `bench/results/iter684_w13_residual_tickets_tp4_m128_cold_short_20260906.log`.
