@@ -15784,3 +15784,32 @@ maximum rank latency of a full CUDA-Graph replay.
   raw logs
   `bench/results/iter688_bound10_w2_packed_exp_s2r_m128_jit_correctness_resources_20260906.log`
   and `bench/results/iter688_bound10_w2_packed_exp_s2r_tp4_m128_cold_short_20260906.log`.
+
+## Iteration 689 — LUT-only lookahead is slower and loses exactness
+
+- **Hypothesis/change:** Preserve the expensive ahead-of-QGMMA LUT synthesis
+  while removing only packed-weight lookahead from M128 W2. This is the
+  reverse of Iterations 687/688 and tests whether the decoded LUT alone can
+  retain full-S2R performance within a ten-CTA register bound.
+- **Resource/correctness:** candidate SHA-256
+  `d1cbe44b15d07857d87da9e0b78d1e9ec71a3f2763b5b997d76a48c6d1557acb`;
+  extension `v4tp_43592085816b37400d77_v178mspec`. M128 split-K2/4 compiles
+  at `REG48 STACK64 SHARED2048 LOCAL0`, admitting ten CTA/SM. Unlike the two
+  packed-lookahead candidates, local output is no longer bitwise: cosine is
+  `0.9999980905`, rel-L2 `0.0019542379`. TP4 remains inside the loose
+  acceptance threshold but degrades to cosine-min `0.9999926659`, rel-L2-max
+  `0.0038299181`, and max absolute error `17408` versus control `1024`.
+- **Cold-L2 TP4 screen:** GPUs 0/5/6/7, seed 20260902, replay-paired CUDA
+  Graphs, 2x20 samples after four warmups and a separate excluded 256 MiB
+  clear for every arm. Multi min/median/max are
+  `0.302752/0.305792/0.333504 ms`; candidate is
+  `0.365376/0.368032/0.443584 ms`. Candidate/control is `1.203537`, or
+  20.35% slower, and is worse than both packed-lookahead candidates.
+- **Decision:** Reject and restore exact Iteration-665 production. Packed
+  weight lookahead is required both for selected timing and exact pipeline
+  behavior; a useful low-register redesign must retain it. The remaining
+  bounded idea is to remove four-lane duplicate LUT synthesis through a
+  single producer plus shared broadcast while keeping packed lookahead.
+- **Evidence:** `evidence/iter689_bound10_w2_lut_only_s2r_rejection.md`; raw
+  logs `bench/results/iter689_bound10_w2_lut_only_s2r_m128_jit_correctness_resources_20260906.log`
+  and `bench/results/iter689_bound10_w2_lut_only_s2r_tp4_m128_cold_short_20260906.log`.
