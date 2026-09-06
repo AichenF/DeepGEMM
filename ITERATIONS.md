@@ -17221,3 +17221,16 @@ maximum rank latency of a full CUDA-Graph replay.
   `sglang.srt.layers.moe` to avoid their broad `__init__` imports.
 - **Pre-CUDA gate:** Python compilation passes; option is default-off.
 - **Evidence:** `evidence/iter713h_sglang_subpackage_namespaces.md`.
+
+## Iteration 713i — re-export the exact lightweight MoE align helper
+
+- **Preflight finding:** `fused_moe_triton.__init__` itself imports the full
+  MoeRunner stack before re-exporting `moe_align_block_size`, causing another
+  unrelated configuration dependency failure.  No CUDA business kernel ran.
+- **Runner change:** optional `V4_SGLANG_LIGHT_MOE_ALIGN=1` loads the exact
+  checkout leaf
+  `moe_runner/triton_utils/moe_align_block_size.py` and exposes only its
+  original function at the package name expected by the unchanged benchmark.
+  No route-alignment code is copied or replaced.
+- **Pre-CUDA gate:** Python compilation passes; default remains off.
+- **Evidence:** `evidence/iter713i_light_moe_align_export.md`.

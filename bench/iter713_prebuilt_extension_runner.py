@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import os
 from pathlib import Path
@@ -66,6 +67,26 @@ def main() -> None:
                 )
             relative = package_name.removeprefix("sglang.").replace(".", "/")
             install_namespace(package_name, sglang_package_dir / relative)
+
+        if os.environ.get("V4_SGLANG_LIGHT_MOE_ALIGN", "0") == "1":
+            for package_name in (
+                "sglang.srt.layers.moe",
+                "sglang.srt.layers.moe.moe_runner",
+                "sglang.srt.layers.moe.moe_runner.triton_utils",
+            ):
+                relative = package_name.removeprefix("sglang.").replace(
+                    ".", "/"
+                )
+                install_namespace(package_name, sglang_package_dir / relative)
+            leaf = importlib.import_module(
+                "sglang.srt.layers.moe.moe_runner.triton_utils."
+                "moe_align_block_size"
+            )
+            public_name = "sglang.srt.layers.moe.fused_moe_triton"
+            public_module = types.ModuleType(public_name)
+            public_module.__package__ = public_name
+            public_module.moe_align_block_size = leaf.moe_align_block_size
+            sys.modules[public_name] = public_module
 
     target = sys.argv[1]
     sys.argv = sys.argv[1:]
