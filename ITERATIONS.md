@@ -16684,3 +16684,20 @@ maximum rank latency of a full CUDA-Graph replay.
   PTX block is not opaque to ptxas.  Next insert a real `bar.warp.sync` after
   operand preparation; require it to force both inputs ready and halve waits.
 - **Evidence:** `evidence/iter709v_w2_paired_inline_asm_static_rejection.md`.
+
+## Iteration 709w — real warp scheduling boundary before paired W2
+
+- **Change:** add one opt-in `bar.warp.sync 0xffffffff` after all source
+  preparation/fences and immediately before the two-QGMMA inline-PTX block.
+  Unlike prior compiler constraints, this is a real machine scheduling and
+  memory boundary intended to keep the spilled LDS ahead of both QGMMAs.
+- **Tradeoff:** one warp-local barrier per K32 step is exchanged for a target
+  reduction of one WGMMA dependency wait per QGMMA pair; no cross-warp data
+  exchange or arithmetic change is introduced.
+- **Isolation/pre-CUDA gate:** the flag requires the full paired diagnostic
+  chain, remains default-off TP4-M128-only, and enters the JIT identity.
+  Python compilation passes; staged SHA256 is
+  `f3d1f5debbc07089fed0a1ea519a1aa1f8ee8579b2603f862097d72df44c8175`.
+- **Next:** require REG56/no spill/nine CTA, 64 QGMMAs, about 32 waits, and
+  SASS order LDS -> warp barrier -> two QGMMAs before any CUDA launch.
+- **Evidence:** `evidence/iter709w_w2_pair_warp_sync_implementation.md`.

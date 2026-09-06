@@ -355,6 +355,9 @@ SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE = (
 SINGLE_LAUNCH_W2_PAIR_INLINE_ASM = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PAIR_INLINE_ASM", "0") == "1"
 )
+SINGLE_LAUNCH_W2_PAIR_WARP_SYNC = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_PAIR_WARP_SYNC", "0") == "1"
+)
 # Selected single-launch production bundle.  The historical environment name
 # is retained because compact W13 was the first bundled component, but the
 # switch now covers every independently validated fast path selected for the
@@ -1830,6 +1833,12 @@ if (SINGLE_LAUNCH_W2_PAIR_INLINE_ASM
         "V4_SINGLE_LAUNCH_W2_PAIR_INLINE_ASM requires "
         "V4_SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE=1"
     )
+if (SINGLE_LAUNCH_W2_PAIR_WARP_SYNC
+        and not SINGLE_LAUNCH_W2_PAIR_INLINE_ASM):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_PAIR_WARP_SYNC requires "
+        "V4_SINGLE_LAUNCH_W2_PAIR_INLINE_ASM=1"
+    )
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
 LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
 DIRECT_BARRIER_ADDR = os.environ.get("V4_DIRECT_BARRIER_ADDR", "0") == "1"
@@ -2081,6 +2090,8 @@ static constexpr bool kSingleLaunchW2PairOperandFence =
     K_SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE;
 static constexpr bool kSingleLaunchW2PairInlineAsm =
     K_SINGLE_LAUNCH_W2_PAIR_INLINE_ASM;
+static constexpr bool kSingleLaunchW2PairWarpSync =
+    K_SINGLE_LAUNCH_W2_PAIR_WARP_SYNC;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -2586,7 +2597,8 @@ template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool AtomicCombineW2 = false, int IndependentTaskWGs = 1,
           bool F16WgmmaAccum = false, bool PredecodeS2R = false,
           bool PairWgmmaGroups = false, bool PairSpillOne = false,
-          bool PairOperandFence = false, bool PairInlineAsm = false>
+          bool PairOperandFence = false, bool PairInlineAsm = false,
+          bool PairWarpSync = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -2720,6 +2732,8 @@ __device__ __forceinline__ void route_gemm_task(
                   "paired WGMMA operand fence requires shared spill");
     static_assert(!PairInlineAsm || PairOperandFence,
                   "paired inline WGMMA requires fenced operands");
+    static_assert(!PairWarpSync || PairInlineAsm,
+                  "paired WGMMA warp sync requires inline issue");
     constexpr bool kMergedWgmmaGroup =
         IsW13 && kW13MergedWgmmaGroup;
     constexpr bool kDistributedPrep =
@@ -3678,6 +3692,10 @@ __device__ __forceinline__ void route_gemm_task(
                         cute::warpgroup_fence_operand(
                             current_fp8_1[group].y);
                     }
+                }
+                if constexpr (PairWarpSync) {
+                    asm volatile("bar.warp.sync 0xffffffff;"
+                                 ::: "memory");
                 }
                 if constexpr (PairInlineAsm) {
                     asm volatile(
@@ -9121,7 +9139,8 @@ void tp4_megamoe_single_launch_kernel(
                         kSingleLaunchW2PairWgmmaGroups && Tokens == 128,
                         kSingleLaunchW2PairSpillOne && Tokens == 128,
                         kSingleLaunchW2PairOperandFence && Tokens == 128,
-                        kSingleLaunchW2PairInlineAsm && Tokens == 128>(
+                        kSingleLaunchW2PairInlineAsm && Tokens == 128,
+                        kSingleLaunchW2PairWarpSync && Tokens == 128>(
                         &w2_tma_weight, &w2_tma_weight_scale,
                         w2, s2, g2, qactivation, activation_scale,
                         sorted_ids, expert_ids, num_tokens_padded,
@@ -12208,6 +12227,7 @@ _EXTENSION_CONFIG = (
           f"slw2pso{int(SINGLE_LAUNCH_W2_PAIR_SPILL_ONE)}_"
           f"slw2pof{int(SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE)}_"
           f"slw2pia{int(SINGLE_LAUNCH_W2_PAIR_INLINE_ASM)}_"
+          f"slw2pws{int(SINGLE_LAUNCH_W2_PAIR_WARP_SYNC)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slagp{int(SINGLE_LAUNCH_ADAPTIVE_GRID_POLL)}_"
@@ -12462,6 +12482,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_PAIR_INLINE_ASM="
             f"{int(SINGLE_LAUNCH_W2_PAIR_INLINE_ASM)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_PAIR_WARP_SYNC="
+            f"{int(SINGLE_LAUNCH_W2_PAIR_WARP_SYNC)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="
