@@ -17104,3 +17104,22 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** raw log
   `bench/results/iter713a_rdc_single_tu_build_20260906.log` and
   `evidence/iter713a_rdc_whole_extension_compile_rejection.md`.
+
+## Iteration 713b — compose an M128-targeted RDC static probe
+
+- **Hypothesis:** TP4 M128's unbounded entry may still allow the outlined W2
+  phase to be device-linked and recover standalone's two-QGMMA-per-wait
+  schedule; Iteration 713a failed only because other caller specializations
+  retained 64-register contracts.
+- **Temporary scope:** on a generated-source copy only, change the fallback
+  TP4 `SingleLaunchMinBlocks` and TP8 launch-bound minimum from 8 to 1.  This
+  lets unrelated specializations satisfy their high-register RDC callees so
+  the object can link.  Production source, defaults, math and ABI are
+  untouched, and only TP4 M128 SASS will be evaluated.
+- **Pre-CUDA gate:** patched generated-source SHA256 is
+  `85dafc4cd81d0fa52599430df9da301c48d5d17f11b888da47d554521f695a9b`.
+  No JIT/device link or kernel launch is claimed yet.
+- **Static acceptance gate:** require the exact TP4 M128 split-K2 W2 phase to
+  contain 32 QGMMAs and approximately 16 dependency barriers, with no
+  prohibitive fixed local spill.  Reject before runtime otherwise.
+- **Evidence:** `evidence/iter713b_m128_targeted_rdc_composition.md`.
