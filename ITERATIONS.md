@@ -15753,3 +15753,34 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `evidence/iter687_bound10_w2_packed_s2r_rejection.md`; raw
   logs `bench/results/iter687_bound10_w2_packed_s2r_m128_jit_correctness_resources_20260906.log`
   and `bench/results/iter687_bound10_w2_packed_s2r_tp4_m128_cold_short_20260906.log`.
+
+## Iteration 688 — exponent lookahead does not recover W2 LUT overlap
+
+- **Hypothesis/change:** Extend Iteration 687's ten-CTA specialization by
+  retaining the next two E8M0 exponents alongside the prefetched packed
+  weights. This hides all packed-weight and scale shared loads, but computes
+  each decoded FP8 LUT immediately before its QGMMA. Routing, W13, activation,
+  W2 math, communication and public input remain unchanged.
+- **Resource/correctness:** candidate SHA-256
+  `3c51bc84f02f811a9705276a772ff43bac35d10a85d43376ffeb18211503c122`;
+  extension `v4tp_37f1cb1981a2be64af96_v178mspec`. M128 split-K2/4 remains
+  `REG48 STACK48 SHARED2048 LOCAL0`, so exponent lookahead costs no additional
+  allocated registers and ten CTA/SM remains admitted. Local full output is
+  bitwise equal to the independent reference. TP4 passes every-rank embedded
+  allreduce correctness at cosine-min `0.9999955976741226`, rel-L2-max
+  `0.0029672639980990933`, finite and `allreduce_ok=true`.
+- **Cold-L2 TP4 screen:** GPUs 0/5/6/7, seed 20260902, replay-paired CUDA
+  Graphs, 2x20 samples after four warmups, separately excluded 256 MiB clear
+  before every arm. Multi min/median/max are
+  `0.303328/0.305600/0.327616 ms`; candidate is
+  `0.361824/0.363888/0.385152 ms`; candidate/control is `1.190733` (19.07%
+  slower). Candidate latency differs by only +0.057% from Iteration 687's
+  `0.363680 ms`, proving exponent LDS was not the lost overlap.
+- **Decision:** Reject and restore exact Iteration-665 production. The
+  selected full W2 S2R benefit comes from moving LUT synthesis itself ahead
+  of QGMMA. Any further ten-CTA attempt must preserve that placement rather
+  than merely prefetching its inputs.
+- **Evidence:** `evidence/iter688_bound10_w2_packed_exp_s2r_rejection.md`;
+  raw logs
+  `bench/results/iter688_bound10_w2_packed_exp_s2r_m128_jit_correctness_resources_20260906.log`
+  and `bench/results/iter688_bound10_w2_packed_exp_s2r_tp4_m128_cold_short_20260906.log`.
