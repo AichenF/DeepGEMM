@@ -16773,3 +16773,21 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Qualification:** no JIT, CUDA launch, numerical result or timing is
   claimed.  Rebuild the exact opt-in and require a cubin before SASS audit.
 - **Evidence:** `evidence/iter710b_w2_outline_explicit_else_implementation.md`.
+
+## Iteration 710c — repaired existing W2 outline remains 1:1
+
+- **Scope:** compile-only SASS audit after the Iteration-710b scope repair;
+  no business kernel launched and no latency is claimed.
+- **Build/resource:** selected TP4 plus
+  `V4_SINGLE_LAUNCH_W2_PHASE_NOINLINE=1` builds extension
+  `v4tp_b9572d91268c0bf6a995_v178mspec`.  M128/split-K2 main is
+  `REG56 STACK48 SHARED2048 LOCAL0`; the local W2 phase callee is 20,800 B.
+- **SASS result:** the exact callee has 32 QGMMAs and 32 dependency barriers,
+  still one wait per QGMMA.  Extracted SASS SHA256 is
+  `16fc8775103384986e55dd5e6dbfacba51cbdf7d67a23b006bb3fbac80929bfe`.
+- **Decision:** a terminal no-return change alone cannot repair scheduling
+  already serialized inside this callee.  Next isolate the fused-only
+  `AssumeValidMblock=true` difference: audited standalone W2's 2:1 entry uses
+  `false`, so compile the same outline with that specialization before adding
+  a new tail architecture.
+- **Evidence:** `evidence/iter710c_existing_w2_outline_sass_audit.md`.
