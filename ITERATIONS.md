@@ -17528,3 +17528,22 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `bench/results/iter714c_unique_rdc_build_20260906.log`,
   `bench/results/iter714c_unique_rdc_resources_20260906.log`, and
   `evidence/iter714c_unique_rdc_build_static.md`.
+
+## Iteration 714d — unique RDC entry is 0.128% slower than matched ordinary
+
+- **Attribution:** selectively dispatch the uniquely named RDC TP4 host/CUDA
+  entry; all helpers and multi control remain in the ordinary same-ABI
+  library, eliminating same-symbol interposition.
+- **Correctness:** both paths pass with cosine `0.9999955977`, relative L2
+  `0.0029672640`, max absolute error `1024`, finite outputs and
+  `allreduce_ok=true`.
+- **Short cold-L2 result:** 20 samples/path give multi `0.303504005 ms` and
+  unique RDC single `0.363023996 ms`; single is 19.611% slower than multi.
+  Matched ordinary single from Iteration 713y is `0.362560004 ms`, making RDC
+  `0.000463992 ms` or 0.1280% slower.
+- **Decision:** conclusively close RDC/device-call isolation.  The 32/16 W2
+  schedule does not repay REG195/STACK112/call/residency costs.  No long run or
+  production integration is justified; formal all-M gap remains unchanged.
+- **Evidence:**
+  `bench/results/iter714d_unique_rdc_tp4_m128_cold_smoke_20260906.log` and
+  `evidence/iter714d_unique_rdc_runtime_rejection.md`.
