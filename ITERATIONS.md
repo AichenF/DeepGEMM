@@ -17676,3 +17676,21 @@ maximum rank latency of a full CUDA-Graph replay.
   avoids fixed local/material stack spill, and the W2 callee retains roughly
   32 QGMMAs / 16 dependency barriers.
 - **Evidence:** `evidence/iter716a_rdc_maxrreg64_composition.md`.
+
+## Iteration 716b — reject capped RDC because it converts registers into local-stack traffic
+
+- **Build/static result:** the unique Iteration-716a RDC object links and the
+  TP4 M128 split-K2/split-K4 entries both report REG64, but each also reports
+  STACK360 per thread.  The exact W2 callee retains the desired 32 QGMMAs / 16
+  DEPBARs, yet opens a 248-byte frame and contains 61 `STL` plus 66 `LDL`
+  instructions (127 explicit local-stack accesses).
+- **Interpretation:** the register cap did not recover the standalone W2
+  resource contract; it preserved the paired schedule by spilling live state.
+  This is a material stack/spill cliff versus natural RDC's STACK112 and the
+  ordinary monolith's STACK32, and therefore fails the predeclared no-spill
+  gate.
+- **Decision:** **REJECT before CUDA launch.**  No TP4 correctness, cold-L2
+  timing, TP8 timing, or speedup is claimed.  Production source hashes remain
+  `30e6c402...fdbdf` and `16bb9e09...01bb`.
+- **Evidence:** `evidence/iter716b_rdc_maxrreg64_static_rejection.md` and
+  `bench/results/iter716a_rdc_maxrreg64_static_20260906.log`.
