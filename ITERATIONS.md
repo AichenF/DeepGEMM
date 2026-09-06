@@ -17309,3 +17309,20 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Pre-CUDA gate:** both Python files compile.  Defaults are unchanged and no
   CUDA business kernel has launched for this change.
 - **Evidence:** `evidence/iter713n_recursive_jit_overlay.md`.
+
+## Iteration 713o — overlay kernel namespace masks the real MoE op
+
+- **Scope:** first TP4 M128 cold-L2 smoke with the miniforge RDC library and
+  explicit compatibility overlay.  All ranks exit in Python import setup;
+  communicator construction, graph capture, correctness, timing, and CUDA
+  business-kernel launch are not reached.
+- **Failure:** the overlay also contains namespace-only `sglang.kernels`
+  stubs.  Overlay-first resolution selects its empty
+  `sglang.kernels.ops.moe.__init__`, so the old-checkout alignment leaf cannot
+  import the real `moe_align_block_size` export.
+- **Decision:** retain the overlay for `sglang.jit_kernel`, but pin
+  `sglang.kernels` and `sglang.kernels.ops` to the original checkout for the
+  lightweight alignment import.  This changes import routing only.
+- **Evidence:**
+  `bench/results/iter713o_rdc_tp4_m128_cold_smoke_20260906.log` and
+  `evidence/iter713o_overlay_kernel_namespace_failure.md`.
