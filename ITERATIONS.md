@@ -15813,3 +15813,36 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `evidence/iter689_bound10_w2_lut_only_s2r_rejection.md`; raw
   logs `bench/results/iter689_bound10_w2_lut_only_s2r_m128_jit_correctness_resources_20260906.log`
   and `bench/results/iter689_bound10_w2_lut_only_s2r_tp4_m128_cold_short_20260906.log`.
+
+## Iteration 690 — four-lane LUT shared broadcast is exact but much slower
+
+- **Hypothesis/change:** Keep packed-weight lookahead, synthesize each next
+  E8M0-derived LUT once instead of redundantly in four lanes, and broadcast
+  the 128 row LUTs through a 1 KiB per-CTA dynamic-shared stage after the
+  current QGMMA. This preserves ahead-of-QGMMA synthesis while removing LUTs
+  from the cross-QGMMA register live range and targets ten CTA/SM.
+- **Resource/correctness:** candidate SHA-256
+  `b9f1db40e7c37e004718999c5088d4b1c308608cb8b9bbfb6a56a9b00a32a217`;
+  extension `v4tp_54d4ad56c9bfe74a39f7_v178mspec`. M128 split-K2/4 is
+  `REG48 STACK64 SHARED2048 LOCAL0` plus 19,456 bytes dynamic shared; the
+  runtime occupancy guard confirms ten CTA/SM. Local full output returns to
+  bitwise equality. TP4 matches control correctness exactly at cosine-min
+  `0.9999955976741226`, rel-L2-max `0.0029672639980990933`, finite and
+  embedded-allreduce correct.
+- **Cold-L2 TP4 screen:** GPUs 0/5/6/7, seed 20260902, replay-paired CUDA
+  Graphs, 2x20 samples after four warmups and a separately excluded 256 MiB
+  clear per arm. Multi min/median/max are
+  `0.303104/0.305424/0.317280 ms`; candidate is
+  `0.373984/0.376688/0.395040 ms`; candidate/control is `1.233328` (23.33%
+  slower). Candidate is about 7.74% slower than the adjacent selected
+  0.349616-ms one-kernel anchor.
+- **Decision:** Reject and restore exact Iteration-665 production. The
+  per-K-step warp ordering and shared store/load broadcast cost exceeds both
+  the four-lane duplicate synthesis and the tenth-CTA benefit. Together with
+  Iterations 687-689, this closes partial/full W2 S2R rearrangements as a
+  path to lower-register M128 residency; retain selected full register S2R
+  at nine CTA/SM.
+- **Evidence:** `evidence/iter690_bound10_w2_shared_lut_s2r_rejection.md`;
+  raw logs
+  `bench/results/iter690_bound10_w2_shared_lut_s2r_m128_jit_correctness_resources_20260906.log`
+  and `bench/results/iter690_bound10_w2_shared_lut_s2r_tp4_m128_cold_short_20260906.log`.
