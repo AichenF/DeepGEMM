@@ -16791,3 +16791,23 @@ maximum rank latency of a full CUDA-Graph replay.
   `false`, so compile the same outline with that specialization before adding
   a new tail architecture.
 - **Evidence:** `evidence/iter710c_existing_w2_outline_sass_audit.md`.
+
+## Iteration 710d — disabling the fused task guard still leaves W2 at 1:1
+
+- **Question:** standalone W2's audited 2:1 specialization retains defensive
+  mblock validation, while fused W2 uses `AssumeValidMblock=true`.  Compile
+  the repaired whole-W2 phase with that global invariant disabled to isolate
+  the template boolean from the persistent loop.
+- **Build/resource:** selected TP4 plus W2 phase outline and
+  `V4_SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS=0` builds extension
+  `v4tp_0e10226e8b3f3485da1e_v178mspec`.  M128/split-K2 remains
+  `REG56 STACK48 SHARED2048 LOCAL0`; its guarded W2 callee is 20,944 B.
+- **SASS result:** still exactly 32 QGMMAs and 32 dependency waits.  Callee
+  SASS SHA256 is
+  `dc31fa292294a79602920f9e473b1c0c0f82c31927f523086d110a2b27ceb5be`.
+- **Decision:** **reject the guard specialization as the cause.**  No business
+  kernel ran.  The persistent grid-stride loop is now the isolated codegen
+  difference.  Next use a compact per-task call—one shared-record pointer and
+  one task id—to reproduce standalone's callee shape without the rejected
+  thirteen-pointer per-task ABI; require 2:1 statically before launch.
+- **Evidence:** `evidence/iter710d_w2_outline_guarded_sass_control.md`.
