@@ -43,10 +43,29 @@ def main() -> None:
         sglang_package_dir = Path(sglang_root_value).resolve() / "sglang"
         if not sglang_package_dir.is_dir():
             raise FileNotFoundError(sglang_package_dir)
-        sglang_package = types.ModuleType("sglang")
-        sglang_package.__package__ = "sglang"
-        sglang_package.__path__ = [str(sglang_package_dir)]
-        sys.modules["sglang"] = sglang_package
+
+        def install_namespace(package_name: str, package_dir: Path) -> None:
+            if not package_dir.is_dir():
+                raise FileNotFoundError(package_dir)
+            package = types.ModuleType(package_name)
+            package.__package__ = package_name
+            package.__path__ = [str(package_dir)]
+            sys.modules[package_name] = package
+
+        install_namespace("sglang", sglang_package_dir)
+        subpackages = os.environ.get(
+            "V4_SGLANG_NAMESPACE_SUBPACKAGES", ""
+        ).split(",")
+        for package_name in (value.strip() for value in subpackages):
+            if not package_name:
+                continue
+            if not package_name.startswith("sglang."):
+                raise ValueError(
+                    "V4_SGLANG_NAMESPACE_SUBPACKAGES entries must start "
+                    "with 'sglang.'"
+                )
+            relative = package_name.removeprefix("sglang.").replace(".", "/")
+            install_namespace(package_name, sglang_package_dir / relative)
 
     target = sys.argv[1]
     sys.argv = sys.argv[1:]

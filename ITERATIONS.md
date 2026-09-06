@@ -17207,3 +17207,17 @@ maximum rank latency of a full CUDA-Graph replay.
   timing or kernel code.
 - **Next:** import preflight, then TP4 M128 correctness/short cold-L2 screen.
 - **Evidence:** `evidence/iter713g_sglang_namespace_runner.md`.
+
+## Iteration 713h — bypass side-effect package initializers, not modules
+
+- **Preflight finding:** after top-level isolation, importing the benchmark's
+  `fused_moe_triton` helper still executes `sglang.srt.layers.moe.__init__`,
+  recursively pulling model/config/Transformers code and failing on an
+  unrelated API mismatch.  No CUDA business kernel launched.
+- **Runner change:** add optional comma-separated
+  `V4_SGLANG_NAMESPACE_SUBPACKAGES`.  Each named package becomes a namespace
+  rooted at its exact checkout directory; requested leaf modules remain the
+  original source.  The probe selects only `sglang.srt.distributed` and
+  `sglang.srt.layers.moe` to avoid their broad `__init__` imports.
+- **Pre-CUDA gate:** Python compilation passes; option is default-off.
+- **Evidence:** `evidence/iter713h_sglang_subpackage_namespaces.md`.
