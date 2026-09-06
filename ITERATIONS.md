@@ -16716,3 +16716,24 @@ maximum rank latency of a full CUDA-Graph replay.
   64-register/eight-CTA fused control to determine whether the blocker is the
   register cliff or broader persistent-entry code generation.
 - **Evidence:** `evidence/iter709x_w2_pair_warp_sync_static_rejection.md`.
+
+## Iteration 709y — 64-register fused-entry W2 scheduling control
+
+- **Scope:** compile-only control of the plain TP4 single-launch entry with
+  `V4_SINGLE_LAUNCH_COMPACT_W13_BUNDLE=0`; all Iteration-709l–709w diagnostic
+  flags remain default-off.  No MoE business kernel ran and no timing is
+  claimed.  A harmless first print-only probe raised `NameError` after loading;
+  the cached rerun reported the exact extension successfully.
+- **Build/resource:** extension
+  `v4tp_8e3ee4aad14428dc50e9_v178mspec`, target
+  `tp4_megamoe_single_launch_kernel<2,128>`, is
+  `REG64 STACK32 SHARED4096 LOCAL0`, restoring the eight-CTA register tier.
+- **SASS result:** the exact entry still contains 64 QGMMAs and 64 dependency
+  barriers, with a wait after every W2 QGMMA.  SASS SHA256 is
+  `145c931f426a3cb8bbcbcdc8fb30cb167cd7566752040ace112a1584616dc6aa`.
+- **Decision:** **REJECT before correctness/timing.**  Extra registers alone
+  do not recover standalone W2's 2:1 schedule; the large persistent entry's
+  phase-spanning lifetime/control-flow contract is the stronger constraint.
+  Close same-entry register-limit and operand-order probes unless a true
+  phase-local code-generation boundary changes that contract.
+- **Evidence:** `evidence/iter709y_bound8_persistent_entry_sass_control.md`.

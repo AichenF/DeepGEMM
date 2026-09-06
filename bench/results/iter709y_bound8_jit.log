@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+NameError: name 'EXTENSION_NAME' is not defined
+v4tp_8e3ee4aad14428dc50e9_v178mspec
+/tmp/torch_ext_v4_tp/v4tp_8e3ee4aad14428dc50e9_v178mspec/v4tp_8e3ee4aad14428dc50e9_v178mspec.so
