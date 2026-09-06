@@ -16832,3 +16832,21 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Next:** JIT only, then require REG56/no spill/nine CTA and a 32-QGMMA /
   about-16-wait extracted callee before any correctness or timing launch.
 - **Evidence:** `evidence/iter710e_w2_compact_task_call_implementation.md`.
+
+## Iteration 710f — compact per-task W2 call remains 1:1
+
+- **Scope:** compile-only on H20 GPU1; no business kernel launch, correctness
+  run or latency claim.
+- **Build/resource:** extension
+  `v4tp_5db5ea89ab57f9aab05f_v178mspec`; TP4 M128/split-K2 main is
+  `REG56 STACK48 SHARED2048 LOCAL0`, and the local compact W2 callee is
+  20,672 B.
+- **SASS result:** the exact callee still has 32 QGMMAs and 32 dependency
+  barriers.  Sliced SASS SHA256 is
+  `63e5ce2faec911affabc2dd779271f5d38478db1728c677d5d97e1f6c56d085f`.
+- **Decision:** **reject before correctness/timing.**  A two-argument task
+  boundary does not recover standalone scheduling, so neither the legacy
+  high-argument ABI nor the outer grid-stride loop alone is causal.  Next
+  align standalone descriptor/parameter form or reuse its already-paired
+  issue body in a fused-callable specialization.
+- **Evidence:** `evidence/iter710f_w2_compact_task_call_static_rejection.md`.

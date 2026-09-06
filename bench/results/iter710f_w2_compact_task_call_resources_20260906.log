@@ -1,0 +1,162 @@
+
+Fatbin elf code:
+================
+arch = sm_90a
+code version = [1,7]
+host = linux
+compile_size = 64bit
+identifier = /tmp/torch_ext_v4_tp/v4tp_5db5ea89ab57f9aab05f_v178mspec/cuda.cu
+
+Resource usage:
+ Common:
+  GLOBAL:12 CONSTANT[4]:96 CONSTANT[3]:32
+ Function void tp8_megamoe_single_launch_kernel<4, 128>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:63 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:1393 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp8_megamoe_single_launch_kernel<2, 128>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:63 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:1393 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp8_megamoe_single_launch_kernel<4, 64>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:63 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:1393 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp8_megamoe_single_launch_kernel<2, 64>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:63 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:1393 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp8_megamoe_single_launch_kernel<4, 32>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:63 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:1393 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp8_megamoe_single_launch_kernel<2, 32>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:63 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:1393 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp8_megamoe_single_launch_kernel<4, 16>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:62 STACK:64 SHARED:2048 LOCAL:0 CONSTANT[0]:1393 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp8_megamoe_single_launch_kernel<2, 16>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:62 STACK:64 SHARED:2048 LOCAL:0 CONSTANT[0]:1393 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp8_megamoe_single_launch_kernel<4, 8>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:62 STACK:64 SHARED:2048 LOCAL:0 CONSTANT[0]:1393 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp8_megamoe_single_launch_kernel<2, 8>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:62 STACK:64 SHARED:2048 LOCAL:0 CONSTANT[0]:1393 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp4_megamoe_single_launch_kernel<2, 128>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:56 STACK:48 SHARED:2048 LOCAL:0 CONSTANT[0]:1361 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp4_megamoe_single_launch_kernel<4, 128>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:56 STACK:48 SHARED:2048 LOCAL:0 CONSTANT[0]:1361 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp4_megamoe_single_launch_kernel<2, 64>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:64 STACK:32 SHARED:2048 LOCAL:0 CONSTANT[0]:1361 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp4_megamoe_single_launch_kernel<4, 64>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:64 STACK:32 SHARED:2048 LOCAL:0 CONSTANT[0]:1361 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp4_megamoe_single_launch_kernel<4, 32>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:63 STACK:32 SHARED:2048 LOCAL:0 CONSTANT[0]:1361 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp4_megamoe_single_launch_kernel<2, 32>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:63 STACK:32 SHARED:2048 LOCAL:0 CONSTANT[0]:1361 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp4_megamoe_single_launch_kernel<4, 16>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:63 STACK:32 SHARED:2048 LOCAL:0 CONSTANT[0]:1361 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp4_megamoe_single_launch_kernel<2, 16>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:63 STACK:32 SHARED:2048 LOCAL:0 CONSTANT[0]:1361 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp4_megamoe_single_launch_kernel<4, 8>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:63 STACK:32 SHARED:2048 LOCAL:0 CONSTANT[0]:1361 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tp4_megamoe_single_launch_kernel<2, 8>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, float const*, int*, int*, int*, float*, __nv_bfloat16*, unsigned char*, float*, __nv_bfloat16*, uint2 const*, int*, int*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, __nv_bfloat16*, unsigned char const*, unsigned char*, unsigned char*, int, int, long, bool):
+  REG:63 STACK:32 SHARED:2048 LOCAL:0 CONSTANT[0]:1361 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void reduce_swiglu_quant_kernel<256, 1>(float const*, __nv_bfloat16*, unsigned char*, float*, int const*, int const*, float const*, int):
+  REG:19 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:588 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void reduce_swiglu_quant_kernel<256, 2>(float const*, __nv_bfloat16*, unsigned char*, float*, int const*, int const*, float const*, int):
+  REG:19 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:588 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void reduce_swiglu_quant_kernel<256, 4>(float const*, __nv_bfloat16*, unsigned char*, float*, int const*, int const*, float const*, int):
+  REG:24 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:588 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void reduce_swiglu_quant_kernel<512, 1>(float const*, __nv_bfloat16*, unsigned char*, float*, int const*, int const*, float const*, int):
+  REG:19 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:588 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void reduce_swiglu_quant_kernel<512, 2>(float const*, __nv_bfloat16*, unsigned char*, float*, int const*, int const*, float const*, int):
+  REG:19 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:588 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void reduce_swiglu_quant_kernel<512, 4>(float const*, __nv_bfloat16*, unsigned char*, float*, int const*, int const*, float const*, int):
+  REG:24 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:588 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void reduce_swiglu_kernel<256, 1>(float const*, __nv_bfloat16*, int):
+  REG:16 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:548 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void reduce_swiglu_kernel<256, 2>(float const*, __nv_bfloat16*, int):
+  REG:18 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:548 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void reduce_swiglu_kernel<256, 4>(float const*, __nv_bfloat16*, int):
+  REG:20 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:548 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void reduce_swiglu_kernel<512, 1>(float const*, __nv_bfloat16*, int):
+  REG:16 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:548 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void reduce_swiglu_kernel<512, 2>(float const*, __nv_bfloat16*, int):
+  REG:18 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:548 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void reduce_swiglu_kernel<512, 4>(float const*, __nv_bfloat16*, int):
+  REG:20 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:548 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<256, 4096, 1, false, 4, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:58 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<256, 4096, 1, false, 8, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:58 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<256, 4096, 1, false, 16, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:58 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<512, 4096, 1, false, 4, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:61 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<512, 4096, 1, false, 8, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:61 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<512, 4096, 1, false, 16, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:61 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<512, 4096, 1, false, 0, true, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:59 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<256, 4096, 1, false, 0, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:58 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<512, 4096, 1, false, 0, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:61 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<4096, 512, 1, true, 0, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:54 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<4096, 512, 2, true, 0, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:47 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<4096, 512, 4, true, 0, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:47 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<4096, 1024, 1, true, 0, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:54 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<4096, 1024, 2, true, 0, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:47 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void route_gemm<4096, 1024, 4, true, 0, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:47 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void fused_k6_nvls_pull_tp4_kernel<256>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, unsigned char const*, __nv_bfloat16*, unsigned char*, unsigned char*, int):
+  REG:32 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:588 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void fused_rank_route_mc_pull_tp4_kernel<256>(unsigned char const*, float const*, __nv_bfloat16*, unsigned char*, unsigned char*, int):
+  REG:32 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:572 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void progress_mc_push_finish_tp4_kernel<512>(__nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long):
+  REG:39 STACK:32 SHARED:1024 LOCAL:0 CONSTANT[0]:592 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void progress_mc_push_finish_tp4_kernel<256>(__nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long):
+  REG:39 STACK:32 SHARED:1024 LOCAL:0 CONSTANT[0]:592 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void progress_mc_push_finish_tp4_kernel<128>(__nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long):
+  REG:39 STACK:32 SHARED:1024 LOCAL:0 CONSTANT[0]:592 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void progress_k6_mc_push_tp4_kernel<64, 8, false>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, int*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long):
+  REG:32 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:624 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void progress_k6_mc_push_tp4_kernel<128, 4, false>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, int*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long):
+  REG:32 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:624 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void progress_k6_mc_push_tp4_kernel<256, 2, false>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, int*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long):
+  REG:32 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:624 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void progress_k6_mc_push_tp4_kernel<64, 8, true>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, int*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long):
+  REG:48 STACK:32 SHARED:1024 LOCAL:0 CONSTANT[0]:624 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void progress_k6_mc_push_tp4_kernel<128, 4, true>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, int*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long):
+  REG:48 STACK:32 SHARED:1024 LOCAL:0 CONSTANT[0]:624 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void progress_k6_mc_push_tp4_kernel<256, 2, true>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, int*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long):
+  REG:48 STACK:32 SHARED:1024 LOCAL:0 CONSTANT[0]:624 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void fused_k6_push_ar_tp4_kernel<256, true, true>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long, int, int):
+  REG:40 STACK:32 SHARED:1024 LOCAL:0 CONSTANT[0]:624 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void fused_k6_push_ar_tp4_kernel<256, false, false>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long, int, int):
+  REG:38 STACK:32 SHARED:1024 LOCAL:0 CONSTANT[0]:624 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void fused_k6_push_ar_tp4_kernel<128, false, false>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long, int, int):
+  REG:40 STACK:32 SHARED:1024 LOCAL:0 CONSTANT[0]:624 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void fused_k6_push_ar_tp4_kernel<256, true, false>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long, int, int):
+  REG:40 STACK:32 SHARED:1024 LOCAL:0 CONSTANT[0]:624 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void fused_k6_push_ar_tp4_kernel<128, true, false>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long, int, int):
+  REG:36 STACK:32 SHARED:1024 LOCAL:0 CONSTANT[0]:624 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void fused_k6_push_ar_tp4_kernel<512, true, false>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, unsigned int*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, unsigned char*, int, int, long, int, int):
+  REG:40 STACK:32 SHARED:1024 LOCAL:0 CONSTANT[0]:624 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tiled_k6_reduce_kernel<256, 2>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, int):
+  REG:32 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:556 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tiled_k6_reduce_kernel<256, 1>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, int):
+  REG:24 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:556 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tiled_k6_reduce_kernel<128, 2>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, int):
+  REG:32 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:556 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void tiled_k6_reduce_kernel<128, 1>(__nv_bfloat16 const*, float const*, __nv_bfloat16*, int):
+  REG:24 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:556 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void paired_w13_fused_kernel<256>(unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float*, __nv_bfloat16*, unsigned char*, float*, int):
+  REG:70 STACK:8 SHARED:4096 LOCAL:0 CONSTANT[0]:620 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function void paired_w13_fused_kernel<512>(unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float*, __nv_bfloat16*, unsigned char*, float*, int):
+  REG:70 STACK:8 SHARED:4096 LOCAL:0 CONSTANT[0]:620 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function braid_mode2_kernel(unsigned int*, long):
+  REG:15 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:544 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function cast_bf16_kernel(float const*, __nv_bfloat16*, int):
+  REG:10 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:548 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function interleaved_scheduler_probe_kernel(int const*, int const*, int*, int*, int*, int*, int*, int*, int*, int*, int*, int, int, int):
+  REG:22 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:628 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function fused_route_quant_kernel(int const*, __nv_bfloat16 const*, int*, int*, int*, unsigned char*, float*, int*, int):
+  REG:29 STACK:0 SHARED:5120 LOCAL:0 CONSTANT[0]:596 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function route_align_kernel(int const*, int*, int*, int*, int*, int):
+  REG:27 STACK:0 SHARED:5120 LOCAL:0 CONSTANT[0]:572 TEXTURE:0 SURFACE:0 SAMPLER:0
