@@ -16076,3 +16076,31 @@ maximum rank latency of a full CUDA-Graph replay.
   than noise and the whole phase sum improves.
 - **Evidence:** `evidence/iter699_w2_f16_accum_resource_correctness.md`; raw
   logs `bench/results/iter699_w2_f16_accum_m128_{correctness,resources,sass}.log`.
+
+## Iteration 700 — Packed-FP16 W2 improves M128 cold phase time by 1.11%
+
+- **Protocol:** physical H20 GPU1, M128 random routes/seed 20260902,
+  communication disabled only for attribution. Five FP32-OFF and five
+  FP16-ON processes were interleaved in `0/1/1/0/1/0/0/1/1/0` order. Each
+  process performs one warm execution, then a single phase-stamped candidate
+  launch immediately after its own excluded 256 MiB L2 clear. Every output
+  is finite; OFF is bitwise equal to multi, while ON repeats cosine
+  `0.9999993512848424` and relative L2 `0.001139531250097178`.
+- **Cold-L2 W2:** OFF values are
+  `106.464/106.112/107.360/106.912/107.072 us`, giving
+  `106.112/106.912/107.360 us` min/median/max and `106.784 us` mean. ON
+  values are `105.984/105.728/104.928/105.504/106.176 us`, giving
+  `104.928/105.728/106.176 us` and `105.664 us` mean. The candidate improves
+  median W2 by 1.107% and mean by 1.049%.
+- **Complete phase sum:** OFF values are
+  `327.968/326.208/329.152/328.640/327.360 us`; ON values are
+  `326.048/326.528/324.416/328.192/326.496 us`. OFF/ON min/median/max are
+  `326.208/327.968/329.152 us` and `324.416/326.496/328.192 us`; means are
+  `327.866/326.336 us`. The candidate improves median total local phase time
+  by 0.449% and mean by 0.467%.
+- **Decision:** the gain is small but W2 sample ranges almost separate and
+  both median and mean agree. Admit to M128 four-rank cold-L2 CUDA-Graph A/B;
+  retain as opt-in until the end-to-end result beats noise and the FP16
+  numerical tradeoff is explicitly accepted.
+- **Evidence:** `evidence/iter700_w2_f16_accum_m128_phase_abba.md`; raw log
+  `bench/results/iter700_w2_f16_accum_m128_phase_abba.log`.
