@@ -16301,3 +16301,21 @@ maximum rank latency of a full CUDA-Graph replay.
   independently measured W2 FP16 option remains default-off; selected FP32
   behavior remains unchanged unless that W2 flag is explicitly enabled.
 - **Evidence:** `evidence/iter708_restore_after_w13_f16_rejection.md`.
+
+## Iteration 709a — standalone-W2 NCU runner fails before CUDA
+
+- **Intent:** collect the missing standalone W2 SourceCounters report at TP4
+  M128, using the same random seed, prequantized FP8 input, and application-
+  managed excluded 256 MiB cold-L2 clear as the saved fused/standalone-W13
+  reports.  The NCU filter skipped the first matching `route_gemm` launch and
+  requested the second matching launch only.
+- **Result:** **environment failure before JIT launch, graph execution, cache
+  clear, or any profiled CUDA kernel.**  `/home/xutingz/fac/v4_bench_env_runner.py`
+  unconditionally imported Humming's dtype table while preparing a custom-only
+  run; megamoe's Torch has no `torch.float8_e8m0fnu`, so Python raised
+  `AttributeError` and NCU reported application exit code 1.
+- **Decision:** this is not kernel evidence.  Retry the identical NCU protocol
+  through the runner's pinned-SGLang setup only, without invoking its unused
+  Humming weight-preprocess hook.  Do not change the tested kernel, weights,
+  routes, cache policy, or launch filter.
+- **Evidence:** `evidence/iter709a_standalone_w2_ncu_runner_failure.md`.
