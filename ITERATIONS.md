@@ -17887,3 +17887,24 @@ maximum rank latency of a full CUDA-Graph replay.
   LOCAL=0, occupancy eight, and contain 32 QGMMAs with at most 20 dependency
   waits before any CUDA business launch.
 - **Evidence:** `evidence/iter725a_w2_shared_decoded_b32_composition.md`.
+
+## Iteration 725b–d — shared-decoded SS still serializes; pause
+
+- **Fresh JIT:** after narrowing the compile-time branch so unrelated packed
+  eight-WG template instances retain RS, extension
+  `v4tp_6009ed5b408d872cf41c_v178mspec` builds successfully.
+- **Resources:** TP4 M128 split-K2 is REG64/STACK48/SHARED2048/LOCAL0.
+  Candidate dynamic shared memory is 22,528 bytes, so the exact 24-KiB
+  static+dynamic footprint remains compatible with eight CTAs/SM; no local
+  spill is introduced.
+- **Exact static result:** the isolated W2 interval has 32 SS QGMMAs and 32
+  `WARPGROUP.DEPBAR` waits.  Its SHA256 is
+  `b0348d5698e78f1a732e05ae314178aeb59730e7fc0fd62a569c04a722479923`.
+- **Decision:** **REJECT before correctness/timing and restore production
+  exactly.**  Shared decoded operands do not repair fused-entry issue depth,
+  while adding shared stores/fences/barriers.  Per the user's instruction,
+  pause optimization after this unsuccessful round.
+- **Evidence:** `evidence/iter725d_w2_shared_decoded_static_rejection.md`,
+  `bench/results/iter725{b,c}_w2_shared_decoded_jit_20260907.log`,
+  `bench/results/iter725c_w2_shared_decoded_resources_20260907.log`, and
+  `bench/results/iter725c_w2_shared_decoded_m128_split2_ss_interval.sass`.

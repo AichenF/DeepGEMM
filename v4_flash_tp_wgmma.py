@@ -340,9 +340,6 @@ SINGLE_LAUNCH_TP4 = os.environ.get("V4_SINGLE_LAUNCH_TP4", "0") == "1"
 SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM", "0") == "1"
 )
-SINGLE_LAUNCH_W2_SHARED_DECODED = (
-    os.environ.get("V4_SINGLE_LAUNCH_W2_SHARED_DECODED", "0") == "1"
-)
 SINGLE_LAUNCH_W2_PREDECODE_S2R = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PREDECODE_S2R", "0") == "1"
 )
@@ -1922,33 +1919,6 @@ if SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM and (
         "V4_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM requires the isolated flat "
         "inline WOUT128 TP4 schedule-0 W2 path"
     )
-if SINGLE_LAUNCH_W2_SHARED_DECODED and (
-    not SINGLE_LAUNCH_TP4
-    or SINGLE_LAUNCH_SCHEDULE != 0
-    or SINGLE_LAUNCH_MIN_BLOCKS != 8
-    or SINGLE_LAUNCH_NOINLINE_GEMM
-    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
-    or SINGLE_LAUNCH_W2_PERSISTENT_STATE
-    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
-    or SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM
-    or SINGLE_LAUNCH_W2_PREDECODE_S2R
-    or SINGLE_LAUNCH_DUAL_WG_PHASES
-    or SINGLE_LAUNCH_78CTA_8WG
-    or SINGLE_LAUNCH_156CTA_4WG
-    or SINGLE_LAUNCH_W2_N64_TAIL
-    or SINGLE_LAUNCH_W2_CHUNK_MAJOR
-    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
-    or SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
-    or SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
-    or W2_COALESCED_STORE
-    or WOUT != 128
-    or not COMPACT_INTERLEAVED_SCALE
-    or WEIGHT_STAGES != 2
-):
-    raise ValueError(
-        "V4_SINGLE_LAUNCH_W2_SHARED_DECODED requires the isolated inline "
-        "bound-8 WOUT128 TP4 schedule-0 W2 path"
-    )
 if SINGLE_LAUNCH_W2_PREDECODE_S2R and (
     not SINGLE_LAUNCH_TP4
     or not (
@@ -2184,14 +2154,9 @@ static constexpr int kBulkReduceStageBytes =
 static constexpr int kPairSpillStageBytes =
     K_SINGLE_LAUNCH_W2_PAIR_SPILL_ONE
     ? 2 * 128 * static_cast<int>(sizeof(uint32_t)) : 0;
-// One B32-swizzled FP8 K32 tile for each N64 half.  The tiles are reused only
-// after the preceding WGMMA wait, so no second decoded stage is required.
-static constexpr int kSharedDecodedW2StageBytes =
-    K_SINGLE_LAUNCH_W2_SHARED_DECODED ? 2 * 64 * 32 : 0;
 static constexpr int kRouteTaskDynamicBytes =
     kStages * kWout * ((kBlockK / 2) + 4) + kTok * kBlockK
-    + kBulkReduceStageBytes + kPairSpillStageBytes
-    + kSharedDecodedW2StageBytes;
+    + kBulkReduceStageBytes + kPairSpillStageBytes;
 static_assert(kStages == 2 || kStages == 3 || kStages == 4);
 static_assert(!kInterleavedBulkCopy
               || (kBulkWeightCopy && kTiledWeightLayout
@@ -2272,8 +2237,6 @@ static constexpr bool kSingleLaunchW2ProducerAtomicCombine =
     K_SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE;
 static constexpr bool kSingleLaunchW2F16WgmmaAccum =
     K_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM;
-static constexpr bool kSingleLaunchW2SharedDecoded =
-    K_SINGLE_LAUNCH_W2_SHARED_DECODED;
 static constexpr bool kSingleLaunchW2PredecodeS2R =
     K_SINGLE_LAUNCH_W2_PREDECODE_S2R;
 static constexpr bool kSingleLaunchW2PairWgmmaGroups =
@@ -2684,18 +2647,6 @@ __device__ __forceinline__ cute::GmmaDescriptor desc_128b(uint32_t pointer) {
     return descriptor;
 }
 
-__device__ __forceinline__ cute::GmmaDescriptor desc_32b(uint32_t pointer) {
-    cute::GmmaDescriptor descriptor;
-    descriptor.bitfield.start_address_ = pointer >> 4;
-    descriptor.bitfield.layout_type_ = static_cast<uint64_t>(
-        cute::SM90::GMMA::LayoutType::B32);
-    descriptor.bitfield.leading_byte_offset_ = 0;
-    // Eight 32-byte rows form one descriptor stride atom.
-    descriptor.bitfield.stride_byte_offset_ = 16;
-    descriptor.bitfield.base_offset_ = 0;
-    return descriptor;
-}
-
 __device__ __forceinline__ int32_t progress_load_acquire(
         const int32_t* pointer) {
     uint32_t value;
@@ -3006,18 +2957,12 @@ __device__ __forceinline__ void route_gemm_task(
         + (kPrivateDualActivation ? math_wg * kTok * kBlockK : 0);
     __nv_bfloat16* w2_output_smem = reinterpret_cast<__nv_bfloat16*>(
         activation_smem_base + kActivationCopies * kTok * kBlockK);
-    uint8_t* shared_decoded_w2_smem =
-        activation_smem_base + kActivationCopies * kTok * kBlockK
-        + kBulkReduceStageBytes + kPairSpillStageBytes;
     const uint32_t weight_smem_addr =
         static_cast<uint32_t>(__cvta_generic_to_shared(weight_smem));
     const uint32_t weight_scale_smem_addr =
         static_cast<uint32_t>(__cvta_generic_to_shared(weight_scale_smem));
     const uint32_t activation_smem_addr =
         static_cast<uint32_t>(__cvta_generic_to_shared(activation_smem));
-    const uint32_t shared_decoded_w2_smem_addr =
-        static_cast<uint32_t>(
-            __cvta_generic_to_shared(shared_decoded_w2_smem));
     const int weight_swizzle_row_offset =
         kWeightSwizzle == 64 ? ((weight_smem_addr >> 7) & 3) : 0;
 
@@ -3600,131 +3545,6 @@ __device__ __forceinline__ void route_gemm_task(
         uint2 next_fp8_1[kActiveWgmmaGroups];
         uint2 current_fp8_0[kActiveWgmmaGroups];
         uint2 current_fp8_1[kActiveWgmmaGroups];
-        if constexpr (!IsW13 && kSingleLaunchW2SharedDecoded
-                      && kActiveWgmmaGroups == 2 && !F16WgmmaAccum
-                      && IndependentTaskWGs == 1 && !DualWgW13
-                      && WgmmaHalf == -1) {
-            #pragma unroll
-            for (int k_step = 0; k_step < kBlockK / 32; ++k_step) {
-                const uint32_t stage_base =
-                    weight_smem_addr + stage * kWeightStageStride;
-                const auto activation_desc = desc_128b(
-                    activation_smem_addr + k_step * 32);
-
-                #pragma unroll
-                for (int group = 0; group < kActiveWgmmaGroups; ++group) {
-                    const int group_row0 = group * 64 + row0;
-                    const int group_row1 = group * 64 + row1;
-                    const int weight_chunk0 = kWeightSwizzle == 64
-                        ? (k_step ^ (((group_row0 >> 1)
-                                      + weight_swizzle_row_offset) & 3))
-                        : k_step;
-                    const int weight_chunk1 = kWeightSwizzle == 64
-                        ? (k_step ^ (((group_row1 >> 1)
-                                      + weight_swizzle_row_offset) & 3))
-                        : k_step;
-                    uint32_t packed0;
-                    uint32_t packed1;
-                    asm volatile("ld.shared.b32 %0,[%1];"
-                        : "=r"(packed0)
-                        : "r"(stage_base + group_row0 * (kBlockK / 2)
-                              + weight_chunk0 * 16 + packed_k_offset));
-                    asm volatile("ld.shared.b32 %0,[%1];"
-                        : "=r"(packed1)
-                        : "r"(stage_base + group_row1 * (kBlockK / 2)
-                              + weight_chunk1 * 16 + packed_k_offset));
-                    const uint32_t exponent0 =
-                        weight_scale_smem[scale_stage * kScaleStageStride
-                                          + group_row0 * kScaleRowBytes
-                                          + scale_k_base + k_step];
-                    const uint32_t exponent1 =
-                        weight_scale_smem[scale_stage * kScaleStageStride
-                                          + group_row1 * kScaleRowBytes
-                                          + scale_k_base + k_step];
-                    uint2 weight_lut0;
-                    uint2 weight_lut1;
-                    if constexpr (kNormalizedWeightScale) {
-                        if constexpr (kNormalizedSharedLut) {
-                            weight_lut0 = lut_smem[exponent0];
-                            weight_lut1 = lut_smem[exponent1];
-                        } else {
-                            weight_lut0 = synth_normalized_e2m1_lut(
-                                exponent0);
-                            weight_lut1 = synth_normalized_e2m1_lut(
-                                exponent1);
-                        }
-                    } else if constexpr (kDequantSynthLut) {
-                        weight_lut0 = synth_e2m1_e8m0_lut(exponent0);
-                        weight_lut1 = synth_e2m1_e8m0_lut(exponent1);
-                    } else if constexpr (kW2GlobalLut) {
-                        constexpr int kGlobalLutOffset =
-                            kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
-                        weight_lut0 = __ldg(
-                            global_lut + kGlobalLutOffset
-                            + scale_lut_index(exponent0));
-                        weight_lut1 = __ldg(
-                            global_lut + kGlobalLutOffset
-                            + scale_lut_index(exponent1));
-                    } else {
-                        weight_lut0 = lut_smem[scale_lut_index(exponent0)];
-                        weight_lut1 = lut_smem[scale_lut_index(exponent1)];
-                    }
-                    const uint2 fp8_0 = dequant_weight_word<kMode2Braid>(
-                        packed0, weight_lut0);
-                    const uint2 fp8_1 = dequant_weight_word<kMode2Braid>(
-                        packed1, weight_lut1);
-                    constexpr uint32_t kDecodedGroupBytes = 64 * 32;
-                    const uint32_t group_base =
-                        shared_decoded_w2_smem_addr
-                        + group * kDecodedGroupBytes;
-                    const uint32_t decoded_k_offset = packed_k_offset * 2;
-                    const uint32_t dst0 = group_base + row0 * 32
-                        + (decoded_k_offset ^ ((row0 & 1) << 4));
-                    const uint32_t dst1 = group_base + row1 * 32
-                        + (decoded_k_offset ^ ((row1 & 1) << 4));
-                    asm volatile("st.shared.v2.b32 [%0],{%1,%2};"
-                        :: "r"(dst0), "r"(fp8_0.x), "r"(fp8_0.y)
-                        : "memory");
-                    asm volatile("st.shared.v2.b32 [%0],{%1,%2};"
-                        :: "r"(dst1), "r"(fp8_1.x), "r"(fp8_1.y)
-                        : "memory");
-                }
-
-                // Publish ordinary shared stores to the async WGMMA proxy,
-                // then converge the four producer/consumer warps.
-                asm volatile("fence.proxy.async.shared::cta;"
-                             ::: "memory");
-                independent_wg_sync<IndependentTaskWGs>(independent_wg);
-                #pragma unroll
-                for (int group = 0; group < kActiveWgmmaGroups; ++group) {
-                    #pragma unroll
-                    for (int value = 0; value < 4; ++value)
-                        ptx::warpgroup_fence_operand(tile_f32[group][value]);
-                }
-                ptx::warpgroup_arrive();
-                #pragma unroll
-                for (int group = 0; group < kActiveWgmmaGroups; ++group) {
-                    constexpr uint32_t kDecodedGroupBytes = 64 * 32;
-                    const auto weight_desc = desc_32b(
-                        shared_decoded_w2_smem_addr
-                        + group * kDecodedGroupBytes);
-                    cute::SM90::GMMA::
-                        MMA_64x8x32_F32E4M3E4M3_SS_TN<>::fma(
-                            weight_desc, activation_desc,
-                            tile_f32[group][0], tile_f32[group][1],
-                            tile_f32[group][2], tile_f32[group][3],
-                            cute::SM90::GMMA::ScaleOut::One);
-                }
-                ptx::warpgroup_commit_batch();
-                #pragma unroll
-                for (int group = 0; group < kActiveWgmmaGroups; ++group) {
-                    #pragma unroll
-                    for (int value = 0; value < 4; ++value)
-                        ptx::warpgroup_fence_operand(tile_f32[group][value]);
-                }
-                ptx::warpgroup_wait<0>();
-            }
-        } else {
         #pragma unroll
         for (int k_step = 0; k_step < kBlockK / 32; ++k_step) {
             const uint32_t stage_base =
@@ -4124,7 +3944,6 @@ __device__ __forceinline__ void route_gemm_task(
                 }
                 ptx::warpgroup_wait<0>();
             }
-        }
         }
         if constexpr (kMergedWgmmaGroup) {
             ptx::warpgroup_commit_batch();
@@ -12643,7 +12462,6 @@ _EXTENSION_CONFIG = (
           f"slw2brr{SINGLE_LAUNCH_W2_BULK_REDUCE_ROUTES}_"
           f"slw2pac{int(SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE)}_"
           f"slw2f16a{int(SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM)}_"
-          f"slw2ssd{int(SINGLE_LAUNCH_W2_SHARED_DECODED)}_"
           f"slw2pds2r{int(SINGLE_LAUNCH_W2_PREDECODE_S2R)}_"
           f"slw2pwg{int(SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS)}_"
           f"slw2pso{int(SINGLE_LAUNCH_W2_PAIR_SPILL_ONE)}_"
@@ -12896,10 +12714,6 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM="
             f"{int(SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM)}"
-        ),
-        (
-            "-DK_SINGLE_LAUNCH_W2_SHARED_DECODED="
-            f"{int(SINGLE_LAUNCH_W2_SHARED_DECODED)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W2_PREDECODE_S2R="
