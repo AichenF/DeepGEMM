@@ -17871,3 +17871,19 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `evidence/iter724c_w2_terminal_noreturn_static_probe.md`,
   `evidence/iter724f_w2_terminal_noreturn_static_rejection.md`, and
   `bench/results/iter724{d,e}_w2_terminal_noreturn*20260906*`.
+
+## Iteration 725a — compose B32 shared-decoded W2 SS-WGMMA
+
+- **Hypothesis:** the fused entry's decoded RS source registers alias W2
+  accumulator destinations and force 32 QGMMAs / 32 dependency waits.  Two
+  B32-swizzled N64xK32 shared tiles remove those register operands and may
+  recover the standalone entry's two-WGMMA issue depth.
+- **Isolated candidate:** default-off
+  `V4_SINGLE_LAUNCH_W2_SHARED_DECODED=1`, restricted to the inline TP4
+  schedule-0 bound-eight N128 path.  Decode both N64 halves into a reusable
+  4-KiB shared scratch, publish/converge, then issue two SS-WGMMAs per K32.
+  All other phases and embedded communication remain unchanged.
+- **Predeclared gate:** fresh M128 split-2 entry must remain REG<=64,
+  LOCAL=0, occupancy eight, and contain 32 QGMMAs with at most 20 dependency
+  waits before any CUDA business launch.
+- **Evidence:** `evidence/iter725a_w2_shared_decoded_b32_composition.md`.
