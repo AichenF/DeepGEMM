@@ -532,6 +532,17 @@ SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE = (
     )
     == "1"
 )
+# M128-only compact-outline task-boundary experiment.  Alternate two sets of
+# route metadata and TMA mbarriers so the next task can initialize its private
+# set before the sole task-entry CTA rendezvous.  This removes the otherwise
+# redundant post-task rendezvous without reinitializing state that a lagging
+# warp from the preceding task can still observe.
+SINGLE_LAUNCH_W13_COMPACT_PINGPONG_STATE = (
+    os.environ.get(
+        "V4_SINGLE_LAUNCH_W13_COMPACT_PINGPONG_STATE", "0"
+    )
+    == "1"
+)
 # M128-only compact-outline scheduling experiment.  Enumerate every N128
 # tile for one K split before advancing to the next split, then map that
 # physical ordinal back to route_gemm_task's unchanged logical ABI.
@@ -1735,6 +1746,60 @@ if SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE and (
         "V4_SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE requires the "
         "isolated compact-ABI M128-bound9 schedule-0 path"
     )
+if SINGLE_LAUNCH_W13_COMPACT_PINGPONG_STATE and (
+    SINGLE_LAUNCH_SCHEDULE != 0
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or not SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or not SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+    or SINGLE_LAUNCH_W2_PHASE_NOINLINE
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W2_PERSISTENT_STATE
+    or SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE
+    or SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS
+    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_78CTA_8WG
+    or SINGLE_LAUNCH_156CTA_4WG
+    or SINGLE_LAUNCH_78CTA_SMID_MAP
+    or SINGLE_LAUNCH_SM_STRIPED_TASKS
+    or SINGLE_LAUNCH_78CTA_WG_DAG
+    or SINGLE_LAUNCH_78CTA_LOCAL_W13
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_W2_N64_TAIL
+    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS
+    or SINGLE_LAUNCH_BALANCED_W2_WORKERS
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC
+    or SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or not SINGLE_LAUNCH_M128_BOUND9
+    or not SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS
+    or SINGLE_LAUNCH_W2_UNROLL2_BOUND9
+    or SINGLE_LAUNCH_W2_CHUNK_MAJOR
+    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+    or SINGLE_LAUNCH_W2_CHUNK_AR_POST
+    or SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
+    or SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE
+    or W2_COALESCED_STORE
+    or WOUT != 128
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W13_COMPACT_PINGPONG_STATE requires the "
+        "isolated compact-ABI M128-bound9 valid-task schedule-0 path"
+    )
 if SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS and (
     SINGLE_LAUNCH_SCHEDULE != 0
     or SINGLE_LAUNCH_NOINLINE_GEMM
@@ -2132,6 +2197,8 @@ static constexpr bool kSingleLaunchW2PersistentState =
     K_SINGLE_LAUNCH_W2_PERSISTENT_STATE;
 static constexpr bool kSingleLaunchW13CompactPersistentState =
     K_SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE;
+static constexpr bool kSingleLaunchW13CompactPingPongState =
+    K_SINGLE_LAUNCH_W13_COMPACT_PINGPONG_STATE;
 static constexpr bool kSingleLaunchW13CompactSplitMajorTasks =
     K_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS;
 static constexpr int kSingleLaunchW13WaveRotate =
@@ -2688,7 +2755,7 @@ template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool F16WgmmaAccum = false, bool PredecodeS2R = false,
           bool PairWgmmaGroups = false, bool PairSpillOne = false,
           bool PairOperandFence = false, bool PairInlineAsm = false,
-          bool PairWarpSync = false>
+          bool PairWarpSync = false, bool PingPongTaskState = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -2773,13 +2840,19 @@ __device__ __forceinline__ void route_gemm_task(
     constexpr bool kPrivateDualActivation =
         DualWgW13 && kSingleLaunchDualWgPrivateAct;
     constexpr int kActivationCopies = kPrivateDualActivation ? 2 : 1;
-    constexpr int kMetadataSlots = PersistentState ? 2 : 1;
+    constexpr int kTaskStateBanks = PingPongTaskState ? 2 : 1;
+    constexpr int kMetadataSlots =
+        (PersistentState || PingPongTaskState) ? 2 : 1;
     constexpr bool kCrossTaskWeightPrefetch =
         PersistentState
         && ((IsW13 && kSingleLaunchW13NextTaskPrefetch)
             || (!IsW13 && kSingleLaunchW2NextTaskPrefetch));
     static_assert(!PersistentState || !DualWgW13,
                   "persistent task state supports one WGMMA warpgroup");
+    static_assert(!PingPongTaskState
+                  || (IsW13 && !PersistentState && !DualWgW13
+                      && IndependentTaskWGs == 1),
+                  "ping-pong task state supports flat nonpersistent W13");
     static_assert(IndependentTaskWGs == 1 || IndependentTaskWGs == 4
                   || IndependentTaskWGs == 8);
     static_assert(!F16WgmmaAccum
@@ -2894,10 +2967,12 @@ __device__ __forceinline__ void route_gemm_task(
         kWeightSwizzle == 64 ? ((weight_smem_addr >> 7) & 3) : 0;
 
     __shared__ __align__(8)
-        uint64_t full_barriers[kStorageWGs][kStages];
-    __shared__ __align__(8) uint64_t scale_barriers[kStorageWGs];
+        uint64_t full_barriers[kStorageWGs][kTaskStateBanks][kStages];
     __shared__ __align__(8)
-        uint64_t activation_empty_barrier_storage[IndependentTaskWGs];
+        uint64_t scale_barriers[kStorageWGs][kTaskStateBanks];
+    __shared__ __align__(8)
+        uint64_t activation_empty_barrier_storage[
+            IndependentTaskWGs][kTaskStateBanks];
     constexpr int kLutEntries =
         (kNormalizedWeightScale && kNormalizedSharedLut) ? 13 :
         (kNormalizedWeightScale || kDequantSynthLut
@@ -2932,7 +3007,11 @@ __device__ __forceinline__ void route_gemm_task(
             "createpolicy.fractional.L2::evict_last.b64 %0,1.0;"
             : "=l"(reused_cache_policy));
     }
-    const int metadata_slot = PersistentState ? (task_sequence & 1) : 0;
+    const int task_state_bank =
+        PingPongTaskState ? (task_sequence & 1) : 0;
+    const int metadata_slot =
+        (PersistentState || PingPongTaskState)
+        ? (task_sequence & 1) : 0;
     if (tid < kTok) {
         const int position = m_block_idx * kTok + tid;
         const int route = __ldg(sorted_ids + position);
@@ -2952,13 +3031,15 @@ __device__ __forceinline__ void route_gemm_task(
         }
     }
     if constexpr (kNormalizedWeightScale && kNormalizedSharedLut) {
-        if (!PersistentState || task_sequence == 0) {
+        if ((!PersistentState && !PingPongTaskState)
+                || task_sequence == 0) {
             for (int i = tid; i < 13; i += kTaskThreads)
                 lut_smem[i] = synth_normalized_e2m1_lut(i);
         }
     } else if constexpr (!kNormalizedWeightScale && !kDequantSynthLut
                          && (IsW13 || !kW2GlobalLut)) {
-        if (!PersistentState || task_sequence == 0) {
+        if ((!PersistentState && !PingPongTaskState)
+                || task_sequence == 0) {
             for (int i = tid; i < kLutRows; i += kTaskThreads) {
                 constexpr int kGlobalLutOffset =
                     kLutRows == 128 ? mxfp4::kE8M0LutBase : 0;
@@ -2968,13 +3049,15 @@ __device__ __forceinline__ void route_gemm_task(
     }
 
     const uint32_t barrier_base_addr = static_cast<uint32_t>(
-        __cvta_generic_to_shared(&full_barriers[storage_wg][0]));
+        __cvta_generic_to_shared(
+            &full_barriers[storage_wg][task_state_bank][0]));
     uint32_t barrier_addr[kDirectBarrierAddr ? 1 : kStages];
     if constexpr (!kDirectBarrierAddr) {
         #pragma unroll
         for (int stage = 0; stage < kStages; ++stage)
             barrier_addr[stage] = static_cast<uint32_t>(
-                __cvta_generic_to_shared(&full_barriers[storage_wg][stage]));
+                __cvta_generic_to_shared(
+                    &full_barriers[storage_wg][task_state_bank][stage]));
     }
     const auto weight_barrier_addr = [&](int stage) {
         if constexpr (kDirectBarrierAddr)
@@ -2983,10 +3066,12 @@ __device__ __forceinline__ void route_gemm_task(
             return barrier_addr[stage];
     };
     const uint32_t scale_barrier_addr = static_cast<uint32_t>(
-        __cvta_generic_to_shared(&scale_barriers[storage_wg]));
+        __cvta_generic_to_shared(
+            &scale_barriers[storage_wg][task_state_bank]));
     const uint32_t activation_empty_barrier_addr = static_cast<uint32_t>(
         __cvta_generic_to_shared(
-            &activation_empty_barrier_storage[independent_wg]));
+            &activation_empty_barrier_storage[
+                independent_wg][task_state_bank]));
     if (!PersistentState || task_sequence == 0) {
         if constexpr (DualWgW13 && !kPrivateDualActivation) {
             if (tid == 0)
@@ -3002,10 +3087,11 @@ __device__ __forceinline__ void route_gemm_task(
             asm volatile("fence.proxy.async.shared::cta;");
         }
     }
-    // In persistent mode this single rendezvous both completes the preceding
-    // task before its dynamic stages are reused and publishes the next task's
-    // double-buffered metadata.  The legacy caller retains its post-task
-    // barrier, so the nonpersistent path is unchanged.
+    // Persistent mode advances barrier generations.  Ping-pong mode instead
+    // initializes the alternate barrier/metadata bank before this rendezvous;
+    // the rendezvous completes the preceding task before any lane reuses the
+    // common dynamic stages.  The legacy single-bank caller retains its
+    // post-task barrier and is therefore unchanged.
     independent_wg_sync<IndependentTaskWGs>(independent_wg);
 
     const auto load_weight_stage = [&](int local_kt, int stage) {
@@ -4332,6 +4418,8 @@ __device__ __noinline__ void single_launch_w13_gemm_phase_compact(
         const SingleLaunchW13PhaseArgs* args) {
     constexpr int kW13NTiles = 1024 / kWout;
     constexpr int kMaxRoutes = Tokens * kTopK;
+    constexpr bool kPingPongTaskState =
+        kSingleLaunchW13CompactPingPongState && Tokens == 128;
     const int cta = static_cast<int>(blockIdx.x);
     const int ctas = static_cast<int>(gridDim.x);
     const int tasks =
@@ -4366,14 +4454,17 @@ __device__ __noinline__ void single_launch_w13_gemm_phase_compact(
         route_gemm_task<
             4096, 1024, SplitK, true, 0, false, false,
             kSingleLaunchW13CompactPersistentState, -1,
-            false, 0, AssumeValidMblock>(
+            false, 0, AssumeValidMblock, false, false, 1, false,
+            false, false, false, false, false, false,
+            kPingPongTaskState>(
             args->tma_weight, args->tma_weight_scale,
             args->weight, args->weight_scale, args->weight_global_scale,
             args->activation, args->activation_scale,
             args->sorted_ids, args->expert_ids, args->num_tokens_padded,
             args->topk_weights, args->output, args->global_lut, nullptr,
             kMaxRoutes, 0, logical_task, task_sequence);
-        if constexpr (!kSingleLaunchW13CompactPersistentState)
+        if constexpr (!kSingleLaunchW13CompactPersistentState
+                      && !kPingPongTaskState)
             __syncthreads();
     }
 }
@@ -12351,6 +12442,7 @@ _EXTENSION_CONFIG = (
           f"slps{int(SINGLE_LAUNCH_PERSISTENT_GEMM_STATE)}_"
           f"slw2ps{int(SINGLE_LAUNCH_W2_PERSISTENT_STATE)}_"
           f"slw13cps{int(SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE)}_"
+          f"slw13cpp{int(SINGLE_LAUNCH_W13_COMPACT_PINGPONG_STATE)}_"
           f"slw13csm{int(SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS)}_"
           f"slw13wr{SINGLE_LAUNCH_W13_WAVE_ROTATE}_"
           f"slw2wr{SINGLE_LAUNCH_W2_WAVE_ROTATE}_"
@@ -12542,6 +12634,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE="
             f"{int(SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W13_COMPACT_PINGPONG_STATE="
+            f"{int(SINGLE_LAUNCH_W13_COMPACT_PINGPONG_STATE)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W13_COMPACT_SPLIT_MAJOR_TASKS="
