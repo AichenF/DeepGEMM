@@ -15607,3 +15607,28 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** `evidence/iter682_w13_base_rotate65_rejection.md`; raw logs
   `bench/results/iter682_w13_base_rotate65_m128_{jit_correctness,resources}_20260906.log`
   and `bench/results/iter682_w13_base_rotate65_tp4_m128_cold_short_20260906.log`.
+
+## Iteration 683 — reject owner-preserving W13 residual task permutation
+
+- **Hypothesis/change:** Keep the production 474-CTA residual owner set and
+  every complete-wave mapping unchanged, but rotate only the residual logical
+  task indices by 65 modulo the dynamic residual count. This tests weight/SM
+  decorrelation without changing per-SM task counts or the hot loop.
+- **Resource/correctness:** Candidate SHA-256
+  `85d505b7c0462b9138f57b81d97849d804870afa94dfda2bb8df5e5327819091`;
+  extension `v4tp_2cc4594d271735395df9_v178mspec`. M128 split-K2/4 remains
+  `REG56 STACK32 SHARED2048 LOCAL0`; random-route M128 is bitwise equal to
+  the local reference and packed generation wrap is `[0,0,0,0]`.
+- **Cold-L2 TP4 gate:** Candidate multi/one medians are
+  `0.305088/0.352384 ms`, ratio `1.155024`, over two replay-paired batches
+  of 20 after four warmups. An immediately preceding exact-production anchor
+  reports `0.305008/0.349616 ms`, ratio `1.146252`. Ratio normalization makes
+  the residual permutation a 0.765% regression; direct one-kernel latency
+  regresses 0.792%. All correctness/allreduce checks pass.
+- **Decision:** Reject, restore exact Iteration-665 production, and close
+  W13 residual-wave mapping. The selected policy of rotating complete waves
+  while leaving the residual mapping unchanged remains best measured.
+- **Evidence:** `evidence/iter683_w13_residual_permute65_rejection.md`; raw
+  logs `bench/results/iter682b_production_tp4_m128_cold_anchor_20260906.log`,
+  `bench/results/iter683_w13_residual_permute65_m128_{jit_correctness,resources}_20260906.log`,
+  and `bench/results/iter683_w13_residual_permute65_tp4_m128_cold_short_20260906.log`.
