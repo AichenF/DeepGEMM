@@ -15931,3 +15931,26 @@ maximum rank latency of a full CUDA-Graph replay.
   SGLang dependency path.  Inspect the already-built cubin before the retry.
 - **Evidence:** `evidence/iter693_w2_k128_merged_launcher_failure.md`; raw log
   `bench/results/iter693_w2_k128_merged_m128_jit_correctness.log`.
+
+## Iteration 694 — W2 K128 merged group passes resource and exact-output gates
+
+- **Candidate:** unchanged Iteration-693 source and extension
+  `v4tp_58c93f6e47c09fccaf68_v178mspec`, now launched through the pinned
+  benchmark environment runner.  Only TP4 single-launch W2 merges its four
+  K32 RS-WGMMA operations per K128 tile; the independently executed
+  same-source multi reference keeps its original per-K32 commit/wait path.
+- **Resource gate:** M128/split-K2 remains
+  `REG56 STACK32 SHARED2048 LOCAL0 CONSTANT[0]1361`, exactly preserving the
+  selected 702-CTA/nine-CTA-per-SM contract and fixed stack envelope.
+- **Correctness/progress:** physical H20 GPU1, random M128 routes, seed
+  20260902, prequantized FP8-E4M3 input plus FP32 group-128 scales and MXFP4
+  weights.  One warm launch preceded a launch after the separate excluded
+  256 MiB L2 clear.  The complete routed W2 output is bitwise equal to the
+  independent multi reference (`cosine=1`, `rel_l2=0`, finite), with 1,992
+  padded rows.  Packed barrier generations seeded at their last value wrap
+  exactly to `[0,0,0,0]`.
+- **Qualification/decision:** this is a TP-disabled arithmetic and resource
+  gate, not latency evidence.  The candidate is admitted to adjacent OFF/ON
+  cold-L2 phase-stamp timing before any four-rank graph run.
+- **Evidence:** `evidence/iter694_w2_k128_merged_resource_correctness.md`;
+  raw logs `bench/results/iter694_w2_k128_merged_m128_{resources,correctness}.log`.
