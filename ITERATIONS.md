@@ -16850,3 +16850,22 @@ maximum rank latency of a full CUDA-Graph replay.
   align standalone descriptor/parameter form or reuse its already-paired
   issue body in a fused-callable specialization.
 - **Evidence:** `evidence/iter710f_w2_compact_task_call_static_rejection.md`.
+
+## Iteration 711a — standalone W2 bound-9 proves the register cause
+
+- **Question/method:** compile unchanged source with the existing
+  `V4_W13_LAUNCH_BOUND_10=1` control, which applies min-blocks 9 to standalone
+  W2.  H20 GPU1 performed JIT only; no business kernel launched.
+- **Build/resource:** extension
+  `v4tp_660a3b674a50eda03d64_v178mspec`; standalone
+  `route_gemm<512,4096,1,false>` becomes
+  `REG56 STACK0 SHARED2048 LOCAL0`, versus its natural 61 registers.
+- **SASS result:** the exact function changes from the prior 32-QGMMA /
+  16-wait schedule to 32 QGMMAs / 32 dependency barriers.  Exact SASS SHA256
+  is `417857b8a26f64a69b04727f5a6a746a7ebaafd92c9dcfad9f5f2d5edf304721`.
+- **Conclusion:** the 56-register/nine-CTA constraint alone is sufficient to
+  serialize standalone W2.  Relaxing registers is necessary, although the
+  prior 64-register fused control shows it may not be sufficient.  Next
+  disable only fused M128 bound-9 while retaining every other selected
+  production optimization and require a fused 32/16 interval statically.
+- **Evidence:** `evidence/iter711a_standalone_w2_bound9_static_control.md`.

@@ -1,0 +1,2 @@
+ Function void route_gemm<512, 4096, 1, false, 0, false, false>(CUtensorMap_st, CUtensorMap_st, unsigned char const*, unsigned char const*, float const*, unsigned char const*, float const*, int const*, int const*, int const*, float const*, float*, uint2 const*, int*, int, int):
+  REG:56 STACK:0 SHARED:2048 LOCAL:0 CONSTANT[0]:936 TEXTURE:0 SURFACE:0 SAMPLER:0
