@@ -343,6 +343,9 @@ SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM = (
 SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM", "0") == "1"
 )
+SINGLE_LAUNCH_W2_F16_PAIR_LATE_ARRIVE = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_F16_PAIR_LATE_ARRIVE", "0") == "1"
+)
 SINGLE_LAUNCH_W2_PREDECODE_S2R = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PREDECODE_S2R", "0") == "1"
 )
@@ -1878,6 +1881,12 @@ if SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM and (
         "V4_SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM requires the selected "
         "M128-bound9 compact one-launch path and isolated FP16 W2 accum"
     )
+if (SINGLE_LAUNCH_W2_F16_PAIR_LATE_ARRIVE
+        and not SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_F16_PAIR_LATE_ARRIVE requires "
+        "V4_SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM=1"
+    )
 if SINGLE_LAUNCH_W2_PREDECODE_S2R and (
     not SINGLE_LAUNCH_TP4
     or not (
@@ -2196,6 +2205,8 @@ static constexpr bool kSingleLaunchW2F16WgmmaAccum =
     K_SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM;
 static constexpr bool kSingleLaunchW2F16PairInlineAsm =
     K_SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM;
+static constexpr bool kSingleLaunchW2F16PairLateArrive =
+    K_SINGLE_LAUNCH_W2_F16_PAIR_LATE_ARRIVE;
 static constexpr bool kSingleLaunchW2PredecodeS2R =
     K_SINGLE_LAUNCH_W2_PREDECODE_S2R;
 static constexpr bool kSingleLaunchW2PairWgmmaGroups =
@@ -2714,7 +2725,8 @@ template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool F16WgmmaAccum = false, bool PredecodeS2R = false,
           bool PairWgmmaGroups = false, bool PairSpillOne = false,
           bool PairOperandFence = false, bool PairInlineAsm = false,
-          bool PairWarpSync = false, bool F16PairInlineAsm = false>
+          bool PairWarpSync = false, bool F16PairInlineAsm = false,
+          bool F16PairLateArrive = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -2858,6 +2870,8 @@ __device__ __forceinline__ void route_gemm_task(
                       && WgmmaHalf == -1 && IndependentTaskWGs == 1
                       && kActiveWgmmaGroups == 2),
                   "paired FP16 inline WGMMA requires isolated flat W2 N128");
+    static_assert(!F16PairLateArrive || F16PairInlineAsm,
+                  "late FP16 WGMMA arrive requires paired inline issue");
     constexpr bool kMergedWgmmaGroup =
         IsW13 && kW13MergedWgmmaGroup;
     constexpr bool kDistributedPrep =
@@ -3518,7 +3532,8 @@ __device__ __forceinline__ void route_gemm_task(
                             tile_f32[group][value]);
                 }
             }
-            ptx::warpgroup_arrive();
+            if constexpr (!F16PairLateArrive)
+                ptx::warpgroup_arrive();
             #pragma unroll
             for (int group = 0; group < kActiveWgmmaGroups; ++group) {
                 const int group_row0 = group * 64 + row0;
@@ -3814,6 +3829,17 @@ __device__ __forceinline__ void route_gemm_task(
                         current_fp8_1[group].x);
                     cute::warpgroup_fence_operand(
                         current_fp8_1[group].y);
+                }
+                if constexpr (F16PairLateArrive) {
+                    #pragma unroll
+                    for (int group = 0;
+                         group < kActiveWgmmaGroups; ++group) {
+                        #pragma unroll
+                        for (int value = 0; value < 2; ++value)
+                            cute::warpgroup_fence_operand(
+                                tile_f16[group][value]);
+                    }
+                    ptx::warpgroup_arrive();
                 }
                 asm volatile(
                 "{\n"
@@ -9365,7 +9391,8 @@ void tp4_megamoe_single_launch_kernel(
                         kSingleLaunchW2PairOperandFence && Tokens == 128,
                         kSingleLaunchW2PairInlineAsm && Tokens == 128,
                         kSingleLaunchW2PairWarpSync && Tokens == 128,
-                        kSingleLaunchW2F16PairInlineAsm && Tokens == 128>(
+                        kSingleLaunchW2F16PairInlineAsm && Tokens == 128,
+                        kSingleLaunchW2F16PairLateArrive && Tokens == 128>(
                         &w2_tma_weight, &w2_tma_weight_scale,
                         w2, s2, g2, qactivation, activation_scale,
                         sorted_ids, expert_ids, num_tokens_padded,
@@ -12451,6 +12478,7 @@ _EXTENSION_CONFIG = (
           f"slw2pac{int(SINGLE_LAUNCH_W2_PRODUCER_ATOMIC_COMBINE)}_"
           f"slw2f16a{int(SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM)}_"
           f"slw2f16pia{int(SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM)}_"
+          f"slw2f16pla{int(SINGLE_LAUNCH_W2_F16_PAIR_LATE_ARRIVE)}_"
           f"slw2pds2r{int(SINGLE_LAUNCH_W2_PREDECODE_S2R)}_"
           f"slw2pwg{int(SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS)}_"
           f"slw2pso{int(SINGLE_LAUNCH_W2_PAIR_SPILL_ONE)}_"
@@ -12703,6 +12731,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM="
             f"{int(SINGLE_LAUNCH_W2_F16_PAIR_INLINE_ASM)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_F16_PAIR_LATE_ARRIVE="
+            f"{int(SINGLE_LAUNCH_W2_F16_PAIR_LATE_ARRIVE)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W2_PREDECODE_S2R="

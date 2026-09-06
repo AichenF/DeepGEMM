@@ -17758,3 +17758,20 @@ maximum rank latency of a full CUDA-Graph replay.
   alter coarse phase/dataflow ownership rather than WGMMA spelling.
 - **Evidence:** `evidence/iter718b_f16_paired_inline_w2_static_rejection.md`
   and `bench/results/iter718a_f16_pair_static_20260906.log`.
+
+## Iteration 719a — move the actual WGMMA fence after FP8 operand preparation
+
+- **New attribution:** Iteration 718 retained distinct source/destination
+  registers but executed `warpgroup_arrive` before packed-weight/scale loads
+  and FP4-to-FP8 register decode.  DeepGEMM's own SM90 bodies explicitly put
+  every shared input read before this fence.  None of the prior compiler
+  fence, inline-asm or warp-sync probes moved the hardware WGMMA fence.
+- **Change:** add a default-off child switch of the M128 FP16 paired path.
+  It suppresses the early arrive and emits one arrive after all source words
+  and packed-FP16 accumulators are compiler-fenced, immediately before the
+  unchanged two-QGMMA block.  Other shapes and all downstream work are
+  untouched.
+- **Pre-CUDA gate:** retain REG<=64/STACK32/LOCAL0 with no W2 local-memory
+  operations, and reduce the exact 32-QGMMA W2 interval to at most 20
+  DEPBARs (target 16), or reject before launch.
+- **Evidence:** `evidence/iter719a_late_wgmma_arrive_composition.md`.
