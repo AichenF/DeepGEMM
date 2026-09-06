@@ -15692,3 +15692,32 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/iter685_lean_tma_producer_tp4_m128_cold_screen_20260906.log`
   (harness mismatch, no timing) and
   `bench/results/iter685b_lean_tma_producer_tp4_m128_cold_screen_20260906.log`.
+
+## Iteration 686 — duplicate TMA-descriptor removal is noise-sized
+
+- **Hypothesis/change:** compact-interleaved MXFP4 passes an identical
+  tensor-map descriptor for weight and appended scale bytes. Remove the
+  duplicate W13 and W2 `__grid_constant__` parameters from the TP4 monolithic
+  entry, while retaining the task body's two-pointer source interface through
+  references to the two unique maps. Math, tasks, geometry, barriers,
+  communication, and TP8 are unchanged.
+- **Resource/correctness:** candidate SHA-256
+  `c3f780c50beef4122a337f3263b3ff107590397153e43c0d9ec233d3bc7336cb`;
+  extension `v4tp_87ee8546948a5b607d83_v178mspec`. M128 split-K2/4 remains
+  `REG56 STACK32 SHARED2048 LOCAL0`; `CONSTANT[0]` falls exactly 256 bytes,
+  from 1,361 to 1,105 bytes. Local M128 is bitwise equal to reference, packed
+  generation wrap is `[0,0,0,0]`, and TP4 correctness/allreduce pass on all
+  ranks.
+- **Cold-L2 TP4 screen:** GPUs 0/5/6/7, random seed 20260902, replay-paired
+  CUDA Graphs, 2x20 samples after four warmups, separate excluded 256 MiB
+  clear before every arm. Multi/candidate min/median/max are
+  `0.304576/0.307216/0.320352 ms` and
+  `0.349120/0.351776/0.357888 ms`; ratio `1.1450445`. The adjacent selected
+  anchor ratio is `1.146252`, so normalized movement is only about -0.11%,
+  inside noise and below the 1% gate.
+- **Decision:** Reject and restore exact selected production. Removing real
+  ABI redundancy does not alter the limiting register/stack/residency contract
+  and provides no defensible latency win.
+- **Evidence:** `evidence/iter686_dedup_tma_descriptors_rejection.md`; raw
+  logs `bench/results/iter686_dedup_tma_descriptors_m128_{jit_correctness,resources}_20260906.log`
+  and `bench/results/iter686_dedup_tma_descriptors_tp4_m128_cold_short_20260906.log`.
