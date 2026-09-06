@@ -15954,3 +15954,33 @@ maximum rank latency of a full CUDA-Graph replay.
   cold-L2 phase-stamp timing before any four-rank graph run.
 - **Evidence:** `evidence/iter694_w2_k128_merged_resource_correctness.md`;
   raw logs `bench/results/iter694_w2_k128_merged_m128_{resources,correctness}.log`.
+
+## Iteration 695 — ptxas already performs the W2 K128 merge; reject no-op
+
+- **Protocol:** unchanged Iteration-694 candidate on physical H20 GPU1,
+  random M128 routes/seed 20260902, communication disabled only for phase
+  attribution.  Five OFF and five ON processes were interleaved in
+  `0/1/1/0/1/0/0/1/1/0` order.  Every process ran one warm execution and
+  then one phase-stamped execution after a separate excluded 256 MiB L2
+  clear.  All ten complete routed outputs remained bitwise equal to the
+  independent multi reference.
+- **Cold-L2 W2 result:** OFF values are
+  `105.792/105.920/106.464/106.240/106.720 us`; ON values are
+  `105.536/108.192/106.240/106.080/106.944 us`.  OFF/ON medians are exactly
+  `106.240/106.240 us`; means are `106.227/106.598 us`, so the candidate is
+  0.35% slower by mean and has no median movement.
+- **Complete phase sum:** OFF/ON medians are `326.528/327.520 us`
+  (candidate +0.304%); means are `326.746/327.590 us` (+0.259%).  This is an
+  eager device-stamp diagnostic, not a distributed CUDA-Graph verdict.
+- **SASS proof:** the exact M128/split-K2 entry extracted from the phase-stamp
+  OFF and ON cubins has the same SHA-256
+  `bfbf7d2677e3dad303e09716cbc1568a5686ad44028b5e84927a78017acdae90`.
+  Thus ptxas already lowers both C++ commit/wait arrangements to identical
+  machine code; the timing tie is expected, not a hidden optimization.
+- **Decision:** reject before TP4, remove the probe, and restore exact selected
+  production SHA-256
+  `7ac22134c953d17c8dea9310011818ca483b5b8a96b06324381abd2c8c9c3f45`.
+  Do not retry W2 K128 group syntax; only a different instruction/dataflow
+  schedule can change the generated kernel.
+- **Evidence:** `evidence/iter695_w2_k128_merged_noop_rejection.md`; raw logs
+  `bench/results/iter695_w2_k128_merged_m128_{phase_abba,sass}.log`.
