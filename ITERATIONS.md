@@ -16926,3 +16926,22 @@ maximum rank latency of a full CUDA-Graph replay.
   78-CTA wave, and an exact W2 interval of 32 QGMMAs / about 16 waits before
   correctness or cold-L2 timing.
 - **Evidence:** `evidence/iter711d_fused_m128_unbounded_implementation.md`.
+
+## Iteration 711e — unbounded fused M128 still serializes W2
+
+- **Scope:** compile-only H20 GPU1 audit with the selected compact bundle,
+  bound9/rotations off and `V4_SINGLE_LAUNCH_M128_UNBOUNDED=1`; no business
+  kernel launched.
+- **Build/resource:** extension
+  `v4tp_c168d18c5c6bcac3eb17_v178mspec`; TP4 M128/split-K2 is
+  `REG79 STACK32 SHARED2048 LOCAL0`, statically admitting at most six
+  128-thread CTAs/SM by the register budget.
+- **SASS result:** the exact main entry still contains 32 W2 QGMMAs / 32
+  dependency barriers.  Exact SASS SHA256 is
+  `2c9ac18ff447b9a19f6acecb081fc9c2694090cc9bbee40d67a42e46a176b1a1`.
+- **Decision:** **reject before correctness/timing.**  Natural register
+  allocation alone does not overcome the large fused-entry scheduling
+  context.  Next combine the natural M128 register contract with the existing
+  whole-W2 phase outline; those two conditions have not yet been tested
+  together, and must restore 32/16 statically before launch.
+- **Evidence:** `evidence/iter711e_fused_m128_unbounded_static_rejection.md`.
