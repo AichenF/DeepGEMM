@@ -16534,3 +16534,21 @@ maximum rank latency of a full CUDA-Graph replay.
   was launched and no cold-L2 number is claimed.  Retain the diagnostic path
   default-off; next test must alter accumulator/WGMMA issue lifetime directly.
 - **Evidence:** `evidence/iter709m_w2_predecode_s2r_static_rejection.md`.
+
+## Iteration 709n — standalone W2 operand-lifetime audit
+
+- **Scope:** read-only cubin inspection of the exact standalone
+  `route_gemm<512,4096,1,false,0,false,false>` specialization already linked
+  into the Iteration-709m extension; no CUDA launch or timing.
+- **Result:** standalone is `REG61 STACK0 SHARED2048 LOCAL0` and contains
+  exactly 32 QGMMAs plus 16 dependency barriers.  Its first pair uses
+  distinct accumulator bases (`R28/R24`) and register-source bases
+  (`R48/R44`) before one wait.  A fused path instead aliases `R24` as both
+  destination and register source, then waits immediately after each QGMMA.
+- **Interpretation:** this strongly supports operand/accumulator lifetime
+  aliasing under fused REG56 as the serialization mechanism.  The next source
+  probe will explicitly materialize two current FP8 operand pairs and issue
+  adjacent QGMMAs while retaining predecoded S2R lookahead.
+- **Artifact:** standalone SASS SHA256
+  `d62b23aa061e2bd3a02a9ce3c35d763a4a8a590777a2aec01257adc70610a9ce`.
+- **Evidence:** `evidence/iter709n_standalone_w2_operand_lifetime_audit.md`.
