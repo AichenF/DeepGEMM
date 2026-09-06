@@ -17326,3 +17326,16 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter713o_rdc_tp4_m128_cold_smoke_20260906.log` and
   `evidence/iter713o_overlay_kernel_namespace_failure.md`.
+
+## Iteration 713p — split ownership between real kernel ops and JIT overlay
+
+- **Runner change:** under `V4_SGLANG_LIGHT_MOE_ALIGN=1`, pin
+  `sglang.kernels` and `sglang.kernels.ops` to the original selected checkout
+  before importing the alignment leaf.  The real
+  `sglang.kernels.ops.moe.__init__` now owns the exported function.
+- **Preserved path:** top-level `sglang` remains overlay-first, so only the
+  selected `sglang.jit_kernel` compatibility source continues to come from
+  `/home/xutingz/fac/.tpmoe_tmp`.
+- **Pre-CUDA gate:** runner Python compilation passes; production kernel and
+  benchmark sources are unchanged.
+- **Evidence:** `evidence/iter713p_pin_kernel_ops_to_checkout.md`.

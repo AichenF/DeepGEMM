@@ -82,6 +82,15 @@ def main() -> None:
             install_namespace(package_name, sglang_package_dir / relative)
 
         if os.environ.get("V4_SGLANG_LIGHT_MOE_ALIGN", "0") == "1":
+            # The compatibility overlay intentionally owns jit_kernel, but
+            # may also contain namespace-only kernels stubs.  Load the real
+            # registry-backed MoE op package from the selected checkout.
+            install_namespace(
+                "sglang.kernels", sglang_package_dir / "kernels"
+            )
+            install_namespace(
+                "sglang.kernels.ops", sglang_package_dir / "kernels" / "ops"
+            )
             for package_name in (
                 "sglang.srt.layers.moe",
                 "sglang.srt.layers.moe.moe_runner",
