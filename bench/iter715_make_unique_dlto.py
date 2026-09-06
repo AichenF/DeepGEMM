@@ -73,9 +73,11 @@ def main() -> None:
     rewrite(host_source, old_host, new_host, 2)
     rewrite(build_file, str(source_dir), str(output_dir), 2)
 
-    # Emit LTO IR at compile time, then enable the optimization itself at
-    # device link.  With explicit gencode targets NVCC rejects a compile-side
-    # -dlto flag; code=lto_90a is the compile-side request.
+    # Use NVCC's architecture-driver form at both stages.  CUDA 12.8 accepts
+    # code=lto_90a at compile time but nvlink lowers that path to generic
+    # sm_90 PTX, which rejects architecture-specific WGMMA.  In contrast,
+    # -arch=sm_90a -dlto expands to NVVM images tagged sm=90a and nvlink
+    # --arch=sm_90a.  Remove both inherited explicit gencode spellings first.
     ninja_text = build_file.read_text()
     ninja_lines = ninja_text.splitlines(keepends=True)
     cuda_flag_lines = [
@@ -90,15 +92,29 @@ def main() -> None:
         )
     cuda_flag_index = cuda_flag_lines[0]
     cuda_flag_line = ninja_lines[cuda_flag_index]
-    if cuda_flag_line.count("code=sm_90a") != 2:
+    compact_gencode = "-gencode=arch=compute_90a,code=sm_90a"
+    spaced_gencode = "-gencode arch=compute_90a,code=sm_90a"
+    if cuda_flag_line.count(compact_gencode) != 1:
         raise RuntimeError(
-            f"{build_file}: expected two sm_90a compile targets"
+            f"{build_file}: expected one compact sm_90a gencode"
         )
-    ninja_lines[cuda_flag_index] = cuda_flag_line.replace(
-        "code=sm_90a", "code=lto_90a"
+    if cuda_flag_line.count(spaced_gencode) != 1:
+        raise RuntimeError(
+            f"{build_file}: expected one spaced sm_90a gencode"
+        )
+    cuda_flag_line = cuda_flag_line.replace(compact_gencode, "")
+    cuda_flag_line = cuda_flag_line.replace(spaced_gencode, "")
+    newline = "\n" if cuda_flag_line.endswith("\n") else ""
+    ninja_lines[cuda_flag_index] = (
+        cuda_flag_line.removesuffix("\n") + " -arch=sm_90a -dlto" + newline
     )
     build_file.write_text("".join(ninja_lines))
-    rewrite(build_file, " -dlink -gencode=", " -dlink -dlto -gencode=", 1)
+    rewrite(
+        build_file,
+        " -dlink -gencode=arch=compute_90a,code=sm_90a",
+        " -dlink -dlto -arch=sm_90a",
+        1,
+    )
 
     print(
         json.dumps(

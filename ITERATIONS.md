@@ -17610,3 +17610,20 @@ maximum rank latency of a full CUDA-Graph replay.
   link; no CUDA business kernel, correctness result or timing exists.  Retry
   from a fresh output directory after this commit.
 - **Evidence:** `evidence/iter715d_device_lto_flag_fix.md`.
+
+## Iteration 715e — preserve SM90a features through device LTO
+
+- **Failure:** Iteration 715d reached nvlink, but its explicit
+  `code=lto_90a` input was lowered to PTX `.target sm_90`; ptxas therefore
+  rejected all architecture-specific WGMMA/FP8 instructions.  No cubin or
+  CUDA business-kernel launch exists.
+- **Driver proof:** an isolated CUDA-12.8 dry-run with
+  `-arch=sm_90a -dlto` expands to NVVM images tagged `sm=90a`,
+  `nvlink --arch=sm_90a -dlto`, and a final `sm=90a` cubin image.
+- **Repair:** remove both inherited explicit compile gencode spellings and
+  use the proven architecture-driver form at compile and device link.  This
+  changes only the generated temporary build recipe; production code and
+  kernel semantics are untouched.
+- **Next:** build from a fresh directory, then apply the original resource
+  and 32/16 W2 SASS gates before any CUDA launch.
+- **Evidence:** `evidence/iter715e_device_lto_sm90a_fix.md`.
