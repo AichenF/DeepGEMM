@@ -17803,3 +17803,28 @@ maximum rank latency of a full CUDA-Graph replay.
   `16bb9e09...01bb`.  No JIT or CUDA launch is required for this exact source
   restoration.
 - **Evidence:** `evidence/iter720_remove_rejected_f16_pair_probes.md`.
+
+## Iteration 723 — compact W2 bound-eight cross-composition remains 1:1
+
+- **Open composition tested:** Iteration 710 tested the compact two-argument
+  W2 task callee only under M128 bound-nine, while Iteration 711 tested the
+  fused bound-eight entry only with inline W2.  This iteration combined the
+  compact task boundary with the exact 64-register/eight-CTA contract under
+  which standalone W2 emits 32 QGMMAs / 16 dependency waits.
+- **Fresh build/resources:** JIT succeeds for TP4 M128 split-K2; the exact
+  entry is REG64/STACK48/SHARED2048/LOCAL0.  The added 16-byte stack frame
+  versus the already rejected bound-nine compact call is itself unfavorable.
+- **Exact static result:** the isolated compact W2 split-K2 callee contains
+  32 QGMMAs and 32 `WARPGROUP.DEPBAR` instructions, not the required at-most
+  20 waits (target 16).  Exact interval SHA256 is
+  `56a22b8691d896235397a44522d864f2cb7af7c435e4e05e0118403dd73300a4`.
+- **Decision:** **REJECT before CUDA business-kernel launch.**  The candidate
+  failed the predeclared static hard gate, so no correctness or timing is
+  claimed.  Restore the production validator and benchmark flag surface.
+  This closes the missing compact-call + bound-eight matrix cell: register
+  tier and call boundary together do not recover standalone W2 issue depth.
+- **Evidence:** `evidence/iter723a_w2_compact_bound8_composition.md`,
+  `evidence/iter723c_w2_compact_bound8_static_rejection.md`,
+  `bench/results/iter723b_w2_compact_bound8_jit_20260906.log`,
+  `bench/results/iter723c_w2_compact_bound8_resources_20260906.log`, and
+  `bench/results/iter723c_w2_compact_bound8_m128_split2_exact.sass`.
