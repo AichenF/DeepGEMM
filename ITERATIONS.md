@@ -16174,3 +16174,34 @@ maximum rank latency of a full CUDA-Graph replay.
   M8/16/32/64 before deciding default status.
 - **Evidence:** `evidence/iter703_w2_f16_accum_tp4_m128_paired_cold.md`; raw
   log `bench/results/iter703_w2_f16_accum_tp4_m128_paired_cold.log`.
+
+## Iteration 704 — W2 FP16 improves every remaining TP4 shape by 0.19–0.66%
+
+- **Protocol:** same physical H20 GPUs 1,5,6,7, verified peer matrix,
+  random routes/seed 20260902 and complete one-kernel MegaMoE+embedded
+  all-reduce FP32-vs-FP16 graph comparison as Iteration 703. M8, M16, M32
+  and M64 each use five outer batches x thirty replays = 150 samples per
+  variant; every replay follows an excluded 256 MiB L2 clear and alternates
+  variant order per sample.
+- **Cold-L2 medians (FP32 control / FP16 candidate / speedup):**
+  - M8: `0.075312 / 0.075168 ms / 1.001916x` (+0.192%).
+  - M16: `0.123552 / 0.122736 ms / 1.006648x` (+0.665%).
+  - M32: `0.198432 / 0.197536 ms / 1.004536x` (+0.454%).
+  - M64: `0.281920 / 0.280384 ms / 1.005478x` (+0.548%).
+  Including M128 from Iteration 703, control/candidate equal-weight geometric
+  means are `0.179075/0.178277 ms`, a `1.004477x` or 0.448% gain.
+- **Correctness:** M64 is bitwise equal on all ranks. M8/M16/M32 are finite
+  and tolerance-pass but not bitwise: minimum cosines are
+  `0.999997735/0.999997914/0.999997675` and maximum relative L2 values are
+  `0.00219598/0.00215028/0.00216612`; each reports max absolute BF16
+  difference 512. The apparent large absolute value reflects the benchmark's
+  broad random scale range; normalized error remains within the predefined
+  graph gate.
+- **Decision:** performance is directionally consistent across all five M,
+  but the 0.448% geometric-mean gain is a numerical tradeoff. Keep it opt-in
+  rather than silently changing production semantics. Run the candidate
+  against the actual multi-kernel baseline across all M to quantify the
+  updated remaining gap; any default promotion requires explicit acceptance
+  of FP16 accumulation quality.
+- **Evidence:** `evidence/iter704_w2_f16_accum_tp4_remaining_shapes.md`; raw
+  log `bench/results/iter704_w2_f16_accum_tp4_m8_m16_m32_m64_paired_cold.log`.
