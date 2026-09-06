@@ -16620,3 +16620,19 @@ maximum rank latency of a full CUDA-Graph replay.
   pair never exists in machine code.  Next force all current FP8 inputs live
   at the issue boundary with compiler operand fences.
 - **Evidence:** `evidence/iter709r_w2_pair_spill_one_static_rejection.md`.
+
+## Iteration 709s — force paired W2 source operands live at issue
+
+- **Change:** at the explicit two-QGMMA issue boundary, apply CuTe's empty
+  read/write compiler operand fence to all eight materialized FP8 source
+  registers.  This requires the exact predecode/pair/one-value-spill probe and
+  is intended to prevent ptxas from delaying the second group's shared load
+  until after the first wait.
+- **Scope:** no hardware instruction or arithmetic/order change is intended;
+  all diagnostic flags remain default-off and TP4-M128-only.  TP8 and selected
+  production remain unchanged; the new flag is part of the JIT identity.
+- **Pre-CUDA gate:** Python compilation passes; staged SHA256 is
+  `f8890202e7cdedc8c372b0515a1ac6a8dfc202e65f931ac4d4c648ba998cd1ae`.
+- **Next:** require REG56/no spill/nine CTA, unchanged 64 QGMMAs, dependency
+  barriers toward 32, and the spilled LDS before both QGMMAs in SASS.
+- **Evidence:** `evidence/iter709s_w2_pair_operand_fence_implementation.md`.

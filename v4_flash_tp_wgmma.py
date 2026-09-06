@@ -349,6 +349,9 @@ SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS = (
 SINGLE_LAUNCH_W2_PAIR_SPILL_ONE = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PAIR_SPILL_ONE", "0") == "1"
 )
+SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE", "0") == "1"
+)
 # Selected single-launch production bundle.  The historical environment name
 # is retained because compact W13 was the first bundled component, but the
 # switch now covers every independently validated fast path selected for the
@@ -1812,6 +1815,12 @@ if (SINGLE_LAUNCH_W2_PAIR_SPILL_ONE
         "V4_SINGLE_LAUNCH_W2_PAIR_SPILL_ONE requires "
         "V4_SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS=1"
     )
+if (SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE
+        and not SINGLE_LAUNCH_W2_PAIR_SPILL_ONE):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE requires "
+        "V4_SINGLE_LAUNCH_W2_PAIR_SPILL_ONE=1"
+    )
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
 LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
 DIRECT_BARRIER_ADDR = os.environ.get("V4_DIRECT_BARRIER_ADDR", "0") == "1"
@@ -2059,6 +2068,8 @@ static constexpr bool kSingleLaunchW2PairWgmmaGroups =
     K_SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS;
 static constexpr bool kSingleLaunchW2PairSpillOne =
     K_SINGLE_LAUNCH_W2_PAIR_SPILL_ONE;
+static constexpr bool kSingleLaunchW2PairOperandFence =
+    K_SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -2563,7 +2574,8 @@ template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool AssumeValidMblock = false, bool BulkReduceW2 = false,
           bool AtomicCombineW2 = false, int IndependentTaskWGs = 1,
           bool F16WgmmaAccum = false, bool PredecodeS2R = false,
-          bool PairWgmmaGroups = false, bool PairSpillOne = false>
+          bool PairWgmmaGroups = false, bool PairSpillOne = false,
+          bool PairOperandFence = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -2693,6 +2705,8 @@ __device__ __forceinline__ void route_gemm_task(
                   "paired WGMMA issue requires predecoded N128 W2");
     static_assert(!PairSpillOne || PairWgmmaGroups,
                   "paired WGMMA shared spill requires paired issue");
+    static_assert(!PairOperandFence || PairSpillOne,
+                  "paired WGMMA operand fence requires shared spill");
     constexpr bool kMergedWgmmaGroup =
         IsW13 && kW13MergedWgmmaGroup;
     constexpr bool kDistributedPrep =
@@ -3638,6 +3652,20 @@ __device__ __forceinline__ void route_gemm_task(
                 }
             }
             if constexpr (PairWgmmaGroups) {
+                if constexpr (PairOperandFence) {
+                    #pragma unroll
+                    for (int group = 0;
+                         group < kActiveWgmmaGroups; ++group) {
+                        cute::warpgroup_fence_operand(
+                            current_fp8_0[group].x);
+                        cute::warpgroup_fence_operand(
+                            current_fp8_0[group].y);
+                        cute::warpgroup_fence_operand(
+                            current_fp8_1[group].x);
+                        cute::warpgroup_fence_operand(
+                            current_fp8_1[group].y);
+                    }
+                }
                 #pragma unroll
                 for (int group = 0; group < kActiveWgmmaGroups; ++group) {
                     const uint2 fp8_0 = current_fp8_0[group];
@@ -9037,7 +9065,8 @@ void tp4_megamoe_single_launch_kernel(
                         kSingleLaunchW2F16WgmmaAccum,
                         kSingleLaunchW2PredecodeS2R && Tokens == 128,
                         kSingleLaunchW2PairWgmmaGroups && Tokens == 128,
-                        kSingleLaunchW2PairSpillOne && Tokens == 128>(
+                        kSingleLaunchW2PairSpillOne && Tokens == 128,
+                        kSingleLaunchW2PairOperandFence && Tokens == 128>(
                         &w2_tma_weight, &w2_tma_weight_scale,
                         w2, s2, g2, qactivation, activation_scale,
                         sorted_ids, expert_ids, num_tokens_padded,
@@ -12122,6 +12151,7 @@ _EXTENSION_CONFIG = (
           f"slw2pds2r{int(SINGLE_LAUNCH_W2_PREDECODE_S2R)}_"
           f"slw2pwg{int(SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS)}_"
           f"slw2pso{int(SINGLE_LAUNCH_W2_PAIR_SPILL_ONE)}_"
+          f"slw2pof{int(SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slagp{int(SINGLE_LAUNCH_ADAPTIVE_GRID_POLL)}_"
@@ -12368,6 +12398,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_PAIR_SPILL_ONE="
             f"{int(SINGLE_LAUNCH_W2_PAIR_SPILL_ONE)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE="
+            f"{int(SINGLE_LAUNCH_W2_PAIR_OPERAND_FENCE)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="
