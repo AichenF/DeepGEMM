@@ -17296,3 +17296,16 @@ maximum rank latency of a full CUDA-Graph replay.
   root, retaining the old checkout as fallback for SRT/CAR Python modules.
 - **Evidence:** `bench/results/iter713m_rdc_tp4_m128_cold_smoke_20260906.log`
   and `evidence/iter713m_ipc_header_compatibility_failure.md`.
+
+## Iteration 713n — make the accepted JIT overlay explicit and recursive
+
+- **Change:** both the in-process runner namespace and subprocess disk shim
+  accept comma-separated `V4_SGLANG_NAMESPACE_OVERLAY_ROOTS`.  Validated
+  `<overlay>/sglang` paths precede the original checkout in `sglang.__path__`.
+- **Selected overlay:** `/home/xutingz/fac/.tpmoe_tmp`, the exact
+  source-preserving JIT tree used by prior successful baseline runs.  Thus
+  `sglang.jit_kernel` and its IPC header resolve from the compatibility copy,
+  while absent SRT packages fall through to the old checkout.
+- **Pre-CUDA gate:** both Python files compile.  Defaults are unchanged and no
+  CUDA business kernel has launched for this change.
+- **Evidence:** `evidence/iter713n_recursive_jit_overlay.md`.

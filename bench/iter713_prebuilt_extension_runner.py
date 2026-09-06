@@ -45,15 +45,28 @@ def main() -> None:
         if not sglang_package_dir.is_dir():
             raise FileNotFoundError(sglang_package_dir)
 
-        def install_namespace(package_name: str, package_dir: Path) -> None:
-            if not package_dir.is_dir():
-                raise FileNotFoundError(package_dir)
+        def install_namespace(
+            package_name: str, package_dirs: Path | list[Path]
+        ) -> None:
+            if isinstance(package_dirs, Path):
+                package_dirs = [package_dirs]
+            for package_dir in package_dirs:
+                if not package_dir.is_dir():
+                    raise FileNotFoundError(package_dir)
             package = types.ModuleType(package_name)
             package.__package__ = package_name
-            package.__path__ = [str(package_dir)]
+            package.__path__ = [str(package_dir) for package_dir in package_dirs]
             sys.modules[package_name] = package
 
-        install_namespace("sglang", sglang_package_dir)
+        overlay_roots = os.environ.get(
+            "V4_SGLANG_NAMESPACE_OVERLAY_ROOTS", ""
+        ).split(",")
+        overlay_dirs = [
+            Path(value.strip()).resolve() / "sglang"
+            for value in overlay_roots
+            if value.strip()
+        ]
+        install_namespace("sglang", overlay_dirs + [sglang_package_dir])
         subpackages = os.environ.get(
             "V4_SGLANG_NAMESPACE_SUBPACKAGES", ""
         ).split(",")
