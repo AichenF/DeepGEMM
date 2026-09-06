@@ -29,9 +29,23 @@ kernel defines.  Change only:
 
 No production source or benchmark logic changes.
 
-## Gate
+## Build and static result
 
-After build, inspect the exact linked W2 callee again.  Continue to a TP4 M128
-runtime smoke only if it remains 32 QGMMAs / 16 dependency barriers with no
-fixed local spill.  No CUDA compilation or business-kernel launch is claimed
-by this composition record.
+The miniforge-targeted relocatable compile, PIC device link, and shared-library
+link all succeed.
+
+- Raw build log SHA256:
+  `3a9bf7525edba320c56c05e8a7601ed15a07c939e3ef6972ea8f695b8ecb1d9c`.
+- Candidate library SHA256:
+  `8664907620654c14b0e158614253db6c5caafdd1c3dc76370226315888f9c488`.
+- Exact W2 callee SASS SHA256:
+  `adf4eb6fd60c7954ca7c2bec966d6dc005c160d0f78d66fbc27804daca7f418e`.
+- Exact W2 counts: 32 QGMMAs, 16 dependency barriers, 32 arrives.
+- TP4 M128 split-K2 resources:
+  `REG195 STACK112 SHARED1616 LOCAL0`.
+
+The exact W2 SASS and resource report are byte-identical to the `/usr`-header
+Iteration-713b artifacts, showing that the ABI rebuild did not change device
+scheduling.  The static gate passes.  Proceed to the isolated TP4 M128
+correctness and short cold-L2 screen.  No CUDA business kernel has launched
+for this build/static result.

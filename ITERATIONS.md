@@ -17183,6 +17183,11 @@ maximum rank latency of a full CUDA-Graph replay.
   rules, but replace only PyTorch/Python include and library paths with the
   baseline environment at `/home/xutingz/workspace/miniforge3` (PyTorch
   2.11.0+cu129, C++11 ABI enabled, E8M0 dtype present).
-- **Gate:** rebuild and re-audit exact W2 SASS before loading.  It must retain
-  32 QGMMAs / 16 dependency barriers and `LOCAL0`.
+- **Build/static result:** the miniforge compile/device-link/host-link succeed.
+  Exact W2 SASS is byte-identical to Iteration 713b (SHA256
+  `adf4eb6f...7f418e`) with 32 QGMMAs / 16 dependency barriers / 32 arrives.
+  TP4 M128 remains `REG195 STACK112 SHARED1616 LOCAL0`; candidate library
+  SHA256 is `86649076...9c488`.  No CUDA business kernel launched.
+- **Decision:** the baseline-ABI static gate passes.  Proceed to the isolated
+  TP4 M128 correctness and short cold-L2 runtime screen.
 - **Evidence:** `evidence/iter713f_miniforge_rdc_composition.md`.
