@@ -17264,3 +17264,17 @@ maximum rank latency of a full CUDA-Graph replay.
   executing its frontend initializer.
 - **Evidence:** `bench/results/iter713k_rdc_tp4_m128_cold_smoke_20260906.log`
   and `evidence/iter713k_p2p_subprocess_namespace_failure.md`.
+
+## Iteration 713l — add a subprocess-visible SGLang source shim
+
+- **Change:** add
+  `bench/iter713_sglang_shim/sglang/__init__.py`.  It reads the already
+  required `V4_SGLANG_NAMESPACE_ROOT`, validates `<root>/sglang`, and sets
+  only that package `__path__`; it imports no frontend APIs and replaces no
+  distributed/CAR module.
+- **Isolation:** putting the shim directory first in `PYTHONPATH` applies the
+  exact checkout selection to both torchrun workers and CAR's P2P helper
+  subprocess.  The runner's MoE-align leaf re-export remains in-process only.
+- **Pre-CUDA gate:** Python compilation passes.  No CUDA business kernel has
+  launched for this change.
+- **Evidence:** `evidence/iter713l_sglang_subprocess_shim.md`.
