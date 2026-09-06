@@ -15410,3 +15410,43 @@ maximum rank latency of a full CUDA-Graph replay.
   production CUDA/Python source byte-identical to HEAD.
 - **Evidence:** `evidence/iter667_bulk_reduce_phase_boundary_isolation.md`;
   raw `bench/results/iter667*.log`.
+
+## Iteration 668 — 32-CTA expert wavefront loses W13 concurrency
+
+- **Hypothesis/change:** widen schedule-2's expert cohort from 16 to 32 CTAs.
+  At M128/split-K2 this leaves 16 CTAs idle for the expert's 16 W13 tasks but
+  lets all 32 CTAs execute one activation and one W2 tile instead of two.
+  The resident grid was rounded to complete cohorts and the W13 loop was
+  generalized for the partial worker set; one business kernel remained.
+- **Gates:** the first JIT stopped at the intentionally exposed stale
+  divisibility assertion and launched no CUDA work.  After repair, local M128
+  passed bitwise against same-source multi and completed its expected packed
+  phase words.
+- **TP4 cold-L2:** GPUs 0/5/6/7, random seed 20260902, replay-paired CUDA
+  Graphs, two batches x 20 samples, four warmups, and a separate excluded
+  256 MiB L2 clear per replay.  Multi/candidate medians were
+  `0.305296/0.531744 ms`; candidate is 74.17% slower.  Correctness/allreduce
+  passed.  Candidate NVLS-pull versus control stock-CARv2 is a tail-policy
+  qualification, but cannot explain a 226.448-us loss.
+- **Decision:** reject without other M values and restore production source
+  byte-identical.  Full W13 concurrency dominates the W2 one-task benefit.
+- **Evidence:** `evidence/iter668_schedule2_group32_rejection.md`; raw
+  `bench/results/iter668*.log`.
+
+## Iteration 669 — alternating W13 completion-barrier banks is neutral/slower
+
+- **Hypothesis/change:** approximate fresh standalone CTA async state by
+  alternating consecutive compact-W13 tasks across two independently
+  initialized mbarrier banks.  Buffers, arithmetic, mapping, rotations, phase
+  barriers and one-launch execution were unchanged.
+- **Gates:** local M128 correctness passed; the complete entry retained
+  `REG56 STACK32 SHARED2048 LOCAL0` and nine-CTA/SM admission.
+- **Cold-L2 ABBA:** eight independent GPU1 processes in
+  `0/1/1/0/0/1/1/0` order, each with a separate excluded 256 MiB clear.
+  Control/candidate W13 medians were `210.320/210.992 us` and means were
+  `210.392/210.904 us`, regressions of 0.32%/0.24%.
+- **Decision:** reject below the 1% phase gate, skip TP4, remove the
+  diagnostic and restore production source byte-identical.  Barrier-address
+  reuse is not the standalone launch advantage.
+- **Evidence:** `evidence/iter669_w13_alt_barrier_banks_rejection.md`; raw
+  `bench/results/iter669*.log`.
