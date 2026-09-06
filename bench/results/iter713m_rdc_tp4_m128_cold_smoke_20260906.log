@@ -1,0 +1,141 @@
+W0906 12:27:05.365000 263727 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] 
+W0906 12:27:05.365000 263727 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] *****************************************
+W0906 12:27:05.365000 263727 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0906 12:27:05.365000 263727 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] *****************************************
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/iter713_prebuilt_extension_runner.py", line 97, in <module>
+[rank0]:     main()
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/iter713_prebuilt_extension_runner.py", line 93, in main
+[rank0]:     runpy.run_path(target, run_name="__main__")
+[rank0]:   File "<frozen runpy>", line 287, in run_path
+[rank0]:   File "<frozen runpy>", line 98, in _run_module_code
+[rank0]:   File "<frozen runpy>", line 88, in _run_code
+[rank0]:   File "bench/v4_flash_tp_single_vs_multi_graph.py", line 1119, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "bench/v4_flash_tp_single_vs_multi_graph.py", line 168, in main
+[rank0]:     comm = CustomAllReduceV2(cpu_group, device)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lustre/raplab/client/xutingz/workspace/codex_correct_forks_20260731/sglang/python/sglang/srt/distributed/device_communicators/custom_all_reduce_v2.py", line 149, in __init__
+[rank0]:     self._ipc_manager = IPCManager()
+[rank0]:                         ^^^^^^^^^^^^
+[rank0]:   File "/lustre/raplab/client/xutingz/workspace/codex_correct_forks_20260731/sglang/python/sglang/jit_kernel/utils/common.py", line 70, in __new__
+[rank0]:     init_fn()  # lazy initialization before registration once
+[rank0]:     ^^^^^^^^^
+[rank0]:   File "/lustre/raplab/client/xutingz/workspace/codex_correct_forks_20260731/sglang/python/sglang/jit_kernel/all_reduce.py", line 118, in _init_ipc_manager
+[rank0]:     module = load_jit(
+[rank0]:              ^^^^^^^^^
+[rank0]:   File "/lustre/raplab/client/xutingz/workspace/codex_correct_forks_20260731/sglang/python/sglang/jit_kernel/utils/compile.py", line 271, in load_jit
+[rank0]:     return load_inline(
+[rank0]:            ^^^^^^^^^^^^
+[rank0]:   File "/tmp/tpmoe_pydeps/tvm_ffi/cpp/extension.py", line 1123, in load_inline
+[rank0]:     build_inline(
+[rank0]:   File "/tmp/tpmoe_pydeps/tvm_ffi/cpp/extension.py", line 965, in build_inline
+[rank0]:     return _build_impl(
+[rank0]:            ^^^^^^^^^^^^
+[rank0]:   File "/tmp/tpmoe_pydeps/tvm_ffi/cpp/extension.py", line 729, in _build_impl
+[rank0]:     build_ninja(str(build_dir))
+[rank0]:   File "/tmp/tpmoe_pydeps/tvm_ffi/cpp/extension.py", line 601, in build_ninja
+[rank0]:     raise RuntimeError("\n".join(msg))
+[rank0]: RuntimeError: ninja exited with status 1
+[rank0]: stdout:
+[rank0]: [1/2] /usr/local/cuda/bin/nvcc  --generate-dependencies-with-compile --dependency-output cuda_0.o.d -Xcompiler -fPIC -std=c++17 -O2 -gencode=arch=compute_90a,code=sm_90a -DSGL_CUDA_ARCH=900 -std=c++20 -O3 --expt-relaxed-constexpr -I/tmp/tpmoe_pydeps/tvm_ffi/include -I/tmp/tpmoe_pydeps/tvm_ffi/include -I/lustre/raplab/client/xutingz/workspace/codex_correct_forks_20260731/sglang/python/sglang/jit_kernel/include -c /root/.cache/tvm-ffi/sgl_kernel_jit_cuda_ipc_6c75632c9c90eb10__arch_9.0a__tvmffi_0.1.11/cuda.cu -o cuda_0.o
+[rank0]: FAILED: cuda_0.o 
+[rank0]: /usr/local/cuda/bin/nvcc  --generate-dependencies-with-compile --dependency-output cuda_0.o.d -Xcompiler -fPIC -std=c++17 -O2 -gencode=arch=compute_90a,code=sm_90a -DSGL_CUDA_ARCH=900 -std=c++20 -O3 --expt-relaxed-constexpr -I/tmp/tpmoe_pydeps/tvm_ffi/include -I/tmp/tpmoe_pydeps/tvm_ffi/include -I/lustre/raplab/client/xutingz/workspace/codex_correct_forks_20260731/sglang/python/sglang/jit_kernel/include -c /root/.cache/tvm-ffi/sgl_kernel_jit_cuda_ipc_6c75632c9c90eb10__arch_9.0a__tvmffi_0.1.11/cuda.cu -o cuda_0.o
+[rank0]: nvcc warning : incompatible redefinition for option 'std', the last value of this option was used
+[rank0]: nvcc warning : incompatible redefinition for option 'optimize', the last value of this option was used
+[rank0]: /lustre/raplab/client/xutingz/workspace/codex_correct_forks_20260731/sglang/python/sglang/jit_kernel/csrc/distributed/ipc.cuh: In member function ‘host::distributed::IPCManager::BatchGetInputs host::distributed::IPCManager::batch_open_handles(BatchGetResult)’:
+[rank0]: /lustre/raplab/client/xutingz/workspace/codex_correct_forks_20260731/sglang/python/sglang/jit_kernel/csrc/distributed/ipc.cuh:81:42: error: no matching function for call to ‘get(const tvm::ffi::Tuple<tvm::ffi::Array<char, void>, long unsigned int>&)’
+[rank0]:    81 |       const auto ipc_handle = to_ipc_handle(get<0>(pair));
+[rank0]:       |                                       ~~~^~~~~~
+[rank0]: /tmp/tpmoe_pydeps/tvm_ffi/include/tvm/ffi/container/tuple.h:357:1: note: candidate: ‘template<long unsigned int I, class ... Types> constexpr std::tuple_element_t<I, std::tuple<_UTypes ...> > tvm::ffi::get(const Tuple<U ...>&)’
+[rank0]:   357 | inline constexpr auto get(const Tuple<Types...>& t)
+[rank0]:       | ^~~
+[rank0]: /tmp/tpmoe_pydeps/tvm_ffi/include/tvm/ffi/container/tuple.h:357:1: note:   template argument deduction/substitution failed:
+[rank0]: /lustre/raplab/client/xutingz/workspace/codex_correct_forks_20260731/sglang/python/sglang/jit_kernel/csrc/distributed/ipc.cuh:81:42: note:   couldn’t deduce template parameter ‘I’
+[rank0]:    81 |       const auto ipc_handle = to_ipc_handle(get<0>(pair));
+[rank0]:       |                                       ~~~^~~~~~
+[rank0]: /tmp/tpmoe_pydeps/tvm_ffi/include/tvm/ffi/container/tuple.h:369:1: note: candidate: ‘template<long unsigned int I, class ... Types> constexpr std::tuple_element_t<I, std::tuple<_UTypes ...> > tvm::ffi::get(Tuple<U ...>&&)’
+[rank0]:   369 | inline constexpr auto get(Tuple<Types...>&& t) -> std::tuple_element_t<I, std::tuple<Types...>> {
+[rank0]:       | ^~~
+[rank0]: /tmp/tpmoe_pydeps/tvm_ffi/include/tvm/ffi/container/tuple.h:369:1: note:   template argument deduction/substitution failed:
+[rank0]: /lustre/raplab/client/xutingz/workspace/codex_correct_forks_20260731/sglang/python/sglang/jit_kernel/csrc/distributed/ipc.cuh:81:42: note:   types ‘tvm::ffi::Tuple<U ...>’ and ‘const tvm::ffi::Tuple<tvm::ffi::Array<char, void>, long unsigned int>’ have incompatible cv-qualifiers
+[rank0]:    81 |       const auto ipc_handle = to_ipc_handle(get<0>(pair));
+[rank0]:       |                                       ~~~^~~~~~
+[rank0]: /lustre/raplab/client/xutingz/workspace/codex_correct_forks_20260731/sglang/python/sglang/jit_kernel/csrc/distributed/ipc.cuh:82:24: error: no matching function for call to ‘get(const tvm::ffi::Tuple<tvm::ffi::Array<char, void>, long unsigned int>&)’
+[rank0]:    82 |       const auto offset = get<1>(pair);
+[rank0]:       |                     ~~~^~~~~~
+[rank0]: /tmp/tpmoe_pydeps/tvm_ffi/include/tvm/ffi/container/tuple.h:357:1: note: candidate: ‘template<long unsigned int I, class ... Types> constexpr std::tuple_element_t<I, std::tuple<_UTypes ...> > tvm::ffi::get(const Tuple<U ...>&)’
+[rank0]:   357 | inline constexpr auto get(const Tuple<Types...>& t)
+[rank0]:       | ^~~
+[rank0]: /tmp/tpmoe_pydeps/tvm_ffi/include/tvm/ffi/container/tuple.h:357:1: note:   template argument deduction/substitution failed:
+[rank0]: /lustre/raplab/client/xutingz/workspace/codex_correct_forks_20260731/sglang/python/sglang/jit_kernel/csrc/distributed/ipc.cuh:82:24: note:   couldn’t deduce template parameter ‘I’
+[rank0]:    82 |       const auto offset = get<1>(pair);
+[rank0]:       |                     ~~~^~~~~~
+[rank0]: /tmp/tpmoe_pydeps/tvm_ffi/include/tvm/ffi/container/tuple.h:369:1: note: candidate: ‘template<long unsigned int I, class ... Types> constexpr std::tuple_element_t<I, std::tuple<_UTypes ...> > tvm::ffi::get(Tuple<U ...>&&)’
+[rank0]:   369 | inline constexpr auto get(Tuple<Types...>&& t) -> std::tuple_element_t<I, std::tuple<Types...>> {
+[rank0]:       | ^~~
+[rank0]: /tmp/tpmoe_pydeps/tvm_ffi/include/tvm/ffi/container/tuple.h:369:1: note:   template argument deduction/substitution failed:
+[rank0]: /lustre/raplab/client/xutingz/workspace/codex_correct_forks_20260731/sglang/python/sglang/jit_kernel/csrc/distributed/ipc.cuh:82:24: note:   types ‘tvm::ffi::Tuple<U ...>’ and ‘const tvm::ffi::Tuple<tvm::ffi::Array<char, void>, long unsigned int>’ have incompatible cv-qualifiers
+[rank0]:    82 |       const auto offset = get<1>(pair);
+[rank0]:       |                     ~~~^~~~~~
+[rank0]: ninja: build stopped: subcommand failed.
+
+W0906 12:28:39.134000 263727 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 263797 closing signal SIGTERM
+W0906 12:28:39.136000 263727 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 263798 closing signal SIGTERM
+W0906 12:28:39.138000 263727 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 263799 closing signal SIGTERM
+E0906 12:28:39.531000 263727 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 0 (pid: 263796) of binary: /home/xutingz/workspace/miniforge3/bin/python
+Traceback (most recent call last):
+  File "/home/xutingz/workspace/miniforge3/bin/torchrun", line 8, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+bench/iter713_prebuilt_extension_runner.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-09-06_12:28:39
+  host      : H20-GPU-06.cm.cluster
+  rank      : 1 (local_rank: 1)
+  exitcode  : -15 (pid: 263797)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 263797
+[2]:
+  time      : 2026-09-06_12:28:39
+  host      : H20-GPU-06.cm.cluster
+  rank      : 2 (local_rank: 2)
+  exitcode  : -15 (pid: 263798)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 263798
+[3]:
+  time      : 2026-09-06_12:28:39
+  host      : H20-GPU-06.cm.cluster
+  rank      : 3 (local_rank: 3)
+  exitcode  : -15 (pid: 263799)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 263799
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-09-06_12:28:39
+  host      : H20-GPU-06.cm.cluster
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 263796)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

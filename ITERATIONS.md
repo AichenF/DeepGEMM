@@ -17278,3 +17278,21 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Pre-CUDA gate:** Python compilation passes.  No CUDA business kernel has
   launched for this change.
 - **Evidence:** `evidence/iter713l_sglang_subprocess_shim.md`.
+
+## Iteration 713m — original IPC header is incompatible with TVM-FFI 0.1.11
+
+- **Scope:** TP4 retry with the subprocess-visible source shim.  P2P access
+  checking succeeds and CARv2 reaches `IPCManager` initialization, but no CAR
+  communicator, graph, correctness, timing or MegaMoE business kernel is
+  reached.
+- **Failure:** the old checkout's `ipc.cuh` uses free `get<N>(pair)` calls
+  that do not compile for a const TVM-FFI 0.1.11 tuple.  NVCC fails both tuple
+  accesses before producing the IPC helper module.
+- **Existing compatible artifact:** the prior baseline's source-preserving
+  overlay remains at `/home/xutingz/fac/.tpmoe_tmp/sglang/jit_kernel`; its only
+  IPC delta uses `pair.template get<0/1>()`, and its header SHA256 is
+  `ba6fec52...9424fc`.  A matching successful content-addressed cache exists.
+- **Decision:** add the overlay's parent as the first `sglang` package search
+  root, retaining the old checkout as fallback for SRT/CAR Python modules.
+- **Evidence:** `bench/results/iter713m_rdc_tp4_m128_cold_smoke_20260906.log`
+  and `evidence/iter713m_ipc_header_compatibility_failure.md`.
