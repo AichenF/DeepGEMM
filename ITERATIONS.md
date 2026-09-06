@@ -17513,3 +17513,18 @@ maximum rank latency of a full CUDA-Graph replay.
   has occurred in the new directory.
 - **Evidence:** `bench/results/iter714b_unique_rdc_composition_20260906.log`
   and `evidence/iter714b_unique_rdc_static_composition.md`.
+
+## Iteration 714c — unique RDC build preserves exact 32/16 W2 SASS
+
+- **Build:** compile, PIC device-link and host-link the unique Iteration-714b
+  source successfully.  Resulting `.so` SHA256 is `682d5fe5...f1815`.
+- **Resources:** unique TP4 M128 split-K2 entry remains `REG195 STACK112
+  SHARED1616 LOCAL0`.
+- **Static equivalence:** linked W2 callee remains 32 QGMMAs / 16 DEPBARs /
+  32 arrives; complete extracted function is byte-identical to Iteration 713b,
+  SHA256 `adf4eb6f...f418e`.
+- **Qualification:** build/static only, no CUDA business launch.  Unique
+  naming removes interposition ambiguity without changing device code.
+- **Evidence:** `bench/results/iter714c_unique_rdc_build_20260906.log`,
+  `bench/results/iter714c_unique_rdc_resources_20260906.log`, and
+  `evidence/iter714c_unique_rdc_build_static.md`.
