@@ -17156,3 +17156,18 @@ maximum rank latency of a full CUDA-Graph replay.
   compute-only correctness plus phase timing against the non-RDC anchor.
 - **Evidence:** `bench/results/iter713d_m128_targeted_rdc_pic_hostlink_20260906.log`
   and `evidence/iter713d_rdc_pic_hostlink_success.md`.
+
+## Iteration 713e — add an isolated prebuilt-extension benchmark runner
+
+- **Purpose:** evaluate the temporary RDC library without copying it over the
+  normal JIT cache or modifying the benchmarked kernel source.
+- **Change:** add `bench/iter713_prebuilt_extension_runner.py`.  It loads the
+  exact `.so` named by `V4_PREBUILT_EXTENSION`, intercepts only the matching
+  `load_inline` request, and then executes the unchanged target benchmark with
+  its original arguments.  All other extension loads use PyTorch's normal
+  loader.
+- **Pre-CUDA gate:** Python compilation passes.  No extension load or CUDA
+  business kernel is claimed yet.
+- **Next:** TP4 M128, first correctness and short cold-L2 paired timing; reject
+  before a longer run if the 195-register RDC entry is slower or unstable.
+- **Evidence:** `evidence/iter713e_prebuilt_extension_runner.md`.
