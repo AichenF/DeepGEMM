@@ -17627,3 +17627,17 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Next:** build from a fresh directory, then apply the original resource
   and 32/16 W2 SASS gates before any CUDA launch.
 - **Evidence:** `evidence/iter715e_device_lto_sm90a_fix.md`.
+
+## Iteration 715f — combine single-image LTO IR with SM90a nvlink
+
+- **Failure:** compile-side `-arch=sm_90a -dlto` embedded both generic
+  `sm_90` and architecture-specific `sm_90a` images.  Real device LTO tried
+  the generic image and ptxas again rejected WGMMA.  No cubin or CUDA launch.
+- **Repair:** emit only explicit `compute_90a,code=lto_90a` IR at compile
+  time, then use `-dlto -arch=sm_90a` at device link.  Each half was already
+  accepted independently; this combination removes the invalid generic
+  image while retaining nvlink's architecture-specific final target.
+- **Qualification:** temporary build-recipe change only; production source,
+  math, task ownership and communication are unchanged.  Commit, then build
+  in a fresh directory and apply the original resource/SASS gates.
+- **Evidence:** `evidence/iter715f_device_lto_single_image_fix.md`.

@@ -73,11 +73,10 @@ def main() -> None:
     rewrite(host_source, old_host, new_host, 2)
     rewrite(build_file, str(source_dir), str(output_dir), 2)
 
-    # Use NVCC's architecture-driver form at both stages.  CUDA 12.8 accepts
-    # code=lto_90a at compile time but nvlink lowers that path to generic
-    # sm_90 PTX, which rejects architecture-specific WGMMA.  In contrast,
-    # -arch=sm_90a -dlto expands to NVVM images tagged sm=90a and nvlink
-    # --arch=sm_90a.  Remove both inherited explicit gencode spellings first.
+    # Emit exactly one architecture-specific LTO image at compile time, then
+    # select it through nvlink's architecture-driver form.  Using
+    # -arch=sm_90a at compile time also embeds a generic sm_90 fallback, which
+    # nvlink tries to optimize and ptxas correctly rejects for WGMMA.
     ninja_text = build_file.read_text()
     ninja_lines = ninja_text.splitlines(keepends=True)
     cuda_flag_lines = [
@@ -92,21 +91,12 @@ def main() -> None:
         )
     cuda_flag_index = cuda_flag_lines[0]
     cuda_flag_line = ninja_lines[cuda_flag_index]
-    compact_gencode = "-gencode=arch=compute_90a,code=sm_90a"
-    spaced_gencode = "-gencode arch=compute_90a,code=sm_90a"
-    if cuda_flag_line.count(compact_gencode) != 1:
+    if cuda_flag_line.count("code=sm_90a") != 2:
         raise RuntimeError(
-            f"{build_file}: expected one compact sm_90a gencode"
+            f"{build_file}: expected two sm_90a compile targets"
         )
-    if cuda_flag_line.count(spaced_gencode) != 1:
-        raise RuntimeError(
-            f"{build_file}: expected one spaced sm_90a gencode"
-        )
-    cuda_flag_line = cuda_flag_line.replace(compact_gencode, "")
-    cuda_flag_line = cuda_flag_line.replace(spaced_gencode, "")
-    newline = "\n" if cuda_flag_line.endswith("\n") else ""
-    ninja_lines[cuda_flag_index] = (
-        cuda_flag_line.removesuffix("\n") + " -arch=sm_90a -dlto" + newline
+    ninja_lines[cuda_flag_index] = cuda_flag_line.replace(
+        "code=sm_90a", "code=lto_90a"
     )
     build_file.write_text("".join(ninja_lines))
     rewrite(
