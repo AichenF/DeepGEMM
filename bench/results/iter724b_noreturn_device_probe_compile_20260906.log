@@ -1,0 +1,15 @@
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function 'terminal_entry' for 'sm_90a'
+ptxas info    : Function properties for terminal_entry
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 8 registers, used 0 barriers
+ptxas info    : Compile time = 2.437 ms
+ptxas info    : Function properties for _Z13terminal_tailPii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Compiling entry function 'returning_entry' for 'sm_90a'
+ptxas info    : Function properties for returning_entry
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 10 registers, used 0 barriers
+ptxas info    : Compile time = 1.273 ms
+ptxas info    : Function properties for _Z14returning_tailPii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads

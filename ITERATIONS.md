@@ -17828,3 +17828,26 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/iter723b_w2_compact_bound8_jit_20260906.log`,
   `bench/results/iter723c_w2_compact_bound8_resources_20260906.log`, and
   `bench/results/iter723c_w2_compact_bound8_m128_split2_exact.sass`.
+
+## Iteration 724 — CUDA 12.8 admits a true terminal device-function ABI
+
+- **Stall reassessment:** NVIDIA's PTX ISA states that `setmaxnreg` borrows
+  registers only from a per-CTA pool, closing the proposed cross-CTA/SM donor
+  mechanism.  It separately defines `.func ... .noreturn`, and CUDA C++
+  documents `[[noreturn]]` for device code.  The earlier terminal-tail idea
+  was rejected from ordinary returning-callee SASS without compiling this
+  materially different ABI.
+- **Matched compiler probe:** CUDA 12.8.61 accepts a returning and a
+  `[[noreturn]]` device callee under otherwise matched bound-eight entries.
+  Generated PTX marks only the terminal function `.noreturn`.
+- **Exact SASS result:** the returning entry has a `CALL`, a caller-side
+  `EXIT`, and a callee `RET.REL`; the terminal entry has a `CALL` directly
+  into a callee ending in `EXIT`, with no `RET` or reachable caller
+  continuation.  Both compile without stack, spills, or local memory.
+- **Decision:** **ADMIT the compiler mechanism only.**  This is not a
+  business-kernel correctness or performance result.  Next outline M128 W2
+  into a default-off terminal callee and require improved exact W2 issue
+  depth before moving the collective into that tail or launching CUDA.
+- **Evidence:** `evidence/iter724a_terminal_noreturn_probe.md`,
+  `evidence/iter724b_terminal_noreturn_probe_result.md`, and
+  `bench/results/iter724b_noreturn_device_probe_20260906.{ptx,sass}`.
