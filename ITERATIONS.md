@@ -16517,3 +16517,20 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Next:** require REG56, no spill, nine-CTA admission and a static fused-W2
   `WARPGROUP.DEPBAR.LE` reduction from 32 toward 16 before any timing run.
 - **Evidence:** `evidence/iter709l_w2_predecode_s2r_implementation.md`.
+
+## Iteration 709m — reject W2 S2R predecode at the static gate
+
+- **Build:** exact Iteration-709l source with TP4 selected defaults and the
+  opt-in predecode flag compiles as
+  `v4tp_a586be89b63a5cb2a66c_v178mspec` on H20 GPU1.
+- **Resources:** M128/split-K2 remains `REG56 STACK32 SHARED2048 LOCAL0`, so
+  the nine-CTA/SM register tier and no-fixed-local-spill property survive.
+- **SASS result:** the exact target entry contains 64 QGMMA and 64
+  `WARPGROUP.DEPBAR.LE` instructions across its two emitted W2 runtime paths.
+  Every W2 QGMMA is still immediately serialized; the ratio remains 1:1 and
+  does not approach standalone W2's 2:1 ratio.  Extracted SASS SHA256 is
+  `0db68b78d4e937d88bfdabda358cb2c5b386877f29fb66e14cfa28ba558d5500`.
+- **Decision:** **REJECT before correctness/timing.**  No CUDA business kernel
+  was launched and no cold-L2 number is claimed.  Retain the diagnostic path
+  default-off; next test must alter accumulator/WGMMA issue lifetime directly.
+- **Evidence:** `evidence/iter709m_w2_predecode_s2r_static_rejection.md`.
