@@ -17127,3 +17127,17 @@ maximum rank latency of a full CUDA-Graph replay.
   temporary loadable extension and run only M128 compute-only
   correctness/phase timing before any production refactor.
 - **Evidence:** `evidence/iter713b_m128_targeted_rdc_composition.md`.
+
+## Iteration 713c — first RDC shared-library link lacks PIC
+
+- **Scope:** host-link only, using Iteration-713b's successful `cuda.cuda.o`
+  and `dlink.o`; no CUDA business kernel was launched.
+- **Result:** `main.o` compiles, but GNU ld rejects `dlink.o` relocation
+  `R_X86_64_PC32` against its fatbin wrapper when producing the shared
+  library and requests recompilation with `-fPIC`.
+- **Decision:** this is a temporary Ninja/device-link recipe defect, not a
+  kernel or SASS failure.  Re-run only `nvcc -dlink` with host PIC enabled,
+  then retry the shared-library link.
+- **Evidence:** raw log
+  `bench/results/iter713c_m128_targeted_rdc_hostlink_20260906.log` and
+  `evidence/iter713c_rdc_hostlink_pic_rejection.md`.

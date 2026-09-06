@@ -1,0 +1,9 @@
+[1/2] c++ -MMD -MF main.o.d -DTORCH_EXTENSION_NAME=v4tp_49f35bd1b995105c53bc_v178mspec -DTORCH_API_INCLUDE_EXTENSION_H -DPYBIND11_COMPILER_TYPE=\"_gcc\" -DPYBIND11_STDLIB=\"_libstdcpp\" -DPYBIND11_BUILD_ABI=\"_cxxabi1016\" -isystem /usr/local/lib/python3.12/dist-packages/torch/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/lib/python3.12/dist-packages/torch/include/TH -isystem /usr/local/lib/python3.12/dist-packages/torch/include/THC -isystem /usr/local/cuda/include -isystem /usr/include/python3.12 -D_GLIBCXX_USE_CXX11_ABI=1 -fPIC -std=c++17 -c /tmp/iter713b_rdc.P6TFNm/main.cpp -o main.o 
+[2/2] c++ main.o cuda.cuda.o dlink.o -shared -lcuda -L/usr/local/lib/python3.12/dist-packages/torch/lib -lc10 -lc10_cuda -ltorch_cpu -ltorch_cuda -ltorch -ltorch_python -L/usr/local/cuda/lib64 -lcudart -o v4tp_49f35bd1b995105c53bc_v178mspec.so
+FAILED: v4tp_49f35bd1b995105c53bc_v178mspec.so 
+c++ main.o cuda.cuda.o dlink.o -shared -lcuda -L/usr/local/lib/python3.12/dist-packages/torch/lib -lc10 -lc10_cuda -ltorch_cpu -ltorch_cuda -ltorch -ltorch_python -L/usr/local/cuda/lib64 -lcudart -o v4tp_49f35bd1b995105c53bc_v178mspec.so
+/usr/bin/ld: dlink.o: warning: relocation against `__fatbinwrap_9964a5b2_7_cuda_cu_bf31be75' in read-only section `.text'
+/usr/bin/ld: dlink.o: relocation R_X86_64_PC32 against symbol `__fatbinwrap_9964a5b2_7_cuda_cu_bf31be75' can not be used when making a shared object; recompile with -fPIC
+/usr/bin/ld: final link failed: bad value
+collect2: error: ld returned 1 exit status
+ninja: build stopped: subcommand failed.
