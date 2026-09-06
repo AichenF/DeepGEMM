@@ -1,0 +1,2 @@
+[1/2] /usr/local/cuda/bin/nvcc cuda.cuda.o -o dlink.o -dlink -gencode=arch=compute_90a,code=sm_90a --compiler-options '-fPIC'
+[2/2] c++ main.o cuda.cuda.o dlink.o -shared -lcuda -L/usr/local/lib/python3.12/dist-packages/torch/lib -lc10 -lc10_cuda -ltorch_cpu -ltorch_cuda -ltorch -ltorch_python -L/usr/local/cuda/lib64 -lcudart -o v4tp_49f35bd1b995105c53bc_v178mspec.so

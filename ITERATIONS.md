@@ -17141,3 +17141,18 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:** raw log
   `bench/results/iter713c_m128_targeted_rdc_hostlink_20260906.log` and
   `evidence/iter713c_rdc_hostlink_pic_rejection.md`.
+
+## Iteration 713d — PIC device link produces a loadable candidate library
+
+- **Build fix:** add host `-fPIC` to the temporary `nvcc -dlink` rule and
+  relink the unchanged Iteration-713b CUDA object plus generated PyTorch
+  binding object.
+- **Result:** device link and final shared-library link succeed.  Candidate
+  library SHA256 is `d6253af2...6305058`; PIC `dlink.o` SHA256 is
+  `6efbc396...d0039`.
+- **Qualification:** build-only result; the library has not been loaded and no
+  CUDA business kernel has run.  Production source/build remain unchanged.
+- **Next:** load the isolated library in a fresh process and run only TP4 M128
+  compute-only correctness plus phase timing against the non-RDC anchor.
+- **Evidence:** `bench/results/iter713d_m128_targeted_rdc_pic_hostlink_20260906.log`
+  and `evidence/iter713d_rdc_pic_hostlink_success.md`.
