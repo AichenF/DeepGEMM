@@ -73,10 +73,9 @@ def main() -> None:
     rewrite(host_source, old_host, new_host, 2)
     rewrite(build_file, str(source_dir), str(output_dir), 2)
 
-    # CUDA device LTO must be enabled at both compile and device-link time.
-    # Keep RDC so the retained phase boundary exists in NVVM IR, then let
-    # nvlink decide whether to inline it into the one business entry.
-    rewrite(build_file, " -rdc=true ", " -rdc=true -dlto ", 1)
+    # Emit LTO IR at compile time, then enable the optimization itself at
+    # device link.  With explicit gencode targets NVCC rejects a compile-side
+    # -dlto flag; code=lto_90a is the compile-side request.
     ninja_text = build_file.read_text()
     ninja_lines = ninja_text.splitlines(keepends=True)
     cuda_flag_lines = [

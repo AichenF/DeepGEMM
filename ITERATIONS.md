@@ -17596,3 +17596,17 @@ maximum rank latency of a full CUDA-Graph replay.
   launch, correctness result or timing occurred.  Preserve the partial
   Iteration-715b directory and retry from a fresh directory after commit.
 - **Evidence:** `evidence/iter715c_device_lto_target_fix.md`.
+
+## Iteration 715d — keep `-dlto` only on the device-link command
+
+- **Failure:** compile targets were correctly changed to `code=lto_90a`, but
+  NVCC still rejected the command because explicit LTO code generation and a
+  compile-side `-dlto` flag are mutually exclusive.  The latter is redundant
+  when `-gencode` explicitly requests LTO IR.
+- **Repair:** retain compile-side `-rdc=true`, emit both compile targets as
+  `lto_90a`, and apply `-dlto` only at final `sm_90a` device link.  No CUDA or
+  production kernel source changes.
+- **Qualification:** the failed attempt reached neither ptxas nor device
+  link; no CUDA business kernel, correctness result or timing exists.  Retry
+  from a fresh output directory after this commit.
+- **Evidence:** `evidence/iter715d_device_lto_flag_fix.md`.
