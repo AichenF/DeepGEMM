@@ -16758,3 +16758,18 @@ maximum rank latency of a full CUDA-Graph replay.
   rebuild both default and opt-in configurations before inspecting SASS.
 - **Evidence:** `evidence/iter710a_w2_phase_outline_current_jit_failure.md`;
   raw `bench/results/iter710a_existing_w2_phase_outline_jit.log`.
+
+## Iteration 710b — explicit scope for the W2 outline branch
+
+- **Change:** replace the historical
+  `else if constexpr { phase_call; } else for (...)` chain with an explicit
+  `else { for (...) { ... } }` scope.  Loop bounds, task order, task body,
+  synchronization and all default conditions are unchanged.
+- **Purpose:** remove Iteration 710a's NVCC parser/instantiation ambiguity and
+  restore the retained whole-W2 diagnostic needed to qualify a terminal
+  non-returning W2+collective device-tail design.
+- **Pre-CUDA gate:** Python bytecode compilation passes; staged source SHA256
+  is `716ce0b3745597895511391c6eb9bb09a01a993b234e2828bc9475a5b051954a`.
+- **Qualification:** no JIT, CUDA launch, numerical result or timing is
+  claimed.  Rebuild the exact opt-in and require a cubin before SASS audit.
+- **Evidence:** `evidence/iter710b_w2_outline_explicit_else_implementation.md`.

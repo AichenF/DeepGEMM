@@ -9070,10 +9070,11 @@ void tp4_megamoe_single_launch_kernel(
                     sorted_ids, expert_ids, num_tokens_padded,
                     topk_weights, down, lut, routes,
                     cta, ctas, w2_tasks);
-            } else for (int logical_task = w2_worker_rank;
-                        w2_worker_rank < w2_workers
-                            && logical_task < w2_tasks;
-                        logical_task += w2_workers, ++w2_sequence) {
+            } else {
+            for (int logical_task = w2_worker_rank;
+                 w2_worker_rank < w2_workers
+                     && logical_task < w2_tasks;
+                 logical_task += w2_workers, ++w2_sequence) {
                 int task = logical_task;
                 if constexpr (Tokens == 128
                               && kSingleLaunchW2WaveRotate > 0) {
@@ -9208,6 +9209,7 @@ void tp4_megamoe_single_launch_kernel(
                         }
                     }
                 }
+            }
             }
             if constexpr (kSingleLaunchW2ChunkArDedicated
                           && Tokens >= 64) {
