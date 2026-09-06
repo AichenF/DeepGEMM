@@ -346,6 +346,9 @@ SINGLE_LAUNCH_W2_PREDECODE_S2R = (
 SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS = (
     os.environ.get("V4_SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS", "0") == "1"
 )
+SINGLE_LAUNCH_W2_PAIR_SPILL_ONE = (
+    os.environ.get("V4_SINGLE_LAUNCH_W2_PAIR_SPILL_ONE", "0") == "1"
+)
 # Selected single-launch production bundle.  The historical environment name
 # is retained because compact W13 was the first bundled component, but the
 # switch now covers every independently validated fast path selected for the
@@ -1803,6 +1806,12 @@ if (SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS
         "V4_SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS requires "
         "V4_SINGLE_LAUNCH_W2_PREDECODE_S2R=1"
     )
+if (SINGLE_LAUNCH_W2_PAIR_SPILL_ONE
+        and not SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_W2_PAIR_SPILL_ONE requires "
+        "V4_SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS=1"
+    )
 W13_S2R_PREFETCH = os.environ.get("V4_W13_S2R_PREFETCH", "1") == "1"
 LEADER_MBAR_WAIT = os.environ.get("V4_LEADER_MBAR_WAIT", "1") == "1"
 DIRECT_BARRIER_ADDR = os.environ.get("V4_DIRECT_BARRIER_ADDR", "0") == "1"
@@ -1964,9 +1973,12 @@ static constexpr int kStages = K_WEIGHT_STAGES;
 static constexpr int kBulkReduceStageBytes =
     K_SINGLE_LAUNCH_W2_BULK_REDUCE_COMBINE
     ? kTok * 132 * static_cast<int>(sizeof(float)) : 0;
+static constexpr int kPairSpillStageBytes =
+    K_SINGLE_LAUNCH_W2_PAIR_SPILL_ONE
+    ? 2 * 128 * static_cast<int>(sizeof(uint32_t)) : 0;
 static constexpr int kRouteTaskDynamicBytes =
     kStages * kWout * ((kBlockK / 2) + 4) + kTok * kBlockK
-    + kBulkReduceStageBytes;
+    + kBulkReduceStageBytes + kPairSpillStageBytes;
 static_assert(kStages == 2 || kStages == 3 || kStages == 4);
 static_assert(!kInterleavedBulkCopy
               || (kBulkWeightCopy && kTiledWeightLayout
@@ -2045,6 +2057,8 @@ static constexpr bool kSingleLaunchW2PredecodeS2R =
     K_SINGLE_LAUNCH_W2_PREDECODE_S2R;
 static constexpr bool kSingleLaunchW2PairWgmmaGroups =
     K_SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS;
+static constexpr bool kSingleLaunchW2PairSpillOne =
+    K_SINGLE_LAUNCH_W2_PAIR_SPILL_ONE;
 static constexpr bool kSingleLaunchCooperativeGrid =
     K_SINGLE_LAUNCH_COOPERATIVE_GRID;
 static constexpr bool kSingleLaunchRelaxedGridPoll =
@@ -2549,7 +2563,7 @@ template <int K, int N, int SplitK, bool IsW13, int LaunchNTiles = 0,
           bool AssumeValidMblock = false, bool BulkReduceW2 = false,
           bool AtomicCombineW2 = false, int IndependentTaskWGs = 1,
           bool F16WgmmaAccum = false, bool PredecodeS2R = false,
-          bool PairWgmmaGroups = false>
+          bool PairWgmmaGroups = false, bool PairSpillOne = false>
 __device__ __forceinline__ void route_gemm_task(
         const CUtensorMap* tma_weight,
         const CUtensorMap* tma_weight_scale,
@@ -2677,6 +2691,8 @@ __device__ __forceinline__ void route_gemm_task(
     static_assert(!PairWgmmaGroups
                   || (PredecodeS2R && kActiveWgmmaGroups == 2),
                   "paired WGMMA issue requires predecoded N128 W2");
+    static_assert(!PairSpillOne || PairWgmmaGroups,
+                  "paired WGMMA shared spill requires paired issue");
     constexpr bool kMergedWgmmaGroup =
         IsW13 && kW13MergedWgmmaGroup;
     constexpr bool kDistributedPrep =
@@ -3468,7 +3484,25 @@ __device__ __forceinline__ void route_gemm_task(
                             packed1, weight_lut1);
                     } else {
                         fp8_0 = next_fp8_0[group];
-                        fp8_1 = next_fp8_1[group];
+                        if constexpr (PairSpillOne) {
+                            if (group == 1) {
+                                const uint32_t spill_base =
+                                    activation_smem_addr
+                                    + kActivationCopies * kTok * kBlockK
+                                    + kBulkReduceStageBytes;
+                                asm volatile("ld.shared.b32 %0,[%1];"
+                                    : "=r"(fp8_1.x)
+                                    : "r"(spill_base + mtid * 4));
+                                asm volatile("ld.shared.b32 %0,[%1];"
+                                    : "=r"(fp8_1.y)
+                                    : "r"(spill_base
+                                          + (128 + mtid) * 4));
+                            } else {
+                                fp8_1 = next_fp8_1[group];
+                            }
+                        } else {
+                            fp8_1 = next_fp8_1[group];
+                        }
                     }
                 } else {
                     fp8_0 = dequant_weight_word<kMode2Braid>(
@@ -3550,10 +3584,31 @@ __device__ __forceinline__ void route_gemm_task(
                                 dequant_weight_word<kMode2Braid>(
                                     prefetched_packed0,
                                     prefetched_weight_lut0);
-                            next_fp8_1[group] =
+                            const uint2 decoded_fp8_1 =
                                 dequant_weight_word<kMode2Braid>(
                                     prefetched_packed1,
                                     prefetched_weight_lut1);
+                            if constexpr (PairSpillOne) {
+                                if (group == 1) {
+                                    const uint32_t spill_base =
+                                        activation_smem_addr
+                                        + kActivationCopies * kTok * kBlockK
+                                        + kBulkReduceStageBytes;
+                                    asm volatile("st.shared.b32 [%0],%1;"
+                                        :: "r"(spill_base + mtid * 4),
+                                           "r"(decoded_fp8_1.x)
+                                        : "memory");
+                                    asm volatile("st.shared.b32 [%0],%1;"
+                                        :: "r"(spill_base
+                                               + (128 + mtid) * 4),
+                                           "r"(decoded_fp8_1.y)
+                                        : "memory");
+                                } else {
+                                    next_fp8_1[group] = decoded_fp8_1;
+                                }
+                            } else {
+                                next_fp8_1[group] = decoded_fp8_1;
+                            }
                         } else {
                             next_packed0[group] = prefetched_packed0;
                             next_packed1[group] = prefetched_packed1;
@@ -8981,7 +9036,8 @@ void tp4_megamoe_single_launch_kernel(
                         kSingleLaunchW2ProducerAtomicCombine, 1,
                         kSingleLaunchW2F16WgmmaAccum,
                         kSingleLaunchW2PredecodeS2R && Tokens == 128,
-                        kSingleLaunchW2PairWgmmaGroups && Tokens == 128>(
+                        kSingleLaunchW2PairWgmmaGroups && Tokens == 128,
+                        kSingleLaunchW2PairSpillOne && Tokens == 128>(
                         &w2_tma_weight, &w2_tma_weight_scale,
                         w2, s2, g2, qactivation, activation_scale,
                         sorted_ids, expert_ids, num_tokens_padded,
@@ -12065,6 +12121,7 @@ _EXTENSION_CONFIG = (
           f"slw2f16a{int(SINGLE_LAUNCH_W2_F16_WGMMA_ACCUM)}_"
           f"slw2pds2r{int(SINGLE_LAUNCH_W2_PREDECODE_S2R)}_"
           f"slw2pwg{int(SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS)}_"
+          f"slw2pso{int(SINGLE_LAUNCH_W2_PAIR_SPILL_ONE)}_"
           f"slcg{int(SINGLE_LAUNCH_COOPERATIVE_GRID)}_"
           f"slrp{int(SINGLE_LAUNCH_RELAXED_GRID_POLL)}_"
           f"slagp{int(SINGLE_LAUNCH_ADAPTIVE_GRID_POLL)}_"
@@ -12307,6 +12364,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS="
             f"{int(SINGLE_LAUNCH_W2_PAIR_WGMMA_GROUPS)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_W2_PAIR_SPILL_ONE="
+            f"{int(SINGLE_LAUNCH_W2_PAIR_SPILL_ONE)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_COOPERATIVE_GRID="

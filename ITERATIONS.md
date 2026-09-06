@@ -16585,3 +16585,21 @@ maximum rank latency of a full CUDA-Graph replay.
   a phase-local callee contract can expose standalone's REG61 schedule without
   importing the previously rejected whole-W2 outline overhead.
 - **Evidence:** `evidence/iter709p_w2_paired_wgmma_static_rejection.md`.
+
+## Iteration 709q — one-`uint2` manual shared spill for paired W2
+
+- **Change:** append a 1,024-byte SoA shared stage and explicitly spill only
+  the second N64 group's two-register `next_fp8_1` value across each QGMMA.
+  The following K32 step reloads the same thread-private value.  Packed/LUT
+  loads and FP8 decode remain ahead of the current QGMMA, and the explicit
+  two-QGMMA issue loop is retained.
+- **Ordering:** inline shared PTX plus a memory clobber prevents ordinary
+  register retention.  No CTA barrier is needed because producer/consumer are
+  the same thread and the existing WGMMA wait separates loop iterations.
+- **Isolation:** the new flag requires the paired/predecoded diagnostics and
+  inherits strict default-off TP4 M128 isolation.  TP8 is unchanged.
+- **Pre-CUDA gate:** Python compilation passes; staged SHA256 is
+  `8e9456ed51b74f6d89807fa0e39c75621403827c5c2e8b43498ca07997d69c1a`.
+- **Next:** require REG56, no local spill, nine-CTA shared/register admission,
+  64 QGMMAs and dependency-barrier reduction toward 32 before launching.
+- **Evidence:** `evidence/iter709q_w2_pair_manual_spill_implementation.md`.
