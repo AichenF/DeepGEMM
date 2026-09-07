@@ -69,3 +69,20 @@
 ## 2026-09-05 Hopper reference correction (from the user's latest directive)
 - `megamoe_nvfp4_dev_m` is itself the Hopper/SM90 MegaMoE reference.  Base the fused TP scheduler and W13/SwiGLU/W2 overlap on that branch's Hopper implementation (`mega_moe.cuh` and `sm90_nvfp4_mega_moe_h200_fused_body.inl`), not on a B200/Blackwell MegaMoE implementation.
 - Reuse the Hopper framework selectively; adapt NVFP4 to MXFP4 and EP communication/ownership to replicated-route TP plus one final all-reduce.  Do not import Blackwell-only tcgen05/TMEM assumptions.
+
+## 2026-09-07 exact H20 outer-pipeline experiment (from the user's approval)
+- Implement an isolated experiment derived from the existing native TP code,
+  using the `megamoe_nvfp4_dev` common H20 small-M outer pipeline rather than
+  rewriting the kernel from scratch or changing the selected flat path.
+- Preserve exactly 78 cooperative CTAs x 384 threads and the reference role
+  split: 64 TP-local route/pool threads, 64 TMA producer threads, and 256
+  WGMMA/epilogue threads.  Remove EP ownership and remote dispatch/combine;
+  retain one embedded final TP all-reduce.
+- The first experiment may deliberately preserve the reference global
+  intermediate boundary: W13/SwiGLU writes a group-128-scaled FP8 pool and W2
+  reloads it in the same CUDA kernel.  A shared/register-only W13-to-W2 handoff
+  is a separate follow-up and must not be conflated with this outer-pipeline
+  isolation test.
+- Reuse the current canonical MXFP4 weight adapters, prequantized FP8 input,
+  workspace, collective helpers, correctness oracles, and cold-L2 CUDA-Graph
+  benchmark.  Keep TP4 as the performance target and require TP8 run-through.
