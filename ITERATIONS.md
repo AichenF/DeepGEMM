@@ -18480,3 +18480,33 @@ maximum rank latency of a full CUDA-Graph replay.
   synchronization tax.  **REJECT** iter754 as a winner.  Restore the exact
   iter742 production checkpoint, then run the required TP8 compatibility
   validation rather than starting another optimization branch.
+
+## Iteration 755 — restore production and partial-GPU TP8 compatibility gate
+
+- Restored the active three-file implementation byte-for-byte from iter742
+  after rejecting iter754.  SHA-256 is `136757753077...` for the body,
+  `756e58862f4d...` for the native host/JIT wrapper, and
+  `63bcc6a144cb...` for the isolated tile-WS entry; restoration commit is
+  `04a73bc`.
+- On physical GPU2, the production TP8 shape (`intermediate_per_rank=256`)
+  compiled and completed the full local MegaMoE body for
+  M={8,16,32,64,128}.  Every launch synchronized, output stayed finite, and
+  maximum absolute values were respectively
+  {69632,69632,99328,148480,272384}.  Endpoint runs also report finite
+  `[2,6,128,4096]` W2 partial scratch.  M8 route materialization is byte exact
+  with zero activation-SF and route-weight error.
+- The M128 post-run route-buffer diagnostic cannot be interpreted as an
+  accuracy check: its expected rows assume input-order expert ordinals, while
+  312 parallel route atomics assign duplicate-expert rows in nondeterministic
+  order.  It reports finite compute, but is deliberately not promoted to a
+  numerical-correctness claim.  TP4 all-M strict output correctness remains
+  established by iter742 and the byte-identical restoration.
+- A fresh real eight-rank all-reduce gate was not run: GPUs0 and1 each showed
+  about 84 GiB allocated with no corresponding container-visible process,
+  leaving insufficient safe headroom for two more ranks.  This follows the
+  user's partial-GPU constraint; the evidence is a TP8 JIT/local-shape
+  run-through, not TP8 communication or latency evidence.
+- **Decision:** keep iter742 as production, stop the rejected cluster-pair
+  optimization line, and pause.  Do not claim that the one-kernel objective
+  beats the multi-kernel control: production remains 1.5205x slower by the
+  last qualified paired cold-L2 all-M geometric mean.
