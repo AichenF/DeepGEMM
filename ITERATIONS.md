@@ -18343,3 +18343,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Benchmark policy: `bash scripts/bench.sh iter-748`; TP4, CUDA Graph, random routing, 256 MiB cold-L2 clear before every replay. The hang occurred before the first reported point.
 - Diagnosis: reordering the existing epilogue grid barrier behind the mixed CTA barrier creates a global cyclic dependency with persistent CTA progress/cleanup. Keeping the original participant set is insufficient when its phase ordering changes.
 - Decision: reject. Restore the last strictly correct layout before the next experiment; do not use this barrier placement.
+
+## Iteration 749 — four-N64-WG admission stops at stale compile assertion
+
+- Hypothesis/change: preserve the `(routed BM8 block, K128 slice)` task and BN256/BK128 producer tile, but split each tile over four N64 math warpgroups. With 156 cooperative CTAs this targets eight math WGs/SM instead of four. The dead inherited shared combine alias was removed, math `setmaxnreg` was lowered to 48, and the launch shape was changed from 384 to 640 threads while retaining two dispatch and two loader warps.
+- Required benchmark: `bash scripts/bench.sh iter-749`; TP4 CUDA Graph, random routing, 256 MiB cold-L2 clear before every replay, all five M requested.
+- Result: `COMPILED=False`. NVCC stops at the old two-WG-only assertion `WG_L1_OUT_BLOCK_N == 64`; the four-WG layout intentionally makes it 32. No GPU launch, correctness result, occupancy result, or timing is admissible.
+- Diagnosis: this is an incomplete admission patch, not evidence against four-WG execution. The active register-dequant swap-AB mapping already supports one 64-row weight half per WG; update the assertion to express total coverage (`num_wg * WG_L1_OUT_BLOCK_N == BLOCK_N/2`) and rerun the otherwise unchanged candidate.
+- Decision: infrastructure/compile-gate failure. Keep the candidate source and repair only the stale assertion in the next iteration.
