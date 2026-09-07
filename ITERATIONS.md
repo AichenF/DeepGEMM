@@ -18378,3 +18378,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Stable lower-envelope evidence: candidate minima are `0.147776/0.185920/0.277568/0.359872/0.490624 ms`, all slower than the iter742 medians `0.122368/0.168432/0.269200/0.356448/0.465344`. Even without contaminated batches, N128x2 does not win any required M.
 - Diagnosis: the 50% increase in resident task WGs does not repay doubling the W13 A/pipeline traversal, doubling W2 physical-tile barrier/TMA scheduling, and using N64 rather than N128 accumulators. The shared BF16 join is correct but adds another CTA-wide sequence.
 - Decision: REJECT for selection. Retain as structural correctness evidence only; profile phases before deciding whether a bounded A-reuse repair is worthwhile, otherwise restore iter742.
+
+## Iteration 752 — N128x2 phase localization
+
+- Scope: diagnostic only on the strictly correct iter751 source. Extended local phase storage/parser from 156 to 234 CTAs; no GEMM, activation, collective, or benchmark-path arithmetic changed.
+- Launcher audit: the first attempt lacked repository `PYTHONPATH`; the second imported native without the tile wrapper and compiled the wrong `tws=0/tn128=0` configuration; the third reached weight preprocessing but lacked the pinned Humming path. None launched GPU work. The final command explicitly selected `tws=1`, `tn128=1`, dual dispatch, `sm_90a`, the miniforge Python, and pinned Humming source.
+- Protocol: physical H20 GPU1, TP4 local body, M8 and M128, one excluded 256 MiB L2 clear immediately before each stamped launch. The prior distributed iter751 run is the authoritative strict-correctness evidence; legacy post-launch global-L2 pool diagnostics are intentionally inapplicable because tile-WS keeps the activation in shared memory.
+- M8 phase stamps (us): route `4.224`, last W13 `85.888`, last W2 `117.376`, all GEMM `118.336`, final reduction `5.152`, local body `123.488`.
+- M128 phase stamps (us): route `4.480`, last W13 `403.904`, last W2 `443.232`, all GEMM `444.224`, final reduction `33.664`, local body `477.888`.
+- Comparison to iter744 N256 production: M8 W13/W2/local are `81.152/106.624/112.384 us`; M128 are `366.560/397.952/446.912 us`. N128x2 regresses W13 by `4.736/37.344 us` and last-W2 by `10.752/45.280 us`; its smaller final reduction cannot compensate.
+- Decision: no bounded A-reuse repair is justified: the loss spans both W13 and W2 physical-tile streams, not a narrow activation-join tail. Reject N128x2 and restore iter742 before pursuing a cluster/cohort design that executes the two N128 halves concurrently rather than serially.
