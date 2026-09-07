@@ -121,6 +121,9 @@
                      "one W13 N256 tile must produce one W2 K128 slice");
     DG_STATIC_ASSERT(kNumW2OutputTiles == 16,
                      "V4 Flash hidden4096 requires sixteen W2 N256 tiles");
+    // M128 has enough routed BM8 blocks to make one complete-K task per block
+    // useful.  Smaller M retains slice tasks so all resident CTAs can help.
+    const bool full_k_w2_task = num_tokens == kNumMaxTokensPerRank;
     constexpr bool kSplitMDecodedWeightReuse =
         BLOCK_M == 128 && BLOCK_N == 128 && kNumEpilogueWarpgroups == 2;
     constexpr uint32_t WG_BLOCK_M =
@@ -211,7 +214,8 @@
     // CD output: max of L1 FP8 (BLOCK_M * (BLOCK_N/2) * 1 byte * num_wg) and
     // L2 BF16 (BLOCK_M * BLOCK_N * 2 bytes * num_wg).
     constexpr uint32_t SMEM_CD_L1_SIZE =
-        kNumEpilogueWarpgroups * WG_BLOCK_M * WG_L1_OUT_BLOCK_N * sizeof(cutlass::float_e4m3_t);
+        kNumIntermediateSlices * BLOCK_M * L1_OUT_BLOCK_N *
+        sizeof(cutlass::float_e4m3_t);
     constexpr uint32_t SMEM_CD_L2_SIZE = kSwapABRequested ?
         BLOCK_M * BLOCK_N * sizeof(nv_bfloat16) : 0u;
     constexpr uint32_t SMEM_CD_OUTPUT_BASE_SIZE =
@@ -220,9 +224,12 @@
         kNumEpilogueWarpgroups * BLOCK_M;
     constexpr uint32_t SMEM_CD_L1_SWAP_AMAX_SLOTS = kSwapABRequested ?
         BLOCK_M * kNumEpilogueWarps : 0u;
+    constexpr uint32_t SMEM_CD_L1_SCALE_CACHE_SLOTS =
+        kSwapABRequested ? kNumIntermediateSlices * BLOCK_M : 0u;
     constexpr uint32_t SMEM_CD_L1_EXTRA_FLOAT_SLOTS =
-        SMEM_CD_L1_SHARED_SF_SLOTS > SMEM_CD_L1_SWAP_AMAX_SLOTS ?
-        SMEM_CD_L1_SHARED_SF_SLOTS : SMEM_CD_L1_SWAP_AMAX_SLOTS;
+        kSwapABRequested ?
+        SMEM_CD_L1_SWAP_AMAX_SLOTS + SMEM_CD_L1_SCALE_CACHE_SLOTS :
+        SMEM_CD_L1_SHARED_SF_SLOTS;
     constexpr uint32_t SMEM_CD_L1_SHARED_SF_SIZE =
         SMEM_CD_L1_EXTRA_FLOAT_SLOTS * sizeof(float);
     constexpr uint32_t SMEM_CD_OUTPUT_UNALIGNED_SIZE =
@@ -259,6 +266,8 @@
     auto smem_cd_l1 = reinterpret_cast<cutlass::float_e4m3_t*>(smem_cd_base);
     auto smem_cd_l1_shared_sf =
         math::advance_ptr<float>(smem_cd_base, SMEM_CD_OUTPUT_BASE_SIZE);
+    auto smem_cd_l1_scale_cache =
+        smem_cd_l1_shared_sf + SMEM_CD_L1_SWAP_AMAX_SLOTS;
     auto smem_cd_l2 = reinterpret_cast<nv_bfloat16*>(smem_cd_base);
 
     auto smem_a = utils::PatternVisitor([=](const uint32_t& i) {
@@ -467,12 +476,14 @@
             interleaved_scheduler.wait_task_slot_empty();
             const uint32_t task_idx = interleaved_scheduler_t::get_next_task_idx(
                 workspace.get_l1_task_count_ptr());
+            const uint32_t task_slices =
+                full_k_w2_task ? 1u : kNumIntermediateSlices;
             const auto task_info =
                 task_idx < interleaved_scheduler.num_total_m_blocks *
-                               kNumIntermediateSlices
+                               task_slices
                 ? interleaved_scheduler.create_task(
                       sched::BlockPhase::Linear1, task_idx,
-                      kNumIntermediateSlices, L1_SHAPE_N, L1_SHAPE_K)
+                      task_slices, L1_SHAPE_N, L1_SHAPE_K)
                 : task_info_t();
             interleaved_scheduler.publish_task(task_info);
             if (!task_info.is_valid())
@@ -977,19 +988,35 @@
                                      const uint32_t& slice_idx,
                                      const uint32_t& pool_block_idx,
                                      const uint32_t& valid_m) {
-            load_a_phase(
-                std::integral_constant<
-                    sched::BlockPhase, sched::BlockPhase::Linear1>{},
-                local_expert_idx, L1_SHAPE_K / BLOCK_K,
-                m_block_idx, slice_idx, pool_block_idx, valid_m, 0u);
+            if (full_k_w2_task) {
+                #pragma unroll
+                for (uint32_t l1_slice = 0;
+                     l1_slice < kNumIntermediateSlices; ++ l1_slice) {
+                    load_a_phase(
+                        std::integral_constant<
+                            sched::BlockPhase,
+                            sched::BlockPhase::Linear1>{},
+                        local_expert_idx, L1_SHAPE_K / BLOCK_K,
+                        m_block_idx, l1_slice, pool_block_idx, valid_m, 0u);
+                }
+            } else {
+                load_a_phase(
+                    std::integral_constant<
+                        sched::BlockPhase,
+                        sched::BlockPhase::Linear1>{},
+                    local_expert_idx, L1_SHAPE_K / BLOCK_K,
+                    m_block_idx, slice_idx, pool_block_idx, valid_m, 0u);
+            }
             #pragma unroll
             for (uint32_t n_block_idx = 0;
                  n_block_idx < kNumW2OutputTiles; ++ n_block_idx) {
                 load_a_phase(
                     std::integral_constant<
                         sched::BlockPhase, sched::BlockPhase::Linear2>{},
-                    local_expert_idx, 1u, m_block_idx, n_block_idx,
-                    pool_block_idx, valid_m, slice_idx);
+                    local_expert_idx,
+                    full_k_w2_task ? kNumIntermediateSlices : 1u,
+                    m_block_idx, n_block_idx, pool_block_idx, valid_m,
+                    full_k_w2_task ? 0u : slice_idx);
             }
         };
         for_each_published_block(load_a_task);
@@ -1064,19 +1091,35 @@
                                      const uint32_t& slice_idx,
                                      const uint32_t& pool_block_idx,
                                      const uint32_t& valid_m) {
-            load_b_phase(
-                std::integral_constant<
-                    sched::BlockPhase, sched::BlockPhase::Linear1>{},
-                local_expert_idx, L1_SHAPE_K / BLOCK_K,
-                m_block_idx, slice_idx, pool_block_idx, valid_m, 0u);
+            if (full_k_w2_task) {
+                #pragma unroll
+                for (uint32_t l1_slice = 0;
+                     l1_slice < kNumIntermediateSlices; ++ l1_slice) {
+                    load_b_phase(
+                        std::integral_constant<
+                            sched::BlockPhase,
+                            sched::BlockPhase::Linear1>{},
+                        local_expert_idx, L1_SHAPE_K / BLOCK_K,
+                        m_block_idx, l1_slice, pool_block_idx, valid_m, 0u);
+                }
+            } else {
+                load_b_phase(
+                    std::integral_constant<
+                        sched::BlockPhase,
+                        sched::BlockPhase::Linear1>{},
+                    local_expert_idx, L1_SHAPE_K / BLOCK_K,
+                    m_block_idx, slice_idx, pool_block_idx, valid_m, 0u);
+            }
             #pragma unroll
             for (uint32_t n_block_idx = 0;
                  n_block_idx < kNumW2OutputTiles; ++ n_block_idx) {
                 load_b_phase(
                     std::integral_constant<
                         sched::BlockPhase, sched::BlockPhase::Linear2>{},
-                    local_expert_idx, 1u, m_block_idx, n_block_idx,
-                    pool_block_idx, valid_m, slice_idx);
+                    local_expert_idx,
+                    full_k_w2_task ? kNumIntermediateSlices : 1u,
+                    m_block_idx, n_block_idx, pool_block_idx, valid_m,
+                    full_k_w2_task ? 0u : slice_idx);
             }
         };
         produce_interleaved_blocks(load_b_task);
@@ -1210,6 +1253,8 @@
                  k_block_idx < num_k_blocks;
                  advance_pipeline(k_block_idx)) {
                 full_barriers[stage_idx]->wait(phase);
+                const uint32_t logical_k_block_idx =
+                    k_block_start + k_block_idx;
                 if (release_task_info && k_block_idx == 0)
                     interleaved_scheduler.release_task_info(lane_idx);
                 if constexpr (!kRegisterDequant)
@@ -1218,15 +1263,15 @@
                 // Read SF (must precede warpgroup_arrive)
                 const float scale_a_0_lo = kBlockIsL2 ?
                     ptx::ld_shared(
-                        smem_cd_l1_shared_sf + row_offset_r0 *
-                            kNumEpilogueWarps + 1u)
+                        smem_cd_l1_scale_cache +
+                            logical_k_block_idx * BLOCK_M + row_offset_r0)
                         * task_weight_global_scale :
                     ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r0)
                         * task_weight_global_scale;
                 const float scale_a_1_lo = kBlockIsL2 ?
                     ptx::ld_shared(
-                        smem_cd_l1_shared_sf + row_offset_r1 *
-                            kNumEpilogueWarps + 1u)
+                        smem_cd_l1_scale_cache +
+                            logical_k_block_idx * BLOCK_M + row_offset_r1)
                         * task_weight_global_scale :
                     ptx::ld_shared(smem_sfa[stage_idx] + row_offset_r1)
                         * task_weight_global_scale;
@@ -1319,7 +1364,10 @@
 
                         const auto activation_desc =
                             mma::sm90::make_smem_desc(
-                                (kBlockIsL2 ? smem_cd_l1 : smem_a[stage_idx])
+                                (kBlockIsL2 ?
+                                     smem_cd_l1 + logical_k_block_idx *
+                                         BLOCK_M * L1_OUT_BLOCK_N :
+                                     smem_a[stage_idx])
                                     + k * 32,
                                 1);
                         if constexpr (K_NATIVE_RS_HALF_PREFETCH) {
@@ -1506,8 +1554,9 @@
                         if (token_0 < valid_m) {
                             const float scale_0 = kBlockIsL2 ?
                                 ptx::ld_shared(
-                                    smem_cd_l1_shared_sf + token_0 *
-                                        kNumEpilogueWarps + 1u)
+                                    smem_cd_l1_scale_cache +
+                                        logical_k_block_idx * BLOCK_M +
+                                        token_0)
                                     * task_weight_global_scale :
                                 ptx::ld_shared(smem_sfa[stage_idx] + token_0)
                                     * task_weight_global_scale;
@@ -1519,8 +1568,9 @@
                         if (token_1 < valid_m) {
                             const float scale_1 = kBlockIsL2 ?
                                 ptx::ld_shared(
-                                    smem_cd_l1_shared_sf + token_1 *
-                                        kNumEpilogueWarps + 1u)
+                                    smem_cd_l1_scale_cache +
+                                        logical_k_block_idx * BLOCK_M +
+                                        token_1)
                                     * task_weight_global_scale :
                                 ptx::ld_shared(smem_sfa[stage_idx] + token_1)
                                     * task_weight_global_scale;
@@ -1900,14 +1950,14 @@
                             cute::max(amax, 1.0e-30f) * (1.0f / 448.0f);
                         const float group_scale_inv = 1.0f / group_scale;
 
-                        // Keep both quantization factors CTA-local. Slot zero
-                        // is consumed by the FP8 stores below; slot one is the
-                        // dequant scale consumed by every W2 N tile.
+                        // Keep the inverse in reusable amax scratch for the
+                        // stores below, while retaining one dequant scale for
+                        // every K128 slice until the complete-K W2 finishes.
                         smem_cd_l1_shared_sf[
                             token * kNumEpilogueWarps + reduce_warp_start] =
                             group_scale_inv;
-                        smem_cd_l1_shared_sf[
-                            token * kNumEpilogueWarps + 1u] =
+                        smem_cd_l1_scale_cache[
+                            n_block_idx * BLOCK_M + token] =
                             group_scale * output_weight_global_scale;
                     }
 
@@ -1927,7 +1977,9 @@
                                 const __nv_fp8_e4m3 q(swap_v0[half][i] * sf_inv);
                                 const uint32_t physical_col = out_col_base ^
                                     ((token_0 & 7u) * 16u);
-                                reinterpret_cast<uint8_t*>(smem_cd_l1)[
+                                reinterpret_cast<uint8_t*>(
+                                    smem_cd_l1 + n_block_idx * BLOCK_M *
+                                        L1_OUT_BLOCK_N)[
                                     token_0 * L1_OUT_BLOCK_N + physical_col] =
                                     *reinterpret_cast<const uint8_t*>(&q);
                             }
@@ -1937,7 +1989,9 @@
                                 const __nv_fp8_e4m3 q(swap_v1[half][i] * sf_inv);
                                 const uint32_t physical_col = out_col_base ^
                                     ((token_1 & 7u) * 16u);
-                                reinterpret_cast<uint8_t*>(smem_cd_l1)[
+                                reinterpret_cast<uint8_t*>(
+                                    smem_cd_l1 + n_block_idx * BLOCK_M *
+                                        L1_OUT_BLOCK_N)[
                                     token_1 * L1_OUT_BLOCK_N + physical_col] =
                                     *reinterpret_cast<const uint8_t*>(&q);
                             }
@@ -2141,29 +2195,38 @@
                     notify_l1_ready(pool_block_idx, n_block_idx);
                 }
             } else {
-                // ---------------- W2 EPILOGUE: FP32 K128 slice partial ----------------
-                // Each routed row maps back to a unique (token, top-k slot).
-                // The slice dimension is disjoint across fused microtasks, and
-                // the two math WGs own disjoint hidden columns, so no atomics
-                // are required here.
+                // ---------------- W2 EPILOGUE ----------------
+                // M128 tasks have accumulated complete K512 in registers and
+                // emit the public BF16 route boundary once.  Smaller-M slice
+                // tasks retain disjoint FP32 partials for parallelism.
                 DG_STATIC_ASSERT(kSwapABRequested && BLOCK_M == 8,
                                  "tile-WS partial store requires BM8 swap-AB");
                 const uint32_t slice_idx = k_block_start;
-                auto store_partial = [&](const uint32_t& token,
-                                         const uint32_t& col,
-                                         const float& value) {
+                auto* w2_routes = reinterpret_cast<__nv_bfloat16*>(
+                    w2_partials);
+                auto store_w2 = [&](const uint32_t& token,
+                                    const uint32_t& col,
+                                    const float& value) {
                     if (token < valid_m) {
                         const auto src_metadata =
                             *workspace.get_token_src_metadata_ptr(
                                 pool_block_idx * BLOCK_M + token);
-                        const uint64_t partial_idx =
-                            (((static_cast<uint64_t>(slice_idx) * kNumTopk +
-                               src_metadata.topk_idx) *
+                        const uint64_t route_element_idx =
+                            ((static_cast<uint64_t>(src_metadata.topk_idx) *
                                   kNumMaxTokensPerRank +
                               src_metadata.token_idx) *
                                  kHidden) +
                             n_idx + col;
-                        w2_partials[partial_idx] = value;
+                        if (full_k_w2_task) {
+                            w2_routes[route_element_idx] =
+                                __float2bfloat16_rn(value);
+                        } else {
+                            const uint64_t partial_idx =
+                                static_cast<uint64_t>(slice_idx) *
+                                    kNumTopk * kNumMaxTokensPerRank * kHidden +
+                                route_element_idx;
+                            w2_partials[partial_idx] = value;
+                        }
                     }
                 };
 
@@ -2175,14 +2238,14 @@
                     const uint32_t accum_offset =
                         half * kSwapABHalfAccumPerThread;
                     const uint32_t col_offset = half * 64u;
-                    store_partial(token_0, col_offset + r_0,
-                                  final_accum[accum_offset + 0]);
-                    store_partial(token_0, col_offset + r_1,
-                                  final_accum[accum_offset + 2]);
-                    store_partial(token_1, col_offset + r_0,
-                                  final_accum[accum_offset + 1]);
-                    store_partial(token_1, col_offset + r_1,
-                                  final_accum[accum_offset + 3]);
+                    store_w2(token_0, col_offset + r_0,
+                             final_accum[accum_offset + 0]);
+                    store_w2(token_0, col_offset + r_1,
+                             final_accum[accum_offset + 2]);
+                    store_w2(token_1, col_offset + r_0,
+                             final_accum[accum_offset + 1]);
+                    store_w2(token_1, col_offset + r_1,
+                             final_accum[accum_offset + 3]);
                 }
             }
 
@@ -2201,20 +2264,36 @@
                                        const uint32_t& slice_idx,
                                        const uint32_t& pool_block_idx,
                                        const uint32_t& valid_m) {
-            run_math_phase(
-                std::integral_constant<
-                    sched::BlockPhase, sched::BlockPhase::Linear1>{},
-                local_expert_idx, L1_SHAPE_K / BLOCK_K,
-                m_block_idx, slice_idx, pool_block_idx, valid_m,
-                0u, true);
+            if (full_k_w2_task) {
+                #pragma unroll
+                for (uint32_t l1_slice = 0;
+                     l1_slice < kNumIntermediateSlices; ++ l1_slice) {
+                    run_math_phase(
+                        std::integral_constant<
+                            sched::BlockPhase,
+                            sched::BlockPhase::Linear1>{},
+                        local_expert_idx, L1_SHAPE_K / BLOCK_K,
+                        m_block_idx, l1_slice, pool_block_idx, valid_m,
+                        0u, l1_slice == 0u);
+                }
+            } else {
+                run_math_phase(
+                    std::integral_constant<
+                        sched::BlockPhase, sched::BlockPhase::Linear1>{},
+                    local_expert_idx, L1_SHAPE_K / BLOCK_K,
+                    m_block_idx, slice_idx, pool_block_idx, valid_m,
+                    0u, true);
+            }
             #pragma unroll
             for (uint32_t n_block_idx = 0;
                  n_block_idx < kNumW2OutputTiles; ++ n_block_idx) {
                 run_math_phase(
                     std::integral_constant<
                         sched::BlockPhase, sched::BlockPhase::Linear2>{},
-                    local_expert_idx, 1u, m_block_idx, n_block_idx,
-                    pool_block_idx, valid_m, slice_idx, false);
+                    local_expert_idx,
+                    full_k_w2_task ? kNumIntermediateSlices : 1u,
+                    m_block_idx, n_block_idx, pool_block_idx, valid_m,
+                    full_k_w2_task ? 0u : slice_idx, false);
             }
         };
         for_each_published_block(run_math_task);
@@ -2255,12 +2334,12 @@
         // dispatch may now safely clean workspace state.
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
 
-        // Ordered local reduction of the disjoint K128 slice partials.  Match
-        // the public numerical boundary: first accumulate the full W2 K for
-        // one route in FP32, round that route result to BF16, then apply
-        // topk_weight * 1.5 and advance to the next slot in fixed k6 order.
-        // Invalid top-k slots are skipped.
+        // Ordered local reduction. Complete-K tasks already emitted one BF16
+        // value per route; slice tasks reconstruct that same boundary here.
+        // Then apply topk_weight * 1.5 in fixed k6 order.
         auto* local_output = reinterpret_cast<__nv_bfloat16*>(y);
+        const auto* w2_routes = reinterpret_cast<const __nv_bfloat16*>(
+            w2_partials);
         const uint32_t global_math_thread =
             sm_idx * kNumEpilogueThreads + epilogue_thread_idx;
         const uint32_t num_math_threads =
@@ -2279,23 +2358,34 @@
                 const int64_t expert_idx = __ldg(
                     input_topk_idx_buffer.get_base_ptr<int64_t>() + route_idx);
                 if (expert_idx >= 0) {
-                    float route_value = 0.0f;
-                    #pragma unroll
-                    for (uint32_t slice_idx = 0;
-                         slice_idx < kNumIntermediateSlices; ++ slice_idx) {
-                        const uint64_t partial_idx =
-                            (((static_cast<uint64_t>(slice_idx) * kNumTopk +
-                               slot_idx) * kNumMaxTokensPerRank + token_idx) *
-                                 kHidden) +
-                            hidden_idx;
-                        route_value += w2_partials[partial_idx];
+                    const uint64_t route_element_idx =
+                        ((static_cast<uint64_t>(slot_idx) *
+                              kNumMaxTokensPerRank + token_idx) *
+                             kHidden) +
+                        hidden_idx;
+                    float route_bf16;
+                    if (full_k_w2_task) {
+                        route_bf16 = __bfloat162float(
+                            w2_routes[route_element_idx]);
+                    } else {
+                        float route_value = 0.0f;
+                        #pragma unroll
+                        for (uint32_t slice_idx = 0;
+                             slice_idx < kNumIntermediateSlices;
+                             ++ slice_idx) {
+                            const uint64_t partial_idx =
+                                static_cast<uint64_t>(slice_idx) *
+                                    kNumTopk * kNumMaxTokensPerRank * kHidden +
+                                route_element_idx;
+                            route_value += w2_partials[partial_idx];
+                        }
+                        route_bf16 = __bfloat162float(
+                            __float2bfloat16_rn(route_value));
                     }
                     const float route_weight = __ldg(
                         input_topk_weights_buffer.get_base_ptr<float>() +
                         route_idx) * 1.5f;
-                    reduced += __bfloat162float(
-                                   __float2bfloat16_rn(route_value)) *
-                               route_weight;
+                    reduced += route_bf16 * route_weight;
                 }
             }
             local_output[output_idx] = __float2bfloat16_rn(reduced);

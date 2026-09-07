@@ -18261,3 +18261,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Geometric mean: control 0.162491 ms, candidate 0.246310 ms; control/candidate speedup 0.659699× (candidate is 1.5158× slower).
 - Versus iteration 736's one-CTA candidate (0.295684 ms geometric mean), two-CTA residency is 16.70% faster overall; endpoint gains are 7.85% at M8 and 20.13% at M128. This validates the NCU occupancy diagnosis.
 - Decision: accept two-CTA residency as the new tile-WS production checkpoint. It does not close the baseline gap; next remove the FP32 per-slice scratch/final 24-load reduction by making W2 accumulate complete K before emitting a BF16 route tile.
+## Iteration 740 — complete-K BM8 task removes partials but loses on granularity
+
+- Hypothesis/change: for M128 only, collapse four `(BM8,K128-slice)` tasks into one BM8 task. Compute all four W13 slices, retain their FP8 activations/scales in CTA shared memory, make every W2 N256 tile accumulate complete K512 in FP32 registers, emit one BF16 route tile, and reduce six BF16 routes. M<128 keeps the prior slice-task algorithm. This removes M128's four FP32 global partial writes and 24-load final reduction while preserving the exact numerical boundary.
+- Benchmark: TP4 GPUs 1–4, random routing, CUDA Graph, independent 256 MiB cold-L2 eviction, 2 outer × 5 replay samples, all five M.
+- Build/correctness: `COMPILED=True`, `CORRECT=True` for every M. M128 final rel-L2 is 0.00297382 and local rel-L2 0.00035880, confirming the complete-K BF16 route path is numerically sound.
+- Median latency (control / candidate, ms): M8 0.072416 / 0.129040; M16 0.114832 / 0.176752; M32 0.178368 / 0.280864; M64 0.251232 / 0.370064; M128 0.308288 / 0.495712.
+- Geometric mean: control 0.162948 ms, candidate 0.259429 ms; candidate is 1.5921× slower. Versus iteration 739's 0.246310 ms, this regresses 5.33%; M128 alone regresses 6.22% (0.466688→0.495712 ms). Even the nominally unchanged small-M runtime branch regresses, indicating code/resource footprint also worsened.
+- Decision: reject and roll back the monolithic BM8 task. Eliminating scratch is not sufficient when it cuts M128 task population 4× and lengthens each indivisible task; preserve fine slice scheduling and pursue a cooperative/cohort reduction that retains parallel W2 N tiles.
