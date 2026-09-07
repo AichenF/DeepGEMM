@@ -43,9 +43,6 @@ NATIVE_H20_EXACT_OUTER = (
 NATIVE_TP_TILE_WS = (
     os.environ.get("V4_NATIVE_TP_TILE_WS", "0") == "1"
 )
-NATIVE_TP_TILE_N128 = (
-    os.environ.get("V4_NATIVE_TP_TILE_N128", "0") == "1"
-)
 # Native production historically applies the routed scaling factor inside its
 # collective tail.  Scheme A restores the public W2-BF16/weighted-k6 boundary,
 # so its local output already includes that factor and the tail must not apply
@@ -145,12 +142,6 @@ if NATIVE_TP_TILE_WS and (
     raise ValueError(
         "V4_NATIVE_TP_TILE_WS requires the isolated TP-local "
         "register-dequant K128 configuration"
-    )
-if NATIVE_TP_TILE_N128 and not (
-    NATIVE_TP_TILE_WS and NATIVE_TWO_CTA_PER_SM
-):
-    raise ValueError(
-        "V4_NATIVE_TP_TILE_N128 requires the two-CTA tile-WS base bundle"
     )
 if NATIVE_RS_HALF_PREFETCH and not (
     NATIVE_REGISTER_DEQUANT and NATIVE_RS_K128_BATCH
@@ -648,9 +639,6 @@ _CUDA = r"""
 #ifndef K_NATIVE_TP_TILE_WS
 #define K_NATIVE_TP_TILE_WS 0
 #endif
-#ifndef K_NATIVE_TP_TILE_N128
-#define K_NATIVE_TP_TILE_N128 0
-#endif
 #ifndef K_NATIVE_SKIP_CLEANUP_GRID_SYNC
 #define K_NATIVE_SKIP_CLEANUP_GRID_SYNC 0
 #endif
@@ -962,8 +950,7 @@ __device__ __forceinline__ void native_nvls_pull(
 }
 
 template <int kIntermediate, int kExpertsPerWave = 16, int kTpWorld = 4>
-CUTLASS_GLOBAL __launch_bounds__(
-    384, K_NATIVE_TP_TILE_N128 ? 3 : (K_NATIVE_TWO_CTA_PER_SM ? 2 : 1)) void
+CUTLASS_GLOBAL __launch_bounds__(384, K_NATIVE_TWO_CTA_PER_SM ? 2 : 1) void
 v4_flash_tp4_native_megamoe_impl(
         void* y,
         int* cumulative_local_expert_recv_stats,
@@ -997,9 +984,7 @@ v4_flash_tp4_native_megamoe_impl(
     constexpr uint32_t kNumExpertsPerWave = kExpertsPerWave;
     // `kNumSMs` is the inherited scheduler's persistent-CTA population.
     // The opt-in resource experiment places two CTAs on each of 78 H20 SMs.
-    constexpr uint32_t kNumSMs =
-        K_NATIVE_TP_TILE_N128 ? 234 :
-        (K_NATIVE_TWO_CTA_PER_SM ? 156 : 78);
+    constexpr uint32_t kNumSMs = K_NATIVE_TWO_CTA_PER_SM ? 156 : 78;
     constexpr uint32_t kNumRanks = 1;
     constexpr uint32_t kNumExperts = 256;
     constexpr uint32_t BLOCK_M = 8;
@@ -1271,8 +1256,7 @@ void run_native(
         } else if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
             tensor_map_l1_weights = native_make_desc(
                 w13.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
-                2048, w13.numel() / 2048, 64,
-                K_NATIVE_TP_TILE_N128 ? 128 : 256, 2048,
+                2048, w13.numel() / 2048, 64, 256, 2048,
                 CU_TENSOR_MAP_SWIZZLE_NONE);
             tensor_map_l1_weight_scales = native_make_desc(
                 w13_scale.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
@@ -1281,8 +1265,7 @@ void run_native(
         } else {
             tensor_map_l1_weights = native_make_desc(
                 w13.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
-                2560, w13.numel() / 2560, 80,
-                K_NATIVE_TP_TILE_N128 ? 128 : 256, 2560,
+                2560, w13.numel() / 2560, 80, 256, 2560,
                 CU_TENSOR_MAP_SWIZZLE_NONE);
             tensor_map_l1_weight_scales = tensor_map_l1_weights;
         }
@@ -1308,7 +1291,7 @@ void run_native(
             tensor_map_l2_weights = native_make_desc(
                 w2.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
                 intermediate / 2, w2.numel() / (intermediate / 2),
-                64, K_NATIVE_TP_TILE_N128 ? 128 : 256, intermediate / 2,
+                64, 256, intermediate / 2,
                 CU_TENSOR_MAP_SWIZZLE_NONE);
             tensor_map_l2_weight_scales = native_make_desc(
                 w2_scale.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
@@ -1319,8 +1302,7 @@ void run_native(
                 w2.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
                 intermediate * 5 / 8,
                 w2.numel() / (intermediate * 5 / 8),
-                80, K_NATIVE_TP_TILE_N128 ? 128 : 256,
-                intermediate * 5 / 8,
+                80, 256, intermediate * 5 / 8,
                 CU_TENSOR_MAP_SWIZZLE_NONE);
             tensor_map_l2_weight_scales = tensor_map_l2_weights;
         }
@@ -1335,11 +1317,10 @@ void run_native(
     std::array<int64_t, 1> ptrs = {
         reinterpret_cast<int64_t>(workspace.data_ptr<uint8_t>())};
     const layout::SymBuffer<1> sym_buffer(ptrs, 0);
-    constexpr int kDynamicSmemBytes = K_NATIVE_TP_TILE_N128 ? 65536 :
-        (K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448);
+    constexpr int kDynamicSmemBytes =
+        K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448;
     const auto stream = at::cuda::getCurrentCUDAStream();
-    constexpr int kGrid = K_NATIVE_TP_TILE_N128 ? 234 :
-        (K_NATIVE_TWO_CTA_PER_SM ? 156 : 78);
+    constexpr int kGrid = K_NATIVE_TWO_CTA_PER_SM ? 156 : 78;
     int* native_phase_stamps = nullptr;
     if constexpr (K_NATIVE_PHASE_STAMPS) {
         if (!enable_tp) {
@@ -1359,15 +1340,7 @@ void run_native(
         C10_CUDA_CHECK(cudaFuncSetAttribute(
             kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
             kDynamicSmemBytes));
-        if constexpr (K_NATIVE_TP_TILE_N128) {
-            int active_blocks = 0;
-            C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-                &active_blocks, kernel, 384, kDynamicSmemBytes));
-            TORCH_CHECK(
-                active_blocks >= 3,
-                "native N128 specialization requires >=3 CTAs/SM, got ",
-                active_blocks);
-        } else if constexpr (K_NATIVE_TWO_CTA_PER_SM) {
+        if constexpr (K_NATIVE_TWO_CTA_PER_SM) {
             int active_blocks = 0;
             C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
                 &active_blocks, kernel, 384, kDynamicSmemBytes));
@@ -1383,7 +1356,7 @@ void run_native(
         launch_config.dynamicSmemBytes = kDynamicSmemBytes;
         launch_config.stream = stream;
         cudaLaunchAttribute launch_attribute{};
-        if constexpr (K_NATIVE_TP_TILE_N128 || K_NATIVE_TWO_CTA_PER_SM) {
+        if constexpr (K_NATIVE_TWO_CTA_PER_SM) {
             int cooperative_supported = 0;
             C10_CUDA_CHECK(cudaDeviceGetAttribute(
                 &cooperative_supported, cudaDevAttrCooperativeLaunch,
@@ -1444,8 +1417,8 @@ void run_native(
 }
 
 int native_tp4_active_blocks_per_sm(int tokens) {
-    constexpr int kDynamicSmemBytes = K_NATIVE_TP_TILE_N128 ? 65536 :
-        (K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448);
+    constexpr int kDynamicSmemBytes =
+        K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448;
     int active_blocks = 0;
     const auto query = [&]<int kLaunchExpertsPerWave>() {
         auto kernel =
@@ -1468,8 +1441,8 @@ int native_tp4_active_blocks_per_sm(int tokens) {
 }
 
 int native_tp8_active_blocks_per_sm(int tokens) {
-    constexpr int kDynamicSmemBytes = K_NATIVE_TP_TILE_N128 ? 65536 :
-        (K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448);
+    constexpr int kDynamicSmemBytes =
+        K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448;
     int active_blocks = 0;
     const auto query = [&]<int kLaunchExpertsPerWave>() {
         auto kernel =
@@ -1551,7 +1524,6 @@ _SOURCE_HASH = hashlib.sha1(
         + str(int(NATIVE_TWO_CTA_PER_SM))
         + str(int(NATIVE_H20_EXACT_OUTER))
         + str(int(NATIVE_TP_TILE_WS))
-        + str(int(NATIVE_TP_TILE_N128))
         + str(int(NATIVE_SKIP_CLEANUP_GRID_SYNC))
         + str(int(NATIVE_RS_HALF_PREFETCH))
         + str(int(NATIVE_NORMALIZED_WEIGHT_SCALE))
@@ -1580,7 +1552,6 @@ _ext = load_inline(
         f"cta2{int(NATIVE_TWO_CTA_PER_SM)}_"
         f"h20eo{int(NATIVE_H20_EXACT_OUTER)}_"
         f"tws{int(NATIVE_TP_TILE_WS)}_"
-        f"tn128{int(NATIVE_TP_TILE_N128)}_"
         f"scg{int(NATIVE_SKIP_CLEANUP_GRID_SYNC)}_"
         f"hp{int(NATIVE_RS_HALF_PREFETCH)}_"
         f"nws{int(NATIVE_NORMALIZED_WEIGHT_SCALE)}_"
@@ -1626,7 +1597,6 @@ _ext = load_inline(
         f"-DK_NATIVE_TWO_CTA_PER_SM={int(NATIVE_TWO_CTA_PER_SM)}",
         f"-DK_NATIVE_H20_EXACT_OUTER={int(NATIVE_H20_EXACT_OUTER)}",
         f"-DK_NATIVE_TP_TILE_WS={int(NATIVE_TP_TILE_WS)}",
-        f"-DK_NATIVE_TP_TILE_N128={int(NATIVE_TP_TILE_N128)}",
         (
             "-DK_NATIVE_SKIP_CLEANUP_GRID_SYNC="
             f"{int(NATIVE_SKIP_CLEANUP_GRID_SYNC)}"
@@ -1820,15 +1790,8 @@ def run_local(
     """Diagnostic entry that executes the same body but skips the TP tail."""
     device = local_output.device
     # In the default build this remains an ordinary unused local counter slab.
-    # A phase-stamp build needs four boundaries plus two stamps per CTA, stored
-    # through the int32 allocation and viewed as int64 by the diagnostic.
-    phase_ctas = 234 if NATIVE_TP_TILE_N128 else (
-        156 if NATIVE_TWO_CTA_PER_SM else 78
-    )
-    phase_counter_words = 2 * (4 + 2 * phase_ctas)
-    dummy_counter = torch.zeros(
-        (max(640, phase_counter_words),), dtype=torch.int32, device=device
-    )
+    # The explicit phase-stamp build reinterprets its first 316 int64 entries.
+    dummy_counter = torch.zeros((640,), dtype=torch.int32, device=device)
     dummy_bytes = workspace.storage[:128]
     intermediate = workspace.l2_acts.shape[1]
     if intermediate not in (256, 512):

@@ -18388,3 +18388,8 @@ maximum rank latency of a full CUDA-Graph replay.
 - M128 phase stamps (us): route `4.480`, last W13 `403.904`, last W2 `443.232`, all GEMM `444.224`, final reduction `33.664`, local body `477.888`.
 - Comparison to iter744 N256 production: M8 W13/W2/local are `81.152/106.624/112.384 us`; M128 are `366.560/397.952/446.912 us`. N128x2 regresses W13 by `4.736/37.344 us` and last-W2 by `10.752/45.280 us`; its smaller final reduction cannot compensate.
 - Decision: no bounded A-reuse repair is justified: the loss spans both W13 and W2 physical-tile streams, not a narrow activation-join tail. Reject N128x2 and restore iter742 before pursuing a cluster/cohort design that executes the two N128 halves concurrently rather than serially.
+
+## Post-iteration 752 production restoration
+
+- Restored the three runtime sources byte-for-byte to iter742 after phase evidence rejected serial N128x2. Verified the same production SHA-256 triplet recorded after iter750.
+- No timing claim is attached to this restoration; the next experiment must branch from the strict-correct N256 checkpoint and execute any N128 halves concurrently rather than serially.

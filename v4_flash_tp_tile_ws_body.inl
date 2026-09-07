@@ -23,10 +23,6 @@
                      !K_NATIVE_SPLIT_WEIGHT_SCALE_TMA &&
                      !K_NATIVE_TILE_WEIGHT_SCALE_TMA,
                      "tile-WS v1 supports only fused normalized weight rows");
-    DG_STATIC_ASSERT(!K_NATIVE_TP_TILE_N128 ||
-                     (BLOCK_M == 8 && BLOCK_N == 256 &&
-                      K_NATIVE_TWO_CTA_PER_SM),
-                     "N128 physical tiles require the BM8 two-CTA base plan");
     DG_STATIC_ASSERT(BLOCK_M == 8 || BLOCK_M == 16 ||
                      BLOCK_M == 24 || BLOCK_M == 64 || BLOCK_M == 128,
                      "H200 fused kernel requires BM8/BM16/BM24/BM64/BM128");
@@ -120,32 +116,24 @@
     constexpr uint32_t kNumRoutedL1BlockNs = L1_SHAPE_N / BLOCK_N;
     constexpr uint32_t kNumIntermediateSlices =
         kIntermediateHidden / BLOCK_K;
-    constexpr uint32_t kPhysicalBlockN =
-        K_NATIVE_TP_TILE_N128 ? 128u : BLOCK_N;
-    constexpr uint32_t kNumL1PhysicalTiles = BLOCK_N / kPhysicalBlockN;
-    constexpr uint32_t kNumW2OutputTiles =
-        L2_SHAPE_N / kPhysicalBlockN;
+    constexpr uint32_t kNumW2OutputTiles = L2_SHAPE_N / BLOCK_N;
     DG_STATIC_ASSERT(kNumRoutedL1BlockNs == kNumIntermediateSlices,
                      "one W13 N256 tile must produce one W2 K128 slice");
-    DG_STATIC_ASSERT(kNumW2OutputTiles * kPhysicalBlockN == L2_SHAPE_N,
-                     "physical W2 N tiles must cover hidden4096");
+    DG_STATIC_ASSERT(kNumW2OutputTiles == 16,
+                     "V4 Flash hidden4096 requires sixteen W2 N256 tiles");
     constexpr bool kSplitMDecodedWeightReuse =
         BLOCK_M == 128 && BLOCK_N == 128 && kNumEpilogueWarpgroups == 2;
     constexpr uint32_t WG_BLOCK_M =
         kSplitMDecodedWeightReuse ? BLOCK_M / 2 : BLOCK_M;
     constexpr uint32_t WG_BLOCK_N =
-        kSplitMDecodedWeightReuse ? BLOCK_N : kPhysicalBlockN / 2;
+        kSplitMDecodedWeightReuse ? BLOCK_N : BLOCK_N / 2;
     constexpr uint32_t L1_OUT_BLOCK_N = BLOCK_N / 2;       // post-SwiGLU tile N
-    constexpr uint32_t kPhysicalL1OutBlockN = kPhysicalBlockN / 2;
     constexpr uint32_t WG_L1_OUT_BLOCK_N = WG_BLOCK_N / 2; // post-SwiGLU per-WG N
     constexpr uint32_t kSwapABTokenChunks = BLOCK_M / 8;
     constexpr uint32_t kSwapABWeightHalves = WG_BLOCK_N / 64;
     constexpr uint32_t kSwapABHalfAccumPerThread = 64 * 64 / 128;
-    DG_STATIC_ASSERT(!kSwapABRequested ||
-                     (WG_BLOCK_N % 64 == 0 &&
-                      kNumEpilogueWarpgroups * WG_L1_OUT_BLOCK_N *
-                          kNumL1PhysicalTiles == L1_OUT_BLOCK_N),
-                     "swapAB physical tiles must cover the complete K128 activation");
+    DG_STATIC_ASSERT(!kSwapABRequested || WG_L1_OUT_BLOCK_N == 64,
+                     "swapAB expects BN256 split-N with 64 L1 output columns per WG");
     // Both dispatch warps participate in CTA-wide barriers. Selected plans may
     // use one warp for routing and token pulls, leaving the other warp's send
     // buffer available for an additional GEMM stage.
@@ -159,7 +147,7 @@
                   "Unexpected WGMMA shape");
     // A and B are CTA-local in the fixed cluster-size-one plan.
     constexpr uint32_t LOAD_BLOCK_M    = BLOCK_M;
-    constexpr uint32_t LOAD_BLOCK_N    = kPhysicalBlockN;
+    constexpr uint32_t LOAD_BLOCK_N    = BLOCK_N;
     constexpr uint32_t kSwizzleAMode   = BLOCK_K * sizeof(a_dtype_t);   // 128
     constexpr uint32_t kL2ActsSFGranK =
         kSplitMDecodedWeightReuse ? 64u : 128u;
@@ -222,14 +210,8 @@
         kNumL2SFAGroups * kL2SFAHalfStride * sizeof(float);
     // CD output: max of L1 FP8 (BLOCK_M * (BLOCK_N/2) * 1 byte * num_wg) and
     // L2 BF16 (BLOCK_M * BLOCK_N * 2 bytes * num_wg).
-    constexpr uint32_t SMEM_CD_L1_FP8_SIZE =
-        BLOCK_M * L1_OUT_BLOCK_N * sizeof(cutlass::float_e4m3_t);
-    // N128x2 first materializes both SwiGLU halves as BF16 so one exact
-    // group-128 amax can quantize the complete W2 K tile.
-    constexpr uint32_t SMEM_CD_L1_BF16_SIZE = K_NATIVE_TP_TILE_N128 ?
-        BLOCK_M * L1_OUT_BLOCK_N * sizeof(nv_bfloat16) : 0u;
     constexpr uint32_t SMEM_CD_L1_SIZE =
-        SMEM_CD_L1_FP8_SIZE + SMEM_CD_L1_BF16_SIZE;
+        kNumEpilogueWarpgroups * WG_BLOCK_M * WG_L1_OUT_BLOCK_N * sizeof(cutlass::float_e4m3_t);
     constexpr uint32_t SMEM_CD_L2_SIZE = kSwapABRequested ?
         BLOCK_M * BLOCK_N * sizeof(nv_bfloat16) : 0u;
     constexpr uint32_t SMEM_CD_OUTPUT_BASE_SIZE =
@@ -238,14 +220,9 @@
         kNumEpilogueWarpgroups * BLOCK_M;
     constexpr uint32_t SMEM_CD_L1_SWAP_AMAX_SLOTS = kSwapABRequested ?
         BLOCK_M * kNumEpilogueWarps : 0u;
-    constexpr uint32_t SMEM_CD_L1_N128_AMAX_SLOTS =
-        K_NATIVE_TP_TILE_N128 ? BLOCK_M : 0u;
-    constexpr uint32_t SMEM_CD_L1_EXTRA_FLOAT_SLOTS_BASE =
+    constexpr uint32_t SMEM_CD_L1_EXTRA_FLOAT_SLOTS =
         SMEM_CD_L1_SHARED_SF_SLOTS > SMEM_CD_L1_SWAP_AMAX_SLOTS ?
         SMEM_CD_L1_SHARED_SF_SLOTS : SMEM_CD_L1_SWAP_AMAX_SLOTS;
-    constexpr uint32_t SMEM_CD_L1_EXTRA_FLOAT_SLOTS =
-        SMEM_CD_L1_EXTRA_FLOAT_SLOTS_BASE +
-        SMEM_CD_L1_N128_AMAX_SLOTS;
     constexpr uint32_t SMEM_CD_L1_SHARED_SF_SIZE =
         SMEM_CD_L1_EXTRA_FLOAT_SLOTS * sizeof(float);
     constexpr uint32_t SMEM_CD_OUTPUT_UNALIGNED_SIZE =
@@ -260,7 +237,7 @@
     // The post-GEMM top-k combine reuses the prefix as three buffers over two
     // hidden chunks.  Decoded-B used to make that prefix large implicitly;
     // keep the alias contract explicit when register dequant removes it.
-    constexpr uint32_t SMEM_COMBINE_ALIAS_SIZE = K_NATIVE_TP_TILE_N128 ? 0u :
+    constexpr uint32_t SMEM_COMBINE_ALIAS_SIZE =
         3u * kNumEpilogueWarps * kHidden * sizeof(nv_bfloat16) / 2u;
     constexpr uint32_t SMEM_BEFORE_BARRIER_SIZE =
         SMEM_GEMM_STORAGE_SIZE > SMEM_COMBINE_ALIAS_SIZE
@@ -280,8 +257,6 @@
     auto smem_cd_base = smem_gemm_base;
     // CD output is shared by L1 (FP8) and L2 (BF16); reinterpret-cast as needed.
     auto smem_cd_l1 = reinterpret_cast<cutlass::float_e4m3_t*>(smem_cd_base);
-    auto smem_cd_l1_bf16 = reinterpret_cast<nv_bfloat16*>(
-        math::advance_ptr<uint8_t>(smem_cd_base, SMEM_CD_L1_FP8_SIZE));
     auto smem_cd_l1_shared_sf =
         math::advance_ptr<float>(smem_cd_base, SMEM_CD_OUTPUT_BASE_SIZE);
     auto smem_cd_l2 = reinterpret_cast<nv_bfloat16*>(smem_cd_base);
@@ -342,8 +317,6 @@
                      "Interleaved scheduler exceeds the SM90 shared-memory capacity");
     DG_STATIC_ASSERT(!kRegisterDequant || kInterleavedSMEMEnd <= 102400,
                      "register-dequant shared-memory budget exceeded");
-    DG_STATIC_ASSERT(!K_NATIVE_TP_TILE_N128 || kInterleavedSMEMEnd <= 65536,
-                     "N128 three-CTA shared-memory budget exceeded");
 
     // =====================================================================
     // Initialization
@@ -434,16 +407,14 @@
     // Register reconfiguration counts (chosen to fit in 64512 reg budget).
     constexpr uint32_t kNumDispatchRegisters    = 48;
     constexpr uint32_t kNumNonEpilogueRegisters =
-        K_NATIVE_TP_TILE_N128 ? 48 :
-        (kUseInterleavedScheduler ? 64 : 40);
+        kUseInterleavedScheduler ? 64 : 40;
     // Register-dequant reduces shared memory enough for two resident CTAs.
     // 88 registers per math lane also stays below the cubin's 80-reg/thread
     // initial CTA allocation after producer warps deallocate; requesting 96
     // would need 1,024 registers from outside the CTA and can deadlock.
     // The default reference retains 208.
     constexpr uint32_t kNumEpilogueRegisters =
-        K_NATIVE_TP_TILE_N128 ? 56 :
-        (K_NATIVE_TWO_CTA_PER_SM ? 88 : 208);
+        K_NATIVE_TWO_CTA_PER_SM ? 88 : 208;
     DG_STATIC_ASSERT(kNumDispatchRegisters * kNumDispatchThreads +
                      kNumNonEpilogueRegisters * kNumNonEpilogueThreads +
                      kNumEpilogueRegisters * kNumEpilogueThreads <= 64512,
@@ -1006,17 +977,11 @@
                                      const uint32_t& slice_idx,
                                      const uint32_t& pool_block_idx,
                                      const uint32_t& valid_m) {
-            #pragma unroll
-            for (uint32_t l1_tile = 0;
-                 l1_tile < kNumL1PhysicalTiles; ++ l1_tile) {
-                load_a_phase(
-                    std::integral_constant<
-                        sched::BlockPhase, sched::BlockPhase::Linear1>{},
-                    local_expert_idx, L1_SHAPE_K / BLOCK_K,
-                    m_block_idx,
-                    slice_idx * kNumL1PhysicalTiles + l1_tile,
-                    pool_block_idx, valid_m, 0u);
-            }
+            load_a_phase(
+                std::integral_constant<
+                    sched::BlockPhase, sched::BlockPhase::Linear1>{},
+                local_expert_idx, L1_SHAPE_K / BLOCK_K,
+                m_block_idx, slice_idx, pool_block_idx, valid_m, 0u);
             #pragma unroll
             for (uint32_t n_block_idx = 0;
                  n_block_idx < kNumW2OutputTiles; ++ n_block_idx) {
@@ -1053,9 +1018,7 @@
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 empty_barriers[stage_idx]->wait(phase ^ 1);
 
-                const uint32_t n_idx =
-                    local_expert_idx * shape_n +
-                    n_block_idx * kPhysicalBlockN;
+                const uint32_t n_idx = local_expert_idx * shape_n + n_block_idx * BLOCK_N;
                 const uint32_t logical_k_block_idx =
                     k_block_start + k_block_idx;
                 if (cute::elect_one_sync()) {
@@ -1101,17 +1064,11 @@
                                      const uint32_t& slice_idx,
                                      const uint32_t& pool_block_idx,
                                      const uint32_t& valid_m) {
-            #pragma unroll
-            for (uint32_t l1_tile = 0;
-                 l1_tile < kNumL1PhysicalTiles; ++ l1_tile) {
-                load_b_phase(
-                    std::integral_constant<
-                        sched::BlockPhase, sched::BlockPhase::Linear1>{},
-                    local_expert_idx, L1_SHAPE_K / BLOCK_K,
-                    m_block_idx,
-                    slice_idx * kNumL1PhysicalTiles + l1_tile,
-                    pool_block_idx, valid_m, 0u);
-            }
+            load_b_phase(
+                std::integral_constant<
+                    sched::BlockPhase, sched::BlockPhase::Linear1>{},
+                local_expert_idx, L1_SHAPE_K / BLOCK_K,
+                m_block_idx, slice_idx, pool_block_idx, valid_m, 0u);
             #pragma unroll
             for (uint32_t n_block_idx = 0;
                  n_block_idx < kNumW2OutputTiles; ++ n_block_idx) {
@@ -1177,8 +1134,7 @@
                 kSplitMDecodedWeightReuse ? 0u : epilogue_wg_idx * WG_BLOCK_N;
             const uint32_t wg_l1_out_n_idx =
                 kSplitMDecodedWeightReuse ? 0u : epilogue_wg_idx * WG_L1_OUT_BLOCK_N;
-            const uint32_t n_idx =
-                n_block_idx * kPhysicalBlockN + wg_n_idx;
+            const uint32_t n_idx = n_block_idx * BLOCK_N + wg_n_idx;
             const uint32_t row_block_offset =
                 kSplitMDecodedWeightReuse ? epilogue_wg_idx * WG_BLOCK_M : 0u;
             const uint32_t row_offset_r0 = row_block_offset + r_0;
@@ -1927,184 +1883,67 @@
 
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
 
-                    if constexpr (K_NATIVE_TP_TILE_N128) {
-                        const uint32_t l1_physical_tile =
-                            n_block_idx % kNumL1PhysicalTiles;
-                        auto* saved_amax = smem_cd_l1_shared_sf +
-                            SMEM_CD_L1_EXTRA_FLOAT_SLOTS_BASE;
-
-                        // Preserve the first N128 physical tile as BF16 and
-                        // defer FP8 quantization until the second half exposes
-                        // the complete group-128 amax.
-                        for (uint32_t token = scale_token_thread;
-                             token < valid_m;
-                             token += scale_token_stride) {
-                            float amax = 0.0f;
-                            #pragma unroll
-                            for (uint32_t w = 0;
-                                 w < reduce_warp_count; ++ w) {
-                                amax = cute::max(
-                                    amax,
-                                    smem_cd_l1_shared_sf[
-                                        token * kNumEpilogueWarps +
-                                        reduce_warp_start + w]);
-                            }
-                            if (l1_physical_tile == 0) {
-                                saved_amax[token] = amax;
-                            } else {
-                                amax = cute::max(amax, saved_amax[token]);
-                                const float group_scale =
-                                    cute::max(amax, 1.0e-30f) *
-                                    (1.0f / 448.0f);
-                                smem_cd_l1_shared_sf[
-                                    token * kNumEpilogueWarps +
-                                    reduce_warp_start] = 1.0f / group_scale;
-                                smem_cd_l1_shared_sf[
-                                    token * kNumEpilogueWarps + 1u] =
-                                    group_scale * output_weight_global_scale;
-                            }
-                        }
-                        ptx::sync_aligned(
-                            kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-
+                    for (uint32_t token = scale_token_thread;
+                         token < valid_m;
+                         token += scale_token_stride) {
+                        float amax = 0.0f;
                         #pragma unroll
-                        for (uint32_t i = 0;
-                             i < kSwapABTokenChunks; ++ i) {
-                            const uint32_t token_0 =
-                                i * 8 + col_idx * 2;
-                            const uint32_t token_1 = token_0 + 1;
-                            #pragma unroll
-                            for (uint32_t half = 0;
-                                 half < kSwapABWeightHalves; ++ half) {
-                                const uint32_t out_col =
-                                    l1_physical_tile *
-                                        kPhysicalL1OutBlockN +
-                                    wg_l1_out_n_idx + half * 32u +
-                                    warp_idx_in_wg * 8 + row_idx;
-                                if (token_0 < valid_m) {
-                                    smem_cd_l1_bf16[
-                                        token_0 * L1_OUT_BLOCK_N + out_col] =
-                                        __float2bfloat16_rn(
-                                            swap_v0[half][i]);
-                                }
-                                if (token_1 < valid_m) {
-                                    smem_cd_l1_bf16[
-                                        token_1 * L1_OUT_BLOCK_N + out_col] =
-                                        __float2bfloat16_rn(
-                                            swap_v1[half][i]);
-                                }
-                            }
-                        }
-                        ptx::sync_aligned(
-                            kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                        for (uint32_t w = 0; w < reduce_warp_count; ++ w)
+                            amax = cute::max(
+                                amax, smem_cd_l1_shared_sf[token * kNumEpilogueWarps + reduce_warp_start + w]);
+                        // TP's public W13->W2 boundary uses the same ordinary
+                        // FP32 group-128 scale as the selected SGLang path,
+                        // not the UE8M0/power-of-two scale inherited from EP.
+                        // Keeping that distinction is numerically material:
+                        // power-of-two rounding needlessly spends FP8 range.
+                        const float group_scale =
+                            cute::max(amax, 1.0e-30f) * (1.0f / 448.0f);
+                        const float group_scale_inv = 1.0f / group_scale;
 
-                        if (l1_physical_tile + 1 ==
-                            kNumL1PhysicalTiles) {
-                            const uint32_t num_l1_values =
-                                valid_m * L1_OUT_BLOCK_N;
-                            for (uint32_t value_idx = epilogue_thread_idx;
-                                 value_idx < num_l1_values;
-                                 value_idx += kNumEpilogueThreads) {
-                                const uint32_t token =
-                                    value_idx / L1_OUT_BLOCK_N;
-                                const uint32_t logical_col =
-                                    value_idx % L1_OUT_BLOCK_N;
+                        // Keep both quantization factors CTA-local. Slot zero
+                        // is consumed by the FP8 stores below; slot one is the
+                        // dequant scale consumed by every W2 N tile.
+                        smem_cd_l1_shared_sf[
+                            token * kNumEpilogueWarps + reduce_warp_start] =
+                            group_scale_inv;
+                        smem_cd_l1_shared_sf[
+                            token * kNumEpilogueWarps + 1u] =
+                            group_scale * output_weight_global_scale;
+                    }
+
+                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+
+                    #pragma unroll
+                    for (uint32_t i = 0; i < kSwapABTokenChunks; ++ i) {
+                        const uint32_t token_0 = i * 8 + col_idx * 2;
+                        const uint32_t token_1 = token_0 + 1;
+                        #pragma unroll
+                        for (uint32_t half = 0; half < kSwapABWeightHalves; ++ half) {
+                            const uint32_t out_col_base =
+                                wg_l1_out_n_idx + half * 32u + warp_idx_in_wg * 8 + row_idx;
+                            if (token_0 < valid_m) {
                                 const float sf_inv =
-                                    smem_cd_l1_shared_sf[
-                                        token * kNumEpilogueWarps +
-                                        reduce_warp_start];
-                                const __nv_fp8_e4m3 q(
-                                    __bfloat162float(
-                                        smem_cd_l1_bf16[value_idx]) *
-                                    sf_inv);
-                                const uint32_t physical_col = logical_col ^
-                                    ((token & 7u) * 16u);
+                                    smem_cd_l1_shared_sf[token_0 * kNumEpilogueWarps + reduce_warp_start];
+                                const __nv_fp8_e4m3 q(swap_v0[half][i] * sf_inv);
+                                const uint32_t physical_col = out_col_base ^
+                                    ((token_0 & 7u) * 16u);
                                 reinterpret_cast<uint8_t*>(smem_cd_l1)[
-                                    token * L1_OUT_BLOCK_N + physical_col] =
+                                    token_0 * L1_OUT_BLOCK_N + physical_col] =
+                                    *reinterpret_cast<const uint8_t*>(&q);
+                            }
+                            if (token_1 < valid_m) {
+                                const float sf_inv =
+                                    smem_cd_l1_shared_sf[token_1 * kNumEpilogueWarps + reduce_warp_start];
+                                const __nv_fp8_e4m3 q(swap_v1[half][i] * sf_inv);
+                                const uint32_t physical_col = out_col_base ^
+                                    ((token_1 & 7u) * 16u);
+                                reinterpret_cast<uint8_t*>(smem_cd_l1)[
+                                    token_1 * L1_OUT_BLOCK_N + physical_col] =
                                     *reinterpret_cast<const uint8_t*>(&q);
                             }
                         }
-                        ptx::sync_aligned(
-                            kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-                    } else {
-                        for (uint32_t token = scale_token_thread;
-                             token < valid_m;
-                             token += scale_token_stride) {
-                            float amax = 0.0f;
-                            #pragma unroll
-                            for (uint32_t w = 0;
-                                 w < reduce_warp_count; ++ w)
-                                amax = cute::max(
-                                    amax,
-                                    smem_cd_l1_shared_sf[
-                                        token * kNumEpilogueWarps +
-                                        reduce_warp_start + w]);
-                            // TP's public W13->W2 boundary uses the same
-                            // ordinary FP32 group-128 scale as the selected
-                            // SGLang path.
-                            const float group_scale =
-                                cute::max(amax, 1.0e-30f) *
-                                (1.0f / 448.0f);
-                            const float group_scale_inv =
-                                1.0f / group_scale;
-                            smem_cd_l1_shared_sf[
-                                token * kNumEpilogueWarps +
-                                reduce_warp_start] = group_scale_inv;
-                            smem_cd_l1_shared_sf[
-                                token * kNumEpilogueWarps + 1u] =
-                                group_scale * output_weight_global_scale;
-                        }
-
-                        ptx::sync_aligned(
-                            kNumEpilogueThreads, kEpilogueFullBarrierIdx);
-
-                        #pragma unroll
-                        for (uint32_t i = 0;
-                             i < kSwapABTokenChunks; ++ i) {
-                            const uint32_t token_0 =
-                                i * 8 + col_idx * 2;
-                            const uint32_t token_1 = token_0 + 1;
-                            #pragma unroll
-                            for (uint32_t half = 0;
-                                 half < kSwapABWeightHalves; ++ half) {
-                                const uint32_t out_col_base =
-                                    wg_l1_out_n_idx + half * 32u +
-                                    warp_idx_in_wg * 8 + row_idx;
-                                if (token_0 < valid_m) {
-                                    const float sf_inv =
-                                        smem_cd_l1_shared_sf[
-                                            token_0 * kNumEpilogueWarps +
-                                            reduce_warp_start];
-                                    const __nv_fp8_e4m3 q(
-                                        swap_v0[half][i] * sf_inv);
-                                    const uint32_t physical_col =
-                                        out_col_base ^
-                                        ((token_0 & 7u) * 16u);
-                                    reinterpret_cast<uint8_t*>(smem_cd_l1)[
-                                        token_0 * L1_OUT_BLOCK_N +
-                                        physical_col] =
-                                        *reinterpret_cast<const uint8_t*>(&q);
-                                }
-                                if (token_1 < valid_m) {
-                                    const float sf_inv =
-                                        smem_cd_l1_shared_sf[
-                                            token_1 * kNumEpilogueWarps +
-                                            reduce_warp_start];
-                                    const __nv_fp8_e4m3 q(
-                                        swap_v1[half][i] * sf_inv);
-                                    const uint32_t physical_col =
-                                        out_col_base ^
-                                        ((token_1 & 7u) * 16u);
-                                    reinterpret_cast<uint8_t*>(smem_cd_l1)[
-                                        token_1 * L1_OUT_BLOCK_N +
-                                        physical_col] =
-                                        *reinterpret_cast<const uint8_t*>(&q);
-                                }
-                            }
-                        }
-                        ptx::sync_aligned(
-                            kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                     }
+                    ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 } else {
                     // ---------------- L1 EPILOGUE: SwiGLU + FP8 quantize + TMA store ----------------
                     const bool valid_r0 = row_offset_r0 < valid_m;
@@ -2362,17 +2201,12 @@
                                        const uint32_t& slice_idx,
                                        const uint32_t& pool_block_idx,
                                        const uint32_t& valid_m) {
-            #pragma unroll
-            for (uint32_t l1_tile = 0;
-                 l1_tile < kNumL1PhysicalTiles; ++ l1_tile) {
-                run_math_phase(
-                    std::integral_constant<
-                        sched::BlockPhase, sched::BlockPhase::Linear1>{},
-                    local_expert_idx, L1_SHAPE_K / BLOCK_K,
-                    m_block_idx,
-                    slice_idx * kNumL1PhysicalTiles + l1_tile,
-                    pool_block_idx, valid_m, 0u, l1_tile == 0);
-            }
+            run_math_phase(
+                std::integral_constant<
+                    sched::BlockPhase, sched::BlockPhase::Linear1>{},
+                local_expert_idx, L1_SHAPE_K / BLOCK_K,
+                m_block_idx, slice_idx, pool_block_idx, valid_m,
+                0u, true);
             #pragma unroll
             for (uint32_t n_block_idx = 0;
                  n_block_idx < kNumW2OutputTiles; ++ n_block_idx) {

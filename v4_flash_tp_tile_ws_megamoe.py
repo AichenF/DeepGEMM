@@ -22,7 +22,6 @@ if "v4_flash_tp_native_megamoe" in sys.modules:
 
 _TILE_WS_ENV = {
     "V4_NATIVE_TP_TILE_WS": "1",
-    "V4_NATIVE_TP_TILE_N128": "1",
     "V4_NATIVE_H20_EXACT_OUTER": "0",
     "V4_NATIVE_REGISTER_DEQUANT": "1",
     "V4_NATIVE_RS_K128_BATCH": "1",
@@ -59,7 +58,6 @@ from v4_flash_tp_native_megamoe import *  # noqa: E402,F403
 
 TP_TILE_WS = True
 TP_TILE_WS_TORCH_EXTENSIONS_DIR = os.environ["TORCH_EXTENSIONS_DIR"]
-TP_TILE_WS_CTA_COUNT = 234
+TP_TILE_WS_CTA_COUNT = 156
 TP_TILE_WS_THREADS = 384
-TP_TILE_WS_PHYSICAL_N = 128
-TP_TILE_WS_TASK = "route_bm8_x_intermediate_k128_n128x2"
+TP_TILE_WS_TASK = "route_bm8_x_intermediate_k128"
