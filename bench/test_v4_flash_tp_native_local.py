@@ -6,10 +6,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 
 import torch
 
-import v4_flash_tp_native_megamoe as native
+if os.environ.get("V4_NATIVE_TEST_H20_EXACT", "0") == "1":
+    import v4_flash_tp_h20_exact_megamoe as native
+else:
+    import v4_flash_tp_native_megamoe as native
 
 
 def dequant_marlin_weight(
@@ -53,6 +57,7 @@ def rel_l2(actual: torch.Tensor, reference: torch.Tensor) -> float:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--m", type=int, default=8)
+    parser.add_argument("--tp", type=int, choices=(4, 8), default=4)
     parser.add_argument(
         "--profile-only",
         action="store_true",
@@ -71,24 +76,34 @@ def main() -> None:
 
     torch.cuda.set_device(0)
     device = torch.device("cuda:0")
+    intermediate = 2048 // args.tp
+    n13 = 2 * intermediate
     torch.manual_seed(20260904)
     w13 = torch.randint(
-        0, 256, (256, 1024, 2048), dtype=torch.uint8, device=device
+        0, 256, (256, n13, 2048), dtype=torch.uint8, device=device
     )
     s13 = torch.randint(
-        125, 129, (256, 1024, 128), dtype=torch.uint8, device=device
+        125, 129, (256, n13, 128), dtype=torch.uint8, device=device
     )
     w2 = torch.randint(
-        0, 256, (256, 4096, 256), dtype=torch.uint8, device=device
+        0,
+        256,
+        (256, 4096, intermediate // 2),
+        dtype=torch.uint8,
+        device=device,
     )
     s2 = torch.randint(
-        125, 129, (256, 4096, 16), dtype=torch.uint8, device=device
+        125,
+        129,
+        (256, 4096, intermediate // 32),
+        dtype=torch.uint8,
+        device=device,
     )
     native_w13, native_w2, native_g13, native_g2, native_s13, native_s2 = (
         native.transform_weights(w13, s13, w2, s2)
     )
 
-    workspace = native.allocate_workspace(512, device)
+    workspace = native.allocate_workspace(intermediate, device)
     qx = (torch.randn((args.m, 4096), device=device) * 0.1).to(
         torch.float8_e4m3fn
     )
@@ -231,7 +246,7 @@ def main() -> None:
     swiglu_bf16 = (
         torch.nn.functional.silu(gate_bf16) * up_bf16
     ).bfloat16().float()
-    native_l2_scale = workspace.l2_acts_sf[:4, 0]
+    native_l2_scale = workspace.l2_acts_sf[: intermediate // 128, 0]
     native_l2 = workspace.l2_acts[0].float() * native_l2_scale.repeat_interleave(
         128
     )
@@ -253,6 +268,8 @@ def main() -> None:
         + json.dumps(
             {
                 "m": args.m,
+                "tp": args.tp,
+                "intermediate_per_rank": intermediate,
                 "finite": bool(torch.isfinite(output).all()),
                 "max_abs": float(output.float().abs().max()),
                 "l1_x_mismatch_bytes": x_mismatch_bytes,

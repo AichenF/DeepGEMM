@@ -737,16 +737,17 @@ __device__ __forceinline__ void native_multimem_red_add_release_u32(
         : : "l"(pointer) : "memory");
 }
 
-template <int kThreads>
-__device__ __forceinline__ void native_tp4_multicast_push(
+template <int kThreads, int kWorld>
+__device__ __forceinline__ void native_multicast_push(
         const __nv_bfloat16* __restrict__ local_output,
         __nv_bfloat16* __restrict__ output,
         uint32_t* __restrict__ push_counter,
         uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
+        uint8_t* push4, uint8_t* push5, uint8_t* push6, uint8_t* push7,
         uint8_t* __restrict__ push_mc,
         const uint32_t num_tokens, const int rank, const int64_t push_stride,
         const int linear_block_idx, const int linear_grid_dim) {
-    constexpr int kWorld = 4;
+    static_assert(kWorld == 4 || kWorld == 8);
     constexpr int kHidden = 4096;
     constexpr int kVecsPerToken = kHidden / 8;
     constexpr float kRoutedScale = 1.5f;
@@ -756,7 +757,8 @@ __device__ __forceinline__ void native_tp4_multicast_push(
     const int phase = push_counter[linear_block_idx] & 1u;
     const int64_t phase_offset =
         static_cast<int64_t>(phase) * push_stride * kWorld;
-    uint8_t* peer_base[kWorld] = {push0, push1, push2, push3};
+    uint8_t* peer_base[8] = {
+        push0, push1, push2, push3, push4, push5, push6, push7};
 
     for (int vec = global_tid; vec < num_vecs; vec += global_threads) {
         const uint4 local_bits = reinterpret_cast<const uint4*>(local_output)[vec];
@@ -831,8 +833,8 @@ __device__ __forceinline__ void native_tp4_multicast_push(
         atomicAdd(push_counter + linear_block_idx, 1u);
 }
 
-template <int kThreads>
-__device__ __forceinline__ void native_tp4_nvls_pull(
+template <int kThreads, int kWorld>
+__device__ __forceinline__ void native_nvls_pull(
         const __nv_bfloat16* __restrict__ local_output,
         __nv_bfloat16* __restrict__ symm_input,
         const uint8_t* __restrict__ symm_input_mc,
@@ -841,7 +843,7 @@ __device__ __forceinline__ void native_tp4_nvls_pull(
         uint8_t* __restrict__ sem_mc,
         const uint32_t num_tokens,
         const int linear_block_idx, const int linear_grid_dim) {
-    constexpr int kWorld = 4;
+    static_assert(kWorld == 4 || kWorld == 8);
     constexpr int kHidden = 4096;
     constexpr int kVecsPerToken = kHidden / 8;
     constexpr int kSemaphoreBytes = 128;
@@ -898,7 +900,7 @@ __device__ __forceinline__ void native_tp4_nvls_pull(
     }
 }
 
-template <int kIntermediate, int kExpertsPerWave = 16>
+template <int kIntermediate, int kExpertsPerWave = 16, int kTpWorld = 4>
 CUTLASS_GLOBAL __launch_bounds__(384, K_NATIVE_TWO_CTA_PER_SM ? 2 : 1) void
 v4_flash_tp4_native_megamoe_impl(
         void* y,
@@ -919,6 +921,7 @@ v4_flash_tp4_native_megamoe_impl(
         __nv_bfloat16* output,
         uint32_t* push_counter,
         uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
+        uint8_t* push4, uint8_t* push5, uint8_t* push6, uint8_t* push7,
         uint8_t* push_mc,
         __nv_bfloat16* pull_input,
         const uint8_t* pull_input_mc,
@@ -987,10 +990,12 @@ v4_flash_tp4_native_megamoe_impl(
         return;
 
     const auto* local_output = reinterpret_cast<const __nv_bfloat16*>(y);
-    if (num_tokens == 128) {
+    static_assert(kTpWorld == 4 || kTpWorld == 8);
+    const bool use_pull = kTpWorld == 4 ? num_tokens == 128 : num_tokens > 16;
+    if (use_pull) {
         constexpr int kPullBlocks = 64;
         if (sm_idx < kPullBlocks) {
-            native_tp4_nvls_pull<384>(
+            native_nvls_pull<384, kTpWorld>(
                 local_output, pull_input, pull_input_mc, output,
                 pull_sem_local, pull_sem_mc, num_tokens,
                 static_cast<int>(sm_idx), kPullBlocks);
@@ -1000,9 +1005,10 @@ v4_flash_tp4_native_megamoe_impl(
         // 78-CTA push.  Extra compute CTAs leave after the local grid drain.
         constexpr int kPushBlocks = 78;
         if (sm_idx < kPushBlocks) {
-            native_tp4_multicast_push<384>(
+            native_multicast_push<384, kTpWorld>(
                 local_output, output, push_counter,
-                push0, push1, push2, push3, push_mc,
+                push0, push1, push2, push3,
+                push4, push5, push6, push7, push_mc,
                 num_tokens, rank, push_stride,
                 static_cast<int>(sm_idx), kPushBlocks);
         }
@@ -1037,7 +1043,7 @@ CUtensorMap native_make_desc(
     return descriptor;
 }
 
-void run_native_tp4(
+void run_native(
         torch::Tensor workspace,
         torch::Tensor l1_acts,
         torch::Tensor l1_acts_sf,
@@ -1056,6 +1062,10 @@ void run_native_tp4(
         torch::Tensor push1,
         torch::Tensor push2,
         torch::Tensor push3,
+        torch::Tensor push4,
+        torch::Tensor push5,
+        torch::Tensor push6,
+        torch::Tensor push7,
         torch::Tensor pull_input,
         torch::Tensor pull_sem_local,
         int64_t push_mc_ptr,
@@ -1065,48 +1075,59 @@ void run_native_tp4(
         int64_t push_stride,
         int tokens,
         int intermediate,
+        int world_size,
         bool enable_tp) {
     TORCH_CHECK(workspace.scalar_type() == torch::kUInt8
                     && workspace.is_cuda() && workspace.is_contiguous(),
                 "native workspace must be contiguous CUDA uint8");
     TORCH_CHECK(tokens == 8 || tokens == 16 || tokens == 32
                     || tokens == 64 || tokens == 128,
-                "native TP4 supports M=8,16,32,64,128");
-    TORCH_CHECK(intermediate == 512,
-                "native TP4 requires intermediate_per_rank=512");
+                "native TP supports M=8,16,32,64,128");
+    TORCH_CHECK(
+        (world_size == 4 && intermediate == 512)
+            || (world_size == 8 && intermediate == 256),
+        "native TP requires (world, intermediate_per_rank)=(4,512) or (8,256)");
+    const int64_t w13_tile_elements =
+        static_cast<int64_t>(2 * intermediate) * 32 * 136 * 128;
+    const int64_t w2_tile_elements =
+        static_cast<int64_t>(4096) * (intermediate / 128) * 136 * 128;
+    const int64_t w13_scale_elements =
+        static_cast<int64_t>(2 * intermediate) * 32 * 64 * 16;
+    const int64_t w2_scale_elements =
+        static_cast<int64_t>(4096) * (intermediate / 128) * 64 * 16;
     if constexpr (K_NATIVE_TILE_WEIGHT_SCALE_TMA) {
         TORCH_CHECK(w13.scalar_type() == torch::kUInt8 && w13.is_contiguous()
-                        && w13.numel() == 570425344,
-                    "tile native W13 must be contiguous uint8 with "
-                    "570425344 elements");
+                        && w13.numel() == w13_tile_elements,
+                    "tile native W13 has the wrong element count");
         TORCH_CHECK(w2.scalar_type() == torch::kUInt8 && w2.is_contiguous()
-                        && w2.numel() == 285212672,
-                    "tile native W2 must be contiguous uint8 with "
-                    "285212672 elements");
+                        && w2.numel() == w2_tile_elements,
+                    "tile native W2 has the wrong element count");
     } else if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
         TORCH_CHECK(w13.scalar_type() == torch::kUInt8 && w13.is_contiguous()
-                        && w13.sizes() == torch::IntArrayRef({256, 1024, 2048}),
-                    "split native W13 must be uint8 [256,1024,2048]");
+                        && w13.sizes() == torch::IntArrayRef(
+                            {256, 2 * intermediate, 2048}),
+                    "split native W13 has the wrong shape");
         TORCH_CHECK(w2.scalar_type() == torch::kUInt8 && w2.is_contiguous()
-                        && w2.sizes() == torch::IntArrayRef({256, 4096, 256}),
-                    "split native W2 must be uint8 [256,4096,256]");
+                        && w2.sizes() == torch::IntArrayRef(
+                            {256, 4096, intermediate / 2}),
+                    "split native W2 has the wrong shape");
         TORCH_CHECK(w13_scale.scalar_type() == torch::kUInt8
                         && w13_scale.is_contiguous()
-                        && w13_scale.numel() == 33554432,
-                    "split native W13 scales must be contiguous uint8 with "
-                    "33554432 elements");
+                        && w13_scale.numel() == w13_scale_elements,
+                    "split native W13 scales have the wrong element count");
         TORCH_CHECK(w2_scale.scalar_type() == torch::kUInt8
                         && w2_scale.is_contiguous()
-                        && w2_scale.numel() == 16777216,
-                    "split native W2 scales must be contiguous uint8 with "
-                    "16777216 elements");
+                        && w2_scale.numel() == w2_scale_elements,
+                    "split native W2 scales have the wrong element count");
     } else {
         TORCH_CHECK(w13.scalar_type() == torch::kUInt8 && w13.is_contiguous()
-                        && w13.sizes() == torch::IntArrayRef({256, 1024, 2560}),
-                    "native W13 must be uint8 [256,1024,2560]");
+                        && w13.sizes() == torch::IntArrayRef(
+                            {256, 2 * intermediate, 2560}),
+                    "native W13 has the wrong shape");
         TORCH_CHECK(w2.scalar_type() == torch::kUInt8 && w2.is_contiguous()
-                        && w2.sizes() == torch::IntArrayRef({256, 4096, 320}),
-                    "native W2 must be uint8 [256,4096,320]");
+                        && w2.sizes() == torch::IntArrayRef(
+                            {256, 4096, intermediate * 5 / 8}),
+                    "native W2 has the wrong shape");
     }
     TORCH_CHECK(w13_global_scale.scalar_type() == torch::kFloat32
                     && w13_global_scale.is_cuda()
@@ -1126,17 +1147,19 @@ void run_native_tp4(
                 "native final output must be BF16 [M,4096]");
     TORCH_CHECK(push_counter.is_cuda() && push_counter.element_size() == 4
                     && push_counter.numel() >= 78,
-                "native TP4 needs at least 78 CARv2 push counters");
-    TORCH_CHECK(!enable_tp || (rank >= 0 && rank < 4 && push_mc_ptr != 0),
-                "native TP4 requires a valid rank and multicast push VA");
+                "native TP needs at least 78 CARv2 push counters");
+    TORCH_CHECK(
+        !enable_tp || (rank >= 0 && rank < world_size && push_mc_ptr != 0),
+        "native TP requires a valid rank and multicast push VA");
     TORCH_CHECK(!enable_tp || (pull_input_mc_ptr != 0 && pull_sem_mc_ptr != 0),
-                "native TP4 requires multicast pull/semaphore VAs");
+                "native TP requires multicast pull/semaphore VAs");
 
     static void* last_workspace = nullptr;
     static void* last_w13 = nullptr;
     static void* last_w2 = nullptr;
     static void* last_w13_scale = nullptr;
     static void* last_w2_scale = nullptr;
+    static int last_intermediate = 0;
     static CUtensorMap tensor_map_l1_acts;
     static CUtensorMap tensor_map_l1_acts_sf;
     static CUtensorMap tensor_map_l1_weights;
@@ -1150,7 +1173,8 @@ void run_native_tp4(
             || last_w13 != w13.data_ptr()
             || last_w2 != w2.data_ptr()
             || last_w13_scale != w13_scale.data_ptr()
-            || last_w2_scale != w2_scale.data_ptr()) {
+            || last_w2_scale != w2_scale.data_ptr()
+            || last_intermediate != intermediate) {
         tensor_map_l1_acts = native_make_desc(
             l1_acts.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
             4096, 3072, 128, 8, 4096,
@@ -1162,56 +1186,59 @@ void run_native_tp4(
         if constexpr (K_NATIVE_TILE_WEIGHT_SCALE_TMA) {
             tensor_map_l1_weights = native_make_desc(
                 w13.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
-                128, 4456448, 128, 136, 128,
+                128, w13.numel() / 128, 128, 136, 128,
                 CU_TENSOR_MAP_SWIZZLE_NONE);
             tensor_map_l1_weight_scales = tensor_map_l1_weights;
         } else if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
             tensor_map_l1_weights = native_make_desc(
                 w13.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
-                2048, 256 * 1024, 64, 256, 2048,
+                2048, w13.numel() / 2048, 64, 256, 2048,
                 CU_TENSOR_MAP_SWIZZLE_NONE);
             tensor_map_l1_weight_scales = native_make_desc(
                 w13_scale.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
-                16, 2097152, 16, 64, 16,
+                16, w13_scale.numel() / 16, 16, 64, 16,
                 CU_TENSOR_MAP_SWIZZLE_NONE);
         } else {
             tensor_map_l1_weights = native_make_desc(
                 w13.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
-                2560, 256 * 1024, 80, 256, 2560,
+                2560, w13.numel() / 2560, 80, 256, 2560,
                 CU_TENSOR_MAP_SWIZZLE_NONE);
             tensor_map_l1_weight_scales = tensor_map_l1_weights;
         }
         tensor_map_l1_output = native_make_desc(
             l2_acts.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
-            512, 3072, 128, 8, 512,
+            intermediate, 3072, 128, 8, intermediate,
             CU_TENSOR_MAP_SWIZZLE_NONE);
         tensor_map_l2_acts = native_make_desc(
             l2_acts.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
-            512, 3072, 128, 8, 512,
+            intermediate, 3072, 128, 8, intermediate,
             CU_TENSOR_MAP_SWIZZLE_128B);
         tensor_map_l2_acts_sf = native_make_desc(
             l2_acts_sf.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_FLOAT32,
-            49152, 4, 8, 1, 49152 * sizeof(float),
+            49152, intermediate / 128, 8, 1, 49152 * sizeof(float),
             CU_TENSOR_MAP_SWIZZLE_NONE);
         if constexpr (K_NATIVE_TILE_WEIGHT_SCALE_TMA) {
             tensor_map_l2_weights = native_make_desc(
                 w2.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
-                128, 2228224, 128, 136, 128,
+                128, w2.numel() / 128, 128, 136, 128,
                 CU_TENSOR_MAP_SWIZZLE_NONE);
             tensor_map_l2_weight_scales = tensor_map_l2_weights;
         } else if constexpr (K_NATIVE_SPLIT_WEIGHT_SCALE_TMA) {
             tensor_map_l2_weights = native_make_desc(
                 w2.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
-                256, 256 * 4096, 64, 256, 256,
+                intermediate / 2, w2.numel() / (intermediate / 2),
+                64, 256, intermediate / 2,
                 CU_TENSOR_MAP_SWIZZLE_NONE);
             tensor_map_l2_weight_scales = native_make_desc(
                 w2_scale.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
-                16, 1048576, 16, 64, 16,
+                16, w2_scale.numel() / 16, 16, 64, 16,
                 CU_TENSOR_MAP_SWIZZLE_NONE);
         } else {
             tensor_map_l2_weights = native_make_desc(
                 w2.data_ptr(), CU_TENSOR_MAP_DATA_TYPE_UINT8,
-                320, 256 * 4096, 80, 256, 320,
+                intermediate * 5 / 8,
+                w2.numel() / (intermediate * 5 / 8),
+                80, 256, intermediate * 5 / 8,
                 CU_TENSOR_MAP_SWIZZLE_NONE);
             tensor_map_l2_weight_scales = tensor_map_l2_weights;
         }
@@ -1220,6 +1247,7 @@ void run_native_tp4(
         last_w2 = w2.data_ptr();
         last_w13_scale = w13_scale.data_ptr();
         last_w2_scale = w2_scale.data_ptr();
+        last_intermediate = intermediate;
     }
 
     std::array<int64_t, 1> ptrs = {
@@ -1240,9 +1268,11 @@ void run_native_tp4(
                 reinterpret_cast<int*>(push_counter.data_ptr());
         }
     }
-    const auto launch = [&]<int kLaunchExpertsPerWave>() {
+    const auto launch = [&]<int kLaunchIntermediate, int kLaunchWorld,
+                           int kLaunchExpertsPerWave>() {
         auto kernel =
-            v4_flash_tp4_native_megamoe_impl<512, kLaunchExpertsPerWave>;
+            v4_flash_tp4_native_megamoe_impl<
+                kLaunchIntermediate, kLaunchExpertsPerWave, kLaunchWorld>;
         C10_CUDA_CHECK(cudaFuncSetAttribute(
             kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
             kDynamicSmemBytes));
@@ -1291,6 +1321,8 @@ void run_native_tp4(
             reinterpret_cast<uint32_t*>(push_counter.data_ptr()),
             push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
             push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
+            push4.data_ptr<uint8_t>(), push5.data_ptr<uint8_t>(),
+            push6.data_ptr<uint8_t>(), push7.data_ptr<uint8_t>(),
             reinterpret_cast<uint8_t*>(push_mc_ptr),
             reinterpret_cast<__nv_bfloat16*>(pull_input.data_ptr()),
             reinterpret_cast<const uint8_t*>(pull_input_mc_ptr),
@@ -1300,12 +1332,22 @@ void run_native_tp4(
         C10_CUDA_CHECK(launch_result);
     };
     if constexpr (K_NATIVE_H20_EXACT_OUTER) {
-        if (tokens == 128)
-            launch.template operator()<32>();
-        else
-            launch.template operator()<16>();
+        if (world_size == 4) {
+            if (tokens == 128)
+                launch.template operator()<512, 4, 32>();
+            else
+                launch.template operator()<512, 4, 16>();
+        } else {
+            if (tokens == 128)
+                launch.template operator()<256, 8, 32>();
+            else
+                launch.template operator()<256, 8, 16>();
+        }
     } else {
-        launch.template operator()<16>();
+        if (world_size == 4)
+            launch.template operator()<512, 4, 16>();
+        else
+            launch.template operator()<256, 8, 16>();
     }
 }
 
@@ -1315,7 +1357,31 @@ int native_tp4_active_blocks_per_sm(int tokens) {
     int active_blocks = 0;
     const auto query = [&]<int kLaunchExpertsPerWave>() {
         auto kernel =
-            v4_flash_tp4_native_megamoe_impl<512, kLaunchExpertsPerWave>;
+            v4_flash_tp4_native_megamoe_impl<512, kLaunchExpertsPerWave, 4>;
+        C10_CUDA_CHECK(cudaFuncSetAttribute(
+            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            kDynamicSmemBytes));
+        C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &active_blocks, kernel, 384, kDynamicSmemBytes));
+    };
+    if constexpr (K_NATIVE_H20_EXACT_OUTER) {
+        if (tokens == 128)
+            query.template operator()<32>();
+        else
+            query.template operator()<16>();
+    } else {
+        query.template operator()<16>();
+    }
+    return active_blocks;
+}
+
+int native_tp8_active_blocks_per_sm(int tokens) {
+    constexpr int kDynamicSmemBytes =
+        K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448;
+    int active_blocks = 0;
+    const auto query = [&]<int kLaunchExpertsPerWave>() {
+        auto kernel =
+            v4_flash_tp4_native_megamoe_impl<256, kLaunchExpertsPerWave, 8>;
         C10_CUDA_CHECK(cudaFuncSetAttribute(
             kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
             kDynamicSmemBytes));
@@ -1335,7 +1401,7 @@ int native_tp4_active_blocks_per_sm(int tokens) {
 """
 
 _CPP = r"""
-void run_native_tp4(
+void run_native(
     torch::Tensor workspace,
     torch::Tensor l1_acts,
     torch::Tensor l1_acts_sf,
@@ -1354,6 +1420,10 @@ void run_native_tp4(
     torch::Tensor push1,
     torch::Tensor push2,
     torch::Tensor push3,
+    torch::Tensor push4,
+    torch::Tensor push5,
+    torch::Tensor push6,
+    torch::Tensor push7,
     torch::Tensor pull_input,
     torch::Tensor pull_sem_local,
     int64_t push_mc_ptr,
@@ -1363,8 +1433,10 @@ void run_native_tp4(
     int64_t push_stride,
     int tokens,
     int intermediate,
+    int world_size,
     bool enable_tp);
 int native_tp4_active_blocks_per_sm(int tokens);
+int native_tp8_active_blocks_per_sm(int tokens);
 """
 
 _SOURCE_HASH = hashlib.sha1(
@@ -1431,7 +1503,11 @@ _ext = load_inline(
     ),
     cpp_sources=_CPP,
     cuda_sources=_CUDA,
-    functions=["run_native_tp4", "native_tp4_active_blocks_per_sm"],
+    functions=[
+        "run_native",
+        "native_tp4_active_blocks_per_sm",
+        "native_tp8_active_blocks_per_sm",
+    ],
     extra_cflags=["-O3", "-std=c++17"],
     extra_cuda_cflags=[
         "-O3",
@@ -1529,7 +1605,7 @@ def run_tp4(
     push_stride: int,
     tokens: int,
 ) -> None:
-    _ext.run_native_tp4(
+    _ext.run_native(
         workspace.storage,
         workspace.l1_acts.view(torch.uint8),
         workspace.l1_acts_sf,
@@ -1548,6 +1624,10 @@ def run_tp4(
         push_workspaces[1],
         push_workspaces[2],
         push_workspaces[3],
+        push_workspaces[0],
+        push_workspaces[0],
+        push_workspaces[0],
+        push_workspaces[0],
         pull_input,
         pull_sem_local,
         push_mc_ptr,
@@ -1557,6 +1637,67 @@ def run_tp4(
         push_stride,
         tokens,
         512,
+        4,
+        True,
+    )
+
+
+def run_tp8(
+    workspace: NativeWorkspace,
+    native_w13: torch.Tensor,
+    native_w2: torch.Tensor,
+    native_s13: torch.Tensor,
+    native_s2: torch.Tensor,
+    native_g13: torch.Tensor,
+    native_g2: torch.Tensor,
+    local_output: torch.Tensor,
+    output: torch.Tensor,
+    push_counter: torch.Tensor,
+    push_workspaces: tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ],
+    pull_input: torch.Tensor,
+    pull_sem_local: torch.Tensor,
+    push_mc_ptr: int,
+    pull_input_mc_ptr: int,
+    pull_sem_mc_ptr: int,
+    rank: int,
+    push_stride: int,
+    tokens: int,
+) -> None:
+    _ext.run_native(
+        workspace.storage,
+        workspace.l1_acts.view(torch.uint8),
+        workspace.l1_acts_sf,
+        workspace.l2_acts.view(torch.uint8),
+        workspace.l2_acts_sf,
+        native_w13,
+        native_w2,
+        native_s13,
+        native_s2,
+        native_g13,
+        native_g2,
+        local_output,
+        output,
+        push_counter,
+        *push_workspaces,
+        pull_input,
+        pull_sem_local,
+        push_mc_ptr,
+        pull_input_mc_ptr,
+        pull_sem_mc_ptr,
+        rank,
+        push_stride,
+        tokens,
+        256,
+        8,
         True,
     )
 
@@ -1578,7 +1719,11 @@ def run_local(
     # The explicit phase-stamp build reinterprets its first 316 int64 entries.
     dummy_counter = torch.zeros((640,), dtype=torch.int32, device=device)
     dummy_bytes = workspace.storage[:128]
-    _ext.run_native_tp4(
+    intermediate = workspace.l2_acts.shape[1]
+    if intermediate not in (256, 512):
+        raise ValueError("native local diagnostic requires I=256 or I=512")
+    world_size = 8 if intermediate == 256 else 4
+    _ext.run_native(
         workspace.storage,
         workspace.l1_acts.view(torch.uint8),
         workspace.l1_acts_sf,
@@ -1597,6 +1742,10 @@ def run_local(
         dummy_bytes,
         dummy_bytes,
         dummy_bytes,
+        dummy_bytes,
+        dummy_bytes,
+        dummy_bytes,
+        dummy_bytes,
         local_output,
         dummy_bytes,
         0,
@@ -1605,7 +1754,8 @@ def run_local(
         0,
         0,
         tokens,
-        512,
+        intermediate,
+        world_size,
         False,
     )
     return dummy_counter

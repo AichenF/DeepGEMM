@@ -1000,6 +1000,8 @@ class CapturedCase:
 
     def run_tp8_single_launch(self, comm: CustomAllReduceV2) -> torch.Tensor:
         """Run the complete TP8 MoE and multicast all-reduce in one kernel."""
+        if self.native_workspace is not None:
+            return self.run_native_tp8_single_launch(comm)
         self.prepare_fused_pull(comm)
         assert self.down is not None
         assert self.activation_scale is not None
@@ -1055,6 +1057,63 @@ class CapturedCase:
             "single_launch_tp8_multicast_push"
             if self.m <= 16
             else "single_launch_tp8_nvls_pull"
+        )
+        self.graph_output = self.fused_graph_output
+        return self.graph_output
+
+    def run_native_tp8_single_launch(
+        self, comm: CustomAllReduceV2
+    ) -> torch.Tensor:
+        native_kernel = self.native_kernel_module
+        if native_kernel is None:
+            import v4_flash_tp_native_megamoe as native_kernel
+
+        self.prepare_fused_pull(comm)
+        assert self.native_workspace is not None
+        assert self.native_w13 is not None and self.native_w2 is not None
+        assert self.native_s13 is not None and self.native_s2 is not None
+        assert self.native_g13 is not None and self.native_g2 is not None
+        assert self.native_local_output is not None
+        assert self.fused_push_workspaces is not None
+        assert self.fused_push_counter is not None
+        assert self.fused_pull_output is not None
+        assert self.fused_pull_sem_local is not None
+        if (
+            comm.world_size != 8
+            or len(self.fused_push_workspaces) != 8
+            or not self.fused_push_mc_ptr
+            or not self.fused_pull_mc_ptr
+            or not self.fused_pull_sem_mc_ptr
+        ):
+            raise RuntimeError(
+                "native TP8 single launch requires TP8 NVLS multicast memory"
+            )
+        native_kernel.run_tp8(
+            self.native_workspace,
+            self.native_w13,
+            self.native_w2,
+            self.native_s13,
+            self.native_s2,
+            self.native_g13,
+            self.native_g2,
+            self.native_local_output,
+            self.fused_graph_output,
+            self.fused_push_counter,
+            self.fused_push_workspaces,
+            self.fused_pull_output,
+            self.fused_pull_sem_local,
+            self.fused_push_mc_ptr,
+            self.fused_pull_mc_ptr,
+            self.fused_pull_sem_mc_ptr,
+            self.fused_push_rank,
+            self.fused_push_stride,
+            self.m,
+        )
+        self.fused_k6_push_active = True
+        self.fused_k6_ar_mode = (
+            "native_single_launch_tp8_multicast_push"
+            if self.m <= 16
+            else "native_single_launch_tp8_nvls_pull"
         )
         self.graph_output = self.fused_graph_output
         return self.graph_output

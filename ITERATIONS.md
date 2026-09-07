@@ -18001,3 +18001,43 @@ maximum rank latency of a full CUDA-Graph replay.
   Attempts `iter727a` through `iter727i` stopped before valid timing while
   reconstructing the compatible CARv2 Python/JIT environment and make no
   performance claim.
+
+## Iteration 728 — make the rejected exact-H20 experiment TP8-runnable
+
+- **Scope:** parameterize the existing exact-H20/native body rather than
+  introduce another kernel.  The same source now instantiates TP4
+  (`intermediate_per_rank=512`) and TP8 (`intermediate_per_rank=256`).  The
+  fused tail accepts four or eight symmetric workspaces; TP8 uses multicast
+  push for M8/M16 and NVLS pull for M32/M64/M128.  The TP4 policy is unchanged.
+- **Build/local qualification:** a fresh SM90a JIT succeeds and reports one
+  active block/SM for both TP8 EPW variants.  A local TP8 M8 run is finite,
+  materializes route bytes/scales/weights exactly, and reports weighted
+  W13/SwiGLU cosine `0.9995771904` and relative L2 `0.0290979`.  This is a
+  functionality gate, not end-to-end numerical equivalence.
+- **TP8 runtime smoke:** all requested M values execute under CUDA Graph with
+  a separate 256 MiB L2 clear immediately before each timed replay.  With only
+  two cold samples per implementation, exact/control medians in milliseconds
+  are M8 `0.271568/0.136480`, M16 `0.446864/0.086736`, M32
+  `0.556576/0.120512`, M64 `0.602512/0.159184`, and M128
+  `0.425600/0.216800`.  The exact path is `1.9631x` to `5.1520x` slower
+  (`3.2304x` geometric-mean slowdown).  These sparse, visibly noisy samples
+  establish runtime coverage only and are not a formal performance result.
+- **TP8 accuracy:** strict end-to-end all-reduce equivalence fails at every M:
+  exact relative L2 is `0.03535` to `0.03603`, while the multi-kernel control
+  is `0.00396` to `0.00415`.  Comparing the embedded communication against
+  NCCL over the exact kernel's own local output is much closer (`0.00486` to
+  `0.00496` relative L2), again locating most of the discrepancy in the reused
+  native math/dataflow instead of the TP8 communication tail.
+- **TP4 regression:** after world/intermediate parameterization, M8/M128 keep
+  the prior exact-path signatures (`0.035844/0.035763` final relative L2 and
+  `0.004056/0.004093` embedded-communication relative L2).  Two-sample cold-L2
+  medians are `0.313504/0.139280 ms` at M8 and `0.629760/0.311536 ms` at M128
+  for exact/control.  Thus TP4 is not newly broken, but remains rejected.
+- **Decision:** retain TP8 as a default-off runnable falsification artifact;
+  do not promote this exact-static/shared-decode configuration.  Stop this
+  optimization line: it fails both strict accuracy and the large speed gate.
+- **Evidence:**
+  `bench/results/iter728b_h20_exact_tp8_jit_20260907.log`,
+  `bench/results/iter728d_h20_exact_tp8_local_m8_20260907.log`,
+  `bench/results/iter728e_h20_exact_tp8_allm_cold_runtime_20260907.log`, and
+  `bench/results/iter728f_h20_exact_tp4_regression_cold_runtime_20260907.log`.

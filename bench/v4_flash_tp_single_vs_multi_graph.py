@@ -146,8 +146,8 @@ def tensor_comparison_metrics(
 def main() -> None:
     args = parse_args()
     rank, world_size, device, cpu_group = custom.init_distributed()
-    if world_size != 4:
-        raise RuntimeError("single-vs-multi performance harness currently requires TP4")
+    if world_size not in (4, 8):
+        raise RuntimeError("single-vs-multi harness requires TP4 or TP8")
     nccl_group = ps._WORLD.device_group
     if not isinstance(nccl_group, dist.ProcessGroup):
         raise RuntimeError("SGLang did not create the NCCL process group")
