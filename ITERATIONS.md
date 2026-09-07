@@ -17958,3 +17958,46 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/iter726b_h20_exact_outer_resources_20260907.log`,
   `bench/results/iter726b_h20_exact_outer_cuobjdump_resources_20260907.log`,
   and `bench/results/iter726b_h20_exact_outer_full_20260907.sass`.
+
+## Iteration 727 — exact H20 outer fails the distributed accuracy and speed gates
+
+- **Benchmark environment qualification:** restore the same
+  symmetric-memory `CustomAllReduceV2` ABI used by the prior successful TP4
+  runs from SGLang checkout `2538def097c4`.  Torch 2.11/tvm-ffi 0.1.11 needs
+  the two-line `Tuple::get` source compatibility fix in `ipc.cuh`; apply it
+  only to a private `/home/xutingz/fac/sglang_carv2_overlay_2538def` copy.
+  `bench/setup_sglang_carv2_overlay.sh` makes that isolation reproducible and
+  leaves the SGLang checkout untouched.  The benchmark now constructs Gloo
+  and NCCL groups directly and pins the historical Triton
+  `moe_fused_mul_sum` source, avoiding imports of the serving stack.
+- **Protocol:** physical H20 GPUs 4-7, TP4, random routes/seed 20260902,
+  CUDA Graph, M8 and M128, two warmup replays, two outer batches x five
+  samples/implementation.  A separate 256 MiB Triton clear runs immediately
+  before every graph replay and outside the CUDA-event interval.  These ten
+  samples/point are an explicit rejection screen, not a formal all-M result.
+- **Accuracy result:** the multi-kernel control passes its strict all-reduce
+  check at both endpoints (`rel_l2=0.002901/0.002967`).  The exact-outer
+  candidate fails it: M8/M128 final cosine is `0.999359/0.999360` and relative
+  L2 is `0.035844/0.035763`.  Its embedded collective compared with NCCL over
+  its own local output is much closer (`rel_l2=0.004056/0.004093`), while the
+  scaled local computation already differs from the control by
+  `0.036125/0.035794`.  The failure is therefore in the transferred native
+  math/dataflow, not primarily in the multicast/NVLS tail.  The harness's
+  broad native diagnostic tolerance reports `candidate_accept=true`; that is
+  not treated as numerical equivalence here because `allreduce_ok=false`.
+- **Cold-L2 screen:** M8 exact/control median is
+  `0.311872/0.072128 ms` (exact is `4.3239x` slower); M128 is
+  `0.626864/0.307088 ms` (`2.0413x` slower).  Endpoint geometric mean is
+  `2.9709x` slower.  The large loss is consistent with one 232,448-byte CTA
+  per SM serializing the reused body rather than reproducing the reference
+  outer pipeline's fine-grained overlap.
+- **Decision:** **REJECT the exact-static/shared-decode configuration before
+  an all-M formal run.**  Keep the isolated, default-off implementation as a
+  falsification artifact, but do not merge it into the selected TP4 kernel.
+  Any follow-up must change the native compute body/overlap rather than only
+  selecting the reference outer constants.
+- **Evidence:**
+  `bench/results/iter727j_h20_exact_tp4_m8_m128_cold_smoke_20260907.log`.
+  Attempts `iter727a` through `iter727i` stopped before valid timing while
+  reconstructing the compatible CARv2 Python/JIT environment and make no
+  performance claim.

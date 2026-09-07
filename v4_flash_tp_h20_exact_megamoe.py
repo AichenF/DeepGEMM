@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import sys
 
+import torch as _torch
+
 
 if "v4_flash_tp_native_megamoe" in sys.modules:
     raise RuntimeError(
@@ -39,10 +41,21 @@ _EXACT_ENV = {
 for _name, _value in _EXACT_ENV.items():
     os.environ[_name] = _value
 
+# The repository's flat control and this experiment can be imported by
+# different PyTorch environments on the shared host.  Keep the exact cubin
+# cache ABI-specific instead of accepting a same-named extension built by a
+# different torch installation.
+_torch_abi = _torch.__version__.split("+")[0].replace(".", "_")
+os.environ["TORCH_EXTENSIONS_DIR"] = os.environ.get(
+    "V4_H20_EXACT_TORCH_EXTENSIONS_DIR",
+    f"/tmp/torch_ext_v4_tp_h20_exact_t{_torch_abi}",
+)
+
 from v4_flash_tp_native_megamoe import *  # noqa: E402,F403
 
 
 H20_EXACT_OUTER = True
+H20_EXACT_TORCH_EXTENSIONS_DIR = os.environ["TORCH_EXTENSIONS_DIR"]
 H20_EXACT_CTA_COUNT = 78
 H20_EXACT_THREADS = 384
 H20_EXACT_EXPERTS_PER_WAVE = {8: 16, 16: 16, 32: 16, 64: 16, 128: 32}

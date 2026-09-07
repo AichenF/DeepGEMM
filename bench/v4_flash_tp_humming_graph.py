@@ -23,6 +23,7 @@ import logging
 import os
 import statistics
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import torch
@@ -37,11 +38,17 @@ try:
     from sglang.jit_kernel.mp import register_comm_cleanup
 except ImportError:  # Compatibility with the older benchmark checkout.
     from sglang.kernels.ops.communication.mp import register_comm_cleanup
-from sglang.kernels.ops.moe.moe_fused_mul_sum import moe_fused_mul_sum
+try:
+    from sglang.kernels.ops.moe.moe_fused_mul_sum import moe_fused_mul_sum
+except ImportError:
+    from sglang_moe_fused_mul_sum_558c9bd import moe_fused_mul_sum
 from sglang.srt.distributed.device_communicators.custom_all_reduce_v2 import (
     CustomAllReduceV2,
 )
-from sglang.srt.layers.moe.fused_moe_triton import moe_align_block_size
+try:
+    from sglang.jit_kernel.moe_align import moe_align_block_size
+except ImportError:
+    from sglang.srt.layers.moe.fused_moe_triton import moe_align_block_size
 from sgl_kernel import silu_and_mul
 
 
@@ -111,14 +118,22 @@ def init_distributed() -> tuple[int, int, torch.device, dist.ProcessGroup]:
     # Registered before communicator cleanup, so LIFO atexit ordering closes
     # the custom communicator while process groups are still live.
     atexit.register(dist.destroy_process_group)
-    ps._WORLD = coordinator = ps.init_world_group(
-        ranks=list(range(world_size)),
-        local_rank=local_rank,
-        backend="nccl",
+    device_group = dist.new_group(
+        ranks=list(range(world_size)), backend="nccl"
     )
-    cpu_group = coordinator.cpu_group
+    cpu_group = dist.group.WORLD
     if not isinstance(cpu_group, dist.ProcessGroup):
-        raise RuntimeError("SGLang world coordinator did not create a CPU group")
+        raise RuntimeError("benchmark did not create the CPU process group")
+    if not isinstance(device_group, dist.ProcessGroup):
+        raise RuntimeError("benchmark did not create the NCCL process group")
+    ps._WORLD = SimpleNamespace(
+        cpu_group=cpu_group,
+        device_group=device_group,
+        rank=rank,
+        local_rank=local_rank,
+        world_size=world_size,
+        barrier=lambda: dist.barrier(group=cpu_group),
+    )
 
     device = torch.device(f"cuda:{local_rank}")
     stream = torch.cuda.Stream(device=device)
