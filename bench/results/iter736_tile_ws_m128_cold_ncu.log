@@ -1,0 +1,12 @@
+==WARNING== Note: Running with uncontrolled GPU caches. Profiling results may be inconsistent.
+==WARNING== Note: Running with unmodified GPU clocks. If not controlled otherwise, profiling results may be inconsistent.
+==PROF== Connected to process 328584 (/lustre/raplab/client/xutingz/workspace/miniforge3/bin/python3.12)
+==PROF== Profiling "void deep_gemm::v4_flash_tp4_native_megamoe_impl<(int)512, (int)16, (int)4>(void *, int *, unsigned int, deep_gemm::layout::SymBuffer<(unsigned int)1>, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, const float *, const float *, float *, __nv_bfloat16 *, unsigned int *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, __nv_bfloat16 *, const unsigned char *, unsigned char *, unsigned char *, int, long, bool)": 0%....50%....100% - 21 passes
+NATIVE_PHASE_STAMPS {"all_gemm_us": 511.648, "combine_only_us": 83.264, "local_body_us": 594.912, "m": 128, "num_ctas": 78, "route_publish_us": 3.872, "w13_ctas": 78, "w13_last_us": 494.144, "w2_ctas": 78, "w2_last_us": 510.688}
+NATIVE_LOCAL_PROFILE_ONLY {"finite": true, "m": 128, "max_abs": 450560.0, "synchronized": true, "tp": 4}
+==PROF== Disconnected from process 328584
+==PROF== Connected to process 328657 (/lustre/raplab/client/xutingz/workspace/miniforge3/bin/python3.12)
+==PROF== Connected to process 328659 (/lustre/raplab/client/xutingz/workspace/miniforge3/bin/python3.12)
+==PROF== Disconnected from process 328657
+==PROF== Disconnected from process 328659
+==PROF== Report: /lustre/raplab/client/xutingz/fac/DeepGEMM_tp/results/iter736_tile_ws_m128_cold_ncu.ncu-rep
