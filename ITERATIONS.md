@@ -18433,3 +18433,50 @@ maximum rank latency of a full CUDA-Graph replay.
   selected winner.  The one bounded follow-up is a smaller producer-role CTA
   that reaches four CTAs/SM (156 resident pairs) without weakening the strict
   boundary; otherwise restore iter742.
+## Iteration 754 — compact 320-thread cluster pair is correct but slower
+
+- **Hypothesis/change:** convert iter753's 234×384, three-CTA/SM cluster-pair
+  plan into 312×320, four-CTA/SM.  Each CTA now contains two physically
+  aligned N64 WGMMA math warpgroups (warps 0–7), one dispatch warp (warp 8),
+  and one combined A/SFA+B/SFB TMA producer (warp 9).  A cluster pair still
+  owns one logical N256 task, shares the two BF16 W13 halves through DSM,
+  locally quantizes the complete FP8 K128 operand, and alternates W2 N128
+  tiles.  Full barriers use one combined-producer arrival.  The launch uses
+  57,344 dynamic shared bytes, 48 registers/thread, and reports four active
+  CTAs/SM with no local-memory spill.
+- **Bring-up evidence:** the first 320-thread smoke failed because WGMMA math
+  warps began at physical warp 2.  Reordering math to physical warps 0–7
+  removed that invalid grouping.  Compute Sanitizer then identified the
+  remaining fault exactly: `InterleavedMegaMoEScheduler::publish_task` made a
+  16-byte shared write to address ending in `...f8` after the dispatch-barrier
+  count shrank from two to one.  Explicit `alignof(TaskInfo)` padding (8 bytes
+  in this plan) repaired the scheduler mailbox.  A local M8 full-body smoke
+  then completed finite, followed by a strict TP4 M8 smoke.
+- **Benchmark:** `GPU_LIST=2,3,4,5 bash scripts/bench.sh iter-754`; random
+  routing, one CUDA Graph per implementation, excluded 256 MiB cold-L2 clear
+  immediately before every replay, paired replay granularity, two outer
+  batches × five samples, M={8,16,32,64,128}.
+- **Correctness:** `COMPILED=True`, strict embedded-all-reduce
+  `CORRECT=True` for every M.  Candidate-local rel-L2 is
+  {5.6965e-5, 1.1906e-4, 4.7414e-4, 3.2871e-5, 3.5936e-4}; final rel-L2 is
+  {0.00290157, 0.00296829, 0.00297039, 0.00295907, 0.00297388}, identical to
+  the accepted iter753 numerical envelope.
+- **Cold-L2 latency (control/candidate median ms; candidate min/median/max):**
+  M8 0.072128/0.122144 (0.120544/0.122144/0.155968), M16
+  0.115280/0.197104 (0.195680/0.197104/0.217536), M32
+  0.178464/0.291120 (0.288192/0.291120/0.305184), M64
+  0.251488/0.434576 (0.432224/0.434576/0.456320), M128
+  0.309456/0.554400 (0.550880/0.554400/0.566784).  Geometric means are
+  0.163119/0.278937 ms, so control/candidate is **0.584789×** and candidate is
+  **1.7100× slower** than the paired multi-kernel baseline.
+- **Comparison:** versus iter753's 234×384 cluster pair, candidate medians
+  change by +8.79%, +3.49%, -5.51%, +0.72%, and +3.09% for M8..M128;
+  geomean regresses 2.01%.  Versus the retained iter742 production geomean
+  (0.247052 ms), this is 12.90% slower; only M8 is noise-level equal, while
+  M16/M32/M64/M128 regress about 17.0%/8.1%/21.9%/19.1%.
+- **Diagnosis/decision:** four resident CTAs recover pair-level task
+  concurrency, but halving dispatch parallelism and serializing both TMA
+  streams through one producer outweigh it; the DSM join remains a per-task
+  synchronization tax.  **REJECT** iter754 as a winner.  Restore the exact
+  iter742 production checkpoint, then run the required TP8 compatibility
+  validation rather than starting another optimization branch.
