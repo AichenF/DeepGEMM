@@ -18326,3 +18326,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Required benchmark invocation: `bash scripts/bench.sh iter-746`, TP4 all-M cold-L2 defaults.
 - Failure: the harness computed `MASTER_PORT` from a nanosecond substring with a leading zero (`014481021`); Bash treated it as invalid octal and then aborted on an unbound `AKO_MASTER_PORT` before Python, JIT compilation, CUDA initialization, correctness, or timing.
 - Decision: infrastructure-only invalid iteration; no kernel conclusion. Preserve the output and rerun the identical source after making the port expression explicitly base-10.
+
+## Iteration 747 — cross-grid reducer publication traps during graph capture
+
+- Change under test: identical iter746 kernel after repairing only the benchmark port arithmetic; dispatch reducers now rendezvous locally and dispatch warp 0 performs a grid-wide publication before the existing mixed dispatch/math CTA barrier and terminal k6 read.
+- Harness repair: `scripts/bench.sh` now converts `date +%N` explicitly with Bash base-10 syntax, eliminating the occasional leading-zero/octal failure from iter746.
+- Required benchmark: TP4 GPUs 1–4, all-M request, CUDA Graph, separately cold L2, 2×5 samples.
+- Result: JIT compilation succeeds, but the first M8 candidate graph-capture synchronization reports `cudaErrorIllegalInstruction` on all four ranks before correctness or timing. No performance number is admissible.
+- Diagnosis: the added dispatch-only reuse of the existing grid-sync generation violates that helper's participant/generation contract in this location; this is distinct from iter745's proven-correct slice0 arithmetic. Do not treat the trap as a numerical result.
+- Decision: REJECT this publication placement. Preserve the artifact; replace it with a grid barrier whose participant set/order matches the existing all-math rendezvous, or keep the reduction terminal.
