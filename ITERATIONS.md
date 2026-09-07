@@ -18277,3 +18277,14 @@ maximum rank latency of a full CUDA-Graph replay.
 - Median latency (control / candidate, ms): M8 0.072016 / 0.121888; M16 0.114816 / 0.168176; M32 0.177680 / 0.273424; M64 0.250384 / 0.360848; M128 0.308112 / 0.468416.
 - Geometric mean: control 0.162509 ms, candidate 0.248487 ms; candidate is 1.5291× slower. This recovers 4.22% versus rejected iteration 740, but remains 0.88% slower than iteration 739's 0.246310 ms winner, plausibly from the generalized code/layout plus run noise.
 - Decision: correctness-qualified rollback, but iteration 739 remains the measured winner. A useful scratch-removal design must preserve `(BM8,slice)` producer parallelism and join slices through a cohort rather than one long CTA task.
+
+## Iteration 742 — exact iter739 source restoration
+
+- Hypothesis: remove all generalized complete-K remnants from iter740/741 and restore the byte-identical iter739 two-CTA-residency body before testing dependency-aware readiness.
+- Change: restored `v4_flash_tp_tile_ws_body.inl` exactly to commit `88cd659` (SHA256 `136757753077f62e9ea0be6971f4360296f27552c4d1957eb3d4b737a186474c`).
+- Benchmark: TP4 on GPUs 1–4; CUDA Graph; 256 MiB cold-L2 clear immediately before every timed replay; 2 outer batches × 5 samples; M={8,16,32,64,128}.
+- Correctness: PASS for every M; strict all-reduce accepted. Candidate final max relL2 ranged 0.002902–0.002975 and minimum cosine ranged 0.999995575–0.999995791.
+- Candidate medians (ms): M8 0.122368; M16 0.168432; M32 0.269200; M64 0.356448; M128 0.465344.
+- Paired multi-kernel control medians (ms): M8 0.071552; M16 0.114560; M32 0.179168; M64 0.250192; M128 0.308144.
+- Aggregate: candidate geometric mean 0.247052 ms; control 0.162476 ms; control/candidate speedup 0.657659× (candidate 1.52054× slower).
+- Decision: ACCEPT as the clean scheme-A checkpoint. Results reproduce iter739 within noise; proceed from this exact body to tile-level dependency-aware reduction overlap.
