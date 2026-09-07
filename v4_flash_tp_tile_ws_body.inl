@@ -123,7 +123,11 @@
                      "V4 Flash hidden4096 requires sixteen W2 N256 tiles");
     // M128 has enough routed BM8 blocks to make one complete-K task per block
     // useful.  Smaller M retains slice tasks so all resident CTAs can help.
-    const bool full_k_w2_task = num_tokens == kNumMaxTokensPerRank;
+    // Iteration 740 proved that collapsing four slice tasks into one BM8 task
+    // loses more scheduling parallelism than its scratch reduction saves.
+    // Compile the rejected branch away while retaining it as a controlled
+    // reference for a future cohort implementation.
+    constexpr bool full_k_w2_task = false;
     constexpr bool kSplitMDecodedWeightReuse =
         BLOCK_M == 128 && BLOCK_N == 128 && kNumEpilogueWarpgroups == 2;
     constexpr uint32_t WG_BLOCK_M =

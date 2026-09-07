@@ -18269,3 +18269,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Median latency (control / candidate, ms): M8 0.072416 / 0.129040; M16 0.114832 / 0.176752; M32 0.178368 / 0.280864; M64 0.251232 / 0.370064; M128 0.308288 / 0.495712.
 - Geometric mean: control 0.162948 ms, candidate 0.259429 ms; candidate is 1.5921× slower. Versus iteration 739's 0.246310 ms, this regresses 5.33%; M128 alone regresses 6.22% (0.466688→0.495712 ms). Even the nominally unchanged small-M runtime branch regresses, indicating code/resource footprint also worsened.
 - Decision: reject and roll back the monolithic BM8 task. Eliminating scratch is not sufficient when it cuts M128 task population 4× and lengthens each indivisible task; preserve fine slice scheduling and pursue a cooperative/cohort reduction that retains parallel W2 N tiles.
+## Iteration 741 — compile out the rejected complete-K branch
+
+- Change: set `full_k_w2_task` to compile-time false so the iteration-740 coarse BM8 branch is dead code. The retained slice path still uses the generalized shared activation/scale layout and equivalent scratch indexing.
+- Benchmark: TP4 GPUs 1–4, random routing, CUDA Graph, 256 MiB cold-L2 eviction before each replay, 2 outer × 5 samples, all five M.
+- Build/correctness: `COMPILED=True`, `CORRECT=True`; final and local error metrics remain unchanged.
+- Median latency (control / candidate, ms): M8 0.072016 / 0.121888; M16 0.114816 / 0.168176; M32 0.177680 / 0.273424; M64 0.250384 / 0.360848; M128 0.308112 / 0.468416.
+- Geometric mean: control 0.162509 ms, candidate 0.248487 ms; candidate is 1.5291× slower. This recovers 4.22% versus rejected iteration 740, but remains 0.88% slower than iteration 739's 0.246310 ms winner, plausibly from the generalized code/layout plus run noise.
+- Decision: correctness-qualified rollback, but iteration 739 remains the measured winner. A useful scratch-removal design must preserve `(BM8,slice)` producer parallelism and join slices through a cohort rather than one long CTA task.
