@@ -134,14 +134,13 @@ if NATIVE_TP_TILE_WS and (
     NATIVE_H20_EXACT_OUTER
     or not NATIVE_REGISTER_DEQUANT
     or not NATIVE_RS_K128_BATCH
-    or NATIVE_TWO_CTA_PER_SM
     or not NATIVE_NORMALIZED_WEIGHT_SCALE
     or not NATIVE_DUAL_ACTIVE_DISPATCH
     or not NATIVE_TP_LOCAL_ROUTE_BUILD
     or not NATIVE_TP_LOCAL_BARRIER_FASTPATH
 ):
     raise ValueError(
-        "V4_NATIVE_TP_TILE_WS requires the isolated one-CTA/SM TP-local "
+        "V4_NATIVE_TP_TILE_WS requires the isolated TP-local "
         "register-dequant K128 configuration"
     )
 if NATIVE_RS_HALF_PREFETCH and not (

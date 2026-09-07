@@ -18252,3 +18252,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Benchmark: required TP4 CUDA-Graph/cold-L2 AKO harness, all five M values requested.
 - Result: `COMPILED=False`. All ranks stop during module import at `v4_flash_tp_native_megamoe.py`'s pre-existing Python validation, which still hard-requires tile-WS to be one CTA/SM. No JIT, GPU kernel, correctness, or latency measurement occurred.
 - Decision: this is an incomplete admission patch, not evidence against two-CTA residency. Update only the matching Python configuration guard, rerun the unchanged experiment, and keep the failed output as evidence.
+## Iteration 739 — two-CTA tile-WS residency is a valid 16.7% win
+
+- Change relative to iteration 738: remove only the stale Python guard that prohibited `NATIVE_TWO_CTA_PER_SM` for tile-WS. The kernel now uses the existing cooperative 156×384 Hopper launch and 88-register math-role allocation; math, activation quantization, scratch layout, and communication are unchanged.
+- Benchmark: TP4 GPUs 1–4, random routing, CUDA Graph, separate 256 MiB cold-L2 eviction before each replay, 2 outer × 5 replay samples, M={8,16,32,64,128}.
+- Build/correctness: `COMPILED=True`, `CORRECT=True` for all five M. Final rel-L2 remains 0.002902–0.002974 and candidate-local rel-L2 0.000033–0.000474, bit-for-bit metric-equivalent to iteration 736's one-CTA math.
+- Median latency (control / candidate, ms): M8 0.071744 / 0.120944; M16 0.114352 / 0.168272; M32 0.178080 / 0.267584; M64 0.251344 / 0.356720; M128 0.308480 / 0.466688.
+- Geometric mean: control 0.162491 ms, candidate 0.246310 ms; control/candidate speedup 0.659699× (candidate is 1.5158× slower).
+- Versus iteration 736's one-CTA candidate (0.295684 ms geometric mean), two-CTA residency is 16.70% faster overall; endpoint gains are 7.85% at M8 and 20.13% at M128. This validates the NCU occupancy diagnosis.
+- Decision: accept two-CTA residency as the new tile-WS production checkpoint. It does not close the baseline gap; next remove the FP32 per-slice scratch/final 24-load reduction by making W2 accumulate complete K before emitting a BF16 route tile.
