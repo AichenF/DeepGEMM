@@ -1892,19 +1892,24 @@
                         for (uint32_t w = 0; w < reduce_warp_count; ++ w)
                             amax = cute::max(
                                 amax, smem_cd_l1_shared_sf[token * kNumEpilogueWarps + reduce_warp_start + w]);
-                        float2 amax_pair = {amax, amax};
-                        float2 sf_pair, sf_inv_pair;
-                        math::get_e4m3_sf_and_sf_inv(amax_pair, sf_pair, sf_inv_pair);
+                        // TP's public W13->W2 boundary uses the same ordinary
+                        // FP32 group-128 scale as the selected SGLang path,
+                        // not the UE8M0/power-of-two scale inherited from EP.
+                        // Keeping that distinction is numerically material:
+                        // power-of-two rounding needlessly spends FP8 range.
+                        const float group_scale =
+                            cute::max(amax, 1.0e-30f) * (1.0f / 448.0f);
+                        const float group_scale_inv = 1.0f / group_scale;
 
                         // Keep both quantization factors CTA-local. Slot zero
                         // is consumed by the FP8 stores below; slot one is the
                         // dequant scale consumed by every W2 N tile.
                         smem_cd_l1_shared_sf[
                             token * kNumEpilogueWarps + reduce_warp_start] =
-                            sf_inv_pair.x;
+                            group_scale_inv;
                         smem_cd_l1_shared_sf[
                             token * kNumEpilogueWarps + 1u] =
-                            sf_pair.x * output_weight_global_scale;
+                            group_scale * output_weight_global_scale;
                     }
 
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);

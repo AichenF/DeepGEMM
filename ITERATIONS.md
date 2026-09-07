@@ -18229,3 +18229,12 @@ maximum rank latency of a full CUDA-Graph replay.
 - Median latency (control / candidate, ms): M8 0.071792 / 0.130480; M16 0.114848 / 0.202912; M32 0.177728 / 0.314656; M64 0.249456 / 0.449136; M128 0.307904 / 0.584400.
 - Geometric mean: control 0.162283 ms, candidate 0.293735 ms; control/candidate speedup 0.552482× (candidate is 1.8100× slower).
 - Decision: reject as a correctness and performance win. Keep the numerically faithful boundary while isolating W13/W2 slice-order or dequant/layout differences next; do not profile performance until strict correctness passes.
+## Iteration 736 — match TP's ordinary FP32 activation scale
+
+- Hypothesis: the stable ~3.6% local rel-L2 error is caused by reusing the EP kernel's UE8M0/power-of-two W13→W2 activation scale, while the selected SGLang TP baseline uses an ordinary FP32 group-128 scale `max(abs)/448`.
+- Change: replace `math::get_e4m3_sf_and_sf_inv` in the active BM8 tile-WS epilogue with `group_scale=max(amax,1e-30)/448` and its reciprocal. Keep W13/SwiGLU BF16 boundaries, normalized W2 global scale folding, fixed-k6 weighting, and embedded AR unchanged.
+- Benchmark: TP4 on GPUs 1–4, random routing, CUDA Graph, 256 MiB cold-L2 eviction before every timed replay, 2 outer batches × 5 replay samples, M={8,16,32,64,128}.
+- Build/correctness: `COMPILED=True`, `CORRECT=True` under strict `allreduce_ok` for all five M values. Final max-rank rel-L2 is 0.002902 / 0.002968 / 0.002970 / 0.002959 / 0.002974 for M=8/16/32/64/128; local rel-L2 collapses to 0.000057 / 0.000119 / 0.000474 / 0.000033 / 0.000359. Embedded AR versus candidate-local NCCL remains ~0.00290–0.00297. This confirms the root cause was the activation scale format, not GEMM layout or communication.
+- Median latency (control / candidate, ms): M8 0.072176 / 0.131248; M16 0.114928 / 0.204448; M32 0.179024 / 0.319904; M64 0.249104 / 0.450592; M128 0.307664 / 0.584336.
+- Geometric mean: control 0.162644 ms, candidate 0.295684 ms; control/candidate speedup 0.550059× (candidate is 1.8180× slower).
+- Decision: accept as the first correctness-qualified scheme-A baseline. Performance still loses decisively, so the next iteration may now use profiling/phase evidence rather than further numerical debugging.
