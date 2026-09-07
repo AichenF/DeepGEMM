@@ -1833,7 +1833,12 @@
                                 float u0 = final_accum[accum_offset + 2];
                                 clamp_gate(g0);
                                 clamp_up(u0);
-                                v0 = silu(g0) * u0;
+                                g0 = __bfloat162float(
+                                    __float2bfloat16_rn(g0));
+                                u0 = __bfloat162float(
+                                    __float2bfloat16_rn(u0));
+                                v0 = __bfloat162float(
+                                    __float2bfloat16_rn(silu(g0) * u0));
                                 swap_v0[half][i] = v0;
                                 v0_amax = cute::max(v0_amax, cute::abs(v0));
                             }
@@ -1844,7 +1849,12 @@
                                 float u1 = final_accum[accum_offset + 3];
                                 clamp_gate(g1);
                                 clamp_up(u1);
-                                v1 = silu(g1) * u1;
+                                g1 = __bfloat162float(
+                                    __float2bfloat16_rn(g1));
+                                u1 = __bfloat162float(
+                                    __float2bfloat16_rn(u1));
+                                v1 = __bfloat162float(
+                                    __float2bfloat16_rn(silu(g1) * u1));
                                 swap_v1[half][i] = v1;
                                 v1_amax = cute::max(v1_amax, cute::abs(v1));
                             }

@@ -18219,3 +18219,13 @@ maximum rank latency of a full CUDA-Graph replay.
   performance winner, but is retained as the required numerical ordering while
   the remaining local-math discrepancy is isolated.
 - Evidence: `trajectory/iter-734/_bench_output.txt`.
+## Iteration 735 — restore W13 and SwiGLU BF16 boundaries
+
+- Hypothesis: the remaining ~3.6% local-output relative-L2 error comes from feeding FP32 W13 accumulators directly into SwiGLU/FP8, while the production control explicitly rounds gate and up to BF16, computes SwiGLU, then rounds the activation to BF16 before FP8 quantization.
+- Change: in `v4_flash_tp_tile_ws_body.inl`, round gate/up to BF16, evaluate SwiGLU from those rounded values, and round the SwiGLU result to BF16 before per-token FP8 quantization. Retain iteration 734's fixed-k6 final route weighting and embedded-AR scale boundary.
+- Benchmark: TP4 on GPUs 1–4, random routing, CUDA Graph, 256 MiB cold-L2 eviction before every timed replay, 2 outer batches × 5 replay samples, M={8,16,32,64,128}.
+- Build: `COMPILED=True`.
+- Strict correctness: `CORRECT=False`. Final max-rank rel-L2 is 0.03572 / 0.03553 / 0.03581 / 0.03554 / 0.03523 for M=8/16/32/64/128; local rel-L2 is 0.03656 / 0.03622 / 0.03615 / 0.03582 / 0.03529. Embedded communication versus the candidate's own NCCL result remains accurate at ~0.00296–0.00300 rel-L2. Therefore the mismatch is still in the local GEMM/activation path, not AR, and this BF16-boundary hypothesis is falsified.
+- Median latency (control / candidate, ms): M8 0.071792 / 0.130480; M16 0.114848 / 0.202912; M32 0.177728 / 0.314656; M64 0.249456 / 0.449136; M128 0.307904 / 0.584400.
+- Geometric mean: control 0.162283 ms, candidate 0.293735 ms; control/candidate speedup 0.552482× (candidate is 1.8100× slower).
+- Decision: reject as a correctness and performance win. Keep the numerically faithful boundary while isolating W13/W2 slice-order or dequant/layout differences next; do not profile performance until strict correctness passes.
