@@ -415,6 +415,9 @@ def main() -> None:
                     "single_launch_w13_act_tail_pipe": (
                         kernel.SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
                     ),
+                    "single_launch_dep_ready_tail": (
+                        kernel.SINGLE_LAUNCH_DEP_READY_TAIL
+                    ),
                     "single_launch_w13_n64_tail": (
                         kernel.SINGLE_LAUNCH_W13_N64_TAIL
                     ),

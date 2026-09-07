@@ -1,0 +1,94 @@
+Target
+======
+
+DeepSeek-V4-Flash TP4 MegaMoE on one H20 per rank, M in
+{8,16,32,64,128}, prequantized FP8 activation plus MXFP4 W13/W2 weights.
+The candidate is one persistent business kernel containing route alignment,
+W13, SwiGLU/requantization, W2, local k6 reduction, and CARv2 all-reduce.
+The control is the same-source multi-kernel CUDA-Graph path.  Every timed
+replay is cold-L2 via an excluded 256 MiB clear.
+
+Fresh production anchor (2026-09-07)
+====================================
+
+TP4 physical GPUs 1,2,3,4; random route seed 20260902; CUDA Graph;
+2 outer x 20 replay-level paired samples after 4 warmups.
+
+M      multi ms    one-kernel ms    one/multi
+8      0.071248    0.075808         1.06400
+16     0.114816    0.123584         1.07637
+32     0.177744    0.198672         1.11774
+64     0.249664    0.280480         1.12343
+128    0.305600    0.349104         1.14236
+GM     0.161814    0.178704         1.10438
+
+All candidate/control correctness checks pass.  This short fresh anchor is
+consistent with the 300-sample Iteration-612 result (one-kernel 10.72%
+slower by geometric mean).
+
+Bottleneck evidence
+===================
+
+The selected M128 launch is 702 x 128 (nine CTAs per each of 78 SMs), 56
+registers/thread, no local spilling.  Existing NCU evidence reports only
+60.07% compute and 50.73% DRAM throughput, 0.63 issued warps/scheduler/cycle,
+36.61% no-eligible cycles, and 37.85% of warp-state cost in barriers.  The
+activation loop exit plus terminal W2/grid convergence account for most of
+the sampled barrier stalls.  Independent tail mapping measurement showed
+the residual W13 and W2 waves are already count-balanced across SMs; generic
+task stealing is therefore not the missing optimization.
+
+Hypothesis for this iteration
+=============================
+
+Preserve the production WGMMA task order, outlined compact W13 body, 128
+threads/CTA, and 8/9-CTA-per-SM occupancy.  At the last W13 wave, publish the
+completed full-wave prefix with one generation-tagged, release-sequenced
+arrival per CTA.  Tail producers continue without waiting.  Only suffix CTAs
+that have no residual W13 task acquire that publication and execute at most
+one dependency-safe activation group before the existing final W13 safety
+barrier.  This bounds overlap to work likely to fit under the tail, adds no
+per-GEMM-task atomics, and never overlaps the cold W13 and W2 weight streams.
+
+Acceptance gate
+===============
+
+1. Flag-off cubin/resources and output are unchanged.
+2. TP4 all-M and TP8 smoke correctness pass, including repeated CUDA-Graph
+   replay generation state.
+3. Candidate must improve paired cold-L2 median/GM beyond run noise without
+   regressing any large-M endpoint materially; otherwise reject and retain
+   the production default.
+
+Screen 1 result and repair
+==========================
+
+The first implementation was correct but regressed the one-kernel latency
+versus the fresh production anchor by about 9.3%, 5.8%, 3.8%, 2.7%, and 3.0%
+at M8/16/32/64/128.  It split the M128 residual W13 task into a second device
+call, increasing the M128 stack frame from 32 to 48 bytes, and imposed route
+map/readiness work on shapes whose tails were too short to amortize it.
+
+The repaired screen keeps readiness and the residual producer task inside the
+original compact W13 phase call, so its external ABI remains one pointer.  It
+enables overlap only in the M128 specialization; M<=64 compile back to the
+selected production W13/activation flow and do not write the inverse route
+map.  This is the final targeted repair before rejecting the approach.
+
+Final result
+============
+
+The repaired M128 path remains slower.  In adjacent 40-sample cold-L2 runs,
+dependency-ready M128 is 0.356576 ms and flag-off production is 0.349664 ms:
+a direct 1.98% regression.  Normalizing each arm by its paired multi-kernel
+control still leaves a 1.29% regression.  The candidate retains 56 registers
+and no fixed local allocation, but its monolithic entry uses a 48-byte stack
+frame versus production's 32 bytes.  M8 and M64, which compile back to the
+production schedule, return to 0.075616 and 0.280400 ms respectively.
+
+Decision: reject dependency-ready W13/activation tail overlap as a default.
+Keep it default-off as a reproducible falsification artifact.  Do not add the
+planned W2/communication chunk overlap: prior flat/chunk screens already show
+the chunk reorder/producer-readiness overhead is negative, and this iteration
+failed the prerequisite that phase-tail readiness pay for itself.  Production
+therefore remains the fixed-phase compact bundle.

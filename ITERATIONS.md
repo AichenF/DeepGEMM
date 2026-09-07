@@ -18041,3 +18041,67 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/iter728d_h20_exact_tp8_local_m8_20260907.log`,
   `bench/results/iter728e_h20_exact_tp8_allm_cold_runtime_20260907.log`, and
   `bench/results/iter728f_h20_exact_tp4_regression_cold_runtime_20260907.log`.
+
+## Iteration 729 — restore production CAR environment and freeze cold-L2 anchor
+
+- Recovered the successful symmetric-memory CARv2 checkout at
+  `workspace/codex_correct_forks_20260731/sglang/python` and retained the
+  source-preserving `/home/xutingz/fac/.tpmoe_tmp` `ipc.cuh` overlay.  The
+  effective runtime is Torch 2.11.0/CUDA 12.9 and exposes `_symm_tensor` plus
+  `_push_counter`, matching the fused-kernel benchmark ABI.
+- The first attempt without `V4_SINGLE_LAUNCH_TP4=1` resolved the legacy
+  bundle and is invalid as a production anchor.  The corrected run uses
+  physical GPUs 1–4, random seed 20260902, replay-paired CUDA Graphs, four
+  warmups and 2x20 samples/implementation/M, with a separate excluded 256 MiB
+  L2 clear before every replay.
+- Same-source multi / production one-kernel medians in ms are M8
+  `0.071248/0.075808`, M16 `0.114816/0.123584`, M32
+  `0.177744/0.198672`, M64 `0.249664/0.280480`, and M128
+  `0.305600/0.349104`.  Geometric means are `0.161814/0.178704`; the
+  one-kernel path is 10.44% slower.  All correctness and all-reduce checks
+  pass.
+- Evidence:
+  `bench/results/iter729e_dep_ready_production_anchor_tp4_allm_cold_20260907.log`.
+
+## Iteration 730 — dependency-ready W13 tail first screen is slower
+
+- Added default-off `V4_SINGLE_LAUNCH_DEP_READY_TAIL`.  Every CTA release
+  publishes the complete W13-wave prefix once; residual producers continue
+  without waiting, while suffix-idle CTAs acquire readiness and execute at
+  most one dependency-safe activation N128 group.  A separate packed
+  generation word preserves the existing four phase-barrier generations.
+- Local M8/M128 output is bitwise identical to the independent multi-kernel
+  local path (`cosine=1`, `rel_l2=0`), packed generation wrap passes, and TP4
+  end-to-end/all-reduce correctness passes at all M.
+- The first implementation adds a second compact tail call and regresses
+  production one-kernel medians by about 9.3/5.8/3.8/2.7/3.0% at
+  M8/16/32/64/128.  Its all-M geometric mean is 4.9% slower.  M128 retains
+  56 registers and no fixed local allocation but stack grows 32->48 bytes.
+- Decision: repair only the identified call-frame/small-M overhead once;
+  keep the flag off.
+- Evidence: `evidence/iter731_dependency_ready_tail_rejection.md` and raw
+  `bench/results/iter730{a,b,c,d}_dep_ready*20260907.log` files.
+
+## Iteration 731 — compact-internal repair remains negative; pause
+
+- The repair keeps full waves, the release publication, and the residual W13
+  task inside the original single compact phase call.  Only the TP4-M128
+  specialization overlaps activation; M<=64 compile to production flow.
+- Correctness remains exact locally.  An eight-H20 TP8 M128 CUDA-Graph smoke
+  runs the full one-kernel/NVLS-pull path and passes all-reduce with minimum
+  cosine `0.999991959` and maximum relative L2 `0.004010353`.
+- M8 and M64 return to production noise range (`0.075616` and `0.280400 ms`).
+  M128 ON is `0.356576 ms` versus adjacent flag-OFF production
+  `0.349664 ms`, a direct 1.98% regression.  Normalized by each run's paired
+  multi-kernel control, the regression is still 1.29%.  Candidate M128 still
+  has a 48-byte stack; flag OFF is resource-identical to production at 56
+  registers, 32-byte stack, 2,048-byte static shared memory, and zero fixed
+  local allocation.
+- Decision: reject dependency-ready tail overlap as a default, retain the
+  reproducible implementation default-off, and do not add W2 communication
+  chunk overlap.  Previous chunk screens already made its producer/reordering
+  cost negative, while the prerequisite readiness mechanism also loses here.
+  Preserve the fixed-phase production bundle and pause performance work per
+  the agreed stop condition.
+- Evidence: `evidence/iter731_dependency_ready_tail_rejection.md` and raw
+  `bench/results/iter731{a,b,c,d,e}_dep_ready*20260907.log` files.

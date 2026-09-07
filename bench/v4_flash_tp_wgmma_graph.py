@@ -343,7 +343,8 @@ class CapturedCase:
             (self.m * TOP_K * 32 + 2,), dtype=torch.int32, device=device
         )
         # Four count/epoch pairs and five uint64 device timestamps precede an
-        # optional four-word FC2 chunk-readiness slab and scheduler suffix.
+        # optional four-word FC2 chunk-readiness slab, one W13 bulk-readiness
+        # word, and scheduler suffix.
         # The suffix is reset inside the same business kernel and stores the
         # W13->activation->W2 task-DAG counters/readiness queues.  No captured
         # memset or additional launch is part of the single-launch path.
@@ -380,8 +381,15 @@ class CapturedCase:
         chunk_ready_words = (
             4 if kernel.SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP else 0
         )
+        dep_ready_words = 1 if kernel.SINGLE_LAUNCH_DEP_READY_TAIL else 0
         self.single_launch_barrier_state = torch.zeros(
-            (18 + hierarchical_words + chunk_ready_words + scheduler_words,),
+            (
+                18
+                + hierarchical_words
+                + chunk_ready_words
+                + dep_ready_words
+                + scheduler_words,
+            ),
             dtype=torch.int32,
             device=device,
         )
@@ -1570,6 +1578,9 @@ def main() -> None:
                     ),
                     "single_launch_w13_act_tail_pipe": (
                         kernel.SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
+                    ),
+                    "single_launch_dep_ready_tail": (
+                        kernel.SINGLE_LAUNCH_DEP_READY_TAIL
                     ),
                     "single_launch_dual_wg_phases": (
                         kernel.SINGLE_LAUNCH_DUAL_WG_PHASES

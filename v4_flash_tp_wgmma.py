@@ -163,6 +163,13 @@ SINGLE_LAUNCH_W13_COMPLETION_ACT = (
 SINGLE_LAUNCH_W13_ACT_TAIL_PIPE = (
     os.environ.get("V4_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE", "0") == "1"
 )
+# Production-shaped tail experiment.  Unlike the older readiness queue, this
+# publishes only the last complete W13 wave boundary (one arrival per CTA),
+# lets residual W13 producers continue without waiting, and gives otherwise
+# idle CTAs at most one dependency-safe activation group to hide under it.
+SINGLE_LAUNCH_DEP_READY_TAIL = (
+    os.environ.get("V4_SINGLE_LAUNCH_DEP_READY_TAIL", "0") == "1"
+)
 SINGLE_LAUNCH_W13_N64_TAIL = (
     os.environ.get("V4_SINGLE_LAUNCH_W13_N64_TAIL", "0") == "1"
 )
@@ -256,6 +263,7 @@ W2_NEEDS_ROUTE_MAP = (
     or SINGLE_LAUNCH_TAIL_OVERLAP
     or SINGLE_LAUNCH_W13_TAIL_SPLIT4
     or SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
+    or SINGLE_LAUNCH_DEP_READY_TAIL
 )
 W2_FOLD_GLOBAL_SCALE = (
     os.environ.get("V4_W2_FOLD_GLOBAL_SCALE", "0") == "1"
@@ -2053,6 +2061,58 @@ if W13_LAUNCH_BOUND_10 and (W13_DUAL_WG_SPLIT or W13_PAIRED_WG):
         "V4_W13_LAUNCH_BOUND_10 probes only the 128-thread split-K W13 path"
     )
 
+if SINGLE_LAUNCH_DEP_READY_TAIL and (
+    not SINGLE_LAUNCH_COMPACT_W13_BUNDLE
+    or SINGLE_LAUNCH_SCHEDULE != 0
+    or not SINGLE_LAUNCH_W13_PHASE_NOINLINE
+    or not SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI
+    or not SINGLE_LAUNCH_ROUTE_DYNAMIC_SMEM
+    or not SINGLE_LAUNCH_M128_BOUND9
+    or not SINGLE_LAUNCH_ASSUME_VALID_GEMM_TASKS
+    or not SINGLE_LAUNCH_PACKED_GRID_BARRIER
+    or not SINGLE_LAUNCH_RELEASE_GRID_ARRIVAL
+    or SINGLE_LAUNCH_PHASE_STAMPS
+    or SINGLE_LAUNCH_COOPERATIVE_GRID
+    or SINGLE_LAUNCH_HIERARCHICAL_GRID
+    or SINGLE_LAUNCH_NOINLINE_GEMM
+    or SINGLE_LAUNCH_PERSISTENT_GEMM_STATE
+    or SINGLE_LAUNCH_W13_COMPACT_PERSISTENT_STATE
+    or SINGLE_LAUNCH_W13_COMPACT_PINGPONG_STATE
+    or SINGLE_LAUNCH_W13_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_W2_NEXT_TASK_PREFETCH
+    or SINGLE_LAUNCH_TAIL_OVERLAP
+    or SINGLE_LAUNCH_TAIL_ACT_ONLY
+    or SINGLE_LAUNCH_GROUPED_W13_ACT
+    or SINGLE_LAUNCH_ACT_W2_COHORT
+    or SINGLE_LAUNCH_W13_COMPLETION_ACT
+    or SINGLE_LAUNCH_W13_ACT_TAIL_PIPE
+    or SINGLE_LAUNCH_W13_N64_TAIL
+    or SINGLE_LAUNCH_W2_N64_TAIL
+    or SINGLE_LAUNCH_W13_TAIL_SPLIT4
+    or SINGLE_LAUNCH_CLUSTER_W13_ACT
+    or SINGLE_LAUNCH_DUAL_WG_PHASES
+    or SINGLE_LAUNCH_PACKED_MULTI_WG
+    or SINGLE_LAUNCH_SM_STRIPED_TASKS
+    or SINGLE_LAUNCH_BALANCED_WORKERS
+    or SINGLE_LAUNCH_BALANCED_ACTIVATION_WORKERS
+    or SINGLE_LAUNCH_BALANCED_W2_WORKERS
+    or SINGLE_LAUNCH_SKIP_FINAL_CTA_SYNC
+    or SINGLE_LAUNCH_GRID_BARRIER_NO_ENTRY_SYNC
+    or SINGLE_LAUNCH_SKIP_ACTIVATION_TASK_SYNC
+    or SINGLE_LAUNCH_W2_CHUNK_MAJOR
+    or SINGLE_LAUNCH_W2_CHUNK_AR_OVERLAP
+    or SINGLE_LAUNCH_W2_CHUNK_AR_POST
+    or SINGLE_LAUNCH_CTAS_PER_SM != 8
+    or SINGLE_LAUNCH_MIN_BLOCKS != 8
+    or WOUT != 128
+    or not COMPACT_INTERLEAVED_SCALE
+    or WEIGHT_STAGES != 2
+):
+    raise ValueError(
+        "V4_SINGLE_LAUNCH_DEP_READY_TAIL requires the isolated production "
+        "compact-W13, packed-barrier, 8-CTA/SM schedule-0 bundle"
+    )
+
 os.environ.setdefault("TORCH_EXTENSIONS_DIR", "/tmp/torch_ext_v4_tp")
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
 
@@ -2293,6 +2353,8 @@ static constexpr bool kSingleLaunchW13CompletionAct =
     K_SINGLE_LAUNCH_W13_COMPLETION_ACT;
 static constexpr bool kSingleLaunchW13ActTailPipe =
     K_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE;
+static constexpr bool kSingleLaunchDepReadyTail =
+    K_SINGLE_LAUNCH_DEP_READY_TAIL;
 static constexpr bool kSingleLaunchW13N64Tail =
     K_SINGLE_LAUNCH_W13_N64_TAIL;
 static constexpr bool kSingleLaunchW2N64Tail =
@@ -4411,9 +4473,14 @@ struct SingleLaunchW13PhaseArgs {
     const float* topk_weights;
     float* output;
     const uint2* global_lut;
+    int32_t* dep_ready_word;
 };
 
-template <int SplitK, int Tokens, bool AssumeValidMblock>
+__device__ __forceinline__ void single_launch_packed_arrive_and_wait(
+    int32_t* __restrict__ word, int expected_blocks, bool wait_for_ready);
+
+template <int SplitK, int Tokens, bool AssumeValidMblock,
+          bool DependencyReadyTail = false>
 __device__ __noinline__ void single_launch_w13_gemm_phase_compact(
         const SingleLaunchW13PhaseArgs* args) {
     constexpr int kW13NTiles = 1024 / kWout;
@@ -4424,8 +4491,12 @@ __device__ __noinline__ void single_launch_w13_gemm_phase_compact(
     const int ctas = static_cast<int>(gridDim.x);
     const int tasks =
         (__ldg(args->num_tokens_padded) / kTok) * kW13NTiles * SplitK;
+    const int tail_tasks = tasks % ctas;
+    const int task_limit =
+        DependencyReadyTail && tail_tasks > 0
+        ? tasks - tail_tasks : tasks;
     int task_sequence = 0;
-    for (int task = cta; task < tasks;
+    for (int task = cta; task < task_limit;
          task += ctas, ++task_sequence) {
         int logical_task = task;
         if constexpr (Tokens == 128 && kSingleLaunchW13WaveRotate > 0) {
@@ -4466,6 +4537,39 @@ __device__ __noinline__ void single_launch_w13_gemm_phase_compact(
         if constexpr (!kSingleLaunchW13CompactPersistentState
                       && !kPingPongTaskState)
             __syncthreads();
+    }
+    if constexpr (DependencyReadyTail) {
+        if (tail_tasks > 0) {
+            const bool is_idle_tail_cta = cta >= tail_tasks;
+            single_launch_packed_arrive_and_wait(
+                args->dep_ready_word, ctas, is_idle_tail_cta);
+            if (!is_idle_tail_cta) {
+                int logical_task = task_limit + cta;
+                if constexpr (kSingleLaunchW13CompactSplitMajorTasks) {
+                    constexpr int kTasksPerMblock =
+                        kW13NTiles * SplitK;
+                    const int mblock = logical_task / kTasksPerMblock;
+                    const int inner =
+                        logical_task - mblock * kTasksPerMblock;
+                    const int split = inner / kW13NTiles;
+                    const int n_tile = inner - split * kW13NTiles;
+                    logical_task =
+                        (mblock * kW13NTiles + n_tile) * SplitK + split;
+                }
+                route_gemm_task<
+                    4096, 1024, SplitK, true, 0, false, false, false,
+                    -1, false, 0, AssumeValidMblock>(
+                    args->tma_weight, args->tma_weight_scale,
+                    args->weight, args->weight_scale,
+                    args->weight_global_scale, args->activation,
+                    args->activation_scale, args->sorted_ids,
+                    args->expert_ids, args->num_tokens_padded,
+                    args->topk_weights, args->output, args->global_lut,
+                    nullptr, kMaxRoutes, 0, logical_task,
+                    task_limit / ctas);
+                __syncthreads();
+            }
+        }
     }
 }
 
@@ -5861,8 +5965,14 @@ __device__ __forceinline__ void single_launch_route_task(
                 if constexpr (kW2SortedAct || kW2MblockScale
                               || kSingleLaunchTailOverlap
                               || kSingleLaunchW13TailSplit4
-                              || kSingleLaunchW13ActTailPipe)
+                              || kSingleLaunchW13ActTailPipe) {
                     route_to_sorted[route] = position;
+                } else if constexpr (kSingleLaunchDepReadyTail) {
+                    // This experiment is selected only by the M128 kernel;
+                    // keep lower-M route preparation bit-for-bit unchanged.
+                    if (tokens == 128)
+                        route_to_sorted[route] = position;
+                }
             }
         }
         if constexpr (!kSingleLaunchSkipFinalCtaSync)
@@ -6909,8 +7019,12 @@ static constexpr int kSingleLaunchChunkReadyOffset =
     kSingleLaunchBarrierWords + kSingleLaunchPhaseStampWords
     + (kSingleLaunchHierarchicalGrid
         ? kSingleLaunchHierarchicalStateWords : 0);
-static constexpr int kSingleLaunchStatePrefixWords =
+static constexpr int kSingleLaunchDepReadyOffset =
     kSingleLaunchChunkReadyOffset + kSingleLaunchChunkReadyWords;
+static constexpr int kSingleLaunchDepReadyWords =
+    kSingleLaunchDepReadyTail ? 1 : 0;
+static constexpr int kSingleLaunchStatePrefixWords =
+    kSingleLaunchDepReadyOffset + kSingleLaunchDepReadyWords;
 static constexpr int kSingleLaunchTailGroupCtas =
     K_SINGLE_LAUNCH_TAIL_GROUP_CTAS;
 static constexpr int kSingleLaunchTailMaxGroups = 39;
@@ -7092,12 +7206,11 @@ __device__ __forceinline__ void single_launch_grid_barrier(
     __syncthreads();
 }
 
-// Non-blocking whole-grid arrival for one FC2 N1024 chunk.  Every CTA arrives
-// exactly once after its final logical task in the chunk.  Only the selected
-// communication CTA waits; all other CTAs immediately continue the next FC2
-// chunk.  The saved generation avoids missing a publication that races ahead
-// of the wait, and the packed word wraps naturally after 2^22 graph replays.
-__device__ __forceinline__ void single_launch_chunk_arrive_and_wait(
+// Generic non-blocking packed arrival.  Every CTA contributes one release
+// RMW, while only dependency consumers wait for the next generation.  The
+// saved generation avoids missing a publication that races ahead of the
+// wait, and the packed word wraps naturally after 2^22 graph replays.
+__device__ __forceinline__ void single_launch_packed_arrive_and_wait(
         int32_t* __restrict__ word, int expected_blocks, bool wait_for_ready) {
     if (threadIdx.x == 0) {
         constexpr uint32_t kCountBits = 10;
@@ -7122,8 +7235,15 @@ __device__ __forceinline__ void single_launch_chunk_arrive_and_wait(
             }
         }
     }
-    // Waiting CTAs return to the WGMMA loop, so all lanes must reconverge.
+    // All lanes reconverge before either producer or dependent work resumes.
     __syncthreads();
+}
+
+// FC2-chunk compatibility wrapper retained for the older overlap experiments.
+__device__ __forceinline__ void single_launch_chunk_arrive_and_wait(
+        int32_t* __restrict__ word, int expected_blocks, bool wait_for_ready) {
+    single_launch_packed_arrive_and_wait(
+        word, expected_blocks, wait_for_ready);
 }
 
 enum SingleLaunchSchedulerOffset : int {
@@ -7633,6 +7753,8 @@ void tp4_megamoe_single_launch_kernel(
             w13_phase_args.topk_weights = topk_weights;
             w13_phase_args.output = partials;
             w13_phase_args.global_lut = lut;
+            w13_phase_args.dep_ready_word =
+                barrier_state + kSingleLaunchDepReadyOffset;
         }
     }
 #endif
@@ -8684,6 +8806,68 @@ void tp4_megamoe_single_launch_kernel(
                     barrier_state + kSingleLaunchBarrierWords);
                 stamps[3] = stamps[2];
             }
+        } else if constexpr (kSingleLaunchDepReadyTail && Tokens == 128) {
+            constexpr int kActivationGroupsPerRoute = kIntermediate / 128;
+            const int common_rounds = w13_tasks / ctas;
+            const int common_tasks = common_rounds * ctas;
+            const int tail_tasks = w13_tasks - common_tasks;
+            const int idle_ctas = tail_tasks > 0 ? ctas - tail_tasks : 0;
+            const int safe_mblocks =
+                common_tasks / kW13TasksPerMblock;
+            const int safe_sorted_positions = safe_mblocks * kTok;
+            const int total_activation_groups =
+                routes * kActivationGroupsPerRoute;
+            const int early_activation_groups = idle_ctas
+                    < total_activation_groups
+                ? idle_ctas : total_activation_groups;
+
+            // Keep complete waves, the readiness publication, and the
+            // residual producer task inside the original single compact
+            // phase call.  This preserves the one-pointer ABI and avoids a
+            // second W13 call frame in the monolithic caller.
+            single_launch_w13_gemm_phase_compact<
+                SplitK, Tokens,
+                kSingleLaunchAssumeValidGemmTasks, true>(
+                &w13_phase_args);
+
+            if (tail_tasks > 0 && cta >= tail_tasks) {
+                // Bound the overlap to one activation N128 group per idle
+                // CTA.  Route-major ownership avoids padding work; the
+                // inverse route map proves that the complete gate/up mblock
+                // lies in the release-published prefix.
+                const int group = cta - tail_tasks;
+                if (group < early_activation_groups) {
+                    const int route = group / kActivationGroupsPerRoute;
+                    const int sorted_position =
+                        __ldg(route_to_sorted + route);
+                    if (sorted_position < safe_sorted_positions) {
+                        reduce_swiglu_quant_task<kIntermediate, SplitK>(
+                            partials, activation, qactivation,
+                            activation_scale, route_to_sorted, topk_ids,
+                            g2, routes, group);
+                        __syncthreads();
+                    }
+                }
+            }
+            // Safety convergence for residual W13 producers and early
+            // activation consumers.  Only activation groups not already
+            // completed under the tail are scheduled below.
+            single_launch_grid_barrier(barrier_state, 1, ctas);
+            for (int group = cta; group < total_activation_groups;
+                 group += ctas) {
+                const int route = group / kActivationGroupsPerRoute;
+                const bool completed_early =
+                    group < early_activation_groups
+                    && __ldg(route_to_sorted + route)
+                        < safe_sorted_positions;
+                if (!completed_early) {
+                    reduce_swiglu_quant_task<kIntermediate, SplitK>(
+                        partials, activation, qactivation, activation_scale,
+                        route_to_sorted, topk_ids, g2, routes, group);
+                    __syncthreads();
+                }
+            }
+            single_launch_grid_barrier(barrier_state, 2, ctas);
         } else {
             if constexpr (kSingleLaunchTailActOnly) {
                 constexpr int kActivationGroupsPerRoute =
@@ -12491,6 +12675,7 @@ _EXTENSION_CONFIG = (
           f"slaw{int(SINGLE_LAUNCH_ACT_W2_COHORT)}_"
           f"slca{int(SINGLE_LAUNCH_W13_COMPLETION_ACT)}_"
           f"slwatp{int(SINGLE_LAUNCH_W13_ACT_TAIL_PIPE)}_"
+          f"sldrt{int(SINGLE_LAUNCH_DEP_READY_TAIL)}_"
           f"sln64{int(SINGLE_LAUNCH_W13_N64_TAIL)}_"
           f"slw2n64{int(SINGLE_LAUNCH_W2_N64_TAIL)}_"
           f"slts4{int(SINGLE_LAUNCH_W13_TAIL_SPLIT4)}_"
@@ -12821,6 +13006,10 @@ _ext = load_inline(
         (
             "-DK_SINGLE_LAUNCH_W13_ACT_TAIL_PIPE="
             f"{int(SINGLE_LAUNCH_W13_ACT_TAIL_PIPE)}"
+        ),
+        (
+            "-DK_SINGLE_LAUNCH_DEP_READY_TAIL="
+            f"{int(SINGLE_LAUNCH_DEP_READY_TAIL)}"
         ),
         (
             "-DK_SINGLE_LAUNCH_W13_N64_TAIL="

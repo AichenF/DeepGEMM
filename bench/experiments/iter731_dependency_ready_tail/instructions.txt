@@ -1,0 +1,128 @@
+#### 2. Concept: one worker per SM + a software scheduler
+
+Instead of launching one block per output tile, a persistent GEMM kernel:
+
+- Launches **~one worker CTA per SM** (or per “worker slot”).
+- Each CTA computes **multiple** output tiles \((m,n)\) selected by a **software scheduler**.
+
+This is most natural if you already have a warp-specialized (producer/consumer) kernel for a single tile.
+
+#### 4. Scheduler interface (what you need for correctness)
+
+You need a function that maps a worker index to a sequence of tiles:
+
+```cpp
+struct Schedule {
+  __device__ Schedule(int M, int N, int worker_idx, int num_workers);
+  // returns false when no work remains
+  __device__ bool next(int& block_m, int& block_n);
+};
+```
+
+Correctness properties your scheduler must satisfy:
+
+- **Exactly-once coverage**: every output tile is produced exactly once (no duplicates, no missing tiles).
+- **Deterministic iteration**: if both producer and consumers call `schedule.next(...)`, they must see the **same tile sequence** (or you must centralize scheduling so they stay consistent).
+- **Termination**: all warpgroups must agree on when work is finished (avoid producer waiting forever on `empty[]` after consumers stop, or consumers waiting forever on `full[]` after producer stops).
+
+#### 8. Critical tips / common failure modes
+
+- [ ] Grid uses `NUM_WORKERS` (≈ SM count or grouping-friendly constant), not `(M/BM)*(N/BN)`.
+- [ ] You have a scheduler that covers all tiles exactly once.
+- [ ] Queue/barriers are initialized once per CTA and reused across scheduled tiles.
+- [ ] Producer uses `(block_m, block_n)` from schedule for its TMA row/col offsets.
+- [ ] Consumers store to the scheduled tile (not `blockIdx.x` mapping).
+- [ ] Store mapping uses warpgroup-local indices (`tid = threadIdx.x % 128`).
+- [ ] If using multi-consumer, each consumer writes a disjoint slice of the output tile.
+- [ ] The producer path does not “run ahead forever”: if consumers terminate early, producer must not keep writing slots that will never be released (design your termination so both sides complete).
+- [ ] Do not reset parity/queue state incorrectly when moving to the next scheduled tile (if you keep a ring buffer across tiles, reset indices consistently for both producer and consumers).
+- [ ] If your design calls `schedule.next(...)` separately in producer and consumer paths, ensure both paths observe the same sequence; otherwise, have a single scheduler owner (e.g., producer publishes `(block_m, block_n)` via shared memory).
+
+
+#### 2. Concept: phases, parity, and tx-count
+
+An `mbarrier` phase completes when:
+
+- arrival count reaches 0, and
+- tx-count reaches 0
+
+We reuse each slot across many phases. The **parity bit** tells you which phase you’re waiting for.
+
+#### 7. Critical tips / common failure modes
+
+- [ ] `full[]` and `empty[]` are `.b64` aligned to 8 bytes in shared memory.
+- [ ] Barriers are initialized exactly once per block before use.
+- [ ] Parity bit `p` flips consistently on slot reuse (commonly on `qidx` wrap).
+- [ ] `full[]` expected arrivals is **1** (producer only); consumers do not call `arrive()` on it.
+- [ ] `empty[]` expected arrivals equals `num_consumers` and **exactly one thread per consumer warpgroup** calls `arrive()` per slot.
+- [ ] Producer calls `expect_bytes(full[q], bytes_total)` **before** issuing all copies linked to `full[q]`.
+- [ ] The sum of copy bytes linked to `full[q]` equals `bytes_total`.
+- [ ] Do not mix CUDA barrier objects with `mbarrier` in the same queue protocol.
+- [ ] Do not reinitialize `mbarrier` objects per tile or per K-iteration; reuse phases via parity.
+- [ ] If results “sometimes pass, sometimes fail”, suspect: wrong byte count, wrong parity flip, or tensor-map addressability (tma pointer not in device memory).
+- [ ] Store mapping uses warpgroup-local indexing (`tid = threadIdx.x % 128`) when writing WGMMA fragments.
+
+
+## Performance Considerations
+
+### Occupancy
+- Persistent kernels should launch enough blocks to occupy all SMs
+- Too few blocks = underutilization
+- Too many blocks = scheduling overhead
+
+### Shared Memory
+- Problem visitor may need shared memory for schedule prefetch
+- Must not conflict with mainloop/epilogue shared memory
+- Use union to overlay non-concurrent allocations
+
+### Register Pressure
+- Problem visitor adds registers for indices and state
+- Keep visitor state minimal
+- Consider spilling to shared memory if register-bound
+
+### Memory Bandwidth
+- Loading pointer arrays and strides adds global memory traffic
+- Amortize by processing multiple tiles per problem fetch
+- Prefetch problem info to shared memory when possible
+
+### Common Anti-Patterns (Empirically Confirmed Regressions)
+
+| Anti-Pattern | Regression | Why |
+|-------------|-----------|-----|
+| `cudaLaunchKernel` replacing `cuLaunchKernelEx` | -15 to -30% | Loses programmatic serialization |
+| Device global + `cudaMemcpyAsync` per call | -10 to -60% | H2D memcpy overhead exceeds benefit |
+| pybind11 / torch extension for launch | -8 to -540% | Python/C++ bridging overhead |
+| BLOCK_N=64 (doubling tile count) | -10 to -21% | Per-tile overhead increase |
+| Reducing NUM_STAGES below 6 | -2 to -7% | Less TMA/MMA overlap |
+| Dual-path epilogue (full-tile + partial) | -2 to -4% | Register pressure from code duplication |
+
+
+#### 1. Motivation: overlap TMA loads with tensor-core compute
+
+TMA loads (global → shared) have latency. If a single warpgroup does:
+
+- load A/B tile
+- wait for completion
+- run WGMMA
+
+then WGMMA execution is often blocked by loads.
+
+Warp specialization turns the kernel into a producer/consumer pipeline:
+
+- **Producer warpgroup** keeps loading upcoming tiles into a shared-memory ring buffer.
+- **Consumer warpgroup(s)** keep running WGMMA as soon as tiles are ready.
+
+With `QSIZE > 1`, producer and consumers can run mostly independently, hiding load latency.
+
+#### 2. Concept: warpgroups + a shared-memory ring buffer
+
+Warp specialization is a **producer/consumer pipeline inside one CTA** that overlaps:
+
+- **Producer warpgroup**: issues TMA loads (global → shared) into a ring buffer.
+- **Consumer warpgroup(s)**: waits for ready tiles, runs WGMMA, then releases ring-buffer slots.
+
+Baseline (single warpgroup) is:
+
+- load A/B → wait → compute → repeat
+
+Warp specialization decouples the stages so loads can run ahead of compute.
