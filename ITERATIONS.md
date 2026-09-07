@@ -18167,3 +18167,28 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/iter732d_tp_tile_ws_resources_20260907.log` and
   `bench/results/iter732e_tp_tile_ws_layout_fix_tp4_m8_smoke_20260907.log`, and
   `bench/results/iter732f_tp_tile_ws_flagoff_local_m8_20260907.log`.
+
+## Iteration 733 — retarget AKO and establish a strict scheme-A baseline
+
+- Replaced the stale eight-rank/H6144 AKO entry with the current TP4 V4-Flash
+  paired benchmark.  The wrapper now runs the isolated `tp-tile-ws` candidate
+  against the selected multi-kernel control for all five required M values,
+  under CUDA Graph with an excluded 256 MiB L2 clear before every replay.  It
+  emits AKO `COMPILED/CORRECT/RUNTIME/REF_RUNTIME/SPEEDUP` fields and snapshots
+  the actual in-tree candidate sources.
+- Persisted the user's scheme-A continuation in `HINTS.md`: retain one
+  persistent business kernel, keep the W13-to-W2 FP8 intermediate in
+  registers/shared memory, and require the approved W2-BF16 then weighted-k6
+  numerical boundary before performance tuning.
+- Baseline protocol: physical GPUs 1-4, random routes seed 20260902,
+  replay-paired candidate/control ordering, two warmups, and 2x5 samples per M.
+  Control/candidate medians in milliseconds are M8 `0.072288/0.127344`, M16
+  `0.114960/0.194560`, M32 `0.178112/0.299936`, M64
+  `0.250800/0.416400`, and M128 `0.307856/0.524864`.  Geometric means are
+  `0.162778/0.276773 ms`; candidate/control is `1.7003x` and AKO speedup is
+  `0.588129x`.
+- `COMPILED=True`, but `CORRECT=False`: every loose experimental acceptance
+  passes while every strict final all-reduce gate fails with the known local
+  math signature.  This run confirms that the first AKO action must be a
+  numerical-boundary repair, not performance tuning on the invalid result.
+- Evidence: `trajectory/baseline/_bench_output.txt`.

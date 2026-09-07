@@ -86,3 +86,24 @@
 - Reuse the current canonical MXFP4 weight adapters, prequantized FP8 input,
   workspace, collective helpers, correctness oracles, and cold-L2 CUDA-Graph
   benchmark.  Keep TP4 as the performance target and require TP8 run-through.
+
+## 2026-09-08 scheme-A AKO continuation (from the user's latest prompt)
+- Continue from the approved TP tile-warp-specialized scheme A and its
+  default-off `tp-tile-ws` implementation; do not replace it with the older
+  multi-kernel, EPW-boundary, or global-FP8-intermediate designs merely to
+  obtain an easier speedup.
+- Use the AKO loop for every optimization: establish a correctness-qualified
+  baseline, profile, change one coherent direction, run the paired cold-L2
+  benchmark, immediately append `ITERATIONS.md`, and immediately commit with
+  `aichenf <aichenf@nvidia.com>` as both author and committer.
+- Correctness precedes performance.  The loose experimental
+  `candidate_accept` gate is not sufficient: restore the approved numerical
+  boundary in which SwiGLU is quantized without route weights, W2 forms a
+  per-route BF16 result, and `topk_weight * 1.5` is applied only during the
+  fixed-order local k=6 reduction.  Do not optimize the current ~3.6% relative
+  L2 signature as though it were a valid baseline.
+- The invariant remains one persistent business-kernel launch per TP rank,
+  with W13 -> SwiGLU/FP8 -> W2 -> local route reduction -> embedded all-reduce
+  and cleanup.  The FP8 W13-to-W2 intermediate must remain in registers/shared
+  memory.  Temporary FP32 W2 partial scratch may be reduced or eliminated by
+  later iterations, but no new timed helper kernel is allowed.
