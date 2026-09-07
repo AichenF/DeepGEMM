@@ -861,9 +861,21 @@ def main() -> None:
         if use_native:
             assert candidate_case.native_local_output is not None
             native_local_raw = candidate_case.native_local_output.clone()
+            native_output_is_scaled = bool(
+                native_kernel
+                and getattr(
+                    native_kernel,
+                    "NATIVE_LOCAL_OUTPUT_INCLUDES_ROUTED_SCALE",
+                    False,
+                )
+            )
             native_local_scaled = (
-                native_local_raw.float() * custom.ROUTED_SCALING_FACTOR
-            ).to(torch.bfloat16)
+                native_local_raw
+                if native_output_is_scaled
+                else (
+                    native_local_raw.float() * custom.ROUTED_SCALING_FACTOR
+                ).to(torch.bfloat16)
+            )
             local_reference = (
                 candidate_case.make_reference_case().run_local().clone()
             )
@@ -877,9 +889,11 @@ def main() -> None:
             assert candidate_case.graph_output is not None
             native_nccl_reference = native_local_raw.clone()
             dist.all_reduce(native_nccl_reference, group=nccl_group)
-            native_nccl_reference = (
-                native_nccl_reference.float() * custom.ROUTED_SCALING_FACTOR
-            ).to(torch.bfloat16)
+            if not native_output_is_scaled:
+                native_nccl_reference = (
+                    native_nccl_reference.float()
+                    * custom.ROUTED_SCALING_FACTOR
+                ).to(torch.bfloat16)
             native_embedded_comm_check = tensor_comparison_metrics(
                 candidate_case.graph_output,
                 native_nccl_reference,

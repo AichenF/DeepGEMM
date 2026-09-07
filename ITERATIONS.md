@@ -18192,3 +18192,30 @@ maximum rank latency of a full CUDA-Graph replay.
   math signature.  This run confirms that the first AKO action must be a
   numerical-boundary repair, not performance tuning on the invalid result.
 - Evidence: `trajectory/baseline/_bench_output.txt`.
+
+## Iteration 734 — move route weighting to the approved W2-BF16 boundary
+
+- Removed route weights from the CTA-local SwiGLU/FP8 values and their amax.
+  The final in-kernel reduction now sums all K128 slice partials for one route
+  in FP32, rounds that W2 route value to BF16, multiplies by
+  `topk_weight * 1.5`, and accumulates slots in fixed k6 order.  The embedded
+  multicast/NVLS helpers skip their historical extra 1.5 factor for this
+  candidate only.  Benchmark diagnostics were updated to recognize that its
+  local output is already routed-scaled.
+- Added the relevant Hopper epilogue-fusion and WGMMA verification extracts to
+  the checked-in optimization instructions before changing the kernel.
+- AKO TP4 cold-L2 result remains `COMPILED=True`, `CORRECT=False`.  The
+  communication comparison improves to the control's own error range
+  (`0.99999553-0.99999564` cosine and `0.00296-0.00299` relative L2), proving
+  that the 1.5 placement in the collective is repaired.  However, local output
+  versus the multi-kernel reference remains at `0.03544-0.03648` relative L2,
+  and final output remains at `0.03527-0.03589`; the hypothesis that early
+  route weighting caused the dominant discrepancy is falsified.
+- Control/candidate medians in milliseconds are M8 `0.072288/0.131552`, M16
+  `0.115152/0.204640`, M32 `0.178128/0.318000`, M64
+  `0.250704/0.452432`, and M128 `0.307344/0.584400`.  Geometric means are
+  `0.162769/0.295771 ms`; the correctness repair is `1.8171x` slower than
+  control and about 6.9% slower than iteration 733's candidate.  It is not a
+  performance winner, but is retained as the required numerical ordering while
+  the remaining local-math discrepancy is isolated.
+- Evidence: `trajectory/iter-734/_bench_output.txt`.

@@ -1833,10 +1833,7 @@
                                 float u0 = final_accum[accum_offset + 2];
                                 clamp_gate(g0);
                                 clamp_up(u0);
-                                const float weight_0 = *l1_topk_weights_buffer
-                                    .get_data_buffer(m_idx + token_0)
-                                    .template get_base_ptr<float>();
-                                v0 = silu(g0) * u0 * weight_0;
+                                v0 = silu(g0) * u0;
                                 swap_v0[half][i] = v0;
                                 v0_amax = cute::max(v0_amax, cute::abs(v0));
                             }
@@ -1847,10 +1844,7 @@
                                 float u1 = final_accum[accum_offset + 3];
                                 clamp_gate(g1);
                                 clamp_up(u1);
-                                const float weight_1 = *l1_topk_weights_buffer
-                                    .get_data_buffer(m_idx + token_1)
-                                    .template get_base_ptr<float>();
-                                v1 = silu(g1) * u1 * weight_1;
+                                v1 = silu(g1) * u1;
                                 swap_v1[half][i] = v1;
                                 v1_amax = cute::max(v1_amax, cute::abs(v1));
                             }
@@ -2247,9 +2241,11 @@
         // dispatch may now safely clean workspace state.
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
 
-        // Ordered local reduction of the disjoint K128 slice partials.  Route
-        // weights were folded before FP8 quantization, so this loop performs
-        // only the slice and fixed-k6 sums. Invalid top-k slots are skipped.
+        // Ordered local reduction of the disjoint K128 slice partials.  Match
+        // the public numerical boundary: first accumulate the full W2 K for
+        // one route in FP32, round that route result to BF16, then apply
+        // topk_weight * 1.5 and advance to the next slot in fixed k6 order.
+        // Invalid top-k slots are skipped.
         auto* local_output = reinterpret_cast<__nv_bfloat16*>(y);
         const uint32_t global_math_thread =
             sm_idx * kNumEpilogueThreads + epilogue_thread_idx;
@@ -2263,22 +2259,29 @@
             const uint32_t hidden_idx = output_idx % kHidden;
             float reduced = 0.0f;
             #pragma unroll
-            for (uint32_t slice_idx = 0;
-                 slice_idx < kNumIntermediateSlices; ++ slice_idx) {
-                #pragma unroll
-                for (uint32_t slot_idx = 0;
-                     slot_idx < kNumTopk; ++ slot_idx) {
-                    const int64_t expert_idx = __ldg(
-                        input_topk_idx_buffer.get_base_ptr<int64_t>() +
-                        token_idx * kNumTopk + slot_idx);
-                    if (expert_idx >= 0) {
+            for (uint32_t slot_idx = 0;
+                 slot_idx < kNumTopk; ++ slot_idx) {
+                const uint32_t route_idx = token_idx * kNumTopk + slot_idx;
+                const int64_t expert_idx = __ldg(
+                    input_topk_idx_buffer.get_base_ptr<int64_t>() + route_idx);
+                if (expert_idx >= 0) {
+                    float route_value = 0.0f;
+                    #pragma unroll
+                    for (uint32_t slice_idx = 0;
+                         slice_idx < kNumIntermediateSlices; ++ slice_idx) {
                         const uint64_t partial_idx =
                             (((static_cast<uint64_t>(slice_idx) * kNumTopk +
                                slot_idx) * kNumMaxTokensPerRank + token_idx) *
                                  kHidden) +
                             hidden_idx;
-                        reduced += w2_partials[partial_idx];
+                        route_value += w2_partials[partial_idx];
                     }
+                    const float route_weight = __ldg(
+                        input_topk_weights_buffer.get_base_ptr<float>() +
+                        route_idx) * 1.5f;
+                    reduced += __bfloat162float(
+                                   __float2bfloat16_rn(route_value)) *
+                               route_weight;
                 }
             }
             local_output[output_idx] = __float2bfloat16_rn(reduced);

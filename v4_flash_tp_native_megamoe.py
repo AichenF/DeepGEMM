@@ -43,6 +43,11 @@ NATIVE_H20_EXACT_OUTER = (
 NATIVE_TP_TILE_WS = (
     os.environ.get("V4_NATIVE_TP_TILE_WS", "0") == "1"
 )
+# Native production historically applies the routed scaling factor inside its
+# collective tail.  Scheme A restores the public W2-BF16/weighted-k6 boundary,
+# so its local output already includes that factor and the tail must not apply
+# it a second time.
+NATIVE_LOCAL_OUTPUT_INCLUDES_ROUTED_SCALE = NATIVE_TP_TILE_WS
 NATIVE_SKIP_CLEANUP_GRID_SYNC = (
     os.environ.get("V4_NATIVE_SKIP_CLEANUP_GRID_SYNC", "0") == "1"
 )
@@ -795,7 +800,7 @@ __device__ __forceinline__ void native_multicast_push(
     static_assert(kWorld == 4 || kWorld == 8);
     constexpr int kHidden = 4096;
     constexpr int kVecsPerToken = kHidden / 8;
-    constexpr float kRoutedScale = 1.5f;
+    constexpr float kRoutedScale = K_NATIVE_TP_TILE_WS ? 1.0f : 1.5f;
     const int global_tid = linear_block_idx * kThreads + threadIdx.x;
     const int global_threads = linear_grid_dim * kThreads;
     const int num_vecs = static_cast<int>(num_tokens) * kVecsPerToken;
@@ -892,7 +897,7 @@ __device__ __forceinline__ void native_nvls_pull(
     constexpr int kHidden = 4096;
     constexpr int kVecsPerToken = kHidden / 8;
     constexpr int kSemaphoreBytes = 128;
-    constexpr float kRoutedScale = 1.5f;
+    constexpr float kRoutedScale = K_NATIVE_TP_TILE_WS ? 1.0f : 1.5f;
     const int global_tid = linear_block_idx * kThreads + threadIdx.x;
     const int global_threads = linear_grid_dim * kThreads;
     const int num_vecs = static_cast<int>(num_tokens) * kVecsPerToken;
