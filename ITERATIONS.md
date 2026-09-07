@@ -18105,3 +18105,65 @@ maximum rank latency of a full CUDA-Graph replay.
   the agreed stop condition.
 - Evidence: `evidence/iter731_dependency_ready_tail_rejection.md` and raw
   `bench/results/iter731{a,b,c,d,e}_dep_ready*20260907.log` files.
+
+## Iteration 732 — first TP tile-warp-specialized persistent MegaMoE
+
+- Added the default-off `NATIVE_TP_TILE_WS` experiment.  One launch now owns
+  TP-local route packing, W13, SwiGLU plus FP8 quantization, W2, route-weighted
+  combine, and the embedded all-reduce.  It launches 78 persistent 384-thread
+  CTAs (one CTA/SM): two dispatch/route warps, separate A and B loader warps,
+  and two four-warp WGMMA math warpgroups.
+- Replaced the EPW boundary between W13 and W2 with a global fine-grained
+  microtask queue over `(routed BM8 block, intermediate K128 slice)`.  Each
+  claimed task computes its W13 N256 tile, writes the SwiGLU/FP8 tile directly
+  to CTA shared memory, and immediately consumes it in all sixteen W2 N256
+  tiles.  The configured path never materializes the FP8 W13-to-W2
+  intermediate in global memory.  Cross-CTA reduction uses explicitly allowed
+  disjoint FP32 W2 slice partials in global scratch, followed by an in-kernel
+  slice/route sum and the existing multicast-push or NVLS-pull communication
+  tail.
+- Fresh SM90a JIT succeeds.  Both TP4 and TP8 specializations admit exactly one
+  active CTA/SM.  `cuobjdump` reports 168 registers/thread, 1,024 bytes static
+  shared memory, zero fixed local memory, and 64/128-byte stack frames for
+  TP4/TP8; the launch requests 102,400 bytes dynamic shared memory.  FP32
+  scratch is 50.33 MB (48 MiB) for TP4 and 25.17 MB (24 MiB) for TP8; total
+  workspaces are 80.02 MB and 53.28 MB respectively.
+- TP4 CUDA-Graph cold-L2 screen used physical GPUs 1-4, random routes with seed
+  20260902, an excluded 256 MiB clear immediately before every replay, two
+  warmups, and 2x5 timed samples per implementation/M.  Multi-kernel/control
+  versus tile-WS medians in milliseconds are M8 `0.071920/0.126736`, M16
+  `0.114944/0.193344`, M32 `0.177712/0.299280`, M64
+  `0.250160/0.418448`, and M128 `0.309136/0.523568`.  Geometric means are
+  `0.162586/0.276175 ms`: tile-WS is `1.6986x` slower.
+- Every TP4 result is finite.  Candidate local-scaled cosine is
+  `0.999351-0.999366` with `0.0356-0.0361` relative L2, matching the inherited
+  native quantized-math signature rather than strict control equivalence.
+  Therefore the benchmark's loose experimental admission is true, but the
+  strict final `allreduce_ok` gate is false at every M.  The embedded AR versus
+  NCCL over the candidate's own local output is substantially closer
+  (`0.9999915-0.9999917` cosine, `0.00408-0.00412` relative L2), so the dominant
+  discrepancy is local math/dataflow rather than communication.
+- TP8 M8 local-body qualification succeeds with a finite output, exact route
+  byte/scale/weight materialization, finite `[2,6,128,4096]` partial scratch,
+  and a stable output hash.  Full eight-rank communication was intentionally
+  not run because GPUs 5-7 were shared; this is a local TP8 run-through only.
+- A pre-commit ABI audit moved the new explicit scratch allocation after the
+  legacy combine area, preserving every device-derived workspace offset.  A
+  post-fix TP4 M8 four-rank CUDA-Graph smoke reproduces the exact prior
+  correctness metrics and completes without a hang or CUDA error; its two
+  timing samples are qualification-only and do not replace the all-M screen.
+  With the experiment disabled, the scratch argument aliases the legacy
+  combine allocation: the production workspace remains exactly 29,684,992
+  bytes and its local M8 output hash is unchanged.
+- Decision: retain this implementation as a default-off structural experiment,
+  but reject it as a performance or strict-accuracy winner.  The first targets
+  for a future repair are eliminating the 50 MiB TP4 FP32 scratch round trip
+  and recovering more than one resident CTA/SM without spilling the FP8
+  intermediate.
+- Evidence:
+  `bench/results/iter732a_tp_tile_ws_tp4_m8_smoke_20260907.log`,
+  `bench/results/iter732b_tp_tile_ws_tp4_allm_cold_screen_20260907.log`, and
+  `bench/results/iter732c_tp_tile_ws_tp8_local_m8_20260907.log`, plus
+  `bench/results/iter732d_tp_tile_ws_resources_20260907.log` and
+  `bench/results/iter732e_tp_tile_ws_layout_fix_tp4_m8_smoke_20260907.log`, and
+  `bench/results/iter732f_tp_tile_ws_flagoff_local_m8_20260907.log`.

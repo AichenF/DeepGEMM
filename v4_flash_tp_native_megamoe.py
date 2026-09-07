@@ -40,6 +40,9 @@ NATIVE_TWO_CTA_PER_SM = (
 NATIVE_H20_EXACT_OUTER = (
     os.environ.get("V4_NATIVE_H20_EXACT_OUTER", "0") == "1"
 )
+NATIVE_TP_TILE_WS = (
+    os.environ.get("V4_NATIVE_TP_TILE_WS", "0") == "1"
+)
 NATIVE_SKIP_CLEANUP_GRID_SYNC = (
     os.environ.get("V4_NATIVE_SKIP_CLEANUP_GRID_SYNC", "0") == "1"
 )
@@ -121,6 +124,20 @@ if NATIVE_H20_EXACT_OUTER and (
     raise ValueError(
         "V4_NATIVE_H20_EXACT_OUTER requires shared-memory dequant, one "
         "CTA/SM, original E8M0 scales, and one active dispatch warp"
+    )
+if NATIVE_TP_TILE_WS and (
+    NATIVE_H20_EXACT_OUTER
+    or not NATIVE_REGISTER_DEQUANT
+    or not NATIVE_RS_K128_BATCH
+    or NATIVE_TWO_CTA_PER_SM
+    or not NATIVE_NORMALIZED_WEIGHT_SCALE
+    or not NATIVE_DUAL_ACTIVE_DISPATCH
+    or not NATIVE_TP_LOCAL_ROUTE_BUILD
+    or not NATIVE_TP_LOCAL_BARRIER_FASTPATH
+):
+    raise ValueError(
+        "V4_NATIVE_TP_TILE_WS requires the isolated one-CTA/SM TP-local "
+        "register-dequant K128 configuration"
     )
 if NATIVE_RS_HALF_PREFETCH and not (
     NATIVE_REGISTER_DEQUANT and NATIVE_RS_K128_BATCH
@@ -222,6 +239,7 @@ class NativeWorkspace:
     l1_topk_weights: torch.Tensor
     l2_acts: torch.Tensor
     l2_acts_sf: torch.Tensor
+    w2_partials: torch.Tensor
     combine: torch.Tensor
 
     def load_inputs(
@@ -282,11 +300,34 @@ def allocate_workspace(
         (intermediate_per_rank // 64, PADDED_SF_POOL_TOKENS),
         torch.float32,
     )
+    # Keep every legacy body-derived workspace view at its original offset.
+    # The tile-warp-specialized scratch is an explicit kernel argument rather
+    # than part of deep_gemm::layout::Workspace, so it must be appended after
+    # the legacy combine area.
     reserve(
         "combine",
         (TOP_K, MAX_TOKENS, HIDDEN),
         torch.bfloat16,
     )
+    # The tile-warp-specialized experiment never spills its FP8 W13 output.
+    # It does materialize one FP32 W2 partial for each local K128 slice so
+    # independent persistent CTAs can finish without a cross-CTA shared-memory
+    # lifetime.  For the default path, alias an unused one-float argument view
+    # to the start of combine so its allocation and every legacy offset remain
+    # bit-for-bit unchanged; that specialization never dereferences it.
+    if NATIVE_TP_TILE_WS:
+        reserve(
+            "w2_partials",
+            (intermediate_per_rank // 128, TOP_K, MAX_TOKENS, HIDDEN),
+            torch.float32,
+        )
+    else:
+        fields["w2_partials"] = (
+            fields["combine"][0],
+            torch.empty((), dtype=torch.float32).element_size(),
+            torch.float32,
+            (1,),
+        )
 
     storage = torch.zeros((offset,), dtype=torch.uint8, device=device)
 
@@ -305,6 +346,7 @@ def allocate_workspace(
         l1_topk_weights=view("l1_topk_weights"),
         l2_acts=view("l2_acts"),
         l2_acts_sf=view("l2_acts_sf"),
+        w2_partials=view("w2_partials"),
         combine=view("combine"),
     )
 
@@ -589,6 +631,9 @@ _CUDA = r"""
 #endif
 #ifndef K_NATIVE_H20_EXACT_OUTER
 #define K_NATIVE_H20_EXACT_OUTER 0
+#endif
+#ifndef K_NATIVE_TP_TILE_WS
+#define K_NATIVE_TP_TILE_WS 0
 #endif
 #ifndef K_NATIVE_SKIP_CLEANUP_GRID_SYNC
 #define K_NATIVE_SKIP_CLEANUP_GRID_SYNC 0
@@ -918,6 +963,7 @@ v4_flash_tp4_native_megamoe_impl(
         const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weight_scales,
         const float* w13_global_scale,
         const float* w2_global_scale,
+        float* w2_partials,
         __nv_bfloat16* output,
         uint32_t* push_counter,
         uint8_t* push0, uint8_t* push1, uint8_t* push2, uint8_t* push3,
@@ -951,7 +997,8 @@ v4_flash_tp4_native_megamoe_impl(
     // A/B of the otherwise idle second warp.
     constexpr bool kSingleActiveDispatchWarp = !K_NATIVE_DUAL_ACTIVE_DISPATCH;
     constexpr bool kUseMode2RowDecoder = true;
-    constexpr bool kUseInterleavedScheduler = !K_NATIVE_H20_EXACT_OUTER;
+    constexpr bool kUseInterleavedScheduler =
+        K_NATIVE_TP_TILE_WS || !K_NATIVE_H20_EXACT_OUTER;
     constexpr uint32_t kHidden = 4096;
     constexpr uint32_t kIntermediateHidden = kIntermediate;
     constexpr uint32_t kNumTopk = 6;
@@ -968,7 +1015,9 @@ v4_flash_tp4_native_megamoe_impl(
     constexpr uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4;
     constexpr uint32_t kNumTokensPerWarp = 32 / kNumTopk;
     constexpr uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks;
-#if K_NATIVE_H20_EXACT_OUTER
+#if K_NATIVE_TP_TILE_WS
+#include "v4_flash_tp_tile_ws_body.inl"
+#elif K_NATIVE_H20_EXACT_OUTER
 #include "v4_flash_tp_h20_exact_body.inl"
 #else
 #include "v4_flash_tp_native_body.inl"
@@ -1049,6 +1098,7 @@ void run_native(
         torch::Tensor l1_acts_sf,
         torch::Tensor l2_acts,
         torch::Tensor l2_acts_sf,
+        torch::Tensor w2_partials,
         torch::Tensor w13,
         torch::Tensor w2,
         torch::Tensor w13_scale,
@@ -1142,6 +1192,16 @@ void run_native(
     TORCH_CHECK(local_output.scalar_type() == torch::kBFloat16
                     && local_output.numel() == static_cast<int64_t>(tokens) * 4096,
                 "native local output must be BF16 [M,4096]");
+    if constexpr (K_NATIVE_TP_TILE_WS) {
+        const int64_t expected_partials =
+            static_cast<int64_t>(intermediate / 128) * 6 * 128 * 4096;
+        TORCH_CHECK(w2_partials.scalar_type() == torch::kFloat32
+                        && w2_partials.is_cuda()
+                        && w2_partials.is_contiguous()
+                        && w2_partials.numel() == expected_partials,
+                    "tile-WS W2 partials must be contiguous CUDA FP32 "
+                    "[I/128,6,128,4096]");
+    }
     TORCH_CHECK(output.scalar_type() == torch::kBFloat16
                     && output.numel() == local_output.numel(),
                 "native final output must be BF16 [M,4096]");
@@ -1317,6 +1377,7 @@ void run_native(
             tensor_map_l2_weights, tensor_map_l2_weight_scales,
             w13_global_scale.data_ptr<float>(),
             w2_global_scale.data_ptr<float>(),
+            w2_partials.data_ptr<float>(),
             reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
             reinterpret_cast<uint32_t*>(push_counter.data_ptr()),
             push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
@@ -1407,6 +1468,7 @@ void run_native(
     torch::Tensor l1_acts_sf,
     torch::Tensor l2_acts,
     torch::Tensor l2_acts_sf,
+    torch::Tensor w2_partials,
     torch::Tensor w13,
     torch::Tensor w2,
     torch::Tensor w13_scale,
@@ -1449,11 +1511,15 @@ _SOURCE_HASH = hashlib.sha1(
         + hashlib.sha1(
             (REPO_INCLUDE / "v4_flash_tp_h20_exact_body.inl").read_bytes()
         ).hexdigest()
+        + hashlib.sha1(
+            (REPO_INCLUDE / "v4_flash_tp_tile_ws_body.inl").read_bytes()
+        ).hexdigest()
         + str(int(NATIVE_REGISTER_DEQUANT))
         + str(int(NATIVE_RS_K128_BATCH))
         + str(int(NATIVE_RS_K64_COMMIT_GROUPS))
         + str(int(NATIVE_TWO_CTA_PER_SM))
         + str(int(NATIVE_H20_EXACT_OUTER))
+        + str(int(NATIVE_TP_TILE_WS))
         + str(int(NATIVE_SKIP_CLEANUP_GRID_SYNC))
         + str(int(NATIVE_RS_HALF_PREFETCH))
         + str(int(NATIVE_NORMALIZED_WEIGHT_SCALE))
@@ -1481,6 +1547,7 @@ _ext = load_inline(
         f"k64cg{int(NATIVE_RS_K64_COMMIT_GROUPS)}_"
         f"cta2{int(NATIVE_TWO_CTA_PER_SM)}_"
         f"h20eo{int(NATIVE_H20_EXACT_OUTER)}_"
+        f"tws{int(NATIVE_TP_TILE_WS)}_"
         f"scg{int(NATIVE_SKIP_CLEANUP_GRID_SYNC)}_"
         f"hp{int(NATIVE_RS_HALF_PREFETCH)}_"
         f"nws{int(NATIVE_NORMALIZED_WEIGHT_SCALE)}_"
@@ -1525,6 +1592,7 @@ _ext = load_inline(
         ),
         f"-DK_NATIVE_TWO_CTA_PER_SM={int(NATIVE_TWO_CTA_PER_SM)}",
         f"-DK_NATIVE_H20_EXACT_OUTER={int(NATIVE_H20_EXACT_OUTER)}",
+        f"-DK_NATIVE_TP_TILE_WS={int(NATIVE_TP_TILE_WS)}",
         (
             "-DK_NATIVE_SKIP_CLEANUP_GRID_SYNC="
             f"{int(NATIVE_SKIP_CLEANUP_GRID_SYNC)}"
@@ -1611,6 +1679,7 @@ def run_tp4(
         workspace.l1_acts_sf,
         workspace.l2_acts.view(torch.uint8),
         workspace.l2_acts_sf,
+        workspace.w2_partials,
         native_w13,
         native_w2,
         native_s13,
@@ -1678,6 +1747,7 @@ def run_tp8(
         workspace.l1_acts_sf,
         workspace.l2_acts.view(torch.uint8),
         workspace.l2_acts_sf,
+        workspace.w2_partials,
         native_w13,
         native_w2,
         native_s13,
@@ -1729,6 +1799,7 @@ def run_local(
         workspace.l1_acts_sf,
         workspace.l2_acts.view(torch.uint8),
         workspace.l2_acts_sf,
+        workspace.w2_partials,
         native_w13,
         native_w2,
         native_s13,

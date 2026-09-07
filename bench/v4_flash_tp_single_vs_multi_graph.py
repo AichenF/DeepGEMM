@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--candidate",
-        choices=("tp", "native", "h20-exact"),
+        choices=("tp", "native", "h20-exact", "tp-tile-ws"),
         default="tp",
         help="single-launch implementation to compare against the multi-kernel control",
     )
@@ -156,15 +156,20 @@ def main() -> None:
     intermediate_per_rank = custom.INTERMEDIATE // world_size
     torch.manual_seed(args.seed + rank)
     torch.cuda.manual_seed(args.seed + rank)
-    use_native = args.candidate in ("native", "h20-exact")
+    use_native = args.candidate in ("native", "h20-exact", "tp-tile-ws")
     native_kernel = None
     if args.candidate == "native":
         import v4_flash_tp_native_megamoe as native_kernel
     elif args.candidate == "h20-exact":
         import v4_flash_tp_h20_exact_megamoe as native_kernel
+    elif args.candidate == "tp-tile-ws":
+        import v4_flash_tp_tile_ws_megamoe as native_kernel
 
     weights = custom.make_weights(
-        intermediate_per_rank, device, include_native=use_native
+        intermediate_per_rank,
+        device,
+        include_native=use_native,
+        native_kernel_module=native_kernel,
     )
     lut = kernel.make_e2m1_e8m0_lut(device)
     comm = CustomAllReduceV2(cpu_group, device)
@@ -202,6 +207,10 @@ def main() -> None:
                     "h20_exact_outer": bool(
                         native_kernel
                         and getattr(native_kernel, "H20_EXACT_OUTER", False)
+                    ),
+                    "tp_tile_ws": bool(
+                        native_kernel
+                        and getattr(native_kernel, "TP_TILE_WS", False)
                     ),
                     "native_register_dequant": bool(
                         native_kernel
@@ -459,7 +468,9 @@ def main() -> None:
                     ),
                     "control": "selected multi-kernel path from the same source",
                     "candidate": (
-                        "exact H20 outer-pipeline MegaMoE kernel"
+                        "TP tile-warp-specialized MegaMoE kernel"
+                        if args.candidate == "tp-tile-ws"
+                        else "exact H20 outer-pipeline MegaMoE kernel"
                         if args.candidate == "h20-exact"
                         else "native Hopper MegaMoE kernel"
                         if args.candidate == "native"
@@ -499,6 +510,7 @@ def main() -> None:
             lut,
             intermediate_per_rank,
             use_native=use_native,
+            native_kernel_module=native_kernel,
         )
 
         kernel.SINGLE_LAUNCH_TP4 = False
@@ -887,6 +899,7 @@ def main() -> None:
             )
         if (
             use_native
+            and args.candidate != "tp-tile-ws"
             and args.route_pattern == "balanced"
             and m * custom.TOP_K <= custom.NUM_EXPERTS
         ):

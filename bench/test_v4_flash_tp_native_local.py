@@ -10,7 +10,9 @@ import os
 
 import torch
 
-if os.environ.get("V4_NATIVE_TEST_H20_EXACT", "0") == "1":
+if os.environ.get("V4_NATIVE_TEST_TP_TILE_WS", "0") == "1":
+    import v4_flash_tp_tile_ws_megamoe as native
+elif os.environ.get("V4_NATIVE_TEST_H20_EXACT", "0") == "1":
     import v4_flash_tp_h20_exact_megamoe as native
 else:
     import v4_flash_tp_native_megamoe as native
@@ -195,7 +197,16 @@ def main() -> None:
     if args.profile_only:
         print(
             "NATIVE_LOCAL_PROFILE_ONLY "
-            + json.dumps({"m": args.m, "synchronized": True}),
+            + json.dumps(
+                {
+                    "m": args.m,
+                    "tp": args.tp,
+                    "finite": bool(torch.isfinite(output).all()),
+                    "max_abs": float(output.float().abs().max()),
+                    "synchronized": True,
+                },
+                sort_keys=True,
+            ),
             flush=True,
         )
         return
@@ -235,6 +246,34 @@ def main() -> None:
     )
     sf_max_abs = float((pooled_sf - expected_sf).abs().max())
     weight_max_abs = float((pooled_weights - expected_weights).abs().max())
+
+    if getattr(native, "TP_TILE_WS", False):
+        print(
+            "NATIVE_LOCAL_RESULT "
+            + json.dumps(
+                {
+                    "m": args.m,
+                    "tp": args.tp,
+                    "intermediate_per_rank": intermediate,
+                    "finite": bool(torch.isfinite(output).all()),
+                    "max_abs": float(output.float().abs().max()),
+                    "l1_x_mismatch_bytes": x_mismatch_bytes,
+                    "l1_sf_max_abs": sf_max_abs,
+                    "l1_weight_max_abs": weight_max_abs,
+                    "output_sha256": hashlib.sha256(
+                        output.view(torch.uint8).cpu().numpy().tobytes()
+                    ).hexdigest(),
+                    "w2_partials_shape": list(workspace.w2_partials.shape),
+                    "w2_partials_finite": bool(
+                        torch.isfinite(workspace.w2_partials).all()
+                    ),
+                    "workspace_bytes": workspace.storage.numel(),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return
 
     x0 = qx[0].float() * x_scale[0].repeat_interleave(128)
     w13_expert0 = dequant_marlin_weight(w13[0], s13[0])

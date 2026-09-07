@@ -1,0 +1,1 @@
+NATIVE_LOCAL_RESULT {"finite": true, "intermediate_per_rank": 256, "l1_sf_max_abs": 0.0, "l1_weight_max_abs": 0.0, "l1_x_mismatch_bytes": 0, "m": 8, "max_abs": 46080.0, "output_sha256": "f488af75d01c7ed3af428787daba1f785eee778027cd3153e2a3c8f2d775bbab", "tp": 8, "w2_partials_finite": true, "w2_partials_shape": [2, 6, 128, 4096], "workspace_bytes": 53277952}
