@@ -18361,3 +18361,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - Stability evidence: several batches contain multi-millisecond interference on both arms, so the aggregate medians are not clean selection evidence. Candidate minima are `0.138880/0.178240/0.260256/0.363680/0.464000 ms`; even these show no robust improvement over iter742 (`0.122368/0.168432/0.269200/0.356448/0.465344 ms`) and materially regress M8/M16.
 - Diagnosis: doubling consumer WGs does not double useful tile work; it splits each N128 accumulator into two N64 WGMMA streams while keeping the same shared TMA producer and adds 256 CTA-wide participants. The added synchronization/instruction pressure dominates at small M, and the large-M best cases are at most noise-level parity.
 - Decision: REJECT. Four N64 math WGs per CTA are numerically valid but not a performance win. Restore iter742's 156x384 two-N128-WG checkpoint before pausing or attempting a differently structured producer pipeline.
+
+## Post-iteration 750 production restoration
+
+- Restored `v4_flash_tp_tile_ws_body.inl`, `v4_flash_tp_native_megamoe.py`, and `v4_flash_tp_tile_ws_megamoe.py` byte-for-byte to the strict-correct iter742/iter739 winner after rejecting the four-N64-WG experiment.
+- Verified SHA-256 values: body `136757753077f62e9ea0be6971f4360296f27552c4d1957eb3d4b737a186474c`, native launcher `756e58862f4da544031b6b12a7c6b042e8ea8f0e3a2c9f4c5184500caaa48a86`, tile wrapper `63bcc6a144cbcab7482e95fd5263ebb382a78c52334ec91ed01145377d02bb82`.
+- No new timing was claimed: this is an exact source restoration to an already benchmarked checkpoint, not a performance candidate.

@@ -59,6 +59,5 @@ from v4_flash_tp_native_megamoe import *  # noqa: E402,F403
 TP_TILE_WS = True
 TP_TILE_WS_TORCH_EXTENSIONS_DIR = os.environ["TORCH_EXTENSIONS_DIR"]
 TP_TILE_WS_CTA_COUNT = 156
-TP_TILE_WS_THREADS = 640
-TP_TILE_WS_MATH_WARPGROUPS = 4
+TP_TILE_WS_THREADS = 384
 TP_TILE_WS_TASK = "route_bm8_x_intermediate_k128"

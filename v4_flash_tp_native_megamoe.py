@@ -950,8 +950,7 @@ __device__ __forceinline__ void native_nvls_pull(
 }
 
 template <int kIntermediate, int kExpertsPerWave = 16, int kTpWorld = 4>
-CUTLASS_GLOBAL __launch_bounds__(K_NATIVE_TP_TILE_WS ? 640 : 384,
-                                 K_NATIVE_TWO_CTA_PER_SM ? 2 : 1) void
+CUTLASS_GLOBAL __launch_bounds__(384, K_NATIVE_TWO_CTA_PER_SM ? 2 : 1) void
 v4_flash_tp4_native_megamoe_impl(
         void* y,
         int* cumulative_local_expert_recv_stats,
@@ -1009,13 +1008,7 @@ v4_flash_tp4_native_megamoe_impl(
     constexpr uint32_t kNumTopk = 6;
     constexpr uint32_t kNumDispatchThreads = 64;
     constexpr uint32_t kNumNonEpilogueThreads = 64;
-    // Scheme-A splits every BN256 tile over four N64 math warpgroups.  The
-    // two resident CTAs therefore expose eight independent WGMMA consumers
-    // per SM while retaining the inherited dispatch/A-loader/B-loader roles.
-    constexpr uint32_t kNumEpilogueThreads =
-        K_NATIVE_TP_TILE_WS ? 512 : 256;
-    constexpr uint32_t kNumKernelThreads =
-        kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads;
+    constexpr uint32_t kNumEpilogueThreads = 256;
     constexpr uint32_t L1_SHAPE_N = kIntermediateHidden * 2;
     constexpr uint32_t L1_SHAPE_K = kHidden;
     constexpr uint32_t L2_SHAPE_N = kHidden;
@@ -1055,7 +1048,7 @@ v4_flash_tp4_native_megamoe_impl(
     if (use_pull) {
         constexpr int kPullBlocks = 64;
         if (sm_idx < kPullBlocks) {
-            native_nvls_pull<kNumKernelThreads, kTpWorld>(
+            native_nvls_pull<384, kTpWorld>(
                 local_output, pull_input, pull_input_mc, output,
                 pull_sem_local, pull_sem_mc, num_tokens,
                 static_cast<int>(sm_idx), kPullBlocks);
@@ -1065,7 +1058,7 @@ v4_flash_tp4_native_megamoe_impl(
         // 78-CTA push.  Extra compute CTAs leave after the local grid drain.
         constexpr int kPushBlocks = 78;
         if (sm_idx < kPushBlocks) {
-            native_multicast_push<kNumKernelThreads, kTpWorld>(
+            native_multicast_push<384, kTpWorld>(
                 local_output, output, push_counter,
                 push0, push1, push2, push3,
                 push4, push5, push6, push7, push_mc,
@@ -1326,7 +1319,6 @@ void run_native(
     const layout::SymBuffer<1> sym_buffer(ptrs, 0);
     constexpr int kDynamicSmemBytes =
         K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448;
-    constexpr int kThreads = K_NATIVE_TP_TILE_WS ? 640 : 384;
     const auto stream = at::cuda::getCurrentCUDAStream();
     constexpr int kGrid = K_NATIVE_TWO_CTA_PER_SM ? 156 : 78;
     int* native_phase_stamps = nullptr;
@@ -1351,7 +1343,7 @@ void run_native(
         if constexpr (K_NATIVE_TWO_CTA_PER_SM) {
             int active_blocks = 0;
             C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-                &active_blocks, kernel, kThreads, kDynamicSmemBytes));
+                &active_blocks, kernel, 384, kDynamicSmemBytes));
             TORCH_CHECK(
                 active_blocks >= 2,
                 "native two-CTA specialization requires >=2 CTAs/SM, got ",
@@ -1360,7 +1352,7 @@ void run_native(
 
         cudaLaunchConfig_t launch_config{};
         launch_config.gridDim = dim3(kGrid);
-        launch_config.blockDim = dim3(kThreads);
+        launch_config.blockDim = dim3(384);
         launch_config.dynamicSmemBytes = kDynamicSmemBytes;
         launch_config.stream = stream;
         cudaLaunchAttribute launch_attribute{};
@@ -1427,7 +1419,6 @@ void run_native(
 int native_tp4_active_blocks_per_sm(int tokens) {
     constexpr int kDynamicSmemBytes =
         K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448;
-    constexpr int kThreads = K_NATIVE_TP_TILE_WS ? 640 : 384;
     int active_blocks = 0;
     const auto query = [&]<int kLaunchExpertsPerWave>() {
         auto kernel =
@@ -1436,7 +1427,7 @@ int native_tp4_active_blocks_per_sm(int tokens) {
             kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
             kDynamicSmemBytes));
         C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-            &active_blocks, kernel, kThreads, kDynamicSmemBytes));
+            &active_blocks, kernel, 384, kDynamicSmemBytes));
     };
     if constexpr (K_NATIVE_H20_EXACT_OUTER) {
         if (tokens == 128)
@@ -1452,7 +1443,6 @@ int native_tp4_active_blocks_per_sm(int tokens) {
 int native_tp8_active_blocks_per_sm(int tokens) {
     constexpr int kDynamicSmemBytes =
         K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448;
-    constexpr int kThreads = K_NATIVE_TP_TILE_WS ? 640 : 384;
     int active_blocks = 0;
     const auto query = [&]<int kLaunchExpertsPerWave>() {
         auto kernel =
@@ -1461,7 +1451,7 @@ int native_tp8_active_blocks_per_sm(int tokens) {
             kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
             kDynamicSmemBytes));
         C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-            &active_blocks, kernel, kThreads, kDynamicSmemBytes));
+            &active_blocks, kernel, 384, kDynamicSmemBytes));
     };
     if constexpr (K_NATIVE_H20_EXACT_OUTER) {
         if (tokens == 128)

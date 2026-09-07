@@ -126,18 +126,14 @@
     constexpr uint32_t WG_BLOCK_M =
         kSplitMDecodedWeightReuse ? BLOCK_M / 2 : BLOCK_M;
     constexpr uint32_t WG_BLOCK_N =
-        kSplitMDecodedWeightReuse ? BLOCK_N
-                                  : BLOCK_N / kNumEpilogueWarpgroups;
+        kSplitMDecodedWeightReuse ? BLOCK_N : BLOCK_N / 2;
     constexpr uint32_t L1_OUT_BLOCK_N = BLOCK_N / 2;       // post-SwiGLU tile N
     constexpr uint32_t WG_L1_OUT_BLOCK_N = WG_BLOCK_N / 2; // post-SwiGLU per-WG N
     constexpr uint32_t kSwapABTokenChunks = BLOCK_M / 8;
     constexpr uint32_t kSwapABWeightHalves = WG_BLOCK_N / 64;
     constexpr uint32_t kSwapABHalfAccumPerThread = 64 * 64 / 128;
-    DG_STATIC_ASSERT(!kSwapABRequested ||
-                     (WG_BLOCK_N % 64 == 0 &&
-                      kNumEpilogueWarpgroups * WG_L1_OUT_BLOCK_N ==
-                          L1_OUT_BLOCK_N),
-                     "swapAB WGs must cover the complete K128 L1 output");
+    DG_STATIC_ASSERT(!kSwapABRequested || WG_L1_OUT_BLOCK_N == 64,
+                     "swapAB expects BN256 split-N with 64 L1 output columns per WG");
     // Both dispatch warps participate in CTA-wide barriers. Selected plans may
     // use one warp for routing and token pulls, leaving the other warp's send
     // buffer available for an additional GEMM stage.
@@ -238,11 +234,11 @@
         SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE + SMEM_MXFP4_LUT_SIZE + SMEM_CD_SIZE +
         kNumStages * (SMEM_A_SIZE_PER_STAGE + SMEM_PACKED_B_STAGE_SIZE) +
         kNumDecodedBStages * SMEM_B_SIZE_PER_STAGE;
-    // Tile-WS performs the fixed-k6 reduction directly from global FP32
-    // partials and never uses the inherited three-buffer shared combine.
-    // Dropping that dead alias lets four N64 math WGs share the same 100-KiB
-    // budget as the previous two N128 WGs.
-    constexpr uint32_t SMEM_COMBINE_ALIAS_SIZE = 0u;
+    // The post-GEMM top-k combine reuses the prefix as three buffers over two
+    // hidden chunks.  Decoded-B used to make that prefix large implicitly;
+    // keep the alias contract explicit when register dequant removes it.
+    constexpr uint32_t SMEM_COMBINE_ALIAS_SIZE =
+        3u * kNumEpilogueWarps * kHidden * sizeof(nv_bfloat16) / 2u;
     constexpr uint32_t SMEM_BEFORE_BARRIER_SIZE =
         SMEM_GEMM_STORAGE_SIZE > SMEM_COMBINE_ALIAS_SIZE
         ? SMEM_GEMM_STORAGE_SIZE : SMEM_COMBINE_ALIAS_SIZE;
@@ -409,19 +405,16 @@
     constexpr uint32_t kAfterWorkspaceCleanBarrierTag   = 3;
 
     // Register reconfiguration counts (chosen to fit in 64512 reg budget).
-    constexpr uint32_t kNumDispatchRegisters =
-        kNumEpilogueWarpgroups == 4 ? 40 : 48;
+    constexpr uint32_t kNumDispatchRegisters    = 48;
     constexpr uint32_t kNumNonEpilogueRegisters =
-        kNumEpilogueWarpgroups == 4 ? 40 :
-        (kUseInterleavedScheduler ? 64 : 40);
+        kUseInterleavedScheduler ? 64 : 40;
     // Register-dequant reduces shared memory enough for two resident CTAs.
     // 88 registers per math lane also stays below the cubin's 80-reg/thread
     // initial CTA allocation after producer warps deallocate; requesting 96
     // would need 1,024 registers from outside the CTA and can deadlock.
     // The default reference retains 208.
     constexpr uint32_t kNumEpilogueRegisters =
-        kNumEpilogueWarpgroups == 4 ? 48 :
-        (K_NATIVE_TWO_CTA_PER_SM ? 88 : 208);
+        K_NATIVE_TWO_CTA_PER_SM ? 88 : 208;
     DG_STATIC_ASSERT(kNumDispatchRegisters * kNumDispatchThreads +
                      kNumNonEpilogueRegisters * kNumNonEpilogueThreads +
                      kNumEpilogueRegisters * kNumEpilogueThreads <= 64512,
@@ -2151,7 +2144,7 @@
                 // ---------------- W2 EPILOGUE: FP32 K128 slice partial ----------------
                 // Each routed row maps back to a unique (token, top-k slot).
                 // The slice dimension is disjoint across fused microtasks, and
-                // the math WGs own disjoint hidden columns, so no atomics
+                // the two math WGs own disjoint hidden columns, so no atomics
                 // are required here.
                 DG_STATIC_ASSERT(kSwapABRequested && BLOCK_M == 8,
                                  "tile-WS partial store requires BM8 swap-AB");
@@ -2223,7 +2216,6 @@
                     local_expert_idx, 1u, m_block_idx, n_block_idx,
                     pool_block_idx, valid_m, slice_idx, false);
             }
-
         };
         for_each_published_block(run_math_task);
 
