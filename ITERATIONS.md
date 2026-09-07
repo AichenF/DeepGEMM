@@ -17934,3 +17934,27 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Evidence:**
   `bench/results/iter726_h20_exact_outer_local_m8_20260907.log` and
   `docs/plans/2026-09-07-h20-exact-outer-pipeline-design.md`.
+
+### Iteration 726b — M128/resource/SASS gate
+
+- The EPW32 M128 instance executes and produces the same output SHA256
+  (`2e225dc3...4ea5e5`) as the previously qualified production-native M128
+  body, with finite output and the same route-0 weighted-intermediate cosine
+  `0.9996428552` / relative L2 `0.0271052359`.
+- The raw rowwise L1 pool diagnostic is intentionally not a correctness
+  oracle once an expert has multiple routes: concurrent atomic slot claims
+  permute those rows.  Its M128 mismatch signature and final output hash
+  match the old production-native log; the TP4 gate below compares the
+  route-reduced output instead.
+- Both EPW16 and EPW32 cubin entries report REG168, STACK64, static SHARED1024
+  and LOCAL0.  With 232,448 bytes of dynamic shared memory, the CUDA occupancy
+  API reports exactly one resident CTA/SM for both, as required.
+- SASS contains both exact specializations, 16 QGMMAs and 80 Mode2 sign-fold
+  `LOP3.LUT ... 0xf8` instructions per entry.  This confirms the shared
+  MXFP4 Mode2 path survived lowering rather than silently selecting RS.
+- **Status:** M8/M128 local, resource, and machine-code gates pass; proceed
+  to the TP4 end-to-end paired graph.
+- **Evidence:** `bench/results/iter726b_h20_exact_outer_local_m128_20260907.log`,
+  `bench/results/iter726b_h20_exact_outer_resources_20260907.log`,
+  `bench/results/iter726b_h20_exact_outer_cuobjdump_resources_20260907.log`,
+  and `bench/results/iter726b_h20_exact_outer_full_20260907.sass`.

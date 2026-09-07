@@ -1,0 +1,16 @@
+
+Fatbin elf code:
+================
+arch = sm_90a
+code version = [1,7]
+host = linux
+compile_size = 64bit
+identifier = /tmp/torch_ext_v4_tp/v4tp_native_megamoe_rd0_kb0_k64cg0_cta20_h20eo1_scg0_hp0_nws0_swc0_swt0_twt0_l1w10_l1wn0_dad0_tlb1_tld0_tlc0_tlr1_tlp1_pst0_fgs0_fw130_fw20_5ab11de08af1387a78c6/cuda.cu
+
+Resource usage:
+ Common:
+  GLOBAL:13 CONSTANT[4]:104 CONSTANT[3]:32
+ Function _ZN9deep_gemm32v4_flash_tp4_native_megamoe_implILi512ELi16EEEvPvPijNS_6layout9SymBufferILj1EEE14CUtensorMap_stS6_S6_S6_S6_S6_S6_S6_S6_PKfS8_P13__nv_bfloat16PjPhSC_SC_SC_SC_SA_PKhSC_SC_ilb:
+  REG:168 STACK:64 SHARED:1024 LOCAL:0 CONSTANT[2]:24 CONSTANT[0]:2425 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN9deep_gemm32v4_flash_tp4_native_megamoe_implILi512ELi32EEEvPvPijNS_6layout9SymBufferILj1EEE14CUtensorMap_stS6_S6_S6_S6_S6_S6_S6_S6_PKfS8_P13__nv_bfloat16PjPhSC_SC_SC_SC_SA_PKhSC_SC_ilb:
+  REG:168 STACK:64 SHARED:1024 LOCAL:0 CONSTANT[2]:24 CONSTANT[0]:2425 TEXTURE:0 SURFACE:0 SAMPLER:0
