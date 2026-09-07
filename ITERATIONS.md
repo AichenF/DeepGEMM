@@ -18300,3 +18300,13 @@ maximum rank latency of a full CUDA-Graph replay.
 - Comparison to iter742 candidate: regressions are +25.82%, +33.86%, +14.80%, +20.29%, and +22.15% for M8 through M128; geometric mean regresses 23.22%.
 - Diagnosis: assigning the entire 8×4096 four-slice join to a single last-arriving CTA creates a long low-parallelism tail and stalls that CTA from claiming another GEMM task. Removing three terminal loads per route does not repay this producer-side serialization.
 - Decision: REJECT for selection. Restore iter742; a successor must distribute the join over many resident CTAs or avoid materializing the four partial planes without collapsing producer concurrency.
+
+## Iteration 744 — two-CTA winner phase and NCU audit
+
+- Scope: diagnostic only; restored the exact iter742/iter739 selected body after rejecting iter743 and profiled the actual 156×384, two-CTA-per-SM tile-WS kernel. No performance candidate was selected from profiler timing.
+- Cold phase stamps: M8 route publication / last W13 / last W2 / all GEMM / final reduction / local body = 4.544 / 81.152 / 106.624 / 107.552 / 4.832 / 112.384 us. M128 = 4.256 / 366.560 / 397.952 / 398.816 / 48.096 / 446.912 us.
+- NCU protocol: physical H20 GPU1, M128 TP4-local, exact business-kernel filter, application-owned excluded 256 MiB L2 clear, NCU cache/clock controls disabled, 39 replay passes.
+- NCU result: 156×384 launch, 80 registers/thread, 102.40 KiB dynamic shared memory, two resident CTAs/SM, theoretical and achieved occupancy 37.50%, no fixed local allocation. Duration is 450.34 us under replay; DRAM bandwidth is 2.57 TB/s (52.38% reported DRAM throughput), memory/SM throughput are 67.91%/54.91%.
+- Scheduler/stalls: 6.05 active and 1.13 eligible warps/scheduler, 0.55 issued warp/scheduler/cycle, and 44.97% no-eligible cycles. Not-issued samples are led by long scoreboard 4,391 and barrier 3,759, followed by wait 1,267; the kernel executes 153.97M instructions.
+- Interpretation: two-CTA residency raises bandwidth substantially versus iter737's one-CTA 1.88 TB/s and cuts no-eligible from 60.97% to 44.97%, explaining the accepted 16.7% gain. The remaining M128 deficit is dominated by the full-K N256 W13 stream (last W13 366.6 us), while final reduction is 48.1 us and communication is outside this local profile. Optimize math-WG availability/task shape first; tail work may only provide a secondary gain.
+- Evidence: `results/iter744_tile_ws_twocta_phase_stamps_m8_m128_20260908.log`, `bench/results/iter744_tile_ws_twocta_m128_cold_ncu.log`, and `results/iter744_tile_ws_twocta_m128_cold_ncu_details.log`. Binary report remains outside git due size.

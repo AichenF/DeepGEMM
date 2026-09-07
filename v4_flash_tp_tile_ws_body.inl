@@ -1097,6 +1097,16 @@
                 empty_barriers[s]->arrive();
         };
 
+        const auto notify_l1_ready = [&](const uint32_t& ready_pool_block_idx,
+                                         const uint32_t& ready_n_block_idx) {
+            if (epilogue_warp_idx == 0 and cute::elect_one_sync()) {
+                ptx::red_or_rel_gpu(
+                    workspace.get_l2_arrival_mask_ptr(ready_pool_block_idx),
+                    1ull << ready_n_block_idx);
+            }
+            __syncwarp();
+        };
+
         // WGMMA-output register layout helpers
         const uint32_t row_idx = lane_idx / 4;
         const uint32_t col_idx = lane_idx % 4;
@@ -2128,6 +2138,7 @@
                     __syncwarp();
                     ptx::tma_store_wait<0>();
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
+                    notify_l1_ready(pool_block_idx, n_block_idx);
                 }
             } else {
                 // ---------------- W2 EPILOGUE: FP32 K128 slice partial ----------------
@@ -2205,70 +2216,6 @@
                     local_expert_idx, 1u, m_block_idx, n_block_idx,
                     pool_block_idx, valid_m, slice_idx, false);
             }
-
-            // Publish one coarse dependency per complete routed BM8 block.
-            // `bar.sync` strongly orders every math lane's FP32 partial stores
-            // before lane 0's device-scope acq_rel RMW.  The four slice RMWs
-            // form one release sequence; therefore the last arriver imports
-            // all earlier slice stores before reducing this block.  Reuse the
-            // otherwise dead L2-arrival mask: tile-WS consumes the directly
-            // published microtask stream and does not use the EP L1->L2 mask.
-            ptx::sync_aligned(kNumEpilogueThreads,
-                              kEpilogueFullBarrierIdx);
-            if (epilogue_thread_idx == 0) {
-                const uint64_t arrival_bit = 1ull << slice_idx;
-                uint64_t old_mask;
-                asm volatile(
-                    "atom.acq_rel.gpu.global.or.b64 %0, [%1], %2;"
-                    : "=l"(old_mask)
-                    : "l"(workspace.get_l2_arrival_mask_ptr(pool_block_idx)),
-                      "l"(arrival_bit)
-                    : "memory");
-                *reinterpret_cast<uint32_t*>(smem_cd_base) =
-                    ((old_mask & 0xfull) == (0xfull ^ arrival_bit));
-            }
-            ptx::sync_aligned(kNumEpilogueThreads,
-                              kEpilogueFullBarrierIdx);
-
-            // The last slice CTA rounds each full-K route result to BF16 and
-            // stores that value in slice-0's existing FP32 slot.  This moves
-            // the expensive 4-slice join into the W2 tail without reducing
-            // task population or allocating another global buffer.
-            if (*reinterpret_cast<uint32_t*>(smem_cd_base)) {
-                #pragma unroll
-                for (uint32_t route_row = 0;
-                     route_row < BLOCK_M; ++ route_row) {
-                    if (route_row < valid_m) {
-                        const auto src_metadata =
-                            *workspace.get_token_src_metadata_ptr(
-                                pool_block_idx * BLOCK_M + route_row);
-                        for (uint32_t hidden_idx = epilogue_thread_idx;
-                             hidden_idx < kHidden;
-                             hidden_idx += kNumEpilogueThreads) {
-                            const uint64_t slice0_idx =
-                                ((static_cast<uint64_t>(
-                                      src_metadata.topk_idx) *
-                                      kNumMaxTokensPerRank +
-                                  src_metadata.token_idx) *
-                                     kHidden) +
-                                hidden_idx;
-                            float route_value = 0.0f;
-                            #pragma unroll
-                            for (uint32_t reduce_slice = 0;
-                                 reduce_slice < kNumIntermediateSlices;
-                                 ++ reduce_slice) {
-                                route_value += w2_partials[
-                                    slice0_idx +
-                                    static_cast<uint64_t>(reduce_slice) *
-                                        kNumTopk * kNumMaxTokensPerRank *
-                                        kHidden];
-                            }
-                            w2_partials[slice0_idx] = __bfloat162float(
-                                __float2bfloat16_rn(route_value));
-                        }
-                    }
-                }
-            }
         };
         for_each_published_block(run_math_task);
 
@@ -2332,12 +2279,17 @@
                 const int64_t expert_idx = __ldg(
                     input_topk_idx_buffer.get_base_ptr<int64_t>() + route_idx);
                 if (expert_idx >= 0) {
-                    const uint64_t partial_idx =
-                        ((static_cast<uint64_t>(slot_idx) *
-                              kNumMaxTokensPerRank + token_idx) *
-                             kHidden) +
-                        hidden_idx;
-                    const float route_value = w2_partials[partial_idx];
+                    float route_value = 0.0f;
+                    #pragma unroll
+                    for (uint32_t slice_idx = 0;
+                         slice_idx < kNumIntermediateSlices; ++ slice_idx) {
+                        const uint64_t partial_idx =
+                            (((static_cast<uint64_t>(slice_idx) * kNumTopk +
+                               slot_idx) * kNumMaxTokensPerRank + token_idx) *
+                                 kHidden) +
+                            hidden_idx;
+                        route_value += w2_partials[partial_idx];
+                    }
                     const float route_weight = __ldg(
                         input_topk_weights_buffer.get_base_ptr<float>() +
                         route_idx) * 1.5f;

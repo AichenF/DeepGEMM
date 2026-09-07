@@ -1,0 +1,15 @@
+==WARNING== Note: Running with uncontrolled GPU caches. Profiling results may be inconsistent.
+==WARNING== Note: Running with unmodified GPU clocks. If not controlled otherwise, profiling results may be inconsistent.
+==PROF== Connected to process 333412 (/lustre/raplab/client/xutingz/workspace/miniforge3/bin/python3.12)
+==WARNING== Unable to access the following 6 metrics: ctc__rx_bytes_data_user.sum, ctc__rx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__rx_bytes_data_user.sum.per_second, ctc__tx_bytes_data_user.sum, ctc__tx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__tx_bytes_data_user.sum.per_second.
+
+
+==PROF== Profiling "void deep_gemm::v4_flash_tp4_native_megamoe_impl<(int)512, (int)16, (int)4>(void *, int *, unsigned int, deep_gemm::layout::SymBuffer<(unsigned int)1>, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, const float *, const float *, float *, __nv_bfloat16 *, unsigned int *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, unsigned char *, __nv_bfloat16 *, const unsigned char *, unsigned char *, unsigned char *, int, long, bool)": 0%....50%....100% - 39 passes
+==PROF== Connected to process 333487 (/lustre/raplab/client/xutingz/workspace/miniforge3/bin/python3.12)
+==PROF== Connected to process 333485 (/lustre/raplab/client/xutingz/workspace/miniforge3/bin/python3.12)
+NATIVE_PHASE_STAMPS {"all_gemm_us": 402.976, "combine_only_us": 47.104, "local_body_us": 450.08, "m": 128, "num_ctas": 156, "route_publish_us": 3.936, "w13_ctas": 156, "w13_last_us": 367.488, "w2_ctas": 156, "w2_last_us": 402.08}
+NATIVE_LOCAL_PROFILE_ONLY {"finite": true, "m": 128, "max_abs": 450560.0, "synchronized": true, "tp": 4}
+==PROF== Disconnected from process 333412
+==PROF== Disconnected from process 333485
+==PROF== Disconnected from process 333487
+==PROF== Report: /lustre/raplab/client/xutingz/fac/DeepGEMM_tp/results/iter744_tile_ws_twocta_m128_cold_ncu.ncu-rep
