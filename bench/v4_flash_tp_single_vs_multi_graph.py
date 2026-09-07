@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--candidate",
-        choices=("tp", "native"),
+        choices=("tp", "native", "h20-exact"),
         default="tp",
         help="single-launch implementation to compare against the multi-kernel control",
     )
@@ -156,10 +156,12 @@ def main() -> None:
     intermediate_per_rank = custom.INTERMEDIATE // world_size
     torch.manual_seed(args.seed + rank)
     torch.cuda.manual_seed(args.seed + rank)
-    use_native = args.candidate == "native"
+    use_native = args.candidate in ("native", "h20-exact")
     native_kernel = None
-    if use_native:
+    if args.candidate == "native":
         import v4_flash_tp_native_megamoe as native_kernel
+    elif args.candidate == "h20-exact":
+        import v4_flash_tp_h20_exact_megamoe as native_kernel
 
     weights = custom.make_weights(
         intermediate_per_rank, device, include_native=use_native
@@ -197,6 +199,10 @@ def main() -> None:
                         "BF16-to-FP8 quantization outside timed graphs"
                     ),
                     "native_megamoe": use_native,
+                    "h20_exact_outer": bool(
+                        native_kernel
+                        and getattr(native_kernel, "H20_EXACT_OUTER", False)
+                    ),
                     "native_register_dequant": bool(
                         native_kernel
                         and native_kernel.NATIVE_REGISTER_DEQUANT
@@ -450,8 +456,10 @@ def main() -> None:
                     ),
                     "control": "selected multi-kernel path from the same source",
                     "candidate": (
-                        "native Hopper MegaMoE kernel"
-                        if use_native
+                        "exact H20 outer-pipeline MegaMoE kernel"
+                        if args.candidate == "h20-exact"
+                        else "native Hopper MegaMoE kernel"
+                        if args.candidate == "native"
                         else "TP-specialized MegaMoE single kernel"
                     ),
                 },

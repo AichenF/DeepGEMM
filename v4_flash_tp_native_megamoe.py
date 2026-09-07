@@ -37,6 +37,9 @@ NATIVE_RS_K64_COMMIT_GROUPS = (
 NATIVE_TWO_CTA_PER_SM = (
     os.environ.get("V4_NATIVE_TWO_CTA_PER_SM", "1") == "1"
 )
+NATIVE_H20_EXACT_OUTER = (
+    os.environ.get("V4_NATIVE_H20_EXACT_OUTER", "0") == "1"
+)
 NATIVE_SKIP_CLEANUP_GRID_SYNC = (
     os.environ.get("V4_NATIVE_SKIP_CLEANUP_GRID_SYNC", "0") == "1"
 )
@@ -108,6 +111,16 @@ if NATIVE_TP_LOCAL_DIRECT_COPY and not NATIVE_TP_LOCAL_DISPATCH_FASTPATH:
 if NATIVE_TWO_CTA_PER_SM and not NATIVE_REGISTER_DEQUANT:
     raise ValueError(
         "V4_NATIVE_TWO_CTA_PER_SM requires V4_NATIVE_REGISTER_DEQUANT=1"
+    )
+if NATIVE_H20_EXACT_OUTER and (
+    NATIVE_REGISTER_DEQUANT
+    or NATIVE_TWO_CTA_PER_SM
+    or NATIVE_NORMALIZED_WEIGHT_SCALE
+    or NATIVE_DUAL_ACTIVE_DISPATCH
+):
+    raise ValueError(
+        "V4_NATIVE_H20_EXACT_OUTER requires shared-memory dequant, one "
+        "CTA/SM, original E8M0 scales, and one active dispatch warp"
     )
 if NATIVE_RS_HALF_PREFETCH and not (
     NATIVE_REGISTER_DEQUANT and NATIVE_RS_K128_BATCH
@@ -574,6 +587,9 @@ _CUDA = r"""
 #ifndef K_NATIVE_TWO_CTA_PER_SM
 #define K_NATIVE_TWO_CTA_PER_SM 0
 #endif
+#ifndef K_NATIVE_H20_EXACT_OUTER
+#define K_NATIVE_H20_EXACT_OUTER 0
+#endif
 #ifndef K_NATIVE_SKIP_CLEANUP_GRID_SYNC
 #define K_NATIVE_SKIP_CLEANUP_GRID_SYNC 0
 #endif
@@ -882,7 +898,7 @@ __device__ __forceinline__ void native_tp4_nvls_pull(
     }
 }
 
-template <int kIntermediate>
+template <int kIntermediate, int kExpertsPerWave = 16>
 CUTLASS_GLOBAL __launch_bounds__(384, K_NATIVE_TWO_CTA_PER_SM ? 2 : 1) void
 v4_flash_tp4_native_megamoe_impl(
         void* y,
@@ -912,7 +928,7 @@ v4_flash_tp4_native_megamoe_impl(
         const int64_t push_stride,
         const bool enable_tp) {
     constexpr uint32_t kNumMaxTokensPerRank = 128;
-    constexpr uint32_t kNumExpertsPerWave = 16;
+    constexpr uint32_t kNumExpertsPerWave = kExpertsPerWave;
     // `kNumSMs` is the inherited scheduler's persistent-CTA population.
     // The opt-in resource experiment places two CTAs on each of 78 H20 SMs.
     constexpr uint32_t kNumSMs = K_NATIVE_TWO_CTA_PER_SM ? 156 : 78;
@@ -932,7 +948,7 @@ v4_flash_tp4_native_megamoe_impl(
     // A/B of the otherwise idle second warp.
     constexpr bool kSingleActiveDispatchWarp = !K_NATIVE_DUAL_ACTIVE_DISPATCH;
     constexpr bool kUseMode2RowDecoder = true;
-    constexpr bool kUseInterleavedScheduler = true;
+    constexpr bool kUseInterleavedScheduler = !K_NATIVE_H20_EXACT_OUTER;
     constexpr uint32_t kHidden = 4096;
     constexpr uint32_t kIntermediateHidden = kIntermediate;
     constexpr uint32_t kNumTopk = 6;
@@ -949,7 +965,11 @@ v4_flash_tp4_native_megamoe_impl(
     constexpr uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4;
     constexpr uint32_t kNumTokensPerWarp = 32 / kNumTopk;
     constexpr uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks;
+#if K_NATIVE_H20_EXACT_OUTER
+#include "v4_flash_tp_h20_exact_body.inl"
+#else
 #include "v4_flash_tp_native_body.inl"
+#endif
 
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900) && (__CUDA_ARCH__ < 1000)
     // The last combine store is asynchronous.  Drain it before the local-rank
@@ -1205,20 +1225,8 @@ void run_native_tp4(
     std::array<int64_t, 1> ptrs = {
         reinterpret_cast<int64_t>(workspace.data_ptr<uint8_t>())};
     const layout::SymBuffer<1> sym_buffer(ptrs, 0);
-    auto kernel = v4_flash_tp4_native_megamoe_impl<512>;
     constexpr int kDynamicSmemBytes =
         K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448;
-    C10_CUDA_CHECK(cudaFuncSetAttribute(
-        kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-        kDynamicSmemBytes));
-    if constexpr (K_NATIVE_TWO_CTA_PER_SM) {
-        int active_blocks = 0;
-        C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-            &active_blocks, kernel, 384, kDynamicSmemBytes));
-        TORCH_CHECK(active_blocks >= 2,
-                    "native two-CTA specialization requires >=2 CTAs/SM, got ",
-                    active_blocks);
-    }
     const auto stream = at::cuda::getCurrentCUDAStream();
     constexpr int kGrid = K_NATIVE_TWO_CTA_PER_SM ? 156 : 78;
     int* native_phase_stamps = nullptr;
@@ -1232,59 +1240,96 @@ void run_native_tp4(
                 reinterpret_cast<int*>(push_counter.data_ptr());
         }
     }
-    cudaLaunchConfig_t launch_config{};
-    launch_config.gridDim = dim3(kGrid);
-    launch_config.blockDim = dim3(384);
-    launch_config.dynamicSmemBytes = kDynamicSmemBytes;
-    launch_config.stream = stream;
-    cudaLaunchAttribute launch_attribute{};
-    if constexpr (K_NATIVE_TWO_CTA_PER_SM) {
-        int cooperative_supported = 0;
-        C10_CUDA_CHECK(cudaDeviceGetAttribute(
-            &cooperative_supported, cudaDevAttrCooperativeLaunch,
-            workspace.get_device()));
-        TORCH_CHECK(cooperative_supported != 0,
-                    "native two-CTA specialization requires cooperative launch");
-        launch_attribute.id = cudaLaunchAttributeCooperative;
-        launch_attribute.val.cooperative = 1;
-        launch_config.attrs = &launch_attribute;
-        launch_config.numAttrs = 1;
+    const auto launch = [&]<int kLaunchExpertsPerWave>() {
+        auto kernel =
+            v4_flash_tp4_native_megamoe_impl<512, kLaunchExpertsPerWave>;
+        C10_CUDA_CHECK(cudaFuncSetAttribute(
+            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            kDynamicSmemBytes));
+        if constexpr (K_NATIVE_TWO_CTA_PER_SM) {
+            int active_blocks = 0;
+            C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+                &active_blocks, kernel, 384, kDynamicSmemBytes));
+            TORCH_CHECK(
+                active_blocks >= 2,
+                "native two-CTA specialization requires >=2 CTAs/SM, got ",
+                active_blocks);
+        }
+
+        cudaLaunchConfig_t launch_config{};
+        launch_config.gridDim = dim3(kGrid);
+        launch_config.blockDim = dim3(384);
+        launch_config.dynamicSmemBytes = kDynamicSmemBytes;
+        launch_config.stream = stream;
+        cudaLaunchAttribute launch_attribute{};
+        if constexpr (K_NATIVE_TWO_CTA_PER_SM) {
+            int cooperative_supported = 0;
+            C10_CUDA_CHECK(cudaDeviceGetAttribute(
+                &cooperative_supported, cudaDevAttrCooperativeLaunch,
+                workspace.get_device()));
+            TORCH_CHECK(
+                cooperative_supported != 0,
+                "native two-CTA specialization requires cooperative launch");
+            launch_attribute.id = cudaLaunchAttributeCooperative;
+            launch_attribute.val.cooperative = 1;
+            launch_config.attrs = &launch_attribute;
+            launch_config.numAttrs = 1;
+        }
+        const cudaError_t launch_result = cudaLaunchKernelEx(
+            &launch_config, kernel,
+            local_output.data_ptr(), native_phase_stamps,
+            static_cast<uint32_t>(tokens),
+            sym_buffer,
+            tensor_map_l1_acts, tensor_map_l1_acts_sf,
+            tensor_map_l1_weights, tensor_map_l1_weight_scales,
+            tensor_map_l1_output,
+            tensor_map_l2_acts, tensor_map_l2_acts_sf,
+            tensor_map_l2_weights, tensor_map_l2_weight_scales,
+            w13_global_scale.data_ptr<float>(),
+            w2_global_scale.data_ptr<float>(),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+            reinterpret_cast<uint32_t*>(push_counter.data_ptr()),
+            push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
+            push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
+            reinterpret_cast<uint8_t*>(push_mc_ptr),
+            reinterpret_cast<__nv_bfloat16*>(pull_input.data_ptr()),
+            reinterpret_cast<const uint8_t*>(pull_input_mc_ptr),
+            pull_sem_local.data_ptr<uint8_t>(),
+            reinterpret_cast<uint8_t*>(pull_sem_mc_ptr),
+            rank, push_stride, enable_tp);
+        C10_CUDA_CHECK(launch_result);
+    };
+    if constexpr (K_NATIVE_H20_EXACT_OUTER) {
+        if (tokens == 128)
+            launch.template operator()<32>();
+        else
+            launch.template operator()<16>();
+    } else {
+        launch.template operator()<16>();
     }
-    const cudaError_t launch_result = cudaLaunchKernelEx(
-        &launch_config, kernel,
-        local_output.data_ptr(), native_phase_stamps,
-        static_cast<uint32_t>(tokens),
-        sym_buffer,
-        tensor_map_l1_acts, tensor_map_l1_acts_sf,
-        tensor_map_l1_weights, tensor_map_l1_weight_scales,
-        tensor_map_l1_output,
-        tensor_map_l2_acts, tensor_map_l2_acts_sf,
-        tensor_map_l2_weights, tensor_map_l2_weight_scales,
-        w13_global_scale.data_ptr<float>(),
-        w2_global_scale.data_ptr<float>(),
-        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
-        reinterpret_cast<uint32_t*>(push_counter.data_ptr()),
-        push0.data_ptr<uint8_t>(), push1.data_ptr<uint8_t>(),
-        push2.data_ptr<uint8_t>(), push3.data_ptr<uint8_t>(),
-        reinterpret_cast<uint8_t*>(push_mc_ptr),
-        reinterpret_cast<__nv_bfloat16*>(pull_input.data_ptr()),
-        reinterpret_cast<const uint8_t*>(pull_input_mc_ptr),
-        pull_sem_local.data_ptr<uint8_t>(),
-        reinterpret_cast<uint8_t*>(pull_sem_mc_ptr),
-        rank, push_stride, enable_tp);
-    C10_CUDA_CHECK(launch_result);
 }
 
-int native_tp4_active_blocks_per_sm() {
-    auto kernel = v4_flash_tp4_native_megamoe_impl<512>;
+int native_tp4_active_blocks_per_sm(int tokens) {
     constexpr int kDynamicSmemBytes =
         K_NATIVE_REGISTER_DEQUANT ? 102400 : 232448;
-    C10_CUDA_CHECK(cudaFuncSetAttribute(
-        kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-        kDynamicSmemBytes));
     int active_blocks = 0;
-    C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-        &active_blocks, kernel, 384, kDynamicSmemBytes));
+    const auto query = [&]<int kLaunchExpertsPerWave>() {
+        auto kernel =
+            v4_flash_tp4_native_megamoe_impl<512, kLaunchExpertsPerWave>;
+        C10_CUDA_CHECK(cudaFuncSetAttribute(
+            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            kDynamicSmemBytes));
+        C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &active_blocks, kernel, 384, kDynamicSmemBytes));
+    };
+    if constexpr (K_NATIVE_H20_EXACT_OUTER) {
+        if (tokens == 128)
+            query.template operator()<32>();
+        else
+            query.template operator()<16>();
+    } else {
+        query.template operator()<16>();
+    }
     return active_blocks;
 }
 """
@@ -1319,7 +1364,7 @@ void run_native_tp4(
     int tokens,
     int intermediate,
     bool enable_tp);
-int native_tp4_active_blocks_per_sm();
+int native_tp4_active_blocks_per_sm(int tokens);
 """
 
 _SOURCE_HASH = hashlib.sha1(
@@ -1329,10 +1374,14 @@ _SOURCE_HASH = hashlib.sha1(
         + hashlib.sha1(
             (REPO_INCLUDE / "v4_flash_tp_native_body.inl").read_bytes()
         ).hexdigest()
+        + hashlib.sha1(
+            (REPO_INCLUDE / "v4_flash_tp_h20_exact_body.inl").read_bytes()
+        ).hexdigest()
         + str(int(NATIVE_REGISTER_DEQUANT))
         + str(int(NATIVE_RS_K128_BATCH))
         + str(int(NATIVE_RS_K64_COMMIT_GROUPS))
         + str(int(NATIVE_TWO_CTA_PER_SM))
+        + str(int(NATIVE_H20_EXACT_OUTER))
         + str(int(NATIVE_SKIP_CLEANUP_GRID_SYNC))
         + str(int(NATIVE_RS_HALF_PREFETCH))
         + str(int(NATIVE_NORMALIZED_WEIGHT_SCALE))
@@ -1359,6 +1408,7 @@ _ext = load_inline(
         f"kb{int(NATIVE_RS_K128_BATCH)}_"
         f"k64cg{int(NATIVE_RS_K64_COMMIT_GROUPS)}_"
         f"cta2{int(NATIVE_TWO_CTA_PER_SM)}_"
+        f"h20eo{int(NATIVE_H20_EXACT_OUTER)}_"
         f"scg{int(NATIVE_SKIP_CLEANUP_GRID_SYNC)}_"
         f"hp{int(NATIVE_RS_HALF_PREFETCH)}_"
         f"nws{int(NATIVE_NORMALIZED_WEIGHT_SCALE)}_"
@@ -1398,6 +1448,7 @@ _ext = load_inline(
             f"{int(NATIVE_RS_K64_COMMIT_GROUPS)}"
         ),
         f"-DK_NATIVE_TWO_CTA_PER_SM={int(NATIVE_TWO_CTA_PER_SM)}",
+        f"-DK_NATIVE_H20_EXACT_OUTER={int(NATIVE_H20_EXACT_OUTER)}",
         (
             "-DK_NATIVE_SKIP_CLEANUP_GRID_SYNC="
             f"{int(NATIVE_SKIP_CLEANUP_GRID_SYNC)}"

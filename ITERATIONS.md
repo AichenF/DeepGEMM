@@ -17908,3 +17908,29 @@ maximum rank latency of a full CUDA-Graph replay.
   `bench/results/iter725{b,c}_w2_shared_decoded_jit_20260907.log`,
   `bench/results/iter725c_w2_shared_decoded_resources_20260907.log`, and
   `bench/results/iter725c_w2_shared_decoded_m128_split2_ss_interval.sass`.
+
+## Iteration 726 — isolate the exact Hopper/H20 outer pipeline
+
+- **Hypothesis:** the Hopper small-M implementation's coarse outer contract
+  (78 persistent CTAs, 64/64/256 dispatch/load/math roles, static
+  expert-wave scheduling, shared Mode2 decode, and four GEMM stages) may
+  transfer to the current MXFP4 TP kernel without replacing its validated
+  TP-local routing, global intermediate pool, ordered k6 reduction, or
+  embedded communication tail.
+- **Change:** add a default-off `V4_NATIVE_H20_EXACT_OUTER=1` JIT identity
+  and a dedicated checked body include.  The production default remains the
+  interleaved two-CTA/register-dequant path.  The exact path instantiates
+  EPW16 for M=8/16/32/64 and the reference heuristic's EPW32 for M=128.
+  Add an isolated Python entry and a `--candidate h20-exact` option to the
+  existing paired cold-L2 graph harness.
+- **First gate:** fresh SM90a JIT and the single-GPU M8 full local body both
+  pass.  Route materialization is byte exact (`l1_x_mismatch_bytes=0`,
+  `l1_sf_max_abs=0`, `l1_weight_max_abs=0`); the weighted W13/SwiGLU
+  intermediate has cosine `0.9996428552`, relative L2 `0.0271052359`, and
+  all outputs are finite.  No performance claim is made from this warm local
+  correctness gate.
+- **Status:** **ADMIT for TP4 correctness/resource/performance gates.**  The
+  exact path remains experimental and default-off.
+- **Evidence:**
+  `bench/results/iter726_h20_exact_outer_local_m8_20260907.log` and
+  `docs/plans/2026-09-07-h20-exact-outer-pipeline-design.md`.
