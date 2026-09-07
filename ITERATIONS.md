@@ -18288,3 +18288,15 @@ maximum rank latency of a full CUDA-Graph replay.
 - Paired multi-kernel control medians (ms): M8 0.071552; M16 0.114560; M32 0.179168; M64 0.250192; M128 0.308144.
 - Aggregate: candidate geometric mean 0.247052 ms; control 0.162476 ms; control/candidate speedup 0.657659× (candidate 1.52054× slower).
 - Decision: ACCEPT as the clean scheme-A checkpoint. Results reproduce iter739 within noise; proceed from this exact body to tile-level dependency-aware reduction overlap.
+
+## Iteration 743 — coarse BM8 dependency-ready slice reduction rejected
+
+- Hypothesis: retain all `(BM8,K128-slice)` W13/W2 producer tasks, replace the unused W13 L2-arrival publication with one acq_rel completion bit after each task's sixteen W2 tiles, and let the fourth slice CTA reduce that routed BM8 block while other blocks remain in flight.
+- Change: four slice publications form a device-scope acq_rel OR chain in the existing per-pool-block `l2_arrival_mask`; the last CTA sums four FP32 slice planes, BF16-rounds each complete route into slice 0, and the terminal fixed-k6 combine reads only slice 0. No new global allocation was added.
+- Benchmark: TP4 GPUs 1–4; CUDA Graph; separate excluded 256 MiB cold-L2 clear before every replay; 2 outer batches × 5 samples; M={8,16,32,64,128}.
+- Correctness: PASS at every M, including strict all-reduce. Candidate final max relL2 is 0.002902–0.002974 and local metrics exactly retain the accepted numerical envelope, validating the acq_rel visibility chain and BF16 route boundary.
+- Candidate medians (ms): M8 0.153968; M16 0.225472; M32 0.309056; M64 0.428752; M128 0.568400. Paired controls: 0.071952, 0.115488, 0.178192, 0.251456, 0.309392 ms.
+- Aggregate: candidate geometric mean 0.304428 ms; control 0.163038 ms; control/candidate 0.535555× (candidate 1.86722× slower).
+- Comparison to iter742 candidate: regressions are +25.82%, +33.86%, +14.80%, +20.29%, and +22.15% for M8 through M128; geometric mean regresses 23.22%.
+- Diagnosis: assigning the entire 8×4096 four-slice join to a single last-arriving CTA creates a long low-parallelism tail and stalls that CTA from claiming another GEMM task. Removing three terminal loads per route does not repay this producer-side serialization.
+- Decision: REJECT for selection. Restore iter742; a successor must distribute the join over many resident CTAs or avoid materializing the four partial planes without collapsing producer concurrency.
