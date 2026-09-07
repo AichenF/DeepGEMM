@@ -18319,3 +18319,10 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: `COMPILED=True` but correctness fails immediately at M8, so no latency is admissible and later M values are not run. Candidate local cosine/relL2 are 0.884448/0.466641; final cosine/relL2 are 0.917864/0.396896; strict all-reduce fails. The embedded communication versus the candidate-local NCCL oracle remains healthy (0.999995660/0.00294670), localizing failure before communication.
 - Diagnosis: the release/acquire observation is insufficient for the current producer partition or the dispatch worker's slice-0 overwrite races a producer despite the apparent eight-bit completion contract. This is a numerical/synchronization failure, not a performance result.
 - Decision: REJECT as written. Preserve the failed artifact, then isolate readiness/partial equality locally before any timing retry; do not weaken the correctness gate.
+
+## Iteration 746 — invalid benchmark launcher arithmetic
+
+- Intended change: iter745 dispatch-warp slice join plus one cross-grid publication after all dispatch reducers, so terminal math readers cannot observe another CTA's unfinished slice-0 stores.
+- Required benchmark invocation: `bash scripts/bench.sh iter-746`, TP4 all-M cold-L2 defaults.
+- Failure: the harness computed `MASTER_PORT` from a nanosecond substring with a leading zero (`014481021`); Bash treated it as invalid octal and then aborted on an unbound `AKO_MASTER_PORT` before Python, JIT compilation, CUDA initialization, correctness, or timing.
+- Decision: infrastructure-only invalid iteration; no kernel conclusion. Preserve the output and rerun the identical source after making the port expression explicitly base-10.
