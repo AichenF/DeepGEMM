@@ -102,7 +102,9 @@ def _run_cuda_dequant_lut_unit_test() -> None:
 
 def _run_dequant_unit_test() -> None:
     scales = torch.tensor([0x00, 0x01, 0x07, 0x08, 0x38, 0x3F, 0x7E, 0x7F], dtype=torch.uint8)
-    nibbles = torch.arange(16, dtype=torch.uint8).view(1, 1, 16).expand(scales.numel(), 1, 16).clone()
+    # One MXFP4 group is 32 elements, so a row must hold a whole group: cover all
+    # 16 codes twice rather than once.
+    nibbles = torch.arange(16, dtype=torch.uint8).repeat(2).view(1, 1, 32).expand(scales.numel(), 1, 32).clone()
     packed = _pack_mxfp4_marlin(nibbles)
     got = dequantize_mxfp4_to_fp32(packed, scales.view(-1, 1, 1), group_size=32)
 
@@ -333,10 +335,23 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
 def _worker(local_rank: int, num_local_ranks: int, args: argparse.Namespace) -> None:
     rank_idx, _, group = init_dist(local_rank, num_local_ranks)
     try:
+        # The unit tests only run on rank 0, so its failure has to be published
+        # to the others -- a bare barrier here leaves them waiting forever and
+        # spawn() cannot surface the traceback until join, which never happens.
+        ok = torch.ones(1, dtype=torch.int32, device="cuda")
+        rank0_error = None
         if rank_idx == 0:
-            _run_dequant_unit_test()
-            _run_cuda_dequant_lut_unit_test()
-        dist.barrier(group=group)
+            try:
+                _run_dequant_unit_test()
+                _run_cuda_dequant_lut_unit_test()
+            except Exception as exc:
+                rank0_error = exc
+                ok.zero_()
+        dist.all_reduce(ok, group=group)
+        if ok.item() == 0:
+            if rank_idx == 0:
+                raise rank0_error
+            raise RuntimeError("rank 0 unit tests failed; see rank 0 traceback")
         if get_arch_major() != 9:
             if rank_idx == 0:
                 print(f"[SKIP] requires SM90, got SM{get_arch_major()}0", flush=True)
