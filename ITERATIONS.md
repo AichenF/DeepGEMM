@@ -18393,3 +18393,43 @@ maximum rank latency of a full CUDA-Graph replay.
 
 - Restored the three runtime sources byte-for-byte to iter742 after phase evidence rejected serial N128x2. Verified the same production SHA-256 triplet recorded after iter750.
 - No timing claim is attached to this restoration; the next experiment must branch from the strict-correct N256 checkpoint and execute any N128 halves concurrently rather than serially.
+
+## Iteration 753 — two-CTA N128 cluster pair is correct but loses beyond M8
+
+- Hypothesis/change: start from the strictly correct iter751 physical-N128
+  implementation, but assign one W13 N128 half to each CTA in a hardware
+  cluster pair instead of executing the halves serially.  Both CTAs derive the
+  same static `(routed BM8 block, K128 slice)` task, publish BF16 half-tiles and
+  per-row amax through DSM, use paired ready/consumed mbarriers to protect the
+  shared lifetime, reconstruct a complete FP8 K128 activation locally, and
+  compute interleaved halves of the 32 physical W2 N128 tiles.  FC1, SwiGLU,
+  FC2 partials, fixed-k6 reduction, and TP communication remain one persistent
+  business-kernel launch.
+- Bring-up: the first local smoke deadlocked because cluster rank 1 retained
+  the serial path's `l1_tile == 0` TaskInfo-release condition.  Making the one
+  W13 tile on both ranks release its own mailbox repaired the pipeline.  JIT
+  then passed, cluster size two admitted the full 234-CTA cooperative grid at
+  three CTAs/SM, and a TP4 M8 profile-only launch returned finite output.
+- Benchmark: `GPU_LIST=2,3,4,5 bash scripts/bench.sh iter-753`; GPU1 retained
+  an unowned 83-GiB ghost allocation after an old stuck test and could not be
+  reset without privilege.  The formal run uses random routing, CUDA Graph,
+  an excluded 256-MiB L2 clear before every candidate/control replay, two
+  outer batches and five samples per arm for M={8,16,32,64,128}.
+- Build/correctness: `COMPILED=True`, `CORRECT=True` at every M.  Candidate
+  local rel-L2 is `0.000057/0.000119/0.000474/0.000033/0.000359`; final
+  all-reduce rel-L2 is `0.002902/0.002968/0.002970/0.002959/0.002974`, the
+  same strict numerical envelope as iter742/iter751.
+- Median control/candidate latency (ms): M8 `0.072016/0.112272`, M16
+  `0.114800/0.190448`, M32 `0.178496/0.308096`, M64 `0.251568/0.431488`, and
+  M128 `0.308496/0.537792`.  Geometric means are
+  `0.162847/0.273441 ms`; control/candidate speedup is `0.595549x`, so the
+  cluster candidate is `1.6791x` slower than the multi-kernel baseline.
+- Comparison/decision: M8 improves 8.25% versus iter742's `0.122368 ms`, but
+  M16/M32/M64/M128 regress 13.07%/14.45%/21.05%/15.57%, and the geometric mean
+  regresses 10.68% versus iter742's `0.247052 ms`.  Pairing removes the serial
+  half dependency but constrains task placement and adds two DSM rendezvous
+  per microtask; three-CTA residency supplies only 117 logical pairs versus
+  156 independent production tasks.  Reject this 234x384 topology as the
+  selected winner.  The one bounded follow-up is a smaller producer-role CTA
+  that reaches four CTAs/SM (156 resident pairs) without weakening the strict
+  boundary; otherwise restore iter742.
