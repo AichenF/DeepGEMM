@@ -18335,3 +18335,11 @@ maximum rank latency of a full CUDA-Graph replay.
 - Result: JIT compilation succeeds, but the first M8 candidate graph-capture synchronization reports `cudaErrorIllegalInstruction` on all four ranks before correctness or timing. No performance number is admissible.
 - Diagnosis: the added dispatch-only reuse of the existing grid-sync generation violates that helper's participant/generation contract in this location; this is distinct from iter745's proven-correct slice0 arithmetic. Do not treat the trap as a numerical result.
 - Decision: REJECT this publication placement. Preserve the artifact; replace it with a grid barrier whose participant set/order matches the existing all-math rendezvous, or keep the reduction terminal.
+
+## Iteration 748 — dependency-ordered reducer publication (rejected)
+
+- Change: removed the extra dispatch-only grid barrier from iter747. Dispatch reducers first joined the existing mixed dispatch/math CTA barrier; the unchanged all-math epilogue grid barrier was moved after that CTA dependency so it could publish reducer slice-0 stores across CTAs.
+- Correctness: not reached. JIT completed, but the first M=8 CUDA Graph replay never returned and was terminated after the normal runtime window; no numerical or latency result is valid.
+- Benchmark policy: `bash scripts/bench.sh iter-748`; TP4, CUDA Graph, random routing, 256 MiB cold-L2 clear before every replay. The hang occurred before the first reported point.
+- Diagnosis: reordering the existing epilogue grid barrier behind the mixed CTA barrier creates a global cyclic dependency with persistent CTA progress/cleanup. Keeping the original participant set is insufficient when its phase ordering changes.
+- Decision: reject. Restore the last strictly correct layout before the next experiment; do not use this barrier placement.
