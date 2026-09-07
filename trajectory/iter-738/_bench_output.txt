@@ -1,0 +1,116 @@
+W0907 17:50:17.384000 329096 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] 
+W0907 17:50:17.384000 329096 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] *****************************************
+W0907 17:50:17.384000 329096 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0907 17:50:17.384000 329096 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py:851] *****************************************
+[rank3]: Traceback (most recent call last):
+[rank3]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 1157, in <module>
+[rank3]:     main()
+[rank3]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank3]:     return func(*args, **kwargs)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 166, in main
+[rank3]:     import v4_flash_tp_tile_ws_megamoe as native_kernel
+[rank3]:   File "/home/xutingz/fac/DeepGEMM_tp/v4_flash_tp_tile_ws_megamoe.py", line 56, in <module>
+[rank3]:     from v4_flash_tp_native_megamoe import *  # noqa: E402,F403
+[rank3]:     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/home/xutingz/fac/DeepGEMM_tp/v4_flash_tp_native_megamoe.py", line 143, in <module>
+[rank3]:     raise ValueError(
+[rank3]: ValueError: V4_NATIVE_TP_TILE_WS requires the isolated one-CTA/SM TP-local register-dequant K128 configuration
+[rank2]: Traceback (most recent call last):
+[rank2]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 1157, in <module>
+[rank2]:     main()
+[rank2]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank2]:     return func(*args, **kwargs)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 166, in main
+[rank2]:     import v4_flash_tp_tile_ws_megamoe as native_kernel
+[rank2]:   File "/home/xutingz/fac/DeepGEMM_tp/v4_flash_tp_tile_ws_megamoe.py", line 56, in <module>
+[rank2]:     from v4_flash_tp_native_megamoe import *  # noqa: E402,F403
+[rank2]:     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/home/xutingz/fac/DeepGEMM_tp/v4_flash_tp_native_megamoe.py", line 143, in <module>
+[rank2]:     raise ValueError(
+[rank2]: ValueError: V4_NATIVE_TP_TILE_WS requires the isolated one-CTA/SM TP-local register-dequant K128 configuration
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 1157, in <module>
+[rank1]:     main()
+[rank1]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank1]:     return func(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 166, in main
+[rank1]:     import v4_flash_tp_tile_ws_megamoe as native_kernel
+[rank1]:   File "/home/xutingz/fac/DeepGEMM_tp/v4_flash_tp_tile_ws_megamoe.py", line 56, in <module>
+[rank1]:     from v4_flash_tp_native_megamoe import *  # noqa: E402,F403
+[rank1]:     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/home/xutingz/fac/DeepGEMM_tp/v4_flash_tp_native_megamoe.py", line 143, in <module>
+[rank1]:     raise ValueError(
+[rank1]: ValueError: V4_NATIVE_TP_TILE_WS requires the isolated one-CTA/SM TP-local register-dequant K128 configuration
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 1157, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lustre/raplab/client/xutingz/fac/DeepGEMM_tp/bench/v4_flash_tp_single_vs_multi_graph.py", line 166, in main
+[rank0]:     import v4_flash_tp_tile_ws_megamoe as native_kernel
+[rank0]:   File "/home/xutingz/fac/DeepGEMM_tp/v4_flash_tp_tile_ws_megamoe.py", line 56, in <module>
+[rank0]:     from v4_flash_tp_native_megamoe import *  # noqa: E402,F403
+[rank0]:     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/xutingz/fac/DeepGEMM_tp/v4_flash_tp_native_megamoe.py", line 143, in <module>
+[rank0]:     raise ValueError(
+[rank0]: ValueError: V4_NATIVE_TP_TILE_WS requires the isolated one-CTA/SM TP-local register-dequant K128 configuration
+W0907 17:50:55.088000 329096 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 329165 closing signal SIGTERM
+W0907 17:50:55.092000 329096 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 329166 closing signal SIGTERM
+W0907 17:50:55.095000 329096 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 329167 closing signal SIGTERM
+E0907 17:50:55.476000 329096 /lustre/raplab/client/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 3 (pid: 329168) of binary: /home/xutingz/workspace/miniforge3/bin/python
+Traceback (most recent call last):
+  File "/home/xutingz/workspace/miniforge3/bin/torchrun", line 8, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xutingz/workspace/miniforge3/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+bench/v4_flash_tp_single_vs_multi_graph.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-09-07_17:50:55
+  host      : H20-GPU-06.cm.cluster
+  rank      : 0 (local_rank: 0)
+  exitcode  : -15 (pid: 329165)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 329165
+[2]:
+  time      : 2026-09-07_17:50:55
+  host      : H20-GPU-06.cm.cluster
+  rank      : 1 (local_rank: 1)
+  exitcode  : -15 (pid: 329166)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 329166
+[3]:
+  time      : 2026-09-07_17:50:55
+  host      : H20-GPU-06.cm.cluster
+  rank      : 2 (local_rank: 2)
+  exitcode  : -15 (pid: 329167)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 329167
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-09-07_17:50:55
+  host      : H20-GPU-06.cm.cluster
+  rank      : 3 (local_rank: 3)
+  exitcode  : 1 (pid: 329168)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

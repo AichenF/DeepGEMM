@@ -14,7 +14,6 @@
                      "tile-WS body requires its isolated JIT selector");
     DG_STATIC_ASSERT(K_NATIVE_REGISTER_DEQUANT &&
                      K_NATIVE_RS_K128_BATCH &&
-                     !K_NATIVE_TWO_CTA_PER_SM &&
                      K_NATIVE_NORMALIZED_WEIGHT_SCALE &&
                      K_NATIVE_DUAL_ACTIVE_DISPATCH &&
                      K_NATIVE_TP_LOCAL_ROUTE_BUILD &&

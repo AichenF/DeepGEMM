@@ -18246,3 +18246,9 @@ maximum rank latency of a full CUDA-Graph replay.
 - Throughput/scheduler: 1.88 TB/s memory throughput, 38.35% DRAM peak, 57.44% L2 throughput, 38.92% SM throughput, 3.00 active but only 0.51 eligible warps/scheduler, 0.39 issued warps/scheduler/cycle, and 60.97% no-eligible cycles. The kernel executes 131.28M instructions.
 - Interpretation: the 1.82× endpoint gap is not communication dominated. The primary defect is one-CTA residency starving both the fused W13/W2 stream and HBM; at M128 the global FP32 K-slice scratch reduction independently contributes another 82.8 us. The next bounded experiment is the already-proven Hopper 156-CTA/88-math-register residency configuration, followed by a structural full-K W2 redesign to remove slice scratch if residency alone is insufficient.
 - Evidence retained under `/home/xutingz/fac/DeepGEMM_tp`: `bench/results/iter736_tile_ws_m128_cold_ncu.log` and `results/iter736_tile_ws_m128_cold_ncu.ncu-rep`.
+## Iteration 738 — first tile-WS two-CTA admission attempt fails at Python guard
+
+- Hypothesis/change: reuse the Hopper-native 156-CTA/two-CTA-per-SM configuration for tile-WS by selecting `V4_NATIVE_TWO_CTA_PER_SM=1`, its existing cooperative launch, 88-register math role, and 156-CTA scheduler population; remove the tile body compile-time prohibition and update wrapper metadata.
+- Benchmark: required TP4 CUDA-Graph/cold-L2 AKO harness, all five M values requested.
+- Result: `COMPILED=False`. All ranks stop during module import at `v4_flash_tp_native_megamoe.py`'s pre-existing Python validation, which still hard-requires tile-WS to be one CTA/SM. No JIT, GPU kernel, correctness, or latency measurement occurred.
+- Decision: this is an incomplete admission patch, not evidence against two-CTA residency. Update only the matching Python configuration guard, rerun the unchanged experiment, and keep the failed output as evidence.

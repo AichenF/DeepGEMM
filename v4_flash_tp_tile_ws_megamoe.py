@@ -1,6 +1,6 @@
 """TP tile-warp-specialized Hopper MegaMoE experiment.
 
-This isolated import selects the one-CTA-per-SM persistent schedule whose
+This isolated import selects the two-CTA-per-SM persistent schedule whose
 microtask is one routed BM8 block and one local intermediate K128 slice.
 W13, SwiGLU/FP8 quantization, and every W2 N256 tile for that slice execute
 back-to-back; the FP8 intermediate remains CTA-local in shared memory.
@@ -26,7 +26,7 @@ _TILE_WS_ENV = {
     "V4_NATIVE_REGISTER_DEQUANT": "1",
     "V4_NATIVE_RS_K128_BATCH": "1",
     "V4_NATIVE_RS_K64_COMMIT_GROUPS": "0",
-    "V4_NATIVE_TWO_CTA_PER_SM": "0",
+    "V4_NATIVE_TWO_CTA_PER_SM": "1",
     "V4_NATIVE_RS_HALF_PREFETCH": "0",
     "V4_NATIVE_NORMALIZED_WEIGHT_SCALE": "1",
     "V4_NATIVE_RS_SCALE_WORD_CACHE": "0",
@@ -58,6 +58,6 @@ from v4_flash_tp_native_megamoe import *  # noqa: E402,F403
 
 TP_TILE_WS = True
 TP_TILE_WS_TORCH_EXTENSIONS_DIR = os.environ["TORCH_EXTENSIONS_DIR"]
-TP_TILE_WS_CTA_COUNT = 78
+TP_TILE_WS_CTA_COUNT = 156
 TP_TILE_WS_THREADS = 384
 TP_TILE_WS_TASK = "route_bm8_x_intermediate_k128"
