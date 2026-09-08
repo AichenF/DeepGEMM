@@ -18510,3 +18510,31 @@ maximum rank latency of a full CUDA-Graph replay.
   optimization line, and pause.  Do not claim that the one-kernel objective
   beats the multi-kernel control: production remains 1.5205x slower by the
   last qualified paired cold-L2 all-M geometric mean.
+
+## Iteration 756 — BF16-serving CutlassHumming harness; first TP4 compile gate fails
+
+- **Hypothesis/change:** add a paired TP4 serving-layer harness for current
+  FlashInfer `CutlassHummingConfig`: both sides start from BF16 activations and
+  the same canonical MXFP4 checkpoint payload/scales, and both timed CUDA
+  Graphs include online FP8 quantization, W13, activation, W2, route reduction,
+  and TP all-reduce.  The custom graph uses the existing Humming group-128
+  quant kernel; FlashInfer retains its native per-expanded-row online quant.
+  The harness also checks custom quant bytes/scales, each communication path
+  against NCCL, and cross-backend output agreement.
+- **Environment bring-up:** installed FlashInfer main commit `866acb62d31c`
+  as version 0.6.18 in the isolated Torch 2.11 environment
+  `/home/xutingz/fac/flashinfer_humming_torch211_env`; its first SM90 Humming
+  JIT compiled successfully and a 4-expert BF16 smoke produced finite output.
+- **Benchmark attempted:** TP4 GPUs 0-3, M=8, random routes, fallback CUTLASS
+  tactic, two outer batches x three cold-L2 replays, 256 MiB eviction excluded
+  from events.  No latency sample was reached.
+- **Failure evidence:** rebuilding current custom multi-kernel configuration
+  (`V4_SINGLE_LAUNCH_TP4=0`) fails in generated `cuda.cu:6707` because
+  `w13_phase_args` is referenced but undefined.  The other ranks then see the
+  absent shared object.  This is a pre-existing conditional-compilation bug in
+  the restored kernel source/cache combination, not a FlashInfer or numerical
+  failure.
+- **Decision/next:** retain the benchmark contract.  Repair only the missing
+  non-single-launch compile guard (or use the byte-identical known-good
+  multi-kernel source), rerun the same M8 gate, then autotune and collect all
+  M={8,16,32,64,128}.  This iteration establishes no performance claim.
