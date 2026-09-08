@@ -1,8 +1,8 @@
-"""Deterministic DeepSeek-V4-Flash W4A8 fixtures for SM120 tests.
+"""Deterministic DeepSeek-V4-Flash W4A8 fixtures for tests and benchmarks.
 
 The tensors returned here use the public ``fp8_fp4_routed_moe_sm120`` ABI.
-Raw launcher tests may adapt these tensors to their internal ABI, but benchmark
-drivers should consume them without reaching into the extension module.
+This is intentionally not a pytest module. It defines the structured public-API
+fixture shared by the routed-MoE test and benchmark.
 """
 
 from dataclasses import dataclass
@@ -59,8 +59,12 @@ __all__ = [
     "deterministic_route_expert",
     "deterministic_weight_exponents",
     "epoch_slots",
+    "expected_local_work",
+    "expected_route",
+    "expected_tokens",
     "make_dsv4_w4a8_inputs",
     "make_dsv4_w4a8_weights",
+    "source_order_combine",
 ]
 
 
@@ -276,4 +280,147 @@ def make_dsv4_w4a8_weights(
         w1_scales=scales("w1", 2 * INTERMEDIATE, HIDDEN),
         w2_weight=w2.view(torch.int8),
         w2_scales=scales("w2", HIDDEN, INTERMEDIATE),
+    )
+
+
+def source_order_combine(partials: torch.Tensor) -> torch.Tensor:
+    """Accumulate original route slots in FP32, then round once to BF16."""
+
+    if partials.ndim != 3 or partials.shape[1] != TOP_K:
+        raise ValueError(f"partials must have shape [tokens, {TOP_K}, hidden]")
+    combined = torch.zeros(
+        (partials.shape[0], partials.shape[2]),
+        dtype=torch.float32,
+        device=partials.device,
+    )
+    for route_slot in range(TOP_K):
+        combined += partials[:, route_slot].float()
+    return combined.to(torch.bfloat16)
+
+
+def _physical_gate_up(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
+    if gate.shape != up.shape or gate.shape[-1] != INTERMEDIATE:
+        raise ValueError("W1 must contain one gate and one up projection")
+    output = torch.empty(
+        (*gate.shape[:-1], 2 * INTERMEDIATE),
+        dtype=gate.dtype,
+        device=gate.device,
+    )
+    logical = torch.arange(INTERMEDIATE, device=gate.device)
+    physical_gate = (logical // 8) * 16 + logical % 8
+    output[..., physical_gate] = gate
+    output[..., physical_gate + 8] = up
+    return output
+
+
+def _split_physical_gate_up(w1_bf16: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    logical = torch.arange(INTERMEDIATE, device=w1_bf16.device)
+    physical_gate = (logical // 8) * 16 + logical % 8
+    return w1_bf16[..., physical_gate], w1_bf16[..., physical_gate + 8]
+
+
+def _requantize_k32(weighted: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    grouped = weighted.reshape(weighted.shape[0], INTERMEDIATE // K_GROUP, K_GROUP)
+    raw_scale = (grouped.abs().amax(dim=2) * (1.0 / 448.0)).contiguous()
+    bits = raw_scale.view(torch.int32)
+    exponent = (
+        ((bits >> 23) & 255) + (((bits & 0x7FFFFF) + 0x7FFFFF) >> 23)
+    ).clamp(max=254).to(torch.uint8)
+    inverse = ((254 - exponent.to(torch.int32)) << 23).view(torch.float32)
+    fp8 = (grouped * inverse[:, :, None]).to(torch.float8_e4m3fn).view(torch.uint8)
+    scale = torch.ldexp(
+        torch.ones_like(exponent, dtype=torch.float32),
+        exponent.to(torch.int32) - 127,
+    )
+    dequantized = fp8.view(torch.float8_e4m3fn).float() * scale[:, :, None]
+    return fp8.reshape(weighted.shape), exponent, dequantized.reshape(weighted.shape)
+
+
+def expected_route(
+    source_rank: int,
+    token: int,
+    route_slot: int,
+    global_expert: int,
+    device: DeviceLike,
+    *,
+    round_swiglu_output: bool = False,
+) -> dict[str, torch.Tensor]:
+    """Compute one route from the fixture recipe, without kernel intermediates."""
+
+    codes, input_exponents = deterministic_input_encoding(source_rank, token, device)
+    input_scales = torch.ldexp(
+        torch.ones_like(input_exponents, dtype=torch.float32),
+        input_exponents.to(torch.int32) - 127,
+    )
+    x_group_sum = (codes.view(torch.float8_e4m3fn).float() * input_scales[:, None]).sum(dim=1)
+    w1_exponents = deterministic_weight_exponents(global_expert, "w1", device)
+    w1_scales = torch.ldexp(
+        torch.ones_like(w1_exponents, dtype=torch.float32),
+        w1_exponents.to(torch.int32) - 127,
+    )
+    common = (x_group_sum * w1_scales).sum()
+    logical = torch.arange(INTERMEDIATE, device=device)
+    gate = (common * deterministic_fp4_value(global_expert, "gate", logical)).to(torch.bfloat16)
+    up = (common * deterministic_fp4_value(global_expert, "up", logical)).to(torch.bfloat16)
+    w1_bf16 = _physical_gate_up(gate[None, :], up[None, :])
+
+    gate_f32, up_f32 = _split_physical_gate_up(w1_bf16)
+    gate_f32 = gate_f32.float().clamp(max=ACTIVATION_CLAMP)
+    up_f32 = up_f32.float().clamp(min=-ACTIVATION_CLAMP, max=ACTIVATION_CLAMP)
+    silu = gate_f32 * (1.0 / (1.0 + torch.exp2(-gate_f32 * 1.4426950408889634)))
+    weighted = silu * up_f32 * float(ROUTE_WEIGHTS[route_slot])
+    if round_swiglu_output:
+        weighted = weighted.to(torch.bfloat16).float()
+    intermediate_fp8, intermediate_scale, intermediate = _requantize_k32(weighted)
+
+    w2_exponents = deterministic_weight_exponents(global_expert, "w2", device)
+    w2_scales = torch.ldexp(
+        torch.ones_like(w2_exponents, dtype=torch.float32),
+        w2_exponents.to(torch.int32) - 127,
+    )
+    down_weight = deterministic_fp4_value(global_expert, "down", logical)
+    down = (
+        intermediate.reshape(INTERMEDIATE // K_GROUP, K_GROUP)
+        * w2_scales[:, None]
+        * down_weight.reshape(INTERMEDIATE // K_GROUP, K_GROUP)
+    ).sum()
+    output = torch.arange(HIDDEN, device=device)
+    output_sign = torch.where(
+        ((output // 64 + global_expert) & 1) == 0,
+        1.0,
+        -1.0,
+    )
+    return {
+        "w1_bf16": w1_bf16[0],
+        "intermediate_fp8": intermediate_fp8[0],
+        "intermediate_scale": intermediate_scale[0],
+        "w2_bf16": (down * output_sign).to(torch.bfloat16),
+    }
+
+
+def expected_tokens(
+    rank: int,
+    tokens: tuple[int, ...],
+    device: DeviceLike,
+) -> torch.Tensor:
+    rows = []
+    for token in tokens:
+        routes = []
+        for slot in range(TOP_K):
+            expert = deterministic_route_expert(rank, token, slot)
+            routes.append(expected_route(rank, token, slot, expert, device)["w2_bf16"])
+        rows.append(torch.stack(routes))
+    return source_order_combine(torch.stack(rows))
+
+
+def expected_local_work(rank: int, active_rows: int) -> tuple[int, int]:
+    local_counts = [0] * LOCAL_EXPERTS
+    for source in range(WORLD_SIZE):
+        for token in range(active_rows):
+            for slot in range(TOP_K):
+                expert = deterministic_route_expert(source, token, slot)
+                if expert // LOCAL_EXPERTS == rank:
+                    local_counts[expert % LOCAL_EXPERTS] += 1
+    return sum(local_counts), sum(
+        (count + TASK_ROWS - 1) // TASK_ROWS for count in local_counts
     )

@@ -154,7 +154,7 @@ NCCL 2.30.7 with GIN Device API support. Build it with
 `DG_WITH_NCCL_GIN=1` and set `DG_NCCL_ROOT` to that NCCL installation. Create
 one `SM120RoutedMoESession` per process group and reuse a
 `SM120RoutedMoEWorkspace` across launches. See
-`tests/test_routed_moe_sm120_e2e.py` for exact distributed correctness coverage
+`tests/test_routed_moe_sm120.py` for exact distributed correctness coverage
 and `tests/bench_routed_moe_sm120.py` for max-rank prefill measurements.
 
 ##### SM90 FP8xFP8
