@@ -673,8 +673,8 @@ def test_sm120_public_api_ep8_bit_exact_multi_epoch():
     device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
     active_rows = int(os.environ.get("SM120_ROUTED_MOE_E2E_ROWS", "1"))
     epochs = int(os.environ.get("SM120_ROUTED_MOE_E2E_EPOCHS", "3"))
-    if not 1 <= active_rows <= MAX_ROWS or not 1 <= epochs <= 8:
-        raise ValueError("E2E rows must be in [1, 8192] and epochs in [1, 8]")
+    if not 1 <= active_rows <= MAX_ROWS or not 1 <= epochs <= 64:
+        raise ValueError("E2E rows must be in [1, 8192] and epochs in [1, 64]")
     sample_tokens = (
         tuple(range(active_rows))
         if active_rows <= 8

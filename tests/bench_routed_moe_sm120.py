@@ -153,6 +153,7 @@ def _distributed_backend() -> tuple[Any, Any, int, int]:
     if not torch.distributed.is_initialized():
         torch.distributed.init_process_group(backend="nccl", init_method="env://")
     group = torch.distributed.group.WORLD
+    torch.distributed.barrier(group=group, device_ids=[local_rank])
     control_group = torch.distributed.new_group(backend="gloo")
     return group, control_group, torch.distributed.get_rank(group), local_rank
 
