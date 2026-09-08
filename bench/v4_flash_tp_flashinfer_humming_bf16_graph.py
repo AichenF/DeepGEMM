@@ -68,9 +68,20 @@ class PreparedWeights:
 class CustomBF16Case:
     x_bf16: torch.Tensor
     inner: custom.CapturedCase
+    quant_mode: str
+    row_scale: torch.Tensor | None = None
 
     def run_full(self, comm: CustomAllReduceV2) -> torch.Tensor:
-        quant_group128_into(self.x_bf16, self.inner.qx, self.inner.x_scale)
+        if self.quant_mode == "rowwise":
+            assert self.row_scale is not None
+            quant_rowwise_into(
+                self.x_bf16,
+                self.inner.qx,
+                self.row_scale,
+                self.inner.x_scale,
+            )
+        else:
+            quant_group128_into(self.x_bf16, self.inner.qx, self.inner.x_scale)
         return self.inner.run_full(comm)
 
 
@@ -100,6 +111,16 @@ def parse_args() -> argparse.Namespace:
         "--pair-granularity", choices=("batch", "replay"), default="batch"
     )
     parser.add_argument("--seed", type=int, default=20260908)
+    parser.add_argument(
+        "--custom-input-quant",
+        choices=("group128", "rowwise"),
+        default="group128",
+        help=(
+            "group128 is the native custom contract; rowwise matches "
+            "CutlassHummingConfig numerics and broadcasts its one row scale "
+            "to the custom GEMM's 32 scale slots"
+        ),
+    )
     parser.add_argument(
         "--no-autotune",
         action="store_true",
@@ -272,6 +293,39 @@ def quant_group128_into(
     )
 
 
+def quant_rowwise_into(
+    x_bf16: torch.Tensor,
+    qx: torch.Tensor,
+    row_scale: torch.Tensor,
+    expanded_scale: torch.Tensor,
+) -> None:
+    """Humming rowwise FP8 quant plus an explicit custom-ABI scale broadcast."""
+    inputs = x_bf16.view(-1, x_bf16.shape[-1])
+    rows, hidden = inputs.shape
+    _quant_tensor_kernel[(rows,)](
+        inputs,
+        qx,
+        row_scale,
+        inputs.stride(0),
+        rows,
+        True,
+        hidden,
+        hidden,
+        hidden,
+        1,
+        "float8e4m3",
+        rows,
+        False,
+        "float32",
+        False,
+        None,
+        False,
+        num_warps=8,
+        num_stages=1,
+    )
+    expanded_scale.copy_(row_scale.expand_as(expanded_scale))
+
+
 def make_flashinfer_runner(
     intermediate_per_rank: int, device: torch.device
 ) -> CutlassHummingRunner:
@@ -372,22 +426,37 @@ def flashinfer_allreduce_correctness(
 
 
 def quant_correctness(
-    x: torch.Tensor, qx: torch.Tensor, scale: torch.Tensor
+    x: torch.Tensor,
+    qx: torch.Tensor,
+    scale: torch.Tensor,
+    mode: str,
+    row_scale: torch.Tensor | None,
 ) -> dict[str, float | bool]:
     expected_q = torch.empty_like(qx)
     expected_q, expected_scale = humming_ops.quant_input(
         inputs=x,
         outputs=expected_q,
         dtype="float8e4m3",
-        group_size=128,
+        group_size=128 if mode == "group128" else x.shape[-1],
         m_major_scale=False,
         scale_dtype="float32",
     )
-    quant_group128_into(x, qx, scale)
+    if mode == "rowwise":
+        assert row_scale is not None
+        quant_rowwise_into(x, qx, row_scale, scale)
+        actual_scale = row_scale
+        broadcast_error = float(
+            (scale - row_scale.expand_as(scale)).abs().max()
+        )
+    else:
+        quant_group128_into(x, qx, scale)
+        actual_scale = scale
+        broadcast_error = 0.0
     torch.cuda.synchronize(x.device)
     result = {
         "fp8_bytes_exact": bool(torch.equal(qx.view(torch.uint8), expected_q.view(torch.uint8))),
-        "scale_max_abs": float((scale - expected_scale).abs().max()),
+        "scale_max_abs": float((actual_scale - expected_scale).abs().max()),
+        "broadcast_scale_max_abs": broadcast_error,
     }
     del expected_q, expected_scale
     return result
@@ -450,7 +519,12 @@ def main() -> None:
                     "timed_contract": "BF16 input -> online FP8 quant -> W13/SwiGLU/W2/route reduce -> TP all-reduce",
                     "routing_timed": False,
                     "weight_preprocess_timed": False,
-                    "custom_input_quant": "Humming Triton FP8-E4M3 group128, one quant per original token",
+                    "custom_input_quant": (
+                        "Humming Triton FP8-E4M3 group128, one quant per original token"
+                        if args.custom_input_quant == "group128"
+                        else "Humming Triton rowwise FP8-E4M3 plus timed row-scale broadcast"
+                    ),
+                    "custom_input_quant_mode": args.custom_input_quant,
                     "flashinfer_input_quant": "CutlassHummingConfig native rowwise FP8-E4M3 after route expansion",
                     "common_weights": "same canonical Marlin-K8 MXFP4 payload and E8M0 scales; independently transformed at model load",
                     "route_scale": "custom applies 1.5 in fused reduction; FlashInfer receives topk weights pre-multiplied by 1.5",
@@ -475,7 +549,14 @@ def main() -> None:
         x_scale = torch.empty(
             (m, custom.HIDDEN // 128), dtype=torch.float32, device=device
         )
-        quant_check = quant_correctness(x_bf16, qx, x_scale)
+        row_scale = (
+            torch.empty((m, 1), dtype=torch.float32, device=device)
+            if args.custom_input_quant == "rowwise"
+            else None
+        )
+        quant_check = quant_correctness(
+            x_bf16, qx, x_scale, args.custom_input_quant, row_scale
+        )
 
         inner = custom.CapturedCase(
             m=m,
@@ -492,7 +573,9 @@ def main() -> None:
             lut=lut,
             intermediate_per_rank=intermediate_per_rank,
         )
-        custom_case = CustomBF16Case(x_bf16, inner)
+        custom_case = CustomBF16Case(
+            x_bf16, inner, args.custom_input_quant, row_scale
+        )
 
         fi_ids = topk_ids.clone()
         fi_weights = (topk_weights * custom.ROUTED_SCALING_FACTOR).contiguous()

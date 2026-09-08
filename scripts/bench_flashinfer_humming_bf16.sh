@@ -12,6 +12,7 @@ BENCH_WARMUP="${WARMUP_REPLAYS:-10}"
 BENCH_GPUS="${GPU_LIST:-0,1,2,3}"
 BENCH_PAIR="${PAIR_GRANULARITY:-batch}"
 BENCH_ROUTE="${ROUTE_PATTERN:-random}"
+BENCH_CUSTOM_QUANT="${CUSTOM_INPUT_QUANT:-group128}"
 BENCH_TAG="${1:-$(date +%Y%m%d_%H%M%S)}"
 BENCH_PORT=$((20000 + $(date +%N) / 1000 % 40000))
 BENCH_RESULT_DIR="${BENCH_REPO}/results/flashinfer_humming_bf16"
@@ -48,6 +49,7 @@ python -m torch.distributed.run \
   --replays "${BENCH_REPLAYS}" \
   --warmup-replays "${BENCH_WARMUP}" \
   --pair-granularity "${BENCH_PAIR}" \
+  --custom-input-quant "${BENCH_CUSTOM_QUANT}" \
   "${EXTRA_ARGS[@]}" \
   2>&1 | tee "${BENCH_LOG}"
 

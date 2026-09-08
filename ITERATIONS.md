@@ -18635,3 +18635,27 @@ maximum rank latency of a full CUDA-Graph replay.
   result, not as an exact-quant numerical comparison.  The remaining bounded
   diagnostic is matched rowwise quant on custom to establish how much of the
   6.2% output delta is solely quantization semantics.
+
+## Iteration 760 — matched rowwise BF16 input-quant diagnostic
+
+- **Change:** add an explicit `--custom-input-quant=rowwise` diagnostic.  It
+  invokes the public Humming rowwise FP8-E4M3 quant math once per original
+  token, then performs a timed broadcast of the one row dequant scale into the
+  custom GEMM's 32 group-scale slots.  Native `group128` remains the default.
+- **Benchmark:** TP4 M8 fallback screen, two outer batches x three cold-L2
+  graph replays per implementation, otherwise identical to iter758.
+- **Correctness:** custom FP8 bytes, row scale, and the 32-way broadcast are
+  all exact against `humming_ops.quant_input`.  Matching BF16 input quant
+  improves same-checkpoint cross-backend cosine from `0.998069` to `0.999488`
+  and rel-L2 from `0.062216` to `0.031990`.  The remaining delta is therefore
+  downstream, principally FlashInfer's rowwise intermediate quant versus the
+  custom fused group-128 SwiGLU quant.  Both TP reductions still pass their
+  NCCL checks.
+- **Provisional cold-L2 M8 latency (min/median/max ms):** FlashInfer fallback
+  `0.162400/0.163904/0.250912`; matched-rowwise custom
+  `0.075552/0.076352/0.173088`, a `2.14669x` median ratio.  Relative to native
+  group-128 custom in iter758 (`0.074928 ms`), the diagnostic adapter costs
+  about 1.90%; this small screen is not the formal result.
+- **Decision/next:** the user-requested BF16 input quant is now semantically
+  matched and timed.  Run the same autotuned five-point protocol as iter759
+  and report it alongside, not in place of, the native custom contract.
