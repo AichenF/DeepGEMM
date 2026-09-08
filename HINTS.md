@@ -107,3 +107,25 @@
   and cleanup.  The FP8 W13-to-W2 intermediate must remain in registers/shared
   memory.  Temporary FP32 W2 partial scratch may be reduced or eliminated by
   later iterations, but no new timed helper kernel is allowed.
+
+## 2026-09-08 supplemental BF16 serving-layer benchmark
+- This is a supplemental comparison only and does not replace the production
+  prequantized-FP8 entry contract above.
+- Compare current FlashInfer-main `CutlassHummingConfig` against the selected
+  same-source TP4 multi-kernel implementation from one shared BF16 `X`, shared
+  precomputed `topk_idx/topk_weights`, and one canonical raw MXFP4/E8M0 weight
+  payload transformed offline into each backend's required layout.
+- Preserve each backend's native serving path: FlashInfer keeps its original
+  route-expansion plus per-token online FP8 quantization; the custom graph adds
+  its existing group-128 BF16-to-FP8 quantization before route alignment.
+  Report the differing quantization semantics explicitly and include numerical
+  diagnostics; do not describe this supplement as an identical prequantized
+  FP8-input comparison.
+- Weight preparation, allocations, router/top-k selection, JIT/autotuning and
+  graph capture remain untimed. Both paths end in the same SGLang
+  `CustomAllReduceV2` instance and use the same TP4 rank-local shape.
+- Benchmark `M={8,16,32,64,128}` with paired CUDA Graph replay, TP max-rank
+  latency, and a separate excluded 256 MiB L2 clear before every measured
+  replay. Record correctness, launch traces, per-M min/median/max and the
+  equal-weight geometric mean. Store all code and results under
+  `/home/xutingz/fac`.
