@@ -669,6 +669,12 @@ static torch::Tensor make_sm120_tma_2d(
 static void register_sm120_routed_moe_apis(pybind11::module& module) {
     module.def("has_sm120_routed_moe", []() { return true; });
     module.def("get_sm120_routed_moe_layout", &get_sm120_routed_moe_layout);
+    module.def(
+        "prepare_sm120_fp8_fp4_routed_moe",
+        [](bool enable_phase_trace) {
+            (void)deep_gemm::prepare_sm120_fp8_fp4_routed_moe(enable_phase_trace);
+        },
+        pybind11::arg("enable_phase_trace") = false);
     pybind11::class_<SM120RoutedMoESession>(module, "SM120RoutedMoESession")
         .def(pybind11::init<
              std::uintptr_t, const pybind11::object&, int, int, int>(),

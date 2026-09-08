@@ -54,6 +54,15 @@ public:
     }
 };
 
+static std::shared_ptr<KernelRuntime> prepare_sm120_fp8_fp4_routed_moe(
+    bool enable_phase_trace) {
+    SM120FP8FP4RoutedMoERuntime::Args compile_args{
+        {}, LaunchArgs(1, 1), enable_phase_trace};
+    return compiler->build(
+        "sm120_fp8_fp4_routed_moe",
+        SM120FP8FP4RoutedMoERuntime::generate(compile_args));
+}
+
 namespace detail {
 
 static torch::Tensor require_cuda_tensor(
@@ -273,11 +282,7 @@ static void sm120_fp8_fp4_routed_moe(
     append_handle("ack_out_window");
     append_handle("ack_inbox_window");
 
-    SM120FP8FP4RoutedMoERuntime::Args compile_args{
-        {}, LaunchArgs(grid_ctas, kThreads), enable_phase_trace};
-    const auto runtime = compiler->build(
-        "sm120_fp8_fp4_routed_moe",
-        SM120FP8FP4RoutedMoERuntime::generate(compile_args));
+    const auto runtime = prepare_sm120_fp8_fp4_routed_moe(enable_phase_trace);
     SM120FP8FP4RoutedMoERuntime::Args launch_args{
         std::move(packed),
         LaunchArgs(grid_ctas, kThreads, kDynamicSharedMemory, 1, false, true),

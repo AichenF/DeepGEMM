@@ -145,6 +145,7 @@ class SM120RoutedMoESession:
         self._bound_workspace = None
         self._next_epoch = 0
         self._pending_launch = None
+        self._prepared_trace_modes: set[bool] = set()
         self._native = _C.SM120RoutedMoESession(
             int(backend._comm_ptr()), backend, self.rank, self.world_size, self.device.index
         )
@@ -485,6 +486,12 @@ def _fp8_fp4_routed_moe_sm120_locked(
                     (local_experts, hidden, intermediate // 2))
     _require_tensor(w2_scales, 'w2_down.scales', workspace.device, torch.int32,
                     (local_experts, intermediate // 128, hidden))
+
+    trace_mode = workspace.enable_phase_trace
+    if trace_mode not in session._prepared_trace_modes:
+        _C.prepare_sm120_fp8_fp4_routed_moe(trace_mode)
+        dist.barrier(group=session.group, device_ids=[session.device.index])
+        session._prepared_trace_modes.add(trace_mode)
 
     workspace._prepare_tensor_maps(w1_weight, w1_scales, w2_weight, w2_scales)
     arguments = dict(workspace._arguments)

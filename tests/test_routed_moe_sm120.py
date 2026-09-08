@@ -418,6 +418,7 @@ def _mock_public_launch_state():
     session._bound_workspace = None
     session._next_epoch = 0
     session._pending_launch = None
+    session._prepared_trace_modes = {False}
 
     workspace = object.__new__(adapter.SM120RoutedMoEWorkspace)
     workspace.device = session.device
@@ -488,7 +489,21 @@ def _launch_mock(session, workspace, inputs, weights):
 def test_sm120_public_launch_binds_one_workspace_and_advances_epoch(monkeypatch):
     session, workspace, inputs, weights = _mock_public_launch_state()
     calls = []
+    prepares = []
+    barriers = []
+    session.group = object()
+    session._prepared_trace_modes.clear()
     monkeypatch.setattr(torch.cuda, "current_device", lambda: None)
+    monkeypatch.setattr(
+        adapter._C,
+        "prepare_sm120_fp8_fp4_routed_moe",
+        lambda enable_phase_trace: prepares.append(enable_phase_trace),
+    )
+    monkeypatch.setattr(
+        adapter.dist,
+        "barrier",
+        lambda **kwargs: barriers.append(kwargs),
+    )
     monkeypatch.setattr(
         adapter._C,
         "sm120_fp8_fp4_routed_moe",
@@ -512,6 +527,8 @@ def test_sm120_public_launch_binds_one_workspace_and_advances_epoch(monkeypatch)
     assert session._bound_workspace is workspace
     assert workspace._bound_session() is session
     assert session._next_epoch == workspace._epoch == 2
+    assert prepares == [False]
+    assert barriers == [{"group": session.group, "device_ids": [session.device.index]}]
 
     other_workspace = copy.copy(workspace)
     other_workspace._closed = False
