@@ -973,6 +973,7 @@ sm120_fp8_fp4_routed_moe_impl(
 #endif
         }
     }
+    cooperative_groups::this_grid().sync();
     int grid_tid = bid * SM120RoutedMoEShape::kThreads + tid;
     int grid_threads = num_bids * SM120RoutedMoEShape::kThreads;
     #pragma unroll 1
