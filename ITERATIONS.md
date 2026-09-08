@@ -18659,3 +18659,35 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Decision/next:** the user-requested BF16 input quant is now semantically
   matched and timed.  Run the same autotuned five-point protocol as iter759
   and report it alongside, not in place of, the native custom contract.
+
+## Iteration 761 — formal matched-rowwise BF16 input-quant comparison
+
+- **Benchmark:** repeat iter759 exactly (TP4 GPUs 0-3, FlashInfer main
+  `866acb62d31c`, Torch 2.11, random fixed top-k6, six outer batches x 30
+  replays = 180 cold-L2 samples per implementation and M), changing only the
+  custom graph's BF16 input quant from native group-128 to matched rowwise plus
+  an explicit timed 32-slot scale broadcast.  CUTLASS remains autotuned.
+- **Correctness:** FP8 bytes, row scales, and broadcast scales are exact at
+  every M.  Both final all-reduces pass NCCL.  Cross-backend same-checkpoint
+  cosine is 0.999488..0.999525 and rel-L2 is 0.03082..0.03199.  Matching the
+  input quant halves iter759's ~6.2% discrepancy; the remaining ~3.1% is from
+  the non-matched intermediate-activation quant and accumulation details.
+- **Cold-L2 latency, FlashInfer/custom min/median/max ms:**
+  - M8: `0.114592/0.116496/0.148448` vs
+    `0.077024/0.078416/0.111936` (`1.48562x` FlashInfer/custom).
+  - M16: `0.165664/0.167776/0.188064` vs
+    `0.115808/0.117104/0.148256` (`1.43271x`).
+  - M32: `0.232832/0.235424/0.257952` vs
+    `0.174880/0.175968/0.198048` (`1.33788x`).
+  - M64: `0.332576/0.344224/0.363680` vs
+    `0.250432/0.258800/0.278976` (`1.33008x`).
+  - M128: `0.399040/0.414816/0.434944` vs
+    `0.305728/0.315536/0.334688` (`1.31464x`).
+- **Aggregate/comparison:** geometric means are FlashInfer `0.230950 ms` and
+  matched custom `0.167527 ms`, so custom is `1.37858x` faster.  The matched
+  adapter is 1.12% slower in geomean than the native group-128 custom graph
+  (`0.165669 ms`), while the substantive ranking is unchanged at every M.
+- **Decision:** accept this as the direct answer to the identical BF16-input
+  quant request.  Keep iter759 as the production-native supplemental table and
+  iter761 as the stricter input-quant-matched table; neither claims identical
+  intermediate quantization.
