@@ -41,7 +41,7 @@ pybind11_add_module(_C csrc/python_api.cpp)
 target_link_libraries(_C PRIVATE ${TORCH_LIBRARIES} torch_python)
 if(DG_WITH_NCCL_GIN)
     target_include_directories(_C PRIVATE ${DG_NCCL_ROOT}/include)
-    target_compile_definitions(_C PRIVATE DG_WITH_NCCL_GIN)
+    target_compile_definitions(_C PRIVATE DG_WITH_NCCL_GIN NCCL_HOSTLIB_ONLY)
     target_link_libraries(_C PRIVATE ${DG_NCCL_LIBRARY})
 endif()
 

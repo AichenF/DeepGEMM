@@ -31,7 +31,7 @@ cxx_flags = ['-std=c++17', '-O3', '-fPIC', '-Wno-psabi', '-Wno-deprecated-declar
 if DG_JIT_USE_RUNTIME_API:
     cxx_flags.append('-DDG_JIT_USE_RUNTIME_API')
 if DG_WITH_NCCL_GIN:
-    cxx_flags.append('-DDG_WITH_NCCL_GIN')
+    cxx_flags.extend(['-DDG_WITH_NCCL_GIN', '-DNCCL_HOSTLIB_ONLY'])
 
 # Sources
 current_dir = os.path.dirname(os.path.realpath(__file__))
