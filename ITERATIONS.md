@@ -18567,3 +18567,30 @@ maximum rank latency of a full CUDA-Graph replay.
 - **Decision/next:** preserve the runnable graph and communication evidence;
   fix and independently validate the common logical weight conversion before
   running autotune or reporting the five-point comparison.
+
+## Iteration 758 — fix CUTLASS/custom gated-W13 logical row order
+
+- **Change:** preserve the custom checkpoint interpretation `[gate, up]`, but
+  swap the two W13 row halves (and matching E8M0 scale rows) only while making
+  FlashInfer's canonical `[up, gate]` model-load view.  FC2 and every logical
+  payload/scale value remain shared.
+- **Benchmark:** repeat the exact iter757 TP4 M8 fallback screen: random top-k6,
+  two outer batches x three CUDA-Graph samples per implementation, separate
+  excluded 256 MiB cold-L2 clear before every replay.
+- **Correctness:** cross-backend cosine rises from `0.502829` to `0.998069` and
+  rel-L2 falls from `0.996739` to `0.062216`, confirming that gated-W13 order
+  was the material mapping error.  The residual difference is consistent with
+  the deliberately different online activation quantizers (FlashInfer native
+  rowwise after route expansion versus custom group-128 before expansion).
+  Custom quant remains byte/scale exact against its public Humming operator;
+  both all-reduce paths independently pass NCCL (cos >=0.999995,
+  rel-L2 <=0.00303).
+- **Cold-L2 M8 latency (min/median/max ms):** FlashInfer fallback
+  `0.162176/0.162480/0.252992`; custom multi
+  `0.073600/0.074928/0.084928`.  The median FlashInfer/custom ratio is
+  `2.16848x`, stable versus iter757 despite the corrected logical weights.
+- **Decision/next:** accept the canonical weight adapter.  Add a matched
+  rowwise-quant custom diagnostic (broadcasting one dequant scale across its
+  K-groups) to separate quantization-semantics error from GEMM error, then use
+  the native serving contracts for the formal autotuned five-point timing and
+  label the semantic difference explicitly.

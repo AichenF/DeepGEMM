@@ -184,12 +184,26 @@ def prepare_common_weights(
             device=device,
         )
         linear = marlin_to_linear_mxfp4(raw_marlin)
+        fi_raw_scale = raw_scale
+        if is_w13:
+            # The custom kernel's logical W13 rows are [gate, up].  CUTLASS
+            # Humming's canonical SwiGLU contract is [up, gate] (the unified
+            # reference splits ``up, gate = fc1.chunk(2)``), so swap only the
+            # FlashInfer model-load view while preserving identical logical
+            # matrices.
+            half_rows = rows // 2
+            linear = torch.cat(
+                (linear[:, half_rows:], linear[:, :half_rows]), dim=1
+            ).contiguous()
+            fi_raw_scale = torch.cat(
+                (raw_scale[:, half_rows:], raw_scale[:, :half_rows]), dim=1
+            ).contiguous()
         fi_weight, fi_scale, fi_residual = (
             preprocess_moe_weights_for_sm90_mixed_gemm_humming(
-                linear, raw_scale
+                linear, fi_raw_scale
             )
         )
-        del linear
+        del linear, fi_raw_scale
         c_weight, c_scale, c_global = prepare_custom_layer(
             raw_marlin, raw_scale, is_w13=is_w13
         )
