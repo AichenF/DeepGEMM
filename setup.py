@@ -23,12 +23,15 @@ DG_SKIP_CUDA_BUILD = int(os.getenv('DG_SKIP_CUDA_BUILD', '0')) == 1
 DG_FORCE_BUILD = int(os.getenv('DG_FORCE_BUILD', '0')) == 1
 DG_USE_LOCAL_VERSION = int(os.getenv('DG_USE_LOCAL_VERSION', '1')) == 1
 DG_JIT_USE_RUNTIME_API = int(os.environ.get('DG_JIT_USE_RUNTIME_API', '0')) == 1
+DG_WITH_NCCL_GIN = int(os.environ.get('DG_WITH_NCCL_GIN', '0')) == 1
 
 # Compiler flags
 cxx_flags = ['-std=c++17', '-O3', '-fPIC', '-Wno-psabi', '-Wno-deprecated-declarations',
              f'-D_GLIBCXX_USE_CXX11_ABI={int(torch.compiled_with_cxx11_abi())}']
 if DG_JIT_USE_RUNTIME_API:
     cxx_flags.append('-DDG_JIT_USE_RUNTIME_API')
+if DG_WITH_NCCL_GIN:
+    cxx_flags.append('-DDG_WITH_NCCL_GIN')
 
 # Sources
 current_dir = os.path.dirname(os.path.realpath(__file__))
@@ -42,6 +45,28 @@ build_include_dirs = [
 ]
 build_libraries = ['cudart', 'nvrtc']
 build_library_dirs = [f'{CUDA_HOME}/lib64']
+build_extra_link_args = []
+
+if DG_WITH_NCCL_GIN:
+    raw_nccl_root = os.environ.get('DG_NCCL_ROOT')
+    if not raw_nccl_root:
+        raise RuntimeError('DG_WITH_NCCL_GIN=1 requires DG_NCCL_ROOT')
+    nccl_root = Path(raw_nccl_root).expanduser()
+    nccl_include = nccl_root / 'include'
+    nccl_library = next(
+        (path / name
+         for path in (nccl_root / 'lib', nccl_root / 'lib64')
+         for name in ('libnccl.so', 'libnccl.so.2')
+         if (path / name).is_file()),
+        None,
+    )
+    if not (nccl_include / 'nccl_device.h').is_file() or nccl_library is None:
+        raise RuntimeError(
+            'DG_WITH_NCCL_GIN=1 requires DG_NCCL_ROOT with '
+            'include/nccl_device.h and libnccl.so or libnccl.so.2'
+        )
+    build_include_dirs.append(str(nccl_include))
+    build_extra_link_args.append(str(nccl_library))
 third_party_include_dirs = [
     'third-party/cutlass/include/cute',
     'third-party/cutlass/include/cutlass',
@@ -108,7 +133,8 @@ def get_ext_modules():
                           include_dirs=build_include_dirs,
                           libraries=build_libraries,
                           library_dirs=build_library_dirs,
-                          extra_compile_args=cxx_flags)]
+                          extra_compile_args=cxx_flags,
+                          extra_link_args=build_extra_link_args)]
 
 
 class CustomBuildPy(build_py):
@@ -140,8 +166,14 @@ class CustomBuildPy(build_py):
     def generate_default_envs(self):
         code = '# Pre-installed environment variables\n'
         code += 'persistent_envs = dict()\n'
-        for name in ('DG_JIT_CACHE_DIR', 'DG_JIT_PRINT_COMPILER_COMMAND', 'DG_JIT_CPP_STANDARD'):
-            code += f"persistent_envs['{name}'] = '{os.environ[name]}'\n" if name in os.environ else ''
+        for name in (
+            'DG_JIT_CACHE_DIR',
+            'DG_JIT_PRINT_COMPILER_COMMAND',
+            'DG_JIT_CPP_STANDARD',
+            'DG_NCCL_ROOT',
+        ):
+            if name in os.environ:
+                code += f'persistent_envs[{name!r}] = {os.environ[name]!r}\n'
 
         with open(os.path.join(self.build_lib, 'deep_gemm', 'envs.py'), 'w') as f:
             f.write(code)

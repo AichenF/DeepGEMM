@@ -1,13 +1,16 @@
 #pragma once
 
 #include <ATen/cuda/CUDAContext.h>
+#include <algorithm>
 #include <cuda_runtime.h>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <nvrtc.h>
 #include <regex>
 #include <string>
+#include <vector>
 
 #include "../utils/exception.hpp"
 #include "../utils/format.hpp"
@@ -212,6 +215,39 @@ public:
                             "--compiler-options=-fPIC,-O3,-fconcepts,-Wno-deprecated-declarations,-Wno-abi "
                             "-O3 --expt-relaxed-constexpr --expt-extended-lambda",
                             flags, library_include_path.c_str(), arch_flag);
+
+#ifdef DG_WITH_NCCL_GIN
+        if (const auto nccl_root = get_env<std::string>("DG_NCCL_ROOT"); not nccl_root.empty()) {
+            const auto include_path = std::filesystem::path(nccl_root) / "include";
+            const auto device_header = include_path / "nccl_device.h";
+            DG_HOST_ASSERT(std::filesystem::is_regular_file(device_header) and
+                           "DG_NCCL_ROOT must contain include/nccl_device.h");
+
+            std::vector<std::filesystem::path> headers{device_header};
+            const auto device_include_path = include_path / "nccl_device";
+            if (std::filesystem::is_directory(device_include_path)) {
+                for (const auto& entry:
+                     std::filesystem::recursive_directory_iterator(device_include_path)) {
+                    if (entry.is_regular_file())
+                        headers.push_back(entry.path());
+                }
+            }
+            std::sort(headers.begin(), headers.end());
+
+            std::vector<char> contents;
+            for (const auto& header: headers) {
+                const auto relative_path = std::filesystem::relative(header, include_path).string();
+                contents.insert(contents.end(), relative_path.begin(), relative_path.end());
+                contents.push_back('\0');
+                std::ifstream stream(header, std::ios::binary);
+                contents.insert(
+                    contents.end(), std::istreambuf_iterator<char>(stream),
+                    std::istreambuf_iterator<char>());
+            }
+            flags += fmt::format(" -I{} -DDG_NCCL_DEVICE_HEADER_{}=1",
+                                 include_path.c_str(), get_hex_digest(contents));
+        }
+#endif
     }
 
     void compile(const std::string &code, const std::filesystem::path& dir_path,

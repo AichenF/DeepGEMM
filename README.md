@@ -139,6 +139,24 @@ deep_gemm.fp8_fp4_mega_moe(y, transformed_l1, transformed_l2, buffer)
 
 For the full example with multi-process setup and benchmarking, please refer to `tests/test_mega_moe.py`.
 
+##### SM120 routed W4A8 with NCCL GIN
+
+The SM120 fast path targets the DeepSeek V4 Flash routed-expert shape: 256
+experts, top-6 routing, hidden size 4096, and intermediate size 2048. W1
+contains the gate and up projections, W2 is the down projection, activations
+use MXFP8 E4M3, and weights use MXFP4 E2M1 with UE8M0 K32 scales. The kernel
+fuses dispatch, W1, SwiGLU and requantization, W2, result exchange, and routed
+top-k reduction. The router and shared-expert computation are outside this
+API.
+
+The current implementation requires an eight-rank EP group, SM120 GPUs, and
+NCCL 2.30.7 with GIN Device API support. Build it with
+`DG_WITH_NCCL_GIN=1` and set `DG_NCCL_ROOT` to that NCCL installation. Create
+one `SM120RoutedMoESession` per process group and reuse a
+`SM120RoutedMoEWorkspace` across launches. See
+`tests/test_routed_moe_sm120_e2e.py` for exact distributed correctness coverage
+and `tests/bench_routed_moe_sm120.py` for max-rank prefill measurements.
+
 ##### SM90 FP8xFP8
 
 The SM90 implementation uses FP8 E4M3 activations and weights. It launches separate linear 1 and linear 2 kernels while preserving the same overlapped EP dispatch/combine contract. Allocate the SM90 symmetric buffer and use the SM90 weight transform and entry point:

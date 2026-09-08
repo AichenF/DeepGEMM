@@ -93,6 +93,9 @@ from .mega import (
     fp8_fp4_mega_moe,
     fp8_mega_moe,
     bf16_mega_moe,
+    SM120RoutedMoESession,
+    SM120RoutedMoEWorkspace,
+    fp8_fp4_routed_moe_sm120,
 )
 
 # Some utils

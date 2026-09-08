@@ -17,6 +17,18 @@ find_package(CUDAToolkit REQUIRED)
 find_package(pybind11 REQUIRED)
 find_package(Torch REQUIRED)
 
+option(DG_WITH_NCCL_GIN "Enable the SM120 NCCL GIN routed MoE runtime" OFF)
+if(DG_WITH_NCCL_GIN)
+    if(NOT DEFINED ENV{DG_NCCL_ROOT})
+        message(FATAL_ERROR "DG_WITH_NCCL_GIN requires DG_NCCL_ROOT")
+    endif()
+    set(DG_NCCL_ROOT "$ENV{DG_NCCL_ROOT}")
+    find_library(DG_NCCL_LIBRARY
+        NAMES nccl libnccl.so.2
+        PATHS ${DG_NCCL_ROOT}/lib ${DG_NCCL_ROOT}/lib64
+        NO_DEFAULT_PATH REQUIRED)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CUDA_STANDARD 20)
 
@@ -27,6 +39,11 @@ link_directories(${TORCH_INSTALL_PREFIX}/lib ${CUDA_TOOLKIT_ROOT_DIR}/lib64 ${CU
 # The main Python API entrance
 pybind11_add_module(_C csrc/python_api.cpp)
 target_link_libraries(_C PRIVATE ${TORCH_LIBRARIES} torch_python)
+if(DG_WITH_NCCL_GIN)
+    target_include_directories(_C PRIVATE ${DG_NCCL_ROOT}/include)
+    target_compile_definitions(_C PRIVATE DG_WITH_NCCL_GIN)
+    target_link_libraries(_C PRIVATE ${DG_NCCL_LIBRARY})
+endif()
 
 # Enable kernel code indexing with CMake-based IDEs
 cuda_add_library(deep_gemm_indexing_cuda STATIC csrc/indexing/main.cu)

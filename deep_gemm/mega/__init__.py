@@ -358,3 +358,10 @@ def fp8_mega_moe(y: torch.Tensor,
         activation, activation_clamp,
         fast_math
     )
+
+
+from .routed_moe_sm120 import (
+    SM120RoutedMoESession,
+    SM120RoutedMoEWorkspace,
+    fp8_fp4_routed_moe_sm120,
+)
