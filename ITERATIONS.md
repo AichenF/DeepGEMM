@@ -18538,3 +18538,32 @@ maximum rank latency of a full CUDA-Graph replay.
   non-single-launch compile guard (or use the byte-identical known-good
   multi-kernel source), rerun the same M8 gate, then autotune and collect all
   M={8,16,32,64,128}.  This iteration establishes no performance claim.
+
+## Iteration 757 — BF16-serving M8 graph runs; shared-checkpoint mapping fails
+
+- **Change:** keep `V4_SINGLE_LAUNCH_TP4=0`, but set only the dormant-template
+  `V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE=1` and
+  `V4_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI=1` in the new launcher.  This makes
+  the discarded C++ single-launch branches well formed without changing any
+  kernel dispatched by the selected multi-kernel path.
+- **Benchmark:** TP4 GPUs 0-3, M=8, random precomputed top-k6 routes, fallback
+  CUTLASS tactic, two outer batches x three samples, CUDA Graph, separate
+  256 MiB cold-L2 clear before every replay and outside event timing.  Timed
+  contract is BF16 input through online quant, FC1/SwiGLU/FC2/route reduction,
+  and all-reduce.
+- **Bring-up correctness:** the custom group-128 online quant is byte exact
+  against public `humming_ops.quant_input` and its FP32 scale max error is 0.
+  Custom fused multicast-push all-reduce and FlashInfer stock CARv2 both pass
+  their independent NCCL checks (cos >=0.999995, rel-L2 <=0.00303).
+- **Provisional cold-L2 M8 latency (min/median/max ms):** FlashInfer fallback
+  `0.161632/0.162608/0.223744`; custom multi
+  `0.073376/0.074992/0.089600`, nominal FlashInfer/custom ratio `2.1683x`.
+- **Blocking validation failure:** despite deriving both layouts from one raw
+  payload/scale image, cross-backend output cosine is only `0.502829` with
+  rel-L2 `0.996739`.  Therefore the provisional latency is useful only as a
+  launch/overhead screen and is not promoted as an apples-to-apples result.
+  The likely cause is canonical nibble or gated-W13 row ordering in the custom
+  -> FlashInfer model-load adapter.
+- **Decision/next:** preserve the runnable graph and communication evidence;
+  fix and independently validate the common logical weight conversion before
+  running autotune or reporting the five-point comparison.

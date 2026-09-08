@@ -26,6 +26,12 @@ export MASTER_PORT="${BENCH_PORT}"
 export FLASHINFER_DISABLE_VERSION_CHECK=1
 export FLASHINFER_WORKSPACE_BASE="${BENCH_CACHE}"
 export V4_SINGLE_LAUNCH_TP4=0
+# The restored source still parses the dormant single-launch template while
+# building the selected multi-kernel extension.  Declare its compact W13
+# argument record so discarded C++ branches remain well-formed; these two
+# flags do not change any kernel launched by the multi-kernel path.
+export V4_SINGLE_LAUNCH_W13_PHASE_NOINLINE=1
+export V4_SINGLE_LAUNCH_W13_PHASE_COMPACT_ABI=1
 export PYTHONPATH=/home/xutingz/fac/.tpmoe_tmp:/home/xutingz/fac/sglang_carv2_overlay_2538def:/tmp/tpmoe_pydeps:${BENCH_REPO}:${BENCH_REPO}/bench:/lustre/raplab/client/xutingz/workspace/dsv4pro_public_sbo_repro_20260826/source/humming-v0.1.12
 
 EXTRA_ARGS=()
