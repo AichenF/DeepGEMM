@@ -18594,3 +18594,44 @@ maximum rank latency of a full CUDA-Graph replay.
   K-groups) to separate quantization-semantics error from GEMM error, then use
   the native serving contracts for the formal autotuned five-point timing and
   label the semantic difference explicitly.
+
+## Iteration 759 — formal autotuned native BF16-serving comparison
+
+- **Benchmark:** FlashInfer main `866acb62d31c` / package 0.6.18 and the
+  selected custom multi-kernel graph on TP4 GPUs 0-3, Torch 2.11.0+cu129,
+  H20-3e (78 SM), random fixed top-k6 routes, M={8,16,32,64,128}.  Every point
+  uses six AB/BA outer batches x 30 replays = 180 samples per implementation.
+  Each replay has its own 256 MiB cold-L2 clear excluded from CUDA-event
+  timing.  Route construction, model-load transforms, CUTLASS autotuning,
+  graph capture, and warmup are excluded.
+- **Timed contract:** BF16 X -> online FP8-E4M3 quant -> MXFP4 W13 -> SwiGLU
+  and intermediate quant -> MXFP4 W2 -> weighted route reduction -> TP
+  all-reduce.  FlashInfer uses unmodified `CutlassHummingConfig` native
+  rowwise quant after route expansion plus stock SGLang CARv2.  Custom uses
+  its native group-128 quant once per original token; M<=32 fuses k6 combine
+  with multicast push and M>=64 invokes stock CARv2.
+- **Correctness:** custom online quant is byte exact and scale exact against
+  public Humming group-128 quant for every M.  Both final communication paths
+  pass independent NCCL checks at every point (minimum cosine >0.999995,
+  maximum rel-L2 <0.00303).  Same-checkpoint cross-backend cosine is
+  0.998052..0.998113 and rel-L2 is 0.06143..0.06245; this is explicitly a
+  native-quant semantic difference, not bitwise-equivalent layer output.
+- **Cold-L2 latency, FlashInfer/custom min/median/max ms:**
+  - M8: `0.114560/0.116320/0.148192` vs
+    `0.075296/0.076848/0.090624` (`1.51364x` FlashInfer/custom).
+  - M16: `0.165504/0.167344/0.183808` vs
+    `0.114336/0.115264/0.130656` (`1.45183x`).
+  - M32: `0.232928/0.235552/0.267648` vs
+    `0.173152/0.174336/0.191296` (`1.35114x`).
+  - M64: `0.333536/0.344608/0.376384` vs
+    `0.249152/0.256928/0.273760` (`1.34126x`).
+  - M128: `0.400800/0.416448/0.437312` vs
+    `0.305952/0.314544/0.373440` (`1.32397x`).
+- **Aggregate/tactics:** geometric means are FlashInfer `0.231019 ms` and
+  custom `0.165669 ms`, so custom is `1.39446x` faster.  CUTLASS selected W13
+  tactic 117 everywhere; W2 is 243 at M8 and predominantly 241 for M>=16
+  (one max-rank process occasionally selected 243 at M32/M128).
+- **Decision:** retain this as the native-serving supplementary performance
+  result, not as an exact-quant numerical comparison.  The remaining bounded
+  diagnostic is matched rowwise quant on custom to establish how much of the
+  6.2% output delta is solely quantization semantics.
