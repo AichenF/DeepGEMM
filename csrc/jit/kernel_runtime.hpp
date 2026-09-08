@@ -17,12 +17,19 @@ struct LaunchArgs {
     int smem_size;
     int cluster_dim;
     bool enable_pdl;
+    bool cooperative;
 
-    LaunchArgs(const int& grid_dim_x, const int& num_threads, const int& smem_size = 0, const int& cluster_dim = 1, const bool& enable_pdl = true):
-        grid_dim({grid_dim_x, 1}), num_threads(num_threads), smem_size(smem_size), cluster_dim(cluster_dim), enable_pdl(enable_pdl) {}
+    LaunchArgs(const int& grid_dim_x, const int& num_threads, const int& smem_size = 0,
+               const int& cluster_dim = 1, const bool& enable_pdl = true,
+               const bool& cooperative = false):
+        grid_dim({grid_dim_x, 1}), num_threads(num_threads), smem_size(smem_size),
+        cluster_dim(cluster_dim), enable_pdl(enable_pdl), cooperative(cooperative) {}
 
-    LaunchArgs(const std::pair<int, int>& grid_dim, const int& num_threads, const int& smem_size = 0, const int& cluster_dim = 1, const bool& enable_pdl = true):
-        grid_dim(grid_dim), num_threads(num_threads), smem_size(smem_size), cluster_dim(cluster_dim), enable_pdl(enable_pdl) {}
+    LaunchArgs(const std::pair<int, int>& grid_dim, const int& num_threads, const int& smem_size = 0,
+               const int& cluster_dim = 1, const bool& enable_pdl = true,
+               const bool& cooperative = false):
+        grid_dim(grid_dim), num_threads(num_threads), smem_size(smem_size),
+        cluster_dim(cluster_dim), enable_pdl(enable_pdl), cooperative(cooperative) {}
 };
 
 class KernelRuntime final {
@@ -150,7 +157,8 @@ public:
                                1};
         const dim3 block_dim = {static_cast<unsigned>(launch_args.num_threads), 1, 1};
         auto config = construct_launch_config(kernel, stream, launch_args.smem_size,
-                                              grid_dim, block_dim, launch_args.cluster_dim, launch_args.enable_pdl);
+                                              grid_dim, block_dim, launch_args.cluster_dim,
+                                              launch_args.enable_pdl, launch_args.cooperative);
 
         // Launch in the derived class
         if (get_env<int>("DG_JIT_DEBUG")) {

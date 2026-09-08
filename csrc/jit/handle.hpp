@@ -2,6 +2,7 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <array>
 #include <dlfcn.h>
 #include <filesystem>
 
@@ -50,8 +51,11 @@ DECL_LAZY_CUDA_DRIVER_FUNCTION(cuTensorMapEncodeTiled);
 // Use CUDA runtime API
 using LibraryHandle = cudaLibrary_t;
 using KernelHandle = cudaKernel_t;
-using LaunchConfigHandle = cudaLaunchConfig_t;
 using LaunchAttrHandle = cudaLaunchAttribute;
+struct LaunchConfigHandle {
+    cudaLaunchConfig_t config{};
+    std::array<LaunchAttrHandle, 3> attrs{};
+};
 
 #define DG_CUDA_UNIFIED_CHECK DG_CUDA_RUNTIME_CHECK
 
@@ -72,27 +76,29 @@ static void unload_library(const LibraryHandle& library) {
     DG_HOST_ASSERT(error == cudaSuccess or error == cudaErrorCudartUnloading);
 }
 
-static LaunchConfigHandle construct_launch_config(const KernelHandle& kernel,
-                                                  const cudaStream_t& stream, const int& smem_size,
-                                                  const dim3& grid_dim, const dim3& block_dim, const int& cluster_dim, const bool& enable_pdl) {
+static LaunchConfigHandle construct_launch_config(
+        const KernelHandle& kernel, const cudaStream_t& stream,
+        const int& smem_size, const dim3& grid_dim, const dim3& block_dim,
+        const int& cluster_dim, const bool& enable_pdl,
+        const bool& cooperative) {
     if (smem_size > 0)
         DG_CUDA_RUNTIME_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
-    LaunchConfigHandle config;
+    LaunchConfigHandle launch_config;
+    auto& config = launch_config.config;
     config.gridDim = grid_dim;
     config.blockDim = block_dim;
     config.dynamicSmemBytes = smem_size;
     config.stream = stream;
 
     // Create attributes
-    // NOTES: must use `static` or the `attr` will be deconstructed
-    static LaunchAttrHandle attrs[2];
+    auto& attrs = launch_config.attrs;
     config.numAttrs = 0;
-    config.attrs = attrs;
+    config.attrs = nullptr;
 
     // Cluster size
     if (cluster_dim > 1) {
-        auto& attr = attrs[config.numAttrs ++];
+        auto& attr = attrs[config.numAttrs++];
         attr.id = cudaLaunchAttributeClusterDimension;
         attr.val.clusterDim = {static_cast<unsigned>(cluster_dim), 1, 1};
     }
@@ -104,21 +110,44 @@ static LaunchConfigHandle construct_launch_config(const KernelHandle& kernel,
         attr.val.programmaticStreamSerializationAllowed = 1;
     }
 
-    return config;
+    if (cooperative) {
+        auto& attr = attrs[config.numAttrs ++];
+        attr.id = cudaLaunchAttributeCooperative;
+        attr.val.cooperative = 1;
+    }
+
+    return launch_config;
 }
 
 template<typename... ActTypes>
-static auto launch_kernel(const KernelHandle& kernel, const LaunchConfigHandle& config, ActTypes&&... args) {
+static auto launch_kernel(
+        const KernelHandle& kernel, const LaunchConfigHandle& launch_config,
+        ActTypes&&... args) {
+    auto config = launch_config.config;
+    auto attrs = launch_config.attrs;
+    config.attrs = attrs.data();
     void *ptr_args[] = { &args... };
     return cudaLaunchKernelExC(&config, kernel, ptr_args);
+}
+
+static auto launch_kernel(
+        const KernelHandle& kernel, const LaunchConfigHandle& launch_config,
+        void** args) {
+    auto config = launch_config.config;
+    auto attrs = launch_config.attrs;
+    config.attrs = attrs.data();
+    return cudaLaunchKernelExC(&config, kernel, args);
 }
 
 #else
 
 // Use CUDA driver API
 using KernelHandle = CUfunction;
-using LaunchConfigHandle = CUlaunchConfig;
 using LaunchAttrHandle = CUlaunchAttribute;
+struct LaunchConfigHandle {
+    CUlaunchConfig config{};
+    std::array<LaunchAttrHandle, 3> attrs{};
+};
 
 // `cuLibraryEnumerateKernels` is supported since CUDA Driver API 12.4
 #if CUDA_VERSION >= 12040
@@ -171,13 +200,16 @@ static void unload_library(const LibraryHandle& library) {
     DG_HOST_ASSERT(error == CUDA_SUCCESS or error == CUDA_ERROR_DEINITIALIZED);
 }
 
-static LaunchConfigHandle construct_launch_config(const KernelHandle& kernel,
-                                                 const cudaStream_t& stream, const int& smem_size,
-                                                 const dim3& grid_dim, const dim3& block_dim, const int& cluster_dim, const bool& enable_pdl) {
+static LaunchConfigHandle construct_launch_config(
+        const KernelHandle& kernel, const cudaStream_t& stream,
+        const int& smem_size, const dim3& grid_dim, const dim3& block_dim,
+        const int& cluster_dim, const bool& enable_pdl,
+        const bool& cooperative) {
     if (smem_size > 0)
         DG_CUDA_DRIVER_CHECK(lazy_cuFuncSetAttribute(kernel, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, smem_size));
 
-    LaunchConfigHandle config;
+    LaunchConfigHandle launch_config;
+    auto& config = launch_config.config;
     config.gridDimX = grid_dim.x;
     config.gridDimY = grid_dim.y;
     config.gridDimZ = grid_dim.z;
@@ -188,14 +220,13 @@ static LaunchConfigHandle construct_launch_config(const KernelHandle& kernel,
     config.hStream = stream;
     
     // Create attributes
-    // NOTES: must use `static` or the `attr` will be deconstructed
-    static LaunchAttrHandle attrs[2];
+    auto& attrs = launch_config.attrs;
     config.numAttrs = 0;
-    config.attrs = attrs;
+    config.attrs = nullptr;
 
     // Cluster size
     if (cluster_dim > 1) {
-        auto& attr = attrs[config.numAttrs ++];
+        auto& attr = attrs[config.numAttrs++];
         attr.id = CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION;
         attr.value.clusterDim.x = static_cast<unsigned>(cluster_dim);
         attr.value.clusterDim.y = 1;
@@ -208,14 +239,33 @@ static LaunchConfigHandle construct_launch_config(const KernelHandle& kernel,
         attr.id = CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION;
         attr.value.programmaticStreamSerializationAllowed = 1;
     }
+    if (cooperative) {
+        auto& attr = attrs[config.numAttrs ++];
+        attr.id = CU_LAUNCH_ATTRIBUTE_COOPERATIVE;
+        attr.value.cooperative = 1;
+    }
 
-    return config;
+    return launch_config;
 }
 
 template<typename... ActTypes>
-static auto launch_kernel(const KernelHandle& kernel, const LaunchConfigHandle& config, ActTypes&&... args) {
+static auto launch_kernel(
+        const KernelHandle& kernel, const LaunchConfigHandle& launch_config,
+        ActTypes&&... args) {
+    auto config = launch_config.config;
+    auto attrs = launch_config.attrs;
+    config.attrs = attrs.data();
     void *ptr_args[] = { &args... };
     return lazy_cuLaunchKernelEx(&config, kernel, ptr_args, nullptr);
+}
+
+static auto launch_kernel(
+        const KernelHandle& kernel, const LaunchConfigHandle& launch_config,
+        void** args) {
+    auto config = launch_config.config;
+    auto attrs = launch_config.attrs;
+    config.attrs = attrs.data();
+    return lazy_cuLaunchKernelEx(&config, kernel, args, nullptr);
 }
 #endif
 
