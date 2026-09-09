@@ -151,6 +151,14 @@ __device__ __forceinline__ void dequant_braided_quad(
 
 template <
     uint32_t kNumSMs,
+    // Shape is a template parameter, not a baked-in constant. The kernel body
+    // was already written against these names; only the wrapper hardcoded the
+    // H200 384-expert / 6144-hidden model, which locked out every other shape
+    // (e.g. DeepSeek-V4-Flash: 4096 hidden, 256 experts, topk 6).
+    uint32_t kHidden,
+    uint32_t kIntermediateHidden,
+    uint32_t kNumExperts,
+    uint32_t kNumTopk,
     uint32_t kNumMaxTokensPerRank,
     uint32_t kNumExpertsPerWave,
     uint32_t BLOCK_M,
@@ -180,15 +188,16 @@ sm90_mxfp4_mega_moe_h200_fused_impl(
         const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weights,
         const float* __restrict__ l1_global_scales,
         const float* __restrict__ l2_global_scales) {
-    constexpr uint32_t kHidden = 6144;
-    constexpr uint32_t kIntermediateHidden = 2048;
-    constexpr uint32_t kNumExperts = 384;
-    constexpr uint32_t kNumTopk = 8;
     constexpr uint32_t BLOCK_K = 128;
     constexpr uint32_t kNumDispatchThreads = 64;
     constexpr uint32_t kNumNonEpilogueThreads = 64;
     constexpr uint32_t kNumEpilogueThreads = 256;
-    constexpr uint32_t kNumRanks = 8;
+    constexpr uint32_t kNumRanks = 8;   // SymBuffer<8> is still fixed
+    DG_STATIC_ASSERT(kNumExperts % kNumRanks == 0,
+                     "Experts must divide evenly across ranks");
+    DG_STATIC_ASSERT(kHidden % 128 == 0, "Hidden must be a multiple of BLOCK_K");
+    DG_STATIC_ASSERT(kIntermediateHidden % 128 == 0,
+                     "Intermediate hidden must be a multiple of BLOCK_K");
     constexpr uint32_t L1_SHAPE_N = kIntermediateHidden * 2;
     constexpr uint32_t L1_SHAPE_K = kHidden;
     constexpr uint32_t L2_SHAPE_N = kHidden;

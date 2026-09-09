@@ -19,6 +19,12 @@ class SM90MXFP4H200FusedRuntime final
     : public LaunchRuntime<SM90MXFP4H200FusedRuntime> {
 public:
     struct Args {
+        // Shape is part of the kernel signature now (see the .cuh template
+        // parameter list), so it must be part of the JIT cache key too.
+        int hidden;
+        int intermediate_hidden;
+        int num_experts;
+        int num_topk;
         int num_max_tokens_per_rank;
         float activation_clamp;
         bool fast_math;
@@ -66,6 +72,10 @@ using namespace deep_gemm;
 static void __instantiate_kernel() {{
     auto ptr = reinterpret_cast<void*>(&{}<
         /* kNumSMs */ {},
+        /* kHidden */ {},
+        /* kIntermediateHidden */ {},
+        /* kNumExperts */ {},
+        /* kNumTopk */ {},
         /* kNumMaxTokensPerRank */ {},
         /* kNumExpertsPerWave */ {},
         /* BLOCK_M */ {},
@@ -82,6 +92,10 @@ static void __instantiate_kernel() {{
             kernel_header,
             "sm90_mxfp4_mega_moe_h200_fused_impl",
             args.launch_args.grid_dim.first,
+            args.hidden,
+            args.intermediate_hidden,
+            args.num_experts,
+            args.num_topk,
             args.num_max_tokens_per_rank,
             args.config.num_experts_per_wave,
             args.config.block_m,
@@ -192,6 +206,10 @@ static void sm90_mxfp4_h200_fused_mega_moe(
         l2_global_scales->data_ptr<float>() : nullptr;
 
     const SM90MXFP4H200FusedRuntime::Args args = {
+        .hidden = hidden,
+        .intermediate_hidden = intermediate_hidden,
+        .num_experts = num_experts,
+        .num_topk = num_topk,
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
