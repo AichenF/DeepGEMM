@@ -44,28 +44,17 @@ struct ScaledLut {
     std::uint32_t y;
 };
 
-// Byte 0 of the base table is magnitude 0. Filling it with a nonzero exponent
-// keeps the fast path's subtract from borrowing across the lane boundary; the
-// lane is masked off after the add.
-static constexpr uint32_t kBaseLutXFilled = 0x3c383030u;
-
-DG_MXFP4_INLINE ScaledLut make_scaled_lut_general(int k) {
-    const std::uint32_t magnitude = static_cast<std::uint32_t>(k >= 0 ? k : -k) * 8u;
-    const std::uint32_t delta = (magnitude > 255u ? 255u : magnitude) * 0x01010101u;
-    ScaledLut lut;
-    if (k >= 0) {
-        lut.x = __vminu4(__vaddus4(kBaseLutX, delta), kE4M3MaxBytes) & 0xffffff00u;
-        lut.y = __vminu4(__vaddus4(kBaseLutY, delta), kE4M3MaxBytes);
-    } else {
-        const std::uint32_t x = __vsubus4(kBaseLutX, delta);
-        const std::uint32_t y = __vsubus4(kBaseLutY, delta);
-        lut.x = x & __vcmpgeu4(x, kMinNormalBytes);
-        lut.y = y & __vcmpgeu4(y, kMinNormalBytes);
-    }
-    return lut;
-}
-
-// Fold scale 2^(code - 127) into the base table.
+// Fold scale 2^(code - 127) into the base table -- branchless.
+//
+// k's sign and magnitude both come from the weight group's own scale byte, so
+// they vary per element and are independent across the 32 lanes of a warp
+// (each lane dequantizes a different B-tile row). An `if (k >= 0)` or
+// `if (in fast range)` here is therefore not a rare/uniform branch: whenever
+// two lanes in the same warp fall on different sides, the SM serializes them,
+// and that scalar branch cost was found (via SASS inspection -- @!P0 BRA in
+// the compiled make_scaled_lut) to dominate the two saturating vadds it was
+// meant to save. So both signs are computed unconditionally and blended with
+// an arithmetic mask (SEL/PRMT), never a control-flow branch.
 //
 // k >= 0: saturating byte add, then clamp to 448. Byte 0 of x is magnitude 0
 //         and must stay zero, so it is masked off -- adding to it would
@@ -80,26 +69,24 @@ DG_MXFP4_INLINE ScaledLut make_scaled_lut_general(int k) {
 // bytes.
 DG_MXFP4_INLINE ScaledLut make_scaled_lut(std::uint32_t scale_ue8m0) {
     const int k = static_cast<int>(scale_ue8m0 & 0xffu) - 127;
+    const std::uint32_t magnitude = static_cast<std::uint32_t>(k >= 0 ? k : -k) * 8u;
+    const std::uint32_t delta = (magnitude > 255u ? 255u : magnitude) * 0x01010101u;
 
-    // Fast path. The seven nonzero base bytes hold exponent fields 6..9, so for
-    // k in [-5, 6] every byte stays inside [0x08, 0x7c]: no byte overflows into
-    // its neighbour and a plain 32-bit add is exact. kBaseLutXFilled carries
-    // 0x30 in byte 0 purely so the subtract cannot borrow out of the magnitude-0
-    // lane; that lane is masked back to zero afterwards.
-    // Three instructions, no table, no memory traffic.
-    if (__builtin_expect(k >= -5 && k <= 6, 1)) {
-        const std::uint32_t delta = static_cast<std::uint32_t>(k * 8) * 0x01010101u;
-        ScaledLut lut;
-        lut.x = (kBaseLutXFilled + delta) & 0xffffff00u;
-        lut.y = kBaseLutY + delta;
-        return lut;
-    }
+    const std::uint32_t pos_x = __vminu4(__vaddus4(kBaseLutX, delta), kE4M3MaxBytes) & 0xffffff00u;
+    const std::uint32_t pos_y = __vminu4(__vaddus4(kBaseLutY, delta), kE4M3MaxBytes);
 
-    // Slow path: the group's scale pushes part of the table out of E4M3's
-    // normal range, so bytes need individual saturation or flushing. Reachable
-    // but rare -- a weight group whose maximum is below 6 * 2^-5, or above
-    // 6 * 2^6, lands here.
-    return make_scaled_lut_general(k);
+    const std::uint32_t neg_x_raw = __vsubus4(kBaseLutX, delta);
+    const std::uint32_t neg_y_raw = __vsubus4(kBaseLutY, delta);
+    const std::uint32_t neg_x = neg_x_raw & __vcmpgeu4(neg_x_raw, kMinNormalBytes);
+    const std::uint32_t neg_y = neg_y_raw & __vcmpgeu4(neg_y_raw, kMinNormalBytes);
+
+    // All-1s if k < 0, all-0s otherwise -- an arithmetic mask, not a predicate
+    // on control flow, so ptxas has nothing to branch on.
+    const std::uint32_t neg_mask = static_cast<std::uint32_t>(-(k < 0));
+    ScaledLut lut;
+    lut.x = (pos_x & ~neg_mask) | (neg_x & neg_mask);
+    lut.y = (pos_y & ~neg_mask) | (neg_y & neg_mask);
+    return lut;
 }
 
 // Decode eight packed FP4 nibbles (one uint32) into eight FP8 bytes, using a
