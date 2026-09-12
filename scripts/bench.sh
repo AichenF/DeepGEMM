@@ -70,7 +70,6 @@ for source in \
     csrc/apis/mega.hpp \
     csrc/jit_kernels/heuristics/sm90_nvfp4_mega_moe.hpp \
     csrc/jit_kernels/impls/sm90_nvfp4_mega_moe.hpp \
-    csrc/jit_kernels/heuristics/sm90_nvfp4_mega_moe_small_m.hpp \
     csrc/jit_kernels/impls/sm90_nvfp4_mega_moe_small_m.hpp \
     deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe.cuh \
     deep_gemm/include/deep_gemm/impls/sm90_nvfp4_mega_moe_mode2_dequant.cuh \

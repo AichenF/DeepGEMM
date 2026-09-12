@@ -71,7 +71,7 @@ def _run_one_config(args, num_tokens, num_max_tokens_per_rank,
     l1_packed, l1_scale = quantize_to_nvfp4(l1_bf, group_size=16)
     l2_packed, l2_scale = quantize_to_nvfp4(l2_bf, group_size=16)
     # One BN128 metadata view backs both schedules. --nvfp4-block-n forces a
-    # family for A/B measurements; unset exercises the runtime rho=192 policy.
+    # family for A/B measurements; unset exercises the runtime M=192 policy.
     nvfp4_auto_block_n = deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
         num_tokens, num_topk, num_experts_per_rank, intermediate_hidden)
     nvfp4_block_n = args.nvfp4_block_n or nvfp4_auto_block_n

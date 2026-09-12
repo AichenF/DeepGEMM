@@ -15,7 +15,8 @@ sys.path.insert(0, str(REPO_ROOT))
 
 POLICY_CASES = {
     "flash_fused_boundaries": [
-        "--batches", "15", "16", "42", "43",
+        "--batches", "8", "9", "16", "17", "32", "33", "35", "36",
+        "64", "65", "128", "129", "191",
         "--hidden", "4096",
         "--intermediate-hidden", "2048",
         "--num-experts", "32",
@@ -24,7 +25,8 @@ POLICY_CASES = {
         "--nvfp4-block-n", "256",
     ],
     "pro_fused_boundaries": [
-        "--batches", "63", "64", "65",
+        "--batches", "8", "9", "16", "17", "32", "33", "64", "65",
+        "128", "129", "191",
         "--hidden", "7168",
         "--intermediate-hidden", "3072",
         "--num-experts", "48",
@@ -32,17 +34,18 @@ POLICY_CASES = {
         "--num-max-tokens-per-rank", "8192",
         "--nvfp4-block-n", "256",
     ],
-    "middle_fused_boundaries": [
-        "--batches", "63", "64", "65",
-        "--hidden", "5120",
-        "--intermediate-hidden", "2560",
+    "mimo_fused_boundaries": [
+        "--batches", "8", "9", "16", "17", "32", "33", "64", "65",
+        "96", "97", "144", "145", "191",
+        "--hidden", "6144",
+        "--intermediate-hidden", "2048",
         "--num-experts", "48",
-        "--num-topk", "6",
+        "--num-topk", "8",
         "--num-max-tokens-per-rank", "8192",
         "--nvfp4-block-n", "256",
     ],
     "flash_layout_cutoff": [
-        "--batches", "384", "385",
+        "--batches", "191", "192",
         "--hidden", "1024",
         "--intermediate-hidden", "2048",
         "--num-experts", "8",
@@ -50,7 +53,7 @@ POLICY_CASES = {
         "--num-max-tokens-per-rank", "8192",
     ],
     "pro_layout_cutoff": [
-        "--batches", "380", "381",
+        "--batches", "191", "192",
         "--hidden", "1024",
         "--intermediate-hidden", "3072",
         "--num-experts", "8",
@@ -78,14 +81,14 @@ def check_layout_policy() -> None:
     from deep_gemm.mega import choose_nvfp4_block_n_for_mega_moe_sm90
 
     cases = [
-        # Flash and middle use the measured expected-192 cutoff.
-        (1024, 6, 32, 2048, 256),
-        (1025, 6, 32, 2048, 128),
-        (1536, 6, 48, 2560, 256),
-        (1537, 6, 48, 2560, 128),
-        # Pro crosses between expected 190 and 192.
-        (1520, 6, 48, 3072, 256),
-        (1521, 6, 48, 3072, 128),
+        # The production boundary is raw source-token M, independent of model
+        # geometry and routed density.
+        (191, 6, 32, 2048, 256),
+        (192, 6, 32, 2048, 128),
+        (191, 8, 48, 2048, 256),
+        (192, 8, 48, 2048, 128),
+        (191, 6, 48, 3072, 256),
+        (192, 6, 48, 3072, 128),
     ]
     for num_tokens, topk, local_experts, intermediate, expected_block_n in cases:
         actual_block_n = choose_nvfp4_block_n_for_mega_moe_sm90(

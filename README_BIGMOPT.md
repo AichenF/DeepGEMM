@@ -1,5 +1,11 @@
 # SM90 NVFP4 MegaMoE big M opt — splitT1 + L2 scatter + 2 stream
 
+> Historical note: this document records the original `bigMopt@53d943e`
+> submission and its former routed-density selector. On the all-M branch the
+> production policy is now `M < 192 -> fused`, `M >= 192 -> split`; see
+> `README_MEGAMOE_ALLM_OPT.md` for the current policy and measurements. The
+> bigM device implementation described here is retained unchanged.
+
 Base: `megamoe_nvfp4_dev` @ `c277f44`.
 
 One weight copy, one entry point. Each forward picks the kernel family from the

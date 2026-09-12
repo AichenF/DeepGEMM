@@ -8,9 +8,9 @@
 #endif
 #include "../jit/device_runtime.hpp"
 #include "../jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp"
-#include "../jit_kernels/heuristics/sm90_nvfp4_mega_moe_allm.hpp"
+#include "../jit_kernels/heuristics/sm90_nvfp4_mega_moe.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe.hpp"
-#include "../jit_kernels/impls/sm90_nvfp4_mega_moe_h200_fused.hpp"
+#include "../jit_kernels/impls/sm90_nvfp4_mega_moe_fused.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe_small_m.hpp"
 
 namespace deep_gemm::mega {
@@ -317,12 +317,11 @@ static void nvfp4_mega_moe(
         requested_kernel_block_n == 256);
     DG_HOST_ASSERT(family_threshold > 0);
     // One common braided packed-B copy serves both families. Select the
-    // schedule from this forward's routed work, not from the scale-metadata
+    // schedule from this forward's source-token M, not from the scale-metadata
     // view used while prepacking the weights.
     const int selected_kernel_block_n = requested_kernel_block_n != 0 ?
         requested_kernel_block_n :
-        (static_cast<int64_t>(num_tokens) * num_topk <=
-             static_cast<int64_t>(family_threshold) * num_experts_per_rank ?
+        (num_tokens < family_threshold ?
              256 : 128);
     // NVFP4 UE4M3 SF: tile-major shape
     //   (E, N/block_n, K/128, block_n, 8)
@@ -381,8 +380,9 @@ static void nvfp4_mega_moe(
     const auto allm_arm = select_sm90_nvfp4_allm_arm(allm_policy_input);
 
     if (allm_arm == SM90NVFP4AllMArm::DevMDynamic ||
-        allm_arm == SM90NVFP4AllMArm::D40DynamicRS) {
-        sm90_nvfp4_h200_fused_mega_moe(
+        allm_arm == SM90NVFP4AllMArm::DynamicRS ||
+        allm_arm == SM90NVFP4AllMArm::StaticSS) {
+        sm90_nvfp4_fused_mega_moe(
             y,
             l1_acts, l1_acts_sf,
             l2_acts, l2_acts_sf,
@@ -396,9 +396,9 @@ static void nvfp4_mega_moe(
             num_tokens, num_topk,
             hidden, intermediate_hidden,
             activation_clamp, fast_math,
-            true,
-            allm_arm == SM90NVFP4AllMArm::D40DynamicRS);
-    } else if (allm_arm == SM90NVFP4AllMArm::D40KF424StaticRS) {
+            allm_arm != SM90NVFP4AllMArm::StaticSS,
+            allm_arm == SM90NVFP4AllMArm::DynamicRS);
+    } else if (allm_arm == SM90NVFP4AllMArm::KF424StaticRS) {
         sm90_nvfp4_small_m_fused_mega_moe(
             y,
             l1_acts, l1_acts_sf,
@@ -413,8 +413,7 @@ static void nvfp4_mega_moe(
             num_experts_per_rank,
             num_tokens, num_topk,
             hidden, intermediate_hidden,
-            activation_clamp, fast_math,
-            true);
+            activation_clamp, fast_math);
     } else {
         DG_HOST_ASSERT(allm_arm == SM90NVFP4AllMArm::BigMSplit);
         sm90_nvfp4_split_mega_moe(

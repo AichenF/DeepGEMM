@@ -28,6 +28,13 @@
 #include <deep_gemm/ptx/wgmma.cuh>
 #include <deep_gemm/quantization/nvfp4_dequant.cuh>
 
+// The persistent fused kernel launches one CTA per SM and derives its
+// dispatch/combine strides and grid barriers from the SM count.  The JIT host
+// defines MEGAMOE_NUM_SMS from the live device (132 on H200, 78 on H20-3e).
+#ifndef MEGAMOE_NUM_SMS
+#define MEGAMOE_NUM_SMS 132
+#endif
+
 namespace deep_gemm {
 namespace nvfp4 {
 
@@ -327,7 +334,7 @@ template <
     bool kUseInterleavedScheduler
 >
 CUTLASS_GLOBAL __launch_bounds__(384, 1) void
-sm90_nvfp4_mega_moe_h200_fused_impl(
+sm90_nvfp4_mega_moe_fused_impl(
         void* y,
         int* cumulative_local_expert_recv_stats,
         const uint32_t num_tokens,
@@ -345,7 +352,7 @@ sm90_nvfp4_mega_moe_h200_fused_impl(
     constexpr uint32_t kNumDispatchThreads = 64;
     constexpr uint32_t kNumNonEpilogueThreads = 64;
     constexpr uint32_t kNumEpilogueThreads = 256;
-    constexpr uint32_t kNumSMs = 132;
+    constexpr uint32_t kNumSMs = MEGAMOE_NUM_SMS;
     constexpr uint32_t kNumRanks = 8;
     static_assert(kNumExperts % kNumRanks == 0,
                   "Experts must divide evenly across ranks");
@@ -359,7 +366,7 @@ sm90_nvfp4_mega_moe_h200_fused_impl(
     constexpr uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4;
     constexpr uint32_t kNumTokensPerWarp = 32 / kNumTopk;
     constexpr uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks;
-#include <deep_gemm/impls/sm90_nvfp4_mega_moe_h200_fused_body.inl>
+#include <deep_gemm/impls/sm90_nvfp4_mega_moe_fused_body.inl>
 }
 
 }  // namespace deep_gemm

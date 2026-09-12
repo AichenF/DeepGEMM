@@ -115,8 +115,9 @@ def choose_nvfp4_block_n_for_mega_moe_sm90(
     """Select the SM90 NVFP4 MegaMoE kernel family for one forward.
 
     BN256 is the fused small-M family and BN128 is the split L1/L2 family.
-    The decision is based only on routed work per local expert, so it can be
-    made for every forward without model-name or hidden-size special cases.
+    The production boundary is the source-token batch M itself: M values below
+    ``family_threshold`` use the fused small-M portfolio, while M values at or
+    above the threshold use the split bigM implementation.
 
     ``intermediate_hidden`` remains in the public signature for compatibility
     with the original deployment-time selector; it no longer changes policy.
@@ -128,12 +129,7 @@ def choose_nvfp4_block_n_for_mega_moe_sm90(
         raise ValueError("num_topk and num_experts_per_rank must be positive")
     if family_threshold <= 0:
         raise ValueError("family_threshold must be positive")
-    routed_tokens = num_tokens * num_topk
-    return (
-        256
-        if routed_tokens <= family_threshold * num_experts_per_rank
-        else 128
-    )
+    return 256 if num_tokens < family_threshold else 128
 
 
 def _braid_nvfp4_mode2_signs(fused_weight: torch.Tensor) -> torch.Tensor:
@@ -259,13 +255,11 @@ def nvfp4_mega_moe(y: torch.Tensor,
     the L1 gate/up interleave and prepack UE4M3 scales into
     ``(E, N/block_n, K/128, block_n, 8)``. Both layouts use Mode2 braided
     signs. The packed weights are shared by both kernel families. With
-    ``kernel_family='auto'``, every forward first uses routed work per local
-    expert to select BN256 fused or BN128 split.  On the validated physical
-    8xH200 Flash/Pro M=8..128 matrix, the fused side then applies the D40
-    exact-key portfolio (dev-m dynamic, dynamic+RS mode5, or KF 424
-    static-RS). Every other fused/small-M point uses dev-m dynamic rather than
-    the merged bigM static small-M implementation. The split family remains
-    the fixed bigM mode4+remap L1 followed by L2 scatter.
+    ``kernel_family='auto'``, M < ``family_threshold`` selects the BN256 fused
+    small-M portfolio and M >= ``family_threshold`` selects BN128 split.  The
+    fused side then applies the architecture-specific M-range portfolio
+    (dev-m dynamic, dynamic+RS mode5, or KF 424 static-RS). The split family
+    remains the fixed bigM mode4+remap L1 followed by L2 scatter.
     """
     family_to_block_n = {
         'auto': 0,

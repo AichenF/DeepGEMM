@@ -4,6 +4,35 @@ DeepGEMM is a unified, high-performance tensor core kernel library that brings t
 
 DeepGEMM leverages some concepts from [CUTLASS](https://github.com/nvidia/cutlass) and [CuTe](https://github.com/NVIDIA/cutlass/tree/main/include/cute), but avoids heavy reliance on their templates or algebras. The library is designed for simplicity, with only a limited number of core kernel functions, making it a clean and accessible resource for learning NVIDIA GPU kernel optimization techniques.
 
+## SM90 NVFP4 MegaMoE all-M branch
+
+This branch provides one native DeepGEMM runtime for H20 and H200. Production
+uses `kernel_family="auto"`: M<192 selects the fused small-M portfolio and
+M>=192 selects the common BN128 bigM split kernel. The fused selector first
+identifies the physical target from the SM count, then selects a continuous
+model/M range.
+
+| Target/model | Production small-M arm ranges |
+|---|---|
+| H20 Flash | dynamic-RS M1–128; dev-m dynamic-SS M129–191 |
+| H20 Pro | dynamic-RS M1–191 |
+| H20 MiMo | dynamic-RS M1–144; dev-m dynamic-SS M145–191 |
+| H200 Flash | dynamic-RS M1–35; static-SS M36–64; dev-m M65–191 |
+| H200 Pro | dynamic-RS M1–128; dev-m M129–191 |
+| H200 MiMo | dynamic-RS M1–16; dev-m M17–32; dynamic-RS M33–96; dev-m M97–191 |
+
+| Target | Small M vs dev-m | Small M vs PR383 W8A8 | Large M vs current dev | Large M vs PR383 W8A8 |
+|---|---|---|---|---|
+| 8x H20-3e | +26.28% on optimized routing workloads; +18.66% including fallback anchors | W4A8 +13.57% | identity | W8A8 +7.28% on M192–8192 |
+| 8x H200 | random-router optimized workloads +2.39%; fresh balanced 18-point matrix +0.41% | W4A8 +13.79% | identity | W8A8 +8.11% on M192–8192 |
+
+Current Aichen dev already contains the same `bigMopt` source. The historical
+physical-H200 result versus pre-merge dev was +10.35% over six
+Flash/Pro M2048/4096/8192 points; it is provenance, not a new gain over current
+dev. On the fresh 39-point H200 W4/W8 grid, W4A8 is +1.78% overall. Full
+per-point tables, protocols, correctness coverage, and baseline definitions are in
+[README_MEGAMOE_ALLM_OPT.md](README_MEGAMOE_ALLM_OPT.md).
+
 Despite its lightweight design, DeepGEMM's performance matches or exceeds expert-tuned libraries across various matrix shapes.
 
 ## News

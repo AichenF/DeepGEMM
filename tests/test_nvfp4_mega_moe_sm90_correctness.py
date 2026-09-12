@@ -144,13 +144,13 @@ def _run_cuda_dequant_lut_unit_test() -> None:
 
 def _run_dequant_unit_test() -> None:
     # The production family selector is model-agnostic and changes exactly at
-    # rho = M * topk / local_experts = 192.
+    # source-token M = 192.
     assert deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
-        768, 8, 32, 2048) == 256
+        191, 8, 32, 2048) == 256
     assert deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
-        769, 8, 32, 2048) == 128
+        192, 8, 32, 2048) == 128
     assert deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
-        768, 8, 32, 4096) == 256
+        191, 8, 32, 4096) == 256
 
     scales = torch.tensor([0x00, 0x01, 0x07, 0x08, 0x38, 0x3F, 0x7E, 0x7F], dtype=torch.uint8)
     nibbles = torch.arange(16, dtype=torch.uint8).view(1, 1, 16).expand(scales.numel(), 1, 16).clone()
@@ -536,7 +536,8 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Force the runtime family for validation: 128=split, 256=fused; "
-            "unset selects dynamically at rho=192. Weight layout remains BN128."
+            "unset selects fused for M<192 and split for M>=192. "
+            "Weight layout remains BN128."
         ),
     )
     parser.add_argument("--seed", type=int, default=42)

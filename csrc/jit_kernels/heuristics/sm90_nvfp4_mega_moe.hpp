@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -349,5 +350,620 @@ static SM90NVFP4MegaMoEPlan select_sm90_nvfp4_split_mega_moe(
     }
     return plan;
 }
+
+// Exact-key static-RS small-M implementation.  This is a separate physical
+// schedule from the dev-m dynamic fused kernel, but its H20/H200 selection
+// policy and material configuration live in this one SM90 heuristic file.
+struct SM90NVFP4SmallMConfig {
+    static constexpr int kBlockN = 256;
+    static constexpr int kBlockK = 128;
+    static constexpr int kWeightStoragePerKBlock = 80;
+    static constexpr int kSwizzleActsMode = 128;
+    static constexpr int kClusterSize = 1;
+    static constexpr int kNumDispatchThreads = 64;
+    static constexpr int kNumNonEpilogueThreads = 64;
+    static constexpr int kNumEpilogueThreads = 256;
+    static constexpr int kNumThreads =
+        kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads;
+
+    int block_m;
+    int num_max_pool_tokens;
+    int num_padded_sf_pool_tokens;
+    int num_experts_per_wave;
+    int num_stages;
+    int smem_size;
+};
+
+struct SM90NVFP4SmallMInput {
+    int num_sms;
+    int num_ranks;
+    int num_experts;
+    int num_experts_per_rank;
+    int num_max_tokens_per_rank;
+    int num_tokens;
+    int num_topk;
+    int hidden;
+    int intermediate_hidden;
+    int num_padded_sf_pool_tokens;
+};
+
+struct SM90NVFP4SmallMPlan {
+    SM90NVFP4SmallMConfig config;
+    bool swap_ab;
+    bool rs_swap_ab;
+    bool rs_batch4;
+    bool rs_vector_scale;
+    bool rs_direct_lut;
+    bool rs_compact_smem;
+    bool use_mode2_lop3_decoder;
+    bool single_active_dispatch_warp;
+};
+
+static bool is_sm90_nvfp4_small_m_plan_legal(
+        const SM90NVFP4SmallMInput& input,
+        const SM90NVFP4SmallMPlan& plan) {
+    const auto& config = plan.config;
+    const bool supported_block_m =
+        config.block_m == 8 || config.block_m == 16 ||
+        config.block_m == 24;
+    return (input.num_sms == 78 || input.num_sms == 132) &&
+        input.num_ranks == 8 &&
+        input.num_experts == input.num_experts_per_rank * input.num_ranks &&
+        input.num_tokens > 0 &&
+        input.num_tokens <= input.num_max_tokens_per_rank &&
+        input.num_topk > 0 && input.num_topk <= 32 &&
+        input.hidden % SM90NVFP4SmallMConfig::kBlockN == 0 &&
+        (2 * input.intermediate_hidden) %
+            SM90NVFP4SmallMConfig::kBlockN == 0 &&
+        input.hidden % SM90NVFP4SmallMConfig::kBlockK == 0 &&
+        input.intermediate_hidden %
+            SM90NVFP4SmallMConfig::kBlockK == 0 &&
+        input.num_padded_sf_pool_tokens > 0 &&
+        supported_block_m &&
+        config.num_experts_per_wave > 0 &&
+        config.num_experts_per_wave <= input.num_experts_per_rank &&
+        input.num_experts_per_rank % config.num_experts_per_wave == 0 &&
+        config.num_stages >= 3 && config.num_stages <= 4 &&
+        config.smem_size > 0 &&
+        config.smem_size <= SM90ArchSpec::smem_capacity;
+}
+
+// Materialize only the exact H20/H200 KF424 buckets admitted by the all-M
+// table below.  Architecture is part of the key; no neighboring M or SKU
+// inherits one of these schedules.
+static SM90NVFP4SmallMPlan select_sm90_nvfp4_small_m_kf424(
+        const SM90NVFP4SmallMInput& input) {
+    const bool is_h20 = input.num_sms == 78;
+    const bool is_h200 = input.num_sms == 132;
+    const bool is_flash =
+        input.num_ranks == 8 && input.num_experts == 256 &&
+        input.num_experts_per_rank == 32 && input.num_topk == 6 &&
+        input.hidden == 4096 && input.intermediate_hidden == 2048;
+    const bool is_pro =
+        input.num_ranks == 8 && input.num_experts == 384 &&
+        input.num_experts_per_rank == 48 && input.num_topk == 6 &&
+        input.hidden == 7168 && input.intermediate_hidden == 3072;
+
+    int block_m = 0;
+    int num_experts_per_wave = 0;
+    int num_stages = 0;
+    int smem_size = 0;
+    bool single_active_dispatch_warp = false;
+    bool compact_smem = false;
+
+    if (is_h200 && is_flash && input.num_tokens == 16) {
+        block_m = 8;
+        num_experts_per_wave = 32;
+        num_stages = 4;
+        smem_size = 229120;
+        single_active_dispatch_warp = true;
+    } else if ((is_h20 || is_h200) && is_flash &&
+               input.num_tokens == 32) {
+        block_m = 8;
+        num_experts_per_wave = 32;
+        num_stages = 3;
+        smem_size = 186112;
+    } else if (is_h200 && is_flash && input.num_tokens == 64) {
+        block_m = 16;
+        num_experts_per_wave = 32;
+        num_stages = 3;
+        smem_size = 189184;
+        single_active_dispatch_warp = true;
+    } else if ((is_h20 || is_h200) && is_pro &&
+               input.num_tokens == 128) {
+        block_m = 24;
+        num_experts_per_wave = 48;
+        num_stages = 4;
+        smem_size = 193280;
+        single_active_dispatch_warp = true;
+        compact_smem = true;
+    } else if (is_h20 && is_pro && input.num_tokens == 8) {
+        block_m = 8;
+        num_experts_per_wave = 48;
+        num_stages = 3;
+        smem_size = 178944;
+        single_active_dispatch_warp = true;
+    } else if (is_h20 && is_pro && input.num_tokens == 32) {
+        block_m = 8;
+        num_experts_per_wave = 48;
+        num_stages = 3;
+        smem_size = 193280;
+    } else {
+        DG_HOST_UNREACHABLE(
+            "Point is not an admitted H20/H200 KF424 bucket");
+    }
+
+    const SM90NVFP4SmallMPlan plan {
+        {
+            block_m,
+            layout::get_num_max_pool_tokens(
+                input.num_ranks,
+                input.num_max_tokens_per_rank,
+                input.num_topk,
+                input.num_experts_per_rank),
+            input.num_padded_sf_pool_tokens,
+            num_experts_per_wave,
+            num_stages,
+            smem_size,
+        },
+        true,
+        true,
+        true,
+        true,
+        false,
+        compact_smem,
+        true,
+        single_active_dispatch_warp,
+    };
+    DG_HOST_ASSERT(is_sm90_nvfp4_small_m_plan_legal(input, plan));
+    return plan;
+}
+
+// Common dev-m dynamic fused kernel.  H20 and H200 have the same SM90
+// instruction, register, and shared-memory surface; num_sms changes the
+// persistent grid and the exact small-M bucket selected below.
+static constexpr int kSM90NVFP4BStoragePerKBlock = 80;
+
+struct SM90NVFP4FusedConfig {
+    static constexpr int kBlockK = 128;
+    static constexpr int kSwizzleActsMode = 128;
+    static constexpr int kNumDispatchThreads = 64;
+    static constexpr int kNumNonEpilogueThreads = 64;
+    static constexpr int kNumEpilogueThreads = 256;
+    static constexpr int kNumThreads =
+        kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads;
+
+    int block_m, block_n;
+    int num_max_pool_tokens;
+    int num_padded_sf_pool_tokens;
+    int num_experts_per_wave;
+    int num_stages, smem_size;
+};
+
+struct SM90NVFP4FusedShape {
+    static constexpr int kH20NumSMs = 78;
+    static constexpr int kH200NumSMs = 132;
+    static constexpr int kNumRanks = 8;
+
+    int num_sms;
+    int num_ranks;
+    int num_experts;
+    int num_topk;
+    int hidden;
+    int intermediate_hidden;
+
+    static constexpr bool is_supported_batch(const int num_tokens) noexcept {
+        return num_tokens > 0;
+    }
+
+    constexpr bool is_supported_shape() const noexcept {
+        if ((num_sms != kH20NumSMs && num_sms != kH200NumSMs) ||
+            num_ranks != kNumRanks)
+            return false;
+        const bool flash =
+            num_experts == 256 && num_topk == 6 &&
+            hidden == 4096 && intermediate_hidden == 2048;
+        const bool pro =
+            num_experts == 384 && num_topk == 6 &&
+            hidden == 7168 && intermediate_hidden == 3072;
+        const bool mimo =
+            num_experts == 384 && num_topk == 8 &&
+            hidden == 6144 && intermediate_hidden == 2048;
+        return flash || pro || mimo;
+    }
+};
+
+struct SM90NVFP4FusedInput {
+    int num_sms;
+    int num_ranks, num_experts, num_experts_per_rank;
+    int num_max_tokens_per_rank, num_tokens, num_topk;
+    int hidden, intermediate_hidden;
+    int num_padded_sf_pool_tokens;
+
+    SM90NVFP4FusedShape shape() const noexcept {
+        return {
+            num_sms, num_ranks, num_experts, num_topk,
+            hidden, intermediate_hidden};
+    }
+};
+
+struct SM90NVFP4FusedPlan {
+    SM90NVFP4FusedConfig config;
+    bool swap_ab;
+    bool use_mode2_row_decoder;
+    bool single_active_dispatch_warp;
+    bool use_interleaved_scheduler;
+};
+
+struct SM90NVFP4FusedBucket {
+    int hidden;
+    int min_tokens;
+    int max_tokens;
+    int block_m;
+    int num_experts_per_wave;
+    int num_stages;
+    bool swap_ab;
+    bool use_mode2_row_decoder;
+    bool single_active_dispatch_warp;
+};
+
+// H20's range-keyed small-M physical buckets.  These continuous ranges were
+// selected from physical H20 crossover measurements; the arm table
+// below sends every point outside them to the unmodified dev-m scheduler.
+// H200 never reads this table.
+static constexpr std::array<SM90NVFP4FusedBucket, 12>
+kSM90NVFP4H20FusedBuckets {{
+    {4096,  1,   8,  8, 16, 6, true, true, true},
+    {4096,  9,  16,  8, 32, 6, true, true, true},
+    {4096, 17,  64, 24, 32, 6, true, true, true},
+    {4096, 65, 128, 24, 16, 6, true, true, true},
+    {7168,  1,   8,  8, 48, 6, true, true, true},
+    {7168,  9,  16,  8, 24, 6, true, true, true},
+    {7168, 17,  64, 24, 48, 6, true, true, true},
+    {7168, 65, 191, 24, 16, 6, true, true, true},
+    {6144,  1,   8,  8, 48, 6, true, true, true},
+    {6144,  9,  16,  8, 24, 6, true, true, true},
+    {6144, 17,  64, 24, 48, 6, true, true, true},
+    {6144, 65, 144, 24, 16, 6, true, true, true},
+}};
+
+// H200 physical buckets for the measured optimized ranges.  A missing range
+// intentionally falls through to the unmodified dev-m physical selector
+// below (most importantly its BM64 bucket beginning at M65).
+static constexpr std::array<SM90NVFP4FusedBucket, 11>
+kSM90NVFP4H200FusedBuckets {{
+    {4096,  1,   8,  8, 16, 4, true, true, true},
+    {4096,  9,  16,  8, 32, 4, true, true, true},
+    {4096, 17,  32, 24, 32, 3, true, true, false},
+    {4096, 33,  64, 24, 32, 3, true, true, true},
+    {7168,  1,   8,  8, 16, 3, true, true, true},
+    {7168,  9,  16,  8, 24, 3, true, true, true},
+    {7168, 17,  32, 24, 48, 3, true, true, false},
+    {7168, 33, 128, 24, 48, 3, true, true, true},
+    {6144,  1,   8,  8, 16, 4, true, true, true},
+    {6144,  9,  16,  8, 24, 4, true, true, true},
+    {6144, 33,  96, 24, 48, 3, true, true, true},
+}};
+
+static SM90NVFP4FusedPlan select_sm90_nvfp4_fused(
+        const SM90NVFP4FusedInput& input,
+        const bool use_interleaved_scheduler = true) {
+    DG_HOST_ASSERT(input.shape().is_supported_shape());
+    DG_HOST_ASSERT(input.num_experts ==
+                   input.num_experts_per_rank * input.num_ranks);
+    DG_HOST_ASSERT(input.num_experts_per_rank == 32 ||
+                   input.num_experts_per_rank == 48);
+    DG_HOST_ASSERT(input.num_max_tokens_per_rank > 0);
+    DG_HOST_ASSERT(input.num_tokens <= input.num_max_tokens_per_rank);
+    DG_HOST_ASSERT(
+        SM90NVFP4FusedShape::is_supported_batch(input.num_tokens));
+    DG_HOST_ASSERT(input.num_padded_sf_pool_tokens > 0);
+
+    struct Tuning {
+        int block_m, block_n;
+        int num_experts_per_wave;
+        int num_stages;
+        int smem_size;
+        bool swap_ab;
+        bool use_mode2_row_decoder;
+        bool single_active_dispatch_warp;
+    } tuning {};
+
+    bool range_bucket = false;
+    const auto find_range_bucket = [&](const auto& buckets) {
+        for (const auto& bucket : buckets) {
+            if (bucket.hidden == input.hidden &&
+                input.num_tokens >= bucket.min_tokens &&
+                input.num_tokens <= bucket.max_tokens) {
+                tuning = {
+                    bucket.block_m,
+                    256,
+                    bucket.num_experts_per_wave,
+                    bucket.num_stages,
+                    SM90ArchSpec::smem_capacity,
+                    bucket.swap_ab,
+                    bucket.use_mode2_row_decoder,
+                    bucket.single_active_dispatch_warp,
+                };
+                range_bucket = true;
+                return;
+            }
+        }
+    };
+    if (input.num_sms == SM90NVFP4FusedShape::kH20NumSMs)
+        find_range_bucket(kSM90NVFP4H20FusedBuckets);
+    else if (input.num_sms == SM90NVFP4FusedShape::kH200NumSMs)
+        find_range_bucket(kSM90NVFP4H200FusedBuckets);
+
+    if (!range_bucket && input.num_tokens <= 1)
+        tuning = {8, 256, 24, 4, SM90ArchSpec::smem_capacity,
+                  true, true, true};
+    else if (!range_bucket && input.num_tokens <= 8)
+        tuning = {8, 256, 16, 4, SM90ArchSpec::smem_capacity,
+                  true, true, true};
+    else if (!range_bucket && input.num_tokens <= 16)
+        tuning = {8, 256, 24, 4, SM90ArchSpec::smem_capacity,
+                  true, true, true};
+    else if (!range_bucket && input.num_tokens <= 32)
+        tuning = {16, 256, 48, 3, SM90ArchSpec::smem_capacity,
+                  true, true, false};
+    else if (!range_bucket && input.num_tokens <= 64)
+        tuning = {24, 256, 48, 3, 229312,
+                  true, false, true};
+    else if (!range_bucket && input.num_tokens <= 256)
+        tuning = {64, 256, 48, 3, 209856,
+                  false, true, false};
+    else if (!range_bucket)
+        tuning = {128, 128, 48, 6, SM90ArchSpec::smem_capacity,
+                  false, true, false};
+
+    tuning.num_experts_per_wave = cute::min(
+        tuning.num_experts_per_wave, input.num_experts_per_rank);
+    while (tuning.num_experts_per_wave < input.num_experts_per_rank &&
+           input.num_experts_per_rank % tuning.num_experts_per_wave != 0)
+        ++tuning.num_experts_per_wave;
+
+    // The unified interleaved scheduler appends a 96-byte mailbox after the
+    // original dev-m barriers.  In particular, the inherited MiMo BM64
+    // 209856-byte launch is 96 bytes short of the new 209952-byte end.  Use
+    // the full SM90 capacity for every fused shape; all plans are persistent
+    // one-CTA-per-SM kernels, so this does not reduce resident CTA count.
+    tuning.smem_size = SM90ArchSpec::smem_capacity;
+
+    const bool is_pro =
+        input.num_experts == 384 && input.num_topk == 6 &&
+        input.hidden == 7168 && input.intermediate_hidden == 3072;
+    if (is_pro && tuning.block_m == 8 && tuning.num_stages == 4)
+        tuning.num_stages = 3;
+
+    DG_HOST_ASSERT(
+        input.num_experts_per_rank % tuning.num_experts_per_wave == 0);
+    DG_HOST_ASSERT(tuning.smem_size <= SM90ArchSpec::smem_capacity);
+    return {
+        {
+            tuning.block_m,
+            tuning.block_n,
+            layout::get_num_max_pool_tokens(
+                input.num_ranks, input.num_max_tokens_per_rank,
+                input.num_topk, input.num_experts_per_rank),
+            input.num_padded_sf_pool_tokens,
+            tuning.num_experts_per_wave,
+            tuning.num_stages,
+            use_interleaved_scheduler ?
+                cute::min(
+                    tuning.smem_size +
+                        layout::kSM90InterleavedSchedulerSMEMBytes,
+                    SM90ArchSpec::smem_capacity) :
+                tuning.smem_size,
+        },
+        tuning.swap_ab,
+        tuning.use_mode2_row_decoder,
+        tuning.single_active_dispatch_warp,
+        use_interleaved_scheduler,
+    };
+}
+
+static std::string get_sm90_nvfp4_small_jit_flags(const bool fast_math) {
+    const std::string register_flags =
+        "--ptxas-options=--register-usage-level=5";
+    return fast_math ? "--use_fast_math " + register_flags : register_flags;
+}
+
+enum class SM90NVFP4Target : uint32_t {
+    Unsupported,
+    H20,
+    H200,
+};
+
+enum class SM90NVFP4Model : uint32_t {
+    Unsupported,
+    Flash,
+    Pro,
+    MiMo,
+};
+
+enum class SM90NVFP4AllMArm : uint32_t {
+    DevMDynamic,
+    DynamicRS,
+    StaticSS,
+    KF424StaticRS,
+    BigMSplit,
+};
+
+struct SM90NVFP4AllMPolicyInput {
+    int num_sms;
+    int num_ranks;
+    int num_experts;
+    int num_tokens;
+    int num_topk;
+    int hidden;
+    int intermediate_hidden;
+    int selected_kernel_block_n;
+};
+
+struct SM90NVFP4SmallMBucket {
+    SM90NVFP4Target target;
+    SM90NVFP4Model model;
+    int min_tokens;
+    int max_tokens;
+    SM90NVFP4AllMArm arm;
+};
+
+static constexpr SM90NVFP4Target get_sm90_nvfp4_target(
+        const int num_sms) {
+    return num_sms == 78 ? SM90NVFP4Target::H20 :
+           num_sms == 132 ? SM90NVFP4Target::H200 :
+           SM90NVFP4Target::Unsupported;
+}
+
+static constexpr SM90NVFP4Model get_sm90_nvfp4_model(
+        const SM90NVFP4AllMPolicyInput& input) {
+    if (input.num_ranks != 8)
+        return SM90NVFP4Model::Unsupported;
+    if (input.num_experts == 256 && input.num_topk == 6 &&
+        input.hidden == 4096 && input.intermediate_hidden == 2048)
+        return SM90NVFP4Model::Flash;
+    if (input.num_experts == 384 && input.num_topk == 6 &&
+        input.hidden == 7168 && input.intermediate_hidden == 3072)
+        return SM90NVFP4Model::Pro;
+    if (input.num_experts == 384 && input.num_topk == 8 &&
+        input.hidden == 6144 && input.intermediate_hidden == 2048)
+        return SM90NVFP4Model::MiMo;
+    return SM90NVFP4Model::Unsupported;
+}
+
+// One table owns every architecture-specific small-M arm bucket. Both targets
+// use inclusive ranges; their physical BM/EPW/stage tables remain separate
+// above. The large-M split arm is deliberately absent because H20 and H200
+// share the same bigM implementation and runtime heuristic.
+static constexpr std::array<SM90NVFP4SmallMBucket, 15>
+kSM90NVFP4SmallMBuckets {{
+    {SM90NVFP4Target::H20,  SM90NVFP4Model::Flash,   1, 128,
+     SM90NVFP4AllMArm::DynamicRS},
+    {SM90NVFP4Target::H20,  SM90NVFP4Model::Flash, 129, 0x7fffffff,
+     SM90NVFP4AllMArm::DevMDynamic},
+    {SM90NVFP4Target::H20,  SM90NVFP4Model::Pro,     1, 191,
+     SM90NVFP4AllMArm::DynamicRS},
+    {SM90NVFP4Target::H20,  SM90NVFP4Model::Pro,   192, 0x7fffffff,
+     SM90NVFP4AllMArm::DevMDynamic},
+    {SM90NVFP4Target::H20,  SM90NVFP4Model::MiMo,    1, 144,
+     SM90NVFP4AllMArm::DynamicRS},
+    {SM90NVFP4Target::H20,  SM90NVFP4Model::MiMo,  145, 0x7fffffff,
+     SM90NVFP4AllMArm::DevMDynamic},
+    {SM90NVFP4Target::H200, SM90NVFP4Model::Flash,   1,  35,
+     SM90NVFP4AllMArm::DynamicRS},
+    {SM90NVFP4Target::H200, SM90NVFP4Model::Flash,  36,  64,
+     SM90NVFP4AllMArm::StaticSS},
+    {SM90NVFP4Target::H200, SM90NVFP4Model::Flash,  65, 0x7fffffff,
+     SM90NVFP4AllMArm::DevMDynamic},
+    {SM90NVFP4Target::H200, SM90NVFP4Model::Pro,     1, 128,
+     SM90NVFP4AllMArm::DynamicRS},
+    {SM90NVFP4Target::H200, SM90NVFP4Model::Pro,   129, 0x7fffffff,
+     SM90NVFP4AllMArm::DevMDynamic},
+    {SM90NVFP4Target::H200, SM90NVFP4Model::MiMo,    1,  16,
+     SM90NVFP4AllMArm::DynamicRS},
+    {SM90NVFP4Target::H200, SM90NVFP4Model::MiMo,   17,  32,
+     SM90NVFP4AllMArm::DevMDynamic},
+    {SM90NVFP4Target::H200, SM90NVFP4Model::MiMo,   33,  96,
+     SM90NVFP4AllMArm::DynamicRS},
+    {SM90NVFP4Target::H200, SM90NVFP4Model::MiMo,   97, 0x7fffffff,
+     SM90NVFP4AllMArm::DevMDynamic},
+}};
+
+static constexpr SM90NVFP4AllMArm select_sm90_nvfp4_allm_arm(
+        const SM90NVFP4AllMPolicyInput& input) {
+    // Resolve the physical SM90 target first. Both supported targets share
+    // bigM, while their fused/small-M portfolios differ below.
+    const auto target = get_sm90_nvfp4_target(input.num_sms);
+    if (input.selected_kernel_block_n == 128)
+        return SM90NVFP4AllMArm::BigMSplit;
+
+    const auto model = get_sm90_nvfp4_model(input);
+    for (const auto& bucket : kSM90NVFP4SmallMBuckets) {
+        if (bucket.target == target && bucket.model == model &&
+            input.num_tokens >= bucket.min_tokens &&
+            input.num_tokens <= bucket.max_tokens)
+            return bucket.arm;
+    }
+
+    // The default fused path is always dev-m dynamic.  Its own selector
+    // rejects unsupported H20/H200 hardware or model geometry fail-closed.
+    return SM90NVFP4AllMArm::DevMDynamic;
+}
+
+static constexpr const char* sm90_nvfp4_allm_arm_name(
+        const SM90NVFP4AllMArm arm) {
+    switch (arm) {
+        case SM90NVFP4AllMArm::DevMDynamic:
+            return "devm-dynamic";
+        case SM90NVFP4AllMArm::DynamicRS:
+            return "dynamic-rs-mode5";
+        case SM90NVFP4AllMArm::StaticSS:
+            return "static-ss";
+        case SM90NVFP4AllMArm::KF424StaticRS:
+            return "kf424-static-rs";
+        case SM90NVFP4AllMArm::BigMSplit:
+            return "bigm-split-mode4";
+    }
+    return "unknown";
+}
+
+static_assert(select_sm90_nvfp4_allm_arm(
+    {78, 8, 256, 37, 6, 4096, 2048, 256}) ==
+    SM90NVFP4AllMArm::DynamicRS);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {78, 8, 384, 191, 6, 7168, 3072, 256}) ==
+    SM90NVFP4AllMArm::DynamicRS);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {78, 8, 384, 192, 6, 7168, 3072, 256}) ==
+    SM90NVFP4AllMArm::DevMDynamic);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {78, 8, 256, 128, 6, 4096, 2048, 256}) ==
+    SM90NVFP4AllMArm::DynamicRS);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {78, 8, 256, 129, 6, 4096, 2048, 256}) ==
+    SM90NVFP4AllMArm::DevMDynamic);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {78, 8, 384, 144, 8, 6144, 2048, 256}) ==
+    SM90NVFP4AllMArm::DynamicRS);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {78, 8, 384, 145, 8, 6144, 2048, 256}) ==
+    SM90NVFP4AllMArm::DevMDynamic);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {132, 8, 256, 35, 6, 4096, 2048, 256}) ==
+    SM90NVFP4AllMArm::DynamicRS);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {132, 8, 256, 36, 6, 4096, 2048, 256}) ==
+    SM90NVFP4AllMArm::StaticSS);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {132, 8, 256, 64, 6, 4096, 2048, 256}) ==
+    SM90NVFP4AllMArm::StaticSS);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {132, 8, 256, 65, 6, 4096, 2048, 256}) ==
+    SM90NVFP4AllMArm::DevMDynamic);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {132, 8, 384, 128, 6, 7168, 3072, 256}) ==
+    SM90NVFP4AllMArm::DynamicRS);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {132, 8, 384, 129, 6, 7168, 3072, 256}) ==
+    SM90NVFP4AllMArm::DevMDynamic);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {132, 8, 384, 16, 8, 6144, 2048, 256}) ==
+    SM90NVFP4AllMArm::DynamicRS);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {132, 8, 384, 17, 8, 6144, 2048, 256}) ==
+    SM90NVFP4AllMArm::DevMDynamic);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {132, 8, 384, 33, 8, 6144, 2048, 256}) ==
+    SM90NVFP4AllMArm::DynamicRS);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {132, 8, 384, 96, 8, 6144, 2048, 256}) ==
+    SM90NVFP4AllMArm::DynamicRS);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {132, 8, 384, 97, 8, 6144, 2048, 256}) ==
+    SM90NVFP4AllMArm::DevMDynamic);
+static_assert(select_sm90_nvfp4_allm_arm(
+    {78, 8, 384, 2048, 6, 7168, 3072, 128}) ==
+    SM90NVFP4AllMArm::BigMSplit);
 
 }  // namespace deep_gemm

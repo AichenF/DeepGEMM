@@ -11,8 +11,7 @@
 #include <deep_gemm/layout/mega_moe.cuh>
 #include <deep_gemm/layout/sym_buffer.cuh>
 
-#include "../heuristics/sm90_nvfp4_mega_moe_allm.hpp"
-#include "../heuristics/sm90_nvfp4_mega_moe_small_m.hpp"
+#include "../heuristics/sm90_nvfp4_mega_moe.hpp"
 
 namespace deep_gemm {
 
@@ -161,8 +160,7 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
     const int& hidden,
     const int& intermediate_hidden,
     const float& activation_clamp,
-    const bool& fast_math,
-    const bool& use_kf424_schedule = false
+    const bool& fast_math
 ) {
     const int num_ranks = static_cast<int>(sym_buffer_ptrs.size());
     const int num_experts = num_experts_per_rank * num_ranks;
@@ -171,6 +169,7 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
     const int num_padded_sf_pool_tokens =
         static_cast<int>(l1_acts_sf.size(0));
     const SM90NVFP4SmallMInput heuristic_input {
+        num_sms,
         num_ranks,
         num_experts,
         num_experts_per_rank,
@@ -181,11 +180,7 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
         intermediate_hidden,
         num_padded_sf_pool_tokens,
     };
-    if (use_kf424_schedule)
-        DG_HOST_ASSERT(num_sms == 132);
-    const auto plan = use_kf424_schedule ?
-        select_sm90_nvfp4_small_m_kf424(heuristic_input) :
-        select_sm90_nvfp4_small_m(heuristic_input);
+    const auto plan = select_sm90_nvfp4_small_m_kf424(heuristic_input);
     const auto& config = plan.config;
     using KernelConfig = SM90NVFP4SmallMConfig;
 
@@ -318,14 +313,9 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
     const auto runtime = compiler->build(
         plan.rs_compact_smem ?
             "sm90_nvfp4_small_m_kf424_rs_mode5_compact" :
-        plan.rs_swap_ab ?
-            "sm90_nvfp4_small_m_kf424_rs_mode5" :
-        plan.use_mode2_lop3_decoder ?
-            "sm90_nvfp4_small_m_mode2_lop3" :
-            "sm90_nvfp4_small_m_mode2_braided_lut",
+            "sm90_nvfp4_small_m_kf424_rs_mode5",
         code,
-        use_kf424_schedule ?
-            get_sm90_nvfp4_allm_small_jit_flags(fast_math) : std::string());
+        get_sm90_nvfp4_small_jit_flags(fast_math));
     SM90NVFP4SmallMFusedRuntime::launch(runtime, args);
 }
 

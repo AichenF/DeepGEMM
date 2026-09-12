@@ -13,13 +13,12 @@
 #include <deep_gemm/layout/mega_moe.cuh>
 #include <deep_gemm/layout/sym_buffer.cuh>
 
-#include "../heuristics/sm90_nvfp4_mega_moe_allm.hpp"
-#include "../heuristics/sm90_nvfp4_mega_moe_devm.hpp"
+#include "../heuristics/sm90_nvfp4_mega_moe.hpp"
 
 namespace deep_gemm {
 
-class SM90NVFP4H200FusedRuntime final
-    : public LaunchRuntime<SM90NVFP4H200FusedRuntime> {
+class SM90NVFP4FusedRuntime final
+    : public LaunchRuntime<SM90NVFP4FusedRuntime> {
 public:
     struct Args {
         int num_max_tokens_per_rank;
@@ -34,7 +33,8 @@ public:
         bool use_mode2_row_decoder;
         bool single_active_dispatch_warp;
         bool use_interleaved_scheduler;
-        SM90NVFP4H200FusedConfig config;
+        int num_sms;
+        SM90NVFP4FusedConfig config;
 
         void* y;
         int* cumulative_local_expert_recv_stats;
@@ -53,10 +53,13 @@ public:
     };
 
     static std::string generate_impl(const Args& args) {
-        const std::string kernel_header =
+        DG_HOST_ASSERT(args.num_sms == 132 || args.num_sms == 78);
+        const std::string kernel_header = fmt::format(
             "#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1\n"
+            "#define MEGAMOE_NUM_SMS {}\n"
             "#include <deep_gemm/impls/"
-            "sm90_nvfp4_mega_moe_h200_fused.cuh>";
+            "sm90_nvfp4_mega_moe_fused.cuh>",
+            args.num_sms);
         const std::string policy_template_args = fmt::format(
             "/* kSwapABRequested */ {},\n"
             "        /* kRSSwapABRequested */ {},\n"
@@ -93,7 +96,7 @@ static void __instantiate_kernel() {{
 }};
 )",
             kernel_header,
-            "sm90_nvfp4_mega_moe_h200_fused_impl",
+            "sm90_nvfp4_mega_moe_fused_impl",
             args.num_max_tokens_per_rank,
             args.num_experts,
             args.num_topk,
@@ -130,7 +133,7 @@ static void __instantiate_kernel() {{
     }
 };
 
-static void sm90_nvfp4_h200_fused_mega_moe(
+static void sm90_nvfp4_fused_mega_moe(
     const torch::Tensor& y,
     const torch::Tensor& l1_acts, const torch::Tensor& l1_acts_sf,
     const torch::Tensor& l2_acts, const torch::Tensor& l2_acts_sf,
@@ -152,7 +155,7 @@ static void sm90_nvfp4_h200_fused_mega_moe(
     const int num_experts = num_experts_per_rank * num_ranks;
     const int num_sms = device_runtime->get_num_sms();
     const int num_padded_sf_pool_tokens = static_cast<int>(l1_acts_sf.size(0));
-    const SM90NVFP4H200FusedInput heuristic_input {
+    const SM90NVFP4FusedInput heuristic_input {
         num_sms,
         num_ranks, num_experts, num_experts_per_rank,
         num_max_tokens_per_rank, num_tokens, num_topk,
@@ -162,23 +165,27 @@ static void sm90_nvfp4_h200_fused_mega_moe(
     // overrides remain available for diagnostic A/B runs without changing
     // the default D40 arm selected by the caller.
     const int scheduler_mode = get_env<int>(
-        "DG_NVFP4_H200_INTERLEAVED_SCHEDULER",
+        "DG_NVFP4_SM90_INTERLEAVED_SCHEDULER",
         use_interleaved_scheduler ? 1 : 0);
     const int rs_mode = get_env<int>(
-        "DG_NVFP4_H200_RS_SWAPAB",
+        "DG_NVFP4_SM90_RS_SWAPAB",
         request_rs_swap_ab ? 1 : 0);
     DG_HOST_ASSERT(scheduler_mode == 0 || scheduler_mode == 1);
     DG_HOST_ASSERT(rs_mode == 0 || rs_mode == 1);
-    const auto plan = select_sm90_nvfp4_h200_fused(
+    const auto plan = select_sm90_nvfp4_fused(
         heuristic_input, scheduler_mode != 0);
     const auto& config = plan.config;
-    using KernelConfig = SM90NVFP4H200FusedConfig;
+    using KernelConfig = SM90NVFP4FusedConfig;
     DG_HOST_ASSERT(num_experts_per_rank % config.num_experts_per_wave == 0);
     DG_HOST_ASSERT((config.block_m == 8 || config.block_m == 16 ||
                     config.block_m == 24 || config.block_m == 64 ||
                     config.block_m == 128));
     DG_HOST_ASSERT(config.block_n == 128 || config.block_n == 256);
-    DG_HOST_ASSERT(plan.swap_ab == (num_tokens <= 64));
+    // The range table in the unified SM90 heuristic is the sole authority for
+    // swap-AB. Do not duplicate its M boundaries here: range tuning moves
+    // those boundaries independently on H20 and H200.
+    if (request_rs_swap_ab)
+        DG_HOST_ASSERT(plan.swap_ab);
     const bool rs_swap_ab = rs_mode != 0 && plan.swap_ab;
 
     constexpr int kL1ScaleGranK = 128;
@@ -222,7 +229,7 @@ static void sm90_nvfp4_h200_fused_mega_moe(
     const float* l2_global_scales_ptr = l2_global_scales.has_value() ?
         l2_global_scales->data_ptr<float>() : nullptr;
 
-    const SM90NVFP4H200FusedRuntime::Args args = {
+    const SM90NVFP4FusedRuntime::Args args = {
         .num_max_tokens_per_rank = num_max_tokens_per_rank,
         .num_experts = num_experts,
         .num_topk = num_topk,
@@ -238,6 +245,7 @@ static void sm90_nvfp4_h200_fused_mega_moe(
         .use_mode2_row_decoder = rs_swap_ab || plan.use_mode2_row_decoder,
         .single_active_dispatch_warp = plan.single_active_dispatch_warp,
         .use_interleaved_scheduler = plan.use_interleaved_scheduler,
+        .num_sms = num_sms,
         .config = config,
         .y = y.data_ptr(),
         .cumulative_local_expert_recv_stats = cumulative_stats_ptr,
@@ -260,20 +268,27 @@ static void sm90_nvfp4_h200_fused_mega_moe(
             false)
     };
 
-    const auto code = SM90NVFP4H200FusedRuntime::generate(args);
+    const auto code = SM90NVFP4FusedRuntime::generate(args);
+    // A production dynamic-SS call is the exact dev-m fallback and must retain
+    // DeepGEMM's default JIT flags.  Level 5 is required only by the measured
+    // RS and static-SS specializations; applying it to BM64 dev-m changes the
+    // fallback itself and regresses the upper end of small M.
+    const std::string arm_jit_flags =
+        plan.use_interleaved_scheduler && !rs_swap_ab ? "" :
+        get_sm90_nvfp4_small_jit_flags(fast_math);
     const auto runtime = compiler->build(
         plan.use_interleaved_scheduler ?
             (rs_swap_ab ?
-                "sm90_nvfp4_h200_fused_interleaved_rs_mode5" :
-                "sm90_nvfp4_h200_fused_interleaved") :
+                "sm90_nvfp4_fused_interleaved_rs_mode5" :
+                "sm90_nvfp4_fused_interleaved") :
             (rs_swap_ab ?
-                "sm90_nvfp4_h200_fused_static_rs_mode5" :
+                "sm90_nvfp4_fused_static_rs_mode5" :
                 (plan.use_mode2_row_decoder ?
-                    "sm90_nvfp4_h200_fused_mode2_row" :
-                    "sm90_nvfp4_h200_fused_lut_window")),
+                    "sm90_nvfp4_fused_mode2_row" :
+                    "sm90_nvfp4_fused_lut_window")),
         code,
-        get_sm90_nvfp4_allm_small_jit_flags(fast_math));
-    SM90NVFP4H200FusedRuntime::launch(runtime, args);
+        arm_jit_flags);
+    SM90NVFP4FusedRuntime::launch(runtime, args);
 }
 
 }  // namespace deep_gemm
