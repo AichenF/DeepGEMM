@@ -45,7 +45,7 @@ POLICY_CASES = {
         "--nvfp4-block-n", "256",
     ],
     "flash_layout_cutoff": [
-        "--batches", "191", "192",
+        "--batches", "256", "257",
         "--hidden", "1024",
         "--intermediate-hidden", "2048",
         "--num-experts", "8",
@@ -53,7 +53,7 @@ POLICY_CASES = {
         "--num-max-tokens-per-rank", "8192",
     ],
     "pro_layout_cutoff": [
-        "--batches", "191", "192",
+        "--batches", "256", "257",
         "--hidden", "1024",
         "--intermediate-hidden", "3072",
         "--num-experts", "8",
@@ -81,14 +81,13 @@ def check_layout_policy() -> None:
     from deep_gemm.mega import choose_nvfp4_block_n_for_mega_moe_sm90
 
     cases = [
-        # The production boundary is raw source-token M, independent of model
-        # geometry and routed density.
-        (191, 6, 32, 2048, 256),
-        (192, 6, 32, 2048, 128),
-        (191, 8, 48, 2048, 256),
-        (192, 8, 48, 2048, 128),
-        (191, 6, 48, 3072, 256),
-        (192, 6, 48, 3072, 128),
+        # The raw per-rank M boundary is common to all three models.
+        (256, 6, 32, 2048, 256),
+        (257, 6, 32, 2048, 128),
+        (256, 8, 48, 2048, 256),
+        (257, 8, 48, 2048, 128),
+        (256, 6, 48, 3072, 256),
+        (257, 6, 48, 3072, 128),
     ]
     for num_tokens, topk, local_experts, intermediate, expected_block_n in cases:
         actual_block_n = choose_nvfp4_block_n_for_mega_moe_sm90(

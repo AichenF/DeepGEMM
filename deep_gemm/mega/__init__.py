@@ -110,14 +110,14 @@ def choose_nvfp4_block_n_for_mega_moe_sm90(
     num_topk: int,
     num_experts_per_rank: int,
     intermediate_hidden: int,
-    family_threshold: int = 192,
+    family_threshold: int = 256,
 ) -> int:
     """Select the SM90 NVFP4 MegaMoE kernel family for one forward.
 
     BN256 is the fused small-M family and BN128 is the split L1/L2 family.
-    The production boundary is the source-token batch M itself: M values below
-    ``family_threshold`` use the fused small-M portfolio, while M values at or
-    above the threshold use the split bigM implementation.
+    ``M`` is the per-source-rank token count before top-k expansion. The
+    measured H20/H200 production boundary is raw ``M <= family_threshold``;
+    larger workloads use the split bigM implementation.
 
     ``intermediate_hidden`` remains in the public signature for compatibility
     with the original deployment-time selector; it no longer changes policy.
@@ -129,7 +129,7 @@ def choose_nvfp4_block_n_for_mega_moe_sm90(
         raise ValueError("num_topk and num_experts_per_rank must be positive")
     if family_threshold <= 0:
         raise ValueError("family_threshold must be positive")
-    return 256 if num_tokens < family_threshold else 128
+    return 256 if num_tokens <= family_threshold else 128
 
 
 def _braid_nvfp4_mode2_signs(fused_weight: torch.Tensor) -> torch.Tensor:
@@ -247,7 +247,7 @@ def nvfp4_mega_moe(y: torch.Tensor,
                   activation_clamp: Optional[float] = None,
                   fast_math: bool = True,
                   kernel_family: str = 'auto',
-                  family_threshold: int = 192):
+                  family_threshold: int = 256):
     """SM90 (Hopper) NVFP4 MegaMoE entry.
 
     Weight tensors are packed E2M1 FP4. Use
@@ -255,9 +255,10 @@ def nvfp4_mega_moe(y: torch.Tensor,
     the L1 gate/up interleave and prepack UE4M3 scales into
     ``(E, N/block_n, K/128, block_n, 8)``. Both layouts use Mode2 braided
     signs. The packed weights are shared by both kernel families. With
-    ``kernel_family='auto'``, M < ``family_threshold`` selects the BN256 fused
-    small-M portfolio and M >= ``family_threshold`` selects BN128 split.  The
-    fused side then applies the architecture-specific M-range portfolio
+    ``kernel_family='auto'`` selects BN256 fused for raw per-source-rank
+    ``M <= family_threshold`` and BN128 split above that threshold. The fused
+    side then applies the
+    architecture-specific M-range portfolio
     (dev-m dynamic, dynamic+RS mode5, or KF 424 static-RS). The split family
     remains the fixed bigM mode4+remap L1 followed by L2 scatter.
     """

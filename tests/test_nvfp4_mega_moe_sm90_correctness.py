@@ -143,14 +143,16 @@ def _run_cuda_dequant_lut_unit_test() -> None:
 
 
 def _run_dequant_unit_test() -> None:
-    # The production family selector is model-agnostic and changes exactly at
-    # source-token M = 192.
-    assert deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
-        191, 8, 32, 2048) == 256
-    assert deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
-        192, 8, 32, 2048) == 128
-    assert deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
-        191, 8, 32, 4096) == 256
+    # The measured production boundary is raw per-source-rank M=256/257.
+    for topk, local_experts, intermediate in (
+        (6, 32, 2048),
+        (6, 48, 3072),
+        (8, 48, 2048),
+    ):
+        assert deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
+            256, topk, local_experts, intermediate) == 256
+        assert deep_gemm.choose_nvfp4_block_n_for_mega_moe_sm90(
+            257, topk, local_experts, intermediate) == 128
 
     scales = torch.tensor([0x00, 0x01, 0x07, 0x08, 0x38, 0x3F, 0x7E, 0x7F], dtype=torch.uint8)
     nibbles = torch.arange(16, dtype=torch.uint8).view(1, 1, 16).expand(scales.numel(), 1, 16).clone()
@@ -357,7 +359,7 @@ def _run_case(args: argparse.Namespace, m_tokens: int, weight_scale: float,
         activation_clamp=args.activation_clamp,
         fast_math=bool(args.fast_math),
         kernel_family=kernel_family,
-        family_threshold=192,
+        family_threshold=256,
     )
     torch.cuda.synchronize()
     dist.barrier(group=group)
@@ -536,7 +538,7 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Force the runtime family for validation: 128=split, 256=fused; "
-            "unset selects fused for M<192 and split for M>=192. "
+            "unset selects fused for raw per-rank M<=256. "
             "Weight layout remains BN128."
         ),
     )

@@ -7,30 +7,32 @@ DeepGEMM leverages some concepts from [CUTLASS](https://github.com/nvidia/cutlas
 ## SM90 NVFP4 MegaMoE all-M branch
 
 This branch provides one native DeepGEMM runtime for H20 and H200. Production
-uses `kernel_family="auto"`: M<192 selects the fused small-M portfolio and
-M>=192 selects the common BN128 bigM split kernel. The fused selector first
-identifies the physical target from the SM count, then selects a continuous
-model/M range.
+uses `kernel_family="auto"`. Here M is the source-token count on each rank
+before top-k expansion. Physical measurements on both targets select BN256
+fused for M<=256 and the common BN128 bigM split kernel for M>=257. The fused
+selector then identifies the SM count and applies a continuous model/M range.
 
 | Target/model | Production small-M arm ranges |
 |---|---|
-| H20 Flash | dynamic-RS M1–128; dev-m dynamic-SS M129–191 |
-| H20 Pro | dynamic-RS M1–191 |
-| H20 MiMo | dynamic-RS M1–144; dev-m dynamic-SS M145–191 |
-| H200 Flash | dynamic-RS M1–35; static-SS M36–64; dev-m M65–191 |
-| H200 Pro | dynamic-RS M1–128; dev-m M129–191 |
-| H200 MiMo | dynamic-RS M1–16; dev-m M17–32; dynamic-RS M33–96; dev-m M97–191 |
+| H20 Flash | dynamic-RS M1–128; dev-m dynamic-SS M129–256 |
+| H20 Pro | dynamic-RS M1–191; dev-m dynamic-SS M192–256 |
+| H20 MiMo | dynamic-RS M1–144; dev-m dynamic-SS M145–256 |
+| H200 Flash | dynamic-RS M1–35; static-SS M36–64; dev-m M65–256 |
+| H200 Pro | dynamic-RS M1–128; dev-m M129–256 |
+| H200 MiMo | dynamic-RS M1–16; dev-m M17–32; dynamic-RS M33–96; dev-m M97–256 |
+| H20/H200 all models | common bigM split M257+ |
 
-| Target | Small M vs dev-m | Small M vs PR383 W8A8 | Large M vs current dev | Large M vs PR383 W8A8 |
-|---|---|---|---|---|
-| 8x H20-3e | +26.28% on optimized routing workloads; +18.66% including fallback anchors | W4A8 +13.57% | identity | W8A8 +7.28% on M192–8192 |
-| 8x H200 | random-router optimized workloads +2.39%; fresh balanced 18-point matrix +0.41% | W4A8 +13.79% | identity | W8A8 +8.11% on M192–8192 |
+| Target | Fused vs dev-m | M257–1024 family test | W4A8 vs PR383 W8A8 |
+|---|---|---|---|
+| 8x H20-3e | optimized buckets win the five-router median; fallback is identity | split won 165/165 paired workloads | W4A8 +9.30% for displayed M<=256 rows; PR383 +7.41% for M>=257 |
+| 8x H200 | random-router optimized workloads +2.39%; fallback is identity | split won 165/165 paired workloads | see the stable per-point table in the optimization README |
 
-Current Aichen dev already contains the same `bigMopt` source. The historical
+Current dev already contains the same `bigMopt` source. The historical
 physical-H200 result versus pre-merge dev was +10.35% over six
 Flash/Pro M2048/4096/8192 points; it is provenance, not a new gain over current
-dev. On the fresh 39-point H200 W4/W8 grid, W4A8 is +1.78% overall. Full
-per-point tables, protocols, correctness coverage, and baseline definitions are in
+dev. Fused M1–256 uses dev-m as its baseline; split M257+ uses the byte-identical
+forced split path from dev. Full per-point tables, protocols, correctness
+coverage, and baseline definitions are in
 [README_MEGAMOE_ALLM_OPT.md](README_MEGAMOE_ALLM_OPT.md).
 
 Despite its lightweight design, DeepGEMM's performance matches or exceeds expert-tuned libraries across various matrix shapes.

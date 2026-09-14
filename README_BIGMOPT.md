@@ -2,7 +2,7 @@
 
 > Historical note: this document records the original `bigMopt@53d943e`
 > submission and its former routed-density selector. On the all-M branch the
-> production policy is now `M < 192 -> fused`, `M >= 192 -> split`; see
+> production policy is now `M <= 256 -> fused`, `M >= 257 -> split`; see
 > `README_MEGAMOE_ALLM_OPT.md` for the current policy and measurements. The
 > bigM device implementation described here is retained unchanged.
 
@@ -157,7 +157,7 @@ multi-round reuse all finite; formal component measurement over 8 M points with
 ## Usage
 
 ```python
-deep_gemm.nvfp4_mega_moe(..., kernel_family="auto", family_threshold=192)
+deep_gemm.nvfp4_mega_moe(..., kernel_family="auto", family_threshold=256)
 ```
 
 Weights are prepared once at load time with

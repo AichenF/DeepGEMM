@@ -316,12 +316,12 @@ static void nvfp4_mega_moe(
         requested_kernel_block_n == 128 or
         requested_kernel_block_n == 256);
     DG_HOST_ASSERT(family_threshold > 0);
-    // One common braided packed-B copy serves both families. Select the
-    // schedule from this forward's source-token M, not from the scale-metadata
-    // view used while prepacking the weights.
+    // One common braided packed-B copy serves both families. M is the number
+    // of source tokens on this rank before top-k expansion. Physical H20 and
+    // H200 measurements place the common family boundary at raw M=256/257.
     const int selected_kernel_block_n = requested_kernel_block_n != 0 ?
         requested_kernel_block_n :
-        (num_tokens < family_threshold ?
+        (num_tokens <= family_threshold ?
              256 : 128);
     // NVFP4 UE4M3 SF: tile-major shape
     //   (E, N/block_n, K/128, block_n, 8)
