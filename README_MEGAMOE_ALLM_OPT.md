@@ -189,7 +189,4 @@ model/M/router workloads passed correctness and timing hygiene.
 - Current branch rebuilt successfully after the selector change. The Python
   and C++ selectors agree at M256/257 for Flash, Pro and MiMo.
 
-`README_BIGMOPT.md` is retained only as historical provenance for the original
-bigM contribution. Current production policy is defined by this document.
-
 No instrumented or profiled timing is used in any performance claim.
