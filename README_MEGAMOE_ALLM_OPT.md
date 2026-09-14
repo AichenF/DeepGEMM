@@ -21,9 +21,9 @@ All SM90 NVFP4 policy is in
 
 Baselines:
 
-- small M: Aichen dev-m dynamic scheduler (`8b59b194` plus the validated
+- small M: dev-m dynamic scheduler (`8b59b194` plus the validated
   Flash/Pro adapter);
-- large M: current Aichen dev (`dbd995f`), which already contains the same
+- large M: current dev (`dbd995f`), which already contains the same
   `bigMopt@53d943e`, so the comparison is identity;
 - W8A8: DeepGEMM PR383 at `bc4f33a`.
 
@@ -81,7 +81,7 @@ active to rerun all three binaries in one new process sequence.
 
 ### Flash
 
-| M | Family | W4A8 | Aichen baseline | W8A8 | W4 vs baseline | W4 vs W8 |
+| M | Family | W4A8 | devm/dev baseline | W8A8 | W4 vs baseline | W4 vs W8 |
 |---:|---|---:|---|---:|---:|---:|
 | 8 | fused | 262.513 us | dev-m | 279.895 us | +12.73% | +6.621% |
 | 16 | fused | 264.404 us | dev-m | 292.600 us | +13.64% | +10.664% |
@@ -99,7 +99,7 @@ active to rerun all three binaries in one new process sequence.
 
 ### Pro
 
-| M | Family | W4A8 | Aichen baseline | W8A8 | W4 vs baseline | W4 vs W8 |
+| M | Family | W4A8 | devm/dev baseline | W8A8 | W4 vs baseline | W4 vs W8 |
 |---:|---|---:|---|---:|---:|---:|
 | 8 | fused | 966.393 us | dev-m | 1092.396 us | +16.25% | +13.039% |
 | 16 | fused | 980.224 us | dev-m | 1226.528 us | +15.41% | +25.127% |
@@ -117,7 +117,7 @@ active to rerun all three binaries in one new process sequence.
 
 ### MiMo 2.5 Pro
 
-| M | Family | W4A8 | Aichen baseline | W8A8 | W4 vs baseline | W4 vs W8 |
+| M | Family | W4A8 | devm/dev baseline | W8A8 | W4 vs baseline | W4 vs W8 |
 |---:|---|---:|---|---:|---:|---:|
 | 8 | fused | 567.538 us | dev-m | 610.421 us | +11.57% | +7.556% |
 | 16 | fused | 574.591 us | dev-m | 663.890 us | +11.36% | +15.541% |
@@ -149,7 +149,7 @@ latency is the W4 latency because both branches contain the same bigM source.
 
 ### Flash
 
-| M | Family | Aichen baseline | W4A8 | W8A8 | W4 vs baseline | W4 vs W8 |
+| M | Family | devm/dev baseline | W4A8 | W8A8 | W4 vs baseline | W4 vs W8 |
 |---:|---|---:|---:|---:|---:|---:|
 | 8 | fused | 195.907 us | 197.179 us | 227.414 us | -0.645% | +15.334% |
 | 16 | fused | 198.139 us | 198.547 us | 230.959 us | -0.206% | +16.324% |
@@ -167,7 +167,7 @@ latency is the W4 latency because both branches contain the same bigM source.
 
 ### Pro
 
-| M | Family | Aichen baseline | W4A8 | W8A8 | W4 vs baseline | W4 vs W8 |
+| M | Family | devm/dev baseline | W4A8 | W8A8 | W4 vs baseline | W4 vs W8 |
 |---:|---|---:|---:|---:|---:|---:|
 | 8 | fused | 671.519 us | 672.769 us | 803.796 us | -0.186% | +19.476% |
 | 16 | fused | 674.476 us | 676.103 us | 806.737 us | -0.241% | +19.322% |
@@ -185,7 +185,7 @@ latency is the W4 latency because both branches contain the same bigM source.
 
 ### MiMo 2.5 Pro
 
-| M | Family | Aichen baseline | W4A8 | W8A8 | W4 vs baseline | W4 vs W8 |
+| M | Family | devm/dev baseline | W4A8 | W8A8 | W4 vs baseline | W4 vs W8 |
 |---:|---|---:|---:|---:|---:|---:|
 | 8 | fused | 396.403 us | 398.512 us | 479.902 us | -0.529% | +20.423% |
 | 16 | fused | 397.686 us | 399.631 us | 488.124 us | -0.487% | +22.144% |
@@ -214,7 +214,7 @@ H200 summary:
 
 ## Historical bigM origin
 
-Before `bigMopt` was merged into Aichen dev, the accepted physical-H200 result
+Before `bigMopt` was merged into dev, the accepted physical-H200 result
 was:
 
 | Model | M | Old dev | bigMopt | bigM faster |
