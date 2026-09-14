@@ -9,7 +9,7 @@ DeepGEMM leverages some concepts from [CUTLASS](https://github.com/nvidia/cutlas
 This branch provides one native DeepGEMM runtime for H20 and H200. Production
 uses `kernel_family="auto"`. Here M is the source-token count on each rank
 before top-k expansion. Physical measurements on both targets select BN256
-fused for M<=256 and the common BN128 bigM split kernel for M>=257. The fused
+fused for M<=256 and the common BN128 split family for M>=257. The fused
 selector then identifies the SM count and applies a continuous model/M range.
 
 | Target/model | Production small-M arm ranges |
@@ -20,18 +20,19 @@ selector then identifies the SM count and applies a continuous model/M range.
 | H200 Flash | dynamic-RS M1–35; static-SS M36–64; dev-m M65–256 |
 | H200 Pro | dynamic-RS M1–128; dev-m M129–256 |
 | H200 MiMo | dynamic-RS M1–16; dev-m M17–32; dynamic-RS M33–96; dev-m M97–256 |
-| H20/H200 all models | common bigM split M257+ |
+| H20/H200 all models | common split family M257+ |
 
 | Target | Fused vs dev-m | M257–1024 family test | W4A8 vs PR383 W8A8 |
 |---|---|---|---|
-| 8x H20-3e | optimized buckets win the five-router median; fallback is identity | split won 165/165 paired workloads | W4A8 +9.30% for displayed M<=256 rows; PR383 +7.41% for M>=257 |
-| 8x H200 | random-router optimized workloads +2.39%; fallback is identity | split won 165/165 paired workloads | see the stable per-point table in the optimization README |
+| 8x H20-3e | optimized buckets win the five-router median; fallback is identity | split won 165/165 paired workloads | W4A8 +9.30% for displayed M<=256 rows; PR383 latency -9.40% on M257–1024 and -1.58% on M2048–8192 |
+| 8x H200 | random-router optimized workloads +2.39%; fallback is identity | split won 165/165 paired workloads | PR383 latency -6.87% on M2048–8192; see the per-point table in the optimization README |
 
 Current dev already contains the same `bigMopt` source. The historical
 physical-H200 result versus pre-merge dev was +10.35% over six
 Flash/Pro M2048/4096/8192 points; it is provenance, not a new gain over current
-dev. Fused M1–256 uses dev-m as its baseline; split M257+ uses the byte-identical
-forced split path from dev. Full per-point tables, protocols, correctness
+dev. M1–1024 uses dev-m as its baseline even when production selects split;
+the large-M M2048/4096/8192 points use the byte-identical forced split path
+from dev. Full per-point tables, protocols, correctness
 coverage, and baseline definitions are in
 [README_MEGAMOE_ALLM_OPT.md](README_MEGAMOE_ALLM_OPT.md).
 
