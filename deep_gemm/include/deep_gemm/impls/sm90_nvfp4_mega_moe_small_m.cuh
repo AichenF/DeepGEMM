@@ -188,6 +188,11 @@ template <
     float kActivationClamp,
     bool kFastMath,
     bool kSwapABRequested,
+    bool kRSSwapABRequested,
+    bool kRSBatch4Requested,
+    bool kRSVectorScaleRequested,
+    bool kRSDirectLutRequested,
+    bool kRSCompactSmemRequested,
     bool kSingleActiveDispatchWarp,
     bool kUseMode2Lop3Decoder
 >
