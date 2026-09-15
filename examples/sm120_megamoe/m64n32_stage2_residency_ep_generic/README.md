@@ -1,8 +1,7 @@
 # SM120 MegaMoE — M64xN32 two-stage residency schedule, EP-generic release (EP4 and EP8)
 
-One generated MoE megakernel per variant, valid for 4-rank and 8-rank expert parallelism. Each `.cu` contains a
-generated kernel body with a unique exported symbol and an exact EP-width launch guard. The two EP widths come from
-the same generator source, which
+One generated MoE megakernel per variant, valid for 4-rank and 8-rank expert parallelism. Each build entry point
+exports a unique symbol and enforces its exact EP width. The two EP widths come from the same generator source, which
 resolves the expert-parallel width at generation time (experts per rank, peer count and every derived buffer size
 become literals), so one file is emitted per EP width. Both variants keep all EP-specific tuning inside the generator:
 the EP4 emission is the EP4-tuned kernel, the EP8 emission is the EP8-tuned kernel, and no EP4 mechanism leaks into
@@ -12,14 +11,16 @@ the EP8 build (see "How the EP policy was decided").
 |---|---|---|---:|---:|---|---|
 | `cake_sm120_megamoe_m64n32_stage2_residency_fp8shared_ep4.cu` | fp8shared | 4 | 298510 | 5063 | 167 REG, 0 spills, 16 barriers, 8 B stack | `840471325d920ee8d3e9c27247e2fcd238c514ea7cc7668206ba1eb34aac08d9` |
 | `cake_sm120_megamoe_m64n32_stage2_residency_fp8shared_ep8.cu` | fp8shared | 8 | 294926 | 5019 | 167 REG, 0 spills, 16 barriers, 8 B stack | `c9fdbfde7e816797d8b9665eeaf58224b3e7e6c8e881f00046b09a06d2a4b539` |
-| `cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep4.cu` | noshared | 4 | 259841 | 4493 | 167 REG, 0 spills, 16 barriers, 8 B stack | `2e58deb63015fc2273bce5e73eb9579110acc5c2df17bceb267f39c5408b009b` |
-| `cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep4_r2048_unroll2.cu` | noshared, unroll-2 instance | 4 | 259855 | 4493 | 168 REG, 0 spills, 16 barriers, 8 B stack | `62a88b5175c5a54c005d52e3cd29567996d1b535d8190829aff92251a58c5111` |
+| `cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep4.cu` | noshared | 4 | 252 | 4 | 167 REG, 0 spills, 16 barriers, 8 B stack | `472088f2d0496f38b6b8bc1ccfbf7b4e660fec5224bdeec3c86b46124994bfb2` |
+| `cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep4_r2048_unroll2.cu` | noshared, unroll-2 instance | 4 | 266 | 4 | 168 REG, 0 spills, 16 barriers, 8 B stack | `7d4a78c64ed400aba865c173e81a7dda224999e3e716d8dbdd4a34eb9457cdef` |
 | `cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep8.cu` | noshared | 8 | 214094 | 3882 | 164 REG, 0 spills, 16 barriers, 8 B stack | `33a3ed7c55639eaaa770f0be3cb1f6f38ccb6950a54d268e50e1d5a8b5251680` |
 
 Resource figures are from `nvcc -cubin --generate-code=arch=compute_120a,code=sm_120a -std=c++17 -O3 --resource-usage`
-on each file as shipped. The noshared EP4 kernel ships two instances that differ only in two `#pragma unroll`
-directives (K-loop unroll 1 vs 2); the host selects the unroll-2 instance when the per-rank row count is 2048 and the
-unroll-1 instance otherwise. At EP8 a single instance is used.
+on each build entry point as shipped. The two EP4 entry points include the 260232-byte, 4502-line common body
+`cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep4.cuh` (SHA256
+`65f4bb47925738944939756e3b7e35930a6936d2754f1b7818af8b78f95751bc`) and select K-loop unroll 1 or 2 at compile
+time. This removes a 4493-line duplicate without changing either kernel's SASS. The host selects unroll 2 when the
+per-rank row count is 2048 and unroll 1 otherwise. At EP8 a single instance is used.
 
 ## Geometry (both variants, both EP widths)
 
