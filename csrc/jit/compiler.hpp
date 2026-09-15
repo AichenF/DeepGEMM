@@ -173,6 +173,8 @@ DG_DECLARE_STATIC_VAR_IN_CLASS(Compiler, cuobjdump_path);
 
 class NVCCCompiler final: public Compiler {
     std::filesystem::path nvcc_path;
+    std::filesystem::path ptxas_path;
+    std::string arch;
 
     std::pair<int, int> get_nvcc_version() const {
         DG_HOST_ASSERT(std::filesystem::exists(nvcc_path));
@@ -201,11 +203,19 @@ public:
             nvcc_path = env_nvcc_path;
         const auto [nvcc_major, nvcc_minor] = get_nvcc_version();
         signature = fmt::format("NVCC{}.{}", nvcc_major, nvcc_minor);
+        if (const auto value = get_env<std::string>("DG_JIT_PTXAS_COMPILER"); not value.empty()) {
+            ptxas_path = value;
+            DG_HOST_ASSERT(std::filesystem::is_regular_file(ptxas_path));
+            const auto [return_code, version] =
+                call_external_command(fmt::format("{} --version", ptxas_path.c_str()));
+            DG_HOST_ASSERT(return_code == 0);
+            signature += fmt::format("$PTXAS{}", get_hex_digest(version));
+        }
 
         // The override the compiler flags
         // Only NVCC >= 12.9 supports arch-specific family suffix
         device_runtime->set_support_arch_family(nvcc_major > 12 or nvcc_minor >= 9);
-        const auto arch = device_runtime->get_arch(false);
+        arch = device_runtime->get_arch(false);
         // SM120a requires -gencode (--gpu-architecture makes ptxas fall back to sm_120,
         // losing block_scale and other arch-specific features)
         const auto arch_flag = device_runtime->get_arch_major() == 12
@@ -257,29 +267,58 @@ public:
         const auto code_path = dir_path / "kernel.cu";
         put(code_path, code);
 
-        // Compile
-        // Avoid cwd files shadowing C++ standard library headers
+        // Avoid cwd files shadowing C++ standard library headers.
         const auto compile_dir = make_tmp_dir();
-        const auto command = fmt::format("cd {} && {} {} -cubin -o {} {}",
-            compile_dir.c_str(), nvcc_path.c_str(), code_path.c_str(), cubin_path.c_str(), flags);
-        if (get_env("DG_JIT_DEBUG", 0) or get_env("DG_JIT_PRINT_COMPILER_COMMAND", 0))
-            printf("Running NVCC command: %s\n", command.c_str());
-        const auto [return_code, output] = call_external_command(command);
-        if (return_code != 0) {
-            printf("NVCC compilation failed: %s\n", output.c_str());
-            DG_HOST_ASSERT(false and "NVCC compilation failed");
+        std::string output;
+        if (ptxas_path.empty()) {
+            const auto command = fmt::format("cd {} && {} {} -cubin -o {} {}",
+                compile_dir.c_str(), nvcc_path.c_str(), code_path.c_str(), cubin_path.c_str(), flags);
+            if (get_env("DG_JIT_DEBUG", 0) or get_env("DG_JIT_PRINT_COMPILER_COMMAND", 0))
+                printf("Running NVCC command: %s\n", command.c_str());
+            const auto [return_code, compile_output] = call_external_command(command);
+            output = compile_output;
+            if (return_code != 0) {
+                printf("NVCC compilation failed: %s\n", output.c_str());
+                DG_HOST_ASSERT(false and "NVCC compilation failed");
+            }
         }
 
-        // Compile to PTX if needed
-        if (ptx_path.has_value()) {
+        if (ptx_path.has_value() or not ptxas_path.empty()) {
+            const auto generated_ptx_path =
+                ptx_path.value_or(dir_path / "kernel.intermediate.ptx");
             const auto ptx_command = fmt::format("cd {} && {} {} -ptx -o {} {}",
-                compile_dir.c_str(), nvcc_path.c_str(), code_path.c_str(), ptx_path->c_str(), flags);
+                compile_dir.c_str(), nvcc_path.c_str(), code_path.c_str(), generated_ptx_path.c_str(), flags);
             if (get_env("DG_JIT_DEBUG", 0) or get_env("DG_JIT_PRINT_COMPILER_COMMAND", 0))
                 printf("Running NVCC PTX command: %s\n", ptx_command.c_str());
             const auto [ptx_return_code, ptx_output] = call_external_command(ptx_command);
             if (ptx_return_code != 0) {
                 printf("NVCC PTX compilation failed: %s\n", ptx_output.c_str());
                 DG_HOST_ASSERT(false and "NVCC PTX compilation failed");
+            }
+            if (not ptxas_path.empty()) {
+                const auto check_ptxas =
+                    get_env("DG_JIT_DEBUG", 0) or
+                    get_env("DG_JIT_PTXAS_VERBOSE", 0) or
+                    get_env("DG_JIT_PTXAS_CHECK", 0);
+                const auto ptxas_command = fmt::format(
+                    "cd {} && {} -arch=sm_{} -O3 --register-usage-level=10 {} -o {} {}",
+                    compile_dir.c_str(),
+                    ptxas_path.c_str(),
+                    arch,
+                    check_ptxas ? "-v --warn-on-local-memory-usage" : "",
+                    cubin_path.c_str(),
+                    generated_ptx_path.c_str());
+                if (get_env("DG_JIT_DEBUG", 0) or get_env("DG_JIT_PRINT_COMPILER_COMMAND", 0))
+                    printf("Running PTXAS command: %s\n", ptxas_command.c_str());
+                const auto [ptxas_return_code, ptxas_output] =
+                    call_external_command(ptxas_command);
+                output += ptxas_output;
+                if (ptxas_return_code != 0) {
+                    printf("PTXAS compilation failed: %s\n", ptxas_output.c_str());
+                    DG_HOST_ASSERT(false and "PTXAS compilation failed");
+                }
+                if (not ptx_path.has_value())
+                    std::filesystem::remove(generated_ptx_path);
             }
         }
 
