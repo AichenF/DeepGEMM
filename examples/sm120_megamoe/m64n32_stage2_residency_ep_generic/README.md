@@ -9,8 +9,8 @@ the EP8 build (see "How the EP policy was decided").
 
 | file | variant | EP | bytes | lines | ptxas (sm_120a) | sha256 |
 |---|---|---|---:|---:|---|---|
-| `cake_sm120_megamoe_m64n32_stage2_residency_fp8shared_ep4.cu` | fp8shared | 4 | 298510 | 5063 | 167 REG, 0 spills, 16 barriers, 8 B stack | `840471325d920ee8d3e9c27247e2fcd238c514ea7cc7668206ba1eb34aac08d9` |
-| `cake_sm120_megamoe_m64n32_stage2_residency_fp8shared_ep8.cu` | fp8shared | 8 | 294926 | 5019 | 167 REG, 0 spills, 16 barriers, 8 B stack | `c9fdbfde7e816797d8b9665eeaf58224b3e7e6c8e881f00046b09a06d2a4b539` |
+| `cake_sm120_megamoe_m64n32_stage2_residency_fp8shared_ep4.cu` | fp8shared | 4 | 298143 | 5063 | 167 REG, 0 spills, 16 barriers, 8 B stack | `2c5f463af0e1efbc8f251c46c75d38c6eb8a1a588dc5e530c6ca771daca34e76` |
+| `cake_sm120_megamoe_m64n32_stage2_residency_fp8shared_ep8.cu` | fp8shared | 8 | 294559 | 5019 | 167 REG, 0 spills, 16 barriers, 8 B stack | `a9eae1b4fe00e345cfd96296b75585e4149de4eca3f243249529d93eed7ed764` |
 | `cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep4.cu` | noshared | 4 | 252 | 4 | 167 REG, 0 spills, 16 barriers, 8 B stack | `472088f2d0496f38b6b8bc1ccfbf7b4e660fec5224bdeec3c86b46124994bfb2` |
 | `cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep4_r2048_unroll2.cu` | noshared, unroll-2 instance | 4 | 266 | 4 | 168 REG, 0 spills, 16 barriers, 8 B stack | `7d4a78c64ed400aba865c173e81a7dda224999e3e716d8dbdd4a34eb9457cdef` |
 | `cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep8.cu` | noshared | 8 | 214094 | 3882 | 164 REG, 0 spills, 16 barriers, 8 B stack | `33a3ed7c55639eaaa770f0be3cb1f6f38ccb6950a54d268e50e1d5a8b5251680` |

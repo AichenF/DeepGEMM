@@ -2328,7 +2328,7 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                                         *(reinterpret_cast<int*>(reinterpret_cast<int*>(result_out) + ((unsigned long long)(source_5 * 2 + slot) * 102285312 + 102236160 + (unsigned long long)scatter_result_index)) + (0)) = scatter_new_index;
                                         routing_weight_pool[dst_row] = scatter_route_weight;
                                         int c41_sc_q = 128;
-                                        if (c41_sc_r >= 768 && c41_sc_r < 768 || c41_sc_r >= 6144) {
+                                        if (c41_sc_r >= 6144) {
                                             c41_sc_q = 64;
                                         }
                                         if (c41_sc_r < 768) {
@@ -3688,7 +3688,7 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                                 int _min_34 = ((_max_64) < (49152) ? (_max_64) : (49152));
                                 int ce_rc = _min_34;
                                 int ce_q = 128;
-                                if (ce_rc >= 768 && ce_rc < 768 || ce_rc >= 6144) {
+                                if (ce_rc >= 6144) {
                                     ce_q = 64;
                                 }
                                 if (ce_rc < 768) {
@@ -4154,7 +4154,7 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                                         int _min_45 = ((_max_79) < (49152) ? (_max_79) : (49152));
                                         int ce_rc_1 = _min_45;
                                         int ce_q_1 = 128;
-                                        if (ce_rc_1 >= 768 && ce_rc_1 < 768 || ce_rc_1 >= 6144) {
+                                        if (ce_rc_1 >= 6144) {
                                             ce_q_1 = 64;
                                         }
                                         if (ce_rc_1 < 768) {
@@ -4380,7 +4380,7 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                         int _min_48 = ((_max_84) < (49152) ? (_max_84) : (49152));
                         int h29_routes = _min_48;
                         int h29_pq = 128;
-                        if (h29_routes >= 768 && h29_routes < 768 || h29_routes >= 6144) {
+                        if (h29_routes >= 6144) {
                             h29_pq = 64;
                         }
                         if (h29_routes < 768) {
@@ -4467,7 +4467,7 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                             int _min_53 = ((_max_88) < (49152) ? (_max_88) : (49152));
                             int c41_tr = _min_53;
                             int c41_tq = 128;
-                            if (c41_tr >= 768 && c41_tr < 768 || c41_tr >= 6144) {
+                            if (c41_tr >= 6144) {
                                 c41_tq = 64;
                             }
                             if (c41_tr < 768) {
@@ -4558,7 +4558,7 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                             }
                         }
                         int c41_aq = 128;
-                        if (tail_routes >= 768 && tail_routes < 768 || tail_routes >= 6144) {
+                        if (tail_routes >= 6144) {
                             c41_aq = 64;
                         }
                         if (tail_routes < 768) {
@@ -4664,7 +4664,7 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
             int _min_59 = ((_max_93) < (49152) ? (_max_93) : (49152));
             int safe_owner_routes = _min_59;
             int c41_wq = 128;
-            if (safe_owner_routes >= 768 && safe_owner_routes < 768 || safe_owner_routes >= 6144) {
+            if (safe_owner_routes >= 6144) {
                 c41_wq = 64;
             }
             if (safe_owner_routes < 768) {
@@ -4783,7 +4783,7 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                         }
                     } else {
                         int cd_rq = 128;
-                        if (meta_owner_count >= 768 && meta_owner_count < 768 || meta_owner_count >= 6144) {
+                        if (meta_owner_count >= 6144) {
                             cd_rq = 64;
                         }
                         if (meta_owner_count < 768) {
@@ -5024,7 +5024,7 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                             int _min_63 = ((_max_100) < (49152) ? (_max_100) : (49152));
                             int h8_routes = _min_63;
                             int h8_rq = 128;
-                            if (h8_routes >= 768 && h8_routes < 768 || h8_routes >= 6144) {
+                            if (h8_routes >= 6144) {
                                 h8_rq = 64;
                             }
                             if (h8_routes < 768) {
