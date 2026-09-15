@@ -15,7 +15,7 @@ static bool can_use_sm120_routed_moe_fast_path(
     float activation_clamp,
     bool fast_math) {
     using Shape = sm120_routed_moe::Shape;
-    return num_ranks == Shape::kWorldSize and
+    return (num_ranks == 4 or num_ranks == Shape::kWorldSize) and
            num_experts == Shape::kExperts and
            num_topk == Shape::kTopK and
            hidden == Shape::kHidden and

@@ -547,22 +547,22 @@ __device__ __forceinline__ void tma_store_2d(
         :: "l"(tmap), "r"(x), "r"(y), "r"(smem_addr) : "memory");
 }
 
-#ifndef kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch
+#ifndef DG_SM120_ROUTED_MOE_KERNEL
 #error "Define the exported kernel symbol before including this file"
 #endif
 
-#ifndef CAKE_MEGAMOE_K_LOOP_UNROLL
-#error "Define CAKE_MEGAMOE_K_LOOP_UNROLL before including this file"
+#ifndef DG_SM120_ROUTED_MOE_K_LOOP_UNROLL
+#error "Define DG_SM120_ROUTED_MOE_K_LOOP_UNROLL before including this file"
 #endif
 
-#define CAKE_MEGAMOE_STRINGIFY_IMPL(value) #value
-#define CAKE_MEGAMOE_STRINGIFY(value) CAKE_MEGAMOE_STRINGIFY_IMPL(value)
-#define CAKE_MEGAMOE_PRAGMA(value) _Pragma(CAKE_MEGAMOE_STRINGIFY(value))
+#define DG_SM120_STRINGIFY_IMPL(value) #value
+#define DG_SM120_STRINGIFY(value) DG_SM120_STRINGIFY_IMPL(value)
+#define DG_SM120_PRAGMA(value) _Pragma(DG_SM120_STRINGIFY(value))
 
 extern "C" {
 
 __global__ __launch_bounds__(384) void
-kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap const* W1_A, LoomTensorMap const* W1_A64, LoomTensorMap const* W1_B, LoomTensorMap const* W1_SFA, LoomTensorMap const* W1_SFA64, LoomTensorMap const* W1_SFB, LoomTensorMap const* W1_D, LoomTensorMap const* W2_A, LoomTensorMap const* W2_A64, LoomTensorMap const* W2_B, LoomTensorMap const* W2_SFA, LoomTensorMap const* W2_SFA64, LoomTensorMap const* W2_SFB, LoomTensorMap const* W2_D, uint8_t* __restrict__ intermediate_fp8, uint8_t* __restrict__ intermediate_sfa_u8, int* __restrict__ requant_groups_done, int* __restrict__ w2_warp_done, int* __restrict__ w2_tiles_completed, int* __restrict__ topk_idx_i32, float* __restrict__ topk_weights, int* __restrict__ x_fp8_i32, int* __restrict__ x_sf_i32, int* __restrict__ owner_record_counts, int* __restrict__ owner_route_counts, int* __restrict__ owner_minexp_record_base, int* __restrict__ owner_minexp_record_cursor, int* __restrict__ sorted_record_token, int* __restrict__ sorted_record_route_base, int* __restrict__ route_result_index, int* __restrict__ protocol_error, unsigned long long* __restrict__ phase_timestamps, unsigned long long* __restrict__ peer_phase_timestamps, unsigned int* __restrict__ w2_task_counter, unsigned int* __restrict__ w1_task_counter, unsigned int* __restrict__ dispatch_chunk_scatter_counter, unsigned int* __restrict__ pull_chunk_arrived, unsigned int* __restrict__ result_owner_ready, unsigned int* __restrict__ result_owner_progress, unsigned long long* __restrict__ pull_request_scratch, int* __restrict__ dispatch_chunk_targets, int* __restrict__ c56_claim_cursor, int* __restrict__ combine_claim_cursor, int* __restrict__ c56_tile_mailbox, int* __restrict__ task_gate_packed, int* __restrict__ result_chunk_total, int* __restrict__ result_chunk_tally, int* __restrict__ result_ovf_cursor, unsigned long long* __restrict__ signal_base_scratch, unsigned long long* __restrict__ dispatch_chunk_signal_base_scratch, unsigned long long* __restrict__ result_signal_base_scratch, unsigned long long* __restrict__ ack_signal_base_scratch, __nv_bfloat16* __restrict__ final_output, unsigned int* __restrict__ pool_fp8_u32, unsigned int* __restrict__ pool_sf_u32, float* __restrict__ routing_weight_pool, int* __restrict__ meta_source_rank, int* __restrict__ meta_token, int* __restrict__ meta_slot, int* __restrict__ meta_result_index, int* __restrict__ expert_counts, int* __restrict__ owner_expert_route_counts, int* __restrict__ source_route_sum, int* __restrict__ source_expert_counts, int* __restrict__ expert_source_base, int* __restrict__ expert_source_offsets, int* __restrict__ source_expert_prefix, int* __restrict__ task_max_source, int* __restrict__ source_record_counts, int* __restrict__ source_route_counts, int* __restrict__ source_active_rows, int* __restrict__ expert_row_offsets, int* __restrict__ expert_task_base, int* __restrict__ expert_block_task, int* __restrict__ task_source_slot_base, int* __restrict__ expert_scatter_offsets, int* __restrict__ task_expert, int* __restrict__ task_source_rank, int* __restrict__ task_owner_rank, int* __restrict__ task_local_expert, int* __restrict__ task_pool_row, int* __restrict__ task_m_local, int* __restrict__ task_valid_m, int* __restrict__ task_rows_landed, int* __restrict__ total_valid_routes, int* __restrict__ total_padded_rows, int* __restrict__ total_m_tasks, int* __restrict__ histogram_done, int* __restrict__ prefix_done, int* __restrict__ w1_warp_done, int* __restrict__ w1_tiles_completed, int rank, int world_size, int active_rows, unsigned int epoch, ncclDevComm const* __restrict__ gin_dev_comm, uint8_t* __restrict__ dispatch_header_out, ncclWindow_t dispatch_header_out_window, uint8_t* __restrict__ dispatch_payload_out, ncclWindow_t dispatch_payload_out_window, uint8_t* __restrict__ dispatch_header_inbox, ncclWindow_t dispatch_header_inbox_window, uint8_t* __restrict__ dispatch_payload_inbox, ncclWindow_t dispatch_payload_inbox_window, uint8_t* __restrict__ result_out, ncclWindow_t result_out_window, uint8_t* __restrict__ result_inbox, ncclWindow_t result_inbox_window, uint8_t* __restrict__ ack_out, ncclWindow_t ack_out_window, uint8_t* __restrict__ ack_inbox, ncclWindow_t ack_inbox_window)
+DG_SM120_ROUTED_MOE_KERNEL(LoomTensorMap const* W1_A, LoomTensorMap const* W1_A64, LoomTensorMap const* W1_B, LoomTensorMap const* W1_SFA, LoomTensorMap const* W1_SFA64, LoomTensorMap const* W1_SFB, LoomTensorMap const* W1_D, LoomTensorMap const* W2_A, LoomTensorMap const* W2_A64, LoomTensorMap const* W2_B, LoomTensorMap const* W2_SFA, LoomTensorMap const* W2_SFA64, LoomTensorMap const* W2_SFB, LoomTensorMap const* W2_D, uint8_t* __restrict__ intermediate_fp8, uint8_t* __restrict__ intermediate_sfa_u8, int* __restrict__ requant_groups_done, int* __restrict__ w2_warp_done, int* __restrict__ w2_tiles_completed, int* __restrict__ topk_idx_i32, float* __restrict__ topk_weights, int* __restrict__ x_fp8_i32, int* __restrict__ x_sf_i32, int* __restrict__ owner_record_counts, int* __restrict__ owner_route_counts, int* __restrict__ owner_minexp_record_base, int* __restrict__ owner_minexp_record_cursor, int* __restrict__ sorted_record_token, int* __restrict__ sorted_record_route_base, int* __restrict__ route_result_index, int* __restrict__ protocol_error, unsigned long long* __restrict__ phase_timestamps, unsigned long long* __restrict__ peer_phase_timestamps, unsigned int* __restrict__ w2_task_counter, unsigned int* __restrict__ w1_task_counter, unsigned int* __restrict__ dispatch_chunk_scatter_counter, unsigned int* __restrict__ pull_chunk_arrived, unsigned int* __restrict__ result_owner_ready, unsigned int* __restrict__ result_owner_progress, unsigned long long* __restrict__ pull_request_scratch, int* __restrict__ dispatch_chunk_targets, int* __restrict__ c56_claim_cursor, int* __restrict__ combine_claim_cursor, int* __restrict__ c56_tile_mailbox, int* __restrict__ task_gate_packed, int* __restrict__ result_chunk_total, int* __restrict__ result_chunk_tally, int* __restrict__ result_ovf_cursor, unsigned long long* __restrict__ signal_base_scratch, unsigned long long* __restrict__ dispatch_chunk_signal_base_scratch, unsigned long long* __restrict__ result_signal_base_scratch, unsigned long long* __restrict__ ack_signal_base_scratch, __nv_bfloat16* __restrict__ final_output, unsigned int* __restrict__ pool_fp8_u32, unsigned int* __restrict__ pool_sf_u32, float* __restrict__ routing_weight_pool, int* __restrict__ meta_source_rank, int* __restrict__ meta_token, int* __restrict__ meta_slot, int* __restrict__ meta_result_index, int* __restrict__ expert_counts, int* __restrict__ owner_expert_route_counts, int* __restrict__ source_route_sum, int* __restrict__ source_expert_counts, int* __restrict__ expert_source_base, int* __restrict__ expert_source_offsets, int* __restrict__ source_expert_prefix, int* __restrict__ task_max_source, int* __restrict__ source_record_counts, int* __restrict__ source_route_counts, int* __restrict__ source_active_rows, int* __restrict__ expert_row_offsets, int* __restrict__ expert_task_base, int* __restrict__ expert_block_task, int* __restrict__ task_source_slot_base, int* __restrict__ expert_scatter_offsets, int* __restrict__ task_expert, int* __restrict__ task_source_rank, int* __restrict__ task_owner_rank, int* __restrict__ task_local_expert, int* __restrict__ task_pool_row, int* __restrict__ task_m_local, int* __restrict__ task_valid_m, int* __restrict__ task_rows_landed, int* __restrict__ total_valid_routes, int* __restrict__ total_padded_rows, int* __restrict__ total_m_tasks, int* __restrict__ histogram_done, int* __restrict__ prefix_done, int* __restrict__ w1_warp_done, int* __restrict__ w1_tiles_completed, int rank, int world_size, int active_rows, unsigned int epoch, bool drain_only, ncclDevComm const* __restrict__ gin_dev_comm, uint8_t* __restrict__ dispatch_header_out, ncclWindow_t dispatch_header_out_window, uint8_t* __restrict__ dispatch_payload_out, ncclWindow_t dispatch_payload_out_window, uint8_t* __restrict__ dispatch_header_inbox, ncclWindow_t dispatch_header_inbox_window, uint8_t* __restrict__ dispatch_payload_inbox, ncclWindow_t dispatch_payload_inbox_window, uint8_t* __restrict__ result_out, ncclWindow_t result_out_window, uint8_t* __restrict__ result_inbox, ncclWindow_t result_inbox_window, uint8_t* __restrict__ ack_out, ncclWindow_t ack_out_window, uint8_t* __restrict__ ack_inbox, ncclWindow_t ack_inbox_window)
 {
     const int tid = threadIdx.x;
     const int warp = make_warp_uniform(tid / 32);
@@ -582,6 +582,26 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
 
     const int bid = blockIdx.x;
     const int num_bids = gridDim.x;
+    if (drain_only) {
+        if (bid == 0 && warp == 0 && elect_sync() &&
+            rank >= 0 && rank < world_size && world_size == 4 &&
+            ack_signal_base_scratch[4] != 0) {
+            ncclGin gin{*gin_dev_comm, 0};
+            #pragma unroll 1
+            for (int source = 0; source < 4; ++source) {
+                gin.waitSignal(
+                    ncclCoopThread(),
+                    static_cast<ncclGinSignal_t>(8 + source),
+                    ack_signal_base_scratch[source] + 1,
+                    64,
+                    cuda::memory_order_acquire);
+                ack_signal_base_scratch[source] += 1;
+            }
+            ack_signal_base_scratch[4] = 0;
+        }
+        cooperative_groups::this_grid().sync();
+        return;
+    }
     if (tid == 0) {
         asm volatile("fence.proxy.tensormap::generic.acquire.sys [%0], 128;" :: "l"((uint64_t)(W1_A)) : "memory");
         asm volatile("fence.proxy.tensormap::generic.acquire.sys [%0], 128;" :: "l"((uint64_t)(W1_A64)) : "memory");
@@ -2652,7 +2672,7 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                     }
                 }
                 if (w1_slab_active != 0) {
-                    CAKE_MEGAMOE_PRAGMA(unroll CAKE_MEGAMOE_K_LOOP_UNROLL)
+                    DG_SM120_PRAGMA(unroll DG_SM120_ROUTED_MOE_K_LOOP_UNROLL)
                     for (int w1_k_block_2 = 0; w1_k_block_2 < 32; w1_k_block_2++) {
                         mbarrier_wait(w1_full_addr + (w1_math_stage) * 8, _phase_w1_full);
                         asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
@@ -2986,7 +3006,7 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                     }
                 }
                 if (w2_slab_active != 0) {
-                    CAKE_MEGAMOE_PRAGMA(unroll CAKE_MEGAMOE_K_LOOP_UNROLL)
+                    DG_SM120_PRAGMA(unroll DG_SM120_ROUTED_MOE_K_LOOP_UNROLL)
                     for (int w2_k_block_2 = 0; w2_k_block_2 < 16; w2_k_block_2++) {
                         mbarrier_wait(w1_full_addr + (w1_math_stage) * 8, _phase_w1_full);
                         asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
