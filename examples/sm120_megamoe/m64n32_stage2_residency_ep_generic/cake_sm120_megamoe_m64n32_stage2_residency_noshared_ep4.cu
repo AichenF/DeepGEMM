@@ -1,4 +1,0 @@
-#define kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch \
-    kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_noshared_ep4
-#define CAKE_MEGAMOE_K_LOOP_UNROLL 1
-#include "cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep4.cuh"
