@@ -1,7 +1,8 @@
 # SM120 MegaMoE — M64xN32 two-stage residency schedule, EP-generic release (EP4 and EP8)
 
-One generated MoE megakernel per variant, valid for 4-rank and 8-rank expert parallelism. Each `.cu` is the code
-generator's output byte for byte (no hand edits); the two EP widths come from the **same generator source**, which
+One generated MoE megakernel per variant, valid for 4-rank and 8-rank expert parallelism. Each `.cu` contains a
+generated kernel body with an exact EP-width launch guard. The two EP widths come from the same generator source,
+which
 resolves the expert-parallel width at generation time (experts per rank, peer count and every derived buffer size
 become literals), so one file is emitted per EP width. Both variants keep all EP-specific tuning inside the generator:
 the EP4 emission is the EP4-tuned kernel, the EP8 emission is the EP8-tuned kernel, and no EP4 mechanism leaks into
@@ -9,11 +10,11 @@ the EP8 build (see "How the EP policy was decided").
 
 | file | variant | EP | bytes | lines | ptxas (sm_120a) | sha256 |
 |---|---|---|---:|---:|---|---|
-| `cake_sm120_megamoe_m64n32_stage2_residency_fp8shared_ep4.cu` | fp8shared | 4 | 298384 | 5061 | 167 REG, 0 spills, 16 barriers, 8 B stack | `63cf6b5320a044876ddb47a274265b6f5842d8d1486c8ce7c30d20471624bbc2` |
-| `cake_sm120_megamoe_m64n32_stage2_residency_fp8shared_ep8.cu` | fp8shared | 8 | 294800 | 5017 | 167 REG, 0 spills, 16 barriers, 8 B stack | `b3503df17b528b02f36c8fe6791fe25478ff0f123c8084ff516355528d685ae1` |
-| `cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep4.cu` | noshared | 4 | 259716 | 4491 | 167 REG, 0 spills, 16 barriers, 8 B stack | `981c1c0088379874637ceab3b71f22eb46f2894a8a9dd21ce0ef49dd148b01cd` |
-| `cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep4_r2048_unroll2.cu` | noshared, unroll-2 instance | 4 | 259716 | 4491 | 168 REG, 0 spills, 16 barriers, 8 B stack | `b001fc5fb4d8413860a23ea92b462c63e1b15f4f716fce24e4c6d689b9a3d9c0` |
-| `cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep8.cu` | noshared | 8 | 213969 | 3880 | 164 REG, 0 spills, 16 barriers, 8 B stack | `1de7fecba8440506f75db336899a2248943617bbc9965f9c6464598022f28db5` |
+| `cake_sm120_megamoe_m64n32_stage2_residency_fp8shared_ep4.cu` | fp8shared | 4 | 298364 | 5060 | 167 REG, 0 spills, 16 barriers, 8 B stack | `68150103b021b791f49fb38725b6d26466f1bb2e227a103709f10e721d985175` |
+| `cake_sm120_megamoe_m64n32_stage2_residency_fp8shared_ep8.cu` | fp8shared | 8 | 294780 | 5016 | 167 REG, 0 spills, 16 barriers, 8 B stack | `26545d321b48e900d40b018f5559f16ba8ec697f7b8c761180c12954854d6e4e` |
+| `cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep4.cu` | noshared | 4 | 259696 | 4490 | 167 REG, 0 spills, 16 barriers, 8 B stack | `953c251160d203f84942bdb87706e1e0bc130f422b7da7c23ab30a6fcb3d6a7f` |
+| `cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep4_r2048_unroll2.cu` | noshared, unroll-2 instance | 4 | 259696 | 4490 | 168 REG, 0 spills, 16 barriers, 8 B stack | `67fb46b7804c88854da7c7f6f3e09d59821867c504ceaed46ebd23c948fa8639` |
+| `cake_sm120_megamoe_m64n32_stage2_residency_noshared_ep8.cu` | noshared | 8 | 213949 | 3879 | 164 REG, 0 spills, 16 barriers, 8 B stack | `ebb5c3a77710a6a1a1cbd1db9499cfe3eed959e541ca8bd646fd3c53ae413201` |
 
 Resource figures are from `nvcc -cubin --generate-code=arch=compute_120a,code=sm_120a -std=c++17 -O3 --resource-usage`
 on each file as shipped. The noshared EP4 kernel ships two instances that differ only in two `#pragma unroll`

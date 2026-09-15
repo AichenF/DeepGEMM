@@ -831,7 +831,7 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
     if (active_rows <= 512) {
         dispatch_chunk_min_records = 96;
     }
-    int launch_valid = (int)(rank >= 0 && rank < world_size && world_size >= 1 && world_size <= 8 && active_rows >= 1 && active_rows <= 8192 && num_bids >= 2 && num_bids >= world_size);
+    int launch_valid = (int)(rank >= 0 && rank < world_size && world_size == 8 && active_rows >= 1 && active_rows <= 8192 && num_bids >= 2 && num_bids >= world_size);
     if (launch_valid == 0) {
         if (warp == 0) {
             if (elect_sync()) {
@@ -5014,4 +5014,3 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
 }
 
 } // extern "C"
-
