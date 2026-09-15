@@ -547,6 +547,9 @@ __device__ __forceinline__ void tma_store_2d(
         :: "l"(tmap), "r"(x), "r"(y), "r"(smem_addr) : "memory");
 }
 
+#define kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch \
+    kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_noshared_ep8
+
 extern "C" {
 
 __global__ __launch_bounds__(384) void
