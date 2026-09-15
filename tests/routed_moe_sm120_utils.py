@@ -6,13 +6,16 @@ fixture shared by the routed-MoE test and benchmark.
 """
 
 from dataclasses import dataclass
+import os
 
 import torch
 
 DeviceLike = int | str | torch.device
 
 RECIPE_ID = "dsv4-w4a8-distinct-k32-v1"
-WORLD_SIZE = 8
+WORLD_SIZE = int(os.environ.get("WORLD_SIZE", "8"))
+if WORLD_SIZE not in (4, 8):
+    raise RuntimeError("SM120 routed MoE tests require EP4 or EP8")
 EXPERTS = 256
 LOCAL_EXPERTS = EXPERTS // WORLD_SIZE
 TOP_K = 6

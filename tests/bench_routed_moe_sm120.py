@@ -35,7 +35,11 @@ from routed_moe_sm120_utils import (
     make_dsv4_w4a8_weights,
 )
 
-KERNEL_NAME = "sm120_fp8_fp4_routed_moe_impl"
+KERNEL_NAME = (
+    "sm120_fp8_fp4_routed_moe_ep4_impl"
+    if WORLD_SIZE == 4
+    else "sm120_fp8_fp4_routed_moe_impl"
+)
 ROWS = (1024, 2048, 4096, 8192)
 
 
@@ -285,7 +289,11 @@ def main() -> int:
                 "fixture_recipe": RECIPE_ID,
                 "kernel_sha256": hashlib.sha256(
                     (Path(deep_gemm.__file__).resolve().parent /
-                     "include/deep_gemm/impls/sm120_fp8_fp4_routed_moe.cuh").read_bytes()
+                     (
+                         "include/deep_gemm/impls/sm120_fp8_fp4_routed_moe_ep4.cuh"
+                         if WORLD_SIZE == 4
+                         else "include/deep_gemm/impls/sm120_fp8_fp4_routed_moe.cuh"
+                     )).read_bytes()
                 ).hexdigest(),
                 "timing": "cold-L2 Kineto/CUPTI kernel activity; max of rank-local means",
             }

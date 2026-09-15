@@ -1,8 +1,8 @@
-"""SM120 routed-MoE contract, adapter, and opt-in EP8 correctness tests.
+"""SM120 routed-MoE contract, adapter, and opt-in distributed correctness tests.
 
-Run the distributed case on eight SM120 GPUs with::
+Run the distributed case on four or eight SM120 GPUs with::
 
-    RUN_SM120_ROUTED_MOE_E2E=1 torchrun --nproc-per-node=8 \
+    RUN_SM120_ROUTED_MOE_E2E=1 torchrun --nproc-per-node=<4-or-8> \
         -m pytest -q tests/test_routed_moe_sm120.py
 """
 
@@ -109,13 +109,38 @@ def test_sm120_workspace_diagnostics_are_cloned():
         assert torch.equal(diagnostics[name], workspace._arguments[name])
 
 
-def test_sm120_layout_contract():
-    layout = dict(deep_gemm._C.get_sm120_routed_moe_layout())
+@pytest.mark.parametrize(
+    ("world_size", "ep_layout"),
+    (
+        (4, {
+            "experts_per_rank": 64,
+            "pool_rows": 204736,
+            "max_tasks": 1600,
+            "dispatch_header_window_bytes": 4352,
+            "dispatch_header_slot_bytes": 544,
+            "dispatch_payload_window_bytes": 285212672,
+            "result_window_bytes": 3273129984,
+            "ack_window_bytes": 4,
+            "gin_signal_count": 48,
+        }),
+        (8, {
+            "experts_per_rank": 32,
+            "pool_rows": 397280,
+            "max_tasks": 3104,
+            "dispatch_header_window_bytes": 4608,
+            "dispatch_header_slot_bytes": 288,
+            "dispatch_payload_window_bytes": 570425344,
+            "result_window_bytes": 6546259968,
+            "ack_window_bytes": 8,
+            "gin_signal_count": 88,
+        }),
+    ),
+)
+def test_sm120_layout_contract(world_size, ep_layout):
+    layout = dict(deep_gemm._C.get_sm120_routed_moe_layout(world_size))
 
-    assert layout == {
-        "world_size": 8,
+    common = {
         "num_experts": 256,
-        "experts_per_rank": 32,
         "num_topk": 6,
         "hidden": 4096,
         "intermediate_hidden": 2048,
@@ -124,8 +149,6 @@ def test_sm120_layout_contract():
         "max_grid_ctas": 110,
         "activation_clamp": 10.0,
         "fast_math": True,
-        "pool_rows": 397280,
-        "max_tasks": 3104,
         "mailbox_entries": 8192,
         "phase_timestamp_count": 33,
         "codec_blocks_per_row": 64,
@@ -136,17 +159,12 @@ def test_sm120_layout_contract():
         "codec_max_chunks_per_peer": 769,
         "result_route_pitch_bytes": 8320,
         "result_slot_bytes": 409141248,
-        "dispatch_header_window_bytes": 4608,
-        "dispatch_header_slot_bytes": 288,
         "dispatch_record_bytes": 4352,
-        "dispatch_payload_window_bytes": 570425344,
-        "result_window_bytes": 6546259968,
-        "ack_window_bytes": 8,
         "gin_context_count": 2,
         "dispatch_chunks": 8,
-        "gin_signal_count": 88,
         "world_barrier_count": 1,
     }
+    assert layout == {"world_size": world_size, **common, **ep_layout}
 
 
 def test_sm120_workspace_contract_uses_semantic_pipeline_names():
@@ -170,6 +188,10 @@ def test_sm120_workspace_contract_uses_semantic_pipeline_names():
         "total_padded_rows",
     }.isdisjoint(specs)
 
+    ep4_specs = _workspace_specs(dict(deep_gemm._C.get_sm120_routed_moe_layout(4)))
+    assert {"c56_claim_cursor", "c56_tile_mailbox", "result_owner_ready"} <= ep4_specs.keys()
+    assert {"pipeline_claim_cursor", "pipeline_tile_mailbox"}.isdisjoint(ep4_specs)
+
 
 def test_sm120_tensor_validation_is_fail_closed():
     tensor = torch.empty((2, 4), dtype=torch.float32)
@@ -191,6 +213,7 @@ def test_sm120_tensor_validation_is_fail_closed():
 
 def test_sm120_tensor_map_recipes_are_cached(monkeypatch):
     workspace = object.__new__(adapter.SM120RoutedMoEWorkspace)
+    workspace.world_size = 8
     workspace.layout = {
         "experts_per_rank": LOCAL_EXPERTS,
         "hidden": HIDDEN,
@@ -259,8 +282,9 @@ def test_sm120_fast_path_contract():
         assert not can_use(**target)
         return
     assert can_use(**target)
+    assert can_use(**{**target, "num_ranks": 4})
     for field, unsupported in (
-        ("num_ranks", 4),
+        ("num_ranks", 2),
         ("num_experts", 128),
         ("num_topk", 8),
         ("hidden", 7168),
@@ -418,10 +442,11 @@ def _mock_public_launch_state():
     session._bound_workspace = None
     session._next_epoch = 0
     session._pending_launch = None
-    session._prepared_trace_modes = {False}
+    session._prepared_kernels = {(WORLD_SIZE, False)}
 
     workspace = object.__new__(adapter.SM120RoutedMoEWorkspace)
     workspace.device = session.device
+    workspace.world_size = WORLD_SIZE
     workspace.layout = {
         "world_size": WORLD_SIZE,
         "experts_per_rank": LOCAL_EXPERTS,
@@ -492,7 +517,7 @@ def test_sm120_public_launch_binds_one_workspace_and_advances_epoch(monkeypatch)
     prepares = []
     barriers = []
     session.group = object()
-    session._prepared_trace_modes.clear()
+    session._prepared_kernels.clear()
     monkeypatch.setattr(torch.cuda, "current_device", lambda: None)
     monkeypatch.setattr(
         adapter._C,
@@ -540,6 +565,7 @@ def test_sm120_public_launch_binds_one_workspace_and_advances_epoch(monkeypatch)
     assert other_workspace._epoch == 0
 
     other_session = object.__new__(adapter.SM120RoutedMoESession)
+    other_session.world_size = WORLD_SIZE
     other_session._bound_workspace = None
     other_session._next_epoch = 0
     with pytest.raises(RuntimeError, match="workspace is already bound to a session"):
@@ -670,7 +696,7 @@ def _distributed_backend() -> tuple[Any, Any, int]:
     if not torch.cuda.is_available() or not deep_gemm._C.has_sm120_routed_moe():
         pytest.skip("DeepGEMM was not built with the SM120 NCCL GIN path")
     if int(os.environ.get("WORLD_SIZE", "1")) != WORLD_SIZE:
-        pytest.skip("run with torchrun --nproc-per-node=8")
+        pytest.skip(f"run with torchrun --nproc-per-node={WORLD_SIZE}")
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     if not torch.distributed.is_initialized():
@@ -683,9 +709,9 @@ def _distributed_backend() -> tuple[Any, Any, int]:
 
 @pytest.mark.skipif(
     os.environ.get("RUN_SM120_ROUTED_MOE_E2E") != "1",
-    reason="set RUN_SM120_ROUTED_MOE_E2E=1 for the full eight-rank allocation",
+    reason="set RUN_SM120_ROUTED_MOE_E2E=1 for a full EP4 or EP8 allocation",
 )
-def test_sm120_public_api_ep8_bit_exact_multi_epoch():
+def test_sm120_public_api_bit_exact_multi_epoch():
     group, control_group, rank = _distributed_backend()
     device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
     active_rows = int(os.environ.get("SM120_ROUTED_MOE_E2E_ROWS", "1"))
@@ -694,10 +720,19 @@ def test_sm120_public_api_ep8_bit_exact_multi_epoch():
         raise ValueError("E2E rows must be in [1, 8192] and epochs in [1, 64]")
     sample_tokens = (
         tuple(range(active_rows))
-        if active_rows <= 8
-        else (0, 1, active_rows // 2, active_rows - 1)
+        if active_rows <= 256
+        else tuple(sorted({
+            *range(256),
+            active_rows // 4 - 1,
+            active_rows // 4,
+            active_rows // 2 - 1,
+            active_rows // 2,
+            active_rows - 2,
+            active_rows - 1,
+        }))
     )
     inputs = make_dsv4_w4a8_inputs(rank, active_rows, device)
+    original_topk_indices = inputs.topk_indices.clone()
     weights = make_dsv4_w4a8_weights(rank, device)
     expected = expected_tokens(rank, sample_tokens, device)
     session = None
@@ -714,7 +749,7 @@ def test_sm120_public_api_ep8_bit_exact_multi_epoch():
             "gin_connection_count"
         ]
         assert properties["window_count"] == 8
-        layout = dict(deep_gemm._C.get_sm120_routed_moe_layout())
+        layout = dict(deep_gemm._C.get_sm120_routed_moe_layout(WORLD_SIZE))
         for name, size_name in (
             ("dispatch_header_out", "dispatch_header_window_bytes"),
             ("dispatch_header_inbox", "dispatch_header_window_bytes"),
@@ -744,13 +779,18 @@ def test_sm120_public_api_ep8_bit_exact_multi_epoch():
                 weights.w2_down,
             )
             torch.cuda.synchronize(device)
-            torch.testing.assert_close(
-                output[list(sample_tokens)],
-                expected,
-                rtol=0,
-                atol=0,
-            )
             diagnostics = workspace.diagnostics()
+            mismatched_tokens = [
+                token
+                for sample_index, token in enumerate(sample_tokens)
+                if not torch.equal(output[token], expected[sample_index])
+            ]
+            assert torch.equal(inputs.topk_indices, original_topk_indices)
+            assert not mismatched_tokens, (
+                f"rank={rank}, epoch={epoch}, mismatched_tokens={mismatched_tokens}, "
+                f"observed={[float(output[token, 0]) for token in mismatched_tokens]}, "
+                f"expected={[float(expected[sample_tokens.index(token), 0]) for token in mismatched_tokens]}"
+            )
             expected_routes, expected_tasks = expected_local_work(rank, active_rows)
             assert int(diagnostics["protocol_error"].item()) == 0
             assert int(diagnostics["total_valid_routes"].item()) == expected_routes
