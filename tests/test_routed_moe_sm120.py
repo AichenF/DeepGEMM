@@ -29,6 +29,7 @@ from routed_moe_sm120_utils import (
     INTERMEDIATE,
     LOCAL_EXPERTS,
     MAX_ROWS,
+    TASK_ROWS,
     TOP_K,
     WORLD_SIZE,
     ModelContract,
@@ -38,8 +39,10 @@ from routed_moe_sm120_utils import (
     epoch_slots,
     expected_local_work,
     expected_route,
+    expected_shared_tokens,
     expected_tokens,
     make_dsv4_w4a8_inputs,
+    make_dsv4_w4a8_shared_weights,
     make_dsv4_w4a8_weights,
     source_order_combine,
 )
@@ -192,6 +195,30 @@ def test_sm120_workspace_contract_uses_semantic_pipeline_names():
     assert {"c56_claim_cursor", "c56_tile_mailbox", "result_owner_ready"} <= ep4_specs.keys()
     assert {"pipeline_claim_cursor", "pipeline_tile_mailbox"}.isdisjoint(ep4_specs)
 
+    ep8_shared_specs = _workspace_specs(
+        dict(deep_gemm._C.get_sm120_routed_moe_layout(8)), True
+    )
+    assert {"pipeline_claim_cursor", "pipeline_tile_mailbox"} <= ep8_shared_specs.keys()
+    assert {
+        "c24_front_sync",
+        "c56_claim_cursor",
+        "c56_tile_mailbox",
+        "expert_task_base",
+        "pull_request_scratch",
+        "result_owner_ready",
+        "tb_pub",
+    } <= ep8_shared_specs.keys()
+    assert ep8_shared_specs["result_signal_base_scratch"][1] == 16
+
+    ep4_layout = dict(deep_gemm._C.get_sm120_routed_moe_layout(4))
+    ep4_shared_specs = _workspace_specs(ep4_layout, True)
+    assert ep4_shared_specs["routing_weight_pool"][1] == (
+        ep4_layout["pool_rows"] + MAX_ROWS
+    )
+    assert ep4_shared_specs["w1_task_counter"][1] == (
+        ep4_layout["max_tasks"] + MAX_ROWS // ep4_layout["task_rows"]
+    )
+
 
 def test_sm120_tensor_validation_is_fail_closed():
     tensor = torch.empty((2, 4), dtype=torch.float32)
@@ -261,6 +288,64 @@ def test_sm120_tensor_map_recipes_are_cached(monkeypatch):
         weights.w1_scales,
         weights.w2_weight,
         weights.w2_scales,
+    )
+
+
+def test_sm120_shared_tensor_map_recipes_are_cached(monkeypatch):
+    workspace = object.__new__(adapter.SM120RoutedMoEWorkspace)
+    workspace.world_size = 8
+    workspace.fuse_shared_expert = True
+    workspace.layout = {
+        "experts_per_rank": LOCAL_EXPERTS,
+        "hidden": HIDDEN,
+        "intermediate_hidden": INTERMEDIATE,
+        "pool_rows": 397280,
+        "max_rows": MAX_ROWS,
+        "task_rows": 128,
+    }
+    workspace._tensor_map_key = None
+    workspace._tensor_maps = {}
+    workspace._tensor_map_sources = ()
+    workspace._pool_fp8 = torch.empty(0, dtype=torch.uint8, device="meta")
+    workspace._pool_scales = torch.empty(0, dtype=torch.int32, device="meta")
+    workspace._intermediate_fp8 = torch.empty(0, dtype=torch.uint8, device="meta")
+    workspace._intermediate_scales = torch.empty(0, dtype=torch.int32, device="meta")
+    workspace._w1_output = torch.empty(0, dtype=torch.bfloat16, device="meta")
+    workspace._w2_output = torch.empty(0, dtype=torch.bfloat16, device="meta")
+    weights, shared = make_dsv4_w4a8_shared_weights(rank=0, device="meta")
+    calls = []
+
+    def make_tensor_map(*arguments):
+        calls.append(arguments)
+        return len(calls)
+
+    monkeypatch.setattr(adapter._C, "make_sm120_tma_2d", make_tensor_map)
+    workspace._prepare_tensor_maps(
+        weights.w1_weight,
+        weights.w1_scales,
+        weights.w2_weight,
+        weights.w2_scales,
+        *shared,
+    )
+    workspace._prepare_tensor_maps(
+        weights.w1_weight,
+        weights.w1_scales,
+        weights.w2_weight,
+        weights.w2_scales,
+        *shared,
+    )
+
+    assert len(calls) == 12
+    assert calls[3][1:] == ("int32", 4096, 32 * 33, 4096 * 4, 128, 1, 0)
+    assert calls[8][1:] == ("int32", 4096, 16 * 33, 4096 * 4, 128, 1, 0)
+    assert calls[10][1:] == ("uint8", 4096, 4096, 4096, 128, 128, 128)
+    assert calls[11][1:] == ("uint8", 2048, 4096, 2048, 128, 128, 128)
+    assert workspace._tensor_map_sources == (
+        weights.w1_weight,
+        weights.w1_scales,
+        weights.w2_weight,
+        weights.w2_scales,
+        *shared,
     )
 
 
@@ -572,6 +657,42 @@ def test_sm120_public_launch_binds_one_workspace_and_advances_epoch(monkeypatch)
         other_session._require_workspace(workspace)
 
 
+def test_sm120_public_launch_selects_shared_specialization(monkeypatch):
+    session, workspace, inputs, _ = _mock_public_launch_state()
+    workspace.fuse_shared_expert = True
+    session.group = object()
+    session._prepared_kernels.clear()
+    weights, shared = make_dsv4_w4a8_shared_weights(rank=0, device="meta")
+    prepares = []
+    launches = []
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: None)
+    monkeypatch.setattr(
+        adapter._C,
+        "prepare_sm120_fp8_fp4_shared_moe",
+        lambda world_size: prepares.append(world_size),
+    )
+    monkeypatch.setattr(adapter.dist, "barrier", lambda **kwargs: None)
+    monkeypatch.setattr(
+        adapter._C,
+        "sm120_fp8_fp4_routed_moe",
+        lambda **kwargs: launches.append(kwargs),
+    )
+
+    output = deep_gemm.fp8_fp4_routed_moe_sm120(
+        session,
+        workspace,
+        *inputs,
+        weights.w1_up_gate,
+        weights.w2_down,
+        shared_expert=shared,
+    )
+
+    assert output.shape == (1, HIDDEN)
+    assert prepares == [WORLD_SIZE]
+    assert launches[0]["fuse_shared_expert"] is True
+    assert session._prepared_kernels == {(WORLD_SIZE, "shared")}
+
+
 def test_sm120_public_launch_is_fail_closed(monkeypatch):
     session, workspace, inputs, weights = _mock_public_launch_state()
     monkeypatch.setattr(torch.cuda, "current_device", lambda: None)
@@ -716,6 +837,7 @@ def test_sm120_public_api_bit_exact_multi_epoch():
     device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
     active_rows = int(os.environ.get("SM120_ROUTED_MOE_E2E_ROWS", "1"))
     epochs = int(os.environ.get("SM120_ROUTED_MOE_E2E_EPOCHS", "3"))
+    fuse_shared_expert = os.environ.get("SM120_ROUTED_MOE_FUSE_SHARED") == "1"
     if not 1 <= active_rows <= MAX_ROWS or not 1 <= epochs <= 64:
         raise ValueError("E2E rows must be in [1, 8192] and epochs in [1, 64]")
     sample_tokens = (
@@ -733,8 +855,13 @@ def test_sm120_public_api_bit_exact_multi_epoch():
     )
     inputs = make_dsv4_w4a8_inputs(rank, active_rows, device)
     original_topk_indices = inputs.topk_indices.clone()
-    weights = make_dsv4_w4a8_weights(rank, device)
-    expected = expected_tokens(rank, sample_tokens, device)
+    if fuse_shared_expert:
+        weights, shared_expert = make_dsv4_w4a8_shared_weights(rank, device)
+        expected = expected_shared_tokens(rank, sample_tokens, device)
+    else:
+        weights = make_dsv4_w4a8_weights(rank, device)
+        shared_expert = None
+        expected = expected_tokens(rank, sample_tokens, device)
     session = None
     workspace = None
     try:
@@ -764,7 +891,11 @@ def test_sm120_public_api_bit_exact_multi_epoch():
             assert session._native.window_handle(name) != 0
         assert session._native.device_communicator() != 0
         torch.distributed.barrier(group=control_group)
-        workspace = deep_gemm.SM120RoutedMoEWorkspace(device)
+        workspace = deep_gemm.SM120RoutedMoEWorkspace(
+            device,
+            world_size=WORLD_SIZE,
+            fuse_shared_expert=fuse_shared_expert,
+        )
 
         for epoch in range(epochs):
             workspace.output[:active_rows].fill_(float("nan"))
@@ -777,6 +908,7 @@ def test_sm120_public_api_bit_exact_multi_epoch():
                 inputs.topk_weights,
                 weights.w1_up_gate,
                 weights.w2_down,
+                shared_expert=shared_expert,
             )
             torch.cuda.synchronize(device)
             diagnostics = workspace.diagnostics()
@@ -792,6 +924,8 @@ def test_sm120_public_api_bit_exact_multi_epoch():
                 f"expected={[float(expected[sample_tokens.index(token), 0]) for token in mismatched_tokens]}"
             )
             expected_routes, expected_tasks = expected_local_work(rank, active_rows)
+            if fuse_shared_expert:
+                expected_tasks += (active_rows + TASK_ROWS - 1) // TASK_ROWS
             assert int(diagnostics["protocol_error"].item()) == 0
             assert int(diagnostics["total_valid_routes"].item()) == expected_routes
             assert int(diagnostics["total_m_tasks"].item()) == expected_tasks

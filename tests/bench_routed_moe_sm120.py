@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import torch
@@ -32,14 +33,10 @@ from routed_moe_sm120_utils import (
     TOP_K,
     WORLD_SIZE,
     make_dsv4_w4a8_inputs,
+    make_dsv4_w4a8_shared_weights,
     make_dsv4_w4a8_weights,
 )
 
-KERNEL_NAME = (
-    "sm120_fp8_fp4_routed_moe_ep4_impl"
-    if WORLD_SIZE == 4
-    else "sm120_fp8_fp4_routed_moe_impl"
-)
 ROWS = (1024, 2048, 4096, 8192)
 
 
@@ -162,14 +159,111 @@ def _distributed_backend() -> tuple[Any, Any, int, int]:
     return group, control_group, torch.distributed.get_rank(group), local_rank
 
 
+def _load_real_fixture(
+    fixture_dir: Path,
+    rank: int,
+    rows: int,
+    device: torch.device,
+    fuse_shared_expert: bool,
+) -> tuple[SimpleNamespace, SimpleNamespace, tuple[torch.Tensor, torch.Tensor] | None, dict]:
+    metadata = json.loads((fixture_dir / "meta.json").read_text())
+    geometry = metadata["geometry"]
+    expected_geometry = {
+        "hidden": HIDDEN,
+        "intermediate": INTERMEDIATE,
+        "experts": EXPERTS,
+        "top_k": TOP_K,
+    }
+    if geometry != expected_geometry or int(metadata.get("ranks", 8)) != WORLD_SIZE:
+        raise ValueError("fixture geometry or EP width does not match this benchmark")
+
+    inputs_cpu = torch.load(
+        fixture_dir / "inputs.pt", map_location="cpu", weights_only=True, mmap=True
+    )
+    weights_cpu = torch.load(
+        fixture_dir / f"rank{rank}_weights.pt",
+        map_location="cpu",
+        weights_only=True,
+        mmap=True,
+    )
+    if rows > inputs_cpu["x_fp8"].shape[1]:
+        raise ValueError("fixture does not contain enough rows")
+
+    inputs = SimpleNamespace(
+        x=inputs_cpu["x_fp8"][rank, :rows].to(device),
+        x_scales=inputs_cpu["x_sf"][rank, :rows].contiguous().view(torch.int32).to(device),
+        topk_indices=inputs_cpu["topk_idx"][rank, :rows].to(device=device, dtype=torch.int64),
+        topk_weights=inputs_cpu["topk_weights"][rank, :rows].to(device),
+    )
+    w1_scales = weights_cpu["w1_sf"].view(torch.int32).squeeze(-1)
+    w2_scales = weights_cpu["w2_sf"].view(torch.int32).squeeze(-1)
+    shared_expert = None
+    if fuse_shared_expert:
+        w1_scales = torch.cat(
+            (
+                w1_scales,
+                weights_cpu["shared_w1_sf8"]
+                .view(torch.int32)
+                .squeeze(-1)
+                .unsqueeze(0),
+            )
+        )
+        w2_scales = torch.cat(
+            (
+                w2_scales,
+                weights_cpu["shared_w2_sf8"]
+                .view(torch.int32)
+                .squeeze(-1)
+                .unsqueeze(0),
+            )
+        )
+        shared_expert = (
+            weights_cpu["shared_w1_fp8"].to(device),
+            weights_cpu["shared_w2_fp8"].to(device),
+        )
+    weights = SimpleNamespace(
+        w1_up_gate=(weights_cpu["w1_fp4"].view(torch.int8).to(device), w1_scales.to(device)),
+        w2_down=(weights_cpu["w2_fp4"].view(torch.int8).to(device), w2_scales.to(device)),
+    )
+    return inputs, weights, shared_expert, metadata
+
+
 class BenchmarkState:
-    def __init__(self, group: Any, rank: int, rows: int):
+    def __init__(
+        self,
+        group: Any,
+        rank: int,
+        rows: int,
+        fuse_shared_expert: bool,
+        fixture_dir: Path | None,
+    ):
         self.device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
-        self.inputs = make_dsv4_w4a8_inputs(rank, rows, self.device)
-        self.weights = make_dsv4_w4a8_weights(rank, self.device)
+        self.fixture_metadata = None
+        if fixture_dir is not None:
+            (
+                self.inputs,
+                self.weights,
+                self.shared_expert,
+                self.fixture_metadata,
+            ) = _load_real_fixture(
+                fixture_dir, rank, rows, self.device, fuse_shared_expert
+            )
+        else:
+            self.inputs = make_dsv4_w4a8_inputs(rank, rows, self.device)
+            if fuse_shared_expert:
+                self.weights, self.shared_expert = make_dsv4_w4a8_shared_weights(
+                    rank, self.device
+                )
+            else:
+                self.weights = make_dsv4_w4a8_weights(rank, self.device)
+                self.shared_expert = None
         self.session = deep_gemm.SM120RoutedMoESession(group, self.device)
         try:
-            self.workspace = deep_gemm.SM120RoutedMoEWorkspace(self.device)
+            self.workspace = deep_gemm.SM120RoutedMoEWorkspace(
+                self.device,
+                world_size=WORLD_SIZE,
+                fuse_shared_expert=fuse_shared_expert,
+            )
         except Exception:
             self.session.close()
             raise
@@ -184,6 +278,7 @@ class BenchmarkState:
             self.inputs.topk_weights,
             self.weights.w1_up_gate,
             self.weights.w2_down,
+            shared_expert=self.shared_expert,
         )
 
     def close(self) -> None:
@@ -199,6 +294,7 @@ def _benchmark(
     control_group: Any,
     repeats: int,
     num_tests: int,
+    kernel_name: str,
     watchdog: ProcessWatchdog,
 ) -> list[float]:
     observations = []
@@ -206,7 +302,7 @@ def _benchmark(
         watchdog.arm(f"benchmark repeat {repeat}")
         local_seconds = bench_kineto(
             state.launch,
-            KERNEL_NAME,
+            kernel_name,
             num_tests=num_tests,
             suppress_kineto_output=True,
             flush_l2=True,
@@ -225,6 +321,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--m", type=int, choices=ROWS, default=2048)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--num-tests", type=int, default=20)
+    parser.add_argument("--fuse-shared-expert", action="store_true")
+    parser.add_argument("--fixture-dir", type=Path)
     parser.add_argument("--min-clock-ratio", type=float, default=0.95)
     parser.add_argument("--rank-timeout-seconds", type=float, default=300.0)
     arguments = parser.parse_args()
@@ -245,7 +343,9 @@ def main() -> int:
     clock = None
     try:
         watchdog.arm("initialization")
-        state = BenchmarkState(group, rank, args.m)
+        state = BenchmarkState(
+            group, rank, args.m, args.fuse_shared_expert, args.fixture_dir
+        )
         torch.distributed.barrier(group=control_group)
         state.launch()
         torch.cuda.synchronize()
@@ -254,8 +354,23 @@ def main() -> int:
 
         clock = ClockSampler(_gpu_uuid(local_rank))
         clock.start()
+        kernel_name = (
+            f"kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_"
+            f"fp8shared_ep{WORLD_SIZE}"
+            if args.fuse_shared_expert
+            else (
+                "sm120_fp8_fp4_routed_moe_ep4_impl"
+                if WORLD_SIZE == 4
+                else "sm120_fp8_fp4_routed_moe_impl"
+            )
+        )
         observations = _benchmark(
-            state, control_group, args.repeats, args.num_tests, watchdog
+            state,
+            control_group,
+            args.repeats,
+            args.num_tests,
+            kernel_name,
+            watchdog,
         )
         clock.stop()
         local_clock = clock.receipt()
@@ -268,7 +383,31 @@ def main() -> int:
 
         if rank == 0:
             median_seconds = statistics.median(observations)
-            useful_flops = args.m * TOP_K * 6 * HIDDEN * INTERMEDIATE
+            projection_count = TOP_K + int(args.fuse_shared_expert)
+            useful_flops = args.m * projection_count * 6 * HIDDEN * INTERMEDIATE
+            kernel_path = Path(deep_gemm.__file__).resolve().parent / (
+                f"include/deep_gemm/impls/sm120_fp8_fp4_routed_moe_shared_ep{WORLD_SIZE}.cuh"
+                if args.fuse_shared_expert
+                else (
+                    "include/deep_gemm/impls/sm120_fp8_fp4_routed_moe_ep4.cuh"
+                    if WORLD_SIZE == 4
+                    else "include/deep_gemm/impls/sm120_fp8_fp4_routed_moe.cuh"
+                )
+            )
+            kernel_paths = [kernel_path]
+            if args.fuse_shared_expert:
+                kernel_paths.insert(
+                    0,
+                    kernel_path.with_name(
+                        "sm120_fp8_fp4_routed_moe_shared_common.cuh"
+                    ),
+                )
+            source_hash = hashlib.sha256()
+            for path in kernel_paths:
+                source_hash.update(path.name.encode())
+                source_hash.update(b"\0")
+                source_hash.update(path.read_bytes())
+            fixture_metadata = state.fixture_metadata
             result = {
                 "status": "accepted" if accepted else "rejected",
                 "model": {
@@ -280,21 +419,28 @@ def main() -> int:
                     "w2": CONTRACT.w2,
                     "precision": "MXFP8 E4M3 x MXFP4 E2M1 K32, BF16 output",
                 },
+                "fuse_shared_expert": args.fuse_shared_expert,
                 "ep": WORLD_SIZE,
                 "m_tokens_per_rank": args.m,
                 "max_rank_median_us": median_seconds * 1e6,
                 "max_rank_samples_us": [value * 1e6 for value in observations],
                 "effective_tflops": useful_flops / median_seconds / 1e12,
                 "clock_by_rank": rank_clocks,
-                "fixture_recipe": RECIPE_ID,
-                "kernel_sha256": hashlib.sha256(
-                    (Path(deep_gemm.__file__).resolve().parent /
-                     (
-                         "include/deep_gemm/impls/sm120_fp8_fp4_routed_moe_ep4.cuh"
-                         if WORLD_SIZE == 4
-                         else "include/deep_gemm/impls/sm120_fp8_fp4_routed_moe.cuh"
-                     )).read_bytes()
-                ).hexdigest(),
+                "fixture_recipe": (
+                    RECIPE_ID if fixture_metadata is None else fixture_metadata["schema"]
+                ),
+                "fixture_meta_sha256": (
+                    None
+                    if args.fixture_dir is None
+                    else hashlib.sha256((args.fixture_dir / "meta.json").read_bytes()).hexdigest()
+                ),
+                "fixture_activation_source": (
+                    None
+                    if fixture_metadata is None
+                    else fixture_metadata["activations"]
+                ),
+                "kernel_sources": [path.name for path in kernel_paths],
+                "kernel_sha256": source_hash.hexdigest(),
                 "timing": "cold-L2 Kineto/CUPTI kernel activity; max of rank-local means",
             }
             print("RESULT_JSON=" + json.dumps(result, sort_keys=True), flush=True)
