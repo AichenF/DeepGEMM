@@ -11,7 +11,7 @@
 #include <deep_gemm/layout/mega_moe.cuh>
 #include <deep_gemm/layout/sym_buffer.cuh>
 
-#include "../heuristics/sm90_nvfp4_mega_moe_small_m.hpp"
+#include "../heuristics/sm90_nvfp4_mega_moe.hpp"
 
 namespace deep_gemm {
 
@@ -29,6 +29,11 @@ public:
         float activation_clamp;
         bool fast_math;
         bool swap_ab;
+        bool rs_swap_ab;
+        bool rs_batch4;
+        bool rs_vector_scale;
+        bool rs_direct_lut;
+        bool rs_compact_smem;
         bool use_mode2_lop3_decoder;
         bool single_active_dispatch_warp;
         SM90NVFP4SmallMConfig config;
@@ -76,6 +81,11 @@ static void __instantiate_kernel() {{
         /* kActivationClamp */ {},
         /* kFastMath */ {},
         /* kSwapABRequested */ {},
+        /* kRSSwapABRequested */ {},
+        /* kRSBatch4Requested */ {},
+        /* kRSVectorScaleRequested */ {},
+        /* kRSDirectLutRequested */ {},
+        /* kRSCompactSmemRequested */ {},
         /* kSingleActiveDispatchWarp */ {},
         /* kUseMode2Lop3Decoder */ {}
     >);
@@ -97,6 +107,11 @@ static void __instantiate_kernel() {{
             to_string(args.activation_clamp),
             args.fast_math ? "true" : "false",
             args.swap_ab ? "true" : "false",
+            args.rs_swap_ab ? "true" : "false",
+            args.rs_batch4 ? "true" : "false",
+            args.rs_vector_scale ? "true" : "false",
+            args.rs_direct_lut ? "true" : "false",
+            args.rs_compact_smem ? "true" : "false",
             args.single_active_dispatch_warp ? "true" : "false",
             args.use_mode2_lop3_decoder ? "true" : "false");
     }
@@ -154,6 +169,7 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
     const int num_padded_sf_pool_tokens =
         static_cast<int>(l1_acts_sf.size(0));
     const SM90NVFP4SmallMInput heuristic_input {
+        num_sms,
         num_ranks,
         num_experts,
         num_experts_per_rank,
@@ -164,7 +180,7 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
         intermediate_hidden,
         num_padded_sf_pool_tokens,
     };
-    const auto plan = select_sm90_nvfp4_small_m(heuristic_input);
+    const auto plan = select_sm90_nvfp4_small_m_kf424(heuristic_input);
     const auto& config = plan.config;
     using KernelConfig = SM90NVFP4SmallMConfig;
 
@@ -262,6 +278,11 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
         .activation_clamp = activation_clamp,
         .fast_math = fast_math,
         .swap_ab = plan.swap_ab,
+        .rs_swap_ab = plan.rs_swap_ab,
+        .rs_batch4 = plan.rs_batch4,
+        .rs_vector_scale = plan.rs_vector_scale,
+        .rs_direct_lut = plan.rs_direct_lut,
+        .rs_compact_smem = plan.rs_compact_smem,
         .use_mode2_lop3_decoder = plan.use_mode2_lop3_decoder,
         .single_active_dispatch_warp =
             plan.single_active_dispatch_warp,
@@ -290,10 +311,11 @@ static void sm90_nvfp4_small_m_fused_mega_moe(
 
     const auto code = SM90NVFP4SmallMFusedRuntime::generate(args);
     const auto runtime = compiler->build(
-        plan.use_mode2_lop3_decoder ?
-            "sm90_nvfp4_small_m_mode2_lop3" :
-            "sm90_nvfp4_small_m_mode2_braided_lut",
-        code);
+        plan.rs_compact_smem ?
+            "sm90_nvfp4_small_m_kf424_rs_mode5_compact" :
+            "sm90_nvfp4_small_m_kf424_rs_mode5",
+        code,
+        get_sm90_nvfp4_small_jit_flags(fast_math));
     SM90NVFP4SmallMFusedRuntime::launch(runtime, args);
 }
 

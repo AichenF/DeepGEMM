@@ -8,8 +8,8 @@
     DG_STATIC_ASSERT(BLOCK_M == 8 || BLOCK_M == 16 ||
                      BLOCK_M == 24 || BLOCK_M == 64,
                      "Small-M kernel requires BM8/BM16/BM24/BM64");
-    DG_STATIC_ASSERT(kNumStages == 3 || kNumStages == 4,
-                     "Small-M kernel requires three or four pipeline stages");
+    DG_STATIC_ASSERT(kNumStages >= 3 && kNumStages <= 6,
+                     "Small-M kernel requires three through six pipeline stages");
     DG_STATIC_ASSERT(kNumExperts % kNumRanks == 0,
                      "Experts must divide evenly across ranks");
 
@@ -78,11 +78,30 @@
     constexpr uint32_t L1_OUT_BLOCK_N = 128;
     constexpr uint32_t WG_L1_OUT_BLOCK_N = 64;
     constexpr bool kSwapAB = kSwapABRequested;
+    constexpr bool kRSSwapAB = kRSSwapABRequested;
+    constexpr bool kRSBatch4 = kRSBatch4Requested;
+    constexpr bool kRSVectorScale = kRSVectorScaleRequested;
+    constexpr bool kRSDirectLut = kRSDirectLutRequested;
+    constexpr bool kRSCompactSmem = kRSCompactSmemRequested;
     constexpr uint32_t kSwapABTokenChunks = BLOCK_M / 8;
     constexpr uint32_t kSwapABWeightHalves = WG_BLOCK_N / 64;
     constexpr uint32_t kSwapABHalfAccumPerThread = 64 * 64 / 128;
     DG_STATIC_ASSERT(!kSwapAB || WG_L1_OUT_BLOCK_N == 64,
                      "swapAB expects BN256 split-N with 64 L1 output columns per WG");
+    DG_STATIC_ASSERT(!kRSSwapAB || kSwapAB,
+                     "RS-swapAB requires the transposed small-M accumulator path");
+    DG_STATIC_ASSERT(!kRSSwapAB || kUseMode2Lop3Decoder,
+                     "RS-swapAB consumes the Mode2 braided packed-weight layout");
+    DG_STATIC_ASSERT(!kRSBatch4 || kRSSwapAB,
+                     "RS batch4 requires the register-source swapAB path");
+    DG_STATIC_ASSERT(!kRSVectorScale || kRSBatch4,
+                     "RS vector-scale mode is layered on the batch4 path");
+    DG_STATIC_ASSERT(!kRSDirectLut || kRSBatch4,
+                     "RS direct-LUT mode is layered on the batch4 path");
+    DG_STATIC_ASSERT(!kRSDirectLut || kRSVectorScale,
+                     "RS direct-LUT mode requires the vector scale preload");
+    DG_STATIC_ASSERT(!kRSCompactSmem || kRSSwapAB,
+                     "compact shared memory requires register-source swapAB");
     // Both dispatch warps participate in CTA-wide barriers. Selected plans may
     // use one warp for routing and token pulls, leaving the other warp's send
     // buffer available for an additional GEMM stage.
@@ -113,7 +132,8 @@
     constexpr uint32_t SMEM_NVFP4_LUT_SIZE =
         math::constexpr_align<uint32_t>(128u * sizeof(uint2), kSharedMemoryAlignment);
     constexpr uint32_t SMEM_A_SIZE_PER_STAGE = LOAD_BLOCK_M * BLOCK_K * sizeof(a_dtype_t);
-    constexpr uint32_t SMEM_B_SIZE_PER_STAGE = LOAD_BLOCK_N * BLOCK_K * sizeof(b_dtype_t);
+    constexpr uint32_t SMEM_B_SIZE_PER_STAGE = kRSCompactSmem ? 0u :
+        LOAD_BLOCK_N * BLOCK_K * sizeof(b_dtype_t);
     constexpr uint32_t B_LOAD_BYTES_PER_ROW = 80u;
     constexpr uint32_t SMEM_B_LOAD_SIZE_PER_STAGE = LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW;
     constexpr uint32_t SMEM_PACKED_B_SIZE_PER_STAGE =
@@ -145,9 +165,21 @@
         SMEM_CD_OUTPUT_UNALIGNED_SIZE, kSharedMemoryAlignment);
     constexpr uint32_t SMEM_CD_SIZE = SMEM_CD_OUTPUT_SIZE;
 
-    constexpr uint32_t SMEM_BEFORE_BARRIER_SIZE =
+    constexpr uint32_t SMEM_NATURAL_BEFORE_BARRIER_SIZE =
         SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE + SMEM_NVFP4_LUT_SIZE + SMEM_CD_SIZE +
         kNumStages * (SMEM_A_SIZE_PER_STAGE + SMEM_B_SIZE_PER_STAGE + SMEM_PACKED_B_SIZE_PER_STAGE);
+    // COMBINE runs after GEMM and reuses the retired shared-memory prefix.  Its
+    // fixed two-chunk ping-pong schedule uses two load buffers plus one store
+    // buffer per epilogue warp.  Reserve the larger of that scratch and the
+    // natural producer/consumer pipeline; do not sum disjoint lifetimes.
+    constexpr uint32_t kCombineNumChunkSlots = 3;
+    constexpr uint32_t kCombineNumChunks = 2;
+    constexpr uint32_t kCombineScratchSize =
+        kCombineNumChunkSlots * kNumEpilogueWarps *
+        (kHidden * sizeof(nv_bfloat16)) / kCombineNumChunks;
+    constexpr uint32_t SMEM_BEFORE_BARRIER_SIZE = kRSCompactSmem &&
+            kCombineScratchSize > SMEM_NATURAL_BEFORE_BARRIER_SIZE ?
+        kCombineScratchSize : SMEM_NATURAL_BEFORE_BARRIER_SIZE;
 
     // SMEM pointers
     auto smem_expert_count = reinterpret_cast<uint32_t*>(smem_buffer);
@@ -179,7 +211,8 @@
             i * SMEM_PACKED_B_SIZE_PER_STAGE);
     });
     auto sf_start_ptr = math::advance_ptr<uint8_t>(smem_gemm_base,
-        SMEM_CD_SIZE + kNumStages * (SMEM_A_SIZE_PER_STAGE + SMEM_B_SIZE_PER_STAGE + SMEM_PACKED_B_SIZE_PER_STAGE));
+        SMEM_BEFORE_BARRIER_SIZE -
+        (SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE + SMEM_NVFP4_LUT_SIZE));
     auto smem_sfa = utils::PatternVisitor([=](const uint32_t& i) {
         return reinterpret_cast<float*>(sf_start_ptr + i * SMEM_SFA_SIZE_PER_STAGE);
     });
@@ -655,8 +688,8 @@
                 empty_barriers[stage_idx]->wait(phase ^ 1);
 
                 const uint32_t n_idx = local_expert_idx * shape_n + n_block_idx * BLOCK_N;
-                // NVFP4 fused B+scale layout stores 64B packed FP4 + 16B
-                // UE4M3 scale per BK128 row.
+                // NVFP4 fused B+scale layout stores 64B packed FP4, 8B of
+                // UE4M3 scales, and 8B of padding per BK128 row.
                 const uint32_t k_idx = k_block_idx * B_LOAD_BYTES_PER_ROW;
                 if (cute::elect_one_sync()) {
                     tma::copy<B_LOAD_BYTES_PER_ROW, LOAD_BLOCK_N, 0, b_dtype_t>(
@@ -738,29 +771,194 @@
             constexpr uint32_t kAccumPerThread = WGMMA::kNumAccum;  // 64 for M=64,N=128
             float final_accum[kAccumPerThread] = {};
             float accum[kAccumPerThread];
+
+            // Direct register-source swapAB for one 64-row weight half.  The
+            // packed 80-byte row remains in the existing TMA stage; each lane
+            // reads only the two u32 words and two scale bytes needed by its
+            // K32 fragment.  This deliberately avoids the dormant large-M
+            // prototype's per-lane uint4 load amplification.
+            const auto run_rs_swap_ab_half = [&]<uint32_t N_SWAP>(
+                    const uint32_t& half, float* swap_accum) {
+                using RSWGMMA = typename mma::sm90::FP8RSMMASelector<N_SWAP>::type;
+                DG_STATIC_ASSERT(BLOCK_K / RSWGMMA::K == 4,
+                                 "Small-M RS expects four K32 slices per BK128 stage");
+
+                const uint32_t frag_row0 =
+                    wg_n_idx + half * 64u + warp_idx_in_wg * 16u + row_idx;
+                const uint32_t decode_row =
+                    frag_row0 + ((lane_idx & 1u) << 3);
+                const uint32_t word_sel = (lane_idx >> 1) & 1u;
+                const bool keep_hi = (lane_idx & 1u) == 0;
+                const auto* packed_row =
+                    reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]) +
+                    decode_row * B_LOAD_BYTES_PER_ROW;
+
+                // Modes 3/5 hoist all eight row-local scale bytes into one
+                // vector LDS.  The four unrolled K32 decodes reuse these
+                // registers instead of issuing two scalar scale loads each.
+                uint2 rs_scale_words;
+                if constexpr (kRSVectorScale) {
+                    rs_scale_words = ptx::ld_shared(
+                        reinterpret_cast<const uint2*>(packed_row + 64u));
+                }
+
+                const auto decode_slice = [&](const uint32_t& slice,
+                                              uint32_t (&dst)[4]) {
+                    const uint32_t slice_offset = slice * 16u;
+                    const uint32_t word_offset = word_sel * sizeof(uint32_t);
+                    const uint32_t w_lo = ptx::ld_shared(
+                        reinterpret_cast<const uint32_t*>(
+                            packed_row + slice_offset + word_offset));
+                    const uint32_t w_hi = ptx::ld_shared(
+                        reinterpret_cast<const uint32_t*>(
+                            packed_row + slice_offset + 8u + word_offset));
+                    uint32_t scale_lo, scale_hi;
+                    uint2 lut_lo, lut_hi;
+                    if constexpr (kRSVectorScale) {
+                        const uint32_t scale_word =
+                            slice < 2u ? rs_scale_words.x : rs_scale_words.y;
+                        const uint32_t scale_shift = (slice & 1u) * 16u;
+                        scale_lo = (scale_word >> scale_shift) & 0x7fu;
+                        scale_hi = (scale_word >> (scale_shift + 8u)) & 0x7fu;
+                        if constexpr (kRSDirectLut) {
+                            lut_lo = deep_gemm::nvfp4::make_nvfp4_direct_lut(
+                                smem_nvfp4_lut, scale_lo);
+                            lut_hi = deep_gemm::nvfp4::make_nvfp4_direct_lut(
+                                smem_nvfp4_lut, scale_hi);
+                        } else {
+                            // Orthogonal mode-5 ablation: exactly the same
+                            // shared uint2 table gathers as mode 2, fed by the
+                            // hoisted raw-scale registers.
+                            lut_lo = smem_nvfp4_lut[scale_lo];
+                            lut_hi = smem_nvfp4_lut[scale_hi];
+                        }
+                    } else {
+                        // Bytes 64..71 are the eight real UE4M3 scales.
+                        // Bytes 72..79 remain deterministic padding and are
+                        // deliberately outside both RS read paths.
+                        scale_lo = ptx::ld_shared(
+                            packed_row + 64u + slice * 2u) & 0x7fu;
+                        scale_hi = ptx::ld_shared(
+                            packed_row + 65u + slice * 2u) & 0x7fu;
+                        lut_lo = smem_nvfp4_lut[scale_lo];
+                        lut_hi = smem_nvfp4_lut[scale_hi];
+                    }
+                    deep_gemm::nvfp4::dequant_mode2_lop3_rs_word_pair(
+                        w_lo, w_hi, lut_lo, lut_hi, keep_hi, dst);
+                };
+
+                if constexpr (kRSBatch4) {
+                    // Keep all four K32 fragments distinct until the group is
+                    // retired.  This matches the SS path's one commit/wait per
+                    // BK128 half and directly tests whether the mode-1
+                    // ping-pong wait cadence is the H200 regression source.
+                    uint32_t a_frag[4][4];
+                    #pragma unroll
+                    for (uint32_t slice = 0;
+                         slice < BLOCK_K / RSWGMMA::K; ++slice) {
+                        decode_slice(slice, a_frag[slice]);
+                        #pragma unroll
+                        for (uint32_t i = 0; i < 4; ++i)
+                            mma::sm90::warpgroup_fence_operand(a_frag[slice][i]);
+                    }
+                    #pragma unroll
+                    for (uint32_t i = 0; i < RSWGMMA::kNumAccum; ++i)
+                        ptx::warpgroup_fence_operand(swap_accum[i]);
+                    ptx::warpgroup_arrive();
+                    #pragma unroll
+                    for (uint32_t slice = 0;
+                         slice < BLOCK_K / RSWGMMA::K; ++slice) {
+                        const auto desc_b = mma::sm90::make_smem_desc(
+                            smem_a[stage_idx] + slice * RSWGMMA::K, 1);
+                        RSWGMMA::wgmma(
+                            a_frag[slice], desc_b, swap_accum, slice > 0);
+                    }
+                    ptx::warpgroup_commit_batch();
+                    #pragma unroll
+                    for (uint32_t i = 0; i < RSWGMMA::kNumAccum; ++i)
+                        ptx::warpgroup_fence_operand(swap_accum[i]);
+                    ptx::warpgroup_wait<0>();
+                    // Inline RS WGMMA consumes A registers asynchronously.
+                    // Pin all four fragments through the wait so ptxas cannot
+                    // shorten their live ranges and reuse a register while
+                    // the warpgroup instruction still owns its value.
+                    #pragma unroll
+                    for (uint32_t slice = 0;
+                         slice < BLOCK_K / RSWGMMA::K; ++slice) {
+                        #pragma unroll
+                        for (uint32_t i = 0; i < 4; ++i)
+                            mma::sm90::warpgroup_fence_operand(
+                                a_frag[slice][i]);
+                    }
+                } else {
+                    uint32_t a_frag[2][4];
+                    decode_slice(0, a_frag[0]);
+                    #pragma unroll
+                    for (uint32_t slice = 0;
+                         slice < BLOCK_K / RSWGMMA::K; ++slice) {
+                        #pragma unroll
+                        for (uint32_t i = 0; i < 4; ++i)
+                            mma::sm90::warpgroup_fence_operand(
+                                a_frag[slice & 1u][i]);
+                        #pragma unroll
+                        for (uint32_t i = 0; i < RSWGMMA::kNumAccum; ++i)
+                            ptx::warpgroup_fence_operand(swap_accum[i]);
+
+                        // A-fragment registers are rewritten between groups,
+                        // so every RS issue needs its own warpgroup fence.
+                        ptx::warpgroup_arrive();
+                        const auto desc_b = mma::sm90::make_smem_desc(
+                            smem_a[stage_idx] + slice * RSWGMMA::K, 1);
+                        RSWGMMA::wgmma(
+                            a_frag[slice & 1u], desc_b, swap_accum, slice > 0);
+                        ptx::warpgroup_commit_batch();
+
+                        if (slice + 1 < BLOCK_K / RSWGMMA::K) {
+                            // At most one group remains pending before a
+                            // ping-pong A-fragment buffer is overwritten.
+                            if (slice >= 1) {
+                                ptx::warpgroup_wait<1>();
+                                #pragma unroll
+                                for (uint32_t i = 0; i < 4; ++i)
+                                    mma::sm90::warpgroup_fence_operand(
+                                        a_frag[(slice + 1) & 1u][i]);
+                            }
+                            decode_slice(
+                                slice + 1, a_frag[(slice + 1) & 1u]);
+                        }
+                    }
+                    #pragma unroll
+                    for (uint32_t i = 0; i < RSWGMMA::kNumAccum; ++i)
+                        ptx::warpgroup_fence_operand(swap_accum[i]);
+                    ptx::warpgroup_wait<0>();
+                }
+            };
+
             const auto run_default_gemm_loop = [&]() {
 for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 full_barriers[stage_idx]->wait(phase);
 
                 // Each math warpgroup publishes its 128 decoded rows before
                 // WGMMA reads them through the async proxy.
-                const uint32_t _tid_in_wg = epilogue_thread_idx;
-                if constexpr (kUseMode2Lop3Decoder) {
-                    deep_gemm::nvfp4::dequant_smem_b_from_packed_mode2_lop3<
-                        kQuadDequantIlp>(
-                        reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
-                        reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
-                        _tid_in_wg, smem_nvfp4_lut);
-                } else {
-                    deep_gemm::nvfp4::dequant_smem_b_from_packed_braided_lut_window<
-                        kQuadDequantIlp>(
-                        reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
-                        reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
-                        _tid_in_wg, smem_nvfp4_lut);
+                if constexpr (!kRSSwapAB) {
+                    const uint32_t _tid_in_wg = epilogue_thread_idx;
+                    if constexpr (kUseMode2Lop3Decoder) {
+                        deep_gemm::nvfp4::dequant_smem_b_from_packed_mode2_lop3<
+                            kQuadDequantIlp>(
+                            reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
+                            reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
+                            _tid_in_wg, smem_nvfp4_lut);
+                    } else {
+                        deep_gemm::nvfp4::dequant_smem_b_from_packed_braided_lut_window<
+                            kQuadDequantIlp>(
+                            reinterpret_cast<uint8_t*>(smem_b[stage_idx]),
+                            reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
+                            _tid_in_wg, smem_nvfp4_lut);
+                    }
+                    cutlass::arch::fence_view_async_shared();
+                    ptx::sync_aligned(
+                        128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
                 }
-                cutlass::arch::fence_view_async_shared();
-                ptx::sync_aligned(
-                    128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
 
                 // Read SF (must precede warpgroup_arrive)
                 float scale_a_0_lo, scale_a_1_lo;
@@ -788,6 +986,13 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
                             #pragma unroll
                             for (uint32_t half = 0; half < kSwapABWeightHalves; ++ half) {
+                            if constexpr (kRSSwapAB) {
+                                using RSSwapWGMMA = typename mma::sm90::FP8RSMMASelector<N_SWAP>::type;
+                                DG_STATIC_ASSERT(RSSwapWGMMA::kNumAccum == kSwapAccum,
+                                                 "RS/SS swap accumulator layouts must match");
+                                run_rs_swap_ab_half.template operator()<N_SWAP>(
+                                    half, swap_accum);
+                            } else {
                             #pragma unroll
                             for (uint32_t i = 0; i < kSwapAccum; ++ i)
                                 ptx::warpgroup_fence_operand(swap_accum[i]);
@@ -805,6 +1010,7 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             for (uint32_t i = 0; i < kSwapAccum; ++ i)
                                 ptx::warpgroup_fence_operand(swap_accum[i]);
                             ptx::warpgroup_wait<0>();
+                            }
 
                             #pragma unroll
                             for (uint32_t i = 0; i < kSwapAccum / 4; ++ i) {
@@ -824,6 +1030,16 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             }
                             }
 
+                            if constexpr (kRSSwapAB) {
+                                // Every lane reads smem_sfa during promotion.
+                                // A warp-leader arrival alone does not order
+                                // the other 127 lanes under independent thread
+                                // scheduling; rendezvous before allowing TMA
+                                // to recycle this stage.
+                                ptx::sync_aligned(
+                                    128,
+                                    kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
+                            }
                             arrive_empty_barrier(stage_idx);
                         };
 
@@ -918,6 +1134,13 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
 
                             #pragma unroll
                             for (uint32_t half = 0; half < kSwapABWeightHalves; ++ half) {
+                            if constexpr (kRSSwapAB) {
+                                using RSSwapWGMMA = typename mma::sm90::FP8RSMMASelector<N_SWAP>::type;
+                                DG_STATIC_ASSERT(RSSwapWGMMA::kNumAccum == kSwapAccum,
+                                                 "RS/SS swap accumulator layouts must match");
+                                run_rs_swap_ab_half.template operator()<N_SWAP>(
+                                    half, swap_accum);
+                            } else {
                             #pragma unroll
                             for (uint32_t i = 0; i < kSwapAccum; ++ i)
                                 ptx::warpgroup_fence_operand(swap_accum[i]);
@@ -935,9 +1158,18 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
                             for (uint32_t i = 0; i < kSwapAccum; ++ i)
                                 ptx::warpgroup_fence_operand(swap_accum[i]);
                             ptx::warpgroup_wait<0>();
+                            }
                             promote_swap_accum(half);
                             }
 
+                            if constexpr (kRSSwapAB) {
+                                // Keep the packed weight, activation, and SFA
+                                // stage live until all lanes have completed
+                                // the transposed accumulator promotion.
+                                ptx::sync_aligned(
+                                    128,
+                                    kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
+                            }
                             arrive_empty_barrier(stage_idx);
                         };
 
@@ -1465,12 +1697,15 @@ for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_bl
         constexpr uint32_t kNumHiddenBytes = kHidden * sizeof(nv_bfloat16);
         constexpr uint32_t kNumElemsPerUint4 = sizeof(uint4) / sizeof(nv_bfloat162);
 
-        constexpr uint32_t kNumChunkSlots = 3;
+        constexpr uint32_t kNumChunkSlots = kCombineNumChunkSlots;
         constexpr uint32_t kNumMaxRegistersForBuffer = 128;
         constexpr uint32_t kNumDefaultChunks =
             (kNumChunkSlots * kNumEpilogueWarps * kNumHiddenBytes <= SMEM_BEFORE_BARRIER_SIZE
              and kHidden <= 32 * kNumMaxRegistersForBuffer) ? 1 : 2;
-        constexpr uint32_t kNumChunks = kNumDefaultChunks;
+        // Preserve mode0-5's original combine choice byte-for-byte.  Only the
+        // compact mode is sized and scheduled against a mandatory two chunks.
+        constexpr uint32_t kNumChunks =
+            kRSCompactSmem ? kCombineNumChunks : kNumDefaultChunks;
         constexpr uint32_t kNumChunkBytes = kNumHiddenBytes / kNumChunks;
         constexpr uint32_t kNumChunkUint4 = kNumChunkBytes / sizeof(uint4);
         constexpr uint32_t kNumUint4PerLane = kNumChunkUint4 / 32;
