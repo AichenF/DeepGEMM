@@ -358,11 +358,7 @@ def main() -> int:
             f"kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_"
             f"fp8shared_ep{WORLD_SIZE}"
             if args.fuse_shared_expert
-            else (
-                "sm120_fp8_fp4_routed_moe_ep4_impl"
-                if WORLD_SIZE == 4
-                else "sm120_fp8_fp4_routed_moe_impl"
-            )
+            else f"sm120_fp8_fp4_routed_moe_ep{WORLD_SIZE}_impl"
         )
         observations = _benchmark(
             state,
@@ -388,11 +384,7 @@ def main() -> int:
             kernel_path = Path(deep_gemm.__file__).resolve().parent / (
                 f"include/deep_gemm/impls/sm120_fp8_fp4_routed_moe_shared_ep{WORLD_SIZE}.cuh"
                 if args.fuse_shared_expert
-                else (
-                    "include/deep_gemm/impls/sm120_fp8_fp4_routed_moe_ep4.cuh"
-                    if WORLD_SIZE == 4
-                    else "include/deep_gemm/impls/sm120_fp8_fp4_routed_moe.cuh"
-                )
+                else f"include/deep_gemm/impls/sm120_fp8_fp4_routed_moe_ep{WORLD_SIZE}.cuh"
             )
             kernel_paths = [kernel_path]
             if args.fuse_shared_expert:

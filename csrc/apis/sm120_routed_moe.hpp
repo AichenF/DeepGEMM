@@ -71,7 +71,6 @@ static pybind11::dict get_sm120_routed_moe_layout(int world_size = 8) {
 #include <c10/cuda/CUDAGuard.h>
 
 #include "../jit_kernels/impls/sm120_fp8_fp4_routed_moe.hpp"
-#include "../jit_kernels/impls/sm120_fp8_fp4_routed_moe_ep4.hpp"
 #include "../jit_kernels/impls/sm120_fp8_fp4_routed_moe_shared.hpp"
 
 #include <algorithm>
@@ -293,6 +292,7 @@ public:
         detail::check_cuda(cudaGetDevice(&current_device), "cudaGetDevice");
         if (current_device != device_)
             throw std::runtime_error("current CUDA device does not match the SM120 routed MoE session");
+        (void)enable_phase_trace;
 
         constexpr std::array<const char*, 20> kSessionOwnedArguments{{
             "rank",
@@ -365,7 +365,7 @@ public:
                     activation_clamp,
                     fast_math);
         } else if (world_size_ == 4) {
-            deep_gemm::sm120_fp8_fp4_routed_moe_ep4(
+            deep_gemm::sm120_fp8_fp4_routed_moe<4>(
                 launch_arguments,
                 rank_,
                 active_rows,
@@ -375,16 +375,14 @@ public:
                 fast_math,
                 drain_only);
         } else {
-            deep_gemm::sm120_fp8_fp4_routed_moe(
+            deep_gemm::sm120_fp8_fp4_routed_moe<8>(
                 launch_arguments,
                 rank_,
-                world_size_,
                 active_rows,
                 epoch,
                 grid_ctas,
                 activation_clamp,
                 fast_math,
-                enable_phase_trace,
                 drain_only);
         }
     }
@@ -741,15 +739,11 @@ static void register_sm120_routed_moe_apis(pybind11::module& module) {
         pybind11::arg("world_size") = 8);
     module.def(
         "prepare_sm120_fp8_fp4_routed_moe",
-        [](bool enable_phase_trace) {
-            (void)deep_gemm::prepare_sm120_fp8_fp4_routed_moe(enable_phase_trace);
+        [](int world_size, int active_rows) {
+            (void)deep_gemm::prepare_sm120_fp8_fp4_routed_moe(
+                world_size, active_rows);
         },
-        pybind11::arg("enable_phase_trace") = false);
-    module.def(
-        "prepare_sm120_fp8_fp4_routed_moe_ep4",
-        [](int active_rows) {
-            (void)deep_gemm::prepare_sm120_fp8_fp4_routed_moe_ep4(active_rows);
-        },
+        pybind11::arg("world_size"),
         pybind11::arg("active_rows"));
     module.def(
         "prepare_sm120_fp8_fp4_shared_moe",

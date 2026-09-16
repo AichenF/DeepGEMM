@@ -92,21 +92,25 @@ def _workspace_specs(
         'w1_task_counter': (torch.uint32, max_tasks),
         'dispatch_chunk_scatter_counter': (torch.uint32, chunk_entries),
         'pull_chunk_arrived': (torch.uint32, chunk_entries),
+        'result_owner_ready': (torch.uint32, world_size),
         'result_owner_progress': (torch.uint32, world_size),
+        'pull_request_scratch': (torch.uint64, 2 * chunk_entries),
         'dispatch_chunk_targets': (torch.int32, chunk_entries),
-        'pipeline_claim_cursor': (torch.int32, 1),
+        'c56_claim_cursor': (torch.int32, 1),
         'combine_claim_cursor': (torch.int32, 1),
-        'pipeline_tile_mailbox': (torch.int32, int(layout['mailbox_entries'])),
+        'c56_tile_mailbox': (torch.int32, int(layout['mailbox_entries'])),
         'task_gate_packed': (torch.int32, max_tasks),
         'result_chunk_total': (torch.int32, max_chunks),
         'result_chunk_tally': (torch.int32, max_chunks),
         'result_ovf_cursor': (torch.int32, max_chunks),
         'signal_base_scratch': (torch.uint64, world_size),
         'dispatch_chunk_signal_base_scratch': (torch.uint64, chunk_entries),
-        'result_signal_base_scratch': (torch.uint64, world_size),
+        'result_signal_base_scratch': (torch.uint64, 2 * world_size),
         'ack_signal_base_scratch': (torch.uint64, world_size + 1),
         'routing_weight_pool': (torch.float32, pool_rows),
         'meta_source_rank': (torch.int32, pool_rows),
+        'meta_token': (torch.int32, pool_rows),
+        'meta_slot': (torch.int32, pool_rows),
         'meta_result_index': (torch.int32, pool_rows),
         'expert_counts': (torch.int32, experts_per_rank),
         'owner_expert_route_counts': (torch.int32, world_size * experts_per_rank),
@@ -115,44 +119,31 @@ def _workspace_specs(
         'expert_source_base': (torch.int32, world_size * experts_per_rank),
         'expert_source_offsets': (torch.int32, world_size * experts_per_rank),
         'source_expert_prefix': (torch.int32, world_size * experts_per_rank),
+        'task_max_source': (torch.int32, max_tasks),
         'source_record_counts': (torch.int32, world_size),
         'source_route_counts': (torch.int32, world_size),
         'source_active_rows': (torch.int32, world_size),
         'expert_row_offsets': (torch.int32, experts_per_rank),
+        'expert_task_base': (torch.int32, experts_per_rank),
+        'expert_block_task': (torch.int32, experts_per_rank * max_tasks),
+        'task_source_slot_base': (torch.int32, max_tasks * world_size),
+        'expert_scatter_offsets': (torch.int32, experts_per_rank),
+        'task_expert': (torch.int32, max_tasks),
+        'task_source_rank': (torch.int32, max_tasks),
+        'task_owner_rank': (torch.int32, max_tasks),
         'task_local_expert': (torch.int32, max_tasks),
         'task_pool_row': (torch.int32, max_tasks),
+        'task_m_local': (torch.int32, max_tasks),
+        'task_valid_m': (torch.int32, max_tasks),
+        'task_rows_landed': (torch.int32, max_tasks),
         'total_valid_routes': (torch.int32, 1),
+        'total_padded_rows': (torch.int32, 1),
         'total_m_tasks': (torch.int32, 1),
         'histogram_done': (torch.int32, 1),
         'prefix_done': (torch.int32, 1),
         'w1_warp_done': (torch.int32, max_tasks * w1_tiles),
         'w1_tiles_completed': (torch.int32, 1),
     }
-    if world_size == 4:
-        specs.pop('pipeline_claim_cursor')
-        specs.pop('pipeline_tile_mailbox')
-    if world_size == 4 or fuse_shared_expert:
-        specs.update({
-            'result_owner_ready': (torch.uint32, world_size),
-            'pull_request_scratch': (torch.uint64, 2 * chunk_entries),
-            'c56_claim_cursor': (torch.int32, 1),
-            'c56_tile_mailbox': (torch.int32, int(layout['mailbox_entries'])),
-            'result_signal_base_scratch': (torch.uint64, 2 * world_size),
-            'meta_token': (torch.int32, pool_rows),
-            'meta_slot': (torch.int32, pool_rows),
-            'task_max_source': (torch.int32, max_tasks),
-            'expert_task_base': (torch.int32, experts_per_rank),
-            'expert_block_task': (torch.int32, experts_per_rank * max_tasks),
-            'task_source_slot_base': (torch.int32, max_tasks * world_size),
-            'expert_scatter_offsets': (torch.int32, experts_per_rank),
-            'task_expert': (torch.int32, max_tasks),
-            'task_source_rank': (torch.int32, max_tasks),
-            'task_owner_rank': (torch.int32, max_tasks),
-            'task_m_local': (torch.int32, max_tasks),
-            'task_valid_m': (torch.int32, max_tasks),
-            'task_rows_landed': (torch.int32, max_tasks),
-            'total_padded_rows': (torch.int32, 1),
-        })
     if fuse_shared_expert:
         specs.update({
             'c24_front_sync': (torch.uint32, 4),
@@ -287,18 +278,17 @@ class SM120RoutedMoEWorkspace:
             'task_pool_row',
         ):
             self._arguments[name].fill_(-1)
-        if world_size == 4 or self.fuse_shared_expert:
-            for name in (
-                'meta_token',
-                'meta_slot',
-                'task_max_source',
-                'task_expert',
-                'task_source_rank',
-                'task_owner_rank',
-                'task_m_local',
-                'task_valid_m',
-            ):
-                self._arguments[name].fill_(-1)
+        for name in (
+            'meta_token',
+            'meta_slot',
+            'task_max_source',
+            'task_expert',
+            'task_source_rank',
+            'task_owner_rank',
+            'task_m_local',
+            'task_valid_m',
+        ):
+            self._arguments[name].fill_(-1)
 
         max_rows = int(self.layout['max_rows'])
         pool_rows = int(self.layout['pool_rows']) + (
@@ -342,15 +332,14 @@ class SM120RoutedMoEWorkspace:
         })
         if self._shared_output is not None:
             self._arguments['shared_out'] = self._shared_output
-        if self.enable_phase_trace or world_size == 4 or self.fuse_shared_expert:
-            self._arguments['phase_timestamps'] = torch.empty(
-                int(self.layout['phase_timestamp_count']),
-                dtype=torch.uint64,
-                device=self.device,
-            )
-            self._arguments['peer_phase_timestamps'] = torch.empty(
-                int(self.layout['world_size']), dtype=torch.uint64, device=self.device
-            )
+        self._arguments['phase_timestamps'] = torch.empty(
+            int(self.layout['phase_timestamp_count']),
+            dtype=torch.uint64,
+            device=self.device,
+        )
+        self._arguments['peer_phase_timestamps'] = torch.empty(
+            int(self.layout['world_size']), dtype=torch.uint64, device=self.device
+        )
 
     @property
     def closed(self) -> bool:
@@ -620,19 +609,16 @@ def _fp8_fp4_routed_moe_sm120_locked(
             (hidden, intermediate),
         )
 
-    trace_mode = workspace.enable_phase_trace
     prepare_key = (
         (session.world_size, 'shared')
         if fuse_shared_expert
-        else (session.world_size, rows if session.world_size == 4 else trace_mode)
+        else (session.world_size, 'routed', session.world_size == 4 and rows == 2048)
     )
     if prepare_key not in session._prepared_kernels:
         if fuse_shared_expert:
             _C.prepare_sm120_fp8_fp4_shared_moe(session.world_size)
-        elif session.world_size == 4:
-            _C.prepare_sm120_fp8_fp4_routed_moe_ep4(rows)
         else:
-            _C.prepare_sm120_fp8_fp4_routed_moe(trace_mode)
+            _C.prepare_sm120_fp8_fp4_routed_moe(session.world_size, rows)
         dist.barrier(group=session.group, device_ids=[session.device.index])
         session._prepared_kernels.add(prepare_key)
 

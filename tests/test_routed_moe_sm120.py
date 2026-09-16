@@ -170,10 +170,9 @@ def test_sm120_layout_contract(world_size, ep_layout):
     assert layout == {"world_size": world_size, **common, **ep_layout}
 
 
-def test_sm120_workspace_contract_uses_semantic_pipeline_names():
+def test_sm120_workspace_contract_covers_both_ep_specializations():
     specs = _workspace_specs(dict(deep_gemm._C.get_sm120_routed_moe_layout()))
 
-    assert {"pipeline_claim_cursor", "pipeline_tile_mailbox"} <= specs.keys()
     assert {
         "c56_claim_cursor",
         "c56_tile_mailbox",
@@ -189,7 +188,8 @@ def test_sm120_workspace_contract_uses_semantic_pipeline_names():
         "task_m_local",
         "task_valid_m",
         "total_padded_rows",
-    }.isdisjoint(specs)
+    } <= specs.keys()
+    assert {"pipeline_claim_cursor", "pipeline_tile_mailbox"}.isdisjoint(specs)
 
     ep4_specs = _workspace_specs(dict(deep_gemm._C.get_sm120_routed_moe_layout(4)))
     assert {"c56_claim_cursor", "c56_tile_mailbox", "result_owner_ready"} <= ep4_specs.keys()
@@ -198,7 +198,6 @@ def test_sm120_workspace_contract_uses_semantic_pipeline_names():
     ep8_shared_specs = _workspace_specs(
         dict(deep_gemm._C.get_sm120_routed_moe_layout(8)), True
     )
-    assert {"pipeline_claim_cursor", "pipeline_tile_mailbox"} <= ep8_shared_specs.keys()
     assert {
         "c24_front_sync",
         "c56_claim_cursor",
@@ -208,6 +207,9 @@ def test_sm120_workspace_contract_uses_semantic_pipeline_names():
         "result_owner_ready",
         "tb_pub",
     } <= ep8_shared_specs.keys()
+    assert {"pipeline_claim_cursor", "pipeline_tile_mailbox"}.isdisjoint(
+        ep8_shared_specs
+    )
     assert ep8_shared_specs["result_signal_base_scratch"][1] == 16
 
     ep4_layout = dict(deep_gemm._C.get_sm120_routed_moe_layout(4))
@@ -527,7 +529,7 @@ def _mock_public_launch_state():
     session._bound_workspace = None
     session._next_epoch = 0
     session._pending_launch = None
-    session._prepared_kernels = {(WORLD_SIZE, False)}
+    session._prepared_kernels = {(WORLD_SIZE, "routed", False)}
 
     workspace = object.__new__(adapter.SM120RoutedMoEWorkspace)
     workspace.device = session.device
@@ -607,7 +609,7 @@ def test_sm120_public_launch_binds_one_workspace_and_advances_epoch(monkeypatch)
     monkeypatch.setattr(
         adapter._C,
         "prepare_sm120_fp8_fp4_routed_moe",
-        lambda enable_phase_trace: prepares.append(enable_phase_trace),
+        lambda world_size, rows: prepares.append((world_size, rows)),
     )
     monkeypatch.setattr(
         adapter.dist,
@@ -637,7 +639,7 @@ def test_sm120_public_launch_binds_one_workspace_and_advances_epoch(monkeypatch)
     assert session._bound_workspace is workspace
     assert workspace._bound_session() is session
     assert session._next_epoch == workspace._epoch == 2
-    assert prepares == [False]
+    assert prepares == [(WORLD_SIZE, 1)]
     assert barriers == [{"group": session.group, "device_ids": [session.device.index]}]
 
     other_workspace = copy.copy(workspace)
