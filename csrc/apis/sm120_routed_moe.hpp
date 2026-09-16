@@ -72,6 +72,7 @@ static pybind11::dict get_sm120_routed_moe_layout(int world_size = 8) {
 
 #include "../jit_kernels/impls/sm120_fp8_fp4_routed_moe.hpp"
 #include "../jit_kernels/impls/sm120_fp8_fp4_routed_moe_ep4.hpp"
+#include "../jit_kernels/impls/sm120_fp8_fp4_routed_moe_shared.hpp"
 
 #include <algorithm>
 #include <array>
@@ -284,6 +285,7 @@ public:
         float activation_clamp,
         bool fast_math,
         bool enable_phase_trace,
+        bool fuse_shared_expert = false,
         bool drain_only = false) const {
         require_open();
 
@@ -340,7 +342,29 @@ public:
                 reinterpret_cast<std::uintptr_t>(allocation.handle);
         }
 
-        if (world_size_ == 4) {
+        if (fuse_shared_expert) {
+            if (drain_only)
+                throw std::invalid_argument(
+                    "the fused shared-expert kernel does not expose a drain-only entry");
+            if (world_size_ == 4)
+                deep_gemm::sm120_fp8_fp4_shared_moe<4>(
+                    launch_arguments,
+                    rank_,
+                    active_rows,
+                    epoch,
+                    grid_ctas,
+                    activation_clamp,
+                    fast_math);
+            else
+                deep_gemm::sm120_fp8_fp4_shared_moe<8>(
+                    launch_arguments,
+                    rank_,
+                    active_rows,
+                    epoch,
+                    grid_ctas,
+                    activation_clamp,
+                    fast_math);
+        } else if (world_size_ == 4) {
             deep_gemm::sm120_fp8_fp4_routed_moe_ep4(
                 launch_arguments,
                 rank_,
@@ -376,6 +400,7 @@ public:
             grid_ctas,
             sm120_routed_moe::Shape::kActivationClamp,
             sm120_routed_moe::Shape::kFastMath,
+            false,
             false,
             true);
     }
@@ -544,7 +569,8 @@ static void launch_sm120_fp8_fp4_routed_moe(
     int grid_ctas,
     float activation_clamp,
     bool fast_math,
-    bool enable_phase_trace) {
+    bool enable_phase_trace,
+    bool fuse_shared_expert) {
     session.launch(
         arguments,
         active_rows,
@@ -552,7 +578,8 @@ static void launch_sm120_fp8_fp4_routed_moe(
         grid_ctas,
         activation_clamp,
         fast_math,
-        enable_phase_trace);
+        enable_phase_trace,
+        fuse_shared_expert);
 }
 
 static CUtensorMapDataType parse_sm120_tma_data_type(const std::string& name) {
@@ -724,6 +751,12 @@ static void register_sm120_routed_moe_apis(pybind11::module& module) {
             (void)deep_gemm::prepare_sm120_fp8_fp4_routed_moe_ep4(active_rows);
         },
         pybind11::arg("active_rows"));
+    module.def(
+        "prepare_sm120_fp8_fp4_shared_moe",
+        [](int world_size) {
+            (void)deep_gemm::prepare_sm120_fp8_fp4_shared_moe(world_size);
+        },
+        pybind11::arg("world_size"));
     pybind11::class_<SM120RoutedMoESession>(module, "SM120RoutedMoESession")
         .def(pybind11::init<
              std::uintptr_t, const pybind11::object&, int, int, int>(),
@@ -762,7 +795,8 @@ static void register_sm120_routed_moe_apis(pybind11::module& module) {
         pybind11::arg("grid_ctas"),
         pybind11::arg("activation_clamp"),
         pybind11::arg("fast_math"),
-        pybind11::arg("enable_phase_trace") = false);
+        pybind11::arg("enable_phase_trace") = false,
+        pybind11::arg("fuse_shared_expert") = false);
     module.def(
         "make_sm120_tma_2d",
         &make_sm120_tma_2d,
