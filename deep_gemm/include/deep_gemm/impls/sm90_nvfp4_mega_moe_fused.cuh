@@ -319,9 +319,11 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_braided_lut_window(
 // cache lines with the persistent math loop.
 template <uint32_t kHidden, uint32_t kNumTopk, uint32_t kNumExpertsPerRank,
           uint32_t kNumPaddedSFPoolTokens, uint32_t BLOCK_M, uint32_t kPushBlocksPerExpert,
-          uint32_t kNumGlobalWarps, uint32_t kNumRanks>
+          uint32_t kNumGlobalWarps, uint32_t kNumRanks, bool kGenericRows>
 __device__ __noinline__ void sm90_nvfp4_push_dispatch_rows(
         const layout::SymBuffer<kNumRanks>& sym_buffer,
+        void* smem_row_buffer,
+        cutlass::arch::ClusterTransactionBarrier* row_mbarrier,
         const int64_t* __restrict__ input_topk_idx,
         const uint8_t* __restrict__ input_tokens,
         const float* __restrict__ input_sf,
@@ -346,6 +348,7 @@ __device__ __noinline__ void sm90_nvfp4_push_dispatch_rows(
     const uint32_t rows_per_warp = (num_rows + kNumGlobalWarps - 1) / kNumGlobalWarps;
     const uint32_t row_begin = global_warp_idx * rows_per_warp;
     const uint32_t row_end = min(row_begin + rows_per_warp, num_rows);
+    uint32_t row_mbarrier_phase = 0;
     #pragma unroll 1
     for (uint32_t batch_begin = row_begin; batch_begin < row_end; batch_begin += 32) {
         const uint32_t batch_size = min(row_end - batch_begin, 32u);
@@ -377,15 +380,29 @@ __device__ __noinline__ void sm90_nvfp4_push_dispatch_rows(
                 input_tokens + static_cast<uint64_t>(src_token_idx) * kHidden);
             auto* dst_token = sym_buffer.map(reinterpret_cast<uint4*>(
                 l1_tokens + static_cast<uint64_t>(pool_token_idx) * kHidden), dr);
-            #pragma unroll
-            for (uint32_t g = 0; g < kNumTokenChunksPerLane; g += kChunkGroup) {
-                uint4 row[kChunkGroup];
+            if constexpr (kGenericRows) {
                 #pragma unroll
-                for (uint32_t c = 0; c < kChunkGroup; ++ c)
-                    row[c] = __ldg(src_token + (g + c) * 32 + lane_idx);
-                #pragma unroll
-                for (uint32_t c = 0; c < kChunkGroup; ++ c)
-                    dst_token[(g + c) * 32 + lane_idx] = row[c];
+                for (uint32_t g = 0; g < kNumTokenChunksPerLane; g += kChunkGroup) {
+                    uint4 row[kChunkGroup];
+                    #pragma unroll
+                    for (uint32_t c = 0; c < kChunkGroup; ++ c)
+                        row[c] = __ldg(src_token + (g + c) * 32 + lane_idx);
+                    #pragma unroll
+                    for (uint32_t c = 0; c < kChunkGroup; ++ c)
+                        dst_token[(g + c) * 32 + lane_idx] = row[c];
+                }
+            } else {
+                // Bulk copy (async proxy) local input row -> smem -> destination pool,
+                // the mirror image of the pull path's TMA pull.
+                if (cute::elect_one_sync()) {
+                    ptx::tma_load_1d(smem_row_buffer, src_token, row_mbarrier, kHidden);
+                    ptx::mbarrier_arrive_and_set_tx(row_mbarrier, kHidden);
+                    ptx::mbarrier_wait_and_flip_phase(row_mbarrier, row_mbarrier_phase);
+                    ptx::tma_store_1d(dst_token, smem_row_buffer, kHidden);
+                    cute::tma_store_arrive();
+                    ptx::tma_store_wait<0>();
+                }
+                __syncwarp();
             }
             const float* src_sf = input_sf + static_cast<uint64_t>(src_token_idx) * kNumSFFloats;
             float* dst_sf = sym_buffer.map(l1_sf, dr);
@@ -430,7 +447,9 @@ template <
     // Diagnostics: strided pool addressing under the PULL protocol (isolates the
     // layout's cost), and the generic->async proxy fence in the push A loader.
     bool kStridedPoolDebug = false,
-    bool kPushProxyFence = false
+    bool kPushProxyFence = false,
+    // Push rows with 16 B generic stores instead of TMA bulk copies (diagnostic).
+    bool kPushGenericRows = false
 >
 CUTLASS_GLOBAL __launch_bounds__(384, 1) void
 sm90_nvfp4_mega_moe_fused_impl(

@@ -38,6 +38,7 @@ public:
         bool no_clean_barrier;
         bool strided_pool_debug;
         bool push_proxy_fence;
+        bool push_generic_rows;
         int num_sms;
         SM90NVFP4FusedConfig config;
 
@@ -76,7 +77,8 @@ public:
             "        /* kFineCombineRequested */ {},\n"
             "        /* kNoCleanBarrierRequested */ {},\n"
             "        /* kStridedPoolDebug */ {},\n"
-            "        /* kPushProxyFence */ {}",
+            "        /* kPushProxyFence */ {},\n"
+            "        /* kPushGenericRows */ {}",
             args.swap_ab ? "true" : "false",
             args.rs_swap_ab ? "true" : "false",
             args.single_active_dispatch_warp ? "true" : "false",
@@ -86,7 +88,8 @@ public:
             args.fine_combine ? "true" : "false",
             args.no_clean_barrier ? "true" : "false",
             args.strided_pool_debug ? "true" : "false",
-            args.push_proxy_fence ? "true" : "false");
+            args.push_proxy_fence ? "true" : "false",
+            args.push_generic_rows ? "true" : "false");
         return fmt::format(R"(
 {}
 
@@ -237,6 +240,7 @@ static void sm90_nvfp4_fused_mega_moe(
     const bool strided_pool_debug = !push_dispatch && plan.use_interleaved_scheduler &&
         get_env<int>("DG_NVFP4_POOL_STRIDE_DEBUG", 0) != 0;
     const bool push_proxy_fence = push_dispatch && get_env<int>("DG_NVFP4_PUSH_PROXY_FENCE", 0) != 0;
+    const bool push_generic_rows = push_dispatch && get_env<int>("DG_NVFP4_PUSH_GENERIC_ROWS", 0) != 0;
     unsigned long long* phase_stamps = nullptr;
     {
         const auto stamps_env = get_env<std::string>("DG_NVFP4_PHASE_STAMPS_PTR");
@@ -307,6 +311,7 @@ static void sm90_nvfp4_fused_mega_moe(
         .no_clean_barrier = no_clean_barrier,
         .strided_pool_debug = strided_pool_debug,
         .push_proxy_fence = push_proxy_fence,
+        .push_generic_rows = push_generic_rows,
         .num_sms = num_sms,
         .config = config,
         .y = y.data_ptr(),
@@ -342,7 +347,7 @@ static void sm90_nvfp4_fused_mega_moe(
     const std::string counter_suffix =
         std::string(push_dispatch ? "_push" : "") + (fine_combine ? "_finecomb" : "") +
         (no_clean_barrier ? "_noclean" : "") + (strided_pool_debug ? "_stridedbg" : "") +
-        (push_proxy_fence ? "_pfence" : "");
+        (push_proxy_fence ? "_pfence" : "") + (push_generic_rows ? "_generic" : "");
     const auto runtime = compiler->build(
         std::string(plan.use_interleaved_scheduler ?
             (rs_swap_ab ?

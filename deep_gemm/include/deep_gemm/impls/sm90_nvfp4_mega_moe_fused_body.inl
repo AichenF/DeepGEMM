@@ -645,8 +645,10 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 constexpr uint32_t kNumGlobalWarps = kNumSMs * kNumActiveDispatchWarps;
                 sm90_nvfp4_push_dispatch_rows<kHidden, kNumTopk, kNumExpertsPerRank,
                                               kNumPaddedSFPoolTokens, BLOCK_M, kPushBlocksPerExpert,
-                                              kNumGlobalWarps, kNumRanks>(
+                                              kNumGlobalWarps, kNumRanks, kPushGenericRows>(
                     sym_buffer,
+                    smem_send_buffers.get_rank_buffer(warp_idx).get_data_buffer(0).get_base_ptr(),
+                    dispatch_barriers[warp_idx],
                     input_topk_idx_buffer.get_base_ptr<int64_t>(),
                     input_token_buffer.get_base_ptr<uint8_t>(),
                     input_sf_buffer.get_base_ptr<float>(),
