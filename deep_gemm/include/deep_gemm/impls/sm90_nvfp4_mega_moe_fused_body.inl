@@ -965,7 +965,15 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 auto* mailbox = workspace.get_combine_mailbox_ptr(sm_idx);
                 uint32_t consumed = ptx::ld_volatile(mailbox + 1);
                 while (true) {
-                    DG_SPIN_WHILE(ptx::ld_acq(mailbox) == consumed, 1214);
+                    // Back off while polling: a warp spinning on ld.acquire for the
+                    // whole math phase steals issue slots from the 8 math warps of
+                    // this SM (+6 % per task measured); ~0.3 us of extra signal
+                    // latency per entry is invisible to the remote combine warps.
+                    for (long long t0 = clock64(); ptx::ld_acq(mailbox) == consumed; ) {
+                        __nanosleep(256);
+                        if (clock64() - t0 > 20000000000ll)
+                            asm volatile("trap;");
+                    }
                     const uint32_t entry = ptx::ld_volatile(
                         mailbox + 4 + (consumed & (layout::kSM90FineCombineRingSize - 1)));
                     __syncwarp();
