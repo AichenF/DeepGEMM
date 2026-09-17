@@ -547,6 +547,17 @@ Tripling the warps buys 1.31x, not 3x, and it plateaus near 577 ns — above the
 beside the math warps anyway. **The decode is throughput-bound on a fixed
 resource, not latency-bound.**
 
+Nor is it the byte-permute, which is reduced-rate on some parts and the obvious
+suspect. Replacing `prmt` with an XOR of the same instruction count changes
+nothing at the 256 threads the kernel actually runs (757 vs 753 ns) and only
+helps at warp counts it cannot reach (525 vs 578 at 24 warps). Even with the
+permute gone the decode plateaus *at* the 522 ns the load needs, leaving nothing
+for the WGMMA and the epilogue that share those warps.
+
+(The scaling harness maps rows to lanes differently from `decode_rs_half`, so
+its absolute numbers are not the kernel's. What transfers is the shape of the
+curve and the ordering of the variants, which is what the argument rests on.)
+
 That closes the last avenue. Decoding in warps separate from the ones issuing
 the WGMMA was the one restructuring left, and its premise was that more warps
 would cover the decode; they do not. No warp arrangement puts the decode under
