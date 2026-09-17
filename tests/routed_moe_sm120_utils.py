@@ -6,13 +6,16 @@ fixture shared by the routed-MoE test and benchmark.
 """
 
 from dataclasses import dataclass
+import os
 
 import torch
 
 DeviceLike = int | str | torch.device
 
 RECIPE_ID = "dsv4-w4a8-distinct-k32-v1"
-WORLD_SIZE = 8
+WORLD_SIZE = int(os.environ.get("WORLD_SIZE", "8"))
+if WORLD_SIZE not in (4, 8):
+    raise RuntimeError("SM120 routed MoE tests require EP4 or EP8")
 EXPERTS = 256
 LOCAL_EXPERTS = EXPERTS // WORLD_SIZE
 TOP_K = 6
@@ -63,7 +66,9 @@ __all__ = [
     "expected_route",
     "expected_tokens",
     "make_dsv4_w4a8_inputs",
+    "make_dsv4_w4a8_shared_weights",
     "make_dsv4_w4a8_weights",
+    "expected_shared_tokens",
     "source_order_combine",
 ]
 
@@ -283,6 +288,48 @@ def make_dsv4_w4a8_weights(
     )
 
 
+def make_dsv4_w4a8_shared_weights(
+    rank: int,
+    device: DeviceLike,
+) -> tuple[DSV4W4A8Weights, tuple[torch.Tensor, torch.Tensor]]:
+    """Create routed weights plus one rank-replicated FP8 shared expert."""
+
+    routed = make_dsv4_w4a8_weights(rank, device)
+    w1_shared_scales = torch.full(
+        (1, HIDDEN // 128, 2 * INTERMEDIATE),
+        0x7F7F7F7F,
+        dtype=torch.int32,
+        device=device,
+    )
+    w2_shared_scales = torch.full(
+        (1, INTERMEDIATE // 128, HIDDEN),
+        0x7F7F7F7F,
+        dtype=torch.int32,
+        device=device,
+    )
+    weights = DSV4W4A8Weights(
+        w1_weight=routed.w1_weight,
+        w1_scales=torch.cat((routed.w1_scales, w1_shared_scales)),
+        w2_weight=routed.w2_weight,
+        w2_scales=torch.cat((routed.w2_scales, w2_shared_scales)),
+    )
+    shared = (
+        torch.full(
+            (2 * INTERMEDIATE, HIDDEN),
+            0x38,
+            dtype=torch.uint8,
+            device=device,
+        ),
+        torch.full(
+            (HIDDEN, INTERMEDIATE),
+            0x38,
+            dtype=torch.uint8,
+            device=device,
+        ),
+    )
+    return weights, shared
+
+
 def source_order_combine(partials: torch.Tensor) -> torch.Tensor:
     """Accumulate original route slots in FP32, then round once to BF16."""
 
@@ -411,6 +458,36 @@ def expected_tokens(
             routes.append(expected_route(rank, token, slot, expert, device)["w2_bf16"])
         rows.append(torch.stack(routes))
     return source_order_combine(torch.stack(rows))
+
+
+def expected_shared_tokens(
+    rank: int,
+    tokens: tuple[int, ...],
+    device: DeviceLike,
+) -> torch.Tensor:
+    """Compute the deterministic FP8 shared expert and routed+shared reduction."""
+
+    routed = expected_tokens(rank, tokens, device).float()
+    shared_rows = []
+    for token in tokens:
+        codes, exponents = deterministic_input_encoding(rank, token, device)
+        scales = torch.ldexp(
+            torch.ones_like(exponents, dtype=torch.float32),
+            exponents.to(torch.int32) - 127,
+        )
+        w1_value = (
+            codes.view(torch.float8_e4m3fn).float() * scales[:, None]
+        ).sum().to(torch.bfloat16).float()
+        gate = w1_value.clamp(max=ACTIVATION_CLAMP)
+        up = w1_value.clamp(min=-ACTIVATION_CLAMP, max=ACTIVATION_CLAMP)
+        silu = gate * (1.0 / (1.0 + torch.exp2(-gate * 1.4426950408889634)))
+        _, _, intermediate = _requantize_k32(
+            torch.full((1, INTERMEDIATE), silu * up, device=device)
+        )
+        shared_value = intermediate.sum().to(torch.bfloat16)
+        shared_rows.append(shared_value.expand(HIDDEN))
+    shared = torch.stack(shared_rows).float()
+    return (routed + shared).to(torch.bfloat16)
 
 
 def expected_local_work(rank: int, active_rows: int) -> tuple[int, int]:

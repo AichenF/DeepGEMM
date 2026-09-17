@@ -4,8 +4,10 @@
 
 namespace deep_gemm::sm120_routed_moe {
 
-struct Shape {
-    static constexpr int kWorldSize = 8;
+template <int WorldSize>
+struct ShapeT {
+    static_assert(WorldSize == 4 or WorldSize == 8);
+    static constexpr int kWorldSize = WorldSize;
     static constexpr int kExperts = 256;
     static constexpr int kExpertsPerRank = kExperts / kWorldSize;
     static constexpr int kTopK = 6;
@@ -21,17 +23,30 @@ struct Shape {
     static constexpr bool kFastMath = true;
 };
 
-struct WorkspaceLayout {
-    static constexpr int kPoolRows = 397280;
-    static constexpr int kMaxTasks = 3104;
+using Shape = ShapeT<8>;
+
+template <int WorldSize>
+struct WorkspaceLayoutT {
+    using Shape = ShapeT<WorldSize>;
+    static constexpr int kRouteCandidates =
+        Shape::kWorldSize * Shape::kMaxRows * Shape::kTopK;
+    static constexpr int kPoolRows =
+        kRouteCandidates + Shape::kExpertsPerRank * (Shape::kTaskRows - 1);
+    static constexpr int kMaxTasks =
+        (kRouteCandidates + Shape::kTaskRows - 1) / Shape::kTaskRows +
+        Shape::kExpertsPerRank;
     static constexpr int kMailboxEntries = 8192;
 };
+
+using WorkspaceLayout = WorkspaceLayoutT<8>;
 
 struct TraceLayout {
     static constexpr int kTimestampCount = 33;
 };
 
-struct ResultCodecLayout {
+template <int WorldSize>
+struct ResultCodecLayoutT {
+    using Shape = ShapeT<WorldSize>;
     static constexpr int kBlockValues = 64;
     static constexpr int kBlocksPerRow = Shape::kHidden / kBlockValues;
     static constexpr int kEncodedRowBytes = 6272;
@@ -53,7 +68,12 @@ struct ResultCodecLayout {
     static constexpr int kRouteMapOffsetWords = kRouteStorageBytes / 4;
 };
 
-struct CommunicationLayout {
+using ResultCodecLayout = ResultCodecLayoutT<8>;
+
+template <int WorldSize>
+struct CommunicationLayoutT {
+    using Codec = ResultCodecLayoutT<WorldSize>;
+    using Shape = ShapeT<WorldSize>;
     static constexpr int kRingSlots = 2;
     static constexpr int kHeaderWords = 8;
     static constexpr int kHeaderSlotBytes =
@@ -65,16 +85,24 @@ struct CommunicationLayout {
         Shape::kWorldSize * kRingSlots * Shape::kMaxRows * kDispatchRecordBytes;
     static constexpr std::int64_t kResultWindowBytes =
         Shape::kWorldSize * kRingSlots *
-        static_cast<std::int64_t>(ResultCodecLayout::kSlotBytes);
+        static_cast<std::int64_t>(Codec::kSlotBytes);
     static constexpr std::int64_t kAckWindowBytes = Shape::kWorldSize;
 
     static constexpr int kGinContextCount = 2;
     static constexpr int kDispatchChunks = 8;
-    static constexpr int kDispatchSignalBase = 24;
-    static constexpr int kGinSignalCount =
+    static constexpr int kHeaderSignalBase = 0;
+    static constexpr int kResultSignalBase = Shape::kWorldSize;
+    static constexpr int kAckSignalBase = 2 * Shape::kWorldSize;
+    static constexpr int kDispatchSignalBase = 3 * Shape::kWorldSize;
+    static constexpr int kResultSecondContextSignalBase =
+        kDispatchSignalBase + Shape::kWorldSize * kDispatchChunks;
+    static constexpr int kGinSignalCount = WorldSize == 4 ?
+        kResultSecondContextSignalBase + Shape::kWorldSize :
         kDispatchSignalBase + Shape::kWorldSize * kDispatchChunks;
     static constexpr int kWorldBarrierCount = 1;
 };
+
+using CommunicationLayout = CommunicationLayoutT<8>;
 
 static_assert(Shape::kExperts % Shape::kWorldSize == 0);
 static_assert(Shape::kExpertsPerRank == 32);
@@ -89,5 +117,19 @@ static_assert(ResultCodecLayout::kSlotBytes == 409141248);
 static_assert(CommunicationLayout::kHeaderWindowBytes == 4608);
 static_assert(CommunicationLayout::kPayloadWindowBytes == 570425344);
 static_assert(CommunicationLayout::kResultWindowBytes == 6546259968);
+static_assert(CommunicationLayout::kGinSignalCount == 88);
+
+using ShapeEP4 = ShapeT<4>;
+using WorkspaceLayoutEP4 = WorkspaceLayoutT<4>;
+using ResultCodecLayoutEP4 = ResultCodecLayoutT<4>;
+using CommunicationLayoutEP4 = CommunicationLayoutT<4>;
+
+static_assert(ShapeEP4::kExpertsPerRank == 64);
+static_assert(WorkspaceLayoutEP4::kPoolRows == 204736);
+static_assert(WorkspaceLayoutEP4::kMaxTasks == 1600);
+static_assert(CommunicationLayoutEP4::kHeaderWindowBytes == 4352);
+static_assert(CommunicationLayoutEP4::kPayloadWindowBytes == 285212672);
+static_assert(CommunicationLayoutEP4::kResultWindowBytes == 3273129984);
+static_assert(CommunicationLayoutEP4::kGinSignalCount == 48);
 
 } // namespace deep_gemm::sm120_routed_moe

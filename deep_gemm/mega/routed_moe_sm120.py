@@ -10,8 +10,10 @@ TensorPair = tuple[torch.Tensor, torch.Tensor]
 DeviceLike = int | str | torch.device
 
 
-def _layout() -> dict[str, int | float | bool]:
-    return dict(_C.get_sm120_routed_moe_layout())
+def _layout(world_size: int | None = None) -> dict[str, int | float | bool]:
+    if world_size is None:
+        world_size = dist.get_world_size() if dist.is_initialized() else 8
+    return dict(_C.get_sm120_routed_moe_layout(world_size))
 
 
 def _cuda_device(device: DeviceLike | None) -> torch.device:
@@ -55,21 +57,26 @@ def _require_tensor(
         raise ValueError(f'{name} must have shape {shape}, got {tuple(tensor.shape)}')
 
 
-def _workspace_specs(layout: dict[str, int | float | bool]):
+def _workspace_specs(
+    layout: dict[str, int | float | bool],
+    fuse_shared_expert: bool = False,
+):
     world_size = int(layout['world_size'])
     experts_per_rank = int(layout['experts_per_rank'])
     topk = int(layout['num_topk'])
     hidden = int(layout['hidden'])
     intermediate = int(layout['intermediate_hidden'])
     max_rows = int(layout['max_rows'])
-    pool_rows = int(layout['pool_rows'])
-    max_tasks = int(layout['max_tasks'])
+    pool_rows = int(layout['pool_rows']) + (max_rows if fuse_shared_expert else 0)
+    max_tasks = int(layout['max_tasks']) + (
+        max_rows // int(layout['task_rows']) if fuse_shared_expert else 0
+    )
     max_chunks = world_size * int(layout['codec_max_chunks_per_peer'])
     chunk_entries = world_size * int(layout['dispatch_chunks'])
     w1_tiles = 2 * intermediate // 128
     w2_tiles = hidden // 128
 
-    return {
+    specs = {
         'requant_groups_done': (torch.int32, 1),
         'w2_warp_done': (torch.int32, max_tasks * w2_tiles),
         'w2_tiles_completed': (torch.int32, 1),
@@ -85,21 +92,25 @@ def _workspace_specs(layout: dict[str, int | float | bool]):
         'w1_task_counter': (torch.uint32, max_tasks),
         'dispatch_chunk_scatter_counter': (torch.uint32, chunk_entries),
         'pull_chunk_arrived': (torch.uint32, chunk_entries),
+        'result_owner_ready': (torch.uint32, world_size),
         'result_owner_progress': (torch.uint32, world_size),
+        'pull_request_scratch': (torch.uint64, 2 * chunk_entries),
         'dispatch_chunk_targets': (torch.int32, chunk_entries),
-        'pipeline_claim_cursor': (torch.int32, 1),
+        'c56_claim_cursor': (torch.int32, 1),
         'combine_claim_cursor': (torch.int32, 1),
-        'pipeline_tile_mailbox': (torch.int32, int(layout['mailbox_entries'])),
+        'c56_tile_mailbox': (torch.int32, int(layout['mailbox_entries'])),
         'task_gate_packed': (torch.int32, max_tasks),
         'result_chunk_total': (torch.int32, max_chunks),
         'result_chunk_tally': (torch.int32, max_chunks),
         'result_ovf_cursor': (torch.int32, max_chunks),
         'signal_base_scratch': (torch.uint64, world_size),
         'dispatch_chunk_signal_base_scratch': (torch.uint64, chunk_entries),
-        'result_signal_base_scratch': (torch.uint64, world_size),
+        'result_signal_base_scratch': (torch.uint64, 2 * world_size),
         'ack_signal_base_scratch': (torch.uint64, world_size + 1),
         'routing_weight_pool': (torch.float32, pool_rows),
         'meta_source_rank': (torch.int32, pool_rows),
+        'meta_token': (torch.int32, pool_rows),
+        'meta_slot': (torch.int32, pool_rows),
         'meta_result_index': (torch.int32, pool_rows),
         'expert_counts': (torch.int32, experts_per_rank),
         'owner_expert_route_counts': (torch.int32, world_size * experts_per_rank),
@@ -108,23 +119,41 @@ def _workspace_specs(layout: dict[str, int | float | bool]):
         'expert_source_base': (torch.int32, world_size * experts_per_rank),
         'expert_source_offsets': (torch.int32, world_size * experts_per_rank),
         'source_expert_prefix': (torch.int32, world_size * experts_per_rank),
+        'task_max_source': (torch.int32, max_tasks),
         'source_record_counts': (torch.int32, world_size),
         'source_route_counts': (torch.int32, world_size),
         'source_active_rows': (torch.int32, world_size),
         'expert_row_offsets': (torch.int32, experts_per_rank),
+        'expert_task_base': (torch.int32, experts_per_rank),
+        'expert_block_task': (torch.int32, experts_per_rank * max_tasks),
+        'task_source_slot_base': (torch.int32, max_tasks * world_size),
+        'expert_scatter_offsets': (torch.int32, experts_per_rank),
+        'task_expert': (torch.int32, max_tasks),
+        'task_source_rank': (torch.int32, max_tasks),
+        'task_owner_rank': (torch.int32, max_tasks),
         'task_local_expert': (torch.int32, max_tasks),
         'task_pool_row': (torch.int32, max_tasks),
+        'task_m_local': (torch.int32, max_tasks),
+        'task_valid_m': (torch.int32, max_tasks),
+        'task_rows_landed': (torch.int32, max_tasks),
         'total_valid_routes': (torch.int32, 1),
+        'total_padded_rows': (torch.int32, 1),
         'total_m_tasks': (torch.int32, 1),
         'histogram_done': (torch.int32, 1),
         'prefix_done': (torch.int32, 1),
         'w1_warp_done': (torch.int32, max_tasks * w1_tiles),
         'w1_tiles_completed': (torch.int32, 1),
     }
+    if fuse_shared_expert:
+        specs.update({
+            'c24_front_sync': (torch.uint32, 4),
+            'tb_pub': (torch.int32, (experts_per_rank + 1) * 128),
+        })
+    return specs
 
 
 class SM120RoutedMoESession:
-    """Owns the NCCL GIN communicator resources for one eight-rank EP group."""
+    """Owns the NCCL GIN resources for one EP4 or EP8 group."""
 
     def __init__(self, group: dist.ProcessGroup, device: DeviceLike | None = None):
         _require_available()
@@ -132,8 +161,8 @@ class SM120RoutedMoESession:
         self.device = _cuda_device(device)
         self.rank = dist.get_rank(group)
         self.world_size = dist.get_world_size(group)
-        if self.world_size != int(_layout()['world_size']):
-            raise ValueError('SM120 routed MoE requires an eight-rank EP group')
+        if self.world_size not in (4, 8):
+            raise ValueError('SM120 routed MoE requires an EP4 or EP8 group')
         if torch.cuda.current_device() != self.device.index:
             raise RuntimeError('current CUDA device must match the SM120 routed MoE session')
 
@@ -145,7 +174,7 @@ class SM120RoutedMoESession:
         self._bound_workspace = None
         self._next_epoch = 0
         self._pending_launch = None
-        self._prepared_trace_modes: set[bool] = set()
+        self._prepared_kernels: set[tuple[object, ...]] = set()
         self._native = _C.SM120RoutedMoESession(
             int(backend._comm_ptr()), backend, self.rank, self.world_size, self.device.index
         )
@@ -184,6 +213,8 @@ class SM120RoutedMoESession:
             self._bound_workspace = None
 
     def _require_workspace(self, workspace: 'SM120RoutedMoEWorkspace') -> None:
+        if workspace.world_size != self.world_size:
+            raise ValueError('workspace EP width does not match its session')
         if self._bound_workspace is not None and self._bound_workspace is not workspace:
             raise RuntimeError('SM120 routed MoE session is already bound to another workspace')
         if workspace._bound_session is not None and workspace._bound_session() is not self:
@@ -214,11 +245,19 @@ class SM120RoutedMoEWorkspace:
         self,
         device: DeviceLike | None = None,
         enable_phase_trace: bool = False,
+        world_size: int | None = None,
+        fuse_shared_expert: bool = False,
     ):
         _require_available()
         self.device = _cuda_device(device)
-        self.layout = _layout()
+        if world_size is None:
+            world_size = dist.get_world_size() if dist.is_initialized() else 8
+        if world_size not in (4, 8):
+            raise ValueError('SM120 routed MoE workspace requires EP4 or EP8')
+        self.world_size = world_size
+        self.layout = _layout(world_size)
         self.enable_phase_trace = bool(enable_phase_trace)
+        self.fuse_shared_expert = bool(fuse_shared_expert)
         self._closed = False
         self._bound_session = None
         self._epoch = 0
@@ -227,7 +266,9 @@ class SM120RoutedMoEWorkspace:
         self._tensor_map_sources = ()
         self._arguments = {
             name: torch.zeros(count, dtype=dtype, device=self.device)
-            for name, (dtype, count) in _workspace_specs(self.layout).items()
+            for name, (dtype, count) in _workspace_specs(
+                self.layout, self.fuse_shared_expert
+            ).items()
         }
         for name in (
             'route_result_index',
@@ -237,9 +278,22 @@ class SM120RoutedMoEWorkspace:
             'task_pool_row',
         ):
             self._arguments[name].fill_(-1)
+        for name in (
+            'meta_token',
+            'meta_slot',
+            'task_max_source',
+            'task_expert',
+            'task_source_rank',
+            'task_owner_rank',
+            'task_m_local',
+            'task_valid_m',
+        ):
+            self._arguments[name].fill_(-1)
 
-        pool_rows = int(self.layout['pool_rows'])
         max_rows = int(self.layout['max_rows'])
+        pool_rows = int(self.layout['pool_rows']) + (
+            max_rows if self.fuse_shared_expert else 0
+        )
         hidden = int(self.layout['hidden'])
         intermediate = int(self.layout['intermediate_hidden'])
         up_gate = 2 * intermediate
@@ -263,6 +317,11 @@ class SM120RoutedMoEWorkspace:
         self.output = torch.empty(
             (max_rows, hidden), dtype=torch.bfloat16, device=self.device
         )
+        self._shared_output = (
+            torch.empty((max_rows, hidden), dtype=torch.bfloat16, device=self.device)
+            if self.fuse_shared_expert
+            else None
+        )
 
         self._arguments.update({
             'intermediate_fp8': self._intermediate_fp8,
@@ -271,15 +330,16 @@ class SM120RoutedMoEWorkspace:
             'pool_fp8_u32': self._pool_fp8.view(torch.int32),
             'pool_sf_u32': self._pool_scales,
         })
-        if self.enable_phase_trace:
-            self._arguments['phase_timestamps'] = torch.empty(
-                int(self.layout['phase_timestamp_count']),
-                dtype=torch.uint64,
-                device=self.device,
-            )
-            self._arguments['peer_phase_timestamps'] = torch.empty(
-                int(self.layout['world_size']), dtype=torch.uint64, device=self.device
-            )
+        if self._shared_output is not None:
+            self._arguments['shared_out'] = self._shared_output
+        self._arguments['phase_timestamps'] = torch.empty(
+            int(self.layout['phase_timestamp_count']),
+            dtype=torch.uint64,
+            device=self.device,
+        )
+        self._arguments['peer_phase_timestamps'] = torch.empty(
+            int(self.layout['world_size']), dtype=torch.uint64, device=self.device
+        )
 
     @property
     def closed(self) -> bool:
@@ -326,7 +386,7 @@ class SM120RoutedMoEWorkspace:
         self._tensor_map_sources = ()
         for name in (
             '_pool_fp8', '_pool_scales', '_intermediate_fp8', '_intermediate_scales',
-            '_w1_output', '_w2_output', 'output',
+            '_w1_output', '_w2_output', '_shared_output', 'output',
         ):
             setattr(self, name, None)
         self._bound_session = None
@@ -344,10 +404,20 @@ class SM120RoutedMoEWorkspace:
         w1_scales: torch.Tensor,
         w2_weight: torch.Tensor,
         w2_scales: torch.Tensor,
+        shared_w1_weight: torch.Tensor | None = None,
+        shared_w2_weight: torch.Tensor | None = None,
     ) -> None:
+        fuse_shared_expert = getattr(self, 'fuse_shared_expert', False)
+        if fuse_shared_expert != (shared_w1_weight is not None):
+            raise ValueError('shared weights do not match the workspace mode')
+        if (shared_w1_weight is None) != (shared_w2_weight is None):
+            raise ValueError('both shared-expert weights must be supplied')
+        sources = (w1_weight, w1_scales, w2_weight, w2_scales)
+        if shared_w1_weight is not None:
+            sources += (shared_w1_weight, shared_w2_weight)
         key = tuple(
             (tensor.data_ptr(), tensor.dtype, tensor.device)
-            for tensor in (w1_weight, w1_scales, w2_weight, w2_scales)
+            for tensor in sources
         )
         if key == self._tensor_map_key:
             return
@@ -356,7 +426,9 @@ class SM120RoutedMoEWorkspace:
         local_experts = int(layout['experts_per_rank'])
         hidden = int(layout['hidden'])
         intermediate = int(layout['intermediate_hidden'])
-        pool_rows = int(layout['pool_rows'])
+        pool_rows = int(layout['pool_rows']) + (
+            int(layout['max_rows']) if fuse_shared_expert else 0
+        )
         task_rows = int(layout['task_rows'])
         up_gate = 2 * intermediate
         make = _C.make_sm120_tma_2d
@@ -369,7 +441,8 @@ class SM120RoutedMoEWorkspace:
             'W1_SFA': make(self._pool_scales, 'int32', pool_rows, hidden // 128,
                            pool_rows * 4, task_rows, 1, 0),
             'W1_SFB': make(w1_scales, 'int32', up_gate,
-                           hidden // 128 * local_experts, up_gate * 4, 128, 1, 0),
+                           hidden // 128 * (local_experts + fuse_shared_expert),
+                           up_gate * 4, 128, 1, 0),
             'W1_D': make(self._w1_output, 'bfloat16', up_gate, pool_rows,
                          up_gate * 2, 64, task_rows, 128),
             'W2_A': make(self._intermediate_fp8, 'uint8', intermediate, pool_rows,
@@ -379,12 +452,31 @@ class SM120RoutedMoEWorkspace:
             'W2_SFA': make(self._intermediate_scales, 'int32', pool_rows,
                            intermediate // 128, pool_rows * 4, task_rows, 1, 0),
             'W2_SFB': make(w2_scales, 'int32', hidden,
-                           intermediate // 128 * local_experts, hidden * 4, 128, 1, 0),
+                           intermediate // 128 * (local_experts + fuse_shared_expert),
+                           hidden * 4, 128, 1, 0),
             'W2_D': make(self._w2_output, 'bfloat16', hidden, pool_rows,
                          hidden * 2, 64, task_rows, 128),
         }
+        if self.world_size == 4:
+            maps.update({
+                'W1_A64': make(self._pool_fp8, 'uint8', hidden, pool_rows, hidden,
+                               128, 64, 128),
+                'W1_SFA64': make(self._pool_scales, 'int32', pool_rows, hidden // 128,
+                                 pool_rows * 4, 64, 1, 0),
+                'W2_A64': make(self._intermediate_fp8, 'uint8', intermediate, pool_rows,
+                               intermediate, 128, 64, 128),
+                'W2_SFA64': make(self._intermediate_scales, 'int32', pool_rows,
+                                 intermediate // 128, pool_rows * 4, 64, 1, 0),
+            })
+        if shared_w1_weight is not None:
+            maps.update({
+                'W1_B8': make(shared_w1_weight, 'uint8', hidden, up_gate,
+                              hidden, 128, 128, 128),
+                'W2_B8': make(shared_w2_weight, 'uint8', intermediate, hidden,
+                              intermediate, 128, 128, 128),
+            })
         self._tensor_maps = maps
-        self._tensor_map_sources = (w1_weight, w1_scales, w2_weight, w2_scales)
+        self._tensor_map_sources = sources
         self._tensor_map_key = key
 
     def _advance_epoch(self) -> None:
@@ -401,13 +493,16 @@ def fp8_fp4_routed_moe_sm120(
     w1_up_gate: TensorPair,
     w2_down: TensorPair,
     grid_ctas: int = 110,
+    shared_expert: tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """Launch the fixed DeepSeek-V4-Flash SM120 routed MoE kernel.
 
-    ``w1_up_gate`` uses contiguous ``[32, 4096, 2048]`` packed-MXFP4 weights
-    and ``[32, 32, 4096]`` packed scale words. ``w2_down`` uses
-    ``[32, 4096, 1024]`` weights and ``[32, 16, 4096]`` scale words. The
-    returned BF16 view is owned by ``workspace`` and is reused by later calls.
+    The packed MXFP4 weights contain one gate and one up projection in W1 and
+    one down projection in W2. Their leading dimension is 256 divided by the
+    EP width. When ``shared_expert=(w1, w2)`` is supplied, the shared expert's
+    FP8 weights are fused and the scale tuples include one trailing shared
+    scale segment. The returned BF16 view is owned by ``workspace`` and is
+    reused by later calls.
     """
     if not isinstance(session, SM120RoutedMoESession):
         raise TypeError('session must be an SM120RoutedMoESession')
@@ -424,6 +519,7 @@ def fp8_fp4_routed_moe_sm120(
             w1_up_gate,
             w2_down,
             grid_ctas,
+            shared_expert,
         )
 
 
@@ -437,6 +533,7 @@ def _fp8_fp4_routed_moe_sm120_locked(
     w1_up_gate: TensorPair,
     w2_down: TensorPair,
     grid_ctas: int,
+    shared_expert: tuple[torch.Tensor, torch.Tensor] | None,
 ) -> torch.Tensor:
     if session.closed:
         raise RuntimeError('SM120 routed MoE session is closed')
@@ -447,6 +544,9 @@ def _fp8_fp4_routed_moe_sm120_locked(
     if torch.cuda.current_device() != session.device.index:
         raise RuntimeError('current CUDA device must match the SM120 routed MoE session')
     session._require_workspace(workspace)
+    fuse_shared_expert = shared_expert is not None
+    if getattr(workspace, 'fuse_shared_expert', False) != fuse_shared_expert:
+        raise ValueError('shared_expert must match workspace.fuse_shared_expert')
 
     layout = workspace.layout
     hidden = int(layout['hidden'])
@@ -480,20 +580,56 @@ def _fp8_fp4_routed_moe_sm120_locked(
     w2_weight, w2_scales = w2_down
     _require_tensor(w1_weight, 'w1_up_gate.weight', workspace.device, torch.int8,
                     (local_experts, 2 * intermediate, hidden // 2))
+    scale_experts = local_experts + int(fuse_shared_expert)
     _require_tensor(w1_scales, 'w1_up_gate.scales', workspace.device, torch.int32,
-                    (local_experts, hidden // 128, 2 * intermediate))
+                    (scale_experts, hidden // 128, 2 * intermediate))
     _require_tensor(w2_weight, 'w2_down.weight', workspace.device, torch.int8,
                     (local_experts, hidden, intermediate // 2))
     _require_tensor(w2_scales, 'w2_down.scales', workspace.device, torch.int32,
-                    (local_experts, intermediate // 128, hidden))
+                    (scale_experts, intermediate // 128, hidden))
 
-    trace_mode = workspace.enable_phase_trace
-    if trace_mode not in session._prepared_trace_modes:
-        _C.prepare_sm120_fp8_fp4_routed_moe(trace_mode)
+    shared_w1_weight = None
+    shared_w2_weight = None
+    if shared_expert is not None:
+        if not isinstance(shared_expert, tuple) or len(shared_expert) != 2:
+            raise TypeError('shared_expert must be an (w1_weight, w2_weight) tuple')
+        shared_w1_weight, shared_w2_weight = shared_expert
+        _require_tensor(
+            shared_w1_weight,
+            'shared_expert.w1_weight',
+            workspace.device,
+            (torch.uint8, float8_dtype),
+            (2 * intermediate, hidden),
+        )
+        _require_tensor(
+            shared_w2_weight,
+            'shared_expert.w2_weight',
+            workspace.device,
+            (torch.uint8, float8_dtype),
+            (hidden, intermediate),
+        )
+
+    prepare_key = (
+        (session.world_size, 'shared')
+        if fuse_shared_expert
+        else (session.world_size, 'routed', session.world_size == 4 and rows == 2048)
+    )
+    if prepare_key not in session._prepared_kernels:
+        if fuse_shared_expert:
+            _C.prepare_sm120_fp8_fp4_shared_moe(session.world_size)
+        else:
+            _C.prepare_sm120_fp8_fp4_routed_moe(session.world_size, rows)
         dist.barrier(group=session.group, device_ids=[session.device.index])
-        session._prepared_trace_modes.add(trace_mode)
+        session._prepared_kernels.add(prepare_key)
 
-    workspace._prepare_tensor_maps(w1_weight, w1_scales, w2_weight, w2_scales)
+    workspace._prepare_tensor_maps(
+        w1_weight,
+        w1_scales,
+        w2_weight,
+        w2_scales,
+        shared_w1_weight,
+        shared_w2_weight,
+    )
     arguments = dict(workspace._arguments)
     arguments.update(workspace._tensor_maps)
     arguments.update({
@@ -513,6 +649,7 @@ def _fp8_fp4_routed_moe_sm120_locked(
         activation_clamp=float(layout['activation_clamp']),
         fast_math=bool(layout['fast_math']),
         enable_phase_trace=workspace.enable_phase_trace,
+        fuse_shared_expert=fuse_shared_expert,
     )
     workspace._advance_epoch()
     session._next_epoch = workspace._epoch

@@ -2,16 +2,19 @@
 
 #include <torch/python.h>
 
+#include <stdexcept>
+
 #include "../jit_kernels/heuristics/sm120_routed_moe.hpp"
 
 namespace deep_gemm::mega {
 
-static pybind11::dict get_sm120_routed_moe_layout() {
-    using Communication = sm120_routed_moe::CommunicationLayout;
-    using Codec = sm120_routed_moe::ResultCodecLayout;
-    using Shape = sm120_routed_moe::Shape;
+template <int WorldSize>
+static pybind11::dict make_sm120_routed_moe_layout() {
+    using Communication = sm120_routed_moe::CommunicationLayoutT<WorldSize>;
+    using Codec = sm120_routed_moe::ResultCodecLayoutT<WorldSize>;
+    using Shape = sm120_routed_moe::ShapeT<WorldSize>;
     using Trace = sm120_routed_moe::TraceLayout;
-    using Workspace = sm120_routed_moe::WorkspaceLayout;
+    using Workspace = sm120_routed_moe::WorkspaceLayoutT<WorldSize>;
 
     pybind11::dict result;
     result["world_size"] = Shape::kWorldSize;
@@ -50,6 +53,14 @@ static pybind11::dict get_sm120_routed_moe_layout() {
     return result;
 }
 
+static pybind11::dict get_sm120_routed_moe_layout(int world_size = 8) {
+    if (world_size == 4)
+        return make_sm120_routed_moe_layout<4>();
+    if (world_size == 8)
+        return make_sm120_routed_moe_layout<8>();
+    throw std::invalid_argument("SM120 routed MoE supports EP4 and EP8");
+}
+
 } // namespace deep_gemm::mega
 
 #ifdef DG_WITH_NCCL_GIN
@@ -60,6 +71,7 @@ static pybind11::dict get_sm120_routed_moe_layout() {
 #include <c10/cuda/CUDAGuard.h>
 
 #include "../jit_kernels/impls/sm120_fp8_fp4_routed_moe.hpp"
+#include "../jit_kernels/impls/sm120_fp8_fp4_routed_moe_shared.hpp"
 
 #include <algorithm>
 #include <array>
@@ -126,8 +138,8 @@ public:
             throw std::invalid_argument("NCCL communicator owner cannot be None");
         if (rank_ < 0 or world_size_ <= 0 or rank_ >= world_size_)
             throw std::invalid_argument("invalid rank or world size");
-        if (world_size_ != sm120_routed_moe::Shape::kWorldSize)
-            throw std::invalid_argument("SM120 routed MoE requires an eight-rank EP group");
+        if (world_size_ != 4 and world_size_ != 8)
+            throw std::invalid_argument("SM120 routed MoE requires an EP4 or EP8 group");
 
         const c10::cuda::CUDAGuard device_guard(device_);
         int runtime_version = 0;
@@ -156,25 +168,41 @@ public:
         gin_type_ = static_cast<int>(properties.ginType);
 
         try {
-            using Communication = sm120_routed_moe::CommunicationLayout;
+            using CommunicationEP4 = sm120_routed_moe::CommunicationLayoutT<4>;
+            using CommunicationEP8 = sm120_routed_moe::CommunicationLayoutT<8>;
+            const bool ep4 = world_size_ == 4;
+            const auto header_window_bytes = ep4 ?
+                CommunicationEP4::kHeaderWindowBytes :
+                CommunicationEP8::kHeaderWindowBytes;
+            const auto payload_window_bytes = ep4 ?
+                CommunicationEP4::kPayloadWindowBytes :
+                CommunicationEP8::kPayloadWindowBytes;
+            const auto result_window_bytes = ep4 ?
+                CommunicationEP4::kResultWindowBytes :
+                CommunicationEP8::kResultWindowBytes;
+            const auto ack_window_bytes = ep4 ?
+                CommunicationEP4::kAckWindowBytes :
+                CommunicationEP8::kAckWindowBytes;
             const std::array<std::pair<const char*, std::int64_t>, 8> window_specs{{
-                {"dispatch_header_out", Communication::kHeaderWindowBytes},
-                {"dispatch_payload_out", Communication::kPayloadWindowBytes},
-                {"dispatch_header_inbox", Communication::kHeaderWindowBytes},
-                {"dispatch_payload_inbox", Communication::kPayloadWindowBytes},
-                {"result_out", Communication::kResultWindowBytes},
-                {"result_inbox", Communication::kResultWindowBytes},
-                {"ack_out", Communication::kAckWindowBytes},
-                {"ack_inbox", Communication::kAckWindowBytes},
+                {"dispatch_header_out", header_window_bytes},
+                {"dispatch_payload_out", payload_window_bytes},
+                {"dispatch_header_inbox", header_window_bytes},
+                {"dispatch_payload_inbox", payload_window_bytes},
+                {"result_out", result_window_bytes},
+                {"result_inbox", result_window_bytes},
+                {"ack_out", ack_window_bytes},
+                {"ack_inbox", ack_window_bytes},
             }};
             windows_.reserve(window_specs.size());
             for (const auto& [name, signed_bytes]: window_specs)
                 allocate_window(name, signed_bytes);
 
             ncclDevCommRequirements_t requirements = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-            requirements.ginContextCount = Communication::kGinContextCount;
-            requirements.ginSignalCount = Communication::kGinSignalCount;
-            requirements.worldGinBarrierCount = Communication::kWorldBarrierCount;
+            requirements.ginContextCount = CommunicationEP8::kGinContextCount;
+            requirements.ginSignalCount = ep4 ?
+                CommunicationEP4::kGinSignalCount :
+                CommunicationEP8::kGinSignalCount;
+            requirements.worldGinBarrierCount = CommunicationEP8::kWorldBarrierCount;
             requirements.ginConnectionType = NCCL_GIN_CONNECTION_FULL;
             requirements.ginStrongSignalsRequired = true;
             requirements.ginVaSignalsRequired = false;
@@ -256,6 +284,7 @@ public:
         float activation_clamp,
         bool fast_math,
         bool enable_phase_trace,
+        bool fuse_shared_expert = false,
         bool drain_only = false) const {
         require_open();
 
@@ -263,8 +292,9 @@ public:
         detail::check_cuda(cudaGetDevice(&current_device), "cudaGetDevice");
         if (current_device != device_)
             throw std::runtime_error("current CUDA device does not match the SM120 routed MoE session");
+        (void)enable_phase_trace;
 
-        constexpr std::array<const char*, 18> kSessionOwnedArguments{{
+        constexpr std::array<const char*, 20> kSessionOwnedArguments{{
             "rank",
             "world_size",
             "device",
@@ -281,7 +311,9 @@ public:
             "result_out_window",
             "result_inbox",
             "result_inbox_window",
+            "ack_out",
             "ack_out_window",
+            "ack_inbox",
             "ack_inbox_window",
         }};
         for (const char* name: kSessionOwnedArguments) {
@@ -301,28 +333,58 @@ public:
                  "dispatch_header_inbox",
                  "dispatch_payload_inbox",
                  "result_out",
-                 "result_inbox"}) {
+                 "result_inbox",
+                 "ack_out",
+                 "ack_inbox"}) {
             const auto& allocation = window(name);
             launch_arguments[pybind11::str(name)] = allocation.tensor;
             launch_arguments[pybind11::str(std::string(name) + "_window")] =
                 reinterpret_cast<std::uintptr_t>(allocation.handle);
         }
-        launch_arguments["ack_out_window"] =
-            reinterpret_cast<std::uintptr_t>(window("ack_out").handle);
-        launch_arguments["ack_inbox_window"] =
-            reinterpret_cast<std::uintptr_t>(window("ack_inbox").handle);
 
-        deep_gemm::sm120_fp8_fp4_routed_moe(
-            launch_arguments,
-            rank_,
-            world_size_,
-            active_rows,
-            epoch,
-            grid_ctas,
-            activation_clamp,
-            fast_math,
-            enable_phase_trace,
-            drain_only);
+        if (fuse_shared_expert) {
+            if (drain_only)
+                throw std::invalid_argument(
+                    "the fused shared-expert kernel does not expose a drain-only entry");
+            if (world_size_ == 4)
+                deep_gemm::sm120_fp8_fp4_shared_moe<4>(
+                    launch_arguments,
+                    rank_,
+                    active_rows,
+                    epoch,
+                    grid_ctas,
+                    activation_clamp,
+                    fast_math);
+            else
+                deep_gemm::sm120_fp8_fp4_shared_moe<8>(
+                    launch_arguments,
+                    rank_,
+                    active_rows,
+                    epoch,
+                    grid_ctas,
+                    activation_clamp,
+                    fast_math);
+        } else if (world_size_ == 4) {
+            deep_gemm::sm120_fp8_fp4_routed_moe<4>(
+                launch_arguments,
+                rank_,
+                active_rows,
+                epoch,
+                grid_ctas,
+                activation_clamp,
+                fast_math,
+                drain_only);
+        } else {
+            deep_gemm::sm120_fp8_fp4_routed_moe<8>(
+                launch_arguments,
+                rank_,
+                active_rows,
+                epoch,
+                grid_ctas,
+                activation_clamp,
+                fast_math,
+                drain_only);
+        }
     }
 
     void quiesce(
@@ -336,6 +398,7 @@ public:
             grid_ctas,
             sm120_routed_moe::Shape::kActivationClamp,
             sm120_routed_moe::Shape::kFastMath,
+            false,
             false,
             true);
     }
@@ -504,7 +567,8 @@ static void launch_sm120_fp8_fp4_routed_moe(
     int grid_ctas,
     float activation_clamp,
     bool fast_math,
-    bool enable_phase_trace) {
+    bool enable_phase_trace,
+    bool fuse_shared_expert) {
     session.launch(
         arguments,
         active_rows,
@@ -512,7 +576,8 @@ static void launch_sm120_fp8_fp4_routed_moe(
         grid_ctas,
         activation_clamp,
         fast_math,
-        enable_phase_trace);
+        enable_phase_trace,
+        fuse_shared_expert);
 }
 
 static CUtensorMapDataType parse_sm120_tma_data_type(const std::string& name) {
@@ -668,13 +733,24 @@ static torch::Tensor make_sm120_tma_2d(
 
 static void register_sm120_routed_moe_apis(pybind11::module& module) {
     module.def("has_sm120_routed_moe", []() { return true; });
-    module.def("get_sm120_routed_moe_layout", &get_sm120_routed_moe_layout);
+    module.def(
+        "get_sm120_routed_moe_layout",
+        &get_sm120_routed_moe_layout,
+        pybind11::arg("world_size") = 8);
     module.def(
         "prepare_sm120_fp8_fp4_routed_moe",
-        [](bool enable_phase_trace) {
-            (void)deep_gemm::prepare_sm120_fp8_fp4_routed_moe(enable_phase_trace);
+        [](int world_size, int active_rows) {
+            (void)deep_gemm::prepare_sm120_fp8_fp4_routed_moe(
+                world_size, active_rows);
         },
-        pybind11::arg("enable_phase_trace") = false);
+        pybind11::arg("world_size"),
+        pybind11::arg("active_rows"));
+    module.def(
+        "prepare_sm120_fp8_fp4_shared_moe",
+        [](int world_size) {
+            (void)deep_gemm::prepare_sm120_fp8_fp4_shared_moe(world_size);
+        },
+        pybind11::arg("world_size"));
     pybind11::class_<SM120RoutedMoESession>(module, "SM120RoutedMoESession")
         .def(pybind11::init<
              std::uintptr_t, const pybind11::object&, int, int, int>(),
@@ -713,7 +789,8 @@ static void register_sm120_routed_moe_apis(pybind11::module& module) {
         pybind11::arg("grid_ctas"),
         pybind11::arg("activation_clamp"),
         pybind11::arg("fast_math"),
-        pybind11::arg("enable_phase_trace") = false);
+        pybind11::arg("enable_phase_trace") = false,
+        pybind11::arg("fuse_shared_expert") = false);
     module.def(
         "make_sm120_tma_2d",
         &make_sm120_tma_2d,
@@ -735,7 +812,10 @@ namespace deep_gemm::mega {
 
 static void register_sm120_routed_moe_apis(pybind11::module& module) {
     module.def("has_sm120_routed_moe", []() { return false; });
-    module.def("get_sm120_routed_moe_layout", &get_sm120_routed_moe_layout);
+    module.def(
+        "get_sm120_routed_moe_layout",
+        &get_sm120_routed_moe_layout,
+        pybind11::arg("world_size") = 8);
     module.def(
         "can_use_sm120_routed_moe_fast_path",
         [](int, int, int, int, int, int, int, float, bool) { return false; },

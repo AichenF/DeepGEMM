@@ -145,12 +145,14 @@ The SM120 fast path targets the DeepSeek V4 Flash routed-expert shape: 256
 experts, top-6 routing, hidden size 4096, and intermediate size 2048. W1
 contains the gate and up projections, W2 is the down projection, activations
 use MXFP8 E4M3, and weights use MXFP4 E2M1 with UE8M0 K32 scales. The kernel
-fuses dispatch, W1, SwiGLU and requantization, W2, result exchange, and routed
-top-k reduction. The router and shared-expert computation are outside this
-API.
+fuses dispatch, W1, SwiGLU and requantization, W2, result exchange, and top-k
+reduction. The router remains outside this API. A replicated FP8 shared expert
+can be fused by creating the workspace with `fuse_shared_expert=True` and
+passing `shared_expert=(w1, w2)` at launch; its K32 scale segments follow the
+local routed-expert segments in the W1 and W2 scale tensors.
 
-The current implementation requires an eight-rank EP group, SM120 GPUs, and
-NCCL 2.30.7 with GIN Device API support. Build it with
+The implementation supports four- and eight-rank EP groups on SM120 GPUs and
+requires NCCL 2.30.7 with GIN Device API support. Build it with
 `DG_WITH_NCCL_GIN=1` and set `DG_NCCL_ROOT` to that NCCL installation. Create
 one `SM120RoutedMoESession` per process group and reuse a
 `SM120RoutedMoEWorkspace` across launches. See
