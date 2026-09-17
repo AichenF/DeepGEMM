@@ -374,7 +374,8 @@ copy, **4.154 TB/s read-only**, against a 4.8 TB/s theoretical peak — so ~87 %
 is the practical ceiling, not 100 %.
 
 *What each weight-tile addressing scheme sustains* — a standalone 132-CTA
-pipeline that issues the loads and does nothing else (`work/tmabw.cu`), 1.3-1.6
+pipeline that issues the loads and does nothing else
+(`tests/bench_sm90_weight_load.cu`, nvcc-only), 1.3-1.6
 GB working set, 6 stages:
 
 | addressing | TB/s | bytes/iter |
@@ -649,7 +650,18 @@ other tier reports. **This tier had never been exercised by the small-M sweeps.*
 
 ## 10. Reproducing
 
-All commands run from a computelab allocation. The scripts and every raw log
+The weight-load measurement in section 7.2 needs no allocation at all — it is
+nvcc-only and runs on any sm_90a device, including the raplab dev boxes:
+
+```bash
+nvcc -O3 -arch=sm_90a -o /tmp/wl tests/bench_sm90_weight_load.cu \
+     -lcuda -L/usr/local/cuda/lib64/stubs && /tmp/wl
+# -DKSTAGES=N varies pipeline depth; nothing changes above four.
+```
+
+Note the raplab boxes cannot run the kernel itself: the only local torch is
+2.5, which has no `symm_mem.rendezvous`, so the symmetric buffer the MegaMoE
+needs cannot be built there. Everything else runs from a computelab allocation. The scripts and every raw log
 live outside the repo, on shared scratch:
 `/home/scratch.jinyanc_wwfo/github/DeepGEMM-aichen/work/mxfp4_opt_20260917/` —
 `env.sh` (the CUDA 13 tree the JIT needs), `run.sh` (srun wrapper), `sweep.sh`,
@@ -678,6 +690,17 @@ bash work/mxfp4_opt_20260917/run.sh <jobid> <repo> tag bench \
 
 # cross-branch against megamoe_nvfp4_dev, alternating processes
 bash work/mxfp4_opt_20260917/abba.sh <jobid> label 8 32 64 128 256
+
+# EP4 (192 experts keeps 48 per rank, matching the EP1 measurements)
+python3 tests/test_mxfp4_mega_moe_sm90_correctness.py \
+        --num-processes 4 --num-experts 192 --batches 8 32 64 128 256
+python3 tests/bench_mega_moe_formats_sm90.py \
+        --num-processes 4 --num-experts 192 --arms fp8 mxfp4 --batches 8 32 64 128 256
+
+# single-rank, no collective: the cleanest read on the weight stream, and the
+# only configuration a profiler can attach to without cross-rank skew
+python3 tests/bench_mega_moe_formats_sm90.py \
+        --num-processes 1 --num-experts 48 --arms mxfp4 --batches 32
 
 # GPU-free gates
 bash tests/compile_all_megamoe_kernels.sh
