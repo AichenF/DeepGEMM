@@ -189,13 +189,22 @@ that costs — 63 % of the device's streaming bandwidth.
 * It is a **pure byte permutation** done offline in the weight transform, so
   every quantized value, scale byte and sign-braid position is untouched. The
   correctness sweep returns the same cosine to four decimals.
-* The rows land in shared memory in the same order at the same 80-byte stride,
-  so the **decoder is not touched at all** — no new shared-memory bank behaviour
-  to reason about, which is where the earlier layout attempt died (section 8).
 * The tile row count is a constant 128 rather than `BLOCK_N`, so the offline
   layout stays valid for every `BLOCK_N` the selector can pick.
 * A bulk copy has no descriptor, so the two weight `CUtensorMap`s and their
   prefetches go away; the kernel takes two base pointers instead.
+
+Once the tile is bulk-copied, the 12 B of padding in each 80 B row has no
+reason to exist either — it was there only because a TMA descriptor needs a
+row that is a multiple of 16. Dropping it naively gives a 68-byte row, which
+misaligns the 128-bit loads the Mode2 decoders use, and a 64-byte row plus a
+separate scale plane is 16 words, which 4-way bank-conflicts them. Storing the
+tile **16-byte-chunk-major** avoids both: chunk `c` of row `r` at
+`c * 128 * 16 + r * 16`, then the E8M0 bytes at `128 * 64 + r * 4`. Every chunk
+stays 16-byte aligned, the bank pattern is arithmetically identical to the
+80-byte row (`4r mod 32` instead of `20r mod 32`, both 8 distinct banks over a
+phase), and the row costs its natural 68 bytes. `decode_tile_row` is the one
+place that knows the layout; all three decoders go through it.
 
 `EVICT_NORMAL` is passed explicitly rather than taking `tma_load_1d`'s streaming
 default, because above the swapAB tiers one expert spans several m-blocks and
@@ -382,12 +391,15 @@ every other MegaMoE format, not something a weight-format change can reach.
 Against the bandwidth the part actually delivers, the single-rank kernel is
 already at 77 %.
 
-The one weight-side lever still open is the 12 B of padding in each 80 B row
-(section 7.2's variant C: 13.5 % less load time). It needs the scales split into
-their own plane, which drops the shared-memory row stride from 80 B to 64 B —
-16 words, so a 128-bit decoder load goes from conflict-free to 4-way
-bank-conflicted. Recovering it needs the tile stored 16-byte-chunk-major so the
-decoder reads at a 16 B stride. Not implemented here.
+Dropping the 12 B of per-row padding on top (chunk-major tiles, section 5.5)
+buys much less than its 15 % of bytes suggests — **-3.6 / -1.2 / -2.2 / +0.1 /
++0.1 %** at EP1 M=8..256. Two reasons, both visible in section 7.2's table: at
+M>=128 the tier is no longer load-bound, and a smaller bulk copy sustains less
+bandwidth (variant D's 16 KB tile runs at 4.27 TB/s where variant E's 20 KB tile
+runs at 4.49). It is kept because it is never a regression and it takes 15 % off
+the weight footprint itself, which is the point of a 4-bit format.
+
+What is left above the roofline is not the GEMM and not the weight layout.
 
 ---
 
@@ -502,7 +514,27 @@ help a kernel that is not waiting on it.
 Correctness after the change: 18/18 over M=1..1024 in both global-scale modes,
 cosine 0.9986-0.9990 — unchanged, as a pure byte permutation must be.
 
-### 9.5 Large M — the tier this work does not touch
+### 9.5 Unpadded chunk-major tiles, H200
+
+Measured on top of section 9.4, same method. EP1 / 48 experts, where the fp8
+anchor reproduces to 0.3 % across all three trees:
+
+| M | baseline | contiguous | + unpadded | vs contiguous | fp8 anchor |
+|---:|---:|---:|---:|---:|---|
+| 8 | 287.8 | 253.5 | **244.5** | -3.6 % | 356.5 / 357.1 / 356.5 |
+| 32 | 385.1 | 345.5 | **341.3** | -1.2 % | 484.6 / 484.7 / 484.8 |
+| 64 | 407.1 | 374.8 | **366.6** | -2.2 % | 505.4 / 506.2 / 505.8 |
+| 128 | 442.5 | 422.3 | 422.8 | +0.1 % | 496.0 / 497.0 / 496.3 |
+| 256 | 455.2 | 433.7 | 434.2 | +0.1 % | 509.5 / 509.4 / 508.9 |
+
+EP8 / 384 experts, mxfp4/nvfp4 in one process: 0.859 / 0.848 / 0.911 / 0.855 /
+0.968 / 0.928 at M=8..256, against 0.916 / 0.860 / 0.897 / 0.881 / 0.974 / 0.945
+for contiguous-only — better at five of six points.
+
+Correctness: 18/18 over M=1..1024 in both global-scale modes, cosine
+0.9986-0.9990.
+
+### 9.6 Large M — the tier this work does not touch
 
 Above `swap_ab_max_tokens` the selector falls to BM64, and above M=256 to the
 BM128/BN128 split-M tier. Both are still **one fused megakernel**; this branch
@@ -537,7 +569,7 @@ losing the alternation its paired warpgroups rely on. It failed at M=512 with
 cosine 0.8966 and passes at 0.9989-0.9990 after the fix — the same value every
 other tier reports. **This tier had never been exercised by the small-M sweeps.**
 
-### 9.6 Attribution, in-process where possible
+### 9.7 Attribution, in-process where possible
 
 | change | measurement | effect |
 |---|---|---|
