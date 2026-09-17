@@ -41,6 +41,7 @@ public:
         bool push_generic_rows;
         bool push_gpu_scope_debug;
         bool sys_traffic_debug;
+        int push_stagger_ns;
         int num_sms;
         SM90NVFP4FusedConfig config;
 
@@ -82,7 +83,8 @@ public:
             "        /* kPushProxyFence */ {},\n"
             "        /* kPushGenericRows */ {},\n"
             "        /* kPushGpuScopeDebug */ {},\n"
-            "        /* kSysTrafficDebug */ {}",
+            "        /* kSysTrafficDebug */ {},\n"
+            "        /* kPushStaggerNs */ {}u",
             args.swap_ab ? "true" : "false",
             args.rs_swap_ab ? "true" : "false",
             args.single_active_dispatch_warp ? "true" : "false",
@@ -95,7 +97,8 @@ public:
             args.push_proxy_fence ? "true" : "false",
             args.push_generic_rows ? "true" : "false",
             args.push_gpu_scope_debug ? "true" : "false",
-            args.sys_traffic_debug ? "true" : "false");
+            args.sys_traffic_debug ? "true" : "false",
+            args.push_stagger_ns);
         return fmt::format(R"(
 {}
 
@@ -250,6 +253,7 @@ static void sm90_nvfp4_fused_mega_moe(
     const bool push_gpu_scope_debug = push_dispatch && get_env<int>("DG_NVFP4_PUSH_GPU_SCOPE_DEBUG", 0) != 0;
     const bool sys_traffic_debug = !push_dispatch && plan.use_interleaved_scheduler &&
         get_env<int>("DG_NVFP4_SYS_TRAFFIC_DEBUG", 0) != 0;
+    const int push_stagger_ns = push_dispatch ? get_env<int>("DG_NVFP4_PUSH_STAGGER_NS", 0) : 0;
     unsigned long long* phase_stamps = nullptr;
     {
         const auto stamps_env = get_env<std::string>("DG_NVFP4_PHASE_STAMPS_PTR");
@@ -323,6 +327,7 @@ static void sm90_nvfp4_fused_mega_moe(
         .push_generic_rows = push_generic_rows,
         .push_gpu_scope_debug = push_gpu_scope_debug,
         .sys_traffic_debug = sys_traffic_debug,
+        .push_stagger_ns = push_stagger_ns,
         .num_sms = num_sms,
         .config = config,
         .y = y.data_ptr(),
@@ -359,7 +364,8 @@ static void sm90_nvfp4_fused_mega_moe(
         std::string(push_dispatch ? "_push" : "") + (fine_combine ? "_finecomb" : "") +
         (no_clean_barrier ? "_noclean" : "") + (strided_pool_debug ? "_stridedbg" : "") +
         (push_proxy_fence ? "_pfence" : "") + (push_generic_rows ? "_generic" : "") +
-        (push_gpu_scope_debug ? "_gpuscope" : "") + (sys_traffic_debug ? "_systraffic" : "");
+        (push_gpu_scope_debug ? "_gpuscope" : "") + (sys_traffic_debug ? "_systraffic" : "") +
+        (push_stagger_ns > 0 ? "_stagger" + std::to_string(push_stagger_ns) : "");
     const auto runtime = compiler->build(
         std::string(plan.use_interleaved_scheduler ?
             (rs_swap_ab ?

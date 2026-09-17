@@ -44,7 +44,7 @@ SHAPES = {
 }
 COUNTER_KNOBS = ('DG_NVFP4_PUSH_DISPATCH', 'DG_NVFP4_FINE_COMBINE', 'DG_NVFP4_NO_CLEAN_BARRIER',
                  'DG_NVFP4_POOL_STRIDE_DEBUG', 'DG_NVFP4_PUSH_PROXY_FENCE', 'DG_NVFP4_PUSH_GENERIC_ROWS',
-                 'DG_NVFP4_PUSH_GPU_SCOPE_DEBUG', 'DG_NVFP4_SYS_TRAFFIC_DEBUG')
+                 'DG_NVFP4_PUSH_GPU_SCOPE_DEBUG', 'DG_NVFP4_SYS_TRAFFIC_DEBUG', 'DG_NVFP4_PUSH_STAGGER_NS')
 STAMP_NAMES = {
     0: 'entry(min)', 1: 'barrier1/DONE done', 2: 'pool ready', 3: 'first math(min)',
     4: 'last L1 end', 5: 'last L2 end', 6: 'combine barrier2/first token', 7: 'combine end',
@@ -68,8 +68,9 @@ def apply_arm(arm: str) -> None:
 def arm_label(arm: str) -> str:
     if arm == 'OFF':
         return 'OFF'
-    return '+'.join(kv.split('=')[0].replace('DG_NVFP4_', '').lower()
-                    for kv in arm.split(',') if kv.strip().endswith('=1'))
+    return '+'.join((kv.split('=')[0].replace('DG_NVFP4_', '').lower() +
+                     ('' if kv.strip().endswith('=1') else kv.split('=')[1]))
+                    for kv in arm.split(',') if kv.split('=')[1].strip() != '0')
 
 
 def make_routing(router: str, m: int, num_experts: int, num_topk: int, rank: int,

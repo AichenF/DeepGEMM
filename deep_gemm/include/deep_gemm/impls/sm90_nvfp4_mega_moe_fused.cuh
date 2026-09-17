@@ -459,7 +459,10 @@ template <
     // Diagnostics: gpu-scope tickets / DONE under push (local routing only), and
     // sys-scope tickets + DONE reductions injected into the pull path.
     bool kPushGpuScopeDebug = false,
-    bool kSysTrafficDebug = false
+    bool kSysTrafficDebug = false,
+    // Per-SM first-task stagger under push (ns per SM group, 8 groups): tests
+    // whether the DONE-synchronised lock-step start of all SMs costs bandwidth.
+    uint32_t kPushStaggerNs = 0
 >
 CUTLASS_GLOBAL __launch_bounds__(384, 1) void
 sm90_nvfp4_mega_moe_fused_impl(

@@ -1003,6 +1003,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         // =====================================================================
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
+        bool a_loader_staggered = false;
         const auto load_a_task = [&](const auto& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
@@ -1024,6 +1025,15 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 if constexpr (!kBlockIsL2) {
                     const auto ptr = workspace.get_l1_arrival_count_ptr(pool_block_idx);
                     while (ptx::ld_acq(ptr) != valid_m) {}
+                    if constexpr (kPushDispatch && kPushStaggerNs > 0) {
+                        if (!a_loader_staggered) {
+                            a_loader_staggered = true;
+                            unsigned long long t0, t;
+                            asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t0));
+                            const unsigned long long delay = static_cast<unsigned long long>(sm_idx % 8u) * kPushStaggerNs;
+                            do { asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t)); } while (t - t0 < delay);
+                        }
+                    }
                     if constexpr (kPushDispatch && kPushProxyFence) {
                         // The rows were written with generic stores (over NVLink);
                         // order the acquire before the async-proxy (TMA) loads.
