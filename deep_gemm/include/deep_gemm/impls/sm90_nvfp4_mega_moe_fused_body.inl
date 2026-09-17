@@ -45,13 +45,13 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
     //   8 max routing count done | 9 max routing writes / pushes issued | 10 max routing
     //   grid sync / DONE signalled | 11 max count broadcast done | 12 max barrier #3 done
     const auto stamp_min = [&](const uint32_t slot) {
-        if (phase_stamps != nullptr) {
+        if constexpr (kPhaseStamps) {
             unsigned long long t; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
             atomicMin(phase_stamps + slot, t);
         }
     };
     const auto stamp_max = [&](const uint32_t slot) {
-        if (phase_stamps != nullptr) {
+        if constexpr (kPhaseStamps) {
             unsigned long long t; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
             atomicMax(phase_stamps + slot, t);
         }
@@ -60,12 +60,12 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
     // 24 sum of A-loader arrival-spin ns (L1), 25 sum of A-loader L2-mask-spin ns.
     const auto stamp_now = [&]() {
         unsigned long long t = 0;
-        if (phase_stamps != nullptr)
+        if constexpr (kPhaseStamps)
             asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
         return t;
     };
     const auto stamp_accumulate = [&](const uint32_t slot, const unsigned long long& delta, const unsigned long long& count) {
-        if (phase_stamps != nullptr) {
+        if constexpr (kPhaseStamps) {
             atomicAdd(phase_stamps + slot, delta);
             if (count) atomicAdd(phase_stamps + slot + 1, count);
         }
@@ -2358,7 +2358,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
             using BlockPhaseTag = std::remove_cv_t<std::remove_reference_t<decltype(block_phase)>>;
             constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
             const auto t_task = stamp_now();
-            const long long c_task = clock64();
+            const long long c_task = kPhaseStamps ? clock64() : 0ll;
             if (epilogue_thread_idx == 0) stamp_min(3);
             run_math_task_impl(block_phase, local_expert_idx, num_k_blocks,
                                m_block_idx, n_block_idx, pool_block_idx, valid_m);

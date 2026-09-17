@@ -466,7 +466,9 @@ template <
     uint32_t kPushStaggerNs = 0,
     // Compile the push routing code into a pull-protocol kernel without ever
     // executing it (code-generation / instruction-cache diagnostic).
-    bool kPushCodeDebug = false
+    bool kPushCodeDebug = false,
+    // Phase stamps (globaltimer) compiled in; host env DG_NVFP4_PHASE_STAMPS_PTR.
+    bool kPhaseStamps = false
 >
 CUTLASS_GLOBAL __launch_bounds__(384, 1) void
 sm90_nvfp4_mega_moe_fused_impl(
