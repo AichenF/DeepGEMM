@@ -109,7 +109,17 @@ torch::Tensor mxfp4_lut_window_cuda() {
 
 
 def _run_cuda_dequant_lut_unit_test() -> None:
-    ext = _load_cuda_dequant_ext()
+    # load_inline needs ninja, which not every node image has. That is a missing
+    # build tool, not a numerical failure, so say so and carry on rather than
+    # taking the whole correctness suite down with it.
+    try:
+        ext = _load_cuda_dequant_ext()
+    except RuntimeError as exc:
+        if "Ninja is required" not in str(exc):
+            raise
+        print("MXFP4 CUDA dequant LUT unit test: SKIP (ninja not installed)",
+              flush=True)
+        return
     got = ext.mxfp4_lut_bytes_cuda().cpu()
 
     scales = torch.arange(128, dtype=torch.uint8, device="cpu")
@@ -145,15 +155,25 @@ def _run_dequant_unit_test() -> None:
     expected = signed * ue8m0_to_fp32(scales).view(-1, 1, 1)
     torch.testing.assert_close(got, expected, rtol=0, atol=0)
 
-    tile_weight = torch.randn(2, 256, 256, dtype=torch.bfloat16) * 0.1
-    tile_packed, tile_scale = quantize_to_mxfp4(tile_weight, group_size=32)
-    tile_scale_tm = mxfp4_scale_to_tile_major(tile_scale)
-    torch.testing.assert_close(
-        dequantize_mxfp4_to_fp32(tile_packed, tile_scale, group_size=32),
-        dequantize_mxfp4_to_fp32(tile_packed, tile_scale_tm, group_size=32),
-        rtol=0,
-        atol=0,
+    # Tile-major reorders the scale bytes, so dequantising with it is *not*
+    # supposed to match dequantising with the row-major tensor -- that only
+    # holds when the scale field happens to be constant, which is what this
+    # check used to depend on, unseeded, for whether it passed. Assert the
+    # property that actually has to hold: the reorder is a pure permutation,
+    # so mapping it back reproduces the input exactly.
+    torch.manual_seed(0)
+    block_n, groups_per_k_block = 256, 128 // 32
+    tile_weight = torch.randn(2, block_n, 256, dtype=torch.bfloat16) * 0.1
+    _, tile_scale = quantize_to_mxfp4(tile_weight, group_size=32)
+    num_experts, n, num_groups = tile_scale.shape
+    restored = (
+        mxfp4_scale_to_tile_major(tile_scale)
+        .view(num_experts, n // block_n, num_groups // groups_per_k_block,
+              block_n, groups_per_k_block)
+        .permute(0, 1, 3, 2, 4)
+        .reshape(num_experts, n, num_groups)
     )
+    torch.testing.assert_close(restored, tile_scale, rtol=0, atol=0)
 
     print('MXFP4 dequant unit test: PASS', flush=True)
 
