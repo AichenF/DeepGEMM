@@ -558,10 +558,26 @@ for the WGMMA and the epilogue that share those warps.
 its absolute numbers are not the kernel's. What transfers is the shape of the
 curve and the ordering of the variants, which is what the argument rests on.)
 
-That closes the last avenue. Decoding in warps separate from the ones issuing
-the WGMMA was the one restructuring left, and its premise was that more warps
-would cover the decode; they do not. No warp arrangement puts the decode under
-the load budget, so the split cannot make the kernel load-bound at any size.
+That rules out *more* warps. It does not rule out **different** warps, and the
+distinction matters: the decode alone is 490 ns, already under the 522 ns load
+budget. The consumer is 683 only because the WGMMA (54 ns) and the epilogue and
+barriers (139 ns) are serialised onto the same warps. Decoding in warps separate
+from the ones issuing the WGMMA would overlap those, and the warp-scaling curve
+above says nothing about it — it measured spreading the same decode wider, not
+splitting decode from issue.
+
+That restructuring is therefore **open, not closed**. Two things are known about
+it. It must hand the decoded tile over through shared memory, and the in-kernel
+RS-versus-SS comparison prices that round trip at 6.4 % (336.6 vs 358.2 us at
+M=32) — so the split has to beat that handicap before it wins anything. And it
+needs roughly 256 decode threads beside the 256 math threads; that fits the
+64512-register budget only because SS math warps hold no A fragments and need
+far fewer than the 208 the RS path uses.
+
+Estimating it further is not worth much: a harness that forces the two warp
+groups into lockstep with `__syncthreads` measures nothing about the overlap,
+which is the only thing that would make it pay. It wants building in the kernel,
+against the correctness gate.
 
 That leaves the floor, and that number is the answer to the whole question. Feeding 4.4 TB/s needs the
 dequant to produce 32768 values per 522 ns, about 32 per cycle per SM; it
