@@ -156,21 +156,32 @@ select_sm90_mxfp4_h200_fused(
     static constexpr int kSwapABReferenceNumSMs = 78;
     const int swap_ab_max_tokens =
         max_tokens_for_block_m(24) * kSwapABReferenceNumSMs / input.num_sms;
+    // Within that range, take the *narrowest* transposed tile that still covers
+    // one local expert's tokens. A wider tile pads the WGMMA's token dimension
+    // with slots that carry nothing, and the tile is the token dimension under
+    // swapAB. Measured on EP1/48 experts, where routing puts M/6 slots on an
+    // expert: BM8 beats BM16 by 1.8 % at M=32, BM16 beats BM24 by 1.7 % at
+    // M=64, and going one step too narrow is far worse than one too wide --
+    // BM16 at M=128 needs a second m-block per expert and costs 45 %.
+    const auto swap_ab_block_m = [&]() {
+        for (const int block_m : {8, 16, 24}) {
+            if (input.num_tokens <= max_tokens_for_block_m(block_m))
+                return block_m;
+        }
+        return 24;
+    }();
 
     if (input.num_tokens <= 1)
-        tuning = {8, 256, 24, 8, SM90ArchSpec::smem_capacity,
+        tuning = {swap_ab_block_m, 256, 24, 8, SM90ArchSpec::smem_capacity,
                   true, true, true, true};
     else if (input.num_tokens <= 8)
-        tuning = {8, 256, 16, 8, SM90ArchSpec::smem_capacity,
+        tuning = {swap_ab_block_m, 256, 16, 8, SM90ArchSpec::smem_capacity,
                   true, true, true, true};
     else if (input.num_tokens <= 16)
-        tuning = {8, 256, 24, 8, SM90ArchSpec::smem_capacity,
-                  true, true, true, true};
-    else if (input.num_tokens <= 32)
-        tuning = {16, 256, 48, 6, SM90ArchSpec::smem_capacity,
+        tuning = {swap_ab_block_m, 256, 24, 8, SM90ArchSpec::smem_capacity,
                   true, true, true, true};
     else if (input.num_tokens <= swap_ab_max_tokens)
-        tuning = {24, 256, 48, 8, SM90ArchSpec::smem_capacity,
+        tuning = {swap_ab_block_m, 256, 48, 8, SM90ArchSpec::smem_capacity,
                   true, true, true, true};
     else if (input.num_tokens <= 256)
         tuning = {64, 256, 48, 3, SM90ArchSpec::smem_capacity,
@@ -203,10 +214,13 @@ select_sm90_mxfp4_h200_fused(
                 tuning.single_active_dispatch_warp ? 1 : 0) != 0;
     // The same width argument applies to RS itself. Trading a shared-memory
     // round trip for cross-lane shuffles wins wherever the decode is on the
-    // critical path -- 2 to 6.7 % at every swapAB tier on H20 -- but the BM8
-    // tiers on a 132-SM part are short enough that the shuffle latency is not
-    // hidden, and there it costs 1 to 2 %.
-    if (input.num_sms > kSwapABReferenceNumSMs && tuning.block_m < 16)
+    // critical path -- 2 to 6.7 % at every swapAB tier on H20 -- but the very
+    // small batches on a 132-SM part are short enough that the shuffle latency
+    // is not hidden, and there it costs 1 to 2 %. That is a property of how
+    // little work the tier has, not of BLOCK_M: once the rule above sends M=32
+    // to BM8, the same tile is 4.3 % *faster* with RS than without.
+    if (input.num_sms > kSwapABReferenceNumSMs && tuning.block_m < 16 &&
+        input.num_tokens <= 16)
         tuning.rs_swap_ab = false;
     tuning.rs_swap_ab =
         env_int("DG_MXFP4_RS", tuning.rs_swap_ab ? 1 : 0) != 0;
