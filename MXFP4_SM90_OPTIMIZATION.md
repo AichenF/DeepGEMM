@@ -597,6 +597,22 @@ against the correctness gate. What that takes, having mapped it:
   `advance_pipeline`, so the decode branch gets its own for free;
   `kNumEpilogueWarpgroups` and `WG_BLOCK_N` drive the per-warpgroup N split and
   must stay consistent when the warp indices shift.
+* **The hard part, and why this is not a patch-sized job.** The handoff has to
+  be split `bar.arrive` / `bar.sync` over the 512 decode+math threads, not a
+  `bar.sync` rendezvous: a rendezvous puts the two groups in lockstep, which is
+  exactly the serialisation the split exists to remove. That needs a
+  non-blocking arrive helper (`bar.arrive`, which `ptx/utils.cuh` does not have
+  — it only wraps `bar.sync`/`barrier.sync`), first-iteration special-casing so
+  the producer does not wait on an empty slot nobody has released yet, and
+  relocating the five `arrive_empty_barrier` sites, which sit *inside* the WGMMA
+  issue on purpose so no TMA wait lands in front of them. Every one of those is
+  a deadlock rather than a wrong number if it is wrong, so it wants a machine to
+  iterate on, not a single patch.
+
+The scaffolding above was built and checked as far as it goes — 640 threads in
+five warpgroups, 58368 of 64512 registers, the warp map, the ring barriers and
+the gating — and then reverted, because a half-built protocol is worse than
+none.
 
 The payoff to expect is ~64 % of the theoretical roofline and ~74 % of the
 achievable one, from 59.4 % and 68.6 % — worth doing, but it does not reach
