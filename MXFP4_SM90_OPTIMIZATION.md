@@ -523,8 +523,27 @@ both rows' nibbles in one word under one LUT, and they do not share a scale. The
 load-bearing**: it is what lets per-row scaling coexist with the WGMMA's
 two-row fragment layout.
 
-That leaves the dequant ALU, and that number is the answer to the whole
-question. Feeding 4.4 TB/s needs the
+That leaves the dequant ALU — and counting it shows the cost is not the
+arithmetic either. Per lane per stage the decode is ~184 instructions (2 halves
+x 4 slices x roughly 3 shared loads, 12 ALU, 2 shuffles and the selects). At 8
+warps over 4 schedulers that is ~368 issue slots, ~186 ns at 1.98 GHz. It
+measures **490**.
+
+The factor of 2.6 is latency, not throughput. The megakernel is persistent at
+one CTA per SM and 384 threads, so a scheduler sees 3 warps; with 8 shuffles per
+lane per stage at ~30 cycles each there is not enough warp-level parallelism to
+cover them. That is why the arithmetic is already near-optimal —
+`dequant_word` is 6 instructions per 4 packed bytes — and shaving instructions
+off it barely moves the result (section 8).
+
+Raising that parallelism is the one avenue left, and it is a restructuring, not
+a tuning knob: decode in warps separate from the ones issuing the WGMMA, with
+enough of them to hide the shuffle latency. Two things bound it. The WGMMA is
+only ~54 ns of the 544, so separating it recovers that much and no more; and the
+register budget is 64512, of which the math warps already hold 208 x 256. The
+arithmetic of that split lands near 63 %, not 70 %.
+
+That leaves the floor, and that number is the answer to the whole question. Feeding 4.4 TB/s needs the
 dequant to produce 32768 values per 522 ns, about 32 per cycle per SM; it
 produces about 34. **MXFP4 on Hopper sits right at the edge of being
 dequant-bound** — the format has no FP4 MMA here, so every weight byte is
