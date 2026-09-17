@@ -433,6 +433,13 @@ intercept from either end, so:
 The load path on its own sustains **4.4 TB/s** (section 7.2, variant G, and the
 same on H20-3e). The kernel only gets 3.38, so **the consumer — decode plus
 WGMMA — is throttling the loader by 24 %**; the memory system is not the limit.
+
+Running the real decoder standalone over a resident tile puts the decode at
+**490 ns per stage per SM** against the load's 522, which looks like there is no
+slack at all. There is: making the decode 10 % cheaper moves the kernel 0.7 %
+(section 8), so the decode is in fact mostly hidden. The ~161 ns per stage that
+is not hidden is the WGMMA and the synchronisation around it -- consistent with
+the narrower transposed tile (section 5.6) being what actually helped.
 That is the opposite of what the earlier "97 % of achievable" reading suggested,
 which measured the stream in isolation rather than in the kernel.
 
@@ -465,6 +472,7 @@ Recorded so they are not retried:
 | Contiguous weight tiles via one 1D bulk copy **with the scales split out** (64 B rows) | **-25 to -40 %** at H20 M=32-64, while moving 15 % fewer bytes. Section 7.2 later showed the load itself was 1.6x faster, so the loss was on the consumer side: a 64 B shared-memory row stride is 16 words, which 4-way bank-conflicts the decoder's 128-bit loads where 80 B (20 words) is conflict-free. Contiguity alone, keeping the 80 B row, is what shipped |
 | Larger weight bulk copies (one 17408 B copy per stage instead of two 8704 B ones, via k-major tile order) | **No gain, and the reorder would have been wasted work.** The standalone pipeline sustains 4.53 TB/s on today's two-copy pattern against 4.34 for one contiguous copy. Measured before implementing |
 | Deeper pipelines now that a stage is 17408 B, not 20480 B (10 stages fit where 6-8 did) | **No effect.** Standalone, 4/6/8/10 stages give 4.36/4.48/4.37/4.40 TB/s -- the load path saturates at 4. End-to-end, M=32 gives 336.6/335.5/339.1 us at 6/8/10 and M=64 gives 362.0/362.9 at 8/10. The consumer is not waiting on buffering |
+| Decode both packed words before either lane-pair shuffle, so the second is not stuck behind the first shuffle's latency | **10 % off the decode in isolation** (472 -> 432 ns per stage per SM, standalone harness) and **0.7 % end-to-end** at M=32, nil at M=64. The decode's issue cost is largely hidden behind the load and the WGMMA already, so shrinking it buys almost nothing. Reverted -- but the measurement is the useful part: of the ~161 ns per stage that is *not* hidden, the decode is not what it is made of |
 | Prefetch: decode K+1 under K's in-flight WGMMAs (two decoded slots, `warpgroup_wait<1>`) | **+5.9 / +7.1 / +10.8 %** at MiMo/H20 M=64 over three runs. Its prefetch waits on stage K+1's TMA barrier, and that wait sits between the WGMMA issue and `arrive_empty(K)`, so it delays the loader by exactly what it saves on the decode |
 | `--ptxas-options=--register-usage-level=5` | no effect: 168 regs, 0 spill, identical QGMMA/DEPBAR, on both the SS and RS kernels |
 | Pipeline depth alone (SS path) | ~1 %, and it flipped sign between runs — inside the drift band, so the shipped depths come from the RS sweep where the effect is outside it |
