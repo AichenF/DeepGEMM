@@ -577,7 +577,31 @@ far fewer than the 208 the RS path uses.
 Estimating it further is not worth much: a harness that forces the two warp
 groups into lockstep with `__syncthreads` measures nothing about the overlap,
 which is the only thing that would make it pay. It wants building in the kernel,
-against the correctness gate.
+against the correctness gate. What that takes, having mapped it:
+
+* **640 threads, five warpgroups**: dispatch 64 + loaders 64 (one warpgroup),
+  decode 256, math 256. Registers 64x48 + 64x40 + 256x48 + 256x128 = 50688 of
+  64512 — it fits only because SS math warps hold no A fragments and need far
+  fewer than the RS path's 208. `__launch_bounds__` and
+  `SM90MXFP4H200FusedConfig::kNumThreads` both carry 384 today.
+* **Shared memory**: 4 packed stages + a 2-slot decoded ring is 136 KB, ~154 KB
+  with CD, send buffers, LUT and barriers, against 227 KB. Depth costs nothing
+  here (section 8), so trading packed stages for the ring is free.
+* **Protocol**: decode warps wait `full_barriers[stage]`, decode into
+  `smem_b[k_block & 1]`, then arrive on a new `decoded_full[2]` *and* on
+  `empty_barriers[stage]` — that last arrival moves off the math warps, which is
+  the point. Math warps wait `decoded_full`, issue the SS WGMMA, arrive
+  `decoded_empty[2]`. Both walk the same task stream, so
+  `task_info_empty_barriers` init count grows by the decode warps.
+* **Watch**: `stage_idx`/`phase` are per-warp copies advanced by
+  `advance_pipeline`, so the decode branch gets its own for free;
+  `kNumEpilogueWarpgroups` and `WG_BLOCK_N` drive the per-warpgroup N split and
+  must stay consistent when the warp indices shift.
+
+The payoff to expect is ~64 % of the theoretical roofline and ~74 % of the
+achievable one, from 59.4 % and 68.6 % — worth doing, but it does not reach
+70 % measured against theoretical peak, and no other identified change does
+either.
 
 That leaves the floor, and that number is the answer to the whole question. Feeding 4.4 TB/s needs the
 dequant to produce 32768 values per 522 ns, about 32 per cycle per SM; it
