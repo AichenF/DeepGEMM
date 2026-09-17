@@ -577,6 +577,21 @@ It also resolves why the decode reorder disappointed: 10 % off the decode
 *alone* is nothing once the WGMMA is there to overlap with, which is exactly
 what both the harness (543.8 vs 544.0) and the kernel (0.7 %) show.
 
+Which roofline the percentage is quoted against decides the verdict, so all
+three, M=32, 47 experts touched, 943 MB of weights:
+
+| denominator | floor | EP1 | EP8 |
+|---|---:|---:|---:|
+| 4.80 TB/s, theoretical HBM peak | 196 us | 59.4 % | 50.3 % |
+| 4.40 TB/s, the TMA load path sustains (section 7.2) | 214 us | 64.8 % | 54.9 % |
+| **4.154 TB/s, what the part actually streams** | 227 us | **68.6 %** | 58.1 % |
+
+The theoretical peak is not reachable by any kernel here — a plain read stream
+measures 4.154 TB/s, 87 % of it — so quoting against it builds in a 13 % penalty
+before the kernel does anything. Against what the hardware delivers, the
+single-rank kernel is at **68.6 %**, and the 10 points between that and EP8 are
+the collective, which is format-independent.
+
 Two levers, both quantified:
 
 | if | M=32 EP1 | vs 196 us theoretical roofline |
