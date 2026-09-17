@@ -42,7 +42,8 @@ SHAPES = {
     'pro': dict(hidden=7168, intermediate_hidden=3072, num_experts=384, num_topk=6),
     'mimo': dict(hidden=6144, intermediate_hidden=2048, num_experts=384, num_topk=8),
 }
-COUNTER_KNOBS = ('DG_NVFP4_PUSH_DISPATCH', 'DG_NVFP4_FINE_COMBINE', 'DG_NVFP4_NO_CLEAN_BARRIER')
+COUNTER_KNOBS = ('DG_NVFP4_PUSH_DISPATCH', 'DG_NVFP4_FINE_COMBINE', 'DG_NVFP4_NO_CLEAN_BARRIER',
+                 'DG_NVFP4_POOL_STRIDE_DEBUG', 'DG_NVFP4_PUSH_PROXY_FENCE')
 STAMP_NAMES = {
     0: 'entry(min)', 1: 'barrier1/DONE done', 2: 'pool ready', 3: 'first math(min)',
     4: 'last L1 end', 5: 'last L2 end', 6: 'combine barrier2/first token', 7: 'combine end',
@@ -77,9 +78,10 @@ def make_routing(router: str, m: int, num_experts: int, num_topk: int, rank: int
         topk_idx = base % num_experts
         topk_w = torch.full((m, num_topk), 1.0 / num_topk, dtype=torch.float32, device='cuda')
         return topk_idx, topk_w
-    g = torch.Generator(device='cuda')
-    g.manual_seed(seed * 1000 + rank)
-    scores = torch.randn((m, num_experts), dtype=torch.float, device='cuda', generator=g)
+    # Their bench script's router: torch.manual_seed(rank + seed_offset), random
+    # scores, top-k (seed offset 101 in their harness, plus our seed index).
+    torch.manual_seed(rank + 101 + seed * 1000)
+    scores = torch.randn((m, num_experts), dtype=torch.float, device='cuda')
     topk_w, topk_idx = torch.topk(scores, num_topk, dim=-1, largest=True, sorted=False)
     return topk_idx, topk_w.float()
 

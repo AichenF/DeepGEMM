@@ -337,7 +337,11 @@ template <
     // rotated pool without the workspace-clean barrier (#3).
     bool kPushDispatchRequested = false,
     bool kFineCombineRequested = false,
-    bool kNoCleanBarrierRequested = false
+    bool kNoCleanBarrierRequested = false,
+    // Diagnostics: strided pool addressing under the PULL protocol (isolates the
+    // layout's cost), and the generic->async proxy fence in the push A loader.
+    bool kStridedPoolDebug = false,
+    bool kPushProxyFence = false
 >
 CUTLASS_GLOBAL __launch_bounds__(384, 1) void
 sm90_nvfp4_mega_moe_fused_impl(

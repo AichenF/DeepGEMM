@@ -419,13 +419,16 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
     constexpr bool kFineCombine = kFineCombineRequested && kUseInterleavedScheduler;
     constexpr bool kCombineDynamic = kFineCombine;
     constexpr bool kNoCleanBarrier = kNoCleanBarrierRequested && kPushDispatch;
+    // Fixed-stride pool: implied by push dispatch; kStridedPoolDebug forces it
+    // under the pull protocol (diagnostic).
+    constexpr bool kStridedPool = kUseInterleavedScheduler && (kPushDispatch || kStridedPoolDebug);
     constexpr uint32_t kNumPoolParitySlots = kNoCleanBarrier ? 2u : 1u;
     constexpr uint32_t kNumPoolBlocksTotal = kNumMaxPoolTokens / BLOCK_M;
-    constexpr uint32_t kPushBlocksPerExpert = kPushDispatch ?
+    constexpr uint32_t kPushBlocksPerExpert = kStridedPool ?
         kNumPoolBlocksTotal / (kNumExpertsPerRank * kNumPoolParitySlots) : 0u;
     constexpr uint32_t kPushMaxRowsPerExpert = kPushBlocksPerExpert * BLOCK_M;
-    DG_STATIC_ASSERT(!kPushDispatch || kPushBlocksPerExpert > 0, "Push dispatch: empty pool stride");
-    DG_STATIC_ASSERT(!kPushDispatch ||
+    DG_STATIC_ASSERT(!kStridedPool || kPushBlocksPerExpert > 0, "Push dispatch: empty pool stride");
+    DG_STATIC_ASSERT(!kStridedPool ||
                      kNumPoolParitySlots * kNumExpertsPerRank * kPushBlocksPerExpert * BLOCK_M <= kNumMaxPoolTokens,
                      "Push dispatch: strided pool must fit the token pool");
     DG_STATIC_ASSERT(!kFineCombine || kNumSMs <= layout::kSM90FineCombineMaxSMs,
@@ -485,7 +488,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                                               auto&& func) {
         // Push dispatch: the dense task index stays the scheduling key; the
         // physical pool block is the fixed-stride one the source ranks wrote to.
-        const uint32_t pool_block_idx = kPushDispatch ?
+        const uint32_t pool_block_idx = kStridedPool ?
             strided_pool_block(task_info.local_expert_idx, task_info.m_block_idx) :
             task_info.pool_block_idx;
         if (task_info.block_phase == sched::BlockPhase::Linear1) {
@@ -556,7 +559,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
             for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
                 const auto num_recv_tokens = static_cast<uint32_t>(*recv_count_sum_ptr(i));
                 const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
-                const auto cleanup_pool_block_offset = kPushDispatch ?
+                const auto cleanup_pool_block_offset = kStridedPool ?
                     strided_pool_block(i, 0) : scheduler.get_pool_block_offset(i);
 
                 ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
@@ -818,6 +821,8 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 }
                 if (current_expert_idx >= kNumExpertsPerRank)
                     break;
+                if constexpr (kStridedPool)
+                    expert_pool_block_offset = strided_pool_block(static_cast<uint32_t>(current_expert_idx), 0);
 
                 if (old_expert_idx != current_expert_idx) {
                     old_expert_idx = current_expert_idx;
@@ -1028,7 +1033,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 if constexpr (!kBlockIsL2) {
                     const auto ptr = workspace.get_l1_arrival_count_ptr(pool_block_idx);
                     while (ptx::ld_acq(ptr) != valid_m) {}
-                    if constexpr (kPushDispatch) {
+                    if constexpr (kPushDispatch && kPushProxyFence) {
                         // The rows were written with generic stores (over NVLink);
                         // order the acquire before the async-proxy (TMA) loads.
                         asm volatile("fence.proxy.async.global;" ::: "memory");
