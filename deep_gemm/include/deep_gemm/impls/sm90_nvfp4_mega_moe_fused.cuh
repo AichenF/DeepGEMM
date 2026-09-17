@@ -319,7 +319,7 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_braided_lut_window(
 // cache lines with the persistent math loop.
 template <uint32_t kHidden, uint32_t kNumTopk, uint32_t kNumExpertsPerRank,
           uint32_t kNumPaddedSFPoolTokens, uint32_t BLOCK_M, uint32_t kPushBlocksPerExpert,
-          uint32_t kNumGlobalWarps, uint32_t kNumRanks, bool kGenericRows>
+          uint32_t kNumGlobalWarps, uint32_t kNumRanks, bool kGenericRows, bool kGpuScopeDebug>
 __device__ __noinline__ void sm90_nvfp4_push_dispatch_rows(
         const layout::SymBuffer<kNumRanks>& sym_buffer,
         void* smem_row_buffer,
@@ -360,8 +360,14 @@ __device__ __noinline__ void sm90_nvfp4_push_dispatch_rows(
         if (expert_idx >= 0) {
             const uint32_t dr = static_cast<uint32_t>(expert_idx) / kNumExpertsPerRank;
             const uint32_t de = static_cast<uint32_t>(expert_idx) % kNumExpertsPerRank;
-            lane_row_idx = static_cast<uint32_t>(ptx::atomic_add_sys(
-                sym_buffer.map(recv_count_sum + de, dr), 1ull));
+            if constexpr (kGpuScopeDebug) {
+                // Diagnostic only (valid when every row is routed to this rank)
+                lane_row_idx = static_cast<uint32_t>(ptx::atomic_add(
+                    sym_buffer.map(recv_count_sum + de, dr), 1ull));
+            } else {
+                lane_row_idx = static_cast<uint32_t>(ptx::atomic_add_sys(
+                    sym_buffer.map(recv_count_sum + de, dr), 1ull));
+            }
         }
         const uint32_t valid_mask = __ballot_sync(0xffffffff, expert_idx >= 0);
         #pragma unroll 1
@@ -449,7 +455,11 @@ template <
     bool kStridedPoolDebug = false,
     bool kPushProxyFence = false,
     // Push rows with 16 B generic stores instead of TMA bulk copies (diagnostic).
-    bool kPushGenericRows = false
+    bool kPushGenericRows = false,
+    // Diagnostics: gpu-scope tickets / DONE under push (local routing only), and
+    // sys-scope tickets + DONE reductions injected into the pull path.
+    bool kPushGpuScopeDebug = false,
+    bool kSysTrafficDebug = false
 >
 CUTLASS_GLOBAL __launch_bounds__(384, 1) void
 sm90_nvfp4_mega_moe_fused_impl(

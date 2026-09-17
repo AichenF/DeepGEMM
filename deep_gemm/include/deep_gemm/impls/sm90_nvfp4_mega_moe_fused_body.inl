@@ -645,7 +645,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 constexpr uint32_t kNumGlobalWarps = kNumSMs * kNumActiveDispatchWarps;
                 sm90_nvfp4_push_dispatch_rows<kHidden, kNumTopk, kNumExpertsPerRank,
                                               kNumPaddedSFPoolTokens, BLOCK_M, kPushBlocksPerExpert,
-                                              kNumGlobalWarps, kNumRanks, kPushGenericRows>(
+                                              kNumGlobalWarps, kNumRanks, kPushGenericRows, kPushGpuScopeDebug>(
                     sym_buffer,
                     smem_send_buffers.get_rank_buffer(warp_idx).get_data_buffer(0).get_base_ptr(),
                     dispatch_barriers[warp_idx],
@@ -677,8 +677,13 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 if (arrived == kNumSMs - 1) {
                     if (lane_idx == 0)
                         *workspace.get_push_cta_arrival_ptr() = 0;
-                    if (lane_idx < kNumRanks)
-                        ptx::red_add_rel_sys(sym_buffer.map(workspace.get_push_done_count_ptr(), lane_idx), 1);
+                    if (lane_idx < kNumRanks) {
+                        if constexpr (kPushGpuScopeDebug)
+                            ptx::red_add_rel(reinterpret_cast<uint32_t*>(
+                                sym_buffer.map(workspace.get_push_done_count_ptr(), lane_idx)), 1u);
+                        else
+                            ptx::red_add_rel_sys(sym_buffer.map(workspace.get_push_done_count_ptr(), lane_idx), 1);
+                    }
                 }
                 __syncwarp();
             }
@@ -734,6 +739,18 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
             *sym_buffer.map(dst_ptr, dst_rank_idx) = token_topk_idx;
         });
         if (thread_idx == 0) stamp_max(9);
+        if constexpr (kSysTrafficDebug) {
+            // Diagnostic: the push protocol's sys-scope traffic (one remote ticket per
+            // routed row, adding 0, and one DONE reduction per rank) under the pull path.
+            read_topk_idx([&](const uint32_t& token_topk_idx, const int& expert_idx) {
+                ptx::atomic_add_sys(sym_buffer.map(
+                    workspace.get_expert_recv_count_sum_ptr(expert_idx % kNumExpertsPerRank),
+                    expert_idx / kNumExpertsPerRank), 0ull);
+            });
+            if (sm_idx == 0 and warp_idx == 0 and lane_idx < kNumRanks)
+                ptx::red_add_rel_sys(sym_buffer.map(workspace.get_push_done_count_ptr(), lane_idx), 1);
+            __syncwarp();
+        }
 
         comm::grid_sync<kNumSMs, kDispatchGridSyncIndex>(
             workspace, sm_idx, thread_idx,
