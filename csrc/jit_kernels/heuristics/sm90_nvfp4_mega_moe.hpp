@@ -764,10 +764,13 @@ static SM90NVFP4FusedPlan select_sm90_nvfp4_fused(
 }
 
 // Counter-based synchronisation policy for the fused dynamic kernel (see the
-// kernel body): push dispatch + DONE flags (replaces NVLink barrier #1),
-// fine-grained combine (replaces barrier #2), rotated pool without the
-// workspace-clean barrier (#3). Each step is enabled up to a per-model M
-// boundary (tokens per rank) measured on 8 x H20-3e; 0 disables the step.
+// kernel body): push dispatch + DONE flags (replaces NVLink barrier #1) and the
+// parity-rotated pool without the workspace-clean barrier (#3). Measured on
+// 8 x H20-3e (their protocol: CUDA events, max over ranks, 50 calls, 25 A/B/B/A
+// blocks; random router primary, all-experts-active router secondary), a step is
+// enabled only where it won >= 1 % on the random router and did not lose more
+// than 1 % on the all-experts router. The fine-grained combine (step 2) is not
+// enabled anywhere: its code alone costs ~10 % per math task on this kernel.
 struct SM90NVFP4CounterPolicy {
     bool push_dispatch;
     bool fine_combine;
@@ -776,16 +779,19 @@ struct SM90NVFP4CounterPolicy {
 
 struct SM90NVFP4CounterBucket {
     int hidden;
-    int max_tokens_push;
-    int max_tokens_fine_combine;
-    int max_tokens_no_clean_barrier;
+    int min_tokens;
+    int max_tokens;
+    bool push_dispatch;
+    bool no_clean_barrier;
 };
 
-// H20 (78 SMs) boundaries; H200 is not measured and keeps the barrier path.
-static constexpr std::array<SM90NVFP4CounterBucket, 3> kSM90NVFP4H20CounterBuckets {{
-    {4096, 0, 0, 0},   // Flash
-    {7168, 0, 0, 0},   // Pro
-    {6144, 0, 0, 0},   // MiMo
+// H20 (78 SMs) ranges (tokens per rank, inclusive); H200 keeps the barrier path.
+static constexpr std::array<SM90NVFP4CounterBucket, 5> kSM90NVFP4H20CounterBuckets {{
+    {4096,  1, 16, true, false},   // Flash: push         (+2.4 .. +6.7 % random, +1.0 .. +2.5 % all-experts)
+    {4096, 17, 64, true, true},    // Flash: push+rotated (+1.6 .. +4.3 % / +1.3 .. +5.2 %)
+    {7168,  1, 16, true, true},    // Pro:   push+rotated (+2.3 .. +7.6 % / +1.9 .. +2.2 %)
+    {6144,  1, 16, true, true},    // MiMo:  push+rotated (+2.9 .. +8.3 % / +2.3 .. +3.2 %)
+    {6144, 17, 32, true, false},   // MiMo:  push         (+1.6 % / +0.8 %)
 }};
 
 static SM90NVFP4CounterPolicy select_sm90_nvfp4_counter_policy(
@@ -796,12 +802,12 @@ static SM90NVFP4CounterPolicy select_sm90_nvfp4_counter_policy(
         input.num_sms != SM90NVFP4FusedShape::kH20NumSMs)
         return policy;
     for (const auto& bucket : kSM90NVFP4H20CounterBuckets) {
-        if (bucket.hidden != input.hidden)
-            continue;
-        policy.push_dispatch = input.num_tokens <= bucket.max_tokens_push;
-        policy.fine_combine = input.num_tokens <= bucket.max_tokens_fine_combine;
-        policy.no_clean_barrier = policy.push_dispatch &&
-            input.num_tokens <= bucket.max_tokens_no_clean_barrier;
+        if (bucket.hidden == input.hidden &&
+            input.num_tokens >= bucket.min_tokens &&
+            input.num_tokens <= bucket.max_tokens) {
+            policy.push_dispatch = bucket.push_dispatch;
+            policy.no_clean_barrier = bucket.push_dispatch && bucket.no_clean_barrier;
+        }
     }
     return policy;
 }

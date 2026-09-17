@@ -59,6 +59,11 @@ ACC_SLOTS = {20: 'L1 task avg us (sum/count)', 22: 'L2 task avg us (sum/count)',
 
 
 def apply_arm(arm: str) -> None:
+    if arm == 'POLICY':
+        # library default: every counter knob unset -> the M-gated heuristic decides
+        for knob in COUNTER_KNOBS:
+            os.environ.pop(knob, None)
+        return
     for knob in COUNTER_KNOBS:
         os.environ[knob] = '0'
     if arm != 'OFF':
@@ -68,8 +73,8 @@ def apply_arm(arm: str) -> None:
 
 
 def arm_label(arm: str) -> str:
-    if arm == 'OFF':
-        return 'OFF'
+    if arm in ('OFF', 'POLICY'):
+        return arm
     return '+'.join((kv.split('=')[0].replace('DG_NVFP4_', '').lower() +
                      ('' if kv.strip().endswith('=1') else kv.split('=')[1]))
                     for kv in arm.split(',') if kv.split('=')[1].strip() != '0')
