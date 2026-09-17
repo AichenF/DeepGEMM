@@ -36,7 +36,10 @@ UE8M0_BIAS = _qm.UE8M0_BIAS
 dequantize_mxfp4_to_fp32 = _qm.dequantize_mxfp4_to_fp32
 fp32_to_ue8m0_ceil = _qm.fp32_to_ue8m0_ceil
 mxfp4_fuse_packed_with_scale_tile_major = _qm.mxfp4_fuse_packed_with_scale_tile_major
+mxfp4_fused_to_tile_contiguous = _qm.mxfp4_fused_to_tile_contiguous
 mxfp4_scale_to_tile_major = _qm.mxfp4_scale_to_tile_major
+MXFP4_TILE_ROWS = _qm.MXFP4_TILE_ROWS
+MXFP4_FUSED_ROW_BYTES = _qm.MXFP4_FUSED_ROW_BYTES
 quantize_to_mxfp4 = _qm.quantize_to_mxfp4
 ue8m0_to_fp32 = _qm.ue8m0_to_fp32
 
@@ -199,10 +202,38 @@ def test_fused_row_layout(device: str) -> None:
     print("fused row layout: PASS")
 
 
+def test_tile_contiguous_is_pure_permutation(device: str) -> None:
+    """Regrouping the fused rows into contiguous tiles must move bytes, not
+    change them: every tile has to hold exactly the 80-byte rows the kernel
+    would otherwise have gathered with a strided load."""
+    torch.manual_seed(7)
+    E, N, k_blocks = 2, 3 * MXFP4_TILE_ROWS, 5
+    row_span = k_blocks * MXFP4_FUSED_ROW_BYTES
+    fused = torch.randint(0, 256, (E, N, row_span), dtype=torch.uint8, device=device)
+
+    tiled = mxfp4_fused_to_tile_contiguous(fused)
+    n_tiles = N // MXFP4_TILE_ROWS
+    assert tiled.shape == (
+        E, n_tiles * k_blocks, MXFP4_TILE_ROWS * MXFP4_FUSED_ROW_BYTES)
+
+    rows = tiled.view(E, n_tiles, k_blocks, MXFP4_TILE_ROWS, MXFP4_FUSED_ROW_BYTES)
+    for n_tile in range(n_tiles):
+        for kb in range(k_blocks):
+            lo = n_tile * MXFP4_TILE_ROWS
+            expect = fused[
+                :, lo:lo + MXFP4_TILE_ROWS,
+                kb * MXFP4_FUSED_ROW_BYTES:(kb + 1) * MXFP4_FUSED_ROW_BYTES]
+            assert torch.equal(rows[:, n_tile, kb], expect)
+    assert torch.equal(
+        torch.sort(tiled.flatten())[0], torch.sort(fused.flatten())[0])
+    print("mxfp4 tile-contiguous regroup: PASS")
+
+
 def test_weight_transform_matches_nvfp4_structure(device: str) -> None:
-    """The MXFP4 SM90 weight transform must produce the same fused-row stride
-    and dtypes as the NVFP4 one, differing only in scale-byte count, so the
-    shared K-major TMA descriptor path and sign braid stay valid."""
+    """The MXFP4 SM90 weight transform must keep the NVFP4 fused-row stride and
+    dtypes, differing only in scale-byte count, so the sign braid stays valid.
+    MXFP4 then regroups those rows into contiguous tiles, which changes the
+    shape but not the footprint."""
     try:
         import deep_gemm
         from deep_gemm.quantization_nvfp4 import quantize_to_nvfp4
@@ -228,10 +259,15 @@ def test_weight_transform_matches_nvfp4_structure(device: str) -> None:
     )
 
     # Same fused storage footprint: 80-byte BK128 rows either way.
-    assert mx_l1_out.shape == nv_l1_out.shape, (mx_l1_out.shape, nv_l1_out.shape)
-    assert mx_l2_out.shape == nv_l2_out.shape
+    assert mx_l1_out.numel() == nv_l1_out.numel(), (mx_l1_out.shape, nv_l1_out.shape)
+    assert mx_l2_out.numel() == nv_l2_out.numel()
     assert mx_l1_out.dtype == torch.uint8 and mx_l2_out.dtype == torch.uint8
-    assert mx_l1_out.shape[-1] % 80 == 0
+    # ... but grouped into contiguous (n_tile, k_block) tiles the kernel bulk-copies.
+    tile_bytes = MXFP4_TILE_ROWS * MXFP4_FUSED_ROW_BYTES
+    assert mx_l1_out.shape == (
+        E, (2 * IH // MXFP4_TILE_ROWS) * (H // BLOCK_K), tile_bytes), mx_l1_out.shape
+    assert mx_l2_out.shape == (
+        E, (H // MXFP4_TILE_ROWS) * (IH // BLOCK_K), tile_bytes), mx_l2_out.shape
 
     # MXFP4 carries half the scale elements of NVFP4 (group 32 vs 16).
     assert mx_l1_sf.numel() * 2 == nv_l1[1].numel(), (mx_l1_sf.numel(), nv_l1[1].numel())
@@ -256,6 +292,7 @@ def main() -> None:
     test_dequant_matches_elementwise_reference(device)
     test_tile_major_is_pure_permutation(device)
     test_fused_row_layout(device)
+    test_tile_contiguous_is_pure_permutation(device)
     test_weight_transform_matches_nvfp4_structure(device)
     print("ALL MXFP4 LAYOUT TESTS PASS")
 

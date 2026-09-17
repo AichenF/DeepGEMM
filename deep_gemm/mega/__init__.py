@@ -234,13 +234,14 @@ def transform_mxfp4_weights_for_mega_moe_sm90(
 
     Only ``group_size`` differs (32 vs 16), so a BK128 fused row carries 4 E8M0
     scale bytes instead of 8 UE4M3 bytes and leaves 12 padding bytes instead of
-    8. The 80-byte row stride is kept identical so the same K-major TMA
-    descriptor path is reused, and the sign braid is shared verbatim because it
-    only permutes the packed FP4 nibbles, which are group-size independent.
+    8. The sign braid is shared verbatim because it only permutes the packed FP4
+    nibbles, which are group-size independent. The rows are then regrouped into
+    contiguous per-tile blocks, which is what the kernel bulk-copies.
     """
     block_n, block_k, group_size = 256, 128, 32
     from ..quantization_mxfp4 import (
         mxfp4_fuse_packed_with_scale_tile_major,
+        mxfp4_fused_to_tile_contiguous,
         mxfp4_scale_to_tile_major,
     )
     l1_packed, l1_scale = l1_weights
@@ -253,11 +254,13 @@ def transform_mxfp4_weights_for_mega_moe_sm90(
     l1_packed_il, l1_scale_il = _interleave_l1_weights((l1_packed, l1_scale))
     l1_scale_tm = mxfp4_scale_to_tile_major(l1_scale_il, block_n=block_n, block_k=block_k, group_size=group_size)
     l2_scale_tm = mxfp4_scale_to_tile_major(l2_scale, block_n=block_n, block_k=block_k, group_size=group_size)
-    l1_packed_out = _braid_nvfp4_mode2_signs(mxfp4_fuse_packed_with_scale_tile_major(
-        l1_packed_il.contiguous(), l1_scale_tm, block_k=block_k)
+    l1_packed_out = mxfp4_fused_to_tile_contiguous(_braid_nvfp4_mode2_signs(
+        mxfp4_fuse_packed_with_scale_tile_major(
+            l1_packed_il.contiguous(), l1_scale_tm, block_k=block_k))
     )
-    l2_packed_out = _braid_nvfp4_mode2_signs(mxfp4_fuse_packed_with_scale_tile_major(
-        l2_packed.contiguous(), l2_scale_tm, block_k=block_k)
+    l2_packed_out = mxfp4_fused_to_tile_contiguous(_braid_nvfp4_mode2_signs(
+        mxfp4_fuse_packed_with_scale_tile_major(
+            l2_packed.contiguous(), l2_scale_tm, block_k=block_k))
     )
     setattr(l1_packed_out, _SM90_MXFP4_H20_FUSED_LAYOUT_ATTR,
             _SM90_MXFP4_H20_FUSED_LAYOUT)

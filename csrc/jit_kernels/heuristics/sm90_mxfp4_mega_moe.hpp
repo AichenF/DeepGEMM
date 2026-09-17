@@ -10,6 +10,9 @@
 namespace deep_gemm {
 
 static constexpr int kSM90MXFP4BStoragePerKBlock = 80;
+// Weight tiles are stored contiguously at a fixed row count, so the layout
+// is independent of the BLOCK_N the selector picks.
+static constexpr int kSM90MXFP4BTileRows = 128;
 
 struct SM90MXFP4H200FusedConfig {
     static constexpr int kBlockK = 128;

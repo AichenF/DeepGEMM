@@ -219,11 +219,13 @@ sm90_mxfp4_mega_moe_h200_fused_impl(
         const __grid_constant__ layout::SymBuffer<kNumRanks> sym_buffer,
         const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts,
         const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts_sf,
-        const __grid_constant__ cute::TmaDescriptor tensor_map_l1_weights,
         const __grid_constant__ cute::TmaDescriptor tensor_map_l1_output,
         const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts,
         const __grid_constant__ cute::TmaDescriptor tensor_map_l2_acts_sf,
-        const __grid_constant__ cute::TmaDescriptor tensor_map_l2_weights,
+        // Weights are bulk-copied a tile at a time, not addressed through a
+        // tensor map: the tile is contiguous, so there is no shape to describe.
+        const uint8_t* __restrict__ l1_weights,
+        const uint8_t* __restrict__ l2_weights,
         const float* __restrict__ l1_global_scales,
         const float* __restrict__ l2_global_scales) {
     constexpr uint32_t BLOCK_K = 128;

@@ -42,11 +42,11 @@ public:
         layout::SymBuffer<> sym_buffer_ptrs;
         CUtensorMap tensor_map_l1_acts;
         CUtensorMap tensor_map_l1_acts_sf;
-        CUtensorMap tensor_map_l1_weights;
         CUtensorMap tensor_map_l1_output;
         CUtensorMap tensor_map_l2_acts;
         CUtensorMap tensor_map_l2_acts_sf;
-        CUtensorMap tensor_map_l2_weights;
+        const uint8_t* l1_weights;
+        const uint8_t* l2_weights;
         const float* l1_global_scales;
         const float* l2_global_scales;
         LaunchArgs launch_args;
@@ -124,11 +124,11 @@ static void __instantiate_kernel() {{
             args.sym_buffer_ptrs,
             args.tensor_map_l1_acts,
             args.tensor_map_l1_acts_sf,
-            args.tensor_map_l1_weights,
             args.tensor_map_l1_output,
             args.tensor_map_l2_acts,
             args.tensor_map_l2_acts_sf,
-            args.tensor_map_l2_weights,
+            args.l1_weights,
+            args.l2_weights,
             args.l1_global_scales,
             args.l2_global_scales));
     }
@@ -188,12 +188,6 @@ static void sm90_mxfp4_h200_fused_mega_moe(
         cute::UMMA::Major::MN, l1_acts_sf,
         config.num_padded_sf_pool_tokens, hidden,
         config.block_m, kL1ScaleGranK, 1, 0);
-    const auto tensor_map_l1_weights = make_tma_2d_desc(
-        l1_weights, static_cast<int>(l1_weights.size(2)),
-        num_experts_per_rank * intermediate_hidden * 2,
-        kSM90MXFP4BStoragePerKBlock, config.block_n,
-        static_cast<int>(l1_weights.stride(-2)), 0);
-
     const int l1_output_store_block_n = config.block_n / 2;
     const auto tensor_map_l1_output = make_tma_2d_desc(
         l2_acts, intermediate_hidden, config.num_max_pool_tokens,
@@ -207,11 +201,6 @@ static void sm90_mxfp4_h200_fused_mega_moe(
         cute::UMMA::Major::MN, l2_acts_sf,
         config.num_padded_sf_pool_tokens, intermediate_hidden,
         config.block_m, l2_scale_gran_k, 1, 0);
-    const auto tensor_map_l2_weights = make_tma_2d_desc(
-        l2_weights, static_cast<int>(l2_weights.size(2)),
-        num_experts_per_rank * hidden,
-        kSM90MXFP4BStoragePerKBlock, config.block_n,
-        static_cast<int>(l2_weights.stride(-2)), 0);
     int* cumulative_stats_ptr = cumulative_local_expert_recv_stats.has_value() ?
         cumulative_local_expert_recv_stats->data_ptr<int>() : nullptr;
     const float* l1_global_scales_ptr = l1_global_scales.has_value() ?
@@ -240,11 +229,11 @@ static void sm90_mxfp4_h200_fused_mega_moe(
         .sym_buffer_ptrs = layout::SymBuffer<>(sym_buffer_ptrs, rank_idx),
         .tensor_map_l1_acts = tensor_map_l1_acts,
         .tensor_map_l1_acts_sf = tensor_map_l1_acts_sf,
-        .tensor_map_l1_weights = tensor_map_l1_weights,
         .tensor_map_l1_output = tensor_map_l1_output,
         .tensor_map_l2_acts = tensor_map_l2_acts,
         .tensor_map_l2_acts_sf = tensor_map_l2_acts_sf,
-        .tensor_map_l2_weights = tensor_map_l2_weights,
+        .l1_weights = reinterpret_cast<const uint8_t*>(l1_weights.data_ptr()),
+        .l2_weights = reinterpret_cast<const uint8_t*>(l2_weights.data_ptr()),
         .l1_global_scales = l1_global_scales_ptr,
         .l2_global_scales = l2_global_scales_ptr,
         .launch_args = LaunchArgs(

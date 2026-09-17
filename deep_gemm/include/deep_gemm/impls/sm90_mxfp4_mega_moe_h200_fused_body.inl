@@ -31,11 +31,9 @@
     if (warp_idx == 0 and cute::elect_one_sync()) {
         cute::prefetch_tma_descriptor(&tensor_map_l1_acts);
         cute::prefetch_tma_descriptor(&tensor_map_l1_acts_sf);
-        cute::prefetch_tma_descriptor(&tensor_map_l1_weights);
         cute::prefetch_tma_descriptor(&tensor_map_l1_output);
         cute::prefetch_tma_descriptor(&tensor_map_l2_acts);
         cute::prefetch_tma_descriptor(&tensor_map_l2_acts_sf);
-        cute::prefetch_tma_descriptor(&tensor_map_l2_weights);
     }
 
     // =====================================================================
@@ -169,6 +167,14 @@
     constexpr uint32_t B_LOAD_BYTES_PER_ROW = 80u;
     constexpr uint32_t SMEM_PACKED_B_SIZE_PER_STAGE =
         LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW * sizeof(b_dtype_t);
+    // Weight tiles are stored contiguously at a fixed row count so the layout
+    // does not depend on the selected BLOCK_N.
+    constexpr uint32_t kBTileRows = 128u;
+    constexpr uint32_t kBTileBytes = kBTileRows * B_LOAD_BYTES_PER_ROW;
+    DG_STATIC_ASSERT(LOAD_BLOCK_N % kBTileRows == 0,
+                     "BLOCK_N must be a whole number of weight tiles");
+    DG_STATIC_ASSERT(L1_SHAPE_N % kBTileRows == 0 && L2_SHAPE_N % kBTileRows == 0,
+                     "Weight N must be a whole number of weight tiles");
     // L1 and L2 each consume one per-128 activation scale per row and K tile.
     constexpr uint32_t kL2SFAHalfStride =
         math::constexpr_align<uint32_t>(BLOCK_M * sizeof(float), 128u) / sizeof(float);
@@ -804,22 +810,32 @@
                                      const uint32_t& valid_m) {
             using BlockPhaseTag = std::remove_cv_t<std::remove_reference_t<decltype(block_phase)>>;
             constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
-            const auto tensor_map_b_ptr = kBlockIsL2 ?
-                &tensor_map_l2_weights : &tensor_map_l1_weights;
+            const uint8_t* b_base = kBlockIsL2 ? l2_weights : l1_weights;
             constexpr uint32_t shape_n = kBlockIsL2 ? L2_SHAPE_N : L1_SHAPE_N;
+            // One tile is `kBTileRows` fused rows laid out contiguously, so a
+            // stage is `BLOCK_N / kBTileRows` bulk copies of adjacent tiles.
+            constexpr uint32_t kNumTileLoads = LOAD_BLOCK_N / kBTileRows;
+            constexpr uint32_t kNumNTiles = shape_n / kBTileRows;
 
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 empty_barriers[stage_idx]->wait(phase ^ 1);
 
-                const uint32_t n_idx = local_expert_idx * shape_n + n_block_idx * BLOCK_N;
-                // NVFP4 fused B+scale layout stores 64B packed FP4 + 8B
-                // UE4M3 scale + 8B zero padding per BK128 row.
-                const uint32_t k_idx = k_block_idx * B_LOAD_BYTES_PER_ROW;
+                const uint32_t n_tile_idx =
+                    local_expert_idx * kNumNTiles + n_block_idx * kNumTileLoads;
                 if (cute::elect_one_sync()) {
-                    tma::copy<B_LOAD_BYTES_PER_ROW, LOAD_BLOCK_N, 0, b_dtype_t>(
-                        tensor_map_b_ptr, full_barriers[stage_idx],
-                        smem_packed_b[stage_idx],
-                        k_idx, n_idx, 1);
+                    #pragma unroll
+                    for (uint32_t i = 0; i < kNumTileLoads; ++ i) {
+                        const uint64_t tile_idx = static_cast<uint64_t>(n_tile_idx + i) *
+                            num_k_blocks + k_block_idx;
+                        // EVICT_NORMAL, not tma_load_1d's streaming default:
+                        // above the swapAB tiers an expert spans several
+                        // m-blocks, and those CTAs share these tiles via L2.
+                        ptx::tma_load_1d(
+                            smem_packed_b[stage_idx] + i * kBTileBytes,
+                            b_base + tile_idx * kBTileBytes,
+                            full_barriers[stage_idx], kBTileBytes,
+                            cute::TMA::CacheHintSm90::EVICT_NORMAL);
+                    }
                     full_barriers[stage_idx]->arrive_and_expect_tx(
                         SMEM_PACKED_B_SIZE_PER_STAGE);
                 }
