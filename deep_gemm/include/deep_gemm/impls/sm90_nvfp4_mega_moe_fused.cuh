@@ -331,12 +331,19 @@ template <
     bool kRSSwapABRequested,
     bool kSingleActiveDispatchWarp,
     bool kUseMode2RowDecoder,
-    bool kUseInterleavedScheduler
+    bool kUseInterleavedScheduler,
+    // Counter-based synchronisation (see the body): push dispatch + DONE flags
+    // (replaces NVLink barrier #1), fine-grained combine (replaces barrier #2),
+    // rotated pool without the workspace-clean barrier (#3).
+    bool kPushDispatchRequested = false,
+    bool kFineCombineRequested = false,
+    bool kNoCleanBarrierRequested = false
 >
 CUTLASS_GLOBAL __launch_bounds__(384, 1) void
 sm90_nvfp4_mega_moe_fused_impl(
         void* y,
         int* cumulative_local_expert_recv_stats,
+        unsigned long long* phase_stamps,
         const uint32_t num_tokens,
         const __grid_constant__ layout::SymBuffer<8> sym_buffer,
         const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts,

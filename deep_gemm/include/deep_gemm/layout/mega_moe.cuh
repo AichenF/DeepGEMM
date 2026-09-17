@@ -5,7 +5,27 @@
 #include <deep_gemm/common/math.cuh>
 #include <deep_gemm/common/exception.cuh>
 
+// Bounded spin (trap after ~10 s at 2 GHz) used by the counter-based
+// synchronisation paths (push dispatch DONE flags, fine-grained combine).
+#ifndef DG_SPIN_WHILE
+#define DG_SPIN_WHILE(cond, tag) \
+    for (long long __spin_t0 = clock64(); (cond); ) { \
+        if (clock64() - __spin_t0 > 20000000000ll) { \
+            printf("DeepGEMM counter spin timeout: tag=%d blk=%d thr=%d\n", \
+                   static_cast<int>(tag), static_cast<int>(blockIdx.x), static_cast<int>(threadIdx.x)); \
+            asm volatile("trap;"); \
+        } \
+    }
+#endif
+
 namespace deep_gemm::layout {
+
+// Fine-grained combine (kernel `kFineCombine`): per-CTA epilogue -> dispatch mailbox
+// (32 B per SM, ring of 4 entries) and one arrival counter per local token.
+static constexpr uint32_t kSM90FineCombineMaxSMs = 160;
+static constexpr uint32_t kSM90FineCombineMailboxBytes = 32;
+static constexpr uint32_t kSM90FineCombineRingSize = 4;
+static constexpr uint32_t kSM90FineCombineDoneEntry = 0xffffffffu;
 
 static constexpr int kNumCandidateBlockMs = 7;
 static constexpr int kCandidateBlockM[kNumCandidateBlockMs] = {8, 16, 32, 64, 96, 128, 192};
@@ -82,14 +102,20 @@ struct Workspace {
         // Expert send/recv count
         num_bytes += num_experts * sizeof(uint64_t) * 2;
 
-        // Expert recv count sum
-        num_bytes += num_experts_per_rank * sizeof(uint64_t);
+        // Expert recv count sum (two sets: launch parity for the rotated push pool)
+        num_bytes += num_experts_per_rank * sizeof(uint64_t) * 2;
 
         // L1 arrival count (padded to even entry count for `uint64_t` alignment of L2 mask)
         num_bytes += math::align(num_max_pool_blocks, 2u) * sizeof(uint32_t);
 
         // L2 block arrival mask
         num_bytes += num_max_pool_blocks * sizeof(uint64_t);
+
+        // Fine-grained combine arrival counters, one per local token (padded)
+        num_bytes += math::align<uint64_t>(num_max_tokens_per_rank * sizeof(int), 8);
+
+        // Fine-grained combine per-CTA mailboxes (epilogue -> dispatch warp)
+        num_bytes += kSM90FineCombineMaxSMs * kSM90FineCombineMailboxBytes;
 
         // Dispatch pulling source token-topk
         num_bytes += num_experts_per_rank * num_ranks * num_max_recv_tokens_per_expert * sizeof(int);
@@ -142,6 +168,31 @@ struct Workspace {
     }
 
     CUTLASS_DEVICE
+    int* get_push_done_count_ptr() const {
+        return math::advance_ptr<int>(base, 40u);
+    }
+
+    CUTLASS_DEVICE
+    uint32_t* get_push_epoch_ptr() const {
+        return math::advance_ptr<uint32_t>(base, 44u);
+    }
+
+    CUTLASS_DEVICE
+    uint32_t* get_push_cta_arrival_ptr() const {
+        return math::advance_ptr<uint32_t>(base, 48u);
+    }
+
+    CUTLASS_DEVICE
+    uint32_t* get_combine_epoch_ptr() const {
+        return math::advance_ptr<uint32_t>(base, 52u);
+    }
+
+    CUTLASS_DEVICE
+    uint32_t* get_combine_ticket_ptr(const uint32_t& parity) const {
+        return math::advance_ptr<uint32_t>(base, 56u) + (parity & 1u);
+    }
+
+    CUTLASS_DEVICE
     uint64_t* get_expert_send_count_ptr(const uint32_t& expert_idx = 0) const {
         return math::advance_ptr<uint64_t>(base, kNumBarrierSignalBytes) + expert_idx;
     }
@@ -157,9 +208,15 @@ struct Workspace {
         return get_expert_send_count_ptr(num_experts * 2) + expert_idx;
     }
 
+    // Second recv-count-sum set (push dispatch with the rotated pool: launch parity 1)
+    CUTLASS_DEVICE
+    uint64_t* get_expert_recv_count_sum_ptr(const uint32_t& expert_idx, const uint32_t& parity) const {
+        return get_expert_send_count_ptr(num_experts * 2) + (parity & 1u) * num_experts_per_rank + expert_idx;
+    }
+
     CUTLASS_DEVICE
     uint32_t* get_l1_arrival_count_ptr(const uint32_t& pool_block_idx = 0) const {
-        const auto base = get_expert_recv_count_sum_ptr(num_experts_per_rank);
+        const auto base = get_expert_recv_count_sum_ptr(num_experts_per_rank * 2);
         return reinterpret_cast<uint32_t*>(base) + pool_block_idx;
     }
 
@@ -170,11 +227,28 @@ struct Workspace {
         return reinterpret_cast<uint64_t*>(base) + pool_block_idx;
     }
 
+    // Fine-grained combine: per-local-token arrival counter (see the kernel body)
+    CUTLASS_DEVICE
+    int* get_combine_arrival_count_ptr(const uint32_t& token_idx = 0) const {
+        const auto base = get_l2_arrival_mask_ptr(num_max_pool_blocks);
+        return reinterpret_cast<int*>(base) + token_idx;
+    }
+
+    // Fine-grained combine per-CTA mailbox (32 B per SM, never reset):
+    //   [0] producer sequence (st.release.gpu), [1] consumer sequence,
+    //   [4..7] 4-entry ring indexed by sequence & 3.
+    CUTLASS_DEVICE
+    uint32_t* get_combine_mailbox_ptr(const uint32_t& sm_idx) const {
+        const auto base = get_combine_arrival_count_ptr(0) +
+            math::align<uint64_t>(num_max_tokens_per_rank * sizeof(int), 8) / sizeof(int);
+        return reinterpret_cast<uint32_t*>(base) + sm_idx * (kSM90FineCombineMailboxBytes / sizeof(uint32_t));
+    }
+
     // For dispatch pulling
     CUTLASS_DEVICE
     uint32_t* get_src_token_topk_idx_ptr(
         const uint32_t& expert_idx = 0, const uint32_t& rank_idx = 0, const uint32_t& token_idx = 0) const {
-        const auto base = get_l2_arrival_mask_ptr(num_max_pool_blocks);
+        const auto base = get_combine_mailbox_ptr(kSM90FineCombineMaxSMs);
         return reinterpret_cast<uint32_t*>(base) +
             expert_idx * (num_ranks * num_max_recv_tokens_per_expert) +
             rank_idx * num_max_recv_tokens_per_expert + token_idx;

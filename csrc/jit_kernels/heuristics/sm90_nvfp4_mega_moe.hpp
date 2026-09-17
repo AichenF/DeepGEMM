@@ -763,6 +763,49 @@ static SM90NVFP4FusedPlan select_sm90_nvfp4_fused(
     };
 }
 
+// Counter-based synchronisation policy for the fused dynamic kernel (see the
+// kernel body): push dispatch + DONE flags (replaces NVLink barrier #1),
+// fine-grained combine (replaces barrier #2), rotated pool without the
+// workspace-clean barrier (#3). Each step is enabled up to a per-model M
+// boundary (tokens per rank) measured on 8 x H20-3e; 0 disables the step.
+struct SM90NVFP4CounterPolicy {
+    bool push_dispatch;
+    bool fine_combine;
+    bool no_clean_barrier;
+};
+
+struct SM90NVFP4CounterBucket {
+    int hidden;
+    int max_tokens_push;
+    int max_tokens_fine_combine;
+    int max_tokens_no_clean_barrier;
+};
+
+// H20 (78 SMs) boundaries; H200 is not measured and keeps the barrier path.
+static constexpr std::array<SM90NVFP4CounterBucket, 3> kSM90NVFP4H20CounterBuckets {{
+    {4096, 0, 0, 0},   // Flash
+    {7168, 0, 0, 0},   // Pro
+    {6144, 0, 0, 0},   // MiMo
+}};
+
+static SM90NVFP4CounterPolicy select_sm90_nvfp4_counter_policy(
+        const SM90NVFP4FusedInput& input,
+        const bool use_interleaved_scheduler) {
+    SM90NVFP4CounterPolicy policy {false, false, false};
+    if (!use_interleaved_scheduler ||
+        input.num_sms != SM90NVFP4FusedShape::kH20NumSMs)
+        return policy;
+    for (const auto& bucket : kSM90NVFP4H20CounterBuckets) {
+        if (bucket.hidden != input.hidden)
+            continue;
+        policy.push_dispatch = input.num_tokens <= bucket.max_tokens_push;
+        policy.fine_combine = input.num_tokens <= bucket.max_tokens_fine_combine;
+        policy.no_clean_barrier = policy.push_dispatch &&
+            input.num_tokens <= bucket.max_tokens_no_clean_barrier;
+    }
+    return policy;
+}
+
 static std::string get_sm90_nvfp4_small_jit_flags(const bool fast_math) {
     const std::string register_flags =
         "--ptxas-options=--register-usage-level=5";

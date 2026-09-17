@@ -288,6 +288,33 @@ CUTLASS_DEVICE longlong4_t ld_gez_pred(const longlong4_t* ptr, const int& pred) 
     return ret;
 }
 
+
+CUTLASS_DEVICE int ld_volatile(const int* ptr) {
+    int ret;
+    asm volatile("ld.volatile.global.s32 %0, [%1];" : "=r"(ret) : "l"(ptr));
+    return ret;
+}
+
+CUTLASS_DEVICE uint64_t atomic_add_rel_gpu(const uint64_t* ptr, const uint64_t& value) {
+    uint64_t ret;
+    asm volatile("atom.release.gpu.global.add.u64 %0, [%1], %2;" : "=l"(ret) : "l"(ptr), "l"(value));
+    return ret;
+}
+
+CUTLASS_DEVICE uint32_t atomic_add_acq_rel(const uint32_t* ptr, const uint32_t& value) {
+    uint32_t ret;
+    asm volatile("atom.acq_rel.gpu.global.add.u32 %0, [%1], %2;" : "=r"(ret) : "l"(ptr), "r"(value) : "memory");
+    return ret;
+}
+
+CUTLASS_DEVICE void st_rel_gpu(const uint32_t* ptr, const uint32_t& value) {
+    asm volatile("st.release.gpu.global.u32 [%0], %1;" :: "l"(ptr), "r"(value));
+}
+
+CUTLASS_DEVICE void st_rel_sys(const uint32_t* ptr, const uint32_t& value) {
+    asm volatile("st.release.sys.global.u32 [%0], %1;" :: "l"(ptr), "r"(value));
+}
+
 /// Prefetch
 CUTLASS_DEVICE void prefetch_l1(void *ptr) {
     asm volatile("prefetch.global.L1 [%0];" :: "l"(ptr));
