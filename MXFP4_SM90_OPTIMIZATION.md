@@ -484,13 +484,38 @@ target is explicit: **cut 161 ns, 24 %, off the consumer** and the stream reache
 4.4 TB/s, the weight time 279 -> 214 us, and the kernel ~272 us, which is 72 % of
 the 196 us roofline.
 
-What that 161 ns is made of is the part still not pinned down. It is not the
-decode's issue cost — 10 % off the decode standalone moved the kernel 0.7 %
-(section 8), which the model above would have predicted as ~5 %. That
-discrepancy is the open question: the standalone decode harness does not
-reproduce the in-kernel consumer, most likely because register pressure and the
-WGMMA's own issue slots differ. Closing it wants either a profiler or a
-consumer-side harness that models the WGMMA too; neither exists here yet.
+That 161 ns is now pinned down. A harness that runs the real consumer — the RS
+decode feeding the swapAB WGMMA, both halves, as `decode_rs_half` and
+`issue_half` do it — reproduces 544 ns of it (the rest is the epilogue, the
+barriers and the A/SF loads it omits). Within that:
+
+| consumer variant | ns/stage/SM |
+|---|---:|
+| as shipped | 545.1 |
+| **the same with a free scale lookup** | **484.5** |
+| one lookup per row instead of four | 488.6 |
+| decode alone, no WGMMA (earlier harness) | 490 |
+
+Three things follow. The **WGMMA adds only ~54 ns** on top of the decode, so the
+transposed tile's narrow N is not what costs. The **scale lookup is 60 ns**, and
+collapsing four per row into one recovers 56 — but that is only correct when all
+four groups in a K-block share an E8M0 exponent, which they generally do not,
+and a warp-uniform guard would fire too rarely to pay. And with a **free** lookup
+the consumer still costs 484 ns against a 522 ns load.
+
+That last number is the answer to the whole question. Feeding 4.4 TB/s needs the
+dequant to produce 32768 values per 522 ns, about 32 per cycle per SM; it
+produces about 34. **MXFP4 on Hopper sits right at the edge of being
+dequant-bound** — the format has no FP4 MMA here, so every weight byte is
+unpacked in the ALU before it can be multiplied, and that unpacking is as
+expensive as fetching it. Even a free lookup leaves the kernel at 64 % of
+roofline. Reaching 70-80 % is not a scheduling or layout problem; it needs
+either fewer dequantised values per byte of weight, or hardware that multiplies
+FP4 directly.
+
+It also resolves why the decode reorder disappointed: 10 % off the decode
+*alone* is nothing once the WGMMA is there to overlap with, which is exactly
+what both the harness (543.8 vs 544.0) and the kernel (0.7 %) show.
 
 Two levers, both quantified:
 
