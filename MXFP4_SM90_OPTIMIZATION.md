@@ -174,7 +174,34 @@ and is worse (§6).
   the constraint the kernel actually has (`swap_ab => BLOCK_M <= 24`), which is
   what had made the larger-batch swapAB experiments unreachable.
 
-### 5.5 Test and harness fixes found on the way
+### 5.5 Contiguous weight tiles
+
+The fused weight tensor was `(E, N, k_blocks * 80)`: N-major, so the
+`BLOCK_N` rows a pipeline stage wants sat `k_blocks * 80` bytes apart and the
+stage load was `BLOCK_N` strided 80-byte TMA requests. Section 7.2 measures what
+that costs — 63 % of the device's streaming bandwidth.
+
+`mxfp4_fused_to_tile_contiguous` regroups the same rows into
+`(E, n_tiles * k_blocks, 128 * 80)`, one contiguous block per
+`(expert, 128-row n-tile, k-block)`, and the loader issues `BLOCK_N / 128`
+`cp.async.bulk` copies instead of a 2D TMA. Properties that made this cheap:
+
+* It is a **pure byte permutation** done offline in the weight transform, so
+  every quantized value, scale byte and sign-braid position is untouched. The
+  correctness sweep returns the same cosine to four decimals.
+* The rows land in shared memory in the same order at the same 80-byte stride,
+  so the **decoder is not touched at all** — no new shared-memory bank behaviour
+  to reason about, which is where the earlier layout attempt died (section 8).
+* The tile row count is a constant 128 rather than `BLOCK_N`, so the offline
+  layout stays valid for every `BLOCK_N` the selector can pick.
+* A bulk copy has no descriptor, so the two weight `CUtensorMap`s and their
+  prefetches go away; the kernel takes two base pointers instead.
+
+`EVICT_NORMAL` is passed explicitly rather than taking `tma_load_1d`'s streaming
+default, because above the swapAB tiers one expert spans several m-blocks and
+those CTAs share these tiles through L2.
+
+### 5.6 Test and harness fixes found on the way
 
 * `tests/compile_all_megamoe_kernels.sh` could not instantiate the MXFP4 kernel
   at all — its argument list predated the `kNumSMs` and shape template
@@ -261,18 +288,106 @@ Three regimes, and they are qualitatively different:
    33.7 %, and 63.2 % vs 77.6 % on H20-3e — a 20-25 % deficit that is the dequant
    tax, not a scheduling problem.
 
-### 7.1 The biggest lever left, quantified
+### 7.1 Splitting the runtime three ways
 
-The fused weight row is 80 B per 128 values: 64 B of packed E2M1, 4 B of E8M0,
-and **12 B of padding** that exists only because the row is TMA-addressed and
-must be a multiple of 16. MXFP4 needs 68. That padding is **15 % of the byte
-stream that dominates the decode regime** — the weight floor would go 236 -> 201
-us. Splitting the scales into their own tile-major TMA (the transform already
-produces exactly that tensor, and the host already validates it) would recover
-it, and would also shrink the per-stage shared memory from 20 KB to 17 KB.
+`kNumRanks` became a template parameter, so the same kernel runs at EP1 — one
+rank, no all-to-all, no cross-rank barriers. Running EP1 with 48 experts against
+EP8 with 384 gives each GPU the same weight volume and the same routed-token
+count, so the difference is exactly what the collective costs. H200, MXFP4:
 
-This is MXFP4-exclusive: NVFP4 needs 72 B of payload and pads to 80 anyway.
-It is not implemented here.
+| M | EP1 / 48 experts | EP8 / 384 experts | collective |
+|---:|---:|---:|---:|
+| 8 | 287.8 us (34 exp) | 368.3 us (37 exp) | +80.5 |
+| 32 | 385.1 us (47 exp) | 415.6 us (47 exp) | +30.5 |
+| 64 | 407.1 us (47 exp) | 450.9 us (48 exp) | +43.8 |
+| 128 | 442.5 us (47 exp) | 474.4 us (48 exp) | +31.9 |
+| 256 | 455.2 us (47 exp) | 511.1 us (48 exp) | +55.9 |
+
+A linear fit over EP1's M=32..256, where the touched-expert count is already
+saturated, gives **375 us + 0.313 us/token**. The 375 us intercept is the weight
+stream plus everything that does not scale with tokens. With the weight stream
+measured independently at 3.52 TB/s (the expert-count ablation), H200 at M=32
+decomposes as:
+
+| part | time | share |
+|---|---:|---:|
+| weight stream, 1.109 GB at 3.52 TB/s | 316 us | 76 % |
+| local fixed cost (launch, grid sync, epilogues, combine) | ~59 us | 14 % |
+| cross-rank dispatch + combine + NVLink barriers | ~40 us | 10 % |
+| **total** | **415.6 us** | |
+
+The collective is format-independent: it costs FP8, NVFP4 and MXFP4 the same, so
+no weight-format work can remove it. That puts a hard ceiling on any
+roofline percentage quoted against weight bytes alone.
+
+### 7.2 The load path, measured in isolation
+
+The roofline above assumes the weight bytes move at HBM peak. They did not, and
+the reason was not the byte count. Two standalone measurements on the same
+H200:
+
+*What the device can actually stream* (torch, 512 MiB buffers): 4.217 TB/s for a
+copy, **4.154 TB/s read-only**, against a 4.8 TB/s theoretical peak — so ~87 %
+is the practical ceiling, not 100 %.
+
+*What each weight-tile addressing scheme sustains* — a standalone 132-CTA
+pipeline that issues the loads and does nothing else (`work/tmabw.cu`), 1.3-1.6
+GB working set, 6 stages:
+
+| addressing | TB/s | bytes/iter |
+|---|---:|---:|
+| 2D TMA, 80 B rows, `k_blocks * 80` stride (what the kernel did) | **2.769** | 1557 MB |
+| 2D TMA, 64 B rows + separate scale row | 3.406 | 1324 MB |
+| 1D bulk copy, contiguous 17408 B tile | 4.413 | 1324 MB |
+| **1D bulk copy, contiguous 20480 B tile (same bytes as today)** | **4.487** | 1557 MB |
+| 1D bulk copy, contiguous 16384 B tile | 4.269 | 1246 MB |
+
+A pipeline stage wanted `BLOCK_N` rows of one k-block, and those rows sat
+`k_blocks * 80` bytes apart, so the stage was 256 strided 80-byte requests. That
+pattern tops out at **63 % of what the same device streams contiguously**.
+Grouping the tile so its rows are adjacent moves the *identical* bytes 1.62x
+faster, and needs no change to the shared-memory image the decoder reads.
+
+This also settles the reverted experiment in section 8: its layout was right and
+its load instruction was right — the 25-40 % it lost came from elsewhere, not
+from the bulk copy.
+
+### 7.3 Where the kernel stands after contiguous tiles
+
+Same H200, same routing, `fp8` as the in-process control (its code is
+untouched, and across the two EP1 runs it reproduces to 0.2 %):
+
+| | EP1 M=32 | EP8 M=32 |
+|---|---:|---:|
+| before | 385.1 us | 415.6 us |
+| after | **345.5 us** | **390.3 us** |
+| weight bytes (47 experts) | 1.109 GB | 1.109 GB |
+| at 4.8 TB/s theoretical | 231 us -> **66.9 %** | 231 us -> **59.2 %** |
+| at 4.154 TB/s achievable | 267 us -> **77.2 %** | 267 us -> **68.4 %** |
+
+Backing the weight stream out of the EP1 intercept puts it at **4.01 TB/s, 97 %
+of what this device streams**. The load path is closed; what is left above the
+roofline is not the GEMM:
+
+| part | M=32 EP8 | note |
+|---|---:|---|
+| weight stream at 4.01 TB/s | 276 us | 97 % of achievable — no headroom |
+| local fixed cost | ~59 us | launch, grid sync, epilogues, combine |
+| collective | ~40 us | format-independent; FP8 and NVFP4 pay it too |
+| token-scaling | ~10 us | |
+
+Reaching 70-80 % against the *theoretical* peak would mean removing ~60 us more
+of that ~99 us of fixed cost. That is dispatch/combine/barrier work shared with
+every other MegaMoE format, not something a weight-format change can reach.
+Against the bandwidth the part actually delivers, the single-rank kernel is
+already at 77 %.
+
+The one weight-side lever still open is the 12 B of padding in each 80 B row
+(section 7.2's variant C: 13.5 % less load time). It needs the scales split into
+their own plane, which drops the shared-memory row stride from 80 B to 64 B —
+16 words, so a 128-bit decoder load goes from conflict-free to 4-way
+bank-conflicted. Recovering it needs the tile stored 16-byte-chunk-major so the
+decoder reads at a 16 B stride. Not implemented here.
 
 ---
 
@@ -282,6 +397,7 @@ Recorded so they are not retried:
 
 | idea | result |
 |---|---|
+| Contiguous weight tiles via one 1D bulk copy **with the scales split out** (64 B rows) | **-25 to -40 %** at H20 M=32-64, while moving 15 % fewer bytes. Section 7.2 later showed the load itself was 1.6x faster, so the loss was on the consumer side: a 64 B shared-memory row stride is 16 words, which 4-way bank-conflicts the decoder's 128-bit loads where 80 B (20 words) is conflict-free. Contiguity alone, keeping the 80 B row, is what shipped |
 | Prefetch: decode K+1 under K's in-flight WGMMAs (two decoded slots, `warpgroup_wait<1>`) | **+5.9 / +7.1 / +10.8 %** at MiMo/H20 M=64 over three runs. Its prefetch waits on stage K+1's TMA barrier, and that wait sits between the WGMMA issue and `arrive_empty(K)`, so it delays the loader by exactly what it saves on the decode |
 | `--ptxas-options=--register-usage-level=5` | no effect: 168 regs, 0 spill, identical QGMMA/DEPBAR, on both the SS and RS kernels |
 | Pipeline depth alone (SS path) | ~1 %, and it flipped sign between runs — inside the drift band, so the shipped depths come from the RS sweep where the effect is outside it |
@@ -349,6 +465,42 @@ adopted here (§5.3), the cross-stage half was measured and rejected (§6).
 The FP8 MegaMoE is the same kernel in both runs and moves by only 1-4 % between
 them, which is what bounds the drift these speedups are measured against.
 
+
+### 9.4 Contiguous weight tiles, H200
+
+`fp8` runs in the same process and its code is untouched, so the ratio to it
+cancels the cross-process drift. `nvfp4` still uses the strided descriptor path
+and is the in-process control for the layout change itself.
+
+EP8 / 384 experts, 8x H200:
+
+| M | mxfp4/fp8 before | mxfp4/fp8 after | gain | mxfp4/nvfp4 before | mxfp4/nvfp4 after |
+|---:|---:|---:|---:|---:|---:|
+| 8 | 0.843 | 0.726 | **-13.9 %** | 0.999 | **0.916** |
+| 16 | 0.850 | 0.717 | **-15.6 %** | 1.001 | **0.860** |
+| 32 | 0.806 | 0.725 | **-10.1 %** | 0.983 | **0.897** |
+| 64 | 0.831 | 0.741 | **-10.8 %** | 0.969 | **0.881** |
+| 128 | 0.901 | 0.820 | **-9.0 %** | 0.988 | 0.974 |
+| 256 | 0.924 | 0.871 | **-5.7 %** | 1.022 | **0.945** |
+
+EP1 / 48 experts, 1x H200 — no collective, and the fp8 anchor reproduces to
+0.2 % between the two runs, so these are absolute:
+
+| M | before (us) | after (us) | gain | fp8 anchor before / after |
+|---:|---:|---:|---:|---|
+| 8 | 287.8 | **253.5** | -11.9 % | 356.5 / 357.1 |
+| 32 | 385.1 | **345.5** | -10.3 % | 484.6 / 484.7 |
+| 64 | 407.1 | **374.8** | -7.9 % | 505.4 / 506.2 |
+| 128 | 442.5 | **422.3** | -4.6 % | 496.0 / 497.0 |
+| 256 | 455.2 | **433.7** | -4.7 % | 509.5 / 509.4 |
+
+8x H20-3e is **flat** (-0.2 to -2.5 %, inside that node's drift), and that is the
+expected result: H20 runs the same weight stream at 1.94 TB/s, 40 % of peak, so
+it is bound by its 78 SMs and not by the load. Making the load faster cannot
+help a kernel that is not waiting on it.
+
+Correctness after the change: 18/18 over M=1..1024 in both global-scale modes,
+cosine 0.9986-0.9990 — unchanged, as a pure byte permutation must be.
 
 ### 9.5 Large M — the tier this work does not touch
 
