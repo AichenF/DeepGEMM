@@ -447,19 +447,27 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                      "Push dispatch: strided pool must fit the token pool");
     DG_STATIC_ASSERT(!kFineCombine || kNumSMs <= layout::kSM90FineCombineMaxSMs,
                      "Too many SMs for the combine mailboxes");
-    // Launch epoch (push launches completed on this rank): read once per thread at
-    // kernel start, before any barrier, so SM0's bump in the cleanup cannot be
-    // observed by this launch. Selects the DONE target and the pool parity slot.
-    const uint32_t launch_epoch = kPushDispatch ?
-        ptx::ld_volatile(workspace.get_push_epoch_ptr()) : 0u;
-    const uint32_t pool_parity = kNoCleanBarrier ? (launch_epoch & 1u) : 0u;
-    const int push_done_target = static_cast<int>(kNumRanks * (launch_epoch + 1u));
-    const auto strided_pool_block = [&](const uint32_t& local_expert_idx, const uint32_t& m_block_idx) {
-        return (pool_parity * kNumExpertsPerRank + local_expert_idx) * kPushBlocksPerExpert + m_block_idx;
+    // Launch epoch (push launches completed on this rank): every role that needs it
+    // reads it at its own start, before any barrier of the launch, so SM0's bump in
+    // the cleanup (after every reader) cannot be observed by this launch. Selects
+    // the DONE target and the pool parity slot. Read inside the roles (not before
+    // the role split) so that no extra value is live across the split: ptxas
+    // re-schedules the math warps' code when the split-point pressure changes.
+    const auto read_launch_epoch = [&]() {
+        return kPushDispatch ? ptx::ld_volatile(workspace.get_push_epoch_ptr()) : 0u;
     };
-    const auto recv_count_sum_ptr = [&](const uint32_t& local_expert_idx) {
+    const auto epoch_pool_parity = [&](const uint32_t& epoch) {
+        return kNoCleanBarrier ? (epoch & 1u) : 0u;
+    };
+    const auto epoch_done_target = [&](const uint32_t& epoch) {
+        return static_cast<int>(kNumRanks * (epoch + 1u));
+    };
+    const auto strided_pool_block_p = [&](const uint32_t& parity, const uint32_t& local_expert_idx, const uint32_t& m_block_idx) {
+        return (parity * kNumExpertsPerRank + local_expert_idx) * kPushBlocksPerExpert + m_block_idx;
+    };
+    const auto recv_count_sum_ptr_p = [&](const uint32_t& parity, const uint32_t& local_expert_idx) {
         return kNoCleanBarrier ?
-            workspace.get_expert_recv_count_sum_ptr(local_expert_idx, pool_parity) :
+            workspace.get_expert_recv_count_sum_ptr(local_expert_idx, parity) :
             workspace.get_expert_recv_count_sum_ptr(local_expert_idx);
     };
 
@@ -498,12 +506,20 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         }
     };
 
+    // Pool parity of this launch for the task consumers (constant 0 unless the
+    // rotated pool is on; then one volatile load per role at first use).
+    uint32_t task_pool_parity = 0u;
+    bool task_pool_parity_read = !kNoCleanBarrier;
     const auto invoke_interleaved_task = [&](const task_info_t& task_info,
                                               auto&& func) {
+        if (!task_pool_parity_read) {
+            task_pool_parity = epoch_pool_parity(read_launch_epoch());
+            task_pool_parity_read = true;
+        }
         // Push dispatch: the dense task index stays the scheduling key; the
         // physical pool block is the fixed-stride one the source ranks wrote to.
         const uint32_t pool_block_idx = kStridedPool ?
-            strided_pool_block(task_info.local_expert_idx, task_info.m_block_idx) :
+            strided_pool_block_p(task_pool_parity, task_info.local_expert_idx, task_info.m_block_idx) :
             task_info.pool_block_idx;
         if (task_info.block_phase == sched::BlockPhase::Linear1) {
             func(std::integral_constant<sched::BlockPhase, sched::BlockPhase::Linear1>{},
@@ -526,8 +542,11 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
 
     const auto produce_interleaved_blocks = [&](auto&& func) {
         if constexpr (kPushDispatch) {
+            const uint32_t epoch = read_launch_epoch();
+            task_pool_parity = epoch_pool_parity(epoch);
+            task_pool_parity_read = true;
             interleaved_scheduler.fetch_expert_recv_count(
-                workspace.get_push_done_count_ptr(), push_done_target, pool_parity);
+                workspace.get_push_done_count_ptr(), epoch_done_target(epoch), task_pool_parity);
         } else {
             interleaved_scheduler.fetch_expert_recv_count();
         }
@@ -541,6 +560,8 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         }
     };
 
+    // Dispatch-role launch epoch / parity (read at the dispatch role's start)
+    uint32_t dispatch_epoch = 0u, dispatch_parity = 0u;
     const auto cleanup_workspace = [&]() {
         DG_STATIC_ASSERT(kNumSMs > 1, "Invalid SM count");
         if (sm_idx == 0) {
@@ -558,7 +579,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
             if constexpr (kPushDispatch) {
                 // Next launch's DONE target / pool parity (see `kPushDispatch`)
                 if (thread_idx == 0)
-                    *workspace.get_push_epoch_ptr() = launch_epoch + 1u;
+                    *workspace.get_push_epoch_ptr() = dispatch_epoch + 1u;
             }
             if constexpr (kCombineDynamic) {
                 // Next dynamic-combine launch's ticket word (zeroed one launch ahead:
@@ -571,16 +592,16 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
             }
         } else {
             for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
-                const auto num_recv_tokens = static_cast<uint32_t>(*recv_count_sum_ptr(i));
+                const auto num_recv_tokens = static_cast<uint32_t>(*recv_count_sum_ptr_p(dispatch_parity, i));
                 const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
                 const auto cleanup_pool_block_offset = kStridedPool ?
-                    strided_pool_block(i, 0) : scheduler.get_pool_block_offset(i);
+                    strided_pool_block_p(dispatch_parity, i, 0) : scheduler.get_pool_block_offset(i);
 
                 ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
 
                 DG_STATIC_ASSERT(kNumDispatchWarps >= 2, "Not enough dispatch warps");
                 if (warp_idx == 0) {
-                    *recv_count_sum_ptr(i) = 0;
+                    *recv_count_sum_ptr_p(dispatch_parity, i) = 0;
                 } else if (warp_idx == 1) {
                     if (cute::elect_one_sync() and cumulative_local_expert_recv_stats != nullptr)
                         ptx::red_add(cumulative_local_expert_recv_stats + i, static_cast<int>(num_recv_tokens));
@@ -613,6 +634,10 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
     // =====================================================================
     if (warp_idx < kNumDispatchWarps) {
         cutlass::arch::warpgroup_reg_dealloc<kNumDispatchRegisters>();
+        if constexpr (kPushDispatch) {
+            dispatch_epoch = read_launch_epoch();
+            dispatch_parity = epoch_pool_parity(dispatch_epoch);
+        }
 
         DG_STATIC_ASSERT(kNumTopk <= 32, "Invalid number of topk");
         constexpr uint32_t kNumActivateLanes = kNumTokensPerWarp * kNumTopk;
@@ -657,8 +682,8 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                     l1_sf_buffer.get_base_ptr<float>(),
                     l1_topk_weights_buffer.get_base_ptr<float>(),
                     workspace.get_token_src_metadata_ptr(0),
-                    recv_count_sum_ptr(0),
-                    pool_parity * kNumExpertsPerRank * kPushBlocksPerExpert,
+                    recv_count_sum_ptr_p(dispatch_parity, 0),
+                    dispatch_parity * kNumExpertsPerRank * kPushBlocksPerExpert,
                     num_tokens,
                     sm_idx * kNumActiveDispatchWarps + warp_idx,
                     lane_idx);
@@ -697,6 +722,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
             // lane, with release.gpu: the loaders' acquire on the count then also
             // covers the remotely written rows.
             if (warp_idx == 0 and sm_idx < kNumExpertsPerRank) {
+                const int push_done_target = epoch_done_target(dispatch_epoch);
                 if (lane_idx == 0) {
                     DG_SPIN_WHILE(ptx::ld_volatile(workspace.get_push_done_count_ptr()) - push_done_target < 0, 1094);
                     DG_SPIN_WHILE(ptx::ld_acq_sys(workspace.get_push_done_count_ptr()) - push_done_target < 0, 1095);
@@ -704,11 +730,11 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 }
                 __syncwarp();
                 const uint32_t num_recv_tokens = static_cast<uint32_t>(
-                    ptx::ld_volatile(recv_count_sum_ptr(sm_idx)));
+                    ptx::ld_volatile(recv_count_sum_ptr_p(dispatch_parity, sm_idx)));
                 const uint32_t num_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
                 for (uint32_t b = lane_idx; b < num_blocks; b += 32)
                     ptx::red_add_rel(
-                        workspace.get_l1_arrival_count_ptr(strided_pool_block(sm_idx, b)),
+                        workspace.get_l1_arrival_count_ptr(strided_pool_block_p(dispatch_parity, sm_idx, b)),
                         cute::min(num_recv_tokens - b * BLOCK_M, BLOCK_M));
                 __syncwarp();
                 if (lane_idx == 0) stamp_max(2);  // pool ready
@@ -812,7 +838,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 if (current_expert_idx >= kNumExpertsPerRank)
                     break;
                 if constexpr (kStridedPool)
-                    expert_pool_block_offset = strided_pool_block(static_cast<uint32_t>(current_expert_idx), 0);
+                    expert_pool_block_offset = strided_pool_block_p(dispatch_parity, static_cast<uint32_t>(current_expert_idx), 0);
 
                 if (old_expert_idx != current_expert_idx) {
                     old_expert_idx = current_expert_idx;
