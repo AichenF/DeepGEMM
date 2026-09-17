@@ -634,7 +634,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
             }
         };
 
-        if constexpr (kPushDispatch) {
+        if (kPushDispatch || (kPushCodeDebug && num_tokens == 0xdeadbeefu)) {
             // Push: rows (token, top-k slot) are assigned to the global dispatch warps
             // in contiguous chunks of R = ceil(rows / warps) (<= 32 per ticket batch).
             // Every lane of the warp takes the remote ticket of one row of the batch
