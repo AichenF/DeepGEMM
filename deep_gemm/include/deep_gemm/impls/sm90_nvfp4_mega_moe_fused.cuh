@@ -315,12 +315,13 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_braided_lut_window(
 
 // Push dispatch (see the kernel body, `kPushDispatch`): the routed rows of this
 // rank are written straight into the destination ranks' fixed-stride pools.
-// Kept out of line so that the (cold) routing code does not share instruction
-// cache lines with the persistent math loop.
+// Force-inlined: an ABI call (`__noinline__`) anywhere in the persistent kernel
+// changes the register allocation of the whole kernel and costs ~15 % on the
+// math warps (measured on H20).
 template <uint32_t kHidden, uint32_t kNumTopk, uint32_t kNumExpertsPerRank,
           uint32_t kNumPaddedSFPoolTokens, uint32_t BLOCK_M, uint32_t kPushBlocksPerExpert,
           uint32_t kNumGlobalWarps, uint32_t kNumRanks, bool kGenericRows, bool kGpuScopeDebug>
-__device__ __noinline__ void sm90_nvfp4_push_dispatch_rows(
+__device__ __forceinline__ void sm90_nvfp4_push_dispatch_rows(
         const layout::SymBuffer<kNumRanks>& sym_buffer,
         void* smem_row_buffer,
         cutlass::arch::ClusterTransactionBarrier* row_mbarrier,

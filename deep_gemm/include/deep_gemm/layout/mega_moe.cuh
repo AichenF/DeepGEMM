@@ -7,14 +7,14 @@
 
 // Bounded spin (trap after ~10 s at 2 GHz) used by the counter-based
 // synchronisation paths (push dispatch DONE flags, fine-grained combine).
+// Trap only: a device `printf` (vprintf ABI call) anywhere in the persistent
+// kernel costs ~15 % on the math warps (measured: the ABI call changes the
+// register allocation of the whole kernel), so no message is printed.
 #ifndef DG_SPIN_WHILE
 #define DG_SPIN_WHILE(cond, tag) \
     for (long long __spin_t0 = clock64(); (cond); ) { \
-        if (clock64() - __spin_t0 > 20000000000ll) { \
-            printf("DeepGEMM counter spin timeout: tag=%d blk=%d thr=%d\n", \
-                   static_cast<int>(tag), static_cast<int>(blockIdx.x), static_cast<int>(threadIdx.x)); \
+        if (clock64() - __spin_t0 > 20000000000ll) \
             asm volatile("trap;"); \
-        } \
     }
 #endif
 
