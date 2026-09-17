@@ -304,6 +304,13 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         kInterleavedSchedulerSMEMBytes;
     DG_STATIC_ASSERT(!kUseInterleavedScheduler || kInterleavedSMEMEnd <= 232448,
                      "Interleaved scheduler exceeds the SM90 shared-memory capacity");
+    // Fine-grained combine CTA words (kept in shared memory, not in registers of the
+    // 208-register math warps): [0] mailbox producer sequence (epilogue thread 0),
+    // [1] combine ticket parity of this launch (written by the task producer).
+    auto smem_combine_words = reinterpret_cast<uint32_t*>(
+        task_infos + interleaved_scheduler_t::kNumScheduleStages);
+    DG_STATIC_ASSERT(!kFineCombineRequested || kInterleavedSMEMEnd + 16 <= 232448,
+                     "Fine-combine words exceed the SM90 shared-memory capacity");
 
     // =====================================================================
     // Initialization
@@ -541,6 +548,14 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
     };
 
     const auto produce_interleaved_blocks = [&](auto&& func) {
+        if constexpr (kCombineDynamic) {
+            // This launch's combine ticket parity, read before any task exists (SM0's
+            // cleanup bump happens after every math task of this launch) and handed
+            // to the combine warps through shared memory (ordered by the task mailbox).
+            if (lane_idx == 0)
+                smem_combine_words[1] = ptx::ld_volatile(workspace.get_combine_epoch_ptr()) & 1u;
+            __syncwarp();
+        }
         if constexpr (kPushDispatch) {
             const uint32_t epoch = read_launch_epoch();
             task_pool_parity = epoch_pool_parity(epoch);
@@ -1207,20 +1222,19 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         // only epilogue thread 0 writes). Baseline = the word's value left by the
         // previous launch (ordered by the kernel boundary; the consumer reads the
         // same baseline from its own word).
-        uint32_t combine_mailbox_seq = 0u;
-        uint32_t combine_ticket_parity = 0u;
-        if constexpr (kCombineDynamic)
-            combine_ticket_parity = ptx::ld_volatile(workspace.get_combine_epoch_ptr()) & 1u;
-        if constexpr (kFineCombine)
-            combine_mailbox_seq = *workspace.get_combine_mailbox_ptr(sm_idx);
+        if constexpr (kFineCombine) {
+            if (epilogue_thread_idx == 0)
+                smem_combine_words[0] = *workspace.get_combine_mailbox_ptr(sm_idx);
+        }
         const auto post_combine_mailbox = [&](const uint32_t entry) {
             if constexpr (kFineCombine) {
                 if (epilogue_thread_idx == 0) {
                     auto* mailbox = workspace.get_combine_mailbox_ptr(sm_idx);
-                    DG_SPIN_WHILE(combine_mailbox_seq - ptx::ld_volatile(mailbox + 1) >= layout::kSM90FineCombineRingSize, 1611);
-                    mailbox[4 + (combine_mailbox_seq & (layout::kSM90FineCombineRingSize - 1))] = entry;
-                    ptx::st_rel_gpu(mailbox, combine_mailbox_seq + 1);
-                    ++ combine_mailbox_seq;
+                    const uint32_t seq = smem_combine_words[0];
+                    DG_SPIN_WHILE(seq - ptx::ld_volatile(mailbox + 1) >= layout::kSM90FineCombineRingSize, 1611);
+                    mailbox[4 + (seq & (layout::kSM90FineCombineRingSize - 1))] = entry;
+                    ptx::st_rel_gpu(mailbox, seq + 1);
+                    smem_combine_words[0] = seq + 1;
                 }
             }
         };
@@ -2469,7 +2483,8 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         uint32_t combine_phase = 0;
         uint32_t load_stage_idx = 0;
         // Token assignment: dynamic ticket (kCombineDynamic) or static (SM, warp) stride
-        const auto combine_ticket_ptr = workspace.get_combine_ticket_ptr(combine_ticket_parity);
+        const auto combine_ticket_ptr = workspace.get_combine_ticket_ptr(
+            kCombineDynamic ? smem_combine_words[1] : 0u);
         uint32_t token_idx = sm_idx * kNumEpilogueWarps + epilogue_warp_idx;
         const auto next_combine_token = [&]() {
             if constexpr (kCombineDynamic) {
