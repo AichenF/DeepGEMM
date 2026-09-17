@@ -28,9 +28,9 @@ struct SM90MXFP4H200FusedConfig {
 };
 
 struct SM90MXFP4H200FusedShape {
-    // kNumRanks is still fixed: the kernel takes layout::SymBuffer<8> and the
-    // nvlink barrier instantiations are sized for 8 peers.
-    static constexpr int kNumRanks = 8;
+    // The dispatch loop keeps per-rank state in one warp, so the width has to
+    // stay within a warp; everything else is templated on it.
+    static constexpr int kMaxNumRanks = 32;
 
     int num_sms;
     int num_ranks;
@@ -47,23 +47,24 @@ struct SM90MXFP4H200FusedShape {
     // kNumSMs became a kernel template parameter in 1b23095, and hidden /
     // intermediate_hidden / num_experts / num_topk followed, so the only
     // constraints left are the ones the kernel body genuinely needs:
-    //   - 8 ranks (SymBuffer<8>)
+    //   - a power-of-two rank count the dispatch loop can address
     //   - experts divide evenly across ranks
     //   - hidden and intermediate_hidden are whole BLOCK_K (128) tiles
     //   - topk fits in one warp (the dispatch loop maps lanes to topk slots)
     // This admits DeepSeek-V4-Flash (4096 / 2048 / 256 experts / topk 6).
     constexpr bool is_supported_shape() const noexcept {
         return num_sms > 0 &&
-            num_ranks == kNumRanks &&
+            num_ranks > 0 && num_ranks <= kMaxNumRanks &&
+            (num_ranks & (num_ranks - 1)) == 0 &&
             num_experts > 0 &&
-            num_experts % kNumRanks == 0 &&
+            num_experts % num_ranks == 0 &&
             num_topk > 0 && num_topk <= 32 &&
             hidden > 0 && hidden % 128 == 0 &&
             intermediate_hidden > 0 && intermediate_hidden % 128 == 0;
     }
 
     constexpr int experts_per_rank() const noexcept {
-        return num_experts / kNumRanks;
+        return num_experts / num_ranks;
     }
 };
 

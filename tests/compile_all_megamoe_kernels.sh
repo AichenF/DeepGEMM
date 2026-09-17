@@ -99,17 +99,17 @@ instantiate 'sm90_nvfp4_mega_moe_h200'   120a gated-out "$nvfp4_src"
 # itself -- the thing the port adds -- was never codegen'd for any arch.
 # The MiMo shape (hidden 6144, ih 2048, 384 experts, top-k 8) the SM90 MXFP4
 # kernel ships for. Shape joined kNumSMs as a template parameter in 2a54e4b, so
-# the argument list is: kNumSMs, kHidden, kIntermediateHidden, kNumExperts,
-# kNumTopk, kNumMaxTokensPerRank, kNumExpertsPerWave, BLOCK_M, BLOCK_N,
-# kNumMaxPoolTokens, kNumPaddedSFPoolTokens, kNumStages, clamp, fastMath,
-# swapAB, singleDispatchWarp, mode2RowDecoder, interleavedScheduler.
+# the argument list is: kNumSMs, kNumRanks, kHidden, kIntermediateHidden,
+# kNumExperts, kNumTopk, kNumMaxTokensPerRank, kNumExpertsPerWave, BLOCK_M,
+# BLOCK_N, kNumMaxPoolTokens, kNumPaddedSFPoolTokens, kNumStages, clamp,
+# fastMath, swapAB, singleDispatchWarp, mode2RowDecoder, interleavedScheduler.
 mxfp4_src() {
   printf '%s\n' '#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1
 #include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused.cuh>
 using namespace deep_gemm;
 static void __instantiate_kernel() {
     auto ptr = reinterpret_cast<void*>(&sm90_mxfp4_mega_moe_h200_fused_impl<
-        '"$1"', 6144, 2048, 384, 8, 2048, '"$2"', '"$3"', '"$4"', 8192, 8192,
+        '"$1"', '"${8:-8}"', 6144, 2048, 384, 8, 2048, '"$2"', '"$3"', '"$4"', 8192, 8192,
         '"$5"', 10.0f, true, '"$6"', true, true, true, '"${7:-false}"'>);
     (void)ptr;
 }'
@@ -128,6 +128,9 @@ mxfp4_bm16_src=$(mxfp4_src     78   48   16  256     6   true   true)
 # BM64 is the one small-M tier that stays shared-memory sourced.
 mxfp4_bm64_src=$(mxfp4_src    132   48   64  256     3   false)
 
+# EP4 shares the kernel; only the rank count differs.
+mxfp4_ep4_src=$(mxfp4_src     132   48   24  256     8   true   true   4)
+
 # kNumSMs is now a template parameter, so both SM counts must build.
 instantiate 'sm90_mxfp4 (78 SM, H20)'    90a  wgmma     "$mxfp4_h20_src"
 instantiate 'sm90_mxfp4 (132 SM, H200)'  90a  wgmma     "$mxfp4_h200_src"
@@ -135,6 +138,7 @@ instantiate 'sm90_mxfp4 BM24/BN256 RS'    90a wgmma    "$mxfp4_bm24_src"
 instantiate 'sm90_mxfp4 BM8/BN256 RS'     90a wgmma    "$mxfp4_bm8_src"
 instantiate 'sm90_mxfp4 BM16/BN256 RS'    90a wgmma    "$mxfp4_bm16_src"
 instantiate 'sm90_mxfp4 BM64/BN256 SS'    90a wgmma    "$mxfp4_bm64_src"
+instantiate 'sm90_mxfp4 EP4 BM24 RS'     90a wgmma    "$mxfp4_ep4_src"
 instantiate 'sm90_mxfp4 (78 SM, H20)'    120a gated-out "$mxfp4_h20_src"
 
 # Template-only headers, not instantiated here: catches parse/merge damage but

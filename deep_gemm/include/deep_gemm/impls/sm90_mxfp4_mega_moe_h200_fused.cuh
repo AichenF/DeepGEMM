@@ -183,6 +183,9 @@ __device__ __forceinline__ void dequant_braided_quad(
 
 template <
     uint32_t kNumSMs,
+    // Expert-parallel width. SymBuffer<N> has one layout for every N, and the
+    // barriers, scheduler and workspace were already templated on it.
+    uint32_t kNumRanks,
     // Shape is a template parameter, not a baked-in constant. The kernel body
     // was already written against these names; only the wrapper hardcoded the
     // H200 384-expert / 6144-hidden model, which locked out every other shape
@@ -213,7 +216,7 @@ sm90_mxfp4_mega_moe_h200_fused_impl(
         void* y,
         int* cumulative_local_expert_recv_stats,
         const uint32_t num_tokens,
-        const __grid_constant__ layout::SymBuffer<8> sym_buffer,
+        const __grid_constant__ layout::SymBuffer<kNumRanks> sym_buffer,
         const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts,
         const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts_sf,
         const __grid_constant__ cute::TmaDescriptor tensor_map_l1_weights,
@@ -227,7 +230,6 @@ sm90_mxfp4_mega_moe_h200_fused_impl(
     constexpr uint32_t kNumDispatchThreads = 64;
     constexpr uint32_t kNumNonEpilogueThreads = 64;
     constexpr uint32_t kNumEpilogueThreads = 256;
-    constexpr uint32_t kNumRanks = 8;   // SymBuffer<8> is still fixed
     DG_STATIC_ASSERT(kNumExperts % kNumRanks == 0,
                      "Experts must divide evenly across ranks");
     DG_STATIC_ASSERT(kHidden % 128 == 0, "Hidden must be a multiple of BLOCK_K");
