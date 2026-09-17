@@ -503,7 +503,28 @@ four groups in a K-block share an E8M0 exponent, which they generally do not,
 and a warp-uniform guard would fire too rarely to pay. And with a **free** lookup
 the consumer still costs 484 ns against a 522 ns load.
 
-That last number is the answer to the whole question. Feeding 4.4 TB/s needs the
+The lane-pair shuffle is the other 112 ns (21 %), and unlike the decode
+reorder the WGMMA does *not* absorb it:
+
+| consumer variant | ns/stage/SM |
+|---|---:|
+| as shipped | 543.7 |
+| without the shuffle (upper bound) | **427.1** |
+| shuffle replaced by loading the partner's word | 801.4 |
+| ...with only the needed nibble-half computed | 918.5 |
+
+Neither replacement works, and the second explains the first: picking the half
+needs `if (keep_hi)`, which diverges the warp. Folding the exchange into the
+offline layout looked like the answer — until the reason it exists shows up.
+`a_frag[0]` and `a_frag[1]` hold rows `r` and `r+8`, **each dequantised with its
+own row's E8M0 scale** before they are exchanged. Folding it offline would need
+both rows' nibbles in one word under one LUT, and they do not share a scale. The
+427 ns figure is an upper bound that quietly assumes they do. **The shuffle is
+load-bearing**: it is what lets per-row scaling coexist with the WGMMA's
+two-row fragment layout.
+
+That leaves the dequant ALU, and that number is the answer to the whole
+question. Feeding 4.4 TB/s needs the
 dequant to produce 32768 values per 522 ns, about 32 per cycle per SM; it
 produces about 34. **MXFP4 on Hopper sits right at the edge of being
 dequant-bound** — the format has no FP4 MMA here, so every weight byte is
