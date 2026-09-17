@@ -313,6 +313,95 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_braided_lut_window(
 
 }  // namespace nvfp4
 
+// Push dispatch (see the kernel body, `kPushDispatch`): the routed rows of this
+// rank are written straight into the destination ranks' fixed-stride pools.
+// Kept out of line so that the (cold) routing code does not share instruction
+// cache lines with the persistent math loop.
+template <uint32_t kHidden, uint32_t kNumTopk, uint32_t kNumExpertsPerRank,
+          uint32_t kNumPaddedSFPoolTokens, uint32_t BLOCK_M, uint32_t kPushBlocksPerExpert,
+          uint32_t kNumGlobalWarps, uint32_t kNumRanks>
+__device__ __noinline__ void sm90_nvfp4_push_dispatch_rows(
+        const layout::SymBuffer<kNumRanks>& sym_buffer,
+        const int64_t* __restrict__ input_topk_idx,
+        const uint8_t* __restrict__ input_tokens,
+        const float* __restrict__ input_sf,
+        const float* __restrict__ input_topk_weights,
+        uint8_t* l1_tokens, float* l1_sf, float* l1_topk_weights,
+        layout::TokenSrcMetadata* token_src_metadata,
+        uint64_t* recv_count_sum,
+        const uint32_t pool_block_base,
+        const uint32_t num_tokens,
+        const uint32_t global_warp_idx,
+        const uint32_t lane_idx) {
+    constexpr uint32_t kNumSFFloats = kHidden / 128;
+    constexpr uint32_t kNumTokenChunksPerLane = kHidden / (16 * 32);
+    constexpr uint32_t kChunkGroup = 2;
+    static_assert(kHidden % 512 == 0 && kNumTokenChunksPerLane % kChunkGroup == 0,
+                  "Invalid token shape for push dispatch");
+    // Rows (token, top-k slot) in contiguous chunks of R = ceil(rows / warps) per
+    // warp (<= 32 per ticket batch): every lane takes the remote ticket of one row
+    // of the batch at once (the NVLink round trips overlap), then the warp streams
+    // the batch's rows (16 B per lane per store) into the destination pools.
+    const uint32_t num_rows = num_tokens * kNumTopk;
+    const uint32_t rows_per_warp = (num_rows + kNumGlobalWarps - 1) / kNumGlobalWarps;
+    const uint32_t row_begin = global_warp_idx * rows_per_warp;
+    const uint32_t row_end = min(row_begin + rows_per_warp, num_rows);
+    #pragma unroll 1
+    for (uint32_t batch_begin = row_begin; batch_begin < row_end; batch_begin += 32) {
+        const uint32_t batch_size = min(row_end - batch_begin, 32u);
+        const uint32_t r = batch_begin + lane_idx;
+        int expert_idx = -1;
+        if (lane_idx < batch_size)
+            expert_idx = static_cast<int>(__ldg(input_topk_idx + r));
+        uint32_t lane_row_idx = 0;
+        if (expert_idx >= 0) {
+            const uint32_t dr = static_cast<uint32_t>(expert_idx) / kNumExpertsPerRank;
+            const uint32_t de = static_cast<uint32_t>(expert_idx) % kNumExpertsPerRank;
+            lane_row_idx = static_cast<uint32_t>(ptx::atomic_add_sys(
+                sym_buffer.map(recv_count_sum + de, dr), 1ull));
+        }
+        const uint32_t valid_mask = __ballot_sync(0xffffffff, expert_idx >= 0);
+        #pragma unroll 1
+        for (uint32_t mask = valid_mask; mask != 0; mask &= mask - 1) {
+            const uint32_t src_lane = __ffs(mask) - 1;
+            const uint32_t row_r = batch_begin + src_lane;
+            const uint32_t e = static_cast<uint32_t>(__shfl_sync(0xffffffff, expert_idx, src_lane));
+            const uint32_t row_idx = __shfl_sync(0xffffffff, lane_row_idx, src_lane);
+            const uint32_t dr = e / kNumExpertsPerRank;
+            const uint32_t de = e % kNumExpertsPerRank;
+            const uint32_t src_token_idx = row_r / kNumTopk, src_topk_idx = row_r % kNumTopk;
+            DG_TRAP_ONLY_DEVICE_ASSERT(row_idx < kPushBlocksPerExpert * BLOCK_M);
+            const uint32_t pool_token_idx =
+                (pool_block_base + de * kPushBlocksPerExpert) * BLOCK_M + row_idx;
+            const auto* src_token = reinterpret_cast<const uint4*>(
+                input_tokens + static_cast<uint64_t>(src_token_idx) * kHidden);
+            auto* dst_token = sym_buffer.map(reinterpret_cast<uint4*>(
+                l1_tokens + static_cast<uint64_t>(pool_token_idx) * kHidden), dr);
+            #pragma unroll
+            for (uint32_t g = 0; g < kNumTokenChunksPerLane; g += kChunkGroup) {
+                uint4 row[kChunkGroup];
+                #pragma unroll
+                for (uint32_t c = 0; c < kChunkGroup; ++ c)
+                    row[c] = __ldg(src_token + (g + c) * 32 + lane_idx);
+                #pragma unroll
+                for (uint32_t c = 0; c < kChunkGroup; ++ c)
+                    dst_token[(g + c) * 32 + lane_idx] = row[c];
+            }
+            const float* src_sf = input_sf + static_cast<uint64_t>(src_token_idx) * kNumSFFloats;
+            float* dst_sf = sym_buffer.map(l1_sf, dr);
+            #pragma unroll
+            for (uint32_t j = lane_idx; j < kNumSFFloats; j += 32)
+                dst_sf[static_cast<uint64_t>(j) * kNumPaddedSFPoolTokens + pool_token_idx] = __ldg(src_sf + j);
+            if (lane_idx == 0) {
+                *sym_buffer.map(l1_topk_weights + pool_token_idx, dr) = __ldg(input_topk_weights + row_r);
+                *sym_buffer.map(token_src_metadata + pool_token_idx, dr) =
+                    {static_cast<uint32_t>(sym_buffer.rank_idx), src_token_idx, src_topk_idx};
+            }
+        }
+        __syncwarp();
+    }
+}
+
 template <
     uint32_t kNumMaxTokensPerRank,
     uint32_t kNumExperts,
