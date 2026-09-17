@@ -43,6 +43,7 @@ public:
         bool sys_traffic_debug;
         int push_stagger_ns;
         bool push_code_debug;
+        bool fine_combine_code_debug;
         int num_sms;
         SM90NVFP4FusedConfig config;
 
@@ -87,7 +88,8 @@ public:
             "        /* kSysTrafficDebug */ {},\n"
             "        /* kPushStaggerNs */ {}u,\n"
             "        /* kPushCodeDebug */ {},\n"
-            "        /* kPhaseStamps */ {}",
+            "        /* kPhaseStamps */ {},\n"
+            "        /* kFineCombineCodeDebug */ {}",
             args.swap_ab ? "true" : "false",
             args.rs_swap_ab ? "true" : "false",
             args.single_active_dispatch_warp ? "true" : "false",
@@ -103,7 +105,8 @@ public:
             args.sys_traffic_debug ? "true" : "false",
             args.push_stagger_ns,
             args.push_code_debug ? "true" : "false",
-            args.phase_stamps != nullptr ? "true" : "false");
+            args.phase_stamps != nullptr ? "true" : "false",
+            args.fine_combine_code_debug ? "true" : "false");
         return fmt::format(R"(
 {}
 
@@ -260,6 +263,8 @@ static void sm90_nvfp4_fused_mega_moe(
         get_env<int>("DG_NVFP4_SYS_TRAFFIC_DEBUG", 0) != 0;
     const int push_stagger_ns = push_dispatch ? get_env<int>("DG_NVFP4_PUSH_STAGGER_NS", 0) : 0;
     const bool push_code_debug = !push_dispatch && get_env<int>("DG_NVFP4_PUSH_CODE_DEBUG", 0) != 0;
+    const bool fine_combine_code_debug = !fine_combine && plan.use_interleaved_scheduler &&
+        get_env<int>("DG_NVFP4_FINE_COMBINE_CODE_DEBUG", 0) != 0;
     unsigned long long* phase_stamps = nullptr;
     {
         const auto stamps_env = get_env<std::string>("DG_NVFP4_PHASE_STAMPS_PTR");
@@ -335,6 +340,7 @@ static void sm90_nvfp4_fused_mega_moe(
         .sys_traffic_debug = sys_traffic_debug,
         .push_stagger_ns = push_stagger_ns,
         .push_code_debug = push_code_debug,
+        .fine_combine_code_debug = fine_combine_code_debug,
         .num_sms = num_sms,
         .config = config,
         .y = y.data_ptr(),
@@ -373,7 +379,8 @@ static void sm90_nvfp4_fused_mega_moe(
         (push_proxy_fence ? "_pfence" : "") + (push_generic_rows ? "_generic" : "") +
         (push_gpu_scope_debug ? "_gpuscope" : "") + (sys_traffic_debug ? "_systraffic" : "") +
         (push_stagger_ns > 0 ? "_stagger" + std::to_string(push_stagger_ns) : "") +
-        (push_code_debug ? "_codedbg" : "") + (phase_stamps != nullptr ? "_stamps" : "");
+        (push_code_debug ? "_codedbg" : "") + (fine_combine_code_debug ? "_fccodedbg" : "") +
+        (phase_stamps != nullptr ? "_stamps" : "");
     const auto runtime = compiler->build(
         std::string(plan.use_interleaved_scheduler ?
             (rs_swap_ab ?

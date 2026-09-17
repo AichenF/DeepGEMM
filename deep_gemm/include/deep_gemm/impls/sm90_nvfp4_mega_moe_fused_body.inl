@@ -437,8 +437,11 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
     // after every rank completed N (same stream) including its cleanup of N.
     // ---------------------------------------------------------------------
     constexpr bool kPushDispatch = kPushDispatchRequested && kUseInterleavedScheduler;
-    constexpr bool kFineCombine = kFineCombineRequested && kUseInterleavedScheduler;
+    constexpr bool kFineCombine = (kFineCombineRequested || kFineCombineCodeDebug) && kUseInterleavedScheduler;
     constexpr bool kCombineDynamic = kFineCombine;
+    // Runtime view of the fine-combine switch: identical to kFineCombine except in
+    // the code-debug variant, where the code is compiled but never executed.
+    const bool fine_combine_on = kFineCombineCodeDebug ? (num_tokens == 0xdeadbeefu) : kFineCombine;
     constexpr bool kNoCleanBarrier = kNoCleanBarrierRequested && kPushDispatch;
     // Fixed-stride pool: implied by push dispatch; kStridedPoolDebug forces it
     // under the pull protocol (diagnostic).
@@ -548,7 +551,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
     };
 
     const auto produce_interleaved_blocks = [&](auto&& func) {
-        if constexpr (kCombineDynamic) {
+        if (fine_combine_on) {
             // This launch's combine ticket parity, read before any task exists (SM0's
             // cleanup bump happens after every math task of this launch) and handed
             // to the combine warps through shared memory (ordered by the task mailbox).
@@ -596,7 +599,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 if (thread_idx == 0)
                     *workspace.get_push_epoch_ptr() = dispatch_epoch + 1u;
             }
-            if constexpr (kCombineDynamic) {
+            if (fine_combine_on) {
                 // Next dynamic-combine launch's ticket word (zeroed one launch ahead:
                 // the word of parity N+1 was last used by launch N-1, complete)
                 if (thread_idx == 0) {
@@ -971,7 +974,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         if (thread_idx == 0) stamp_max(2);  // pool ready (pull done)
         }  // !kPushDispatch
 
-        if constexpr (kFineCombine) {
+        if (fine_combine_on) {
             // Fine-grained combine signaller (dispatch warp 0): consume this CTA's
             // mailbox; for every finished L2 task release-add 1 per scattered token
             // row to the destination rank's counter (sys-scope fence here, off the
@@ -1029,7 +1032,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         if constexpr (kNoCleanBarrier) {
             // Rotated pool: local grid sync (every CTA's math tasks are done), then
             // clean; no cross-rank barrier (see `kNoCleanBarrier`).
-            if constexpr (!kFineCombine) {
+            if (!fine_combine_on) {
                 comm::grid_sync<kNumSMs, kDispatchGridSyncIndex>(
                     workspace, sm_idx, thread_idx,
                     [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); });
@@ -1222,12 +1225,12 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         // only epilogue thread 0 writes). Baseline = the word's value left by the
         // previous launch (ordered by the kernel boundary; the consumer reads the
         // same baseline from its own word).
-        if constexpr (kFineCombine) {
+        if (fine_combine_on) {
             if (epilogue_thread_idx == 0)
                 smem_combine_words[0] = *workspace.get_combine_mailbox_ptr(sm_idx);
         }
         const auto post_combine_mailbox = [&](const uint32_t entry) {
-            if constexpr (kFineCombine) {
+            if (fine_combine_on) {
                 if (epilogue_thread_idx == 0) {
                     auto* mailbox = workspace.get_combine_mailbox_ptr(sm_idx);
                     const uint32_t seq = smem_combine_words[0];
@@ -2439,7 +2442,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         // NVLink barrier first: signals remote ranks that this rank's GEMM
         // outputs (NVLink scatter targets) are fully written. Fine-grained
         // combine skips it: readiness is per token (see the loop).
-        if constexpr (!kFineCombine) {
+        if (!fine_combine_on) {
             comm::nvlink_barrier<kNumRanks, kNumSMs, kNumEpilogueThreads,
                                  kEpilogueGridSyncIndex, kBeforeCombineReduceBarrierTag>(
                 workspace, sym_buffer, sm_idx, epilogue_thread_idx,
@@ -2484,10 +2487,10 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         uint32_t load_stage_idx = 0;
         // Token assignment: dynamic ticket (kCombineDynamic) or static (SM, warp) stride
         const auto combine_ticket_ptr = workspace.get_combine_ticket_ptr(
-            kCombineDynamic ? smem_combine_words[1] : 0u);
+            fine_combine_on ? smem_combine_words[1] : 0u);
         uint32_t token_idx = sm_idx * kNumEpilogueWarps + epilogue_warp_idx;
         const auto next_combine_token = [&]() {
-            if constexpr (kCombineDynamic) {
+            if (fine_combine_on) {
                 uint32_t ticket = 0;
                 if (lane_idx == 0) {
                     ticket = ptx::ld_volatile(combine_ticket_ptr);
@@ -2499,14 +2502,14 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 token_idx += kNumSMs * kNumEpilogueWarps;
             }
         };
-        if constexpr (kCombineDynamic)
+        if (fine_combine_on)
             next_combine_token();
         for (; token_idx < num_tokens; next_combine_token()) {
             const int stored_topk_slot_idx = lane_idx < kNumTopk ?
                 static_cast<int>(__ldg(input_topk_idx_buffer.get_base_ptr<int64_t>() + token_idx * kNumTopk + lane_idx)) : -1;
             const uint32_t total_mask = __ballot_sync(0xffffffff, stored_topk_slot_idx >= 0);
 
-            if constexpr (kFineCombine) {
+            if (fine_combine_on) {
                 // Wait until every (topk slot, L2 N-block) slice of this token has
                 // landed, hand the counter back, and order the generic-proxy acquire
                 // before the TMA (async-proxy) loads.

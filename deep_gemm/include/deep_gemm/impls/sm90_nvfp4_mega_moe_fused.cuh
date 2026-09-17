@@ -468,7 +468,9 @@ template <
     // executing it (code-generation / instruction-cache diagnostic).
     bool kPushCodeDebug = false,
     // Phase stamps (globaltimer) compiled in; host env DG_NVFP4_PHASE_STAMPS_PTR.
-    bool kPhaseStamps = false
+    bool kPhaseStamps = false,
+    // Compile the fine-combine code into a barrier-#2 kernel without executing it.
+    bool kFineCombineCodeDebug = false
 >
 CUTLASS_GLOBAL __launch_bounds__(384, 1) void
 sm90_nvfp4_mega_moe_fused_impl(
