@@ -51,6 +51,8 @@ STAMP_NAMES = {
     11: 'count bcast done', 12: 'barrier3 done',
 }
 MIN_SLOTS = (0, 3)
+ACC_SLOTS = {20: 'L1 task avg us (sum/count)', 22: 'L2 task avg us (sum/count)',
+             24: 'A-loader L1 arrival spin, total us per SM', 25: 'A-loader L2 mask spin, total us per SM'}
 
 
 def apply_arm(arm: str) -> None:
@@ -299,8 +301,16 @@ def run_stamps(args, rank, num_ranks, group, shape):
                     torch.cuda.synchronize()
                     s = stamps.cpu().tolist()
                     t0 = s[0]
-                    per_call.append([(v - t0) / 1000.0 if (v != 0 and v != 0x7fffffffffffffff) else float('nan')
-                                     for v in s])
+                    row = [(v - t0) / 1000.0 if (v != 0 and v != 0x7fffffffffffffff) else float('nan')
+                           for v in s]
+                    # accumulator slots: averages / per-SM totals in us
+                    row[20] = s[20] / max(1, s[21]) / 1000.0
+                    row[22] = s[22] / max(1, s[23]) / 1000.0
+                    row[21] = float(s[21])
+                    row[23] = float(s[23])
+                    row[24] = s[24] / 1000.0 / 78.0
+                    row[25] = s[25] / 1000.0 / 78.0
+                    per_call.append(row)
                 # median over calls per slot, per rank; then gather
                 med = []
                 for slot in range(32):
@@ -319,6 +329,10 @@ def run_stamps(args, rank, num_ranks, group, shape):
                         if torch.isnan(col).all():
                             continue
                         print(f'  [{slot:2d}] {name:36s} max={col.nanmax().item() if hasattr(col, "nanmax") else col.max().item():8.2f}  rank0={col[0].item():8.2f}  ranks={[round(v, 1) for v in col.tolist()]}', flush=True)
+                    for slot, name in ACC_SLOTS.items():
+                        col = tab[:, slot]
+                        print(f'  [{slot:2d}] {name:36s} max={col.max().item():8.2f}  rank0={col[0].item():8.2f}  ranks={[round(v, 2) for v in col.tolist()]}', flush=True)
+                    print(f'  [21/23] L1/L2 task counts rank0: {int(tab[0, 21].item())} / {int(tab[0, 23].item())}', flush=True)
                     print('STAMPS_JSON ' + json.dumps({'shape': shape, 'm': m, 'router': router, 'arm': arm_label(arm),
                                                        'per_rank_us': tab.tolist()}), flush=True)
             case.destroy()

@@ -56,6 +56,20 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
             atomicMax(phase_stamps + slot, t);
         }
     };
+    // Accumulators (all SMs): 20/21 sum of L1 task ns / count, 22/23 L2 task ns / count,
+    // 24 sum of A-loader arrival-spin ns (L1), 25 sum of A-loader L2-mask-spin ns.
+    const auto stamp_now = [&]() {
+        unsigned long long t = 0;
+        if (phase_stamps != nullptr)
+            asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+        return t;
+    };
+    const auto stamp_accumulate = [&](const uint32_t slot, const unsigned long long& delta, const unsigned long long& count) {
+        if (phase_stamps != nullptr) {
+            atomicAdd(phase_stamps + slot, delta);
+            if (count) atomicAdd(phase_stamps + slot + 1, count);
+        }
+    };
 
     if (warp_idx == 0 and cute::elect_one_sync()) {
         stamp_min(0);
@@ -1030,6 +1044,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
 
             // Wait for the pool to be ready.
             if (has_valid_m) {
+                const auto t_spin = stamp_now();
                 if constexpr (!kBlockIsL2) {
                     const auto ptr = workspace.get_l1_arrival_count_ptr(pool_block_idx);
                     while (ptx::ld_acq(ptr) != valid_m) {}
@@ -1044,6 +1059,8 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                         ? ~0ull : ((1ull << kNumRoutedL1BlockNs) - 1ull);
                     while (ptx::ld_acq_gpu(ptr) != expected) {}
                 }
+                if (lane_idx == 0)
+                    stamp_accumulate(kBlockIsL2 ? 25 : 24, stamp_now() - t_spin, 0);
             }
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 empty_barriers[stage_idx]->wait(phase ^ 1);
@@ -2354,9 +2371,12 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                                      const uint32_t& valid_m) {
             using BlockPhaseTag = std::remove_cv_t<std::remove_reference_t<decltype(block_phase)>>;
             constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
+            const auto t_task = stamp_now();
             if (epilogue_thread_idx == 0) stamp_min(3);
             run_math_task_impl(block_phase, local_expert_idx, num_k_blocks,
                                m_block_idx, n_block_idx, pool_block_idx, valid_m);
+            if (epilogue_thread_idx == 0)
+                stamp_accumulate(kBlockIsL2 ? 22 : 20, stamp_now() - t_task, 1);
             if constexpr (kBlockIsL2) {
                 // Fine-grained combine: the CTA-wide sync that ends the L2 scatter
                 // made every thread's remote stores happen-before this post
