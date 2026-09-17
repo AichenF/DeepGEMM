@@ -210,7 +210,41 @@ place that knows the layout; all three decoders go through it.
 default, because above the swapAB tiers one expert spans several m-blocks and
 those CTAs share these tiles through L2.
 
-### 5.6 Test and harness fixes found on the way
+### 5.6 The transposed tile is a token tile, so pick it by tokens per expert
+
+Under swapAB the tile's `BLOCK_M` *is* the WGMMA's token dimension, so a tile
+wider than one local expert's token count pads the MMA with slots that carry
+nothing. Routing puts `num_tokens * num_ranks * num_topk / num_experts` slots on
+an expert, and the selector already had `max_tokens_for_block_m` to invert that.
+Taking the narrowest tile that still covers it replaces three hand-set `BLOCK_M`
+tiers with one rule, and reproduces every measured optimum:
+
+| M | slots/expert | rule | measured (EP1, 48 experts) |
+|---:|---:|---|---|
+| 32 | 5.3 | BM8 | BM8 **330.5** vs BM16 337.3 vs BM24 343.2 |
+| 64 | 10.7 | BM16 | BM16 **355.2** vs BM24 361.4 |
+| 128 | 21.3 | past the swapAB bound | BM64 **419.0** vs BM24 443.0 vs BM16 640.8 |
+
+One step too narrow is much worse than one too wide, because the expert no
+longer fits one m-block and its weights are re-read: BM16 at M=128 costs 45 %,
+BM8 at M=64 costs 47 %. The rule never does that -- it only ever rounds up.
+
+With the rule in the selector, the default arm lands on the measured optimum at
+both points (same process, EP1/48 experts):
+
+| M | default | explicit BM8 | explicit BM16 | default before |
+|---:|---:|---:|---:|---:|
+| 32 | **330.8** | 330.9 | 335.8 | 337.6 |
+| 64 | **355.3** | 522.9 | 355.7 | 361.1 |
+
+The RS gate needed rescoping with it. It had disabled the register-source
+operand for `BLOCK_M < 16` on parts wider than the reference SM count, which the
+new rule would have applied at M=32; measured there, the same BM8 tile is 4.3 %
+*faster* with RS (330.5) than without (345.5). The gate is a statement about how
+little work a tier has, not about `BLOCK_M`, so it is now scoped to the batches
+it was measured on.
+
+### 5.7 Test and harness fixes found on the way
 
 * `tests/compile_all_megamoe_kernels.sh` could not instantiate the MXFP4 kernel
   at all — its argument list predated the `kNumSMs` and shape template
@@ -378,18 +412,37 @@ Backing the weight stream out of the EP1 intercept puts it at **4.01 TB/s, 97 %
 of what this device streams**. The load path is closed; what is left above the
 roofline is not the GEMM:
 
-| part | M=32 EP8 | note |
-|---|---:|---|
-| weight stream at 4.01 TB/s | 276 us | 97 % of achievable — no headroom |
-| local fixed cost | ~59 us | launch, grid sync, epilogues, combine |
-| collective | ~40 us | format-independent; FP8 and NVFP4 pay it too |
-| token-scaling | ~10 us | |
+Measured directly rather than inferred, by varying the expert count at fixed
+M=32 on EP1 — the tile count, and so the weight bytes, scale with experts while
+the token-dependent work does not:
 
-Reaching 70-80 % against the *theoretical* peak would mean removing ~60 us more
-of that ~99 us of fixed cost. That is dispatch/combine/barrier work shared with
-every other MegaMoE format, not something a weight-format change can reach.
-Against the bandwidth the part actually delivers, the single-rank kernel is
-already at 77 %.
+| experts touched | time |
+|---:|---:|
+| 47 | 337.4 us |
+| 35 | 265.6 us |
+| 23 | 194.9 us |
+
+Both gaps give the same slope to 1.5 % (5.98 / 5.89 us per expert) and the same
+intercept from either end, so:
+
+| part | M=32 EP1 | |
+|---|---:|---|
+| weight stream, 20.06 MB/expert at **3.38 TB/s** | 279 us | |
+| fixed cost, independent of the weights | **58 us** | |
+
+The load path on its own sustains **4.4 TB/s** (section 7.2, variant G, and the
+same on H20-3e). The kernel only gets 3.38, so **the consumer — decode plus
+WGMMA — is throttling the loader by 24 %**; the memory system is not the limit.
+That is the opposite of what the earlier "97 % of achievable" reading suggested,
+which measured the stream in isolation rather than in the kernel.
+
+Two levers, both quantified:
+
+| if | M=32 EP1 | vs 196 us theoretical roofline |
+|---|---:|---:|
+| today | 337 us | 58 % |
+| stream reaches the load path's 4.4 TB/s | 272 us | **72 %** |
+| ...and the fixed cost halves | 243 us | **81 %** |
 
 Dropping the 12 B of per-row padding on top (chunk-major tiles, section 5.5)
 buys much less than its 15 % of bytes suggests — **-3.6 / -1.2 / -2.2 / +0.1 /
@@ -410,6 +463,8 @@ Recorded so they are not retried:
 | idea | result |
 |---|---|
 | Contiguous weight tiles via one 1D bulk copy **with the scales split out** (64 B rows) | **-25 to -40 %** at H20 M=32-64, while moving 15 % fewer bytes. Section 7.2 later showed the load itself was 1.6x faster, so the loss was on the consumer side: a 64 B shared-memory row stride is 16 words, which 4-way bank-conflicts the decoder's 128-bit loads where 80 B (20 words) is conflict-free. Contiguity alone, keeping the 80 B row, is what shipped |
+| Larger weight bulk copies (one 17408 B copy per stage instead of two 8704 B ones, via k-major tile order) | **No gain, and the reorder would have been wasted work.** The standalone pipeline sustains 4.53 TB/s on today's two-copy pattern against 4.34 for one contiguous copy. Measured before implementing |
+| Deeper pipelines now that a stage is 17408 B, not 20480 B (10 stages fit where 6-8 did) | **No effect.** Standalone, 4/6/8/10 stages give 4.36/4.48/4.37/4.40 TB/s -- the load path saturates at 4. End-to-end, M=32 gives 336.6/335.5/339.1 us at 6/8/10 and M=64 gives 362.0/362.9 at 8/10. The consumer is not waiting on buffering |
 | Prefetch: decode K+1 under K's in-flight WGMMAs (two decoded slots, `warpgroup_wait<1>`) | **+5.9 / +7.1 / +10.8 %** at MiMo/H20 M=64 over three runs. Its prefetch waits on stage K+1's TMA barrier, and that wait sits between the WGMMA issue and `arrive_empty(K)`, so it delays the loader by exactly what it saves on the decode |
 | `--ptxas-options=--register-usage-level=5` | no effect: 168 regs, 0 spill, identical QGMMA/DEPBAR, on both the SS and RS kernels |
 | Pipeline depth alone (SS path) | ~1 %, and it flipped sign between runs — inside the drift band, so the shipped depths come from the RS sweep where the effect is outside it |
