@@ -472,6 +472,26 @@ costs is the device-wide barrier in front of it and the latency of its own
 chunked loop, not bandwidth. Removing it outright would not reach the target,
 which is why the remaining work is not a single change.
 
+The throttle has a model, and it checks out. Per stage per SM at M=32: the load
+wants 522 ns (17408 B at the 4.4 TB/s the load path sustains), and the consumer
+takes 683 ns (the expert-ablation slope, 5.94 us per expert over 8.7 stages).
+If the consumer gates the loader, the stream should run at
+
+    4.4 TB/s * 522 / 683 = 3.36 TB/s
+
+against **3.38 TB/s measured** — 0.6 % apart. So the arithmetic that closes the
+target is explicit: **cut 161 ns, 24 %, off the consumer** and the stream reaches
+4.4 TB/s, the weight time 279 -> 214 us, and the kernel ~272 us, which is 72 % of
+the 196 us roofline.
+
+What that 161 ns is made of is the part still not pinned down. It is not the
+decode's issue cost — 10 % off the decode standalone moved the kernel 0.7 %
+(section 8), which the model above would have predicted as ~5 %. That
+discrepancy is the open question: the standalone decode harness does not
+reproduce the in-kernel consumer, most likely because register pressure and the
+WGMMA's own issue slots differ. Closing it wants either a profiler or a
+consumer-side harness that models the WGMMA too; neither exists here yet.
+
 Two levers, both quantified:
 
 | if | M=32 EP1 | vs 196 us theoretical roofline |
