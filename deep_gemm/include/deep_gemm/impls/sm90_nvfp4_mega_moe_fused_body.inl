@@ -1049,7 +1049,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                     stamp_accumulate(kBlockIsL2 ? 25 : 24, stamp_now() - t_spin, 0);
             }
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
-                empty_barriers[stage_idx]->wait(phase ^ 1);
+                { const auto t_w = stamp_now(); empty_barriers[stage_idx]->wait(phase ^ 1); if (lane_idx == 0) stamp_accumulate(29, stamp_now() - t_w, 0); }
 
                 if (cute::elect_one_sync()) {
                     if (has_valid_m) {
@@ -1108,7 +1108,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
             constexpr uint32_t shape_n = kBlockIsL2 ? L2_SHAPE_N : L1_SHAPE_N;
 
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
-                empty_barriers[stage_idx]->wait(phase ^ 1);
+                { const auto t_w = stamp_now(); empty_barriers[stage_idx]->wait(phase ^ 1); if (lane_idx == 0) stamp_accumulate(27, stamp_now() - t_w, 0); }
 
                 const uint32_t n_idx = local_expert_idx * shape_n + n_block_idx * BLOCK_N;
                 // NVFP4 fused B+scale layout stores 64B packed FP4 + 8B
@@ -1402,7 +1402,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                         }
                     };
 
-                    full_barriers[stage_idx]->wait(phase);
+                    { const auto t_w = stamp_now(); full_barriers[stage_idx]->wait(phase); if (epilogue_thread_idx == 0) stamp_accumulate(28, stamp_now() - t_w, 0); }
                     if constexpr (kUseInterleavedScheduler)
                         interleaved_scheduler.release_task_info(lane_idx);
                     decode_rs_swap_ab_half.template operator()<N_SWAP>(
@@ -1431,7 +1431,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                                     0 : current_stage + 1;
                             const uint32_t next_phase =
                                 phase ^ (next_stage == 0);
-                            full_barriers[next_stage]->wait(next_phase);
+                            { const auto t_w = stamp_now(); full_barriers[next_stage]->wait(next_phase); if (epilogue_thread_idx == 0) stamp_accumulate(28, stamp_now() - t_w, 0); }
                             decode_rs_swap_ab_half
                                 .template operator()<N_SWAP>(
                                     next_stage, 0, a_frag[0]);

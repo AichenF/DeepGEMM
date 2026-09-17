@@ -54,6 +54,7 @@ STAMP_NAMES = {
 }
 MIN_SLOTS = (0, 3)
 ACC_SLOTS = {20: 'L1 task avg us (sum/count)', 22: 'L2 task avg us (sum/count)', 26: 'SM clock over L1 tasks (GHz)',
+             27: 'B-loader empty-wait us per SM', 28: 'math full-wait us per SM', 29: 'A-loader empty-wait us per SM',
              24: 'A-loader L1 arrival spin, total us per SM', 25: 'A-loader L2 mask spin, total us per SM'}
 
 
@@ -312,6 +313,8 @@ def run_stamps(args, rank, num_ranks, group, shape):
                     row[21] = float(s[21])
                     row[23] = float(s[23])
                     row[26] = s[26] / max(1, s[20])  # GHz over the L1 tasks
+                    for k in (27, 28, 29):
+                        row[k] = s[k] / 1000.0 / 78.0
                     row[24] = s[24] / 1000.0 / 78.0
                     row[25] = s[25] / 1000.0 / 78.0
                     per_call.append(row)
