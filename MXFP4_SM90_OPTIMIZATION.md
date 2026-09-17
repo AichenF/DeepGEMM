@@ -455,6 +455,23 @@ the narrower transposed tile (section 5.6) being what actually helped.
 That is the opposite of what the earlier "97 % of achievable" reading suggested,
 which measured the stream in isolation rather than in the kernel.
 
+`ncu` is not installed on any node image these run on, so the phase split came
+from `clock64()` timestamps compiled into the kernel behind a macro and read
+back with `printf` — diagnostic only, not kept. At M=32 on 78 SMs, EP1, two
+independent runs:
+
+| phase | cycles | share |
+|---|---:|---:|
+| entry -> GEMM end (prologue, dispatch, mainloop) | 990 833 / 992 747 | **91.8 / 91.9 %** |
+| combine + workspace cleanup | 88 889 / 87 202 | **8.2 / 8.1 %** |
+
+1 079 722 cycles at ~1.98 GHz is ~545 us against ~503 us of measured wall time,
+so the timestamps track the real kernel. **The combine tail is worth at most
+8 %**, and it moves ~3 MB, which at 4 TB/s is under a microsecond — so what it
+costs is the device-wide barrier in front of it and the latency of its own
+chunked loop, not bandwidth. Removing it outright would not reach the target,
+which is why the remaining work is not a single change.
+
 Two levers, both quantified:
 
 | if | M=32 EP1 | vs 196 us theoretical roofline |
