@@ -59,14 +59,24 @@ def _quantize_grouped_fp8_block_128_128(weights: torch.Tensor) -> Tuple[torch.Te
 
 
 class Arm:
-    """One weight format: its symm buffer, transformed weights and runner."""
+    """One weight format: its symm buffer, transformed weights and runner.
+
+    ``sched`` is an optional ``{env: value}`` overlay applied around this arm's
+    launch only. The SM90 MXFP4 selector reads its DG_MXFP4_* overrides through
+    getenv on every launch, so several schedules can be compared as separate
+    arms of one process -- which is the only way to compare them at all, since
+    a fresh process draws a different router and therefore a different number
+    of routed tokens.
+    """
 
     def __init__(self, name, group, num_experts, cap, num_topk, hidden, ih,
                  l1_bf, l2_bf, x_fp8, x_sf, topk_idx, topk_w, cum_stats,
-                 num_tokens, activation_clamp, fast_math):
+                 num_tokens, activation_clamp, fast_math, sched=None):
+        self.sched = sched or {}
+        self.fmt = name.split('[')[0]
         self.name = name
         self.num_tokens = num_tokens
-        if name == 'fp8':
+        if self.fmt == 'fp8':
             self.buffer = deep_gemm.get_symm_buffer_for_sm90_mega_moe(
                 group, num_experts, cap, num_topk, hidden, ih)
             l1 = _quantize_grouped_fp8_block_128_128(l1_bf)
@@ -77,7 +87,7 @@ class Arm:
         else:
             self.buffer = deep_gemm.get_symm_buffer_for_mega_moe(
                 group, num_experts, cap, num_topk, hidden, ih)
-            if name == 'mxfp4':
+            if self.fmt == 'mxfp4':
                 gs = 32
                 l1, l2 = quantize_to_mxfp4(l1_bf, group_size=gs), quantize_to_mxfp4(l2_bf, group_size=gs)
                 self.t1, self.t2 = deep_gemm.transform_mxfp4_weights_for_mega_moe_sm90(l1, l2)
@@ -95,6 +105,18 @@ class Arm:
         self._clamp, self._fm = activation_clamp, fast_math
 
     def run(self):
+        prev = {k: os.environ.get(k) for k in self.sched}
+        os.environ.update({k: str(v) for k, v in self.sched.items()})
+        try:
+            return self._run()
+        finally:
+            for k, v in prev.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def _run(self):
         n = self.num_tokens
         b = self.buffer
         b.x[:n].copy_(self._x_fp8)
@@ -102,14 +124,14 @@ class Arm:
         b.topk_idx[:n].copy_(self._topk_idx)
         b.topk_weights[:n].copy_(self._topk_w)
         y = torch.empty((n, self._hidden), dtype=torch.bfloat16, device='cuda')
-        if self.name == 'fp8':
+        if self.fmt == 'fp8':
             deep_gemm.fp8_mega_moe(
                 y, self.t1, self.t2, b,
                 cumulative_local_expert_recv_stats=self._cum,
                 recipe=(128, 128, 128), activation='swiglu',
                 activation_clamp=self._clamp, fast_math=self._fm)
         else:
-            entry = deep_gemm.mxfp4_mega_moe if self.name == 'mxfp4' else deep_gemm.nvfp4_mega_moe
+            entry = deep_gemm.mxfp4_mega_moe if self.fmt == 'mxfp4' else deep_gemm.nvfp4_mega_moe
             entry(y, self.t1, self.t2, b,
                   cumulative_local_expert_recv_stats=self._cum,
                   activation_clamp=self._clamp, fast_math=self._fm)
@@ -145,6 +167,37 @@ def _run_one_config(args, num_tokens, cap, hidden, ih, num_experts, num_topk,
         arms[name] = Arm(name, group, num_experts, cap, num_topk, hidden, ih,
                          l1_bf, l2_bf, x_fp8, x_sf, topk_idx, topk_w, cum,
                          num_tokens, activation_clamp, fast_math)
+    for spec in args.mxfp4_scheds:
+        fields = [int(v) for v in spec.split(',')]
+        bm, st, epw = fields[:3]
+        # Whether one or both dispatch warps stay active is a shared-memory
+        # decision as much as a routing one: the second warp's send buffer is
+        # another `hidden` bytes, which is what decides how deep the pipeline
+        # can go. Default to the table's own choice unless the spec pins it.
+        single = fields[3] if len(fields) > 3 else None
+        rs = fields[4] if len(fields) > 4 else None
+        label = (f'mxfp4[{bm}/{st}/{epw}'
+                 + (f'/s{single}' if single is not None else '')
+                 + (f'/rs{rs}' if rs is not None else '') + ']')
+        # A duplicate label would drop the earlier Arm on the floor, and its
+        # symmetric buffer would then be torn down mid-run by the collector.
+        assert label not in arms, f'duplicate schedule arm {label}'
+        arms[label] = Arm(label, group, num_experts, cap, num_topk, hidden, ih,
+                          l1_bf, l2_bf, x_fp8, x_sf, topk_idx, topk_w, cum,
+                          num_tokens, activation_clamp, fast_math,
+                          sched={'DG_MXFP4_BLOCK_M': bm, 'DG_MXFP4_STAGES': st,
+                                 'DG_MXFP4_EPW': epw,
+                                 # swapAB is a property of the tile, not of the
+                                 # batch: the transposed path packs tokens into
+                                 # WGMMA N and so needs BLOCK_M <= 24, while the
+                                 # straight path needs a full M64 tile. Deriving
+                                 # it here keeps every variant self-consistent.
+                                 'DG_MXFP4_SWAP_AB': 1 if bm <= 24 else 0,
+                                 **({} if single is None
+                                    else {'DG_MXFP4_SINGLE_DISPATCH': single}),
+                                 **({} if rs is None
+                                    else {'DG_MXFP4_RS': rs})})
+    order = list(arms)
     del l1_bf, l2_bf, x_bf, scores
 
     for a in arms.values():
@@ -152,12 +205,12 @@ def _run_one_config(args, num_tokens, cap, hidden, ih, num_experts, num_topk,
     dist.barrier()
 
     show_kineto = os.environ.get('DG_SHOW_KINETO', '0') != '0'
-    samples = {n: [] for n in args.arms}
+    samples = {n: [] for n in order}
     for _ in range(args.reps):              # interleaved, so drift hits all arms alike
-        for n in args.arms:
+        for n in order:
             samples[n].append(arms[n].time_once(args.num_tests, show_kineto))
 
-    med = {n: statistics.median(samples[n]) for n in args.arms}
+    med = {n: statistics.median(samples[n]) for n in order}
 
     gathered = uneven_all_gather(topk_idx, group=group)
     gathered[(gathered < rank_idx * num_experts_per_rank) |
@@ -169,12 +222,12 @@ def _run_one_config(args, num_tokens, cap, hidden, ih, num_experts, num_topk,
     tf = lambda t: sd(2 * num_recv * (hidden * ih * 3) / 1e12, t)
 
     parts = []
-    for n in args.arms:
+    for n in order:
         parts.append(f'{n}={med[n]*1e6:7.1f}us({tf(med[n]):5.1f}TF)')
     base = args.baseline if args.baseline in med else None
     delta = ''
     if base:
-        for n in args.arms:
+        for n in order:
             if n == base:
                 continue
             d = (med[n] - med[base]) / med[base] * 100
@@ -182,7 +235,7 @@ def _run_one_config(args, num_tokens, cap, hidden, ih, num_experts, num_topk,
     dist_print(f' M={num_tokens:4d} recv={num_recv:5d} exp={touched:3d} | ' +
                ' '.join(parts) + ' |' + delta, once_in_node=True)
     if args.verbose:
-        for n in args.arms:
+        for n in order:
             dist_print(f'    raw {n}={[round(v*1e6, 1) for v in samples[n]]}', once_in_node=True)
     dist.barrier()
     for a in arms.values():
@@ -230,6 +283,9 @@ if __name__ == '__main__':
     p.add_argument('--local-rank-idx', type=int, default=None)
     p.add_argument('--arms', nargs='+', default=['fp8', 'mxfp4'], choices=['fp8', 'mxfp4', 'nvfp4'])
     p.add_argument('--baseline', default='fp8')
+    # Extra MXFP4 arms that differ only in schedule, e.g. --mxfp4-scheds 24,3,48 24,7,48
+    p.add_argument('--mxfp4-scheds', nargs='*', default=[],
+                   metavar='BLOCK_M,STAGES,EPW[,SINGLE_DISPATCH[,RS]]')
     p.add_argument('--batches', type=int, nargs='+', default=None)
     # Defaults are the ONLY shape the mxfp4/nvfp4 kernels accept.
     p.add_argument('--hidden', type=int, default=6144)

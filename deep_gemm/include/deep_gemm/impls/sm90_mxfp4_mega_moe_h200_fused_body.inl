@@ -8,11 +8,13 @@
     DG_STATIC_ASSERT(BLOCK_M == 8 || BLOCK_M == 16 ||
                      BLOCK_M == 24 || BLOCK_M == 64 || BLOCK_M == 128,
                      "H200 fused kernel requires BM8/BM16/BM24/BM64/BM128");
-    DG_STATIC_ASSERT((BLOCK_M == 8 && kNumStages == 4) ||
-                     ((BLOCK_M == 16 || BLOCK_M == 24) && kNumStages == 3) ||
-                     (BLOCK_M == 64 && kNumStages == 3) ||
-                     (BLOCK_M == 128 && kNumStages == 6),
-                     "Unexpected H200 pipeline depth");
+    // Pipeline depth used to be pinned to one value per BLOCK_M, which made the
+    // shipped table the only reachable schedule. The binding constraint is
+    // shared memory, and the layout assertions below already enforce it
+    // exactly, so only the pipelining minimum is asserted here.
+    DG_STATIC_ASSERT(kNumStages >= 2, "Pipelining needs at least two stages");
+    DG_STATIC_ASSERT(BLOCK_M != 128 || kNumStages == 6,
+                     "BM128 split-M is only validated at stage depth 6");
     DG_STATIC_ASSERT((BLOCK_M == 128) == (BLOCK_N == 128),
                      "BM128 is paired with the BN128 split-M topology");
     DG_STATIC_ASSERT(!kSwapABRequested || BLOCK_M <= 24,
@@ -129,13 +131,41 @@
         math::constexpr_align<uint32_t>(kNumExperts * sizeof(uint32_t), kSharedMemoryAlignment);
     constexpr uint32_t SMEM_SEND_BUFFER_SIZE =
         math::constexpr_align(fp8_token_layout.get_num_bytes() * kNumActiveDispatchWarps, kSharedMemoryAlignment);
+    // 32-entry scaled-magnitude window; see kScaledLutWindowLo. The alignment
+    // quantum, not the 256 B payload, is what this actually costs.
+    constexpr uint32_t SMEM_MXFP4_LUT_SIZE =
+        math::constexpr_align<uint32_t>(
+            mxfp4::kScaledLutWindowSize * sizeof(mxfp4::ScaledLut),
+            kSharedMemoryAlignment);
     constexpr uint32_t SMEM_A_SIZE_PER_STAGE = LOAD_BLOCK_M * BLOCK_K * sizeof(a_dtype_t);
     constexpr uint32_t SMEM_B_SIZE_PER_STAGE = LOAD_BLOCK_N * BLOCK_K * sizeof(b_dtype_t);
     // BM128 split-M alternates two decoded-B slots. This lets one WG begin
     // decoding K+1 after its K WGMMA completes without overwriting the slot
     // that the paired WG may still be consuming.
+    //
+    // Every other plan needs exactly one. Decode and consume are serialized
+    // inside a K-block iteration -- the warpgroup drains its own WGMMA with
+    // warpgroup_wait<0> before it loops -- and the two warpgroups decode and
+    // read disjoint N halves of the same BN256 tile, so no slot is ever live
+    // across iterations. Sizing this ring by kNumStages spent
+    // (kNumStages - 1) * BN256 * BK128 bytes (64 KB at three stages) to hold
+    // tiles nobody could read, and that is what capped the TMA pipeline at
+    // three or four stages.
+    // One slot is enough outside split-M. Decode and consume are serialized
+    // inside a K-block iteration -- the warpgroup drains its own WGMMA with
+    // warpgroup_wait<0> before it loops -- and the two warpgroups decode and
+    // read disjoint N halves of the same BN256 tile, so no slot is live across
+    // iterations.
+    //
+    // Rotating two slots to decode K+1 under K's in-flight WGMMAs was measured
+    // and is worse: at MiMo/H20 M=64 it cost +5.9 / +7.1 / +10.8 % over three
+    // runs. The prefetch has to wait on stage K+1's TMA barrier, and that wait
+    // sits between the WGMMA issue and arrive_empty(K), so it delays the loader
+    // by exactly as much as it saves on the decode.
+    DG_STATIC_ASSERT(!kUseRSOperand || kSwapABRequested,
+                     "The register-source A path is swapAB-only");
     constexpr uint32_t kNumDecodedBStages =
-        kSplitMDecodedWeightReuse ? 2u : kNumStages;
+        kSplitMDecodedWeightReuse ? 2u : (kUseRSOperand ? 0u : 1u);
     constexpr uint32_t B_LOAD_BYTES_PER_ROW = 80u;
     constexpr uint32_t SMEM_PACKED_B_SIZE_PER_STAGE =
         LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW * sizeof(b_dtype_t);
@@ -168,18 +198,34 @@
     constexpr uint32_t SMEM_CD_SIZE = math::constexpr_align(
         SMEM_CD_OUTPUT_UNALIGNED_SIZE, kSharedMemoryAlignment);
 
-    constexpr uint32_t SMEM_BEFORE_BARRIER_SIZE =
-        SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE + SMEM_CD_SIZE +
+    constexpr uint32_t SMEM_GEMM_END_SIZE =
+        SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE + SMEM_MXFP4_LUT_SIZE + SMEM_CD_SIZE +
         kNumStages * (SMEM_A_SIZE_PER_STAGE + SMEM_PACKED_B_SIZE_PER_STAGE) +
-        kNumDecodedBStages * SMEM_B_SIZE_PER_STAGE;
+        kNumDecodedBStages * SMEM_B_SIZE_PER_STAGE +
+        kNumStages * SMEM_SFA_SIZE_PER_STAGE;
+    // The combine phase reuses this whole region as its own ring, so it sets a
+    // floor on it that has nothing to do with the GEMM. Deriving the chunk
+    // count from kHidden alone keeps that floor non-circular; the static
+    // assertion further down re-derives it from the final region size and
+    // would fire if the two ever disagreed.
+    constexpr uint32_t kCombineNumChunks = kHidden <= 4096 ? 1u : 2u;
+    constexpr uint32_t SMEM_COMBINE_MIN_SIZE =
+        3u * kNumEpilogueWarps * kHidden * sizeof(nv_bfloat16) / kCombineNumChunks;
+    constexpr uint32_t SMEM_BEFORE_BARRIER_SIZE =
+        SMEM_GEMM_END_SIZE > SMEM_COMBINE_MIN_SIZE ?
+            SMEM_GEMM_END_SIZE : SMEM_COMBINE_MIN_SIZE;
 
     // SMEM pointers
     auto smem_expert_count = reinterpret_cast<uint32_t*>(smem_buffer);
     const auto smem_send_buffers = layout::Buffer(
         fp8_token_layout, kNumActiveDispatchWarps, 1,
         math::advance_ptr(smem_buffer, SMEM_EXPERT_COUNT_SIZE));
+    auto smem_mxfp4_lut = reinterpret_cast<mxfp4::ScaledLut*>(
+        math::advance_ptr<uint8_t>(
+            smem_buffer, SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE));
     auto smem_gemm_base = math::advance_ptr(
-        smem_buffer, SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE);
+        smem_buffer,
+        SMEM_EXPERT_COUNT_SIZE + SMEM_SEND_BUFFER_SIZE + SMEM_MXFP4_LUT_SIZE);
 
     auto smem_cd_base = smem_gemm_base;
     // CD output is shared by L1 (FP8) and L2 (BF16); reinterpret-cast as needed.
@@ -192,8 +238,12 @@
         return math::advance_ptr<a_dtype_t>(smem_gemm_base, SMEM_CD_SIZE + i * SMEM_A_SIZE_PER_STAGE);
     });
     auto smem_b = utils::PatternVisitor([=](const uint32_t& i) {
+        // Callers pass a decoded-slot index, not a pipeline stage. The RS path
+        // allocates no decoded tile at all, so the index degenerates to zero and
+        // the pointer is never dereferenced.
         const uint32_t decoded_stage =
-            kSplitMDecodedWeightReuse ? (i & 1u) : i;
+            kSplitMDecodedWeightReuse ? (i & 1u) :
+            (kNumDecodedBStages <= 1u ? 0u : (i % kNumDecodedBStages));
         return math::advance_ptr<b_dtype_t>(
             smem_gemm_base,
             SMEM_CD_SIZE + kNumStages * SMEM_A_SIZE_PER_STAGE +
@@ -213,7 +263,7 @@
     });
     // Barriers live after SF.
     auto barrier_start_ptr = reinterpret_cast<Barrier*>(
-        sf_start_ptr + kNumStages * SMEM_SFA_SIZE_PER_STAGE);
+        smem_buffer + SMEM_BEFORE_BARRIER_SIZE);
     auto dispatch_barriers = utils::PatternVisitor([=](const uint32_t& i) { return barrier_start_ptr + i; });
     auto full_barriers     = utils::PatternVisitor([=](const uint32_t& i) { return barrier_start_ptr + kNumDispatchWarps + i; });
     auto empty_barriers    = utils::PatternVisitor([=](const uint32_t& i) { return barrier_start_ptr + kNumDispatchWarps + kNumStages + i; });
@@ -234,8 +284,7 @@
             layout::kSM90InterleavedSchedulerSMEMBytes,
         "Host and device scheduler shared-memory layouts disagree");
     constexpr uint32_t kInterleavedSMEMEnd =
-        SMEM_BEFORE_BARRIER_SIZE + kNumStages * SMEM_SFA_SIZE_PER_STAGE +
-        kNumBaseBarriers * sizeof(Barrier) +
+        SMEM_BEFORE_BARRIER_SIZE + kNumBaseBarriers * sizeof(Barrier) +
         kInterleavedSchedulerSMEMBytes;
     DG_STATIC_ASSERT(!kUseInterleavedScheduler || kInterleavedSMEMEnd <= 232448,
                      "Interleaved scheduler exceeds the SM90 shared-memory capacity");
@@ -243,6 +292,7 @@
     // =====================================================================
     // Initialization
     // =====================================================================
+    mxfp4::init_scaled_lut_window(smem_mxfp4_lut, thread_idx);
 
     if (warp_idx == 0) {
         // Clean expert-count shared memory
@@ -849,7 +899,8 @@
             using WGMMA = L1WGMMA;
             constexpr uint32_t kAccumPerThread = WGMMA::kNumAccum;  // 64 for M=64,N=128
             float final_accum[kAccumPerThread] = {};
-            const auto decode_b_stage = [&](const uint32_t& decoded_stage) {
+            const auto decode_b_stage = [&](const uint32_t& packed_stage,
+                                            const uint32_t& decoded_slot) {
                 if constexpr (kSplitMDecodedWeightReuse) {
                     // Both M64 consumers share the same decoded N128 tile.
                     // The two physical decoded slots remove the overwrite
@@ -859,32 +910,74 @@
                                      "BM128 split-M uses the cooperative Mode2 decoder");
                     deep_gemm::mxfp4::
                         dequant_smem_b_from_packed_mode2_nibble_split_m(
-                            reinterpret_cast<uint8_t*>(smem_b[decoded_stage]),
-                            reinterpret_cast<const uint8_t*>(smem_packed_b[decoded_stage]),
-                            epilogue_thread_idx);
+                            reinterpret_cast<uint8_t*>(smem_b[decoded_slot]),
+                            reinterpret_cast<const uint8_t*>(smem_packed_b[packed_stage]),
+                            epilogue_thread_idx, smem_mxfp4_lut);
                     cutlass::arch::fence_view_async_shared();
                     asm volatile("bar.sync %0, %1;" : :
                                  "n"(kSplitMDecodeBarrierIdx), "n"(256) : "memory");
                 } else {
                     deep_gemm::mxfp4::dequant_smem_b_from_packed_mode2_nibble<
                         kQuadDequantIlp>(
-                        reinterpret_cast<uint8_t*>(smem_b[decoded_stage]),
-                        reinterpret_cast<const uint8_t*>(smem_packed_b[decoded_stage]),
-                        epilogue_thread_idx);
+                        reinterpret_cast<uint8_t*>(smem_b[decoded_slot]),
+                        reinterpret_cast<const uint8_t*>(smem_packed_b[packed_stage]),
+                        epilogue_thread_idx, smem_mxfp4_lut);
                     cutlass::arch::fence_view_async_shared();
                     ptx::sync_aligned(
                         128, kEpilogueWGBarrierStartIdx + epilogue_wg_idx);
                 }
             };
+
+            // Register-source decode: one lane pair owns one weight row of the
+            // half-tile, and each slice of four A registers is produced from two
+            // packed words plus one shuffle. Nothing lands in shared memory, so
+            // this path allocates no decoded-B tile at all.
+            const auto decode_rs_half = [&](const uint32_t& rs_stage,
+                                            const uint32_t& half,
+                                            uint32_t (&a_frag)[4][4]) {
+                const uint32_t frag_row0 =
+                    wg_n_idx + half * 64u + warp_idx_in_wg * 16u + row_idx;
+                const uint32_t decode_row = frag_row0 + ((lane_idx & 1u) << 3);
+                const uint32_t word_sel = (lane_idx >> 1) & 1u;
+                const bool keep_hi = (lane_idx & 1u) == 0;
+                const auto* __restrict__ packed_row =
+                    reinterpret_cast<const uint8_t*>(smem_packed_b[rs_stage]) +
+                    decode_row * B_LOAD_BYTES_PER_ROW;
+                const uint32_t scale_word = ptx::ld_shared(
+                    reinterpret_cast<const uint32_t*>(packed_row + 64u));
+
+                #pragma unroll
+                for (uint32_t slice = 0; slice < 4; ++slice) {
+                    const uint32_t offset = slice * 16u + word_sel * sizeof(uint32_t);
+                    const uint32_t w_lo = ptx::ld_shared(
+                        reinterpret_cast<const uint32_t*>(packed_row + offset));
+                    const uint32_t w_hi = ptx::ld_shared(
+                        reinterpret_cast<const uint32_t*>(packed_row + offset + 8u));
+                    const auto lut = mxfp4::load_scaled_lut(
+                        smem_mxfp4_lut, (scale_word >> (slice * 8u)) & 0xffu);
+                    mxfp4::dequant_rs_word_pair(w_lo, w_hi, lut, keep_hi, a_frag[slice]);
+                    #pragma unroll
+                    for (uint32_t i = 0; i < 4; ++i)
+                        mma::sm90::warpgroup_fence_operand(a_frag[slice][i]);
+                }
+            };
             for (uint32_t k_block_idx = 0;
                  k_block_idx < num_k_blocks;
                  advance_pipeline(k_block_idx)) {
+                // BM128 split-M alternates two decoded slots keyed by the
+                // pipeline stage, because its paired warpgroups share the same
+                // N range and one must not overwrite a tile the other is still
+                // reading. Every other plan decodes and consumes inside one
+                // iteration and has a single slot.
+                const uint32_t b_slot =
+                    kSplitMDecodedWeightReuse ? stage_idx : 0u;
                 full_barriers[stage_idx]->wait(phase);
                 if constexpr (kUseInterleavedScheduler) {
                     if (k_block_idx == 0)
                         interleaved_scheduler.release_task_info(lane_idx);
                 }
-                decode_b_stage(stage_idx);
+                if constexpr (!kUseRSOperand)
+                    decode_b_stage(stage_idx, b_slot);
 
                 // Read SF (must precede warpgroup_arrive)
                 const float scale_a_0_lo =
@@ -908,44 +1001,98 @@
                         auto run_swap_ab_l1 = [&]<uint32_t N_SWAP>() {
                             using SwapWGMMA = typename mma::sm90::FP8MMASelector<N_SWAP>::type;
                             constexpr uint32_t kSwapAccum = SwapWGMMA::kNumAccum;
-                            float swap_accum[kSwapAccum];
+                            DG_STATIC_ASSERT(kSwapABWeightHalves == 2,
+                                             "BN256 swapAB splits the weight tile into two halves");
+                            float swap_accum[2][kSwapAccum];
 
-                            #pragma unroll
-                            for (uint32_t half = 0; half < kSwapABWeightHalves; ++ half) {
+                            // The two halves are independent WGMMA groups, so issue both and only
+                            // then wait. The window between the last issue and the first wait is
+                            // where the next K-block's dequant hides.
+                            using RSWGMMA =
+                                typename mma::sm90::FP8RSMMASelector<N_SWAP>::type;
+                            // One fragment set per half. Under RS the decode sits
+                            // between the stage barrier and the WGMMA, so giving
+                            // each half its own registers lets half 1's decode run
+                            // under half 0's MMA. Unlike prefetching the next
+                            // K-block, this stays inside one stage and so never
+                            // puts a TMA wait in front of arrive_empty.
+                            uint32_t a_frags[kUseRSOperand ? 2 : 1][4][4];
+                            const auto issue_half = [&](const uint32_t half) {
+                                auto& a_frag = a_frags[kUseRSOperand ? half : 0];
+                                if constexpr (kUseRSOperand)
+                                    decode_rs_half(stage_idx, half, a_frag);
                                 #pragma unroll
                                 for (uint32_t i = 0; i < kSwapAccum; ++ i)
-                                    ptx::warpgroup_fence_operand(swap_accum[i]);
+                                    ptx::warpgroup_fence_operand(swap_accum[half][i]);
                                 ptx::warpgroup_arrive();
                                 #pragma unroll
                                 for (uint32_t k = 0; k < BLOCK_K / SwapWGMMA::K; ++ k) {
-                                    auto desc_a = mma::sm90::make_smem_desc(
-                                        smem_b[stage_idx] + (wg_n_idx + half * 64u) * BLOCK_K + k * SwapWGMMA::K, 1);
-                                    auto desc_b = mma::sm90::make_smem_desc(
-                                        smem_a[stage_idx] + k * SwapWGMMA::K, 1);
-                                    SwapWGMMA::wgmma(desc_a, desc_b, swap_accum, k);
+                                    if constexpr (kUseRSOperand) {
+                                        auto desc_b = mma::sm90::make_smem_desc(
+                                            smem_a[stage_idx] + k * RSWGMMA::K, 1);
+                                        RSWGMMA::wgmma(a_frag[k], desc_b, swap_accum[half], k);
+                                    } else {
+                                        auto desc_a = mma::sm90::make_smem_desc(
+                                            smem_b[b_slot] + (wg_n_idx + half * 64u) * BLOCK_K + k * SwapWGMMA::K, 1);
+                                        auto desc_b = mma::sm90::make_smem_desc(
+                                            smem_a[stage_idx] + k * SwapWGMMA::K, 1);
+                                        SwapWGMMA::wgmma(desc_a, desc_b, swap_accum[half], k);
+                                    }
                                 }
                                 ptx::warpgroup_commit_batch();
                                 #pragma unroll
                                 for (uint32_t i = 0; i < kSwapAccum; ++ i)
-                                    ptx::warpgroup_fence_operand(swap_accum[i]);
-                                ptx::warpgroup_wait<0>();
-
+                                    ptx::warpgroup_fence_operand(swap_accum[half][i]);
+                            };
+                            // The next issue_half overwrites a_frag, so the
+                            // fragments have to be re-fenced once the WGMMA that
+                            // reads them has drained.
+                            const auto fence_frags = [&](const uint32_t half) {
+                                if constexpr (kUseRSOperand) {
+                                    auto& a_frag = a_frags[half];
+                                    #pragma unroll
+                                    for (uint32_t slice = 0; slice < 4; ++ slice)
+                                        #pragma unroll
+                                        for (uint32_t i = 0; i < 4; ++ i)
+                                            mma::sm90::warpgroup_fence_operand(a_frag[slice][i]);
+                                }
+                            };
+                            const auto accumulate_half = [&](const uint32_t half) {
                                 #pragma unroll
                                 for (uint32_t i = 0; i < kSwapAccum / 4; ++ i) {
-                                    const uint32_t accum_offset = half * kSwapABHalfAccumPerThread + i * 4;
+                                    const uint32_t accum_offset =
+                                        half * kSwapABHalfAccumPerThread + i * 4;
                                     const uint32_t token_0 = i * 8 + col_idx * 2;
                                     const uint32_t token_1 = token_0 + 1;
                                     if (token_0 < valid_m) {
                                         const float scale_0 = ptx::ld_shared(smem_sfa[stage_idx] + token_0);
-                                        final_accum[accum_offset + 0] += scale_0 * swap_accum[i * 4 + 0];
-                                        final_accum[accum_offset + 2] += scale_0 * swap_accum[i * 4 + 2];
+                                        final_accum[accum_offset + 0] += scale_0 * swap_accum[half][i * 4 + 0];
+                                        final_accum[accum_offset + 2] += scale_0 * swap_accum[half][i * 4 + 2];
                                     }
                                     if (token_1 < valid_m) {
                                         const float scale_1 = ptx::ld_shared(smem_sfa[stage_idx] + token_1);
-                                        final_accum[accum_offset + 1] += scale_1 * swap_accum[i * 4 + 1];
-                                        final_accum[accum_offset + 3] += scale_1 * swap_accum[i * 4 + 3];
+                                        final_accum[accum_offset + 1] += scale_1 * swap_accum[half][i * 4 + 1];
+                                        final_accum[accum_offset + 3] += scale_1 * swap_accum[half][i * 4 + 3];
                                     }
                                 }
+                            };
+
+                            if constexpr (kUseRSOperand) {
+                                issue_half(0);
+                                issue_half(1);      // decodes under half 0's MMA
+                                ptx::warpgroup_wait<1>();
+                                fence_frags(0);
+                                accumulate_half(0);
+                                ptx::warpgroup_wait<0>();
+                                fence_frags(1);
+                                accumulate_half(1);
+                            } else {
+                                issue_half(0);
+                                ptx::warpgroup_wait<0>();
+                                accumulate_half(0);
+                                issue_half(1);
+                                ptx::warpgroup_wait<0>();
+                                accumulate_half(1);
                             }
 
                             arrive_empty_barrier(stage_idx);
@@ -983,7 +1130,7 @@
                                 smem_a[stage_idx] + row_block_offset * BLOCK_K +
                                 k * WGMMA::K, 1);
                             auto desc_b = mma::sm90::make_smem_desc(
-                                smem_b[stage_idx] + wg_n_idx * BLOCK_K + k * WGMMA::K, 1);
+                                smem_b[b_slot] + wg_n_idx * BLOCK_K + k * WGMMA::K, 1);
                             WGMMA::wgmma(desc_a, desc_b, accum, k);
                         }
                         ptx::warpgroup_commit_batch();
@@ -1012,27 +1159,63 @@
                         auto run_swap_ab_l2 = [&]<uint32_t N_SWAP>() {
                             using SwapWGMMA = typename mma::sm90::FP8MMASelector<N_SWAP>::type;
                             constexpr uint32_t kSwapAccum = SwapWGMMA::kNumAccum;
-                            float swap_accum[kSwapAccum];
+                            DG_STATIC_ASSERT(kSwapABWeightHalves == 2,
+                                             "BN256 swapAB splits the weight tile into two halves");
+                            float swap_accum[2][kSwapAccum];
 
-                            #pragma unroll
-                            for (uint32_t half = 0; half < kSwapABWeightHalves; ++ half) {
+                            // The two halves are independent WGMMA groups, so issue both and only
+                            // then wait. The window between the last issue and the first wait is
+                            // where the next K-block's dequant hides.
+                            using RSWGMMA =
+                                typename mma::sm90::FP8RSMMASelector<N_SWAP>::type;
+                            // One fragment set per half. Under RS the decode sits
+                            // between the stage barrier and the WGMMA, so giving
+                            // each half its own registers lets half 1's decode run
+                            // under half 0's MMA. Unlike prefetching the next
+                            // K-block, this stays inside one stage and so never
+                            // puts a TMA wait in front of arrive_empty.
+                            uint32_t a_frags[kUseRSOperand ? 2 : 1][4][4];
+                            const auto issue_half = [&](const uint32_t half) {
+                                auto& a_frag = a_frags[kUseRSOperand ? half : 0];
+                                if constexpr (kUseRSOperand)
+                                    decode_rs_half(stage_idx, half, a_frag);
                                 #pragma unroll
                                 for (uint32_t i = 0; i < kSwapAccum; ++ i)
-                                    ptx::warpgroup_fence_operand(swap_accum[i]);
+                                    ptx::warpgroup_fence_operand(swap_accum[half][i]);
                                 ptx::warpgroup_arrive();
                                 #pragma unroll
                                 for (uint32_t k = 0; k < BLOCK_K / SwapWGMMA::K; ++ k) {
-                                    auto desc_a = mma::sm90::make_smem_desc(
-                                        smem_b[stage_idx] + (wg_n_idx + half * 64u) * BLOCK_K + k * SwapWGMMA::K, 1);
-                                    auto desc_b = mma::sm90::make_smem_desc(
-                                        smem_a[stage_idx] + k * SwapWGMMA::K, 1);
-                                    SwapWGMMA::wgmma(desc_a, desc_b, swap_accum, k);
+                                    if constexpr (kUseRSOperand) {
+                                        auto desc_b = mma::sm90::make_smem_desc(
+                                            smem_a[stage_idx] + k * RSWGMMA::K, 1);
+                                        RSWGMMA::wgmma(a_frag[k], desc_b, swap_accum[half], k);
+                                    } else {
+                                        auto desc_a = mma::sm90::make_smem_desc(
+                                            smem_b[b_slot] + (wg_n_idx + half * 64u) * BLOCK_K + k * SwapWGMMA::K, 1);
+                                        auto desc_b = mma::sm90::make_smem_desc(
+                                            smem_a[stage_idx] + k * SwapWGMMA::K, 1);
+                                        SwapWGMMA::wgmma(desc_a, desc_b, swap_accum[half], k);
+                                    }
                                 }
                                 ptx::warpgroup_commit_batch();
                                 #pragma unroll
                                 for (uint32_t i = 0; i < kSwapAccum; ++ i)
-                                    ptx::warpgroup_fence_operand(swap_accum[i]);
-                                ptx::warpgroup_wait<0>();
+                                    ptx::warpgroup_fence_operand(swap_accum[half][i]);
+                            };
+                            // The next issue_half overwrites a_frag, so the
+                            // fragments have to be re-fenced once the WGMMA that
+                            // reads them has drained.
+                            const auto fence_frags = [&](const uint32_t half) {
+                                if constexpr (kUseRSOperand) {
+                                    auto& a_frag = a_frags[half];
+                                    #pragma unroll
+                                    for (uint32_t slice = 0; slice < 4; ++ slice)
+                                        #pragma unroll
+                                        for (uint32_t i = 0; i < 4; ++ i)
+                                            mma::sm90::warpgroup_fence_operand(a_frag[slice][i]);
+                                }
+                            };
+                            const auto accumulate_half = [&](const uint32_t half) {
                                 #pragma unroll
                                 for (uint32_t i = 0; i < kSwapAccum / 4; ++ i) {
                                     const uint32_t accum_offset =
@@ -1040,22 +1223,34 @@
                                     const uint32_t token_0 = i * 8 + col_idx * 2;
                                     const uint32_t token_1 = token_0 + 1;
                                     if (token_0 < valid_m) {
-                                        const float scale_0 = ptx::ld_shared(
-                                            smem_sfa[stage_idx] + token_0);
-                                        final_accum[accum_offset + 0] +=
-                                            scale_0 * swap_accum[i * 4 + 0];
-                                        final_accum[accum_offset + 2] +=
-                                            scale_0 * swap_accum[i * 4 + 2];
+                                        const float scale_0 = ptx::ld_shared(smem_sfa[stage_idx] + token_0);
+                                        final_accum[accum_offset + 0] += scale_0 * swap_accum[half][i * 4 + 0];
+                                        final_accum[accum_offset + 2] += scale_0 * swap_accum[half][i * 4 + 2];
                                     }
                                     if (token_1 < valid_m) {
-                                        const float scale_1 = ptx::ld_shared(
-                                            smem_sfa[stage_idx] + token_1);
-                                        final_accum[accum_offset + 1] +=
-                                            scale_1 * swap_accum[i * 4 + 1];
-                                        final_accum[accum_offset + 3] +=
-                                            scale_1 * swap_accum[i * 4 + 3];
+                                        const float scale_1 = ptx::ld_shared(smem_sfa[stage_idx] + token_1);
+                                        final_accum[accum_offset + 1] += scale_1 * swap_accum[half][i * 4 + 1];
+                                        final_accum[accum_offset + 3] += scale_1 * swap_accum[half][i * 4 + 3];
                                     }
                                 }
+                            };
+
+                            if constexpr (kUseRSOperand) {
+                                issue_half(0);
+                                issue_half(1);      // decodes under half 0's MMA
+                                ptx::warpgroup_wait<1>();
+                                fence_frags(0);
+                                accumulate_half(0);
+                                ptx::warpgroup_wait<0>();
+                                fence_frags(1);
+                                accumulate_half(1);
+                            } else {
+                                issue_half(0);
+                                ptx::warpgroup_wait<0>();
+                                accumulate_half(0);
+                                issue_half(1);
+                                ptx::warpgroup_wait<0>();
+                                accumulate_half(1);
                             }
 
                             arrive_empty_barrier(stage_idx);
@@ -1107,7 +1302,7 @@
                                     auto desc_a = mma::sm90::make_smem_desc(
                                         smem_a[stage_idx] + row_block_offset * BLOCK_K + k_off, 1);
                                     auto desc_b = mma::sm90::make_smem_desc(
-                                        smem_b[stage_idx] + wg_n_idx * BLOCK_K + k_off, 1);
+                                        smem_b[b_slot] + wg_n_idx * BLOCK_K + k_off, 1);
                                     WGMMA::wgmma(desc_a, desc_b, accum, k);
                                 }
                                 ptx::warpgroup_commit_batch();
@@ -1134,7 +1329,7 @@
                                     smem_a[stage_idx] + row_block_offset * BLOCK_K +
                                     k * WGMMA::K, 1);
                                 auto desc_b = mma::sm90::make_smem_desc(
-                                    smem_b[stage_idx] + wg_n_idx * BLOCK_K + k * WGMMA::K, 1);
+                                    smem_b[b_slot] + wg_n_idx * BLOCK_K + k * WGMMA::K, 1);
                                 WGMMA::wgmma(desc_a, desc_b, accum, k);
                             }
                             ptx::warpgroup_commit_batch();

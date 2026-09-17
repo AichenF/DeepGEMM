@@ -32,6 +32,7 @@ public:
         bool use_mode2_row_decoder;
         bool single_active_dispatch_warp;
         bool use_interleaved_scheduler;
+        bool rs_swap_ab;
         SM90MXFP4H200FusedConfig config;
 
         void* y;
@@ -59,11 +60,13 @@ public:
             "/* kSwapABRequested */ {},\n"
             "        /* kSingleActiveDispatchWarp */ {},\n"
             "        /* kUseMode2RowDecoder */ {},\n"
-            "        /* kUseInterleavedScheduler */ {}",
+            "        /* kUseInterleavedScheduler */ {},\n"
+            "        /* kUseRSOperand */ {}",
             args.swap_ab ? "true" : "false",
             args.single_active_dispatch_warp ? "true" : "false",
             args.use_mode2_row_decoder ? "true" : "false",
-            args.use_interleaved_scheduler ? "true" : "false");
+            args.use_interleaved_scheduler ? "true" : "false",
+            args.rs_swap_ab ? "true" : "false");
         return fmt::format(R"(
 {}
 
@@ -162,7 +165,15 @@ static void sm90_mxfp4_h200_fused_mega_moe(
                     config.block_m == 24 || config.block_m == 64 ||
                     config.block_m == 128));
     DG_HOST_ASSERT(config.block_n == 128 || config.block_n == 256);
-    DG_HOST_ASSERT(plan.swap_ab == (num_tokens <= 64));
+    // What the kernel actually requires, rather than which token count the
+    // shipped table happens to enable swapAB for: the transposed path packs
+    // tokens into the WGMMA N dimension, so it needs BLOCK_M <= 24, and the
+    // straight path needs a full M64 warpgroup tile. Pinning this to
+    // `num_tokens <= 64` blocked every experiment that carries a small BLOCK_M
+    // into a larger batch, which is exactly what the reference NVFP4 selector
+    // does above M=64.
+    DG_HOST_ASSERT(plan.swap_ab ? config.block_m <= 24
+                                : (config.block_m == 64 || config.block_m == 128));
 
     constexpr int kL1ScaleGranK = 128;
     const int l2_scale_gran_k = config.block_n / 2;
@@ -217,6 +228,7 @@ static void sm90_mxfp4_h200_fused_mega_moe(
         .use_mode2_row_decoder = plan.use_mode2_row_decoder,
         .single_active_dispatch_warp = plan.single_active_dispatch_warp,
         .use_interleaved_scheduler = plan.use_interleaved_scheduler,
+        .rs_swap_ab = plan.rs_swap_ab,
         .config = config,
         .y = y.data_ptr(),
         .cumulative_local_expert_recv_stats = cumulative_stats_ptr,
@@ -239,6 +251,8 @@ static void sm90_mxfp4_h200_fused_mega_moe(
 
     const auto code = SM90MXFP4H200FusedRuntime::generate(args);
     const auto runtime = compiler->build(
+        plan.rs_swap_ab ?
+            "sm90_mxfp4_h200_fused_interleaved_rs" :
         plan.use_interleaved_scheduler ?
             "sm90_mxfp4_h200_fused_interleaved" :
             (plan.use_mode2_row_decoder ?

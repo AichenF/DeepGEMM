@@ -41,22 +41,25 @@ namespace mxfp4 {
 //    so one quad is exactly one scale group and all four words share a table.
 //    A BK128 row therefore carries 4 E8M0 bytes (one uint32) instead of 8
 //    UE4M3 bytes (a uint2).
-//  * Table provenance. A UE4M3 scale has a mantissa, so NVFP4 must look the
-//    scaled magnitudes up. E8M0 is a pure power of two, so the table is built
-//    in registers by adding the exponent -- see mxfp4_fused_scale.cuh. No
-//    shared memory, no table load.
+//  * Table provenance and size. Both formats look the scaled magnitudes up in
+//    shared memory, but because E8M0 is a pure power of two its tables are
+//    constant outside 20 codes, so MXFP4's window is 32 entries / 256 B where
+//    NVFP4 needs 128 entries / 1 KB. Combined with the wider group this is half
+//    as many lookups per row over a table an order of magnitude smaller --
+//    see kScaledLutWindowLo in mxfp4_fused_scale.cuh.
 
 template <bool kQuadILP = false>
 __device__ __forceinline__ void dequant_mode2_nibble_row_regs(
         uint8_t* __restrict__ fp8_dst,
         const uint4 (&fp4_quads)[4],
         const uint32_t scale_word,
-        const uint32_t row_swizzle) {
+        const uint32_t row_swizzle,
+        const ScaledLut* __restrict__ lut_smem) {
 #pragma unroll
     for (int quad_i = 0; quad_i < 4; ++quad_i) {
         const uint4 q = fp4_quads[quad_i];
         const ScaledLut lut =
-            make_scaled_lut((scale_word >> (quad_i * 8)) & 0xffu);
+            load_scaled_lut(lut_smem, (scale_word >> (quad_i * 8)) & 0xffu);
 
         const uint2 w0 = dequant_word(q.x, lut);
         const uint2 w1 = dequant_word(q.y, lut);
@@ -82,7 +85,8 @@ template <bool kQuadILP = false>
 __device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble(
         uint8_t* __restrict__ smem_b,
         const uint8_t* __restrict__ packed_b,
-        const uint32_t row) {
+        const uint32_t row,
+        const ScaledLut* __restrict__ lut_smem) {
     const uint8_t* __restrict__ row_ptr = packed_b + row * 80;
     const uint4* __restrict__ fp4_src = reinterpret_cast<const uint4*>(row_ptr);
     uint4 fp4_quads[4];
@@ -92,7 +96,7 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble(
     const uint32_t scale_word =
         *reinterpret_cast<const uint32_t*>(row_ptr + 64);
     dequant_mode2_nibble_row_regs<kQuadILP>(
-        smem_b + row * 128, fp4_quads, scale_word, (row & 7u) << 4);
+        smem_b + row * 128, fp4_quads, scale_word, (row & 7u) << 4, lut_smem);
 }
 
 // Threads 0-127 and 128-255 each decode one K64 half of the same N128 tile,
@@ -101,7 +105,8 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble(
 __device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble_split_m(
         uint8_t* __restrict__ smem_b,
         const uint8_t* __restrict__ packed_b,
-        const uint32_t thread_idx) {
+        const uint32_t thread_idx,
+        const ScaledLut* __restrict__ lut_smem) {
     const uint32_t row = thread_idx & 127u;
     const uint32_t k_half_idx = thread_idx >> 7;
     const uint8_t* __restrict__ row_ptr = packed_b + row * 80u;
@@ -116,7 +121,7 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble_split_m(
     for (uint32_t quad_i = 0; quad_i < 2; ++quad_i) {
         const uint4 q = fp4_src[quad_i];
         const ScaledLut lut =
-            make_scaled_lut((scale_pair >> (quad_i * 8u)) & 0xffu);
+            load_scaled_lut(lut_smem, (scale_pair >> (quad_i * 8u)) & 0xffu);
         const uint2 w0 = dequant_word(q.x, lut);
         const uint2 w1 = dequant_word(q.y, lut);
         const uint2 w2 = dequant_word(q.z, lut);
@@ -128,6 +133,33 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble_split_m(
         *reinterpret_cast<uint4*>(fp8_dst + (off1 ^ row_swizzle)) =
             make_uint4(w2.x, w2.y, w3.x, w3.y);
     }
+}
+
+// Decode the two packed words one lane pair owns directly into the four
+// register-source WGMMA A operands, bypassing shared memory entirely.
+//
+// A K32 slice is 16 packed bytes. Lanes pair up: the even lane keeps the high
+// half of each decoded word and ships the low half to its partner, the odd lane
+// does the reverse, so one shuffle per word assembles both lanes' fragments.
+// MXFP4's group of 32 is exactly the WGMMA's K, so both words of a slice share
+// one table; NVFP4's group of 16 needs two.
+__device__ __forceinline__ void dequant_rs_word_pair(
+        const uint32_t w_lo, const uint32_t w_hi,
+        const ScaledLut& lut, const bool keep_hi,
+        uint32_t (&a_frag)[4]) {
+    const uint2 d_lo = dequant_word(w_lo, lut);
+    const uint32_t keep_lo = keep_hi ? d_lo.x : d_lo.y;
+    const uint32_t ship_lo = keep_hi ? d_lo.y : d_lo.x;
+    const uint32_t recv_lo = __shfl_xor_sync(0xffffffffu, ship_lo, 1);
+    a_frag[0] = keep_hi ? keep_lo : recv_lo;
+    a_frag[1] = keep_hi ? recv_lo : keep_lo;
+
+    const uint2 d_hi = dequant_word(w_hi, lut);
+    const uint32_t keep_hi_half = keep_hi ? d_hi.x : d_hi.y;
+    const uint32_t ship_hi_half = keep_hi ? d_hi.y : d_hi.x;
+    const uint32_t recv_hi_half = __shfl_xor_sync(0xffffffffu, ship_hi_half, 1);
+    a_frag[2] = keep_hi ? keep_hi_half : recv_hi_half;
+    a_frag[3] = keep_hi ? recv_hi_half : keep_hi_half;
 }
 
 __device__ __forceinline__ void dequant_braided_quad(
@@ -171,7 +203,10 @@ template <
     bool kSwapABRequested,
     bool kSingleActiveDispatchWarp,
     bool kUseMode2RowDecoder,
-    bool kUseInterleavedScheduler
+    bool kUseInterleavedScheduler,
+    // Feed the WGMMA's A operand from registers instead of decoding the weight
+    // tile into shared memory first. swapAB only; removes the decoded-B ring.
+    bool kUseRSOperand
 >
 CUTLASS_GLOBAL __launch_bounds__(384, 1) void
 sm90_mxfp4_mega_moe_h200_fused_impl(

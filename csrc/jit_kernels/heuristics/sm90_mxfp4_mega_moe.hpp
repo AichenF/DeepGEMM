@@ -100,6 +100,10 @@ struct SM90MXFP4H200FusedPlan {
     bool use_mode2_row_decoder;
     bool single_active_dispatch_warp;
     bool use_interleaved_scheduler;
+    // Source the WGMMA's A operand (the weight tile under swapAB) from
+    // registers instead of decoding it into shared memory first. Removes the
+    // decoded-B ring, the store/load round trip and the decode barrier.
+    bool rs_swap_ab;
 };
 
 static SM90MXFP4H200FusedPlan
@@ -122,29 +126,53 @@ select_sm90_mxfp4_h200_fused(
         bool swap_ab;
         bool use_mode2_row_decoder;
         bool single_active_dispatch_warp;
+        bool rs_swap_ab;
     } tuning {};
 
+    // The transposed (swapAB) tile packs tokens into the WGMMA's N dimension, so
+    // it is the right shape exactly while a local expert's tokens still fit one
+    // tile. Routing spreads `num_tokens * num_ranks * num_topk` slots over
+    // `num_experts` experts, so that holds up to:
+    const int64_t routed_slots_per_expert_num =
+        static_cast<int64_t>(input.num_ranks) * input.num_topk;
+    const auto max_tokens_for_block_m = [&](const int block_m) {
+        return static_cast<int>(
+            (static_cast<int64_t>(block_m) * input.num_experts) /
+            routed_slots_per_expert_num);
+    };
+    // ...but fitting is necessary, not sufficient. The transposed tile issues a
+    // WGMMA of N_SWAP <= 24 where the straight tile issues one of 128, so it
+    // needs roughly five times the MMA instructions for the same work. That is
+    // affordable only while each SM still has enough tokens for the decode, not
+    // the MMA, to be the critical path -- so the bound shrinks as the part gets
+    // wider. Measured on MiMo: BM24 wins by 6.5 % at M=128 and loses by 57 % at
+    // M=256 on H20's 78 SMs; on H200's 132 it already loses by 23 % at M=128 and
+    // wins by 4.6 % at M=64.
+    static constexpr int kSwapABReferenceNumSMs = 78;
+    const int swap_ab_max_tokens =
+        max_tokens_for_block_m(24) * kSwapABReferenceNumSMs / input.num_sms;
+
     if (input.num_tokens <= 1)
-        tuning = {8, 256, 24, 4, SM90ArchSpec::smem_capacity,
-                  true, true, true};
+        tuning = {8, 256, 24, 8, SM90ArchSpec::smem_capacity,
+                  true, true, true, true};
     else if (input.num_tokens <= 8)
-        tuning = {8, 256, 16, 4, SM90ArchSpec::smem_capacity,
-                  true, true, true};
+        tuning = {8, 256, 16, 8, SM90ArchSpec::smem_capacity,
+                  true, true, true, true};
     else if (input.num_tokens <= 16)
-        tuning = {8, 256, 24, 4, SM90ArchSpec::smem_capacity,
-                  true, true, true};
+        tuning = {8, 256, 24, 8, SM90ArchSpec::smem_capacity,
+                  true, true, true, true};
     else if (input.num_tokens <= 32)
-        tuning = {16, 256, 48, 3, SM90ArchSpec::smem_capacity,
-                  true, true, false};
-    else if (input.num_tokens <= 64)
-        tuning = {24, 256, 48, 3, 229312,
-                  true, false, true};
+        tuning = {16, 256, 48, 6, SM90ArchSpec::smem_capacity,
+                  true, true, true, true};
+    else if (input.num_tokens <= swap_ab_max_tokens)
+        tuning = {24, 256, 48, 8, SM90ArchSpec::smem_capacity,
+                  true, true, true, true};
     else if (input.num_tokens <= 256)
-        tuning = {64, 256, 48, 3, 209856,
-                  false, true, false};
+        tuning = {64, 256, 48, 3, SM90ArchSpec::smem_capacity,
+                  false, true, false, false};
     else
         tuning = {128, 128, 48, 6, SM90ArchSpec::smem_capacity,
-                  false, true, false};
+                  false, true, false, false};
 
     // Tuning override hook. The table above was measured on H200's 132 SMs;
     // H20 has 78, so the tiers have to be re-swept there. Reading the knobs
@@ -168,6 +196,30 @@ select_sm90_mxfp4_h200_fused(
     tuning.single_active_dispatch_warp =
         env_int("DG_MXFP4_SINGLE_DISPATCH",
                 tuning.single_active_dispatch_warp ? 1 : 0) != 0;
+    // The same width argument applies to RS itself. Trading a shared-memory
+    // round trip for cross-lane shuffles wins wherever the decode is on the
+    // critical path -- 2 to 6.7 % at every swapAB tier on H20 -- but the BM8
+    // tiers on a 132-SM part are short enough that the shuffle latency is not
+    // hidden, and there it costs 1 to 2 %.
+    if (input.num_sms > kSwapABReferenceNumSMs && tuning.block_m < 16)
+        tuning.rs_swap_ab = false;
+    tuning.rs_swap_ab =
+        env_int("DG_MXFP4_RS", tuning.rs_swap_ab ? 1 : 0) != 0;
+    // Only the swapAB mainloop has a register-source form.
+    tuning.rs_swap_ab = tuning.rs_swap_ab && tuning.swap_ab;
+
+    // The per-tier shared-memory numbers above were the exact layout size of
+    // one fixed stage count. Once pipeline depth became tunable they became a
+    // trap: a deeper plan lays out past the launch's dynamic allocation and the
+    // kernel faults with an illegal address rather than failing to compile.
+    // These are persistent one-CTA-per-SM kernels, so requesting the whole
+    // capacity costs no occupancy and removes the entire failure mode.
+    // A swapAB tier that falls back to shared memory allocates a decoded-B tile
+    // again and wants the depth it was originally measured at, not the RS one.
+    if (tuning.swap_ab && !tuning.rs_swap_ab)
+        tuning.num_stages = tuning.block_m == 8 ? 4 : 3;
+
+    tuning.smem_size = SM90ArchSpec::smem_capacity;
 
     tuning.num_experts_per_wave = largest_divisor_at_most(
         input.num_experts_per_rank, tuning.num_experts_per_wave);
@@ -192,6 +244,7 @@ select_sm90_mxfp4_h200_fused(
         tuning.use_mode2_row_decoder,
         tuning.single_active_dispatch_warp,
         true,
+        tuning.rs_swap_ab,
     };
 }
 

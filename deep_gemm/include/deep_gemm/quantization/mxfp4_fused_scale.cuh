@@ -4,8 +4,13 @@
 //
 // E8M0 is a pure power of two, so scaling by 2^k is an exponent adjustment:
 // adding k to an E4M3 value's 4-bit exponent field is adding (k << 3) to the
-// byte. The magnitude table therefore lives in two immediates and applying a
-// scale group is two integer adds, with no table in memory to look up.
+// byte, and the whole magnitude table for a scale group fits in two registers.
+//
+// Folding that shift arithmetically per group is nonetheless the wrong trade on
+// SM90 -- the saturation/flush edge cases need byte-wise SIMD intrinsics Hopper
+// does not implement. make_scaled_lut() below remains the definition of the
+// numerics, but the mainloop reads the tables from a 32-entry shared-memory
+// window built from it once per CTA; see kScaledLutWindowLo.
 
 #pragma once
 
@@ -87,6 +92,51 @@ DG_MXFP4_INLINE ScaledLut make_scaled_lut(std::uint32_t scale_ue8m0) {
     lut.x = (pos_x & ~neg_mask) | (neg_x & neg_mask);
     lut.y = (pos_y & ~neg_mask) | (neg_y & neg_mask);
     return lut;
+}
+
+// Shared-memory window over the scaled tables.
+//
+// make_scaled_lut() is exact but expensive on SM90: its byte-wise saturating
+// intrinsics (__vaddus4 / __vsubus4 / __vminu4 / __vcmpgeu4) have no native
+// instruction on Hopper, so ptxas emulates them -- a single call compiles to
+// 88 SASS instructions (39 LOP3 + 8 PRMT + ...) versus 40 for NVFP4's whole
+// table-load-plus-decode. Calling it once per 32-element scale group, i.e.
+// four times per BK128 weight row per thread, dominated the mainloop.
+//
+// The table is constant outside a narrow band of E8M0 codes. Sweeping all 256
+// codes yields only 20 distinct tables, at codes 118..137 (k = -9..+10):
+// below that every magnitude underflows E4M3's normal range and flushes to
+// zero, above it every magnitude saturates at 448. A 32-entry window with a
+// clamped index therefore reproduces make_scaled_lut() bit-exactly for every
+// code while costing 256 B of shared memory -- a quarter of the 1 KB table the
+// NVFP4 path loads, and half as many lookups per row because MXFP4 groups 32
+// elements where NVFP4 groups 16.
+static constexpr std::uint32_t kScaledLutWindowLo = 112;
+static constexpr std::uint32_t kScaledLutWindowSize = 32;
+static constexpr std::uint32_t kScaledLutWindowHi =
+    kScaledLutWindowLo + kScaledLutWindowSize - 1;
+
+DG_MXFP4_INLINE std::uint32_t scaled_lut_index(std::uint32_t scale_ue8m0) {
+    const std::uint32_t code = scale_ue8m0 & 0xffu;
+    const std::uint32_t clamped =
+        code < kScaledLutWindowLo ? kScaledLutWindowLo :
+        (code > kScaledLutWindowHi ? kScaledLutWindowHi : code);
+    return clamped - kScaledLutWindowLo;
+}
+
+// Fill the window. Any thread block with at least kScaledLutWindowSize threads
+// can call this once during initialization; the tables are built by the same
+// make_scaled_lut() the decoders used to call inline, so the numerics are
+// unchanged by construction.
+DG_MXFP4_INLINE void init_scaled_lut_window(ScaledLut* __restrict__ smem_lut,
+                                            const std::uint32_t thread_idx) {
+    if (thread_idx < kScaledLutWindowSize)
+        smem_lut[thread_idx] = make_scaled_lut(kScaledLutWindowLo + thread_idx);
+}
+
+DG_MXFP4_INLINE ScaledLut load_scaled_lut(const ScaledLut* __restrict__ smem_lut,
+                                          const std::uint32_t scale_ue8m0) {
+    return smem_lut[scaled_lut_index(scale_ue8m0)];
 }
 
 // Decode eight packed FP4 nibbles (one uint32) into eight FP8 bytes, using a

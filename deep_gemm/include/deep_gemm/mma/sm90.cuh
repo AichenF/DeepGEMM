@@ -74,6 +74,56 @@ struct FP8MMASelector {
     using type = decltype(select_type());
 };
 
+// Register-source A form of the FP8 WGMMA. The SS form above takes both
+// operands as shared-memory descriptors; this one takes A as four registers per
+// K32 slice, which lets a dequantized weight tile go straight from the decode
+// into the MMA instead of round-tripping through shared memory.
+template <int N_, typename MMA>
+struct FP8MMARS {
+    template <size_t ...Idx>
+    CUTLASS_DEVICE static void call_fma_impl(uint32_t const* a, uint64_t const& desc_b, float* d, bool scale_d, cute::index_sequence<Idx...>) {
+        using namespace cute::SM90::GMMA;
+        MMA::fma(a[0], a[1], a[2], a[3], desc_b, d[Idx]..., (scale_d ? ScaleOut::One : ScaleOut::Zero));
+    }
+
+    CUTLASS_DEVICE static void wgmma(uint32_t const* a, uint64_t const& desc_b, float* d, bool scale_d) {
+        call_fma_impl(a, desc_b, d, scale_d, cute::make_index_sequence<N_ / 2>{});
+    }
+
+    static constexpr int M = 64;
+    static constexpr int N = N_;
+    static constexpr int K = 32;
+    static constexpr int kNumAccum = M * N / 128;
+};
+
+template <int N>
+struct FP8RSMMASelector {
+    static constexpr auto select_mma() {
+        using namespace cute::SM90::GMMA;
+        DG_STATIC_ASSERT(N == 8 || N == 16 || N == 24 || N == 32 ||
+                         N == 64 || N == 128,
+                         "Invalid FP8 RS WGMMA N");
+        if constexpr (N == 8) return MMA_64x8x32_F32E4M3E4M3_RS_TN();
+        if constexpr (N == 16) return MMA_64x16x32_F32E4M3E4M3_RS_TN();
+        if constexpr (N == 24) return MMA_64x24x32_F32E4M3E4M3_RS_TN();
+        if constexpr (N == 32) return MMA_64x32x32_F32E4M3E4M3_RS_TN();
+        if constexpr (N == 64) return MMA_64x64x32_F32E4M3E4M3_RS_TN();
+        if constexpr (N == 128) return MMA_64x128x32_F32E4M3E4M3_RS_TN();
+    }
+
+    static constexpr auto select_type() {
+        return FP8MMARS<N, decltype(select_mma())>();
+    }
+
+    using type = decltype(select_type());
+};
+
+// Register-operand fence for RS-form A fragments (uint32 payload), mirroring
+// ptx::warpgroup_fence_operand(float&) for accumulators.
+CUTLASS_DEVICE void warpgroup_fence_operand(uint32_t& reg) {
+    asm volatile("" : "+r"(reg) :: "memory");
+}
+
 template <int N_, typename MMA>
 struct BF16MMA {
     template <size_t ...Idx>

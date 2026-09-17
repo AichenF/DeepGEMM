@@ -97,29 +97,44 @@ instantiate 'sm90_nvfp4_mega_moe_h200'   120a gated-out "$nvfp4_src"
 # Same tuning row against the MXFP4 port. Without this the gate compiled only
 # the NVFP4 kernel and the standalone dequant probe, so the MXFP4 MegaMoE kernel
 # itself -- the thing the port adds -- was never codegen'd for any arch.
-mxfp4_h20_src='#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1
+# The MiMo shape (hidden 6144, ih 2048, 384 experts, top-k 8) the SM90 MXFP4
+# kernel ships for. Shape joined kNumSMs as a template parameter in 2a54e4b, so
+# the argument list is: kNumSMs, kHidden, kIntermediateHidden, kNumExperts,
+# kNumTopk, kNumMaxTokensPerRank, kNumExpertsPerWave, BLOCK_M, BLOCK_N,
+# kNumMaxPoolTokens, kNumPaddedSFPoolTokens, kNumStages, clamp, fastMath,
+# swapAB, singleDispatchWarp, mode2RowDecoder, interleavedScheduler.
+mxfp4_src() {
+  printf '%s\n' '#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1
 #include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused.cuh>
 using namespace deep_gemm;
 static void __instantiate_kernel() {
     auto ptr = reinterpret_cast<void*>(&sm90_mxfp4_mega_moe_h200_fused_impl<
-        78, 2048, 48, 128, 128, 8192, 8192, 6, 10.0f, true,
-        false, false, true, false>);
+        '"$1"', 6144, 2048, 384, 8, 2048, '"$2"', '"$3"', '"$4"', 8192, 8192,
+        '"$5"', 10.0f, true, '"$6"', true, true, true, '"${7:-false}"'>);
     (void)ptr;
 }'
+}
 
-mxfp4_h200_src='#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1
-#include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused.cuh>
-using namespace deep_gemm;
-static void __instantiate_kernel() {
-    auto ptr = reinterpret_cast<void*>(&sm90_mxfp4_mega_moe_h200_fused_impl<
-        132, 2048, 48, 128, 128, 8192, 8192, 6, 10.0f, true,
-        false, false, true, false>);
-    (void)ptr;
-}'
+#                              SMs  EPW  BM   BN  stages swapAB
+mxfp4_h20_src=$(mxfp4_src      78   48  128  128     6   false)
+mxfp4_h200_src=$(mxfp4_src    132   48  128  128     6   false)
+# The two plans small-M decode actually selects; these are the ones whose
+# register/shared budgets move when the dequant path changes.
+# The three shipped swapAB tiers, at the exact depths the selector picks. RS
+# allocates no decoded-B tile, so its shared-memory budget differs from SS's.
+mxfp4_bm24_src=$(mxfp4_src    132   48   24  256     8   true   true)
+mxfp4_bm8_src=$(mxfp4_src     132   16    8  256     8   true   true)
+mxfp4_bm16_src=$(mxfp4_src     78   48   16  256     6   true   true)
+# BM64 is the one small-M tier that stays shared-memory sourced.
+mxfp4_bm64_src=$(mxfp4_src    132   48   64  256     3   false)
 
 # kNumSMs is now a template parameter, so both SM counts must build.
 instantiate 'sm90_mxfp4 (78 SM, H20)'    90a  wgmma     "$mxfp4_h20_src"
 instantiate 'sm90_mxfp4 (132 SM, H200)'  90a  wgmma     "$mxfp4_h200_src"
+instantiate 'sm90_mxfp4 BM24/BN256 RS'    90a wgmma    "$mxfp4_bm24_src"
+instantiate 'sm90_mxfp4 BM8/BN256 RS'     90a wgmma    "$mxfp4_bm8_src"
+instantiate 'sm90_mxfp4 BM16/BN256 RS'    90a wgmma    "$mxfp4_bm16_src"
+instantiate 'sm90_mxfp4 BM64/BN256 SS'    90a wgmma    "$mxfp4_bm64_src"
 instantiate 'sm90_mxfp4 (78 SM, H20)'    120a gated-out "$mxfp4_h20_src"
 
 # Template-only headers, not instantiated here: catches parse/merge damage but
