@@ -2329,11 +2329,16 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
             using BlockPhaseTag = std::remove_cv_t<std::remove_reference_t<decltype(block_phase)>>;
             constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
             const auto t_task = stamp_now();
+            const long long c_task = clock64();
             if (epilogue_thread_idx == 0) stamp_min(3);
             run_math_task_impl(block_phase, local_expert_idx, num_k_blocks,
                                m_block_idx, n_block_idx, pool_block_idx, valid_m);
-            if (epilogue_thread_idx == 0)
+            if (epilogue_thread_idx == 0) {
                 stamp_accumulate(kBlockIsL2 ? 22 : 20, stamp_now() - t_task, 1);
+                // 26: SM clock cycles over L1 tasks (frequency = 26 / 20)
+                if constexpr (!kBlockIsL2)
+                    stamp_accumulate(26, static_cast<unsigned long long>(clock64() - c_task), 0);
+            }
             if constexpr (kBlockIsL2) {
                 // Fine-grained combine: the CTA-wide sync that ends the L2 scatter
                 // made every thread's remote stores happen-before this post
