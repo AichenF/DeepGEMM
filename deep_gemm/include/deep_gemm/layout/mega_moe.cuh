@@ -102,8 +102,9 @@ struct Workspace {
         // Expert send/recv count
         num_bytes += num_experts * sizeof(uint64_t) * 2;
 
-        // Expert recv count sum (two sets: launch parity for the rotated push pool)
-        num_bytes += num_experts_per_rank * sizeof(uint64_t) * 2;
+        // Expert recv count sum (two sets: launch parity for the rotated push pool),
+        // each set padded to whole 128 B lines (remote sys-scope tickets land here)
+        num_bytes += math::align<uint64_t>(num_experts_per_rank * sizeof(uint64_t), 128) * 2;
 
         // L1 arrival count (padded to even entry count for `uint64_t` alignment of L2 mask)
         num_bytes += math::align(num_max_pool_blocks, 2u) * sizeof(uint32_t);
@@ -167,29 +168,37 @@ struct Workspace {
         return math::advance_ptr<uint32_t>(base, 32u);
     }
 
+    // Counter-based words (second 64 B sector of the signal line, away from the
+    // dev-m task counters that gpu-scope atomics hammer all kernel long):
+    // [64..67] int push DONE count (monotonic; remote red.release.sys, +1 per rank per launch)
+    // [68..71] push epoch (launches completed; SM0 bumps it in the cleanup; DONE target =
+    //          ranks * (epoch + 1); also the pool parity slot)
+    // [72..75] push CTA arrival count (last CTA signals DONE and resets it)
+    // [76..79] combine epoch (dynamic combine ticket parity)
+    // [80..87] 2 x combine token ticket (one per launch parity)
     CUTLASS_DEVICE
     int* get_push_done_count_ptr() const {
-        return math::advance_ptr<int>(base, 40u);
+        return math::advance_ptr<int>(base, 64u);
     }
 
     CUTLASS_DEVICE
     uint32_t* get_push_epoch_ptr() const {
-        return math::advance_ptr<uint32_t>(base, 44u);
+        return math::advance_ptr<uint32_t>(base, 68u);
     }
 
     CUTLASS_DEVICE
     uint32_t* get_push_cta_arrival_ptr() const {
-        return math::advance_ptr<uint32_t>(base, 48u);
+        return math::advance_ptr<uint32_t>(base, 72u);
     }
 
     CUTLASS_DEVICE
     uint32_t* get_combine_epoch_ptr() const {
-        return math::advance_ptr<uint32_t>(base, 52u);
+        return math::advance_ptr<uint32_t>(base, 76u);
     }
 
     CUTLASS_DEVICE
     uint32_t* get_combine_ticket_ptr(const uint32_t& parity) const {
-        return math::advance_ptr<uint32_t>(base, 56u) + (parity & 1u);
+        return math::advance_ptr<uint32_t>(base, 80u) + (parity & 1u);
     }
 
     CUTLASS_DEVICE
@@ -204,6 +213,12 @@ struct Workspace {
     }
 
     CUTLASS_DEVICE
+    uint32_t get_recv_count_sum_set_stride() const {
+        // uint64 words per parity set (whole 128 B lines)
+        return static_cast<uint32_t>(math::align<uint64_t>(num_experts_per_rank * sizeof(uint64_t), 128) / sizeof(uint64_t));
+    }
+
+    CUTLASS_DEVICE
     uint64_t* get_expert_recv_count_sum_ptr(const uint32_t& expert_idx = 0) const {
         return get_expert_send_count_ptr(num_experts * 2) + expert_idx;
     }
@@ -211,12 +226,12 @@ struct Workspace {
     // Second recv-count-sum set (push dispatch with the rotated pool: launch parity 1)
     CUTLASS_DEVICE
     uint64_t* get_expert_recv_count_sum_ptr(const uint32_t& expert_idx, const uint32_t& parity) const {
-        return get_expert_send_count_ptr(num_experts * 2) + (parity & 1u) * num_experts_per_rank + expert_idx;
+        return get_expert_send_count_ptr(num_experts * 2) + (parity & 1u) * get_recv_count_sum_set_stride() + expert_idx;
     }
 
     CUTLASS_DEVICE
     uint32_t* get_l1_arrival_count_ptr(const uint32_t& pool_block_idx = 0) const {
-        const auto base = get_expert_recv_count_sum_ptr(num_experts_per_rank * 2);
+        const auto base = get_expert_recv_count_sum_ptr(get_recv_count_sum_set_stride() * 2);
         return reinterpret_cast<uint32_t*>(base) + pool_block_idx;
     }
 
