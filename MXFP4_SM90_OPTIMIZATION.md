@@ -229,13 +229,24 @@ One step too narrow is much worse than one too wide, because the expert no
 longer fits one m-block and its weights are re-read: BM16 at M=128 costs 45 %,
 BM8 at M=64 costs 47 %. The rule never does that -- it only ever rounds up.
 
-With the rule in the selector, the default arm lands on the measured optimum at
-both points (same process, EP1/48 experts):
+With the rule in the selector, the default arm lands on the measured optimum
+(same process, EP1/48 experts):
 
-| M | default | explicit BM8 | explicit BM16 | default before |
-|---:|---:|---:|---:|---:|
-| 32 | **330.8** | 330.9 | 335.8 | 337.6 |
-| 64 | **355.3** | 522.9 | 355.7 | 361.1 |
+| part | M | default | BM8 | BM16 | BM24 | default before |
+|---|---:|---:|---:|---:|---:|---:|
+| H200, 132 SM | 32 | **330.8** | 330.9 | 335.8 | 343.2 | 337.6 |
+| H200, 132 SM | 64 | **355.3** | 522.9 | 355.7 | 361.4 | 361.1 |
+| H20-3e, 78 SM | 32 | **503.3** | 503.3 | 536.2 | 542.9 | — |
+| H20-3e, 78 SM | 64 | 581.9 | 813.1 | 581.4 | **572.5** | — |
+
+One exception, and it is left in deliberately. At M=64 on 78 SMs, BM24 is 1.6 %
+faster than the BM16 the rule picks, where on 132 SMs BM16 is 1.7 % faster than
+BM24. That is the same SM-count dependence the swapAB bound above already
+encodes — a wider tile amortises per-tile overhead where the part is issue-bound,
+a narrower one wastes less WGMMA width where it is load-bound. Scaling the rule
+for it would mean fitting a factor to one 1.6 % data point, so the rule stays as
+measured: it wins 6.1 % at M=32 on 78 SMs and 2.0 % on 132, and gives up 1.6 % at
+one point on one part.
 
 The RS gate needed rescoping with it. It had disabled the register-source
 operand for `BLOCK_M < 16` on parts wider than the reference SM count, which the
@@ -598,7 +609,33 @@ for contiguous-only — better at five of six points.
 Correctness: 18/18 over M=1..1024 in both global-scale modes, cosine
 0.9986-0.9990.
 
-### 9.6 Large M — the tier this work does not touch
+### 9.6 EP4 and EP8 on the shipped stack
+
+The first run of everything together — rank templating, contiguous tiles, the
+unpadded chunk-major layout and the tile rule — at the rank counts that ship.
+8x H20-3e, `fp8` in the same process as the anchor:
+
+| M | EP4 / 192 experts | | EP8 / 384 experts | |
+|---:|---:|---:|---:|---:|
+| | fp8 | mxfp4 | fp8 | mxfp4 |
+| 8 | 498.4 | **456.0** (-8.5 %) | 455.1 | **444.5** (-2.3 %) |
+| 16 | 524.5 | **482.9** (-7.9 %) | 583.9 | **517.0** (-11.5 %) |
+| 32 | 549.3 | **530.3** (-3.5 %) | 581.7 | 604.0 (+3.8 %) |
+| 64 | 636.9 | 643.4 (+1.0 %) | 668.5 | **658.3** (-1.5 %) |
+| 128 | 933.3 | **812.1** (-13.0 %) | 957.2 | **833.4** (-12.9 %) |
+| 256 | 951.5 | **931.4** (-2.1 %) | 1003.0 | **980.5** (-2.3 %) |
+
+EP4 correctness: 10/10 over M=8..256 at 192 experts, which is 48 per rank — the
+same per-rank load the EP1 measurements were taken at.
+
+The +3.8 % at EP8 M=32 looked like a regression from the tile rule and is not:
+the in-process comparison in section 5.6 has the rule's BM8 **6.1 % ahead** of
+BM16 at that exact point on the same part. Between those two EP8 runs the fp8
+anchor itself moved 13 % and the router drew a different token count (253 vs
+239 received), which is the drift these cross-process numbers carry and why the
+selector conclusions all come from in-process arms.
+
+### 9.7 Large M — the tier this work does not touch
 
 Above `swap_ab_max_tokens` the selector falls to BM64, and above M=256 to the
 BM128/BN128 split-M tier. Both are still **one fused megakernel**; this branch
@@ -633,7 +670,7 @@ losing the alternation its paired warpgroups rely on. It failed at M=512 with
 cosine 0.8966 and passes at 0.9989-0.9990 after the fix — the same value every
 other tier reports. **This tier had never been exercised by the small-M sweeps.**
 
-### 9.7 Attribution, in-process where possible
+### 9.8 Attribution, in-process where possible
 
 | change | measurement | effect |
 |---|---|---|
