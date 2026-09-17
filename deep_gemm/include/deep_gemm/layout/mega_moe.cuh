@@ -248,7 +248,7 @@ struct Workspace {
     CUTLASS_DEVICE
     uint32_t* get_src_token_topk_idx_ptr(
         const uint32_t& expert_idx = 0, const uint32_t& rank_idx = 0, const uint32_t& token_idx = 0) const {
-        const auto base = get_combine_mailbox_ptr(kSM90FineCombineMaxSMs);
+        const auto base = get_combine_mailbox_ptr(static_cast<uint32_t>(kSM90FineCombineMaxSMs));
         return reinterpret_cast<uint32_t*>(base) +
             expert_idx * (num_ranks * num_max_recv_tokens_per_expert) +
             rank_idx * num_max_recv_tokens_per_expert + token_idx;

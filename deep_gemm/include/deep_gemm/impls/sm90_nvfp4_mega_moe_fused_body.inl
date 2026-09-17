@@ -948,7 +948,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                     const uint32_t entry = ptx::ld_volatile(
                         mailbox + 4 + (consumed & (layout::kSM90FineCombineRingSize - 1)));
                     __syncwarp();
-                    if (entry == layout::kSM90FineCombineDoneEntry)
+                    if (entry == static_cast<uint32_t>(layout::kSM90FineCombineDoneEntry))
                         break;
                     const uint32_t signal_pool_block_idx = entry & 0xffffffu, signal_valid_m = entry >> 24;
                     for (uint32_t row = lane_idx; row < signal_valid_m; row += 32) {
@@ -1171,7 +1171,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
             combine_ticket_parity = ptx::ld_volatile(workspace.get_combine_epoch_ptr()) & 1u;
         if constexpr (kFineCombine)
             combine_mailbox_seq = *workspace.get_combine_mailbox_ptr(sm_idx);
-        const auto post_combine_mailbox = [&](const uint32_t& entry) {
+        const auto post_combine_mailbox = [&](const uint32_t entry) {
             if constexpr (kFineCombine) {
                 if (epilogue_thread_idx == 0) {
                     auto* mailbox = workspace.get_combine_mailbox_ptr(sm_idx);
@@ -2369,7 +2369,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
 
         // Fine-grained combine: tell the dispatch warps that this CTA's math tasks
         // are done (replaces the epilogue/dispatch pairing below).
-        post_combine_mailbox(layout::kSM90FineCombineDoneEntry);
+        post_combine_mailbox(static_cast<uint32_t>(layout::kSM90FineCombineDoneEntry));
 
         // ---------------- COMBINE ----------------
         // NVLink barrier first: signals remote ranks that this rank's GEMM
