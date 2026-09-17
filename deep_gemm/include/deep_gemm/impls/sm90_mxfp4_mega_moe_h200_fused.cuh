@@ -87,14 +87,14 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble(
         const uint8_t* __restrict__ packed_b,
         const uint32_t row,
         const ScaledLut* __restrict__ lut_smem) {
-    const uint8_t* __restrict__ row_ptr = packed_b + row * 80;
-    const uint4* __restrict__ fp4_src = reinterpret_cast<const uint4*>(row_ptr);
+    const DecodeTileRow src = decode_tile_row(packed_b, row);
     uint4 fp4_quads[4];
 #pragma unroll
     for (int i = 0; i < 4; ++i)
-        fp4_quads[i] = fp4_src[i];
+        fp4_quads[i] = *reinterpret_cast<const uint4*>(
+            src.chunk + i * kBChunkStride);
     const uint32_t scale_word =
-        *reinterpret_cast<const uint32_t*>(row_ptr + 64);
+        *reinterpret_cast<const uint32_t*>(src.scale);
     dequant_mode2_nibble_row_regs<kQuadILP>(
         smem_b + row * 128, fp4_quads, scale_word, (row & 7u) << 4, lut_smem);
 }
@@ -109,17 +109,18 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_mode2_nibble_split_m(
         const ScaledLut* __restrict__ lut_smem) {
     const uint32_t row = thread_idx & 127u;
     const uint32_t k_half_idx = thread_idx >> 7;
-    const uint8_t* __restrict__ row_ptr = packed_b + row * 80u;
-    const uint4* __restrict__ fp4_src =
-        reinterpret_cast<const uint4*>(row_ptr + k_half_idx * 32u);
+    const DecodeTileRow src = decode_tile_row(packed_b, row);
+    const uint8_t* __restrict__ fp4_src =
+        src.chunk + k_half_idx * 2u * kBChunkStride;
     const uint32_t scale_pair = *reinterpret_cast<const uint16_t*>(
-        row_ptr + 64u + k_half_idx * sizeof(uint16_t));
+        src.scale + k_half_idx * sizeof(uint16_t));
     uint8_t* __restrict__ fp8_dst = smem_b + row * 128u;
     const uint32_t row_swizzle = (row & 7u) << 4;
 
 #pragma unroll
     for (uint32_t quad_i = 0; quad_i < 2; ++quad_i) {
-        const uint4 q = fp4_src[quad_i];
+        const uint4 q = *reinterpret_cast<const uint4*>(
+            fp4_src + quad_i * kBChunkStride);
         const ScaledLut lut =
             load_scaled_lut(lut_smem, (scale_pair >> (quad_i * 8u)) & 0xffu);
         const uint2 w0 = dequant_word(q.x, lut);

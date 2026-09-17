@@ -12,12 +12,13 @@ __global__ void decode_rows(const uint8_t* __restrict__ packed,
                             uint8_t* __restrict__ out, int rows) {
     const int row = blockIdx.x * blockDim.x + threadIdx.x;
     if (row >= rows) return;
-    const uint8_t* row_ptr = packed + row * 80;
-    const uint4* src = reinterpret_cast<const uint4*>(row_ptr);
+    const auto src = deep_gemm::mxfp4::decode_tile_row(packed, row);
     uint4 quads[4];
 #pragma unroll
-    for (int i = 0; i < 4; ++i) quads[i] = src[i];
-    const uint32_t scale_word = *reinterpret_cast<const uint32_t*>(row_ptr + 64);
+    for (int i = 0; i < 4; ++i)
+        quads[i] = *reinterpret_cast<const uint4*>(
+            src.chunk + i * deep_gemm::mxfp4::kBChunkStride);
+    const uint32_t scale_word = *reinterpret_cast<const uint32_t*>(src.scale);
     const uint32_t swz = (row & 7u) << 4;
     uint8_t* dst = out + row * 128;
 #pragma unroll
@@ -41,7 +42,9 @@ static std::vector<uint8_t> load(const char* p, size_t n) {
 
 int main() {
     const int rows = 256, k = 128;
-    auto packed = load("chain_packed.bin", (size_t)rows * 80);
+    auto packed = load("chain_packed.bin",
+                       (size_t)(rows / deep_gemm::mxfp4::kBTileRows) *
+                           deep_gemm::mxfp4::kBTileBytes);
     auto ref    = load("chain_ref.bin",    (size_t)rows * k);
 
     uint8_t *d_p = nullptr, *d_o = nullptr;

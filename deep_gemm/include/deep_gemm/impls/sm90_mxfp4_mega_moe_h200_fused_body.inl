@@ -164,13 +164,15 @@
                      "The register-source A path is swapAB-only");
     constexpr uint32_t kNumDecodedBStages =
         kSplitMDecodedWeightReuse ? 2u : (kUseRSOperand ? 0u : 1u);
-    constexpr uint32_t B_LOAD_BYTES_PER_ROW = 80u;
+    // Tile geometry (chunk-major, unpadded) lives with the decoders that read
+    // it; the loader only needs the tile size and a fixed row count, so the
+    // layout does not depend on the selected BLOCK_N.
+    // Local copies: `tma_load_1d` takes its byte count by reference, which
+    // odr-uses the operand, and a namespace-scope constant is host-side.
+    constexpr uint32_t kBTileRows = mxfp4::kBTileRows;
+    constexpr uint32_t kBTileBytes = mxfp4::kBTileBytes;
     constexpr uint32_t SMEM_PACKED_B_SIZE_PER_STAGE =
-        LOAD_BLOCK_N * B_LOAD_BYTES_PER_ROW * sizeof(b_dtype_t);
-    // Weight tiles are stored contiguously at a fixed row count so the layout
-    // does not depend on the selected BLOCK_N.
-    constexpr uint32_t kBTileRows = 128u;
-    constexpr uint32_t kBTileBytes = kBTileRows * B_LOAD_BYTES_PER_ROW;
+        (LOAD_BLOCK_N / kBTileRows) * kBTileBytes * sizeof(b_dtype_t);
     DG_STATIC_ASSERT(LOAD_BLOCK_N % kBTileRows == 0,
                      "BLOCK_N must be a whole number of weight tiles");
     DG_STATIC_ASSERT(L1_SHAPE_N % kBTileRows == 0 && L2_SHAPE_N % kBTileRows == 0,
@@ -956,19 +958,20 @@
                 const uint32_t decode_row = frag_row0 + ((lane_idx & 1u) << 3);
                 const uint32_t word_sel = (lane_idx >> 1) & 1u;
                 const bool keep_hi = (lane_idx & 1u) == 0;
-                const auto* __restrict__ packed_row =
-                    reinterpret_cast<const uint8_t*>(smem_packed_b[rs_stage]) +
-                    decode_row * B_LOAD_BYTES_PER_ROW;
+                const auto src = mxfp4::decode_tile_row(
+                    reinterpret_cast<const uint8_t*>(smem_packed_b[rs_stage]),
+                    decode_row);
                 const uint32_t scale_word = ptx::ld_shared(
-                    reinterpret_cast<const uint32_t*>(packed_row + 64u));
+                    reinterpret_cast<const uint32_t*>(src.scale));
 
                 #pragma unroll
                 for (uint32_t slice = 0; slice < 4; ++slice) {
-                    const uint32_t offset = slice * 16u + word_sel * sizeof(uint32_t);
+                    const auto* __restrict__ chunk = src.chunk +
+                        slice * mxfp4::kBChunkStride + word_sel * sizeof(uint32_t);
                     const uint32_t w_lo = ptx::ld_shared(
-                        reinterpret_cast<const uint32_t*>(packed_row + offset));
+                        reinterpret_cast<const uint32_t*>(chunk));
                     const uint32_t w_hi = ptx::ld_shared(
-                        reinterpret_cast<const uint32_t*>(packed_row + offset + 8u));
+                        reinterpret_cast<const uint32_t*>(chunk + 8u));
                     const auto lut = mxfp4::load_scaled_lut(
                         smem_mxfp4_lut, (scale_word >> (slice * 8u)) & 0xffu);
                     mxfp4::dequant_rs_word_pair(w_lo, w_hi, lut, keep_hi, a_frag[slice]);

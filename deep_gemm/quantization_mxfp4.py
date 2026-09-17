@@ -128,9 +128,9 @@ def mxfp4_fuse_packed_with_scale_tile_major(
 ) -> torch.Tensor:
     """Pack each BK128 MXFP4 row as ``64B FP4 + 4B E8M0 scale + 12B padding``.
 
-    The 80-byte row stride is kept identical to the NVFP4 bridge so the same
-    K-major TMA descriptor path is reused; MXFP4 simply leaves 12 padding bytes
-    instead of 8 because group_size=32 halves the scale bytes per row.
+    This is the intermediate the sign braid runs on, shared byte-for-byte with
+    the NVFP4 bridge; ``mxfp4_fused_to_decode_tiles`` then drops the padding on
+    the way to the layout the kernel actually reads.
     """
     assert packed.dtype == torch.uint8
     assert scale_tile_major.dtype == torch.uint8
@@ -169,16 +169,24 @@ def mxfp4_fuse_packed_with_scale_tile_major(
 # measures 1.6x the HBM throughput for the same bytes.
 MXFP4_TILE_ROWS = 128
 MXFP4_FUSED_ROW_BYTES = 80
+MXFP4_CHUNK_BYTES = 16
+MXFP4_SCALE_BYTES_PER_ROW = 4
+MXFP4_TILE_BYTES = MXFP4_TILE_ROWS * (64 + MXFP4_SCALE_BYTES_PER_ROW)
 
 
-def mxfp4_fused_to_tile_contiguous(fused: torch.Tensor) -> torch.Tensor:
-    """Regroup ``(E, N, k_blocks * 80)`` into contiguous per-tile blocks.
+def mxfp4_fused_to_decode_tiles(fused: torch.Tensor) -> torch.Tensor:
+    """Regroup ``(E, N, k_blocks * 80)`` into the kernel's decode tiles.
 
-    The result is ``(E, n_tiles * k_blocks, MXFP4_TILE_ROWS * 80)`` with tile
+    The result is ``(E, n_tiles * k_blocks, MXFP4_TILE_BYTES)`` with tile
     ``(n_tile, k_block)`` at index ``n_tile * k_blocks + k_block``, so the
-    k-blocks a mainloop walks in sequence stay adjacent. Each block holds the
-    same 80-byte rows in the same order as before, so the shared-memory image a
-    stage load produces is unchanged.
+    k-blocks a mainloop walks in sequence stay adjacent and a stage load is one
+    bulk copy instead of ``block_n`` strided requests.
+
+    Within a tile the bytes are 16-byte-chunk-major -- chunk ``c`` of row ``r``
+    at ``c * MXFP4_TILE_ROWS * 16 + r * 16``, then the E8M0 bytes at
+    ``MXFP4_TILE_ROWS * 64 + r * 4``. That drops the 12 bytes of per-row
+    padding, which only existed to keep a row 16-byte aligned, while still
+    handing every decoder a 16-byte-aligned chunk.
     """
     assert fused.dtype == torch.uint8
     assert fused.dim() == 3
@@ -187,9 +195,19 @@ def mxfp4_fused_to_tile_contiguous(fused: torch.Tensor) -> torch.Tensor:
     assert row_span % MXFP4_FUSED_ROW_BYTES == 0
     n_tiles = N // MXFP4_TILE_ROWS
     k_blocks = row_span // MXFP4_FUSED_ROW_BYTES
-    return (
+    num_chunks = 64 // MXFP4_CHUNK_BYTES
+
+    rows = (
         fused.view(E, n_tiles, MXFP4_TILE_ROWS, k_blocks, MXFP4_FUSED_ROW_BYTES)
-        .permute(0, 1, 3, 2, 4)
-        .reshape(E, n_tiles * k_blocks, MXFP4_TILE_ROWS * MXFP4_FUSED_ROW_BYTES)
-        .contiguous()
+        .permute(0, 1, 3, 2, 4)                      # (E, nt, kb, row, 80)
+        .reshape(E, n_tiles * k_blocks, MXFP4_TILE_ROWS, MXFP4_FUSED_ROW_BYTES)
     )
+    fp4 = (
+        rows[..., :64]
+        .reshape(-1, MXFP4_TILE_ROWS, num_chunks, MXFP4_CHUNK_BYTES)
+        .permute(0, 2, 1, 3)                         # (tile, chunk, row, 16)
+        .reshape(E, n_tiles * k_blocks, MXFP4_TILE_ROWS * 64)
+    )
+    sf = rows[..., 64:64 + MXFP4_SCALE_BYTES_PER_ROW].reshape(
+        E, n_tiles * k_blocks, MXFP4_TILE_ROWS * MXFP4_SCALE_BYTES_PER_ROW)
+    return torch.cat((fp4, sf), dim=-1).contiguous()

@@ -429,9 +429,9 @@ static void mxfp4_mega_moe(
     DG_HOST_ASSERT(activation_clamp >= 0);
     DG_HOST_ASSERT(get_major_type_ab(l1_weights) == cute::UMMA::Major::K);
     DG_HOST_ASSERT(get_major_type_ab(l2_weights) == cute::UMMA::Major::K);
-    // MXFP4: weights are uint8 packed E2M1 FP4. With the fused B+scale layout,
-    // each BK128 row stores 64B FP4 + 4B E8M0 scale + 12B padding, so recover
-    // logical K from the tile-major scale tensor instead of the storage width.
+    // MXFP4: weights are uint8 packed E2M1 FP4 fused with their E8M0 scales,
+    // so recover logical K from the tile-major scale tensor instead of the
+    // storage width.
     DG_HOST_ASSERT(l1_weights.scalar_type() == torch::kUInt8);
     DG_HOST_ASSERT(l2_weights.scalar_type() == torch::kUInt8);
     DG_HOST_ASSERT(l1_weights_sf.scalar_type() == torch::kUInt8);
@@ -441,16 +441,15 @@ static void mxfp4_mega_moe(
     constexpr int mxfp4_block_n = 256;
     // 128 / group_size, with MXFP4 group_size = 32.
     constexpr int kMxfp4ScalesPerKTile = 4;
-    // Packed weights are a flat stream of contiguous
-    // `kSM90MXFP4BTileRows x 80 B` tiles ordered (expert, n_tile, k_block), so
-    // the shape carries a tile count rather than N and K.
+    // Packed weights are a flat stream of contiguous chunk-major decode tiles
+    // ordered (expert, n_tile, k_block), so the shape carries a tile count
+    // rather than N and K.
     const auto [num_experts_per_rank, l1_num_tiles, l1_tile_bytes] = get_shape<3>(l1_weights);
     const auto [l2_num_experts_per_rank, l2_num_tiles, l2_tile_bytes] = get_shape<3>(l2_weights);
     const int hidden = static_cast<int>(l1_weights_sf.size(2)) * 128;
     const int intermediate_hidden = static_cast<int>(l2_weights_sf.size(2)) * 128;
-    constexpr int mxfp4_tile_bytes =
-        kSM90MXFP4BTileRows * kSM90MXFP4BStoragePerKBlock;
-    DG_HOST_ASSERT(l1_tile_bytes == mxfp4_tile_bytes && l2_tile_bytes == mxfp4_tile_bytes);
+    DG_HOST_ASSERT(l1_tile_bytes == kSM90MXFP4BTileBytes &&
+                   l2_tile_bytes == kSM90MXFP4BTileBytes);
     DG_HOST_ASSERT(l1_num_tiles ==
                    (intermediate_hidden * 2 / kSM90MXFP4BTileRows) * (hidden / 128));
     DG_HOST_ASSERT(l2_num_tiles ==

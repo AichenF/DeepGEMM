@@ -27,6 +27,8 @@ packed, scale = qm.quantize_to_mxfp4(w, group_size=32)
 tm = qm.mxfp4_scale_to_tile_major(scale, block_n=N, block_k=128, group_size=32)
 fused = qm.mxfp4_fuse_packed_with_scale_tile_major(packed, tm, block_k=128)
 fused = _braid_nvfp4_mode2_signs(fused)
+# The kernel decodes the chunk-major decode tile, not the fused row image.
+fused = qm.mxfp4_fused_to_decode_tiles(fused)
 
 # Reference FP8 bytes, in logical K order.
 deq = qm.dequantize_mxfp4_to_fp32(packed, scale, group_size=32)

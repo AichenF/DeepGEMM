@@ -116,6 +116,29 @@ static constexpr std::uint32_t kScaledLutWindowSize = 32;
 static constexpr std::uint32_t kScaledLutWindowHi =
     kScaledLutWindowLo + kScaledLutWindowSize - 1;
 
+// A decode tile is `kBTileRows` fused rows stored 16-byte-chunk-major: the
+// 16-byte chunk `c` of row `r` sits at `c * kBTileRows * 16 + r * 16`, and the
+// row's four E8M0 bytes at `kBTileRows * 64 + r * 4`. Laying the chunks out
+// this way is what lets the 12 bytes of per-row padding go -- 15 % of the
+// weight stream -- while keeping every 16-byte decoder load aligned, which a
+// flat 68-byte row would not.
+static constexpr std::uint32_t kBTileRows = 128;
+static constexpr std::uint32_t kBChunkStride = kBTileRows * 16;
+static constexpr std::uint32_t kBTileFP4Bytes = kBTileRows * 64;
+static constexpr std::uint32_t kBTileBytes = kBTileFP4Bytes + kBTileRows * 4;
+
+struct DecodeTileRow {
+    const std::uint8_t* chunk;   // chunk c at `chunk + c * kBChunkStride`
+    const std::uint8_t* scale;
+};
+
+DG_MXFP4_INLINE DecodeTileRow decode_tile_row(
+        const std::uint8_t* __restrict__ packed_b, const std::uint32_t row) {
+    const std::uint8_t* tile = packed_b + (row / kBTileRows) * kBTileBytes;
+    const std::uint32_t sub = row % kBTileRows;
+    return {tile + sub * 16, tile + kBTileFP4Bytes + sub * 4};
+}
+
 DG_MXFP4_INLINE std::uint32_t scaled_lut_index(std::uint32_t scale_ue8m0) {
     const std::uint32_t code = scale_ue8m0 & 0xffu;
     const std::uint32_t clamped =

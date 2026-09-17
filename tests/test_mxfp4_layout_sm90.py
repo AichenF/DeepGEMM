@@ -36,10 +36,12 @@ UE8M0_BIAS = _qm.UE8M0_BIAS
 dequantize_mxfp4_to_fp32 = _qm.dequantize_mxfp4_to_fp32
 fp32_to_ue8m0_ceil = _qm.fp32_to_ue8m0_ceil
 mxfp4_fuse_packed_with_scale_tile_major = _qm.mxfp4_fuse_packed_with_scale_tile_major
-mxfp4_fused_to_tile_contiguous = _qm.mxfp4_fused_to_tile_contiguous
+mxfp4_fused_to_decode_tiles = _qm.mxfp4_fused_to_decode_tiles
 mxfp4_scale_to_tile_major = _qm.mxfp4_scale_to_tile_major
 MXFP4_TILE_ROWS = _qm.MXFP4_TILE_ROWS
 MXFP4_FUSED_ROW_BYTES = _qm.MXFP4_FUSED_ROW_BYTES
+MXFP4_CHUNK_BYTES = _qm.MXFP4_CHUNK_BYTES
+MXFP4_TILE_BYTES = _qm.MXFP4_TILE_BYTES
 quantize_to_mxfp4 = _qm.quantize_to_mxfp4
 ue8m0_to_fp32 = _qm.ue8m0_to_fp32
 
@@ -202,31 +204,39 @@ def test_fused_row_layout(device: str) -> None:
     print("fused row layout: PASS")
 
 
-def test_tile_contiguous_is_pure_permutation(device: str) -> None:
-    """Regrouping the fused rows into contiguous tiles must move bytes, not
-    change them: every tile has to hold exactly the 80-byte rows the kernel
-    would otherwise have gathered with a strided load."""
+def test_decode_tiles_match_the_decoder_addressing(device: str) -> None:
+    """The decode-tile regroup must land every byte where the kernel's decoder
+    looks for it: chunk ``c`` of row ``r`` at ``c * rows * 16 + r * 16``, the
+    row's scale bytes at ``rows * 64 + r * 4``, and nothing else carried over
+    (the 12 padding bytes per row are dropped)."""
     torch.manual_seed(7)
     E, N, k_blocks = 2, 3 * MXFP4_TILE_ROWS, 5
     row_span = k_blocks * MXFP4_FUSED_ROW_BYTES
     fused = torch.randint(0, 256, (E, N, row_span), dtype=torch.uint8, device=device)
 
-    tiled = mxfp4_fused_to_tile_contiguous(fused)
+    tiled = mxfp4_fused_to_decode_tiles(fused)
     n_tiles = N // MXFP4_TILE_ROWS
-    assert tiled.shape == (
-        E, n_tiles * k_blocks, MXFP4_TILE_ROWS * MXFP4_FUSED_ROW_BYTES)
+    assert tiled.shape == (E, n_tiles * k_blocks, MXFP4_TILE_BYTES)
+    # 68 of every 80 bytes survive; the rest was padding.
+    assert tiled.numel() * MXFP4_FUSED_ROW_BYTES == fused.numel() * 68
 
-    rows = tiled.view(E, n_tiles, k_blocks, MXFP4_TILE_ROWS, MXFP4_FUSED_ROW_BYTES)
+    chunk_stride = MXFP4_TILE_ROWS * MXFP4_CHUNK_BYTES
+    scale_base = MXFP4_TILE_ROWS * 64
     for n_tile in range(n_tiles):
         for kb in range(k_blocks):
-            lo = n_tile * MXFP4_TILE_ROWS
-            expect = fused[
-                :, lo:lo + MXFP4_TILE_ROWS,
+            tile = tiled[:, n_tile * k_blocks + kb]
+            src = fused[
+                :, n_tile * MXFP4_TILE_ROWS:(n_tile + 1) * MXFP4_TILE_ROWS,
                 kb * MXFP4_FUSED_ROW_BYTES:(kb + 1) * MXFP4_FUSED_ROW_BYTES]
-            assert torch.equal(rows[:, n_tile, kb], expect)
-    assert torch.equal(
-        torch.sort(tiled.flatten())[0], torch.sort(fused.flatten())[0])
-    print("mxfp4 tile-contiguous regroup: PASS")
+            for r in (0, 1, MXFP4_TILE_ROWS - 1):
+                for c in range(64 // MXFP4_CHUNK_BYTES):
+                    off = c * chunk_stride + r * MXFP4_CHUNK_BYTES
+                    assert torch.equal(
+                        tile[:, off:off + MXFP4_CHUNK_BYTES],
+                        src[:, r, c * MXFP4_CHUNK_BYTES:(c + 1) * MXFP4_CHUNK_BYTES])
+                off = scale_base + r * 4
+                assert torch.equal(tile[:, off:off + 4], src[:, r, 64:68])
+    print("mxfp4 decode-tile regroup: PASS")
 
 
 def test_weight_transform_matches_nvfp4_structure(device: str) -> None:
@@ -258,16 +268,17 @@ def test_weight_transform_matches_nvfp4_structure(device: str) -> None:
         deep_gemm.transform_nvfp4_weights_for_mega_moe_sm90(nv_l1, nv_l2)
     )
 
-    # Same fused storage footprint: 80-byte BK128 rows either way.
-    assert mx_l1_out.numel() == nv_l1_out.numel(), (mx_l1_out.shape, nv_l1_out.shape)
-    assert mx_l2_out.numel() == nv_l2_out.numel()
+    # NVFP4 keeps its padded 80-byte rows; MXFP4 drops the padding.
     assert mx_l1_out.dtype == torch.uint8 and mx_l2_out.dtype == torch.uint8
-    # ... but grouped into contiguous (n_tile, k_block) tiles the kernel bulk-copies.
-    tile_bytes = MXFP4_TILE_ROWS * MXFP4_FUSED_ROW_BYTES
+    # ... regrouped into the unpadded decode tiles the kernel bulk-copies, which
+    # is 68 of every 80 bytes.
     assert mx_l1_out.shape == (
-        E, (2 * IH // MXFP4_TILE_ROWS) * (H // BLOCK_K), tile_bytes), mx_l1_out.shape
+        E, (2 * IH // MXFP4_TILE_ROWS) * (H // BLOCK_K),
+        MXFP4_TILE_BYTES), mx_l1_out.shape
     assert mx_l2_out.shape == (
-        E, (H // MXFP4_TILE_ROWS) * (IH // BLOCK_K), tile_bytes), mx_l2_out.shape
+        E, (H // MXFP4_TILE_ROWS) * (IH // BLOCK_K),
+        MXFP4_TILE_BYTES), mx_l2_out.shape
+    assert mx_l1_out.numel() * MXFP4_FUSED_ROW_BYTES == nv_l1_out.numel() * 68
 
     # MXFP4 carries half the scale elements of NVFP4 (group 32 vs 16).
     assert mx_l1_sf.numel() * 2 == nv_l1[1].numel(), (mx_l1_sf.numel(), nv_l1[1].numel())
@@ -292,7 +303,7 @@ def main() -> None:
     test_dequant_matches_elementwise_reference(device)
     test_tile_major_is_pure_permutation(device)
     test_fused_row_layout(device)
-    test_tile_contiguous_is_pure_permutation(device)
+    test_decode_tiles_match_the_decoder_addressing(device)
     test_weight_transform_matches_nvfp4_structure(device)
     print("ALL MXFP4 LAYOUT TESTS PASS")
 
