@@ -1063,6 +1063,45 @@ this shape allows.**
 
 ---
 
+### 9.11 Ruled out: the split on the straight BM64 tier
+
+At M>=160 the selector leaves swapAB for the straight BM64 tile, and there the
+measured time matches **compute + decode**, not max(compute, decode):
+
+| M | measured | compute | decode | sum |
+|---:|---:|---:|---:|---:|
+| 160 | 911.5 | 326 | 325 | 651 |
+| 192 | 914.2 | 392 | 325 | 717 |
+| 256 | 920.7 | 522 | 325 | 847 |
+
+That is the signature of a decode that does not overlap its WGMMA, and this
+tier decodes on the math warps because `sm90_mxfp4_split_decode()` required
+swapAB. Extending the split to it predicted M=256 at ~600 us, i.e. 87 % of the
+compute roofline. Measured instead: correctness passes 4/4 and **every point is
+57 % slower** -- 1434 / 1438 / 1447 us.
+
+The cause is the register budget, and it generalises. The split costs 256
+threads, and the budget is granted per warp in 256-register granules, so the
+epilogue's share falls with the wider launch:
+
+| launch | budget | epilogue after loaders + decode |
+|:--|---:|---:|
+| 384 threads (no split) | 64512 | <= 220 regs/thread |
+| 640 threads (split) | 61440 | **<= 176** |
+
+BM64/BN256 holds `float final_accum[64]` per thread and runs at 208, so under
+the split it spills. **The split is only available to tiers whose epilogue fits
+in 176 registers** -- which is why it serves the swapAB tiles, whose
+accumulators are a quarter the size, and cannot serve the straight one.
+Reverted.
+
+So the tier boundary at `swap_ab_max_tokens` is also confirmed right rather
+than under-derated: forcing BM64 below it costs 53 % at M=96 and 32 % at M=128,
+and forcing BM24 above it costs 17 % at M=192 and 34 % at M=256. The crossover
+sits at M~160 against a bound of 144 -- slightly conservative, correctly placed.
+
+---
+
 ## 10. Reproducing
 
 The weight-load measurement in section 7.2 needs no allocation at all — it is
