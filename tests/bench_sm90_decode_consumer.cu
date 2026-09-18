@@ -7,18 +7,28 @@
 // deficit can be attributed rather than guessed at.
 //
 // Measured H20-3e, 78 SMs:
-//   loader alone                4.19 TB/s
-//   + dequant ALU only          2.90        -30%
-//   + shared store only         3.19        -24%
-//   + both (the SS decode)      2.39        -43%   (kernel measures 2.10-2.29)
+//   loader alone                       4.18 TB/s
+//   + dequant ALU only (6 ops/word)    2.91        -30%
+//   + dequant ALU at 4 ops/word        3.81        (WRONG results; slope only)
+//   + shared store only                3.19        -24%
+//   + both (the SS decode)             2.39        -43%   (kernel: 2.10-2.29)
 //
 // So the dequant ALU alone caps any such kernel near 70% of its own load path,
-// and that is the ceiling to quote -- not the HBM roofline. The quad-ILP decode
-// variant changes nothing, so that knob is exhausted.
+// and that is the ceiling to quote -- not the HBM roofline.
 //
-//   nvcc -O3 -arch=sm_90a --expt-relaxed-constexpr -std=c++20 \
-//        -I deep_gemm/include -I third-party/cutlass/include \
+// The 4-op row exists to price instruction count: the decode is strongly
+// instruction-bound, roughly 10% of stream throughput per op removed. Real
+// dequant_word emits ~7-8 SASS ops per 8 output bytes (AND, two PRMT, SHF,
+// IMAD.SHL, two LOP3), and each is load-bearing -- the AND is forced because a
+// PRMT selector with bit 3 set selects sign-replication mode, and the shifts
+// cannot fold into LOP3, which has no shifter. One op saved would be worth ~5%
+// on the ceiling and ~3% in-kernel, under the noise floor. The quad-ILP decode
+// variant changes nothing, so that knob is exhausted too.
+//
+//   nvcc -O3 -gencode=arch=compute_90a,code=sm_90a --expt-relaxed-constexpr \
+//        -std=c++20 -I deep_gemm/include -I third-party/cutlass/include \
 //        -o bench_sm90_decode_consumer tests/bench_sm90_decode_consumer.cu
+// (-arch=sm_90a alone resolves to sm_90 and ptxas then rejects wgmma.)
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cstdio>
@@ -88,6 +98,22 @@ __global__ __launch_bounds__(kThreads) void consume(
                 d = deep_gemm::mxfp4::dequant_word(v.z, l); acc ^= d.x ^ d.y;
                 d = deep_gemm::mxfp4::dequant_word(v.w, l); acc ^= d.x ^ d.y;
             }
+        } else if constexpr (kMode == 5) {
+            const auto src = deep_gemm::mxfp4::decode_tile_row(p, tid);
+            const uint32_t sw = *reinterpret_cast<const uint32_t*>(src.scale);
+            #pragma unroll
+            for (int q = 0; q < 4; ++q) {
+                const uint4 v = *reinterpret_cast<const uint4*>(src.chunk + q*deep_gemm::mxfp4::kBChunkStride);
+                const auto l = deep_gemm::mxfp4::load_scaled_lut(lut, (sw >> (q*8)) & 0xffu);
+                uint32_t a, b;
+                #define FAKE4(w) { a = deep_gemm::mxfp4::byte_perm_unchecked(l.x, l.y, (w)); \
+                                   b = deep_gemm::mxfp4::byte_perm_unchecked(l.x, l.y, (w)); \
+                                   asm("lop3.b32 %0, %0, %1, 0x80808080, 0xf8;" : "+r"(a) : "r"(w)); \
+                                   asm("lop3.b32 %0, %0, %1, 0x80808080, 0xf8;" : "+r"(b) : "r"(w)); \
+                                   acc ^= a ^ b; }
+                FAKE4(v.x) FAKE4(v.y) FAKE4(v.z) FAKE4(v.w)
+                #undef FAKE4
+            }
         } else if constexpr (kMode == 3) {
             // smem store only: same 128 B written per thread, no dequant ALU
             const auto src = deep_gemm::mxfp4::decode_tile_row(p, tid);
@@ -138,7 +164,8 @@ int main() {
     uint32_t* sink; CHK(cudaMalloc(&sink, 4));
     printf("H20-3e %d SMs, streaming %.2f GB per launch\n", sms, bytes/1e9);
     run<0>("loader alone (1 word/thread)", buf, tiles, kb, sink, sms, bytes);
-    run<1>("decode ALU only, no smem store",  buf, tiles, kb, sink, sms, bytes);
+    run<1>("decode ALU only (6 ops/word)",    buf, tiles, kb, sink, sms, bytes);
+    run<5>("decode ALU, 4 ops/word (WRONG)",  buf, tiles, kb, sink, sms, bytes);
     run<3>("smem store only, no decode ALU",  buf, tiles, kb, sink, sms, bytes);
     run<2>("+ decode to shared (SS, both)",   buf, tiles, kb, sink, sms, bytes);
     run<4>("SS with quad-ILP decode",         buf, tiles, kb, sink, sms, bytes);
