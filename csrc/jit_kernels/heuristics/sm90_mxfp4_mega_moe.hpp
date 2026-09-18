@@ -170,12 +170,20 @@ select_sm90_mxfp4_h200_fused(
     // Within that range, take the *narrowest* transposed tile that still covers
     // one local expert's tokens. A wider tile pads the WGMMA's token dimension
     // with slots that carry nothing, and the tile is the token dimension under
-    // swapAB. Measured on EP1/48 experts, where routing puts M/6 slots on an
-    // expert: BM8 beats BM16 by 1.8 % at M=32, BM16 beats BM24 by 1.7 % at
-    // M=64, and going one step too narrow is far worse than one too wide --
-    // BM16 at M=128 needs a second m-block per expert and costs 45 %.
+    // swapAB. Measured on EP1/48 experts against the register-source path, where
+    // routing puts M/6 slots on an expert: BM8 beats BM16 by 1.8 % at M=32,
+    // BM16 beats BM24 by 1.7 % at M=64, and going one step too narrow is far
+    // worse than one too wide -- BM16 at M=128 needs a second m-block per
+    // expert and costs 45 %.
+    // BM16 is left out. The bound above assumes routing spreads tokens evenly,
+    // so it lets BM16 run to 16 tokens per expert; real routing is lumpy, and
+    // by the top of that range enough experts overflow the tile to need the
+    // second m-block this rule exists to avoid -- 40% at M=96 on both EP4 and
+    // EP8. BM16 is also only ever picked where the decode runs in its own
+    // warps, and there the wider tile wins anyway by giving that decode a
+    // longer WGMMA to hide behind.
     const auto swap_ab_block_m = [&]() {
-        for (const int block_m : {8, 16, 24}) {
+        for (const int block_m : {8, 24}) {
             if (input.num_tokens <= max_tokens_for_block_m(block_m))
                 return block_m;
         }
