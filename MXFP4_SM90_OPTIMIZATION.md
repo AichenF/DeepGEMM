@@ -879,6 +879,96 @@ other tier reports. **This tier had never been exercised by the small-M sweeps.*
 
 ---
 
+### 9.7 Decode in its own warps, and two tile-selection cliffs it exposed
+
+Three commits, all on H20-3e (78 SMs), MiMo shape, measured with matched
+`BLOCK_M` arms inside one process unless stated.
+
+**a4cba25 — decode/issue split.** The swapAB mainloop decoded each weight tile
+on the math warps, so the decode and the WGMMA it feeds ran back to back. Decode
+now owns 256 threads and hands tiles over a two-stage mbarrier ring.
+
+It is *not* a uniform win, which is the useful part:
+
+| BLOCK_M | WGMMA/tile | split vs RS |
+|---:|---:|---:|
+| 8 | 28 | **+2.4 .. +3.0 %** (loses) |
+| 16 | 56 | -3.8 .. -7.7 % |
+| 24 | 84 | -4.0 .. -6.3 % |
+
+The split trades a shared-memory round trip for warp-level overlap, so it pays
+only where the WGMMA is long enough to hide the decode. `BLOCK_M 8` issues a
+third as many WGMMAs as 24 and the round trip dominates, so that tier keeps
+decoding on the math warps — gated in the kernel by
+`sm90_mxfp4_split_decode(swap_ab, use_rs, block_m)`, not only in the heuristic,
+because a pre-existing H200 rule sets `rs_swap_ab=false` at BM8 and was measured
+against the *old* meaning of that flag.
+
+**The deadlock was register over-subscription, not the protocol.** `setmaxnreg`
+reserves registers per warp in 256-register granules, so the budget is
+`65536 / warps / 256 * 256 * warps` — 64512 at 384 threads but **61440 at 640**
+— and it is charged per *warpgroup*, so dispatch (48) sharing a warpgroup with
+the loaders (64) costs `64 * 128`, not `48*64 + 64*64`. Both were wrong in the
+assert. An over-subscribed `warpgroup_reg_alloc` does not fail the launch, it
+**blocks**, which presents exactly like a producer/consumer deadlock:
+
+| epilogue regs | total | result |
+|---:|---:|:--|
+| 152 | 59392 | passes |
+| 168 | 63488 | hangs |
+| 176 | 65536 | hangs |
+
+**9849545 and 4b67d03 — the tile bound is a mean.** `max_tokens_for_block_m`
+divides routed slots by experts, but a tile has to hold the *busiest* expert.
+Near the top of any tile's nominal range enough experts overflow it to need the
+second m-block the rule exists to avoid, so the plan falls off a cliff exactly
+where the rule still prefers it:
+
+| tile | nominal bound | measured cost near the top |
+|---:|---:|---:|
+| BM8 | 48 | +19 % at M=40, +23 % at M=48 |
+| BM16 | 96 | +10 % at M=64, +40 % at M=96 |
+
+BM16 is dropped from the candidate list outright and the bound derated by 3/4,
+putting the BM8/BM24 crossover at M=36 — between the measured M=32 where BM8
+still wins by 7.5 % and M=40 where it loses by 9.7 %. The signature to
+recognise is latency *jumping* with M while the wider tile stays flat: BM8 goes
+574.6 -> 688.6 us from M=32 to M=40 while BM24 goes 617.5 -> 621.8.
+
+**End to end**, versus the recorded pre-change baseline:
+
+| | M=40 | M=48 | M=64 | M=96 | M=128 |
+|:--|---:|---:|---:|---:|---:|
+| EP8 before | 688.6 | 702.6 | 658.3 | 972.4 | 833.4 |
+| EP8 after | **570.0** | **567.7** | **587.7** | **693.4** | **780.2** |
+| EP4 after | | | **573.4** | **646.9** | **783.9** |
+
+Correctness is unchanged at EP1, EP4 and EP8 (cosine_min 0.9988-0.9989).
+
+**Caveat on the numbers.** Same-config arms in one EP8 process have read 653.8
+and 680.0 us; the same M=128 plan has read 780.6, 781.3, 788.0, 792.4 and 841.4
+across runs. Treat the ~4 % band as noise and trust only matched-`BLOCK_M`
+in-process arms — every delta quoted above is one of those, except the
+before/after table, which is cross-run.
+
+### 9.8 Where this sits against SOL
+
+At the best-understood point (EP8, M=128, 780.2 us) each GPU streams 48 local
+experts x 20.1 MB = 963 MB of MXFP4 weights and does 78.5 GFLOP:
+
+| | achieved | roofline | fraction |
+|:--|---:|---:|---:|
+| weight read | 1.23 TB/s | 4.154 TB/s measured device stream | **30 %** |
+| compute | 100.6 TF | ~296 TF H20 FP8 peak | **34 %** |
+
+Both are well short of the 70-80 % target, and neither denominator accounts for
+dispatch and combine over NVLink, which are inside the measured time. Quoting a
+single roofline percentage for this kernel is what produced the retracted claims
+in section 7; the honest next step is to re-establish the three-way split
+(weight stream / local compute / collective) at these new operating points
+before choosing the next lever, since the tile changes moved which plan runs at
+every M below 128.
+
 ---
 
 ## 10. Reproducing
