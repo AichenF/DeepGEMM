@@ -15,14 +15,25 @@ namespace deep_gemm {
 static constexpr int kSM90MXFP4BTileRows = 128;
 static constexpr int kSM90MXFP4BTileBytes = kSM90MXFP4BTileRows * (64 + 4);
 
+// Below this tile height the WGMMA is too short to hide a decode running beside
+// it. Must stay in step with sm90_mxfp4_split_decode() in the kernel header.
+static constexpr int kSplitDecodeMinBlockM = 16;
+
 struct SM90MXFP4H200FusedConfig {
     static constexpr int kBlockK = 128;
     static constexpr int kSwizzleActsMode = 128;
     static constexpr int kNumDispatchThreads = 64;
     static constexpr int kNumNonEpilogueThreads = 64;
+    static constexpr int kNumDecodeThreads = 256;
     static constexpr int kNumEpilogueThreads = 256;
-    static constexpr int kNumThreads =
-        kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads;
+    // Decode occupies its own warps only on a swapAB tile tall enough to hide
+    // it. Must stay in step with sm90_mxfp4_num_threads() in the kernel header.
+    static constexpr int num_threads(const bool swap_ab, const bool use_rs,
+                                     const int block_m) {
+        const bool split = swap_ab and not use_rs and block_m >= kSplitDecodeMinBlockM;
+        return kNumDispatchThreads + kNumNonEpilogueThreads + kNumEpilogueThreads +
+               (split ? kNumDecodeThreads : 0);
+    }
 
     int block_m, block_n;
     int num_max_pool_tokens;
@@ -221,6 +232,13 @@ select_sm90_mxfp4_h200_fused(
     // to BM8, the same tile is 4.3 % *faster* with RS than without.
     if (input.num_sms > kSwapABReferenceNumSMs && tuning.block_m < 16 &&
         input.num_tokens <= 16)
+        tuning.rs_swap_ab = false;
+    // Decoding in its own warps costs a shared-memory round trip and buys
+    // overlap with the WGMMA, so it pays only where the WGMMA is long enough to
+    // hide the decode behind it. Measured on MiMo at both EP4 and EP8: BM24
+    // gains 4-5% and BM16 3.8-7.7%, while BM8 issues a third as many WGMMAs as
+    // BM24 and the round trip costs it 2-3% instead.
+    if (tuning.swap_ab && tuning.block_m >= kSplitDecodeMinBlockM)
         tuning.rs_swap_ab = false;
     tuning.rs_swap_ab =
         env_int("DG_MXFP4_RS", tuning.rs_swap_ab ? 1 : 0) != 0;

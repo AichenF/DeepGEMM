@@ -182,6 +182,22 @@ __device__ __forceinline__ void dequant_braided_quad(
 
 }  // namespace mxfp4
 
+// Decode occupies its own warps only on a shared-memory swapAB tile tall
+// enough for the WGMMA to hide it; the register-source path has no decoded-B
+// ring to fill, and BLOCK_M 8 is faster decoding on the math warps. An
+// unconditional 640 would also cut the compiler's per-thread register budget
+// for the narrow tiers. Must stay in step with
+// SM90MXFP4H200FusedConfig::num_threads().
+constexpr bool sm90_mxfp4_split_decode(const bool swap_ab, const bool use_rs,
+                                      const uint32_t block_m) {
+    return swap_ab and not use_rs and block_m >= 16;
+}
+
+constexpr uint32_t sm90_mxfp4_num_threads(const bool swap_ab, const bool use_rs,
+                                          const uint32_t block_m) {
+    return 64 + 64 + 256 + (sm90_mxfp4_split_decode(swap_ab, use_rs, block_m) ? 256 : 0);
+}
+
 template <
     uint32_t kNumSMs,
     // Expert-parallel width. SymBuffer<N> has one layout for every N, and the
@@ -212,7 +228,8 @@ template <
     // tile into shared memory first. swapAB only; removes the decoded-B ring.
     bool kUseRSOperand
 >
-CUTLASS_GLOBAL __launch_bounds__(384, 1) void
+CUTLASS_GLOBAL
+__launch_bounds__(sm90_mxfp4_num_threads(kSwapABRequested, kUseRSOperand, BLOCK_M), 1) void
 sm90_mxfp4_mega_moe_h200_fused_impl(
         void* y,
         int* cumulative_local_expert_recv_stats,
@@ -232,7 +249,17 @@ sm90_mxfp4_mega_moe_h200_fused_impl(
     constexpr uint32_t BLOCK_K = 128;
     constexpr uint32_t kNumDispatchThreads = 64;
     constexpr uint32_t kNumNonEpilogueThreads = 64;
+    // Decode gets its own warps so it overlaps the WGMMA rather than
+    // serialising with it on the math warps.
+    constexpr bool kSplitDecodeWarps =
+        sm90_mxfp4_split_decode(kSwapABRequested, kUseRSOperand, BLOCK_M);
+    constexpr uint32_t kNumDecodeThreads = kSplitDecodeWarps ? 256 : 0;
     constexpr uint32_t kNumEpilogueThreads = 256;
+    constexpr uint32_t kNumThreads = kNumDispatchThreads + kNumNonEpilogueThreads +
+                                     kNumDecodeThreads + kNumEpilogueThreads;
+    DG_STATIC_ASSERT(kNumThreads ==
+                         sm90_mxfp4_num_threads(kSwapABRequested, kUseRSOperand, BLOCK_M),
+                     "Launch bounds and the role partition disagree");
     DG_STATIC_ASSERT(kNumExperts % kNumRanks == 0,
                      "Experts must divide evenly across ranks");
     DG_STATIC_ASSERT(kHidden % 128 == 0, "Hidden must be a multiple of BLOCK_K");
@@ -244,7 +271,11 @@ sm90_mxfp4_mega_moe_h200_fused_impl(
     constexpr uint32_t L2_SHAPE_K = kIntermediateHidden;
     constexpr uint32_t kNumDispatchWarps = kNumDispatchThreads / 32;
     constexpr uint32_t kNumMMANonEpilogueWarps = kNumNonEpilogueThreads / 32;
+    constexpr uint32_t kNumDecodeWarps = kNumDecodeThreads / 32;
     constexpr uint32_t kNumEpilogueWarps = kNumEpilogueThreads / 32;
+    // Warp map: [dispatch][A loader][B loader][decode][math]
+    constexpr uint32_t kFirstDecodeWarp = kNumDispatchWarps + kNumMMANonEpilogueWarps;
+    constexpr uint32_t kFirstMathWarp = kFirstDecodeWarp + kNumDecodeWarps;
     constexpr uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4;
     constexpr uint32_t kNumTokensPerWarp = 32 / kNumTopk;
     constexpr uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks;

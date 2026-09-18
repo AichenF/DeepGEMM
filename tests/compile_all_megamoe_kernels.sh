@@ -128,6 +128,11 @@ mxfp4_bm16_src=$(mxfp4_src     78   48   16  256     6   true   true)
 # BM64 is the one small-M tier that stays shared-memory sourced.
 mxfp4_bm64_src=$(mxfp4_src    132   48   64  256     3   false)
 
+# The shared-memory swapAB path, which runs decode in its own warps. Without
+# this row every swapAB instantiation above is register-source, so the split's
+# warp partition and register budget are never codegen'd.
+mxfp4_bm24_split_src=$(mxfp4_src 132   48   24  256     3   true   false)
+
 # EP4 shares the kernel; only the rank count differs.
 mxfp4_ep4_src=$(mxfp4_src     132   48   24  256     8   true   true   4)
 
@@ -139,6 +144,7 @@ instantiate 'sm90_mxfp4 BM8/BN256 RS'     90a wgmma    "$mxfp4_bm8_src"
 instantiate 'sm90_mxfp4 BM16/BN256 RS'    90a wgmma    "$mxfp4_bm16_src"
 instantiate 'sm90_mxfp4 BM64/BN256 SS'    90a wgmma    "$mxfp4_bm64_src"
 instantiate 'sm90_mxfp4 EP4 BM24 RS'     90a wgmma    "$mxfp4_ep4_src"
+instantiate 'sm90_mxfp4 BM24/BN256 split'  90a wgmma  "$mxfp4_bm24_split_src"
 instantiate 'sm90_mxfp4 (78 SM, H20)'    120a gated-out "$mxfp4_h20_src"
 
 # Template-only headers, not instantiated here: catches parse/merge damage but

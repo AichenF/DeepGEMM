@@ -163,7 +163,11 @@
     DG_STATIC_ASSERT(!kUseRSOperand || kSwapABRequested,
                      "The register-source A path is swapAB-only");
     constexpr uint32_t kNumDecodedBStages =
-        kSplitMDecodedWeightReuse ? 2u : (kUseRSOperand ? 0u : 1u);
+        (kSplitMDecodedWeightReuse || kSplitDecodeWarps) ? 2u :
+        (kUseRSOperand ? 0u : 1u);
+    // Only the split hands decoded tiles between warps, so only it needs the
+    // ring's barriers; every other plan decodes and consumes in one warp.
+    constexpr uint32_t kNumBRingStages = kSplitDecodeWarps ? 2u : 0u;
     // Tile geometry (chunk-major, unpadded) lives with the decoders that read
     // it; the loader only needs the tile size and a fixed row count, so the
     // layout does not depend on the selected BLOCK_N.
@@ -276,8 +280,15 @@
     auto full_barriers     = utils::PatternVisitor([=](const uint32_t& i) { return barrier_start_ptr + kNumDispatchWarps + i; });
     auto empty_barriers    = utils::PatternVisitor([=](const uint32_t& i) { return barrier_start_ptr + kNumDispatchWarps + kNumStages + i; });
     auto combine_barriers  = utils::PatternVisitor([=](const uint32_t& i) { return barrier_start_ptr + kNumDispatchWarps + kNumStages * 2 + i; });
-    constexpr uint32_t kNumBaseBarriers =
+    // The decoded-B ring is a two-stage pipeline in its own right, so it gets
+    // the same barrier pair the stage pipeline uses.
+    constexpr uint32_t kNumRingBarriers =
         kNumDispatchWarps + kNumStages * 2 + kNumEpilogueWarps * 2;
+    auto decoded_full_barriers  = utils::PatternVisitor(
+        [=](const uint32_t& i) { return barrier_start_ptr + kNumRingBarriers + i; });
+    auto decoded_empty_barriers = utils::PatternVisitor(
+        [=](const uint32_t& i) { return barrier_start_ptr + kNumRingBarriers + kNumBRingStages + i; });
+    constexpr uint32_t kNumBaseBarriers = kNumRingBarriers + kNumBRingStages * 2;
     auto task_info_full_barriers = barrier_start_ptr + kNumBaseBarriers;
     auto task_info_empty_barriers = task_info_full_barriers +
         interleaved_scheduler_t::kNumScheduleStages;
@@ -322,18 +333,33 @@
                 // cp.async.bulk and counted as B-loader transaction bytes, so
                 // it does not need a separate producer arrival.
                 full_barriers[i]->init(2);
-                empty_barriers[i]->init(kNumEpilogueWarps);
+                // A stage holds both the packed weights and the activations.
+                // With split decode the two are read by different warps and
+                // both must release it, or the A loader refills the stage
+                // under a running WGMMA.
+                empty_barriers[i]->init(
+                    kNumEpilogueWarps +
+                    (kSplitDecodeWarps ? kNumDecodeWarps : 0u));
             }
             #pragma unroll
             for (uint32_t i = 0; i < kNumEpilogueWarps * 2; ++ i)
                 combine_barriers[i]->init(1);
+            #pragma unroll
+            for (uint32_t i = 0; i < kNumBRingStages; ++ i) {
+                // One arrival per warp on each side: the tile is not readable
+                // until every decode warp has written its rows.
+                decoded_full_barriers[i]->init(kNumDecodeWarps);
+                decoded_empty_barriers[i]->init(kNumEpilogueWarps);
+            }
             if constexpr (kUseInterleavedScheduler) {
                 #pragma unroll
                 for (uint32_t i = 0;
                      i < interleaved_scheduler_t::kNumScheduleStages;
                      ++ i) {
                     task_info_full_barriers[i].init(1);
-                    task_info_empty_barriers[i].init(kNumEpilogueWarps);
+                    task_info_empty_barriers[i].init(
+                        kNumEpilogueWarps +
+                        (kSplitDecodeWarps ? kNumDecodeWarps : 0u));
                 }
             }
         }
@@ -358,10 +384,18 @@
 
     // Pipeline state shared by TMA loaders and math warpgroups
     uint32_t stage_idx = 0, phase = 0;
+    // The ring advances with the stage pipeline and, like it, runs continuously
+    // across blocks: its barriers carry state, so resetting the slot per block
+    // would leave the producer a slot ahead of its consumer.
+    uint32_t b_ring_idx = 0, b_ring_phase = 0;
     auto advance_pipeline = [&](uint32_t& k_block_idx) {
         ++ k_block_idx;
         stage_idx = stage_idx == kNumStages - 1 ? 0 : stage_idx + 1;
         phase ^= stage_idx == 0;
+        if constexpr (kSplitDecodeWarps) {
+            b_ring_idx = b_ring_idx == kNumBRingStages - 1 ? 0 : b_ring_idx + 1;
+            b_ring_phase ^= b_ring_idx == 0;
+        }
     };
     // Intra-SM barrier indices (mirroring SM100)
     constexpr uint32_t kDispatchBarrierIdx              = 0;
@@ -379,10 +413,26 @@
     constexpr uint32_t kNumDispatchRegisters    = 48;
     constexpr uint32_t kNumNonEpilogueRegisters =
         kUseInterleavedScheduler ? 64 : 40;
-    constexpr uint32_t kNumEpilogueRegisters    = 208;
-    DG_STATIC_ASSERT(kNumDispatchRegisters * kNumDispatchThreads +
-                     kNumNonEpilogueRegisters * kNumNonEpilogueThreads +
-                     kNumEpilogueRegisters * kNumEpilogueThreads <= 64512,
+    constexpr uint32_t kNumDecodeRegisters      = 48;
+    // The decode warps take their share out of the epilogue's budget, so the
+    // split runs the math warps leaner.
+    constexpr uint32_t kNumEpilogueRegisters    = kSplitDecodeWarps ? 152 : 208;
+    // The register file is handed out per warp in 256-register granules, so
+    // what setmaxnreg can redistribute is not 64K but what the launch could
+    // actually reserve at this width -- 64512 at 384 threads, 61440 at 640.
+    constexpr uint32_t kNumWarps = kNumThreads / 32;
+    constexpr uint32_t kRegisterBudget = 65536 / kNumWarps / 256 * 256 * kNumWarps;
+    // setmaxnreg acts per warpgroup, so the budget has to be counted that way:
+    // dispatch and the two loaders share one warpgroup, which is held at the
+    // larger of their two requests. Counting per role instead understates the
+    // total, and an over-subscribed warpgroup_reg_alloc does not fail -- it
+    // blocks, so the kernel hangs rather than refusing to launch.
+    constexpr uint32_t kNumLoaderWarpgroupRegisters =
+        kNumDispatchRegisters > kNumNonEpilogueRegisters ?
+            kNumDispatchRegisters : kNumNonEpilogueRegisters;
+    DG_STATIC_ASSERT(kNumLoaderWarpgroupRegisters * 128 +
+                     kNumDecodeRegisters * kNumDecodeThreads +
+                     kNumEpilogueRegisters * kNumEpilogueThreads <= kRegisterBudget,
                      "Too many registers");
 
     constexpr uint32_t kDispatchGridSyncIndex = 0;
@@ -849,20 +899,69 @@
         else
             for_each_static_selected_block(load_b_task);
 
+    } else if (kSplitDecodeWarps and warp_idx < kFirstMathWarp) {
+        // =====================================================================
+        // ROLE 3a: DECODE WARPS (FP4 -> FP8 into the decoded ring)
+        // =====================================================================
+        cutlass::arch::warpgroup_reg_dealloc<kNumDecodeRegisters>();
+        const uint32_t decode_thread_idx =
+            (warp_idx - kFirstDecodeWarp) * 32 + lane_idx;
+
+        const auto run_decode_task = [&](const auto& block_phase,
+                                         const uint32_t& local_expert_idx,
+                                         const uint32_t& num_k_blocks,
+                                         const uint32_t& m_block_idx,
+                                         const uint32_t& n_block_idx,
+                                         const uint32_t& pool_block_idx,
+                                         const uint32_t& valid_m) {
+            for (uint32_t k_block_idx = 0;
+                 k_block_idx < num_k_blocks;
+                 advance_pipeline(k_block_idx)) {
+                full_barriers[stage_idx]->wait(phase);
+                if constexpr (kUseInterleavedScheduler) {
+                    if (k_block_idx == 0)
+                        interleaved_scheduler.release_task_info(lane_idx);
+                }
+                decoded_empty_barriers[b_ring_idx]->wait(b_ring_phase ^ 1);
+                deep_gemm::mxfp4::dequant_smem_b_from_packed_mode2_nibble<
+                    kQuadDequantIlp>(
+                    reinterpret_cast<uint8_t*>(smem_b[b_ring_idx]),
+                    reinterpret_cast<const uint8_t*>(smem_packed_b[stage_idx]),
+                    decode_thread_idx, smem_mxfp4_lut);
+                cutlass::arch::fence_view_async_shared();
+                if (lane_idx == 0) {
+                    // Publishing does not block, so this warp runs on into the
+                    // other slot while the math warps consume this one.
+                    decoded_full_barriers[b_ring_idx]->arrive();
+                    // The packed stage is ours to release once it is decoded.
+                    empty_barriers[stage_idx]->arrive();
+                }
+            }
+        };
+        if constexpr (kUseInterleavedScheduler)
+            for_each_published_block(run_decode_task);
+        else
+            for_each_static_selected_block(run_decode_task);
+
     } else {
         // =====================================================================
         // ROLE 3: MATH WARPGROUPS (WGMMA + epilogue + combine)
         // =====================================================================
         cutlass::arch::warpgroup_reg_alloc<kNumEpilogueRegisters>();
 
-        const uint32_t epilogue_warp_idx  = warp_idx - (kNumDispatchWarps + kNumMMANonEpilogueWarps);
+        const uint32_t epilogue_warp_idx  = warp_idx - kFirstMathWarp;
         const uint32_t epilogue_wg_idx    = epilogue_warp_idx / 4;
         const uint32_t epilogue_thread_idx = epilogue_warp_idx * 32 + lane_idx;
         const uint32_t warp_idx_in_wg     = epilogue_warp_idx % 4;
 
         const auto arrive_empty_barrier = [&](const uint32_t& s) {
-            if (lane_idx == 0)
+            if (lane_idx == 0) {
+                // Hand the decoded slot back, then release the stage itself:
+                // its activations were read by these warps.
+                if constexpr (kSplitDecodeWarps)
+                    decoded_empty_barriers[b_ring_idx]->arrive();
                 empty_barriers[s]->arrive();
+            }
         };
 
         const auto notify_l1_ready = [&](const uint32_t& ready_pool_block_idx,
@@ -989,13 +1088,20 @@
                 // reading. Every other plan decodes and consumes inside one
                 // iteration and has a single slot.
                 const uint32_t b_slot =
-                    kSplitMDecodedWeightReuse ? stage_idx : 0u;
-                full_barriers[stage_idx]->wait(phase);
+                    kSplitDecodeWarps ? b_ring_idx :
+                    (kSplitMDecodedWeightReuse ? stage_idx : 0u);
+                if constexpr (kSplitDecodeWarps) {
+                    // The decode warps own the packed stage and its release, so
+                    // wait on the decoded tile rather than the TMA.
+                    decoded_full_barriers[b_ring_idx]->wait(b_ring_phase);
+                } else {
+                    full_barriers[stage_idx]->wait(phase);
+                }
                 if constexpr (kUseInterleavedScheduler) {
                     if (k_block_idx == 0)
                         interleaved_scheduler.release_task_info(lane_idx);
                 }
-                if constexpr (!kUseRSOperand)
+                if constexpr (!kUseRSOperand and !kSplitDecodeWarps)
                     decode_b_stage(stage_idx, b_slot);
 
                 // Read SF (must precede warpgroup_arrive)

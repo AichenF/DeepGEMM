@@ -238,7 +238,7 @@ static void sm90_mxfp4_h200_fused_mega_moe(
         .l2_global_scales = l2_global_scales_ptr,
         .launch_args = LaunchArgs(
             num_sms,
-            KernelConfig::kNumThreads,
+            KernelConfig::num_threads(plan.swap_ab, plan.rs_swap_ab, config.block_m),
             config.smem_size, 1)
     };
 
