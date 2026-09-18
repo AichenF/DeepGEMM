@@ -1090,10 +1090,32 @@ epilogue's share falls with the wider launch:
 | 640 threads (split) | 61440 | **<= 176** |
 
 BM64/BN256 holds `float final_accum[64]` per thread and runs at 208, so under
-the split it spills. **The split is only available to tiers whose epilogue fits
-in 176 registers** -- which is why it serves the swapAB tiles, whose
-accumulators are a quarter the size, and cannot serve the straight one.
-Reverted.
+the split it spills. Reverted.
+
+A narrower retry -- 128 decode threads instead of 256, a 512-thread launch whose
+`setmaxnreg` budget still reaches 200 -- looked like it fitted on paper. It does
+not, and `ptxas -v` says so without needing the GPU:
+
+| BM64 build | static registers | spill |
+|:--|---:|---:|
+| 384 threads (shipped) | **168** | 0 |
+| 512 threads (split) | **128** | 128 B |
+
+The binding constraint is not the `setmaxnreg` budget but ptxas's *static*
+allocation, which is simply `65536 / threads`. So a tier's widest possible
+launch is `65536 / (registers it needs)`:
+
+| tier | static regs | max threads | split needs |
+|:--|---:|---:|---:|
+| BM8/16/24 swapAB | ~100 | 640 | 640 -- fits |
+| BM64/BN256 straight | 168 | **384** | 512 -- no |
+| BM128/BN128 split-M | 168 | **384** | 512 -- no |
+
+**BM64 is already at its ceiling: it cannot afford one extra warp.** That is the
+general rule -- the split is available only to tiers whose epilogue is small
+enough to leave room for 4 or 8 more warps, which is exactly the swapAB family.
+Check it with `nvcc -Xptxas -v` before trying; it costs nothing and needs no
+allocation.
 
 So the tier boundary at `swap_ab_max_tokens` is also confirmed right rather
 than under-derated: forcing BM64 below it costs 53 % at M=96 and 32 % at M=128,
