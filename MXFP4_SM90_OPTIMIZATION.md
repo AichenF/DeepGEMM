@@ -1124,6 +1124,43 @@ sits at M~160 against a bound of 144 -- slightly conservative, correctly placed.
 
 ---
 
+### 9.12 Correction: the ceiling, measured with the loader in its own warp
+
+Sections 9.8-9.9 quoted a 69 % ceiling from `bench_sm90_decode_consumer.cu`.
+That benchmark has thread 0 issue the next bulk copy only *after* the decode
+returns, so it prices decode and load **serialised** -- which is not how the
+kernel runs. `tests/bench_sm90_warp_specialised_decode.cu` puts the loader in
+its own warp, as the kernel does, and then adds the WGMMA consumer:
+
+| stage | TB/s |
+|:--|---:|
+| loader alone | 4.16 |
+| + dequant, 8 decode warps | **3.09** |
+| + dequant, 4 decode warps | 2.48 |
+| + WGMMA consuming the decoded tile | **2.31** |
+| kernel: SS split / RS | 2.10 / **2.29** |
+
+Two corrections fall out. The decode hides far better than the serialised
+figure suggested -- 3.09, not 2.39. But the WGMMA consumer costs 0.78 TB/s on
+top, and against that the kernel is at **91-99 % of achievable**, not the 79 % I
+reported.
+
+And the binding resource is **shared-memory bandwidth, not the dequant ALU**.
+Per stage the SS path moves ~100 KB of smem -- 17 KB TMA write, 17 KB decode
+read, 32 KB decode write, 32 KB WGMMA read -- against 17 KB of HBM, a 5.75x
+amplification. This also explains a result that looked odd in 9.9: the
+register-source path sustains a *higher* stream rate (2.29 vs 2.10) because it
+skips the decoded-tile round trip, yet the split still wins end-to-end at
+BM16/24 because it overlaps decode with the WGMMA. Different quantities.
+
+So the conclusion in 9.9 was right but for the wrong reason, and the margin is
+smaller than stated: there is no ~20 % of un-hidden decode to reclaim. The
+pipeline is at its shared-memory limit, and the distance to the HBM roofline is
+the W4A8-on-Hopper tax -- ALU expansion plus a shared-memory round trip that no
+FP4-MMA-less part can avoid.
+
+---
+
 ## 10. Reproducing
 
 The weight-load measurement in section 7.2 needs no allocation at all — it is
