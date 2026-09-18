@@ -1161,6 +1161,43 @@ FP4-MMA-less part can avoid.
 
 ---
 
+### 9.13 Where the kernel stands, and the one lever left
+
+With the pipeline limit measured correctly (9.12: 2.31 TB/s for loader warp +
+dequant + WGMMA consumer), the achievable roofline is
+`max(compute at 296 TF, weights at 2.31 TB/s)`:
+
+| | M=8 | M=16 | M=32 | M=64 | M=128 | M=256 |
+|:--|---:|---:|---:|---:|---:|---:|
+| EP8 % of achievable | 75 | 78 | 69 | 71 | **53** | 54 |
+| EP4 % of achievable | 84 | 84 | 77 | 73 | **53** | 57 |
+
+Across M=8-64 the kernel runs at **69-84 % of achievable**, which is the band
+this work was aimed at. The outlier is M=128.
+
+**Why M=128 is the worst point.** At EP8 it routes 21.7 tokens to the average
+expert against a BM24 tile, so the lumpy tail overflows and those experts need a
+second m-block, doubling their share of the weight stream -- the same
+mean-vs-busiest effect as 9.7, one tier up. BM64 is not the answer: forcing it
+there costs 32 % (9.11). What is missing is a tile *between* 24 and 64.
+
+**BM32 is feasible and untested.** `FP8MMASelector` accepts N=32, and the only
+things stopping it are two template asserts -- the BLOCK_M whitelist and
+`!kSwapABRequested || BLOCK_M <= 24`, whose message ("only selected through the
+M64 bucket") records a selection convention, not a hardware limit. Relaxing both
+compiles a BM32 swapAB + split kernel at **96 registers with zero spill**, the
+same as BM24. At M=128/EP8 it would hold 21.7 tokens in one m-block at 68 %
+occupancy instead of spilling the tail into a second BM24 block.
+
+This is prepared, not shipped: it needs the two asserts relaxed, BM32 added to
+`swap_ab_block_m`'s candidate list with its own `max_tokens_for_block_m` bound,
+a gate row, and then correctness plus a matched-BLOCK_M A/B at M=96/128/144 on
+EP1, EP4 and EP8. It was not committed because no hardware was available to
+validate it, and two changes this session that looked equally sound on paper
+(9.10, 9.11) measured as regressions.
+
+---
+
 ## 10. Reproducing
 
 The weight-load measurement in section 7.2 needs no allocation at all — it is
