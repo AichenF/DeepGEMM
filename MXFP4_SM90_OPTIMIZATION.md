@@ -971,6 +971,68 @@ every M below 128.
 
 ---
 
+### 9.9 What actually throttles the stream, and the real ceiling
+
+Section 9.8 quoted 30-34 % of roofline. That denominator was wrong in two ways,
+and fixing both changes the conclusion.
+
+**The collective is not the problem.** Templating on `kNumRanks` makes EP1
+runnable, so the collective can be differenced out directly at matched per-GPU
+work (H20-3e, 48 local experts either way):
+
+| M | EP1 | EP8 | collective |
+|---:|---:|---:|---:|
+| 32 | 503.5 | 593.5 | 90.0 us |
+| 64 | 545.9 | 587.7 | 41.8 |
+| 128 | 700.6 | 780.2 | 79.6 |
+| 256 | 917.8 | 942.0 | 24.2 |
+
+3-15 %. EP1, with no collective at all, still runs at 37-57 % of roofline, so
+the gap is in the GEMM.
+
+**The weight stream is consumer-throttled, and the consumer is the dequant.**
+Ablating the expert count at M=8 (where compute/expert is 2.0 us against
+4.6 us of memory, so the slope is a pure stream read) gives 8.75 us/expert on
+the best schedule = **2.29 TB/s, 52 % of the 4.4 TB/s load path**.
+`tests/bench_sm90_decode_consumer.cu` attributes that deficit by running the
+shipped loader with progressively more of the real consumer:
+
+| consumer | TB/s | vs loader |
+|:--|---:|---:|
+| loader alone | 4.19 | — |
+| + dequant ALU only | 2.90 | -30 % |
+| + shared store only | 3.19 | -24 % |
+| + both (the SS decode) | 2.39 | -43 % |
+
+2.39 reproduces the in-kernel 2.10-2.39 almost exactly, which is the
+attribution: **the decode, not the WGMMA, not barriers, not the collective.**
+The WGMMA is not the binding term either -- issue time for an L1 CTA is 6.6 us
+against 14.8 us of its HBM share.
+
+**So ~70 % of the load path is the ceiling, not a target.** The dequant ALU
+alone costs 30 %, and it is unavoidable: Hopper has no FP4 MMA, so every weight
+byte is expanded to FP8 before the tensor core can see it. The RS path, which
+skips the shared store, is the closest to that ceiling -- 2.29 of a possible
+2.90, i.e. 79 % -- and the missing 21 % is decode that is not hidden behind an
+MMA.
+
+**That last 21 % is structurally blocked.** The mainloop already pipelines at
+half granularity, so half 1's decode hides under half 0's MMA and only half 0's
+is exposed. Hiding it too needs the *previous* k-block's MMA still in flight,
+but `warpgroup_wait<0>` has to drain before `arrive_empty(K)` releases the
+stage; moving the decode ahead of that wait is the next-stage prefetch already
+measured and rejected in section 8. The halves cannot be subdivided either --
+they are 64-row WGMMA M groups, which is the instruction minimum. The quad-ILP
+decode variant measures identically (2.39), so that knob is spent.
+
+Quoted honestly, then: against the load path the kernel is at **55 % of a
+69 % ceiling**. Reaching 70-80 % of the *HBM* roofline is not available to W4A8
+on this part at these shapes; it needs an FP4 MMA (Blackwell), or enough tokens
+per expert to amortise the expansion over a wider WGMMA -- which is exactly
+what the tile rules in 9.7 now do wherever routing allows.
+
+---
+
 ## 10. Reproducing
 
 The weight-load measurement in section 7.2 needs no allocation at all — it is
