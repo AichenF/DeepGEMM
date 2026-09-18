@@ -1033,6 +1033,36 @@ what the tile rules in 9.7 now do wherever routing allows.
 
 ---
 
+### 9.10 Ruled out: finer decode/MMA grouping on the RS path
+
+9.9 left one candidate for the 21 % of the RS path that is decode not hidden
+behind an MMA. The mainloop decodes all four k-step slices of a half and then
+issues four MMAs, so half 0's decode is exposed and only half 1's hides.
+Grouping more finely should hide more of it, for one extra fence/commit pair
+per group. `tests/bench_sm90_rs_interleave.cu` runs exactly that comparison --
+same loader, same 48 MMAs, only the grouping differs:
+
+| grouping | TB/s |
+|:--|---:|
+| `kGroupK=4`, decode half then 4 MMA (shipped) | 2.35 |
+| `kGroupK=2`, two groups per half | 2.40 (+2.1 %) |
+| `kGroupK=1`, interleaved per k-step | **2.13 (-9.4 %)** |
+
+Reproducible to two decimal places over three runs. The aggressive form is a
+**regression** -- the fences cost more than the overlap wins -- and the mild one
+sits inside the kernel's own noise floor (~4 % at EP8), so it could not be
+validated in-kernel even if shipped. I had implemented `kGroupK=1` and predicted
++27 % from a model that ignored fence cost; the measurement says otherwise and
+the change was reverted.
+
+The half-granularity grouping already in the mainloop is the right trade. With
+this and the thread-count sweep in 9.9 (decode peaks at 256 threads and is
+slower at 512, so it is ALU-throughput-bound, not latency-bound), the consumer
+side is closed: **the 69 % ceiling stands and the RS path's 79 % of it is what
+this shape allows.**
+
+---
+
 ## 10. Reproducing
 
 The weight-load measurement in section 7.2 needs no allocation at all — it is
