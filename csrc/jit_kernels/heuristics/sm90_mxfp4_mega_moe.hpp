@@ -182,9 +182,17 @@ select_sm90_mxfp4_h200_fused(
     // EP8. BM16 is also only ever picked where the decode runs in its own
     // warps, and there the wider tile wins anyway by giving that decode a
     // longer WGMMA to hide behind.
+    // max_tokens_for_block_m is a mean, and a tile has to hold the busiest
+    // expert, not the average one. Leave a quarter of it as headroom for that
+    // imbalance: measured on MiMo, BM8 is still the better tile at M=32 but
+    // costs 10% at M=40 and M=48 against its nominal bound of 48, because by
+    // then enough experts need a second m-block.
+    const auto tokens_per_block_m = [&](const int block_m) {
+        return max_tokens_for_block_m(block_m) * 3 / 4;
+    };
     const auto swap_ab_block_m = [&]() {
         for (const int block_m : {8, 24}) {
-            if (input.num_tokens <= max_tokens_for_block_m(block_m))
+            if (input.num_tokens <= tokens_per_block_m(block_m))
                 return block_m;
         }
         return 24;
