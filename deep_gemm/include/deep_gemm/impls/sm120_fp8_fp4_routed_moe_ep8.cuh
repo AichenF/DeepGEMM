@@ -636,6 +636,13 @@ DG_SM120_ROUTED_MOE_KERNEL(LoomTensorMap const* W1_A, LoomTensorMap const* W1_B,
     __syncthreads();
 
     // === Task calls (dependency order) ===
+    // CTA0 owns the queue; the reset grid barrier publishes these initial values.
+    if (bid == 0) {
+        #pragma unroll 1
+        for (int reset_queue_slot = tid; reset_queue_slot < 1024; reset_queue_slot += 384) {
+            svc_queue[reset_queue_slot] = 0;
+        }
+    }
     int reset_tid = bid * 384 + tid;
     int reset_threads = num_bids * 384;
     int _max_0 = ((world_size * active_rows * 6 + 4064) > (0) ? (world_size * active_rows * 6 + 4064) : (0));
@@ -3209,8 +3216,10 @@ DG_SM120_ROUTED_MOE_KERNEL(LoomTensorMap const* W1_A, LoomTensorMap const* W1_B,
                         break;
                     }
                     __threadfence_block();
-                    int h29_chunk = svc_queue[h29_idx & 1023];
+                    int h29_chunk = atomicAdd(&svc_queue[h29_idx & 1023], 0);
                     h29_idx += 1;
+                    // Finish reading before publishing that this slot is reusable.
+                    __threadfence_block();
                     atomicMax(&svc_qctl[3 + warp], h29_idx);
                     int h29_source = h29_chunk / 769;
                     if (h29_source == map_source) {
@@ -3359,7 +3368,10 @@ DG_SM120_ROUTED_MOE_KERNEL(LoomTensorMap const* W1_A, LoomTensorMap const* W1_B,
                                         break;
                                     }
                                 }
-                                svc_queue[h20_tail & 1023] = service_chunk_2;
+                                __threadfence_block();
+                                // Single producer: replace atomically before publishing the tail.
+                                int h20_old_chunk = atomicAdd(&svc_queue[h20_tail & 1023], 0);
+                                atomicAdd(&svc_queue[h20_tail & 1023], service_chunk_2 - h20_old_chunk);
                                 h20_tail += 1;
                                 __threadfence_block();
                                 atomicAdd(&svc_qctl[1], 1);
