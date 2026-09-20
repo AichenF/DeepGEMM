@@ -313,6 +313,119 @@ __device__ __forceinline__ void dequant_smem_b_from_packed_braided_lut_window(
 
 }  // namespace nvfp4
 
+// Push dispatch (see the kernel body, `kPushDispatch`): the routed rows of this
+// rank are written straight into the destination ranks' fixed-stride pools.
+// Force-inlined: an ABI call (`__noinline__`) anywhere in the persistent kernel
+// changes the register allocation of the whole kernel and costs ~15 % on the
+// math warps (measured on H20).
+template <uint32_t kHidden, uint32_t kNumTopk, uint32_t kNumExpertsPerRank,
+          uint32_t kNumPaddedSFPoolTokens, uint32_t BLOCK_M, uint32_t kPushBlocksPerExpert,
+          uint32_t kNumGlobalWarps, uint32_t kNumRanks, bool kGenericRows, bool kGpuScopeDebug>
+__device__ __forceinline__ void sm90_nvfp4_push_dispatch_rows(
+        const layout::SymBuffer<kNumRanks>& sym_buffer,
+        void* smem_row_buffer,
+        cutlass::arch::ClusterTransactionBarrier* row_mbarrier,
+        const int64_t* __restrict__ input_topk_idx,
+        const uint8_t* __restrict__ input_tokens,
+        const float* __restrict__ input_sf,
+        const float* __restrict__ input_topk_weights,
+        uint8_t* l1_tokens, float* l1_sf, float* l1_topk_weights,
+        layout::TokenSrcMetadata* token_src_metadata,
+        uint64_t* recv_count_sum,
+        const uint32_t pool_block_base,
+        const uint32_t num_tokens,
+        const uint32_t global_warp_idx,
+        const uint32_t lane_idx) {
+    constexpr uint32_t kNumSFFloats = kHidden / 128;
+    constexpr uint32_t kNumTokenChunksPerLane = kHidden / (16 * 32);
+    constexpr uint32_t kChunkGroup = 2;
+    static_assert(kHidden % 512 == 0 && kNumTokenChunksPerLane % kChunkGroup == 0,
+                  "Invalid token shape for push dispatch");
+    // Rows (token, top-k slot) in contiguous chunks of R = ceil(rows / warps) per
+    // warp (<= 32 per ticket batch): every lane takes the remote ticket of one row
+    // of the batch at once (the NVLink round trips overlap), then the warp streams
+    // the batch's rows (16 B per lane per store) into the destination pools.
+    const uint32_t num_rows = num_tokens * kNumTopk;
+    const uint32_t rows_per_warp = (num_rows + kNumGlobalWarps - 1) / kNumGlobalWarps;
+    const uint32_t row_begin = global_warp_idx * rows_per_warp;
+    const uint32_t row_end = min(row_begin + rows_per_warp, num_rows);
+    uint32_t row_mbarrier_phase = 0;
+    #pragma unroll 1
+    for (uint32_t batch_begin = row_begin; batch_begin < row_end; batch_begin += 32) {
+        const uint32_t batch_size = min(row_end - batch_begin, 32u);
+        const uint32_t r = batch_begin + lane_idx;
+        int expert_idx = -1;
+        if (lane_idx < batch_size)
+            expert_idx = static_cast<int>(__ldg(input_topk_idx + r));
+        uint32_t lane_row_idx = 0;
+        if (expert_idx >= 0) {
+            const uint32_t dr = static_cast<uint32_t>(expert_idx) / kNumExpertsPerRank;
+            const uint32_t de = static_cast<uint32_t>(expert_idx) % kNumExpertsPerRank;
+            if constexpr (kGpuScopeDebug) {
+                // Diagnostic only (valid when every row is routed to this rank)
+                lane_row_idx = static_cast<uint32_t>(ptx::atomic_add(
+                    sym_buffer.map(recv_count_sum + de, dr), 1ull));
+            } else {
+                lane_row_idx = static_cast<uint32_t>(ptx::atomic_add_sys(
+                    sym_buffer.map(recv_count_sum + de, dr), 1ull));
+            }
+        }
+        const uint32_t valid_mask = __ballot_sync(0xffffffff, expert_idx >= 0);
+        #pragma unroll 1
+        for (uint32_t mask = valid_mask; mask != 0; mask &= mask - 1) {
+            const uint32_t src_lane = __ffs(mask) - 1;
+            const uint32_t row_r = batch_begin + src_lane;
+            const uint32_t e = static_cast<uint32_t>(__shfl_sync(0xffffffff, expert_idx, src_lane));
+            const uint32_t row_idx = __shfl_sync(0xffffffff, lane_row_idx, src_lane);
+            const uint32_t dr = e / kNumExpertsPerRank;
+            const uint32_t de = e % kNumExpertsPerRank;
+            const uint32_t src_token_idx = row_r / kNumTopk, src_topk_idx = row_r % kNumTopk;
+            DG_TRAP_ONLY_DEVICE_ASSERT(row_idx < kPushBlocksPerExpert * BLOCK_M);
+            const uint32_t pool_token_idx =
+                (pool_block_base + de * kPushBlocksPerExpert) * BLOCK_M + row_idx;
+            const auto* src_token = reinterpret_cast<const uint4*>(
+                input_tokens + static_cast<uint64_t>(src_token_idx) * kHidden);
+            auto* dst_token = sym_buffer.map(reinterpret_cast<uint4*>(
+                l1_tokens + static_cast<uint64_t>(pool_token_idx) * kHidden), dr);
+            if constexpr (kGenericRows) {
+                #pragma unroll
+                for (uint32_t g = 0; g < kNumTokenChunksPerLane; g += kChunkGroup) {
+                    uint4 row[kChunkGroup];
+                    #pragma unroll
+                    for (uint32_t c = 0; c < kChunkGroup; ++ c)
+                        row[c] = __ldg(src_token + (g + c) * 32 + lane_idx);
+                    #pragma unroll
+                    for (uint32_t c = 0; c < kChunkGroup; ++ c)
+                        dst_token[(g + c) * 32 + lane_idx] = row[c];
+                }
+            } else {
+                // Bulk copy (async proxy) local input row -> smem -> destination pool,
+                // the mirror image of the pull path's TMA pull.
+                if (cute::elect_one_sync()) {
+                    ptx::tma_load_1d(smem_row_buffer, src_token, row_mbarrier, kHidden);
+                    ptx::mbarrier_arrive_and_set_tx(row_mbarrier, kHidden);
+                    ptx::mbarrier_wait_and_flip_phase(row_mbarrier, row_mbarrier_phase);
+                    ptx::tma_store_1d(dst_token, smem_row_buffer, kHidden);
+                    cute::tma_store_arrive();
+                    ptx::tma_store_wait<0>();
+                }
+                __syncwarp();
+            }
+            const float* src_sf = input_sf + static_cast<uint64_t>(src_token_idx) * kNumSFFloats;
+            float* dst_sf = sym_buffer.map(l1_sf, dr);
+            #pragma unroll
+            for (uint32_t j = lane_idx; j < kNumSFFloats; j += 32)
+                dst_sf[static_cast<uint64_t>(j) * kNumPaddedSFPoolTokens + pool_token_idx] = __ldg(src_sf + j);
+            if (lane_idx == 0) {
+                *sym_buffer.map(l1_topk_weights + pool_token_idx, dr) = __ldg(input_topk_weights + row_r);
+                *sym_buffer.map(token_src_metadata + pool_token_idx, dr) =
+                    {static_cast<uint32_t>(sym_buffer.rank_idx), src_token_idx, src_topk_idx};
+            }
+        }
+        __syncwarp();
+    }
+}
+
 template <
     uint32_t kNumMaxTokensPerRank,
     uint32_t kNumExperts,
@@ -331,12 +444,39 @@ template <
     bool kRSSwapABRequested,
     bool kSingleActiveDispatchWarp,
     bool kUseMode2RowDecoder,
-    bool kUseInterleavedScheduler
+    bool kUseInterleavedScheduler,
+    // Counter-based synchronisation (see the body): push dispatch + DONE flags
+    // (replaces NVLink barrier #1), fine-grained combine (replaces barrier #2),
+    // rotated pool without the workspace-clean barrier (#3).
+    bool kPushDispatchRequested = false,
+    bool kFineCombineRequested = false,
+    bool kNoCleanBarrierRequested = false,
+    // Diagnostics: strided pool addressing under the PULL protocol (isolates the
+    // layout's cost), and the generic->async proxy fence in the push A loader.
+    bool kStridedPoolDebug = false,
+    bool kPushProxyFence = false,
+    // Push rows with 16 B generic stores instead of TMA bulk copies (diagnostic).
+    bool kPushGenericRows = false,
+    // Diagnostics: gpu-scope tickets / DONE under push (local routing only), and
+    // sys-scope tickets + DONE reductions injected into the pull path.
+    bool kPushGpuScopeDebug = false,
+    bool kSysTrafficDebug = false,
+    // Per-SM first-task stagger under push (ns per SM group, 8 groups): tests
+    // whether the DONE-synchronised lock-step start of all SMs costs bandwidth.
+    uint32_t kPushStaggerNs = 0,
+    // Compile the push routing code into a pull-protocol kernel without ever
+    // executing it (code-generation / instruction-cache diagnostic).
+    bool kPushCodeDebug = false,
+    // Phase stamps (globaltimer) compiled in; host env DG_NVFP4_PHASE_STAMPS_PTR.
+    bool kPhaseStamps = false,
+    // Compile the fine-combine code into a barrier-#2 kernel without executing it.
+    bool kFineCombineCodeDebug = false
 >
 CUTLASS_GLOBAL __launch_bounds__(384, 1) void
 sm90_nvfp4_mega_moe_fused_impl(
         void* y,
         int* cumulative_local_expert_recv_stats,
+        unsigned long long* phase_stamps,
         const uint32_t num_tokens,
         const __grid_constant__ layout::SymBuffer<8> sym_buffer,
         const __grid_constant__ cute::TmaDescriptor tensor_map_l1_acts,

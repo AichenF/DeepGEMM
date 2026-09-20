@@ -33,11 +33,23 @@ public:
         bool use_mode2_row_decoder;
         bool single_active_dispatch_warp;
         bool use_interleaved_scheduler;
+        bool push_dispatch;
+        bool fine_combine;
+        bool no_clean_barrier;
+        bool strided_pool_debug;
+        bool push_proxy_fence;
+        bool push_generic_rows;
+        bool push_gpu_scope_debug;
+        bool sys_traffic_debug;
+        int push_stagger_ns;
+        bool push_code_debug;
+        bool fine_combine_code_debug;
         int num_sms;
         SM90NVFP4FusedConfig config;
 
         void* y;
         int* cumulative_local_expert_recv_stats;
+        unsigned long long* phase_stamps;
         int num_tokens;
         layout::SymBuffer<> sym_buffer_ptrs;
         CUtensorMap tensor_map_l1_acts;
@@ -65,12 +77,36 @@ public:
             "        /* kRSSwapABRequested */ {},\n"
             "        /* kSingleActiveDispatchWarp */ {},\n"
             "        /* kUseMode2RowDecoder */ {},\n"
-            "        /* kUseInterleavedScheduler */ {}",
+            "        /* kUseInterleavedScheduler */ {},\n"
+            "        /* kPushDispatchRequested */ {},\n"
+            "        /* kFineCombineRequested */ {},\n"
+            "        /* kNoCleanBarrierRequested */ {},\n"
+            "        /* kStridedPoolDebug */ {},\n"
+            "        /* kPushProxyFence */ {},\n"
+            "        /* kPushGenericRows */ {},\n"
+            "        /* kPushGpuScopeDebug */ {},\n"
+            "        /* kSysTrafficDebug */ {},\n"
+            "        /* kPushStaggerNs */ {}u,\n"
+            "        /* kPushCodeDebug */ {},\n"
+            "        /* kPhaseStamps */ {},\n"
+            "        /* kFineCombineCodeDebug */ {}",
             args.swap_ab ? "true" : "false",
             args.rs_swap_ab ? "true" : "false",
             args.single_active_dispatch_warp ? "true" : "false",
             args.use_mode2_row_decoder ? "true" : "false",
-            args.use_interleaved_scheduler ? "true" : "false");
+            args.use_interleaved_scheduler ? "true" : "false",
+            args.push_dispatch ? "true" : "false",
+            args.fine_combine ? "true" : "false",
+            args.no_clean_barrier ? "true" : "false",
+            args.strided_pool_debug ? "true" : "false",
+            args.push_proxy_fence ? "true" : "false",
+            args.push_generic_rows ? "true" : "false",
+            args.push_gpu_scope_debug ? "true" : "false",
+            args.sys_traffic_debug ? "true" : "false",
+            args.push_stagger_ns,
+            args.push_code_debug ? "true" : "false",
+            args.phase_stamps != nullptr ? "true" : "false",
+            args.fine_combine_code_debug ? "true" : "false");
         return fmt::format(R"(
 {}
 
@@ -119,6 +155,7 @@ static void __instantiate_kernel() {{
             kernel, config,
             args.y,
             args.cumulative_local_expert_recv_stats,
+            args.phase_stamps,
             args.num_tokens,
             args.sym_buffer_ptrs,
             args.tensor_map_l1_acts,
@@ -188,6 +225,54 @@ static void sm90_nvfp4_fused_mega_moe(
         DG_HOST_ASSERT(plan.swap_ab);
     const bool rs_swap_ab = rs_mode != 0 && plan.swap_ab;
 
+    // Counter-based synchronisation (see the kernel body). Defaults come from the
+    // M-gated policy in the heuristics; the env knobs force a step on/off for A/B.
+    //   DG_NVFP4_PUSH_DISPATCH    : push dispatch + DONE flags (replaces barrier #1)
+    //   DG_NVFP4_FINE_COMBINE     : per-token combine counters (replaces barrier #2)
+    //   DG_NVFP4_NO_CLEAN_BARRIER : parity-rotated pool, no barrier #3 (needs push)
+    //   DG_NVFP4_PHASE_STAMPS_PTR : device address (decimal) of 32 x u64 stamp slots
+    const SM90NVFP4CounterPolicy counter_policy = select_sm90_nvfp4_counter_policy(
+        heuristic_input, plan.use_interleaved_scheduler);
+    const bool no_clean_barrier_req = get_env<int>(
+        "DG_NVFP4_NO_CLEAN_BARRIER", counter_policy.no_clean_barrier ? 1 : 0) != 0;
+    bool push_dispatch = plan.use_interleaved_scheduler && get_env<int>(
+        "DG_NVFP4_PUSH_DISPATCH", counter_policy.push_dispatch ? 1 : 0) != 0;
+    const bool fine_combine = plan.use_interleaved_scheduler && get_env<int>(
+        "DG_NVFP4_FINE_COMBINE", counter_policy.fine_combine ? 1 : 0) != 0;
+    if (push_dispatch) {
+        // The fixed-stride push pool must hold the worst case (every routed row of
+        // every rank lands on one expert); otherwise fall back to the pull path.
+        const int pool_blocks_total = config.num_max_pool_tokens / config.block_m;
+        const int blocks_per_expert = pool_blocks_total /
+            (num_experts_per_rank * (no_clean_barrier_req ? 2 : 1));
+        if (static_cast<int64_t>(num_tokens) * num_ranks >
+            static_cast<int64_t>(blocks_per_expert) * config.block_m) {
+            if (get_env<int>("DG_JIT_DEBUG"))
+                printf("NVFP4 push dispatch disabled: %d x %d rows exceed the %d-row pool stride\n",
+                       num_tokens, num_ranks, blocks_per_expert * config.block_m);
+            push_dispatch = false;
+        }
+    }
+    const bool no_clean_barrier = push_dispatch && no_clean_barrier_req;
+    const bool strided_pool_debug = !push_dispatch && plan.use_interleaved_scheduler &&
+        get_env<int>("DG_NVFP4_POOL_STRIDE_DEBUG", 0) != 0;
+    const bool push_proxy_fence = push_dispatch && get_env<int>("DG_NVFP4_PUSH_PROXY_FENCE", 0) != 0;
+    const bool push_generic_rows = push_dispatch && get_env<int>("DG_NVFP4_PUSH_GENERIC_ROWS", 0) != 0;
+    const bool push_gpu_scope_debug = push_dispatch && get_env<int>("DG_NVFP4_PUSH_GPU_SCOPE_DEBUG", 0) != 0;
+    const bool sys_traffic_debug = !push_dispatch && plan.use_interleaved_scheduler &&
+        get_env<int>("DG_NVFP4_SYS_TRAFFIC_DEBUG", 0) != 0;
+    const int push_stagger_ns = push_dispatch ? get_env<int>("DG_NVFP4_PUSH_STAGGER_NS", 0) : 0;
+    const bool push_code_debug = !push_dispatch && get_env<int>("DG_NVFP4_PUSH_CODE_DEBUG", 0) != 0;
+    const bool fine_combine_code_debug = !fine_combine && plan.use_interleaved_scheduler &&
+        get_env<int>("DG_NVFP4_FINE_COMBINE_CODE_DEBUG", 0) != 0;
+    unsigned long long* phase_stamps = nullptr;
+    {
+        const auto stamps_env = get_env<std::string>("DG_NVFP4_PHASE_STAMPS_PTR");
+        if (!stamps_env.empty())
+            phase_stamps = reinterpret_cast<unsigned long long*>(
+                std::strtoull(stamps_env.c_str(), nullptr, 10));
+    }
+
     constexpr int kL1ScaleGranK = 128;
     const int l2_scale_gran_k = config.block_n / 2;
     const auto tensor_map_l1_acts = make_tma_2d_desc(
@@ -245,10 +330,22 @@ static void sm90_nvfp4_fused_mega_moe(
         .use_mode2_row_decoder = rs_swap_ab || plan.use_mode2_row_decoder,
         .single_active_dispatch_warp = plan.single_active_dispatch_warp,
         .use_interleaved_scheduler = plan.use_interleaved_scheduler,
+        .push_dispatch = push_dispatch,
+        .fine_combine = fine_combine,
+        .no_clean_barrier = no_clean_barrier,
+        .strided_pool_debug = strided_pool_debug,
+        .push_proxy_fence = push_proxy_fence,
+        .push_generic_rows = push_generic_rows,
+        .push_gpu_scope_debug = push_gpu_scope_debug,
+        .sys_traffic_debug = sys_traffic_debug,
+        .push_stagger_ns = push_stagger_ns,
+        .push_code_debug = push_code_debug,
+        .fine_combine_code_debug = fine_combine_code_debug,
         .num_sms = num_sms,
         .config = config,
         .y = y.data_ptr(),
         .cumulative_local_expert_recv_stats = cumulative_stats_ptr,
+        .phase_stamps = phase_stamps,
         .num_tokens = num_tokens,
         .sym_buffer_ptrs = layout::SymBuffer<>(sym_buffer_ptrs, rank_idx),
         .tensor_map_l1_acts = tensor_map_l1_acts,
@@ -276,8 +373,16 @@ static void sm90_nvfp4_fused_mega_moe(
     const std::string arm_jit_flags =
         plan.use_interleaved_scheduler && !rs_swap_ab ? "" :
         get_sm90_nvfp4_small_jit_flags(fast_math);
+    const std::string counter_suffix =
+        std::string(push_dispatch ? "_push" : "") + (fine_combine ? "_finecomb" : "") +
+        (no_clean_barrier ? "_noclean" : "") + (strided_pool_debug ? "_stridedbg" : "") +
+        (push_proxy_fence ? "_pfence" : "") + (push_generic_rows ? "_generic" : "") +
+        (push_gpu_scope_debug ? "_gpuscope" : "") + (sys_traffic_debug ? "_systraffic" : "") +
+        (push_stagger_ns > 0 ? "_stagger" + std::to_string(push_stagger_ns) : "") +
+        (push_code_debug ? "_codedbg" : "") + (fine_combine_code_debug ? "_fccodedbg" : "") +
+        (phase_stamps != nullptr ? "_stamps" : "");
     const auto runtime = compiler->build(
-        plan.use_interleaved_scheduler ?
+        std::string(plan.use_interleaved_scheduler ?
             (rs_swap_ab ?
                 "sm90_nvfp4_fused_interleaved_rs_mode5" :
                 "sm90_nvfp4_fused_interleaved") :
@@ -285,7 +390,7 @@ static void sm90_nvfp4_fused_mega_moe(
                 "sm90_nvfp4_fused_static_rs_mode5" :
                 (plan.use_mode2_row_decoder ?
                     "sm90_nvfp4_fused_mode2_row" :
-                    "sm90_nvfp4_fused_lut_window")),
+                    "sm90_nvfp4_fused_lut_window"))) + counter_suffix,
         code,
         arm_jit_flags);
     SM90NVFP4FusedRuntime::launch(runtime, args);

@@ -38,7 +38,41 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
     const uint32_t warp_idx   = cutlass::canonical_warp_idx_sync();
     const uint32_t lane_idx   = ptx::get_lane_idx();
 
+    // Optional phase timestamps (globaltimer, ns; `phase_stamps` != nullptr). Slots:
+    //   0 min kernel entry | 1 max dispatch barrier #1 / DONE wait done | 2 max pool ready
+    //   3 min first math task | 4 max last L1 task end | 5 max last L2 task end
+    //   6 max combine barrier #2 done (fine combine: first token ready) | 7 max combine end
+    //   8 max routing count done | 9 max routing writes / pushes issued | 10 max routing
+    //   grid sync / DONE signalled | 11 max count broadcast done | 12 max barrier #3 done
+    const auto stamp_min = [&](const uint32_t slot) {
+        if constexpr (kPhaseStamps) {
+            unsigned long long t; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+            atomicMin(phase_stamps + slot, t);
+        }
+    };
+    const auto stamp_max = [&](const uint32_t slot) {
+        if constexpr (kPhaseStamps) {
+            unsigned long long t; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+            atomicMax(phase_stamps + slot, t);
+        }
+    };
+    // Accumulators (all SMs): 20/21 sum of L1 task ns / count, 22/23 L2 task ns / count,
+    // 24 sum of A-loader arrival-spin ns (L1), 25 sum of A-loader L2-mask-spin ns.
+    const auto stamp_now = [&]() {
+        unsigned long long t = 0;
+        if constexpr (kPhaseStamps)
+            asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+        return t;
+    };
+    const auto stamp_accumulate = [&](const uint32_t slot, const unsigned long long& delta, const unsigned long long& count) {
+        if constexpr (kPhaseStamps) {
+            atomicAdd(phase_stamps + slot, delta);
+            if (count) atomicAdd(phase_stamps + slot + 1, count);
+        }
+    };
+
     if (warp_idx == 0 and cute::elect_one_sync()) {
+        stamp_min(0);
         cute::prefetch_tma_descriptor(&tensor_map_l1_acts);
         cute::prefetch_tma_descriptor(&tensor_map_l1_acts_sf);
         cute::prefetch_tma_descriptor(&tensor_map_l1_weights);
@@ -270,6 +304,13 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         kInterleavedSchedulerSMEMBytes;
     DG_STATIC_ASSERT(!kUseInterleavedScheduler || kInterleavedSMEMEnd <= 232448,
                      "Interleaved scheduler exceeds the SM90 shared-memory capacity");
+    // Fine-grained combine CTA words (kept in shared memory, not in registers of the
+    // 208-register math warps): [0] mailbox producer sequence (epilogue thread 0),
+    // [1] combine ticket parity of this launch (written by the task producer).
+    auto smem_combine_words = reinterpret_cast<uint32_t*>(
+        task_infos + interleaved_scheduler_t::kNumScheduleStages);
+    DG_STATIC_ASSERT(!kFineCombineRequested || kInterleavedSMEMEnd + 16 <= 232448,
+                     "Fine-combine words exceed the SM90 shared-memory capacity");
 
     // =====================================================================
     // Initialization
@@ -352,6 +393,94 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
     constexpr uint32_t kBeforeCombineReduceBarrierTag   = 2;
     constexpr uint32_t kAfterWorkspaceCleanBarrierTag   = 3;
 
+    // ---------------------------------------------------------------------
+    // Counter-based synchronisation knobs (host env DG_NVFP4_PUSH_DISPATCH /
+    // DG_NVFP4_FINE_COMBINE / DG_NVFP4_NO_CLEAN_BARRIER, see the host).
+    //
+    // Push dispatch (kPushDispatch): during routing the SOURCE rank takes a
+    // remote atomic ticket on the destination's per-expert recv-count word (low
+    // 32 bits grow by 1 per row) and writes the FP8 row + per-K128 SF + top-k
+    // weight + source metadata straight into the destination's pool with plain
+    // 16 B stores. The pool is addressed with a FIXED stride of
+    // kPushBlocksPerExpert blocks per local expert (rows inside an expert stay
+    // packed); the dynamic scheduler keeps its dense task indices and only the
+    // task's `pool_block_idx` is remapped (see `invoke_interleaved_task`).
+    // NVLink barrier #1 is replaced by per-rank DONE counts: after a CTA's
+    // dispatch warps issued their last pushed row, warp 0 takes a CTA arrival
+    // ticket (atom.acq_rel.gpu, after the CTA barrier) and the last CTA
+    // red.release.sys-adds 1 into every rank's DONE count. A launch's DONE target
+    // is kNumRanks * (epoch + 1), `epoch` = push launches completed on this rank
+    // (bumped by SM0 in the workspace cleanup). Waiters: every CTA's task producer
+    // (the B-loader warp) and SM e's dispatch warp 0, which then publishes expert
+    // e's L1 arrival counts (release.gpu) exactly like the pull path did. Lean
+    // routing is implied: no send counts, no cross-rank count broadcast, no
+    // top-k index writes. Pool reuse across launches rests on barrier #3 (a rank
+    // can only push launch N+1 rows after barrier #3 of launch N) or, with
+    // kNoCleanBarrier, on the parity-rotated pool (below).
+    //
+    // Fine-grained combine (kFineCombine): NVLink barrier #2 is replaced by
+    // per-(destination rank, token) arrival counters. The L2 epilogue posts
+    // (pool block, valid rows) to a per-CTA mailbox after its CTA-wide
+    // post-scatter sync; the CTA's dispatch warp 0 consumes the mailbox and
+    // red.release.sys-adds 1 per scattered row to the row's destination counter
+    // (the sys-scope fence stays off the math warps). Combine warps claim tokens
+    // from a per-launch ticket (parity-selected by the combine epoch) and spin
+    // (ld.acquire.sys) until the token's counter equals
+    // popc(valid topk slots) * kNumRoutedL2BlockNs, then reset it.
+    //
+    // Rotated pool (kNoCleanBarrier, requires kPushDispatch): the strided push
+    // pool and the recv-count sums are double-buffered by launch parity, so no
+    // rank can push launch N+1 rows into a slot another rank still reads for
+    // launch N; barrier #3 (after the workspace cleanup) is dropped and the
+    // cleanup is ordered only by the local dispatch-warp grid sync. A rank pushes
+    // N+2 rows (slot of N) only after every rank signalled DONE for N+1, i.e.
+    // after every rank completed N (same stream) including its cleanup of N.
+    // ---------------------------------------------------------------------
+    constexpr bool kPushDispatch = kPushDispatchRequested && kUseInterleavedScheduler;
+    constexpr bool kFineCombine = (kFineCombineRequested || kFineCombineCodeDebug) && kUseInterleavedScheduler;
+    constexpr bool kCombineDynamic = kFineCombine;
+    // Runtime view of the fine-combine switch: identical to kFineCombine except in
+    // the code-debug variant, where the code is compiled but never executed.
+    const bool fine_combine_on = kFineCombineCodeDebug ? (num_tokens == 0xdeadbeefu) : kFineCombine;
+    constexpr bool kNoCleanBarrier = kNoCleanBarrierRequested && kPushDispatch;
+    // Fixed-stride pool: implied by push dispatch; kStridedPoolDebug forces it
+    // under the pull protocol (diagnostic).
+    constexpr bool kStridedPool = kUseInterleavedScheduler && (kPushDispatch || kStridedPoolDebug);
+    constexpr uint32_t kNumPoolParitySlots = kNoCleanBarrier ? 2u : 1u;
+    constexpr uint32_t kNumPoolBlocksTotal = kNumMaxPoolTokens / BLOCK_M;
+    constexpr uint32_t kPushBlocksPerExpert = kStridedPool ?
+        kNumPoolBlocksTotal / (kNumExpertsPerRank * kNumPoolParitySlots) : 0u;
+    constexpr uint32_t kPushMaxRowsPerExpert = kPushBlocksPerExpert * BLOCK_M;
+    DG_STATIC_ASSERT(!kStridedPool || kPushBlocksPerExpert > 0, "Push dispatch: empty pool stride");
+    DG_STATIC_ASSERT(!kStridedPool ||
+                     kNumPoolParitySlots * kNumExpertsPerRank * kPushBlocksPerExpert * BLOCK_M <= kNumMaxPoolTokens,
+                     "Push dispatch: strided pool must fit the token pool");
+    DG_STATIC_ASSERT(!kFineCombine || kNumSMs <= layout::kSM90FineCombineMaxSMs,
+                     "Too many SMs for the combine mailboxes");
+    // Launch epoch (push launches completed on this rank): every role that needs it
+    // reads it at its own start, before any barrier of the launch, so SM0's bump in
+    // the cleanup (after every reader) cannot be observed by this launch. Selects
+    // the DONE target and the pool parity slot. Read inside the roles (not before
+    // the role split) so that no extra value is live across the split: ptxas
+    // re-schedules the math warps' code when the split-point pressure changes.
+    const auto read_launch_epoch = [&]() {
+        return kPushDispatch ? ptx::ld_volatile(workspace.get_push_epoch_ptr()) : 0u;
+    };
+    const auto epoch_pool_parity = [&](const uint32_t& epoch) {
+        return kNoCleanBarrier ? (epoch & 1u) : 0u;
+    };
+    const auto epoch_done_target = [&](const uint32_t& epoch) {
+        return static_cast<int>(kNumRanks * (epoch + 1u));
+    };
+    const auto strided_pool_block_p = [&](const uint32_t& parity, const uint32_t& local_expert_idx, const uint32_t& m_block_idx) {
+        return (parity * kNumExpertsPerRank + local_expert_idx) * kPushBlocksPerExpert + m_block_idx;
+    };
+    const auto recv_count_sum_ptr_p = [&](const uint32_t& parity, const uint32_t& local_expert_idx) {
+        return kNoCleanBarrier ?
+            workspace.get_expert_recv_count_sum_ptr(local_expert_idx, parity) :
+            workspace.get_expert_recv_count_sum_ptr(local_expert_idx);
+    };
+
     // Register reconfiguration counts (chosen to fit in 64512 reg budget).
     constexpr uint32_t kNumDispatchRegisters    = 48;
     constexpr uint32_t kNumNonEpilogueRegisters =
@@ -387,18 +516,31 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         }
     };
 
+    // Pool parity of this launch for the task consumers (constant 0 unless the
+    // rotated pool is on; then one volatile load per role at first use).
+    uint32_t task_pool_parity = 0u;
+    bool task_pool_parity_read = !kNoCleanBarrier;
     const auto invoke_interleaved_task = [&](const task_info_t& task_info,
                                               auto&& func) {
+        if (!task_pool_parity_read) {
+            task_pool_parity = epoch_pool_parity(read_launch_epoch());
+            task_pool_parity_read = true;
+        }
+        // Push dispatch: the dense task index stays the scheduling key; the
+        // physical pool block is the fixed-stride one the source ranks wrote to.
+        const uint32_t pool_block_idx = kStridedPool ?
+            strided_pool_block_p(task_pool_parity, task_info.local_expert_idx, task_info.m_block_idx) :
+            task_info.pool_block_idx;
         if (task_info.block_phase == sched::BlockPhase::Linear1) {
             func(std::integral_constant<sched::BlockPhase, sched::BlockPhase::Linear1>{},
                  task_info.local_expert_idx, L1_SHAPE_K / BLOCK_K,
                  task_info.m_block_idx, task_info.n_block_idx,
-                 task_info.pool_block_idx, task_info.valid_m);
+                 pool_block_idx, task_info.valid_m);
         } else {
             func(std::integral_constant<sched::BlockPhase, sched::BlockPhase::Linear2>{},
                  task_info.local_expert_idx, L2_SHAPE_K / BLOCK_K,
                  task_info.m_block_idx, task_info.n_block_idx,
-                 task_info.pool_block_idx, task_info.valid_m);
+                 pool_block_idx, task_info.valid_m);
         }
     };
 
@@ -409,7 +551,23 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
     };
 
     const auto produce_interleaved_blocks = [&](auto&& func) {
-        interleaved_scheduler.fetch_expert_recv_count();
+        if (fine_combine_on) {
+            // This launch's combine ticket parity, read before any task exists (SM0's
+            // cleanup bump happens after every math task of this launch) and handed
+            // to the combine warps through shared memory (ordered by the task mailbox).
+            if (lane_idx == 0)
+                smem_combine_words[1] = ptx::ld_volatile(workspace.get_combine_epoch_ptr()) & 1u;
+            __syncwarp();
+        }
+        if constexpr (kPushDispatch) {
+            const uint32_t epoch = read_launch_epoch();
+            task_pool_parity = epoch_pool_parity(epoch);
+            task_pool_parity_read = true;
+            interleaved_scheduler.fetch_expert_recv_count(
+                workspace.get_push_done_count_ptr(), epoch_done_target(epoch), task_pool_parity);
+        } else {
+            interleaved_scheduler.fetch_expert_recv_count();
+        }
         while (true) {
             interleaved_scheduler.wait_task_slot_empty();
             const auto task_info = interleaved_scheduler.claim_next_task();
@@ -420,38 +578,58 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         }
     };
 
+    // Dispatch-role launch epoch / parity (read at the dispatch role's start)
+    uint32_t dispatch_epoch = 0u, dispatch_parity = 0u;
     const auto cleanup_workspace = [&]() {
         DG_STATIC_ASSERT(kNumSMs > 1, "Invalid SM count");
         if (sm_idx == 0) {
-            #pragma unroll
-            for (uint32_t i = thread_idx; i < kNumExperts; i += kNumDispatchThreads)
-                *workspace.get_expert_send_count_ptr(i) = 0;
+            if constexpr (!kPushDispatch) {
+                #pragma unroll
+                for (uint32_t i = thread_idx; i < kNumExperts; i += kNumDispatchThreads)
+                    *workspace.get_expert_send_count_ptr(i) = 0;
+            }
             if constexpr (kUseInterleavedScheduler) {
                 if (thread_idx == 0) {
                     *workspace.get_l1_task_count_ptr() = 0;
                     *workspace.get_l2_task_count_ptr() = 0;
                 }
             }
+            if constexpr (kPushDispatch) {
+                // Next launch's DONE target / pool parity (see `kPushDispatch`)
+                if (thread_idx == 0)
+                    *workspace.get_push_epoch_ptr() = dispatch_epoch + 1u;
+            }
+            if (fine_combine_on) {
+                // Next dynamic-combine launch's ticket word (zeroed one launch ahead:
+                // the word of parity N+1 was last used by launch N-1, complete)
+                if (thread_idx == 0) {
+                    const auto epoch = ptx::ld_volatile(workspace.get_combine_epoch_ptr());
+                    *workspace.get_combine_ticket_ptr(epoch + 1u) = 0u;
+                    *workspace.get_combine_epoch_ptr() = epoch + 1u;
+                }
+            }
         } else {
             for (uint32_t i = sm_idx - 1; i < kNumExpertsPerRank; i += kNumSMs - 1) {
-                const auto num_recv_tokens = static_cast<uint32_t>(
-                    *workspace.get_expert_recv_count_sum_ptr(i));
+                const auto num_recv_tokens = static_cast<uint32_t>(*recv_count_sum_ptr_p(dispatch_parity, i));
                 const auto num_recv_m_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
-                const auto cleanup_pool_block_offset = scheduler.get_pool_block_offset(i);
+                const auto cleanup_pool_block_offset = kStridedPool ?
+                    strided_pool_block_p(dispatch_parity, i, 0) : scheduler.get_pool_block_offset(i);
 
                 ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
 
                 DG_STATIC_ASSERT(kNumDispatchWarps >= 2, "Not enough dispatch warps");
                 if (warp_idx == 0) {
-                    *workspace.get_expert_recv_count_sum_ptr(i) = 0;
+                    *recv_count_sum_ptr_p(dispatch_parity, i) = 0;
                 } else if (warp_idx == 1) {
                     if (cute::elect_one_sync() and cumulative_local_expert_recv_stats != nullptr)
                         ptx::red_add(cumulative_local_expert_recv_stats + i, static_cast<int>(num_recv_tokens));
                     __syncwarp();
                 }
 
-                for (uint32_t j = thread_idx; j < kNumRanks; j += kNumDispatchThreads)
-                    *workspace.get_expert_recv_count_ptr(j, i) = 0;
+                if constexpr (!kPushDispatch) {
+                    for (uint32_t j = thread_idx; j < kNumRanks; j += kNumDispatchThreads)
+                        *workspace.get_expert_recv_count_ptr(j, i) = 0;
+                }
                 __syncwarp();
 
                 for (uint32_t j = thread_idx; j < num_recv_m_blocks; j += kNumDispatchThreads) {
@@ -474,6 +652,10 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
     // =====================================================================
     if (warp_idx < kNumDispatchWarps) {
         cutlass::arch::warpgroup_reg_dealloc<kNumDispatchRegisters>();
+        if constexpr (kPushDispatch) {
+            dispatch_epoch = read_launch_epoch();
+            dispatch_parity = epoch_pool_parity(dispatch_epoch);
+        }
 
         DG_STATIC_ASSERT(kNumTopk <= 32, "Invalid number of topk");
         constexpr uint32_t kNumActivateLanes = kNumTokensPerWarp * kNumTopk;
@@ -495,11 +677,93 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
             }
         };
 
+        if (kPushDispatch || (kPushCodeDebug && num_tokens == 0xdeadbeefu)) {
+            // Push: rows (token, top-k slot) are assigned to the global dispatch warps
+            // in contiguous chunks of R = ceil(rows / warps) (<= 32 per ticket batch).
+            // Every lane of the warp takes the remote ticket of one row of the batch
+            // at once (kNumRanks-way NVLink round trips overlap), then the warp
+            // streams the batch's rows (16 B per lane per store) into the
+            // destination pools.
+            if (warp_idx < kNumActiveDispatchWarps) {
+                constexpr uint32_t kNumGlobalWarps = kNumSMs * kNumActiveDispatchWarps;
+                sm90_nvfp4_push_dispatch_rows<kHidden, kNumTopk, kNumExpertsPerRank,
+                                              kNumPaddedSFPoolTokens, BLOCK_M, kPushBlocksPerExpert,
+                                              kNumGlobalWarps, kNumRanks, kPushGenericRows, kPushGpuScopeDebug>(
+                    sym_buffer,
+                    smem_send_buffers.get_rank_buffer(warp_idx).get_data_buffer(0).get_base_ptr(),
+                    dispatch_barriers[warp_idx],
+                    input_topk_idx_buffer.get_base_ptr<int64_t>(),
+                    input_token_buffer.get_base_ptr<uint8_t>(),
+                    input_sf_buffer.get_base_ptr<float>(),
+                    input_topk_weights_buffer.get_base_ptr<float>(),
+                    l1_token_buffer.get_base_ptr<uint8_t>(),
+                    l1_sf_buffer.get_base_ptr<float>(),
+                    l1_topk_weights_buffer.get_base_ptr<float>(),
+                    workspace.get_token_src_metadata_ptr(0),
+                    recv_count_sum_ptr_p(dispatch_parity, 0),
+                    dispatch_parity * kNumExpertsPerRank * kPushBlocksPerExpert,
+                    num_tokens,
+                    sm_idx * kNumActiveDispatchWarps + warp_idx,
+                    lane_idx);
+            }
+            if (thread_idx == 0) stamp_max(9);  // pushes issued
+
+            // CTA arrival ticket; the last CTA signals DONE to every rank (kNumRanks
+            // lanes of warp 0 at once: one warp-wide sys-scope release).
+            ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
+            if (warp_idx == 0) {
+                DG_STATIC_ASSERT(kNumRanks <= 32, "Too many ranks for one signalling warp");
+                uint32_t arrived = 0;
+                if (lane_idx == 0)
+                    arrived = ptx::atomic_add_acq_rel(workspace.get_push_cta_arrival_ptr(), 1u);
+                arrived = __shfl_sync(0xffffffff, arrived, 0);
+                if (arrived == kNumSMs - 1) {
+                    if (lane_idx == 0)
+                        *workspace.get_push_cta_arrival_ptr() = 0;
+                    if (lane_idx < kNumRanks) {
+                        if constexpr (kPushGpuScopeDebug)
+                            ptx::red_add_rel(reinterpret_cast<uint32_t*>(
+                                sym_buffer.map(workspace.get_push_done_count_ptr(), lane_idx)), 1u);
+                        else
+                            ptx::red_add_rel_sys(sym_buffer.map(workspace.get_push_done_count_ptr(), lane_idx), 1);
+                    }
+                }
+                __syncwarp();
+            }
+            if (thread_idx == 0) stamp_max(10);  // DONE signalled (this CTA arrived)
+
+            // Let the math warps go (they wait for published tasks anyway)
+            ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
+
+            // SM e (< experts per rank) publishes expert e's L1 arrival counts once
+            // every rank's rows are in the local pool (DONE acquired), one block per
+            // lane, with release.gpu: the loaders' acquire on the count then also
+            // covers the remotely written rows.
+            if (warp_idx == 0 and sm_idx < kNumExpertsPerRank) {
+                const int push_done_target = epoch_done_target(dispatch_epoch);
+                if (lane_idx == 0) {
+                    DG_SPIN_WHILE(ptx::ld_volatile(workspace.get_push_done_count_ptr()) - push_done_target < 0, 1094);
+                    DG_SPIN_WHILE(ptx::ld_acq_sys(workspace.get_push_done_count_ptr()) - push_done_target < 0, 1095);
+                    stamp_max(1);
+                }
+                __syncwarp();
+                const uint32_t num_recv_tokens = static_cast<uint32_t>(
+                    ptx::ld_volatile(recv_count_sum_ptr_p(dispatch_parity, sm_idx)));
+                const uint32_t num_blocks = math::ceil_div(num_recv_tokens, BLOCK_M);
+                for (uint32_t b = lane_idx; b < num_blocks; b += 32)
+                    ptx::red_add_rel(
+                        workspace.get_l1_arrival_count_ptr(strided_pool_block_p(dispatch_parity, sm_idx, b)),
+                        cute::min(num_recv_tokens - b * BLOCK_M, BLOCK_M));
+                __syncwarp();
+                if (lane_idx == 0) stamp_max(2);  // pool ready
+            }
+        } else {
         // Count tokens per expert
         read_topk_idx([&](const uint32_t& token_topk_idx, const int& expert_idx) {
             atomicAdd_block(smem_expert_count + expert_idx, 1);
         });
         ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
+        if (thread_idx == 0) stamp_max(8);
 
         // Stake out per-expert SM offsets via global atomic
         #pragma unroll
@@ -518,11 +782,25 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 expert_idx % kNumExpertsPerRank, sym_buffer.rank_idx, dst_slot_idx);
             *sym_buffer.map(dst_ptr, dst_rank_idx) = token_topk_idx;
         });
+        if (thread_idx == 0) stamp_max(9);
+        if constexpr (kSysTrafficDebug) {
+            // Diagnostic: the push protocol's sys-scope traffic (one remote ticket per
+            // routed row, adding 0, and one DONE reduction per rank) under the pull path.
+            read_topk_idx([&](const uint32_t& token_topk_idx, const int& expert_idx) {
+                ptx::atomic_add_sys(sym_buffer.map(
+                    workspace.get_expert_recv_count_sum_ptr(expert_idx % kNumExpertsPerRank),
+                    expert_idx / kNumExpertsPerRank), 0ull);
+            });
+            if (sm_idx == 0 and warp_idx == 0 and lane_idx < kNumRanks)
+                ptx::red_add_rel_sys(sym_buffer.map(workspace.get_push_done_count_ptr(), lane_idx), 1);
+            __syncwarp();
+        }
 
         comm::grid_sync<kNumSMs, kDispatchGridSyncIndex>(
             workspace, sm_idx, thread_idx,
             [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); }
         );
+        if (thread_idx == 0) stamp_max(10);
 
         if (sm_idx == 0 and thread_idx < kNumActiveDispatchThreads) {
             #pragma unroll
@@ -539,12 +817,14 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
             }
         }
         ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx);
+        if (thread_idx == 0) stamp_max(11);
 
         comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
                              kDispatchGridSyncIndex, kBeforeDispatchPullBarrierTag>(
             workspace, sym_buffer, sm_idx, thread_idx,
             [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
             false, true);
+        if (thread_idx == 0) stamp_max(1);
 
         // Sync with epilogue warps before pulling tokens
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
@@ -575,6 +855,8 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 }
                 if (current_expert_idx >= kNumExpertsPerRank)
                     break;
+                if constexpr (kStridedPool)
+                    expert_pool_block_offset = strided_pool_block_p(dispatch_parity, static_cast<uint32_t>(current_expert_idx), 0);
 
                 if (old_expert_idx != current_expert_idx) {
                     old_expert_idx = current_expert_idx;
@@ -689,16 +971,82 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 __syncwarp();
             }
         }
+        if (thread_idx == 0) stamp_max(2);  // pool ready (pull done)
+        }  // !kPushDispatch
 
-        // Cleanup workspace, overlapping with combine
-        ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
+        if (fine_combine_on) {
+            // Fine-grained combine signaller (dispatch warp 0): consume this CTA's
+            // mailbox; for every finished L2 task release-add 1 per scattered token
+            // row to the destination rank's counter (sys-scope fence here, off the
+            // math warps), until the epilogue posts DONE (all math tasks finished).
+            if (warp_idx == 0) {
+                auto* mailbox = workspace.get_combine_mailbox_ptr(sm_idx);
+                uint32_t consumed = ptx::ld_volatile(mailbox + 1);
+                while (true) {
+                    // Back off while polling: a warp spinning on ld.acquire for the
+                    // whole math phase steals issue slots from the 8 math warps of
+                    // this SM (+6 % per task measured); ~0.3 us of extra signal
+                    // latency per entry is invisible to the remote combine warps.
+                    for (long long t0 = clock64(); ptx::ld_acq(mailbox) == consumed; ) {
+                        __nanosleep(256);
+                        if (clock64() - t0 > 20000000000ll)
+                            asm volatile("trap;");
+                    }
+                    const uint32_t entry = ptx::ld_volatile(
+                        mailbox + 4 + (consumed & (layout::kSM90FineCombineRingSize - 1)));
+                    __syncwarp();
+                    if (entry == static_cast<uint32_t>(layout::kSM90FineCombineDoneEntry))
+                        break;
+                    const uint32_t signal_pool_block_idx = entry & 0xffffffu, signal_valid_m = entry >> 24;
+                    for (uint32_t row = lane_idx; row < signal_valid_m; row += 32) {
+                        const auto src_metadata = *workspace.get_token_src_metadata_ptr(
+                            signal_pool_block_idx * BLOCK_M + row);
+                        asm volatile("fence.acq_rel.sys;" ::: "memory");
+                        ptx::red_add_rel_sys(
+                            sym_buffer.map(workspace.get_combine_arrival_count_ptr(src_metadata.token_idx),
+                                           src_metadata.rank_idx), 1);
+                    }
+                    __syncwarp();
+                    ++ consumed;
+                    if (lane_idx == 0)
+                        ptx::st_rel_gpu(mailbox + 1, consumed);  // release: slot read done before reuse
+                }
+                // Terminal entry consumed too (keeps producer/consumer sequences aligned)
+                ++ consumed;
+                if (lane_idx == 0)
+                    ptx::st_rel_gpu(mailbox + 1, consumed);
+                __syncwarp();
+            }
+            // All dispatch warps: this CTA's math tasks are done (warp 0 saw DONE);
+            // the cleanup below zeroes the L1 arrival counts / L2 arrival masks that
+            // other CTAs' L1/L2 tasks still touch, so wait for every CTA's math tasks
+            // (dispatch warps only; the combine warps are not held up).
+            comm::grid_sync<kNumSMs, kDispatchGridSyncIndex>(
+                workspace, sm_idx, thread_idx,
+                [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); });
+        } else {
+            // Cleanup workspace, overlapping with combine
+            ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
+        }
 
-        cleanup_workspace();
-        comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
-                             kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
-            workspace, sym_buffer, sm_idx, thread_idx,
-            [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
-            true, false);
+        if constexpr (kNoCleanBarrier) {
+            // Rotated pool: local grid sync (every CTA's math tasks are done), then
+            // clean; no cross-rank barrier (see `kNoCleanBarrier`).
+            if (!fine_combine_on) {
+                comm::grid_sync<kNumSMs, kDispatchGridSyncIndex>(
+                    workspace, sm_idx, thread_idx,
+                    [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); });
+            }
+            cleanup_workspace();
+        } else {
+            cleanup_workspace();
+            comm::nvlink_barrier<kNumRanks, kNumSMs, kNumDispatchThreads,
+                                 kDispatchGridSyncIndex, kAfterWorkspaceCleanBarrierTag>(
+                workspace, sym_buffer, sm_idx, thread_idx,
+                [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
+                true, false);
+        }
+        if (thread_idx == 0) stamp_max(12);
     } else if (warp_idx == kNumDispatchWarps) {
         // =====================================================================
         // ROLE 2: GEMM TMA LOAD warps (load A+SFA, B+SFB)
@@ -707,6 +1055,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         // =====================================================================
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
+        bool a_loader_staggered = false;
         const auto load_a_task = [&](const auto& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
@@ -724,18 +1073,35 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
 
             // Wait for the pool to be ready.
             if (has_valid_m) {
+                const auto t_spin = stamp_now();
                 if constexpr (!kBlockIsL2) {
                     const auto ptr = workspace.get_l1_arrival_count_ptr(pool_block_idx);
                     while (ptx::ld_acq(ptr) != valid_m) {}
+                    if constexpr (kPushDispatch && kPushStaggerNs > 0) {
+                        if (!a_loader_staggered) {
+                            a_loader_staggered = true;
+                            unsigned long long t0, t;
+                            asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t0));
+                            const unsigned long long delay = static_cast<unsigned long long>(sm_idx % 8u) * kPushStaggerNs;
+                            do { asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t)); } while (t - t0 < delay);
+                        }
+                    }
+                    if constexpr (kPushDispatch && kPushProxyFence) {
+                        // The rows were written with generic stores (over NVLink);
+                        // order the acquire before the async-proxy (TMA) loads.
+                        asm volatile("fence.proxy.async.global;" ::: "memory");
+                    }
                 } else {
                     const auto ptr = workspace.get_l2_arrival_mask_ptr(pool_block_idx);
                     const uint64_t expected = (kNumRoutedL1BlockNs >= 64)
                         ? ~0ull : ((1ull << kNumRoutedL1BlockNs) - 1ull);
                     while (ptx::ld_acq_gpu(ptr) != expected) {}
                 }
+                if (lane_idx == 0)
+                    stamp_accumulate(kBlockIsL2 ? 25 : 24, stamp_now() - t_spin, 0);
             }
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
-                empty_barriers[stage_idx]->wait(phase ^ 1);
+                { const auto t_w = stamp_now(); empty_barriers[stage_idx]->wait(phase ^ 1); if (lane_idx == 0) stamp_accumulate(29, stamp_now() - t_w, 0); }
 
                 if (cute::elect_one_sync()) {
                     if (has_valid_m) {
@@ -794,7 +1160,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
             constexpr uint32_t shape_n = kBlockIsL2 ? L2_SHAPE_N : L1_SHAPE_N;
 
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
-                empty_barriers[stage_idx]->wait(phase ^ 1);
+                { const auto t_w = stamp_now(); empty_barriers[stage_idx]->wait(phase ^ 1); if (lane_idx == 0) stamp_accumulate(27, stamp_now() - t_w, 0); }
 
                 const uint32_t n_idx = local_expert_idx * shape_n + n_block_idx * BLOCK_N;
                 // NVFP4 fused B+scale layout stores 64B packed FP4 + 8B
@@ -855,7 +1221,28 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
         // Sync with dispatch
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
 
-        const auto run_math_task = [&](const auto& block_phase,
+        // Fine-grained combine: this CTA's mailbox producer sequence (CTA-uniform;
+        // only epilogue thread 0 writes). Baseline = the word's value left by the
+        // previous launch (ordered by the kernel boundary; the consumer reads the
+        // same baseline from its own word).
+        if (fine_combine_on) {
+            if (epilogue_thread_idx == 0)
+                smem_combine_words[0] = *workspace.get_combine_mailbox_ptr(sm_idx);
+        }
+        const auto post_combine_mailbox = [&](const uint32_t entry) {
+            if (fine_combine_on) {
+                if (epilogue_thread_idx == 0) {
+                    auto* mailbox = workspace.get_combine_mailbox_ptr(sm_idx);
+                    const uint32_t seq = smem_combine_words[0];
+                    DG_SPIN_WHILE(seq - ptx::ld_volatile(mailbox + 1) >= layout::kSM90FineCombineRingSize, 1611);
+                    mailbox[4 + (seq & (layout::kSM90FineCombineRingSize - 1))] = entry;
+                    ptx::st_rel_gpu(mailbox, seq + 1);
+                    smem_combine_words[0] = seq + 1;
+                }
+            }
+        };
+
+        const auto run_math_task_impl = [&](const auto& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx,
@@ -1066,7 +1453,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                         }
                     };
 
-                    full_barriers[stage_idx]->wait(phase);
+                    { const auto t_w = stamp_now(); full_barriers[stage_idx]->wait(phase); if (epilogue_thread_idx == 0) stamp_accumulate(28, stamp_now() - t_w, 0); }
                     if constexpr (kUseInterleavedScheduler)
                         interleaved_scheduler.release_task_info(lane_idx);
                     decode_rs_swap_ab_half.template operator()<N_SWAP>(
@@ -1095,7 +1482,7 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                                     0 : current_stage + 1;
                             const uint32_t next_phase =
                                 phase ^ (next_stage == 0);
-                            full_barriers[next_stage]->wait(next_phase);
+                            { const auto t_w = stamp_now(); full_barriers[next_stage]->wait(next_phase); if (epilogue_thread_idx == 0) stamp_accumulate(28, stamp_now() - t_w, 0); }
                             decode_rs_swap_ab_half
                                 .template operator()<N_SWAP>(
                                     next_stage, 0, a_frag[0]);
@@ -2013,23 +2400,60 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 }
             }
         };
+        const auto run_math_task = [&](const auto& block_phase,
+                                     const uint32_t& local_expert_idx,
+                                     const uint32_t& num_k_blocks,
+                                     const uint32_t& m_block_idx, const uint32_t& n_block_idx,
+                                     const uint32_t& pool_block_idx,
+                                     const uint32_t& valid_m) {
+            using BlockPhaseTag = std::remove_cv_t<std::remove_reference_t<decltype(block_phase)>>;
+            constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
+            const auto t_task = stamp_now();
+            const long long c_task = kPhaseStamps ? clock64() : 0ll;
+            if (epilogue_thread_idx == 0) stamp_min(3);
+            run_math_task_impl(block_phase, local_expert_idx, num_k_blocks,
+                               m_block_idx, n_block_idx, pool_block_idx, valid_m);
+            if (epilogue_thread_idx == 0) {
+                stamp_accumulate(kBlockIsL2 ? 22 : 20, stamp_now() - t_task, 1);
+                // 26: SM clock cycles over L1 tasks (frequency = 26 / 20)
+                if constexpr (!kBlockIsL2)
+                    stamp_accumulate(26, static_cast<unsigned long long>(clock64() - c_task), 0);
+            }
+            if constexpr (kBlockIsL2) {
+                // Fine-grained combine: the CTA-wide sync that ends the L2 scatter
+                // made every thread's remote stores happen-before this post
+                // (st.release.gpu); the dispatch consumer's acquire + sys-scope
+                // release make them visible to the remote combine warp.
+                if (valid_m > 0)
+                    post_combine_mailbox(pool_block_idx | (valid_m << 24));
+            }
+            if (epilogue_thread_idx == 0) stamp_max(kBlockIsL2 ? 5 : 4);
+        };
         if constexpr (kUseInterleavedScheduler)
             for_each_published_block(run_math_task);
         else
             for_each_static_selected_block(run_math_task);
 
+        // Fine-grained combine: tell the dispatch warps that this CTA's math tasks
+        // are done (replaces the epilogue/dispatch pairing below).
+        post_combine_mailbox(static_cast<uint32_t>(layout::kSM90FineCombineDoneEntry));
+
         // ---------------- COMBINE ----------------
         // NVLink barrier first: signals remote ranks that this rank's GEMM
-        // outputs (NVLink scatter targets) are fully written.
-        comm::nvlink_barrier<kNumRanks, kNumSMs, kNumEpilogueThreads,
-                             kEpilogueGridSyncIndex, kBeforeCombineReduceBarrierTag>(
-            workspace, sym_buffer, sm_idx, epilogue_thread_idx,
-            [&]() { ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx); }
-        );
+        // outputs (NVLink scatter targets) are fully written. Fine-grained
+        // combine skips it: readiness is per token (see the loop).
+        if (!fine_combine_on) {
+            comm::nvlink_barrier<kNumRanks, kNumSMs, kNumEpilogueThreads,
+                                 kEpilogueGridSyncIndex, kBeforeCombineReduceBarrierTag>(
+                workspace, sym_buffer, sm_idx, epilogue_thread_idx,
+                [&]() { ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx); }
+            );
+            if (epilogue_thread_idx == 0) stamp_max(6);
 
-        // Sync with dispatch (paired with dispatch's pre-cleanup sync) so that
-        // dispatch may now safely clean workspace state.
-        ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
+            // Sync with dispatch (paired with dispatch's pre-cleanup sync) so that
+            // dispatch may now safely clean workspace state.
+            ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
+        }
 
         constexpr uint32_t kNumHiddenBytes = kHidden * sizeof(nv_bfloat16);
         constexpr uint32_t kNumElemsPerUint4 = sizeof(uint4) / sizeof(nv_bfloat162);
@@ -2061,12 +2485,45 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
 
         uint32_t combine_phase = 0;
         uint32_t load_stage_idx = 0;
-        for (uint32_t token_idx = sm_idx * kNumEpilogueWarps + epilogue_warp_idx;
-             token_idx < num_tokens;
-             token_idx += kNumSMs * kNumEpilogueWarps) {
+        // Token assignment: dynamic ticket (kCombineDynamic) or static (SM, warp) stride
+        const auto combine_ticket_ptr = workspace.get_combine_ticket_ptr(
+            fine_combine_on ? smem_combine_words[1] : 0u);
+        uint32_t token_idx = sm_idx * kNumEpilogueWarps + epilogue_warp_idx;
+        const auto next_combine_token = [&]() {
+            if (fine_combine_on) {
+                uint32_t ticket = 0;
+                if (lane_idx == 0) {
+                    ticket = ptx::ld_volatile(combine_ticket_ptr);
+                    if (ticket < num_tokens)
+                        ticket = ptx::atomic_add(combine_ticket_ptr, 1u);
+                }
+                token_idx = __shfl_sync(0xffffffff, ticket, 0);
+            } else {
+                token_idx += kNumSMs * kNumEpilogueWarps;
+            }
+        };
+        if (fine_combine_on)
+            next_combine_token();
+        for (; token_idx < num_tokens; next_combine_token()) {
             const int stored_topk_slot_idx = lane_idx < kNumTopk ?
                 static_cast<int>(__ldg(input_topk_idx_buffer.get_base_ptr<int64_t>() + token_idx * kNumTopk + lane_idx)) : -1;
             const uint32_t total_mask = __ballot_sync(0xffffffff, stored_topk_slot_idx >= 0);
+
+            if (fine_combine_on) {
+                // Wait until every (topk slot, L2 N-block) slice of this token has
+                // landed, hand the counter back, and order the generic-proxy acquire
+                // before the TMA (async-proxy) loads.
+                constexpr uint32_t kNumRoutedL2BlockNs = L2_SHAPE_N / BLOCK_N;
+                if (lane_idx == 0) {
+                    const auto counter_ptr = workspace.get_combine_arrival_count_ptr(token_idx);
+                    const int target = static_cast<int>(__popc(total_mask) * kNumRoutedL2BlockNs);
+                    DG_SPIN_WHILE(ptx::ld_acq_sys(counter_ptr) != target, 3474);
+                    *counter_ptr = 0;
+                    asm volatile("fence.proxy.async.global;" ::: "memory");
+                    stamp_max(6);
+                }
+                __syncwarp();
+            }
 
             for (uint32_t chunk = 0; chunk < kNumChunks; ++ chunk) {
                 const uint32_t chunk_byte_offset = chunk * kNumChunkBytes;
@@ -2134,6 +2591,10 @@ DG_STATIC_ASSERT((BLOCK_M == 8 &&
                 }
                 __syncwarp();
             }
+        }
+        if (epilogue_thread_idx == 0) {
+            ptx::tma_store_wait<0>();
+            stamp_max(7);
         }
     }
 #else

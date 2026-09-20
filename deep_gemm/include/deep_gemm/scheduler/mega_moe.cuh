@@ -415,17 +415,35 @@ struct InterleavedMegaMoEScheduler {
         return __reduce_add_sync(0xffffffff, num_blocks);
     }
 
-    CUTLASS_DEVICE void fetch_expert_recv_count() {
+    // Push dispatch (`push_done_ptr != nullptr`): wait for every rank's DONE
+    // signal (lane 0 relaxed spin, then one acquire.sys load; bar.warp.sync
+    // extends the ordering to the other lanes), then read the low words of the
+    // recv-count sums of the given parity slot (the per-row remote tickets).
+    CUTLASS_DEVICE void fetch_expert_recv_count(const int* push_done_ptr = nullptr,
+                                                const int& push_done_target = 0,
+                                                const uint32_t& parity = 0) {
+        if (push_done_ptr != nullptr) {
+            if (ptx::get_lane_idx() == 0) {
+                DG_SPIN_WHILE(ptx::ld_volatile(push_done_ptr) - push_done_target < 0, 90010);
+                DG_SPIN_WHILE(ptx::ld_acq_sys(push_done_ptr) - push_done_target < 0, 90020);
+            }
+            __syncwarp();
+        }
         #pragma unroll
         for (uint32_t i = 0; i < kNumExpertsPerLane; ++ i) {
             const auto expert_idx = i * 32 + ptx::get_lane_idx();
             uint64_t value = 0;
             if (expert_idx < kNumExpertsPerRank) {
-                do {
+                if (push_done_ptr != nullptr) {
                     value = ptx::ld_volatile(
-                        workspace.get_expert_recv_count_sum_ptr(expert_idx));
-                } while (static_cast<uint32_t>(value >> 32) !=
-                         kNumSMs * kNumRanks);
+                        workspace.get_expert_recv_count_sum_ptr(expert_idx, parity));
+                } else {
+                    do {
+                        value = ptx::ld_volatile(
+                            workspace.get_expert_recv_count_sum_ptr(expert_idx));
+                    } while (static_cast<uint32_t>(value >> 32) !=
+                             kNumSMs * kNumRanks);
+                }
             }
             stored_num_tokens_per_expert[i] = static_cast<uint32_t>(value);
         }
