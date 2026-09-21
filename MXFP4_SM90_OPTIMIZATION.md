@@ -1317,9 +1317,8 @@ from M~256 to M~128. There BM24 must spill the busiest experts into a second
 m-block. It is still the best tile available -- BM16 costs +22 %, BM8 +77 %, the
 wide BN256 tile +21-45 % -- so this is not a mis-set bound.
 
-The right-sized tile is BM32, and it deadlocks (9.15). Closing this needs an
-investigation into *why* the swapAB path requires `BLOCK_M <= 24`, in the
-accumulator or epilogue layout; it is not reachable from the selector.
+The right-sized tile is BM32. **9.15 was wrong to call its deadlock a real
+invariant** -- see 9.17. It is now enabled and the spike is gone.
 
 **The tier bound is not the problem, and a same-M test is what settles it.**
 Mapping M = 80..160 shows M=144 running 7 % *faster* than M=128 despite more
@@ -1333,6 +1332,58 @@ BM8 813). The boundary sits where it should.
 Pooling every EP8 measurement of M=128 taken today: **+3.5, +9.1, +5.2, +6.9,
 +10.3, +9.5, +3.5 %** -- positive 7 of 7, mean ~+6.9 %. The sign is solid even
 where the magnitude is not, which is the standard this shape's noise demands.
+
+---
+
+### 9.17 BM32, and why it appeared to be forbidden
+
+9.15 concluded that `BLOCK_M <= 24` on the swapAB path is "a real invariant,
+enforced redundantly". That was wrong, and the way it was wrong is the useful
+part.
+
+**Defect 1 -- a missing arm in the N_SWAP dispatch ladder.** Both mainloops
+select the WGMMA width with
+
+    if constexpr (BLOCK_M == 8)       { ...<8>(); }
+    else if constexpr (BLOCK_M == 16) { ... }
+    else if constexpr (BLOCK_M == 24) { ... }
+
+and there was no `== 32` arm. Being `if constexpr`, a BM32 kernel **compiles
+perfectly with an empty mainloop**: no WGMMA, and -- fatally --
+`arrive_empty_barrier(stage_idx)` lives inside that lambda, so no stage is ever
+released and the loader blocks forever. That is the 600 s hang. Four guards had
+accumulated around the hole; the comment on one of them, dismissed in 9.15 as
+stale policy, was closer to right than the correction.
+
+An `if constexpr` ladder with no trailing `else` turns an unhandled case into a
+silent empty body, which in a warp-specialised kernel is a deadlock rather than
+a build error. A trailing `DG_STATIC_ASSERT` now closes it.
+
+**Defect 2 -- the fallback returned the narrowest tile.** Past every derated
+bound `swap_ab_block_m` returned 24. That was correct while the candidates were
+`{8, 24}`, and became a bug the moment 32 joined them: at M=128 / EP8 on
+DeepSeek-V4-Flash, BM32's derated bound is 127, the batch misses it by one, and
+the fallback handed back a *narrower* tile than the one available. Past all
+bounds the widest tile is the least bad -- it spills the busiest experts into
+the fewest extra m-blocks.
+
+**Result at the spike** (EP8, DeepSeek-V4-Flash, two runs each):
+
+| M | before | after |
+|---:|---:|---:|
+| 112 | -4.3 / -5.5 % | **-14.3 / -15.4 %** |
+| 128 | **+10.5 / +7.2 %** | **-22.6 / -16.8 %** |
+| 144 | -5.6 / -5.3 % | -1.9 / -4.6 % |
+| 160 | -3.9 / -3.1 % | -5.7 / -6.5 % |
+
+M=128 absolute: 467/479 us -> 362/361, a 24 % cut, with no neighbour regressed.
+Correctness 8/8 on DSv4 EP8, DSv4 EP4 and MiMo EP4, cosine_min unchanged.
+
+**Three mechanisms were proposed and refuted before this one**: tokens crossing
+24 into a second m-block (refuted by a same-M control -- the wide tile is worse
+at M=128), the tier bound being one step late (same control), and BM32 being
+structurally forbidden (refuted by reading the ladder). Each was plausible; only
+the same-M measurement and the source settled it.
 
 ---
 

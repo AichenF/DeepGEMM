@@ -191,11 +191,15 @@ select_sm90_mxfp4_h200_fused(
         return max_tokens_for_block_m(block_m) * 3 / 4;
     };
     const auto swap_ab_block_m = [&]() {
-        for (const int block_m : {8, 24}) {
+        for (const int block_m : {8, 24, 32}) {
             if (input.num_tokens <= tokens_per_block_m(block_m))
                 return block_m;
         }
-        return 24;
+        // Past every bound the widest transposed tile is the least bad, not the
+        // narrowest: it spills the busiest experts into the fewest extra
+        // m-blocks. Returning 24 here cost 7-10% at M=128/EP8, where BM32's
+        // derated bound is 127 and the batch misses it by one.
+        return 32;
     }();
 
     if (input.num_tokens <= 1)

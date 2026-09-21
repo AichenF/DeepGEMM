@@ -5,9 +5,9 @@
     // =====================================================================
     // Template checks
     // =====================================================================
-    DG_STATIC_ASSERT(BLOCK_M == 8 || BLOCK_M == 16 ||
-                     BLOCK_M == 24 || BLOCK_M == 64 || BLOCK_M == 128,
-                     "H200 fused kernel requires BM8/BM16/BM24/BM64/BM128");
+    DG_STATIC_ASSERT(BLOCK_M == 8 || BLOCK_M == 16 || BLOCK_M == 24 ||
+                     BLOCK_M == 32 || BLOCK_M == 64 || BLOCK_M == 128,
+                     "H200 fused kernel requires BM8/BM16/BM24/BM32/BM64/BM128");
     // Pipeline depth used to be pinned to one value per BLOCK_M, which made the
     // shipped table the only reachable schedule. The binding constraint is
     // shared memory, and the layout assertions below already enforce it
@@ -17,8 +17,9 @@
                      "BM128 split-M is only validated at stage depth 6");
     DG_STATIC_ASSERT((BLOCK_M == 128) == (BLOCK_N == 128),
                      "BM128 is paired with the BN128 split-M topology");
-    DG_STATIC_ASSERT(!kSwapABRequested || BLOCK_M <= 24,
-                     "swap-AB is only selected through the M64 bucket");
+    // FP8MMASelector takes N=32, and the N_SWAP ladder below has a BM32 arm.
+    DG_STATIC_ASSERT(!kSwapABRequested || BLOCK_M <= 32,
+                     "swap-AB packs tokens into the WGMMA N dimension");
 
     // =====================================================================
     // Thread / warp identification
@@ -1241,6 +1242,24 @@
                             } else {
                                 run_swap_ab_l1.template operator()<24>();
                             }
+                        } else if constexpr (BLOCK_M == 32) {
+                            const uint32_t n_swap = ((valid_m + 7u) / 8u) * 8u;
+                            if (n_swap <= 8) {
+                                run_swap_ab_l1.template operator()<8>();
+                            } else if (n_swap <= 16) {
+                                run_swap_ab_l1.template operator()<16>();
+                            } else if (n_swap <= 24) {
+                                run_swap_ab_l1.template operator()<24>();
+                            } else {
+                                run_swap_ab_l1.template operator()<32>();
+                            }
+                        } else {
+                            // A tile with no arm here never runs the mainloop,
+                            // so nothing releases the stage and the loader
+                            // hangs. Fail at compile time instead.
+                            DG_STATIC_ASSERT(BLOCK_M == 8 || BLOCK_M == 16 ||
+                                             BLOCK_M == 24 || BLOCK_M == 32,
+                                             "swapAB tile has no N_SWAP arm");
                         }
                     } else {
                         float accum[kAccumPerThread];
@@ -1399,6 +1418,24 @@
                             } else {
                                 run_swap_ab_l2.template operator()<24>();
                             }
+                        } else if constexpr (BLOCK_M == 32) {
+                            const uint32_t n_swap = ((valid_m + 7u) / 8u) * 8u;
+                            if (n_swap <= 8) {
+                                run_swap_ab_l2.template operator()<8>();
+                            } else if (n_swap <= 16) {
+                                run_swap_ab_l2.template operator()<16>();
+                            } else if (n_swap <= 24) {
+                                run_swap_ab_l2.template operator()<24>();
+                            } else {
+                                run_swap_ab_l2.template operator()<32>();
+                            }
+                        } else {
+                            // A tile with no arm here never runs the mainloop,
+                            // so nothing releases the stage and the loader
+                            // hangs. Fail at compile time instead.
+                            DG_STATIC_ASSERT(BLOCK_M == 8 || BLOCK_M == 16 ||
+                                             BLOCK_M == 24 || BLOCK_M == 32,
+                                             "swapAB tile has no N_SWAP arm");
                         }
                     } else {
                         float accum[kAccumPerThread];

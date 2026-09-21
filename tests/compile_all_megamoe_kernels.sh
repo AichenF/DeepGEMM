@@ -163,7 +163,9 @@ static void __instantiate_kernel() {
 #                              BM   BN  stages swapAB  RS
 dsv4_swap_src=$(dsv4_src       24  256     3   true   false)
 dsv4_wide_src=$(dsv4_src       64  256     3   false  false)
+dsv4_bm32_src=$(dsv4_src        32  256     3   true   false)
 instantiate 'sm90_mxfp4 DSv4-Flash BM24 split' 90a wgmma "$dsv4_swap_src"
+instantiate 'sm90_mxfp4 DSv4-Flash BM32 split' 90a wgmma "$dsv4_bm32_src"
 instantiate 'sm90_mxfp4 DSv4-Flash BM64 wide'  90a wgmma "$dsv4_wide_src"
 instantiate 'sm90_mxfp4 BM24/BN256 split'  90a wgmma  "$mxfp4_bm24_split_src"
 instantiate 'sm90_mxfp4 (78 SM, H20)'    120a gated-out "$mxfp4_h20_src"
