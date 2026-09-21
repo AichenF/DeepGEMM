@@ -1257,6 +1257,42 @@ untuned one.
 
 ---
 
+### 9.15 Ruled out: BLOCK_M 32 for the swapAB tile
+
+9.13 proposed BM32 for the band where tokens per expert pass 24 and experts
+spill into a second m-block. On DeepSeek-V4-Flash / EP4 that band is M = 193..256
+and MXFP4 loses 5-7 % to FP8 there, while the wide BN256 tile is 21-45 % worse
+(so the tier bound is correctly placed -- forcing BN256 at M=160 costs 45 %).
+
+BM32 **deadlocks**. Enabling it needs four separate guards opened:
+
+| guard | where |
+|:--|:--|
+| `BLOCK_M == 8/16/24/64/128` | kernel `DG_STATIC_ASSERT` |
+| `!kSwapABRequested \|\| BLOCK_M <= 24` | kernel `DG_STATIC_ASSERT` |
+| `config.block_m == 8/16/24/64/128` | host `DG_HOST_ASSERT` |
+| `plan.swap_ab ? block_m <= 24 : ...` | host `DG_HOST_ASSERT` |
+
+With all four open it compiles at **96 registers, zero spill**, passes a 19-row
+compile gate, and then hangs on hardware -- NCCL watchdog timeout at 600 s,
+M=224, EP4. So `BLOCK_M <= 24` on the swapAB path is a real invariant, enforced
+redundantly, and at least one of those guards protects something no
+`static_assert` expresses. The comment on the fourth ("the reference NVFP4
+selector packs into a larger batch above M=64") reads like an inherited policy;
+it is not. Reverted.
+
+**Third static-check false positive this session.** Register over-subscription
+compiled and hung (9.9); the compile gate could not see a host selector bug
+(9.14); BM32 passed every static check and deadlocked. On this kernel, a clean
+compile plus a green gate is weak evidence -- only a default-path run on
+hardware settles anything.
+
+The +5-7 % at M=256 on DeepSeek-V4-Flash therefore **remains unexplained**. It is
+not the tier bound, and not reachable with a 32-wide tile; it coincides exactly
+with tokens per expert crossing 24. Any fix is deeper than tile selection.
+
+---
+
 ## 10. Reproducing
 
 The weight-load measurement in section 7.2 needs no allocation at all — it is
