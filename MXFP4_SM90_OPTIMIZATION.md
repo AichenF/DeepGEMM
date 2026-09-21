@@ -1293,6 +1293,36 @@ with tokens per expert crossing 24. Any fix is deeper than tile selection.
 
 ---
 
+### 9.16 The residual, localised: tokens per expert crossing 24
+
+The 5-7 % at M=256 on DeepSeek-V4-Flash / EP4 (9.15) is not isolated. At EP8 the
+same shape loses at **M=128**, and three runs at `--num-tests 30 --reps 5` show
+it is real where a neighbouring point is not:
+
+| M | run 1 | run 2 | run 3 | verdict |
+|---:|---:|---:|---:|:--|
+| 8 | -21.2 % | -0.1 % | +11.3 % | **noise** -- 32-point spread |
+| 32 | -5.0 % | +0.6 % | -1.0 % | noise |
+| 128 | **+9.1 %** | **+5.2 %** | **+6.9 %** | **real** |
+| 256 | -1.8 % | -1.7 % | +1.5 % | noise |
+
+A single run of this sweep had read M=8 as a +9.7 % regression and M=128 as
++3.5 %. The first was noise and the second understated. **At EP8 nothing below
+about 10 % is a finding without repeats** -- the floor recorded in 9.7 was
+measured and then ignored in practice.
+
+**The mechanism is the same at both EP widths.** `experts / (ranks * topk)`
+halves from EP4 to EP8, so the point where tokens per expert crosses 24 moves
+from M~256 to M~128. There BM24 must spill the busiest experts into a second
+m-block. It is still the best tile available -- BM16 costs +22 %, BM8 +77 %, the
+wide BN256 tile +21-45 % -- so this is not a mis-set bound.
+
+The right-sized tile is BM32, and it deadlocks (9.15). Closing this needs an
+investigation into *why* the swapAB path requires `BLOCK_M <= 24`, in the
+accumulator or epilogue layout; it is not reachable from the selector.
+
+---
+
 ## 10. Reproducing
 
 The weight-load measurement in section 7.2 needs no allocation at all — it is
