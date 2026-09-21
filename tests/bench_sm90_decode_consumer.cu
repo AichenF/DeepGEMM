@@ -61,7 +61,7 @@ __global__ __launch_bounds__(kThreads) void consume(
     auto* lut = reinterpret_cast<deep_gemm::mxfp4::ScaledLut*>(bars + 2*kStages);
     const uint32_t tid = threadIdx.x;
     if (tid == 0) for (int i=0;i<kStages;++i) mbar_init(bars+i,1);
-    deep_gemm::mxfp4::init_scaled_lut_window(lut, tid);
+    deep_gemm::mxfp4::init_scaled_lut(lut, tid, blockDim.x);
     asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
     __syncthreads();
 
@@ -144,7 +144,7 @@ __global__ __launch_bounds__(kThreads) void consume(
 }
 
 template <int M> void run(const char* name, const uint8_t* buf, int tiles, int kb, uint32_t* sink, int sms, size_t bytes) {
-    size_t smem = kStages*kStageBytes + ((M==2||M==3||M==4) ? 2*kDecodedBytes : 0) + 2*kStages*8 + 32*sizeof(deep_gemm::mxfp4::ScaledLut);
+    size_t smem = kStages*kStageBytes + ((M==2||M==3||M==4) ? 2*kDecodedBytes : 0) + 2*kStages*8 + deep_gemm::mxfp4::kScaledLutSize*sizeof(deep_gemm::mxfp4::ScaledLut);
     CHK(cudaFuncSetAttribute(consume<M>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
     for (int r=0;r<3;++r) consume<M><<<sms,kThreads,smem>>>(buf,tiles,kb,sink);
     CHK(cudaDeviceSynchronize());

@@ -42,11 +42,8 @@ namespace mxfp4 {
 //    A BK128 row therefore carries 4 E8M0 bytes (one uint32) instead of 8
 //    UE4M3 bytes (a uint2).
 //  * Table provenance and size. Both formats look the scaled magnitudes up in
-//    shared memory, but because E8M0 is a pure power of two its tables are
-//    constant outside 20 codes, so MXFP4's window is 32 entries / 256 B where
-//    NVFP4 needs 128 entries / 1 KB. Combined with the wider group this is half
-//    as many lookups per row over a table an order of magnitude smaller --
-//    see kScaledLutWindowLo in mxfp4_fused_scale.cuh.
+//    shared memory. Combined with the wider group, MXFP4 needs half as many
+//    lookups per row -- see kScaledLutSize in mxfp4_fused_scale.cuh.
 
 template <bool kQuadILP = false>
 __device__ __forceinline__ void dequant_mode2_nibble_row_regs(

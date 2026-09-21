@@ -9,8 +9,8 @@
 // Folding that shift arithmetically per group is nonetheless the wrong trade on
 // SM90 -- the saturation/flush edge cases need byte-wise SIMD intrinsics Hopper
 // does not implement. make_scaled_lut() below remains the definition of the
-// numerics, but the mainloop reads the tables from a 32-entry shared-memory
-// window built from it once per CTA; see kScaledLutWindowLo.
+// numerics, but the mainloop reads the tables from a shared-memory copy built
+// from it once per CTA; see kScaledLutSize.
 
 #pragma once
 
@@ -103,18 +103,17 @@ DG_MXFP4_INLINE ScaledLut make_scaled_lut(std::uint32_t scale_ue8m0) {
 // table-load-plus-decode. Calling it once per 32-element scale group, i.e.
 // four times per BK128 weight row per thread, dominated the mainloop.
 //
-// The table is constant outside a narrow band of E8M0 codes. Sweeping all 256
-// codes yields only 20 distinct tables, at codes 118..137 (k = -9..+10):
-// below that every magnitude underflows E4M3's normal range and flushes to
-// zero, above it every magnitude saturates at 448. A 32-entry window with a
-// clamped index therefore reproduces make_scaled_lut() bit-exactly for every
-// code while costing 256 B of shared memory -- a quarter of the 1 KB table the
-// NVFP4 path loads, and half as many lookups per row because MXFP4 groups 32
-// elements where NVFP4 groups 16.
-static constexpr std::uint32_t kScaledLutWindowLo = 112;
-static constexpr std::uint32_t kScaledLutWindowSize = 32;
-static constexpr std::uint32_t kScaledLutWindowHi =
-    kScaledLutWindowLo + kScaledLutWindowSize - 1;
+// The table is constant outside a narrow band of E8M0 codes: sweeping all 256
+// codes yields only 20 distinct tables, at codes 118..137 (k = -9..+10). Below
+// that every magnitude underflows E4M3's normal range and flushes to zero,
+// above it every magnitude saturates at 448. That makes a clamped 32-entry
+// window bit-exact, and it is what this used to be -- but the clamp is not
+// free: it costs two VIMNMX and a subtract per lookup, twelve instructions per
+// decode iteration across four slices. Indexing all 256 codes directly costs
+// 2 KB of shared memory and none of that arithmetic, so the table is stored
+// whole. Still half as many lookups per row as NVFP4, which groups 16 elements
+// where MXFP4 groups 32.
+static constexpr std::uint32_t kScaledLutSize = 256;
 
 // A decode tile is `kBTileRows` fused rows stored 16-byte-chunk-major: the
 // 16-byte chunk `c` of row `r` sits at `c * kBTileRows * 16 + r * 16`, and the
@@ -139,27 +138,20 @@ DG_MXFP4_INLINE DecodeTileRow decode_tile_row(
     return {tile + sub * 16, tile + kBTileFP4Bytes + sub * 4};
 }
 
-DG_MXFP4_INLINE std::uint32_t scaled_lut_index(std::uint32_t scale_ue8m0) {
-    const std::uint32_t code = scale_ue8m0 & 0xffu;
-    const std::uint32_t clamped =
-        code < kScaledLutWindowLo ? kScaledLutWindowLo :
-        (code > kScaledLutWindowHi ? kScaledLutWindowHi : code);
-    return clamped - kScaledLutWindowLo;
-}
-
-// Fill the window. Any thread block with at least kScaledLutWindowSize threads
-// can call this once during initialization; the tables are built by the same
-// make_scaled_lut() the decoders used to call inline, so the numerics are
-// unchanged by construction.
-DG_MXFP4_INLINE void init_scaled_lut_window(ScaledLut* __restrict__ smem_lut,
-                                            const std::uint32_t thread_idx) {
-    if (thread_idx < kScaledLutWindowSize)
-        smem_lut[thread_idx] = make_scaled_lut(kScaledLutWindowLo + thread_idx);
+// Fill the table once during initialization, striding so that a block with
+// fewer than kScaledLutSize threads still fills all of it. The entries are
+// built by the same make_scaled_lut() the decoders used to call inline, so the
+// numerics are unchanged by construction.
+DG_MXFP4_INLINE void init_scaled_lut(ScaledLut* __restrict__ smem_lut,
+                                     const std::uint32_t thread_idx,
+                                     const std::uint32_t num_threads) {
+    for (std::uint32_t code = thread_idx; code < kScaledLutSize; code += num_threads)
+        smem_lut[code] = make_scaled_lut(code);
 }
 
 DG_MXFP4_INLINE ScaledLut load_scaled_lut(const ScaledLut* __restrict__ smem_lut,
                                           const std::uint32_t scale_ue8m0) {
-    return smem_lut[scaled_lut_index(scale_ue8m0)];
+    return smem_lut[scale_ue8m0 & 0xffu];
 }
 
 // Decode eight packed FP4 nibbles (one uint32) into eight FP8 bytes, using a

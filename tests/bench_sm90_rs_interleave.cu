@@ -49,7 +49,7 @@ __global__ __launch_bounds__(128) void run(const uint8_t* __restrict__ raw,int t
     auto* lut=reinterpret_cast<mxfp4::ScaledLut*>(bars+2*kStages);
     const uint32_t tid=threadIdx.x, lane=tid&31u, warp=tid>>5;
     if(tid==0) for(int i=0;i<kStages;++i) mbi(bars+i,1);
-    mxfp4::init_scaled_lut_window(lut,tid);
+    mxfp4::init_scaled_lut(lut, tid, blockDim.x);
     asm volatile("fence.proxy.async.shared::cta;":::"memory"); __syncthreads();
     float acc[kAccum]; for(int i=0;i<kAccum;++i) acc[i]=0.f;
     const int total=tiles*kb; int stage=0; uint32_t ph=0;
@@ -100,7 +100,7 @@ __global__ __launch_bounds__(128) void run(const uint8_t* __restrict__ raw,int t
     if(acc[0]==1234.5f) sink[0]=acc[0];
 }
 template<int G> void go(const char* n,const uint8_t* buf,int tiles,int kb,float* sink,int sms,size_t bytes){
-    size_t smem=kStages*kStageBytes+kASize+2*kStages*8+32*sizeof(mxfp4::ScaledLut);
+    size_t smem=kStages*kStageBytes+kASize+2*kStages*8+mxfp4::kScaledLutSize*sizeof(mxfp4::ScaledLut);
     CHK(cudaFuncSetAttribute(run<G>,cudaFuncAttributeMaxDynamicSharedMemorySize,smem));
     for(int r=0;r<3;++r) run<G><<<sms,128,smem>>>(buf,tiles,kb,sink);
     CHK(cudaDeviceSynchronize());

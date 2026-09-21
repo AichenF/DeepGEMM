@@ -130,11 +130,10 @@
         math::constexpr_align<uint32_t>(kNumExperts * sizeof(uint32_t), kSharedMemoryAlignment);
     constexpr uint32_t SMEM_SEND_BUFFER_SIZE =
         math::constexpr_align(fp8_token_layout.get_num_bytes() * kNumActiveDispatchWarps, kSharedMemoryAlignment);
-    // 32-entry scaled-magnitude window; see kScaledLutWindowLo. The alignment
-    // quantum, not the 256 B payload, is what this actually costs.
+    // Scaled-magnitude tables for all 256 E8M0 codes; see kScaledLutSize.
     constexpr uint32_t SMEM_MXFP4_LUT_SIZE =
         math::constexpr_align<uint32_t>(
-            mxfp4::kScaledLutWindowSize * sizeof(mxfp4::ScaledLut),
+            mxfp4::kScaledLutSize * sizeof(mxfp4::ScaledLut),
             kSharedMemoryAlignment);
     constexpr uint32_t SMEM_A_SIZE_PER_STAGE = LOAD_BLOCK_M * BLOCK_K * sizeof(a_dtype_t);
     constexpr uint32_t SMEM_B_SIZE_PER_STAGE = LOAD_BLOCK_N * BLOCK_K * sizeof(b_dtype_t);
@@ -312,7 +311,7 @@
     // =====================================================================
     // Initialization
     // =====================================================================
-    mxfp4::init_scaled_lut_window(smem_mxfp4_lut, thread_idx);
+    mxfp4::init_scaled_lut(smem_mxfp4_lut, thread_idx, kNumThreads);
 
     if (warp_idx == 0) {
         // Clean expert-count shared memory

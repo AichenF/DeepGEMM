@@ -68,39 +68,39 @@ torch::Tensor mxfp4_lut_bytes_cuda() {
     return out;
 }
 
-// The mainloop reads the scaled tables out of a clamped 32-entry shared-memory
-// window instead of rebuilding them per group. That is only legal because the
-// table is constant outside the window, which this checks for every one of the
-// 256 E8M0 codes: column 0 is the window lookup, column 1 the definition.
-__global__ void mxfp4_lut_window_kernel(uint32_t* out) {
-    __shared__ deep_gemm::mxfp4::ScaledLut window[
-        deep_gemm::mxfp4::kScaledLutWindowSize];
-    deep_gemm::mxfp4::init_scaled_lut_window(window, threadIdx.x);
+// The mainloop reads the scaled tables out of shared memory instead of
+// rebuilding them per group. This checks the copy against make_scaled_lut() for
+// every one of the 256 E8M0 codes: column 0 is the lookup, column 1 the
+// definition.
+__global__ void mxfp4_lut_table_kernel(uint32_t* out) {
+    __shared__ deep_gemm::mxfp4::ScaledLut table[
+        deep_gemm::mxfp4::kScaledLutSize];
+    deep_gemm::mxfp4::init_scaled_lut(table, threadIdx.x, blockDim.x);
     __syncthreads();
 
     const uint32_t code = threadIdx.x;
-    const auto from_window = deep_gemm::mxfp4::load_scaled_lut(window, code);
+    const auto from_table = deep_gemm::mxfp4::load_scaled_lut(table, code);
     const auto from_definition = deep_gemm::mxfp4::make_scaled_lut(code);
-    out[code * 4 + 0] = from_window.x;
-    out[code * 4 + 1] = from_window.y;
+    out[code * 4 + 0] = from_table.x;
+    out[code * 4 + 1] = from_table.y;
     out[code * 4 + 2] = from_definition.x;
     out[code * 4 + 3] = from_definition.y;
 }
 
-torch::Tensor mxfp4_lut_window_cuda() {
+torch::Tensor mxfp4_lut_table_cuda() {
     auto out = torch::empty({256, 2, 2}, torch::device(torch::kCUDA).dtype(torch::kInt32));
-    mxfp4_lut_window_kernel<<<1, 256>>>(
+    mxfp4_lut_table_kernel<<<1, 256>>>(
         reinterpret_cast<uint32_t*>(out.data_ptr<int32_t>()));
     return out;
 }
 """
     cpp_src = ("torch::Tensor mxfp4_lut_bytes_cuda();\n"
-               "torch::Tensor mxfp4_lut_window_cuda();")
+               "torch::Tensor mxfp4_lut_table_cuda();")
     _CUDA_DEQUANT_EXT = load_inline(
         name="deepgemm_mxfp4_fused_scale_test",
         cpp_sources=cpp_src,
         cuda_sources=cuda_src,
-        functions=["mxfp4_lut_bytes_cuda", "mxfp4_lut_window_cuda"],
+        functions=["mxfp4_lut_bytes_cuda", "mxfp4_lut_table_cuda"],
         extra_include_paths=[os.path.join(REPO_ROOT, "deep_gemm", "include")],
         extra_cuda_cflags=["--expt-relaxed-constexpr"],
         verbose=False,
@@ -135,10 +135,10 @@ def _run_cuda_dequant_lut_unit_test() -> None:
     expected = expected.unsqueeze(-1).expand(128, 16, 2).contiguous()
     torch.testing.assert_close(got, expected, rtol=0, atol=0)
 
-    # The shared-memory window must be indistinguishable from the definition it
-    # replaces, for every E8M0 code including the clamped tails.
-    window = ext.mxfp4_lut_window_cuda().cpu()
-    torch.testing.assert_close(window[:, 0], window[:, 1], rtol=0, atol=0)
+    # The shared-memory table must be indistinguishable from the definition it
+    # replaces, for every one of the 256 E8M0 codes.
+    table = ext.mxfp4_lut_table_cuda().cpu()
+    torch.testing.assert_close(table[:, 0], table[:, 1], rtol=0, atol=0)
     print("MXFP4 CUDA dequant LUT unit test: PASS", flush=True)
 
 
