@@ -1387,6 +1387,45 @@ the same-M measurement and the source settled it.
 
 ---
 
+### 9.18 Final state, both shapes, both EP widths
+
+All figures MXFP4 versus FP8 on the fused MegaMoE, H20-3e, 78 SMs, after e2c99d4
+(tier bound) and 3287cfb (BM32 + fallback). Negative is MXFP4 faster.
+
+| M | DSv4-Flash EP4 | DSv4-Flash EP8 | MiMo EP4 |
+|---:|---:|---:|---:|
+| 8 | -2.1 % | noise (+/-10 %) | |
+| 32 | +1.4 % | -1.0 % | |
+| 64 | +3.4 % | | -9.4 % |
+| 96 | | -6.2 / -11.7 % | -15.4 % |
+| 112 | | -14.3 / -15.4 % | |
+| 128 | -7.8 % | **-22.6 / -16.8 %** | **-30.5 %** |
+| 160 | | -5.7 / -6.5 % | -1.9 % |
+| 192 | -11.6 % | | -2.4 % |
+| 256 | **-15.7 %** | | -3.1 % |
+| 384 | -4.1 % | | -2.9 % |
+| 512 | -3.5 % | | -3.3 % |
+| 768 | -0.3 % | | -1.0 % |
+
+**What the two fixes were worth.** The tier bound took M >= 384 from +22..+116 %
+to roughly parity on both shapes. BM32 took the boundary spikes from +5..+10 %
+to -16..-30 %: at EP4 the derated bounds are BM8 64, BM24 192, BM32 256, so
+BM32 covers M = 193..256 -- exactly the band that measured +5-7 % and was
+recorded in 9.16 as unexplained. At EP8 the same bounds halve and it covers
+M = 97..127 plus the fallback at 128.
+
+Only M=32 and M=64 at EP4 remain marginally positive (+1.4 / +3.4 %), inside
+this shape's run-to-run spread; earlier runs of the same points read -1.9 and
+-3.4 %.
+
+**Scope of the earlier SOL claims.** Sections 9.7-9.13 measured M <= 256 on MiMo
+only and are not a statement about either shape at larger batches, nor about
+DeepSeek-V4-Flash at all. The two defects above were live throughout that work
+and cost MiMo 22-49 % at M = 384..768 and 17 % at M = 128 while it was being
+reported as a win.
+
+---
+
 ## 10. Reproducing
 
 The weight-load measurement in section 7.2 needs no allocation at all — it is
