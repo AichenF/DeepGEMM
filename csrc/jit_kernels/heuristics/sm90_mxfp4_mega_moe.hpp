@@ -210,11 +210,15 @@ select_sm90_mxfp4_h200_fused(
     else if (input.num_tokens <= swap_ab_max_tokens)
         tuning = {swap_ab_block_m, 256, 48, 8, SM90ArchSpec::smem_capacity,
                   true, true, true, true};
-    else if (input.num_tokens <= 256)
-        tuning = {64, 256, 48, 3, SM90ArchSpec::smem_capacity,
-                  false, true, false, false};
+    // Everything above the transposed range takes the straight BN256 tile. The
+    // BM128/BN128 split-M plan used to serve M > 256, but that bound was a bare
+    // constant among otherwise shape-derived ones, and the plan loses to BN256
+    // at every batch measured on both shapes -- MiMo 34/19/31 % at M=384/512/768
+    // and DeepSeek-V4-Flash 55/55/24/16/37/26 % at M=384..2048. Against FP8 it
+    // turns a 22-112 % loss into a 2 % win. It stays compiled and reachable
+    // through DG_MXFP4_BLOCK_M=128; it is simply never selected.
     else
-        tuning = {128, 128, 48, 6, SM90ArchSpec::smem_capacity,
+        tuning = {64, 256, 48, 3, SM90ArchSpec::smem_capacity,
                   false, true, false, false};
 
     // Tuning override hook. The table above was measured on H200's 132 SMs;
