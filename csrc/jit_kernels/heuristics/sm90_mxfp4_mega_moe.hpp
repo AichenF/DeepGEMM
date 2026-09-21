@@ -183,12 +183,29 @@ select_sm90_mxfp4_h200_fused(
     // warps, and there the wider tile wins anyway by giving that decode a
     // longer WGMMA to hide behind.
     // max_tokens_for_block_m is a mean, and a tile has to hold the busiest
-    // expert, not the average one. Leave a quarter of it as headroom for that
-    // imbalance: measured on MiMo, BM8 is still the better tile at M=32 but
-    // costs 10% at M=40 and M=48 against its nominal bound of 48, because by
-    // then enough experts need a second m-block.
+    // expert, not the average one. Leave headroom for that imbalance: measured
+    // on MiMo, BM8 is still the better tile at M=32 but costs 10% at M=40 and
+    // M=48 against its nominal bound of 48, because by then enough experts need
+    // a second m-block. An overflowing expert is expensive out of proportion to
+    // the tokens that spilled -- its second m-block re-streams and re-decodes
+    // the whole weight slice, and the decode is the throttle -- while padding an
+    // under-filled tile costs nothing, because the N_SWAP ladder picks the WGMMA
+    // width from the tokens actually present.
+    //
+    // A quarter of headroom put the bound at exactly lambda/block_m = 0.75,
+    // which is on the edge rather than inside it: BM24 collapses once lambda
+    // passes ~18-20, and both DSv4 configurations sit *at* their bound and
+    // already lose -- 7.9% at EP8/M=96 and 2.8% at EP4/M=192, against 8.7% for
+    // MiMo EP4 one step past its own bound at M=240. Seven tenths clears it.
+    //
+    // The headroom is a constant fraction rather than something that widens for
+    // narrow tiles: that was measured too, and it is wrong. Sizing for Poisson
+    // counting noise (lambda + 2.5 sqrt(lambda)) would cut BM8 to 36 tokens on
+    // DSv4 EP4 and cost 4-10% at M=40/48/56, where BM8 still wins by 9-10%.
+    // Routing imbalance is learned and correlated, not shot noise, so its spread
+    // tracks the mean instead of its square root.
     const auto tokens_per_block_m = [&](const int block_m) {
-        return max_tokens_for_block_m(block_m) * 3 / 4;
+        return max_tokens_for_block_m(block_m) * 7 / 10;
     };
     const auto swap_ab_block_m = [&]() {
         for (const int block_m : {8, 24, 32}) {
