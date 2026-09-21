@@ -1198,6 +1198,65 @@ validate it, and two changes this session that looked equally sound on paper
 
 ---
 
+### 9.14 Scope correction: everything above only describes M <= 256
+
+Sections 9.7-9.13 sweep M = 8..256 and quote 69-84 % of achievable. **That
+framing does not describe the large-M region at all**, and the reason is a bug,
+not a gap in the measurements.
+
+The tier rule sent `num_tokens > 256` to the BM128/BN128 split-M plan. That 256
+was a bare constant sitting among bounds otherwise derived from
+`experts / (ranks * topk)`, and the plan it selects loses to the straight BN256
+tile at **every** batch measured, on both shapes (EP4, H20-3e):
+
+| M | MiMo before | MiMo after | DSv4-Flash before | DSv4-Flash after |
+|---:|---:|---:|---:|---:|
+| 384 | 2200 | **1455** | 1963 | **880** |
+| 512 | 2256 | **1825** | 1964 | **874** |
+| 768 | 3367 | **2332** | 1981 | **1514** |
+| 1024 | | | 1995 | **1670** |
+| 1536 | | | 3840 | **2429** |
+| 2048 | | | 3953 | **2923** |
+
+Against FP8 that is a **22-112 % loss turned into parity or a small win**.
+Fixed in e2c99d4 by never selecting the plan; it stays reachable through
+`DG_MXFP4_BLOCK_M=128`.
+
+**Two process failures are worth recording, because both were avoidable.**
+
+First, section 8 already noted "at M>=1024 the fused FP4 path loses to FP8 by
+~20 %" and filed it as a property of the large-M tier. It was this bug, visible
+the whole time, mistaken for a known limitation instead of investigated.
+
+Second, the shape. `is_supported_shape()` admits DeepSeek-V4-Flash
+(4096 / 2048 / 256 experts / topk 6) and says so in a comment, but
+`tests/compile_all_megamoe_kernels.sh` hardcoded MiMo's dimensions in
+`mxfp4_src()`, so **every gate row tested one shape**. A second shape was
+declared supported and never instantiated, which is exactly how a 2.1x
+regression survived in it. The gate now carries DSv4-Flash rows.
+
+Verified on the default selector path after rebuilding `_C.so`, not through an
+env override: DSv4-Flash M=384 1938 -> 883 us and M=512 1941 -> 876; MiMo M=384
+2165 -> 1449 and M=512 2194 -> 1835. Against FP8, +116/+115/+47/+19 % became
+-2.2/-4.2/-2.9/-3.3 %.
+
+**A third process failure, caught only because that re-measurement was run.**
+The selector lives in host code inside `_C.so`. The first "after" numbers were
+taken with the fix committed, the compile gate green, and the extension *not
+rebuilt* -- so they showed no change at all. `tests/compile_all_megamoe_kernels.sh`
+instantiates device templates; it is structurally incapable of testing a host
+heuristic. Every selector change in this document was gated by something that
+could not have caught a selector bug. **Changes to
+`csrc/jit_kernels/heuristics/` need a default-path benchmark, not the gate.**
+
+The generalisable rule: **a tuning bound that is not derived from the shape is a
+latent bug in any kernel whose shape is a template parameter.** Every other
+bound in the selector derives from `experts / (ranks * topk)`; the one that did
+not is the one that broke, and it broke both models rather than only the
+untuned one.
+
+---
+
 ## 10. Reproducing
 
 The weight-load measurement in section 7.2 needs no allocation at all — it is

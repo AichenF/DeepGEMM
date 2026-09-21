@@ -144,6 +144,27 @@ instantiate 'sm90_mxfp4 BM8/BN256 RS'     90a wgmma    "$mxfp4_bm8_src"
 instantiate 'sm90_mxfp4 BM16/BN256 RS'    90a wgmma    "$mxfp4_bm16_src"
 instantiate 'sm90_mxfp4 BM64/BN256 SS'    90a wgmma    "$mxfp4_bm64_src"
 instantiate 'sm90_mxfp4 EP4 BM24 RS'     90a wgmma    "$mxfp4_ep4_src"
+
+# DeepSeek-V4-Flash (4096 / 2048 / 256 experts / topk 6), the other shape
+# is_supported_shape() admits. Nothing instantiated it before, so a tier that
+# lost 2.1x to FP8 on it went unnoticed; mxfp4_src's MiMo dimensions are
+# hardcoded, so this spells the shape out.
+dsv4_src() {
+  printf '%s\n' '#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1
+#include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused.cuh>
+using namespace deep_gemm;
+static void __instantiate_kernel() {
+    auto ptr = reinterpret_cast<void*>(&sm90_mxfp4_mega_moe_h200_fused_impl<
+        78, 4, 4096, 2048, 256, 6, 2048, 32, '"$1"', '"$2"', 8192, 8192,
+        '"$3"', 10.0f, true, '"$4"', true, true, true, '"$5"'>);
+    (void)ptr;
+}'
+}
+#                              BM   BN  stages swapAB  RS
+dsv4_swap_src=$(dsv4_src       24  256     3   true   false)
+dsv4_wide_src=$(dsv4_src       64  256     3   false  false)
+instantiate 'sm90_mxfp4 DSv4-Flash BM24 split' 90a wgmma "$dsv4_swap_src"
+instantiate 'sm90_mxfp4 DSv4-Flash BM64 wide'  90a wgmma "$dsv4_wide_src"
 instantiate 'sm90_mxfp4 BM24/BN256 split'  90a wgmma  "$mxfp4_bm24_split_src"
 instantiate 'sm90_mxfp4 (78 SM, H20)'    120a gated-out "$mxfp4_h20_src"
 
