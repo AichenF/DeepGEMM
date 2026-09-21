@@ -1321,6 +1321,19 @@ The right-sized tile is BM32, and it deadlocks (9.15). Closing this needs an
 investigation into *why* the swapAB path requires `BLOCK_M <= 24`, in the
 accumulator or epilogue layout; it is not reachable from the selector.
 
+**The tier bound is not the problem, and a same-M test is what settles it.**
+Mapping M = 80..160 shows M=144 running 7 % *faster* than M=128 despite more
+tokens per expert, which looks like a refutation -- but 128 and 144 run
+*different plans* (swapAB and wide BN256), so that comparison crosses a plan
+boundary and tests nothing. Forcing the wide tile at the same M is the clean
+test, and it is worse at every point: M=96 +27 %, M=112 +14 %, M=128 +3.6 %.
+BM24 is the best available tile at M=128 (461 us, against wide 478, BM16 558,
+BM8 813). The boundary sits where it should.
+
+Pooling every EP8 measurement of M=128 taken today: **+3.5, +9.1, +5.2, +6.9,
++10.3, +9.5, +3.5 %** -- positive 7 of 7, mean ~+6.9 %. The sign is solid even
+where the magnitude is not, which is the standard this shape's noise demands.
+
 ---
 
 ## 10. Reproducing
