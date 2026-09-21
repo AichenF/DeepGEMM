@@ -1426,6 +1426,102 @@ reported as a win.
 
 ---
 
+### 9.19 The decode loop in SASS, and what it says the ceiling is
+
+Disassembling the DSv4-Flash BM32 swapAB+split instantiation isolates the decode
+loop at 199 instructions per 128 output bytes per thread. Five candidates came
+out of reading it; four were already optimal and are recorded here so they do
+not get retried:
+
+* The eight swizzled shared-memory store addresses are **hoisted out of the
+  loop** by ptxas -- `IADD3 Rx, Rbase, URn, R{35,34,33,32,7,6,5,3}`, one add per
+  store. Strength-reducing the XOR swizzle to an incremental chain saves nothing.
+* The four packed-FP4 loads already use immediate offsets off one base
+  (`[R30]`, `[R30+0x800]`, `[R30+0x1000]`, `[R30+0x1800]`).
+* The dequant core is **7 instructions per 8 output bytes and irreducible**: the
+  `& 0x77777777` selector mask is forced because a PRMT selector nibble with
+  bit 3 set means sign-replication, and PRMT can only address 8 source bytes, so
+  the sign has to be OR'd back separately.
+* `IMAD.SHL.U32 Rd, Ra, 0x10` is a multiply by sixteen, i.e. the `packed << 4`
+  of the sign path -- not a second shift.
+
+The one real target was the scaled LUT being a 32-entry *window*: legal only
+with a clamped index, which cost two `VIMNMX` and a subtract per lookup, twelve
+instructions per iteration over four slices. Storing all 256 entries costs 1 KB
+more shared memory and none of that arithmetic -- 199 -> 188 instructions at 96
+registers, scale indexing down to a shift and a mask with the times-eight folded
+into the shift.
+
+**The MegaMoE harness cannot measure a change that size.** Paired runs of the
+*same* binary drift 0.3-6.2 points (M=8 read -4.64 % and -10.85 %). The decode
+microbenchmark can: three runs each, no spread, dequant ALU 2.91 -> 3.00 TB/s and
+the shared-memory decode 2.39 -> 2.43 TB/s. For sub-2 % dequant work that is the
+only instrument; the end-to-end number is ~1 point and stays inside the drift.
+
+### 9.20 The tile bound was one step too late, and the model for why is wrong
+
+An expert that overflows its tile is expensive out of proportion to the tokens
+that spilled: work is decomposed `num_m_blocks * num_n_blocks` per expert, so the
+second m-block re-streams and re-decodes the whole weight slice, and the decode
+is the throttle. Padding an under-filled tile costs nothing against that, because
+the N_SWAP ladder picks the WGMMA width from `valid_m` -- a BM32 tile holding 18
+tokens issues exactly the wgmma a BM24 tile would.
+
+BM24 against BM32 at the same M, two runs per point:
+
+| config | M | lambda | BM24 | BM32 |
+|---|---:|---:|---:|---:|
+| DSv4 EP4 | 192 | 18.8 | -9.9 % | **-14.1 %** |
+| DSv4 EP4 | 256 | 24.5 | +2.8 % | **-15.8 %** |
+| DSv4 EP8 | 96 | 17.7 | -8.1 % | **-13.0 %** |
+| DSv4 EP8 | 128 | 23.9 | +9.4 % | **-11.9 %** |
+| MiMo EP4 | 240 | 19.8 | -26.8 % | **-33.6 %** |
+
+The cliff tracks lambda, not M or shape: BM24 collapses once lambda passes ~18-20.
+The old bound sat at exactly `lambda/block_m = 0.75`, on the edge, and both DSv4
+configurations sat *at* their bound and already lost. Seven tenths clears it and
+moves three points and nothing else -- DSv4 EP4 M=192 -9.9 -> -13.1 %, DSv4 EP8
+M=96 -8.1 -> -11.4 %, MiMo EP4 M=216 -32.7 -> -35.3 %.
+
+**The headroom stays a constant fraction, and that was measured rather than
+assumed.** Routing spread looks like it should scale as sqrt(lambda), which would
+give narrow tiles proportionally more headroom. It does not: sizing for
+`lambda + 2.5 sqrt(lambda)` cuts BM8 to 36 tokens on DSv4 EP4, where BM8 still
+wins by 9-10 % out to M=48 and does not cross over until M=64. MoE routing
+imbalance is learned and correlated, so its spread tracks the mean, not its root.
+
+### 9.21 Why DSv4-Flash does not reach 30 %, and MiMo does
+
+DSv4 EP4 after the above, H20-3e, two runs, negative is MXFP4 faster:
+
+| M | 8 | 32 | 64 | 128 | 160 | 192 | 256 | 384 | 768 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| | -9.4 | -5.1 | -1.6 | -9.5 | -13.1 | **-17.1** | **-17.6** | -4.0 | -0.9 |
+
+Converted to achieved weight-stream bandwidth (weights are 25.17 MB/expert in
+FP8, 13.37 MB in MXFP4 including scales):
+
+* FP8 peaks at **3.23 TB/s** against the 4.18 TB/s pure-loader ceiling -- 77 %.
+* MXFP4 peaks at **1.84 TB/s** against its 2.43 TB/s decode ceiling -- 76 %.
+
+MXFP4 moves 0.531x the bytes down a pipe that is 0.581x as fast, so if both arms
+realise the same fraction of their own ceiling the speedup ceiling is
+0.531/0.581 = **0.914, about -9 %**. The kernel beats that in the band where the
+tile fits, because there MXFP4 realises 57 % of its ceiling where FP8 realises
+51 % of its own. Reaching -30 % needs MXFP4 at 1.63 TB/s in-kernel, i.e. 67 % of
+the decode ceiling, and the ceiling itself is set by the 7 irreducible
+instructions per 8 output bytes of 9.19. It is not an instruction-count problem
+and it is not reachable by making MXFP4 faster.
+
+**MiMo's -34 % is an FP8 regression, not an MXFP4 win.** Across M=192..288 MXFP4
+is flat (1214 -> 1215 -> 1310 us) while FP8 jumps 1389 -> 1849 us at M=240 and
+plateaus: FP8 hits its own tile cliff there. Real as a ratio, but DSv4's FP8 has
+no equivalent cliff in range (693 -> 707 -> 750 -> 893, smooth), and that is the
+entire difference between the two shapes. Any "MXFP4 is 30 % faster" claim needs
+the baseline's own curve quoted next to it.
+
+---
+
 ## 10. Reproducing
 
 The weight-load measurement in section 7.2 needs no allocation at all — it is
