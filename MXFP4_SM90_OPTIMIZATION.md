@@ -1455,7 +1455,8 @@ into the shift.
 **The MegaMoE harness cannot measure a change that size.** Paired runs of the
 *same* binary drift 0.3-6.2 points (M=8 read -4.64 % and -10.85 %). The decode
 microbenchmark can: three runs each, no spread, dequant ALU 2.91 -> 3.00 TB/s and
-the shared-memory decode 2.39 -> 2.43 TB/s. For sub-2 % dequant work that is the
+the shared-memory decode 2.39 -> 2.43 TB/s. That benchmark serialises decode
+behind the load, so it over-weights ALU savings -- see 9.21. For sub-2 % dequant work that is the
 only instrument; the end-to-end number is ~1 point and stays inside the drift.
 
 ### 9.20 The tile bound was one step too late, and the model for why is wrong
@@ -1499,19 +1500,36 @@ DSv4 EP4 after the above, H20-3e, two runs, negative is MXFP4 faster:
 | | -9.4 | -5.1 | -1.6 | -9.5 | -13.1 | **-17.1** | **-17.6** | -4.0 | -0.9 |
 
 Converted to achieved weight-stream bandwidth (weights are 25.17 MB/expert in
-FP8, 13.37 MB in MXFP4 including scales):
+FP8, 13.37 MB in MXFP4 including scales), end to end, no model:
 
-* FP8 peaks at **3.23 TB/s** against the 4.18 TB/s pure-loader ceiling -- 77 %.
-* MXFP4 peaks at **1.84 TB/s** against its 2.43 TB/s decode ceiling -- 76 %.
+| | FP8 | MXFP4 | MXFP4 / FP8 |
+|---|---:|---:|---:|
+| M=128 | 2.77 TB/s | 1.62 TB/s | 58 % |
+| M=192 | 2.32 | 1.49 | 64 % |
+| M=256 | 2.15 | 1.38 | 64 % |
 
-MXFP4 moves 0.531x the bytes down a pipe that is 0.581x as fast, so if both arms
-realise the same fraction of their own ceiling the speedup ceiling is
-0.531/0.581 = **0.914, about -9 %**. The kernel beats that in the band where the
-tile fits, because there MXFP4 realises 57 % of its ceiling where FP8 realises
-51 % of its own. Reaching -30 % needs MXFP4 at 1.63 TB/s in-kernel, i.e. 67 % of
-the decode ceiling, and the ceiling itself is set by the 7 irreducible
-instructions per 8 output bytes of 9.19. It is not an instruction-count problem
-and it is not reachable by making MXFP4 faster.
+MXFP4 moves **53.1 %** of the bytes at **58-64 %** of the rate, which is the
+-9 to -18 % that the table shows. To reach -30 % it would have to run at
+`0.531 / 0.70` = **76 %** of FP8's rate, i.e. a further 19-33 % of effective
+weight-stream throughput.
+
+That headroom is not there. Section 9.13's warp-specialised measurement puts the
+kernel at **91-99 % of achievable** already, and the binding resource there is
+**shared-memory bandwidth, not the dequant ALU**: the SS path moves ~100 KB of
+smem per stage (TMA write, decode read, decode write, WGMMA read) for 17 KB of
+HBM, 5.75x amplification. So the remaining headroom is single-digit percent,
+against the 19-33 % that -30 % needs.
+
+This also explains why 9.19's instruction saving does not show up end to end.
+`bench_sm90_decode_consumer.cu` issues the next bulk copy only after the decode
+returns -- decode and load **serialised** -- so it over-weights ALU savings and
+reports +1.7 %. The kernel overlaps them and is limited by smem bandwidth, where
+removing ALU instructions buys almost nothing. The change is still right (fewer
+instructions, same numbers, 1 KB), but its end-to-end value is ~1 point and the
+mechanism is not the one the microbenchmark prices. **Do not quote
+`bench_sm90_decode_consumer.cu` as a ceiling** -- use
+`bench_sm90_warp_specialised_decode.cu`, which reproduces the warp
+specialisation.
 
 **MiMo's -34 % is an FP8 regression, not an MXFP4 win.** Across M=192..288 MXFP4
 is flat (1214 -> 1215 -> 1310 us) while FP8 jumps 1389 -> 1849 us at M=240 and
