@@ -88,10 +88,11 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
             // w2_empty: 2 barriers, init_count=8
             mbarrier_init(smem + 48, 8);
             mbarrier_init(smem + 56, 8);
-            // epi_full: 1 barriers, init_count=1
-            mbarrier_init(smem + 64, 1);
-            // epi_free: 1 barriers, init_count=3
-            mbarrier_init(smem + 72, 3);
+            // Each math / epilogue thread directly releases its d_stage accesses.
+            // epi_full: 1 barriers, init_count=256
+            mbarrier_init(smem + 64, 256);
+            // epi_free: 1 barriers, init_count=96
+            mbarrier_init(smem + 72, 96);
             asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
         }
     }
@@ -99,6 +100,13 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
     __syncthreads();
 
     // === Task calls (dependency order) ===
+    // CTA0 owns the queue; the reset grid barrier publishes these initial values.
+    if (bid == 0) {
+        #pragma unroll 1
+        for (int reset_queue_slot = tid; reset_queue_slot < 1024; reset_queue_slot += 384) {
+            svc_queue[reset_queue_slot] = 0;
+        }
+    }
     int reset_tid = bid * 384 + tid;
     int reset_threads = num_bids * 384;
     int _max_0 = ((world_size * active_rows * 6 + 8128) > (0) ? (world_size * active_rows * 6 + 8128) : (0));
@@ -2319,14 +2327,14 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
             int _shfl_21 = __shfl_sync(0xFFFFFFFF, c56m_val, 0);
             c56m_val = _shfl_21;
             if (c56m_val == 2147483647) {
+                mbarrier_wait(epi_free_addr, _phase_epi_free_0);
+                _phase_epi_free_0 ^= 1;
                 if (warp == 0) {
                     if (elect_sync()) {
-                        mbarrier_wait(epi_free_addr, _phase_epi_free_0);
-                        _phase_epi_free_0 ^= 1;
                         atomicMax(&c56_tile_mailbox[c56m_mb_base + 8], 2147483647);
-                        mbarrier_arrive(epi_full_addr);
                     }
                 }
+                mbarrier_arrive(epi_full_addr);
                 break;
             }
             if (c56m_val == 1073741823) {
@@ -2597,11 +2605,11 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                 if (warp == 0) {
                     if (elect_sync()) {
                         asm volatile("cp.async.bulk.wait_group.read 0;");
-                        if (c56m_mode != 0) {
-                            mbarrier_wait(epi_free_addr, _phase_epi_free_0);
-                            _phase_epi_free_0 ^= 1;
-                        }
                     }
+                }
+                if (c56m_mode != 0) {
+                    mbarrier_wait(epi_free_addr, _phase_epi_free_0);
+                    _phase_epi_free_0 ^= 1;
                 }
                 asm volatile("barrier.sync 15, 256;" ::: "memory");
                 #pragma unroll
@@ -2636,9 +2644,9 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                     if (warp == 0) {
                         if (elect_sync()) {
                             atomicMax(&c56_tile_mailbox[c56m_mb_base + 8], u_tile_2 + 1);
-                            mbarrier_arrive(epi_full_addr);
                         }
                     }
+                    mbarrier_arrive(epi_full_addr);
                 } else {
                     int w1_req_group = w1_n_block_2 * 2 + w1_warp_n;
                     #pragma unroll
@@ -3010,10 +3018,10 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                     if (warp == 0) {
                         if (elect_sync()) {
                             asm volatile("cp.async.bulk.wait_group.read 0;");
-                            mbarrier_wait(epi_free_addr, _phase_epi_free_0);
-                            _phase_epi_free_0 ^= 1;
                         }
                     }
+                    mbarrier_wait(epi_free_addr, _phase_epi_free_0);
+                    _phase_epi_free_0 ^= 1;
                     asm volatile("barrier.sync 15, 256;" ::: "memory");
                     #pragma unroll
                     for (int w2c_mt = 0; w2c_mt < 2; w2c_mt++) {
@@ -3042,9 +3050,9 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                             tma_store_2d(W2_D, w2_n_block_2 * 128 + 64, w2_pool_row_2, d_stage_addr + 16384);
                             asm volatile("cp.async.bulk.commit_group;");
                             atomicMax(&c56_tile_mailbox[c56m_mb_base + 8], u_tile_2 + 1);
-                            mbarrier_arrive(epi_full_addr);
                         }
                     }
+                    mbarrier_arrive(epi_full_addr);
                 } else {
                     if (warp == 0) {
                         if (elect_sync()) {
@@ -3739,9 +3747,7 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                     }
                 }
                 __syncwarp();
-                if (elect_sync()) {
-                    mbarrier_arrive(epi_free_addr);
-                }
+                mbarrier_arrive(epi_free_addr);
             }
         }
     }
@@ -3824,8 +3830,10 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                         break;
                     }
                     __threadfence_block();
-                    int h29_chunk = svc_queue[h29_idx & 1023];
+                    int h29_chunk = atomicAdd(&svc_queue[h29_idx & 1023], 0);
                     h29_idx += 1;
+                    // Finish reading before publishing that this slot is reusable.
+                    __threadfence_block();
                     atomicMax(&svc_qctl[3 + warp], h29_idx);
                     int h29_source = h29_chunk / 769;
                     if (h29_source == map_source) {
@@ -3974,7 +3982,10 @@ kernel_deepgemm_sm120_megamoe_m64n32_stage2_residency_dispatch(LoomTensorMap con
                                         break;
                                     }
                                 }
-                                svc_queue[h20_tail & 1023] = service_chunk_2;
+                                __threadfence_block();
+                                // Single producer: replace atomically before publishing the tail.
+                                int h20_old_chunk = atomicAdd(&svc_queue[h20_tail & 1023], 0);
+                                atomicAdd(&svc_queue[h20_tail & 1023], service_chunk_2 - h20_old_chunk);
                                 h20_tail += 1;
                                 __threadfence_block();
                                 atomicAdd(&svc_qctl[1], 1);
