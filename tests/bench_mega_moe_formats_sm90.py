@@ -189,10 +189,10 @@ def _run_one_config(args, num_tokens, cap, hidden, ih, num_experts, num_topk,
                                  'DG_MXFP4_EPW': epw,
                                  # swapAB is a property of the tile, not of the
                                  # batch: the transposed path packs tokens into
-                                 # WGMMA N and so needs BLOCK_M <= 24, while the
+                                 # WGMMA N and so needs BLOCK_M <= 32, while the
                                  # straight path needs a full M64 tile. Deriving
                                  # it here keeps every variant self-consistent.
-                                 'DG_MXFP4_SWAP_AB': 1 if bm <= 24 else 0,
+                                 'DG_MXFP4_SWAP_AB': 1 if bm <= 32 else 0,
                                  **({} if single is None
                                     else {'DG_MXFP4_SINGLE_DISPATCH': single}),
                                  **({} if rs is None

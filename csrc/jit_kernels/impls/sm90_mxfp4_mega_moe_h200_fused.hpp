@@ -170,7 +170,7 @@ static void sm90_mxfp4_h200_fused_mega_moe(
     DG_HOST_ASSERT(config.block_n == 128 || config.block_n == 256);
     // What the kernel actually requires, rather than which token count the
     // shipped table happens to enable swapAB for: the transposed path packs
-    // tokens into the WGMMA N dimension, so it needs BLOCK_M <= 24, and the
+    // tokens into the WGMMA N dimension, so it needs BLOCK_M <= 32, and the
     // straight path needs a full M64 warpgroup tile. Pinning this to
     // `num_tokens <= 64` blocked every experiment that carries a small BLOCK_M
     // into a larger batch, which is exactly what the reference NVFP4 selector
