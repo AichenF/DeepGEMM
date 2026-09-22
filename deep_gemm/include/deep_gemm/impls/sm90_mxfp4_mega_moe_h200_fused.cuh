@@ -223,7 +223,13 @@ template <
     bool kUseInterleavedScheduler,
     // Feed the WGMMA's A operand from registers instead of decoding the weight
     // tile into shared memory first. swapAB only; removes the decoded-B ring.
-    bool kUseRSOperand
+    bool kUseRSOperand,
+    // Phase timestamps are a compile-time variant, not a runtime flag. Checking
+    // a pointer per task is not free -- the same accumulators cost ~5% per task
+    // on the NVFP4 side when they were runtime-gated -- so the shipped kernel
+    // must not contain them at all. Defaulted, so every existing instantiation
+    // (and every compile-gate row) keeps its current meaning.
+    bool kPhaseStamps = false
 >
 CUTLASS_GLOBAL
 __launch_bounds__(sm90_mxfp4_num_threads(kSwapABRequested, kUseRSOperand, BLOCK_M), 1) void
@@ -242,7 +248,9 @@ sm90_mxfp4_mega_moe_h200_fused_impl(
         const uint8_t* __restrict__ l1_weights,
         const uint8_t* __restrict__ l2_weights,
         const float* __restrict__ l1_global_scales,
-        const float* __restrict__ l2_global_scales) {
+        const float* __restrict__ l2_global_scales,
+        // Only written when kPhaseStamps; see the slot map in the body.
+        unsigned long long* __restrict__ phase_stamps) {
     constexpr uint32_t BLOCK_K = 128;
     constexpr uint32_t kNumDispatchThreads = 64;
     constexpr uint32_t kNumNonEpilogueThreads = 64;

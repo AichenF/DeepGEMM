@@ -144,6 +144,56 @@ class Arm:
         return sum(t) if isinstance(t, (tuple, list)) else t
 
 
+# Slots are defined in sm90_mxfp4_mega_moe_h200_fused_body.inl. Kept here rather
+# than in the kernel so the diagnostic can be read without a rebuild.
+_STAMP_PHASES = [
+    (1, 'dispatch barrier #1'), (2, 'pool ready'), (3, 'first math task'),
+    (4, 'last L1 task end'), (5, 'last L2 task end'),
+    (6, 'combine barrier #2'), (7, 'combine end'), (8, 'cleanup barrier #3'),
+]
+_STAMP_ACCS = [(20, 'L1 task'), (22, 'L2 task'),
+               (24, 'decode waiting on weight TMA'),
+               (26, 'math waiting on decoded ring')]
+
+
+def _report_phase_stamps(arms, order, num_tokens):
+    """One stamped launch per MXFP4 arm, printed as ns from kernel entry.
+
+    The stamped kernel is a separate instantiation, so this costs an extra JIT
+    compile and must not be folded into the timed loop above.
+    """
+    import ctypes
+    for n in order:
+        if not n.startswith('mxfp4'):
+            continue
+        buf = torch.zeros(32, dtype=torch.int64, device='cuda')
+        buf[0] = buf[3] = (1 << 62)          # slots 0 and 3 are atomicMin
+        prev = os.environ.get('DG_MXFP4_PHASE_STAMPS_PTR')
+        os.environ['DG_MXFP4_PHASE_STAMPS_PTR'] = str(buf.data_ptr())
+        try:
+            # Without this the ranks enter skewed and the whole skew lands on
+            # the first NVLink barrier, which then reads as tens of ms.
+            torch.cuda.synchronize()
+            dist.barrier()
+            arms[n].run()
+            torch.cuda.synchronize()
+        finally:
+            if prev is None:
+                os.environ.pop('DG_MXFP4_PHASE_STAMPS_PTR', None)
+            else:
+                os.environ['DG_MXFP4_PHASE_STAMPS_PTR'] = prev
+        v = buf.tolist()
+        entry = v[0]
+        line = [f'  [stamps M={num_tokens} {n}]']
+        for slot, label in _STAMP_PHASES:
+            if v[slot]:
+                line.append(f'{label}={(v[slot] - entry) / 1e3:.1f}us')
+        for slot, label in _STAMP_ACCS:
+            if v[slot + 1]:
+                line.append(f'{label}={v[slot] / v[slot + 1] / 1e3:.2f}us x{v[slot + 1]}')
+        dist_print(' '.join(line), once_in_node=True)
+
+
 def _run_one_config(args, num_tokens, cap, hidden, ih, num_experts, num_topk,
                     num_ranks, rank_idx, group, activation_clamp, fast_math):
     num_experts_per_rank = num_experts // num_ranks
@@ -211,6 +261,9 @@ def _run_one_config(args, num_tokens, cap, hidden, ih, num_experts, num_topk,
             samples[n].append(arms[n].time_once(args.num_tests, show_kineto))
 
     med = {n: statistics.median(samples[n]) for n in order}
+
+    if args.phase_stamps:
+        _report_phase_stamps(arms, order, num_tokens)
 
     gathered = uneven_all_gather(topk_idx, group=group)
     gathered[(gathered < rank_idx * num_experts_per_rank) |
@@ -299,6 +352,8 @@ if __name__ == '__main__':
     p.add_argument('--reps', type=int, default=3)
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--verbose', action='store_true')
+    p.add_argument('--phase-stamps', action='store_true',
+                   help='extra stamped launch per mxfp4 arm; separate instantiation')
     p.add_argument('--num-max-tokens-per-rank', type=int, default=None)
     args = p.parse_args()
 

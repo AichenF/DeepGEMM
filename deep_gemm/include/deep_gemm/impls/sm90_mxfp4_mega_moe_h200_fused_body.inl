@@ -29,7 +29,49 @@
     const uint32_t warp_idx   = cutlass::canonical_warp_idx_sync();
     const uint32_t lane_idx   = ptx::get_lane_idx();
 
+    // Phase timestamps (globaltimer, ns), written only when kPhaseStamps.
+    // Compiled out entirely otherwise -- see the note on the template parameter.
+    //
+    //   0  min  kernel entry              1  max  dispatch barrier #1 done
+    //   2  max  pool ready                3  min  first math task
+    //   4  max  last L1 task end          5  max  last L2 task end
+    //   6  max  combine barrier #2 done   7  max  combine end
+    //   8  max  cleanup barrier #3 done
+    //
+    // Accumulators, summed over every CTA (value, then count):
+    //  20/21 L1 task ns     22/23 L2 task ns
+    //  24/25 decode warps waiting on the weight TMA (decode starved by the load)
+    //  26/27 math warps waiting on the decoded ring (WGMMA starved by decode)
+    // 24 and 26 are the pair that says whether the mainloop is stream-bound or
+    // decode-bound, which is the question the end-to-end numbers cannot answer.
+    const auto stamp_min = [&](const uint32_t slot) {
+        if constexpr (kPhaseStamps) {
+            unsigned long long t; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+            atomicMin(phase_stamps + slot, t);
+        }
+    };
+    const auto stamp_max = [&](const uint32_t slot) {
+        if constexpr (kPhaseStamps) {
+            unsigned long long t; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+            atomicMax(phase_stamps + slot, t);
+        }
+    };
+    const auto stamp_now = [&]() -> unsigned long long {
+        unsigned long long t = 0;
+        if constexpr (kPhaseStamps)
+            asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+        return t;
+    };
+    const auto stamp_add = [&](const uint32_t slot, const unsigned long long delta) {
+        if constexpr (kPhaseStamps) {
+            atomicAdd(phase_stamps + slot, delta);
+            atomicAdd(phase_stamps + slot + 1, 1ull);
+        }
+    };
+    (void) stamp_now; (void) stamp_add;
+
     if (warp_idx == 0 and cute::elect_one_sync()) {
+        stamp_min(0);
         cute::prefetch_tma_descriptor(&tensor_map_l1_acts);
         cute::prefetch_tma_descriptor(&tensor_map_l1_acts_sf);
         cute::prefetch_tma_descriptor(&tensor_map_l1_output);
@@ -618,6 +660,7 @@
             workspace, sym_buffer, sm_idx, thread_idx,
             [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
             false, true);
+        if (thread_idx == 0) stamp_max(1);
 
         // Sync with epilogue warps before pulling tokens
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
@@ -772,6 +815,7 @@
             workspace, sym_buffer, sm_idx, thread_idx,
             [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
             true, false);
+        if (thread_idx == 0) stamp_max(8);
     } else if (warp_idx == kNumDispatchWarps) {
         // =====================================================================
         // ROLE 2: GEMM TMA LOAD warps (load A+SFA, B+SFB)
@@ -917,7 +961,11 @@
             for (uint32_t k_block_idx = 0;
                  k_block_idx < num_k_blocks;
                  advance_pipeline(k_block_idx)) {
-                full_barriers[stage_idx]->wait(phase);
+                {
+                    const unsigned long long w0 = stamp_now();
+                    full_barriers[stage_idx]->wait(phase);
+                    if (decode_thread_idx == 0) stamp_add(24, stamp_now() - w0);
+                }
                 if constexpr (kUseInterleavedScheduler) {
                     if (k_block_idx == 0)
                         interleaved_scheduler.release_task_info(lane_idx);
@@ -993,6 +1041,8 @@
                                      const uint32_t& m_block_idx, const uint32_t& n_block_idx,
                                      const uint32_t& pool_block_idx,
                                      const uint32_t& valid_m) {
+            const unsigned long long task_t0 = stamp_now();
+            if (epilogue_thread_idx == 0) stamp_min(3);
             const uint32_t m_idx = pool_block_idx * BLOCK_M;
             const uint32_t wg_n_idx =
                 kSplitMDecodedWeightReuse ? 0u : epilogue_wg_idx * WG_BLOCK_N;
@@ -1090,12 +1140,16 @@
                 const uint32_t b_slot =
                     kSplitDecodeWarps ? b_ring_idx :
                     (kSplitMDecodedWeightReuse ? stage_idx : 0u);
-                if constexpr (kSplitDecodeWarps) {
-                    // The decode warps own the packed stage and its release, so
-                    // wait on the decoded tile rather than the TMA.
-                    decoded_full_barriers[b_ring_idx]->wait(b_ring_phase);
-                } else {
-                    full_barriers[stage_idx]->wait(phase);
+                {
+                    const unsigned long long w0 = stamp_now();
+                    if constexpr (kSplitDecodeWarps) {
+                        // The decode warps own the packed stage and its release,
+                        // so wait on the decoded tile rather than the TMA.
+                        decoded_full_barriers[b_ring_idx]->wait(b_ring_phase);
+                    } else {
+                        full_barriers[stage_idx]->wait(phase);
+                    }
+                    if (epilogue_thread_idx == 0) stamp_add(26, stamp_now() - w0);
                 }
                 if constexpr (kUseInterleavedScheduler) {
                     if (k_block_idx == 0)
@@ -1972,6 +2026,10 @@
                     ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx);
                 }
             }
+            if (epilogue_thread_idx == 0) {
+                stamp_add(kBlockIsL2 ? 22u : 20u, stamp_now() - task_t0);
+                stamp_max(kBlockIsL2 ? 5u : 4u);
+            }
         };
         if constexpr (kUseInterleavedScheduler)
             for_each_published_block(run_math_task);
@@ -1986,6 +2044,7 @@
             workspace, sym_buffer, sm_idx, epilogue_thread_idx,
             [&]() { ptx::sync_aligned(kNumEpilogueThreads, kEpilogueFullBarrierIdx); }
         );
+        if (epilogue_thread_idx == 0) stamp_max(6);
 
         // Sync with dispatch (paired with dispatch's pre-cleanup sync) so that
         // dispatch may now safely clean workspace state.

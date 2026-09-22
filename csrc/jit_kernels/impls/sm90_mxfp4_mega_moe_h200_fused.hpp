@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdlib>
 #include <torch/python.h>
 
 #include "../../jit/compiler.hpp"
@@ -49,6 +50,8 @@ public:
         const uint8_t* l2_weights;
         const float* l1_global_scales;
         const float* l2_global_scales;
+        // Diagnostic only: non-null selects the kPhaseStamps instantiation.
+        unsigned long long* phase_stamps;
         LaunchArgs launch_args;
     };
 
@@ -62,12 +65,14 @@ public:
             "        /* kSingleActiveDispatchWarp */ {},\n"
             "        /* kUseMode2RowDecoder */ {},\n"
             "        /* kUseInterleavedScheduler */ {},\n"
-            "        /* kUseRSOperand */ {}",
+            "        /* kUseRSOperand */ {},\n"
+            "        /* kPhaseStamps */ {}",
             args.swap_ab ? "true" : "false",
             args.single_active_dispatch_warp ? "true" : "false",
             args.use_mode2_row_decoder ? "true" : "false",
             args.use_interleaved_scheduler ? "true" : "false",
-            args.rs_swap_ab ? "true" : "false");
+            args.rs_swap_ab ? "true" : "false",
+            args.phase_stamps != nullptr ? "true" : "false");
         return fmt::format(R"(
 {}
 
@@ -130,7 +135,8 @@ static void __instantiate_kernel() {{
             args.l1_weights,
             args.l2_weights,
             args.l1_global_scales,
-            args.l2_global_scales));
+            args.l2_global_scales,
+            args.phase_stamps));
     }
 };
 
@@ -236,6 +242,16 @@ static void sm90_mxfp4_h200_fused_mega_moe(
         .l2_weights = reinterpret_cast<const uint8_t*>(l2_weights.data_ptr()),
         .l1_global_scales = l1_global_scales_ptr,
         .l2_global_scales = l2_global_scales_ptr,
+        // Diagnostic buffer address, passed as a decimal device pointer so the
+        // Python API does not grow an argument that only a profiler ever uses.
+        // Non-null also selects the stamped instantiation, so an un-stamped run
+        // is bit-identical to one built without this code.
+        .phase_stamps = [] {
+            const char* v = std::getenv("DG_MXFP4_PHASE_STAMPS_PTR");
+            return v == nullptr ? nullptr
+                                : reinterpret_cast<unsigned long long*>(
+                                      std::strtoull(v, nullptr, 10));
+        }(),
         .launch_args = LaunchArgs(
             num_sms,
             KernelConfig::num_threads(plan.swap_ab, plan.rs_swap_ab, config.block_m),

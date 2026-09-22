@@ -156,7 +156,7 @@ using namespace deep_gemm;
 static void __instantiate_kernel() {
     auto ptr = reinterpret_cast<void*>(&sm90_mxfp4_mega_moe_h200_fused_impl<
         78, 4, 4096, 2048, 256, 6, 2048, 32, '"$1"', '"$2"', 8192, 8192,
-        '"$3"', 10.0f, true, '"$4"', true, true, true, '"$5"'>);
+        '"$3"', 10.0f, true, '"$4"', true, true, true, '"$5"''"${6:+, $6}"'>);
     (void)ptr;
 }'
 }
@@ -164,8 +164,12 @@ static void __instantiate_kernel() {
 dsv4_swap_src=$(dsv4_src       24  256     3   true   false)
 dsv4_wide_src=$(dsv4_src       64  256     3   false  false)
 dsv4_bm32_src=$(dsv4_src        32  256     3   true   false)
+# kPhaseStamps is defaulted, so no row above instantiates it: the globaltimer
+# reads and the atomics into the stamp buffer are only codegen'd here.
+dsv4_stamps_src=$(dsv4_src      32  256     3   true   false   true)
 instantiate 'sm90_mxfp4 DSv4-Flash BM24 split' 90a wgmma "$dsv4_swap_src"
 instantiate 'sm90_mxfp4 DSv4-Flash BM32 split' 90a wgmma "$dsv4_bm32_src"
+instantiate 'sm90_mxfp4 DSv4-Flash BM32 stamps' 90a wgmma "$dsv4_stamps_src"
 instantiate 'sm90_mxfp4 DSv4-Flash BM64 wide'  90a wgmma "$dsv4_wide_src"
 instantiate 'sm90_mxfp4 BM24/BN256 split'  90a wgmma  "$mxfp4_bm24_split_src"
 instantiate 'sm90_mxfp4 (78 SM, H20)'    120a gated-out "$mxfp4_h20_src"
