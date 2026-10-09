@@ -518,6 +518,17 @@ sm100_fp8_fp4_gemm_1d1d_impl(int* grouped_layout,
                  tensor_map_cd);
             }
         }
+
+        // Drain this block's output stores, then signal programmatic
+        // launch completion: every value this grid produces is in
+        // global memory at this point, so a dependent grid may run its
+        // own prologue while this one completes its cluster teardown.
+        // The named barrier orders the signal behind the drain for the
+        // whole epilogue warp group, not just the warp that drains.
+        if (epilogue_warp_idx == 0)
+            cute::tma_store_wait<0>();
+        cutlass::arch::NamedBarrier::sync(kNumUMMAStoreThreads, 0);
+        cudaTriggerProgrammaticLaunchCompletion();
     }
 
     // TODO: Remove redundant synchronization
