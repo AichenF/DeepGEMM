@@ -316,6 +316,11 @@ def _worker(local_rank, num_local_ranks, args):
             print('correctness: PASS', flush=True)
 
         if args.bench:
+            # The first kineto session in a process drops its events, so open
+            # and close one before anything is measured.
+            with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA]):
+                torch.cuda._sleep(1000)
+                torch.cuda.synchronize()
             baseline_buffer = deep_gemm.get_symm_buffer_for_mega_moe(
                 group, E, args.num_max_tokens_per_rank, args.num_topk, args.hidden, args.intermediate_hidden,
                 use_fp8_dispatch=True, activation='swiglu')

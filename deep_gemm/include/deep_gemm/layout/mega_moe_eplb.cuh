@@ -45,12 +45,11 @@ CUTLASS_HOST_DEVICE constexpr uint32_t plan_smem_bytes(const uint32_t& num_ranks
     uint32_t bytes = 0;
     bytes += r * e * sizeof(int32_t);         // hist
     bytes += e * r * sizeof(int32_t);         // q
-    bytes += e * r * sizeof(int32_t);         // q snapshot for pruning
+    bytes += 2 * r * s * sizeof(int32_t);     // replica list for pruning: index, snapshot
     bytes += e * sizeof(int32_t);             // b
     bytes += r * sizeof(int32_t) * 4;         // load, nrep, visited, pad
     bytes += r * s * sizeof(int32_t) * 2;     // previous and new slot tables
     bytes += math::constexpr_align(r * e, 4u); // holds
-    bytes += math::constexpr_align(e * r, 4u); // done marks
     bytes += math::constexpr_align(e, 4u);     // tried marks
     return bytes;
 }

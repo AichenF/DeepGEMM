@@ -65,16 +65,16 @@ eplb_plan_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
     extern __shared__ __align__(16) uint8_t smem_buffer[];
     auto* hist = reinterpret_cast<int32_t*>(smem_buffer);                 // [R][E]
     auto* q = hist + R * E;                                               // [E][R]
-    auto* qs = q + E * R;                                                 // [E][R]
-    auto* b = qs + E * R;                                                 // [E]
+    auto* rep_idx = q + E * R;                                            // [R * S]
+    auto* rep_v = rep_idx + R * S;                                        // [R * S]
+    auto* b = rep_v + R * S;                                              // [E]
     auto* load = b + E;                                                   // [R]
     auto* nrep = load + R;                                                // [R]
     auto* visited = nrep + R;                                             // [R]
     auto* prev_slot = visited + 2 * R;                                    // [R][S]
     auto* new_slot = prev_slot + R * S;                                   // [R][S]
     auto* holds = reinterpret_cast<uint8_t*>(new_slot + R * S);           // [R][E]
-    auto* done = holds + math::constexpr_align(R * E, 4u);                // [E][R]
-    auto* tried = done + math::constexpr_align(E * R, 4u);                // [E]
+    auto* tried = holds + math::constexpr_align(R * E, 4u);               // [E]
 
     auto* ws_base = ws.template get_base_ptr<uint32_t*>();
     auto* flags = ws_base + layout.flags_offset() + parity * Workspace::kMaxRanks;
@@ -151,10 +151,12 @@ eplb_plan_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
 
     // The sequential planner runs on warp 0; everything else waits.
     if (warp_idx == 0) {
+        // Every expert starts on its owner, so a rank's load is the block sum
+        // of its home range.
         if (lane < R) {
             int32_t sum = 0;
-            for (uint32_t e = 0; e < E; ++ e)
-                sum += q[e * R + lane];
+            for (uint32_t e = lane * H; e < (lane + 1) * H; ++ e)
+                sum += b[e];
             load[lane] = sum;
             nrep[lane] = 0;
         }
@@ -254,18 +256,31 @@ eplb_plan_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
         // maximum load is folded back, owner first, then the least loaded copy.
         int32_t max_load = lane < R ? load[lane] : 0;
         max_load = __reduce_max_sync(0xffffffffu, max_load);
-        for (uint32_t i = lane; i < E * R; i += 32) {
-            qs[i] = q[i];
-            done[i] = 0;
+        // Each rank hosts at most S replicas, so the list fits R * S entries;
+        // one lane per rank collects its own.
+        constexpr uint32_t kNumReplicaSlots = R * S;
+        constexpr uint32_t kNumReplicasPerLane = math::constexpr_ceil_div(kNumReplicaSlots, 32u);
+        if (lane < R) {
+            uint32_t n = 0;
+            for (uint32_t e = 0; e < E and n < S; ++ e) {
+                if (e / H != lane and q[e * R + lane] > 0) {
+                    rep_idx[lane * S + n] = static_cast<int32_t>(e * R + lane);
+                    rep_v[lane * S + n] = q[e * R + lane];
+                    ++ n;
+                }
+            }
+            for (; n < S; ++ n)
+                rep_v[lane * S + n] = 0;
         }
         __syncwarp();
         while (true) {
             uint64_t best = kNoneKey;
-            for (uint32_t i = lane; i < E * R; i += 32) {
-                const uint32_t e = i / R, r = i % R;
-                if (r != e / H and qs[i] > 0 and not done[i]) {
+            #pragma unroll
+            for (uint32_t j = 0; j < kNumReplicasPerLane; ++ j) {
+                const uint32_t k = lane + 32 * j;
+                if (k < kNumReplicaSlots and rep_v[k] > 0) {
                     // Order by (snapshot allocation, expert, rank); both fit in 32 bits.
-                    const auto cand = make_key(static_cast<uint32_t>(qs[i]), i);
+                    const auto cand = make_key(static_cast<uint32_t>(rep_v[k]), static_cast<uint32_t>(rep_idx[k]));
                     best = cand < best ? cand : best;
                 }
             }
@@ -273,9 +288,12 @@ eplb_plan_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
             if (best == kNoneKey)
                 break;
             const uint32_t i = static_cast<uint32_t>(best), e = i / R, r = i % R;
-            const int32_t v = qs[i];
-            if (lane == 0)
-                done[i] = 1;
+            const int32_t v = static_cast<int32_t>(best >> 32);
+            if (lane < R) {
+                for (uint32_t n = 0; n < S; ++ n)
+                    if (rep_idx[lane * S + n] == static_cast<int32_t>(i) and rep_v[lane * S + n] == v)
+                        rep_v[lane * S + n] = 0;
+            }
             __syncwarp();
             if (q[i] != v)
                 continue;
