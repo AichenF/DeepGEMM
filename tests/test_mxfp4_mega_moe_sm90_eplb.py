@@ -203,7 +203,7 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
                                  activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math))
         return y
 
-    kernels = ('mega_moe_eplb_plan', 'mega_moe_eplb_copy_weights', 'mega_moe_eplb_remap', 'sm90_mxfp4_mega_moe')
+    kernels = ('eplb_plan_kernel', 'eplb_copy_weights_kernel', 'eplb_remap_kernel', 'sm90_mxfp4_mega_moe')
     for _ in range(3):
         run_eplb()
         run_fixed()

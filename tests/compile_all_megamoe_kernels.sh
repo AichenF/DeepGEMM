@@ -174,6 +174,33 @@ instantiate 'sm90_mxfp4 DSv4-Flash BM64 wide'  90a wgmma "$dsv4_wide_src"
 instantiate 'sm90_mxfp4 BM24/BN256 split'  90a wgmma  "$mxfp4_bm24_split_src"
 instantiate 'sm90_mxfp4 (78 SM, H20)'    120a gated-out "$mxfp4_h20_src"
 
+# Dynamic EPLB: the planner, remap and weight-copy kernels, and the MXFP4
+# kernel at the physical slot count they feed (384 experts + 8 ranks x 4
+# helper slots = 416 slots, 52 per rank, so experts-per-wave clamps to 26).
+eplb_src='#include <deep_gemm/impls/smxx_mega_moe_eplb.cuh>
+using namespace deep_gemm;
+static void __instantiate_kernel() {
+    auto plan = reinterpret_cast<void*>(&eplb::eplb_plan_kernel<8, 384, 4, 256>);
+    auto remap = reinterpret_cast<void*>(&eplb::eplb_remap_kernel<8, 384, 4, 256>);
+    auto copy = reinterpret_cast<void*>(&eplb::eplb_copy_weights_kernel<8, 256>);
+    (void)plan; (void)remap; (void)copy;
+}'
+instantiate 'mega_moe_eplb (plan/remap/copy)' 90a  'shfl|atom'  "$eplb_src"
+instantiate 'mega_moe_eplb (plan/remap/copy)' 100a 'shfl|atom'  "$eplb_src"
+mxfp4_slots_src() {
+  printf '%s\n' '#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1
+#include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused.cuh>
+using namespace deep_gemm;
+static void __instantiate_kernel() {
+    auto ptr = reinterpret_cast<void*>(&sm90_mxfp4_mega_moe_h200_fused_impl<
+        132, 8, 6144, 2048, 416, 8, 2048, 26, '"$1"', 256, 8192, 8192,
+        '"$2"', 10.0f, true, '"$3"', true, true, true, '"$4"'>);
+    (void)ptr;
+}'
+}
+instantiate 'sm90_mxfp4 416 slots BM24 RS'  90a wgmma "$(mxfp4_slots_src 24 8 true true)"
+instantiate 'sm90_mxfp4 416 slots BM64 SS'  90a wgmma "$(mxfp4_slots_src 64 3 false false)"
+
 # Template-only headers, not instantiated here: catches parse/merge damage but
 # not per-arch codegen.
 syntax_only 'sm90_fp8_mega_moe'          90a  '#include <deep_gemm/impls/sm90_fp8_mega_moe.cuh>'

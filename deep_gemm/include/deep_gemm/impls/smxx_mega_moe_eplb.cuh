@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstdio>
+#include <cuda_bf16.h>
+
 #include <deep_gemm/common/math.cuh>
 #include <deep_gemm/common/utils.cuh>
 #include <deep_gemm/layout/sym_buffer.cuh>
