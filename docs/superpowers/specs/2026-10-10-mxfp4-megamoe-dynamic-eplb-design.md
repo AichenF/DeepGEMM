@@ -85,3 +85,59 @@ same histogram matrix.
 
 In-kernel readiness gating of helper slots (overlapping the weight copy with
 home-expert tasks) and multi-candidate planner search. Both are additive.
+
+## Usage
+
+```python
+eplb = deep_gemm.DynamicEPLB(group, num_experts, num_helper_slots,
+                             num_max_tokens_per_rank, num_topk, hidden, intermediate_hidden)
+eplb.set_home_weights(l1, l2, l1_global_scales, l2_global_scales)   # transformed MXFP4 weights
+y = eplb.forward(x_fp8, x_sf, topk_idx_logical, topk_weights)        # plan + copy + remap + kernel
+```
+
+`plan`, `copy_weights` and `remap` are also exposed separately. Every rank
+must issue the same number of plans: the planner waits for its peers in the
+kernel (30 s budget, then it traps), so host-side skew larger than that, for
+example one rank JIT-compiling while another already planned, deadlocks it.
+`DG_EPLB_DEBUG=1` prints the generation of every plan launch and entry.
+
+## Measured (SM90, 2026-10-10)
+
+Synthetic skew: three hot experts owned by rank 0 receive half of all routed
+slots. `tests/test_mxfp4_mega_moe_sm90_eplb.py`, kernel time from kineto,
+rank maximum, median of 20 calls, L2 flushed between calls.
+
+EP2, 96 experts (48 per rank), 4 helper slots, top-k 8, hidden 6144,
+intermediate 2048:
+
+| M per rank | busiest rank blocks | fixed (us) | EPLB kernel (us) | plan + copy + remap (us) | kernel-only | end to end |
+|---:|---|---:|---:|---:|---:|---:|
+| 64 | 54 -> 51 | 417 | 403 | 43 + 1 + 2 | 1.035x | 0.930x |
+| 256 | 59 -> 54 | 531 | 508 | 48 + 1 + 2 | 1.045x | 0.949x |
+| 1024 | 179 -> 157 | 1518 | 1355 | 58 + 1 + 3 | 1.120x | 1.071x |
+
+* The kernel-only gain tracks the planned reduction of the busiest rank's
+  block count, as it should.
+* The "plan" column at EP2 is mostly peer wait: the same planner measures
+  6-13 us at EP1 (48 experts, M 64-1024), where there is nobody to wait for.
+  In the fixed arm that skew is absorbed inside the kernel's first NVLink
+  barrier instead, so end to end is the fair comparison.
+* A cold copy of one helper slot (20.3 MiB: packed L1/L2, tile-major scales,
+  global scales) takes about 170 us over NVLink and is paid only when a slot's
+  expert changes; the steady-state loop above copies nothing.
+* Two empty helper slots cost at most 1% at EP1 (50 vs 48 slots). The
+  experts-per-wave divisor they force (25 instead of 48) makes no measurable
+  difference (A/B with `DG_MXFP4_EPW`).
+* Accuracy against the logical-expert reference is unchanged by replication:
+  per-token cosine 0.999 mean, 0.998-0.999 min, at every M, with and without
+  replicas.
+
+## Known limits
+
+* The planner is serialized with the layer. Overlapping it with the previous
+  layer and gating helper slots on weight readiness inside the kernel are the
+  next steps (see TensorRT-LLM's generation scheme and MegaFlux's pipelined
+  replication).
+* One greedy candidate; MegaFlux evaluates four in parallel warps.
+* Both ranks compute the plan redundantly, which is what keeps them
+  consistent without a collective.
