@@ -116,8 +116,19 @@ intermediate 2048:
 | 256 | 59 -> 54 | 531 | 508 | 48 + 1 + 2 | 1.045x | 0.949x |
 | 1024 | 179 -> 157 | 1518 | 1355 | 58 + 1 + 3 | 1.120x | 1.071x |
 
+EP4, 192 experts (48 per rank), 4 helper slots, same shape and skew:
+
+| M per rank | busiest rank blocks | fixed (us) | EPLB kernel (us) | plan + copy + remap (us) | kernel-only | end to end |
+|---:|---|---:|---:|---:|---:|---:|
+| 64 | 57 -> 48 | 434 | 370 | 50 + 1 + 2 | 1.170x | 1.023x |
+| 256 | 72 -> 55 | 632 | 505 | 77 + 1 + 2 | 1.253x | 1.081x |
+| 1024 | 223 -> 152 | 1867 | 1323 | 60 + 1 + 4 | 1.411x | 1.349x |
+
 * The kernel-only gain tracks the planned reduction of the busiest rank's
-  block count, as it should.
+  block count, as it should. The same hot experts hurt more at EP4 than at
+  EP2 because they are a larger share of one rank's work, so the gain grows
+  with the EP width; EP8 was not reachable on the shared nodes (every 4- and
+  8-GPU allocation exposed fewer devices than granted).
 * The "plan" column at EP2 is mostly peer wait: the same planner measures
   6-13 us at EP1 (48 experts, M 64-1024), where there is nobody to wait for.
   In the fixed arm that skew is absorbed inside the kernel's first NVLink
