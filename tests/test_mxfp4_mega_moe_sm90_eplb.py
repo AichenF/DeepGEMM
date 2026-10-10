@@ -110,7 +110,7 @@ def _check_remap(eplb, ref, counts, logical_rows, physical_rows, rank_idx):
     return seen
 
 
-def _run_case(args, m_tokens, rank_idx, group, eplb_state):
+def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
     num_ranks = dist.get_world_size(group)
     gen = torch.Generator(device='cuda')
     gen.manual_seed(args.seed + m_tokens)
@@ -124,6 +124,8 @@ def _run_case(args, m_tokens, rank_idx, group, eplb_state):
     x_bf = torch.randn((m_tokens, hidden), dtype=torch.bfloat16, device='cuda', generator=gen)
     x_fp8, x_sf = per_token_cast_to_fp8(x_bf, use_ue8m0=False, gran_k=128)
 
+    if not check:
+        return topk_idx, topk_weights, x_fp8, x_sf
     counts = _all_gather_counts(topk_idx, E, group)
     prev_slot_expert = eplb.slot_expert.cpu().tolist()
 
@@ -203,7 +205,33 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
                                  activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math))
         return y
 
+    # Cold copy: every helper slot changes, so this is the full weight transfer
+    # the steady-state loop below never pays again.
+    eplb.slot_expert.fill_(-1)
+    b = eplb.symm
+    b.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int64))
+    eplb.plan(m_tokens)
+    torch.cuda.synchronize()
+    copies = int(eplb.copy_count.item())
+    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    start.record()
+    eplb.copy_weights()
+    end.record()
+    torch.cuda.synchronize()
+    cold_us = torch.tensor([start.elapsed_time(end) * 1e3], device='cuda')
+    dist.all_reduce(cold_us, op=dist.ReduceOp.MAX, group=group)
+    bytes_per_slot = sum(spec[1] for spec in eplb.arena.plane_specs(eplb._plane_names))
+    if rank_idx == 0:
+        print(f'[cold copy M={m_tokens}] {copies} slots x {bytes_per_slot / 2**20:.1f} MiB on rank 0, '
+              f'rank-max {cold_us.item():.1f}us', flush=True)
+
     kernels = ('eplb_plan_kernel', 'eplb_copy_weights_kernel', 'eplb_remap_kernel', 'sm90_mxfp4_mega_moe')
+    # The fixed arm is a separate kernel instantiation. Build it on every rank
+    # before the paired loop: the planner waits on its peers in-kernel and
+    # would otherwise time out behind another rank's JIT compile.
+    run_fixed()
+    torch.cuda.synchronize()
+    dist.barrier(group=group)
     for _ in range(3):
         run_eplb()
         run_fixed()
@@ -253,10 +281,12 @@ def _worker(local_rank, num_local_ranks, args):
 
         routings = {}
         for m_tokens in args.batches:
-            routings[m_tokens] = _run_case(args, m_tokens, rank_idx, group, state)
-            # Second pass on the same routing exercises the slot cache.
-            _run_case(args, m_tokens, rank_idx, group, state)
-        if rank_idx == 0:
+            routings[m_tokens] = _run_case(args, m_tokens, rank_idx, group, state,
+                                           check=bool(args.correctness))
+            if args.correctness:
+                # Second pass on the same routing exercises the slot cache.
+                _run_case(args, m_tokens, rank_idx, group, state)
+        if rank_idx == 0 and args.correctness:
             print('correctness: PASS', flush=True)
 
         if args.bench:
@@ -293,6 +323,7 @@ def _parse_args():
     p.add_argument('--norm-ratio-min', type=float, default=0.99)
     p.add_argument('--norm-ratio-max', type=float, default=1.01)
     p.add_argument('--bench', type=int, default=1)
+    p.add_argument('--correctness', type=int, default=1)
     p.add_argument('--bench-tests', type=int, default=20)
     return p.parse_args()
 
