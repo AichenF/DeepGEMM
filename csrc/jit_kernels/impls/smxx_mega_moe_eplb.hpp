@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdio>
+#include <cstdlib>
 #include <torch/python.h>
 
 #include "../../jit/compiler.hpp"
@@ -26,7 +28,7 @@ public:
 
     static std::string generate_impl(const Args& args) {
         return fmt::format(R"(
-#include <deep_gemm/impls/smxx_mega_moe_eplb.cuh>
+{}#include <deep_gemm/impls/smxx_mega_moe_eplb.cuh>
 
 using namespace deep_gemm;
 
@@ -35,10 +37,14 @@ static void __instantiate_kernel() {{
         {}, {}, {}, {}
     >);
 }};
-)", args.num_ranks, args.num_experts, args.num_helper_slots, args.launch_args.num_threads);
+)", std::getenv("DG_EPLB_DEBUG") ? "#define DG_EPLB_DEBUG 1\n" : "",
+    args.num_ranks, args.num_experts, args.num_helper_slots, args.launch_args.num_threads);
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+        if (std::getenv("DG_EPLB_DEBUG"))
+            printf("EPLB plan launch: rank=%d generation=%u num_tokens=%d block_m=%d\n",
+                   args.workspace.rank_idx, args.generation, args.num_tokens, args.block_m);
         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
             args.workspace, args.topk_idx,
             static_cast<uint32_t>(args.num_tokens), static_cast<uint32_t>(args.num_topk),

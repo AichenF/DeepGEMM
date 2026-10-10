@@ -205,19 +205,24 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
                                  activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math))
         return y
 
+    torch.cuda.synchronize()
+    dist.barrier(group=group)
     # Cold copy: every helper slot changes, so this is the full weight transfer
-    # the steady-state loop below never pays again.
-    eplb.slot_expert.fill_(-1)
+    # the steady-state loop below never pays again. The first pass only builds
+    # the kernel; the second one is timed.
     b = eplb.symm
-    b.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int64))
-    eplb.plan(m_tokens)
-    torch.cuda.synchronize()
-    copies = int(eplb.copy_count.item())
-    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-    start.record()
-    eplb.copy_weights()
-    end.record()
-    torch.cuda.synchronize()
+    for _ in range(2):
+        eplb.slot_expert.fill_(-1)
+        b.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int64))
+        eplb.plan(m_tokens)
+        torch.cuda.synchronize()
+        dist.barrier(group=group)
+        copies = int(eplb.copy_count.item())
+        start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        start.record()
+        eplb.copy_weights()
+        end.record()
+        torch.cuda.synchronize()
     cold_us = torch.tensor([start.elapsed_time(end) * 1e3], device='cuda')
     dist.all_reduce(cold_us, op=dist.ReduceOp.MAX, group=group)
     bytes_per_slot = sum(spec[1] for spec in eplb.arena.plane_specs(eplb._plane_names))
@@ -237,10 +242,30 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
         run_fixed()
     torch.cuda.synchronize()
     dist.barrier(group=group)
+    # Every rank must issue the same number of plans, so the debug profile runs
+    # everywhere and only rank 0 prints it.
+    debug = bool(os.environ.get('DG_EPLB_DEBUG'))
+    quiet = not (debug and rank_idx == 0)
+    if debug:
+        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA]) as prof:
+            run_eplb()
+            torch.cuda.synchronize()
+        if rank_idx == 0:
+            print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=25, max_name_column_width=120), flush=True)
+    # The planner and the kernel both wait on their peers in-kernel with a
+    # 30 s budget; a profiler session can leave the hosts skewed by more than
+    # that, so resynchronize before every segment that launches them.
+    def resync():
+        torch.cuda.synchronize()
+        dist.barrier(group=group)
+
+    resync()
     t_eplb = bench_kineto(run_eplb, kernels, barrier=dist.barrier, num_tests=args.bench_tests,
-                          suppress_kineto_output=True)
+                          suppress_kineto_output=quiet)
+    resync()
     t_fixed = bench_kineto(run_fixed, 'sm90_mxfp4_mega_moe', barrier=dist.barrier, num_tests=args.bench_tests,
-                           suppress_kineto_output=True)
+                           suppress_kineto_output=quiet)
+    resync()
     t_eplb = [t * 1e6 for t in t_eplb]
     t_fixed_us = t_fixed * 1e6
     # Rank-maximum latency is what the layer waits for.
@@ -248,9 +273,10 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
     dist.all_reduce(local, op=dist.ReduceOp.MAX, group=group)
     total, kernel_only, fixed, plan_us, copy_us, remap_us = local.tolist()
     if rank_idx == 0:
+        ratio = lambda a, b: f'{a / b:.3f}x' if b > 0 else 'n/a'
         print(f'[bench M={m_tokens}] fixed={fixed:.1f}us  eplb total={total:.1f}us '
               f'(kernel {kernel_only:.1f} + plan {plan_us:.1f} + copy {copy_us:.1f} + remap {remap_us:.1f})  '
-              f'speedup total={fixed / total:.3f}x kernel-only={fixed / kernel_only:.3f}x', flush=True)
+              f'speedup total={ratio(fixed, total)} kernel-only={ratio(fixed, kernel_only)}', flush=True)
 
 
 def _worker(local_rank, num_local_ranks, args):

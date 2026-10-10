@@ -87,6 +87,10 @@ eplb_plan_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
     auto* g_copy_count = reinterpret_cast<int32_t*>(ws_base + layout.copy_count_offset());
 
     cudaGridDependencySynchronize();
+#ifdef DG_EPLB_DEBUG
+    if (thread_idx == 0)
+        printf("EPLB plan entry: rank=%u generation=%u parity=%u num_tokens=%u block_m=%u\n", rank, generation, parity, num_tokens, block_m);
+#endif
 
     // Local histogram
     for (uint32_t i = thread_idx; i < E; i += kNumThreads)
