@@ -96,6 +96,7 @@ from .mega import (
     fp8_mega_moe,
     nvfp4_mega_moe,
     mxfp4_mega_moe,
+    DynamicEPLB,
 )
 
 # Some utils

@@ -382,3 +382,7 @@ def mxfp4_mega_moe(y: torch.Tensor,
         sym_buffer.num_experts, sym_buffer.num_topk,
         activation_clamp, fast_math,
     )
+
+
+# Dynamic expert load balancing on top of the physical-slot kernel contract.
+from .eplb import DynamicEPLB  # noqa: E402
