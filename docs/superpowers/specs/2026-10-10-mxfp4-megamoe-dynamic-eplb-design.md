@@ -215,18 +215,36 @@ assumed every rank holds the same tokens (true for the synthetic generator,
 false for traces). The reference now gathers all ranks' tokens and reduces
 per destination rank.
 
-### Replay: DeepSeek V4 Flash, GSM8K routing, EP8 (interim, 4 of 40 layers)
+### Replay of real routing, EP8, 4 helper slots
 
-Four layers (0, 10, 20, 30) replayed with each rank taking a different slice
-of the captured batch. Correctness against the logical reference passes at
-every M (cosine 0.999). Rank-maximum times, median of 20 calls:
+Four layers per trace (evenly spaced), each rank taking a different slice of
+the captured batch, planner and remap checked against the Python reference,
+outputs checked against the logical-expert reference (cosine 0.999 in every
+case). End-to-end layer time ratio fixed / EPLB (rank maximum, median of 20
+calls), kernel-only ratio in parentheses; the four values are the four layers.
 
-| M per rank | busiest rank blocks (layers 0/10/20/30) | fixed (us) | EPLB total (us) | end to end | kernel-only |
-|---:|---|---:|---:|---:|---:|
-| 256 | 65/61/52/63 -> 44/44/43/44 | 413 / 417 / 354 / 400 | 392 / 369 / 406 / 375 | 1.05 / 1.13 / 0.87 / 1.07x | 1.35 / 1.39 / 1.19 / 1.33x |
-| 1024 | 184/181/154/174 -> 115/114/115/116 | 1113 / 1056 / 910 / 1016 | 808 / 813 / 797 / 813 | 1.38 / 1.30 / 1.14 / 1.25x | 1.55 / 1.46 / 1.28 / 1.39x |
-| 4096 | 677/675/545/642 -> 401/401/401/400 | 3823 / 3885 / - / - | 2470 / 2655 / - / - | 1.55 / 1.46x | 1.62 / 1.52x |
+| trace | M=256 | M=1024 | M=4096 |
+|---|---|---|---|
+| DeepSeek V4 Flash, GSM8K | 1.09 / 0.93 / 1.02 / 1.11 (1.37 / 1.30 / 1.29 / 1.39) | 1.38 / 1.33 / 1.12 / 1.24 (1.52 / 1.49 / 1.29 / 1.40) | 1.55 / 1.54 / 1.25 / 1.43 (1.62 / 1.60 / 1.30 / 1.49) |
+| DeepSeek V4 Flash, ShareGPT | 0.91 / 0.92 / 0.93 / 0.98 (1.14 / 1.13 / 1.18 / 1.21) | 1.00 / 1.29 / 1.25 / 1.12 (1.11 / 1.43 / 1.50 / 1.28) | 1.04 / 1.10 / 1.15 / 1.15 (1.10 / 1.15 / 1.19 / 1.20) |
+| MiMo 2.5, GSM8K | 0.89 / 0.88 / 1.23 / 1.22 (1.05 / 1.05 / 1.45 / 1.54) | 1.05 / 1.01 / 1.63 / 1.69 (1.13 / 1.09 / 1.76 / 1.82) | 1.11 / 1.03 / 1.80 / 1.94 (1.14 / 1.06 / 1.86 / 1.99) |
+| MiMo 2.5, ShareGPT | 0.91 / 0.83 / 0.95 / 0.92 (1.08 / 1.06 / 1.15 / 1.12) | 0.96 / 1.00 / 1.21 / 1.16 (1.05 / 1.09 / 1.31 / 1.26) | 1.00 / 0.98 / 1.08 / 1.13 (1.03 / 1.01 / 1.11 / 1.16) |
 
-Steady state copies nothing (slots keep their experts across the repeated
-layer); the planner costs 70-110 us per call at EP8, which is the whole gap
-between kernel-only and end-to-end gains at M=256.
+Absolute layer times, DeepSeek V4 Flash GSM8K layer 0: fixed 417 / 1091 /
+3838 us, EPLB 383 / 793 / 2472 us at M = 256 / 1024 / 4096. MiMo 2.5 GSM8K
+layer 51: fixed 860 / 2566 / 9555 us, EPLB 704 / 1521 / 4935 us.
+
+What the numbers say:
+
+* The gain is set by the layer's skew. MiMo's later layers (34, 51) are
+  strongly skewed and gain 1.6-1.9x at M >= 1024; its early layers are near
+  uniform and gain 1-1.1x. DeepSeek's GSM8K routing is skewed in every layer
+  (1.1-1.55x at M >= 1024). ShareGPT routing is close to uniform for both
+  models and gains 1.0-1.3x.
+* The kernel-only gain is always positive (1.01-1.99x). The end-to-end gain is
+  the kernel gain minus the planner, 70-150 us per call at EP8, which is why
+  M=256 lands at 0.83-1.23x. The planner is the next target; its compute is
+  6-13 us at EP1, so most of the EP8 cost is cross-rank skew and launch gaps
+  that overlapping it with the previous layer would hide.
+* Steady state copies nothing: the helper slots keep their experts across the
+  repeated layer. First-time copies cost 120-220 us per slot.
