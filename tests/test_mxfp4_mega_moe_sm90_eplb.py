@@ -59,11 +59,11 @@ def _trace_topk(layers, layer_idx, m_tokens, rank_idx, num_ranks, generator):
     """Rank ``rank_idx``'s slice of one traced layer: ``m_tokens`` consecutive
     tokens out of the global batch, wrapping around if the capture is short.
     Routing weights are not in the trace; softmax over random logits stands in."""
-    rows = layers[layer_idx % len(layers)]
+    rows = layers[layer_idx % len(layers)].cuda()
     total = rows.shape[0]
     start = (rank_idx * m_tokens) % total
-    idx = (torch.arange(m_tokens) + start) % total
-    topk_idx = rows[idx].cuda()
+    idx = (torch.arange(m_tokens, device=rows.device) + start) % total
+    topk_idx = rows[idx]
     w = torch.rand((m_tokens, topk_idx.shape[1]), generator=generator, device='cuda')
     return topk_idx, torch.softmax(w, dim=-1)
 
