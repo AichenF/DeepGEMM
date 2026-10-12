@@ -194,3 +194,23 @@ EP8, DeepSeek V4 Flash shape (256 experts, 32 per rank, top-6, 4096/2048),
    weight readiness inside the kernel.
 3. Replay real routing from DeepSeek V4 Flash and MiMo 2.5 instead of the
    synthetic skew, then end-to-end serving measurements.
+
+## Real routing traces (2026-10-12)
+
+Captured with `tests/eplb_tools/` from the two models served on SM90 with
+512 prompts per dataset, prefill only; one entry per MoE layer.
+
+| model | dataset | layers x tokens | routing skew kappa (min / median / max) |
+|---|---|---|---|
+| MiMo 2.5 | GSM8K | 69 x 31.5K | 1.37 / 5.74 / 12.69 |
+| MiMo 2.5 | ShareGPT | 69 x 326K | 1.06 / 1.31 / 1.77 |
+| DeepSeek V4 Flash | GSM8K | 40 x 31.5K | 3.79 / 8.06 / 14.18 |
+| DeepSeek V4 Flash | ShareGPT | 40 x 322K | 1.39 / 1.49 / 1.94 |
+
+GSM8K routing is strongly skewed on both models (one DeepSeek expert takes
+13.6% of all routed slots); ShareGPT is close to uniform. The first replay
+attempts reported wrong outputs for both the EPLB and the fixed-placement
+kernel while they agreed with each other exactly: the test's reference
+assumed every rank holds the same tokens (true for the synthetic generator,
+false for traces). The reference now gathers all ranks' tokens and reduces
+per destination rank.
