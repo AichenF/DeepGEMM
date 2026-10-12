@@ -124,11 +124,41 @@ EP4, 192 experts (48 per rank), 4 helper slots, same shape and skew:
 | 256 | 72 -> 55 | 632 | 505 | 77 + 1 + 2 | 1.253x | 1.081x |
 | 1024 | 223 -> 152 | 1867 | 1323 | 60 + 1 + 4 | 1.411x | 1.349x |
 
+EP8, MiMo 2.5 shape (384 experts, 48 per rank, top-8, 6144/2048), 4 helper
+slots, same skew (now half of all routed slots land on three experts of one
+rank, so the baseline is far more unbalanced than at EP2/EP4):
+
+| M per rank | busiest rank blocks | fixed (us) | EPLB kernel (us) | plan + copy + remap (us) | kernel-only | end to end |
+|---:|---|---:|---:|---:|---:|---:|
+| 64 | 65 -> 38 | 490 | 320 | 150 + 1 + 2 | 1.54x | 1.04x |
+| 256 | 94 -> 55 | 845 | 520 | 236 + 1 + 2 | 1.63x | 1.12x |
+| 1024 | 309 -> 191 | 2643 | 1540 | 196 + 1 + 3 | 1.72x | 1.52x |
+| 4096 | 1207 -> 747 | 10183 | 6394 | 287 + 1 + 7 | 1.59x | 1.52x |
+
+EP8, DeepSeek V4 Flash shape (256 experts, 32 per rank, top-6, 4096/2048),
+4 helper slots, same skew:
+
+| M per rank | busiest rank blocks | fixed (us) | EPLB kernel (us) | plan + copy + remap (us) | kernel-only | end to end |
+|---:|---|---:|---:|---:|---:|---:|
+| 64 | 55 -> 27 | 314 | 188 | 115 + 1 + 2 | 1.67x | 1.03x |
+| 256 | 77 -> 45 | 649 | 299 | 108 + 1 + 2 | 2.17x | 1.61x |
+| 1024 | 271 -> 148 | 1680 | 885 | 110 + 1 + 3 | 1.90x | 1.69x |
+| 4096 | 1070 -> 604 | 6066 | 3400 | 125 + 1 + 8 | 1.78x | 1.72x |
+
 * The kernel-only gain tracks the planned reduction of the busiest rank's
-  block count, as it should. The same hot experts hurt more at EP4 than at
-  EP2 because they are a larger share of one rank's work, so the gain grows
-  with the EP width; EP8 was not reachable on the shared nodes (every 4- and
-  8-GPU allocation exposed fewer devices than granted).
+  block count, as it should. The same hot experts hurt more as the EP width
+  grows because they are a larger share of one rank's work.
+* At EP8 the planner costs 110-290 us per call, which is what caps the
+  decode-size batches at parity. The EP1 figure (6-13 us) says most of it is
+  waiting for the slowest peer's launch, but the 8-rank planner compute has
+  not been measured in isolation yet.
+* A cold copy at EP8 moves up to four slots per rank (19 replicas in total)
+  and takes 0.5-1.1 ms rank-maximum; it is paid once per slot change.
+* These skews are synthetic. Replays of routing captured from the two models
+  on GSM8K and ShareGPT are the next measurement.
+* Reaching 8 visible GPUs on the shared nodes needed the test to run in the
+  batch step itself: an overlapping `srun` step inside a holder job only
+  received half of the job's GPUs.
 * The "plan" column at EP2 is mostly peer wait: the same planner measures
   6-13 us at EP1 (48 experts, M 64-1024), where there is nobody to wait for.
   In the fixed arm that skew is absorbed inside the kernel's first NVLink
