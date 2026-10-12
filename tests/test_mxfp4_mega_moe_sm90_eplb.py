@@ -44,6 +44,30 @@ def _skewed_topk(m_tokens, num_experts, num_topk, hot_experts, hot_share, genera
     return topk_idx, topk_weights
 
 
+def _load_trace(path, num_experts, num_topk):
+    """Routing trace captured from a real model: a dict with ``layers``, a list
+    of int tensors ``[tokens, topk]`` in logical expert ids (one global batch
+    per entry), plus ``num_experts`` and ``num_topk`` for a shape check."""
+    trace = torch.load(path, map_location='cpu')
+    assert int(trace['num_experts']) == num_experts and int(trace['num_topk']) == num_topk, \
+        f"trace is for {trace['num_experts']} experts / top-{trace['num_topk']}"
+    layers = [t.to(torch.int64) for t in trace['layers']]
+    return layers
+
+
+def _trace_topk(layers, layer_idx, m_tokens, rank_idx, num_ranks, generator):
+    """Rank ``rank_idx``'s slice of one traced layer: ``m_tokens`` consecutive
+    tokens out of the global batch, wrapping around if the capture is short.
+    Routing weights are not in the trace; softmax over random logits stands in."""
+    rows = layers[layer_idx % len(layers)]
+    total = rows.shape[0]
+    start = (rank_idx * m_tokens) % total
+    idx = (torch.arange(m_tokens) + start) % total
+    topk_idx = rows[idx].cuda()
+    w = torch.rand((m_tokens, topk_idx.shape[1]), generator=generator, device='cuda')
+    return topk_idx, torch.softmax(w, dim=-1)
+
+
 def _all_gather_counts(topk_idx, num_experts, group):
     counts = torch.bincount(topk_idx.flatten(), minlength=num_experts).to(torch.int64)
     gathered = [torch.empty_like(counts) for _ in range(dist.get_world_size(group))]
@@ -119,8 +143,11 @@ def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
     H = E // num_ranks
 
     eplb, l1_dequant, l2_dequant, l1_gs, l2_gs = eplb_state
-    hot = [h % E for h in args.hot_experts]
-    topk_idx, topk_weights = _skewed_topk(m_tokens, E, K, hot, args.hot_share, gen)
+    if args.trace_layers is not None:
+        topk_idx, topk_weights = _trace_topk(args.trace_layers, args.trace_layer, m_tokens, rank_idx, num_ranks, gen)
+    else:
+        hot = [h % E for h in args.hot_experts]
+        topk_idx, topk_weights = _skewed_topk(m_tokens, E, K, hot, args.hot_share, gen)
     x_bf = torch.randn((m_tokens, hidden), dtype=torch.bfloat16, device='cuda', generator=gen)
     x_fp8, x_sf = per_token_cast_to_fp8(x_bf, use_ue8m0=False, gran_k=128)
 
@@ -305,13 +332,18 @@ def _worker(local_rank, num_local_ranks, args):
         eplb.set_home_weights(t1, t2, l1_gs, l2_gs)
         state = (eplb, l1_dequant, l2_dequant, l1_gs.cpu().tolist(), l2_gs.cpu().tolist())
 
+        args.trace_layers = _load_trace(args.trace, E, args.num_topk) if args.trace else None
+        trace_layer_ids = list(range(0, len(args.trace_layers), max(1, len(args.trace_layers) // args.trace_num_layers))) \
+            [:args.trace_num_layers] if args.trace_layers is not None else [0]
         routings = {}
         for m_tokens in args.batches:
-            routings[m_tokens] = _run_case(args, m_tokens, rank_idx, group, state,
-                                           check=bool(args.correctness))
-            if args.correctness:
-                # Second pass on the same routing exercises the slot cache.
-                _run_case(args, m_tokens, rank_idx, group, state)
+            for layer in trace_layer_ids:
+                args.trace_layer = layer
+                routings[(m_tokens, layer)] = _run_case(args, m_tokens, rank_idx, group, state,
+                                                        check=bool(args.correctness))
+                if args.correctness:
+                    # Second pass on the same routing exercises the slot cache.
+                    _run_case(args, m_tokens, rank_idx, group, state)
         if rank_idx == 0 and args.correctness:
             print('correctness: PASS', flush=True)
 
@@ -325,7 +357,10 @@ def _worker(local_rank, num_local_ranks, args):
                 group, E, args.num_max_tokens_per_rank, args.num_topk, args.hidden, args.intermediate_hidden,
                 use_fp8_dispatch=True, activation='swiglu')
             for m_tokens in args.batches:
-                _bench(args, m_tokens, rank_idx, group, eplb, routings[m_tokens], baseline_buffer, (t1, t2))
+                for layer in trace_layer_ids:
+                    if args.trace_layers is not None and rank_idx == 0:
+                        print(f'[trace layer {layer}]', flush=True)
+                    _bench(args, m_tokens, rank_idx, group, eplb, routings[(m_tokens, layer)], baseline_buffer, (t1, t2))
             baseline_buffer.destroy()
         eplb.destroy()
     finally:
@@ -353,6 +388,9 @@ def _parse_args():
     p.add_argument('--cosine-min-threshold', type=float, default=0.99)
     p.add_argument('--norm-ratio-min', type=float, default=0.99)
     p.add_argument('--norm-ratio-max', type=float, default=1.01)
+    p.add_argument('--trace', type=str, default=None,
+                   help='routing trace (.pt) captured from a model; replaces the synthetic skew')
+    p.add_argument('--trace-num-layers', type=int, default=4, help='how many traced layers to replay')
     p.add_argument('--bench', type=int, default=1)
     p.add_argument('--correctness', type=int, default=1)
     p.add_argument('--bench-tests', type=int, default=20)
