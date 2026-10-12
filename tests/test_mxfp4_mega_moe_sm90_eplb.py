@@ -134,6 +134,31 @@ def _check_remap(eplb, ref, counts, logical_rows, physical_rows, rank_idx):
     return seen
 
 
+def _verify_copies(eplb, ref, rank_idx, group):
+    """Every helper slot must hold a byte-exact copy of its expert's home slot."""
+    num_ranks = dist.get_world_size(group)
+    H, S = eplb.home_experts, eplb.num_helper_slots
+    sums = []
+    for name in eplb._plane_names:
+        v = eplb.arena.views[name]
+        flat = v.reshape(v.shape[0], -1)
+        if flat.dtype == torch.float32:
+            flat = flat.view(torch.int32)
+        sums.append(flat.to(torch.int64).sum(dim=1))
+    local = torch.stack(sums)  # [planes, slots]
+    gathered = [torch.empty_like(local) for _ in range(num_ranks)]
+    dist.all_gather(gathered, local, group=group)
+    bad = []
+    for r in range(num_ranks):
+        for s_idx, e in enumerate(ref.slot_expert[r]):
+            if e < 0:
+                continue
+            owner, local_e = divmod(e, H)
+            if not torch.equal(gathered[r][:, H + s_idx], gathered[owner][:, local_e]):
+                bad.append((r, s_idx, e, owner))
+    assert not bad, f'rank {rank_idx}: helper slots differ from their owners (rank, slot, expert, owner): {bad[:8]}'
+
+
 def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
     num_ranks = dist.get_world_size(group)
     gen = torch.Generator(device='cuda')
@@ -182,6 +207,8 @@ def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
             n, blocks = local_counts[r][e], ref.blocks[e][r]
             assert n <= blocks * block_m and (blocks == 0) == (n == 0) and n > (blocks - 1) * block_m, \
                 f'rank {rank_idx}: expert {e} on rank {r} got {n} tokens for {blocks} blocks of {block_m}'
+
+    _verify_copies(eplb, ref, rank_idx, group)
 
     y = torch.empty((m_tokens, hidden), dtype=torch.bfloat16, device='cuda')
     deep_gemm.mxfp4_mega_moe(
