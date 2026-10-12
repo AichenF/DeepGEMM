@@ -152,3 +152,15 @@ EP4, 192 experts (48 per rank), 4 helper slots, same shape and skew:
 * One greedy candidate; MegaFlux evaluates four in parallel warps.
 * Both ranks compute the plan redundantly, which is what keeps them
   consistent without a collective.
+
+## Follow-ups
+
+1. Rename the inherited `*_h200_fused*` / `*_H200Fused*` / `_H20_` identifiers
+   and file names to architecture-neutral ones (`sm90_mxfp4_mega_moe_fused`),
+   across the kernel header, body include, JIT runtime, heuristics and the
+   Python layout attributes. Mechanical, about fifteen files; verify with
+   `tests/compile_all_megamoe_kernels.sh`.
+2. Overlap the planner with the previous layer and gate helper slots on
+   weight readiness inside the kernel.
+3. Replay real routing from DeepSeek V4 Flash and MiMo 2.5 instead of the
+   synthetic skew, then end-to-end serving measurements.
