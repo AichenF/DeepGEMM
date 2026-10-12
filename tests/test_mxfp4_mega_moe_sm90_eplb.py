@@ -167,7 +167,7 @@ def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
     E, K, S = args.num_experts, args.num_topk, args.num_helper_slots
     H = E // num_ranks
 
-    eplb, l1_dequant, l2_dequant, l1_gs, l2_gs = eplb_state
+    eplb, l1_dequant, l2_dequant, l1_gs, l2_gs = eplb_state[:5]
     if args.trace_layers is not None:
         topk_idx, topk_weights = _trace_topk(args.trace_layers, args.trace_layer, m_tokens, rank_idx, num_ranks, gen)
     else:
