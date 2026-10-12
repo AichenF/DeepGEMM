@@ -89,7 +89,8 @@ class DynamicEPLB:
                  num_max_tokens_per_rank: int, num_topk: int,
                  hidden: int, intermediate_hidden: int,
                  open_gate_blocks: int = 0,
-                 activation: str = 'swiglu'):
+                 activation: str = 'swiglu',
+                 symm: Optional[SymmBuffer] = None):
         assert num_helper_slots > 0
         self.group = group
         self.num_ranks = group.size()
@@ -106,10 +107,17 @@ class DynamicEPLB:
         self.open_gate_blocks = open_gate_blocks
         self.generation = 0
 
-        # The MegaMoE symmetric buffer is sized for physical slots.
-        self.symm: SymmBuffer = get_symm_buffer_for_mega_moe(
-            group, self.num_slots, num_max_tokens_per_rank, num_topk,
-            hidden, intermediate_hidden, True, activation)
+        # The MegaMoE symmetric buffer is sized for physical slots. A model
+        # with many MoE layers passes one shared buffer (`symm`) instead of
+        # paying for a buffer per layer; the planner workspace and the weight
+        # arena stay per instance.
+        self._owns_symm = symm is None
+        if symm is None:
+            symm = get_symm_buffer_for_mega_moe(
+                group, self.num_slots, num_max_tokens_per_rank, num_topk,
+                hidden, intermediate_hidden, True, activation)
+        assert symm.num_experts == self.num_slots, 'shared buffer must be sized for the physical slots'
+        self.symm: SymmBuffer = symm
         self.num_max_tokens_per_rank = self.symm.num_max_tokens_per_rank
 
         # Planner workspace, also symmetric: histograms travel through it.
@@ -267,6 +275,7 @@ class DynamicEPLB:
         if self.arena is not None:
             self.arena.destroy()
             self.arena = None
-        self.symm.destroy()
+        if self._owns_symm:
+            self.symm.destroy()
         self.ws_handle = None
         self.ws = None
