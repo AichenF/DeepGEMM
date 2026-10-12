@@ -223,6 +223,29 @@ def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
                               l1_gs, l2_gs, rank_idx, H, args.activation_clamp, group)
     finite = torch.isfinite(y).all().item()
     cosine = torch.nn.functional.cosine_similarity(y.float(), y_ref, dim=-1)
+    if args.check_fixed:
+        # The same tokens through the fixed-placement kernel, as a control.
+        fb, fw = eplb_state[5], eplb_state[6]
+        fb.x[:m_tokens].copy_(x_fp8)
+        fb.x_sf[:m_tokens].copy_(x_sf)
+        fb.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int64))
+        fb.topk_weights[:m_tokens].copy_(topk_weights.to(torch.float32))
+        y_fixed = torch.empty((m_tokens, hidden), dtype=torch.bfloat16, device='cuda')
+        deep_gemm.mxfp4_mega_moe(y_fixed, fw[0], fw[1], fb,
+                                 l1_global_scales=torch.tensor(l1_gs, device='cuda'),
+                                 l2_global_scales=torch.tensor(l2_gs, device='cuda'),
+                                 activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math))
+        torch.cuda.synchronize()
+        cos_fixed = torch.nn.functional.cosine_similarity(y_fixed.float(), y_ref, dim=-1)
+        slots = eplb.slots_per_rank
+        phys = b.topk_idx[:m_tokens]
+        on_helper = ((phys % slots) >= H).any(dim=1)
+        if rank_idx == 0:
+            print(f'  [control] fixed-placement cos mean={cos_fixed.mean().item():.4f} min={cos_fixed.min().item():.4f}; '
+                  f'eplb cos<0.9 on {(cosine < 0.9).float().mean().item():.3f} of tokens '
+                  f'(tokens touching a helper slot: {on_helper.float().mean().item():.3f}, '
+                  f'their cos mean={cosine[on_helper].mean().item() if on_helper.any() else float("nan"):.4f}, '
+                  f'others cos mean={cosine[~on_helper].mean().item() if (~on_helper).any() else float("nan"):.4f})', flush=True)
     cos_min, cos_mean = cosine.min().item(), cosine.mean().item()
     norm_ratio = (torch.linalg.vector_norm(y.float()) / torch.linalg.vector_norm(y_ref).clamp_min(1e-30)).item()
     baseline = max(sum(-(-sum(counts[r][e] for r in range(num_ranks)) // block_m)
@@ -358,6 +381,11 @@ def _worker(local_rank, num_local_ranks, args):
                                      open_gate_blocks=args.open_gate_blocks)
         eplb.set_home_weights(t1, t2, l1_gs, l2_gs)
         state = (eplb, l1_dequant, l2_dequant, l1_gs.cpu().tolist(), l2_gs.cpu().tolist())
+        if args.check_fixed:
+            fixed_buffer = deep_gemm.get_symm_buffer_for_mega_moe(
+                group, E, args.num_max_tokens_per_rank, args.num_topk, args.hidden, args.intermediate_hidden,
+                use_fp8_dispatch=True, activation='swiglu')
+            state = state + (fixed_buffer, (t1, t2))
 
         args.trace_layers = _load_trace(args.trace, E, args.num_topk) if args.trace else None
         trace_layer_ids = list(range(0, len(args.trace_layers), max(1, len(args.trace_layers) // args.trace_num_layers))) \
@@ -418,6 +446,8 @@ def _parse_args():
     p.add_argument('--trace', type=str, default=None,
                    help='routing trace (.pt) captured from a model; replaces the synthetic skew')
     p.add_argument('--trace-num-layers', type=int, default=4, help='how many traced layers to replay')
+    p.add_argument('--check-fixed', type=int, default=0,
+                   help='also run the fixed-placement kernel on the same tokens as a control')
     p.add_argument('--bench', type=int, default=1)
     p.add_argument('--correctness', type=int, default=1)
     p.add_argument('--bench-tests', type=int, default=20)
