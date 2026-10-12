@@ -248,3 +248,17 @@ What the numbers say:
   that overlapping it with the previous layer would hide.
 * Steady state copies nothing: the helper slots keep their experts across the
   repeated layer. First-time copies cost 120-220 us per slot.
+
+## End-to-end serving (2026-10-12)
+
+Serving integration: `tests/eplb_tools/sglang_patch/` (SGLang, `--moe-a2a-backend megamoe`, SM90 MXFP4 MegaMoE kernel on both arms). DeepSeek V4 Flash, TP = EP = 4 on one node, `bench_serving` ShareGPT, 256 prompts, 128 output tokens, concurrency 32, request rate inf. The arms differ only in `SGLANG_MEGAMOE_DYNAMIC_EPLB_SLOTS` (0 vs 4).
+
+| metric | fixed | 4 helper slots | change |
+|---|---|---|---|
+| total token throughput (tok/s) | 1766 | 1858 | +5.2% |
+| output token throughput (tok/s) | 498 | 523 | +5.2% |
+| mean / median / P99 TTFT (ms) | 1440 / 1100 / 4800 | 1054 / 893 / 4251 | -27% / -19% / -11% |
+| mean E2E latency (ms) | 8222 | 7813 | -5% |
+| mean TPOT (ms) | 53.4 | 53.2 | 0% |
+
+Prefill improves, decode is unchanged, as the kernel-level study predicts (the balancer only changes the expert placement; decode batches are too small for the imbalance to matter). Integration lessons folded into the adapter: the FP4 group scales arrive as float32 from the loader; the MXFP4 dispatch must run before the FP8 symmetric buffer is created; the balancer must be allocated at weight-build time with one shared physical-slot buffer across layers, otherwise CUDA graph capture runs out of memory. EP8 and prefill-only GSM8K / ShareGPT runs are queued.

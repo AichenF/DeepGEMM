@@ -11,3 +11,26 @@
    `python build_trace.py <dump_dir> <out.pt> --num-experts E --num-topk K`
 4. Replay it in the kernel benchmark:
    `python tests/test_mxfp4_mega_moe_sm90_eplb.py --trace <out.pt> --trace-num-layers 4 ...`
+
+## Serving integration (SGLang, SM90 MXFP4 MegaMoE)
+
+`sglang_patch/install_mxfp4_megamoe.py <sglang_python_root>` wires the SM90
+MXFP4 MegaMoE kernel into an SGLang tree that already carries the SM90 FP8
+MegaMoE integration (`--moe-a2a-backend megamoe`). It copies
+`mega_moe_sm90_mxfp4.py` next to `mega_moe_sm90.py`, lets
+`should_use_mega_moe` accept FP4 experts on SM90, dispatches them before the
+FP8 symmetric buffer is created, and routes the FP4 expert weights to
+`build_sm90_mxfp4_mega_moe_experts_weights` (OCP packed FP4 + per-32 E8M0
+scales, float or byte encoded).
+
+The two serving arms differ only in one environment variable read by the
+server: `SGLANG_MEGAMOE_DYNAMIC_EPLB_SLOTS=0` is fixed placement on the same
+kernel, `SGLANG_MEGAMOE_DYNAMIC_EPLB_SLOTS=S` enables the balancer with `S`
+helper slots per rank (`SGLANG_MEGAMOE_DYNAMIC_EPLB_OPEN_GATE_BLOCKS` is the
+open gate). With the balancer on, the arena is allocated at weight-build time
+and shares one physical-slot symmetric buffer across layers, so KV-cache
+sizing sees it and nothing is allocated during CUDA graph capture.
+
+`gsm8k_quick_eval.py <gsm8k_test.parquet> <port> [num] [concurrency]` is a
+greedy zero-shot GSM8K accuracy probe against a running server, used to check
+that both arms produce the same quality.
