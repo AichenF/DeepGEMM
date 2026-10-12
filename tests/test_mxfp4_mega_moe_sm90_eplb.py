@@ -77,27 +77,39 @@ def _all_gather_counts(topk_idx, num_experts, group):
 
 def _reference_output(x_fp8, x_sf, topk_idx, topk_weights, l1_dequant, l2_dequant,
                       l1_gs, l2_gs, rank_idx, num_local_experts, clamp, group):
+    """Logical-expert reference for every rank's tokens.
+
+    Each rank applies its own experts to all ranks' tokens, then the partial
+    sums are reduced so that rank r receives the full result for its tokens.
+    Ranks may hold different tokens (real routing traces do)."""
+    num_ranks = dist.get_world_size(group)
     m_tokens, hidden = x_fp8.shape
     x_ref = (x_fp8.float().view(m_tokens, hidden // 128, 128) * x_sf.float().unsqueeze(2)).view(m_tokens, hidden)
-    y_ref = torch.zeros((m_tokens, hidden), device='cuda', dtype=torch.float32)
-    topk_idx_cpu = topk_idx.cpu()
-    topk_w_cpu = topk_weights.cpu()
-    # Group by local expert so each expert is one GEMM.
-    for local in range(num_local_experts):
-        expert = rank_idx * num_local_experts + local
-        hits = (topk_idx_cpu == expert).nonzero()
-        if hits.numel() == 0:
-            continue
-        tok = hits[:, 0].cuda()
-        w = topk_w_cpu[hits[:, 0], hits[:, 1]].cuda().float()
-        l1_out = x_ref[tok] @ l1_dequant[local].float().t() * l1_gs[local]
-        inter = l1_out.shape[1] // 2
-        gate = l1_out[:, :inter].clamp(max=clamp)
-        up = l1_out[:, inter:].clamp(min=-clamp, max=clamp)
-        h = _silu(gate) * up * w[:, None]
-        y_ref.index_add_(0, tok, (h @ l2_dequant[local].float().t()) * l2_gs[local])
-    dist.all_reduce(y_ref, op=dist.ReduceOp.SUM, group=group)
-    return y_ref
+    all_x = [torch.empty_like(x_ref) for _ in range(num_ranks)]
+    all_idx = [torch.empty_like(topk_idx) for _ in range(num_ranks)]
+    all_w = [torch.empty_like(topk_weights) for _ in range(num_ranks)]
+    dist.all_gather(all_x, x_ref.contiguous(), group=group)
+    dist.all_gather(all_idx, topk_idx.contiguous(), group=group)
+    dist.all_gather(all_w, topk_weights.contiguous().float(), group=group)
+    y_all = torch.zeros((num_ranks, m_tokens, hidden), device='cuda', dtype=torch.float32)
+    for src in range(num_ranks):
+        idx_cpu = all_idx[src].cpu()
+        w_cpu = all_w[src].cpu()
+        for local in range(num_local_experts):
+            expert = rank_idx * num_local_experts + local
+            hits = (idx_cpu == expert).nonzero()
+            if hits.numel() == 0:
+                continue
+            tok = hits[:, 0].cuda()
+            w = w_cpu[hits[:, 0], hits[:, 1]].cuda().float()
+            l1_out = all_x[src][tok] @ l1_dequant[local].float().t() * l1_gs[local]
+            inter = l1_out.shape[1] // 2
+            gate = l1_out[:, :inter].clamp(max=clamp)
+            up = l1_out[:, inter:].clamp(min=-clamp, max=clamp)
+            h = _silu(gate) * up * w[:, None]
+            y_all[src].index_add_(0, tok, (h @ l2_dequant[local].float().t()) * l2_gs[local])
+    dist.all_reduce(y_all, op=dist.ReduceOp.SUM, group=group)
+    return y_all[rank_idx]
 
 
 def _check_plan(eplb, counts, block_m, prev_slot_expert, rank_idx):
