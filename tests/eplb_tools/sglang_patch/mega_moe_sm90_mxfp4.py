@@ -5,7 +5,8 @@ packed E2M1 + E8M0 scales, or MiMo's MXFP4 store) go through DeepGEMM's fused
 SM90 MXFP4 MegaMoE kernel. ``SGLANG_MEGAMOE_DYNAMIC_EPLB_SLOTS=S`` (S > 0)
 turns on dynamic expert load balancing with S helper slots per rank; 0 or
 unset is fixed placement on the same kernel, so the two arms differ only in
-the balancer.
+the balancer. ``SGLANG_MEGAMOE_DYNAMIC_EPLB_MIN_TOKENS`` (default 512) is the
+smallest local token count that triggers a new plan.
 """
 
 from __future__ import annotations
@@ -22,6 +23,12 @@ if TYPE_CHECKING:
 
 _EPLB_SLOTS = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_SLOTS", "0"))
 _EPLB_OPEN_GATE = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_OPEN_GATE_BLOCKS", "0"))
+# Below this many local tokens (decode steps, small prefill chunks) the planner
+# is skipped: tokens are remapped onto the placement from the last plan, so the
+# per-layer planner cost is not paid where imbalance cannot be exploited. All
+# ranks must take the same branch; without DP attention every rank sees the
+# same token count.
+_EPLB_MIN_TOKENS = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_MIN_TOKENS", "512"))
 _MXFP4_SYMM_BUFFER: dict = {}
 
 
@@ -181,8 +188,10 @@ def run_sm90_mxfp4_mega_routed(
 
     y = torch.empty((max(num_tokens, 1), hidden), dtype=torch.bfloat16, device=hidden_states.device)
     if eplb is not None:
-        if num_tokens > 0:
+        if num_tokens >= _EPLB_MIN_TOKENS:
             eplb.prepare(num_tokens)
+        elif num_tokens > 0:
+            eplb.remap(num_tokens, eplb.block_m(num_tokens))
         deep_gemm.mxfp4_mega_moe(
             y, eplb.l1_weights, eplb.l2_weights, buf,
             cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,

@@ -13,7 +13,7 @@ def last_number(s):
     return m[-1].replace(",", "").rstrip(".") if m else None
 
 def ask(q):
-    body = json.dumps({"model": "default", "prompt": f"Question: {q}\nAnswer: Let's think step by step.", "max_tokens": 384, "temperature": 0}).encode()
+    body = json.dumps({"model": "default", "prompt": f"Question: {q}\nAnswer: Let's think step by step.", "max_tokens": 384, "temperature": 0, "stop": ["\nQuestion:", "\n\n\n"]}).encode()
     req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/completions", body, {"Content-Type": "application/json"})
     return json.loads(urllib.request.urlopen(req, timeout=600).read())["choices"][0]["text"]
 
@@ -24,5 +24,6 @@ for out, ans in zip(outs, df["answer"].tolist()):
     gold = ans.split("####")[-1].strip().replace(",", "")
     pred = last_number(out)
     correct += int(pred is not None and gold is not None and abs(float(pred) - float(gold)) < 1e-6) if pred and re.match(r"^-?\d+(\.\d+)?$", pred) else 0
+json.dump([{"q": q, "out": o} for q, o in zip(df["question"].tolist(), outs)], open(f"gsm8k_outputs_{port}.json", "w"))
 print(f"GSM8K quick eval: {correct}/{len(outs)} = {correct/len(outs):.3f}")
 print("SAMPLE:", outs[0][:300].replace("\n", " | "))

@@ -262,3 +262,18 @@ Serving integration: `tests/eplb_tools/sglang_patch/` (SGLang, `--moe-a2a-backen
 | mean TPOT (ms) | 53.4 | 53.2 | 0% |
 
 Prefill improves, decode is unchanged, as the kernel-level study predicts (the balancer only changes the expert placement; decode batches are too small for the imbalance to matter). Integration lessons folded into the adapter: the FP4 group scales arrive as float32 from the loader; the MXFP4 dispatch must run before the FP8 symmetric buffer is created; the balancer must be allocated at weight-build time with one shared physical-slot buffer across layers, otherwise CUDA graph capture runs out of memory. EP8 and prefill-only GSM8K / ShareGPT runs are queued.
+
+### EP8, first serving run (planner on every forward)
+
+DeepSeek V4 Flash, TP = EP = 8, same client settings; prefill-only runs use 4 output tokens (the client rejects fewer). GSM8K accuracy (greedy, zero-shot, 300 questions) is 285/300 on both arms.
+
+| run | metric | fixed | 4 helper slots | change |
+|---|---|---|---|---|
+| GSM8K prefill | input tok/s | 2198 | 2171 | -1% |
+| GSM8K prefill | mean / median / P99 TTFT (ms) | 847 / 414 / 3939 | 812 / 439 / 3636 | -4% / +6% / -8% |
+| ShareGPT prefill | input tok/s | 7324 | 12174 | +66% |
+| ShareGPT prefill | mean / median / P99 TTFT (ms) | 1157 / 743 / 4204 | 621 / 599 / 1028 | -46% / -19% / -76% |
+| ShareGPT 128-token gen | total tok/s | 5727 | 4053 | -29% |
+| ShareGPT 128-token gen | mean TTFT / TPOT (ms) | 610 / 15.1 | 570 / 23.7 | -7% / +57% |
+
+Reading: long ShareGPT prompts fill the 4096-token prefill chunks, where the kernel-level gains apply, and TTFT drops sharply. GSM8K prompts are short, so the per-forward planner cost (43 layers at EP8) cancels the gain. Decode gets slower for the same reason: a plan was computed for every decode step although a decode batch cannot be rebalanced profitably. The adapter therefore now plans only when the local token count reaches `SGLANG_MEGAMOE_DYNAMIC_EPLB_MIN_TOKENS` (default 512) and otherwise remaps onto the last placement, which is correct for any placement. The rerun with that rule is the number reported in the PR.
