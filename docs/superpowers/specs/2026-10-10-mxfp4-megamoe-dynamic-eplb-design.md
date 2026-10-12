@@ -214,3 +214,19 @@ kernel while they agreed with each other exactly: the test's reference
 assumed every rank holds the same tokens (true for the synthetic generator,
 false for traces). The reference now gathers all ranks' tokens and reduces
 per destination rank.
+
+### Replay: DeepSeek V4 Flash, GSM8K routing, EP8 (interim, 4 of 40 layers)
+
+Four layers (0, 10, 20, 30) replayed with each rank taking a different slice
+of the captured batch. Correctness against the logical reference passes at
+every M (cosine 0.999). Rank-maximum times, median of 20 calls:
+
+| M per rank | busiest rank blocks (layers 0/10/20/30) | fixed (us) | EPLB total (us) | end to end | kernel-only |
+|---:|---|---:|---:|---:|---:|
+| 256 | 65/61/52/63 -> 44/44/43/44 | 413 / 417 / 354 / 400 | 392 / 369 / 406 / 375 | 1.05 / 1.13 / 0.87 / 1.07x | 1.35 / 1.39 / 1.19 / 1.33x |
+| 1024 | 184/181/154/174 -> 115/114/115/116 | 1113 / 1056 / 910 / 1016 | 808 / 813 / 797 / 813 | 1.38 / 1.30 / 1.14 / 1.25x | 1.55 / 1.46 / 1.28 / 1.39x |
+| 4096 | 677/675/545/642 -> 401/401/401/400 | 3823 / 3885 / - / - | 2470 / 2655 / - / - | 1.55 / 1.46x | 1.62 / 1.52x |
+
+Steady state copies nothing (slots keep their experts across the repeated
+layer); the planner costs 70-110 us per call at EP8, which is the whole gap
+between kernel-only and end-to-end gains at M=256.
