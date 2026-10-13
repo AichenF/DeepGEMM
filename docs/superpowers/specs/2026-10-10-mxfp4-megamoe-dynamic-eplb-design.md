@@ -343,3 +343,46 @@ now derives the planning decision and the planner block size from the
 batch's published global token counts (identical on all ranks) instead of
 the local count, which also fixes the sequence-sharded case where local
 counts can differ by one.
+
+### 16384-token chunks and DP attention (2026-10-13)
+
+Job with the kernel gate (PASS), the kernel bench at M = 512 to 4096 and six
+serving arms. The two DP-attention arms (`--enable-dp-attention --dp-size 8`,
+EP8) never served: every scheduler died at the first prefill with an
+unspecified launch failure surfacing in the layer after the MoE, with and
+without the balancer, so it is a base-path problem of the MegaMoE backend
+under DP attention in this image, not of the balancer. SGLang also divides
+the chunk by the DP size (`chunked_prefill_size` became 512), so that
+configuration would not have given the MoE large batches anyway. Dropped.
+
+TP = EP = 8 with 16384-token chunks (cap 16384) served fine. The trace
+confirms the regime: planned layer forwards averaged 1905 local tokens,
+remap-only forwards 55. Steady-state passes 5 (fixed) and 6 (4 slots); pass
+1 (fixed, cold node) is excluded as before:
+
+| run | metric | fixed | 4 slots | change |
+|---|---|---|---|---|
+| GSM8K prefill, conc 64 | input tok/s | 10569 | 9909 | -6% |
+| GSM8K prefill, conc 64 | mean / P99 TTFT (ms) | 317 / 388 | 341 / 407 | +8% / +5% |
+| ShareGPT-long prefill, conc 128 | input tok/s | 47346 | 47715 | +0.8% |
+| ShareGPT-long prefill, conc 128 | mean / P99 TTFT (ms) | 4147 / 7337 | 4096 / 7312 | -1% / 0% |
+| ShareGPT-long 64-token gen | input tok/s | 41617 | 41542 | -0.2% |
+| ShareGPT-long 64-token gen | mean TPOT (ms) | 69.4 | 69.7 | 0% |
+| GSM8K accuracy (300 q) | correct | 285 | 288 | |
+
+Kernel ceiling at this per-rank batch from the same job (M = 2048, EP8, four
+layers, end to end including plan, copy and remap): GSM8K routing fixed
+1631-1993 us vs 1355-1396 us (1.20-1.47x), ShareGPT routing 1548-1871 us vs
+1360-1378 us (1.12-1.37x). The serving arms realize far less than that, so
+either the MoE layers are a smaller share of the step than the kernel bench
+implies, or the plan inside the server is weaker than on the captured
+traces. The GSM8K arm is the break-even band: about 800 tokens per rank, so
+the planner runs on every layer and does not recover its cost.
+
+Next run, same script: the adapter now times every N-th large MoE layer
+forward inside the server with CUDA events (both arms, read back one period
+later so nothing stalls) and prints, for the balanced arm, the rank loads of
+the plan that forward used (owner-only vs planned, in token blocks, from the
+planner's copy table). That gives the per-layer MoE time fixed vs balanced
+at the same point of the same request stream, and shows whether the plan
+replicates. A third arm plans only from 1024 tokens per rank.

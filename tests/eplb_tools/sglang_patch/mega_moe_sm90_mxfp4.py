@@ -31,11 +31,55 @@ _EPLB_OPEN_GATE = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_OPEN_GATE_BLOC
 # same token count.
 _EPLB_MIN_TOKENS = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_MIN_TOKENS", "512"))
 _MXFP4_SYMM_BUFFER: dict = {}
-# ``SGLANG_MEGAMOE_DYNAMIC_EPLB_TRACE=N`` (N > 0): rank 0 reports every N planned
-# layer forwards how many forwards planned vs. remapped onto the last placement,
-# their mean local token counts and the replica count of the latest plan.
+# ``SGLANG_MEGAMOE_DYNAMIC_EPLB_TRACE=N`` (N > 0): rank 0 times every N-th
+# layer forward with at least ``_TRACE_MIN_TOKENS`` local tokens (CUDA events
+# around the whole MoE call, read back one trace period later so nothing
+# stalls) and logs it, with the planned/remap-only counters and the rank
+# loads of the plan that forward used. Works with and without the balancer,
+# so the two arms can be compared layer by layer inside the server.
 _EPLB_TRACE = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_TRACE", "0"))
-_EPLB_STATS = {"plan": 0, "plan_tokens": 0, "remap": 0, "remap_tokens": 0}
+_EPLB_STATS = {"plan": 0, "plan_tokens": 0, "remap": 0, "remap_tokens": 0, "large": 0}
+_TRACE_MIN_TOKENS = 512
+_TRACE_PENDING = None
+
+
+def _plan_summary(copies: torch.Tensor, slot_expert: torch.Tensor, home_experts: int) -> str:
+    """Rank loads in token blocks for one plan, read from the planner's copy
+    table: owner-only placement versus the planned placement."""
+    c = copies.tolist()
+    num_ranks = len(c[0])
+    fixed = [0] * num_ranks
+    planned = [0] * num_ranks
+    for e, row in enumerate(c):
+        prev = 0
+        for rank, cum in row:
+            if rank < 0:
+                break
+            if cum >= 0x7FFFFFFF:
+                return "no plan yet"
+            planned[rank] += cum - prev
+            prev = cum
+        fixed[e // home_experts] += prev
+    replicas = int((slot_expert >= 0).sum().item())
+    return (f"replicas {replicas}, max rank load {max(fixed)} -> {max(planned)} blocks "
+            f"(mean {sum(planned) / num_ranks:.0f})")
+
+
+def _trace_flush(eplb) -> None:
+    global _TRACE_PENDING
+    if _TRACE_PENDING is None:
+        return
+    ordinal, tokens, mode, start, end, copies, slots = _TRACE_PENDING
+    _TRACE_PENDING = None
+    end.synchronize()
+    msg = (f"[megamoe-trace] large forward #{ordinal}: {tokens} local tokens, {mode}, "
+           f"{start.elapsed_time(end) * 1000:.0f} us")
+    if eplb is not None:
+        st = _EPLB_STATS
+        msg += (f" | planned {st['plan']} (mean {st['plan_tokens'] / max(st['plan'], 1):.0f} tokens), "
+                f"remap-only {st['remap']} (mean {st['remap_tokens'] / max(st['remap'], 1):.0f} tokens)"
+                f" | its plan: {_plan_summary(copies, slots, eplb.home_experts)}")
+    logging.getLogger(__name__).info(msg)
 
 
 def is_sm90_mxfp4_mega_moe_available(experts) -> bool:
@@ -185,6 +229,16 @@ def run_sm90_mxfp4_mega_routed(
     else:
         buf = _get_symm_buffer(group, num_experts, num_max_tokens_per_rank, top_k, hidden, intermediate)
 
+    trace_this = False
+    if _EPLB_TRACE and num_tokens >= _TRACE_MIN_TOKENS and group.rank() == 0:
+        _EPLB_STATS["large"] += 1
+        trace_this = _EPLB_STATS["large"] % _EPLB_TRACE == 0
+    if trace_this:
+        _trace_flush(eplb)
+        start = torch.cuda.Event(enable_timing=True)
+        start.record()
+    mode = "kernel, fixed placement"
+
     if num_tokens > 0:
         x_fp8, x_sf = per_token_cast_to_fp8(hidden_states.to(torch.bfloat16), use_ue8m0=False, gran_k=128)
         buf.x[:num_tokens].copy_(x_fp8)
@@ -211,16 +265,12 @@ def run_sm90_mxfp4_mega_routed(
             eplb.prepare(num_tokens, eplb.block_m(decision_tokens))
             _EPLB_STATS["plan"] += 1
             _EPLB_STATS["plan_tokens"] += num_tokens
-            if _EPLB_TRACE and _EPLB_STATS["plan"] % _EPLB_TRACE == 0 and group.rank() == 0:
-                st = _EPLB_STATS
-                logging.getLogger(__name__).info(
-                    "[megamoe-eplb] planned %d layer forwards (mean %.0f tokens), remap-only %d (mean %.0f tokens), "
-                    "latest plan: %d weight copies on rank 0", st["plan"], st["plan_tokens"] / st["plan"],
-                    st["remap"], st["remap_tokens"] / max(st["remap"], 1), int(eplb.copy_count.item()))
+            mode = "plan+copy+remap+kernel"
         elif num_tokens > 0:
             eplb.remap(num_tokens, eplb.block_m(num_tokens))
             _EPLB_STATS["remap"] += 1
             _EPLB_STATS["remap_tokens"] += num_tokens
+            mode = "remap+kernel, last plan"
         deep_gemm.mxfp4_mega_moe(
             y, eplb.l1_weights, eplb.l2_weights, buf,
             cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
@@ -229,4 +279,11 @@ def run_sm90_mxfp4_mega_routed(
         deep_gemm.mxfp4_mega_moe(
             y, moe.experts.mega_l1_weights, moe.experts.mega_l2_weights, buf,
             activation_clamp=clamp, fast_math=True)
+    if trace_this:
+        global _TRACE_PENDING
+        end = torch.cuda.Event(enable_timing=True)
+        end.record()
+        _TRACE_PENDING = (_EPLB_STATS["large"], num_tokens, mode, start, end,
+                          eplb.copies.clone() if eplb is not None else None,
+                          eplb.slot_expert.clone() if eplb is not None else None)
     return y[:num_tokens]
