@@ -11,6 +11,7 @@ smallest local token count that triggers a new plan.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING
 
@@ -193,15 +194,23 @@ def run_sm90_mxfp4_mega_routed(
 
     y = torch.empty((max(num_tokens, 1), hidden), dtype=torch.bfloat16, device=hidden_states.device)
     if eplb is not None:
-        if num_tokens >= _EPLB_MIN_TOKENS:
-            eplb.prepare(num_tokens)
+        # The planner is a collective: every rank must take the same branch.
+        # With DP attention the ranks hold different token counts, so decide
+        # on the global maximum, which every rank sees identically.
+        from sglang.srt.layers.dp_attention import get_dp_global_num_tokens
+        global_num_tokens = get_dp_global_num_tokens()
+        decision_tokens = max(global_num_tokens) if global_num_tokens else num_tokens
+        if decision_tokens >= _EPLB_MIN_TOKENS:
+            # The planner's block size must also agree across ranks.
+            eplb.prepare(num_tokens, eplb.block_m(decision_tokens))
             _EPLB_STATS["plan"] += 1
             _EPLB_STATS["plan_tokens"] += num_tokens
             if _EPLB_TRACE and _EPLB_STATS["plan"] % _EPLB_TRACE == 0 and group.rank() == 0:
                 st = _EPLB_STATS
-                print(f"[megamoe-eplb] planned {st['plan']} layer forwards (mean {st['plan_tokens'] / st['plan']:.0f} tokens), "
-                      f"remap-only {st['remap']} (mean {st['remap_tokens'] / max(st['remap'], 1):.0f} tokens), "
-                      f"latest plan: {int(eplb.copy_count.item())} weight copies on rank 0", flush=True)
+                logging.getLogger(__name__).info(
+                    "[megamoe-eplb] planned %d layer forwards (mean %.0f tokens), remap-only %d (mean %.0f tokens), "
+                    "latest plan: %d weight copies on rank 0", st["plan"], st["plan_tokens"] / st["plan"],
+                    st["remap"], st["remap_tokens"] / max(st["remap"], 1), int(eplb.copy_count.item()))
         elif num_tokens > 0:
             eplb.remap(num_tokens, eplb.block_m(num_tokens))
             _EPLB_STATS["remap"] += 1
