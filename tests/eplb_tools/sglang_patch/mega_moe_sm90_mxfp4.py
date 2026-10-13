@@ -30,6 +30,11 @@ _EPLB_OPEN_GATE = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_OPEN_GATE_BLOC
 # same token count.
 _EPLB_MIN_TOKENS = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_MIN_TOKENS", "512"))
 _MXFP4_SYMM_BUFFER: dict = {}
+# ``SGLANG_MEGAMOE_DYNAMIC_EPLB_TRACE=N`` (N > 0): rank 0 reports every N planned
+# layer forwards how many forwards planned vs. remapped onto the last placement,
+# their mean local token counts and the replica count of the latest plan.
+_EPLB_TRACE = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_TRACE", "0"))
+_EPLB_STATS = {"plan": 0, "plan_tokens": 0, "remap": 0, "remap_tokens": 0}
 
 
 def is_sm90_mxfp4_mega_moe_available(experts) -> bool:
@@ -190,8 +195,17 @@ def run_sm90_mxfp4_mega_routed(
     if eplb is not None:
         if num_tokens >= _EPLB_MIN_TOKENS:
             eplb.prepare(num_tokens)
+            _EPLB_STATS["plan"] += 1
+            _EPLB_STATS["plan_tokens"] += num_tokens
+            if _EPLB_TRACE and _EPLB_STATS["plan"] % _EPLB_TRACE == 0 and group.rank() == 0:
+                st = _EPLB_STATS
+                print(f"[megamoe-eplb] planned {st['plan']} layer forwards (mean {st['plan_tokens'] / st['plan']:.0f} tokens), "
+                      f"remap-only {st['remap']} (mean {st['remap_tokens'] / max(st['remap'], 1):.0f} tokens), "
+                      f"latest plan: {int(eplb.copy_count.item())} weight copies on rank 0", flush=True)
         elif num_tokens > 0:
             eplb.remap(num_tokens, eplb.block_m(num_tokens))
+            _EPLB_STATS["remap"] += 1
+            _EPLB_STATS["remap_tokens"] += num_tokens
         deep_gemm.mxfp4_mega_moe(
             y, eplb.l1_weights, eplb.l2_weights, buf,
             cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
