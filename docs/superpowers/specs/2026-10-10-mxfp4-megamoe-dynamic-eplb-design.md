@@ -277,3 +277,38 @@ DeepSeek V4 Flash, TP = EP = 8, same client settings; prefill-only runs use 4 ou
 | ShareGPT 128-token gen | mean TTFT / TPOT (ms) | 610 / 15.1 | 570 / 23.7 | -7% / +57% |
 
 Reading: long ShareGPT prompts fill the 4096-token prefill chunks, where the kernel-level gains apply, and TTFT drops sharply. GSM8K prompts are short, so the per-forward planner cost (43 layers at EP8) cancels the gain. Decode gets slower for the same reason: a plan was computed for every decode step although a decode batch cannot be rebalanced profitably. The adapter therefore now plans only when the local token count reaches `SGLANG_MEGAMOE_DYNAMIC_EPLB_MIN_TOKENS` (default 512) and otherwise remaps onto the last placement, which is correct for any placement. The rerun with that rule is the number reported in the PR.
+
+### EP8, interleaved passes on one node (2026-10-13)
+
+Same arms, but the kernel-level gate (EP8, model shape, remap-only before and
+after planning) runs first inside the serving image, and the four passes run
+back to back on one node in the order fixed / 4 slots / fixed / 4 slots so
+node and cache effects cancel. The planner runs only for forwards with at
+least 512 local tokens. The balancer is provably active in its arms: weights
+take 31.81 GB per GPU instead of 30.78 GB (43 layers of 4 helper slots) and
+the KV pool is correspondingly smaller.
+
+| run | metric | fixed p1 (cold) | 4 slots p2 | fixed p3 | 4 slots p4 |
+|---|---|---|---|---|---|
+| GSM8K prefill | input tok/s | 4200 | 4201 | 4121 | 4194 |
+| GSM8K prefill | mean / P99 TTFT (ms) | 419 / 428 | 415 / 445 | 426 / 524 | 414 / 438 |
+| ShareGPT prefill | input tok/s | 11004 | 11928 | 11919 | 11923 |
+| ShareGPT prefill | mean / P99 TTFT (ms) | 705 / 1267 | 645 / 1051 | 651 / 1039 | 649 / 1017 |
+| ShareGPT 128-token gen | total tok/s | 5728 | 5690 | 5769 | 5689 |
+| ShareGPT 128-token gen | mean TTFT / TPOT (ms) | 612 / 15.1 | 594 / 15.4 | 595 / 15.1 | 597 / 15.4 |
+| GSM8K accuracy (300 q) | correct | 288 | 285 | 288 | 288 |
+
+Reading: on these client settings the two arms are identical within 1%. The
+first pass of a fresh node is slower on every metric (cold caches), which is
+what the "first serving run" table above measured as a 66% gain; that table
+is superseded. The arms cannot differ here because the forwards are small:
+GSM8K prompts average about 60 tokens and ShareGPT about 330, so with
+concurrency 32 only the first prefill batch fills a 4096-token chunk and
+nearly every later forward is a few hundred tokens, below the planning
+threshold and in the regime where the kernel-level study already shows no
+gain (the planner cost cancels it below M = 1024 per rank). Decode is
+unchanged by design. The follow-up run adds a long-prompt ShareGPT subset
+(first turn of at least 8000 characters, concurrency 64) so that forwards
+carry full chunks, a kernel-level bench at the chunk size (M = 1024 and 4096
+per rank, real routing) as the ceiling, and the adapter trace that reports
+how many forwards planned.
