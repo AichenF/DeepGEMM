@@ -385,10 +385,12 @@ def _check_remap_only(args, m_tokens, rank_idx, group, eplb_state, tag):
     b = eplb.symm
     b.x[:m_tokens].copy_(x_fp8)
     b.x_sf[:m_tokens].copy_(x_sf)
-    b.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int64))
     b.topk_weights[:m_tokens].copy_(topk_weights.to(torch.float32))
     slot_expert = eplb.slot_expert.cpu().tolist()
-    for _ in range(2):  # twice: the ordinal counters must be reset each time
+    # Twice: the ordinal counters must be reset each time. Remap rewrites the
+    # routing in place (logical -> physical), so reload the logical ids first.
+    for _ in range(2):
+        b.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int64))
         eplb.remap(m_tokens, eplb.block_m(m_tokens))
     torch.cuda.synchronize()
     physical = b.topk_idx[:m_tokens].cpu().tolist()
