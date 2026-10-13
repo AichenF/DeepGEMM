@@ -194,14 +194,20 @@ def run_sm90_mxfp4_mega_routed(
 
     y = torch.empty((max(num_tokens, 1), hidden), dtype=torch.bfloat16, device=hidden_states.device)
     if eplb is not None:
-        # The planner is a collective: every rank must take the same branch.
-        # With DP attention the ranks hold different token counts, so decide
-        # on the global maximum, which every rank sees identically.
+        # The planner is a collective: every rank must take the same branch
+        # and use the same block size, so both derive from a token count all
+        # ranks agree on. SGLang publishes the batch's token counts: one entry
+        # per DP rank with DP attention, otherwise one global entry while the
+        # MoE input is sequence-sharded across the EP ranks.
         from sglang.srt.layers.dp_attention import get_dp_global_num_tokens
         global_num_tokens = get_dp_global_num_tokens()
-        decision_tokens = max(global_num_tokens) if global_num_tokens else num_tokens
+        if not global_num_tokens:
+            decision_tokens = num_tokens
+        elif len(global_num_tokens) > 1:
+            decision_tokens = max(global_num_tokens)
+        else:
+            decision_tokens = (global_num_tokens[0] + group.size() - 1) // group.size()
         if decision_tokens >= _EPLB_MIN_TOKENS:
-            # The planner's block size must also agree across ranks.
             eplb.prepare(num_tokens, eplb.block_m(decision_tokens))
             _EPLB_STATS["plan"] += 1
             _EPLB_STATS["plan_tokens"] += num_tokens

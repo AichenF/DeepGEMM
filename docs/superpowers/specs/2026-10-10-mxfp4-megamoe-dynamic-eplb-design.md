@@ -299,16 +299,47 @@ the KV pool is correspondingly smaller.
 | GSM8K accuracy (300 q) | correct | 288 | 285 | 288 | 288 |
 
 Reading: on these client settings the two arms are identical within 1%. The
-first pass of a fresh node is slower on every metric (cold caches), which is
-what the "first serving run" table above measured as a 66% gain; that table
-is superseded. The arms cannot differ here because the forwards are small:
-GSM8K prompts average about 60 tokens and ShareGPT about 330, so with
-concurrency 32 only the first prefill batch fills a 4096-token chunk and
-nearly every later forward is a few hundred tokens, below the planning
-threshold and in the regime where the kernel-level study already shows no
-gain (the planner cost cancels it below M = 1024 per rank). Decode is
-unchanged by design. The follow-up run adds a long-prompt ShareGPT subset
-(first turn of at least 8000 characters, concurrency 64) so that forwards
-carry full chunks, a kernel-level bench at the chunk size (M = 1024 and 4096
-per rank, real routing) as the ceiling, and the adapter trace that reports
-how many forwards planned.
+first pass of a fresh node is slower on every metric (cold caches and JIT),
+which is what the "first serving run" table above measured as a 66% gain;
+that table is superseded. Decode is unchanged by design.
+
+### Long prompts, kernel ceiling and the adapter trace (2026-10-13)
+
+Same job layout plus a long-prompt ShareGPT subset (first turns of 8000+
+characters, mean 11k characters, about 2750 tokens; 256 prompts, concurrency
+64) and the adapter trace. Steady-state passes 3 (fixed) and 4 (4 slots):
+
+| run | metric | fixed | 4 slots | change |
+|---|---|---|---|---|
+| ShareGPT-long prefill | input tok/s | 26664 | 26804 | +0.5% |
+| ShareGPT-long prefill | mean / P99 TTFT (ms) | 3465 / 6674 | 3453 / 6596 | 0% / -1% |
+| ShareGPT-long 64-token gen | input tok/s | 24089 | 23594 | -2% |
+| ShareGPT-long 64-token gen | mean TTFT / TPOT (ms) | 3359 / 62.4 | 3435 / 63.6 | +2% / +2% |
+| GSM8K accuracy (300 q) | correct | 288 | 286 | |
+
+The trace explains why: SGLang sequence-shards the MoE input across the
+eight ranks, so a 4096-token prefill chunk reaches each rank's MoE as about
+500 tokens. Planned layer forwards averaged 240-422 local tokens, decode
+steps 10, and a plan made 0-2 weight copies on rank 0. That is the regime the
+kernel-level study marks as break-even: the serialized planner (75-125 us
+per layer) cancels the kernel gain below about M = 1024 per rank.
+
+Kernel ceiling at the serving shape, measured in the same job (EP8, real
+routing, four layers each, rank-maximum layer time, end-to-end speedup
+including plan, copy and remap / kernel-only):
+
+| trace | M per rank | fixed (us) | EPLB (us) | speedup, four layers |
+|---|---|---|---|---|
+| GSM8K | 1024 | 922-1072 | 788-818 | 1.17-1.32x / 1.30-1.51x |
+| GSM8K | 4096 | 3092-3824 | 2451-2537 | 1.24-1.56x / 1.29-1.63x |
+| ShareGPT | 1024 | 773-1063 | 795-826 | 0.94-1.32x / 1.10-1.49x |
+| ShareGPT | 4096 | 2731-2931 | 2520-2583 | 1.06-1.15x / 1.10-1.20x |
+
+So the balancer pays off once each rank's MoE sees 1024+ tokens per forward:
+16384-token chunks under TP8 (2048 per rank), or DP attention where every
+rank keeps its own 4096-token chunk. Those two configurations are the next
+run. With DP attention the ranks hold different token counts, so the adapter
+now derives the planning decision and the planner block size from the
+batch's published global token counts (identical on all ranks) instead of
+the local count, which also fixes the sequence-sharded case where local
+counts can differ by one.
