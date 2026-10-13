@@ -368,6 +368,54 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
               f'speedup total={ratio(fixed, total)} kernel-only={ratio(fixed, kernel_only)}', flush=True)
 
 
+def _check_remap_only(args, m_tokens, rank_idx, group, eplb_state, tag):
+    """Remap onto the current placement without planning (what decode steps
+    do): every token must land on a slot that holds its expert and the output
+    must match the reference."""
+    num_ranks = dist.get_world_size(group)
+    gen = torch.Generator(device='cuda')
+    gen.manual_seed(args.seed + 7919 * (m_tokens + 1) + rank_idx)
+    E, K, S = args.num_experts, args.num_topk, args.num_helper_slots
+    H = E // num_ranks
+    eplb, l1_dequant, l2_dequant, l1_gs, l2_gs = eplb_state[:5]
+    hot = [h % E for h in args.hot_experts]
+    topk_idx, topk_weights = _skewed_topk(m_tokens, E, K, hot, args.hot_share, gen)
+    x_bf = torch.randn((m_tokens, args.hidden), dtype=torch.bfloat16, device='cuda', generator=gen)
+    x_fp8, x_sf = per_token_cast_to_fp8(x_bf, use_ue8m0=False, gran_k=128)
+    b = eplb.symm
+    b.x[:m_tokens].copy_(x_fp8)
+    b.x_sf[:m_tokens].copy_(x_sf)
+    b.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int64))
+    b.topk_weights[:m_tokens].copy_(topk_weights.to(torch.float32))
+    slot_expert = eplb.slot_expert.cpu().tolist()
+    for _ in range(2):  # twice: the ordinal counters must be reset each time
+        eplb.remap(m_tokens, eplb.block_m(m_tokens))
+    torch.cuda.synchronize()
+    physical = b.topk_idx[:m_tokens].cpu().tolist()
+    logical = topk_idx.cpu().tolist()
+    for row_l, row_p in zip(logical, physical):
+        for e, slot in zip(row_l, row_p):
+            dest, local = divmod(slot, H + S)
+            held = (dest * H + local) if local < H else slot_expert[dest][local - H]
+            assert held == e, f'rank {rank_idx} ({tag}): expert {e} mapped to slot {slot} which holds {held}'
+    y = torch.empty((m_tokens, args.hidden), dtype=torch.bfloat16, device='cuda')
+    deep_gemm.mxfp4_mega_moe(
+        y, eplb.l1_weights, eplb.l2_weights, b,
+        cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
+        l1_global_scales=eplb.l1_global_scales, l2_global_scales=eplb.l2_global_scales,
+        activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math))
+    torch.cuda.synchronize()
+    dist.barrier(group=group)
+    y_ref = _reference_output(x_fp8, x_sf, topk_idx, topk_weights, l1_dequant, l2_dequant,
+                              l1_gs, l2_gs, rank_idx, H, args.activation_clamp, group)
+    cosine = torch.nn.functional.cosine_similarity(y.float(), y_ref, dim=-1)
+    assert torch.isfinite(y).all().item() and cosine.mean().item() > args.cosine_mean_threshold \
+        and cosine.min().item() > args.cosine_min_threshold, \
+        f'rank {rank_idx} ({tag}): remap-only output mismatch, cosine mean {cosine.mean().item():.4f} min {cosine.min().item():.4f}'
+    if rank_idx == 0:
+        print(f'remap-only ({tag}, M={m_tokens}): cosine mean {cosine.mean().item():.4f} min {cosine.min().item():.4f}', flush=True)
+
+
 def _worker(local_rank, num_local_ranks, args):
     rank_idx, _, group = init_dist(local_rank, num_local_ranks)
     try:
@@ -402,6 +450,9 @@ def _worker(local_rank, num_local_ranks, args):
         args.trace_layers = _load_trace(args.trace, E, args.num_topk) if args.trace else None
         trace_layer_ids = list(range(0, len(args.trace_layers), max(1, len(args.trace_layers) // args.trace_num_layers))) \
             [:args.trace_num_layers] if args.trace_layers is not None else [0]
+        if args.correctness:
+            # Before any plan: everything must go home.
+            _check_remap_only(args, 64, rank_idx, group, state, 'no plan yet')
         routings = {}
         for m_tokens in args.batches:
             for layer in trace_layer_ids:
@@ -411,6 +462,10 @@ def _worker(local_rank, num_local_ranks, args):
                 if args.correctness:
                     # Second pass on the same routing exercises the slot cache.
                     _run_case(args, m_tokens, rank_idx, group, state)
+        if args.correctness:
+            # Decode-like steps reuse the last plan without re-planning.
+            for m_small in (8, 64, 256):
+                _check_remap_only(args, m_small, rank_idx, group, state, 'last plan')
         if rank_idx == 0 and args.correctness:
             print('correctness: PASS', flush=True)
 

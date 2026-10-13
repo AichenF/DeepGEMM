@@ -137,8 +137,15 @@ class DynamicEPLB:
         self.copy_list = words[layout['copy_list']:
                                layout['copy_list'] + 2 * num_helper_slots].view(num_helper_slots, 2)
         self.copy_count = words[layout['copy_count']:layout['copy_count'] + 1]
-        # Empty helper slots are -1; the buffer was zeroed.
+        self.local_counter = words[layout['local_counter']:layout['local_counter'] + num_experts]
+        # Empty helper slots are -1; the buffer was zeroed. Before the first
+        # plan every expert has exactly one copy, its home rank, with an
+        # unbounded block budget, so a remap without a plan sends everything
+        # home.
         self.slot_expert.fill_(-1)
+        self.copies.fill_(-1)
+        self.copies[:, 0, 0] = torch.arange(num_experts, device='cuda', dtype=torch.int32) // self.home_experts
+        self.copies[:, 0, 1] = 0x7fffffff
         group.barrier()
         torch.cuda.synchronize()
 
@@ -235,7 +242,14 @@ class DynamicEPLB:
             self.num_experts, self.num_helper_slots,
             self.arena.plane_specs(self._plane_names))
 
-    def remap(self, num_tokens: int, block_m: int):
+    def remap(self, num_tokens: int, block_m: int, after_plan: bool = False):
+        """Rewrite ``self.symm.topk_idx[:num_tokens]`` from logical experts
+        to physical slots using the current placement. Standalone (without a
+        fresh plan, e.g. decode steps) it reuses the last plan's copies and
+        block split, which is correct for any placement; the planner resets
+        the ordinal counters itself, otherwise they are reset here."""
+        if not after_plan:
+            self.local_counter.zero_()
         _C.mega_moe_eplb_remap(
             self.ws, self.rank, self.num_ranks,
             self.symm.topk_idx[:num_tokens],
@@ -244,7 +258,7 @@ class DynamicEPLB:
     def prepare(self, num_tokens: int, block_m: Optional[int] = None) -> int:
         block_m = self.plan(num_tokens, block_m)
         self.copy_weights()
-        self.remap(num_tokens, block_m)
+        self.remap(num_tokens, block_m, after_plan=True)
         return block_m
 
     def forward(self, x_fp8: torch.Tensor, x_sf: torch.Tensor,
