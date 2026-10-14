@@ -129,6 +129,28 @@ Under this extreme skew the EPLB placement (computed from the same distribution,
 
 The device implementations are what matter, and the two cannot be run side by side here (A's planner is JIT-compiled into DeepGEMM and needs its symmetric workspace; B's is Triton). A's own measurements put its device planner at 6-13 us at EP1 and 110-290 us at EP8 (dominated by waiting for the slowest peer's launch); B's single-warp route kernel measured 4-7 us at EP8 for decode batches in this study. The 8-25x gap of the Python references is a fair proxy for the algorithmic work: A does rounds of donor/receiver search and two refinement passes over an `E x R` block matrix; B does one pass over the active replicated experts.
 
+### 3.5 B's fused exchange on 8 GPUs (measured 2026-10-14)
+
+`tests/dist_metro_fused.py --redundant 0 32 64 128 --trials 20` and
+`tests/dist_metro_contention.py --redundant 32 64 --bs 1 4 16 64` on one
+8-GPU SM90 node (NCCL 2.27, world 8), us per layer:
+
+| R | bs | `metro_route_fused` | count + one-shot all-reduce + route |
+|---:|---:|---:|---:|
+| 0 | 1 / 4 / 64 | 5.3 / 5.2 / 6.4 | 13.0 / 12.9 / 13.9 |
+| 32 | 1 / 4 / 64 | 5.8 / 6.5 / 8.4 | 13.4 / 14.3 / 15.8 |
+| 64 | 1 / 4 / 64 | 6.5 / 7.7 / 10.6 | 14.3 / 15.6 / 18.2 |
+| 128 | 1 / 4 / 64 | 7.7 / 10.3 / 14.6 | 15.3 / 18.4 / 21.5 |
+
+Parity mismatches 0, spin-limit hits 0. Under a concurrent per-layer GEMM
+of 28-30 us (the contention test's stand-in for the MoE), the exposed
+latency of the unfused path is 3.5-8.8 us per layer and of the fused path
+0.1-0.3 us (R=32/64, bs 1-64): the fused exchange hides almost entirely
+behind the layer's compute. These numbers confirm the single-GPU figures
+in 3.1 and B's own profile (about 6.5 us for the all-reduce); they were
+printed before the processes aborted in the symmetric-memory destructor at
+teardown, which does not affect the measurements.
+
 ## 4. Recommendation
 
 **Decode: B.** Its objective is the right one for a memory-bound layer (the busiest rank's weight bytes), its per-layer cost is 4-7 us of kernel plus one small all-reduce, it is CUDA-graph safe, and it needs no weight movement. On the real traces it removes 3-4 activated experts from the busiest rank at EP8 with 32 redundant slots (12-17 %), which is exactly what the DeepEP time reduction in B's end-to-end numbers reflects. A at decode sizes reaches the same balance but only by re-copying 20 MiB slots several times per step; even if the planner's 110-290 us were hidden, the copies alone exceed the layer time.
@@ -146,7 +168,7 @@ What this does not solve: B's observation that extra physical experts slow DeepG
 
 ## 5. Caveats
 
-* **No 8-GPU measurement of B's fused exchange in this study.** `tests/dist_metro_fused.py` and `tests/dist_metro_contention.py` were submitted as an 8-GPU batch job on the shared cluster and had not been scheduled when this report was written; the per-layer numbers for `metro_route_fused` vs count + one-shot all-reduce + route, and the exposed latency under a concurrent GEMM, are therefore taken from B's user guide (7.7 vs 14.8 us in isolation; +0.19 / +0.57 / +4.9 us exposed for the default path at bs/rank 4 / 16 / 64) rather than reproduced. The job remains queued and its log can be appended later.
+* **B's fused exchange on 8 GPUs** was measured after the first version of this report (3.5): 5-15 us per layer fused vs 13-22 us unfused at R=0..128, bs 1-64, and 0.1-0.3 us exposed under a concurrent GEMM. The single-GPU numbers in 3.1 stand.
 * **A's device planner was not re-timed here.** The 6-13 us (EP1) and 110-290 us (EP8) figures are from A's design document. The A-vs-B planner cost comparison on identical inputs is therefore the pure-Python reference ratio plus B's measured kernel, not two device kernels side by side.
 * **B's kernels were timed on one GPU without the all-reduce.** The table in 3.1 isolates count and route; B's own profile adds about 6.5 us per layer for the custom all-reduce at EP8.
 * **EPLB placement for B is an oracle.** It is computed from the first half of the same trace layer the batches are drawn from. A real deployment rebalances from a stale window, so B's balance in 3.2 is an upper bound; A does not depend on any placement history, so its numbers are not affected.
