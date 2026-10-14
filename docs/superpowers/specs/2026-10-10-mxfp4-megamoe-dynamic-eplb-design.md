@@ -428,3 +428,31 @@ copies: `SGLANG_MEGAMOE_DYNAMIC_EPLB_REPLAN_EVERY=4` (a layer re-plans every
 4th large forward and remaps the others onto the last plan) and
 `SGLANG_MEGAMOE_DYNAMIC_EPLB_OPEN_GATE_BLOCKS=16` (a fresh replica must be
 worth 16 blocks).
+
+## Division of labour with METRO (decided 2026-10-14)
+
+Two balancers, one per regime, by decision of the project owner after the
+planner comparison on identical real routing traces
+(`2026-10-12-metro-vs-megamoe-eplb.md`):
+
+- **Prefill: this balancer.** Large per-rank batches, compute-bound kernel;
+  the plan minimizes the busiest rank's token blocks and moves weights into
+  helper slots. On the traces it brings the busiest rank to within 0.5 block
+  of the mean at M = 1024 per rank, where METRO's one-replica-per-expert
+  routing cannot (it raised the block count above static EPLB).
+- **Decode: METRO (moe_load_balancer, routing-only).** Fixed redundant
+  placement, no weight movement, a per-layer choice of replica that
+  minimizes the busiest rank's activated experts; 4-7 us per layer at EP8.
+  On the traces it reaches the same busiest-rank expert count as this
+  balancer at M = 8 per rank with zero copies, where this balancer would
+  copy 3.5-5.6 slots per step.
+
+Hand-over point in the serving adapter: forwards below
+`SGLANG_MEGAMOE_DYNAMIC_EPLB_MIN_TOKENS` tokens per rank (decode steps, small
+chunks) skip the planner and only remap onto the last plan. That branch is
+where the decode balancer attaches: the helper slots already hold replicas,
+and a routing-only choice among them needs the remap kernel and no copy.
+Remaining work for the prefill side is to hide the plan and copy cost
+(re-plan interval, overlap with the previous layer), which the in-server
+timing above identifies as the whole gap between the kernel ceiling and the
+end-to-end result.
