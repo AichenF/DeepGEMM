@@ -30,6 +30,13 @@ _EPLB_OPEN_GATE = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_OPEN_GATE_BLOC
 # ranks must take the same branch; without DP attention every rank sees the
 # same token count.
 _EPLB_MIN_TOKENS = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_MIN_TOKENS", "512"))
+# ``SGLANG_MEGAMOE_DYNAMIC_EPLB_REPLAN_EVERY=K`` (default 1): a layer plans on
+# every K-th large forward and remaps the others onto its last plan. Routing
+# statistics change little between consecutive prefill chunks of the same
+# request mix, so a stale plan still balances while the plan and the weight
+# copies are paid once per K chunks. The count is per layer and advances only
+# on forwards all ranks agree are large, so all ranks take the same branch.
+_EPLB_REPLAN_EVERY = max(1, int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_REPLAN_EVERY", "1")))
 _MXFP4_SYMM_BUFFER: dict = {}
 # ``SGLANG_MEGAMOE_DYNAMIC_EPLB_TRACE=N`` (N > 0): rank 0 times every N-th
 # layer forward with at least ``_TRACE_MIN_TOKENS`` local tokens (CUDA events
@@ -69,16 +76,18 @@ def _trace_flush(eplb) -> None:
     global _TRACE_PENDING
     if _TRACE_PENDING is None:
         return
-    ordinal, tokens, mode, start, end, copies, slots = _TRACE_PENDING
+    ordinal, tokens, mode, start, mid, end, copies, slots, copy_count = _TRACE_PENDING
     _TRACE_PENDING = None
     end.synchronize()
     msg = (f"[megamoe-trace] large forward #{ordinal}: {tokens} local tokens, {mode}, "
            f"{start.elapsed_time(end) * 1000:.0f} us")
     if eplb is not None:
         st = _EPLB_STATS
-        msg += (f" | planned {st['plan']} (mean {st['plan_tokens'] / max(st['plan'], 1):.0f} tokens), "
+        msg += (f" (prepare {start.elapsed_time(mid) * 1000:.0f} + kernel {mid.elapsed_time(end) * 1000:.0f})"
+                f" | planned {st['plan']} (mean {st['plan_tokens'] / max(st['plan'], 1):.0f} tokens), "
                 f"remap-only {st['remap']} (mean {st['remap_tokens'] / max(st['remap'], 1):.0f} tokens)"
-                f" | its plan: {_plan_summary(copies, slots, eplb.home_experts)}")
+                f" | its plan: {_plan_summary(copies, slots, eplb.home_experts)}, "
+                f"{int(copy_count.item())} weight copies on rank 0")
     logging.getLogger(__name__).info(msg)
 
 
@@ -261,7 +270,12 @@ def run_sm90_mxfp4_mega_routed(
             decision_tokens = max(global_num_tokens)
         else:
             decision_tokens = (global_num_tokens[0] + group.size() - 1) // group.size()
+        replan = False
         if decision_tokens >= _EPLB_MIN_TOKENS:
+            large = getattr(eplb, "_large_forwards", 0)
+            eplb._large_forwards = large + 1
+            replan = eplb.generation == 0 or large % _EPLB_REPLAN_EVERY == 0
+        if replan:
             eplb.prepare(num_tokens, eplb.block_m(decision_tokens))
             _EPLB_STATS["plan"] += 1
             _EPLB_STATS["plan_tokens"] += num_tokens
@@ -271,6 +285,9 @@ def run_sm90_mxfp4_mega_routed(
             _EPLB_STATS["remap"] += 1
             _EPLB_STATS["remap_tokens"] += num_tokens
             mode = "remap+kernel, last plan"
+        if trace_this:
+            mid = torch.cuda.Event(enable_timing=True)
+            mid.record()
         deep_gemm.mxfp4_mega_moe(
             y, eplb.l1_weights, eplb.l2_weights, buf,
             cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
@@ -283,7 +300,9 @@ def run_sm90_mxfp4_mega_routed(
         global _TRACE_PENDING
         end = torch.cuda.Event(enable_timing=True)
         end.record()
-        _TRACE_PENDING = (_EPLB_STATS["large"], num_tokens, mode, start, end,
+        _TRACE_PENDING = (_EPLB_STATS["large"], num_tokens, mode, start,
+                          mid if eplb is not None else None, end,
                           eplb.copies.clone() if eplb is not None else None,
-                          eplb.slot_expert.clone() if eplb is not None else None)
+                          eplb.slot_expert.clone() if eplb is not None else None,
+                          eplb.copy_count.clone() if eplb is not None else None)
     return y[:num_tokens]

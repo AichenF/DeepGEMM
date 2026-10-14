@@ -386,3 +386,45 @@ the plan that forward used (owner-only vs planned, in token blocks, from the
 planner's copy table). That gives the per-layer MoE time fixed vs balanced
 at the same point of the same request stream, and shows whether the plan
 replicates. A third arm plans only from 1024 tokens per rank.
+
+### Inside the server: per-layer MoE time, fixed vs balanced (2026-10-13)
+
+Six arms at 16384-token chunks (TP = EP = 8), order fixed / 4 slots / 4
+slots with planning from 1024 tokens per rank / fixed / 4 slots / 4 slots
+from 1024, with the adapter timing every 150th MoE layer forward of at least
+512 local tokens (25 per arm, 24 of them at 1900-2000 local tokens, same
+points of the same request stream in every arm).
+
+| arm | layer forward, mean (min-max) us | owner-only max / mean load | planned max / mean | replicas |
+|---|---|---|---|---|
+| fixed, pass 1 | 1684 (1439-2079) | | | |
+| fixed, pass 4 | 1690 (1444-2109) | | | |
+| 4 slots, pass 2 | 1729 (1623-1815) | 1.316 | 1.003 | 7.7 |
+| 4 slots, pass 5 | 1731 (1619-1844) | 1.316 | 1.002 | 7.6 |
+| 4 slots from 1024, pass 3 | 1727 (1610-1811) | 1.316 | 1.003 | 7.6 |
+| 4 slots from 1024, pass 6 | 1723 (1642-1801) | 1.317 | 1.002 | 8.0 |
+
+Loads are token blocks per rank from the planner's copy table. So inside the
+server the plan does what it should: the hottest rank carries 1.32x the mean
+with fixed placement and 1.00x after planning, with about one replica per
+rank, and the layer time loses its layer-to-layer spread (fixed 1440-2110
+us, balanced 1620-1845 us). But the balanced layer is 2.5% slower on
+average, not faster, and that is exactly the end-to-end result (all arms
+within 1%, ShareGPT-long 46.8-47.7k input tok/s, GSM8K accuracy 285-289 of
+300 on every arm). Planning only from 1024 tokens per rank changes nothing
+at this chunk size, and it removes the GSM8K penalty seen earlier (about 800
+tokens per rank; 10462 vs 10457 fixed input tok/s).
+
+Why the kernel ceiling does not show up: the kernel bench repeats the same
+routing, so after the first iteration a plan changes no slot and the weight
+copy is free (1.2 us). In the server consecutive chunks route differently,
+so each plan re-fills about one helper slot per rank per layer, a 12.6 MB
+MXFP4 expert over NVLink, serialized in front of the kernel together with
+the planner. With a 1.32x imbalance the kernel can save at most about a
+quarter of its time, and that is what the plan and the copies cost. The
+next run splits the traced time into prepare (plan, copy, remap) and kernel
+and prints the copy count per plan, and adds two arms that amortize the
+copies: `SGLANG_MEGAMOE_DYNAMIC_EPLB_REPLAN_EVERY=4` (a layer re-plans every
+4th large forward and remaps the others onto the last plan) and
+`SGLANG_MEGAMOE_DYNAMIC_EPLB_OPEN_GATE_BLOCKS=16` (a fresh replica must be
+worth 16 blocks).
