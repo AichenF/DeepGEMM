@@ -456,3 +456,83 @@ Remaining work for the prefill side is to hide the plan and copy cost
 (re-plan interval, overlap with the previous layer), which the in-server
 timing above identifies as the whole gap between the kernel ceiling and the
 end-to-end result.
+
+## Acceptance line and the path to it (2026-10-14)
+
+The MegaFlux paper (arXiv 2610.00671) reports, on 8 GPUs at EP8, a MoE-layer
+geomean of 1.45x (peak 2.14x) against the same megakernel with fixed
+placement under trace-derived skewed routing at 1K-64K tokens per rank, and
+1.13-1.26x end to end for vLLM prefill of DeepSeek-V4-Pro on LongBench-Pro
+prompts with 16K/32K chunks. It has no end-to-end number above 1.26x. The
+accepted acceptance line for this branch is therefore: kernel-level about
+1.45x geomean on skewed real routing (reached: 1.1-1.55x per layer on DSv4
+Flash GSM8K routing, 1.6-1.9x on the late MiMo 2.5 layers), end to end
+1.15-1.25x on long-prompt datasets.
+
+The in-server trace (previous section) located the end-to-end gap: the plan
+and the weight copies it triggers run serially before the kernel and cost as
+much as the kernel saves. Three changes close the gap in the order of their
+expected effect.
+
+### Deferred plan (`SGLANG_MEGAMOE_DYNAMIC_EPLB_DEFERRED=1`)
+
+After a layer's first plan, a large forward only remaps onto the plan made
+from its previous large forward and launches the kernel. It then records an
+event after the kernel, and on one side stream shared by all layers waits for
+that event, plans from a private int64 copy of this forward's logical
+routing (the shared symmetric buffer moves on to the next layer), and copies
+the weights the new plan needs. Nothing of this is on the critical path: the
+plan and copies for layer L run while layers L+1... of the same step compute.
+
+Hazards and how they are avoided:
+- The copy writes this rank's helper slots of layer L, which the kernel of
+  layer L may still be reading: the side stream waits for the kernel's event.
+  Copies pull from the owners' home slots, which are never written.
+- The planner pushes histograms into every rank's workspace and spins on
+  per-rank generation flags. Rank A's plan for chunk c+1 of layer L is issued
+  after A's layer-L kernel of chunk c+1, which is a collective with B's, which
+  B issues only after waiting for its own side-stream plan of chunk c. So no
+  rank can be a plan ahead of another on the same workspace.
+- Every forward of the layer, large or small, first makes the main stream
+  wait for the layer's pending plan, so decode steps and the next chunk see a
+  consistent placement. The last decoder layer drains all pending plans at
+  the end of each step, so CUDA-graph decode replays (which run no Python)
+  never overlap a weight copy.
+- `REPLAN_EVERY=K` still applies: the deferred plan is issued every K-th
+  large forward.
+
+The plan is one chunk stale. The trace showed plan loads nearly identical
+between consecutive chunks of the same request mix, and the remap-only path
+is correct for any placement, so the cost of staleness is a slightly less
+exact balance, not an error.
+
+### Tokens per rank and datasets
+
+SGLang TP8 sequence-shards the MoE input, so a 16384-token chunk is about
+2K tokens per rank, the low end of the paper's range, where it reports 1.29x
+rising to 1.77x at 64K per rank. The arms script now has `tp8c64k`
+(65536-token chunks, about 8K tokens per rank, `--max-prefill-tokens`
+raised to match, symmetric buffer cap unchanged at 16384). LongBench (English
+tasks, 256 prompts of 8K-48K characters, converted by
+`tests/eplb_tools/longbench_to_sharegpt.py`) is the long-prompt dataset,
+served prefill-only (4 output tokens) at concurrency 32; GSM8K and ShareGPT
+remain as the short-prompt and near-uniform controls.
+
+### MiMo 2.5 end to end
+
+MiMo-V2.5-Pro (384 experts, top-8, hidden 6144, 69 MoE layers) loads its
+experts through the MXFP4 quantization method rather than the FP8 method
+DeepSeek V4 uses, so the installer now also patches `mxfp4.py` (SM90 with the
+megamoe backend builds the SM90 MXFP4 MegaMoE weights and the balancer arena)
+and `MiMoV2MoE.forward_normal` (dispatch through `should_use_mega_moe` like
+`DeepseekV2MoE`). The layer communicator already scatters and gathers tokens
+for any a2a backend, so the sequence-sharded MoE input is the same as for
+DeepSeek. The adapter accepts `*_scale` as well as `*_scale_inv` parameter
+names and a missing routed scaling factor. The arms script takes
+`MODEL_KIND=mimo25` (adds `--attention-backend fa3 --context-length 32768`,
+kernel gate on the MiMo shape).
+
+Runs submitted on 2026-10-14: DSv4 Flash fixed vs deferred at 16k and 64k
+chunks, and MiMo 2.5 fixed vs deferred at 16k chunks, both with GSM8K,
+ShareGPT-long and LongBench. Results go to the end-to-end section when they
+land.
