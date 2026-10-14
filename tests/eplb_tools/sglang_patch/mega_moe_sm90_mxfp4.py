@@ -37,6 +37,18 @@ _EPLB_MIN_TOKENS = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_MIN_TOKENS", 
 # copies are paid once per K chunks. The count is per layer and advances only
 # on forwards all ranks agree are large, so all ranks take the same branch.
 _EPLB_REPLAN_EVERY = max(1, int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_REPLAN_EVERY", "1")))
+# ``SGLANG_MEGAMOE_DYNAMIC_EPLB_DEFERRED=1``: after its first plan a layer
+# never plans on the critical path. A large forward remaps onto the plan made
+# from the previous large forward of the same layer, launches the kernel, and
+# then plans and copies weights for the next one on a side stream, behind the
+# remaining layers of the step (the planner keeps a private copy of the
+# logical routing because the shared buffer moves on). Every forward of the
+# layer first waits for its pending plan, and the last decoder layer drains
+# all pending plans so CUDA-graph decode steps never overlap a weight copy.
+# ``REPLAN_EVERY`` still sets how often the deferred plan is issued.
+_EPLB_DEFERRED = os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_DEFERRED", "0") == "1"
+_EPLB_SIDE_STREAM = None
+_EPLB_PENDING: list = []
 _MXFP4_SYMM_BUFFER: dict = {}
 # ``SGLANG_MEGAMOE_DYNAMIC_EPLB_TRACE=N`` (N > 0): rank 0 times every N-th
 # layer forward with at least ``_TRACE_MIN_TOKENS`` local tokens (CUDA events
@@ -45,7 +57,7 @@ _MXFP4_SYMM_BUFFER: dict = {}
 # loads of the plan that forward used. Works with and without the balancer,
 # so the two arms can be compared layer by layer inside the server.
 _EPLB_TRACE = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_TRACE", "0"))
-_EPLB_STATS = {"plan": 0, "plan_tokens": 0, "remap": 0, "remap_tokens": 0, "large": 0}
+_EPLB_STATS = {"plan": 0, "plan_tokens": 0, "remap": 0, "remap_tokens": 0, "large": 0, "deferred": 0}
 _TRACE_MIN_TOKENS = 512
 _TRACE_PENDING = None
 
@@ -85,7 +97,8 @@ def _trace_flush(eplb) -> None:
         st = _EPLB_STATS
         msg += (f" (prepare {start.elapsed_time(mid) * 1000:.0f} + kernel {mid.elapsed_time(end) * 1000:.0f})"
                 f" | planned {st['plan']} (mean {st['plan_tokens'] / max(st['plan'], 1):.0f} tokens), "
-                f"remap-only {st['remap']} (mean {st['remap_tokens'] / max(st['remap'], 1):.0f} tokens)"
+                f"remap-only {st['remap']} (mean {st['remap_tokens'] / max(st['remap'], 1):.0f} tokens), "
+                f"deferred plans {st['deferred']}"
                 f" | its plan: {_plan_summary(copies, slots, eplb.home_experts)}, "
                 f"{int(copy_count.item())} weight copies on rank 0")
     logging.getLogger(__name__).info(msg)
@@ -197,6 +210,38 @@ def _new_eplb(group, num_experts, num_max_tokens_per_rank, num_topk, hidden, int
                                  hidden, intermediate_hidden, open_gate_blocks=_EPLB_OPEN_GATE, symm=symm)
 
 
+def _wait_deferred(eplb) -> None:
+    ev = getattr(eplb, "_deferred_event", None)
+    if ev is not None:
+        torch.cuda.current_stream().wait_event(ev)
+        eplb._deferred_event = None
+
+
+def _drain_deferred() -> None:
+    for eplb in _EPLB_PENDING:
+        _wait_deferred(eplb)
+    _EPLB_PENDING.clear()
+
+
+def _launch_deferred(eplb, num_tokens: int, block_m: int) -> None:
+    """Plan and copy weights for the next large forward of this layer on the
+    side stream, once the kernel that still reads the helper slots is done."""
+    global _EPLB_SIDE_STREAM
+    if _EPLB_SIDE_STREAM is None:
+        _EPLB_SIDE_STREAM = torch.cuda.Stream()
+    kernel_done = torch.cuda.Event()
+    kernel_done.record()
+    with torch.cuda.stream(_EPLB_SIDE_STREAM):
+        _EPLB_SIDE_STREAM.wait_event(kernel_done)
+        eplb.plan(num_tokens, block_m, topk_idx=eplb._deferred_topk)
+        eplb.copy_weights()
+        done = torch.cuda.Event()
+        done.record()
+    eplb._deferred_event = done
+    _EPLB_PENDING.append(eplb)
+    _EPLB_STATS["deferred"] += 1
+
+
 def _get_eplb(moe, group, num_experts, num_max_tokens_per_rank, num_topk, hidden, intermediate_hidden):
     eplb = getattr(moe.experts, "_mega_moe_eplb", None)
     if eplb is None:
@@ -270,21 +315,33 @@ def run_sm90_mxfp4_mega_routed(
             decision_tokens = max(global_num_tokens)
         else:
             decision_tokens = (global_num_tokens[0] + group.size() - 1) // group.size()
-        replan = False
+        _wait_deferred(eplb)
+        replan = schedule = False
         if decision_tokens >= _EPLB_MIN_TOKENS:
             large = getattr(eplb, "_large_forwards", 0)
             eplb._large_forwards = large + 1
-            replan = eplb.generation == 0 or large % _EPLB_REPLAN_EVERY == 0
+            if eplb.generation == 0:
+                replan = True
+            elif _EPLB_DEFERRED:
+                schedule = large % _EPLB_REPLAN_EVERY == 0
+            else:
+                replan = large % _EPLB_REPLAN_EVERY == 0
         if replan:
             eplb.prepare(num_tokens, eplb.block_m(decision_tokens))
             _EPLB_STATS["plan"] += 1
             _EPLB_STATS["plan_tokens"] += num_tokens
             mode = "plan+copy+remap+kernel"
-        elif num_tokens > 0:
-            eplb.remap(num_tokens, eplb.block_m(num_tokens))
-            _EPLB_STATS["remap"] += 1
-            _EPLB_STATS["remap_tokens"] += num_tokens
-            mode = "remap+kernel, last plan"
+        else:
+            if schedule:
+                if getattr(eplb, "_deferred_topk", None) is None:
+                    eplb._deferred_topk = torch.empty((eplb.num_max_tokens_per_rank, top_k),
+                                                      dtype=torch.int64, device=hidden_states.device)
+                eplb._deferred_topk[:num_tokens].copy_(topk_ids.to(torch.int64))
+            if num_tokens > 0:
+                eplb.remap(num_tokens, eplb.block_m(num_tokens))
+                _EPLB_STATS["remap"] += 1
+                _EPLB_STATS["remap_tokens"] += num_tokens
+                mode = "remap+kernel, deferred plan" if _EPLB_DEFERRED else "remap+kernel, last plan"
         if trace_this:
             mid = torch.cuda.Event(enable_timing=True)
             mid.record()
@@ -305,4 +362,9 @@ def run_sm90_mxfp4_mega_routed(
                           eplb.copies.clone() if eplb is not None else None,
                           eplb.slot_expert.clone() if eplb is not None else None,
                           eplb.copy_count.clone() if eplb is not None else None)
+    if eplb is not None and _EPLB_DEFERRED:
+        if schedule:
+            _launch_deferred(eplb, num_tokens, eplb.block_m(decision_tokens))
+        if getattr(moe, "layer_id", None) == moe.config.num_hidden_layers - 1:
+            _drain_deferred()
     return y[:num_tokens]

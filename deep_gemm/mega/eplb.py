@@ -219,18 +219,23 @@ class DynamicEPLB:
             self.hidden, self.intermediate_hidden,
             self.num_max_tokens_per_rank, num_tokens)
 
-    def plan(self, num_tokens: int, block_m: Optional[int] = None) -> int:
-        """Plan from the logical ``topk_idx`` already in ``self.symm.topk_idx``.
+    def plan(self, num_tokens: int, block_m: Optional[int] = None,
+             topk_idx: Optional[torch.Tensor] = None) -> int:
+        """Plan from the logical ``topk_idx`` already in ``self.symm.topk_idx``,
+        or from ``topk_idx`` (a private int64 copy of the logical routing) so a
+        caller can plan on a side stream after the shared buffer has moved on.
 
         All ranks must call this the same number of times. Returns the block
         size used, which ``remap`` needs.
         """
         if block_m is None:
             block_m = self.block_m(num_tokens)
+        if topk_idx is None:
+            topk_idx = self.symm.topk_idx[:num_tokens]
         self.generation += 1
         _C.mega_moe_eplb_plan(
             self.ws, self.ws_handle.buffer_ptrs, self.rank,
-            self.symm.topk_idx[:num_tokens],
+            topk_idx[:num_tokens],
             self.num_experts, self.num_helper_slots,
             block_m, self.open_gate_blocks, self.generation)
         return block_m
