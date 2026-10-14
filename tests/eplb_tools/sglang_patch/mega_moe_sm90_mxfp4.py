@@ -323,9 +323,17 @@ def run_sm90_mxfp4_mega_routed(
             decision_tokens = max(global_num_tokens)
         else:
             decision_tokens = (global_num_tokens[0] + group.size() - 1) // group.size()
-        _wait_deferred(eplb)
+        # Inside a CUDA-graph capture the forward must stay a pure replayable
+        # kernel sequence: no planner (a collective with spin-waits whose
+        # generation number would be baked into the graph), no side stream,
+        # no event waits. Captured forwards remap onto whatever plan is
+        # current at replay time; the deferred plans are drained before any
+        # capture by the last layer of the preceding eager step.
+        capturing = torch.cuda.is_current_stream_capturing()
+        if not capturing:
+            _wait_deferred(eplb)
         replan = schedule = False
-        if decision_tokens >= _EPLB_MIN_TOKENS:
+        if decision_tokens >= _EPLB_MIN_TOKENS and not capturing:
             large = getattr(eplb, "_large_forwards", 0)
             eplb._large_forwards = large + 1
             if eplb.generation == 0:
@@ -370,7 +378,7 @@ def run_sm90_mxfp4_mega_routed(
                           eplb.copies.clone() if eplb is not None else None,
                           eplb.slot_expert.clone() if eplb is not None else None,
                           eplb.copy_count.clone() if eplb is not None else None)
-    if eplb is not None and _EPLB_DEFERRED:
+    if eplb is not None and _EPLB_DEFERRED and not capturing:
         if schedule:
             _launch_deferred(eplb, num_tokens, eplb.block_m(decision_tokens))
         if getattr(moe, "layer_id", None) == moe.config.num_hidden_layers - 1:
