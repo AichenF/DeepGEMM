@@ -8,6 +8,10 @@ Idempotent. Edits:
     _run_mega_routed dispatches to run_sm90_mxfp4_mega_routed for them
   * quantization/fp8.py: on SM90 with the megamoe a2a backend, FP4 experts are
     built for the MXFP4 kernel instead of asserting
+  * quantization/mxfp4.py: same for experts loaded through the MXFP4 method
+    (MiMo V2 checkpoints with an MXFP4 expert store)
+  * models/mimo_v2.py: MiMoV2MoE.forward_normal dispatches to the MXFP4
+    MegaMoE path like DeepseekV2MoE does
 """
 import os
 import re
@@ -83,3 +87,63 @@ if "build_sm90_mxfp4_mega_moe_experts_weights" not in s:
     print("patched", p)
 else:
     print("already patched", p)
+
+# --- mxfp4.py ----------------------------------------------------------------
+p = os.path.join(srt, "layers", "quantization", "mxfp4.py")
+s = open(p).read()
+if "build_sm90_mxfp4_mega_moe_experts_weights" not in s:
+    old = ("        if self.use_deep_gemm or self.use_mega_moe:\n"
+           "            from deep_gemm import transform_sf_into_required_layout\n")
+    assert old in s, "mxfp4.py deep_gemm/mega anchor not found"
+    new = ("        if self.use_mega_moe and get_platform().is_sm90:\n"
+           "            from sglang.srt.layers.moe.mega_moe_sm90_mxfp4 import (\n"
+           "                build_sm90_mxfp4_mega_moe_experts_weights,\n"
+           "            )\n\n"
+           "            build_sm90_mxfp4_mega_moe_experts_weights(layer)\n"
+           "            layer._mxfp4_backend = \"mega_moe_sm90\"\n"
+           "            return\n\n")
+    s = s.replace(old, new + old, 1)
+    open(p, "w").write(s)
+    print("patched", p)
+else:
+    print("already patched", p)
+
+# --- mimo_v2.py --------------------------------------------------------------
+p = os.path.join(srt, "models", "mimo_v2.py")
+if os.path.exists(p):
+    s = open(p).read()
+    if "run_sm90_mxfp4_mega_routed" not in s:
+        old = ("        else:\n"
+               "            topk_output = self.topk.empty_topk_output(hidden_states.device)\n\n"
+               "        final_hidden_states = self.experts(hidden_states, topk_output)\n")
+        assert old in s, "mimo_v2.py forward_normal anchor not found"
+        new = ("        else:\n"
+               "            topk_output = self.topk.empty_topk_output(hidden_states.device)\n\n"
+               "        from sglang.srt.layers.moe.mega_moe import should_use_mega_moe\n\n"
+               "        if should_use_mega_moe(self, hidden_states):\n"
+               "            # The MegaMoE kernel dispatches and combines across the EP group\n"
+               "            # itself; the layer communicator scatters/gathers the tokens.\n"
+               "            from sglang.srt.environ import envs\n"
+               "            from sglang.srt.layers.moe.mega_moe_sm90_mxfp4 import (\n"
+               "                run_sm90_mxfp4_mega_routed,\n"
+               "            )\n\n"
+               "            num_tokens = hidden_states.shape[0]\n"
+               "            cap = envs.SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK.get()\n"
+               "            assert num_tokens <= cap, (\n"
+               "                f\"mega MoE: num_tokens={num_tokens} exceeds cap \"\n"
+               "                f\"SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK={cap}\"\n"
+               "            )\n"
+               "            return run_sm90_mxfp4_mega_routed(\n"
+               "                self,\n"
+               "                hidden_states,\n"
+               "                topk_output.topk_ids if num_tokens > 0 else None,\n"
+               "                topk_output.topk_weights if num_tokens > 0 else None,\n"
+               "                num_tokens,\n"
+               "                cap,\n"
+               "            )\n\n"
+               "        final_hidden_states = self.experts(hidden_states, topk_output)\n")
+        s = s.replace(old, new, 1)
+        open(p, "w").write(s)
+        print("patched", p)
+    else:
+        print("already patched", p)

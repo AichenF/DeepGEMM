@@ -2,7 +2,8 @@
 
 Drop-in companion to ``mega_moe_sm90.py``: FP4 experts (DeepSeek V4 style
 packed E2M1 + E8M0 scales, or MiMo's MXFP4 store) go through DeepGEMM's fused
-SM90 MXFP4 MegaMoE kernel. ``SGLANG_MEGAMOE_DYNAMIC_EPLB_SLOTS=S`` (S > 0)
+SM90 MXFP4 MegaMoE kernel. ``install_mxfp4_megamoe.py`` wires both the
+DeepSeek V2/V4 and the MiMo V2 MoE modules to ``run_sm90_mxfp4_mega_routed``. ``SGLANG_MEGAMOE_DYNAMIC_EPLB_SLOTS=S`` (S > 0)
 turns on dynamic expert load balancing with S helper slots per rank; 0 or
 unset is fixed placement on the same kernel, so the two arms differ only in
 the balancer. ``SGLANG_MEGAMOE_DYNAMIC_EPLB_MIN_TOKENS`` (default 512) is the
@@ -156,8 +157,14 @@ def build_sm90_mxfp4_mega_moe_experts_weights(experts) -> None:
 
     w13 = _ocp_to_marlin_packed(as_u8(experts.w13_weight))
     w2 = _ocp_to_marlin_packed(as_u8(experts.w2_weight))
-    s13 = as_e8m0_u8(experts.w13_weight_scale_inv)
-    s2 = as_e8m0_u8(experts.w2_weight_scale_inv)
+    # DeepSeek V4 checkpoints load through the FP8 method (``*_scale_inv``),
+    # MiMo through the MXFP4 method (``*_scale``); the tensors are the same.
+    def scale_param(name):
+        p = getattr(experts, name + "_scale_inv", None)
+        return p if p is not None else getattr(experts, name + "_scale")
+
+    s13 = as_e8m0_u8(scale_param("w13_weight"))
+    s2 = as_e8m0_u8(scale_param("w2_weight"))
     assert w13.shape[2] * 2 == s13.shape[2] * 32 and w2.shape[2] * 2 == s2.shape[2] * 32, \
         f"scale shapes do not match a 32-element MXFP4 group: {tuple(w13.shape)} {tuple(s13.shape)}"
     l1, l2 = deep_gemm.transform_mxfp4_weights_for_mega_moe_sm90((w13, s13), (w2, s2))
@@ -273,7 +280,8 @@ def run_sm90_mxfp4_mega_routed(
     intermediate = moe.config.moe_intermediate_size
     num_experts = moe.experts.num_experts
     top_k = topk_ids.shape[1] if num_tokens > 0 else moe.config.num_experts_per_tok
-    routed_scaling = 1.0 if moe.experts.should_fuse_routed_scaling_factor_in_topk else float(moe.routed_scaling_factor)
+    routed_scaling = 1.0 if moe.experts.should_fuse_routed_scaling_factor_in_topk \
+        else float(getattr(moe, "routed_scaling_factor", None) or 1.0)
     clamp = getattr(moe.config, "swiglu_limit", None)
 
     eplb = None
