@@ -89,14 +89,15 @@ def _trace_flush(eplb) -> None:
     global _TRACE_PENDING
     if _TRACE_PENDING is None:
         return
-    ordinal, tokens, mode, start, mid, end, copies, slots, copy_count = _TRACE_PENDING
+    ordinal, tokens, mode, start, waited, mid, end, copies, slots, copy_count = _TRACE_PENDING
     _TRACE_PENDING = None
     end.synchronize()
     msg = (f"[megamoe-trace] large forward #{ordinal}: {tokens} local tokens, {mode}, "
            f"{start.elapsed_time(end) * 1000:.0f} us")
     if eplb is not None:
         st = _EPLB_STATS
-        msg += (f" (prepare {start.elapsed_time(mid) * 1000:.0f} + kernel {mid.elapsed_time(end) * 1000:.0f})"
+        msg += (f" (wait {start.elapsed_time(waited) * 1000:.0f} + prepare {waited.elapsed_time(mid) * 1000:.0f}"
+                f" + kernel {mid.elapsed_time(end) * 1000:.0f})"
                 f" | planned {st['plan']} (mean {st['plan_tokens'] / max(st['plan'], 1):.0f} tokens), "
                 f"remap-only {st['remap']} (mean {st['remap_tokens'] / max(st['remap'], 1):.0f} tokens), "
                 f"deferred plans {st['deferred']}"
@@ -295,10 +296,6 @@ def run_sm90_mxfp4_mega_routed(
     if _EPLB_TRACE and num_tokens >= _TRACE_MIN_TOKENS and group.rank() == 0:
         _EPLB_STATS["large"] += 1
         trace_this = _EPLB_STATS["large"] % _EPLB_TRACE == 0
-    if trace_this:
-        _trace_flush(eplb)
-        start = torch.cuda.Event(enable_timing=True)
-        start.record()
     mode = "kernel, fixed placement"
 
     if num_tokens > 0:
@@ -307,6 +304,14 @@ def run_sm90_mxfp4_mega_routed(
         buf.x_sf[:num_tokens].copy_(x_sf)
         buf.topk_idx[:num_tokens].copy_(topk_ids.to(torch.int64))
         buf.topk_weights[:num_tokens].copy_((topk_weights * routed_scaling).to(torch.float32))
+    # The trace starts after the FP8 cast and the buffer copies, which both
+    # arms pay alike, so "prepare" is the balancer's own work (wait for a
+    # deferred plan, plan + copy, or remap) and "kernel" is the MegaMoE call.
+    waited = None
+    if trace_this:
+        _trace_flush(eplb)
+        start = torch.cuda.Event(enable_timing=True)
+        start.record()
 
     y = torch.empty((max(num_tokens, 1), hidden), dtype=torch.bfloat16, device=hidden_states.device)
     if eplb is not None:
@@ -332,6 +337,9 @@ def run_sm90_mxfp4_mega_routed(
         capturing = torch.cuda.is_current_stream_capturing()
         if not capturing:
             _wait_deferred(eplb)
+        if trace_this:
+            waited = torch.cuda.Event(enable_timing=True)
+            waited.record()
         replan = schedule = False
         if decision_tokens >= _EPLB_MIN_TOKENS and not capturing:
             large = getattr(eplb, "_large_forwards", 0)
@@ -373,7 +381,7 @@ def run_sm90_mxfp4_mega_routed(
         global _TRACE_PENDING
         end = torch.cuda.Event(enable_timing=True)
         end.record()
-        _TRACE_PENDING = (_EPLB_STATS["large"], num_tokens, mode, start,
+        _TRACE_PENDING = (_EPLB_STATS["large"], num_tokens, mode, start, waited,
                           mid if eplb is not None else None, end,
                           eplb.copies.clone() if eplb is not None else None,
                           eplb.slot_expert.clone() if eplb is not None else None,
