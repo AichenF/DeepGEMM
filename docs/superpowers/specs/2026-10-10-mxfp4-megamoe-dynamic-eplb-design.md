@@ -581,3 +581,50 @@ MiMo serving path is wrong somewhere common to both (expert weight layout
 through the MXFP4 quant method, the attention backend, or prompt format).
 Job 4997842 runs the same prompts through the MegaMoE path and the stock
 expert path with two attention backends to locate it.
+
+### MiMo 2.5 root cause: checkpoint scales below the kernel's E8M0 window (2026-10-15)
+
+The correctness probe (same three prompts and 60 GSM8K questions per
+configuration) placed the fault: the MegaMoE path produced the same garbage
+with the fa3 and the default attention backend (0/60), while the stock MXFP4
+Marlin runner was right with both (56/60, 57/60). The image's stock triton MoE
+runner cannot run packed MXFP4 experts on SM90 ("Hidden size mismatch"), so
+Marlin is the stock baseline for this checkpoint. A first probe ran the
+image's own SGLang and DeepGEMM because the patched trees were not on the
+path; every arm failed at load time.
+
+`tests/eplb_tools/check_ckpt_experts.py` then ran one layer's real experts
+through the adapter's transform and the kernel at EP1 against a dequantized
+reference, with the byte-layout alternatives alongside:
+
+| weights | adapter before the fix | bytes unpermuted | high nibble first | [up; gate] | after the fix |
+|---|---:|---:|---:|---:|---:|
+| MiMo 2.5 layer 5, 16 experts (codes 114-125) | 0.833 | -0.03 | -0.06 | 0.62 | **0.9999** |
+| MiMo 2.5 layer 40, 48 experts (codes 118-125) | 0.933 | -0.00 | 0.00 | 0.65 | **0.9997** |
+| DeepSeek V4 Flash layer 5, 16 experts (codes 119-123) | 0.965 | 0.00 | -0.00 | 0.59 | **0.9996** |
+
+(per-token cosine, mean). The nibble order and the gate/up order were right;
+the output was simply too small, and more so where the scales were smaller.
+`quantization/mxfp4_fused_scale.cuh` explains it: the SM90 kernel dequantizes
+E2M1 into E4M3 by folding the group's E8M0 scale into the E4M3 exponent, which
+is exact only while every magnitude of the group is a normal E4M3 number,
+0.5 * 2^k >= 2^-6 and 6 * 2^k <= 448, i.e. k in [-5, 6], codes 122..133.
+Below that window groups flush to zero. The kernel bench quantizes
+`randn * 0.05` weights, whose scales land at code 122, the edge of the window,
+so the gate never saw it; checkpoints quantized against absolute magnitudes
+sit below it (MiMo 2.5 codes 114-125, with 2^-13 groups; DeepSeek V4 Flash
+119-123). DeepSeek V4 Flash was therefore also losing its smallest groups
+(cosine 0.965) while still scoring 286/300 on GSM8K.
+
+Fix (commit bda740e): `fold_e8m0_into_kernel_window` shifts every expert's
+codes so that its largest code is 133 and returns the shift as the kernel's
+per-expert fp32 global scale, which both GEMM epilogues already apply
+(`l1_global_scales`, `l2_global_scales`; the EPLB arena carries them per slot
+and the copy kernel moves them with the weights). Per-expert code spans are
+3-10 on both checkpoints, inside the 12-code window, so no group is lost
+(the helper reports the lost fraction; it is 0 here). The adapter applies the
+fold for both models; for scales already inside the window it is the identity
+up to the global factor. The MiMo arms were resubmitted with the fix; the
+DeepSeek V4 Flash arms that were already running picked the fixed adapter up
+mid-job (each arm launches a new server), which does not change their timing
+but means their accuracy columns mix both versions; a clean rerun follows.
