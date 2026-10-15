@@ -536,3 +536,48 @@ Runs submitted on 2026-10-14: DSv4 Flash fixed vs deferred at 16k and 64k
 chunks, and MiMo 2.5 fixed vs deferred at 16k chunks, both with GSM8K,
 ShareGPT-long and LongBench. Results go to the end-to-end section when they
 land.
+
+### First deferred-mode and MiMo runs (2026-10-14, jobs 4966857 and 4980275)
+
+Both on healthy nodes (the probe reads 780-810 TFLOPS per GPU), TP8 = EP8,
+16384-token chunks, interleaved fixed / deferred passes, input tok/s of the
+steady-state passes (pass 1 discarded for GSM8K, which is cold), GSM8K
+accuracy on 300 questions.
+
+DeepSeek V4 Flash, fixed vs deferred (4 helper slots):
+
+| | GSM8K | ShareGPT-long | ShareGPT-long gen64 | LongBench | accuracy |
+|---|---:|---:|---:|---:|---|
+| fixed | 9893 | 46791 / 47474 | 41480 / 41663 | 44580 / 44682 | 286 / 286 |
+| deferred | 10305 / 10505 | 47114 / 47155 | 41121 / 41091 | 44321 / 44289 | 291 / 287 |
+
+In-server trace (62 forwards per arm at 1900-2050 tokens per rank; this
+trace still started before the FP8 cast): fixed 1719 / 1741 us median per
+MoE layer; deferred 1954 / 1894 us = 328 us before the kernel + 1629 / 1572
+us kernel. The plan lines show the imbalance the kernel sees being removed
+(for example max rank load 341 -> 208 blocks, mean 208, 7-11 replicas) and
+0-1 weight copies per rank per layer, yet the layer is 10 % slower end to
+end because of the 328 us in front of the kernel, which is far more than a
+remap. The trace has since been split into wait / prepare / kernel and
+moved after the cast (commit 87e5b10) to attribute it; the rerun is job
+4997843. The 64k-chunk arms did not start: SGLang requires the MegaMoE
+token cap to cover the whole chunk (it does not account for the sequence
+sharding), so `tp8c64k` now sets the cap to 65536.
+
+MiMo 2.5 Pro, same arms (first run with the MXFP4 MegaMoE path):
+
+| | GSM8K | ShareGPT-long | ShareGPT-long gen64 | LongBench | accuracy |
+|---|---:|---:|---:|---:|---|
+| fixed | 12086 | 33250 / 33245 | 28453 / 28468 | 32490 / 32456 | 1 / 300 |
+| deferred | 11482 / 12031 | 38669 / 38761 | 32599 / 32549 | 37353 / 37341 | 1 / 300 |
+
+Per MoE layer (94 forwards per arm at 2048 tokens per rank): fixed 4703 /
+4738 us median, deferred 3123 / 3148 us (321 us before the kernel + 2805 /
+2827 us kernel), i.e. the balanced layer is 1.5x faster and the server is
+16 % faster on ShareGPT-long and 15 % on LongBench. The plan lines show the
+MiMo imbalance (max rank load 594 -> 285 blocks on a late layer). These
+numbers are not claimable yet: GSM8K accuracy is 1/300 in both arms, so the
+MiMo serving path is wrong somewhere common to both (expert weight layout
+through the MXFP4 quant method, the attention backend, or prompt format).
+Job 4997842 runs the same prompts through the MegaMoE path and the stock
+expert path with two attention backends to locate it.
