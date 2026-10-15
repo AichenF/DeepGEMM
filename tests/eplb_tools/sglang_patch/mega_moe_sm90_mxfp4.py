@@ -168,6 +168,16 @@ def build_sm90_mxfp4_mega_moe_experts_weights(experts) -> None:
     s2 = as_e8m0_u8(scale_param("w2_weight"))
     assert w13.shape[2] * 2 == s13.shape[2] * 32 and w2.shape[2] * 2 == s2.shape[2] * 32, \
         f"scale shapes do not match a 32-element MXFP4 group: {tuple(w13.shape)} {tuple(s13.shape)}"
+    # The kernel folds each group scale into an E4M3 exponent, which is exact
+    # only for E8M0 codes 122..133. Shift every expert's codes into that window
+    # and carry the shift as the kernel's per-expert global scale.
+    from deep_gemm.quantization_mxfp4 import fold_e8m0_into_kernel_window
+    s13, gs1, lost1 = fold_e8m0_into_kernel_window(s13)
+    s2, gs2, lost2 = fold_e8m0_into_kernel_window(s2)
+    if max(lost1, lost2) > 0:
+        import logging
+        logging.getLogger(__name__).warning(
+            "MXFP4 groups below the kernel's E8M0 window flush to zero: %.4f (l1) %.4f (l2)", lost1, lost2)
     l1, l2 = deep_gemm.transform_mxfp4_weights_for_mega_moe_sm90((w13, s13), (w2, s2))
     experts.mega_num_local_experts = int(w13.shape[0])
     hidden = int(w13.shape[2] * 2)          # packed [E, 2I, K/2]
@@ -188,13 +198,15 @@ def build_sm90_mxfp4_mega_moe_experts_weights(experts) -> None:
         num_topk = int(getattr(experts, "top_k")) + int(getattr(experts, "num_fused_shared_experts", 0) or 0)
         cap = int(os.environ.get("SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK", "4096"))
         eplb = _new_eplb(group, int(experts.num_experts), cap, num_topk, hidden, intermediate)
-        eplb.set_home_weights(l1, l2)
+        eplb.set_home_weights(l1, l2, gs1, gs2)
         del l1, l2
         torch.cuda.empty_cache()
         experts._mega_moe_eplb = eplb
         return
     experts.mega_l1_weights = l1
     experts.mega_l2_weights = l2
+    experts.mega_l1_global_scales = gs1
+    experts.mega_l2_global_scales = gs2
 
 
 def _get_symm_buffer(group, num_experts, num_max_tokens_per_rank, num_topk, hidden, intermediate_hidden):
@@ -372,10 +384,13 @@ def run_sm90_mxfp4_mega_routed(
         deep_gemm.mxfp4_mega_moe(
             y, eplb.l1_weights, eplb.l2_weights, buf,
             cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
+            l1_global_scales=eplb.l1_global_scales, l2_global_scales=eplb.l2_global_scales,
             activation_clamp=clamp, fast_math=True)
     else:
         deep_gemm.mxfp4_mega_moe(
             y, moe.experts.mega_l1_weights, moe.experts.mega_l2_weights, buf,
+            l1_global_scales=moe.experts.mega_l1_global_scales,
+            l2_global_scales=moe.experts.mega_l2_global_scales,
             activation_clamp=clamp, fast_math=True)
     if trace_this:
         global _TRACE_PENDING

@@ -211,3 +211,39 @@ def mxfp4_fused_to_decode_tiles(fused: torch.Tensor) -> torch.Tensor:
     sf = rows[..., 64:64 + MXFP4_SCALE_BYTES_PER_ROW].reshape(
         E, n_tiles * k_blocks, MXFP4_TILE_ROWS * MXFP4_SCALE_BYTES_PER_ROW)
     return torch.cat((fp4, sf), dim=-1).contiguous()
+
+
+# The SM90 fused kernel dequantizes E2M1 into E4M3 with the group scale folded
+# into the E4M3 exponent (quantization/mxfp4_fused_scale.cuh). That is exact
+# only while every magnitude of the group stays a normal E4M3 number:
+# 0.5 * 2^k >= 2^-6 and 6 * 2^k <= 448, i.e. k in [-5, 6], E8M0 codes 122..133.
+# Below the window groups flush to zero, above it they saturate. Checkpoints
+# quantized against absolute weight magnitudes (MiMo 2.5: codes 114..125) sit
+# below it, so each expert's codes are shifted into the window and the shift is
+# returned as a per-expert fp32 global scale that the kernel applies in the
+# epilogue of both GEMMs.
+KERNEL_E8M0_CODE_MIN = UE8M0_BIAS - 5
+KERNEL_E8M0_CODE_MAX = UE8M0_BIAS + 6
+
+
+def fold_e8m0_into_kernel_window(scale_ue8m0: torch.Tensor):
+    """Per-expert shift of ``(E, N, G)`` E8M0 codes so the largest code of
+    every expert lands on ``KERNEL_E8M0_CODE_MAX``.
+
+    Returns ``(shifted_codes_uint8, global_scales_fp32[E])`` with
+    ``value = 2^(shifted - 127) * global_scale`` unchanged for every group whose
+    shifted code is still inside the window. Groups more than 11 codes below
+    the expert's maximum cannot be represented and flush to zero in the kernel;
+    the fraction of such groups is returned as the third element.
+    """
+    assert scale_ue8m0.dtype == torch.uint8 and scale_ue8m0.dim() == 3
+    codes = scale_ue8m0.to(torch.int32)
+    E = codes.shape[0]
+    max_code = codes.view(E, -1).amax(dim=1)
+    shift = KERNEL_E8M0_CODE_MAX - max_code
+    shifted = codes + shift.view(E, 1, 1)
+    lost = (shifted < KERNEL_E8M0_CODE_MIN).float().mean().item()
+    shifted = shifted.clamp(0, UE8M0_NAN_CODE - 1).to(torch.uint8).contiguous()
+    global_scales = torch.ldexp(torch.ones(E, dtype=torch.float32, device=scale_ue8m0.device),
+                                -shift)
+    return shifted, global_scales, lost
