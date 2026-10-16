@@ -628,3 +628,67 @@ up to the global factor. The MiMo arms were resubmitted with the fix; the
 DeepSeek V4 Flash arms that were already running picked the fixed adapter up
 mid-job (each arm launches a new server), which does not change their timing
 but means their accuracy columns mix both versions; a clean rerun follows.
+
+### Serving results with the scale fix, 16k chunks (2026-10-15, jobs 5009483, 5012291, 5010371, 5012290, 5012837)
+
+All arms below run the folded scales (commit bda740e). TP8 = EP8, 16384-token
+chunks (about 2000 tokens per rank), input tok/s of the steady-state passes,
+GSM8K accuracy on 300 questions. The adapter trace starts after the FP8 cast
+and splits the balancer's own time into wait (for the deferred plan), prepare
+(plan + copy + remap, or remap only) and kernel; medians over 63-94 full-chunk
+forwards per arm.
+
+DeepSeek V4 Flash:
+
+| arm | GSM8K | ShareGPT-long | SG-long gen64 | LongBench | accuracy | layer (us) |
+|---|---:|---:|---:|---:|---|---|
+| fixed (3 passes) | 10377 / 8704 | 47210 / 47147 | 41363 / 41684 | 45015 / 44770 | 288 / 287 | kernel 1572-1619 |
+| deferred 4 slots (3 passes) | 9808 / 9726 | 46915 / 47087 | 41064 / 41157 | 44289 / 44390 | 288 / 289 | 33 wait + 85 remap + kernel 1587-1630 |
+
+MiMo 2.5 Pro:
+
+| arm | GSM8K | ShareGPT-long | SG-long gen64 | LongBench | accuracy | layer (us) |
+|---|---:|---:|---:|---:|---|---|
+| fixed (2 passes) | 11674 / 11774 | 39094 / 39019 | 32421 / 32281 | 37436 / 37452 | 296 / 292 | kernel 2856 / 2890 |
+| synchronous plan, 4 slots | 11975 | 38963 | 32038 | 37865 | 292 | 351 prepare + kernel 2561-2584 |
+| deferred 4 slots (3 passes) | 12095 / 11694 / 11546 | 38235 / 38308 / 38318 | 31693 / 31656 / 31628 | 36740 / 36728 / 36708 | server died at the eval | 33 wait + 88 remap + kernel 2808-2838 |
+| deferred, no CUDA graph | 6262 | 36190 | 22903 | 34959 | 294 | 33 + 86 + kernel 2817 |
+
+What the numbers say:
+
+* With correct numerics the earlier MiMo "+15-16 %" is gone; it was an
+  artifact of the zeroed weights. On these datasets the owner-only imbalance
+  that reaches the planner is 1.16x (MiMo) and 1.32x (DeepSeek) at the
+  median, p90 1.37x / 1.69x, far below the GSM8K-only traces (kappa up to 14)
+  because a 16k chunk mixes many prompts and the sequence sharding gives
+  every rank the same token count.
+* A fresh plan does speed up the MiMo kernel: synchronous plan 2561-2584 us
+  vs fixed 2856-2890 us (1.11x), but its 351 us of plan + copy + remap on the
+  critical path returns the layer to parity (2938 vs 2890 us) and the server
+  to within 1 %.
+* The deferred plan is one chunk stale, and that costs almost the whole
+  kernel gain: deferred kernel 2808-2838 us (1.02x over fixed) against
+  2561-2584 us with a fresh plan. Consecutive chunks route differently enough
+  that last chunk's placement does not fit this chunk. On DeepSeek the
+  deferred kernel is not faster at all (1587-1630 vs 1572-1619 us). The
+  balancer's remaining cost in deferred mode is 118 us per layer (wait 33 +
+  remap 85, the latter host-side launch overhead measured by the events).
+* The deferred MiMo arm dies at the first request after LongBench when the
+  full benchmark sequence (GSM8K, ShareGPT-long, 64-token generation,
+  LongBench, eval) has run: TMA descriptor init error 719 after an earlier
+  launch failure (reproduced twice, jobs 5010371 and 5012837). It does not
+  happen with LongBench + eval alone (job 5012290), with the synchronous plan,
+  or with CUDA graphs disabled, so it is an interaction between the
+  side-stream plan/copy and the decode CUDA-graph replays that the
+  generation phase exercises. The synchronous arm is correct on both models
+  (DeepSeek 288/300 earlier, MiMo 292/300).
+* 64k chunks do not fit: the 65536-token symmetric buffer OOMs at decode
+  graph capture on both arms. 32k chunks (CAP 32768, static fraction 0.72,
+  decode graph batch 128) are the largest; the first 32k attempt failed on an
+  ambiguous flag name (`--cuda-graph-max-bs-decode`), resubmitted as jobs
+  5038278 (DeepSeek) and 5038279 (MiMo), fixed vs synchronous plan.
+
+Decision: the synchronous plan is the balancer's serving mode; deferred mode
+stays behind its flag as experimental until the graph interaction is found.
+The path to a prefill gain is larger per-rank batches (32k chunks) where the
+kernel saving grows and the 350 us plan cost does not.
