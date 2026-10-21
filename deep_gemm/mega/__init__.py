@@ -364,7 +364,11 @@ def mxfp4_mega_moe(y: torch.Tensor,
                   l1_global_scales: Optional[torch.Tensor] = None,
                   l2_global_scales: Optional[torch.Tensor] = None,
                   activation_clamp: Optional[float] = None,
-                  fast_math: bool = True):
+                  fast_math: bool = True,
+                  eplb_fused_copy: Optional[tuple] = None):
+    """``eplb_fused_copy`` (from ``DynamicEPLB.fused_copy_args``) makes the
+    kernel copy the changed helper slots itself instead of a separate copy
+    kernel; see ``deep_gemm.mega.eplb``."""
     l1_layout = getattr(l1_weights[0], _SM90_MXFP4_H20_FUSED_LAYOUT_ATTR, None)
     l2_layout = getattr(l2_weights[0], _SM90_MXFP4_H20_FUSED_LAYOUT_ATTR, None)
     if l1_layout != _SM90_MXFP4_H20_FUSED_LAYOUT or l2_layout != l1_layout:
@@ -372,7 +376,7 @@ def mxfp4_mega_moe(y: torch.Tensor,
             "MXFP4 weights must use the Mode2 Braided layout produced by "
             "transform_mxfp4_weights_for_mega_moe_sm90"
         )
-    _C.mxfp4_mega_moe(
+    common = (
         y, l1_weights, l2_weights,
         cumulative_local_expert_recv_stats,
         l1_global_scales, l2_global_scales,
@@ -382,6 +386,10 @@ def mxfp4_mega_moe(y: torch.Tensor,
         sym_buffer.num_experts, sym_buffer.num_topk,
         activation_clamp, fast_math,
     )
+    if eplb_fused_copy is None:
+        _C.mxfp4_mega_moe(*common)
+    else:
+        _C.mxfp4_mega_moe_fused_copy(*common, *eplb_fused_copy)
 
 
 # Dynamic expert load balancing on top of the physical-slot kernel contract.

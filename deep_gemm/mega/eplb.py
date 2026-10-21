@@ -9,6 +9,7 @@ routing table is rewritten to physical slot ids. The MegaMoE kernel itself
 runs unchanged on ``R * (H + S)`` physical slots. Correctness never depends
 on the plan: any slot holding an expert's weights computes the same output.
 """
+import os
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
@@ -90,8 +91,21 @@ class DynamicEPLB:
                  hidden: int, intermediate_hidden: int,
                  open_gate_blocks: int = 0,
                  activation: str = 'swiglu',
-                 symm: Optional[SymmBuffer] = None):
+                 symm: Optional[SymmBuffer] = None,
+                 fuse_copy: Optional[bool] = None):
+        """``fuse_copy`` (default on; env ``DG_EPLB_FUSE_COPY=0`` turns it off)
+        makes the MegaMoE kernel copy the changed helper slots itself:
+        ``prepare`` then runs only the planner and the remap, and ``forward``
+        passes the copy list to the kernel, whose dispatch warps move the
+        weights during the GEMM phase and whose weight loader waits per slot.
+        Off, a separate copy kernel runs between the plan and the remap (the
+        measurement mode). It can be toggled per call through the attribute
+        of the same name."""
         assert num_helper_slots > 0
+        assert num_helper_slots <= 32, 'the fused copy tracks helper slots in a 32-bit mask'
+        if fuse_copy is None:
+            fuse_copy = bool(int(os.environ.get('DG_EPLB_FUSE_COPY', '1')))
+        self.fuse_copy = fuse_copy
         self.group = group
         self.num_ranks = group.size()
         self.rank = group.rank()
@@ -124,6 +138,17 @@ class DynamicEPLB:
         layout = _C.get_mega_moe_eplb_workspace_layout(
             self.num_ranks, num_experts, num_helper_slots)
         self.ws_layout = layout
+        # The device headers may be newer than the host extension (JIT kernels
+        # pick up `layout/mega_moe_eplb.cuh` immediately, `_C` only after a
+        # rebuild): derive the trailing words the kernels expect from the
+        # offsets the extension reports and size the buffer for the larger
+        # of the two.
+        copy_done_words = 2 * num_helper_slots
+        copy_done = int(layout.get('copy_done', (int(layout['copy_count']) + 1 + 1) // 2 * 2))
+        remap_done = copy_done + copy_done_words
+        num_words = (remap_done + 1 + 3) // 4 * 4
+        layout = dict(layout, copy_done=copy_done, remap_done=remap_done,
+                      num_bytes=max(int(layout['num_bytes']), num_words * 4))
         self.ws = symm_mem.empty(int(layout['num_bytes']), dtype=torch.int8, device='cuda')
         self.ws_handle = symm_mem.rendezvous(self.ws, group=group)
         self.ws.zero_()
@@ -137,7 +162,18 @@ class DynamicEPLB:
         self.copy_list = words[layout['copy_list']:
                                layout['copy_list'] + 2 * num_helper_slots].view(num_helper_slots, 2)
         self.copy_count = words[layout['copy_count']:layout['copy_count'] + 1]
+        self.copy_done = words[layout['copy_done']:
+                               layout['copy_done'] + 2 * num_helper_slots].view(num_helper_slots, 2)
         self.local_counter = words[layout['local_counter']:layout['local_counter'] + num_experts]
+        # Per-forward host work is kept to the two launches: the symmetric
+        # pointer lists (a property call into the handle each time), the
+        # ``topk_idx[:n]`` views (one ``aten::slice`` per call) and the fused
+        # copy argument tuple are all fixed after construction, so they are
+        # built once and reused.
+        self._ws_ptrs = list(self.ws_handle.buffer_ptrs)
+        self._topk_views: Dict[int, torch.Tensor] = {}
+        self._arena_ptrs = None
+        self._fused_copy_args = None
         # Empty helper slots are -1; the buffer was zeroed. Before the first
         # plan every expert has exactly one copy, its home rank, with an
         # unbounded block budget, so a remap without a plan sends everything
@@ -197,6 +233,12 @@ class DynamicEPLB:
             self.l1_global_scales = v['l1_global_scale'].view(-1)
             self.l2_global_scales = v['l2_global_scale'].view(-1)
             self._plane_names = list(planes.keys())
+            # Plane groups for the fused copy: what the L1 GEMM reads, then
+            # what the L2 GEMM reads; each group has its own readiness counter.
+            self._l1_plane_names = ['l1_packed', 'l1_sf', 'l1_global_scale']
+            self._l2_plane_names = ['l2_packed', 'l2_sf', 'l2_global_scale']
+            self._arena_ptrs = list(self.arena.handle.buffer_ptrs)
+            self._fused_copy_args = None
         v = self.arena.views
         v['l1_packed'][:H].copy_(l1_packed)
         v['l1_sf'][:H].copy_(l1_sf)
@@ -214,10 +256,23 @@ class DynamicEPLB:
         self.group.barrier()
 
     def block_m(self, num_tokens: int) -> int:
-        return _C.sm90_mxfp4_mega_moe_block_m(
-            self.num_ranks, self.num_slots, self.num_topk,
-            self.hidden, self.intermediate_hidden,
-            self.num_max_tokens_per_rank, num_tokens)
+        # The heuristic is pure arithmetic on fixed shapes; cache it per token
+        # count so the per-layer host path does not re-enter the extension.
+        cache = self.__dict__.setdefault('_block_m_cache', {})
+        bm = cache.get(num_tokens)
+        if bm is None:
+            bm = cache[num_tokens] = _C.sm90_mxfp4_mega_moe_block_m(
+                self.num_ranks, self.num_slots, self.num_topk,
+                self.hidden, self.intermediate_hidden,
+                self.num_max_tokens_per_rank, num_tokens)
+        return bm
+
+    def topk_view(self, num_tokens: int) -> torch.Tensor:
+        """``self.symm.topk_idx[:num_tokens]``, cached per token count."""
+        v = self._topk_views.get(num_tokens)
+        if v is None:
+            v = self._topk_views[num_tokens] = self.symm.topk_idx[:num_tokens]
+        return v
 
     def plan(self, num_tokens: int, block_m: Optional[int] = None,
              topk_idx: Optional[torch.Tensor] = None) -> int:
@@ -231,11 +286,13 @@ class DynamicEPLB:
         if block_m is None:
             block_m = self.block_m(num_tokens)
         if topk_idx is None:
-            topk_idx = self.symm.topk_idx[:num_tokens]
+            topk_idx = self.topk_view(num_tokens)
+        elif topk_idx.shape[0] != num_tokens:
+            topk_idx = topk_idx[:num_tokens]
         self.generation += 1
         _C.mega_moe_eplb_plan(
-            self.ws, self.ws_handle.buffer_ptrs, self.rank,
-            topk_idx[:num_tokens],
+            self.ws, self._ws_ptrs, self.rank,
+            topk_idx,
             self.num_experts, self.num_helper_slots,
             block_m, self.open_gate_blocks, self.generation)
         return block_m
@@ -243,27 +300,55 @@ class DynamicEPLB:
     def copy_weights(self):
         assert self.arena is not None, 'set_home_weights first'
         _C.mega_moe_eplb_copy_weights(
-            self.ws, self.arena.buffer, self.arena.handle.buffer_ptrs, self.rank,
+            self.ws, self.arena.buffer, self._arena_ptrs, self.rank,
             self.num_experts, self.num_helper_slots,
             self.arena.plane_specs(self._plane_names))
+
+    def fused_copy_args(self) -> tuple:
+        """The extra arguments ``mxfp4_mega_moe`` needs to perform this step's
+        weight copy itself (``eplb_fused_copy=``). The kernel consumes the
+        planner's copy list; a list already applied by ``copy_weights`` must
+        be cleared first (``copy_count.zero_()``) or it is copied again."""
+        assert self.arena is not None, 'set_home_weights first'
+        args = self._fused_copy_args
+        if args is None:
+            # The kernel binding sees the physical slot count as its expert
+            # count, so the logical count is passed alongside. Everything in
+            # the tuple is fixed once the arena exists.
+            args = self._fused_copy_args = (
+                self.ws, self.arena.buffer, self._arena_ptrs,
+                self.num_experts, self.num_helper_slots,
+                self.arena.plane_specs(self._l1_plane_names),
+                self.arena.plane_specs(self._l2_plane_names))
+        return args
 
     def remap(self, num_tokens: int, block_m: int, after_plan: bool = False):
         """Rewrite ``self.symm.topk_idx[:num_tokens]`` from logical experts
         to physical slots using the current placement. Standalone (without a
         fresh plan, e.g. decode steps) it reuses the last plan's copies and
-        block split, which is correct for any placement; the planner resets
-        the ordinal counters itself, otherwise they are reset here."""
-        if not after_plan:
-            self.local_counter.zero_()
+        block split, which is correct for any placement. The ordinal counters
+        are left at zero by both the planner and the remap kernel itself (its
+        last CTA clears them), so no fill launch precedes the remap."""
         _C.mega_moe_eplb_remap(
             self.ws, self.rank, self.num_ranks,
-            self.symm.topk_idx[:num_tokens],
+            self.topk_view(num_tokens),
             self.num_experts, self.num_helper_slots, block_m)
 
     def prepare(self, num_tokens: int, block_m: Optional[int] = None) -> int:
-        block_m = self.plan(num_tokens, block_m)
-        self.copy_weights()
-        self.remap(num_tokens, block_m, after_plan=True)
+        """Plan and remap in one launch, then copy the weights unless the
+        kernel does it (``fuse_copy``). The synchronous path of a large
+        forward; a plan issued early on a side stream uses ``plan`` and
+        ``remap`` separately."""
+        if block_m is None:
+            block_m = self.block_m(num_tokens)
+        self.generation += 1
+        _C.mega_moe_eplb_plan_and_remap(
+            self.ws, self._ws_ptrs, self.rank,
+            self.topk_view(num_tokens),
+            self.num_experts, self.num_helper_slots,
+            block_m, self.open_gate_blocks, self.generation)
+        if not self.fuse_copy:
+            self.copy_weights()
         return block_m
 
     def forward(self, x_fp8: torch.Tensor, x_sf: torch.Tensor,
@@ -287,8 +372,40 @@ class DynamicEPLB:
             cumulative_local_expert_recv_stats=self.cumulative_slot_recv_stats,
             l1_global_scales=self.l1_global_scales if self.use_global_scales else None,
             l2_global_scales=self.l2_global_scales if self.use_global_scales else None,
-            activation_clamp=activation_clamp, fast_math=fast_math)
+            activation_clamp=activation_clamp, fast_math=fast_math,
+            eplb_fused_copy=self.fused_copy_args() if self.fuse_copy else None)
         return y
+
+    def set_replicas(self, slot_expert) -> int:
+        """Install a static replica placement.
+
+        ``slot_expert[r][s]`` is the logical expert held by helper slot ``s``
+        of rank ``r`` (-1 = empty); every rank must pass the same table. The
+        changed slots of this rank fetch their weights from the owners, and
+        the routing falls back to "every expert at its owner" until the next
+        ``plan``. Returns the number of slots this rank copied.
+        """
+        table = torch.as_tensor(slot_expert, dtype=torch.int32).view(self.num_ranks, self.num_helper_slots)
+        prev = self.slot_expert.cpu()
+        changed = [(s, int(table[self.rank, s])) for s in range(self.num_helper_slots)
+                   if int(table[self.rank, s]) >= 0 and int(table[self.rank, s]) != int(prev[self.rank, s])]
+        self.slot_expert.copy_(table.to(self.slot_expert.device))
+        self.copy_list.zero_()
+        for i, (s, e) in enumerate(changed):
+            self.copy_list[i, 0] = s
+            self.copy_list[i, 1] = e
+        self.copy_count.fill_(len(changed))
+        self.copies.fill_(-1)
+        self.copies[:, 0, 0] = torch.arange(self.num_experts, device='cuda', dtype=torch.int32) // self.home_experts
+        self.copies[:, 0, 1] = 0x7fffffff
+        if changed:
+            self.copy_weights()
+        # The list is applied; a fused-copy kernel launch must not redo it.
+        self.copy_count.zero_()
+        self.generation += 1
+        torch.cuda.synchronize()
+        self.group.barrier()
+        return len(changed)
 
     def destroy(self):
         if self.arena is not None:
