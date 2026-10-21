@@ -185,15 +185,11 @@ EP8, DeepSeek V4 Flash shape (256 experts, 32 per rank, top-6, 4096/2048),
 
 ## Follow-ups
 
-1. Rename the inherited `*_h200_fused*` / `*_H200Fused*` / `_H20_` identifiers
-   and file names to architecture-neutral ones (`sm90_mxfp4_mega_moe_fused`),
-   across the kernel header, body include, JIT runtime, heuristics and the
-   Python layout attributes. Mechanical, about fifteen files; verify with
-   `tests/compile_all_megamoe_kernels.sh`.
-2. Overlap the planner with the previous layer and gate helper slots on
-   weight readiness inside the kernel.
-3. Replay real routing from DeepSeek V4 Flash and MiMo 2.5 instead of the
-   synthetic skew, then end-to-end serving measurements.
+The three follow-ups of the first version are done and described below: the
+inherited product-named identifiers and file names are now
+`sm90_mxfp4_mega_moe_fused*` / `SM90MXFP4Fused*`; the weight copy and the
+readiness gating moved into the kernel (fused copy); the planner was replayed
+on real routing and measured end to end.
 
 ## Real routing traces (2026-10-12)
 
@@ -537,7 +533,7 @@ chunks, and MiMo 2.5 fixed vs deferred at 16k chunks, both with GSM8K,
 ShareGPT-long and LongBench. Results go to the end-to-end section when they
 land.
 
-### First deferred-mode and MiMo runs (2026-10-14, jobs 4966857 and 4980275)
+### First deferred-mode and MiMo runs (2026-10-14)
 
 Both on healthy nodes (the probe reads 780-810 TFLOPS per GPU), TP8 = EP8,
 16384-token chunks, interleaved fixed / deferred passes, input tok/s of the
@@ -629,7 +625,7 @@ DeepSeek V4 Flash arms that were already running picked the fixed adapter up
 mid-job (each arm launches a new server), which does not change their timing
 but means their accuracy columns mix both versions; a clean rerun follows.
 
-### Serving results with the scale fix, 16k chunks (2026-10-15, jobs 5009483, 5012291, 5010371, 5012290, 5012837)
+### Serving results with the scale fix, 16k chunks (2026-10-15)
 
 All arms below run the folded scales (commit bda740e). TP8 = EP8, 16384-token
 chunks (about 2000 tokens per rank), input tok/s of the steady-state passes,
@@ -676,8 +672,8 @@ What the numbers say:
 * The deferred MiMo arm dies at the first request after LongBench when the
   full benchmark sequence (GSM8K, ShareGPT-long, 64-token generation,
   LongBench, eval) has run: TMA descriptor init error 719 after an earlier
-  launch failure (reproduced twice, jobs 5010371 and 5012837). It does not
-  happen with LongBench + eval alone (job 5012290), with the synchronous plan,
+  launch failure (reproduced twice). It does not
+  happen with LongBench + eval alone, with the synchronous plan,
   or with CUDA graphs disabled, so it is an interaction between the
   side-stream plan/copy and the decode CUDA-graph replays that the
   generation phase exercises. The synchronous arm is correct on both models
@@ -685,10 +681,65 @@ What the numbers say:
 * 64k chunks do not fit: the 65536-token symmetric buffer OOMs at decode
   graph capture on both arms. 32k chunks (CAP 32768, static fraction 0.72,
   decode graph batch 128) are the largest; the first 32k attempt failed on an
-  ambiguous flag name (`--cuda-graph-max-bs-decode`), resubmitted as jobs
-  5038278 (DeepSeek) and 5038279 (MiMo), fixed vs synchronous plan.
+  ambiguous flag name (`--cuda-graph-max-bs-decode`), resubmitted, fixed vs synchronous plan.
 
 Decision: the synchronous plan is the balancer's serving mode; deferred mode
 stays behind its flag as experimental until the graph interaction is found.
 The path to a prefill gain is larger per-rank batches (32k chunks) where the
 kernel saving grows and the 350 us plan cost does not.
+
+## Final design and results (2026-10-20)
+
+Production path, prefill only, DeepSeek V4 Flash at EP8 unless stated:
+
+* **Owner permutation** (`tests/eplb_tools/build_owner_permutation.py`,
+  applied through SGLang's `--init-expert-location` with static dispatch):
+  one choice per layer of which rank owns which expert, from the first 25 %
+  of a calibration window of the routing. Zero cost per call.
+* **Plan + fused copy + remap**: with helper slots the planner runs once per
+  large chunk (one CTA, 37-40 us in-kernel at 2048 tokens per rank), the
+  MegaMoE kernel itself copies the changed helper slots over NVLink while it
+  computes the home blocks and gates the dependent tiles on per-slot
+  readiness counters (the default; `DG_EPLB_FUSE_COPY=0` restores the separate
+  copy kernel as a measurement mode), and the remap rewrites the
+  routing to physical slots. The per-expert global scales are read after the
+  GEMM main loop (reading them at task start raced with the fused copy).
+  `SGLANG_MEGAMOE_DYNAMIC_EPLB_EARLY_PLAN=1` issues the plan on a side stream
+  right after top-k so it overlaps the shared experts; it measured the same
+  as the synchronous order once the copy was fused, so both stay.
+* **Removed**: the deferred plan (one chunk stale, 1.02-1.06x kernel on
+  ShareGPT and a CUDA-graph interaction) and the fused-plan prototype (the
+  planner inside the kernel's first phase; 137-569 us per layer slower than
+  the single-launch plan at EP4 because its hand-off tail serialises).
+
+Kernel level, real GSM8K routing replayed outside the server, EP8, 4 helper
+slots, rank-maximum time, geomean over four layers: kernel-only 1.42x at
+1024 and 1.50x at 4096 tokens per rank; with the synchronous plan, copy and
+remap on the critical path 1.26x and 1.44x. Inside the server the per-layer
+MoE time under the owner permutation is 1.21x.
+
+End to end (SGLang `bench_serving`, prefill-only 1000 few-shot prompts of
+about 1k tokens, input token throughput, means over the interleaved passes):
+
+| chunk | dataset, concurrency | fixed | owner permutation | permutation + 4 slots | 4 slots |
+|---|---|---:|---:|---:|---:|
+| 16k | GSM8K c128 | 45,228 | +5.3 % | +5.0 % | +6.4 % |
+| 16k | GSM8K c256 | 45,708 | +5.3 % | +6.1 % | +6.1 % |
+| 16k | MMLU c128 | 44,059 | +1.4 % | +2.8 % | +2.9 % |
+| 16k | MMLU c256 | 46,026 | +0.8 % | +2.2 % | +2.1 % |
+| 32k | GSM8K c128 | 46,670 | +5.5 % | +7.8 % | +8.2 % |
+| 32k | GSM8K c256 | 45,234 | +4.0 % | +6.2 % | +7.1 % |
+| 32k | MMLU c128 | 45,263 | +2.0 % | +4.1 % | +3.8 % |
+| 32k | MMLU c256 | 43,504 | +1.1 % | +2.7 % | +3.1 % |
+
+Mean TTFT moves the same way (-2 % to -7 %). GSM8K 300-question accuracy
+285-291 / 300 on every arm. The gain is bounded by the MoE share of the
+prefill step (19-30 % here): the kernel ceiling of 1.66x corresponds to
+about +12 % end to end.
+
+Decode was measured separately with a replica router on static helper-slot
+placement (METRO-style). The kernel gains 4.5-7.8 % but the per-layer route
+and count exchange costs 11.5-14 us, which over 40 layers exceeds the saving;
+TPOT ends 1-6 % worse at 8-64 concurrent requests. That line is not in this
+branch; the only route to a positive result is replica selection inside the
+MegaMoE dispatch phase.
