@@ -4,9 +4,11 @@ Usage (inside the serving container, hook installed, MEGAMOE_TOPK_DUMP_DIR set):
   python capture_routing.py --model-path <ckpt> --tp 8 --dataset gsm8k \
       --data /path/gsm8k_test.parquet --num-prompts 512 --batch 64 [--extra "--mem-fraction-static 0.8"]
 
-Only prefill matters: max_new_tokens is 1. Prompts are sent in batches so each
-chunked-prefill step carries a few thousand tokens, which is what the EPLB
-benchmark replays per rank.
+With --max-new-tokens 1 only prefill matters: prompts are sent in batches so
+each chunked-prefill step carries a few thousand tokens, which is what the
+EPLB benchmark replays per rank. With --max-new-tokens N > 1 every batch also
+runs N decode steps with --batch concurrent sequences, which records the
+decode routing (set MEGAMOE_TOPK_DUMP_MIN_TOKENS=1 so small batches are kept).
 """
 import argparse
 import json
@@ -40,6 +42,7 @@ def main():
     p.add_argument('--num-prompts', type=int, default=512)
     p.add_argument('--batch', type=int, default=64)
     p.add_argument('--extra', default='')
+    p.add_argument('--max-new-tokens', type=int, default=1)
     a = p.parse_args()
 
     import sglang as sgl
@@ -60,7 +63,7 @@ def main():
     print(f'{len(prompts)} prompts from {a.dataset}', flush=True)
     t0 = time.time()
     for i in range(0, len(prompts), a.batch):
-        engine.generate(prompts[i:i + a.batch], {'max_new_tokens': 1, 'temperature': 0})
+        engine.generate(prompts[i:i + a.batch], {'max_new_tokens': a.max_new_tokens, 'temperature': 0, 'ignore_eos': a.max_new_tokens > 1})
         print(f'  batch {i // a.batch}: {time.time() - t0:.1f}s', flush=True)
     engine.shutdown()
 
