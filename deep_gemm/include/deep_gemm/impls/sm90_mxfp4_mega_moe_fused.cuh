@@ -27,6 +27,8 @@
 #include <deep_gemm/ptx/utils.cuh>
 #include <deep_gemm/ptx/wgmma.cuh>
 #include <deep_gemm/quantization/mxfp4_fused_scale.cuh>
+#include <deep_gemm/layout/mega_moe_eplb.cuh>
+#include <deep_gemm/impls/smxx_mega_moe_eplb.cuh>
 
 namespace deep_gemm {
 namespace mxfp4 {
@@ -229,7 +231,12 @@ template <
     // on the NVFP4 side when they were runtime-gated -- so the shipped kernel
     // must not contain them at all. Defaulted, so every existing instantiation
     // (and every compile-gate row) keeps its current meaning.
-    bool kPhaseStamps = false
+    bool kPhaseStamps = false,
+    // Dynamic EPLB fused weight copy: the dispatch warps copy the changed
+    // helper slots from their owners after the token pull, and the weight
+    // loader gates helper-slot tasks on per-slot readiness counters. Off by
+    // default, so every existing instantiation is unchanged.
+    bool kFuseEPLBCopy = false
 >
 CUTLASS_GLOBAL
 __launch_bounds__(sm90_mxfp4_num_threads(kSwapABRequested, kUseRSOperand, BLOCK_M), 1) void
@@ -250,7 +257,9 @@ sm90_mxfp4_mega_moe_fused_impl(
         const float* __restrict__ l1_global_scales,
         const float* __restrict__ l2_global_scales,
         // Only written when kPhaseStamps; see the slot map in the body.
-        unsigned long long* __restrict__ phase_stamps) {
+        unsigned long long* __restrict__ phase_stamps,
+        // Only read when kFuseEPLBCopy.
+        const __grid_constant__ eplb::FusedCopy<kNumRanks> fused_copy) {
     constexpr uint32_t BLOCK_K = 128;
     constexpr uint32_t kNumDispatchThreads = 64;
     constexpr uint32_t kNumNonEpilogueThreads = 64;

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <map>
+#include <tuple>
+
 #include <pybind11/stl.h>
 
 #include "../jit/device_runtime.hpp"
@@ -9,9 +12,32 @@
 
 namespace deep_gemm::mega {
 
-// Dynamic expert load balancing: planner workspace layout and the three
-// kernels that turn logical routing into physical slot routing. See
+// Dynamic expert load balancing: planner workspace layout, the three
+// kernels that turn logical routing into physical slot routing, and the
+// single-launch plan + remap. See
 // `deep_gemm/include/deep_gemm/impls/smxx_mega_moe_eplb.cuh`.
+
+// The generated stub of each EPLB kernel depends only on its template
+// parameters, so the built runtime is cached per parameter tuple and a
+// steady-state launch is a map lookup plus the driver launch. Without this,
+// every call paid the stub formatting, the include hash prefix and two
+// signature hashes before `compiler->build` could hit its own cache (about
+// 15 us of host time per launch, see `dynamic_eplb/PROFILE_eplb_stages.md`).
+// The last element is the profile flag (`DG_EPLB_PROFILE`), which changes
+// the generated stub of the two planner kernels.
+using EPLBRuntimeKey = std::tuple<int, int, int, int, int>;
+
+template <typename Runtime>
+static std::shared_ptr<KernelRuntime> get_eplb_runtime(const char* name, const EPLBRuntimeKey& key,
+                                                        const typename Runtime::Args& args) {
+    static std::map<EPLBRuntimeKey, std::shared_ptr<KernelRuntime>> cache;
+    if (const auto it = cache.find(key); it != cache.end())
+        return it->second;
+    const auto code = Runtime::generate(args);
+    const auto runtime = compiler->build(name, code);
+    cache.emplace(key, runtime);
+    return runtime;
+}
 
 static void check_eplb_geometry(const int& num_ranks, const int& num_experts, const int& num_helper_slots) {
     DG_HOST_ASSERT(num_ranks > 0 and num_ranks <= static_cast<int>(eplb::Workspace::kMaxRanks));
@@ -32,6 +58,14 @@ static pybind11::dict get_mega_moe_eplb_workspace_layout(
     d["local_counter"] = ws.local_counter_offset();
     d["copy_list"] = ws.copy_list_offset();
     d["copy_count"] = ws.copy_count_offset();
+    d["copy_done"] = ws.copy_done_offset();
+    d["remap_done"] = ws.remap_done_offset();
+    d["local_hist"] = ws.local_hist_offset();
+    d["plan_ticket"] = ws.plan_ticket_offset();
+    d["plan_ready"] = ws.plan_ready_offset();
+    d["profile"] = ws.profile_offset();
+    d["num_profile_slots"] = eplb::Workspace::kNumProfileSlots;
+    d["num_profile_words"] = eplb::Workspace::kNumProfileWords;
     d["num_words"] = ws.num_words();
     d["num_bytes"] = ws.num_bytes();
     return d;
@@ -66,8 +100,11 @@ static void mega_moe_eplb_plan(
     DG_HOST_ASSERT(workspace_ptrs[rank_idx] == reinterpret_cast<int64_t>(workspace.data_ptr()));
     const auto [num_tokens, num_topk] = get_shape<2>(topk_idx);
 
+    // One CTA counts every token of the rank; its histogram is bound by the
+    // SM's shared-atomic throughput (512 threads measured the same), so the
+    // critical path uses the grid-wide `mega_moe_eplb_plan_and_remap`.
     constexpr int kNumThreads = 256;
-    const auto smem_bytes = static_cast<int>(eplb::plan_smem_bytes(num_ranks, num_experts, num_helper_slots));
+    const auto smem_bytes = static_cast<int>(eplb::plan_smem_bytes(num_ranks, num_experts, num_helper_slots, kNumThreads / 32));
     const MegaMoEEPLBPlanRuntime::Args args = {
         .num_ranks = num_ranks, .num_experts = num_experts, .num_helper_slots = num_helper_slots,
         .workspace = layout::SymBuffer<>(workspace_ptrs, rank_idx),
@@ -77,9 +114,45 @@ static void mega_moe_eplb_plan(
         .generation = static_cast<unsigned>(generation),
         .launch_args = LaunchArgs(1, kNumThreads, smem_bytes)
     };
-    const auto code = MegaMoEEPLBPlanRuntime::generate(args);
-    const auto runtime = compiler->build("mega_moe_eplb_plan", code);
+    const auto runtime = get_eplb_runtime<MegaMoEEPLBPlanRuntime>(
+        "mega_moe_eplb_plan", {num_ranks, num_experts, num_helper_slots, kNumThreads, eplb_profile_enabled()}, args);
     MegaMoEEPLBPlanRuntime::launch(runtime, args);
+}
+
+// Plan and remap in one launch: `topk_idx` (logical) is rewritten to physical
+// slot ids in place and the tables are published as by `mega_moe_eplb_plan`.
+// Grid of at most one CTA per SM; see `eplb_plan_remap_kernel`.
+static void mega_moe_eplb_plan_and_remap(
+        const torch::Tensor& workspace, const std::vector<int64_t>& workspace_ptrs, const int& rank_idx,
+        const torch::Tensor& topk_idx,
+        const int& num_experts, const int& num_helper_slots,
+        const int& block_m, const int& open_gate_blocks, const int64_t& generation) {
+    const auto num_ranks = static_cast<int>(workspace_ptrs.size());
+    check_eplb_geometry(num_ranks, num_experts, num_helper_slots);
+    check_eplb_workspace(workspace, num_ranks, num_experts, num_helper_slots);
+    check_eplb_topk_idx(topk_idx);
+    DG_HOST_ASSERT(rank_idx >= 0 and rank_idx < num_ranks);
+    DG_HOST_ASSERT(block_m > 0 and open_gate_blocks >= 0);
+    DG_HOST_ASSERT(generation > 0 and generation <= 0xffffffffll);
+    DG_HOST_ASSERT(workspace_ptrs[rank_idx] == reinterpret_cast<int64_t>(workspace.data_ptr()));
+    const auto [num_tokens, num_topk] = get_shape<2>(topk_idx);
+
+    constexpr int kNumThreads = 256;
+    const int num_blocks = std::max(1, std::min(device_runtime->get_num_sms(),
+                                                (num_tokens * num_topk + kNumThreads - 1) / kNumThreads));
+    const auto smem_bytes = static_cast<int>(eplb::plan_smem_bytes(num_ranks, num_experts, num_helper_slots, kNumThreads / 32));
+    const MegaMoEEPLBPlanRemapRuntime::Args args = {
+        .num_ranks = num_ranks, .num_experts = num_experts, .num_helper_slots = num_helper_slots,
+        .workspace = layout::SymBuffer<>(workspace_ptrs, rank_idx),
+        .topk_idx = topk_idx.data_ptr<int64_t>(),
+        .num_tokens = num_tokens, .num_topk = num_topk,
+        .block_m = block_m, .open_gate_blocks = open_gate_blocks,
+        .generation = static_cast<unsigned>(generation),
+        .launch_args = LaunchArgs(num_blocks, kNumThreads, smem_bytes)
+    };
+    const auto runtime = get_eplb_runtime<MegaMoEEPLBPlanRemapRuntime>(
+        "mega_moe_eplb_plan_and_remap", {num_ranks, num_experts, num_helper_slots, kNumThreads, eplb_profile_enabled()}, args);
+    MegaMoEEPLBPlanRemapRuntime::launch(runtime, args);
 }
 
 static void mega_moe_eplb_remap(
@@ -104,8 +177,8 @@ static void mega_moe_eplb_remap(
         .num_tokens = num_tokens, .num_topk = num_topk, .block_m = block_m,
         .launch_args = LaunchArgs(num_blocks, kNumThreads)
     };
-    const auto code = MegaMoEEPLBRemapRuntime::generate(args);
-    const auto runtime = compiler->build("mega_moe_eplb_remap", code);
+    const auto runtime = get_eplb_runtime<MegaMoEEPLBRemapRuntime>(
+        "mega_moe_eplb_remap", {num_ranks, num_experts, num_helper_slots, kNumThreads, 0}, args);
     MegaMoEEPLBRemapRuntime::launch(runtime, args);
 }
 
@@ -141,7 +214,9 @@ static void mega_moe_eplb_copy_weights(
     const eplb::Workspace ws(num_ranks, num_experts, num_helper_slots);
     auto* ws_base = static_cast<uint32_t*>(workspace.data_ptr());
     constexpr int kNumThreads = 256;
-    constexpr int kNumBlocksPerSlot = 32;
+    // Default grid unchanged; `DG_EPLB_COPY_BLOCKS_PER_SLOT` widens it for
+    // comparison with the fused copy, which uses every SM.
+    const int kNumBlocksPerSlot = std::max(1, get_env<int>("DG_EPLB_COPY_BLOCKS_PER_SLOT", 32));
     const MegaMoEEPLBCopyWeightsRuntime::Args args = {
         .num_ranks = num_ranks,
         .arena = layout::SymBuffer<>(arena_ptrs, rank_idx),
@@ -151,8 +226,8 @@ static void mega_moe_eplb_copy_weights(
         .num_home_experts = num_home_experts,
         .launch_args = LaunchArgs({num_helper_slots, kNumBlocksPerSlot}, kNumThreads)
     };
-    const auto code = MegaMoEEPLBCopyWeightsRuntime::generate(args);
-    const auto runtime = compiler->build("mega_moe_eplb_copy_weights", code);
+    const auto runtime = get_eplb_runtime<MegaMoEEPLBCopyWeightsRuntime>(
+        "mega_moe_eplb_copy_weights", {num_ranks, 0, 0, kNumThreads, 0}, args);
     MegaMoEEPLBCopyWeightsRuntime::launch(runtime, args);
 }
 
@@ -175,6 +250,7 @@ static void register_eplb_apis(pybind11::module_& m) {
 #if DG_TENSORMAP_COMPATIBLE
     m.def("get_mega_moe_eplb_workspace_layout", &get_mega_moe_eplb_workspace_layout);
     m.def("mega_moe_eplb_plan", &mega_moe_eplb_plan);
+    m.def("mega_moe_eplb_plan_and_remap", &mega_moe_eplb_plan_and_remap);
     m.def("mega_moe_eplb_remap", &mega_moe_eplb_remap);
     m.def("mega_moe_eplb_copy_weights", &mega_moe_eplb_copy_weights);
     m.def("sm90_mxfp4_mega_moe_block_m", &sm90_mxfp4_mega_moe_block_m);

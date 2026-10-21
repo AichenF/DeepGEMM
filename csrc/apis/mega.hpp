@@ -10,6 +10,7 @@
 #include "../jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe_h200_fused.hpp"
 #include "../jit_kernels/impls/sm90_mxfp4_mega_moe_fused.hpp"
+#include "../jit_kernels/impls/smxx_mega_moe_eplb.hpp"
 
 namespace deep_gemm::mega {
 
@@ -407,7 +408,7 @@ static void validate_sm90_mxfp4_mega_moe_global_scale(
     DG_HOST_ASSERT(scale->device() == device);
 }
 
-static void mxfp4_mega_moe(
+static void mxfp4_mega_moe_impl(
     const torch::Tensor& y,
     const std::tuple<torch::Tensor, torch::Tensor>& l1_weights_tuple,
     const std::tuple<torch::Tensor, torch::Tensor>& l2_weights_tuple,
@@ -419,7 +420,8 @@ static void mxfp4_mega_moe(
     const int& num_max_tokens_per_rank,
     const int& num_experts, const int& num_topk,
     const std::optional<float>& activation_clamp_opt,
-    const bool& fast_math
+    const bool& fast_math,
+    const std::optional<eplb::FusedCopy<>>& fused_copy
 ) {
     const auto [l1_weights, l1_weights_sf] = l1_weights_tuple;
     const auto [l2_weights, l2_weights_sf] = l2_weights_tuple;
@@ -510,9 +512,65 @@ static void mxfp4_mega_moe(
         num_experts_per_rank,
         num_tokens, num_topk,
         hidden, intermediate_hidden,
-        activation_clamp, fast_math);
+        activation_clamp, fast_math, fused_copy);
     if (get_env<int>("DG_COMM_KERNEL_DEBUG"))
         sym_buffer.zero_();
+}
+
+static void mxfp4_mega_moe(
+    const torch::Tensor& y,
+    const std::tuple<torch::Tensor, torch::Tensor>& l1_weights_tuple,
+    const std::tuple<torch::Tensor, torch::Tensor>& l2_weights_tuple,
+    const std::optional<torch::Tensor>& cumulative_local_expert_recv_stats,
+    const std::optional<torch::Tensor>& l1_global_scales,
+    const std::optional<torch::Tensor>& l2_global_scales,
+    const torch::Tensor& sym_buffer,
+    const std::vector<int64_t>& sym_buffer_ptrs, const int& rank_idx,
+    const int& num_max_tokens_per_rank,
+    const int& num_experts, const int& num_topk,
+    const std::optional<float>& activation_clamp_opt,
+    const bool& fast_math
+) {
+    mxfp4_mega_moe_impl(y, l1_weights_tuple, l2_weights_tuple, cumulative_local_expert_recv_stats,
+                        l1_global_scales, l2_global_scales, sym_buffer, sym_buffer_ptrs, rank_idx,
+                        num_max_tokens_per_rank, num_experts, num_topk, activation_clamp_opt, fast_math,
+                        std::nullopt);
+}
+
+// Same kernel with the dynamic EPLB weight copy fused in: the changed helper
+// slots listed in `eplb_workspace` are copied from their owners' arenas
+// (`arena_ptrs`) by the kernel itself. `num_experts` is the physical slot
+// count the kernel runs on; `eplb_num_experts` is the logical expert count
+// the planner workspace is laid out for. `l1_planes` / `l2_planes` are
+// (offset, bytes per slot) of the arena planes each GEMM reads.
+static void mxfp4_mega_moe_fused_copy(
+    const torch::Tensor& y,
+    const std::tuple<torch::Tensor, torch::Tensor>& l1_weights_tuple,
+    const std::tuple<torch::Tensor, torch::Tensor>& l2_weights_tuple,
+    const std::optional<torch::Tensor>& cumulative_local_expert_recv_stats,
+    const std::optional<torch::Tensor>& l1_global_scales,
+    const std::optional<torch::Tensor>& l2_global_scales,
+    const torch::Tensor& sym_buffer,
+    const std::vector<int64_t>& sym_buffer_ptrs, const int& rank_idx,
+    const int& num_max_tokens_per_rank,
+    const int& num_experts, const int& num_topk,
+    const std::optional<float>& activation_clamp_opt,
+    const bool& fast_math,
+    const torch::Tensor& eplb_workspace,
+    const torch::Tensor& arena, const std::vector<int64_t>& arena_ptrs,
+    const int& eplb_num_experts, const int& num_helper_slots,
+    const std::vector<std::tuple<int64_t, int64_t>>& l1_planes,
+    const std::vector<std::tuple<int64_t, int64_t>>& l2_planes
+) {
+    const auto num_ranks = static_cast<int>(sym_buffer_ptrs.size());
+    DG_HOST_ASSERT(arena_ptrs.size() == sym_buffer_ptrs.size());
+    DG_HOST_ASSERT(eplb_num_experts + num_ranks * num_helper_slots == num_experts);
+    const auto fused_copy = make_eplb_fused_copy(
+        eplb_workspace, arena, arena_ptrs, rank_idx, eplb_num_experts, num_helper_slots, l1_planes, l2_planes);
+    mxfp4_mega_moe_impl(y, l1_weights_tuple, l2_weights_tuple, cumulative_local_expert_recv_stats,
+                        l1_global_scales, l2_global_scales, sym_buffer, sym_buffer_ptrs, rank_idx,
+                        num_max_tokens_per_rank, num_experts, num_topk, activation_clamp_opt, fast_math,
+                        fused_copy);
 }
 
 static void register_apis(pybind11::module_& m) {
@@ -522,6 +580,7 @@ static void register_apis(pybind11::module_& m) {
     m.def("fp8_fp4_mega_moe", &fp8_fp4_mega_moe);
     m.def("nvfp4_mega_moe", &nvfp4_mega_moe);
     m.def("mxfp4_mega_moe", &mxfp4_mega_moe);
+    m.def("mxfp4_mega_moe_fused_copy", &mxfp4_mega_moe_fused_copy);
 #endif
 }
 

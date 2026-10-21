@@ -22,12 +22,30 @@
 //             helper slots from their owners over NVLink;
 //   * remap:  rewrite `topk_idx` from logical experts to physical slots,
 //             splitting each expert's token blocks across its copies.
+// A fourth kernel, `eplb_plan_remap_kernel`, is plan and remap in one launch
+// for the synchronous path (see its comment); the separate kernels serve the
+// plan issued early on a side stream, remap-only forwards and `set_replicas`.
 
 namespace deep_gemm::eplb {
 
 __device__ __forceinline__ void st_release_sys(uint32_t* ptr, const uint32_t& value) {
     asm volatile("st.release.sys.global.u32 [%0], %1;" :: "l"(ptr), "r"(value) : "memory");
 }
+
+__device__ __forceinline__ void st_release_gpu(uint32_t* ptr, const uint32_t& value) {
+    asm volatile("st.release.gpu.global.u32 [%0], %1;" :: "l"(ptr), "r"(value) : "memory");
+}
+
+__device__ __forceinline__ uint64_t global_timer_ns() {
+    uint64_t t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    return t;
+}
+
+// Every in-kernel wait on a peer or on another CTA traps after this many
+// SM cycles (about 30 s), so a lost rank shows as an illegal instruction
+// instead of a hang.
+static constexpr int64_t kSpinTimeoutCycles = 30ll * 2000000000ll;
 
 // Lane-cooperative argmin over a 64-bit key; returns the winning key or
 // `kNone` when no lane holds a candidate. Keys pack (primary, secondary).
@@ -46,78 +64,217 @@ __device__ __forceinline__ uint64_t make_key(const uint32_t& primary, const uint
     return (static_cast<uint64_t>(primary) << 32) | secondary;
 }
 
+// Shared memory of the planner; `plan_smem_bytes` in the layout header
+// sizes it with the same regions in the same order.
 template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumHelperSlots, uint32_t kNumThreads>
-CUTLASS_GLOBAL void __launch_bounds__(kNumThreads, 1)
-eplb_plan_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
-                 const int64_t* __restrict__ topk_idx,
-                 const uint32_t num_tokens, const uint32_t num_topk,
-                 const uint32_t block_m, const uint32_t open_gate_blocks,
-                 const uint32_t generation) {
-    DG_STATIC_ASSERT(kNumRanks <= Workspace::kMaxRanks and kNumRanks <= 32, "Too many ranks");
-    DG_STATIC_ASSERT(kNumExperts % kNumRanks == 0, "Experts must divide across ranks");
-    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumHelperSlots;
-    constexpr uint32_t H = E / R;
-    const Workspace layout(R, E, S);
-    const uint32_t thread_idx = threadIdx.x, lane = thread_idx & 31, warp_idx = thread_idx >> 5;
-    const uint32_t rank = ws.rank_idx;
-    const uint32_t parity = generation & 1;
+struct PlanSmem {
+    static constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumHelperSlots;
+    static constexpr uint32_t kNumWarps = kNumThreads / 32;
+    int32_t* hist;       // [R][E] histograms of every rank; row `rank` is counted locally
+    int32_t* warp_hist;  // [kNumWarps][E] private histograms while counting
+    int32_t* q;          // [E][R] blocks of expert e on rank r
+    int32_t* rep_idx;    // [R * S] replica list for pruning: e * R + r
+    int32_t* rep_v;      // [R * S] replica list for pruning: allocation snapshot
+    int32_t* b;          // [E] blocks per expert
+    int32_t* load;       // [R] home loads (the greedy keeps them in registers)
+    int32_t* prev_slot;  // [R][S] helper slot table before the plan
+    int32_t* new_slot;   // [R][S] helper slot table after the plan
+    uint8_t* holds;      // [R][E] rank r holds expert e (owner, active or cached copy)
 
-    extern __shared__ __align__(16) uint8_t smem_buffer[];
-    auto* hist = reinterpret_cast<int32_t*>(smem_buffer);                 // [R][E]
-    auto* q = hist + R * E;                                               // [E][R]
-    auto* rep_idx = q + E * R;                                            // [R * S]
-    auto* rep_v = rep_idx + R * S;                                        // [R * S]
-    auto* b = rep_v + R * S;                                              // [E]
-    auto* load = b + E;                                                   // [R]
-    auto* nrep = load + R;                                                // [R]
-    auto* visited = nrep + R;                                             // [R]
-    auto* prev_slot = visited + 2 * R;                                    // [R][S]
-    auto* new_slot = prev_slot + R * S;                                   // [R][S]
-    auto* holds = reinterpret_cast<uint8_t*>(new_slot + R * S);           // [R][E]
-    auto* tried = holds + math::constexpr_align(R * E, 4u);               // [E]
+    CUTLASS_DEVICE explicit PlanSmem(uint8_t* smem) {
+        hist = reinterpret_cast<int32_t*>(smem);
+        warp_hist = hist + R * E;
+        q = warp_hist + kNumWarps * E;
+        rep_idx = q + E * R;
+        rep_v = rep_idx + R * S;
+        b = rep_v + R * S;
+        load = b + E;
+        prev_slot = load + math::constexpr_align(R, 4u);
+        new_slot = prev_slot + R * S;
+        holds = reinterpret_cast<uint8_t*>(new_slot + R * S);
+    }
+};
 
-    auto* ws_base = ws.template get_base_ptr<uint32_t*>();
-    auto* flags = ws_base + layout.flags_offset() + parity * Workspace::kMaxRanks;
-    auto* g_hist = reinterpret_cast<int32_t*>(ws_base + layout.hist_offset()) + parity * R * E;
-    auto* g_slot_expert = reinterpret_cast<int32_t*>(ws_base + layout.slot_expert_offset());
-    auto* g_copies = reinterpret_cast<int2*>(ws_base + layout.copies_offset());
-    auto* g_expert_base = reinterpret_cast<int32_t*>(ws_base + layout.expert_base_offset());
-    auto* g_local_counter = ws_base + layout.local_counter_offset();
-    auto* g_copy_list = reinterpret_cast<int2*>(ws_base + layout.copy_list_offset());
-    auto* g_copy_count = reinterpret_cast<int32_t*>(ws_base + layout.copy_count_offset());
+// Workspace pointers of one launch (`parity` selects the flag and histogram
+// double buffer of the generation).
+struct PlanGlobals {
+    uint32_t* flags;
+    int32_t* hist;
+    int32_t* slot_expert;
+    int2* copies;
+    int32_t* expert_base;
+    uint32_t* local_counter;
+    int2* copy_list;
+    int32_t* copy_count;
+    uint32_t* copy_done;
+    uint32_t* local_hist;
+    uint32_t* plan_ticket;
+    uint32_t* plan_ready;
+    uint32_t* profile;
 
-    cudaGridDependencySynchronize();
-#ifdef DG_EPLB_DEBUG
-    if (thread_idx == 0)
-        printf("EPLB plan entry: rank=%u generation=%u parity=%u num_tokens=%u block_m=%u\n", rank, generation, parity, num_tokens, block_m);
-#endif
+    CUTLASS_DEVICE PlanGlobals(uint32_t* ws_base, const Workspace& layout, const uint32_t& parity) {
+        flags = ws_base + layout.flags_offset() + parity * Workspace::kMaxRanks;
+        hist = reinterpret_cast<int32_t*>(ws_base + layout.hist_offset()) + parity * layout.num_ranks * layout.num_experts;
+        slot_expert = reinterpret_cast<int32_t*>(ws_base + layout.slot_expert_offset());
+        copies = reinterpret_cast<int2*>(ws_base + layout.copies_offset());
+        expert_base = reinterpret_cast<int32_t*>(ws_base + layout.expert_base_offset());
+        local_counter = ws_base + layout.local_counter_offset();
+        copy_list = reinterpret_cast<int2*>(ws_base + layout.copy_list_offset());
+        copy_count = reinterpret_cast<int32_t*>(ws_base + layout.copy_count_offset());
+        copy_done = ws_base + layout.copy_done_offset();
+        local_hist = ws_base + layout.local_hist_offset();
+        plan_ticket = ws_base + layout.plan_ticket_offset();
+        plan_ready = ws_base + layout.plan_ready_offset();
+        profile = ws_base + layout.profile_offset();
+    }
+};
 
-    // Local histogram
-    for (uint32_t i = thread_idx; i < E; i += kNumThreads)
-        hist[rank * E + i] = 0;
+// Phase timing of the planning CTA (thread 0 keeps the stamps in registers
+// and writes the record at the end). Compiles to nothing unless `kProfile`.
+template <bool kProfile>
+struct PlanTimer {
+    uint64_t clocks[PlanProfile::kNumStamps];
+    uint64_t timer_entry, timer_peers;
+    uint32_t counters[PlanProfile::kNumCounters];
+
+    CUTLASS_DEVICE PlanTimer() {
+        if constexpr (kProfile) {
+            #pragma unroll
+            for (uint32_t i = 0; i < PlanProfile::kNumCounters; ++ i)
+                counters[i] = 0;
+        }
+    }
+
+    CUTLASS_DEVICE void begin() {
+        if constexpr (kProfile) {
+            timer_entry = global_timer_ns();
+            clocks[PlanProfile::kEntry] = clock64();
+        }
+    }
+
+    CUTLASS_DEVICE void stamp(const uint32_t& i) {
+        if constexpr (kProfile)
+            clocks[i] = clock64();
+    }
+
+    CUTLASS_DEVICE void peers_ready() {
+        if constexpr (kProfile) {
+            clocks[PlanProfile::kPeersReady] = clock64();
+            timer_peers = global_timer_ns();
+        }
+    }
+
+    CUTLASS_DEVICE void count(const uint32_t& i, const uint32_t& value = 1) {
+        if constexpr (kProfile)
+            counters[i] += value;
+    }
+
+    // Called by thread 0 of the planning CTA only.
+    CUTLASS_DEVICE void finish(uint32_t* profile, const uint32_t& generation, const uint32_t& grid_size) {
+        if constexpr (kProfile) {
+            clocks[PlanProfile::kEnd] = clock64();
+            counters[PlanProfile::kGridSize] = grid_size;
+            auto* record = reinterpret_cast<uint64_t*>(
+                profile + (generation % Workspace::kNumProfileSlots) * Workspace::kNumProfileWords);
+            #pragma unroll
+            for (uint32_t i = 0; i < PlanProfile::kNumStamps; ++ i)
+                record[i] = clocks[i];
+            record[PlanProfile::kTimerEntryWord / 2] = timer_entry;
+            record[PlanProfile::kTimerPeersWord / 2] = timer_peers;
+            record[PlanProfile::kTimerEndWord / 2] = global_timer_ns();
+            auto* words = reinterpret_cast<uint32_t*>(record) + PlanProfile::kCounterWord;
+            #pragma unroll
+            for (uint32_t i = 0; i < PlanProfile::kNumCounters; ++ i)
+                words[i] = counters[i];
+        }
+    }
+};
+
+// Histogram of `topk_idx[begin + thread_idx :: stride]` (entries below
+// `end`) into `hist_row[E]`: each warp counts into its own copy, the copies
+// are summed afterwards. Ends with the block synchronised.
+template <uint32_t kNumExperts, uint32_t kNumThreads>
+CUTLASS_DEVICE void eplb_count_tokens(int32_t* hist_row, int32_t* warp_hist, const int64_t* __restrict__ topk_idx,
+                                      const uint32_t& begin, const uint32_t& end, const uint32_t& stride,
+                                      const uint32_t& thread_idx) {
+    constexpr uint32_t E = kNumExperts, kNumWarps = kNumThreads / 32;
+    const uint32_t warp_idx = thread_idx >> 5;
+    for (uint32_t i = thread_idx; i < kNumWarps * E; i += kNumThreads)
+        warp_hist[i] = 0;
     __syncthreads();
-    for (uint32_t i = thread_idx; i < num_tokens * num_topk; i += kNumThreads) {
+    auto* mine = warp_hist + warp_idx * E;
+    // Four loads in flight per thread; the shared atomics follow.
+    uint32_t i = begin + thread_idx;
+    for (; i + 3 * stride < end; i += 4 * stride) {
+        const auto e0 = __ldg(topk_idx + i);
+        const auto e1 = __ldg(topk_idx + i + stride);
+        const auto e2 = __ldg(topk_idx + i + 2 * stride);
+        const auto e3 = __ldg(topk_idx + i + 3 * stride);
+        if (e0 >= 0) atomicAdd_block(mine + static_cast<uint32_t>(e0), 1);
+        if (e1 >= 0) atomicAdd_block(mine + static_cast<uint32_t>(e1), 1);
+        if (e2 >= 0) atomicAdd_block(mine + static_cast<uint32_t>(e2), 1);
+        if (e3 >= 0) atomicAdd_block(mine + static_cast<uint32_t>(e3), 1);
+    }
+    for (; i < end; i += stride) {
         const auto e = __ldg(topk_idx + i);
         if (e >= 0)
-            atomicAdd_block(hist + rank * E + static_cast<uint32_t>(e), 1);
+            atomicAdd_block(mine + static_cast<uint32_t>(e), 1);
     }
     __syncthreads();
+    for (uint32_t e = thread_idx; e < E; e += kNumThreads) {
+        int32_t sum = 0;
+        #pragma unroll
+        for (uint32_t w = 0; w < kNumWarps; ++ w)
+            sum += warp_hist[w * E + e];
+        hist_row[e] = sum;
+    }
+    __syncthreads();
+}
 
-    // Push it to every rank, then publish this generation
+// The planner proper: exchange the histograms, wait for every peer, run the
+// deterministic greedy (warp 0) and publish the tables. Expects this rank's
+// histogram in `sm.hist[rank * E ...]` and the block synchronised; ends with
+// the block synchronised and every table written (not yet fenced).
+//
+// The decisions are those of `plan_reference` in `eplb_planner.py`, bit for
+// bit; only the bookkeeping differs from a serial transcription: the greedy
+// keeps the per-rank loads, replica counts and visit marks in one lane per
+// rank, picks the receiver with a single tiered argmin (existing copies rank
+// below fresh ones), and the replica collection and the helper slot
+// assignment scan experts 32 at a time with ballots.
+template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumHelperSlots, uint32_t kNumThreads, bool kProfile>
+CUTLASS_DEVICE void eplb_plan_from_histogram(const layout::SymBuffer<kNumRanks>& ws,
+                                             const PlanSmem<kNumRanks, kNumExperts, kNumHelperSlots, kNumThreads>& sm,
+                                             const PlanGlobals& g,
+                                             const uint32_t& block_m, const uint32_t& open_gate_blocks,
+                                             const uint32_t& generation, PlanTimer<kProfile>& timer) {
+    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumHelperSlots;
+    constexpr uint32_t H = E / R, kNumWarps = kNumThreads / 32;
+    constexpr uint32_t kExpertsPerLane = math::constexpr_ceil_div(H, 32u);
+    DG_STATIC_ASSERT(kExpertsPerLane <= 32, "Too many home experts per rank for the tried mask");
+    DG_STATIC_ASSERT(S <= 32, "Helper slots are tracked in a 32-bit mask");
+    const uint32_t thread_idx = threadIdx.x, lane = thread_idx & 31, warp_idx = thread_idx >> 5;
+    const uint32_t rank = ws.rank_idx;
+    const uint32_t full = 0xffffffffu;
+    auto q_at = [&](const uint32_t& e, const uint32_t& r) -> int32_t& { return sm.q[e * R + r]; };
+
+    // Push the histogram to every rank, then publish this generation.
     for (uint32_t i = thread_idx; i < R * E; i += kNumThreads) {
         const uint32_t dst_rank = i / E, e = i % E;
-        *ws.map(g_hist + rank * E + e, dst_rank) = hist[rank * E + e];
+        *ws.map(g.hist + rank * E + e, dst_rank) = sm.hist[rank * E + e];
     }
     __syncthreads();
-    if (thread_idx == 0) {
+    // One lane per peer: a system fence then the flag, issued together (a
+    // serial loop of release stores over NVLink cost about 1 us each).
+    if (thread_idx < R) {
         __threadfence_system();
-        for (uint32_t r = 0; r < R; ++ r)
-            st_release_sys(ws.map(flags + rank, r), generation);
+        st_release_sys(ws.map(g.flags + rank, thread_idx), generation);
     }
+    timer.stamp(PlanProfile::kPublished);
     if (thread_idx < R) {
         const auto start_clock = clock64();
-        while (ptx::ld_acq_sys(flags + thread_idx) < generation) {
-            if (clock64() - start_clock >= 30ll * 2000000000ll) {
+        while (ptx::ld_acq_sys(g.flags + thread_idx) < generation) {
+            if (clock64() - start_clock >= kSpinTimeoutCycles) {
                 printf("DeepGEMM EPLB plan timeout: rank=%u waiting for rank=%u generation=%u\n",
                        rank, thread_idx, generation);
                 asm volatile("trap;");
@@ -125,187 +282,220 @@ eplb_plan_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
         }
     }
     __syncthreads();
+    timer.peers_ready();
+
+    // Setup: all histograms, the previous slot table, holders, blocks.
     for (uint32_t i = thread_idx; i < R * E; i += kNumThreads)
-        hist[i] = ptx::ld_volatile(reinterpret_cast<const uint32_t*>(g_hist + i));
+        sm.hist[i] = static_cast<int32_t>(ptx::ld_volatile(reinterpret_cast<const uint32_t*>(g.hist + i)));
     for (uint32_t i = thread_idx; i < R * S; i += kNumThreads)
-        prev_slot[i] = g_slot_expert[i];
+        sm.prev_slot[i] = g.slot_expert[i];
     for (uint32_t i = thread_idx; i < R * E; i += kNumThreads)
-        holds[i] = 0;
+        sm.holds[i] = 0;
     __syncthreads();
     for (uint32_t i = thread_idx; i < R * S; i += kNumThreads) {
-        const auto e = prev_slot[i];
+        const auto e = sm.prev_slot[i];
         if (e >= 0)
-            holds[(i / S) * E + e] = 1;
+            sm.holds[(i / S) * E + e] = 1;
     }
     for (uint32_t e = thread_idx; e < E; e += kNumThreads) {
         int32_t total = 0;
         #pragma unroll 4
         for (uint32_t r = 0; r < R; ++ r)
-            total += hist[r * E + e];
-        b[e] = (total + block_m - 1) / block_m;
+            total += sm.hist[r * E + e];
+        sm.b[e] = (total + block_m - 1) / block_m;
         for (uint32_t r = 0; r < R; ++ r)
-            q[e * R + r] = r == e / H ? b[e] : 0;
-        holds[(e / H) * E + e] = 1;
+            q_at(e, r) = r == e / H ? sm.b[e] : 0;
+        sm.holds[(e / H) * E + e] = 1;
     }
     __syncthreads();
+    // Every expert starts on its owner, so a rank's load is the block sum of
+    // its home range; one warp per rank.
+    for (uint32_t r = warp_idx; r < R; r += kNumWarps) {
+        int32_t sum = 0;
+        for (uint32_t e = r * H + lane; e < (r + 1) * H; e += 32)
+            sum += sm.b[e];
+        sum = __reduce_add_sync(full, sum);
+        if (lane == 0)
+            sm.load[r] = sum;
+    }
+    __syncthreads();
+    timer.stamp(PlanProfile::kSetup);
 
-    // The sequential planner runs on warp 0; everything else waits.
-    if (warp_idx == 0) {
-        // Every expert starts on its owner, so a rank's load is the block sum
-        // of its home range.
-        if (lane < R) {
-            int32_t sum = 0;
-            for (uint32_t e = lane * H; e < (lane + 1) * H; ++ e)
-                sum += b[e];
-            load[lane] = sum;
-            nrep[lane] = 0;
+    // The sequential planner runs on warp 0; lane r keeps rank r's state
+    // (the other warps hold unused copies, so the state survives the
+    // all-warp replica collection between the greedy and the pruning).
+    const bool is_rank = lane < R;
+    int32_t my_load = is_rank ? sm.load[lane] : 0;
+    int32_t my_nrep = 0;
+    auto load_of = [&](const uint32_t& r) { return __shfl_sync(full, my_load, r); };
+    // `from` and `to` differ; each updates its own column and load.
+    auto move = [&](const uint32_t& e, const uint32_t& from, const uint32_t& to, const int32_t& v) {
+        if (lane == to) {
+            const int32_t before = q_at(e, to);
+            if (before == 0 and to != e / H)
+                my_nrep += 1;
+            q_at(e, to) = before + v;
+            my_load += v;
         }
-        int32_t total_blocks = 0;
-        for (uint32_t e = lane; e < E; e += 32)
-            total_blocks += b[e];
-        total_blocks = __reduce_add_sync(0xffffffffu, total_blocks);
+        if (lane == from) {
+            q_at(e, from) -= v;
+            my_load -= v;
+        }
+        __syncwarp();
+    };
+    if (warp_idx == 0) {
+        const int32_t total_blocks = __reduce_add_sync(full, my_load);
         const int32_t tau = (total_blocks + R - 1) / R;
         const int32_t gate = open_gate_blocks > 1 ? static_cast<int32_t>(open_gate_blocks) : 1;
-        __syncwarp();
-
-        auto holds_fn = [&](const uint32_t& r, const uint32_t& e) {
-            return q[e * R + r] > 0 or holds[r * E + e] != 0;
-        };
-        auto move = [&](const uint32_t& e, const uint32_t& from, const uint32_t& to, const int32_t& v) {
-            if (lane == 0) {
-                if (q[e * R + to] == 0 and to != e / H)
-                    nrep[to] += 1;
-                q[e * R + from] -= v;
-                q[e * R + to] += v;
-                load[from] -= v;
-                load[to] += v;
-            }
-            __syncwarp();
-        };
 
         // Greedy rounds: shift blocks from overloaded owners towards tau.
         for (uint32_t round = 0; round < S + 2; ++ round) {
-            bool moved = false;
-            if (lane < R)
-                visited[lane] = 0;
-            __syncwarp();
+            bool moved = false, visited = false;
             for (uint32_t k = 0; k < R; ++ k) {
                 uint64_t key = kNoneKey;
-                if (lane < R and not visited[lane] and load[lane] > tau)
-                    key = make_key(static_cast<uint32_t>(0x7fffffff - (load[lane] - tau)), lane);
+                if (is_rank and not visited and my_load > tau)
+                    key = make_key(static_cast<uint32_t>(0x7fffffff - (my_load - tau)), lane);
                 key = warp_min_key(key);
                 if (key == kNoneKey)
                     break;
                 const uint32_t d = static_cast<uint32_t>(key);
-                if (lane == 0)
-                    visited[d] = 1;
-                for (uint32_t e = d * H + lane; e < (d + 1) * H; e += 32)
-                    tried[e] = 0;
-                __syncwarp();
-                while (load[d] > tau) {
+                if (lane == d)
+                    visited = true;
+                timer.count(PlanProfile::kVisits);
+                // Bit j: home expert d * H + lane + 32 * j already tried in this visit.
+                uint32_t tried = 0;
+                int32_t load_d = load_of(d);
+                while (load_d > tau) {
                     uint64_t best = kNoneKey;
-                    for (uint32_t e = d * H + lane; e < (d + 1) * H; e += 32) {
-                        if (not tried[e] and q[e * R + d] > 0) {
-                            const auto cand = make_key(static_cast<uint32_t>(0x7fffffff - q[e * R + d]), e);
-                            best = cand < best ? cand : best;
+                    #pragma unroll
+                    for (uint32_t j = 0; j < kExpertsPerLane; ++ j) {
+                        const uint32_t e = d * H + lane + 32 * j;
+                        if (lane + 32 * j < H and not ((tried >> j) & 1)) {
+                            const int32_t qe = q_at(e, d);
+                            if (qe > 0) {
+                                const auto cand = make_key(static_cast<uint32_t>(0x7fffffff - qe), e);
+                                best = cand < best ? cand : best;
+                            }
                         }
                     }
                     best = warp_min_key(best);
                     if (best == kNoneKey)
                         break;
-                    const uint32_t e = static_cast<uint32_t>(best);
-                    if (lane == 0)
-                        tried[e] = 1;
-                    __syncwarp();
-                    const int32_t avail = q[e * R + d];
-                    // Existing copies first: active replicas and cached slots.
+                    const uint32_t e = static_cast<uint32_t>(best), local = e - d * H;
+                    if (lane == (local & 31))
+                        tried |= 1u << (local >> 5);
+                    timer.count(PlanProfile::kPicks);
+                    const int32_t avail = q_at(e, d);
+                    // Receivers: ranks already holding the expert (active or
+                    // cached copy) first, then fresh slots; least loaded
+                    // first within a tier. One tiered argmin picks both.
                     uint64_t pick = kNoneKey;
                     int32_t v = 0;
-                    if (lane < R and lane != d and holds_fn(lane, e)) {
-                        const int32_t room = tau - load[lane];
+                    if (is_rank and lane != d) {
+                        const int32_t room = tau - my_load;
+                        const int32_t qe = q_at(e, lane);
+                        const bool held = qe > 0 or sm.holds[lane * E + e] != 0;
                         v = avail < room ? avail : room;
-                        if (v > 0 and (q[e * R + lane] > 0 or nrep[lane] < static_cast<int32_t>(S)))
-                            pick = make_key(static_cast<uint32_t>(load[lane]), lane);
-                    }
-                    uint64_t chosen = warp_min_key(pick);
-                    if (chosen == kNoneKey) {
-                        pick = kNoneKey;
-                        v = 0;
-                        if (lane < R and lane != d and not holds_fn(lane, e) and load[lane] < tau and
-                            nrep[lane] < static_cast<int32_t>(S)) {
-                            const int32_t room = tau - load[lane];
-                            v = avail < room ? avail : room;
-                            if (v >= gate)
-                                pick = make_key(static_cast<uint32_t>(load[lane]), lane);
+                        if (held) {
+                            if (v > 0 and (qe > 0 or my_nrep < static_cast<int32_t>(S)))
+                                pick = make_key(static_cast<uint32_t>(my_load), lane);
+                        } else if (my_load < tau and my_nrep < static_cast<int32_t>(S) and v >= gate) {
+                            pick = make_key(0x80000000u | static_cast<uint32_t>(my_load), lane);
                         }
-                        chosen = warp_min_key(pick);
                     }
+                    const uint64_t chosen = warp_min_key(pick);
                     if (chosen == kNoneKey)
                         continue;
                     const uint32_t to = static_cast<uint32_t>(chosen);
-                    const int32_t move_v = __shfl_sync(0xffffffffu, v, to);
+                    const int32_t move_v = __shfl_sync(full, v, to);
                     move(e, d, to, move_v);
+                    timer.count(PlanProfile::kMoves);
                     moved = true;
+                    load_d = load_of(d);
                 }
             }
             if (not moved)
                 break;
         }
+        timer.stamp(PlanProfile::kGreedy);
+    }
+    __syncthreads();
 
+    // Replica list for the pruning: each rank hosts at most S replicas; one
+    // warp per rank collects its own in expert order, the whole column read
+    // up front and 32 experts per ballot.
+    constexpr uint32_t kNumReplicaSlots = R * S;
+    constexpr uint32_t kNumReplicasPerLane = math::constexpr_ceil_div(kNumReplicaSlots, 32u);
+    constexpr uint32_t kNumExpertChunks = math::constexpr_ceil_div(E, 32u);
+    for (uint32_t r = warp_idx; r < R; r += kNumWarps) {
+        int32_t column[kNumExpertChunks];
+        #pragma unroll
+        for (uint32_t j = 0; j < kNumExpertChunks; ++ j) {
+            const uint32_t e = 32 * j + lane;
+            column[j] = e < E ? q_at(e, r) : 0;
+        }
+        uint32_t n = 0;
+        #pragma unroll
+        for (uint32_t j = 0; j < kNumExpertChunks; ++ j) {
+            const uint32_t e = 32 * j + lane;
+            const bool is_replica = e < E and e / H != r and column[j] > 0;
+            uint32_t mask = __ballot_sync(full, is_replica);
+            while (mask != 0 and n < S) {
+                const uint32_t bit = __ffs(mask) - 1;
+                const int32_t v = __shfl_sync(full, column[j], bit);
+                if (lane == 0) {
+                    sm.rep_idx[r * S + n] = static_cast<int32_t>((32 * j + bit) * R + r);
+                    sm.rep_v[r * S + n] = v;
+                }
+                ++ n;
+                mask &= mask - 1;
+            }
+        }
+        if (lane == 0) {
+            for (; n < S; ++ n)
+                sm.rep_v[r * S + n] = 0;
+        }
+    }
+    __syncthreads();
+
+    if (warp_idx == 0) {
         // Pruning: a replica whose allocation fits elsewhere under the current
         // maximum load is folded back, owner first, then the least loaded copy.
-        int32_t max_load = lane < R ? load[lane] : 0;
-        max_load = __reduce_max_sync(0xffffffffu, max_load);
-        // Each rank hosts at most S replicas, so the list fits R * S entries;
-        // one lane per rank collects its own.
-        constexpr uint32_t kNumReplicaSlots = R * S;
-        constexpr uint32_t kNumReplicasPerLane = math::constexpr_ceil_div(kNumReplicaSlots, 32u);
-        if (lane < R) {
-            uint32_t n = 0;
-            for (uint32_t e = 0; e < E and n < S; ++ e) {
-                if (e / H != lane and q[e * R + lane] > 0) {
-                    rep_idx[lane * S + n] = static_cast<int32_t>(e * R + lane);
-                    rep_v[lane * S + n] = q[e * R + lane];
-                    ++ n;
-                }
-            }
-            for (; n < S; ++ n)
-                rep_v[lane * S + n] = 0;
-        }
-        __syncwarp();
+        const int32_t max_load = __reduce_max_sync(full, is_rank ? my_load : 0);
         while (true) {
             uint64_t best = kNoneKey;
             #pragma unroll
             for (uint32_t j = 0; j < kNumReplicasPerLane; ++ j) {
                 const uint32_t k = lane + 32 * j;
-                if (k < kNumReplicaSlots and rep_v[k] > 0) {
+                if (k < kNumReplicaSlots and sm.rep_v[k] > 0) {
                     // Order by (snapshot allocation, expert, rank); both fit in 32 bits.
-                    const auto cand = make_key(static_cast<uint32_t>(rep_v[k]), static_cast<uint32_t>(rep_idx[k]));
+                    const auto cand = make_key(static_cast<uint32_t>(sm.rep_v[k]), static_cast<uint32_t>(sm.rep_idx[k]));
                     best = cand < best ? cand : best;
                 }
             }
             best = warp_min_key(best);
             if (best == kNoneKey)
                 break;
+            timer.count(PlanProfile::kPruneSteps);
             const uint32_t i = static_cast<uint32_t>(best), e = i / R, r = i % R;
             const int32_t v = static_cast<int32_t>(best >> 32);
-            if (lane < R) {
-                for (uint32_t n = 0; n < S; ++ n)
-                    if (rep_idx[lane * S + n] == static_cast<int32_t>(i) and rep_v[lane * S + n] == v)
-                        rep_v[lane * S + n] = 0;
+            #pragma unroll
+            for (uint32_t j = 0; j < kNumReplicasPerLane; ++ j) {
+                const uint32_t k = lane + 32 * j;
+                if (k < kNumReplicaSlots and sm.rep_idx[k] == static_cast<int32_t>(i) and sm.rep_v[k] == v)
+                    sm.rep_v[k] = 0;
             }
             __syncwarp();
-            if (q[i] != v)
+            if (q_at(e, r) != v)
                 continue;
             const uint32_t owner = e / H;
             uint32_t target = ~0u;
-            if (load[owner] + v <= max_load) {
+            if (load_of(owner) + v <= max_load) {
                 target = owner;
             } else {
                 uint64_t pick = kNoneKey;
-                if (lane < R and lane != r and lane != owner and q[e * R + lane] > 0 and
-                    load[lane] + v <= max_load)
-                    pick = make_key(static_cast<uint32_t>(load[lane]), lane);
+                if (is_rank and lane != r and lane != owner and q_at(e, lane) > 0 and my_load + v <= max_load)
+                    pick = make_key(static_cast<uint32_t>(my_load), lane);
                 pick = warp_min_key(pick);
                 if (pick != kNoneKey)
                     target = static_cast<uint32_t>(pick);
@@ -316,108 +506,152 @@ eplb_plan_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
 
         // Single-block moves between the extremes while they share an expert.
         for (uint32_t iter = 0; iter < E * R; ++ iter) {
-            uint64_t hi_key = lane < R ? make_key(static_cast<uint32_t>(0x7fffffff - load[lane]), lane) : kNoneKey;
-            uint64_t lo_key = lane < R ? make_key(static_cast<uint32_t>(load[lane]), lane) : kNoneKey;
+            uint64_t hi_key = is_rank ? make_key(static_cast<uint32_t>(0x7fffffff - my_load), lane) : kNoneKey;
+            uint64_t lo_key = is_rank ? make_key(static_cast<uint32_t>(my_load), lane) : kNoneKey;
             hi_key = warp_min_key(hi_key);
             lo_key = warp_min_key(lo_key);
             const uint32_t hi = static_cast<uint32_t>(hi_key), lo = static_cast<uint32_t>(lo_key);
-            if (load[hi] - load[lo] <= 1)
+            if (load_of(hi) - load_of(lo) <= 1)
                 break;
             uint32_t shared = ~0u;
             for (uint32_t e = lane; e < E; e += 32) {
-                if (q[e * R + hi] > 0 and q[e * R + lo] > 0) {
+                if (q_at(e, hi) > 0 and q_at(e, lo) > 0) {
                     shared = e;
                     break;
                 }
             }
-            shared = __reduce_min_sync(0xffffffffu, shared);
+            shared = __reduce_min_sync(full, shared);
             if (shared == ~0u)
                 break;
             move(shared, hi, lo, 1);
+            timer.count(PlanProfile::kExtremeMoves);
         }
-
-        // Helper slot assignment, one lane per rank: keep cached slots that are
-        // still used, then fill free slots with new experts in expert order.
-        if (lane < R) {
-            const uint32_t r = lane;
-            for (uint32_t s = 0; s < S; ++ s) {
-                const auto e = prev_slot[r * S + s];
-                new_slot[r * S + s] = (e >= 0 and q[e * R + r] > 0) ? e : -1;
-            }
-            for (uint32_t e = 0; e < E; ++ e) {
-                if (e / H == r or q[e * R + r] == 0)
-                    continue;
-                bool present = false;
-                for (uint32_t s = 0; s < S; ++ s)
-                    present |= new_slot[r * S + s] == static_cast<int32_t>(e);
-                if (present)
-                    continue;
-                for (uint32_t s = 0; s < S; ++ s) {
-                    if (new_slot[r * S + s] < 0) {
-                        new_slot[r * S + s] = static_cast<int32_t>(e);
-                        break;
-                    }
-                }
-            }
-        }
-        __syncwarp();
-
-        // Publish: copies, ordinal bases, counters, slot table and copy list.
-        for (uint32_t e = lane; e < E; e += 32) {
-            const uint32_t owner = e / H;
-            uint32_t k = 0;
-            int32_t cum = q[e * R + owner];
-            g_copies[e * R + k ++] = make_int2(static_cast<int32_t>(owner), cum);
-            for (uint32_t r = 0; r < R; ++ r) {
-                if (r != owner and q[e * R + r] > 0) {
-                    cum += q[e * R + r];
-                    g_copies[e * R + k ++] = make_int2(static_cast<int32_t>(r), cum);
-                }
-            }
-            if (k < R)
-                g_copies[e * R + k] = make_int2(-1, cum);
-            int32_t base = 0;
-            for (uint32_t r = 0; r < rank; ++ r)
-                base += hist[r * E + e];
-            g_expert_base[e] = base;
-            g_local_counter[e] = 0;
-        }
-        if (lane == 0) {
-            int32_t count = 0;
-            for (uint32_t s = 0; s < S; ++ s) {
-                const auto e = new_slot[rank * S + s];
-                if (e >= 0 and e != prev_slot[rank * S + s])
-                    g_copy_list[count ++] = make_int2(static_cast<int32_t>(s), e);
-            }
-            *g_copy_count = count;
-        }
-        for (uint32_t i = lane; i < R * S; i += 32)
-            g_slot_expert[i] = new_slot[i];
+        timer.stamp(PlanProfile::kPruned);
     }
+    __syncthreads();
+
+    // Helper slot assignment, one warp per rank: keep cached slots that are
+    // still used, then fill free slots with new experts in expert order.
+    for (uint32_t r = warp_idx; r < R; r += kNumWarps) {
+        int32_t kept = -1;  // lane s < S: expert of helper slot s
+        if (lane < S) {
+            const auto e = sm.prev_slot[r * S + lane];
+            kept = (e >= 0 and q_at(static_cast<uint32_t>(e), r) > 0) ? e : -1;
+        }
+        uint32_t free_mask = __ballot_sync(full, lane < S and kept < 0);
+        for (uint32_t base = 0; base < E and free_mask != 0; base += 32) {
+            const uint32_t e = base + lane;
+            bool needed = e < E and e / H != r and q_at(e, r) > 0;
+            #pragma unroll 1
+            for (uint32_t s = 0; s < S; ++ s)
+                needed &= __shfl_sync(full, kept, s) != static_cast<int32_t>(e);
+            uint32_t mask = __ballot_sync(full, needed);
+            while (mask != 0 and free_mask != 0) {
+                const uint32_t es = base + (__ffs(mask) - 1), s = __ffs(free_mask) - 1;
+                if (lane == s)
+                    kept = static_cast<int32_t>(es);
+                free_mask &= free_mask - 1;
+                mask &= mask - 1;
+            }
+        }
+        if (lane < S)
+            sm.new_slot[r * S + lane] = kept;
+    }
+    __syncthreads();
+    timer.stamp(PlanProfile::kSlots);
+
+    // Publish: copies, ordinal bases, counters, slot table and copy list.
+    for (uint32_t e = thread_idx; e < E; e += kNumThreads) {
+        const uint32_t owner = e / H;
+        uint32_t k = 0;
+        int32_t cum = q_at(e, owner);
+        g.copies[e * R + k ++] = make_int2(static_cast<int32_t>(owner), cum);
+        for (uint32_t r = 0; r < R; ++ r) {
+            if (r != owner and q_at(e, r) > 0) {
+                cum += q_at(e, r);
+                g.copies[e * R + k ++] = make_int2(static_cast<int32_t>(r), cum);
+            }
+        }
+        if (k < R)
+            g.copies[e * R + k] = make_int2(-1, cum);
+        int32_t base = 0;
+        for (uint32_t r = 0; r < rank; ++ r)
+            base += sm.hist[r * E + e];
+        g.expert_base[e] = base;
+        g.local_counter[e] = 0;
+    }
+    if (thread_idx == 0) {
+        int32_t count = 0;
+        for (uint32_t s = 0; s < S; ++ s) {
+            const auto e = sm.new_slot[rank * S + s];
+            if (e >= 0 and e != sm.prev_slot[rank * S + s]) {
+                g.copy_list[count ++] = make_int2(static_cast<int32_t>(s), e);
+                // Fused copy: the MegaMoE kernel counts its CTAs into these.
+                g.copy_done[s * 2] = 0;
+                g.copy_done[s * 2 + 1] = 0;
+            }
+        }
+        *g.copy_count = count;
+    }
+    for (uint32_t i = thread_idx; i < R * S; i += kNumThreads)
+        g.slot_expert[i] = sm.new_slot[i];
+    __syncthreads();
+    timer.stamp(PlanProfile::kTables);
 }
 
+// Rewrite this CTA's grid-strided share of `topk_idx` from logical experts
+// to physical slots under the published tables. Every entry of an expert
+// needs a distinct ordinal within the rank; the CTA counts its share first
+// and reserves one contiguous range per expert with a single device atomic,
+// then hands out the ordinals from shared memory, so a hot expert sees one
+// atomic per CTA instead of one per token (which serialised the whole grid
+// behind it). Any assignment of ordinals is a valid split; only the counts
+// per (rank, expert) matter. Afterwards the counters are left at zero for
+// the next remap: the last CTA to finish (ticket order after a fence, so
+// every CTA's atomics are visible) clears them and the ticket. The planner
+// clears them too, so a remap after a plan and a remap after a remap start
+// from the same state.
 template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumHelperSlots, uint32_t kNumThreads>
-CUTLASS_GLOBAL void __launch_bounds__(kNumThreads)
-eplb_remap_kernel(uint32_t* __restrict__ ws_base, const uint32_t rank,
-                  int64_t* topk_idx, const uint32_t num_tokens, const uint32_t num_topk,
-                  const uint32_t block_m) {
+CUTLASS_DEVICE void eplb_remap_share(uint32_t* ws_base, const Workspace& layout,
+                                     int64_t* topk_idx, const uint32_t& num_tokens, const uint32_t& num_topk,
+                                     const uint32_t& block_m) {
     constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumHelperSlots;
     constexpr uint32_t H = E / R;
-    const Workspace layout(R, E, S);
     const auto* slot_expert = reinterpret_cast<const int32_t*>(ws_base + layout.slot_expert_offset());
     const auto* copies = reinterpret_cast<const int2*>(ws_base + layout.copies_offset());
     const auto* expert_base = reinterpret_cast<const int32_t*>(ws_base + layout.expert_base_offset());
     auto* local_counter = ws_base + layout.local_counter_offset();
+    auto* remap_done = ws_base + layout.remap_done_offset();
 
-    cudaGridDependencySynchronize();
-
+    // Per-expert count of this CTA's share, then the first ordinal of its
+    // range; the count doubles as the cursor afterwards.
+    __shared__ int32_t cta_cursor[E];
+    __shared__ int32_t cta_base[E];
     const uint32_t total = num_tokens * num_topk;
-    for (uint32_t i = blockIdx.x * kNumThreads + threadIdx.x; i < total; i += gridDim.x * kNumThreads) {
+    const uint32_t begin = blockIdx.x * kNumThreads + threadIdx.x, stride = gridDim.x * kNumThreads;
+    for (uint32_t e = threadIdx.x; e < E; e += kNumThreads)
+        cta_cursor[e] = 0;
+    __syncthreads();
+    for (uint32_t i = begin; i < total; i += stride) {
+        const auto e64 = topk_idx[i];
+        if (e64 >= 0)
+            atomicAdd_block(cta_cursor + static_cast<uint32_t>(e64), 1);
+    }
+    __syncthreads();
+    for (uint32_t e = threadIdx.x; e < E; e += kNumThreads) {
+        const auto count = cta_cursor[e];
+        if (count > 0) {
+            cta_base[e] = expert_base[e] + static_cast<int32_t>(atomicAdd(local_counter + e, static_cast<uint32_t>(count)));
+            cta_cursor[e] = 0;
+        }
+    }
+    __syncthreads();
+    for (uint32_t i = begin; i < total; i += stride) {
         const auto e64 = topk_idx[i];
         if (e64 < 0)
             continue;
         const uint32_t e = static_cast<uint32_t>(e64);
-        const uint32_t ordinal = expert_base[e] + atomicAdd(local_counter + e, 1u);
+        const uint32_t ordinal = static_cast<uint32_t>(cta_base[e] + atomicAdd_block(cta_cursor + e, 1));
         const int32_t block = static_cast<int32_t>(ordinal / block_m);
         int32_t dest = e / H;
         #pragma unroll 1
@@ -437,6 +671,167 @@ eplb_remap_kernel(uint32_t* __restrict__ ws_base, const uint32_t rank,
         }
         topk_idx[i] = static_cast<int64_t>(dest) * (H + S) + local_slot;
     }
+
+    __shared__ uint32_t last_cta;
+    __threadfence();
+    __syncthreads();
+    if (threadIdx.x == 0)
+        last_cta = atomicAdd(remap_done, 1u) == gridDim.x - 1 ? 1u : 0u;
+    __syncthreads();
+    if (last_cta) {
+        __threadfence();
+        for (uint32_t e = threadIdx.x; e < E; e += kNumThreads)
+            local_counter[e] = 0;
+        if (threadIdx.x == 0)
+            *remap_done = 0;
+    }
+}
+
+// Standalone planner: one CTA counts this rank's routing, exchanges the
+// histograms and plans. Used by `DynamicEPLB.plan` (the plan issued early on
+// a side stream); the synchronous path uses `eplb_plan_remap_kernel`.
+template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumHelperSlots, uint32_t kNumThreads, bool kProfile>
+CUTLASS_GLOBAL void __launch_bounds__(kNumThreads, 1)
+eplb_plan_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
+                 const int64_t* __restrict__ topk_idx,
+                 const uint32_t num_tokens, const uint32_t num_topk,
+                 const uint32_t block_m, const uint32_t open_gate_blocks,
+                 const uint32_t generation) {
+    DG_STATIC_ASSERT(kNumRanks <= Workspace::kMaxRanks and kNumRanks <= 32, "Too many ranks");
+    DG_STATIC_ASSERT(kNumExperts % kNumRanks == 0, "Experts must divide across ranks");
+    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumHelperSlots;
+    const Workspace layout(R, E, S);
+    const uint32_t thread_idx = threadIdx.x;
+    const uint32_t rank = ws.rank_idx;
+
+    extern __shared__ __align__(16) uint8_t smem_buffer[];
+    const PlanSmem<R, E, S, kNumThreads> sm(smem_buffer);
+    const PlanGlobals g(ws.template get_base_ptr<uint32_t*>(), layout, generation & 1);
+    PlanTimer<kProfile> timer;
+
+    cudaGridDependencySynchronize();
+    timer.begin();
+#ifdef DG_EPLB_DEBUG
+    if (thread_idx == 0)
+        printf("EPLB plan entry: rank=%u generation=%u parity=%u num_tokens=%u block_m=%u\n",
+               rank, generation, generation & 1, num_tokens, block_m);
+#endif
+    eplb_count_tokens<E, kNumThreads>(sm.hist + rank * E, sm.warp_hist, topk_idx,
+                                      0, num_tokens * num_topk, kNumThreads, thread_idx);
+    timer.stamp(PlanProfile::kHistogram);
+    timer.stamp(PlanProfile::kArrived);
+    eplb_plan_from_histogram<R, E, S, kNumThreads, kProfile>(ws, sm, g, block_m, open_gate_blocks, generation, timer);
+    timer.stamp(PlanProfile::kRemapped);
+    if (thread_idx == 0)
+        timer.finish(g.profile, generation, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Single-launch prepare: plan and remap in one grid.
+//
+// Every CTA counts its grid-strided share of the routing into a block
+// histogram and adds it to this rank's histogram in the workspace with device
+// atomics. The last CTA to arrive (fence, then a ticket) reads that
+// histogram, clears it, exchanges it with the peers and runs the planner;
+// when the tables are written it releases `plan_ready = generation`. The
+// other CTAs spin on that word (each is already resident, so nothing waits
+// on an unscheduled CTA) and then every CTA, the planner included, remaps
+// its share of the routing exactly as `eplb_remap_kernel` does. One launch
+// replaces plan + remap (and the host never fills the counters: the planner
+// and the remap's last CTA leave them at zero). The weight copy, when not
+// fused into the MegaMoE kernel, follows this launch in stream order.
+//
+// Host side: `DynamicEPLB.prepare` in `deep_gemm/mega/eplb.py`.
+//
+// The grid is `min(num_sms, ceil(num_tokens * num_topk / kNumThreads))`.
+// ---------------------------------------------------------------------------
+template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumHelperSlots, uint32_t kNumThreads, bool kProfile>
+CUTLASS_GLOBAL void __launch_bounds__(kNumThreads)
+eplb_plan_remap_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
+                       int64_t* topk_idx,
+                       const uint32_t num_tokens, const uint32_t num_topk,
+                       const uint32_t block_m, const uint32_t open_gate_blocks,
+                       const uint32_t generation) {
+    DG_STATIC_ASSERT(kNumRanks <= Workspace::kMaxRanks and kNumRanks <= 32, "Too many ranks");
+    DG_STATIC_ASSERT(kNumExperts % kNumRanks == 0, "Experts must divide across ranks");
+    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumHelperSlots;
+    const Workspace layout(R, E, S);
+    const uint32_t thread_idx = threadIdx.x;
+    const uint32_t rank = ws.rank_idx;
+
+    extern __shared__ __align__(16) uint8_t smem_buffer[];
+    __shared__ uint32_t is_planner;
+    const PlanSmem<R, E, S, kNumThreads> sm(smem_buffer);
+    auto* ws_base = ws.template get_base_ptr<uint32_t*>();
+    const PlanGlobals g(ws_base, layout, generation & 1);
+    PlanTimer<kProfile> timer;
+
+    cudaGridDependencySynchronize();
+    timer.begin();
+
+    // This CTA's share of the histogram, into the rank's accumulator.
+    auto* hist_row = sm.hist + rank * E;
+    eplb_count_tokens<E, kNumThreads>(hist_row, sm.warp_hist, topk_idx,
+                                      blockIdx.x * kNumThreads, num_tokens * num_topk,
+                                      gridDim.x * kNumThreads, thread_idx);
+    for (uint32_t e = thread_idx; e < E; e += kNumThreads) {
+        const auto count = hist_row[e];
+        if (count != 0)
+            ptx::red_add(g.local_hist + e, static_cast<uint32_t>(count));
+    }
+    __threadfence();
+    __syncthreads();
+    if (thread_idx == 0)
+        is_planner = atomicAdd(g.plan_ticket, 1u) == gridDim.x - 1 ? 1u : 0u;
+    __syncthreads();
+    timer.stamp(PlanProfile::kHistogram);
+
+    if (is_planner) {
+        // Every CTA's share has landed: take the histogram and reset the
+        // accumulator and the ticket for the next launch.
+        __threadfence();
+        for (uint32_t e = thread_idx; e < E; e += kNumThreads) {
+            hist_row[e] = static_cast<int32_t>(ptx::ld_volatile(g.local_hist + e));
+            g.local_hist[e] = 0;
+        }
+        if (thread_idx == 0)
+            *g.plan_ticket = 0;
+        __syncthreads();
+        timer.stamp(PlanProfile::kArrived);
+        eplb_plan_from_histogram<R, E, S, kNumThreads, kProfile>(ws, sm, g, block_m, open_gate_blocks, generation, timer);
+        __threadfence();
+        __syncthreads();
+        if (thread_idx == 0)
+            st_release_gpu(g.plan_ready, generation);
+    } else {
+        if (thread_idx == 0) {
+            const auto start_clock = clock64();
+            while (ptx::ld_acq(g.plan_ready) < generation) {
+                if (clock64() - start_clock >= kSpinTimeoutCycles) {
+                    printf("DeepGEMM EPLB plan+remap timeout: rank=%u cta=%u waiting for the planner, generation=%u\n",
+                           rank, blockIdx.x, generation);
+                    asm volatile("trap;");
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    eplb_remap_share<R, E, S, kNumThreads>(ws_base, layout, topk_idx, num_tokens, num_topk, block_m);
+    timer.stamp(PlanProfile::kRemapped);
+    if (is_planner and thread_idx == 0)
+        timer.finish(g.profile, generation, gridDim.x);
+}
+
+template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumHelperSlots, uint32_t kNumThreads>
+CUTLASS_GLOBAL void __launch_bounds__(kNumThreads)
+eplb_remap_kernel(uint32_t* __restrict__ ws_base, const uint32_t rank,
+                  int64_t* topk_idx, const uint32_t num_tokens, const uint32_t num_topk,
+                  const uint32_t block_m) {
+    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumHelperSlots;
+    const Workspace layout(R, E, S);
+    cudaGridDependencySynchronize();
+    eplb_remap_share<R, E, S, kNumThreads>(ws_base, layout, topk_idx, num_tokens, num_topk, block_m);
 }
 
 template <uint32_t kNumRanks, uint32_t kNumThreads>
@@ -472,6 +867,123 @@ eplb_copy_weights_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ar
                 reinterpret_cast<uint32_t*>(dst)[i] = __ldg(reinterpret_cast<const uint32_t*>(src) + i);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Fused copy: the MegaMoE kernel moves the changed helper slots itself.
+//
+// Every CTA copies a strided share of each listed slot, one plane group at a
+// time (L1 planes, then L2 planes), and adds one to the slot's group counter
+// with release semantics once its share is written. A slot's group is ready
+// when the counter equals the grid size; the weight loader waits for it with
+// an acquire load before the first bulk copy of that slot. Slots that are not
+// in the copy list, and home slots, are never waited on. The source is the
+// owner's home slot, which is read-only for its whole life, so no remote
+// synchronisation is needed.
+// ---------------------------------------------------------------------------
+
+// Bit `s` set when helper slot `s` is in this step's copy list.
+template <uint32_t kNumRanks>
+CUTLASS_DEVICE uint32_t fused_copy_pending_mask(const FusedCopy<kNumRanks>& fc) {
+    uint32_t mask = 0;
+    const auto count = ptx::ld_volatile(reinterpret_cast<const uint32_t*>(fc.copy_count));
+    for (uint32_t i = 0; i < count and i < fc.num_helper_slots; ++ i)
+        mask |= 1u << static_cast<uint32_t>(fc.copy_list[i].x);
+    return mask;
+}
+
+// One group of planes of one slot, strided over `num_ctas * kNumThreads`
+// threads. 16-byte planes are the weights; the 4-byte planes are the global
+// scales (a few words), handled by the same loop in 4-byte units.
+template <uint32_t kNumRanks, uint32_t kNumThreads>
+CUTLASS_DEVICE void fused_copy_slot_group(const FusedCopy<kNumRanks>& fc,
+                                          const uint32_t& plane_begin, const uint32_t& plane_end,
+                                          const uint32_t& dst_slot, const uint32_t& expert,
+                                          const uint32_t& cta_idx, const uint32_t& num_ctas,
+                                          const uint32_t& thread_idx) {
+    const uint32_t owner = expert / fc.num_home_experts;
+    const uint32_t src_slot = expert - owner * fc.num_home_experts;
+    auto* base = fc.arena.template get_base_ptr<uint8_t*>();
+    const uint32_t stride = num_ctas * kNumThreads;
+    const uint32_t start = cta_idx * kNumThreads + thread_idx;
+    for (uint32_t p = plane_begin; p < plane_end; ++ p) {
+        const auto& plane = fc.planes.planes[p];
+        const uint8_t* src = fc.arena.map(base + plane.offset + static_cast<uint64_t>(src_slot) * plane.bytes_per_slot, owner);
+        uint8_t* dst = base + plane.offset + static_cast<uint64_t>(dst_slot) * plane.bytes_per_slot;
+        if (plane.vec_bytes == 16) {
+            const auto* s16 = reinterpret_cast<const uint4*>(src);
+            auto* d16 = reinterpret_cast<uint4*>(dst);
+            const uint32_t n = plane.bytes_per_slot / 16;
+            // Four loads in flight per thread: NVLink latency, not issue rate,
+            // bounds a 64-thread copier.
+            uint32_t i = start;
+            for (; i + 3 * stride < n; i += 4 * stride) {
+                const uint4 v0 = __ldg(s16 + i);
+                const uint4 v1 = __ldg(s16 + i + stride);
+                const uint4 v2 = __ldg(s16 + i + 2 * stride);
+                const uint4 v3 = __ldg(s16 + i + 3 * stride);
+                d16[i] = v0;
+                d16[i + stride] = v1;
+                d16[i + 2 * stride] = v2;
+                d16[i + 3 * stride] = v3;
+            }
+            for (; i < n; i += stride)
+                d16[i] = __ldg(s16 + i);
+        } else {
+            const uint32_t n = plane.bytes_per_slot / 4;
+            for (uint32_t i = start; i < n; i += stride)
+                reinterpret_cast<uint32_t*>(dst)[i] = __ldg(reinterpret_cast<const uint32_t*>(src) + i);
+        }
+    }
+}
+
+// This CTA's share of every listed slot, L1 group then L2 group, each group
+// published with one release per slot. `sync` is a barrier over the
+// `kNumThreads` copier threads of this CTA; `thread_idx` indexes them.
+template <uint32_t kNumRanks, uint32_t kNumThreads, typename SyncFn>
+CUTLASS_DEVICE void fused_copy_share(const FusedCopy<kNumRanks>& fc,
+                                     const uint32_t& cta_idx, const uint32_t& num_ctas,
+                                     const uint32_t& thread_idx, SyncFn&& sync) {
+    const auto count = min(static_cast<uint32_t>(ptx::ld_volatile(reinterpret_cast<const uint32_t*>(fc.copy_count))),
+                           fc.num_helper_slots);
+    if (count == 0)
+        return;
+    #pragma unroll 1
+    for (uint32_t group = 0; group < 2; ++ group) {
+        const uint32_t plane_begin = group == 0 ? 0 : fc.num_l1_planes;
+        const uint32_t plane_end = group == 0 ? fc.num_l1_planes : fc.planes.num_planes;
+        #pragma unroll 1
+        for (uint32_t i = 0; i < count; ++ i) {
+            const auto entry = fc.copy_list[i];
+            fused_copy_slot_group<kNumRanks, kNumThreads>(
+                fc, plane_begin, plane_end,
+                fc.num_home_experts + static_cast<uint32_t>(entry.x), static_cast<uint32_t>(entry.y),
+                cta_idx, num_ctas, thread_idx);
+        }
+        // Make every copier thread's stores visible at GPU scope before one
+        // thread publishes the group; the release is cumulative over the
+        // barrier.
+        __threadfence();
+        sync();
+        if (thread_idx == 0) {
+            for (uint32_t i = 0; i < count; ++ i)
+                ptx::red_add_rel(fc.copy_done + static_cast<uint32_t>(fc.copy_list[i].x) * 2 + group, 1u);
+        }
+    }
+}
+
+// Wait until `num_ctas` CTAs have published the group counter `counter`
+// (`copy_done + slot * 2 + group`), then order the following async-proxy
+// (bulk copy) reads after it. Kept free of printf and of the argument
+// struct: it runs in the weight-loader warp inside its register budget. A
+// 30 s timeout traps (the host sees an illegal-instruction error).
+CUTLASS_DEVICE void fused_copy_wait_slot(const uint32_t* counter, const uint32_t& num_ctas) {
+    const auto start_clock = clock64();
+    while (ptx::ld_acq(counter) < num_ctas) {
+        if (clock64() - start_clock >= 30ll * 2000000000ll)
+            asm volatile("trap;");
+    }
+    asm volatile("fence.proxy.async.global;" ::: "memory");
 }
 
 } // namespace deep_gemm::eplb

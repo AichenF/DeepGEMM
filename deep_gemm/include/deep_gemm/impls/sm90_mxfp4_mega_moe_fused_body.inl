@@ -806,6 +806,17 @@
             }
         }
 
+        // Fused EPLB copy: the dispatch warps are idle from the end of the
+        // token pull until the combine, which is the whole GEMM phase, so they
+        // move the changed helper slots now. The scheduler visits local experts
+        // in index order and the helper slots are the last ones, so their
+        // tasks come after every home expert's and the loader rarely waits.
+        if constexpr (kFuseEPLBCopy) {
+            eplb::fused_copy_share<kNumRanks, kNumDispatchThreads>(
+                fused_copy, sm_idx, kNumSMs, thread_idx,
+                [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); });
+        }
+
         // Cleanup workspace, overlapping with combine
         ptx::sync_unaligned(kNumDispatchThreads + kNumEpilogueThreads, kDispatchWithEpilogueBarrierIdx);
 
@@ -816,6 +827,12 @@
             [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
             true, false);
         if (thread_idx == 0) stamp_max(8);
+        // Fused EPLB copy: the list is consumed. Every CTA of every rank has
+        // passed the barrier above, so none can still be reading it.
+        if constexpr (kFuseEPLBCopy) {
+            if (sm_idx == 0 and thread_idx == 0)
+                *fused_copy.copy_count = 0;
+        }
     } else if (warp_idx == kNumDispatchWarps) {
         // =====================================================================
         // ROLE 2: GEMM TMA LOAD warps (load A+SFA, B+SFB)
@@ -898,6 +915,19 @@
     } else if (warp_idx == kNumDispatchWarps + 1) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
+        // Fused EPLB copy: helper slots still being written this step, one
+        // mask per plane group (L1, L2), held in two scalar registers (an
+        // indexed array would go to local memory, and this warp runs inside
+        // the loader register budget). A bit is cleared once the slot's
+        // group has been seen complete; a zero mask is the common case and
+        // costs one predicated branch per task.
+        uint32_t eplb_pending_l1 = 0u, eplb_pending_l2 = 0u, eplb_num_home = 0u;
+        if constexpr (kFuseEPLBCopy) {
+            eplb_pending_l1 = eplb::fused_copy_pending_mask(fused_copy);
+            eplb_pending_l2 = eplb_pending_l1;
+            eplb_num_home = fused_copy.num_home_experts;
+        }
+
         const auto load_b_task = [&](const auto& block_phase,
                                      const uint32_t& local_expert_idx,
                                      const uint32_t& num_k_blocks,
@@ -912,6 +942,21 @@
             // stage is `BLOCK_N / kBTileRows` bulk copies of adjacent tiles.
             constexpr uint32_t kNumTileLoads = LOAD_BLOCK_N / kBTileRows;
             constexpr uint32_t kNumNTiles = shape_n / kBTileRows;
+
+            if constexpr (kFuseEPLBCopy) {
+                constexpr uint32_t group = kBlockIsL2 ? 1u : 0u;
+                uint32_t& pending = kBlockIsL2 ? eplb_pending_l2 : eplb_pending_l1;
+                if (pending != 0u and local_expert_idx >= eplb_num_home) {
+                    const uint32_t slot = local_expert_idx - eplb_num_home;
+                    if ((pending >> slot) & 1u) {
+                        // Every lane acquires, so whichever lane is elected
+                        // to issue the bulk copies is ordered after the copy.
+                        eplb::fused_copy_wait_slot(fused_copy.copy_done + slot * 2 + group, kNumSMs);
+                        __syncwarp();
+                        pending &= ~(1u << slot);
+                    }
+                }
+            }
 
             for (uint32_t k_block_idx = 0; k_block_idx < num_k_blocks; advance_pipeline(k_block_idx)) {
                 empty_barriers[stage_idx]->wait(phase ^ 1);
@@ -1055,7 +1100,20 @@
             const uint32_t row_offset_r1 = row_block_offset + r_1;
             using BlockPhaseTag = std::remove_cv_t<std::remove_reference_t<decltype(block_phase)>>;
             constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
-            const float l2_global_scale = l2_global_scales == nullptr ? 1.0f : __ldg(l2_global_scales + local_expert_idx);
+            // With the fused copy the helper slots' scales are written by the
+            // dispatch warps during this kernel, so they must come through
+            // the coherent path and must be read only after the GEMM main
+            // loop: the weight loader waits for the slot's copy before its
+            // first weight fetch, and the main loop consumes those weights,
+            // so by the epilogue the copy has landed. A read at task start
+            // raced the copy and could apply the slot's previous scale.
+            constexpr bool kEPLBCoherentScales = kFuseEPLBCopy;
+            const auto load_global_scale = [&](const float* scales) -> float {
+                if (scales == nullptr)
+                    return 1.0f;
+                return kEPLBCoherentScales ? __ldcg(scales + local_expert_idx) : __ldg(scales + local_expert_idx);
+            };
+            float l2_global_scale = 1.0f;
             const auto cast_l2_scaled_bf16_pair = [&](float x, float y) -> uint32_t {
                 x *= l2_global_scale;
                 y *= l2_global_scale;
@@ -1559,6 +1617,11 @@
                 }
             }
 
+            // The main loop is done: the helper slot's planes, scales included,
+            // are in place (see `load_global_scale`).
+            if constexpr (kBlockIsL2)
+                l2_global_scale = load_global_scale(l2_global_scales);
+
             // Skip epilogue when block is past valid M (the GEMM loop already
             // released its pipeline stages). Drain any prior L1 async store.
             if (valid_m == 0) {
@@ -1567,7 +1630,7 @@
             }
 
             if constexpr (!kBlockIsL2) {
-                const float l1_global_scale = l1_global_scales == nullptr ? 1.0f : __ldg(l1_global_scales + local_expert_idx);
+                const float l1_global_scale = load_global_scale(l1_global_scales);
                 if constexpr (kSwapABRequested) {
                     auto silu = [](float x) -> float {
                         const float e = kFastMath ? __expf(-x) : expf(-x);
