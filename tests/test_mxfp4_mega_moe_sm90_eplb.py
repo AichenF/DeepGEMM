@@ -3,8 +3,10 @@
 Three checks per batch, all under deliberately skewed routing:
   1. the device planner agrees with the Python reference planner;
   2. the remapped routing table matches the plan (counts per physical slot);
-  3. the kernel output on physical slots matches the logical-expert reference.
-Then a paired benchmark of the same routing with EPLB on and off.
+  3. the kernel output on physical slots matches the logical-expert reference;
+and the same plan and remap through the single-launch kernel (warm and cold
+slot tables). Then a paired benchmark of the same routing with EPLB on and
+off. ``DG_EPLB_PROFILE=1`` adds the planner's in-kernel phase breakdown.
 
 Usage: python tests/test_mxfp4_mega_moe_sm90_eplb.py --num-processes 4
 """
@@ -21,6 +23,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 import deep_gemm
+from deep_gemm import _C
 from deep_gemm.mega.eplb_planner import plan_reference
 from deep_gemm.quantization_mxfp4 import dequantize_mxfp4_to_fp32, quantize_to_mxfp4
 from deep_gemm.testing import bench_kineto, get_arch_major
@@ -30,6 +33,67 @@ from deep_gemm.utils.dist import init_dist
 
 def _silu(x):
     return x * torch.sigmoid(x)
+
+
+# Planner phase stamps and loop counters, in the order of `eplb::PlanProfile`
+# (`deep_gemm/include/deep_gemm/layout/mega_moe_eplb.cuh`). A phase is named
+# after the stamp that ends it.
+PLAN_STAMPS = ('entry', 'histogram', 'arrived', 'published', 'wait', 'setup',
+               'greedy', 'prune', 'slots', 'tables', 'remap', 'end')
+PLAN_COUNTERS = ('visits', 'picks', 'moves', 'prune_steps', 'extreme_moves', 'grid')
+
+
+def plan_profile_enabled():
+    return os.environ.get('DG_EPLB_PROFILE', '0') == '1'
+
+
+def read_plan_profile(eplb, generation=None):
+    """Decode the planner's timing record of ``generation`` (default: the
+    last plan) from the workspace: phase durations in microseconds (SM clock
+    cycles converted with the globaltimer span of the same launch), the
+    globaltimer stamps in ns and the loop counters. Needs ``DG_EPLB_PROFILE=1``
+    in the environment when the kernel was built, and a ``_C`` that reports
+    the ``profile`` region; returns None otherwise."""
+    layout = eplb.ws_layout
+    if 'profile' not in layout:
+        return None
+    gen = eplb.generation if generation is None else generation
+    slots, words = int(layout['num_profile_slots']), int(layout['num_profile_words'])
+    base = int(layout['profile']) + (gen % slots) * words
+    rec = eplb.ws.view(torch.int32)[base:base + words].cpu().contiguous()
+    u64 = rec.view(torch.int64)
+    n = len(PLAN_STAMPS)
+    clocks = u64[:n].tolist()
+    t_entry, t_peers, t_end = u64[n].item(), u64[n + 1].item(), u64[n + 2].item()
+    counters = rec[2 * n + 6:2 * n + 6 + len(PLAN_COUNTERS)].tolist()
+    span_cycles, span_ns = clocks[-1] - clocks[0], t_end - t_entry
+    if span_cycles <= 0 or span_ns <= 0:
+        return None
+    ghz = span_cycles / span_ns
+    phases = {PLAN_STAMPS[i]: (clocks[i] - clocks[i - 1]) / ghz / 1e3 for i in range(1, n)}
+    return dict(phases=phases, total_us=span_cycles / ghz / 1e3, ghz=ghz,
+                timer_entry_ns=t_entry, timer_peers_ns=t_peers, timer_end_ns=t_end,
+                counters=dict(zip(PLAN_COUNTERS, counters)))
+
+
+def format_plan_profile(prof):
+    ph = prof['phases']
+    body = ' + '.join(f'{k} {ph[k]:.1f}' for k in PLAN_STAMPS[1:] if ph[k] >= 0.05)
+    c = prof['counters']
+    return (f'total {prof["total_us"]:.1f} us = {body} | compute (total - wait) '
+            f'{prof["total_us"] - ph["wait"]:.1f} us | picks={c["picks"]} moves={c["moves"]} '
+            f'prune={c["prune_steps"]} extreme={c["extreme_moves"]} grid={c["grid"]} @ {prof["ghz"]:.2f} GHz')
+
+
+def _single_launch(eplb, num_tokens, block_m):
+    """Plan + remap in one grid, driven through ``_C`` directly (what
+    ``DynamicEPLB.prepare`` launches)."""
+    eplb.generation += 1
+    _C.mega_moe_eplb_plan_and_remap(
+        eplb.ws, eplb.ws_handle.buffer_ptrs, eplb.rank,
+        eplb.symm.topk_idx[:num_tokens],
+        eplb.num_experts, eplb.num_helper_slots,
+        block_m, eplb.open_gate_blocks, eplb.generation)
 
 
 def _skewed_topk(m_tokens, num_experts, num_topk, hot_experts, hot_share, generator):
@@ -146,6 +210,55 @@ def _check_remap(eplb, ref, counts, logical_rows, physical_rows, rank_idx):
     return seen
 
 
+def _check_slot_counts(eplb, ref, seen, block_m, rank_idx, group):
+    """Per-(rank, expert) token counts across all ranks must fill exactly the
+    plan's blocks."""
+    num_ranks, E = dist.get_world_size(group), eplb.num_experts
+    local_counts = torch.zeros((num_ranks, E), dtype=torch.int64, device='cuda')
+    for (dest, e), n in seen.items():
+        local_counts[dest, e] += n
+    dist.all_reduce(local_counts, group=group)
+    local_counts = local_counts.cpu().tolist()
+    for e in range(E):
+        for r in range(num_ranks):
+            n, blocks = local_counts[r][e], ref.blocks[e][r]
+            assert n <= blocks * block_m and (blocks == 0) == (n == 0) and n > (blocks - 1) * block_m, \
+                f'rank {rank_idx}: expert {e} on rank {r} got {n} tokens for {blocks} blocks of {block_m}'
+
+
+def _check_single_launch(m_tokens, rank_idx, group, eplb, counts, topk_idx, block_m, cold):
+    """Plan + remap in one launch on the same routing: the tables must match
+    the reference (warm: from the current slot table; cold: from empty
+    slots), the rewritten routing must be a valid remap of that plan, the
+    ordinal counters must be left at zero, and the separate copy kernel that
+    follows must leave every helper slot byte-exact."""
+    b = eplb.symm
+    if cold:
+        eplb.slot_expert.fill_(-1)
+    prev = eplb.slot_expert.cpu().tolist()
+    b.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int64))
+    _single_launch(eplb, m_tokens, block_m)
+    torch.cuda.synchronize()
+    ref = _check_plan(eplb, counts, block_m, prev, rank_idx)
+    physical = b.topk_idx[:m_tokens].cpu().tolist()
+    seen = _check_remap(eplb, ref, counts, topk_idx.cpu().tolist(), physical, rank_idx)
+    _check_slot_counts(eplb, ref, seen, block_m, rank_idx, group)
+    assert not eplb.local_counter.cpu().any().item(), f'rank {rank_idx}: ordinal counters not cleared'
+    copies = int(eplb.copy_count.item())
+    eplb.copy_weights()
+    torch.cuda.synchronize()
+    dist.barrier(group=group)
+    _verify_copies(eplb, ref, rank_idx, group)
+    # The list is applied; a fused-copy kernel launch later must not redo it.
+    eplb.copy_count.zero_()
+    prof = read_plan_profile(eplb) if plan_profile_enabled() else None
+    if rank_idx == 0:
+        replicas = sum(1 for row in ref.slot_expert for e in row if e >= 0)
+        print(f'  [single-launch {"cold" if cold else "warm"}] M={m_tokens} plan+remap match the reference: '
+              f'replicas={replicas} copies(rank0)={copies} max_load={max(ref.loads)}'
+              + (f' | {format_plan_profile(prof)}' if prof else ''), flush=True)
+
+
 def _verify_copies(eplb, ref, rank_idx, group):
     """Every helper slot must hold a byte-exact copy of its expert's home slot."""
     num_ranks = dist.get_world_size(group)
@@ -203,33 +316,35 @@ def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
     torch.cuda.synchronize()
     ref = _check_plan(eplb, counts, block_m, prev_slot_expert, rank_idx)
     copies = int(eplb.copy_count.item())
-    eplb.copy_weights()
+    if not eplb.fuse_copy:
+        eplb.copy_weights()
     eplb.remap(m_tokens, block_m)
     torch.cuda.synchronize()
     physical = b.topk_idx[:m_tokens].cpu().tolist()
     seen = _check_remap(eplb, ref, counts, topk_idx.cpu().tolist(), physical, rank_idx)
-    # Per-(rank, expert) counts across all ranks must equal the plan's blocks.
-    local_counts = torch.zeros((num_ranks, E), dtype=torch.int64, device='cuda')
-    for (dest, e), n in seen.items():
-        local_counts[dest, e] += n
-    dist.all_reduce(local_counts, group=group)
-    local_counts = local_counts.cpu().tolist()
-    for e in range(E):
-        for r in range(num_ranks):
-            n, blocks = local_counts[r][e], ref.blocks[e][r]
-            assert n <= blocks * block_m and (blocks == 0) == (n == 0) and n > (blocks - 1) * block_m, \
-                f'rank {rank_idx}: expert {e} on rank {r} got {n} tokens for {blocks} blocks of {block_m}'
+    _check_slot_counts(eplb, ref, seen, block_m, rank_idx, group)
 
-    _verify_copies(eplb, ref, rank_idx, group)
+    if not eplb.fuse_copy:
+        _verify_copies(eplb, ref, rank_idx, group)
 
     y = torch.empty((m_tokens, hidden), dtype=torch.bfloat16, device='cuda')
     deep_gemm.mxfp4_mega_moe(
         y, eplb.l1_weights, eplb.l2_weights, b,
         cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
         l1_global_scales=eplb.l1_global_scales, l2_global_scales=eplb.l2_global_scales,
-        activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math))
+        activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math),
+        eplb_fused_copy=eplb.fused_copy_args() if eplb.fuse_copy else None)
     torch.cuda.synchronize()
     dist.barrier(group=group)
+    if eplb.fuse_copy:
+        # The kernel did the copy: every listed slot must now be byte-exact
+        # and every counter must have seen the whole grid.
+        _verify_copies(eplb, ref, rank_idx, group)
+        done = eplb.copy_done.cpu()
+        listed = eplb.copy_list.cpu()[:copies, 0].tolist()
+        for s_idx in listed:
+            assert done[s_idx, 0].item() == done[s_idx, 1].item() > 0, \
+                f'rank {rank_idx}: slot {s_idx} readiness counters {done[s_idx].tolist()}'
 
     y_ref = _reference_output(x_fp8, x_sf, topk_idx, topk_weights, l1_dequant, l2_dequant,
                               l1_gs, l2_gs, rank_idx, H, args.activation_clamp, group)
@@ -260,6 +375,35 @@ def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
                   f'others cos mean={cosine[~on_helper].mean().item() if (~on_helper).any() else float("nan"):.4f})', flush=True)
     cos_min, cos_mean = cosine.min().item(), cosine.mean().item()
     norm_ratio = (torch.linalg.vector_norm(y.float()) / torch.linalg.vector_norm(y_ref).clamp_min(1e-30)).item()
+    if os.environ.get('DG_EPLB_GATE_DIAG', '0') == '1':
+        # Which tokens deviate, through which slots: every rank prints its
+        # own worst tokens (logical experts, physical slots, weights) and the
+        # slots shared by the deviating tokens, so a wrong slot or a wrong
+        # token can be told apart from a wrong scale.
+        tok_ratio = (torch.linalg.vector_norm(y.float(), dim=-1) /
+                     torch.linalg.vector_norm(y_ref, dim=-1).clamp_min(1e-30))
+        bad = ((tok_ratio - 1).abs() > 0.02) | (cosine < 0.995)
+        n_bad = int(bad.sum().item())
+        phys = b.topk_idx[:m_tokens].cpu()
+        logical = topk_idx.cpu()
+        weights = topk_weights.float().cpu()
+        slots = eplb.slots_per_rank
+        lines = [f'  [diag rank {rank_idx}] M={m_tokens} bad tokens {n_bad}/{m_tokens} '
+                 f'norm ratio {norm_ratio:.4f} cos min {cos_min:.4f}']
+        from collections import Counter
+        slot_hits = Counter()
+        for t in bad.nonzero().flatten().tolist():
+            for pid in phys[t].tolist():
+                slot_hits[(pid // slots, pid % slots)] += 1
+        for t in bad.nonzero().flatten().tolist()[:6]:
+            ents = [f'e{int(e)}->r{int(p) // slots}s{int(p) % slots}:{w:.2f}'
+                    for e, p, w in zip(logical[t].tolist(), phys[t].tolist(), weights[t].tolist())]
+            lines.append(f'    token {t}: ratio {tok_ratio[t].item():.4f} cos {cosine[t].item():.4f} ' + ' '.join(ents))
+        helper_hits = {k: v for k, v in slot_hits.items() if k[1] >= H}
+        lines.append(f'    helper slots used by bad tokens (rank, slot): hits {sorted(helper_hits.items())}')
+        lines.append(f'    slot table: {eplb.slot_expert.cpu().tolist()}')
+        lines.append(f'    this rank refilled (slot, expert) this step: {eplb.copy_list.cpu().tolist()[:copies]}')
+        print('\n'.join(lines), flush=True)
     baseline = max(sum(-(-sum(counts[r][e] for r in range(num_ranks)) // block_m)
                        for e in range(rr * H, (rr + 1) * H)) for rr in range(num_ranks))
     if rank_idx == 0:
@@ -271,14 +415,24 @@ def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
     assert cos_mean >= args.cosine_mean_threshold, f'cosine mean {cos_mean}'
     assert cos_min >= args.cosine_min_threshold, f'cosine min {cos_min}'
     assert args.norm_ratio_min <= norm_ratio <= args.norm_ratio_max, f'norm ratio {norm_ratio}'
+    if args.single_launch:
+        # The same routing through the single-launch prepare, warm (the
+        # placement just planned) and cold (every slot re-planned).
+        for cold in (False, True):
+            _check_single_launch(m_tokens, rank_idx, group, eplb, counts, topk_idx, block_m, cold)
     return topk_idx, topk_weights, x_fp8, x_sf
 
 
 def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, baseline_weights):
     topk_idx, topk_weights, x_fp8, x_sf = routing
     hidden = args.hidden
+    cold_each_step = bool(args.cold_each_step)
 
     def run_eplb():
+        if cold_each_step:
+            # Forget the slot cache so the planner lists every assigned helper
+            # slot again and the full weight transfer is paid in this step.
+            eplb.slot_expert.fill_(-1)
         return eplb.forward(x_fp8, x_sf, topk_idx, topk_weights,
                             activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math))
 
@@ -320,15 +474,18 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
               f'rank-max {cold_us.item():.1f}us', flush=True)
 
     kernels = ('eplb_plan_kernel', 'eplb_copy_weights_kernel', 'eplb_remap_kernel', 'sm90_mxfp4_mega_moe')
+    arms = {'both': (False, True), 'fused': (True,), 'separate': (False,)}[args.fuse_copy]
     # The fixed arm is a separate kernel instantiation. Build it on every rank
     # before the paired loop: the planner waits on its peers in-kernel and
     # would otherwise time out behind another rank's JIT compile.
     run_fixed()
     torch.cuda.synchronize()
     dist.barrier(group=group)
-    for _ in range(3):
-        run_eplb()
-        run_fixed()
+    for fused in arms:
+        eplb.fuse_copy = fused
+        for _ in range(3):
+            run_eplb()
+            run_fixed()
     torch.cuda.synchronize()
     dist.barrier(group=group)
     # Every rank must issue the same number of plans, so the debug profile runs
@@ -349,23 +506,57 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
         dist.barrier(group=group)
 
     resync()
-    t_eplb = bench_kineto(run_eplb, kernels, barrier=dist.barrier, num_tests=args.bench_tests,
-                          suppress_kineto_output=quiet)
-    resync()
     t_fixed = bench_kineto(run_fixed, 'sm90_mxfp4_mega_moe', barrier=dist.barrier, num_tests=args.bench_tests,
                            suppress_kineto_output=quiet)
     resync()
-    t_eplb = [t * 1e6 for t in t_eplb]
     t_fixed_us = t_fixed * 1e6
-    # Rank-maximum latency is what the layer waits for.
-    local = torch.tensor([sum(t_eplb), t_eplb[3], t_fixed_us] + t_eplb[:3], device='cuda')
-    dist.all_reduce(local, op=dist.ReduceOp.MAX, group=group)
-    total, kernel_only, fixed, plan_us, copy_us, remap_us = local.tolist()
-    if rank_idx == 0:
-        ratio = lambda a, b: f'{a / b:.3f}x' if b > 0 else 'n/a'
-        print(f'[bench M={m_tokens}] fixed={fixed:.1f}us  eplb total={total:.1f}us '
-              f'(kernel {kernel_only:.1f} + plan {plan_us:.1f} + copy {copy_us:.1f} + remap {remap_us:.1f})  '
-              f'speedup total={ratio(fixed, total)} kernel-only={ratio(fixed, kernel_only)}', flush=True)
+    state = 'cold-each-step' if cold_each_step else 'steady'
+    # Interleave the arms `bench_rounds` times: the kernel time of one arm
+    # can move between sub-runs by more than the arm difference.
+    for fused in [f for _ in range(max(1, args.bench_rounds)) for f in arms]:
+        eplb.fuse_copy = fused
+        # bench_kineto sums every kernel whose name matches, so an arm that
+        # never launches the copy kernel asks only for the other three.
+        names = kernels if not fused else tuple(k for k in kernels if k != 'eplb_copy_weights_kernel')
+        # How many slots a step of this arm copies: plan the same routing from
+        # the state the timed steps see (the fused kernel clears the count
+        # once it has consumed the list, so read it after a standalone plan).
+        if cold_each_step:
+            eplb.slot_expert.fill_(-1)
+        b.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int64))
+        eplb.plan(m_tokens)
+        torch.cuda.synchronize()
+        copies = int(eplb.copy_count.item())
+        run_eplb()
+        resync()
+        t = bench_kineto(run_eplb, names, barrier=dist.barrier, num_tests=args.bench_tests,
+                         suppress_kineto_output=quiet)
+        resync()
+        t = [v * 1e6 for v in t]
+        if fused:
+            plan_us, remap_us, kernel_only = t
+            copy_us = 0.0
+        else:
+            plan_us, copy_us, remap_us, kernel_only = t
+        total = plan_us + copy_us + remap_us + kernel_only
+        # Rank-maximum latency is what the layer waits for.
+        local = torch.tensor([total, kernel_only, t_fixed_us, plan_us, copy_us, remap_us, float(copies)], device='cuda')
+        dist.all_reduce(local, op=dist.ReduceOp.MAX, group=group)
+        total, kernel_only, fixed, plan_us, copy_us, remap_us, max_copies = local.tolist()
+        if rank_idx == 0:
+            ratio = lambda a, b: f'{a / b:.3f}x' if b > 0 else 'n/a'
+            arm = 'fused-copy' if fused else 'separate-copy'
+            print(f'[bench M={m_tokens} {state} {arm} slots-copied-max={int(max_copies)}] fixed={fixed:.1f}us  '
+                  f'eplb total={total:.1f}us (kernel {kernel_only:.1f} + plan {plan_us:.1f} + copy {copy_us:.1f} '
+                  f'+ remap {remap_us:.1f})  speedup total={ratio(fixed, total)} kernel-only={ratio(fixed, kernel_only)}',
+                  flush=True)
+        if plan_profile_enabled():
+            # In-kernel phase breakdown of the last plan of this arm.
+            run_eplb()
+            torch.cuda.synchronize()
+            prof = read_plan_profile(eplb)
+            if rank_idx == 0 and prof:
+                print(f'[plan profile M={m_tokens} {arm}] {format_plan_profile(prof)}', flush=True)
 
 
 def _check_remap_only(args, m_tokens, rank_idx, group, eplb_state, tag):
@@ -440,7 +631,8 @@ def _worker(local_rank, num_local_ranks, args):
 
         eplb = deep_gemm.DynamicEPLB(group, E, args.num_helper_slots, args.num_max_tokens_per_rank,
                                      args.num_topk, args.hidden, args.intermediate_hidden,
-                                     open_gate_blocks=args.open_gate_blocks)
+                                     open_gate_blocks=args.open_gate_blocks,
+                                     fuse_copy=args.fuse_copy != 'separate')
         eplb.set_home_weights(t1, t2, l1_gs, l2_gs)
         state = (eplb, l1_dequant, l2_dequant, l1_gs.cpu().tolist(), l2_gs.cpu().tolist())
         if args.check_fixed:
@@ -464,6 +656,12 @@ def _worker(local_rank, num_local_ranks, args):
                 if args.correctness:
                     # Second pass on the same routing exercises the slot cache.
                     _run_case(args, m_tokens, rank_idx, group, state)
+                    if args.fuse_copy == 'both':
+                        # And the other copy arm on a fresh placement.
+                        eplb.fuse_copy = False
+                        eplb.slot_expert.fill_(-1)
+                        _run_case(args, m_tokens, rank_idx, group, state)
+                        eplb.fuse_copy = True
         if args.correctness:
             # Decode-like steps reuse the last plan without re-planning.
             for m_small in (8, 64, 256):
@@ -517,6 +715,15 @@ def _parse_args():
     p.add_argument('--trace-num-layers', type=int, default=4, help='how many traced layers to replay')
     p.add_argument('--check-fixed', type=int, default=0,
                    help='also run the fixed-placement kernel on the same tokens as a control')
+    p.add_argument('--fuse-copy', choices=['separate', 'fused', 'both'],
+                   default='separate' if os.environ.get('DG_EPLB_FUSE_COPY', '1') == '0' else 'fused',
+                   help='weight copy by the separate kernel, fused into the MegaMoE kernel, or both arms')
+    p.add_argument('--bench-rounds', type=int, default=1,
+                   help='repeat the separate/fused arm pair this many times per cell')
+    p.add_argument('--cold-each-step', type=int, default=0,
+                   help='benchmark with every helper slot re-copied on every step')
+    p.add_argument('--single-launch', type=int, default=1,
+                   help='also check plan + remap in one launch (mega_moe_eplb_plan_and_remap) per case')
     p.add_argument('--bench', type=int, default=1)
     p.add_argument('--correctness', type=int, default=1)
     p.add_argument('--bench-tests', type=int, default=20)
