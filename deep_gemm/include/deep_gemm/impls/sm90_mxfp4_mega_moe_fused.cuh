@@ -184,7 +184,7 @@ __device__ __forceinline__ void dequant_braided_quad(
 // ring to fill, and BLOCK_M 8 is faster decoding on the math warps. An
 // unconditional 640 would also cut the compiler's per-thread register budget
 // for the narrow tiers. Must stay in step with
-// SM90MXFP4H200FusedConfig::num_threads().
+// SM90MXFP4FusedConfig::num_threads().
 constexpr bool sm90_mxfp4_split_decode(const bool swap_ab, const bool use_rs,
                                       const uint32_t block_m) {
     return swap_ab and not use_rs and block_m >= 16;
@@ -202,7 +202,7 @@ template <
     uint32_t kNumRanks,
     // Shape is a template parameter, not a baked-in constant. The kernel body
     // was already written against these names; only the wrapper hardcoded the
-    // H200 384-expert / 6144-hidden model, which locked out every other shape
+    // the 384-expert / 6144-hidden model, which locked out every other shape
     // (e.g. DeepSeek-V4-Flash: 4096 hidden, 256 experts, topk 6).
     uint32_t kHidden,
     uint32_t kIntermediateHidden,
@@ -233,7 +233,7 @@ template <
 >
 CUTLASS_GLOBAL
 __launch_bounds__(sm90_mxfp4_num_threads(kSwapABRequested, kUseRSOperand, BLOCK_M), 1) void
-sm90_mxfp4_mega_moe_h200_fused_impl(
+sm90_mxfp4_mega_moe_fused_impl(
         void* y,
         int* cumulative_local_expert_recv_stats,
         const uint32_t num_tokens,
@@ -284,7 +284,7 @@ sm90_mxfp4_mega_moe_h200_fused_impl(
     constexpr uint32_t kNumEpilogueWarpgroups = kNumEpilogueWarps / 4;
     constexpr uint32_t kNumTokensPerWarp = 32 / kNumTopk;
     constexpr uint32_t kNumExpertsPerRank = kNumExperts / kNumRanks;
-#include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused_body.inl>
+#include <deep_gemm/impls/sm90_mxfp4_mega_moe_fused_body.inl>
 }
 
 }  // namespace deep_gemm

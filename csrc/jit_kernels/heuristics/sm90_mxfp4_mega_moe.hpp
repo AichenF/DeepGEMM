@@ -19,7 +19,7 @@ static constexpr int kSM90MXFP4BTileBytes = kSM90MXFP4BTileRows * (64 + 4);
 // it. Must stay in step with sm90_mxfp4_split_decode() in the kernel header.
 static constexpr int kSplitDecodeMinBlockM = 16;
 
-struct SM90MXFP4H200FusedConfig {
+struct SM90MXFP4FusedConfig {
     static constexpr int kBlockK = 128;
     static constexpr int kSwizzleActsMode = 128;
     static constexpr int kNumDispatchThreads = 64;
@@ -42,7 +42,7 @@ struct SM90MXFP4H200FusedConfig {
     int num_stages, smem_size;
 };
 
-struct SM90MXFP4H200FusedShape {
+struct SM90MXFP4FusedShape {
     // The dispatch loop keeps per-rank state in one warp, so the width has to
     // stay within a warp; everything else is templated on it.
     static constexpr int kMaxNumRanks = 32;
@@ -58,7 +58,7 @@ struct SM90MXFP4H200FusedShape {
         return num_tokens > 0;
     }
 
-    // Shape used to be pinned to the H200 384-expert / 6144-hidden model.
+    // Shape used to be pinned to the 384-expert / 6144-hidden model.
     // kNumSMs became a kernel template parameter in 1b23095, and hidden /
     // intermediate_hidden / num_experts / num_topk followed, so the only
     // constraints left are the ones the kernel body genuinely needs:
@@ -96,22 +96,22 @@ static constexpr int largest_divisor_at_most(const int n, const int cap) noexcep
     return 1;
 }
 
-struct SM90MXFP4H200FusedInput {
+struct SM90MXFP4FusedInput {
     int num_sms;
     int num_ranks, num_experts, num_experts_per_rank;
     int num_max_tokens_per_rank, num_tokens, num_topk;
     int hidden, intermediate_hidden;
     int num_padded_sf_pool_tokens;
 
-    SM90MXFP4H200FusedShape shape() const noexcept {
+    SM90MXFP4FusedShape shape() const noexcept {
         return {
             num_sms, num_ranks, num_experts, num_topk,
             hidden, intermediate_hidden};
     }
 };
 
-struct SM90MXFP4H200FusedPlan {
-    SM90MXFP4H200FusedConfig config;
+struct SM90MXFP4FusedPlan {
+    SM90MXFP4FusedConfig config;
     bool swap_ab;
     bool use_mode2_row_decoder;
     bool single_active_dispatch_warp;
@@ -122,16 +122,16 @@ struct SM90MXFP4H200FusedPlan {
     bool rs_swap_ab;
 };
 
-static SM90MXFP4H200FusedPlan
-select_sm90_mxfp4_h200_fused(
-        const SM90MXFP4H200FusedInput& input) {
+static SM90MXFP4FusedPlan
+select_sm90_mxfp4_fused(
+        const SM90MXFP4FusedInput& input) {
     DG_HOST_ASSERT(input.shape().is_supported_shape());
     DG_HOST_ASSERT(input.num_experts ==
                    input.num_experts_per_rank * input.num_ranks);
     DG_HOST_ASSERT(input.num_max_tokens_per_rank > 0);
     DG_HOST_ASSERT(input.num_tokens <= input.num_max_tokens_per_rank);
     DG_HOST_ASSERT(
-        SM90MXFP4H200FusedShape::is_supported_batch(input.num_tokens));
+        SM90MXFP4FusedShape::is_supported_batch(input.num_tokens));
     DG_HOST_ASSERT(input.num_padded_sf_pool_tokens > 0);
 
     struct Tuning {
@@ -162,7 +162,7 @@ select_sm90_mxfp4_h200_fused(
     // affordable only while each SM still has enough tokens for the decode, not
     // the MMA, to be the critical path -- so the bound shrinks as the part gets
     // wider. Measured on MiMo: BM24 wins by 6.5 % at M=128 and loses by 57 % at
-    // M=256 on H20's 78 SMs; on H200's 132 it already loses by 23 % at M=128 and
+    // M=256 on a 78-SM part; on 132 SMs it already loses by 23 % at M=128 and
     // wins by 4.6 % at M=64.
     static constexpr int kSwapABReferenceNumSMs = 78;
     const int swap_ab_max_tokens =
@@ -242,7 +242,7 @@ select_sm90_mxfp4_h200_fused(
         tuning = {64, 256, 48, 3, SM90ArchSpec::smem_capacity,
                   false, true, false, false};
 
-    // Tuning override hook. The table above was measured on H200's 132 SMs;
+    // Tuning override hook. The table above was measured on 132 SMs;
     // H20 has 78, so the tiers have to be re-swept there. Reading the knobs
     // from the environment lets one build serve a whole sweep instead of
     // recompiling this header per candidate. Unset vars keep the table value.

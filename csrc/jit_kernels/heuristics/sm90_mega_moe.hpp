@@ -705,7 +705,7 @@ static Sm90MoeScheduleTuning select_sm90_moe_high_sm_tuning(
         } else if (load.greater_than(1024)) {
             specialized = true;
             l1_epw = l2_epw = 32;
-            // Four stages is the validated H200 setting.
+            // Four stages is the validated 132-SM setting.
             l1_stages = l2_stages = 4;
         }
     } else if (shape_family == Sm90MoeShapeFamily::Wide) {

@@ -175,7 +175,7 @@ def _reference_fused(
 
     # Iterate (cheap; reference is for small test configs only)
     # Token-chunked to keep gathered (S, 2*IH, H) dequant tensors below GPU memory.
-    # Wide H200 Pro weights make a 256-token gathered dequantization exceed
+    # Wide Pro-shape weights make a 256-token gathered dequantization exceed
     # 40 GiB. Keep the reference chunk small enough for the full production
     # shape while preserving exactly the same arithmetic.
     _CHUNK = 32
@@ -407,26 +407,26 @@ def _layer3_shape_cases(num_ranks: int) -> List[Tuple[str, Dict[str, Any]]]:
                            hidden=hidden, intermediate_hidden=ih,
                            num_experts=base_experts, num_topk=topk)
                 out.append((f'L3.h{hidden}_ih{ih}_k{topk}', cfg))
-    # Production H200 shapes. Pro M128 covers the BN512/BF16 path and M256
-    # covers the BK256 split-phase path when this runs on a full H200 node.
+    # Production SM90 shapes. Pro M128 covers the BN512/BF16 path and M256
+    # covers the BK256 split-phase path when this runs on a full 8-GPU node.
     out.extend([
-        ('L3.h200_flash_m128', dict(
+        ('L3.prod_flash_m128', dict(
             num_max_tokens_per_rank=128, num_tokens=128,
             hidden=4096, intermediate_hidden=2048,
             num_experts=32 * num_ranks, num_topk=6)),
-        ('L3.h200_pro_m128', dict(
+        ('L3.prod_pro_m128', dict(
             num_max_tokens_per_rank=128, num_tokens=128,
             hidden=7168, intermediate_hidden=3072,
             num_experts=48 * num_ranks, num_topk=6)),
-        ('L3.h200_pro_m256', dict(
+        ('L3.prod_pro_m256', dict(
             num_max_tokens_per_rank=256, num_tokens=256,
             hidden=7168, intermediate_hidden=3072,
             num_experts=48 * num_ranks, num_topk=6)),
-        ('L3.h200_range_alt_compact_load24', dict(
+        ('L3.prod_range_alt_compact_load24', dict(
             num_max_tokens_per_rank=72, num_tokens=72,
             hidden=4096, intermediate_hidden=2048,
             num_experts=24 * num_ranks, num_topk=8)),
-        ('L3.h200_range_alt_wide_load32', dict(
+        ('L3.prod_range_alt_wide_load32', dict(
             num_max_tokens_per_rank=128, num_tokens=128,
             hidden=7168, intermediate_hidden=3072,
             num_experts=32 * num_ranks, num_topk=8)),

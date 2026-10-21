@@ -1,7 +1,7 @@
 # SM90 MXFP4 MegaMoE — optimization record
 
 Target: the fused MXFP4 MegaMoE kernel on this branch
-(`deep_gemm/include/deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused*.{cuh,inl}`),
+(`deep_gemm/include/deep_gemm/impls/sm90_mxfp4_mega_moe_fused*.{cuh,inl}`),
 measured against the two NVFP4 reference branches:
 
 * `origin/megamoe_nvfp4_dev_m` — the fused H200 NVFP4 kernel this branch was
@@ -583,7 +583,7 @@ against the correctness gate. What that takes, having mapped it:
   decode 256, math 256. Registers 64x48 + 64x40 + 256x48 + 256x128 = 50688 of
   64512 — it fits only because SS math warps hold no A fragments and need far
   fewer than the RS path's 208. `__launch_bounds__` and
-  `SM90MXFP4H200FusedConfig::kNumThreads` both carry 384 today.
+  `SM90MXFP4FusedConfig::kNumThreads` both carry 384 today.
 * **Shared memory**: 4 packed stages + a 2-slot decoded ring is 136 KB, ~154 KB
   with CD, send buffers, LUT and barriers, against 227 KB. Depth costs nothing
   here (section 8), so trading packed stages for the ring is free.

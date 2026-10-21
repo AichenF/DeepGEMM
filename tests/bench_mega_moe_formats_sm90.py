@@ -11,7 +11,7 @@ numbers:
 
   fp8    generic -- no shape or SM lock.
   mxfp4  shape-locked to 8 ranks / 384 experts / topk 8 / hidden 6144 / ih 2048
-         (SM90MXFP4H200FusedShape::is_supported_shape), but its kernel takes
+         (SM90MXFP4FusedShape::is_supported_shape), but its kernel takes
          kNumSMs as a template parameter, so it runs on any SM90 device.
   nvfp4  same shape lock AND num_sms == 132, because 132 is baked into the
          kernel body rather than templated. It therefore cannot run on H20
@@ -144,7 +144,7 @@ class Arm:
         return sum(t) if isinstance(t, (tuple, list)) else t
 
 
-# Slots are defined in sm90_mxfp4_mega_moe_h200_fused_body.inl. Kept here rather
+# Slots are defined in sm90_mxfp4_mega_moe_fused_body.inl. Kept here rather
 # than in the kernel so the diagnostic can be read without a rebuild.
 _STAMP_PHASES = [
     (1, 'dispatch barrier #1'), (2, 'pool ready'), (3, 'first math task'),

@@ -13,7 +13,7 @@
 //        tests/bench_sm90_weight_load.cu -lcuda -L/usr/local/cuda/lib64/stubs
 //   ./bench_sm90_weight_load
 //
-// Measured H200 / H20-3e: the strided 80 B rows the kernel used to issue reach
+// Measured on 132-SM and 78-SM parts: the strided 80 B rows the kernel used to issue reach
 // 2.77 / 2.80 TB/s, the shipped contiguous tiles 4.53 / 4.54, and the device
 // itself streams about 4.2 TB/s. Contiguity, not the byte count, was the whole
 // deficit. -DKSTAGES=N varies the pipeline depth; it makes no difference above

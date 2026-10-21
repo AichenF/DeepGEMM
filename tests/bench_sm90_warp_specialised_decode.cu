@@ -31,7 +31,7 @@
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdint>
-#include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused.cuh>
+#include <deep_gemm/impls/sm90_mxfp4_mega_moe_fused.cuh>
 #define CHK(x) do{auto e=(x);if(e!=cudaSuccess){printf("cuda %s @%d\n",cudaGetErrorString(e),__LINE__);exit(1);} }while(0)
 using namespace deep_gemm;
 constexpr int kRows=128,kTileBytes=kRows*(64+4),kTilesPerStage=2;

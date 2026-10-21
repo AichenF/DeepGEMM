@@ -162,13 +162,13 @@ static int sm90_mxfp4_mega_moe_block_m(
         const int& num_ranks, const int& num_experts, const int& num_topk,
         const int& hidden, const int& intermediate_hidden,
         const int& num_max_tokens_per_rank, const int& num_tokens) {
-    const SM90MXFP4H200FusedInput input {
+    const SM90MXFP4FusedInput input {
         device_runtime->get_num_sms(),
         num_ranks, num_experts, num_experts / num_ranks,
         num_max_tokens_per_rank, num_tokens, num_topk,
         hidden, intermediate_hidden, 1,
     };
-    return select_sm90_mxfp4_h200_fused(input).config.block_m;
+    return select_sm90_mxfp4_fused(input).config.block_m;
 }
 
 static void register_eplb_apis(pybind11::module_& m) {

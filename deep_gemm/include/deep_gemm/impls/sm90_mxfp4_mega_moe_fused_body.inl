@@ -7,7 +7,7 @@
     // =====================================================================
     DG_STATIC_ASSERT(BLOCK_M == 8 || BLOCK_M == 16 || BLOCK_M == 24 ||
                      BLOCK_M == 32 || BLOCK_M == 64 || BLOCK_M == 128,
-                     "H200 fused kernel requires BM8/BM16/BM24/BM32/BM64/BM128");
+                     "The SM90 fused kernel requires BM8/BM16/BM24/BM32/BM64/BM128");
     // Pipeline depth used to be pinned to one value per BLOCK_M, which made the
     // shipped table the only reachable schedule. The binding constraint is
     // shared memory, and the layout assertions below already enforce it

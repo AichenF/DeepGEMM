@@ -105,10 +105,10 @@ instantiate 'sm90_nvfp4_mega_moe_h200'   120a gated-out "$nvfp4_src"
 # fastMath, swapAB, singleDispatchWarp, mode2RowDecoder, interleavedScheduler.
 mxfp4_src() {
   printf '%s\n' '#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1
-#include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused.cuh>
+#include <deep_gemm/impls/sm90_mxfp4_mega_moe_fused.cuh>
 using namespace deep_gemm;
 static void __instantiate_kernel() {
-    auto ptr = reinterpret_cast<void*>(&sm90_mxfp4_mega_moe_h200_fused_impl<
+    auto ptr = reinterpret_cast<void*>(&sm90_mxfp4_mega_moe_fused_impl<
         '"$1"', '"${8:-8}"', 6144, 2048, 384, 8, 2048, '"$2"', '"$3"', '"$4"', 8192, 8192,
         '"$5"', 10.0f, true, '"$6"', true, true, true, '"${7:-false}"'>);
     (void)ptr;
@@ -117,7 +117,7 @@ static void __instantiate_kernel() {
 
 #                              SMs  EPW  BM   BN  stages swapAB
 mxfp4_h20_src=$(mxfp4_src      78   48  128  128     6   false)
-mxfp4_h200_src=$(mxfp4_src    132   48  128  128     6   false)
+mxfp4_132sm_src=$(mxfp4_src    132   48  128  128     6   false)
 # The two plans small-M decode actually selects; these are the ones whose
 # register/shared budgets move when the dequant path changes.
 # The three shipped swapAB tiers, at the exact depths the selector picks. RS
@@ -138,7 +138,7 @@ mxfp4_ep4_src=$(mxfp4_src     132   48   24  256     8   true   true   4)
 
 # kNumSMs is now a template parameter, so both SM counts must build.
 instantiate 'sm90_mxfp4 (78 SM, H20)'    90a  wgmma     "$mxfp4_h20_src"
-instantiate 'sm90_mxfp4 (132 SM, H200)'  90a  wgmma     "$mxfp4_h200_src"
+instantiate 'sm90_mxfp4 (132 SM)'       90a  wgmma     "$mxfp4_132sm_src"
 instantiate 'sm90_mxfp4 BM24/BN256 RS'    90a wgmma    "$mxfp4_bm24_src"
 instantiate 'sm90_mxfp4 BM8/BN256 RS'     90a wgmma    "$mxfp4_bm8_src"
 instantiate 'sm90_mxfp4 BM16/BN256 RS'    90a wgmma    "$mxfp4_bm16_src"
@@ -151,10 +151,10 @@ instantiate 'sm90_mxfp4 EP4 BM24 RS'     90a wgmma    "$mxfp4_ep4_src"
 # hardcoded, so this spells the shape out.
 dsv4_src() {
   printf '%s\n' '#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1
-#include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused.cuh>
+#include <deep_gemm/impls/sm90_mxfp4_mega_moe_fused.cuh>
 using namespace deep_gemm;
 static void __instantiate_kernel() {
-    auto ptr = reinterpret_cast<void*>(&sm90_mxfp4_mega_moe_h200_fused_impl<
+    auto ptr = reinterpret_cast<void*>(&sm90_mxfp4_mega_moe_fused_impl<
         78, 4, 4096, 2048, 256, 6, 2048, 32, '"$1"', '"$2"', 8192, 8192,
         '"$3"', 10.0f, true, '"$4"', true, true, true, '"$5"''"${6:+, $6}"'>);
     (void)ptr;
@@ -189,10 +189,10 @@ instantiate 'mega_moe_eplb (plan/remap/copy)' 90a  'shfl|atom'  "$eplb_src"
 instantiate 'mega_moe_eplb (plan/remap/copy)' 100a 'shfl|atom'  "$eplb_src"
 mxfp4_slots_src() {
   printf '%s\n' '#define DG_NVLINK_BARRIER_TRAP_ONLY_TIMEOUT 1
-#include <deep_gemm/impls/sm90_mxfp4_mega_moe_h200_fused.cuh>
+#include <deep_gemm/impls/sm90_mxfp4_mega_moe_fused.cuh>
 using namespace deep_gemm;
 static void __instantiate_kernel() {
-    auto ptr = reinterpret_cast<void*>(&sm90_mxfp4_mega_moe_h200_fused_impl<
+    auto ptr = reinterpret_cast<void*>(&sm90_mxfp4_mega_moe_fused_impl<
         132, 8, 6144, 2048, 416, 8, 2048, 26, '"$1"', 256, 8192, 8192,
         '"$2"', 10.0f, true, '"$3"', true, true, true, '"$4"'>);
     (void)ptr;

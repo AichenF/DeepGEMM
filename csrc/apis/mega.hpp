@@ -9,7 +9,7 @@
 #include "../jit/device_runtime.hpp"
 #include "../jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp"
 #include "../jit_kernels/impls/sm90_nvfp4_mega_moe_h200_fused.hpp"
-#include "../jit_kernels/impls/sm90_mxfp4_mega_moe_h200_fused.hpp"
+#include "../jit_kernels/impls/sm90_mxfp4_mega_moe_fused.hpp"
 
 namespace deep_gemm::mega {
 
@@ -484,11 +484,11 @@ static void mxfp4_mega_moe(
     validate_sm90_mxfp4_mega_moe_global_scale(
         l2_global_scales, num_experts_per_rank, y.device());
     const auto num_ranks = static_cast<int>(sym_buffer_ptrs.size());
-    const SM90MXFP4H200FusedShape shape = {
+    const SM90MXFP4FusedShape shape = {
         device_runtime->get_num_sms(), num_ranks, num_experts, num_topk,
         hidden, intermediate_hidden};
     DG_HOST_ASSERT(shape.is_supported_shape());
-    DG_HOST_ASSERT(SM90MXFP4H200FusedShape::is_supported_batch(num_tokens));
+    DG_HOST_ASSERT(SM90MXFP4FusedShape::is_supported_batch(num_tokens));
     DG_HOST_ASSERT(rank_idx >= 0 && rank_idx < num_ranks);
     const auto [num_required_bytes, slice] = get_symm_buffer_size_for_mega_moe(
         num_ranks, num_experts,
@@ -498,7 +498,7 @@ static void mxfp4_mega_moe(
     DG_HOST_ASSERT(sym_buffer.nbytes() >= static_cast<size_t>(num_required_bytes));
     DG_HOST_ASSERT(num_experts == num_experts_per_rank * num_ranks);
     const auto [x, x_sf, topk_idx, topk_weights, l1_acts, l1_acts_sf, l2_acts, l2_acts_sf] = slice(sym_buffer);
-    sm90_mxfp4_h200_fused_mega_moe(
+    sm90_mxfp4_fused_mega_moe(
         y,
         l1_acts, l1_acts_sf,
         l2_acts, l2_acts_sf,
