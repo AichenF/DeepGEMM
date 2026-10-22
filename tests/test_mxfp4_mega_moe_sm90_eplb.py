@@ -660,6 +660,94 @@ def _format_stamps(bufs):
     return ' '.join(parts)
 
 
+def _rank_spread(eplb, topk_idx, m_tokens, bufs, group):
+    """Per rank, the planned load next to the measured GEMM finish of the
+    stamped planned launch: blocks, distinct experts (task streams), experts
+    whose last block is partial, and L1-end us. Says whether ranks with the
+    same block count finish at the same time (the planner's cost model is
+    the block) or not (something per expert is missing from it)."""
+    E = eplb.num_experts
+    counts = torch.bincount(topk_idx[:m_tokens].flatten().clamp(min=0).to(torch.int64), minlength=E).to('cuda')
+    dist.all_reduce(counts, group=group)
+    counts = counts.tolist()
+    block_m = eplb.block_m(m_tokens)
+    c = eplb.copies.tolist()
+    num_ranks = len(bufs)
+    blocks = [0] * num_ranks
+    experts = [0] * num_ranks
+    partial = [0] * num_ranks
+    for e, row in enumerate(c):
+        prev = 0
+        last_rank = -1
+        for rank, cum in row:
+            if rank < 0:
+                break
+            if cum >= 0x7FFFFFFF:
+                cum = (counts[e] + block_m - 1) // block_m
+            if cum > prev:
+                blocks[rank] += cum - prev
+                experts[rank] += 1
+                last_rank = rank
+            prev = cum
+        if last_rank >= 0 and counts[e] % block_m:
+            partial[last_rank] += 1
+    l1_end = [(b[4] - b[0]) / 1e3 for b in bufs]
+    cells = ' '.join(f'r{r}:{blocks[r]}blk/{experts[r]}exp/{partial[r]}part/{l1_end[r]:.0f}us' for r in range(num_ranks))
+    return f'block_m={block_m} ' + cells
+
+
+def _host_launch_us(eplb, m_tokens, topk_idx, run_fixed, group):
+    """CPU time per call of the host paths while the GPU is busy (the
+    launches queue, so this is the issue cost, not the kernel): the
+    single-launch plan + remap, the remap alone, the EPLB kernel launch and
+    the fixed kernel launch. What the GPU waits for when it is ahead of the
+    host."""
+    b = eplb.symm
+    y = torch.empty((m_tokens, eplb.hidden), dtype=torch.bfloat16, device='cuda')
+    block_m = eplb.block_m(m_tokens)
+
+    def kernel_only():
+        deep_gemm.mxfp4_mega_moe(
+            y, eplb.l1_weights, eplb.l2_weights, b,
+            cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
+            l1_global_scales=eplb.l1_global_scales, l2_global_scales=eplb.l2_global_scales,
+            activation_clamp=10.0, fast_math=True,
+            eplb_fused_copy=eplb.fused_copy_args() if eplb.fuse_copy else None)
+
+    def measure(fn, n=20, reload=False):
+        torch.cuda.synchronize()
+        dist.barrier(group=group)
+        # Queue one long kernel first so the host runs ahead of the GPU; only
+        # the call itself is timed. The plan and the remap rewrite the routing
+        # in place, so the logical ids are reloaded before each of their calls
+        # (an asynchronous copy, outside the timed span).
+        kernel_only()
+        acc = 0.0
+        for _ in range(n):
+            if reload:
+                b.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int64))
+            t0 = time.perf_counter()
+            fn()
+            acc += time.perf_counter() - t0
+        torch.cuda.synchronize()
+        return acc / n * 1e6
+
+    t_prepare = measure(lambda: eplb.prepare(m_tokens, block_m), reload=True)
+    t_remap = measure(lambda: eplb.remap(m_tokens, block_m), reload=True)
+    t_kernel = measure(kernel_only)
+    t_fixed = measure(lambda: run_fixed())
+    # Leave the buffer in the planned state.
+    b.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int64))
+    eplb.prepare(m_tokens, block_m)
+    torch.cuda.synchronize()
+    dist.barrier(group=group)
+    local = torch.tensor([t_prepare, t_remap, t_kernel, t_fixed], device='cuda')
+    dist.all_reduce(local, op=dist.ReduceOp.MAX, group=group)
+    t_prepare, t_remap, t_kernel, t_fixed = local.tolist()
+    return (f'host us per call (rank max): plan+remap launch {t_prepare:.0f}, remap launch {t_remap:.0f}, '
+            f'EPLB kernel launch {t_kernel:.0f}, fixed kernel launch incl. buffer copies {t_fixed:.0f}')
+
+
 def _phase_stamps(args, m_tokens, rank_idx, group, eplb, routing, run_fixed, run_eplb, quiet):
     """Five launches on the same routing, timed with kineto (rank-maximum
     kernel time) and stamped once each:
@@ -708,7 +796,9 @@ def _phase_stamps(args, m_tokens, rank_idx, group, eplb, routing, run_fixed, run
     results = []
     # Planned first: the slot cache of the previous bench step is still in place.
     run_eplb()
-    results.append(('planned', timed(run_eplb), _format_stamps(_stamped(run_eplb, group))))
+    planned_bufs = _stamped(run_eplb, group)
+    results.append(('planned', timed(run_eplb), _format_stamps(planned_bufs)))
+    spread = _rank_spread(eplb, topk_idx, m_tokens, planned_bufs, group)
     for name, fn in arms:
         fn()
         results.append((name, timed(fn), _format_stamps(_stamped(fn, group))))
@@ -723,11 +813,14 @@ def _phase_stamps(args, m_tokens, rank_idx, group, eplb, routing, run_fixed, run
     dist.barrier(group=group)
     local = torch.tensor([r[1] for r in results], device='cuda')
     dist.all_reduce(local, op=dist.ReduceOp.MAX, group=group)
+    host = _host_launch_us(eplb, m_tokens, topk_idx, run_fixed, group)
     if rank_idx == 0:
+        print(f'[host M={m_tokens}] ' + host, flush=True)
         base = local[1].item()
         print(f'[slots M={m_tokens}] ' + '  '.join(f'{r[0]}={t:.0f}us ({t / base:.3f}x)' for r, t in zip(results, local.tolist())), flush=True)
         for r in results:
             print(f'[stamps M={m_tokens} {r[0]}] {r[2]}', flush=True)
+        print(f'[spread M={m_tokens} planned] {spread}', flush=True)
 
 
 def _worker(local_rank, num_local_ranks, args):

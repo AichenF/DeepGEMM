@@ -587,6 +587,11 @@
     //     * The "token_idx_in_expert" → SF token index is now the simple
     //       per-block linear mapping (no 4×32 transpose).
     // =====================================================================
+    // Local experts below this index are home slots (never the target of a
+    // fused copy); with the copy compiled out every slot is a home slot.
+    const uint32_t eplb_num_home_experts =
+        kFuseEPLBCopy ? fused_copy.num_home_experts : kNumExpertsPerRank;
+
     if (warp_idx < kNumDispatchWarps) {
         cutlass::arch::warpgroup_reg_dealloc<kNumDispatchRegisters>();
 
@@ -1107,12 +1112,24 @@
             // first weight fetch, and the main loop consumes those weights,
             // so by the epilogue the copy has landed. A read at task start
             // raced the copy and could apply the slot's previous scale.
-            constexpr bool kEPLBCoherentScales = kFuseEPLBCopy;
+            // Home slots are never written by a copy, so their scale is read
+            // through the non-coherent path at task start, as in the kernel
+            // without the fused copy, and the load hides behind the main
+            // loop. Only a helper slot's scale is read coherently, after the
+            // loop. (A coherent load after the loop on every task cost about
+            // 3% of the L2 task time; pinning the load into the first k-block
+            // with an asm barrier slowed every task by 2%, so the plain form
+            // stays.)
+            const bool scale_after_loop =
+                kFuseEPLBCopy and local_expert_idx >= eplb_num_home_experts;
             const auto load_global_scale = [&](const float* scales) -> float {
                 if (scales == nullptr)
                     return 1.0f;
-                return kEPLBCoherentScales ? __ldcg(scales + local_expert_idx) : __ldg(scales + local_expert_idx);
+                return scale_after_loop ? __ldcg(scales + local_expert_idx) : __ldg(scales + local_expert_idx);
             };
+            float task_global_scale = 1.0f;
+            if (not scale_after_loop)
+                task_global_scale = load_global_scale(kBlockIsL2 ? l2_global_scales : l1_global_scales);
             float l2_global_scale = 1.0f;
             const auto cast_l2_scaled_bf16_pair = [&](float x, float y) -> uint32_t {
                 x *= l2_global_scale;
@@ -1617,10 +1634,12 @@
                 }
             }
 
-            // The main loop is done: the helper slot's planes, scales included,
+            // The main loop is done: a helper slot's planes, scales included,
             // are in place (see `load_global_scale`).
+            if (scale_after_loop)
+                task_global_scale = load_global_scale(kBlockIsL2 ? l2_global_scales : l1_global_scales);
             if constexpr (kBlockIsL2)
-                l2_global_scale = load_global_scale(l2_global_scales);
+                l2_global_scale = task_global_scale;
 
             // Skip epilogue when block is past valid M (the GEMM loop already
             // released its pipeline stages). Drain any prior L1 async store.
@@ -1630,7 +1649,7 @@
             }
 
             if constexpr (!kBlockIsL2) {
-                const float l1_global_scale = load_global_scale(l1_global_scales);
+                const float l1_global_scale = task_global_scale;
                 if constexpr (kSwapABRequested) {
                     auto silu = [](float x) -> float {
                         const float e = kFastMath ? __expf(-x) : expf(-x);
