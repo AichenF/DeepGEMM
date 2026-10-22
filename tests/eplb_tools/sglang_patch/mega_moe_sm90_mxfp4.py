@@ -527,7 +527,7 @@ def _begin_early_plan(moe, group, topk_ids, num_tokens: int, cap: int) -> _Early
     if early.trace_this:
         early.ev_topk = torch.cuda.Event(enable_timing=True)
         early.ev_topk.record()
-    if not early.decision[0] or capturing:
+    if not early.decision or capturing:
         return early
     if _EPLB_EARLY_STREAM is None:
         _EPLB_EARLY_STREAM = torch.cuda.Stream()
