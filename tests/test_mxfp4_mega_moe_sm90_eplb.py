@@ -558,6 +558,9 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
             if rank_idx == 0 and prof:
                 print(f'[plan profile M={m_tokens} {arm}] {format_plan_profile(prof)}', flush=True)
 
+    if args.phase_stamps:
+        _phase_stamps(args, m_tokens, rank_idx, group, eplb, routing, run_fixed, run_eplb, quiet)
+
 
 def _check_remap_only(args, m_tokens, rank_idx, group, eplb_state, tag):
     """Remap onto the current placement without planning (what decode steps
@@ -607,6 +610,111 @@ def _check_remap_only(args, m_tokens, rank_idx, group, eplb_state, tag):
         f'rank {rank_idx} ({tag}): remap-only output mismatch, cosine mean {cosine.mean().item():.4f} min {cosine.min().item():.4f}'
     if rank_idx == 0:
         print(f'remap-only ({tag}, M={m_tokens}): cosine mean {cosine.mean().item():.4f} min {cosine.min().item():.4f}', flush=True)
+
+
+# Phase timestamps of the MegaMoE kernel (globaltimer, ns from kernel entry;
+# the kernel body lists the slots). Slot 0 is the entry (atomic min), 3 the
+# first math task (atomic min), the others phase ends (atomic max); 20..27
+# are (sum, count) accumulators over every CTA.
+_STAMP_PHASES = [(1, 'dispatch#1'), (2, 'pool'), (3, 'first-math'), (4, 'L1-end'),
+                 (5, 'L2-end'), (6, 'combine#2'), (7, 'combine-end'), (8, 'cleanup#3')]
+_STAMP_ACCS = [(20, 'L1 task'), (22, 'L2 task'), (24, 'decode wait TMA'), (26, 'math wait ring')]
+
+
+def _stamped(fn, group):
+    """Run ``fn`` once with the kernel's phase stamps on; returns the stamp
+    buffers of every rank (list of 32-entry lists)."""
+    buf = torch.zeros(32, dtype=torch.int64, device='cuda')
+    buf[0] = buf[3] = (1 << 62)
+    prev = os.environ.get('DG_MXFP4_PHASE_STAMPS_PTR')
+    os.environ['DG_MXFP4_PHASE_STAMPS_PTR'] = str(buf.data_ptr())
+    try:
+        # Enter together: the launch skew of the ranks lands on the first
+        # NVLink barrier and would otherwise read as dispatch time.
+        torch.cuda.synchronize()
+        dist.barrier(group=group)
+        fn()
+        torch.cuda.synchronize()
+    finally:
+        if prev is None:
+            os.environ.pop('DG_MXFP4_PHASE_STAMPS_PTR', None)
+        else:
+            os.environ['DG_MXFP4_PHASE_STAMPS_PTR'] = prev
+    gathered = [torch.empty_like(buf) for _ in range(dist.get_world_size(group))]
+    dist.all_gather(gathered, buf, group=group)
+    return [g.tolist() for g in gathered]
+
+
+def _format_stamps(bufs):
+    parts = []
+    for slot, label in _STAMP_PHASES:
+        vals = [(b[slot] - b[0]) / 1e3 for b in bufs if b[slot]]
+        if vals:
+            parts.append(f'{label}={max(vals):.0f}us(min {min(vals):.0f})')
+    for slot, label in _STAMP_ACCS:
+        vals = [b[slot] / b[slot + 1] / 1e3 for b in bufs if b[slot + 1]]
+        if vals:
+            parts.append(f'{label}={sum(vals) / len(vals):.2f}us')
+    return ' '.join(parts)
+
+
+def _phase_stamps(args, m_tokens, rank_idx, group, eplb, routing, run_fixed, run_eplb, quiet):
+    """Three stamped launches on the same routing: the fixed-placement kernel
+    (home slots only), the EPLB kernel with every helper slot empty and the
+    routing at the owners (the cost of the extra physical slots alone), and
+    the EPLB kernel on the plan. The owner-only arm is also timed with
+    kineto so the slot cost shows as a number next to the fixed arm."""
+    topk_idx, _topk_weights, x_fp8, x_sf = routing
+    num_ranks = dist.get_world_size(group)
+    b = eplb.symm
+
+    def run_owner_only():
+        b.x[:m_tokens].copy_(x_fp8)
+        b.x_sf[:m_tokens].copy_(x_sf)
+        b.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int64))
+        eplb.remap(m_tokens, eplb.block_m(m_tokens))
+        y = torch.empty((m_tokens, eplb.hidden), dtype=torch.bfloat16, device='cuda')
+        deep_gemm.mxfp4_mega_moe(
+            y, eplb.l1_weights, eplb.l2_weights, b,
+            cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
+            l1_global_scales=eplb.l1_global_scales, l2_global_scales=eplb.l2_global_scales,
+            activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math),
+            eplb_fused_copy=eplb.fused_copy_args() if eplb.fuse_copy else None)
+        return y
+
+    lines = []
+    lines.append(('fixed (home slots)', _format_stamps(_stamped(run_fixed, group))))
+    # Plan + remap + kernel; the plan of the previous step is the slot cache,
+    # so this is the steady state with no weight copies.
+    run_eplb()
+    lines.append(('eplb planned', _format_stamps(_stamped(run_eplb, group))))
+    # Empty every helper slot: the routing falls back to the owners and the
+    # kernel runs with H + S physical slots per rank on the fixed placement.
+    eplb.set_replicas(torch.full((num_ranks, eplb.num_helper_slots), -1, dtype=torch.int32))
+    run_owner_only()
+    torch.cuda.synchronize()
+    dist.barrier(group=group)
+    t_owner = bench_kineto(run_owner_only, 'sm90_mxfp4_mega_moe', barrier=dist.barrier,
+                           num_tests=args.bench_tests, suppress_kineto_output=quiet) * 1e6
+    torch.cuda.synchronize()
+    dist.barrier(group=group)
+    t_fixed = bench_kineto(run_fixed, 'sm90_mxfp4_mega_moe', barrier=dist.barrier,
+                           num_tests=args.bench_tests, suppress_kineto_output=quiet) * 1e6
+    local = torch.tensor([t_owner, t_fixed], device='cuda')
+    dist.all_reduce(local, op=dist.ReduceOp.MAX, group=group)
+    lines.append(('eplb owner-only (helper slots empty)', _format_stamps(_stamped(run_owner_only, group))))
+    torch.cuda.synchronize()
+    dist.barrier(group=group)
+    # Back to the planned state for whatever follows.
+    run_eplb()
+    torch.cuda.synchronize()
+    dist.barrier(group=group)
+    if rank_idx == 0:
+        t_owner, t_fixed = local.tolist()
+        print(f'[slots M={m_tokens}] fixed kernel {t_fixed:.1f}us, same routing through the EPLB kernel with '
+              f'{eplb.num_helper_slots} empty helper slots {t_owner:.1f}us ({t_owner / t_fixed:.3f}x)', flush=True)
+        for arm, text in lines:
+            print(f'[stamps M={m_tokens} {arm}] {text}', flush=True)
 
 
 def _worker(local_rank, num_local_ranks, args):
@@ -727,6 +835,9 @@ def _parse_args():
     p.add_argument('--bench', type=int, default=1)
     p.add_argument('--correctness', type=int, default=1)
     p.add_argument('--bench-tests', type=int, default=20)
+    p.add_argument('--phase-stamps', type=int, default=0,
+                   help='after each bench: in-kernel phase timestamps of the fixed, planned and '
+                        'owner-only (empty helper slots) arms, and the slot cost')
     return p.parse_args()
 
 
