@@ -83,6 +83,8 @@ _EPLB_EARLY_STREAM = None
 _per_token_cast_to_fp8 = None
 _get_moe_ep_group = None
 _get_dp_global_num_tokens = None
+_plan_profile_enabled = None
+_format_plan_profile = None
 _get_is_capture_mode = None
 _ExpertLocationDispatchInfo = None
 _get_global_expert_location_metadata = None
@@ -107,6 +109,10 @@ def _bind_lazy() -> None:
     _per_token_cast_to_fp8 = per_token_cast_to_fp8
     _get_moe_ep_group = get_moe_ep_group
     _get_dp_global_num_tokens = get_dp_global_num_tokens
+    global _plan_profile_enabled, _format_plan_profile
+    from deep_gemm.mega.eplb import plan_profile_enabled, format_plan_profile
+    _plan_profile_enabled = plan_profile_enabled
+    _format_plan_profile = format_plan_profile
     _get_is_capture_mode = get_is_capture_mode
     _ExpertLocationDispatchInfo = ExpertLocationDispatchInfo
     _get_global_expert_location_metadata = get_global_expert_location_metadata
@@ -256,6 +262,11 @@ def _trace_flush(eplb) -> None:
                         f"{ev_topk.elapsed_time(s0) * 1000:.0f} us after top-k")
             else:
                 msg += "no plan this forward"
+        if _plan_profile_enabled() and mode.startswith(("plan", "early plan")):
+            # The phase record of the plan this forward used (DG_EPLB_PROFILE=1).
+            prof = eplb.plan_profile()
+            if prof is not None:
+                msg += f" | plan profile: {_format_plan_profile(prof)}"
         msg += (f" | planned {st['plan']} (mean {st['plan_tokens'] / max(st['plan'], 1):.0f} tokens), "
                 f"remap-only {st['remap']} (mean {st['remap_tokens'] / max(st['remap'], 1):.0f} tokens)"
                 f" | its plan: {_plan_summary(copies, slots, eplb.home_experts)}, "

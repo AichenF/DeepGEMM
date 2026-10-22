@@ -70,6 +70,26 @@ class _SymmArena:
         self.buffer = None
 
 
+# Planner phase stamps and loop counters, in the order the kernel records
+# them (``DG_EPLB_PROFILE=1`` when the kernels are built).
+PLAN_STAMPS = ('entry', 'histogram', 'arrived', 'published', 'wait', 'setup',
+               'greedy', 'prune', 'slots', 'tables', 'remap', 'end')
+PLAN_COUNTERS = ('visits', 'picks', 'moves', 'prune_steps', 'extreme_moves', 'grid')
+
+
+def plan_profile_enabled() -> bool:
+    return os.environ.get('DG_EPLB_PROFILE', '0') == '1'
+
+
+def format_plan_profile(prof: dict) -> str:
+    ph = prof['phases']
+    body = ' + '.join(f'{k} {ph[k]:.1f}' for k in PLAN_STAMPS[1:] if ph[k] >= 0.05)
+    c = prof['counters']
+    return (f'total {prof["total_us"]:.1f} us = {body} | compute (total - wait) '
+            f'{prof["total_us"] - ph["wait"]:.1f} us | picks={c["picks"]} moves={c["moves"]} '
+            f'prune={c["prune_steps"]} extreme={c["extreme_moves"]} grid={c["grid"]} @ {prof["ghz"]:.2f} GHz')
+
+
 class DynamicEPLB:
     """Per-layer state for dynamic expert load balancing.
 
@@ -375,6 +395,34 @@ class DynamicEPLB:
             activation_clamp=activation_clamp, fast_math=fast_math,
             eplb_fused_copy=self.fused_copy_args() if self.fuse_copy else None)
         return y
+
+    def plan_profile(self, generation: Optional[int] = None) -> Optional[dict]:
+        """The planner's timing record of ``generation`` (default: the last
+        plan): phase durations in microseconds (SM clock cycles converted
+        with the globaltimer span of the same launch), the globaltimer stamps
+        in ns and the loop counters. Needs ``DG_EPLB_PROFILE=1`` when the
+        kernels were built and a ``_C`` that reports the ``profile`` region;
+        returns None otherwise. Reads the workspace back (synchronises)."""
+        layout = self.ws_layout
+        if 'profile' not in layout:
+            return None
+        gen = self.generation if generation is None else generation
+        slots, words = int(layout['num_profile_slots']), int(layout['num_profile_words'])
+        base = int(layout['profile']) + (gen % slots) * words
+        rec = self.ws.view(torch.int32)[base:base + words].cpu().contiguous()
+        u64 = rec.view(torch.int64)
+        n = len(PLAN_STAMPS)
+        clocks = u64[:n].tolist()
+        t_entry, t_peers, t_end = u64[n].item(), u64[n + 1].item(), u64[n + 2].item()
+        counters = rec[2 * n + 6:2 * n + 6 + len(PLAN_COUNTERS)].tolist()
+        span_cycles, span_ns = clocks[-1] - clocks[0], t_end - t_entry
+        if span_cycles <= 0 or span_ns <= 0:
+            return None
+        ghz = span_cycles / span_ns
+        phases = {PLAN_STAMPS[i]: (clocks[i] - clocks[i - 1]) / ghz / 1e3 for i in range(1, n)}
+        return dict(phases=phases, total_us=span_cycles / ghz / 1e3, ghz=ghz,
+                    timer_entry_ns=t_entry, timer_peers_ns=t_peers, timer_end_ns=t_end,
+                    counters=dict(zip(PLAN_COUNTERS, counters)))
 
     def set_replicas(self, slot_expert) -> int:
         """Install a static replica placement.
