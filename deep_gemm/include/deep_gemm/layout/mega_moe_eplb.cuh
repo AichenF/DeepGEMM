@@ -16,28 +16,29 @@ struct Workspace {
     static constexpr uint32_t kNumProfileSlots = 8;
     static constexpr uint32_t kNumProfileWords = 40;
 
-    uint32_t num_ranks, num_experts, num_helper_slots;
+    uint32_t num_ranks, num_experts, num_redundant_slots;
 
     CUTLASS_HOST_DEVICE
-    Workspace(const uint32_t& num_ranks, const uint32_t& num_experts, const uint32_t& num_helper_slots):
-        num_ranks(num_ranks), num_experts(num_experts), num_helper_slots(num_helper_slots) {}
+    Workspace(const uint32_t& num_ranks, const uint32_t& num_experts, const uint32_t& num_redundant_slots):
+        num_ranks(num_ranks), num_experts(num_experts), num_redundant_slots(num_redundant_slots) {}
 
     // Generation flags, double-buffered by generation parity: [2][kMaxRanks]
     CUTLASS_HOST_DEVICE uint32_t flags_offset() const { return 0; }
     // Expert histograms pushed by every rank: [2][num_ranks][num_experts]
     CUTLASS_HOST_DEVICE uint32_t hist_offset() const { return flags_offset() + 2 * kMaxRanks; }
-    // Helper slot table, identical on all ranks: [num_ranks][num_helper_slots]
+    // Redundant slot table, identical on all ranks: [num_ranks][num_redundant_slots]
     CUTLASS_HOST_DEVICE uint32_t slot_expert_offset() const { return hist_offset() + 2 * num_ranks * num_experts; }
     // Per-expert copies as int2 {rank, cumulative blocks}: [num_experts][num_ranks]
-    CUTLASS_HOST_DEVICE uint32_t copies_offset() const { return slot_expert_offset() + math::align(num_ranks * num_helper_slots, 2u); }
+    CUTLASS_HOST_DEVICE uint32_t copies_offset() const { return slot_expert_offset() + math::align(num_ranks * num_redundant_slots, 2u); }
     // This rank's ordinal base per expert: [num_experts]
     CUTLASS_HOST_DEVICE uint32_t expert_base_offset() const { return copies_offset() + 2 * num_experts * num_ranks; }
-    // Remap counters, zeroed by the planner: [num_experts]
+    // Remap (the logical-to-physical remap of the top-k ids) counters,
+    // zeroed by the planner: [num_experts]
     CUTLASS_HOST_DEVICE uint32_t local_counter_offset() const { return expert_base_offset() + num_experts; }
-    // This rank's weight copies as int2 {helper slot, expert}: [num_helper_slots]
+    // This rank's weight copies as int2 {redundant slot, expert}: [num_redundant_slots]
     CUTLASS_HOST_DEVICE uint32_t copy_list_offset() const { return local_counter_offset() + math::align(num_experts, 2u); }
-    CUTLASS_HOST_DEVICE uint32_t copy_count_offset() const { return copy_list_offset() + 2 * num_helper_slots; }
-    // Fused-copy readiness counters, one pair per helper slot: [num_helper_slots][2]
+    CUTLASS_HOST_DEVICE uint32_t copy_count_offset() const { return copy_list_offset() + 2 * num_redundant_slots; }
+    // Fused-copy readiness counters, one pair per redundant slot: [num_redundant_slots][2]
     // (group 0: the L1 planes, group 1: the L2 planes). The planner zeroes the
     // pair of every slot it lists; each CTA of the MegaMoE kernel adds one per
     // group once its share of the slot is written, so a slot is ready when the
@@ -46,7 +47,7 @@ struct Workspace {
     // Remap completion ticket: the last CTA of the remap kernel to finish
     // zeroes the remap counters and this word, so no separate fill launch
     // is needed between two remaps.
-    CUTLASS_HOST_DEVICE uint32_t remap_done_offset() const { return copy_done_offset() + 2 * num_helper_slots; }
+    CUTLASS_HOST_DEVICE uint32_t remap_done_offset() const { return copy_done_offset() + 2 * num_redundant_slots; }
     // Single-launch prepare (`eplb_plan_remap_kernel`): every CTA adds its
     // share of this rank's histogram here with device atomics; the last CTA
     // to arrive reads it, clears it and plans. [num_experts]
@@ -79,7 +80,7 @@ struct PlanProfile {
         kSetup,         // b, q, holds and loads ready
         kGreedy,        // greedy rounds done
         kPruned,        // pruning and extreme moves done
-        kSlots,         // helper slot assignment done
+        kSlots,         // redundant slot assignment done
         kTables,        // tables published (plan_ready released)
         kRemapped,      // single launch: this CTA's remap share done
         kEnd,
@@ -110,15 +111,15 @@ struct PlanProfile {
 // are kept while the tokens are counted, so hot experts do not serialise one
 // shared atomic stream.
 CUTLASS_HOST_DEVICE constexpr uint32_t plan_smem_bytes(const uint32_t& num_ranks, const uint32_t& num_experts,
-                                                       const uint32_t& num_helper_slots, const uint32_t& num_warps = 8) {
-    const auto r = num_ranks, e = num_experts, s = num_helper_slots;
+                                                       const uint32_t& num_redundant_slots, const uint32_t& num_warps = 8) {
+    const auto r = num_ranks, e = num_experts, s = num_redundant_slots;
     uint32_t bytes = 0;
     bytes += r * e * sizeof(int32_t);                       // hist
     bytes += num_warps * e * sizeof(int32_t);               // per-warp histograms
     bytes += e * r * sizeof(int32_t);                       // q
     bytes += 2 * r * s * sizeof(int32_t);                   // replica list for pruning: index, snapshot
     bytes += e * sizeof(int32_t);                           // b
-    bytes += math::constexpr_align(r, 4u) * sizeof(int32_t); // home loads
+    bytes += math::constexpr_align(r, 4u) * sizeof(int32_t); // resident loads
     bytes += 2 * r * s * sizeof(int32_t);                   // previous and new slot tables
     bytes += math::constexpr_align(r * e, 4u);              // holds
     return bytes;
@@ -138,14 +139,14 @@ struct CopyPlanes {
     uint32_t num_planes;
 };
 
-// Everything the MegaMoE kernel needs to copy the changed helper slots itself
-// (`kFuseEPLBCopy`): the symmetric weight arena, its planes ordered L1 group
+// Everything the MegaMoE kernel needs to copy the changed redundant slots itself
+// (`kInKernelWeightCopy`): the symmetric weight arena, its planes ordered L1 group
 // first (`num_l1_planes` of them) then L2 group, and the planner's copy list,
-// count and readiness counters inside the workspace. Only `num_home_experts`
-// and `num_helper_slots` describe the slot geometry; the kernel's
+// count and readiness counters inside the workspace. Only `num_resident_experts`
+// and `num_redundant_slots` describe the slot geometry; the kernel's
 // `kNumExpertsPerRank` equals their sum.
 template <uint32_t kNumRanks = layout::kNumMaxRanks>
-struct FusedCopy {
+struct InKernelCopy {
     layout::SymBuffer<kNumRanks> arena;
     CopyPlanes planes;
     const int2* copy_list;
@@ -153,8 +154,8 @@ struct FusedCopy {
     // plan (remap-only decode steps) copies nothing.
     int32_t* copy_count;
     uint32_t* copy_done;
-    uint32_t num_home_experts;
-    uint32_t num_helper_slots;
+    uint32_t num_resident_experts;
+    uint32_t num_redundant_slots;
     uint32_t num_l1_planes;
 };
 

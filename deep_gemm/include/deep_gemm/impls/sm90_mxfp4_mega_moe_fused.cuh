@@ -233,10 +233,10 @@ template <
     // (and every compile-gate row) keeps its current meaning.
     bool kPhaseStamps = false,
     // Dynamic EPLB fused weight copy: the dispatch warps copy the changed
-    // helper slots from their owners after the token pull, and the weight
-    // loader gates helper-slot tasks on per-slot readiness counters. Off by
+    // redundant slots from their resident ranks after the token pull, and the weight
+    // loader gates redundant slot-slot tasks on per-slot readiness counters. Off by
     // default, so every existing instantiation is unchanged.
-    bool kFuseEPLBCopy = false
+    bool kInKernelWeightCopy = false
 >
 CUTLASS_GLOBAL
 __launch_bounds__(sm90_mxfp4_num_threads(kSwapABRequested, kUseRSOperand, BLOCK_M), 1) void
@@ -258,8 +258,8 @@ sm90_mxfp4_mega_moe_fused_impl(
         const float* __restrict__ l2_global_scales,
         // Only written when kPhaseStamps; see the slot map in the body.
         unsigned long long* __restrict__ phase_stamps,
-        // Only read when kFuseEPLBCopy.
-        const __grid_constant__ eplb::FusedCopy<kNumRanks> fused_copy) {
+        // Only read when kInKernelWeightCopy.
+        const __grid_constant__ eplb::InKernelCopy<kNumRanks> in_kernel_copy) {
     constexpr uint32_t BLOCK_K = 128;
     constexpr uint32_t kNumDispatchThreads = 64;
     constexpr uint32_t kNumNonEpilogueThreads = 64;

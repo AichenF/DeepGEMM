@@ -4,9 +4,9 @@ Pure Python, no torch: the device planner in ``smxx_mega_moe_eplb.cuh``
 implements the same algorithm and the tests compare the two, so this file is
 the specification of the plan.
 
-Vocabulary: ``R`` ranks, ``E`` logical experts, ``H = E / R`` home experts per
-rank, ``S`` helper slots per rank. Rank ``r`` owns logical experts
-``[r * H, (r + 1) * H)`` in its local slots ``[0, H)``; helper slots are local
+Vocabulary: ``R`` ranks, ``E`` logical experts, ``H = E / R`` resident experts per
+rank, ``S`` redundant slots per rank. Rank ``r`` owns logical experts
+``[r * H, (r + 1) * H)`` in its local slots ``[0, H)``; redundant slots are local
 slots ``[H, H + S)``. The physical slot id of local slot ``j`` on rank ``r`` is
 ``r * (H + S) + j``.
 """
@@ -19,37 +19,37 @@ from typing import List, Optional, Sequence, Tuple
 class Plan:
     num_ranks: int
     num_experts: int
-    num_helper_slots: int
+    num_redundant_slots: int
     block_m: int
     # blocks[e][r]: token blocks of expert e executed on rank r
     blocks: List[List[int]]
-    # slot_expert[r][s]: logical expert held by helper slot s of rank r, or -1
+    # slot_expert[r][s]: logical expert held by redundant slot s of rank r, or -1
     slot_expert: List[List[int]]
-    # copies[e]: (rank, cumulative blocks) in assignment order, owner first
+    # copies[e]: (rank, cumulative blocks) in assignment order, resident rank first
     copies: List[List[Tuple[int, int]]]
     loads: List[int] = field(default_factory=list)
 
     @property
-    def home_experts(self) -> int:
+    def resident_experts(self) -> int:
         return self.num_experts // self.num_ranks
 
     @property
     def slots_per_rank(self) -> int:
-        return self.home_experts + self.num_helper_slots
+        return self.resident_experts + self.num_redundant_slots
 
-    def owner(self, expert: int) -> int:
-        return expert // self.home_experts
+    def resident_rank(self, expert: int) -> int:
+        return expert // self.resident_experts
 
     def local_slot(self, rank: int, expert: int) -> int:
-        if self.owner(expert) == rank:
-            return expert - rank * self.home_experts
-        return self.home_experts + self.slot_expert[rank].index(expert)
+        if self.resident_rank(expert) == rank:
+            return expert - rank * self.resident_experts
+        return self.resident_experts + self.slot_expert[rank].index(expert)
 
     def physical_slot(self, rank: int, expert: int) -> int:
         return rank * self.slots_per_rank + self.local_slot(rank, expert)
 
     def copy_list(self, rank: int, prev_slot_expert: Optional[Sequence[int]]) -> List[Tuple[int, int]]:
-        """(helper slot, expert) pairs rank ``rank`` must fetch from the owner."""
+        """(redundant slot, expert) pairs rank ``rank`` must fetch from the resident_rank."""
         out = []
         for s, e in enumerate(self.slot_expert[rank]):
             if e >= 0 and (prev_slot_expert is None or prev_slot_expert[s] != e):
@@ -62,7 +62,7 @@ def _ceil_div(a: int, b: int) -> int:
 
 
 def plan_reference(counts: Sequence[Sequence[int]],
-                   num_helper_slots: int,
+                   num_redundant_slots: int,
                    block_m: int,
                    prev_slot_expert: Optional[Sequence[Sequence[int]]] = None,
                    open_gate_blocks: int = 0,
@@ -70,17 +70,17 @@ def plan_reference(counts: Sequence[Sequence[int]],
     """Load-only block-granular replica planning (MegaFlux, App. A.1).
 
     ``counts[r][e]`` is the number of tokens rank ``r`` routes to expert ``e``.
-    ``prev_slot_expert[r][s]`` is the expert a helper slot currently holds;
+    ``prev_slot_expert[r][s]`` is the expert a redundant slot currently holds;
     reusing it costs no weight copy, so such ranks are preferred receivers
     and are exempt from ``open_gate_blocks``, the minimum allocation that
     justifies copying weights into a fresh slot.
     """
     R = len(counts)
     E = len(counts[0])
-    S = num_helper_slots
+    S = num_redundant_slots
     assert E % R == 0 and block_m > 0 and S >= 0
     H = E // R
-    owner = [e // H for e in range(E)]
+    resident_rank = [e // H for e in range(E)]
     if prev_slot_expert is None:
         prev_slot_expert = [[-1] * S for _ in range(R)]
     cached = [set(x for x in prev_slot_expert[r] if x >= 0) for r in range(R)]
@@ -89,12 +89,12 @@ def plan_reference(counts: Sequence[Sequence[int]],
     b = [_ceil_div(total[e], block_m) for e in range(E)]
     q = [[0] * R for _ in range(E)]
     for e in range(E):
-        q[e][owner[e]] = b[e]
+        q[e][resident_rank[e]] = b[e]
     load = [sum(q[e][r] for e in range(E)) for r in range(R)]
     tau = _ceil_div(sum(b), R)
 
     def replicas_on(r: int) -> int:
-        return sum(1 for e in range(E) if owner[e] != r and q[e][r] > 0)
+        return sum(1 for e in range(E) if resident_rank[e] != r and q[e][r] > 0)
 
     def holds(r: int, e: int) -> bool:
         return q[e][r] > 0 or e in cached[r]
@@ -141,15 +141,15 @@ def plan_reference(counts: Sequence[Sequence[int]],
             break
 
     # Refinement 1: remove replicas whose allocation fits elsewhere under the
-    # current maximum load; prefer the owner, then the least loaded copy.
+    # current maximum load; prefer the resident rank, then the least loaded copy.
     max_load = max(load)
     replicas = sorted(((q[e][r], e, r) for e in range(E) for r in range(R)
-                       if owner[e] != r and q[e][r] > 0))
+                       if resident_rank[e] != r and q[e][r] > 0))
     for v, e, r in replicas:
         if q[e][r] != v or v == 0:
             continue
-        targets = [owner[e]] + sorted((t for t in range(R)
-                                       if t != r and t != owner[e] and q[e][t] > 0),
+        targets = [resident_rank[e]] + sorted((t for t in range(R)
+                                       if t != r and t != resident_rank[e] and q[e][t] > 0),
                                       key=lambda t: (load[t], t))
         for t in targets:
             if load[t] + v <= max_load:
@@ -178,7 +178,7 @@ def plan_reference(counts: Sequence[Sequence[int]],
     # Slot assignment: keep cached slots still in use, then fill free slots.
     slot_expert = [list(prev_slot_expert[r]) for r in range(R)]
     for r in range(R):
-        needed = [e for e in range(E) if owner[e] != r and q[e][r] > 0]
+        needed = [e for e in range(E) if resident_rank[e] != r and q[e][r] > 0]
         assert len(needed) <= S, "replica capacity exceeded"
         keep = set(needed)
         for s in range(S):
@@ -191,7 +191,7 @@ def plan_reference(counts: Sequence[Sequence[int]],
 
     copies = []
     for e in range(E):
-        order = [owner[e]] + [r for r in range(R) if r != owner[e] and q[e][r] > 0]
+        order = [resident_rank[e]] + [r for r in range(R) if r != resident_rank[e] and q[e][r] > 0]
         cum, acc = [], 0
         for r in order:
             acc += q[e][r]
@@ -203,7 +203,8 @@ def plan_reference(counts: Sequence[Sequence[int]],
 
 def remap_reference(plan: Plan, counts: Sequence[Sequence[int]],
                     topk_idx_per_rank: Sequence[Sequence[Sequence[int]]]) -> List[List[List[int]]]:
-    """Map every rank's logical ``topk_idx`` to physical slot ids.
+    """Map every rank's logical ``topk_idx`` to physical slot ids (the
+    logical-to-physical remap of the top-k ids).
 
     Tokens of one expert are ordered by source rank, then by their position in
     that rank's routing table; the block index of that ordinal selects the copy.
@@ -246,22 +247,22 @@ def _expert_totals(counts) -> List[int]:
     return [int(x) for x in counts]
 
 
-def owner_permutation(counts, num_ranks: int, block_m: int = 64) -> List[int]:
-    """Owner permutation: which logical expert each physical home slot holds.
+def static_placement(counts, num_ranks: int, block_m: int = 64) -> List[int]:
+    """Static expert placement: which logical expert each physical resident slot holds.
 
-    The kernel's home placement is contiguous (physical slot ``p`` is home
+    The kernel's contiguous placement is contiguous (physical slot ``p`` is resident
     slot ``p % H`` of rank ``p // H``), so relabeling the experts chooses
     which rank owns which expert at no per-call cost: the weights are loaded
     in permuted order and the routing ids pass through a logical-to-physical
     table. This picks the relabeling that balances the per-rank block cost of
     a calibration histogram, the prefill objective of :func:`plan_reference`
-    with no helper slots: ``cost[e] = ceil(total[e] / block_m)``, minimise the
+    with no redundant slots: ``cost[e] = ceil(total[e] / block_m)``, minimise the
     busiest rank's sum with exactly ``H = E / num_ranks`` experts per rank.
 
     ``counts`` is the calibration histogram, flat ``counts[e]`` or per rank
     ``counts[r][e]`` (summed). EPLB-style greedy first: experts by descending
     block cost (ascending id on ties), each to the least loaded rank with a
-    free home slot (lowest rank on ties). Then pairwise swap refinement: while
+    free resident slot (lowest rank on ties). Then pairwise swap refinement: while
     some swap of one expert of the busiest rank with one expert of another
     rank lowers the pair's higher load, the swap bringing the two closest
     together is taken (up to ``2 * E`` swaps). The same refinement runs from
@@ -274,7 +275,7 @@ def owner_permutation(counts, num_ranks: int, block_m: int = 64) -> List[int]:
     Returns ``perm`` with ``perm[p]`` the logical expert in physical slot
     ``p`` (``len(perm) == E``, every rank gets exactly ``H`` experts, sorted
     by logical id within a rank). ``perm.index(e)`` is the physical slot of
-    logical expert ``e``; the kernel's owner of ``e`` becomes
+    logical expert ``e``; the kernel's resident rank of ``e`` becomes
     ``perm.index(e) // H``.
     """
     total = _expert_totals(counts)
@@ -327,11 +328,11 @@ def owner_permutation(counts, num_ranks: int, block_m: int = 64) -> List[int]:
     return [e for g in groups for e in sorted(g)]
 
 
-def apply_owner_permutation(counts, perm: Sequence[int]):
+def apply_static_placement(counts, perm: Sequence[int]):
     """Reorder a histogram into physical order: entry ``p`` of the result is
     the count of logical expert ``perm[p]``. Accepts a flat ``counts[e]`` or
     the planner's per-rank ``counts[r][e]`` (each row is reordered), so
-    :func:`plan_reference` and :func:`static_replica_placement` run unchanged
+    :func:`plan_reference` and :func:`static_redundant_slots` run unchanged
     on the permuted layout (their physical slot ids then index ``perm``)."""
     if hasattr(counts, 'tolist'):
         counts = counts.tolist()
@@ -340,13 +341,13 @@ def apply_owner_permutation(counts, perm: Sequence[int]):
     return [counts[e] for e in perm]
 
 
-def static_replica_placement(load: Sequence[float], num_ranks: int, num_helper_slots: int) -> List[List[int]]:
-    """Fill the helper slots once from a load history (EPLB-style replication).
+def static_redundant_slots(load: Sequence[float], num_ranks: int, num_redundant_slots: int) -> List[List[int]]:
+    """Fill the redundant slots once from a load history (EPLB-style replication).
 
     ``load[e]`` is the historical load of logical expert ``e`` (token count);
-    experts are owned contiguously (``owner = e // H``). Repeatedly the
+    experts are owned contiguously (``resident_rank = e // H``). Repeatedly the
     expert with the largest load per copy gets one more copy on the least
-    loaded rank that has a free helper slot and does not hold it yet, with
+    loaded rank that has a free redundant slot and does not hold it yet, with
     the load split evenly over the copies. Deterministic, so every rank
     derives the same table. Returns ``slot_expert[rank][slot]`` (-1 = empty).
     """
@@ -357,9 +358,9 @@ def static_replica_placement(load: Sequence[float], num_ranks: int, num_helper_s
     rank_load = [0.0] * num_ranks
     for e in range(E):
         rank_load[e // H] += float(load[e])
-    slots = [[-1] * num_helper_slots for _ in range(num_ranks)]
-    free = [num_helper_slots] * num_ranks
-    for _ in range(num_ranks * num_helper_slots):
+    slots = [[-1] * num_redundant_slots for _ in range(num_ranks)]
+    free = [num_redundant_slots] * num_ranks
+    for _ in range(num_ranks * num_redundant_slots):
         order = sorted(range(E), key=lambda x: (-float(load[x]) / copies[x], x))
         placed = False
         for e in order:
@@ -381,7 +382,7 @@ def static_replica_placement(load: Sequence[float], num_ranks: int, num_helper_s
             rank_load[r] += share_new
             holders[e].add(r)
             copies[e] += 1
-            slots[r][num_helper_slots - free[r]] = e
+            slots[r][num_redundant_slots - free[r]] = e
             free[r] -= 1
             placed = True
             break
@@ -390,14 +391,14 @@ def static_replica_placement(load: Sequence[float], num_ranks: int, num_helper_s
     return slots
 
 
-def _fill_by_frequency(freq: Sequence[float], num_ranks: int, num_helper_slots: int) -> List[List[int]]:
+def _fill_by_frequency(freq: Sequence[float], num_ranks: int, num_redundant_slots: int) -> List[List[int]]:
     """EPLB-style replication on activation frequency without the "worth a
-    slot" gates of ``static_replica_placement``: every helper slot is filled.
+    slot" gates of ``static_redundant_slots``: every redundant slot is filled.
     Repeatedly the expert with the largest frequency per copy gets one more
     copy on the least loaded rank that has a free slot and does not hold it."""
     E = len(freq)
     H = E // num_ranks
-    S = num_helper_slots
+    S = num_redundant_slots
     copies = [1] * E
     holders = [{e // H} for e in range(E)]
     rank_load = [0.0] * num_ranks

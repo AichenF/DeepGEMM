@@ -176,7 +176,7 @@ instantiate 'sm90_mxfp4 (78 SM, H20)'    120a gated-out "$mxfp4_h20_src"
 
 # Dynamic EPLB: the planner, remap and weight-copy kernels, and the MXFP4
 # kernel at the physical slot count they feed (384 experts + 8 ranks x 4
-# helper slots = 416 slots, 52 per rank, so experts-per-wave clamps to 26).
+# redundant slots = 416 slots, 52 per rank, so experts-per-wave clamps to 26).
 eplb_src='#include <deep_gemm/impls/smxx_mega_moe_eplb.cuh>
 using namespace deep_gemm;
 static void __instantiate_kernel() {

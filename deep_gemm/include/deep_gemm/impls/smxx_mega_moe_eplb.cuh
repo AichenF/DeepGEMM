@@ -11,16 +11,17 @@
 
 // Dynamic expert load balancing for MegaMoE.
 //
-// Every rank owns `H = E / R` home experts in local slots [0, H) and `S`
-// helper slots in [H, H + S). The MegaMoE kernel only ever sees physical slot
+// Every rank owns `H = E / R` resident experts in local slots [0, H) and `S`
+// redundant slots in [H, H + S). The MegaMoE kernel only ever sees physical slot
 // ids `rank * (H + S) + local_slot`. Three kernels turn a logical routing
 // table into a physical one:
 //   * plan:   exchange per-rank expert histograms over symmetric memory and
 //             run the same deterministic block-granular planner on every rank
 //             (the Python reference is `deep_gemm/mega/eplb_planner.py`);
 //   * copy:   fetch the weights of experts newly assigned to this rank's
-//             helper slots from their owners over NVLink;
-//   * remap:  rewrite `topk_idx` from logical experts to physical slots,
+//             redundant slots from their resident ranks over NVLink;
+//   * remap:  the logical-to-physical remap of the top-k ids: rewrite
+//             `topk_idx` from logical experts to physical slots,
 //             splitting each expert's token blocks across its copies.
 // A fourth kernel, `eplb_plan_remap_kernel`, is plan and remap in one launch
 // for the synchronous path (see its comment); the separate kernels serve the
@@ -66,9 +67,9 @@ __device__ __forceinline__ uint64_t make_key(const uint32_t& primary, const uint
 
 // Shared memory of the planner; `plan_smem_bytes` in the layout header
 // sizes it with the same regions in the same order.
-template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumHelperSlots, uint32_t kNumThreads>
+template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumRedundantSlots, uint32_t kNumThreads>
 struct PlanSmem {
-    static constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumHelperSlots;
+    static constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumRedundantSlots;
     static constexpr uint32_t kNumWarps = kNumThreads / 32;
     int32_t* hist;       // [R][E] histograms of every rank; row `rank` is counted locally
     int32_t* warp_hist;  // [kNumWarps][E] private histograms while counting
@@ -76,10 +77,10 @@ struct PlanSmem {
     int32_t* rep_idx;    // [R * S] replica list for pruning: e * R + r
     int32_t* rep_v;      // [R * S] replica list for pruning: allocation snapshot
     int32_t* b;          // [E] blocks per expert
-    int32_t* load;       // [R] home loads (the greedy keeps them in registers)
-    int32_t* prev_slot;  // [R][S] helper slot table before the plan
-    int32_t* new_slot;   // [R][S] helper slot table after the plan
-    uint8_t* holds;      // [R][E] rank r holds expert e (owner, active or cached copy)
+    int32_t* load;       // [R] resident loads (the greedy keeps them in registers)
+    int32_t* prev_slot;  // [R][S] redundant slot table before the plan
+    int32_t* new_slot;   // [R][S] redundant slot table after the plan
+    uint8_t* holds;      // [R][E] rank r holds expert e (resident rank, active or cached copy)
 
     CUTLASS_DEVICE explicit PlanSmem(uint8_t* smem) {
         hist = reinterpret_cast<int32_t*>(smem);
@@ -240,19 +241,19 @@ CUTLASS_DEVICE void eplb_count_tokens(int32_t* hist_row, int32_t* warp_hist, con
 // bit; only the bookkeeping differs from a serial transcription: the greedy
 // keeps the per-rank loads, replica counts and visit marks in one lane per
 // rank, picks the receiver with a single tiered argmin (existing copies rank
-// below fresh ones), and the replica collection and the helper slot
+// below fresh ones), and the replica collection and the redundant slot
 // assignment scan experts 32 at a time with ballots.
-template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumHelperSlots, uint32_t kNumThreads, bool kProfile>
+template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumRedundantSlots, uint32_t kNumThreads, bool kProfile>
 CUTLASS_DEVICE void eplb_plan_from_histogram(const layout::SymBuffer<kNumRanks>& ws,
-                                             const PlanSmem<kNumRanks, kNumExperts, kNumHelperSlots, kNumThreads>& sm,
+                                             const PlanSmem<kNumRanks, kNumExperts, kNumRedundantSlots, kNumThreads>& sm,
                                              const PlanGlobals& g,
                                              const uint32_t& block_m, const uint32_t& open_gate_blocks,
                                              const uint32_t& generation, PlanTimer<kProfile>& timer) {
-    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumHelperSlots;
+    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumRedundantSlots;
     constexpr uint32_t H = E / R, kNumWarps = kNumThreads / 32;
     constexpr uint32_t kExpertsPerLane = math::constexpr_ceil_div(H, 32u);
-    DG_STATIC_ASSERT(kExpertsPerLane <= 32, "Too many home experts per rank for the tried mask");
-    DG_STATIC_ASSERT(S <= 32, "Helper slots are tracked in a 32-bit mask");
+    DG_STATIC_ASSERT(kExpertsPerLane <= 32, "Too many resident experts per rank for the tried mask");
+    DG_STATIC_ASSERT(S <= 32, "Redundant slots are tracked in a 32-bit mask");
     const uint32_t thread_idx = threadIdx.x, lane = thread_idx & 31, warp_idx = thread_idx >> 5;
     const uint32_t rank = ws.rank_idx;
     const uint32_t full = 0xffffffffu;
@@ -308,8 +309,8 @@ CUTLASS_DEVICE void eplb_plan_from_histogram(const layout::SymBuffer<kNumRanks>&
         sm.holds[(e / H) * E + e] = 1;
     }
     __syncthreads();
-    // Every expert starts on its owner, so a rank's load is the block sum of
-    // its home range; one warp per rank.
+    // Every expert starts on its resident rank, so a rank's load is the block sum of
+    // its resident range; one warp per rank.
     for (uint32_t r = warp_idx; r < R; r += kNumWarps) {
         int32_t sum = 0;
         for (uint32_t e = r * H + lane; e < (r + 1) * H; e += 32)
@@ -348,7 +349,7 @@ CUTLASS_DEVICE void eplb_plan_from_histogram(const layout::SymBuffer<kNumRanks>&
         const int32_t tau = (total_blocks + R - 1) / R;
         const int32_t gate = open_gate_blocks > 1 ? static_cast<int32_t>(open_gate_blocks) : 1;
 
-        // Greedy rounds: shift blocks from overloaded owners towards tau.
+        // Greedy rounds: shift blocks from overloaded resident ranks towards tau.
         for (uint32_t round = 0; round < S + 2; ++ round) {
             bool moved = false, visited = false;
             for (uint32_t k = 0; k < R; ++ k) {
@@ -362,7 +363,7 @@ CUTLASS_DEVICE void eplb_plan_from_histogram(const layout::SymBuffer<kNumRanks>&
                 if (lane == d)
                     visited = true;
                 timer.count(PlanProfile::kVisits);
-                // Bit j: home expert d * H + lane + 32 * j already tried in this visit.
+                // Bit j: resident expert d * H + lane + 32 * j already tried in this visit.
                 uint32_t tried = 0;
                 int32_t load_d = load_of(d);
                 while (load_d > tau) {
@@ -460,7 +461,7 @@ CUTLASS_DEVICE void eplb_plan_from_histogram(const layout::SymBuffer<kNumRanks>&
 
     if (warp_idx == 0) {
         // Pruning: a replica whose allocation fits elsewhere under the current
-        // maximum load is folded back, owner first, then the least loaded copy.
+        // maximum load is folded back, resident rank first, then the least loaded copy.
         const int32_t max_load = __reduce_max_sync(full, is_rank ? my_load : 0);
         while (true) {
             uint64_t best = kNoneKey;
@@ -488,13 +489,13 @@ CUTLASS_DEVICE void eplb_plan_from_histogram(const layout::SymBuffer<kNumRanks>&
             __syncwarp();
             if (q_at(e, r) != v)
                 continue;
-            const uint32_t owner = e / H;
+            const uint32_t resident_rank = e / H;
             uint32_t target = ~0u;
-            if (load_of(owner) + v <= max_load) {
-                target = owner;
+            if (load_of(resident_rank) + v <= max_load) {
+                target = resident_rank;
             } else {
                 uint64_t pick = kNoneKey;
-                if (is_rank and lane != r and lane != owner and q_at(e, lane) > 0 and my_load + v <= max_load)
+                if (is_rank and lane != r and lane != resident_rank and q_at(e, lane) > 0 and my_load + v <= max_load)
                     pick = make_key(static_cast<uint32_t>(my_load), lane);
                 pick = warp_min_key(pick);
                 if (pick != kNoneKey)
@@ -530,10 +531,10 @@ CUTLASS_DEVICE void eplb_plan_from_histogram(const layout::SymBuffer<kNumRanks>&
     }
     __syncthreads();
 
-    // Helper slot assignment, one warp per rank: keep cached slots that are
+    // Redundant slot assignment, one warp per rank: keep cached slots that are
     // still used, then fill free slots with new experts in expert order.
     for (uint32_t r = warp_idx; r < R; r += kNumWarps) {
-        int32_t kept = -1;  // lane s < S: expert of helper slot s
+        int32_t kept = -1;  // lane s < S: expert of redundant slot s
         if (lane < S) {
             const auto e = sm.prev_slot[r * S + lane];
             kept = (e >= 0 and q_at(static_cast<uint32_t>(e), r) > 0) ? e : -1;
@@ -562,12 +563,12 @@ CUTLASS_DEVICE void eplb_plan_from_histogram(const layout::SymBuffer<kNumRanks>&
 
     // Publish: copies, ordinal bases, counters, slot table and copy list.
     for (uint32_t e = thread_idx; e < E; e += kNumThreads) {
-        const uint32_t owner = e / H;
+        const uint32_t resident_rank = e / H;
         uint32_t k = 0;
-        int32_t cum = q_at(e, owner);
-        g.copies[e * R + k ++] = make_int2(static_cast<int32_t>(owner), cum);
+        int32_t cum = q_at(e, resident_rank);
+        g.copies[e * R + k ++] = make_int2(static_cast<int32_t>(resident_rank), cum);
         for (uint32_t r = 0; r < R; ++ r) {
-            if (r != owner and q_at(e, r) > 0) {
+            if (r != resident_rank and q_at(e, r) > 0) {
                 cum += q_at(e, r);
                 g.copies[e * R + k ++] = make_int2(static_cast<int32_t>(r), cum);
             }
@@ -586,7 +587,7 @@ CUTLASS_DEVICE void eplb_plan_from_histogram(const layout::SymBuffer<kNumRanks>&
             const auto e = sm.new_slot[rank * S + s];
             if (e >= 0 and e != sm.prev_slot[rank * S + s]) {
                 g.copy_list[count ++] = make_int2(static_cast<int32_t>(s), e);
-                // Fused copy: the MegaMoE kernel counts its CTAs into these.
+                // In-kernel weight copy: the MegaMoE kernel counts its CTAs into these.
                 g.copy_done[s * 2] = 0;
                 g.copy_done[s * 2 + 1] = 0;
             }
@@ -611,11 +612,11 @@ CUTLASS_DEVICE void eplb_plan_from_histogram(const layout::SymBuffer<kNumRanks>&
 // every CTA's atomics are visible) clears them and the ticket. The planner
 // clears them too, so a remap after a plan and a remap after a remap start
 // from the same state.
-template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumHelperSlots, uint32_t kNumThreads>
+template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumRedundantSlots, uint32_t kNumThreads>
 CUTLASS_DEVICE void eplb_remap_share(uint32_t* ws_base, const Workspace& layout,
                                      int64_t* topk_idx, const uint32_t& num_tokens, const uint32_t& num_topk,
                                      const uint32_t& block_m) {
-    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumHelperSlots;
+    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumRedundantSlots;
     constexpr uint32_t H = E / R;
     const auto* slot_expert = reinterpret_cast<const int32_t*>(ws_base + layout.slot_expert_offset());
     const auto* copies = reinterpret_cast<const int2*>(ws_base + layout.copies_offset());
@@ -690,7 +691,7 @@ CUTLASS_DEVICE void eplb_remap_share(uint32_t* ws_base, const Workspace& layout,
 // Standalone planner: one CTA counts this rank's routing, exchanges the
 // histograms and plans. Used by `DynamicEPLB.plan` (the plan issued early on
 // a side stream); the synchronous path uses `eplb_plan_remap_kernel`.
-template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumHelperSlots, uint32_t kNumThreads, bool kProfile>
+template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumRedundantSlots, uint32_t kNumThreads, bool kProfile>
 CUTLASS_GLOBAL void __launch_bounds__(kNumThreads, 1)
 eplb_plan_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
                  const int64_t* __restrict__ topk_idx,
@@ -699,7 +700,7 @@ eplb_plan_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
                  const uint32_t generation) {
     DG_STATIC_ASSERT(kNumRanks <= Workspace::kMaxRanks and kNumRanks <= 32, "Too many ranks");
     DG_STATIC_ASSERT(kNumExperts % kNumRanks == 0, "Experts must divide across ranks");
-    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumHelperSlots;
+    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumRedundantSlots;
     const Workspace layout(R, E, S);
     const uint32_t thread_idx = threadIdx.x;
     const uint32_t rank = ws.rank_idx;
@@ -745,7 +746,7 @@ eplb_plan_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
 //
 // The grid is `min(num_sms, ceil(num_tokens * num_topk / kNumThreads))`.
 // ---------------------------------------------------------------------------
-template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumHelperSlots, uint32_t kNumThreads, bool kProfile>
+template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumRedundantSlots, uint32_t kNumThreads, bool kProfile>
 CUTLASS_GLOBAL void __launch_bounds__(kNumThreads)
 eplb_plan_remap_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
                        int64_t* topk_idx,
@@ -754,7 +755,7 @@ eplb_plan_remap_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
                        const uint32_t generation) {
     DG_STATIC_ASSERT(kNumRanks <= Workspace::kMaxRanks and kNumRanks <= 32, "Too many ranks");
     DG_STATIC_ASSERT(kNumExperts % kNumRanks == 0, "Experts must divide across ranks");
-    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumHelperSlots;
+    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumRedundantSlots;
     const Workspace layout(R, E, S);
     const uint32_t thread_idx = threadIdx.x;
     const uint32_t rank = ws.rank_idx;
@@ -823,12 +824,12 @@ eplb_plan_remap_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ws,
         timer.finish(g.profile, generation, gridDim.x);
 }
 
-template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumHelperSlots, uint32_t kNumThreads>
+template <uint32_t kNumRanks, uint32_t kNumExperts, uint32_t kNumRedundantSlots, uint32_t kNumThreads>
 CUTLASS_GLOBAL void __launch_bounds__(kNumThreads)
 eplb_remap_kernel(uint32_t* __restrict__ ws_base, const uint32_t rank,
                   int64_t* topk_idx, const uint32_t num_tokens, const uint32_t num_topk,
                   const uint32_t block_m) {
-    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumHelperSlots;
+    constexpr uint32_t R = kNumRanks, E = kNumExperts, S = kNumRedundantSlots;
     const Workspace layout(R, E, S);
     cudaGridDependencySynchronize();
     eplb_remap_share<R, E, S, kNumThreads>(ws_base, layout, topk_idx, num_tokens, num_topk, block_m);
@@ -840,20 +841,20 @@ eplb_copy_weights_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ar
                          const __grid_constant__ CopyPlanes planes,
                          const int2* __restrict__ copy_list,
                          const int32_t* __restrict__ copy_count,
-                         const uint32_t num_home_experts) {
+                         const uint32_t num_resident_experts) {
     cudaGridDependencySynchronize();
     if (static_cast<int32_t>(blockIdx.x) >= *copy_count)
         return;
     const auto entry = copy_list[blockIdx.x];
-    const uint32_t dst_slot = num_home_experts + entry.x;
+    const uint32_t dst_slot = num_resident_experts + entry.x;
     const uint32_t expert = entry.y;
-    const uint32_t owner = expert / num_home_experts;
-    const uint32_t src_slot = expert - owner * num_home_experts;
+    const uint32_t resident_rank = expert / num_resident_experts;
+    const uint32_t src_slot = expert - resident_rank * num_resident_experts;
     auto* base = arena.template get_base_ptr<uint8_t*>();
 
     for (uint32_t p = 0; p < planes.num_planes; ++ p) {
         const auto& plane = planes.planes[p];
-        const uint8_t* src = arena.map(base + plane.offset + static_cast<uint64_t>(src_slot) * plane.bytes_per_slot, owner);
+        const uint8_t* src = arena.map(base + plane.offset + static_cast<uint64_t>(src_slot) * plane.bytes_per_slot, resident_rank);
         uint8_t* dst = base + plane.offset + static_cast<uint64_t>(dst_slot) * plane.bytes_per_slot;
         const uint32_t stride = gridDim.y * kNumThreads;
         const uint32_t start = blockIdx.y * kNumThreads + threadIdx.x;
@@ -870,24 +871,24 @@ eplb_copy_weights_kernel(const __grid_constant__ layout::SymBuffer<kNumRanks> ar
 }
 
 // ---------------------------------------------------------------------------
-// Fused copy: the MegaMoE kernel moves the changed helper slots itself.
+// In-kernel weight copy: the MegaMoE kernel moves the changed redundant slots itself.
 //
 // Every CTA copies a strided share of each listed slot, one plane group at a
 // time (L1 planes, then L2 planes), and adds one to the slot's group counter
 // with release semantics once its share is written. A slot's group is ready
 // when the counter equals the grid size; the weight loader waits for it with
 // an acquire load before the first bulk copy of that slot. Slots that are not
-// in the copy list, and home slots, are never waited on. The source is the
-// owner's home slot, which is read-only for its whole life, so no remote
+// in the copy list, and resident slots, are never waited on. The source is the
+// resident slot on its rank, which is read-only for its whole life, so no remote
 // synchronisation is needed.
 // ---------------------------------------------------------------------------
 
-// Bit `s` set when helper slot `s` is in this step's copy list.
+// Bit `s` set when redundant slot `s` is in this step's copy list.
 template <uint32_t kNumRanks>
-CUTLASS_DEVICE uint32_t fused_copy_pending_mask(const FusedCopy<kNumRanks>& fc) {
+CUTLASS_DEVICE uint32_t in_kernel_copy_pending_mask(const InKernelCopy<kNumRanks>& fc) {
     uint32_t mask = 0;
     const auto count = ptx::ld_volatile(reinterpret_cast<const uint32_t*>(fc.copy_count));
-    for (uint32_t i = 0; i < count and i < fc.num_helper_slots; ++ i)
+    for (uint32_t i = 0; i < count and i < fc.num_redundant_slots; ++ i)
         mask |= 1u << static_cast<uint32_t>(fc.copy_list[i].x);
     return mask;
 }
@@ -896,19 +897,19 @@ CUTLASS_DEVICE uint32_t fused_copy_pending_mask(const FusedCopy<kNumRanks>& fc) 
 // threads. 16-byte planes are the weights; the 4-byte planes are the global
 // scales (a few words), handled by the same loop in 4-byte units.
 template <uint32_t kNumRanks, uint32_t kNumThreads>
-CUTLASS_DEVICE void fused_copy_slot_group(const FusedCopy<kNumRanks>& fc,
+CUTLASS_DEVICE void in_kernel_copy_slot_group(const InKernelCopy<kNumRanks>& fc,
                                           const uint32_t& plane_begin, const uint32_t& plane_end,
                                           const uint32_t& dst_slot, const uint32_t& expert,
                                           const uint32_t& cta_idx, const uint32_t& num_ctas,
                                           const uint32_t& thread_idx) {
-    const uint32_t owner = expert / fc.num_home_experts;
-    const uint32_t src_slot = expert - owner * fc.num_home_experts;
+    const uint32_t resident_rank = expert / fc.num_resident_experts;
+    const uint32_t src_slot = expert - resident_rank * fc.num_resident_experts;
     auto* base = fc.arena.template get_base_ptr<uint8_t*>();
     const uint32_t stride = num_ctas * kNumThreads;
     const uint32_t start = cta_idx * kNumThreads + thread_idx;
     for (uint32_t p = plane_begin; p < plane_end; ++ p) {
         const auto& plane = fc.planes.planes[p];
-        const uint8_t* src = fc.arena.map(base + plane.offset + static_cast<uint64_t>(src_slot) * plane.bytes_per_slot, owner);
+        const uint8_t* src = fc.arena.map(base + plane.offset + static_cast<uint64_t>(src_slot) * plane.bytes_per_slot, resident_rank);
         uint8_t* dst = base + plane.offset + static_cast<uint64_t>(dst_slot) * plane.bytes_per_slot;
         if (plane.vec_bytes == 16) {
             const auto* s16 = reinterpret_cast<const uint4*>(src);
@@ -941,11 +942,11 @@ CUTLASS_DEVICE void fused_copy_slot_group(const FusedCopy<kNumRanks>& fc,
 // published with one release per slot. `sync` is a barrier over the
 // `kNumThreads` copier threads of this CTA; `thread_idx` indexes them.
 template <uint32_t kNumRanks, uint32_t kNumThreads, typename SyncFn>
-CUTLASS_DEVICE void fused_copy_share(const FusedCopy<kNumRanks>& fc,
+CUTLASS_DEVICE void in_kernel_copy_share(const InKernelCopy<kNumRanks>& fc,
                                      const uint32_t& cta_idx, const uint32_t& num_ctas,
                                      const uint32_t& thread_idx, SyncFn&& sync) {
     const auto count = min(static_cast<uint32_t>(ptx::ld_volatile(reinterpret_cast<const uint32_t*>(fc.copy_count))),
-                           fc.num_helper_slots);
+                           fc.num_redundant_slots);
     if (count == 0)
         return;
     #pragma unroll 1
@@ -955,9 +956,9 @@ CUTLASS_DEVICE void fused_copy_share(const FusedCopy<kNumRanks>& fc,
         #pragma unroll 1
         for (uint32_t i = 0; i < count; ++ i) {
             const auto entry = fc.copy_list[i];
-            fused_copy_slot_group<kNumRanks, kNumThreads>(
+            in_kernel_copy_slot_group<kNumRanks, kNumThreads>(
                 fc, plane_begin, plane_end,
-                fc.num_home_experts + static_cast<uint32_t>(entry.x), static_cast<uint32_t>(entry.y),
+                fc.num_resident_experts + static_cast<uint32_t>(entry.x), static_cast<uint32_t>(entry.y),
                 cta_idx, num_ctas, thread_idx);
         }
         // Make every copier thread's stores visible at GPU scope before one
@@ -977,7 +978,7 @@ CUTLASS_DEVICE void fused_copy_share(const FusedCopy<kNumRanks>& fc,
 // (bulk copy) reads after it. Kept free of printf and of the argument
 // struct: it runs in the weight-loader warp inside its register budget. A
 // 30 s timeout traps (the host sees an illegal-instruction error).
-CUTLASS_DEVICE void fused_copy_wait_slot(const uint32_t* counter, const uint32_t& num_ctas) {
+CUTLASS_DEVICE void in_kernel_copy_wait_slot(const uint32_t* counter, const uint32_t& num_ctas) {
     const auto start_clock = clock64();
     while (ptx::ld_acq(counter) < num_ctas) {
         if (clock64() - start_clock >= 30ll * 2000000000ll)

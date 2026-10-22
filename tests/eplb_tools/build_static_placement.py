@@ -1,9 +1,9 @@
-"""Build the owner-permutation placement file for SGLang from routing histograms.
+"""Build the resident rank-permutation placement file for SGLang from routing histograms.
 
 The MegaMoE kernel owns experts contiguously: physical expert ``p`` lives on
-rank ``p // H`` (``H = E / EP``). ``owner_permutation`` in
+rank ``p // H`` (``H = E / EP``). ``static_placement`` in
 ``deep_gemm/mega/eplb_planner.py`` chooses, once per layer, which logical
-expert each physical home slot holds so that the per-rank block cost of a
+expert each physical resident slot holds so that the per-rank block cost of a
 calibration histogram is level (PREFILL_headroom_study.md section 10). This
 script turns that choice into the two files the serving path needs:
 
@@ -19,7 +19,7 @@ script turns that choice into the two files the serving path needs:
   location is given), top-k returns physical ids, so the MegaMoE kernel and
   the balancer see the permuted layout without any change;
 * a companion JSON with the per-layer permutation and its calibration summary
-  (``SGLANG_MEGAMOE_OWNER_PERM``), which the adapter uses to cross-check the
+  (``SGLANG_MEGAMOE_STATIC_PLACEMENT``), which the adapter uses to cross-check the
   location SGLang actually loaded and which documents the choice.
 
 Calibration follows the study's protocol: per layer, the first ``--frac``
@@ -30,13 +30,13 @@ mean of their totals, so the counts stay in token-slot units for the block
 rounding) and summing, which is what a server that must carry both traffics
 should be calibrated on. ``--predict`` evaluates the chosen permutation on the
 remaining 75 % of every cache's stream, chunk by chunk, with the study's
-busiest-rank block cost (home versus permutation versus ideal).
+busiest-rank block cost (resident versus permutation versus ideal).
 
 Usage::
 
-    python build_owner_permutation.py --cache gsm8k1k=<npz> --cache mmlu1k=<npz> \
-        --ep 8 --num-layers 43 --out-location dsv4_owner_perm_ep8.json \
-        --out-perm dsv4_owner_perm_ep8_layers.json \
+    python build_static_placement.py --cache gsm8k1k=<npz> --cache mmlu1k=<npz> \
+        --ep 8 --num-layers 43 --out-location dsv4_static_placement_ep8.json \
+        --out-check dsv4_static_placement_ep8_layers.json \
         [--predict 16384 32768] [--predict-ep 8 4] [--out-predict predict.json]
 
 Pure Python on the histograms (numpy only), deterministic, so the file built
@@ -152,7 +152,7 @@ def combine(cals: Dict[str, dict], layer_id: int) -> List[int]:
 
 def predict(caches, cals, perms_by_ep, frac, block_m, chunks, planner):
     """Busiest-rank block cost on the last ``1 - frac`` of every cache's
-    stream: home (contiguous) versus the given permutation versus ideal, mean
+    stream: resident (contiguous) versus the given permutation versus ideal, mean
     over layers and chunks, plus per-chunk spread. ``perms_by_ep`` maps
     EP -> {layer_id: perm}."""
     import numpy as np
@@ -171,20 +171,20 @@ def predict(caches, cals, perms_by_ep, frac, block_m, chunks, planner):
                     for a, bnd in chunk_groups(rem_tokens, W, C):
                         totals = hist[n25 + a:n25 + bnd].sum(0).tolist()
                         b = blocks_of(totals, block_m)
-                        home = max(home_loads(b, R))
-                        pm = max(home_loads(planner.apply_owner_permutation(b, perm), R))
+                        resident = max(home_loads(b, R))
+                        pm = max(home_loads(planner.apply_static_placement(b, perm), R))
                         ideal = sum(b) / R
-                        home_all.append(home)
+                        home_all.append(resident)
                         perm_all.append(pm)
                         ideal_all.append(ideal)
-                        ratios_home.append(home / ideal)
+                        ratios_home.append(resident / ideal)
                         ratios_perm.append(pm / ideal)
-                        worse += pm > home
+                        worse += pm > resident
                 n = len(home_all)
                 mh, mp, mi = (sum(home_all) / n, sum(perm_all) / n, sum(ideal_all) / n)
                 rows.append(dict(trace=name, ep=R, chunk=C, cases=n,
                                  tokens_per_rank=C // R,
-                                 ideal=mi, home=mh, perm=mp, home_over_perm=mh / mp,
+                                 ideal=mi, resident=mh, perm=mp, home_over_perm=mh / mp,
                                  home_over_ideal=mh / mi, perm_over_ideal=mp / mi,
                                  closed=(mh - mp) / (mh - mi) if mh > mi else 0.0,
                                  worse_share=worse / n,
@@ -196,11 +196,11 @@ def predict(caches, cals, perms_by_ep, frac, block_m, chunks, planner):
 def render_predict(rows, block_m, frac, label) -> str:
     out = [f'Predicted busiest-rank block cost (blocks of {block_m}), permutation from {label}, '
            f'evaluated on the last {100 - round(frac * 100)} % of each layer stream; mean over layers and chunks; '
-           f'home / perm is the ratio of the means; p10 / median / p90 are per-chunk busiest rank / ideal.', '',
-           '| trace | EP | chunk | cases | ideal | home | permutation | home / perm | gap home | gap perm | closed | home p10 / med / p90 | perm p10 / med / p90 | perm worse than home |',
+           f'resident / perm is the ratio of the means; p10 / median / p90 are per-chunk busiest rank / ideal.', '',
+           '| trace | EP | chunk | cases | ideal | resident | permutation | resident / perm | gap resident | gap perm | closed | resident p10 / med / p90 | perm p10 / med / p90 | perm worse than resident |',
            '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---:|']
     for r in rows:
-        out.append(f"| {r['trace']} | {r['ep']} | {r['chunk']} | {r['cases']} | {r['ideal']:.1f} | {r['home']:.1f} | {r['perm']:.1f} | "
+        out.append(f"| {r['trace']} | {r['ep']} | {r['chunk']} | {r['cases']} | {r['ideal']:.1f} | {r['resident']:.1f} | {r['perm']:.1f} | "
                    f"{r['home_over_perm']:.3f} | {100 * (r['home_over_ideal'] - 1):.1f}% | {100 * (r['perm_over_ideal'] - 1):.1f}% | "
                    f"{100 * r['closed']:.0f}% | {' / '.join(f'{x:.2f}' for x in r['home_pcts'])} | "
                    f"{' / '.join(f'{x:.2f}' for x in r['perm_pcts'])} | {100 * r['worse_share']:.0f}% |")
@@ -216,7 +216,7 @@ def main():
     p.add_argument('--block-m', type=int, default=64)
     p.add_argument('--frac', type=float, default=0.25, help='share of each layer stream used for the calibration')
     p.add_argument('--out-location', required=True, help='JSON for --init-expert-location')
-    p.add_argument('--out-perm', required=True, help='companion JSON: per-layer permutation and calibration summary')
+    p.add_argument('--out-check', required=True, help='companion JSON for SGLANG_MEGAMOE_STATIC_PLACEMENT: per-layer placement and calibration summary')
     p.add_argument('--predict', type=int, nargs='*', default=[], help='chunk sizes to evaluate the permutation on')
     p.add_argument('--predict-ep', type=int, nargs='*', default=None, help='EP sizes for --predict (default: --ep)')
     p.add_argument('--out-predict', default=None, help='JSON with the prediction rows')
@@ -242,35 +242,35 @@ def main():
         perms_by_ep[R] = {}
         for layer_id in layer_ids:
             counts = combine(cals, layer_id)
-            perm = planner.owner_permutation(counts, R, args.block_m)
+            perm = planner.static_placement(counts, R, args.block_m)
             assert sorted(perm) == list(range(E))
             perms_by_ep[R][layer_id] = perm
             if R == args.ep:
                 b = blocks_of(counts, args.block_m)
-                home = home_loads(b, R)
-                permuted = home_loads(planner.apply_owner_permutation(b, perm), R)
-                # Experts whose owner rank differs from the contiguous placement
+                resident = home_loads(b, R)
+                permuted = home_loads(planner.apply_static_placement(b, perm), R)
+                # Experts whose resident rank differs from the contiguous placement
                 # (the study's definition; a slot change within a rank moves nothing).
                 summary[layer_id] = dict(moved=sum(1 for q, e in enumerate(perm) if q // H != e // H),
                                          calibration_tokens=int(sum(counts)),
-                                         home_max=max(home), perm_max=max(permuted), ideal=sum(b) / R)
+                                         home_max=max(resident), perm_max=max(permuted), ideal=sum(b) / R)
     perms = perms_by_ep[args.ep]
     rows = [perms[l] if l in perms else list(range(E)) for l in range(args.num_layers)]
     with open(args.out_location, 'w') as f:
         json.dump({'physical_to_logical_map': rows}, f, separators=(',', ':'))
-    companion = dict(num_layers=args.num_layers, num_experts=E, ep=args.ep, home_experts_per_rank=H,
+    companion = dict(num_layers=args.num_layers, num_experts=E, ep=args.ep, resident_experts_per_rank=H,
                      block_m=args.block_m, frac=args.frac, sources=names, calibration=label,
                      layers={str(l): perms[l] for l in layer_ids},
                      summary={str(l): summary[l] for l in layer_ids})
-    with open(args.out_perm, 'w') as f:
+    with open(args.out_check, 'w') as f:
         json.dump(companion, f, separators=(',', ':'))
     moved = [summary[l]['moved'] for l in layer_ids]
     ratio = [summary[l]['home_max'] / summary[l]['perm_max'] for l in layer_ids]
-    print(f'{args.out_location}: {args.num_layers} rows x {E} experts, EP {args.ep} ({H} home experts per rank), '
+    print(f'{args.out_location}: {args.num_layers} rows x {E} experts, EP {args.ep} ({H} resident experts per rank), '
           f'{len(layer_ids)} MoE layers permuted ({layer_ids[0]}..{layer_ids[-1]}), identity elsewhere; '
           f'calibration = {label}, first {round(args.frac * 100)} % of each layer stream')
-    print(f'experts whose owner rank changes, per layer: min {min(moved)} / mean {sum(moved) / len(moved):.1f} / max {max(moved)} of {E}; '
-          f'calibration busiest rank home / perm: min {min(ratio):.3f} / mean {sum(ratio) / len(ratio):.3f} / max {max(ratio):.3f}')
+    print(f'experts whose resident rank changes, per layer: min {min(moved)} / mean {sum(moved) / len(moved):.1f} / max {max(moved)} of {E}; '
+          f'calibration busiest rank resident / perm: min {min(ratio):.3f} / mean {sum(ratio) / len(ratio):.3f} / max {max(ratio):.3f}')
     if args.predict:
         pred = predict(caches, cals, perms_by_ep, args.frac, args.block_m, args.predict, planner)
         sys.stdout.write(render_predict(pred, args.block_m, args.frac, label))

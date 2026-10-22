@@ -176,7 +176,7 @@ class StageRunner:
             with _scope('eplb.plan_and_remap(_C)'):
                 _single_launch(e, n, block_m); t2 = time.perf_counter()
             t3 = t2
-            if not e.fuse_copy:
+            if not e.in_kernel_copy:
                 with _scope('eplb.copy_weights'):
                     e.copy_weights(); t3 = time.perf_counter()
             h['block_m'], h['plan'], h['copy'] = t1 - t0, t2 - t1, t3 - t2
@@ -242,7 +242,7 @@ def _kineto_variant(runner, variant, group, num_tests, quiet):
 
 
 def _cold_copy(eplb, runner, group):
-    """Every helper slot changes: the full weight transfer of a first plan."""
+    """Every redundant slot changes: the full weight transfer of a first plan."""
     n = runner.n
     b = eplb.symm
     for _ in range(2):
@@ -428,7 +428,7 @@ def _worker(local_rank, num_local_ranks, args):
         del l1_packed, l1_scale, l2_packed, l2_scale
         l1_gs = torch.linspace(0.73, 1.37, H, dtype=torch.float32, device='cuda')
         l2_gs = torch.linspace(1.31, 0.67, H, dtype=torch.float32, device='cuda')
-        eplb = deep_gemm.DynamicEPLB(group, E, args.num_helper_slots, args.num_max_tokens_per_rank,
+        eplb = deep_gemm.DynamicEPLB(group, E, args.num_redundant_slots, args.num_max_tokens_per_rank,
                                      args.num_topk, args.hidden, args.intermediate_hidden)
         eplb.set_home_weights(t1, t2, l1_gs, l2_gs)
 
@@ -444,7 +444,7 @@ def _worker(local_rank, num_local_ranks, args):
         quiet = True
         if rank_idx == 0:
             print(f'[setup {tag}] E={E} top-{args.num_topk} hidden={args.hidden} inter={args.intermediate_hidden} '
-                  f'ranks={num_ranks} helper_slots={args.num_helper_slots} layers={layer_ids} '
+                  f'ranks={num_ranks} redundant_slots={args.num_redundant_slots} layers={layer_ids} '
                   f'trace_layers={len(layers)} rows/layer={layers[0].shape[0]}', flush=True)
             print('columns: gpu_us = kineto per-kernel time (plan/copy/remap/single = plan+remap in one launch/kernel); '
                   'host_us = perf_counter per Python call (block_m/plan/copy/zero/remap/launch/total/filler; for the '
@@ -518,7 +518,7 @@ def _parse_args():
     p.add_argument('--intermediate-hidden', type=int, default=2048)
     p.add_argument('--num-experts', type=int, default=384)
     p.add_argument('--num-topk', type=int, default=8)
-    p.add_argument('--num-helper-slots', type=int, default=4)
+    p.add_argument('--num-redundant-slots', type=int, default=4)
     p.add_argument('--num-max-tokens-per-rank', type=int, default=4096)
     p.add_argument('--num-processes', type=int, default=8)
     p.add_argument('--activation-clamp', type=float, default=10.0)

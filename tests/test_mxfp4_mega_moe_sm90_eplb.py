@@ -2,7 +2,8 @@
 
 Three checks per batch, all under deliberately skewed routing:
   1. the device planner agrees with the Python reference planner;
-  2. the remapped routing table matches the plan (counts per physical slot);
+  2. the remapped routing table (the logical-to-physical remap of the top-k
+     ids) matches the plan (counts per physical slot);
   3. the kernel output on physical slots matches the logical-expert reference;
 and the same plan and remap through the single-launch kernel (warm and cold
 slot tables). Then a paired benchmark of the same routing with EPLB on and
@@ -52,7 +53,7 @@ def _single_launch(eplb, num_tokens, block_m):
     _C.mega_moe_eplb_plan_and_remap(
         eplb.ws, eplb.ws_handle.buffer_ptrs, eplb.rank,
         eplb.symm.topk_idx[:num_tokens],
-        eplb.num_experts, eplb.num_helper_slots,
+        eplb.num_experts, eplb.num_redundant_slots,
         block_m, eplb.open_gate_blocks, eplb.generation)
 
 
@@ -137,7 +138,7 @@ def _reference_output(x_fp8, x_sf, topk_idx, topk_weights, l1_dequant, l2_dequan
 
 
 def _check_plan(eplb, counts, block_m, prev_slot_expert, rank_idx):
-    ref = plan_reference(counts, eplb.num_helper_slots, block_m,
+    ref = plan_reference(counts, eplb.num_redundant_slots, block_m,
                          prev_slot_expert=prev_slot_expert, open_gate_blocks=eplb.open_gate_blocks)
     dev_slots = eplb.slot_expert.cpu().tolist()
     assert dev_slots == ref.slot_expert, f'rank {rank_idx}: slot table differs\n dev={dev_slots}\n ref={ref.slot_expert}'
@@ -156,16 +157,16 @@ def _check_remap(eplb, ref, counts, logical_rows, physical_rows, rank_idx):
     """Every physical slot refers to a slot that holds the expert, and the
     per-slot counts equal the reference remap exactly."""
     slots = eplb.slots_per_rank
-    H = eplb.home_experts
+    H = eplb.resident_experts
     seen = {}
     for row_l, row_p in zip(logical_rows, physical_rows):
         for e, p in zip(row_l, row_p):
             dest, local = divmod(p, slots)
             if local < H:
-                assert dest * H + local == e, f'rank {rank_idx}: home slot mismatch {p} for expert {e}'
+                assert dest * H + local == e, f'rank {rank_idx}: resident slot mismatch {p} for expert {e}'
             else:
                 assert ref.slot_expert[dest][local - H] == e, \
-                    f'rank {rank_idx}: helper slot {p} does not hold expert {e}'
+                    f'rank {rank_idx}: redundant slot {p} does not hold expert {e}'
             seen[(dest, e)] = seen.get((dest, e), 0) + 1
     return seen
 
@@ -191,7 +192,7 @@ def _check_single_launch(m_tokens, rank_idx, group, eplb, counts, topk_idx, bloc
     the reference (warm: from the current slot table; cold: from empty
     slots), the rewritten routing must be a valid remap of that plan, the
     ordinal counters must be left at zero, and the separate copy kernel that
-    follows must leave every helper slot byte-exact."""
+    follows must leave every redundant slot byte-exact."""
     b = eplb.symm
     if cold:
         eplb.slot_expert.fill_(-1)
@@ -209,7 +210,7 @@ def _check_single_launch(m_tokens, rank_idx, group, eplb, counts, topk_idx, bloc
     torch.cuda.synchronize()
     dist.barrier(group=group)
     _verify_copies(eplb, ref, rank_idx, group)
-    # The list is applied; a fused-copy kernel launch later must not redo it.
+    # The list is applied; a in-kernel-copy kernel launch later must not redo it.
     eplb.copy_count.zero_()
     prof = read_plan_profile(eplb) if plan_profile_enabled() else None
     if rank_idx == 0:
@@ -220,9 +221,9 @@ def _check_single_launch(m_tokens, rank_idx, group, eplb, counts, topk_idx, bloc
 
 
 def _verify_copies(eplb, ref, rank_idx, group):
-    """Every helper slot must hold a byte-exact copy of its expert's home slot."""
+    """Every redundant slot must hold a byte-exact copy of its expert's resident slot."""
     num_ranks = dist.get_world_size(group)
-    H, S = eplb.home_experts, eplb.num_helper_slots
+    H, S = eplb.resident_experts, eplb.num_redundant_slots
     sums = []
     for name in eplb._plane_names:
         v = eplb.arena.views[name]
@@ -238,10 +239,10 @@ def _verify_copies(eplb, ref, rank_idx, group):
         for s_idx, e in enumerate(ref.slot_expert[r]):
             if e < 0:
                 continue
-            owner, local_e = divmod(e, H)
-            if not torch.equal(gathered[r][:, H + s_idx], gathered[owner][:, local_e]):
-                bad.append((r, s_idx, e, owner))
-    assert not bad, f'rank {rank_idx}: helper slots differ from their owners (rank, slot, expert, owner): {bad[:8]}'
+            resident_rank, local_e = divmod(e, H)
+            if not torch.equal(gathered[r][:, H + s_idx], gathered[resident_rank][:, local_e]):
+                bad.append((r, s_idx, e, resident_rank))
+    assert not bad, f'rank {rank_idx}: redundant slots differ from their resident ranks (rank, slot, expert, resident_rank): {bad[:8]}'
 
 
 def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
@@ -249,7 +250,7 @@ def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
     gen = torch.Generator(device='cuda')
     gen.manual_seed(args.seed + m_tokens)
     hidden, ih = args.hidden, args.intermediate_hidden
-    E, K, S = args.num_experts, args.num_topk, args.num_helper_slots
+    E, K, S = args.num_experts, args.num_topk, args.num_redundant_slots
     H = E // num_ranks
 
     eplb, l1_dequant, l2_dequant, l1_gs, l2_gs = eplb_state[:5]
@@ -276,7 +277,7 @@ def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
     torch.cuda.synchronize()
     ref = _check_plan(eplb, counts, block_m, prev_slot_expert, rank_idx)
     copies = int(eplb.copy_count.item())
-    if not eplb.fuse_copy:
+    if not eplb.in_kernel_copy:
         eplb.copy_weights()
     eplb.remap(m_tokens, block_m)
     torch.cuda.synchronize()
@@ -284,7 +285,7 @@ def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
     seen = _check_remap(eplb, ref, counts, topk_idx.cpu().tolist(), physical, rank_idx)
     _check_slot_counts(eplb, ref, seen, block_m, rank_idx, group)
 
-    if not eplb.fuse_copy:
+    if not eplb.in_kernel_copy:
         _verify_copies(eplb, ref, rank_idx, group)
 
     y = torch.empty((m_tokens, hidden), dtype=torch.bfloat16, device='cuda')
@@ -293,10 +294,10 @@ def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
         cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
         l1_global_scales=eplb.l1_global_scales, l2_global_scales=eplb.l2_global_scales,
         activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math),
-        eplb_fused_copy=eplb.fused_copy_args() if eplb.fuse_copy else None)
+        eplb_in_kernel_copy=eplb.in_kernel_copy_args() if eplb.in_kernel_copy else None)
     torch.cuda.synchronize()
     dist.barrier(group=group)
-    if eplb.fuse_copy:
+    if eplb.in_kernel_copy:
         # The kernel did the copy: every listed slot must now be byte-exact
         # and every counter must have seen the whole grid.
         _verify_copies(eplb, ref, rank_idx, group)
@@ -330,7 +331,7 @@ def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
         if rank_idx == 0:
             print(f'  [control] fixed-placement cos mean={cos_fixed.mean().item():.4f} min={cos_fixed.min().item():.4f}; '
                   f'eplb cos<0.9 on {(cosine < 0.9).float().mean().item():.3f} of tokens '
-                  f'(tokens touching a helper slot: {on_helper.float().mean().item():.3f}, '
+                  f'(tokens touching a redundant slot: {on_helper.float().mean().item():.3f}, '
                   f'their cos mean={cosine[on_helper].mean().item() if on_helper.any() else float("nan"):.4f}, '
                   f'others cos mean={cosine[~on_helper].mean().item() if (~on_helper).any() else float("nan"):.4f})', flush=True)
     cos_min, cos_mean = cosine.min().item(), cosine.mean().item()
@@ -360,7 +361,7 @@ def _run_case(args, m_tokens, rank_idx, group, eplb_state, check=True):
                     for e, p, w in zip(logical[t].tolist(), phys[t].tolist(), weights[t].tolist())]
             lines.append(f'    token {t}: ratio {tok_ratio[t].item():.4f} cos {cosine[t].item():.4f} ' + ' '.join(ents))
         helper_hits = {k: v for k, v in slot_hits.items() if k[1] >= H}
-        lines.append(f'    helper slots used by bad tokens (rank, slot): hits {sorted(helper_hits.items())}')
+        lines.append(f'    redundant slots used by bad tokens (rank, slot): hits {sorted(helper_hits.items())}')
         lines.append(f'    slot table: {eplb.slot_expert.cpu().tolist()}')
         lines.append(f'    this rank refilled (slot, expert) this step: {eplb.copy_list.cpu().tolist()[:copies]}')
         print('\n'.join(lines), flush=True)
@@ -390,7 +391,7 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
 
     def run_eplb():
         if cold_each_step:
-            # Forget the slot cache so the planner lists every assigned helper
+            # Forget the slot cache so the planner lists every assigned redundant slot
             # slot again and the full weight transfer is paid in this step.
             eplb.slot_expert.fill_(-1)
         return eplb.forward(x_fp8, x_sf, topk_idx, topk_weights,
@@ -411,7 +412,7 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
 
     torch.cuda.synchronize()
     dist.barrier(group=group)
-    # Cold copy: every helper slot changes, so this is the full weight transfer
+    # Cold copy: every redundant slot changes, so this is the full weight transfer
     # the steady-state loop below never pays again. The first pass only builds
     # the kernel; the second one is timed.
     b = eplb.symm
@@ -436,7 +437,7 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
 
     # `prepare` is the single-launch plan + remap; the separate arm adds the copy kernel.
     kernels = ('eplb_plan_remap_kernel', 'eplb_copy_weights_kernel', 'sm90_mxfp4_mega_moe')
-    arms = {'both': (False, True), 'fused': (True,), 'separate': (False,)}[args.fuse_copy]
+    arms = {'both': (False, True), 'in-kernel': (True,), 'separate': (False,)}[args.weight_copy]
     # The fixed arm is a separate kernel instantiation. Build it on every rank
     # before the paired loop: the planner waits on its peers in-kernel and
     # would otherwise time out behind another rank's JIT compile.
@@ -444,7 +445,7 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
     torch.cuda.synchronize()
     dist.barrier(group=group)
     for fused in arms:
-        eplb.fuse_copy = fused
+        eplb.in_kernel_copy = fused
         for _ in range(3):
             run_eplb()
             run_fixed()
@@ -476,7 +477,7 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
     # Interleave the arms `bench_rounds` times: the kernel time of one arm
     # can move between sub-runs by more than the arm difference.
     for fused in [f for _ in range(max(1, args.bench_rounds)) for f in arms]:
-        eplb.fuse_copy = fused
+        eplb.in_kernel_copy = fused
         # bench_kineto sums every kernel whose name matches, so an arm that
         # never launches the copy kernel asks only for the other three.
         names = kernels if not fused else tuple(k for k in kernels if k != 'eplb_copy_weights_kernel')
@@ -507,7 +508,7 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
         total, kernel_only, fixed, plan_us, copy_us, max_copies = local.tolist()
         if rank_idx == 0:
             ratio = lambda a, b: f'{a / b:.3f}x' if b > 0 else 'n/a'
-            arm = 'fused-copy' if fused else 'separate-copy'
+            arm = 'in-kernel-copy' if fused else 'separate-copy'
             print(f'[bench M={m_tokens} {state} {arm} slots-copied-max={int(max_copies)}] fixed={fixed:.1f}us  '
                   f'eplb total={total:.1f}us (kernel {kernel_only:.1f} + plan+remap {plan_us:.1f} + copy {copy_us:.1f})'
                   f'  speedup total={ratio(fixed, total)} kernel-only={ratio(fixed, kernel_only)}',
@@ -531,7 +532,7 @@ def _check_remap_only(args, m_tokens, rank_idx, group, eplb_state, tag):
     num_ranks = dist.get_world_size(group)
     gen = torch.Generator(device='cuda')
     gen.manual_seed(args.seed + 7919 * (m_tokens + 1) + rank_idx)
-    E, K, S = args.num_experts, args.num_topk, args.num_helper_slots
+    E, K, S = args.num_experts, args.num_topk, args.num_redundant_slots
     H = E // num_ranks
     eplb, l1_dequant, l2_dequant, l1_gs, l2_gs = eplb_state[:5]
     hot = [h % E for h in args.hot_experts]
@@ -672,7 +673,7 @@ def _host_launch_us(eplb, m_tokens, topk_idx, run_fixed, group):
             cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
             l1_global_scales=eplb.l1_global_scales, l2_global_scales=eplb.l2_global_scales,
             activation_clamp=10.0, fast_math=True,
-            eplb_fused_copy=eplb.fused_copy_args() if eplb.fuse_copy else None)
+            eplb_in_kernel_copy=eplb.in_kernel_copy_args() if eplb.in_kernel_copy else None)
 
     def measure(fn, n=20, reload=False):
         torch.cuda.synchronize()
@@ -711,23 +712,23 @@ def _host_launch_us(eplb, m_tokens, topk_idx, run_fixed, group):
 def _phase_stamps(args, m_tokens, rank_idx, group, eplb, routing, run_fixed, run_eplb, quiet):
     """Five launches on the same routing, timed with kineto (rank-maximum
     kernel time) and stamped once each:
-      fixed            home slots only, no global scales (the bench baseline);
+      fixed            resident slots only, no global scales (the bench baseline);
       fixed+gs         same with per-expert global scales (what serving runs);
-      owner-only       the EPLB kernel with every helper slot empty and the
-                       routing at the owners, fused copy on: the extra physical
-                       slots and the fused-copy machinery, no balancing;
-      owner-only-nofc  same with the fused copy off (plain EPLB instantiation);
+      static-placement-only       the EPLB kernel with every redundant slot empty and the
+                       routing at the resident ranks, in-kernel weight copy on: the extra physical
+                       slots and the in-kernel-copy machinery, no balancing;
+      static-placement-only-nofc  same with the in-kernel weight copy off (plain EPLB instantiation);
       planned          the plan of the previous step (steady state, no copies).
     The per-task stamps (L1 task, L2 task) say whether an arm pays per tile."""
     topk_idx, _topk_weights, x_fp8, x_sf = routing
     num_ranks = dist.get_world_size(group)
     b = eplb.symm
-    ones = torch.ones(eplb.home_experts, dtype=torch.float32, device='cuda')
+    ones = torch.ones(eplb.resident_experts, dtype=torch.float32, device='cuda')
 
     def run_fixed_gs():
         return run_fixed(ones)
 
-    def run_owner_only(fused):
+    def run_static_only(fused):
         def fn():
             b.x[:m_tokens].copy_(x_fp8)
             b.x_sf[:m_tokens].copy_(x_sf)
@@ -739,7 +740,7 @@ def _phase_stamps(args, m_tokens, rank_idx, group, eplb, routing, run_fixed, run
                 cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
                 l1_global_scales=eplb.l1_global_scales, l2_global_scales=eplb.l2_global_scales,
                 activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math),
-                eplb_fused_copy=eplb.fused_copy_args() if fused else None)
+                eplb_in_kernel_copy=eplb.in_kernel_copy_args() if fused else None)
             return y
         return fn
 
@@ -762,9 +763,9 @@ def _phase_stamps(args, m_tokens, rank_idx, group, eplb, routing, run_fixed, run
     for name, fn in arms:
         fn()
         results.append((name, timed(fn), _format_stamps(_stamped(fn, group))))
-    # Empty every helper slot: routing at the owners through the H + S slot kernel.
-    eplb.set_replicas(torch.full((num_ranks, eplb.num_helper_slots), -1, dtype=torch.int32))
-    for name, fn in (('owner-only', run_owner_only(True)), ('owner-only-nofc', run_owner_only(False))):
+    # Empty every redundant slot: routing at the resident ranks through the H + S slot kernel.
+    eplb.set_replicas(torch.full((num_ranks, eplb.num_redundant_slots), -1, dtype=torch.int32))
+    for name, fn in (('static-placement-only', run_static_only(True)), ('static-placement-only-nofc', run_static_only(False))):
         fn()
         results.append((name, timed(fn), _format_stamps(_stamped(fn, group))))
     # Back to the planned state for whatever follows.
@@ -803,10 +804,10 @@ def _worker(local_rank, num_local_ranks, args):
         l1_gs = torch.linspace(0.73, 1.37, H, dtype=torch.float32, device='cuda')
         l2_gs = torch.linspace(1.31, 0.67, H, dtype=torch.float32, device='cuda')
 
-        eplb = deep_gemm.DynamicEPLB(group, E, args.num_helper_slots, args.num_max_tokens_per_rank,
+        eplb = deep_gemm.DynamicEPLB(group, E, args.num_redundant_slots, args.num_max_tokens_per_rank,
                                      args.num_topk, args.hidden, args.intermediate_hidden,
                                      open_gate_blocks=args.open_gate_blocks,
-                                     fuse_copy=args.fuse_copy != 'separate')
+                                     in_kernel_copy=args.weight_copy != 'separate')
         eplb.set_home_weights(t1, t2, l1_gs, l2_gs)
         state = (eplb, l1_dequant, l2_dequant, l1_gs.cpu().tolist(), l2_gs.cpu().tolist())
         if args.check_fixed:
@@ -819,7 +820,7 @@ def _worker(local_rank, num_local_ranks, args):
         trace_layer_ids = list(range(0, len(args.trace_layers), max(1, len(args.trace_layers) // args.trace_num_layers))) \
             [:args.trace_num_layers] if args.trace_layers is not None else [0]
         if args.correctness:
-            # Before any plan: everything must go home.
+            # Before any plan: everything must go resident.
             _check_remap_only(args, 64, rank_idx, group, state, 'no plan yet')
         routings = {}
         for m_tokens in args.batches:
@@ -830,12 +831,12 @@ def _worker(local_rank, num_local_ranks, args):
                 if args.correctness:
                     # Second pass on the same routing exercises the slot cache.
                     _run_case(args, m_tokens, rank_idx, group, state)
-                    if args.fuse_copy == 'both':
+                    if args.weight_copy == 'both':
                         # And the other copy arm on a fresh placement.
-                        eplb.fuse_copy = False
+                        eplb.in_kernel_copy = False
                         eplb.slot_expert.fill_(-1)
                         _run_case(args, m_tokens, rank_idx, group, state)
-                        eplb.fuse_copy = True
+                        eplb.in_kernel_copy = True
         if args.correctness:
             # Decode-like steps reuse the last plan without re-planning.
             for m_small in (8, 64, 256):
@@ -870,7 +871,7 @@ def _parse_args():
     p.add_argument('--intermediate-hidden', type=int, default=2048)
     p.add_argument('--num-experts', type=int, default=384)
     p.add_argument('--num-topk', type=int, default=8)
-    p.add_argument('--num-helper-slots', type=int, default=4)
+    p.add_argument('--num-redundant-slots', type=int, default=4)
     p.add_argument('--open-gate-blocks', type=int, default=0)
     p.add_argument('--hot-experts', nargs='+', type=int, default=[3, 7, 11])
     p.add_argument('--hot-share', type=float, default=0.5)
@@ -889,13 +890,13 @@ def _parse_args():
     p.add_argument('--trace-num-layers', type=int, default=4, help='how many traced layers to replay')
     p.add_argument('--check-fixed', type=int, default=0,
                    help='also run the fixed-placement kernel on the same tokens as a control')
-    p.add_argument('--fuse-copy', choices=['separate', 'fused', 'both'],
-                   default='separate' if os.environ.get('DG_EPLB_FUSE_COPY', '1') == '0' else 'fused',
+    p.add_argument('--weight-copy', choices=['separate', 'in-kernel', 'both'],
+                   default='separate' if os.environ.get('DG_EPLB_IN_KERNEL_COPY', '1') == '0' else 'in-kernel',
                    help='weight copy by the separate kernel, fused into the MegaMoE kernel, or both arms')
     p.add_argument('--bench-rounds', type=int, default=1,
                    help='repeat the separate/fused arm pair this many times per cell')
     p.add_argument('--cold-each-step', type=int, default=0,
-                   help='benchmark with every helper slot re-copied on every step')
+                   help='benchmark with every redundant slot re-copied on every step')
     p.add_argument('--single-launch', type=int, default=1,
                    help='also check plan + remap in one launch (mega_moe_eplb_plan_and_remap) per case')
     p.add_argument('--bench', type=int, default=1)
@@ -903,7 +904,7 @@ def _parse_args():
     p.add_argument('--bench-tests', type=int, default=20)
     p.add_argument('--phase-stamps', type=int, default=0,
                    help='after each bench: in-kernel phase timestamps of the fixed, planned and '
-                        'owner-only (empty helper slots) arms, and the slot cost')
+                        'static-placement-only (empty redundant slots) arms, and the slot cost')
     return p.parse_args()
 
 

@@ -24,9 +24,9 @@ FP8 symmetric buffer is created, and routes the FP4 expert weights to
 scales, float or byte encoded).
 
 The two serving arms differ only in one environment variable read by the
-server: `SGLANG_MEGAMOE_DYNAMIC_EPLB_SLOTS=0` is fixed placement on the same
-kernel, `SGLANG_MEGAMOE_DYNAMIC_EPLB_SLOTS=S` enables the balancer with `S`
-helper slots per rank (`SGLANG_MEGAMOE_DYNAMIC_EPLB_OPEN_GATE_BLOCKS` is the
+server: `SGLANG_MEGAMOE_DYNAMIC_EPLB_REDUNDANT_SLOTS=0` is fixed placement on the same
+kernel, `SGLANG_MEGAMOE_DYNAMIC_EPLB_REDUNDANT_SLOTS=S` enables the balancer with `S`
+redundant slots per rank (`SGLANG_MEGAMOE_DYNAMIC_EPLB_OPEN_GATE_BLOCKS` is the
 open gate). With the balancer on, the arena is allocated at weight-build time
 and shares one physical-slot symmetric buffer across layers, so KV-cache
 sizing sees it and nothing is allocated during CUDA graph capture.

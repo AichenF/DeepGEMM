@@ -3,23 +3,24 @@
 Drop-in companion to ``mega_moe_sm90.py``: FP4 experts (DeepSeek V4 style
 packed E2M1 + E8M0 scales, or MiMo's MXFP4 store) go through DeepGEMM's fused
 SM90 MXFP4 MegaMoE kernel. ``install_mxfp4_megamoe.py`` wires both the
-DeepSeek V2/V4 and the MiMo V2 MoE modules to ``run_sm90_mxfp4_mega_routed``. ``SGLANG_MEGAMOE_DYNAMIC_EPLB_SLOTS=S`` (S > 0)
-turns on dynamic expert load balancing with S helper slots per rank; 0 or
+DeepSeek V2/V4 and the MiMo V2 MoE modules to ``run_sm90_mxfp4_mega_routed``. ``SGLANG_MEGAMOE_DYNAMIC_EPLB_REDUNDANT_SLOTS=S`` (S > 0)
+turns on dynamic expert load balancing with S redundant slots per rank; 0 or
 unset is fixed placement on the same kernel, so the two arms differ only in
 the balancer. ``SGLANG_MEGAMOE_DYNAMIC_EPLB_MIN_TOKENS`` (default 512) is the
 smallest local token count that triggers a new plan.
 
-Owner permutation (PREFILL_headroom_study.md section 10, zero per-call
+Static expert placement (PREFILL_headroom_study.md section 10, zero per-call
 cost): start the server with ``--init-expert-location <file>`` built by
-``tests/eplb_tools/build_owner_permutation.py`` (a per-layer
+``tests/eplb_tools/build_static_placement.py`` (a per-layer
 ``physical_to_logical_map`` with no redundancy). SGLang's weight loader then
 puts logical expert ``perm[p]`` into physical slot ``p`` on rank ``p // H``,
 and with ``--ep-dispatch-algorithm static`` (its default once a location is
 given) top-k returns physical ids, so the kernel, the planner and the remap
+(the logical-to-physical remap of the top-k ids)
 see the permuted layout without any change here. The adapter reads the loaded
-location once per layer (``_owner_permutation``) to log it and to map files
+location once per layer (``_static_placement``) to log it and to map files
 that name logical experts (the static placement file) before
-``set_replicas``; ``SGLANG_MEGAMOE_OWNER_PERM=<companion json>`` makes it
+``set_replicas``; ``SGLANG_MEGAMOE_STATIC_PLACEMENT=<companion json>`` makes it
 check that the loaded location equals the file the script built and fail
 otherwise. Nothing of this runs per forward, so CUDA graphs are unaffected.
 """
@@ -39,7 +40,7 @@ from sglang.srt.models.deepseek_common.utils import _device_sm
 if TYPE_CHECKING:
     from sglang.srt.models.deepseek_v2 import DeepseekV2MoE
 
-_EPLB_SLOTS = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_SLOTS", "0"))
+_EPLB_REDUNDANT_SLOTS = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_REDUNDANT_SLOTS", "0"))
 _EPLB_OPEN_GATE = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_OPEN_GATE_BLOCKS", "0"))
 # Below this many local tokens (decode steps, small prefill chunks) the planner
 # is skipped: tokens are remapped onto the placement from the last plan, so the
@@ -48,7 +49,7 @@ _EPLB_OPEN_GATE = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_OPEN_GATE_BLOC
 # same token count.
 _EPLB_MIN_TOKENS = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_MIN_TOKENS", "512"))
 # ``SGLANG_MEGAMOE_DYNAMIC_EPLB_REPLAN_EVERY=K`` (default 1): a layer plans on
-# every K-th large forward and remaps the others onto its last plan. Routing
+# every K-th prefill forward and remaps the others onto its last plan. Routing
 # statistics change little between consecutive prefill chunks of the same
 # request mix, so a stale plan still balances while the plan and the weight
 # copies are paid once per K chunks. The count is per layer and advances only
@@ -63,11 +64,11 @@ _get_dp_global_num_tokens = None
 _plan_profile_enabled = None
 _format_plan_profile = None
 _get_global_expert_location_metadata = None
-# ``SGLANG_MEGAMOE_OWNER_PERM=<json>``: the companion file written by
-# ``build_owner_permutation.py`` next to the ``--init-expert-location`` file;
+# ``SGLANG_MEGAMOE_STATIC_PLACEMENT=<json>``: the companion file written by
+# ``build_static_placement.py`` next to the ``--init-expert-location`` file;
 # the loaded location of every layer must equal its row (see the docstring).
-_OWNER_PERM_FILE = os.environ.get("SGLANG_MEGAMOE_OWNER_PERM", "")
-_OWNER_PERM_DATA = None
+_STATIC_PLACEMENT_FILE = os.environ.get("SGLANG_MEGAMOE_STATIC_PLACEMENT", "")
+_STATIC_PLACEMENT_DATA = None
 
 
 def _bind_lazy() -> None:
@@ -86,15 +87,15 @@ def _bind_lazy() -> None:
     _get_global_expert_location_metadata = get_global_expert_location_metadata
 
 
-def _owner_permutation(moe):
-    """The owner permutation of this layer as SGLang loaded it: ``perm[p]`` is
+def _static_placement(moe):
+    """The static expert placement of this layer as SGLang loaded it: ``perm[p]`` is
     the logical expert in physical slot ``p`` (``None`` for the identity).
     Read once per layer from the global expert-location metadata, so it is
     exactly what the weight loader applied and what the static top-k dispatch
-    emits; with ``SGLANG_MEGAMOE_OWNER_PERM`` the row must equal the companion
-    file of ``build_owner_permutation.py`` (identity for layers it omits)."""
-    global _OWNER_PERM_DATA
-    cached = getattr(moe.experts, "_mega_moe_owner_perm", False)
+    emits; with ``SGLANG_MEGAMOE_STATIC_PLACEMENT`` the row must equal the companion
+    file of ``build_static_placement.py`` (identity for layers it omits)."""
+    global _STATIC_PLACEMENT_DATA
+    cached = getattr(moe.experts, "_mega_moe_static_placement", False)
     if cached is not False:
         return cached
     if _get_global_expert_location_metadata is None:
@@ -109,20 +110,20 @@ def _owner_permutation(moe):
         row = [int(x) for x in meta.physical_to_logical_map_cpu[layer_id].tolist()]
         assert len(row) == num_experts, (
             f"layer {layer_id}: {len(row)} physical experts for {num_experts} logical ones; the MXFP4 "
-            "MegaMoE path takes a pure owner permutation (its helper slots are not SGLang redundant experts)")
+            "MegaMoE path takes a pure static expert placement (its redundant slots are not SGLang redundant experts)")
         if row != identity:
             assert sorted(row) == identity, f"layer {layer_id}: expert location is not a permutation"
             perm = row
-    if _OWNER_PERM_FILE and layer_id is not None:
-        if _OWNER_PERM_DATA is None:
-            with open(_OWNER_PERM_FILE) as f:
-                _OWNER_PERM_DATA = json.load(f)
-        expected = [int(x) for x in _OWNER_PERM_DATA["layers"].get(str(layer_id), identity)]
+    if _STATIC_PLACEMENT_FILE and layer_id is not None:
+        if _STATIC_PLACEMENT_DATA is None:
+            with open(_STATIC_PLACEMENT_FILE) as f:
+                _STATIC_PLACEMENT_DATA = json.load(f)
+        expected = [int(x) for x in _STATIC_PLACEMENT_DATA["layers"].get(str(layer_id), identity)]
         if (perm if perm is not None else identity) != expected:
             raise RuntimeError(
-                f"layer {layer_id}: the expert location SGLang loaded differs from SGLANG_MEGAMOE_OWNER_PERM="
-                f"{_OWNER_PERM_FILE}; pass the matching file to --init-expert-location")
-    moe.experts._mega_moe_owner_perm = perm
+                f"layer {layer_id}: the expert location SGLang loaded differs from SGLANG_MEGAMOE_STATIC_PLACEMENT="
+                f"{_STATIC_PLACEMENT_FILE}; pass the matching file to --init-expert-location")
+    moe.experts._mega_moe_static_placement = perm
     return perm
 
 
@@ -132,12 +133,12 @@ def _log_owner_placement(moe, group, perm) -> None:
     if perm is None or group.rank() != 0:
         return
     num_experts = len(perm)
-    home = num_experts // group.size()
-    moved = sum(1 for p, e in enumerate(perm) if p // home != e // home)
+    resident = num_experts // group.size()
+    moved = sum(1 for p, e in enumerate(perm) if p // resident != e // resident)
     logging.getLogger(__name__).info(
-        "megamoe-eplb layer %s: owner permutation active (SGLang expert location), %d of %d experts "
+        "megamoe-eplb layer %s: static expert placement active (SGLang expert location), %d of %d experts "
         "owned by another rank than in the contiguous placement; rank 0 holds logical experts %s",
-        moe.layer_id, moved, num_experts, perm[:home])
+        moe.layer_id, moved, num_experts, perm[:resident])
 
 
 def _layer_consts(moe) -> tuple:
@@ -153,16 +154,16 @@ def _layer_consts(moe) -> tuple:
             int(moe.experts.num_experts), int(moe.config.num_experts_per_tok),
             routed_scaling, getattr(moe.config, "swiglu_limit", None))
     return c
-# Static helper-slot placement. ``SGLANG_MEGAMOE_STATIC_PLACEMENT=<file>`` is
+# Static redundant slot-slot placement. ``SGLANG_MEGAMOE_STATIC_REDUNDANT_SLOTS=<file>`` is
 # a ``{layer_id: counts[E]}`` load histogram (token counts per logical
-# expert): at a layer's first forward its helper slots are filled once by
-# EPLB-style replication by load (``static_replica_placement``); layers
-# absent from the file keep empty helper slots. With
-# ``SGLANG_MEGAMOE_DYNAMIC_EPLB_STATIC=1`` the prefill planner never runs, so
+# expert): at a layer's first forward its redundant slots are filled once by
+# EPLB-style replication by load (``static_redundant_slots``); layers
+# absent from the file keep empty redundant slots. With
+# ``SGLANG_MEGAMOE_DYNAMIC_EPLB_STATIC_SLOTS=1`` the prefill planner never runs, so
 # the placement stays what the file gave: a fixed redundant placement on the
 # same kernel, which is how an external static balancer is compared.
-_STATIC_PLACEMENT = os.environ.get("SGLANG_MEGAMOE_STATIC_PLACEMENT", "")
-_EPLB_STATIC = os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_STATIC", "0") == "1"
+_STATIC_REDUNDANT_SLOTS = os.environ.get("SGLANG_MEGAMOE_STATIC_REDUNDANT_SLOTS", "")
+_EPLB_STATIC_SLOTS = os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_STATIC_SLOTS", "0") == "1"
 _STATIC_HIST = None
 _MXFP4_SYMM_BUFFER: dict = {}
 # ``SGLANG_MEGAMOE_DYNAMIC_EPLB_TRACE=N`` (N > 0): rank 0 times every N-th
@@ -172,14 +173,14 @@ _MXFP4_SYMM_BUFFER: dict = {}
 # loads of the plan that forward used. Works with and without the balancer,
 # so the two arms can be compared layer by layer inside the server.
 _EPLB_TRACE = int(os.environ.get("SGLANG_MEGAMOE_DYNAMIC_EPLB_TRACE", "0"))
-_EPLB_STATS = {"plan": 0, "plan_tokens": 0, "remap": 0, "remap_tokens": 0, "large": 0}
+_EPLB_STATS = {"plan": 0, "plan_tokens": 0, "remap": 0, "remap_tokens": 0, "prefill": 0}
 _TRACE_MIN_TOKENS = 512
 _TRACE_PENDING = None
 
 
-def _plan_summary(copies: torch.Tensor, slot_expert: torch.Tensor, home_experts: int) -> str:
+def _plan_summary(copies: torch.Tensor, slot_expert: torch.Tensor, resident_experts: int) -> str:
     """Rank loads in token blocks for one plan, read from the planner's copy
-    table: owner-only placement versus the planned placement."""
+    table: static placement only versus the replica plan."""
     c = copies.tolist()
     num_ranks = len(c[0])
     fixed = [0] * num_ranks
@@ -193,7 +194,7 @@ def _plan_summary(copies: torch.Tensor, slot_expert: torch.Tensor, home_experts:
                 return "no plan yet"
             planned[rank] += cum - prev
             prev = cum
-        fixed[e // home_experts] += prev
+        fixed[e // resident_experts] += prev
     replicas = int((slot_expert >= 0).sum().item())
     return (f"replicas {replicas}, max rank load {max(fixed)} -> {max(planned)} blocks "
             f"(mean {sum(planned) / num_ranks:.0f})")
@@ -207,7 +208,7 @@ def _trace_flush(eplb) -> None:
      host_us) = _TRACE_PENDING
     _TRACE_PENDING = None
     end.synchronize()
-    msg = (f"[megamoe-trace] large forward #{ordinal}: {tokens} local tokens, {mode}, "
+    msg = (f"[megamoe-trace] prefill forward #{ordinal}: {tokens} local tokens, {mode}, "
            f"{start.elapsed_time(end) * 1000:.0f} us")
     if eplb is not None:
         st = _EPLB_STATS
@@ -222,7 +223,7 @@ def _trace_flush(eplb) -> None:
                 msg += f" | plan profile: {_format_plan_profile(prof)}"
         msg += (f" | planned {st['plan']} (mean {st['plan_tokens'] / max(st['plan'], 1):.0f} tokens), "
                 f"remap-only {st['remap']} (mean {st['remap_tokens'] / max(st['remap'], 1):.0f} tokens)"
-                f" | its plan: {_plan_summary(copies, slots, eplb.home_experts)}, "
+                f" | its replica plan: {_plan_summary(copies, slots, eplb.resident_experts)}, "
                 f"{int(copy_count.item())} weight copies on rank 0")
     else:
         msg += f" | host kernel launch {host_us[1]:.0f} us"
@@ -231,10 +232,10 @@ def _trace_flush(eplb) -> None:
 
 def _trace_decision(num_tokens: int, group) -> bool:
     """Whether rank 0 times this forward (every ``_EPLB_TRACE``-th large one).
-    Counts the large forwards, so call it once per forward."""
+    Counts the prefill forwards, so call it once per forward."""
     if _EPLB_TRACE and num_tokens >= _TRACE_MIN_TOKENS and group.rank() == 0:
-        _EPLB_STATS["large"] += 1
-        return _EPLB_STATS["large"] % _EPLB_TRACE == 0
+        _EPLB_STATS["prefill"] += 1
+        return _EPLB_STATS["prefill"] % _EPLB_TRACE == 0
     return False
 
 
@@ -321,10 +322,10 @@ def build_sm90_mxfp4_mega_moe_experts_weights(experts) -> None:
     experts._mega_moe_sm90_mxfp4_weights = True
     experts._mega_moe_weights_built = True
     experts._mega_moe_eplb = None
-    if _EPLB_SLOTS > 0:
+    if _EPLB_REDUNDANT_SLOTS > 0:
         # Allocate the balancer at load time so the KV-cache sizing sees it and
         # nothing is allocated while CUDA graphs are being captured. The arena
-        # takes over the home experts; the transformed originals are released.
+        # takes over the resident experts; the transformed originals are released.
         from sglang.srt.distributed.parallel_state import get_moe_ep_group
         group = get_moe_ep_group().device_group
         num_topk = int(getattr(experts, "top_k")) + int(getattr(experts, "num_fused_shared_experts", 0) or 0)
@@ -356,44 +357,44 @@ def _get_symm_buffer(group, num_experts, num_max_tokens_per_rank, num_topk, hidd
 def _new_eplb(group, num_experts, num_max_tokens_per_rank, num_topk, hidden, intermediate_hidden):
     import deep_gemm
     # One symmetric buffer sized for the physical slots, shared by all layers.
-    num_slots = num_experts + _EPLB_SLOTS * group.size()
+    num_slots = num_experts + _EPLB_REDUNDANT_SLOTS * group.size()
     symm = _get_symm_buffer(group, num_slots, num_max_tokens_per_rank, num_topk, hidden, intermediate_hidden)
-    return deep_gemm.DynamicEPLB(group, num_experts, _EPLB_SLOTS, num_max_tokens_per_rank, num_topk,
+    return deep_gemm.DynamicEPLB(group, num_experts, _EPLB_REDUNDANT_SLOTS, num_max_tokens_per_rank, num_topk,
                                  hidden, intermediate_hidden, open_gate_blocks=_EPLB_OPEN_GATE, symm=symm)
 
 
-def _install_static_placement(moe, eplb) -> None:
-    """Fill the helper slots once from this layer's load histogram
-    (``SGLANG_MEGAMOE_STATIC_PLACEMENT``); layers absent from the file keep
-    empty helper slots."""
+def _install_static_redundant_slots(moe, eplb) -> None:
+    """Fill the redundant slots once from this layer's load histogram
+    (``SGLANG_MEGAMOE_STATIC_REDUNDANT_SLOTS``); layers absent from the file keep
+    empty redundant slots."""
     global _STATIC_HIST
-    from deep_gemm.mega.eplb_planner import apply_owner_permutation, static_replica_placement
+    from deep_gemm.mega.eplb_planner import apply_static_placement, static_redundant_slots
     if _STATIC_HIST is None:
-        _STATIC_HIST = torch.load(_STATIC_PLACEMENT, map_location="cpu")
+        _STATIC_HIST = torch.load(_STATIC_REDUNDANT_SLOTS, map_location="cpu")
     layer_id = getattr(moe, "layer_id", None)
     hist = _STATIC_HIST.get(int(layer_id)) if layer_id is not None else None
     if hist is None:
-        table = [[-1] * eplb.num_helper_slots for _ in range(eplb.num_ranks)]
+        table = [[-1] * eplb.num_redundant_slots for _ in range(eplb.num_ranks)]
         how = "no history"
     else:
         # The file names logical experts; the balancer's slots and
         # ``set_replicas`` use the kernel's physical numbering, so under an
-        # owner permutation the counts are mapped to physical order first.
+        # static expert placement the counts are mapped to physical order first.
         counts = hist["counts"] if isinstance(hist, dict) else hist
         counts = torch.as_tensor(counts).float().tolist()
-        perm = _owner_permutation(moe)
+        perm = _static_placement(moe)
         if perm is not None:
-            counts = apply_owner_permutation(counts, perm)
-        table = static_replica_placement(counts, eplb.num_ranks, eplb.num_helper_slots)
+            counts = apply_static_placement(counts, perm)
+        table = static_redundant_slots(counts, eplb.num_ranks, eplb.num_redundant_slots)
         how = "static placement from load counts"
         if perm is not None:
-            how += " (physical ids through the owner permutation)"
+            how += " (physical ids through the static expert placement)"
     copied = eplb.set_replicas(table)
     if eplb.rank == 0:
         replicated = sum(1 for r in table for e in r if e >= 0)
         logging.getLogger(__name__).info(
-            "megamoe-eplb layer %s: %s, %d replicas in %d helper slots (rank 0 copied %d)",
-            layer_id, how, replicated, eplb.num_ranks * eplb.num_helper_slots, copied)
+            "megamoe-eplb layer %s: %s, %d replicas in %d redundant slots (rank 0 copied %d)",
+            layer_id, how, replicated, eplb.num_ranks * eplb.num_redundant_slots, copied)
 
 
 def _get_eplb(moe, group, num_experts, num_max_tokens_per_rank, num_topk, hidden, intermediate_hidden):
@@ -409,15 +410,15 @@ def _get_eplb(moe, group, num_experts, num_max_tokens_per_rank, num_topk, hidden
         # First forward of this layer. SGLang warms every graph batch size up
         # eagerly before capturing it, so this runs outside any capture; the
         # layer id is only known here, not at weight-load time.
-        if _STATIC_PLACEMENT:
-            _install_static_placement(moe, eplb)
+        if _STATIC_REDUNDANT_SLOTS:
+            _install_static_redundant_slots(moe, eplb)
         # Realign the ranks' CPUs before this layer's first MegaMoE launch. The
         # kernel waits for its peers in an NVLink barrier with a 30 s budget and
         # traps beyond it (reported as an unspecified launch failure); SGLang's
         # DeepGEMM pre-compile walk runs on the node's first rank only and, at
         # 32k chunks, keeps that rank away for about 80 s right here. The fixed
         # path gets the same alignment for free from its lazy symmetric-buffer
-        # rendezvous; with helper slots everything was allocated at load time.
+        # rendezvous; with redundant slots everything was allocated at load time.
         torch.cuda.synchronize()
         torch.distributed.barrier(group=group)
         eplb._layer_ready = True
@@ -441,12 +442,12 @@ def _decision_tokens(num_tokens: int, group) -> int:
 
 
 def _decide(eplb, decision_tokens: int, capturing: bool) -> tuple:
-    """Whether this forward plans. Advances the layer's large-forward
+    """Whether this forward plans. Advances the layer's prefill-forward
     counter, so it is called exactly once per forward."""
     replan = False
-    if decision_tokens >= _EPLB_MIN_TOKENS and not capturing and not _EPLB_STATIC:
-        large = getattr(eplb, "_large_forwards", 0)
-        eplb._large_forwards = large + 1
+    if decision_tokens >= _EPLB_MIN_TOKENS and not capturing and not _EPLB_STATIC_SLOTS:
+        large = getattr(eplb, "_prefill_forwards", 0)
+        eplb._prefill_forwards = large + 1
         if eplb.generation == 0:
             replan = True
         else:
@@ -471,14 +472,14 @@ def run_sm90_mxfp4_mega_routed(
     top_k = topk_ids.shape[1] if num_tokens > 0 else top_k_default
     if not getattr(moe.experts, "_mega_moe_placement_logged", False):
         # First forward of this layer (SGLang's eager warm-up, never under a
-        # capture): resolve the owner permutation SGLang loaded, check it
-        # against SGLANG_MEGAMOE_OWNER_PERM if given, and log it once. Host
+        # capture): resolve the static expert placement SGLang loaded, check it
+        # against SGLANG_MEGAMOE_STATIC_PLACEMENT if given, and log it once. Host
         # work only; afterwards this is one attribute test per forward.
-        _log_owner_placement(moe, group, _owner_permutation(moe))
+        _log_owner_placement(moe, group, _static_placement(moe))
         moe.experts._mega_moe_placement_logged = True
 
     eplb = None
-    if _EPLB_SLOTS > 0:
+    if _EPLB_REDUNDANT_SLOTS > 0:
         eplb = _get_eplb(moe, group, num_experts, num_max_tokens_per_rank, top_k, hidden, intermediate)
         buf = eplb.symm
     else:
@@ -532,12 +533,12 @@ def run_sm90_mxfp4_mega_routed(
             mid = torch.cuda.Event(enable_timing=True)
             mid.record()
             t_host1 = time.perf_counter()
-        # With ``fuse_copy`` (the default; ``DG_EPLB_FUSE_COPY=0`` turns it
+        # With ``in_kernel_copy`` (the default; ``DG_EPLB_IN_KERNEL_COPY=0`` turns it
         # off) the planner's copy list is applied by the MegaMoE kernel itself
-        # (its loaders fetch the changed helper slots and gate the dependent
+        # (its loaders fetch the changed redundant slots and gate the dependent
         # tiles on per-slot readiness counters), so ``prepare`` skipped the
         # copy kernel.
-        fused_copy_args = eplb.fused_copy_args() if eplb.fuse_copy else None
+        in_kernel_copy_args = eplb.in_kernel_copy_args() if eplb.in_kernel_copy else None
         if trace_this:
             t_host_args = time.perf_counter()
         deep_gemm.mxfp4_mega_moe(
@@ -545,7 +546,7 @@ def run_sm90_mxfp4_mega_routed(
             cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
             l1_global_scales=eplb.l1_global_scales, l2_global_scales=eplb.l2_global_scales,
             activation_clamp=clamp, fast_math=True,
-            eplb_fused_copy=fused_copy_args)
+            eplb_in_kernel_copy=in_kernel_copy_args)
     else:
         if trace_this:
             t_host1 = time.perf_counter()
@@ -561,7 +562,7 @@ def run_sm90_mxfp4_mega_routed(
         t_host2 = time.perf_counter()
         end = torch.cuda.Event(enable_timing=True)
         end.record()
-        _TRACE_PENDING = (_EPLB_STATS["large"], num_tokens, mode, start,
+        _TRACE_PENDING = (_EPLB_STATS["prefill"], num_tokens, mode, start,
                           mid if eplb is not None else None, end,
                           eplb.copies.clone() if eplb is not None else None,
                           eplb.slot_expert.clone() if eplb is not None else None,

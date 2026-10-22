@@ -365,9 +365,9 @@ def mxfp4_mega_moe(y: torch.Tensor,
                   l2_global_scales: Optional[torch.Tensor] = None,
                   activation_clamp: Optional[float] = None,
                   fast_math: bool = True,
-                  eplb_fused_copy: Optional[tuple] = None):
-    """``eplb_fused_copy`` (from ``DynamicEPLB.fused_copy_args``) makes the
-    kernel copy the changed helper slots itself instead of a separate copy
+                  eplb_in_kernel_copy: Optional[tuple] = None):
+    """``eplb_in_kernel_copy`` (from ``DynamicEPLB.in_kernel_copy_args``) makes the
+    kernel copy the changed redundant slots itself instead of a separate copy
     kernel; see ``deep_gemm.mega.eplb``."""
     l1_layout = getattr(l1_weights[0], _SM90_MXFP4_H20_FUSED_LAYOUT_ATTR, None)
     l2_layout = getattr(l2_weights[0], _SM90_MXFP4_H20_FUSED_LAYOUT_ATTR, None)
@@ -386,10 +386,10 @@ def mxfp4_mega_moe(y: torch.Tensor,
         sym_buffer.num_experts, sym_buffer.num_topk,
         activation_clamp, fast_math,
     )
-    if eplb_fused_copy is None:
+    if eplb_in_kernel_copy is None:
         _C.mxfp4_mega_moe(*common)
     else:
-        _C.mxfp4_mega_moe_fused_copy(*common, *eplb_fused_copy)
+        _C.mxfp4_mega_moe_in_kernel_copy(*common, *eplb_in_kernel_copy)
 
 
 # Dynamic expert load balancing on top of the physical-slot kernel contract.

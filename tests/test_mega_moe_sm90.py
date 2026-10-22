@@ -47,7 +47,7 @@ from deep_gemm.testing import calc_diff, get_arch_major
 
 
 # ----------------------------------------------------------------------------
-# Quantization helpers
+# Quantization redundant slots
 # ----------------------------------------------------------------------------
 
 def _quantize_grouped_fp8_block_128_128(w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -329,7 +329,7 @@ def _run_scenario(
 
     # ---- Reference & check ---------------------------------------------------
     # Use the FP8 weights and their block-(128, 128) SF directly — the dequant
-    # helper expects this MN/K-block SF layout, and the original (gate||up) row
+    # redundant slot expects this MN/K-block SF layout, and the original (gate||up) row
     # ordering is what `_swiglu_fp32` splits with ``[..., :IH], [..., IH:]``.
     _trace('reference')
     y_ref = _reference_fused(

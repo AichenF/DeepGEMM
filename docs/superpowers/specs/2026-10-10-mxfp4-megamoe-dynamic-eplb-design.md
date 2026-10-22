@@ -8,13 +8,13 @@ The fused MXFP4 MegaMoE kernel executes every expert on the rank that owns
 its weights. Under routing skew the rank hosting the hottest experts decides
 the layer latency while the others idle. Both references (TensorRT-LLM
 DynamicEPLB, MegaFlux) solve this the same way: give every rank a few spare
-*helper slots*, replicate hot experts into them at runtime, and send a share of
+*redundant slots*, replicate hot experts into them at runtime, and send a share of
 those experts' token blocks to the replicas, leaving router outputs unchanged.
 
 ## Contract
 
-* **Physical slots.** A rank holds `H = E / R` home experts in local slots
-  `[0, H)` and `S` helper slots in `[H, H + S)`. Physical slot id of
+* **Physical slots.** A rank holds `H = E / R` resident experts in local slots
+  `[0, H)` and `S` redundant slots in `[H, H + S)`. Physical slot id of
   `(rank r, local slot j)` is `r * (H + S) + j`. The MegaMoE kernel, its
   symmetric buffer and its weight tensors are all built for
   `E_phys = R * (H + S)` "experts"; it never sees logical ids. This is the
@@ -29,17 +29,18 @@ those experts' token blocks to the replicas, leaving router outputs unchanged.
      identically on every rank. Outputs the slot table
      `slot_expert[R][S]`, per-expert copy list with cumulative block counts,
      and this rank's weight-copy list (slots whose expert changed).
-  2. `copy_weights`: copies changed helper slots' MXFP4 planes (packed L1/L2,
-     tile-major scales, global scales) from the owner over NVLink. Weights
+  2. `copy_weights`: copies changed redundant slots' MXFP4 planes (packed L1/L2,
+     tile-major scales, global scales) from the resident rank over NVLink. Weights
      live in a symmetric arena so peers can read them. Unchanged slots are
      not copied (slot cache).
-  3. `remap`: rewrites the symmetric-buffer `topk_idx` to physical slot ids.
+  3. `remap`: the logical-to-physical remap of the top-k ids; rewrites the
+     symmetric-buffer `topk_idx` to physical slot ids.
      Token `(t, k)` of expert `e` gets global ordinal
      `base_rank(e) + local_position`, block `ordinal / block_m`, and the
      copy whose cumulative block range contains it.
   4. `mxfp4_mega_moe` runs unchanged on physical slots.
 * **Correctness invariant.** Any physical slot holding expert `e`'s weights
-  produces the same result as the owner, so the plan only affects balance.
+  produces the same result as the resident rank, so the plan only affects balance.
   Reference checks therefore compare against the logical-expert reference.
 
 ## Planner (device, one warp does the sequential part)
@@ -50,8 +51,8 @@ Inputs: `c[r][e]` token counts, previous `slot_expert`, block size `beta`
 
 1. `b_e = ceil(sum_r c[r][e] / beta)`, `q[e][h(e)] = b_e`, loads
    `l_r = sum_e q[e][r]`, target `tau = ceil(sum_e b_e / R)`.
-2. Up to `S + 2` rounds: visit overloaded owners by decreasing overload. For
-   each home expert by decreasing remaining blocks, move
+2. Up to `S + 2` rounds: visit overloaded resident ranks by decreasing overload. For
+   each resident expert by decreasing remaining blocks, move
    `v = min(q[e][d], max(0, tau - l_r))` blocks to the least-loaded eligible
    receiver, preferring ranks that already hold `e` (an active copy or a
    cached slot), then ranks below `tau` with a free slot; a new uncached copy
@@ -83,13 +84,13 @@ same histogram matrix.
 
 ## Out of scope for this cycle
 
-In-kernel readiness gating of helper slots (overlapping the weight copy with
-home-expert tasks) and multi-candidate planner search. Both are additive.
+In-kernel readiness gating of redundant slots (overlapping the weight copy with
+resident-expert tasks) and multi-candidate planner search. Both are additive.
 
 ## Usage
 
 ```python
-eplb = deep_gemm.DynamicEPLB(group, num_experts, num_helper_slots,
+eplb = deep_gemm.DynamicEPLB(group, num_experts, num_redundant_slots,
                              num_max_tokens_per_rank, num_topk, hidden, intermediate_hidden)
 eplb.set_home_weights(l1, l2, l1_global_scales, l2_global_scales)   # transformed MXFP4 weights
 y = eplb.forward(x_fp8, x_sf, topk_idx_logical, topk_weights)        # plan + copy + remap + kernel
@@ -107,7 +108,7 @@ Synthetic skew: three hot experts owned by rank 0 receive half of all routed
 slots. `tests/test_mxfp4_mega_moe_sm90_eplb.py`, kernel time from kineto,
 rank maximum, median of 20 calls, L2 flushed between calls.
 
-EP2, 96 experts (48 per rank), 4 helper slots, top-k 8, hidden 6144,
+EP2, 96 experts (48 per rank), 4 redundant slots, top-k 8, hidden 6144,
 intermediate 2048:
 
 | M per rank | busiest rank blocks | fixed (us) | EPLB kernel (us) | plan + copy + remap (us) | kernel-only | end to end |
@@ -116,7 +117,7 @@ intermediate 2048:
 | 256 | 59 -> 54 | 531 | 508 | 48 + 1 + 2 | 1.045x | 0.949x |
 | 1024 | 179 -> 157 | 1518 | 1355 | 58 + 1 + 3 | 1.120x | 1.071x |
 
-EP4, 192 experts (48 per rank), 4 helper slots, same shape and skew:
+EP4, 192 experts (48 per rank), 4 redundant slots, same shape and skew:
 
 | M per rank | busiest rank blocks | fixed (us) | EPLB kernel (us) | plan + copy + remap (us) | kernel-only | end to end |
 |---:|---|---:|---:|---:|---:|---:|
@@ -124,7 +125,7 @@ EP4, 192 experts (48 per rank), 4 helper slots, same shape and skew:
 | 256 | 72 -> 55 | 632 | 505 | 77 + 1 + 2 | 1.253x | 1.081x |
 | 1024 | 223 -> 152 | 1867 | 1323 | 60 + 1 + 4 | 1.411x | 1.349x |
 
-EP8, MiMo 2.5 shape (384 experts, 48 per rank, top-8, 6144/2048), 4 helper
+EP8, MiMo 2.5 shape (384 experts, 48 per rank, top-8, 6144/2048), 4 redundant slot
 slots, same skew (now half of all routed slots land on three experts of one
 rank, so the baseline is far more unbalanced than at EP2/EP4):
 
@@ -136,7 +137,7 @@ rank, so the baseline is far more unbalanced than at EP2/EP4):
 | 4096 | 1207 -> 747 | 10183 | 6394 | 287 + 1 + 7 | 1.59x | 1.52x |
 
 EP8, DeepSeek V4 Flash shape (256 experts, 32 per rank, top-6, 4096/2048),
-4 helper slots, same skew:
+4 redundant slots, same skew:
 
 | M per rank | busiest rank blocks | fixed (us) | EPLB kernel (us) | plan + copy + remap (us) | kernel-only | end to end |
 |---:|---|---:|---:|---:|---:|---:|
@@ -163,10 +164,10 @@ EP8, DeepSeek V4 Flash shape (256 experts, 32 per rank, top-6, 4096/2048),
   6-13 us at EP1 (48 experts, M 64-1024), where there is nobody to wait for.
   In the fixed arm that skew is absorbed inside the kernel's first NVLink
   barrier instead, so end to end is the fair comparison.
-* A cold copy of one helper slot (20.3 MiB: packed L1/L2, tile-major scales,
+* A cold copy of one redundant slot (20.3 MiB: packed L1/L2, tile-major scales,
   global scales) takes about 170 us over NVLink and is paid only when a slot's
   expert changes; the steady-state loop above copies nothing.
-* Two empty helper slots cost at most 1% at EP1 (50 vs 48 slots). The
+* Two empty redundant slots cost at most 1% at EP1 (50 vs 48 slots). The
   experts-per-wave divisor they force (25 instead of 48) makes no measurable
   difference (A/B with `DG_MXFP4_EPW`).
 * Accuracy against the logical-expert reference is unchanged by replication:
@@ -176,7 +177,7 @@ EP8, DeepSeek V4 Flash shape (256 experts, 32 per rank, top-6, 4096/2048),
 ## Known limits
 
 * The planner is serialized with the layer. Overlapping it with the previous
-  layer and gating helper slots on weight readiness inside the kernel are the
+  layer and gating redundant slots on weight readiness inside the kernel are the
   next steps (see TensorRT-LLM's generation scheme and MegaFlux's pipelined
   replication).
 * One greedy candidate; MegaFlux evaluates four in parallel warps.
@@ -188,7 +189,7 @@ EP8, DeepSeek V4 Flash shape (256 experts, 32 per rank, top-6, 4096/2048),
 The three follow-ups of the first version are done and described below: the
 inherited product-named identifiers and file names are now
 `sm90_mxfp4_mega_moe_fused*` / `SM90MXFP4Fused*`; the weight copy and the
-readiness gating moved into the kernel (fused copy); the planner was replayed
+readiness gating moved into the kernel (in-kernel weight copy); the planner was replayed
 on real routing and measured end to end.
 
 ## Real routing traces (2026-10-12)
@@ -211,7 +212,7 @@ assumed every rank holds the same tokens (true for the synthetic generator,
 false for traces). The reference now gathers all ranks' tokens and reduces
 per destination rank.
 
-### Replay of real routing, EP8, 4 helper slots
+### Replay of real routing, EP8, 4 redundant slots
 
 Four layers per trace (evenly spaced), each rank taking a different slice of
 the captured batch, planner and remap checked against the Python reference,
@@ -242,14 +243,14 @@ What the numbers say:
   M=256 lands at 0.83-1.23x. The planner is the next target; its compute is
   6-13 us at EP1, so most of the EP8 cost is cross-rank skew and launch gaps
   that overlapping it with the previous layer would hide.
-* Steady state copies nothing: the helper slots keep their experts across the
+* Steady state copies nothing: the redundant slots keep their experts across the
   repeated layer. First-time copies cost 120-220 us per slot.
 
 ## End-to-end serving (2026-10-12)
 
-Serving integration: `tests/eplb_tools/sglang_patch/` (SGLang, `--moe-a2a-backend megamoe`, SM90 MXFP4 MegaMoE kernel on both arms). DeepSeek V4 Flash, TP = EP = 4 on one node, `bench_serving` ShareGPT, 256 prompts, 128 output tokens, concurrency 32, request rate inf. The arms differ only in `SGLANG_MEGAMOE_DYNAMIC_EPLB_SLOTS` (0 vs 4).
+Serving integration: `tests/eplb_tools/sglang_patch/` (SGLang, `--moe-a2a-backend megamoe`, SM90 MXFP4 MegaMoE kernel on both arms). DeepSeek V4 Flash, TP = EP = 4 on one node, `bench_serving` ShareGPT, 256 prompts, 128 output tokens, concurrency 32, request rate inf. The arms differ only in `SGLANG_MEGAMOE_DYNAMIC_EPLB_REDUNDANT_SLOTS` (0 vs 4).
 
-| metric | fixed | 4 helper slots | change |
+| metric | fixed | 4 redundant slots | change |
 |---|---|---|---|
 | total token throughput (tok/s) | 1766 | 1858 | +5.2% |
 | output token throughput (tok/s) | 498 | 523 | +5.2% |
@@ -263,7 +264,7 @@ Prefill improves, decode is unchanged, as the kernel-level study predicts (the b
 
 DeepSeek V4 Flash, TP = EP = 8, same client settings; prefill-only runs use 4 output tokens (the client rejects fewer). GSM8K accuracy (greedy, zero-shot, 300 questions) is 285/300 on both arms.
 
-| run | metric | fixed | 4 helper slots | change |
+| run | metric | fixed | 4 redundant slots | change |
 |---|---|---|---|---|
 | GSM8K prefill | input tok/s | 2198 | 2171 | -1% |
 | GSM8K prefill | mean / median / P99 TTFT (ms) | 847 / 414 / 3939 | 812 / 439 / 3636 | -4% / +6% / -8% |
@@ -281,7 +282,7 @@ after planning) runs first inside the serving image, and the four passes run
 back to back on one node in the order fixed / 4 slots / fixed / 4 slots so
 node and cache effects cancel. The planner runs only for forwards with at
 least 512 local tokens. The balancer is provably active in its arms: weights
-take 31.81 GB per GPU instead of 30.78 GB (43 layers of 4 helper slots) and
+take 31.81 GB per GPU instead of 30.78 GB (43 layers of 4 redundant slots) and
 the KV pool is correspondingly smaller.
 
 | run | metric | fixed p1 (cold) | 4 slots p2 | fixed p3 | 4 slots p4 |
@@ -378,7 +379,7 @@ the planner runs on every layer and does not recover its cost.
 Next run, same script: the adapter now times every N-th large MoE layer
 forward inside the server with CUDA events (both arms, read back one period
 later so nothing stalls) and prints, for the balanced arm, the rank loads of
-the plan that forward used (owner-only vs planned, in token blocks, from the
+the plan that forward used (static-placement-only vs planned, in token blocks, from the
 planner's copy table). That gives the per-layer MoE time fixed vs balanced
 at the same point of the same request stream, and shows whether the plan
 replicates. A third arm plans only from 1024 tokens per rank.
@@ -391,7 +392,7 @@ from 1024, with the adapter timing every 150th MoE layer forward of at least
 512 local tokens (25 per arm, 24 of them at 1900-2000 local tokens, same
 points of the same request stream in every arm).
 
-| arm | layer forward, mean (min-max) us | owner-only max / mean load | planned max / mean | replicas |
+| arm | layer forward, mean (min-max) us | static-placement-only max / mean load | planned max / mean | replicas |
 |---|---|---|---|---|
 | fixed, pass 1 | 1684 (1439-2079) | | | |
 | fixed, pass 4 | 1690 (1444-2109) | | | |
@@ -414,26 +415,26 @@ tokens per rank; 10462 vs 10457 fixed input tok/s).
 Why the kernel ceiling does not show up: the kernel bench repeats the same
 routing, so after the first iteration a plan changes no slot and the weight
 copy is free (1.2 us). In the server consecutive chunks route differently,
-so each plan re-fills about one helper slot per rank per layer, a 12.6 MB
+so each plan re-fills about one redundant slot per rank per layer, a 12.6 MB
 MXFP4 expert over NVLink, serialized in front of the kernel together with
 the planner. With a 1.32x imbalance the kernel can save at most about a
 quarter of its time, and that is what the plan and the copies cost. The
 next run splits the traced time into prepare (plan, copy, remap) and kernel
 and prints the copy count per plan, and adds two arms that amortize the
 copies: `SGLANG_MEGAMOE_DYNAMIC_EPLB_REPLAN_EVERY=4` (a layer re-plans every
-4th large forward and remaps the others onto the last plan) and
+4th prefill forward and remaps the others onto the last plan) and
 `SGLANG_MEGAMOE_DYNAMIC_EPLB_OPEN_GATE_BLOCKS=16` (a fresh replica must be
 worth 16 blocks).
 
 ## Division of labour with METRO (decided 2026-10-14)
 
-Two balancers, one per regime, by decision of the project owner after the
+Two balancers, one per regime, by decision of the project resident rank after the
 planner comparison on identical real routing traces
 (`2026-10-12-metro-vs-megamoe-eplb.md`):
 
 - **Prefill: this balancer.** Large per-rank batches, compute-bound kernel;
   the plan minimizes the busiest rank's token blocks and moves weights into
-  helper slots. On the traces it brings the busiest rank to within 0.5 block
+  redundant slots. On the traces it brings the busiest rank to within 0.5 block
   of the mean at M = 1024 per rank, where METRO's one-replica-per-expert
   routing cannot (it raised the block count above static EPLB).
 - **Decode: METRO (moe_load_balancer, routing-only).** Fixed redundant
@@ -446,7 +447,7 @@ planner comparison on identical real routing traces
 Hand-over point in the serving adapter: forwards below
 `SGLANG_MEGAMOE_DYNAMIC_EPLB_MIN_TOKENS` tokens per rank (decode steps, small
 chunks) skip the planner and only remap onto the last plan. That branch is
-where the decode balancer attaches: the helper slots already hold replicas,
+where the decode balancer attaches: the redundant slots already hold replicas,
 and a routing-only choice among them needs the remap kernel and no copy.
 Remaining work for the prefill side is to hide the plan and copy cost
 (re-plan interval, overlap with the previous layer), which the in-server
@@ -472,8 +473,8 @@ expected effect.
 
 ### Deferred plan (`SGLANG_MEGAMOE_DYNAMIC_EPLB_DEFERRED=1`)
 
-After a layer's first plan, a large forward only remaps onto the plan made
-from its previous large forward and launches the kernel. It then records an
+After a layer's first plan, a prefill forward only remaps onto the plan made
+from its previous prefill forward and launches the kernel. It then records an
 event after the kernel, and on one side stream shared by all layers waits for
 that event, plans from a private int64 copy of this forward's logical
 routing (the shared symmetric buffer moves on to the next layer), and copies
@@ -481,9 +482,9 @@ the weights the new plan needs. Nothing of this is on the critical path: the
 plan and copies for layer L run while layers L+1... of the same step compute.
 
 Hazards and how they are avoided:
-- The copy writes this rank's helper slots of layer L, which the kernel of
+- The copy writes this rank's redundant slots of layer L, which the kernel of
   layer L may still be reading: the side stream waits for the kernel's event.
-  Copies pull from the owners' home slots, which are never written.
+  Copies pull from the resident ranks' resident slots, which are never written.
 - The planner pushes histograms into every rank's workspace and spins on
   per-rank generation flags. Rank A's plan for chunk c+1 of layer L is issued
   after A's layer-L kernel of chunk c+1, which is a collective with B's, which
@@ -495,7 +496,7 @@ Hazards and how they are avoided:
   the end of each step, so CUDA-graph decode replays (which run no Python)
   never overlap a weight copy.
 - `REPLAN_EVERY=K` still applies: the deferred plan is issued every K-th
-  large forward.
+  prefill forward.
 
 The plan is one chunk stale. The trace showed plan loads nearly identical
 between consecutive chunks of the same request mix, and the remap-only path
@@ -540,7 +541,7 @@ Both on healthy nodes (the probe reads 780-810 TFLOPS per GPU), TP8 = EP8,
 steady-state passes (pass 1 discarded for GSM8K, which is cold), GSM8K
 accuracy on 300 questions.
 
-DeepSeek V4 Flash, fixed vs deferred (4 helper slots):
+DeepSeek V4 Flash, fixed vs deferred (4 redundant slots):
 
 | | GSM8K | ShareGPT-long | ShareGPT-long gen64 | LongBench | accuracy |
 |---|---:|---:|---:|---:|---|
@@ -618,7 +619,7 @@ per-expert fp32 global scale, which both GEMM epilogues already apply
 (`l1_global_scales`, `l2_global_scales`; the EPLB arena carries them per slot
 and the copy kernel moves them with the weights). Per-expert code spans are
 3-10 on both checkpoints, inside the 12-code window, so no group is lost
-(the helper reports the lost fraction; it is 0 here). The adapter applies the
+(the redundant slot reports the lost fraction; it is 0 here). The adapter applies the
 fold for both models; for scales already inside the window it is the identity
 up to the global factor. The MiMo arms were resubmitted with the fix; the
 DeepSeek V4 Flash arms that were already running picked the fixed adapter up
@@ -653,7 +654,7 @@ MiMo 2.5 Pro:
 What the numbers say:
 
 * With correct numerics the earlier MiMo "+15-16 %" is gone; it was an
-  artifact of the zeroed weights. On these datasets the owner-only imbalance
+  artifact of the zeroed weights. On these datasets the static-placement-only imbalance
   that reaches the planner is 1.16x (MiMo) and 1.32x (DeepSeek) at the
   median, p90 1.37x / 1.69x, far below the GSM8K-only traces (kappa up to 14)
   because a 16k chunk mixes many prompts and the sequence sharding gives
@@ -692,19 +693,19 @@ kernel saving grows and the 350 us plan cost does not.
 
 Production path, prefill only, DeepSeek V4 Flash at EP8 unless stated:
 
-* **Owner permutation** (`tests/eplb_tools/build_owner_permutation.py`,
+* **Static expert placement** (`tests/eplb_tools/build_static_placement.py`,
   applied through SGLang's `--init-expert-location` with static dispatch):
   one choice per layer of which rank owns which expert, from the first 25 %
   of a calibration window of the routing. Zero cost per call.
-* **Plan + fused copy + remap**: with helper slots the planner runs once per
+* **Plan + in-kernel weight copy + remap**: with redundant slots the planner runs once per
   large chunk (one CTA, 37-40 us in-kernel at 2048 tokens per rank), the
-  MegaMoE kernel itself copies the changed helper slots over NVLink while it
-  computes the home blocks and gates the dependent tiles on per-slot
-  readiness counters (the default; `DG_EPLB_FUSE_COPY=0` restores the separate
+  MegaMoE kernel itself copies the changed redundant slots over NVLink while it
+  computes the resident blocks and gates the dependent tiles on per-slot
+  readiness counters (the default; `DG_EPLB_IN_KERNEL_COPY=0` restores the separate
   copy kernel as a measurement mode), and the remap rewrites the
   routing to physical slots. The per-expert global scales are read after the
-  GEMM main loop for helper slots (reading them at task start raced with
-  the fused copy); home slots read theirs at task start.
+  GEMM main loop for redundant slots (reading them at task start raced with
+  the in-kernel weight copy); resident slots read theirs at task start.
 * **Removed**: the deferred plan (one chunk stale, 1.02-1.06x kernel on
   ShareGPT and a CUDA-graph interaction), the fused-plan prototype (the
   planner inside the kernel's first phase; 137-569 us per layer slower than
@@ -713,16 +714,16 @@ Production path, prefill only, DeepSeek V4 Flash at EP8 unless stated:
   prepare segment and gives the same back in the kernel and the shared
   experts).
 
-Kernel level, real GSM8K routing replayed outside the server, EP8, 4 helper
+Kernel level, real GSM8K routing replayed outside the server, EP8, 4 redundant slot
 slots, rank-maximum time, geomean over four layers: kernel-only 1.42x at
 1024 and 1.50x at 4096 tokens per rank; with the synchronous plan, copy and
 remap on the critical path 1.26x and 1.44x. Inside the server the per-layer
-MoE time under the owner permutation is 1.21x.
+MoE time under the static expert placement is 1.21x.
 
 End to end (SGLang `bench_serving`, prefill-only 1000 few-shot prompts of
 about 1k tokens, input token throughput, means over the interleaved passes):
 
-| chunk | dataset, concurrency | fixed | owner permutation | permutation + 4 slots | 4 slots |
+| chunk | dataset, concurrency | fixed | static expert placement | permutation + 4 slots | 4 slots |
 |---|---|---:|---:|---:|---:|
 | 16k | GSM8K c128 | 45,228 | +5.3 % | +5.0 % | +6.4 % |
 | 16k | GSM8K c256 | 45,708 | +5.3 % | +6.1 % | +6.1 % |
@@ -738,7 +739,7 @@ Mean TTFT moves the same way (-2 % to -7 %). GSM8K 300-question accuracy
 prefill step (19-30 % here): the kernel ceiling of 1.66x corresponds to
 about +12 % end to end.
 
-Decode was measured separately with a replica router on static helper-slot
+Decode was measured separately with a replica router on static redundant slot-slot
 placement (METRO-style). The kernel gains 4.5-7.8 % but the per-layer route
 and count exchange costs 11.5-14 us, which over 40 layers exceeds the saving;
 TPOT ends 1-6 % worse at 8-64 concurrent requests. That line is not in this
@@ -751,21 +752,21 @@ Question: today's +5 to +8 % end to end against the derived ceiling of about
 +12 %. Every term below was measured on the final tree; each is either
 recovered or attributed to a measured cause.
 
-### Inside the server (TP8, 16k chunks, GSM8K 1k, 278 large forwards per arm)
+### Inside the server (TP8, 16k chunks, GSM8K 1k, 278 prefill forwards per arm)
 
-The adapter trace times every 50th large forward on rank 0 with CUDA events
+The adapter trace times every 50th prefill forward on rank 0 with CUDA events
 after the FP8 cast; the forwards carry the same ordinals and token counts in
 every arm (median 1848 tokens per rank), so the arms pair by forward.
 
 | arm | prepare us | kernel us | total us | busiest rank, blocks |
 |---|---:|---:|---:|---|
-| fixed placement | 0 | 1670 (mean 1698) | 1670 | owner-only 234 (contiguous: 278) |
+| fixed placement | 0 | 1670 (mean 1698) | 1670 | static-placement-only 234 (contiguous: 278) |
 | permutation + 4 slots | 70 | 1216 | 1287 | planned 190 vs mean 190 |
 | same, plan on a side stream | 47 | 1235 | 1284 | planned 191 vs mean 190 |
 
 Paired kernel ratio fixed / balanced 1.357x (median; mean 1.389x), total
 1.283x. The planner reaches the block ideal (busiest rank equals the mean in
-the median forward, at most 20 blocks above it), so neither more helper
+the median forward, at most 20 blocks above it), so neither more redundant slot
 slots nor a better planner buys anything here; the host planner study on
 the 1k traces agrees (S = 4: 0.3-0.6 % above ideal, the exact optimum
 0.1-0.2 %; S = 2: 2-5 %; S = 1: 11-14 %).
@@ -807,10 +808,10 @@ path costs 1287 us, 168 us more. That excess decomposes as follows.
    one launch; per layer 2420 vs 2418 us at TP4, end to end within noise).
    The translation path is kept on the `megamoe_mxfp4_prefill_ceiling`
    branch as the record; neither is in this tree.
-2. **The fused-copy instantiation, about 35 us per layer.** With zero copies
+2. **The in-kernel-copy instantiation, about 35 us per layer.** With zero copies
    pending the EPLB kernel's L1 task takes 31.6 us against 30.3 us in the
    fixed kernel (+4.5 %), L2 15.45 against 15.3 (+1 % after the fix below).
-   Not the extra physical slots (the EPLB kernel with the fused copy compiled
+   Not the extra physical slots (the EPLB kernel with the in-kernel weight copy compiled
    out runs the same routing at 1.00-1.02x of the fixed kernel), not the
    global scales (fixed + scales = fixed), not the loader's per-task readiness
    check, not the dispatch warps' copy code, not the coherent scale load:
@@ -818,8 +819,8 @@ path costs 1287 us, 168 us more. That excess decomposes as follows.
    registers, no spills and no stack for both instantiations; the fused one
    is 5496 against 5024 SASS instructions, all of it in the dispatch warps'
    copy path. The L2 part was recovered: the per-expert global scale is now
-   read at task start for home slots (never a copy target) and after the main
-   loop only for helper slots, which took the L2 task from 15.9 to 15.45 us;
+   read at task start for resident slots (never a copy target) and after the main
+   loop only for redundant slots, which took the L2 task from 15.9 to 15.45 us;
    pinning the load into the first k-block with an asm barrier made every
    task 2 % slower and was dropped. The L1 part stays attributed to code
    placement of the larger binary; it is worth about +0.9 % end to end.
@@ -846,7 +847,7 @@ path costs 1287 us, 168 us more. That excess decomposes as follows.
 | balanced, measured: prepare 70 + kernel 1216 | 1287 | 77 % |
 | of which planner compute (greedy 5.6, prune 4.5, remap 3.2, the rest 7) | 23 | 1.4 % |
 | of which peer wait and launch gap | 47 | 2.8 % |
-| of which fused-copy instantiation (L1 task +4.5 %, L2 +1 %) | 35 | 2.1 % |
+| of which in-kernel-copy instantiation (L1 task +4.5 %, L2 +1 %) | 35 | 2.1 % |
 | of which rank finish spread at equal blocks | 10 | 0.6 % |
 | of which unexplained kernel excess over the fixed-arm cost model | 52 | 3.1 % |
 
@@ -858,8 +859,8 @@ MoE share of the step (27 %) turns that into the measured +6.8 % against a
 
 `tests/test_mxfp4_mega_moe_sm90_eplb.py --phase-stamps 1` prints, per bench
 cell, the in-kernel phase stamps and per-task times of the fixed kernel, the
-fixed kernel with global scales, the EPLB kernel with empty helper slots on
-the owner routing (the slot cost), the EPLB kernel with the fused copy
+fixed kernel with global scales, the EPLB kernel with empty redundant slots on
+the resident rank routing (the slot cost), the EPLB kernel with the in-kernel weight copy
 compiled out, and the planned EPLB kernel, plus a per-rank table (blocks,
 distinct experts, partial last blocks, GEMM finish) and the host cost of
 each launch; `--translate 1` checks the in-kernel translation against the

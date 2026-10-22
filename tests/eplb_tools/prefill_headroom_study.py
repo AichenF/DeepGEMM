@@ -5,13 +5,13 @@ token blocks (``block_m`` rows each) of the experts it executes. This script
 measures, on captured prefill routing, how far the busiest rank is from the
 ideal ``total_blocks / EP`` under
 
-* ``home``: the contiguous placement the serving baseline uses (expert ``e``
+* ``resident``: the contiguous placement the serving baseline uses (expert ``e``
   on rank ``e // H``), no replicas; also the no-algo column;
 * ``planner``: the MegaFlux-style device planner, host reference
-  ``plan_reference`` in ``deep_gemm/mega/eplb_planner.py``, with ``S`` helper
+  ``plan_reference`` in ``deep_gemm/mega/eplb_planner.py``, with ``S`` redundant slot
   slots per rank (``fresh``: no slot cache; ``chained``: the slot cache of the
   previous chunk of the same layer, which is what the serving path does);
-* ``opt``: the exact optimum with ``S`` helper slots per rank, whole-block
+* ``opt``: the exact optimum with ``S`` redundant slots per rank, whole-block
   splitting of a replicated expert between its holders (mixed-integer program
   solved with HiGHS through ``scipy.optimize.milp``), plus its LP relaxation
   as a lower bound;
@@ -28,7 +28,7 @@ Subcommands::
         --out results.json --md tables.md [--ep 4 8] [--chunks 4096 16384 32768] \
         [--slots 0 4 8] [--block-m 64] [--max-chunks-per-layer N] [--workers P]
 
-    # Owner permutation (which rank owns which expert, chosen once per layer
+    # Static expert placement (which rank owns which expert, chosen once per layer
     # from the first quarter of the stream; zero per-call cost) alone, under
     # the planner, and with an EPLB-style static set + per-chunk split.
     python prefill_headroom_study.py permute --cache dsv4_gsm8k=<npz> --cache dsv4_sharegpt=<npz> \
@@ -43,7 +43,7 @@ is the routing of ``C`` consecutive prompt tokens as the server would see it
 with ``chunked_prefill_size = C``); a trailing partial chunk is kept when it
 holds at least half of ``C``. For ``C = 32768`` a stream shorter than ``C`` is
 taken whole. The chunk is sequence-sharded across the ``EP`` ranks, but every
-rank's tokens go to the experts' home ranks, so the per-rank load depends
+rank's tokens go to the experts' resident ranks, so the per-rank load depends
 only on the chunk's per-expert totals; the planner reference likewise uses
 only the totals.
 """
@@ -152,7 +152,7 @@ def opt_min_max(b: Sequence[int], R: int, S: int, ub: Optional[int] = None,
     replicas of experts it does not own and a replicated expert's blocks are
     split in whole blocks between its holders.
 
-    Only ranks whose home load exceeds ``ceil(total / R)`` can need to export
+    Only ranks whose resident load exceeds ``ceil(total / R)`` can need to export
     (any export from a rank already at or below the optimum can be undone
     without raising the maximum), so replica variables exist only for their
     experts. Given the replica choice the block split is a transportation
@@ -172,9 +172,9 @@ def opt_min_max(b: Sequence[int], R: int, S: int, ub: Optional[int] = None,
         return float(max(base)), True
     donors = [r for r in range(R) if base[r] > lb0]
     ex = [e for d in donors for e in range(d * H, (d + 1) * H) if b[e] > 0]
-    owner = {e: e // H for e in ex}
+    resident_rank = {e: e // H for e in ex}
     nx = len(ex) * R
-    pairs = [(e, r) for e in ex for r in range(R) if r != owner[e]]
+    pairs = [(e, r) for e in ex for r in range(R) if r != resident_rank[e]]
     ny = len(pairs)
     # variable layout: [T] [x_{e,r} for e in ex, r in R] [y_{e,r} for pairs]
     nv = 1 + nx + ny
@@ -188,7 +188,7 @@ def opt_min_max(b: Sequence[int], R: int, S: int, ub: Optional[int] = None,
             rows.append(row); cols.append(xi[(e, r)]); vals.append(1.0)
         lo.append(float(b[e])); hi.append(float(b[e])); row += 1
     # (2) rank load <= T
-    fixed = [base[r] - sum(b[e] for e in ex if owner[e] == r) for r in range(R)]
+    fixed = [base[r] - sum(b[e] for e in ex if resident_rank[e] == r) for r in range(R)]
     for r in range(R):
         for e in ex:
             rows.append(row); cols.append(xi[(e, r)]); vals.append(1.0)
@@ -272,7 +272,7 @@ def _case_worker(payload):
         ideal = sum(b) / R
         for S in slots:
             rec = dict(trace=name, layer=li, chunk=ci, ep=R, slots=S,
-                       total_blocks=int(sum(b)), ideal=ideal, home=max(base))
+                       total_blocks=int(sum(b)), ideal=ideal, resident=max(base))
             if S == 0:
                 rec.update(planner=max(base), planner_chained=max(base), opt=max(base), opt_proven=True,
                            opt_lp=float(max(base)), replicas=0, stale=max(base), resplit=max(base), union=max(base), first=None)
@@ -418,8 +418,8 @@ def render_tables(rows, meta, block_m, compact: bool = False) -> str:
     eps = sorted({r['ep'] for r in rows})
     chunks = sorted({r['chunk_tokens'] for r in rows})
     slots = sorted({r['slots'] for r in rows})
-    hdr = ('| trace | EP | chunk | tokens/rank | cases | S | ideal | home (no-algo) | gap | planner | gap | '
-           'planner (chained) | gap | OPT | gap | OPT proven | LP bound | home/planner | home/OPT | '
+    hdr = ('| trace | EP | chunk | tokens/rank | cases | S | ideal | contiguous placement (no balancing) | gap | planner | gap | '
+           'planner (chained) | gap | OPT | gap | OPT proven | LP bound | resident/planner | resident/OPT | '
            'replicas used | planner at ideal |')
     sep = '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|'
     out.append(hdr)
@@ -432,7 +432,7 @@ def render_tables(rows, meta, block_m, compact: bool = False) -> str:
                     if not sel:
                         continue
                     ideal = _mean([r['ideal'] for r in sel])
-                    home = _mean([r['home'] for r in sel])
+                    resident = _mean([r['resident'] for r in sel])
                     pl = _mean([r['planner'] for r in sel])
                     pc = _mean([r['planner_chained'] for r in sel])
                     opt_vals = [r['opt'] if r['opt'] is not None else r.get('opt_lp') for r in sel]
@@ -443,9 +443,9 @@ def render_tables(rows, meta, block_m, compact: bool = False) -> str:
                     at_ideal = sum(1 for r in sel if r['planner'] <= math.ceil(r['ideal'] - 1e-9))
                     tok = _mean([r['tokens'] for r in sel]) / R
                     g = lambda v: f'{100 * (v - ideal) / ideal:.1f}%'
-                    out.append(f'| {tr} | {R} | {C} | {tok:.0f} | {len(sel)} | {S} | {ideal:.1f} | {home:.1f} | {g(home)} | '
+                    out.append(f'| {tr} | {R} | {C} | {tok:.0f} | {len(sel)} | {S} | {ideal:.1f} | {resident:.1f} | {g(resident)} | '
                                f'{pl:.1f} | {g(pl)} | {pc:.1f} | {g(pc)} | {opt:.1f} | {g(opt)} | {proven}/{len(sel)} | '
-                               f'{lp:.1f} | {home / pl:.3f} | {home / opt:.3f} | {reps:.1f} | {100 * at_ideal / len(sel):.0f}% |')
+                               f'{lp:.1f} | {resident / pl:.3f} | {resident / opt:.3f} | {reps:.1f} | {100 * at_ideal / len(sel):.0f}% |')
     return '\n'.join(out) + '\n'
 
 
@@ -457,9 +457,9 @@ def _render_compact(rows, block_m) -> str:
     slots = sorted({r['slots'] for r in rows})
     for R in eps:
         out.append(f'EP{R}: busiest-rank load in token blocks of {block_m}, mean over layers and chunks; '
-                   f'gap = (column - ideal) / ideal; "no-algo" and "home" are the same contiguous placement.\n')
-        out.append('| trace | chunk | tokens/rank | cases | S | ideal | no-algo = home | gap | planner | gap | OPT | gap | '
-                   'OPT proven | home/planner | home/OPT | replicas used (of S x EP) | chunks where planner = ceil(ideal) |')
+                   f'gap = (column - ideal) / ideal; "no-algo" and "resident" are the same contiguous placement.\n')
+        out.append('| trace | chunk | tokens/rank | cases | S | ideal | no-algo = resident | gap | planner | gap | OPT | gap | '
+                   'OPT proven | resident/planner | resident/OPT | replicas used (of S x EP) | chunks where planner = ceil(ideal) |')
         out.append('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|')
         for tr in traces:
             for C in chunks:
@@ -468,7 +468,7 @@ def _render_compact(rows, block_m) -> str:
                     if not sel:
                         continue
                     ideal = _mean([r['ideal'] for r in sel])
-                    home = _mean([r['home'] for r in sel])
+                    resident = _mean([r['resident'] for r in sel])
                     pl = _mean([r['planner'] for r in sel])
                     opt = _mean([r['opt'] if r['opt'] is not None else r.get('opt_lp') for r in sel])
                     proven = sum(1 for r in sel if r.get('opt_proven'))
@@ -477,9 +477,9 @@ def _render_compact(rows, block_m) -> str:
                     tok = _mean([r['tokens'] for r in sel]) / R
                     g = lambda v: f'{100 * (v - ideal) / ideal:.1f}%'
                     name = _NAMES.get(tr, tr)
-                    out.append(f'| {name} | {C} | {tok:.0f} | {len(sel)} | {S} | {ideal:.1f} | {home:.1f} | {g(home)} | '
+                    out.append(f'| {name} | {C} | {tok:.0f} | {len(sel)} | {S} | {ideal:.1f} | {resident:.1f} | {g(resident)} | '
                                f'{pl:.1f} | {g(pl)} | {opt:.1f} | {g(opt)} | {proven}/{len(sel)} | '
-                               f'{home / pl:.3f} | {home / opt:.3f} | {reps:.1f} | {100 * at_ideal / len(sel):.0f}% |')
+                               f'{resident / pl:.3f} | {resident / opt:.3f} | {reps:.1f} | {100 * at_ideal / len(sel):.0f}% |')
         out.append('')
     return '\n'.join(out) + '\n'
 
@@ -487,7 +487,7 @@ def _render_compact(rows, block_m) -> str:
 def render_stale(rows, block_m) -> str:
     """Deferred-plan quality: chunk i remapped onto chunk i-1's plan (stale),
     and the incremental-refresh upper bound (union). First chunks of a
-    stream are excluded (stale = home there by definition)."""
+    stream are excluded (stale = resident there by definition)."""
     out = []
     traces = sorted({r['trace'] for r in rows})
     eps = sorted({r['ep'] for r in rows})
@@ -496,9 +496,9 @@ def render_stale(rows, block_m) -> str:
     for R in eps:
         out.append(f'EP{R}: busiest-rank blocks of {block_m}, mean over layers and chunks (first chunk of every '
                    f'layer stream excluded); gap vs ideal; "within 2%" = chunks where stale <= 1.02 x fresh planner.\n')
-        out.append('| trace | chunk | tokens/rank | cases | S | ideal | home | fresh planner | gap | stale plan | gap | '
-                   'home/stale | stale within 2% of fresh | stale worse than home | previous replicas, fresh split, no copy | gap | '
-                   'home/resplit | stale + up to S new (upper bound) | gap | home/union |')
+        out.append('| trace | chunk | tokens/rank | cases | S | ideal | resident | fresh planner | gap | stale plan | gap | '
+                   'resident/stale | stale within 2% of fresh | stale worse than resident | previous replicas, fresh split, no copy | gap | '
+                   'resident/resplit | stale + up to S new (upper bound) | gap | resident/union |')
         out.append('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|')
         for tr in traces:
             for C in chunks:
@@ -508,18 +508,18 @@ def render_stale(rows, block_m) -> str:
                     if not sel:
                         continue
                     ideal = _mean([r['ideal'] for r in sel])
-                    home = _mean([r['home'] for r in sel])
+                    resident = _mean([r['resident'] for r in sel])
                     pl = _mean([r['planner'] for r in sel])
                     st = _mean([r['stale'] for r in sel])
                     un = _mean([r['union'] for r in sel])
                     rs = _mean([r['resplit'] for r in sel])
                     within = sum(1 for r in sel if r['stale'] <= 1.02 * r['planner'])
-                    worse = sum(1 for r in sel if r['stale'] > r['home'])
+                    worse = sum(1 for r in sel if r['stale'] > r['resident'])
                     tok = _mean([r['tokens'] for r in sel]) / R
                     g = lambda v: f'{100 * (v - ideal) / ideal:.1f}%'
-                    out.append(f'| {_NAMES.get(tr, tr)} | {C} | {tok:.0f} | {len(sel)} | {S} | {ideal:.1f} | {home:.1f} | '
-                               f'{pl:.1f} | {g(pl)} | {st:.1f} | {g(st)} | {home / st:.3f} | {100 * within / len(sel):.0f}% | '
-                               f'{100 * worse / len(sel):.0f}% | {rs:.1f} | {g(rs)} | {home / rs:.3f} | {un:.1f} | {g(un)} | {home / un:.3f} |')
+                    out.append(f'| {_NAMES.get(tr, tr)} | {C} | {tok:.0f} | {len(sel)} | {S} | {ideal:.1f} | {resident:.1f} | '
+                               f'{pl:.1f} | {g(pl)} | {st:.1f} | {g(st)} | {resident / st:.3f} | {100 * within / len(sel):.0f}% | '
+                               f'{100 * worse / len(sel):.0f}% | {rs:.1f} | {g(rs)} | {resident / rs:.3f} | {un:.1f} | {g(un)} | {resident / un:.3f} |')
         out.append('')
     return '\n'.join(out) + '\n'
 
@@ -541,7 +541,7 @@ def cmd_tables(args):
 # --------------------------------------------------------------------------
 
 def cmd_calibrate(args):
-    """Home / planner block ratio for the windows the kernel benchmark replays
+    """Resident / planner block ratio for the windows the kernel benchmark replays
     (rank r takes tokens [r*M, (r+1)*M) of the layer stream, wrapping) at
     the layer indices the benchmark used, for comparison with its measured
     kernel-only speedups."""
@@ -560,13 +560,13 @@ def cmd_calibrate(args):
             sel = [w % n_win for w in range(need)]
             totals = hist[li, sel].sum(0).tolist()
             b = blocks_of(totals, args.block_m)
-            home = max(home_loads(b, R))
+            resident = max(home_loads(b, R))
             pl = planner_max_load(planner, totals, R, S, args.block_m)[0]
             opt, proven = opt_min_max(b, R, S, ub=pl, time_limit=args.time_limit)
-            vals.append((home, pl, opt, sum(b) / R))
-        print(f'M={M}: ' + ' / '.join(f'{h / p:.2f}' for h, p, o, i in vals) + '  (home/planner)   ' +
-              ' / '.join(f'{h / o:.2f}' for h, p, o, i in vals) + '  (home/OPT)   ' +
-              ' / '.join(f'{h / i:.2f}' for h, p, o, i in vals) + '  (home/ideal)')
+            vals.append((resident, pl, opt, sum(b) / R))
+        print(f'M={M}: ' + ' / '.join(f'{h / p:.2f}' for h, p, o, i in vals) + '  (resident/planner)   ' +
+              ' / '.join(f'{h / o:.2f}' for h, p, o, i in vals) + '  (resident/OPT)   ' +
+              ' / '.join(f'{h / i:.2f}' for h, p, o, i in vals) + '  (resident/ideal)')
 
 
 # --------------------------------------------------------------------------
@@ -575,7 +575,7 @@ def cmd_calibrate(args):
 
 def opt_split_fixed(b: Sequence[int], holders: Sequence[Sequence[int]], R: int) -> int:
     """Exact min-max busiest-rank blocks when the replica set is fixed:
-    ``holders[e]`` are the ranks holding expert ``e`` (owner included) and
+    ``holders[e]`` are the ranks holding expert ``e`` (resident_rank included) and
     its blocks may be split in whole blocks between them. With the set
     fixed this is a transportation problem with integer data, so the LP
     optimum rounded up is the integer optimum."""
@@ -646,11 +646,11 @@ def _static_layer_job(payload):
             counts = [[0] * E for _ in range(R)]
             counts[0] = hist25
             tables[('planner', S, 'same')] = planner.plan_reference(counts, S, block_m).slot_expert
-            tables[('eplb', S, 'same')] = planner.static_replica_placement(hist25, R, S)
+            tables[('eplb', S, 'same')] = planner.static_redundant_slots(hist25, R, S)
             if cross25 is not None and S == 8:
                 counts[0] = cross25
                 tables[('planner', S, 'cross')] = planner.plan_reference(counts, S, block_m).slot_expert
-                tables[('eplb', S, 'cross')] = planner.static_replica_placement(cross25, R, S)
+                tables[('eplb', S, 'cross')] = planner.static_redundant_slots(cross25, R, S)
         for C in chunks:
             groups = chunk_groups(rem_tokens, W, C)
             for ci, (a, bnd) in enumerate(groups):
@@ -664,7 +664,7 @@ def _static_layer_job(payload):
                                              open_gate_blocks=1 << 30)[0]
                     exact = opt_split_fixed(b, _holders_from_table(table, E, R), R)
                     out.append(dict(trace=tr, layer=li, chunk=ci, chunk_tokens=C, ep=R, slots=S, rule=rule, src=src,
-                                    tokens=int(sum(totals)), ideal=ideal, home=max(base), fresh=fresh[S],
+                                    tokens=int(sum(totals)), ideal=ideal, resident=max(base), fresh=fresh[S],
                                     split=split, exact=exact,
                                     replicas=sum(1 for row in table for e in row if e >= 0)))
     return out
@@ -714,14 +714,14 @@ def render_static(rows, block_m, frac) -> str:
     eps = sorted({r['ep'] for r in rows})
     chunks = sorted({r['chunk_tokens'] for r in rows})
     for rule, title in (('planner', "replica set = the planner's replica choice on the first-quarter histogram"),
-                        ('eplb', "replica set = static_replica_placement (EPLB-style, load per copy) on the first-quarter histogram")):
+                        ('eplb', "replica set = static_redundant_slots (EPLB-style, load per copy) on the first-quarter histogram")):
         for R in eps:
             out.append(f'EP{R}, {title}; busiest-rank blocks of {block_m}, mean over layers and the chunks of the last '
                        f'{100 * (1 - frac):.0f} % of each layer stream; gap vs ideal; "within 2%" = chunks where the '
                        f'static split <= 1.02 x the fresh planner with the same S.\n')
-            out.append('| trace | replicas from | chunk | tokens/rank | cases | S | replicas used (of S x EP) | ideal | home | '
-                       'fresh planner | gap | static set + per-chunk split | gap | home/static-split | within 2% of fresh | '
-                       'exact split, same set | gap | home/exact |')
+            out.append('| trace | replicas from | chunk | tokens/rank | cases | S | replicas used (of S x EP) | ideal | resident | '
+                       'fresh planner | gap | static set + per-chunk split | gap | resident/static-split | within 2% of fresh | '
+                       'exact split, same set | gap | resident/exact |')
             out.append('|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|')
             for tr in traces:
                 for src in ('same', 'cross'):
@@ -732,7 +732,7 @@ def render_static(rows, block_m, frac) -> str:
                             if not sel:
                                 continue
                             ideal = _mean([r['ideal'] for r in sel])
-                            home = _mean([r['home'] for r in sel])
+                            resident = _mean([r['resident'] for r in sel])
                             fr = _mean([r['fresh'] for r in sel])
                             sp = _mean([r['split'] for r in sel])
                             ex = _mean([r['exact'] for r in sel])
@@ -743,20 +743,20 @@ def render_static(rows, block_m, frac) -> str:
                             other = {'dsv4_gsm8k': 'ShareGPT', 'dsv4_sharegpt': 'GSM8K'}.get(tr, 'other')
                             label = 'same stream, first 25 %' if src == 'same' else f'{other} stream, first 25 %'
                             out.append(f'| {_NAMES.get(tr, tr)} | {label} | {C} | {tok:.0f} | {len(sel)} | {S} | {reps:.1f} | '
-                                       f'{ideal:.1f} | {home:.1f} | {fr:.1f} | {g(fr)} | {sp:.1f} | {g(sp)} | {home / sp:.3f} | '
-                                       f'{100 * within / len(sel):.0f}% | {ex:.1f} | {g(ex)} | {home / ex:.3f} |')
+                                       f'{ideal:.1f} | {resident:.1f} | {fr:.1f} | {g(fr)} | {sp:.1f} | {g(sp)} | {resident / sp:.3f} | '
+                                       f'{100 * within / len(sel):.0f}% | {ex:.1f} | {g(ex)} | {resident / ex:.3f} |')
             out.append('')
     return '\n'.join(out) + '\n'
 
 
 # --------------------------------------------------------------------------
-# permute: owner permutation (which rank owns which expert), zero per-call cost
+# permute: static expert placement (which rank owns which expert), zero per-call cost
 # --------------------------------------------------------------------------
 
 def _perm_max_load(planner, totals, perm, R: int, block_m: int) -> int:
     """Busiest-rank blocks of the contiguous placement after relabeling the
     experts by ``perm`` (no replicas)."""
-    return max(home_loads(blocks_of(planner.apply_owner_permutation(totals, perm), block_m), R))
+    return max(home_loads(blocks_of(planner.apply_static_placement(totals, perm), block_m), R))
 
 
 def _count_replicas(table) -> int:
@@ -764,9 +764,9 @@ def _count_replicas(table) -> int:
 
 
 def _permute_layer_job(payload):
-    """One layer of one trace: owner permutation from the first ``frac`` of
+    """One layer of one trace: static expert placement from the first ``frac`` of
     the stream (and from the other dataset's first ``frac``), then every
-    later chunk under home / permutation / planner / permutation + planner /
+    later chunk under resident / permutation / planner / permutation + planner /
     permutation + EPLB-style static set + per-chunk split, plus a
     permutation recomputed from the previous chunk of the stream."""
     (tr, li, hist_rows, n_tokens, W, eps, slots, chunks, block_m, frac, cross_hist_rows) = payload
@@ -782,13 +782,13 @@ def _permute_layer_job(payload):
     rem_tokens = n_tokens - n25 * W
     out = []
     for R in eps:
-        perm_same = planner.owner_permutation(hist25, R, block_m)
-        perm_cross = {o: planner.owner_permutation(c, R, block_m) for o, c in cross25.items()}
-        hist25_p = planner.apply_owner_permutation(hist25, perm_same)
+        perm_same = planner.static_placement(hist25, R, block_m)
+        perm_cross = {o: planner.static_placement(c, R, block_m) for o, c in cross25.items()}
+        hist25_p = planner.apply_static_placement(hist25, perm_same)
         # Two EPLB-style static sets on the permuted layout: the gated rule
         # (opens a copy only while it lowers the holders below the receiver)
         # and the ungated fill of every slot by load per copy.
-        tables = {S: planner.static_replica_placement(hist25_p, R, S) for S in slots}
+        tables = {S: planner.static_redundant_slots(hist25_p, R, S) for S in slots}
         tables_full = {S: planner._fill_by_frequency(hist25_p, R, S) for S in slots}
         for C in chunks:
             per = C // W
@@ -801,10 +801,10 @@ def _permute_layer_job(payload):
                 # The chunk of C tokens preceding this one in the stream (the
                 # tail of the calibration part for the first evaluation chunk).
                 prev = hist[max(0, n25 + a - per):n25 + a].sum(0).tolist()
-                perm_prev = planner.owner_permutation(prev, R, block_m)
-                totals_p = planner.apply_owner_permutation(totals, perm_same)
+                perm_prev = planner.static_placement(prev, R, block_m)
+                totals_p = planner.apply_static_placement(totals, perm_same)
                 common = dict(trace=tr, layer=li, chunk=ci, chunk_tokens=C, ep=R, tokens=int(sum(totals)),
-                              ideal=ideal, home=max(base),
+                              ideal=ideal, resident=max(base),
                               perm=max(home_loads(blocks_of(totals_p, block_m), R)),
                               perm_prev=_perm_max_load(planner, totals, perm_prev, R, block_m),
                               perm_moved=sum(1 for p_, e in enumerate(perm_same) if p_ // (E // R) != e // (E // R)))
@@ -817,10 +817,10 @@ def _permute_layer_job(payload):
                     rec.update(planner=p_home, replicas=_count_replicas(slot_home),
                                perm_planner=p_perm, perm_replicas=_count_replicas(slot_perm))
                     rec['perm_prev_planner'] = planner_max_load(
-                        planner, planner.apply_owner_permutation(totals, perm_prev), R, S, block_m)[0]
+                        planner, planner.apply_static_placement(totals, perm_prev), R, S, block_m)[0]
                     for o, pc in perm_cross.items():
                         rec['perm_cross_planner:' + o] = planner_max_load(
-                            planner, planner.apply_owner_permutation(totals, pc), R, S, block_m)[0]
+                            planner, planner.apply_static_placement(totals, pc), R, S, block_m)[0]
                     table = tables[S]
                     rec['perm_static_split'] = planner_max_load(planner, totals_p, R, S, block_m,
                                                                 prev_slot_expert=table, open_gate_blocks=1 << 30)[0]
@@ -894,10 +894,10 @@ def render_permute(rows, block_m, frac) -> str:
     for R in eps:
         out.append(f'EP{R}: busiest-rank blocks of {block_m}, mean over layers and the chunks of the last '
                    f'{100 * (1 - frac):.0f} % of each layer stream; gap vs ideal; "closed" = share of the '
-                   f'home-to-ideal gap the arm removes, (home - arm) / (home - ideal); replicas = helper slots in '
+                   f'resident-to-ideal gap the arm removes, (resident - arm) / (resident - ideal); replicas = redundant slots in '
                    f'use, summed over ranks.\n')
-        out.append('| trace | permutation from | chunk | tokens/rank | cases | S | ideal | home | gap | '
-                   'permutation only | gap | closed | home/perm | home + planner | gap | replicas | '
+        out.append('| trace | permutation from | chunk | tokens/rank | cases | S | ideal | resident | gap | '
+                   'permutation only | gap | closed | resident/perm | resident + planner | gap | replicas | '
                    'permutation + planner | gap | replicas | permutation + EPLB set (gated) + per-chunk split | gap | replicas | '
                    'exact split, same set | gap | permutation + EPLB set (every slot) + per-chunk split | gap | replicas | '
                    'exact split, same set | gap |')
@@ -917,7 +917,7 @@ def render_permute(rows, block_m, frac) -> str:
                         if not sel:
                             continue
                         ideal = _mean([r['ideal'] for r in sel])
-                        home = _mean([r['home'] for r in sel])
+                        resident = _mean([r['resident'] for r in sel])
                         pm = _mean([r[key] for r in sel])
                         pl = _mean([r['planner'] for r in sel])
                         pp = _mean([r[key_pl] for r in sel])
@@ -925,7 +925,7 @@ def render_permute(rows, block_m, frac) -> str:
                         preps = _mean([r['perm_replicas'] for r in sel]) if src == 'same' else None
                         tok = _mean([r['tokens'] for r in sel]) / R
                         g = lambda v: f'{100 * (v - ideal) / ideal:.1f}%'
-                        closed = f'{100 * (home - pm) / (home - ideal):.0f}%'
+                        closed = f'{100 * (resident - pm) / (resident - ideal):.0f}%'
                         if src == 'same':
                             ss = _mean([r['perm_static_split'] for r in sel])
                             se = _mean([r['perm_static_exact'] for r in sel])
@@ -938,16 +938,16 @@ def render_permute(rows, block_m, frac) -> str:
                         else:
                             tail = f'{pp:.1f} | {g(pp)} | - | - | - | - | - | - | - | - | - | - | - |'
                         out.append(f'| {_NAMES.get(tr, tr)} | {label} | {C} | {tok:.0f} | {len(sel)} | {S} | {ideal:.1f} | '
-                                   f'{home:.1f} | {g(home)} | {pm:.1f} | {g(pm)} | {closed} | {home / pm:.3f} | '
+                                   f'{resident:.1f} | {g(resident)} | {pm:.1f} | {g(pm)} | {closed} | {resident / pm:.3f} | '
                                    f'{pl:.1f} | {g(pl)} | {reps:.1f} | {tail}')
         out.append('')
         out.append(f'EP{R}: per-chunk spread of busiest rank / ideal (p10 / median / p90 over layers and chunks), '
-                   f'and the share of chunks where the permutation alone is worse than home. S = {slots[0]} for the '
+                   f'and the share of chunks where the permutation alone is worse than resident. S = {slots[0]} for the '
                    f'planner arms.\n')
-        out.append('| trace | chunk | cases | home | permutation (same stream) | permutation (other stream) | '
-                   'permutation (previous chunk) | home + planner | permutation + planner | '
+        out.append('| trace | chunk | cases | resident | permutation (same stream) | permutation (other stream) | '
+                   'permutation (previous chunk) | resident + planner | permutation + planner | '
                    'permutation + EPLB set (gated) + split | permutation + EPLB set (every slot) + split | '
-                   'permutation worse than home | experts moved by the permutation (of E) |')
+                   'permutation worse than resident | experts moved by the permutation (of E) |')
         out.append('|---|---:|---:|---|---|---|---|---|---|---|---|---:|---:|')
         for tr in traces:
             for C in chunks:
@@ -963,9 +963,9 @@ def render_permute(rows, block_m, frac) -> str:
                     return ' / '.join(f'{v:.2f}' for v in _percentiles(vals))
                 cross_keys = sorted({k for r in sel for k in r if k.startswith('perm_cross:')})
                 cross_cell = '; '.join(f'{_SHORT.get(k.split(":", 1)[1], k)}: {cell(k)}' for k in cross_keys) or '-'
-                worse = sum(1 for r in sel if r['perm'] > r['home'])
+                worse = sum(1 for r in sel if r['perm'] > r['resident'])
                 moved = _mean([r['perm_moved'] for r in sel])
-                out.append(f'| {_NAMES.get(tr, tr)} | {C} | {len(sel)} | {cell("home")} | {cell("perm")} | '
+                out.append(f'| {_NAMES.get(tr, tr)} | {C} | {len(sel)} | {cell("resident")} | {cell("perm")} | '
                            f'{cross_cell} | {cell("perm_prev")} | {cell("planner")} | {cell("perm_planner")} | '
                            f'{cell("perm_static_split")} | {cell("perm_full_split")} | {100 * worse / len(sel):.0f}% | {moved:.0f} |')
         out.append('')
@@ -1010,12 +1010,12 @@ def cmd_budget(args):
     R = args.ep
     out = []
     out.append(f'Time ceiling per MoE layer and chunk at EP{R}. Ratios are means over layers and chunks of the '
-               f'busiest-rank blocks (home / planner, home / OPT, ratio of the means). The saving is the '
+               f'busiest-rank blocks (resident / planner, resident / OPT, ratio of the means). The saving is the '
                f'fixed-placement kernel time times (1 - 1/ratio); the kernel realizes about 92-98% of the block '
                f'ratio (calibration), so these are upper bounds. Net = saving minus the planner kernel '
                f'(76-110 us DeepSeek shape, 120-168 us MiMo shape at EP8); break-even = the planner cost at which '
                f'the net gain is zero.\n')
-    out.append('| trace | chunk | tokens/rank | kernel us (fixed) | S | home/planner | home/OPT | '
+    out.append('| trace | chunk | tokens/rank | kernel us (fixed) | S | resident/planner | resident/OPT | '
                'max saving us (planner) | max saving us (OPT) | net us after planner kernel | net % of layer | '
                'break-even planner cost us (planner / OPT) | net after in-server prepare 351 us |')
     out.append('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|')
@@ -1028,10 +1028,10 @@ def cmd_budget(args):
                 sel = [r for r in rows if r['trace'] == tr and r['ep'] == R and r['chunk_tokens'] == C and r['slots'] == S]
                 if not sel:
                     continue
-                home = _mean([r['home'] for r in sel])
+                resident = _mean([r['resident'] for r in sel])
                 pl = _mean([r['planner'] for r in sel])
                 opt = _mean([r['opt'] if r['opt'] is not None else r.get('opt_lp') for r in sel])
-                rp, ro = home / pl, home / opt
+                rp, ro = resident / pl, resident / opt
                 if k is None:
                     out.append(f'| {tr} | {C} | {tpr} | n/a | {S} | {rp:.3f} | {ro:.3f} | '
                                f'{100 * (1 - 1 / rp):.1f}% of kernel | {100 * (1 - 1 / ro):.1f}% of kernel | | | | |')
@@ -1116,19 +1116,19 @@ def cmd_selftest(args):
         bf = _brute_force_opt(b, R, S)
         assert proven and v == bf, f'MILP {v} (proven {proven}) != brute force {bf} for b={b} R={R} S={S}'
     print('selftest 1: MILP optimum matches brute force on 40 tiny instances')
-    # 2. Ordering: ideal <= LP <= OPT <= planner <= home on random larger instances.
+    # 2. Ordering: ideal <= LP <= OPT <= planner <= resident on random larger instances.
     for trial in range(20):
         R, H, S = 4, 16, random.choice([2, 4])
         b = [max(0, int(random.paretovariate(1.2) * 2)) for _ in range(R * H)]
         totals = [x * 64 for x in b]
-        home = max(home_loads(b, R))
+        resident = max(home_loads(b, R))
         pl = planner_max_load(planner, totals, R, S, 64)[0]
         lp, _ = opt_min_max(b, R, S, ub=pl, relax=True)
         v, proven = opt_min_max(b, R, S, ub=pl)
         ideal = sum(b) / R
-        assert ideal - 1e-9 <= lp <= v + 1e-9 <= pl + 1e-9 <= home + 1e-9, (ideal, lp, v, pl, home)
+        assert ideal - 1e-9 <= lp <= v + 1e-9 <= pl + 1e-9 <= resident + 1e-9, (ideal, lp, v, pl, resident)
         assert proven
-    print('selftest 2: ideal <= LP <= OPT <= planner <= home on 20 random instances')
+    print('selftest 2: ideal <= LP <= OPT <= planner <= resident on 20 random instances')
     # 3. Chunk grouping.
     assert chunk_groups(31471, 512, 32768) == [(0, 62)]
     g = chunk_groups(31471, 512, 4096)
@@ -1138,41 +1138,41 @@ def cmd_selftest(args):
     g = chunk_groups(31471, 512, 16384)
     assert g == [(0, 32), (32, 62)], g
     print('selftest 3: chunk grouping')
-    # 4. Planner with S=0 equals home.
+    # 4. Planner with S=0 equals resident.
     b = [random.randint(0, 20) for _ in range(64)]
     pl = planner_max_load(planner, [x * 64 for x in b], 8, 0, 64)[0]
     assert pl == max(home_loads(b, 8))
-    print('selftest 4: planner with S=0 equals home placement')
-    # 5. Owner permutation: a permutation with H experts per rank, never worse
-    #    than home on its own histogram, deterministic, identity on a flat
-    #    histogram; apply_owner_permutation + plan_reference(S=0) reproduces it.
+    print('selftest 4: planner with S=0 equals contiguous placement')
+    # 5. Static expert placement: a permutation with H experts per rank, never worse
+    #    than resident on its own histogram, deterministic, identity on a flat
+    #    histogram; apply_static_placement + plan_reference(S=0) reproduces it.
     for trial in range(30):
         R, H = random.choice([2, 4, 8]), random.choice([4, 16, 32])
         E = R * H
         totals = [max(0, int(random.paretovariate(1.2) * 64)) for _ in range(E)]
-        perm = planner.owner_permutation(totals, R, 64)
+        perm = planner.static_placement(totals, R, 64)
         assert sorted(perm) == list(range(E)), 'not a permutation'
-        assert perm == planner.owner_permutation(totals, R, 64), 'not deterministic'
+        assert perm == planner.static_placement(totals, R, 64), 'not deterministic'
         assert all(perm[r * H:(r + 1) * H] == sorted(perm[r * H:(r + 1) * H]) for r in range(R))
         b = blocks_of(totals, 64)
-        home = max(home_loads(b, R))
-        pm = max(home_loads(blocks_of(planner.apply_owner_permutation(totals, perm), 64), R))
-        assert pm <= home, (pm, home)
+        resident = max(home_loads(b, R))
+        pm = max(home_loads(blocks_of(planner.apply_static_placement(totals, perm), 64), R))
+        assert pm <= resident, (pm, resident)
         counts = [[0] * E for _ in range(R)]
         counts[0] = totals
-        cp = planner.apply_owner_permutation(counts, perm)
+        cp = planner.apply_static_placement(counts, perm)
         assert cp[0] == [totals[e] for e in perm] and all(row == [0] * E for row in cp[1:])
         assert max(planner.plan_reference(cp, 0, 64).loads) == pm
         # Nested input sums over ranks.
-        assert planner.owner_permutation(counts, R, 64) == perm
-    assert planner.owner_permutation([7] * 32, 4, 64) == list(range(32))
-    assert planner.owner_permutation([0] * 32, 8, 64) == list(range(32))
+        assert planner.static_placement(counts, R, 64) == perm
+    assert planner.static_placement([7] * 32, 4, 64) == list(range(32))
+    assert planner.static_placement([0] * 32, 8, 64) == list(range(32))
     # One hot expert per rank pair: greedy must spread them, one per rank.
     hot = [0] * 16
     hot[0] = hot[1] = hot[2] = hot[3] = 64 * 10
-    perm = planner.owner_permutation(hot, 4, 64)
-    assert max(home_loads(blocks_of(planner.apply_owner_permutation(hot, perm), 64), 4)) == 10
-    print('selftest 5: owner permutation on 30 random instances')
+    perm = planner.static_placement(hot, 4, 64)
+    assert max(home_loads(blocks_of(planner.apply_static_placement(hot, perm), 64), 4)) == 10
+    print('selftest 5: static expert placement on 30 random instances')
     print('selftest passed')
 
 

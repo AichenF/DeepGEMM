@@ -29,7 +29,7 @@ def _baseline_max_load(counts, block_m):
 
 def _check_invariants(tc, plan, counts, S, prev=None):
     R, E = plan.num_ranks, plan.num_experts
-    H = plan.home_experts
+    H = plan.resident_experts
     for e in range(E):
         total = sum(counts[r][e] for r in range(R))
         tc.assertEqual(sum(plan.blocks[e]), _ceil_div(total, plan.block_m), f'expert {e} blocks')
@@ -40,7 +40,7 @@ def _check_invariants(tc, plan, counts, S, prev=None):
         tc.assertEqual(len(held), len(set(held)))
         tc.assertLessEqual(len(held), S)
         for e in held:
-            tc.assertNotEqual(e // H, r, 'owner never needs a helper slot')
+            tc.assertNotEqual(e // H, r, 'resident rank never needs a redundant slot')
         for e in range(E):
             if e // H != r and plan.blocks[e][r] > 0:
                 tc.assertIn(e, plan.slot_expert[r])
@@ -79,7 +79,7 @@ class PlannerTest(unittest.TestCase):
         _check_invariants(self, plan, counts, S)
         self.assertLess(max(plan.loads), _baseline_max_load(counts, 32))
         self.assertGreater(sum(1 for row in plan.slot_expert if 5 in row), 0)
-        # Owner stays first and keeps a share.
+        # Resident rank stays first and keeps a share.
         self.assertEqual(plan.copies[5][0][0], 0)
         self.assertGreater(plan.blocks[5][0], 0)
 
@@ -162,10 +162,10 @@ class PlannerTest(unittest.TestCase):
             for row_l, row_p in zip(topk_idx[r], phys[r]):
                 for e, p in zip(row_l, row_p):
                     dest_rank, local = divmod(p, slots)
-                    if local < plan.home_experts:
-                        self.assertEqual(dest_rank * plan.home_experts + local, e)
+                    if local < plan.resident_experts:
+                        self.assertEqual(dest_rank * plan.resident_experts + local, e)
                     else:
-                        self.assertEqual(plan.slot_expert[dest_rank][local - plan.home_experts], e)
+                        self.assertEqual(plan.slot_expert[dest_rank][local - plan.resident_experts], e)
                     per_slot[(dest_rank, e)] = per_slot.get((dest_rank, e), 0) + 1
         for e in range(E):
             for r in range(R):

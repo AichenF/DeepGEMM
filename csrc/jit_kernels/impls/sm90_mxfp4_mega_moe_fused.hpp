@@ -53,10 +53,10 @@ public:
         const float* l2_global_scales;
         // Diagnostic only: non-null selects the kPhaseStamps instantiation.
         unsigned long long* phase_stamps;
-        // Dynamic EPLB fused weight copy (kFuseEPLBCopy); `fused_copy` is
-        // only read when `fuse_eplb_copy` is set.
-        bool fuse_eplb_copy;
-        eplb::FusedCopy<> fused_copy;
+        // Dynamic EPLB fused weight copy (kInKernelWeightCopy); `in_kernel_copy` is
+        // only read when `in_kernel_weight_copy` is set.
+        bool in_kernel_weight_copy;
+        eplb::InKernelCopy<> in_kernel_copy;
         LaunchArgs launch_args;
     };
 
@@ -72,14 +72,14 @@ public:
             "        /* kUseInterleavedScheduler */ {},\n"
             "        /* kUseRSOperand */ {},\n"
             "        /* kPhaseStamps */ {},\n"
-            "        /* kFuseEPLBCopy */ {}",
+            "        /* kInKernelWeightCopy */ {}",
             args.swap_ab ? "true" : "false",
             args.single_active_dispatch_warp ? "true" : "false",
             args.use_mode2_row_decoder ? "true" : "false",
             args.use_interleaved_scheduler ? "true" : "false",
             args.rs_swap_ab ? "true" : "false",
             args.phase_stamps != nullptr ? "true" : "false",
-            args.fuse_eplb_copy ? "true" : "false");
+            args.in_kernel_weight_copy ? "true" : "false");
         return fmt::format(R"(
 {}
 
@@ -144,7 +144,7 @@ static void __instantiate_kernel() {{
             args.l1_global_scales,
             args.l2_global_scales,
             args.phase_stamps,
-            args.fused_copy));
+            args.in_kernel_copy));
     }
 };
 
@@ -163,7 +163,7 @@ static void sm90_mxfp4_fused_mega_moe(
     const int& hidden, const int& intermediate_hidden,
     const float& activation_clamp,
     const bool& fast_math,
-    const std::optional<eplb::FusedCopy<>>& fused_copy = std::nullopt
+    const std::optional<eplb::InKernelCopy<>>& in_kernel_copy = std::nullopt
 ) {
     const int num_ranks = static_cast<int>(sym_buffer_ptrs.size());
     const int num_experts = num_experts_per_rank * num_ranks;
@@ -261,8 +261,8 @@ static void sm90_mxfp4_fused_mega_moe(
                                 : reinterpret_cast<unsigned long long*>(
                                       std::strtoull(v, nullptr, 10));
         }(),
-        .fuse_eplb_copy = fused_copy.has_value(),
-        .fused_copy = fused_copy.value_or(eplb::FusedCopy<>{}),
+        .in_kernel_weight_copy = in_kernel_copy.has_value(),
+        .in_kernel_copy = in_kernel_copy.value_or(eplb::InKernelCopy<>{}),
         .launch_args = LaunchArgs(
             num_sms,
             KernelConfig::num_threads(plan.swap_ab, plan.rs_swap_ab, config.block_m),
@@ -278,7 +278,7 @@ static void sm90_mxfp4_fused_mega_moe(
             (plan.use_mode2_row_decoder ?
                 "sm90_mxfp4_fused_mode2_row" :
                 "sm90_mxfp4_fused_lut_window")) +
-        (fused_copy.has_value() ? "_eplb_copy" : "");
+        (in_kernel_copy.has_value() ? "_eplb_copy" : "");
     const auto runtime = compiler->build(build_name, code);
     SM90MXFP4FusedRuntime::launch(runtime, args);
 }

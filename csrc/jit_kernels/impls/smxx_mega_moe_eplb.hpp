@@ -25,7 +25,7 @@ static bool eplb_profile_enabled() {
 class MegaMoEEPLBPlanRuntime final: public LaunchRuntime<MegaMoEEPLBPlanRuntime> {
 public:
     struct Args {
-        int num_ranks, num_experts, num_helper_slots;
+        int num_ranks, num_experts, num_redundant_slots;
         layout::SymBuffer<> workspace;
         const int64_t* topk_idx;
         int num_tokens, num_topk;
@@ -46,7 +46,7 @@ static void __instantiate_kernel() {{
     >);
 }};
 )", std::getenv("DG_EPLB_DEBUG") ? "#define DG_EPLB_DEBUG 1\n" : "",
-    args.num_ranks, args.num_experts, args.num_helper_slots, args.launch_args.num_threads,
+    args.num_ranks, args.num_experts, args.num_redundant_slots, args.launch_args.num_threads,
     eplb_profile_enabled() ? "true" : "false");
     }
 
@@ -67,7 +67,7 @@ static void __instantiate_kernel() {{
 class MegaMoEEPLBPlanRemapRuntime final: public LaunchRuntime<MegaMoEEPLBPlanRemapRuntime> {
 public:
     struct Args {
-        int num_ranks, num_experts, num_helper_slots;
+        int num_ranks, num_experts, num_redundant_slots;
         layout::SymBuffer<> workspace;
         int64_t* topk_idx;
         int num_tokens, num_topk;
@@ -87,7 +87,7 @@ static void __instantiate_kernel() {{
         {}, {}, {}, {}, {}
     >);
 }};
-)", args.num_ranks, args.num_experts, args.num_helper_slots, args.launch_args.num_threads,
+)", args.num_ranks, args.num_experts, args.num_redundant_slots, args.launch_args.num_threads,
     eplb_profile_enabled() ? "true" : "false");
     }
 
@@ -103,7 +103,7 @@ static void __instantiate_kernel() {{
 class MegaMoEEPLBRemapRuntime final: public LaunchRuntime<MegaMoEEPLBRemapRuntime> {
 public:
     struct Args {
-        int num_ranks, num_experts, num_helper_slots;
+        int num_ranks, num_experts, num_redundant_slots;
         uint32_t* workspace;
         int rank_idx;
         int64_t* topk_idx;
@@ -122,7 +122,7 @@ static void __instantiate_kernel() {{
         {}, {}, {}, {}
     >);
 }};
-)", args.num_ranks, args.num_experts, args.num_helper_slots, args.launch_args.num_threads);
+)", args.num_ranks, args.num_experts, args.num_redundant_slots, args.launch_args.num_threads);
     }
 
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
@@ -141,7 +141,7 @@ public:
         eplb::CopyPlanes planes;
         const int2* copy_list;
         const int32_t* copy_count;
-        int num_home_experts;
+        int num_resident_experts;
         LaunchArgs launch_args;
     };
 
@@ -162,35 +162,35 @@ static void __instantiate_kernel() {{
     static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
             args.arena, args.planes, args.copy_list, args.copy_count,
-            static_cast<uint32_t>(args.num_home_experts)));
+            static_cast<uint32_t>(args.num_resident_experts)));
     }
 };
 
-// Builds the MegaMoE kernel's fused-copy argument. `l1_planes` and
+// Builds the MegaMoE kernel's in-kernel-copy argument. `l1_planes` and
 // `l2_planes` list (byte offset into the arena, bytes per slot) of the planes
 // the L1 and the L2 GEMM read, respectively; the kernel gates each group on
 // its own counter.
-static eplb::FusedCopy<> make_eplb_fused_copy(
+static eplb::InKernelCopy<> make_eplb_in_kernel_copy(
         const torch::Tensor& workspace,
         const torch::Tensor& arena, const std::vector<int64_t>& arena_ptrs, const int& rank_idx,
-        const int& num_experts, const int& num_helper_slots,
+        const int& num_experts, const int& num_redundant_slots,
         const std::vector<std::tuple<int64_t, int64_t>>& l1_planes,
         const std::vector<std::tuple<int64_t, int64_t>>& l2_planes) {
     const auto num_ranks = static_cast<int>(arena_ptrs.size());
-    DG_HOST_ASSERT(num_ranks > 0 and num_experts % num_ranks == 0 and num_helper_slots > 0);
-    DG_HOST_ASSERT(num_helper_slots <= 32);
+    DG_HOST_ASSERT(num_ranks > 0 and num_experts % num_ranks == 0 and num_redundant_slots > 0);
+    DG_HOST_ASSERT(num_redundant_slots <= 32);
     DG_HOST_ASSERT(rank_idx >= 0 and rank_idx < num_ranks);
     DG_HOST_ASSERT(arena.is_cuda() and arena.is_contiguous());
     DG_HOST_ASSERT(arena_ptrs[rank_idx] == reinterpret_cast<int64_t>(arena.data_ptr()));
     DG_HOST_ASSERT(workspace.is_cuda() and workspace.is_contiguous());
-    const eplb::Workspace ws(num_ranks, num_experts, num_helper_slots);
+    const eplb::Workspace ws(num_ranks, num_experts, num_redundant_slots);
     DG_HOST_ASSERT(workspace.nbytes() >= ws.num_bytes());
-    const int num_home_experts = num_experts / num_ranks;
-    const int num_slots = num_home_experts + num_helper_slots;
+    const int num_resident_experts = num_experts / num_ranks;
+    const int num_slots = num_resident_experts + num_redundant_slots;
     const auto num_planes = l1_planes.size() + l2_planes.size();
     DG_HOST_ASSERT(num_planes > 0 and num_planes <= eplb::CopyPlanes::kMaxPlanes);
 
-    eplb::FusedCopy<> fc = {};
+    eplb::InKernelCopy<> fc = {};
     fc.arena = layout::SymBuffer<>(arena_ptrs, rank_idx);
     fc.planes.num_planes = static_cast<uint32_t>(num_planes);
     size_t k = 0;
@@ -208,8 +208,8 @@ static eplb::FusedCopy<> make_eplb_fused_copy(
     fc.copy_list = reinterpret_cast<const int2*>(ws_base + ws.copy_list_offset());
     fc.copy_count = reinterpret_cast<int32_t*>(ws_base + ws.copy_count_offset());
     fc.copy_done = ws_base + ws.copy_done_offset();
-    fc.num_home_experts = static_cast<uint32_t>(num_home_experts);
-    fc.num_helper_slots = static_cast<uint32_t>(num_helper_slots);
+    fc.num_resident_experts = static_cast<uint32_t>(num_resident_experts);
+    fc.num_redundant_slots = static_cast<uint32_t>(num_redundant_slots);
     fc.num_l1_planes = static_cast<uint32_t>(l1_planes.size());
     return fc;
 }

@@ -587,10 +587,10 @@
     //     * The "token_idx_in_expert" → SF token index is now the simple
     //       per-block linear mapping (no 4×32 transpose).
     // =====================================================================
-    // Local experts below this index are home slots (never the target of a
-    // fused copy); with the copy compiled out every slot is a home slot.
-    const uint32_t eplb_num_home_experts =
-        kFuseEPLBCopy ? fused_copy.num_home_experts : kNumExpertsPerRank;
+    // Local experts below this index are resident slots (never the target of a
+    // in-kernel weight copy); with the copy compiled out every slot is a resident slot.
+    const uint32_t eplb_num_resident_experts =
+        kInKernelWeightCopy ? in_kernel_copy.num_resident_experts : kNumExpertsPerRank;
 
     if (warp_idx < kNumDispatchWarps) {
         cutlass::arch::warpgroup_reg_dealloc<kNumDispatchRegisters>();
@@ -811,14 +811,14 @@
             }
         }
 
-        // Fused EPLB copy: the dispatch warps are idle from the end of the
+        // In-kernel EPLB weight copy: the dispatch warps are idle from the end of the
         // token pull until the combine, which is the whole GEMM phase, so they
-        // move the changed helper slots now. The scheduler visits local experts
-        // in index order and the helper slots are the last ones, so their
-        // tasks come after every home expert's and the loader rarely waits.
-        if constexpr (kFuseEPLBCopy) {
-            eplb::fused_copy_share<kNumRanks, kNumDispatchThreads>(
-                fused_copy, sm_idx, kNumSMs, thread_idx,
+        // move the changed redundant slots now. The scheduler visits local experts
+        // in index order and the redundant slots are the last ones, so their
+        // tasks come after every resident expert's and the loader rarely waits.
+        if constexpr (kInKernelWeightCopy) {
+            eplb::in_kernel_copy_share<kNumRanks, kNumDispatchThreads>(
+                in_kernel_copy, sm_idx, kNumSMs, thread_idx,
                 [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); });
         }
 
@@ -832,11 +832,11 @@
             [=]() { ptx::sync_aligned(kNumDispatchThreads, kDispatchBarrierIdx); },
             true, false);
         if (thread_idx == 0) stamp_max(8);
-        // Fused EPLB copy: the list is consumed. Every CTA of every rank has
+        // In-kernel EPLB weight copy: the list is consumed. Every CTA of every rank has
         // passed the barrier above, so none can still be reading it.
-        if constexpr (kFuseEPLBCopy) {
+        if constexpr (kInKernelWeightCopy) {
             if (sm_idx == 0 and thread_idx == 0)
-                *fused_copy.copy_count = 0;
+                *in_kernel_copy.copy_count = 0;
         }
     } else if (warp_idx == kNumDispatchWarps) {
         // =====================================================================
@@ -920,17 +920,17 @@
     } else if (warp_idx == kNumDispatchWarps + 1) {
         cutlass::arch::warpgroup_reg_dealloc<kNumNonEpilogueRegisters>();
 
-        // Fused EPLB copy: helper slots still being written this step, one
+        // In-kernel EPLB weight copy: redundant slots still being written this step, one
         // mask per plane group (L1, L2), held in two scalar registers (an
         // indexed array would go to local memory, and this warp runs inside
         // the loader register budget). A bit is cleared once the slot's
         // group has been seen complete; a zero mask is the common case and
         // costs one predicated branch per task.
-        uint32_t eplb_pending_l1 = 0u, eplb_pending_l2 = 0u, eplb_num_home = 0u;
-        if constexpr (kFuseEPLBCopy) {
-            eplb_pending_l1 = eplb::fused_copy_pending_mask(fused_copy);
+        uint32_t eplb_pending_l1 = 0u, eplb_pending_l2 = 0u, eplb_num_resident = 0u;
+        if constexpr (kInKernelWeightCopy) {
+            eplb_pending_l1 = eplb::in_kernel_copy_pending_mask(in_kernel_copy);
             eplb_pending_l2 = eplb_pending_l1;
-            eplb_num_home = fused_copy.num_home_experts;
+            eplb_num_resident = in_kernel_copy.num_resident_experts;
         }
 
         const auto load_b_task = [&](const auto& block_phase,
@@ -948,15 +948,15 @@
             constexpr uint32_t kNumTileLoads = LOAD_BLOCK_N / kBTileRows;
             constexpr uint32_t kNumNTiles = shape_n / kBTileRows;
 
-            if constexpr (kFuseEPLBCopy) {
+            if constexpr (kInKernelWeightCopy) {
                 constexpr uint32_t group = kBlockIsL2 ? 1u : 0u;
                 uint32_t& pending = kBlockIsL2 ? eplb_pending_l2 : eplb_pending_l1;
-                if (pending != 0u and local_expert_idx >= eplb_num_home) {
-                    const uint32_t slot = local_expert_idx - eplb_num_home;
+                if (pending != 0u and local_expert_idx >= eplb_num_resident) {
+                    const uint32_t slot = local_expert_idx - eplb_num_resident;
                     if ((pending >> slot) & 1u) {
                         // Every lane acquires, so whichever lane is elected
                         // to issue the bulk copies is ordered after the copy.
-                        eplb::fused_copy_wait_slot(fused_copy.copy_done + slot * 2 + group, kNumSMs);
+                        eplb::in_kernel_copy_wait_slot(in_kernel_copy.copy_done + slot * 2 + group, kNumSMs);
                         __syncwarp();
                         pending &= ~(1u << slot);
                     }
@@ -1072,7 +1072,7 @@
             __syncwarp();
         };
 
-        // WGMMA-output register layout helpers
+        // WGMMA-output register layout redundant slots
         const uint32_t row_idx = lane_idx / 4;
         const uint32_t col_idx = lane_idx % 4;
         const uint32_t r_0 = warp_idx_in_wg * 16 + row_idx;
@@ -1105,23 +1105,23 @@
             const uint32_t row_offset_r1 = row_block_offset + r_1;
             using BlockPhaseTag = std::remove_cv_t<std::remove_reference_t<decltype(block_phase)>>;
             constexpr bool kBlockIsL2 = BlockPhaseTag::value == sched::BlockPhase::Linear2;
-            // With the fused copy the helper slots' scales are written by the
+            // With the in-kernel weight copy the redundant slots' scales are written by the
             // dispatch warps during this kernel, so they must come through
             // the coherent path and must be read only after the GEMM main
             // loop: the weight loader waits for the slot's copy before its
             // first weight fetch, and the main loop consumes those weights,
             // so by the epilogue the copy has landed. A read at task start
             // raced the copy and could apply the slot's previous scale.
-            // Home slots are never written by a copy, so their scale is read
+            // Resident slots are never written by a copy, so their scale is read
             // through the non-coherent path at task start, as in the kernel
-            // without the fused copy, and the load hides behind the main
-            // loop. Only a helper slot's scale is read coherently, after the
+            // without the in-kernel weight copy, and the load hides behind the main
+            // loop. Only a redundant slot's scale is read coherently, after the
             // loop. (A coherent load after the loop on every task cost about
             // 3% of the L2 task time; pinning the load into the first k-block
             // with an asm barrier slowed every task by 2%, so the plain form
             // stays.)
             const bool scale_after_loop =
-                kFuseEPLBCopy and local_expert_idx >= eplb_num_home_experts;
+                kInKernelWeightCopy and local_expert_idx >= eplb_num_resident_experts;
             const auto load_global_scale = [&](const float* scales) -> float {
                 if (scales == nullptr)
                     return 1.0f;
@@ -1634,7 +1634,7 @@
                 }
             }
 
-            // The main loop is done: a helper slot's planes, scales included,
+            // The main loop is done: a redundant slot's planes, scales included,
             // are in place (see `load_global_scale`).
             if (scale_after_loop)
                 task_global_scale = load_global_scale(kBlockIsL2 ? l2_global_scales : l1_global_scales);
