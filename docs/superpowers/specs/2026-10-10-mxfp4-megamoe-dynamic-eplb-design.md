@@ -703,14 +703,15 @@ Production path, prefill only, DeepSeek V4 Flash at EP8 unless stated:
   readiness counters (the default; `DG_EPLB_FUSE_COPY=0` restores the separate
   copy kernel as a measurement mode), and the remap rewrites the
   routing to physical slots. The per-expert global scales are read after the
-  GEMM main loop (reading them at task start raced with the fused copy).
-  `SGLANG_MEGAMOE_DYNAMIC_EPLB_EARLY_PLAN=1` issues the plan on a side stream
-  right after top-k so it overlaps the shared experts; it measured the same
-  as the synchronous order once the copy was fused, so both stay.
+  GEMM main loop for helper slots (reading them at task start raced with
+  the fused copy); home slots read theirs at task start.
 * **Removed**: the deferred plan (one chunk stale, 1.02-1.06x kernel on
-  ShareGPT and a CUDA-graph interaction) and the fused-plan prototype (the
+  ShareGPT and a CUDA-graph interaction), the fused-plan prototype (the
   planner inside the kernel's first phase; 137-569 us per layer slower than
-  the single-launch plan at EP4 because its hand-off tail serialises).
+  the single-launch plan at EP4 because its hand-off tail serialises), and
+  the early plan on a side stream (see the 2026-10-22 section: it halves the
+  prepare segment and gives the same back in the kernel and the shared
+  experts).
 
 Kernel level, real GSM8K routing replayed outside the server, EP8, 4 helper
 slots, rank-maximum time, geomean over four layers: kernel-only 1.42x at
@@ -743,3 +744,138 @@ and count exchange costs 11.5-14 us, which over 40 layers exceeds the saving;
 TPOT ends 1-6 % worse at 8-64 concurrent requests. That line is not in this
 branch; the only route to a positive result is replica selection inside the
 MegaMoE dispatch phase.
+
+## Where the remaining prefill gap is (2026-10-22)
+
+Question: today's +5 to +8 % end to end against the derived ceiling of about
++12 %. Every term below was measured on the final tree; each is either
+recovered or attributed to a measured cause.
+
+### Inside the server (TP8, 16k chunks, GSM8K 1k, 278 large forwards per arm)
+
+The adapter trace times every 50th large forward on rank 0 with CUDA events
+after the FP8 cast; the forwards carry the same ordinals and token counts in
+every arm (median 1848 tokens per rank), so the arms pair by forward.
+
+| arm | prepare us | kernel us | total us | busiest rank, blocks |
+|---|---:|---:|---:|---|
+| fixed placement | 0 | 1670 (mean 1698) | 1670 | owner-only 234 (contiguous: 278) |
+| permutation + 4 slots | 70 | 1216 | 1287 | planned 190 vs mean 190 |
+| same, plan on a side stream | 47 | 1235 | 1284 | planned 191 vs mean 190 |
+
+Paired kernel ratio fixed / balanced 1.357x (median; mean 1.389x), total
+1.283x. The planner reaches the block ideal (busiest rank equals the mean in
+the median forward, at most 20 blocks above it), so neither more helper
+slots nor a better planner buys anything here; the host planner study on
+the 1k traces agrees (S = 4: 0.3-0.6 % above ideal, the exact optimum
+0.1-0.2 %; S = 2: 2-5 %; S = 1: 11-14 %).
+
+A torch-profiler window of the same server gives the MoE share directly:
+the MegaMoE kernel is 27.2 % of GPU busy time in the fixed arm (mean large
+launch 1773 us) and 20.6 % + 2.7 % planner in the balanced arm. On that
+share the per-layer times reproduce the measured gain (+6.9 % predicted,
++6.8 % measured), and the kernel's own ceiling on this workload is about
++10 %: the fixed arm's time is 94 us + 5.40 us per busiest-rank block
+(R^2 1.00), which at the balanced load (190 blocks) is 1119 us. The balanced
+path costs 1287 us, 168 us more. That excess decomposes as follows.
+
+### Term by term
+
+1. **Prepare, 70 us per layer (5.4 % of the balanced layer): planner wait
+   and launch gap, not planner work.** The planner's own phase record, read
+   from the workspace in the server (TP8, 16k chunks, 158 traced large
+   forwards, median / p90 in us): total 38.8 / 71.2 = histogram 1.6 +
+   publish 2.5 + peer wait 15.3 / 46.6 + setup 1.7 + greedy 5.6 + prune 4.5
+   + slot assignment 1.8 + table publish 0.9 + remap 3.2. The compute sum
+   is 23 us, the same as in the quiet kernel bench (21-25 us at EP8), so a
+   faster greedy would return at most 6-10 us per layer, under 0.5 % of the
+   layer, and was not built. The rest of the segment is the wait for the
+   slowest rank's histogram (the ranks arrive skewed by host jitter; the
+   fixed arm pays the same skew inside its kernel's first barrier) and the
+   gap between the two launches. The host is not the cause: in the recorded
+   profiler traces the MegaMoE kernel starts a median 5.6 ms after its
+   launch call returned, cudaLaunchKernel costs 4 us, and there is no
+   per-layer host-device synchronisation in either arm. Two alternatives
+   were measured and closed: the plan on a side stream after top-k (prepare
+   47 instead of 70 us, kernel +19 us, total 0.997x, end to end GSM8K c128
+   46,752 vs 48,303 and MMLU 45,739 vs 45,329; at 32k 50,176 vs 50,143) and
+   the kernel translating logical experts to slots itself so that no remap
+   launch precedes it (the dispatch warps reserve per-expert ordinals and
+   rewrite the routing in place; valid remap and the remap kernel's per-slot
+   counts in 28 cells, output within the remap path's own run-to-run spread;
+   kernel +0 to +10 us, plan alone 23-25 us against plan+remap 23-25 us in
+   one launch; per layer 2420 vs 2418 us at TP4, end to end within noise).
+   The translation path is kept on the `megamoe_mxfp4_prefill_ceiling`
+   branch as the record; neither is in this tree.
+2. **The fused-copy instantiation, about 35 us per layer.** With zero copies
+   pending the EPLB kernel's L1 task takes 31.6 us against 30.3 us in the
+   fixed kernel (+4.5 %), L2 15.45 against 15.3 (+1 % after the fix below).
+   Not the extra physical slots (the EPLB kernel with the fused copy compiled
+   out runs the same routing at 1.00-1.02x of the fixed kernel), not the
+   global scales (fixed + scales = fixed), not the loader's per-task readiness
+   check, not the dispatch warps' copy code, not the coherent scale load:
+   compiling each of them out leaves L1 at 31.2-31.9 us. ptxas reports 168
+   registers, no spills and no stack for both instantiations; the fused one
+   is 5496 against 5024 SASS instructions, all of it in the dispatch warps'
+   copy path. The L2 part was recovered: the per-expert global scale is now
+   read at task start for home slots (never a copy target) and after the main
+   loop only for helper slots, which took the L2 task from 15.9 to 15.45 us;
+   pinning the load into the first k-block with an asm barrier made every
+   task 2 % slower and was dropped. The L1 part stays attributed to code
+   placement of the larger binary; it is worth about +0.9 % end to end.
+3. **Rank finish spread at equal blocks, 10 us per layer.** With the planned
+   loads equal within 1-3 blocks the ranks' GEMM phases end 20 us apart in
+   the median cell (36 us at p90, out of 1640 us at EP4). A fit of the
+   per-rank finish on blocks, distinct experts and partial last blocks
+   explains 16 % of it (7.3 us per block, 0 per expert, a partial block costs
+   1.11 of a full one, not less); the busiest rank's excess over the mean rank
+   is 10.5 us median, 22 us p90, of which the block count explains 1.8 us.
+   No per-task cost model in the planner can reach that, so the term is
+   attributed to the kernel's launch-to-launch scheduling noise.
+4. **Everything outside the MoE layer, 73 % of the step.** Attention 19 %,
+   dense GEMMs 18.5 %, collectives 17 %, other 17 % of GPU busy time in the
+   fixed arm; not touched by the balancer and the reason a 1.36x kernel is a
+   +7 % step.
+
+### Loss table, TP8, 16k chunks, per MoE layer
+
+| | us | share of the fixed layer |
+|---|---:|---:|
+| fixed placement, measured | 1670 | 100 % |
+| ideal with this kernel at the balanced load (94 + 5.40 x 190) | 1119 | 67 % |
+| balanced, measured: prepare 70 + kernel 1216 | 1287 | 77 % |
+| of which planner compute (greedy 5.6, prune 4.5, remap 3.2, the rest 7) | 23 | 1.4 % |
+| of which peer wait and launch gap | 47 | 2.8 % |
+| of which fused-copy instantiation (L1 task +4.5 %, L2 +1 %) | 35 | 2.1 % |
+| of which rank finish spread at equal blocks | 10 | 0.6 % |
+| of which unexplained kernel excess over the fixed-arm cost model | 52 | 3.1 % |
+
+The balanced arm realises 1.283x of the 1.49x the block count allows; the
+MoE share of the step (27 %) turns that into the measured +6.8 % against a
++10 % ceiling for this kernel on this workload.
+
+### Tools added for this study
+
+`tests/test_mxfp4_mega_moe_sm90_eplb.py --phase-stamps 1` prints, per bench
+cell, the in-kernel phase stamps and per-task times of the fixed kernel, the
+fixed kernel with global scales, the EPLB kernel with empty helper slots on
+the owner routing (the slot cost), the EPLB kernel with the fused copy
+compiled out, and the planned EPLB kernel, plus a per-rank table (blocks,
+distinct experts, partial last blocks, GEMM finish) and the host cost of
+each launch; `--translate 1` checks the in-kernel translation against the
+remap path (valid remap, equal per-slot counts, output within the remap
+kernel's own run-to-run spread) and times both. The adapter trace splits
+the host time into decision, prepare, argument glue and kernel call.
+
+### End to end after this study
+
+TP8, 16k chunks (input tok/s, GSM8K 1k c128 / c256, MMLU 1k c128 / c256):
+fixed 45,216 / 45,797 / 44,061 / 45,776; permutation + 4 slots 48,303 /
+48,929 / 45,329 / 47,113 (+6.8 / +6.8 / +2.9 / +2.9 %). 32k chunks: fixed
+46,529 / 40,807 / 45,236 / 43,386; permutation + 4 slots 50,143 / 43,016 /
+46,887 / 44,452 (+7.8 / +5.4 / +3.6 / +2.5 %; the c256 cells at 32k are
+unstable with the smaller static memory fraction). TP4 (EP4), 16k chunks:
+fixed 36,718 / 37,037 / 35,913 / 37,020; 4 slots 37,712 / 38,865 / 36,985 /
+37,532 (+2.7 / +4.9 / +3.0 / +1.4 %); with the in-kernel translation 38,600 /
+38,953 / 36,857 / 37,883 (+5.1 / +5.2 / +2.6 / +2.3 %), within the noise of
+the remap path on the GPU timeline.
