@@ -436,7 +436,7 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
         return eplb.forward(x_fp8, x_sf, topk_idx, topk_weights,
                             activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math))
 
-    def run_fixed():
+    def run_fixed(global_scales=None):
         b = baseline_buffer
         n = m_tokens
         b.x[:n].copy_(x_fp8)
@@ -445,6 +445,7 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
         b.topk_weights[:n].copy_(topk_weights.to(torch.float32))
         y = torch.empty((n, hidden), dtype=torch.bfloat16, device='cuda')
         deep_gemm.mxfp4_mega_moe(y, baseline_weights[0], baseline_weights[1], b,
+                                 l1_global_scales=global_scales, l2_global_scales=global_scales,
                                  activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math))
         return y
 
@@ -473,7 +474,8 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
         print(f'[cold copy M={m_tokens}] {copies} slots x {bytes_per_slot / 2**20:.1f} MiB on rank 0, '
               f'rank-max {cold_us.item():.1f}us', flush=True)
 
-    kernels = ('eplb_plan_kernel', 'eplb_copy_weights_kernel', 'eplb_remap_kernel', 'sm90_mxfp4_mega_moe')
+    # `prepare` is the single-launch plan + remap; the separate arm adds the copy kernel.
+    kernels = ('eplb_plan_remap_kernel', 'eplb_copy_weights_kernel', 'sm90_mxfp4_mega_moe')
     arms = {'both': (False, True), 'fused': (True,), 'separate': (False,)}[args.fuse_copy]
     # The fixed arm is a separate kernel instantiation. Build it on every rank
     # before the paired loop: the planner waits on its peers in-kernel and
@@ -534,21 +536,21 @@ def _bench(args, m_tokens, rank_idx, group, eplb, routing, baseline_buffer, base
         resync()
         t = [v * 1e6 for v in t]
         if fused:
-            plan_us, remap_us, kernel_only = t
+            plan_us, kernel_only = t
             copy_us = 0.0
         else:
-            plan_us, copy_us, remap_us, kernel_only = t
-        total = plan_us + copy_us + remap_us + kernel_only
+            plan_us, copy_us, kernel_only = t
+        total = plan_us + copy_us + kernel_only
         # Rank-maximum latency is what the layer waits for.
-        local = torch.tensor([total, kernel_only, t_fixed_us, plan_us, copy_us, remap_us, float(copies)], device='cuda')
+        local = torch.tensor([total, kernel_only, t_fixed_us, plan_us, copy_us, float(copies)], device='cuda')
         dist.all_reduce(local, op=dist.ReduceOp.MAX, group=group)
-        total, kernel_only, fixed, plan_us, copy_us, remap_us, max_copies = local.tolist()
+        total, kernel_only, fixed, plan_us, copy_us, max_copies = local.tolist()
         if rank_idx == 0:
             ratio = lambda a, b: f'{a / b:.3f}x' if b > 0 else 'n/a'
             arm = 'fused-copy' if fused else 'separate-copy'
             print(f'[bench M={m_tokens} {state} {arm} slots-copied-max={int(max_copies)}] fixed={fixed:.1f}us  '
-                  f'eplb total={total:.1f}us (kernel {kernel_only:.1f} + plan {plan_us:.1f} + copy {copy_us:.1f} '
-                  f'+ remap {remap_us:.1f})  speedup total={ratio(fixed, total)} kernel-only={ratio(fixed, kernel_only)}',
+                  f'eplb total={total:.1f}us (kernel {kernel_only:.1f} + plan+remap {plan_us:.1f} + copy {copy_us:.1f})'
+                  f'  speedup total={ratio(fixed, total)} kernel-only={ratio(fixed, kernel_only)}',
                   flush=True)
         if plan_profile_enabled():
             # In-kernel phase breakdown of the last plan of this arm.
@@ -659,62 +661,73 @@ def _format_stamps(bufs):
 
 
 def _phase_stamps(args, m_tokens, rank_idx, group, eplb, routing, run_fixed, run_eplb, quiet):
-    """Three stamped launches on the same routing: the fixed-placement kernel
-    (home slots only), the EPLB kernel with every helper slot empty and the
-    routing at the owners (the cost of the extra physical slots alone), and
-    the EPLB kernel on the plan. The owner-only arm is also timed with
-    kineto so the slot cost shows as a number next to the fixed arm."""
+    """Five launches on the same routing, timed with kineto (rank-maximum
+    kernel time) and stamped once each:
+      fixed            home slots only, no global scales (the bench baseline);
+      fixed+gs         same with per-expert global scales (what serving runs);
+      owner-only       the EPLB kernel with every helper slot empty and the
+                       routing at the owners, fused copy on: the extra physical
+                       slots and the fused-copy machinery, no balancing;
+      owner-only-nofc  same with the fused copy off (plain EPLB instantiation);
+      planned          the plan of the previous step (steady state, no copies).
+    The per-task stamps (L1 task, L2 task) say whether an arm pays per tile."""
     topk_idx, _topk_weights, x_fp8, x_sf = routing
     num_ranks = dist.get_world_size(group)
     b = eplb.symm
+    ones = torch.ones(eplb.home_experts, dtype=torch.float32, device='cuda')
 
-    def run_owner_only():
-        b.x[:m_tokens].copy_(x_fp8)
-        b.x_sf[:m_tokens].copy_(x_sf)
-        b.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int64))
-        eplb.remap(m_tokens, eplb.block_m(m_tokens))
-        y = torch.empty((m_tokens, eplb.hidden), dtype=torch.bfloat16, device='cuda')
-        deep_gemm.mxfp4_mega_moe(
-            y, eplb.l1_weights, eplb.l2_weights, b,
-            cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
-            l1_global_scales=eplb.l1_global_scales, l2_global_scales=eplb.l2_global_scales,
-            activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math),
-            eplb_fused_copy=eplb.fused_copy_args() if eplb.fuse_copy else None)
-        return y
+    def run_fixed_gs():
+        return run_fixed(ones)
 
-    lines = []
-    lines.append(('fixed (home slots)', _format_stamps(_stamped(run_fixed, group))))
-    # Plan + remap + kernel; the plan of the previous step is the slot cache,
-    # so this is the steady state with no weight copies.
+    def run_owner_only(fused):
+        def fn():
+            b.x[:m_tokens].copy_(x_fp8)
+            b.x_sf[:m_tokens].copy_(x_sf)
+            b.topk_idx[:m_tokens].copy_(topk_idx.to(torch.int64))
+            eplb.remap(m_tokens, eplb.block_m(m_tokens))
+            y = torch.empty((m_tokens, eplb.hidden), dtype=torch.bfloat16, device='cuda')
+            deep_gemm.mxfp4_mega_moe(
+                y, eplb.l1_weights, eplb.l2_weights, b,
+                cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
+                l1_global_scales=eplb.l1_global_scales, l2_global_scales=eplb.l2_global_scales,
+                activation_clamp=args.activation_clamp, fast_math=bool(args.fast_math),
+                eplb_fused_copy=eplb.fused_copy_args() if fused else None)
+            return y
+        return fn
+
+    def timed(fn):
+        torch.cuda.synchronize()
+        dist.barrier(group=group)
+        t = bench_kineto(fn, 'sm90_mxfp4_mega_moe', barrier=dist.barrier,
+                         num_tests=args.bench_tests, suppress_kineto_output=quiet) * 1e6
+        torch.cuda.synchronize()
+        dist.barrier(group=group)
+        return t
+
+    arms = [('fixed', run_fixed), ('fixed+gs', run_fixed_gs)]
+    results = []
+    # Planned first: the slot cache of the previous bench step is still in place.
     run_eplb()
-    lines.append(('eplb planned', _format_stamps(_stamped(run_eplb, group))))
-    # Empty every helper slot: the routing falls back to the owners and the
-    # kernel runs with H + S physical slots per rank on the fixed placement.
+    results.append(('planned', timed(run_eplb), _format_stamps(_stamped(run_eplb, group))))
+    for name, fn in arms:
+        fn()
+        results.append((name, timed(fn), _format_stamps(_stamped(fn, group))))
+    # Empty every helper slot: routing at the owners through the H + S slot kernel.
     eplb.set_replicas(torch.full((num_ranks, eplb.num_helper_slots), -1, dtype=torch.int32))
-    run_owner_only()
-    torch.cuda.synchronize()
-    dist.barrier(group=group)
-    t_owner = bench_kineto(run_owner_only, 'sm90_mxfp4_mega_moe', barrier=dist.barrier,
-                           num_tests=args.bench_tests, suppress_kineto_output=quiet) * 1e6
-    torch.cuda.synchronize()
-    dist.barrier(group=group)
-    t_fixed = bench_kineto(run_fixed, 'sm90_mxfp4_mega_moe', barrier=dist.barrier,
-                           num_tests=args.bench_tests, suppress_kineto_output=quiet) * 1e6
-    local = torch.tensor([t_owner, t_fixed], device='cuda')
-    dist.all_reduce(local, op=dist.ReduceOp.MAX, group=group)
-    lines.append(('eplb owner-only (helper slots empty)', _format_stamps(_stamped(run_owner_only, group))))
-    torch.cuda.synchronize()
-    dist.barrier(group=group)
+    for name, fn in (('owner-only', run_owner_only(True)), ('owner-only-nofc', run_owner_only(False))):
+        fn()
+        results.append((name, timed(fn), _format_stamps(_stamped(fn, group))))
     # Back to the planned state for whatever follows.
     run_eplb()
     torch.cuda.synchronize()
     dist.barrier(group=group)
+    local = torch.tensor([r[1] for r in results], device='cuda')
+    dist.all_reduce(local, op=dist.ReduceOp.MAX, group=group)
     if rank_idx == 0:
-        t_owner, t_fixed = local.tolist()
-        print(f'[slots M={m_tokens}] fixed kernel {t_fixed:.1f}us, same routing through the EPLB kernel with '
-              f'{eplb.num_helper_slots} empty helper slots {t_owner:.1f}us ({t_owner / t_fixed:.3f}x)', flush=True)
-        for arm, text in lines:
-            print(f'[stamps M={m_tokens} {arm}] {text}', flush=True)
+        base = local[1].item()
+        print(f'[slots M={m_tokens}] ' + '  '.join(f'{r[0]}={t:.0f}us ({t / base:.3f}x)' for r, t in zip(results, local.tolist())), flush=True)
+        for r in results:
+            print(f'[stamps M={m_tokens} {r[0]}] {r[2]}', flush=True)
 
 
 def _worker(local_rank, num_local_ranks, args):
