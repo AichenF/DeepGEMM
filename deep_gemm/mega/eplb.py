@@ -342,7 +342,7 @@ class DynamicEPLB:
                 self.arena.plane_specs(self._l2_plane_names))
         return args
 
-    def remap(self, num_tokens: int, block_m: int, after_plan: bool = False):
+    def remap(self, num_tokens: int, block_m: int):
         """Rewrite ``self.symm.topk_idx[:num_tokens]`` from logical experts
         to physical slots using the current placement. Standalone (without a
         fresh plan, e.g. decode steps) it reuses the last plan's copies and

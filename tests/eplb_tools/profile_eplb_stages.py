@@ -21,11 +21,6 @@ Variants per (trace, layer, M):
                GEMMs shaped like DeepSeek V4 Flash's shared experts at this M
                (the server's ``--filler-n`` x hidden gate/up and down), i.e.
                the stock order gate -> ... -> shared experts -> plan -> kernel
-  early_filler the early plan: the plan kernel is launched on a side stream
-               before the filler, the main stream runs the filler, waits for
-               the plan event, remaps and launches the kernel; "prepare" is
-               then measured from the end of the filler (what stays on the
-               critical path), and the side-stream plan span is printed too
 
 ``--wait-study`` adds, per (trace, layer, M), the plan kernel alone (the
 standalone planner and the single-launch kernel) under three host alignments:
@@ -73,7 +68,7 @@ from test_mxfp4_mega_moe_sm90_eplb import (PLAN_STAMPS, _load_trace, _single_lau
 
 KERNELS = ('eplb_plan_kernel', 'eplb_copy_weights_kernel', 'eplb_remap_kernel', 'eplb_plan_remap_kernel',
            'sm90_mxfp4_mega_moe')
-VARIANTS = ('fresh', 'single', 'remap', 'remap_cached', 'kernel', 'fresh_filler', 'early_filler')
+VARIANTS = ('fresh', 'single', 'remap', 'remap_cached', 'kernel', 'fresh_filler')
 # ``zero`` stays as a column for comparison with older logs; ``DynamicEPLB.remap``
 # no longer issues a fill launch (the remap kernel clears its own counters), so
 # it is 0 now. ``filler`` is the host time of the filler GEMM calls.
@@ -115,7 +110,6 @@ class StageRunner:
         self.cached_block_m = eplb.block_m(m_tokens)
         self.host = {}
         self.events = None
-        self.side_events = None
         # Filler standing in for the shared experts (BF16; the model's own may
         # be narrower-typed and faster, the server trace gives the real span):
         # gate/up [M, hidden] x [hidden, filler_n] and down [M, filler_n / 2] x
@@ -124,7 +118,6 @@ class StageRunner:
         self.filler_x = torch.randn((m_tokens, eplb.hidden), dtype=torch.bfloat16, device='cuda')
         self.filler_w1 = torch.randn((eplb.hidden, fn), dtype=torch.bfloat16, device='cuda') * 0.02
         self.filler_w2 = torch.randn((fn // 2, eplb.hidden), dtype=torch.bfloat16, device='cuda') * 0.02
-        self.side = torch.cuda.Stream()
 
     def _kernel(self):
         b = self.eplb.symm
@@ -142,14 +135,14 @@ class StageRunner:
             _ = h @ self.filler_w2
             return time.perf_counter() - t0
 
-    def _remap_split(self, block_m, after_plan):
+    def _remap_split(self, block_m):
         """`DynamicEPLB.remap`: one launch (its kernel clears the ordinal
         counters, the planner too), timed on its own; the ``zero`` slot that
         older logs had is kept at 0."""
         e = self.eplb
         t1 = time.perf_counter()
         with _scope('eplb.remap'):
-            e.remap(self.n, block_m, after_plan=after_plan)
+            e.remap(self.n, block_m)
         t2 = time.perf_counter()
         return 0.0, t2 - t1
 
@@ -159,7 +152,6 @@ class StageRunner:
         src = self.topk_physical if variant == 'kernel' else self.topk_logical
         b.topk_idx[:n].copy_(src)
         ev = [torch.cuda.Event(enable_timing=True) for _ in range(4)] if record else None
-        side_ev = None
         h = dict.fromkeys(HOST_FIELDS, 0.0)
         if record:
             ev[0].record()
@@ -176,7 +168,7 @@ class StageRunner:
             with _scope('eplb.copy_weights'):
                 e.copy_weights(); t3 = time.perf_counter()
             h['block_m'], h['plan'], h['copy'] = t1 - t0, t2 - t1, t3 - t2
-            h['zero'], h['remap'] = self._remap_split(block_m, after_plan=True)
+            h['zero'], h['remap'] = self._remap_split(block_m)
         elif variant == 'single':
             # One launch for plan + remap; the copy follows unless fused.
             with _scope('eplb.block_m'):
@@ -188,40 +180,13 @@ class StageRunner:
                 with _scope('eplb.copy_weights'):
                     e.copy_weights(); t3 = time.perf_counter()
             h['block_m'], h['plan'], h['copy'] = t1 - t0, t2 - t1, t3 - t2
-        elif variant == 'early_filler':
-            # The server's early plan: side stream waits for "top-k" (ev[0]
-            # position), plans; main stream runs the filler, waits, remaps.
-            with _scope('eplb.block_m'):
-                t0 = time.perf_counter(); block_m = e.block_m(n); t1 = time.perf_counter()
-            h['block_m'] = t1 - t0
-            topk_done = torch.cuda.Event()
-            topk_done.record()
-            with torch.cuda.stream(self.side):
-                self.side.wait_event(topk_done)
-                if record:
-                    side_ev = [torch.cuda.Event(enable_timing=True) for _ in range(2)]
-                    side_ev[0].record()
-                with _scope('eplb.plan(side)'):
-                    t2 = time.perf_counter(); e.plan(n, block_m); t3 = time.perf_counter()
-                with _scope('eplb.copy_weights(side)'):
-                    e.copy_weights(); t4 = time.perf_counter()
-                if record:
-                    side_ev[1].record()
-                plan_done = torch.cuda.Event()
-                plan_done.record()
-            h['plan'], h['copy'] = t3 - t2, t4 - t3
-            h['filler'] = self._filler()
-            if record:
-                ev[3].record()
-            torch.cuda.current_stream().wait_event(plan_done)
-            h['zero'], h['remap'] = self._remap_split(block_m, after_plan=True)
         elif variant == 'remap':
             with _scope('eplb.block_m'):
                 t0 = time.perf_counter(); block_m = e.block_m(n); t1 = time.perf_counter()
             h['block_m'] = t1 - t0
-            h['zero'], h['remap'] = self._remap_split(block_m, after_plan=False)
+            h['zero'], h['remap'] = self._remap_split(block_m)
         elif variant == 'remap_cached':
-            h['zero'], h['remap'] = self._remap_split(self.cached_block_m, after_plan=False)
+            h['zero'], h['remap'] = self._remap_split(self.cached_block_m)
         if record:
             ev[1].record()
         t4 = time.perf_counter()
@@ -234,7 +199,6 @@ class StageRunner:
             ev[2].record()
         self.host = h
         self.events = ev
-        self.side_events = side_ev
 
     def capture_physical(self):
         """Remap once on the current placement and keep the physical ids for
@@ -248,7 +212,7 @@ def _measure_variant(runner, variant, group, iters):
     """Per-iteration host and event timings with the ranks realigned before
     each one; returns the per-rank medians (seconds / microseconds)."""
     hosts = {k: [] for k in HOST_FIELDS}
-    prep, kern, tot, fill, side = [], [], [], [], []
+    prep, kern, tot, fill = [], [], [], []
     filler = variant.endswith('_filler')
     for _ in range(3):
         _resync(group)
@@ -260,16 +224,13 @@ def _measure_variant(runner, variant, group, iters):
         for k in HOST_FIELDS:
             hosts[k].append(runner.host[k] * 1e6)
         e0, e1, e2, e3 = runner.events
-        # With a filler, "prepare" is what follows it on the critical path
-        # (plan + remap in the stock order, wait + remap with the early plan).
+        # With a filler, "prepare" is what follows it on the critical path.
         prep.append((e3 if filler else e0).elapsed_time(e1) * 1e3)
         kern.append(e1.elapsed_time(e2) * 1e3)
         tot.append(e0.elapsed_time(e2) * 1e3)
         fill.append(e0.elapsed_time(e3) * 1e3 if filler else 0.0)
-        s = runner.side_events
-        side.append(s[0].elapsed_time(s[1]) * 1e3 if s is not None else 0.0)
     med = statistics.median
-    return {k: med(v) for k, v in hosts.items()}, med(prep), med(kern), med(tot), med(fill), med(side)
+    return {k: med(v) for k, v in hosts.items()}, med(prep), med(kern), med(tot), med(fill)
 
 
 def _kineto_variant(runner, variant, group, num_tests, quiet):
@@ -489,10 +450,10 @@ def _worker(local_rank, num_local_ranks, args):
                   'host_us = perf_counter per Python call (block_m/plan/copy/zero/remap/launch/total/filler; for the '
                   'single variant "plan" is the one plan+remap call); ev_us = CUDA-event spans '
                   '(prepare = before block_m -> before kernel launch, or after the filler -> before kernel launch for '
-                  'the *_filler variants; kernel; total; filler; side = plan+copy span on the side stream); '
+                  'the *_filler variants; kernel; total; filler); '
                   'gap_us = ev_total - sum(gpu_us) - ev_filler. All rank-max.', flush=True)
             print('trace          layer     M variant      | gpu_us plan   copy  remap single kernel | host_us block_m  plan  copy  zero remap launch  total filler '
-                  '| ev_us prepare kernel  total filler   side |  gap_us', flush=True)
+                  '| ev_us prepare kernel  total filler |  gap_us', flush=True)
 
         profiled = False
         for layer in layer_ids:
@@ -523,18 +484,18 @@ def _worker(local_rank, num_local_ranks, args):
                     if variant == 'single' and not _HAS_SINGLE_LAUNCH:
                         continue
                     gpu = _kineto_variant(runner, variant, group, args.bench_tests, quiet)
-                    host, prep, kern, tot, fill, side = _measure_variant(runner, variant, group, args.iters)
-                    vals = _rank_max(gpu + [host[k] for k in HOST_FIELDS] + [prep, kern, tot, fill, side], group)
+                    host, prep, kern, tot, fill = _measure_variant(runner, variant, group, args.iters)
+                    vals = _rank_max(gpu + [host[k] for k in HOST_FIELDS] + [prep, kern, tot, fill], group)
                     nk = len(KERNELS)
                     gpu = vals[:nk]
                     hv = vals[nk:nk + len(HOST_FIELDS)]
-                    prep, kern, tot, fill, side = vals[nk + len(HOST_FIELDS):]
+                    prep, kern, tot, fill = vals[nk + len(HOST_FIELDS):]
                     gap = tot - sum(gpu) - fill
                     if rank_idx == 0:
                         print(f'{tag:<14} {layer:>5} {m_tokens:>5} {variant:<12} | '
                               f'{gpu[0]:>12.1f} {gpu[1]:>6.1f} {gpu[2]:>6.1f} {gpu[3]:>6.1f} {gpu[4]:>6.1f} | '
                               f'{hv[0]:>15.1f} {hv[1]:>5.1f} {hv[2]:>5.1f} {hv[3]:>5.1f} {hv[4]:>5.1f} {hv[5]:>6.1f} {hv[6]:>6.1f} {hv[7]:>6.1f} | '
-                              f'{prep:>13.1f} {kern:>6.1f} {tot:>6.1f} {fill:>6.1f} {side:>6.1f} | {gap:>7.1f}', flush=True)
+                              f'{prep:>13.1f} {kern:>6.1f} {tot:>6.1f} {fill:>6.1f} | {gap:>7.1f}', flush=True)
                 if args.wait_study:
                     _plan_wait_study(runner, group, rank_idx, tag, layer, args.wait_iters)
                 if args.profile_m == m_tokens and not profiled:
@@ -567,7 +528,7 @@ def _parse_args():
     p.add_argument('--profile-m', type=int, default=2048, help='M for the torch.profiler session (0 = off)')
     p.add_argument('--profile-iters', type=int, default=10)
     p.add_argument('--profile-dir', type=str, default=None, help='where to write the chrome trace')
-    p.add_argument('--filler', type=int, default=1, help='also run the fresh_filler / early_filler variants')
+    p.add_argument('--filler', type=int, default=1, help='also run the fresh_filler variant')
     p.add_argument('--table', type=int, default=1, help='run the per-variant table (0: only the studies below)')
     p.add_argument('--wait-study', type=int, default=1,
                    help='plan kernel alone under aligned / loop / free host alignment (set DG_EPLB_PROFILE=1 '

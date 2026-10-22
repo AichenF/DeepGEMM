@@ -56,34 +56,18 @@ if early not in s:
     s = s.replace(anchor, early + anchor, 1)
     open(p, "w").write(s)
     print("moved MXFP4 dispatch before the FP8 buffer", p)
-# Early plan (SGLANG_MEGAMOE_DYNAMIC_EPLB_EARLY_PLAN=1): forward_mega_moe hands
-# the whole forward to the adapter, which runs gate + top-k first, launches the
-# plan on a side stream and only then the shared experts. With the knob off
-# ``wants_early_plan`` is one flag test and the stock body runs unchanged.
+# A tree patched by an earlier version of this script hands the forward to
+# the adapter's early-plan path; that path is gone, so the hook is removed.
 s = open(p).read()
-if "wants_early_plan" not in s:
-    imp_old = ("from sglang.srt.layers.moe.mega_moe_sm90_mxfp4 import (\n"
-               "    is_sm90_mxfp4_mega_moe_available,\n    run_sm90_mxfp4_mega_routed,\n)")
-    imp_new = ("from sglang.srt.layers.moe.mega_moe_sm90_mxfp4 import (\n"
-               "    forward_sm90_mxfp4_mega_moe,\n    is_sm90_mxfp4_mega_moe_available,\n"
-               "    run_sm90_mxfp4_mega_routed,\n    wants_early_plan,\n)")
-    assert imp_old in s, "mxfp4 import anchor not found"
-    s = s.replace(imp_old, imp_new, 1)
-    body_anchor = (") -> torch.Tensor:\n    num_tokens = hidden_states.shape[0]\n\n"
-                   "    sbo_overlap_flag = (\n")
-    assert body_anchor in s, "forward_mega_moe body anchor not found"
-    s = s.replace(body_anchor,
-                  ") -> torch.Tensor:\n"
-                  "    if wants_early_plan(moe):\n"
+if "wants_early_plan" in s:
+    s = s.replace("    forward_sm90_mxfp4_mega_moe,\n", "", 1).replace("    wants_early_plan,\n", "", 1)
+    s = s.replace("    if wants_early_plan(moe):\n"
                   "        return forward_sm90_mxfp4_mega_moe(\n"
                   "            moe, hidden_states, forward_batch, input_ids_global=input_ids_global\n"
-                  "        )\n\n"
-                  "    num_tokens = hidden_states.shape[0]\n\n"
-                  "    sbo_overlap_flag = (\n", 1)
+                  "        )\n\n", "", 1)
+    assert "wants_early_plan" not in s, "early-plan hook not fully removed"
     open(p, "w").write(s)
-    print("patched forward_mega_moe for the early plan", p)
-else:
-    print("forward_mega_moe already patched for the early plan", p)
+    print("removed the early-plan hook from forward_mega_moe", p)
 
 # --- fp8.py ------------------------------------------------------------------
 p = os.path.join(srt, "layers", "quantization", "fp8.py")
