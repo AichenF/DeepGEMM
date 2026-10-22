@@ -240,7 +240,8 @@ def _trace_flush(eplb) -> None:
         st = _EPLB_STATS
         msg += (f" (prepare {start.elapsed_time(mid) * 1000:.0f}"
                 f" + kernel {mid.elapsed_time(end) * 1000:.0f})"
-                f" | host prepare {host_us[0]:.0f} us, kernel launch {host_us[1]:.0f} us")
+                f" | host prepare {host_us[0]:.0f} us (decision {host_us[2]:.0f}), "
+                f"kernel launch {host_us[1]:.0f} us (argument glue {host_us[3]:.0f})")
         if early_events is not None:
             # Early plan: GPU spans of the reordered forward. ``top-k->shared``
             # is the shared experts (the overlap window), ``shared->copies`` the
@@ -685,6 +686,8 @@ def run_sm90_mxfp4_mega_routed(
         else:
             decision_tokens = _decision_tokens(num_tokens, group)
             replan = _decide(eplb, decision_tokens, capturing)
+        if trace_this:
+            t_host_decided = time.perf_counter()
         if replan:
             if early is not None and early.plan_done is not None:
                 # The plan of this chunk has been running on the side stream
@@ -711,15 +714,20 @@ def run_sm90_mxfp4_mega_routed(
         # (its loaders fetch the changed helper slots and gate the dependent
         # tiles on per-slot readiness counters), so ``prepare`` skipped the
         # copy kernel.
+        fused_copy_args = eplb.fused_copy_args() if eplb.fuse_copy else None
+        if trace_this:
+            t_host_args = time.perf_counter()
         deep_gemm.mxfp4_mega_moe(
             y, eplb.l1_weights, eplb.l2_weights, buf,
             cumulative_local_expert_recv_stats=eplb.cumulative_slot_recv_stats,
             l1_global_scales=eplb.l1_global_scales, l2_global_scales=eplb.l2_global_scales,
             activation_clamp=clamp, fast_math=True,
-            eplb_fused_copy=eplb.fused_copy_args() if eplb.fuse_copy else None)
+            eplb_fused_copy=fused_copy_args)
     else:
         if trace_this:
             t_host1 = time.perf_counter()
+            t_host_decided = t_host0
+            t_host_args = t_host1
         deep_gemm.mxfp4_mega_moe(
             y, moe.experts.mega_l1_weights, moe.experts.mega_l2_weights, buf,
             l1_global_scales=moe.experts.mega_l1_global_scales,
@@ -738,6 +746,7 @@ def run_sm90_mxfp4_mega_routed(
                           eplb.copies.clone() if eplb is not None else None,
                           eplb.slot_expert.clone() if eplb is not None else None,
                           eplb.copy_count.clone() if eplb is not None else None,
-                          ((t_host1 - t_host0) * 1e6, (t_host2 - t_host1) * 1e6),
+                          ((t_host1 - t_host0) * 1e6, (t_host2 - t_host1) * 1e6,
+                           (t_host_decided - t_host0) * 1e6, (t_host_args - t_host1) * 1e6),
                           early_events)
     return y[:num_tokens]
